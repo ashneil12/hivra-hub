@@ -191,7 +191,11 @@ pub fn decide(read: &PrRead, open_decision: Option<&str>, allow: &Allow) -> Deci
 }
 
 fn named_files(hits: &[String]) -> String {
-    let shown: Vec<&str> = hits.iter().take(5).map(String::as_str).collect();
+    let shown: Vec<String> = hits
+        .iter()
+        .take(5)
+        .map(|hit| super::protected::show(hit))
+        .collect();
     if hits.len() > 5 {
         format!("{}, and {} more", shown.join(", "), hits.len() - 5)
     } else {
@@ -200,8 +204,9 @@ fn named_files(hits: &[String]) -> String {
 }
 
 /// The protected-path floor. Off, the decision is unchanged, so a project that has not turned the floor on
-/// merges exactly as it did before. A decision that is not a merge is unchanged too: red still refuses, and
-/// a pull request with no checks still asks for the no-checks reason.
+/// merges exactly as it did before. A refusal is unchanged: red still refuses. A pull request that would
+/// otherwise merge needs the person's word when its files are unread or touch a protected path. One that
+/// would ask (no checks, with the switch on) keeps its question and says what the floor found in it too.
 pub(crate) fn floor_decision(
     decision: Decision,
     enabled: bool,
@@ -212,9 +217,9 @@ pub(crate) fn floor_decision(
     if !enabled {
         return decision;
     }
-    let Decision::Merge { .. } = &decision else {
+    if let Decision::Refuse(_) = &decision {
         return decision;
-    };
+    }
     let paths = match files {
         super::protected::ChangedFiles::Unread { reason } => {
             let reason = reason.trim();
@@ -223,9 +228,11 @@ pub(crate) fn floor_decision(
             } else {
                 format!(" {reason}")
             };
-            return Decision::Ask(format!(
-                "{pr}'s changed files couldn't be read, so it needs your word to merge.{detail}"
-            ));
+            let ask = format!("{pr}'s changed files couldn't be read, so it needs your word to merge.{detail}");
+            return match decision {
+                Decision::Ask(question) => Decision::Ask(format!("{question} {ask}")),
+                _ => Decision::Ask(ask),
+            };
         }
         super::protected::ChangedFiles::Listed(paths) => paths,
     };
@@ -233,10 +240,16 @@ pub(crate) fn floor_decision(
     if hits.is_empty() {
         return decision;
     }
-    Decision::Ask(format!(
-        "{pr} changes {}. It needs your word to merge.",
-        named_files(&hits)
-    ))
+    match decision {
+        Decision::Ask(question) => Decision::Ask(format!(
+            "{question} It also changes {}, which the protected-path floor holds, so it needs your word too.",
+            named_files(&hits)
+        )),
+        _ => Decision::Ask(format!(
+            "{pr} changes {}. It needs your word to merge.",
+            named_files(&hits)
+        )),
+    }
 }
 
 /// An open question on the work: a question on any task in its tree, or a WP-14 decision (state open)
@@ -501,11 +514,12 @@ pub fn merge(
         },
     };
     let decided = decide(&read, open.as_deref(), &allow);
-    // WP-158: only the switch consults the floor, and only once the project has turned it on.
-    // The person's own tap, and an approval of this exact head, are already their word.
+    // WP-158: only the switch consults the floor, and only once the project has turned it on. That covers a green
+    // merge and the no-checks question the switch still asks, so the question can name a protected file. The
+    // person's own tap, and an approval of this exact head, are already their word.
     let consult = matches!(allow, Allow::Switch)
         && stored.as_ref().is_some_and(|row| row.protect_paths)
-        && matches!(decided, Decision::Merge { .. });
+        && !matches!(decided, Decision::Refuse(_));
     let decision = if consult {
         let extras = stored
             .as_ref()
@@ -539,7 +553,18 @@ pub fn merge(
             }
         };
         conn = store.lock_conn()?;
-        floor_decision(decided, true, &files, &extras, &format!("{repo}#{number}"))
+        // A decision opened while the files were read (another window, the person) stops the merge too.
+        // The check above ran before that read.
+        let opened_meanwhile = match &delegation {
+            Some(id) => open_decision(&conn, id)?,
+            None => None,
+        };
+        match opened_meanwhile {
+            Some(question) => Decision::Refuse(format!(
+                "A decision on this work is still open: {question}. It merges once that is answered."
+            )),
+            None => floor_decision(decided, true, &files, &extras, &format!("{repo}#{number}")),
+        }
     } else {
         decided
     };

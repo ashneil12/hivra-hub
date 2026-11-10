@@ -1915,12 +1915,17 @@ fn red_and_a_pull_request_with_no_checks_do_not_consult_the_floor() {
     );
     assert!(red.ran("api", "--paginate").is_empty());
 
-    let unchecked = FakeGithub::new(vec![pr(PrState::Open, "1111111111111111111111111111111111111111", vec![])]);
+    // With no checks the switch still asks. The floor reads the list only to say what the question should name.
+    let mut read = pr(PrState::Open, "1111111111111111111111111111111111111111", vec![]);
+    read.changed_files = Some(1);
+    let unchecked = FakeGithub::new(vec![read]);
     *unchecked.files.lock().unwrap() = Some(Ok("readme.md\n".into()));
     let question = asked(&merge::merge(&s, &unchecked, agent_merge("acme/web"), 30).unwrap());
     assert!(question.contains("no checks"), "{question}");
     assert!(!question.contains("couldn't be read"), "{question}");
-    assert!(unchecked.ran("api", "--paginate").is_empty());
+    assert!(!question.contains("protected-path floor"), "{question}");
+    assert_eq!(api_calls(&unchecked), 1, "only the file list is read");
+    assert!(unchecked.ran("pr", "merge").is_empty());
 }
 
 #[test]
@@ -2322,7 +2327,9 @@ fn the_floor_path_merges_only_the_head_it_judged() {
 #[test]
 fn the_no_checks_question_names_a_protected_file_too() {
     let (s, _project) = floor_pr("no-checks-named", 7, None);
-    let unchecked = FakeGithub::new(vec![pr(PrState::Open, "1111111111111111111111111111111111111111", vec![])]);
+    let mut read = pr(PrState::Open, "1111111111111111111111111111111111111111", vec![]);
+    read.changed_files = Some(1);
+    let unchecked = FakeGithub::new(vec![read]);
     *unchecked.files.lock().unwrap() = Some(Ok(".github/workflows/x.yml\n".into()));
     let question = asked(&merge::merge(&s, &unchecked, agent_merge("acme/web"), 20).unwrap());
     assert!(question.contains("no checks"), "{question}");
