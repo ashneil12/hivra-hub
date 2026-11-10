@@ -1024,6 +1024,10 @@ import type { PaletteContext } from "../features/search/model/commandRegistry";
 import { runPaletteRow } from "../features/search/model/paletteRun";
 import { runPaletteCommand } from "../features/search/model/paletteWiring";
 import {
+  focusBeforePalette,
+  paletteFocusOf,
+} from "../features/search/model/paletteFocus";
+import {
   finderFileOptions,
   requestDocFocus,
   requestTaskFocus,
@@ -14956,7 +14960,13 @@ function Workspace({
     });
   }, []);
 
+  // The palette's input takes focus as it opens, so keep what had it before.
+  const paletteFocusRef = useRef<Element | null>(null);
+  const rememberPaletteFocus = () => {
+    paletteFocusRef.current = focusBeforePalette(document.activeElement);
+  };
   const onGoToFile = useCallback(() => {
+    rememberPaletteFocus();
     setSearchViewOpen(false);
     setInboxViewOpen(false);
     setNotesViewOpen(false);
@@ -14967,6 +14977,7 @@ function Workspace({
     setFilePickerOpen(true);
   }, []);
   const onOpenCommandPalette = useCallback(() => {
+    rememberPaletteFocus();
     setSearchViewOpen(false);
     setInboxViewOpen(false);
     setNotesViewOpen(false);
@@ -14978,6 +14989,7 @@ function Workspace({
   }, []);
   // WP-74: ⌘K opens the same palette, ready to search every kind.
   const onOpenFinder = useCallback(() => {
+    rememberPaletteFocus();
     setSearchViewOpen(false);
     setInboxViewOpen(false);
     setNotesViewOpen(false);
@@ -15829,6 +15841,18 @@ function Workspace({
   // WP-93: the command palette's rows for what the app can do right now, and
   // the one runner that sends each row to the handler its shortcut uses.
   // Read fresh on the render that opens the palette, so "now" means now.
+  // Esc stops the Mono's chat while the Mono view is open, else the focused
+  // tab's busy chat; Stop chat in the palette reads the same way.
+  const paletteStopTarget: string | null = monoViewId
+    ? sessions.find((session) => session.id === monoViewId)?.busy
+      ? monoViewId
+      : null
+    : focusedBusyAgentSessionId(
+        activeTabId,
+        tabs,
+        sessions,
+        projectTerminalFocusedRef.current,
+      );
   const paletteContext: PaletteContext = {
     project:
       isLocalProject(sidebarCwd) || isRemoteProjectPath(sidebarCwd)
@@ -15836,46 +15860,26 @@ function Workspace({
         : null,
     terminal: isLocalProject(projectCwd),
     chat: Boolean(activeSessionId),
-    busy: Boolean(
-      activeSessionId &&
-        sessions.find((session) => session.id === activeSessionId)?.busy,
-    ),
-    // The chord treats an input, a terminal or a dialog as not the chat's.
-    control:
-      document.activeElement instanceof Element &&
-      Boolean(
-        document.activeElement.closest(
-          'input, textarea, select, [contenteditable="true"], .cm-editor, .monocode-terminal, [role="dialog"]',
-        ),
-      ),
+    busy: Boolean(paletteStopTarget),
+    ...paletteFocusOf(paletteFocusRef.current),
     editor: Boolean(activeFile && isFilesystemTab(activeFile)),
   };
-  // WP-93: the two commands that act on the chat in focus. The key handlers
-  // work these out from the event; the palette has no event, so it reads the
-  // same refs they do.
-  const paletteTargetsRef = useRef<{ archive: string | null; stop: string | null }>({
-    archive: null,
-    stop: null,
-  });
-  paletteTargetsRef.current = {
-    archive:
-      activeSessionId && !(activeFile && isFilesystemTab(activeFile))
-        ? activeSessionId
-        : null,
-    stop:
-      activeSessionId &&
-      sessions.find((session) => session.id === activeSessionId)?.busy
-        ? activeSessionId
-        : null,
-  };
+  const paletteStopTargetRef = useRef<string | null>(null);
+  paletteStopTargetRef.current = paletteStopTarget;
   const runPaletteCommandFromFinder = useCallback(
     (row: Parameters<typeof runPaletteRow>[0]) =>
       runPaletteCommand(row, actions.current, {
         run,
-        archiveChat: () => paletteTargetsRef.current.archive,
-        stopChat: () => paletteTargetsRef.current.stop,
-        archive: (id) => void onArchiveHistorySession(id, true),
+        stopChat: () => paletteStopTargetRef.current,
         stop: (id) => onStopFromUser(id),
+        // The shortcut's own handler, as if it were pressed where focus was.
+        archiveFocused: () =>
+          onArchiveFocusedSession({
+            defaultPrevented: false,
+            target: focusBeforePalette(paletteFocusRef.current),
+            preventDefault: () => undefined,
+            stopPropagation: () => undefined,
+          } as unknown as KeyboardEvent),
         showHome: () => showAppItem("home"),
         showChanges: onShowSourceControl,
         openModelPicker: () =>
@@ -15896,7 +15900,7 @@ function Workspace({
           else openFindInActiveEditor();
         },
       }),
-    [run, onShowSourceControl, onStopFromUser, onArchiveHistorySession],
+    [run, onShowSourceControl, onStopFromUser, onArchiveFocusedSession],
   );
 
   useEffect(() => {
