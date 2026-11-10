@@ -83,6 +83,21 @@ import { bindCrew, commentId } from "../../phases/model/store";
 import { claudeRunsOnSubscriptionBridge } from "../../../integrations/harness/providers/claude/claudeDeepseekBridge";
 import { checkBrief, renderBrief, type BriefIsolation } from "../../firstmate/model/brief";
 import { parseFanout } from "../../firstmate/model/fanoutContract";
+import {
+  createCheckpoint,
+  describeResume,
+  isSettled,
+  noteRefused,
+  noteStarted,
+  noteStarting,
+  noteStopped,
+  noteWaveDone,
+  planResume,
+  type FanoutCheckpoint,
+  type ResumePlan,
+  type RowLookup,
+} from "../../firstmate/model/fanoutCheckpoint";
+import type { FanoutCheckpointStore } from "../../firstmate/host/fanoutCheckpointStore";
 import { originalRequestOf } from "../../firstmate/model/originalRequest";
 import { fanoutSection, parseFanoutLink, planFanout, taskRequestId } from "../../firstmate/model/fanoutWaves";
 import { classifyBriefTask } from "../../firstmate/model/briefSkills";
@@ -165,7 +180,7 @@ export const TASK_FIELDS: ReadonlyArray<readonly [string, readonly string[]]> = 
     ],
   ],
   // WP-171: one call for a multi-part ask whose tasks name what they own, provide, require and check.
-  ["tasks.fanout", ["intent", "tasks"]],
+  ["tasks.fanout", ["intent", "tasks", "resume", "confirm"]],
   ["tasks.accept", ["taskId", "accept", "reason"]],
   ["tasks.workers", ["project", "workers", "heavy", "scope", "cli", "model", "effort", "clear"]],
   ["tasks.status", ["taskIds"]],
@@ -197,6 +212,8 @@ export type TaskChild = Pick<Session, "busy" | "pendingQuestion"> & {
 
 /** The app's side of the task tools (App.tsx builds it on the delegation tracker). */
 export type AgentAppTasksHost = {
+  /** WP-172: where a fan-out keeps its checkpoint while it sends (absent: a plan is not checkpointed). */
+  fanoutCheckpoints?: FanoutCheckpointStore;
   /** The caller's own rows: by id or request, or (neither) the ones still running or owed, newest first. */
   owned(
     owner: string,
@@ -1277,7 +1294,137 @@ async function delegate(
  * task that requires a name waits in the worker queue until the task that provides it is delivered and checked
  * (fanoutWaves.ts, fanoutChecks.ts), starting by itself then. A task that cannot start holds the tasks that need it.
  */
+/** WP-172: the plans this app is sending right now, by owner and plan id. A resume of one of them waits its turn. */
+const SENDING_PLANS = new Set<string>();
+
+async function sendingPlan<T>(owner: string, planId: string, run: () => Promise<T>): Promise<T> {
+  const key = `${owner}\n${planId}`;
+  if (SENDING_PLANS.has(key))
+    throw new Error("This plan is still sending its tasks. Wait for its answer, then check task_status.");
+  SENDING_PLANS.add(key);
+  try {
+    return await run();
+  } finally {
+    SENDING_PLANS.delete(key);
+  }
+}
+
+/** A checkpoint writer for one plan: each change is saved as the next revision, and a failed save never fails the plan. */
+function planWriter(store: FanoutCheckpointStore | undefined, owner: string, first: FanoutCheckpoint | undefined) {
+  let current = first;
+  return {
+    get: () => current,
+    async write(change: (cp: FanoutCheckpoint) => FanoutCheckpoint): Promise<void> {
+      if (!store || !current) return;
+      current = change(current);
+      await store.save(owner, current).catch(() => false);
+    },
+    /** Once nothing is left to send, the plan is no longer offered for a resume. */
+    async finish(): Promise<void> {
+      if (!store || !current || !isSettled(current)) return;
+      await store.remove(owner, current.id).catch(() => false);
+    },
+  };
+}
+
+/** The rows of a plan's tasks, read by the child session each start was given. */
+function rowsOfPlan(owner: string, plan: FanoutCheckpoint, owned: readonly Delegation[]): RowLookup {
+  return (name) => {
+    const child = `app-${owner}-${taskRequestId(plan.id, name)}`;
+    const row = owned.find((entry) => entry.childSession === child);
+    return row ? { id: row.id, childSession: row.childSession, state: row.state } : undefined;
+  };
+}
+
 async function fanout(
+  source: Session,
+  requestId: string,
+  input: Record<string, unknown>,
+  host: AgentAppHost,
+  helpers: TaskHelpers,
+) {
+  if (input.resume !== undefined) {
+    const planId = text(input.resume, "resume", 100);
+    return sendingPlan(source.id, planId, () => resumeFanout(source, planId, input, host, helpers));
+  }
+  return sendingPlan(source.id, requestId, () => sendFanout(source, requestId, input, host, helpers));
+}
+
+/**
+ * WP-172: a plan an earlier run did not finish (a crash, a restart, a quit mid-plan). What never started is sent now,
+ * what started is kept as it is, and a task whose worker was stopped or has gone is sent again only when `confirm`
+ * names it. Every start keeps the plan's request id, so a task that already has a row is never started a second time.
+ */
+async function resumeFanout(
+  source: Session,
+  planId: string,
+  input: Record<string, unknown>,
+  host: AgentAppHost,
+  helpers: TaskHelpers,
+) {
+  const { tasks } = taskOwner(source, host);
+  if (input.confirm !== undefined && (!Array.isArray(input.confirm) || input.confirm.some((name) => typeof name !== "string")))
+    throw new Error("confirm must be a list of the task names to start again");
+  const confirm = (input.confirm as string[] | undefined) ?? [];
+  const store = tasks.fanoutCheckpoints;
+  const found = store ? (await store.list(source.id).catch(() => [] as FanoutCheckpoint[])).find((cp) => cp.id === planId) : undefined;
+  if (!found) throw new Error("There is no unfinished plan with that id. Send the tasks again with delegate_tasks.");
+  const unknown = confirm.filter((name) => !found.tasks.some((task) => task.name === name));
+  if (unknown.length)
+    throw new Error(`${unknown.join(", ")} ${unknown.length === 1 ? "is" : "are"} not part of this plan.`);
+  const now = (tasks.now ?? Date.now)();
+  const owned = await tasks
+    .owned(source.id, { requestIds: found.tasks.map((task) => `app-${source.id}-${taskRequestId(found.id, task.name)}`) })
+    .catch(() => [] as Delegation[]);
+  const rowOf = rowsOfPlan(source.id, found, owned);
+  const plan: ResumePlan = planResume(found, rowOf);
+  const writer = planWriter(store, source.id, found);
+  await writer.write((cp) => ({ ...cp, resumes: cp.resumes + 1, revision: cp.revision + 1, updatedAt: now }));
+  for (const adopted of plan.adopt)
+    await writer.write((cp) => noteStarted(cp, adopted.name, { taskId: adopted.taskId, childSession: adopted.childSession, status: adopted.state }, now));
+  const outcome = new Map<string, string>();
+  for (const name of plan.kept) outcome.set(name, "kept");
+  for (const name of plan.refused) outcome.set(name, "refused earlier, not retried");
+  for (const name of plan.confirm) {
+    if (!confirm.includes(name)) {
+      outcome.set(name, "needs your yes");
+      await writer.write((cp) => noteStopped(cp, name, now));
+    }
+  }
+  const send = plan.start.concat(plan.confirm.filter((name) => confirm.includes(name)));
+  // In the plan's own order, so the waves still run in order.
+  for (const task of found.tasks.filter((entry) => send.includes(entry.name))) {
+    await writer.write((cp) => noteStarting(cp, task.name, now));
+    try {
+      const out = (await delegate(
+        source,
+        taskRequestId(found.id, task.name),
+        { ...task.input, ...(found.originalRequest ? { originalRequest: found.originalRequest } : {}) },
+        host,
+        helpers,
+      )) as Record<string, unknown>;
+      if (typeof out.taskId === "string" && typeof out.childSessionId === "string") {
+        const status = typeof out.status === "string" ? out.status : undefined;
+        await writer.write((cp) =>
+          noteStarted(cp, task.name, { taskId: out.taskId as string, childSession: out.childSessionId as string, status }, now),
+        );
+      }
+      outcome.set(task.name, out.alreadyStarted === true ? "kept" : "started");
+    } catch (error) {
+      const why = error instanceof Error ? error.message : String(error);
+      await writer.write((cp) => noteRefused(cp, task.name, why, now));
+      outcome.set(task.name, `refused: ${why}`);
+    }
+  }
+  await writer.finish();
+  return {
+    plan: found.id,
+    tasks: found.tasks.map((task) => ({ name: task.name, status: outcome.get(task.name) ?? "kept" })),
+    note: forUser`${describeResume(plan)} Tell Ash in one line what carried on and what waits for his yes (in plain words: never a task id, a task name or a folder path), then end your turn.`,
+  };
+}
+
+async function sendFanout(
   source: Session,
   requestId: string,
   input: Record<string, unknown>,
@@ -1297,52 +1444,88 @@ async function fanout(
   const originalRequest = originalRequestOf(source.blocks);
   const linkOf = new Map(planned.links.map((link) => [link.name, link]));
   const taskOf = new Map(parsed.tasks.map((task) => [task.name, task]));
+  /** The delegate input of one task, as a resume replays it (the person's request is kept once, on the plan). */
+  const delegateInput = (name: string): Record<string, unknown> => {
+    const link = linkOf.get(name)!;
+    const task = taskOf.get(name)!;
+    return {
+      intent: task.intent,
+      brief: task.brief,
+      goal: task.goal,
+      ...(task.title ? { title: task.title } : {}),
+      ...(task.files.length ? { files: task.files } : {}),
+      ...(task.gates ?? {}),
+      ...task.passthrough,
+      fanout: link,
+    };
+  };
+  // WP-172: the plan is written before the first start, so a crash from here on can be resumed.
+  const plans = tasks.fanoutCheckpoints;
+  const writer = planWriter(
+    plans,
+    source.id,
+    plans
+      ? createCheckpoint({
+          id: requestId,
+          owner: source.id,
+          ...(originalRequest ? { originalRequest } : {}),
+          waves: planned.waves,
+          tasks: planned.waves.flat().map((name) => ({ name, wave: linkOf.get(name)!.wave, input: delegateInput(name) })),
+          now: (tasks.now ?? Date.now)(),
+        })
+      : undefined,
+  );
+  const stamp = () => (tasks.now ?? Date.now)();
+  await writer.write((cp) => cp);
   /** Tasks that did not start (refused, or needing one that did not), by name, with why. */
   const notStarted = new Map<string, string>();
   const results: Record<string, unknown>[] = [];
   // The tasks that need nothing first, then each wave after, so the queue holds the rest in order.
-  for (const name of planned.waves.flat()) {
-    const link = linkOf.get(name)!;
-    const task = taskOf.get(name)!;
-    const blocker = link.after.find((dep) => notStarted.has(dep));
-    if (blocker) {
-      notStarted.set(name, `${blocker} did not start`);
-      results.push({ name, wave: link.wave, status: "not started", error: `It needs ${blocker}, which did not start (${notStarted.get(blocker)}).` });
-      continue;
+  for (const [waveIndex, wave] of planned.waves.entries()) {
+    for (const name of wave) {
+      const link = linkOf.get(name)!;
+      const blocker = link.after.find((dep) => notStarted.has(dep));
+      if (blocker) {
+        notStarted.set(name, `${blocker} did not start`);
+        results.push({ name, wave: link.wave, status: "not started", error: `It needs ${blocker}, which did not start (${notStarted.get(blocker)}).` });
+        await writer.write((cp) => noteRefused(cp, name, `It needs ${blocker}, which did not start.`, stamp()));
+        continue;
+      }
+      await writer.write((cp) => noteStarting(cp, name, stamp()));
+      try {
+        const out = (await delegate(
+          source,
+          taskRequestId(requestId, name),
+          { ...delegateInput(name), ...(originalRequest ? { originalRequest } : {}) },
+          host,
+          helpers,
+        )) as Record<string, unknown>;
+        if (typeof out.taskId === "string" && typeof out.childSessionId === "string") {
+          const status = typeof out.status === "string" ? out.status : undefined;
+          await writer.write((cp) =>
+            noteStarted(cp, name, { taskId: out.taskId as string, childSession: out.childSessionId as string, status }, stamp()),
+          );
+        }
+        results.push({
+          name,
+          wave: link.wave,
+          ...Object.fromEntries(
+            ["taskId", "childSessionId", "status", "title", "waiting", "freshEyes", "modelName", "effort", "alreadyStarted"]
+              .filter((key) => out[key] !== undefined)
+              .map((key) => [key, out[key]]),
+          ),
+        });
+      } catch (error) {
+        const why = error instanceof Error ? error.message : String(error);
+        notStarted.set(name, why);
+        results.push({ name, wave: link.wave, status: "refused", error: why });
+        await writer.write((cp) => noteRefused(cp, name, why, stamp()));
+      }
     }
-    try {
-      const out = (await delegate(
-        source,
-        taskRequestId(requestId, name),
-        {
-          intent: task.intent,
-          brief: task.brief,
-          goal: task.goal,
-          ...(task.title ? { title: task.title } : {}),
-          ...(task.files.length ? { files: task.files } : {}),
-          ...(task.gates ?? {}),
-          ...task.passthrough,
-          fanout: link,
-          ...(originalRequest ? { originalRequest } : {}),
-        },
-        host,
-        helpers,
-      )) as Record<string, unknown>;
-      results.push({
-        name,
-        wave: link.wave,
-        ...Object.fromEntries(
-          ["taskId", "childSessionId", "status", "title", "waiting", "freshEyes", "modelName", "effort", "alreadyStarted"]
-            .filter((key) => out[key] !== undefined)
-            .map((key) => [key, out[key]]),
-        ),
-      });
-    } catch (error) {
-      const why = error instanceof Error ? error.message : String(error);
-      notStarted.set(name, why);
-      results.push({ name, wave: link.wave, status: "refused", error: why });
-    }
+    await writer.write((cp) => noteWaveDone(cp, waveIndex + 1, stamp()));
   }
+  // Nothing is left to send: the plan is no longer offered for a resume.
+  await writer.finish();
   if (notStarted.size === results.length)
     throw new Error(`Nothing started. ${results.map((entry) => `${String(entry.name)}: ${String(entry.error)}`).join(" ")}`);
   // Said in the order the tasks were given, not the order they started.
@@ -1429,6 +1612,23 @@ async function briefLead(
   };
 }
 
+/** WP-172: the chat's unfinished fan-outs, each with a plain line on what carrying it on would do. */
+async function unfinishedPlans(source: Session, tasks: AgentAppTasksHost): Promise<{ plan: string; line: string }[]> {
+  const store = tasks.fanoutCheckpoints;
+  if (!store) return [];
+  const found = await store.list(source.id).catch(() => [] as FanoutCheckpoint[]);
+  if (!found.length) return [];
+  const owned = await tasks
+    .owned(source.id, {
+      requestIds: found.flatMap((plan) => plan.tasks.map((task) => `app-${source.id}-${taskRequestId(plan.id, task.name)}`)),
+    })
+    .catch(() => [] as Delegation[]);
+  return found.map((plan) => ({
+    plan: plan.id,
+    line: `${describeResume(planResume(plan, rowsOfPlan(source.id, plan, owned)))} To carry it on, send delegate_tasks with resume "${plan.id}" (and confirm with the names of any stopped task you want started again).`,
+  }));
+}
+
 async function status(source: Session, input: Record<string, unknown>, host: AgentAppHost) {
   const { tasks } = taskOwner(source, host);
   const ids = taskIds(input.taskIds);
@@ -1452,7 +1652,10 @@ async function status(source: Session, input: Record<string, unknown>, host: Age
   // WP-144: a brief held for a fresh-eyes review is waiting too, though no worker is queued for it.
   const reviewed = ids ? [] : await (tasks.freshEyesWaiting?.(source.id) ?? Promise.resolve([])).catch(() => []);
   const team = ids ? [] : await othersOpen(source, tasks);
+  // WP-172: a plan an earlier run did not finish, so First Mate can carry it on (delegate_tasks resume).
+  const plans = ids ? [] : await unfinishedPlans(source, tasks);
   return {
+    ...(plans.length ? { unfinishedPlans: plans } : {}),
     tasks: rows.map((row, index) =>
       taskView(
         row,

@@ -12,6 +12,7 @@ import {
   setHarnessModels,
 } from "../../sessions/model/models";
 import type { Delegation } from "../../monos/model/delegations";
+import { createCheckpoint, type FanoutCheckpoint } from "../../firstmate/model/fanoutCheckpoint";
 import { askFakeClaude, fakeClaudeLaunch } from "../../phases/model/fakeClaude";
 import { begin, counter } from "../../phases/model/machine";
 import { deliverPhaseResult } from "../../phases/model/phaseBridge";
@@ -3073,3 +3074,210 @@ describe("a brief quotes the person's own request (WP-171)", () => {
   });
 });
 
+
+// WP-172: a fan-out checkpoints as it sends its tasks, and a resume sends only what never started (the same request ids,
+// so a task that already has a row is never started twice).
+describe("tasks.fanout: checkpoint and resume (WP-172)", () => {
+  const INTENT_172 = "Ash: a score board with an API behind it.";
+  const api = { name: "api", brief: "Add GET /api/score in src/api/score.ts.", goal: "the route answers with a number" };
+  const docs = { name: "docs", brief: "Document the score in README.md.", goal: "the README explains it" };
+  const board = { name: "board", brief: "Show the score in src/ui/Board.tsx.", goal: "the board shows the number" };
+
+  /** An in-memory checkpoint store with the same compare-and-swap rule as the app's table. */
+  function memCheckpoints() {
+    const saved = new Map<string, FanoutCheckpoint>();
+    return {
+      saved,
+      save: vi.fn(async (owner: string, cp: FanoutCheckpoint) => {
+        const key = `${owner}|${cp.id}`;
+        if ((saved.get(key)?.revision ?? 0) >= cp.revision) return false;
+        saved.set(key, cp);
+        return true;
+      }),
+      list: vi.fn(async (owner: string) =>
+        [...saved.entries()].filter(([key]) => key.startsWith(`${owner}|`)).map(([, cp]) => cp),
+      ),
+      remove: vi.fn(async (owner: string, id: string) => saved.delete(`${owner}|${id}`)),
+    };
+  }
+
+  /** A plan as an earlier run left it: the given tasks, each with the delegate input the fan-out sent. */
+  function seededPlan(owner: string, id: string, states: Record<string, Partial<FanoutCheckpoint["tasks"][number]>>) {
+    const cp = createCheckpoint({
+      id,
+      owner,
+      originalRequest: "Build the score board.",
+      waves: [["api", "docs"]],
+      tasks: [api, docs].map((task) => ({
+        name: task.name,
+        wave: 1,
+        input: { intent: INTENT_172, brief: task.brief, goal: task.goal, title: task.name },
+      })),
+      now: 1_000,
+    });
+    return {
+      ...cp,
+      revision: 2,
+      tasks: cp.tasks.map((task) => ({ ...task, ...(states[task.name] ?? {}) })),
+    } as FanoutCheckpoint;
+  }
+
+  it("keeps a plan with each task marked as it is sent, and removes it once every task is settled", async () => {
+    const f = fixture([]);
+    const store = memCheckpoints();
+    f.api.fanoutCheckpoints = store;
+    const seenAtStart: string[][] = [];
+    const inner = f.host.start;
+    f.host.start = vi.fn(async (...args: unknown[]) => {
+      const plan = store.saved.get(`${f.source.id}|r1`);
+      seenAtStart.push((plan?.tasks ?? []).map((task) => `${task.name}:${task.state}`));
+      return (inner as (...a: unknown[]) => Promise<unknown>)(...args);
+    }) as unknown as AgentAppHost["start"];
+
+    await handleRaw(f.source, "r1", "tasks.fanout", { intent: INTENT_172, tasks: [api, docs] }, f.host);
+
+    // Each start is preceded by its own "starting" mark, so a crash in the call is visible.
+    expect(seenAtStart).toEqual([
+      ["api:starting", "docs:pending"],
+      ["api:started", "docs:starting"],
+    ]);
+    // Everything settled: nothing is left to resume, so the plan is gone.
+    expect(store.saved.size).toBe(0);
+    expect(store.remove).toHaveBeenCalledWith(f.source.id, "r1");
+  });
+
+  it("does not stop the fan-out when the checkpoint cannot be written", async () => {
+    const f = fixture([]);
+    f.api.fanoutCheckpoints = { save: vi.fn(async () => { throw new Error("disk full"); }), list: vi.fn(async () => []), remove: vi.fn(async () => false) };
+    const out = (await handleRaw(f.source, "r2", "tasks.fanout", { intent: INTENT_172, tasks: [api] }, f.host)) as { tasks: { status: string }[] };
+    expect(out.tasks.map((task) => task.status)).toEqual(["running"]);
+  });
+
+  it("resumes a crashed plan: the task that started is kept, the one that never did is sent, nothing is sent twice", async () => {
+    const rows = [row({ id: "t-api", ownerSession: "mono-exo", childSession: "app-mono-exo-r1-api", requestId: "app-mono-exo-r1-api", state: "running" })];
+    const f = fixture(rows);
+    const store = memCheckpoints();
+    store.saved.set("mono-exo|r1", seededPlan("mono-exo", "r1", { api: { state: "started", taskId: "t-api", childSession: "app-mono-exo-r1-api", status: "running" } }));
+    f.api.fanoutCheckpoints = store;
+
+    const out = (await handleRaw(f.source, "resume-1", "tasks.fanout", { resume: "r1" }, f.host)) as {
+      tasks: { name: string; status: string }[];
+      note: string;
+    };
+
+    expect(f.started.map((call) => (call[1] as string))).toEqual(["app-mono-exo-r1-docs"]);
+    expect(out.tasks).toEqual([
+      { name: "api", status: "kept" },
+      { name: "docs", status: "started" },
+    ]);
+    expect(out.note).toMatch(/1 already started and kept as it is/);
+    expect(out.note).toMatch(/1 not started yet, which is sent now/);
+    expect(out.note).not.toMatch(/[—–]/);
+    expect(store.saved.size).toBe(0);
+  });
+
+  it("asks before it starts again a task whose worker was stopped, and sends it only on a yes", async () => {
+    const rows = [row({ id: "t-api", ownerSession: "mono-exo", childSession: "app-mono-exo-r1-api", requestId: "app-mono-exo-r1-api", state: "cancelled" })];
+    const f = fixture(rows);
+    const store = memCheckpoints();
+    store.saved.set("mono-exo|r1", seededPlan("mono-exo", "r1", { api: { state: "started", taskId: "t-api", childSession: "app-mono-exo-r1-api" } }));
+    f.api.fanoutCheckpoints = store;
+
+    const first = (await handleRaw(f.source, "resume-2", "tasks.fanout", { resume: "r1" }, f.host)) as {
+      tasks: { name: string; status: string }[];
+    };
+    expect(first.tasks.find((task) => task.name === "api")).toMatchObject({ status: "needs your yes" });
+    expect(f.started.map((call) => call[1])).toEqual(["app-mono-exo-r1-docs"]);
+    // The plan stays, so the yes can still come.
+    expect(store.saved.has("mono-exo|r1")).toBe(true);
+
+    const second = (await handleRaw(f.source, "resume-3", "tasks.fanout", { resume: "r1", confirm: ["api"] }, f.host)) as {
+      tasks: { name: string; status: string }[];
+    };
+    expect(second.tasks.find((task) => task.name === "api")).toMatchObject({ status: "started" });
+    expect(f.started.map((call) => call[1])).toEqual(["app-mono-exo-r1-docs", "app-mono-exo-r1-api"]);
+  });
+
+  it("refuses a confirm that names no task of the plan", async () => {
+    const f = fixture([]);
+    const store = memCheckpoints();
+    store.saved.set("mono-exo|r1", seededPlan("mono-exo", "r1", {}));
+    f.api.fanoutCheckpoints = store;
+    await expect(
+      handleRaw(f.source, "resume-4", "tasks.fanout", { resume: "r1", confirm: ["nope"] }, f.host),
+    ).rejects.toThrow(/not part of this plan/);
+    expect(f.started).toEqual([]);
+  });
+
+  it("says so, and sends nothing, when the plan is not there to resume", async () => {
+    const f = fixture([]);
+    f.api.fanoutCheckpoints = memCheckpoints();
+    await expect(handleRaw(f.source, "resume-5", "tasks.fanout", { resume: "gone" }, f.host)).rejects.toThrow(
+      /no unfinished plan/i,
+    );
+    expect(f.started).toEqual([]);
+  });
+
+  it("tells the first mate, in plain words, which plan it can carry on with", async () => {
+    const rows = [row({ id: "t-api", ownerSession: "mono-exo", childSession: "app-mono-exo-r1-api", requestId: "app-mono-exo-r1-api", state: "running" })];
+    const f = fixture(rows);
+    const store = memCheckpoints();
+    store.saved.set("mono-exo|r1", seededPlan("mono-exo", "r1", { api: { state: "started", taskId: "t-api", childSession: "app-mono-exo-r1-api" } }));
+    f.api.fanoutCheckpoints = store;
+    const out = (await handleRaw(f.source, "status-1", "tasks.status", {}, f.host)) as {
+      unfinishedPlans?: { plan: string; line: string }[];
+    };
+    expect(out.unfinishedPlans).toEqual([
+      expect.objectContaining({
+        plan: "r1",
+        line: expect.stringMatching(/^1 already started and kept as it is; 1 not started yet, which is sent now\./),
+      }),
+    ]);
+    expect(out.unfinishedPlans?.[0].line).toMatch(/resume "r1"/);
+    expect(out.unfinishedPlans?.[0].line).not.toMatch(/[\u2014\u2013]/);
+  });
+
+  // WP-172 (stop one worker): task_cancel on one task of a fan-out stops that row and leaves its siblings running.
+  it("stopping one task of a fan-out leaves the other tasks of the plan running", async () => {
+    const rows: Delegation[] = [];
+    const f = fixture(rows);
+    f.api.fanoutCheckpoints = memCheckpoints();
+    await handleRaw(f.source, "r7", "tasks.fanout", { intent: INTENT_172, tasks: [api, docs] }, f.host);
+    const [stopped, sibling] = rows;
+    expect([stopped.childSession, sibling.childSession]).toEqual(["app-mono-exo-r7-api", "app-mono-exo-r7-docs"]);
+
+    await handleRaw(f.source, "cancel-1", "tasks.cancel", { taskId: stopped.id, reason: "Stuck on a provider error." }, f.host);
+
+    expect(rows.find((entry) => entry.id === stopped.id)?.state).toBe("cancelled");
+    expect(rows.find((entry) => entry.id === sibling.id)?.state).toBe("running");
+    expect(f.cancelled).toEqual([[stopped.id, "Stuck on a provider error."]]);
+    const status = (await handleRaw(f.source, "status-7", "tasks.status", {}, f.host)) as { tasks: { taskId: string; status: string }[] };
+    expect(status.tasks.find((task) => task.taskId === sibling.id)?.status).toBe("running");
+  });
+
+  it("refuses a resume while the same plan is still being sent by this app", async () => {
+    const f = fixture([]);
+    const store = memCheckpoints();
+    f.api.fanoutCheckpoints = store;
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    const inner = f.host.start;
+    let holding = true;
+    f.host.start = vi.fn(async (...args: unknown[]) => {
+      if (holding) {
+        holding = false;
+        await gate;
+      }
+      return (inner as (...a: unknown[]) => Promise<unknown>)(...args);
+    }) as unknown as AgentAppHost["start"];
+
+    const sending = handleRaw(f.source, "r6", "tasks.fanout", { intent: INTENT_172, tasks: [api] }, f.host);
+    await vi.waitFor(() => expect(store.saved.size).toBe(1));
+    await expect(handleRaw(f.source, "resume-6", "tasks.fanout", { resume: "r6" }, f.host)).rejects.toThrow(
+      /still sending/,
+    );
+    release();
+    await sending;
+    expect(f.started.map((call) => call[1])).toEqual(["app-mono-exo-r6-api"]);
+  });
+});

@@ -81,6 +81,10 @@ Hivra's own rules for what to hand out and how, beside firstmate's:
   its checks passed and what it provided is there. If a provider fails you hear what landed and what did not start, and
   you decide: cancel what is held and send it again once the missing part is redone. Parts that need nothing from each
   other can still go one by one with `delegate_task`.
+- The app keeps a note of a multi-part plan as it sends it. If the app stops or restarts in the middle, `task_status`
+  lists the unfinished plan under `unfinishedPlans` with its id. Send `delegate_tasks` with `resume` set to that id: the
+  tasks that never started are sent, the ones that started are kept, and nothing is sent twice. A task whose worker was
+  stopped is not started again until the person says yes; name it in `confirm` only then.
 
 ## Steering and decisions
 
