@@ -10,7 +10,7 @@ const call = (page: Page, name: string, ...args: unknown[]) =>
 test("nothing is written until asked, and a stop jumps to its lines", async ({ page }) => {
   await page.goto(pageUrl);
   const guide = page.getByRole("region", { name: "Guide" });
-  await expect(guide.getByText("nothing is sent to GitHub")).toBeVisible();
+  await expect(guide.getByText("never posted to GitHub")).toBeVisible();
   await expect(page.locator("body")).not.toHaveAttribute("data-runs", /.+/);
   await guide.getByRole("button", { name: "Write guide" }).click();
   await expect(guide.getByText("Moves the check into the second file.")).toBeVisible();
@@ -29,17 +29,17 @@ test("nothing is written until asked, and a stop jumps to its lines", async ({ p
   );
 });
 
-test("a new push makes the guide out of date until it is rewritten", async ({ page }) => {
+test("a new push shows the guide as written for another version until it is rewritten", async ({ page }) => {
   await page.goto(pageUrl);
   const guide = page.getByRole("region", { name: "Guide" });
   await guide.getByRole("button", { name: "Write guide" }).click();
   await expect(guide.getByRole("list", { name: "Guide stops" })).toBeVisible();
   await page.getByRole("button", { name: "New push" }).click();
-  await expect(guide.getByText("This guide is out of date.")).toBeVisible();
+  await expect(guide.getByText("This guide was written for another version of this pull request.")).toBeVisible();
   await expect(guide.getByRole("list", { name: "Guide stops" })).toHaveCount(0);
   await guide.getByRole("button", { name: "Rewrite guide" }).click();
   await expect(guide.getByRole("list", { name: "Guide stops" })).toBeVisible();
-  await expect(guide.getByText("This guide is out of date.")).toHaveCount(0);
+  await expect(guide.getByText("This guide was written for another version of this pull request.")).toHaveCount(0);
 });
 
 test("a failed write keeps the guide that was there", async ({ page }) => {

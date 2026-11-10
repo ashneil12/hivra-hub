@@ -69,7 +69,8 @@ it("writes nothing until asked, then shows the stops and jumps to one", async ()
   const { onOpen, render, disk } = setup({ available: () => true, run });
   await render();
   expect(run).not.toHaveBeenCalled();
-  expect(container.textContent).toContain("nothing is sent to GitHub");
+  expect(container.textContent).toContain("never posted to GitHub");
+  expect(container.textContent).toContain("goes to the model that writes commit text");
   expect((await disk.readDoc(reviewGuideKey("acme/web", 7))).rev).toBe(0);
 
   await act(async () => button("Write guide").click());
@@ -87,17 +88,29 @@ it("writes nothing until asked, then shows the stops and jumps to one", async ()
   expect(onOpen).toHaveBeenCalledWith("src/app.ts", 12);
 });
 
-it("says a guide for an older head is out of date and hides its stops", async () => {
+it("says a guide kept for another head is for another version and hides its stops", async () => {
   const { render } = setup({ available: () => true, run: async () => answer });
   await render();
   await act(async () => button("Write guide").click());
   await flush();
   await render({ ...diff, headSha: "bbb222" });
-  expect(container.textContent).toContain("This guide is out of date.");
+  expect(container.textContent).toContain("This guide was written for another version of this pull request.");
+  expect(container.textContent).not.toContain("out of date");
   expect(container.querySelector("ol[aria-label='Guide stops']")).toBeNull();
-  await act(async () => button("Show the old guide").click());
-  expect(container.querySelector("ol[aria-label='Old guide stops']")).not.toBeNull();
+  await act(async () => button("Show that guide").click());
+  expect(container.querySelector("ol[aria-label=\"Other version's guide stops\"]")).not.toBeNull();
   expect(button("Rewrite guide")).toBeTruthy();
+});
+
+it("shows a kept guide with a note when the diff on screen doesn't say its head", async () => {
+  const { render } = setup({ available: () => true, run: async () => answer });
+  await render();
+  await act(async () => button("Write guide").click());
+  await flush();
+  await render({ ...diff, headSha: null });
+  expect(container.textContent).toContain("Refresh the pull request to check this guide matches its latest commits.");
+  expect(container.textContent).not.toContain("another version");
+  expect(container.querySelector("ol[aria-label='Guide stops']")).not.toBeNull();
 });
 
 it("keeps the previous guide when the model fails", async () => {

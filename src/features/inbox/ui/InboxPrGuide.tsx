@@ -1,5 +1,6 @@
 // WP-132: the review guide above a GitHub pull request's diff in the inbox. Nothing is written until the person taps
-// "Write guide"; the guide stays on this Mac and nothing goes to GitHub.
+// "Write guide". The diff and comments go to the model that writes commit text; the guide stays on this Mac and is
+// never posted to GitHub.
 import { useCallback, useEffect, useRef, useState } from "react";
 import { LoaderCircle, Sparkles } from "../../../shared/ui/icons";
 import {
@@ -225,13 +226,14 @@ export function InboxPrGuide({
       ) : null}
       {kept == null ? null : state === "none" ? (
         <p className="text-[12px] text-content/50">
-          A short tour of this change, in reading order. It is written on this Mac from the diff below and nothing is
-          sent to GitHub.
+          A short tour of this change, in reading order. The diff below goes to the model that writes commit text. The
+          guide is kept on this Mac and never posted to GitHub.
         </p>
       ) : state === "outdated" && record ? (
         <>
           <p role="status" className="text-[12px] text-amber-300/90">
-            This guide is out of date. The pull request has new commits since it was written.
+            This guide was written for another version of this pull request. Refresh to see its latest commits, then
+            rewrite the guide.
           </p>
           <button
             type="button"
@@ -239,13 +241,20 @@ export function InboxPrGuide({
             onClick={() => setShowOld((open) => !open)}
             className="self-start text-[12px] text-content/55 underline-offset-2 hover:underline"
           >
-            {showOld ? "Hide the old guide" : "Show the old guide"}
+            {showOld ? "Hide that guide" : "Show that guide"}
           </button>
           {showOld ? (
             <div className="opacity-60">
-              <GuideBody record={record} onOpen={onOpen} label="Old guide stops" />
+              <GuideBody record={record} onOpen={onOpen} label="Other version's guide stops" />
             </div>
           ) : null}
+        </>
+      ) : state === "unchecked" && record ? (
+        <>
+          <p role="status" className="text-[12px] text-content/55">
+            Refresh the pull request to check this guide matches its latest commits.
+          </p>
+          <GuideBody record={record} onOpen={onOpen} label="Guide stops" />
         </>
       ) : record ? (
         <GuideBody record={record} onOpen={onOpen} label="Guide stops" />
@@ -280,7 +289,7 @@ function GuideBody({
                   <span className="text-content/45">{index + 1}.</span>
                   <span>{stop.title}</span>
                   {stop.lookClosely ? (
-                    <span className="rounded border border-amber-300/40 px-1.5 text-[11px] text-amber-300/90">
+                    <span className="text-[11px] text-amber-300/90">
                       Look closely
                     </span>
                   ) : null}
