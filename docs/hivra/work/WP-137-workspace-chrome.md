@@ -157,3 +157,7 @@ This package stops at the design. No setting, no migration, no component, and no
 ## Licence
 
 The behaviour in this note is inspired by T3 Code (https://github.com/pingdotgg/t3code at commit `e85e0094dd4617a1eada1ad7961f2132a79e67b2`), MIT, Copyright (c) 2026 T3 Tools Inc. Ideas need no credits.json component. This note does not copy T3 source. It does not copy T3 Connect, Clerk, telemetry, or the T3 name.
+
+## Built in WP-137b
+
+WP-137b builds the first slice only: the per-window "Show only this group" filter, behind a setting that is off by default. This note names no recommended first slice, so that is the smallest piece listed first. Split view, extra windows, and a macOS tray stay as this note left them. See `docs/hivra/work/WP-137b-show-only-group.md`.
