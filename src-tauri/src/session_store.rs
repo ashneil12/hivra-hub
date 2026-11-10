@@ -1003,10 +1003,20 @@ pub(crate) fn purge_chat(
     conn: &Connection,
     session_id: &str,
 ) -> Result<(), String> {
+    purge_chat_with(conn, session_id, |paths| {
+        crate::fs::delete_generated_images_sync(app, paths)
+    })
+}
+
+fn purge_chat_with(
+    conn: &Connection,
+    session_id: &str,
+    remove_images: impl FnOnce(&[String]) -> Result<crate::fs::GeneratedImageDeletion, String>,
+) -> Result<(), String> {
     let image_paths = collect_chat_image_paths(conn, session_id)?;
     delete_session(conn, session_id).map_err(|error| error.to_string())?;
     if !image_paths.is_empty() {
-        if let Err(error) = crate::fs::delete_generated_images_sync(app, &image_paths) {
+        if let Err(error) = remove_images(&image_paths) {
             eprintln!("Generated image cleanup will need a retry: {error}");
         }
     }
@@ -3045,6 +3055,46 @@ mod tests {
         assert_eq!(transcript_reads.load(Ordering::Relaxed), 0);
         drop(managed);
         let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    #[test]
+    fn a_purge_with_one_outside_image_path_still_removes_the_chats_own_images() {
+        let data =
+            std::env::temp_dir().join(format!("hivra purge outside {}", uuid::Uuid::new_v4()));
+        let images = data.join("generated-images");
+        std::fs::create_dir_all(&images).unwrap();
+        let outsider = data.join("outsider.png");
+        std::fs::write(&outsider, "keep me").unwrap();
+        let first = images.join("one.png");
+        let second = images.join("two.png");
+        std::fs::write(&first, "1").unwrap();
+        std::fs::write(&second, "2").unwrap();
+
+        let store = SessionStore::open_in_memory().unwrap();
+        let conn = store.lock_conn().unwrap();
+        let mut chat = sample("chat-images", "/tmp/project", "Pictures");
+        // The refused path is the chat's first image, so a delete that stops at it removes nothing.
+        chat.blocks = json!([
+            { "id": "i0", "role": "image", "image": { "path": outsider.to_string_lossy() } },
+            { "id": "i1", "role": "image", "image": { "path": first.to_string_lossy() } },
+            { "id": "i2", "role": "image", "image": { "path": second.to_string_lossy() } },
+        ]);
+        upsert_session(&conn, &chat).unwrap();
+
+        let mut report = None;
+        purge_chat_with(&conn, "chat-images", |paths| {
+            let done = crate::fs::delete_generated_images_in(&images, paths)?;
+            report = Some(done.skipped);
+            Ok(done)
+        })
+        .unwrap();
+
+        assert_eq!(report, Some(1));
+        assert!(get_session(&conn, "chat-images").unwrap().is_none());
+        assert!(!first.exists());
+        assert!(!second.exists());
+        assert_eq!(std::fs::read_to_string(&outsider).unwrap(), "keep me");
+        let _ = std::fs::remove_dir_all(&data);
     }
 
     fn sample(id: &str, cwd: &str, title: &str) -> SessionUpsert {

@@ -61,6 +61,10 @@ The archive is the same tree under one top folder. Nothing in it is a secret:
    - Workspace: new chats, notes, automations (**paused**), reminders (an overdue one comes back done), delegations
      (**history only**: open ones settle as cancelled, delivery disposed, nothing mirrored to Ash OS again). A chat or
      note already here and different is kept; ticked, the file's comes in as a copy with a new id.
+   - A note's pictures (`workspace/note-assets/<id>/`) come in only as files the manifest lists, as the very bytes that
+     hash as listed, never through a link (the picture, its folder, `note-assets` or `workspace`), and never over a file
+     already here. Anything else in that folder is left out and counted in the report (`noteAssetsSkipped`, with a line
+     in its notes). A folder export can hold links; an archive can't (unpacking refuses them).
    - A provider session id is kept only where it can resume: the daily app, a Claude chat, its transcript on this Mac.
    - **No file path from the file is kept.** Paths in an export name files on the Mac that made it, or were written by
      hand: never files of this one. In every imported chat (side threads and Mono transcripts included) a generated

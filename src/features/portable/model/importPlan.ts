@@ -363,6 +363,8 @@ export type RustImportReport = {
   automationFoldersCleared?: number;
   /** Paths in tool rows that lay outside the chat's folder, dropped. */
   toolPathsDropped?: number;
+  /** Pictures of imported notes left out (a link, a file the manifest doesn't list, one that changed); each is also a line in `notes`. Older builds leave it out. */
+  noteAssetsSkipped?: number;
   memoryFilesAdded: number;
   memoryFilesBeside: number;
   memoryHistory: string[];

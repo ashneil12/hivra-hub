@@ -21,7 +21,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 use std::sync::OnceLock;
@@ -1305,6 +1305,29 @@ impl Opened {
             Opened::V1(_) => Vec::new(),
         }
     }
+
+    /// Each file the manifest lists, as (path, the bytes it says it holds, its sha256). `open_export` has already
+    /// found every one of them there and hashing as listed.
+    fn listed_files(&self) -> Vec<(String, Option<u64>, String)> {
+        match self {
+            Opened::V2 { manifest, .. } => manifest["files"]
+                .as_array()
+                .map(|files| {
+                    files
+                        .iter()
+                        .filter_map(|f| {
+                            Some((
+                                f["path"].as_str()?.to_string(),
+                                f["bytes"].as_u64(),
+                                f["sha256"].as_str()?.to_string(),
+                            ))
+                        })
+                        .collect()
+                })
+                .unwrap_or_default(),
+            Opened::V1(_) => Vec::new(),
+        }
+    }
 }
 
 fn manifest_root(dir: &Path) -> Option<PathBuf> {
@@ -1921,6 +1944,9 @@ pub struct ImportReport {
     pub automation_folders_cleared: usize,
     /// Paths in tool rows and approvals that lay outside the chat's kept folders, dropped.
     pub tool_paths_dropped: usize,
+    /// Pictures of imported notes that were left out: a link, a file the manifest doesn't list, one that changed
+    /// after the export was checked. Each is also said in `notes`.
+    pub note_assets_skipped: usize,
     pub memory_files_added: usize,
     pub memory_files_beside: usize,
     pub memory_history: Vec<String>,
@@ -1981,7 +2007,11 @@ fn import_workspace(
     workspace_rows(env, &tx, opened, wanted, report, &mut after)?;
     tx.commit()?;
     for (from, to) in &after.note_assets {
-        copy_note_assets(env, opened, from, to);
+        let left_out = copy_note_assets(env, opened, from, to);
+        if !left_out.is_empty() {
+            report.note_assets_skipped += left_out.len();
+            report.notes.push(left_out_note(from, &left_out));
+        }
     }
     // Indexing has its own transaction. A chat it fails for still opens from its rows, and is indexed then.
     for id in &after.transcripts {
@@ -2344,19 +2374,216 @@ fn workspace_rows(
     Ok(())
 }
 
-fn copy_note_assets(env: &Env, opened: &Opened, from: &str, to: &str) {
-    let Some(root) = opened.root() else { return };
-    let source = root.join("workspace").join(NOTE_ASSET_DIR).join(from);
-    let Ok(entries) = fs::read_dir(&source) else {
-        return;
-    };
-    let target = env.data_dir.join(NOTE_ASSET_DIR).join(to);
-    for entry in entries.flatten() {
-        let dest = target.join(entry.file_name());
-        if !dest.exists() && fs::create_dir_all(&target).is_ok() {
-            let _ = fs::copy(entry.path(), &dest);
+// Why a note's picture was left out. Said to the person in the import report, so plain words.
+const LEFT_OUT_ID: &str = "the note's id isn't one plain name";
+const LEFT_OUT_FOLDER_LINK: &str = "its folder is a link";
+const LEFT_OUT_LINK: &str = "it is a link";
+const LEFT_OUT_NOT_A_FILE: &str = "it isn't a plain file";
+const LEFT_OUT_UNLISTED: &str = "the export doesn't list it";
+const LEFT_OUT_UNREADABLE: &str = "it couldn't be read";
+const LEFT_OUT_CHANGED: &str = "it changed after the export was checked";
+const LEFT_OUT_UNWRITABLE: &str = "it couldn't be written here";
+
+/// What an import found at a folder it is about to read from.
+enum Folder {
+    Absent,
+    /// A folder, and not a link to one.
+    Real,
+    /// A link, or something that isn't a folder: not followed.
+    Refused,
+}
+
+fn folder_state(path: &Path) -> Folder {
+    match fs::symlink_metadata(path) {
+        Ok(meta) if meta.file_type().is_dir() => Folder::Real,
+        Ok(_) => Folder::Refused,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Folder::Absent,
+        Err(_) => Folder::Refused,
+    }
+}
+
+/// A file opened for reading, never through a link at its last name (O_NOFOLLOW where the platform has it).
+fn open_without_following(path: &Path) -> std::io::Result<fs::File> {
+    let mut options = fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        // O_NONBLOCK: a pipe swapped in for the file opens at once and is refused as "not a plain file", where
+        // a plain open would wait for a writer that never comes.
+        options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+    }
+    options.open(path)
+}
+
+/// The bytes of one picture the manifest lists: a plain file that is not a link, read ONCE, and only if they hash as
+/// the manifest says. The caller writes these same bytes, so a file swapped between the export's check and now
+/// can't bring anything in that the manifest didn't hash.
+fn read_listed_picture(
+    path: &Path,
+    declared: Option<u64>,
+    sha256: &str,
+) -> Result<Vec<u8>, &'static str> {
+    let meta = fs::symlink_metadata(path).map_err(|_| LEFT_OUT_UNREADABLE)?;
+    if meta.file_type().is_symlink() {
+        return Err(LEFT_OUT_LINK);
+    }
+    if !meta.file_type().is_file() {
+        return Err(LEFT_OUT_NOT_A_FILE);
+    }
+    let file = open_without_following(path).map_err(|_| LEFT_OUT_UNREADABLE)?;
+    // The handle, not the name: what was opened is a plain file.
+    if !file.metadata().is_ok_and(|m| m.is_file()) {
+        return Err(LEFT_OUT_NOT_A_FILE);
+    }
+    // No more than the manifest says the file holds, so one swapped for something huge can't fill memory.
+    let cap = declared.unwrap_or(MAX_UNPACKED).min(MAX_UNPACKED);
+    let mut bytes = Vec::new();
+    file.take(cap + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|_| LEFT_OUT_UNREADABLE)?;
+    if bytes.len() as u64 > cap || sha256_hex(&bytes) != sha256 {
+        return Err(LEFT_OUT_CHANGED);
+    }
+    Ok(bytes)
+}
+
+/// The folder this Mac keeps a note's pictures in, made when the first one is about to be written. Never a link:
+/// one here would send the write somewhere else.
+fn picture_folder(env: &Env, to: &str) -> Option<PathBuf> {
+    fs::create_dir_all(&env.data_dir).ok()?;
+    let all = env.data_dir.join(NOTE_ASSET_DIR);
+    let folder = all.join(to);
+    for path in [&all, &folder] {
+        match fs::create_dir(path) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(_) => return None,
+        }
+        if !matches!(folder_state(path), Folder::Real) {
+            return None;
         }
     }
+    Some(folder)
+}
+
+/// A new file nobody else made: it never replaces one that is there and never writes through a link at that name
+/// (O_EXCL). Owner-only, like every other file an import writes.
+fn write_new_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options.open(path)?;
+    if let Err(e) = file.write_all(bytes) {
+        drop(file);
+        let _ = fs::remove_file(path);
+        return Err(e);
+    }
+    Ok(())
+}
+
+/// A folder export's pictures for one imported note, copied from `from`'s folder into `to`'s here. Only the files
+/// the manifest lists come in, each as the bytes that hash as listed (see `read_listed_picture`), and none through a
+/// link: not the picture, not its folder, not `note-assets` or `workspace`. A file that is already here is kept.
+/// Returns why each picture that did not come in was left out; nothing is copied for it. (An archive can't hold
+/// links: `unpack` refuses them. A hidden file such as `.DS_Store` is skipped without a word, as `unpack` does.)
+fn copy_note_assets(env: &Env, opened: &Opened, from: &str, to: &str) -> Vec<&'static str> {
+    let mut left_out = Vec::new();
+    let Some(root) = opened.root() else {
+        return left_out;
+    };
+    // The id names one folder on each side: `..` or a path would read or write somewhere else.
+    if !session_file_id(from) || !session_file_id(to) {
+        left_out.push(LEFT_OUT_ID);
+        return left_out;
+    }
+    let prefix = format!("workspace/{NOTE_ASSET_DIR}/{from}/");
+    let mut listed: BTreeMap<String, (Option<u64>, String)> = BTreeMap::new();
+    for (path, declared, sha256) in opened.listed_files() {
+        let Some(name) = path.strip_prefix(&prefix) else {
+            continue;
+        };
+        // The export keeps every picture directly in its note's folder; a name with a path in it isn't one of ours.
+        let single = safe_relative(name).filter(|p| p.as_os_str() == name);
+        if single.is_some() {
+            listed.insert(name.to_string(), (declared, sha256));
+        }
+    }
+
+    let workspace = root.join("workspace");
+    let all = workspace.join(NOTE_ASSET_DIR);
+    let source = all.join(from);
+    for path in [&workspace, &all, &source] {
+        match folder_state(path) {
+            Folder::Real => {}
+            // This note has no pictures.
+            Folder::Absent => return left_out,
+            Folder::Refused => {
+                // Not looked into: what it lists is what is left out (at least the link itself).
+                left_out.resize(listed.len().max(1), LEFT_OUT_FOLDER_LINK);
+                return left_out;
+            }
+        }
+    }
+
+    let mut folder: Option<Option<PathBuf>> = None;
+    for (name, (declared, sha256)) in &listed {
+        let bytes = match read_listed_picture(&source.join(name), *declared, sha256) {
+            Ok(bytes) => bytes,
+            Err(why) => {
+                left_out.push(why);
+                continue;
+            }
+        };
+        let Some(folder) = folder.get_or_insert_with(|| picture_folder(env, to)) else {
+            left_out.push(LEFT_OUT_UNWRITABLE);
+            continue;
+        };
+        match write_new_private(&folder.join(name), &bytes) {
+            Ok(()) => {}
+            // Already here: kept as it is.
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(_) => left_out.push(LEFT_OUT_UNWRITABLE),
+        }
+    }
+    // Whatever else is in the folder, a link or a plain file, is never opened.
+    if let Ok(entries) = fs::read_dir(&source) {
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let name = name.to_str();
+            if name.is_some_and(|n| n.starts_with('.')) {
+                continue;
+            }
+            if !name.is_some_and(|n| listed.contains_key(n)) {
+                left_out.push(LEFT_OUT_UNLISTED);
+            }
+        }
+    }
+    left_out
+}
+
+/// The report's line about pictures that were left out of a note.
+fn left_out_note(from: &str, reasons: &[&str]) -> String {
+    let mut why: Vec<&str> = Vec::new();
+    for reason in reasons {
+        if !why.contains(reason) {
+            why.push(reason);
+        }
+    }
+    let (count, verb) = match reasons.len() {
+        1 => ("1 picture".to_string(), "was"),
+        n => (format!("{n} pictures"), "were"),
+    };
+    let note = if session_file_id(from) {
+        format!("note {from}")
+    } else {
+        "a note".to_string()
+    };
+    format!("{count} of {note} {verb} not copied ({}).", why.join("; "))
 }
 
 /// What an imported chat lost on the way in.
