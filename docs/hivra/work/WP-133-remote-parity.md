@@ -124,14 +124,28 @@ Ops, either way, in the order they actually fail:
 
 None of this is built here. WP-60 is the package that moves the crew onto the host. A phone that works while the laptop is shut is the later hook named in the phone section. A VM, a domain and a relay are Ash's decisions in the next section.
 
-5. Domain, certificates, Apple and Google developer accounts, hosting, and whether any account exists at all are Ash's. This note lists them. It does not choose them, and it does not build them.
+### Decisions only Ash can make
+
+Nothing in this list is implemented here. The recommendation sits next to the question so a later package does not guess. Store fees and VM prices are published by the vendors. They are not quoted, because those pages were not opened for this note.
+
+1. Whether to build any of it. The earlier answer was not yet. This note does not change that.
+2. The account model. None required, optional, or required. Recommendation: none required. SSH and a one-time pairing code already work. A relay, if it ever exists, stays off and does not demand an account.
+3. Whether Hivra ever operates a relay. SPEC section 12 says a hosted multi-user relay is not now. Recommendation: do not operate one. If he later says yes, the properties in the architecture section are the bar, and it defaults to off.
+4. A domain name. Needed only for a hosted page or a relay. Not needed for SSH, loopback, a LAN, or a tailnet he runs.
+5. Certificates. Direct pairing can keep a self-signed certificate pinned by fingerprint, which the phone already does. A public HTTPS name needs a certificate for a name he controls, and he chooses who issues it.
+6. An Apple Developer account, a new iOS bundle id, and a new Expo owner. The inherited app is `hardbeat920` / `com.hardbeat920.monocode-mobile`. A Hivra listing cannot reuse that identity without his say-so. No store listing is assumed. A simulator build can come first.
+7. A Google Play account and an Android application id. Same rule: his account, no listing assumed.
+8. Hosting. A computer he already leaves on, a Linux VM, or a rented Mac. He sets a monthly cap before any VM exists. A rented Mac only if a provider CLI refuses Linux.
+9. Whether a phone may allow or deny a tool call. The phone cannot do it today. Turning it on is a security decision.
+10. Whether router mapping stays on by default once mobile access is enabled. It does today, and mobile access itself defaults to off. SPEC section 11 says not to touch the upstream mobile app, so this default does not move unless he says so. Recommendation if he does: mapping stays off until a separate tap.
+11. Vendor cloud agents (Cursor, Claude, Codex) stay in WP-136. This note does not start them, does not store a new token, and does not make a billed call.
 
 ## Done when
 
 - [x] WP-61 is updated or explicitly cross-linked, not forked in silence.
 - [x] A recommended relay model is written, with T3 Connect rejected as a copy target.
-- [ ] Ash's open decisions are listed.
-- [ ] No product code, no relay server, no store listing work.
+- [x] Ash's open decisions are listed.
+- [x] No product code, no relay server, no store listing work.
 
 ## Licence
 
