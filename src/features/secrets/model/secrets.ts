@@ -43,8 +43,28 @@ export type GrantRow = {
   createdAt: number;
 };
 
-export type RotateReport = { secret: SecretRow; updated: string[]; leftAlone: string[]; envFiles: string[] };
-export type DeleteReport = { removedGrants: number; removedEnvLines: string[]; keychainKept: boolean };
+/** A `.env` the app left as it was, and why, in plain words. */
+export type RefusedFile = { worktree: string; why: string };
+export type RotateReport = {
+  secret: SecretRow;
+  updated: string[];
+  leftAlone: string[];
+  envFiles: string[];
+  /** `.env` files a re-check refused (now tracked, no longer ignored, now a link). */
+  refused?: RefusedFile[];
+  /** Updated files that other accounts on this Mac can read. */
+  shared?: string[];
+};
+export type DeleteReport = {
+  removedGrants: number;
+  removedEnvLines: string[];
+  keychainKept: boolean;
+  /** `.env` lines the app left, and why. */
+  envLeft?: RefusedFile[];
+};
+/** What writing a `.env` tells the person besides "done". */
+export type EnvWriteReport = { readableByOthers: boolean };
+export const SHARED_FILE_NOTE = "This file can be read by other accounts on this Mac.";
 export type SaveTicket = { request: RequestRow; token: string };
 
 /** `secrets.request`': a handle when the name already resolves, or the open request (a card). */
@@ -184,7 +204,7 @@ export function writeEnv(
   scope: string,
   name: string,
   envName: string,
-): Promise<void> {
+): Promise<EnvWriteReport> {
   return invoke(`${COMMAND}secrets_env_write`, { project, worktree, scope, name, envName });
 }
 

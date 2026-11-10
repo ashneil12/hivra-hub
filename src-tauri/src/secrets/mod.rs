@@ -622,11 +622,22 @@ pub fn touch_used(conn: &Connection, scope: &str, name: &str, now: i64) -> Resul
     Ok(())
 }
 
+/// A `.env` the app left exactly as it was, and why, in plain words.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RefusedFile {
+    pub worktree: String,
+    pub why: String,
+}
+
 #[derive(Clone, Debug, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DeleteReport {
     pub removed_grants: usize,
     pub removed_env_lines: Vec<String>,
+    /// `.env` lines the app left as they were, and why (the file no longer passes the checks, or the line was edited by
+    /// hand). The key is gone from Hivra either way.
+    pub env_left: Vec<RefusedFile>,
     /// The store refused to remove the item. Nothing in Hivra names it any more, but the value is still in the
     /// person's keychain and they have to remove it themselves.
     pub keychain_kept: bool,
@@ -668,13 +679,26 @@ pub fn delete(
         .map_err(|e| e.to_string())?;
         tx.commit().map_err(|e| e.to_string())?;
     }
+    // A file that will not come clean is reported and the delete goes on: the keychain item must not outlive its row.
     for write in writes {
-        if env_file::remove_line(
+        let left = |why: &str| RefusedFile {
+            worktree: write.worktree.clone(),
+            why: why.to_string(),
+        };
+        match env_file::remove_line(
             std::path::Path::new(&write.worktree),
             &write.env_name,
             value.as_deref(),
-        )? {
-            report.removed_env_lines.push(write.worktree.clone());
+        ) {
+            Ok(env_file::LineChange::Changed) => {
+                report.removed_env_lines.push(write.worktree.clone())
+            }
+            Ok(env_file::LineChange::Refused(why)) => report.env_left.push(left(&why)),
+            Ok(env_file::LineChange::LeftAlone) => report
+                .env_left
+                .push(left("That line was edited by hand, so it was left.")),
+            Ok(env_file::LineChange::Missing) => {}
+            Err(why) => report.env_left.push(left(&why)),
         }
     }
     match vault.remove(&service, ACCOUNT) {

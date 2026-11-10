@@ -89,7 +89,7 @@ const pendingRequest = {
 let pendingSave = false;
 let beginCalls = 0;
 // The per-install choice about "Always" for programs that can run any code: off until the person turns it on.
-const fixture = { alwaysAnyCode: false, setCalls: [] as boolean[] };
+const fixture = { alwaysAnyCode: false, setCalls: [] as boolean[], envWrites: [] as string[] };
 (window as unknown as { __fixture: typeof fixture }).__fixture = fixture;
 
 const tauri = installFakeTauri("secrets-fixture", (command, args) => {
@@ -184,6 +184,12 @@ const tauri = installFakeTauri("secrets-fixture", (command, args) => {
       ];
     case "secrets_env_files":
       return [];
+    case "git_worktrees":
+      return { worktrees: [{ path: "/work/proj", branch: "main", isMain: true }] };
+    case "secrets_env_write":
+      // A `.env` the person made group-readable keeps its mode; the result says so and the page tells the person.
+      fixture.envWrites.push(String(args.worktree));
+      return { readableByOthers: true };
     case "secrets_always_for_any_code":
       return fixture.alwaysAnyCode;
     case "secrets_set_always_for_any_code":
@@ -214,7 +220,7 @@ createRoot(document.getElementById("root")!).render(
       <div className="grid max-w-6xl grid-cols-1 gap-8 lg:grid-cols-[1fr_360px]">
         <section aria-label="Secrets">
           <h1 className="mb-3 text-[15px] text-content">Secrets</h1>
-          <SecretsPage />
+          <SecretsPage project={new URLSearchParams(location.search).has("project") ? "/work/proj" : undefined} />
         </section>
         <section aria-label="Chat">
           <h2 className="mb-3 text-[15px] text-content">A chat</h2>

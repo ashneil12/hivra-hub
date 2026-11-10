@@ -25,6 +25,7 @@ import {
   rotateSecret,
   saveNew,
   scopeLabel,
+  SHARED_FILE_NOTE,
   setAlwaysForAnyCode,
   slugIsValid,
   slugOf,
@@ -474,6 +475,9 @@ function RotateButton({
               ...(report.leftAlone.length
                 ? [`Left ${report.leftAlone.length} alone: the line was edited by hand.`]
                 : []),
+              // A file that no longer passes the checks is left as it was, with the reason.
+              ...(report.refused ?? []).map((file) => `${file.worktree}: ${file.why}`),
+              ...((report.shared ?? []).length ? [SHARED_FILE_NOTE] : []),
             ]);
             setEditing(false);
             onDone();
@@ -511,14 +515,27 @@ function WriteEnvButton({
   setError: (error: string | null) => void;
 }) {
   const [open, setOpen] = useState(false);
-  const [worktree, setWorktree] = useState(worktrees[0]?.path ?? "");
+  // The list loads after the page opens, so "nothing picked yet" means the first worktree, not an empty path.
+  const [picked, setWorktree] = useState("");
+  const worktree = picked || worktrees[0]?.path || "";
   const [envName, setEnvName] = useState(row.name.replace(/-/g, "_").toUpperCase());
+  const [note, setNote] = useState<string | null>(null);
   if (!project) return null;
   if (!open) {
     return (
-      <button type="button" className={BUTTON} onClick={() => setOpen(true)}>
-        Write to a worktree's .env
-      </button>
+      <>
+        <button
+          type="button"
+          className={BUTTON}
+          onClick={() => {
+            setNote(null);
+            setOpen(true);
+          }}
+        >
+          Write to a worktree's .env
+        </button>
+        {note ? <span className={PLAIN}>{note}</span> : null}
+      </>
     );
   }
   return (
@@ -536,7 +553,9 @@ function WriteEnvButton({
         className={BUTTON}
         onClick={async () => {
           try {
-            await writeEnv(project, worktree, row.scope, row.name, envName);
+            const report = await writeEnv(project, worktree, row.scope, row.name, envName);
+            // A file the person left readable by other accounts keeps its mode; they are told.
+            setNote(report?.readableByOthers ? SHARED_FILE_NOTE : null);
             setOpen(false);
             onDone();
           } catch (why) {
@@ -601,10 +620,13 @@ function DeleteButton({
         onClick={async () => {
           try {
             const report = await deleteSecret(row.scope, row.name);
+            const left = (report.envLeft ?? []).map((file) => `${file.worktree}: ${file.why}`);
             if (report.keychainKept) {
               setError(
                 `That key is gone from Hivra, but your Mac's keychain wouldn't remove the item. Remove "${row.label}" in Keychain Access to be sure it is gone.`,
               );
+            } else if (left.length) {
+              setError(`That key is deleted. Its line was left in: ${left.join("; ")}`);
             }
             onDone();
           } catch {

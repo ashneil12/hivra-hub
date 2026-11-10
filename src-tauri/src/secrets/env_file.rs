@@ -218,45 +218,118 @@ fn replace_lines(bytes: &[u8], replacements: &[(usize, usize, Vec<u8>)]) -> Vec<
     out
 }
 
-/// Rewrite the file through a temp file in the same folder, then rename.
+/// Whether other accounts on this Mac can read this file (group or world readable). Where the platform has no modes the
+/// answer is no.
+pub fn readable_by_others(path: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::metadata(path)
+            .map(|meta| meta.permissions().mode() & 0o044 != 0)
+            .unwrap_or(false)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+        false
+    }
+}
+
+/// Where the temp file goes. Its name starts `.env.tmp-`, so a `.env*` ignore rule covers it; when the person's rules
+/// only name `.env`, it goes into git's own folder instead, where `git add -A` can never reach it. (A rename from there
+/// is atomic on the same volume, which a worktree and its git folder share.)
+fn temp_path(root: &Path) -> PathBuf {
+    let name = format!(".env.tmp-{}", uuid::Uuid::new_v4().simple());
+    let ignored = crate::fs::git_ignored_names(root, &[name.as_str()])
+        .is_some_and(|names| names.iter().any(|ignored| *ignored == name));
+    if ignored {
+        return root.join(name);
+    }
+    match crate::fs::git_output_capped(root, &["rev-parse", "--absolute-git-dir"], 16_384, None) {
+        Some((out, ..)) => {
+            let dir = PathBuf::from(String::from_utf8_lossy(&out).trim());
+            if dir.is_dir() {
+                return dir.join(name);
+            }
+            root.join(name)
+        }
+        None => root.join(name),
+    }
+}
+
+/// Removes the temp file on every way out, a panic included, unless the rename took it.
+struct TempGuard {
+    path: PathBuf,
+    armed: bool,
+}
+
+impl Drop for TempGuard {
+    fn drop(&mut self) {
+        if self.armed {
+            let _ = fs::remove_file(&self.path);
+        }
+    }
+}
+
+/// Rewrite the file through a temp file on the same volume, then rename.
 fn replace_file(target: &Target, bytes: &[u8]) -> Result<(), String> {
     if is_symlink(&target.path) {
         return Err("That .env became a link, so nothing was written.".into());
     }
-    let name = format!(".env.tmp-{}", uuid::Uuid::new_v4().simple());
-    let temp = target.root.join(name);
-    let result = (|| -> Result<(), String> {
-        let mut options = fs::OpenOptions::new();
-        options.write(true).create_new(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.mode(0o600);
-        }
-        let mut file = options
-            .open(&temp)
-            .map_err(|_| "Couldn't write that .env.".to_string())?;
-        file.write_all(bytes)
-            .map_err(|_| "Couldn't write that .env.".to_string())?;
-        file.sync_all()
-            .map_err(|_| "Couldn't write that .env.".to_string())?;
-        // An existing file keeps its own permissions; a new one stays 0600.
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            if let Ok(meta) = fs::metadata(&target.path) {
-                let _ = fs::set_permissions(
-                    &temp,
-                    fs::Permissions::from_mode(meta.permissions().mode()),
-                );
-            }
-        }
-        fs::rename(&temp, &target.path).map_err(|_| "Couldn't write that .env.".to_string())
-    })();
-    if result.is_err() {
-        let _ = fs::remove_file(&temp);
+    let first = temp_path(&target.root);
+    let beside = target.root.join(
+        first
+            .file_name()
+            .map(|name| name.to_os_string())
+            .unwrap_or_default(),
+    );
+    // A temp in git's folder that cannot be renamed into place (another volume) falls back to one beside the file.
+    let mut places = vec![first.clone()];
+    if beside != first {
+        places.push(beside);
     }
-    result
+    let mut last = Err("Couldn't write that .env.".to_string());
+    for temp in places {
+        last = write_through(&temp, target, bytes);
+        if last.is_ok() {
+            break;
+        }
+    }
+    last
+}
+
+fn write_through(temp: &Path, target: &Target, bytes: &[u8]) -> Result<(), String> {
+    let mut guard = TempGuard {
+        path: temp.to_path_buf(),
+        armed: true,
+    };
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options
+        .open(temp)
+        .map_err(|_| "Couldn't write that .env.".to_string())?;
+    file.write_all(bytes)
+        .map_err(|_| "Couldn't write that .env.".to_string())?;
+    file.sync_all()
+        .map_err(|_| "Couldn't write that .env.".to_string())?;
+    // An existing file keeps its own permissions (a private one stays private, and one other accounts can read is
+    // reported, not changed); a new one stays 0600.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if let Ok(meta) = fs::metadata(&target.path) {
+            let _ =
+                fs::set_permissions(temp, fs::Permissions::from_mode(meta.permissions().mode()));
+        }
+    }
+    fs::rename(temp, &target.path).map_err(|_| "Couldn't write that .env.".to_string())?;
+    guard.armed = false;
+    Ok(())
 }
 
 /// Write one line. The caller has already checked the target and read the value.
@@ -307,32 +380,44 @@ pub fn write(target: &Target, env_name: &str, value: &str) -> Result<(), String>
 }
 
 /// Whether the line still holds `old`; a hand-edited line is left alone and reported.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum LineChange {
     Changed,
     LeftAlone,
     Missing,
+    /// The file no longer passes the checks a write passes (now tracked, no longer ignored, now a link, ...), so it was
+    /// left exactly as it was. The words say why.
+    Refused(String),
 }
 
+/// Rewrite or remove the line `NAME=old` in one worktree's `.env`. A file is rewritten only after the same checks a
+/// write makes (steps 1 to 5): between the write and now it may have become tracked, lost its ignore rule or turned into
+/// a link.
 pub fn rewrite_line(
     worktree: &Path,
     env_name: &str,
     old: &str,
     new: Option<&str>,
 ) -> Result<LineChange, String> {
-    let path = worktree.join(".env");
-    if is_symlink(&path) {
+    if !worktree.is_dir() {
         return Ok(LineChange::Missing);
     }
-    let bytes = match fs::read(&path) {
+    // A recorded worktree is its own project: the first check (who owns it) passed when the person chose it.
+    let shown = crate::fs::path_to_js(worktree);
+    let target = match check(&shown, &shown) {
+        Ok(target) => target,
+        Err(why) => return Ok(LineChange::Refused(why)),
+    };
+    let bytes = match fs::read(&target.path) {
         Ok(bytes) => bytes,
         Err(_) => return Ok(LineChange::Missing),
     };
-    let target = Target {
-        root: worktree.to_path_buf(),
-        path,
-        hash: hash(&bytes),
-    };
+    // The file read here is the file checked there.
+    if hash(&bytes) != target.hash {
+        return Ok(LineChange::Refused(
+            "That .env changed while saving, so nothing was written. Try again.".into(),
+        ));
+    }
     let ranges = line_ranges(&bytes);
     let mut hits = Vec::new();
     for (start, end, after) in &ranges {
@@ -377,11 +462,15 @@ pub fn rewrite_line(
 }
 
 /// Delete a secret's line from a worktree's `.env`, only while it still holds the value.
-pub fn remove_line(worktree: &Path, env_name: &str, old: Option<&str>) -> Result<bool, String> {
+pub fn remove_line(
+    worktree: &Path,
+    env_name: &str,
+    old: Option<&str>,
+) -> Result<LineChange, String> {
     let Some(old) = old else {
-        return Ok(false);
+        return Ok(LineChange::Missing);
     };
-    Ok(rewrite_line(worktree, env_name, old, None)? == LineChange::Changed)
+    rewrite_line(worktree, env_name, old, None)
 }
 
 #[cfg(test)]
@@ -541,10 +630,16 @@ mod tests {
         let tmp = Tmp::new();
         ignore_env(&tmp);
         fs::write(tmp.env(), b"K=mine\nA=1\n").unwrap();
-        assert!(remove_line(tmp.path(), "K", Some("mine")).unwrap());
+        assert_eq!(
+            remove_line(tmp.path(), "K", Some("mine")).unwrap(),
+            LineChange::Changed
+        );
         assert_eq!(fs::read(tmp.env()).unwrap(), b"A=1\n");
         fs::write(tmp.env(), b"K=theirs\n").unwrap();
-        assert!(!remove_line(tmp.path(), "K", Some("mine")).unwrap());
+        assert_eq!(
+            remove_line(tmp.path(), "K", Some("mine")).unwrap(),
+            LineChange::LeftAlone
+        );
         assert_eq!(fs::read(tmp.env()).unwrap(), b"K=theirs\n");
     }
 
@@ -665,5 +760,158 @@ mod tests {
         )
         .is_err());
         let _ = fs::remove_dir_all(&outside);
+    }
+
+    // ---- fix round 1, item H: a rotate and a delete check the file again, say who can read it, and leave no temp ---------
+
+    fn refused(change: &LineChange) -> &str {
+        match change {
+            LineChange::Refused(why) => why,
+            other => panic!("expected a refusal, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_rotate_refuses_a_file_that_has_become_tracked() {
+        let tmp = Tmp::new();
+        ignore_env(&tmp);
+        fs::write(tmp.env(), b"K=old-value\n").unwrap();
+        tmp.git(&["add", "-f", ".env"]);
+        let change = rewrite_line(tmp.path(), "K", "old-value", Some("new-value")).unwrap();
+        assert!(refused(&change).contains("Git"), "{change:?}");
+        assert_eq!(fs::read(tmp.env()).unwrap(), b"K=old-value\n");
+    }
+
+    #[test]
+    fn a_rotate_refuses_a_file_git_no_longer_ignores() {
+        let tmp = Tmp::new();
+        ignore_env(&tmp);
+        fs::write(tmp.env(), b"K=old-value\n").unwrap();
+        fs::remove_file(tmp.path().join(".gitignore")).unwrap();
+        let change = rewrite_line(tmp.path(), "K", "old-value", Some("new-value")).unwrap();
+        assert_eq!(
+            refused(&change),
+            "Git would commit this .env. Add `.env` to `.gitignore` first."
+        );
+        assert_eq!(fs::read(tmp.env()).unwrap(), b"K=old-value\n");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_rotate_refuses_a_file_that_has_become_a_link() {
+        use std::os::unix::fs::symlink;
+        let tmp = Tmp::new();
+        ignore_env(&tmp);
+        let outside = tmp.path().join("outside.txt");
+        fs::write(&outside, b"K=old-value\n").unwrap();
+        symlink(&outside, tmp.env()).unwrap();
+        let change = rewrite_line(tmp.path(), "K", "old-value", Some("new-value")).unwrap();
+        assert!(refused(&change).contains("is a link"), "{change:?}");
+        assert_eq!(fs::read(&outside).unwrap(), b"K=old-value\n");
+    }
+
+    #[test]
+    fn a_delete_checks_the_file_too_and_a_folder_that_is_gone_is_just_missing() {
+        let tmp = Tmp::new();
+        ignore_env(&tmp);
+        fs::write(tmp.env(), b"K=mine\n").unwrap();
+        tmp.git(&["add", "-f", ".env"]);
+        let change = remove_line(tmp.path(), "K", Some("mine")).unwrap();
+        assert!(refused(&change).contains("Git"), "{change:?}");
+        assert_eq!(fs::read(tmp.env()).unwrap(), b"K=mine\n");
+        let gone = std::env::temp_dir().join(format!("mc-gone-{}", uuid::Uuid::new_v4()));
+        assert_eq!(
+            remove_line(&gone, "K", Some("mine")).unwrap(),
+            LineChange::Missing
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_file_other_accounts_can_read_keeps_its_mode_and_the_result_says_so() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = Tmp::new();
+        ignore_env(&tmp);
+        fs::write(tmp.env(), b"A=1\n").unwrap();
+        fs::set_permissions(tmp.env(), fs::Permissions::from_mode(0o644)).unwrap();
+        write(&target(&tmp), "K", "sk_live_abcdefgh").unwrap();
+        // The person's file keeps its own mode; the app says other accounts can read it.
+        assert_eq!(
+            fs::metadata(tmp.env()).unwrap().permissions().mode() & 0o777,
+            0o644
+        );
+        assert!(readable_by_others(&tmp.env()));
+        // Group-readable counts too.
+        fs::set_permissions(tmp.env(), fs::Permissions::from_mode(0o640)).unwrap();
+        assert!(readable_by_others(&tmp.env()));
+        // A private file, and a file the app creates, are not.
+        fs::set_permissions(tmp.env(), fs::Permissions::from_mode(0o600)).unwrap();
+        assert!(!readable_by_others(&tmp.env()));
+        fs::remove_file(tmp.env()).unwrap();
+        write(&target(&tmp), "K", "sk_live_abcdefgh").unwrap();
+        assert_eq!(
+            fs::metadata(tmp.env()).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        assert!(!readable_by_others(&tmp.env()));
+        assert!(!readable_by_others(&tmp.path().join("no-such-file")));
+    }
+
+    fn temp_leftovers(tmp: &Tmp) -> Vec<String> {
+        let mut found = Vec::new();
+        for dir in [tmp.path().to_path_buf(), tmp.path().join(".git")] {
+            for entry in fs::read_dir(dir).unwrap().flatten() {
+                let name = entry.file_name().to_string_lossy().into_owned();
+                if name.starts_with(".env.tmp-") {
+                    found.push(name);
+                }
+            }
+        }
+        found
+    }
+
+    #[test]
+    fn the_temp_file_is_gone_after_a_write_and_after_a_failed_one() {
+        let tmp = Tmp::new();
+        ignore_env(&tmp);
+        fs::write(tmp.env(), b"A=1\n").unwrap();
+        write(&target(&tmp), "K", "sk_live_abcdefgh").unwrap();
+        assert_eq!(temp_leftovers(&tmp), Vec::<String>::new());
+        // A rename that cannot happen (the target is a folder) is an error, and the temp is removed.
+        fs::remove_file(tmp.env()).unwrap();
+        fs::create_dir(tmp.env()).unwrap();
+        let broken = Target {
+            root: tmp.path().to_path_buf(),
+            path: tmp.env(),
+            hash: hash(b""),
+        };
+        assert!(replace_file(&broken, b"K=sk_live_abcdefgh\n").is_err());
+        assert_eq!(temp_leftovers(&tmp), Vec::<String>::new());
+    }
+
+    #[test]
+    fn the_temp_file_stays_in_the_work_tree_only_when_git_ignores_its_name() {
+        // `.env` alone does not cover `.env.tmp-…`, so the temp is kept out of the work tree (in git's own folder),
+        // where a careless `git add -A` can never stage it.
+        let tmp = Tmp::new();
+        ignore_env(&tmp);
+        let git_dir = crate::fs::canonical(tmp.path().join(".git")).unwrap();
+        let outside = temp_path(&crate::fs::canonical(tmp.path()).unwrap());
+        assert!(outside.starts_with(&git_dir), "{outside:?}");
+        assert!(outside
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .starts_with(".env.tmp-"));
+        // With the family ignored (`.env*`), the temp sits beside the file, and its name is matched by that pattern.
+        fs::write(tmp.path().join(".gitignore"), ".env*\n").unwrap();
+        let beside = temp_path(&crate::fs::canonical(tmp.path()).unwrap());
+        assert_eq!(
+            beside.parent().unwrap(),
+            crate::fs::canonical(tmp.path()).unwrap()
+        );
+        let name = beside.file_name().unwrap().to_string_lossy().into_owned();
+        let ignored = crate::fs::git_ignored_names(tmp.path(), &[name.as_str()]).unwrap();
+        assert!(ignored.iter().any(|ignored| *ignored == name), "{name}");
     }
 }

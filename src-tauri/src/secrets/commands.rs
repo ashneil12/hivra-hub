@@ -222,21 +222,31 @@ pub fn secrets_rotate<R: tauri::Runtime>(
         }
         None => rotate(vault(), &conn, &scope, &name, &value, now_millis())?,
     };
-    // Only on the person's tap ("Update the files that hold it"), and only while a line still holds the old value.
+    // Only on the person's tap ("Update the files that hold it"), and only while a line still holds the old value. A
+    // file that fails a check is reported with its reason, and the rest are still done.
     let mut updated = Vec::new();
     let mut left_alone = Vec::new();
+    let mut refused = Vec::new();
+    let mut shared = Vec::new();
     if update_env {
         if let Some(old) = old.as_deref() {
             for write in env_writes_for(&conn, &scope, &name)? {
-                match env_file::rewrite_line(
-                    std::path::Path::new(&write.worktree),
-                    &write.env_name,
-                    old,
-                    Some(&value),
-                )? {
-                    env_file::LineChange::Changed => updated.push(write.worktree),
-                    env_file::LineChange::LeftAlone => left_alone.push(write.worktree),
-                    env_file::LineChange::Missing => {}
+                let path = std::path::Path::new(&write.worktree);
+                match env_file::rewrite_line(path, &write.env_name, old, Some(&value)) {
+                    Ok(env_file::LineChange::Changed) => {
+                        if env_file::readable_by_others(&path.join(".env")) {
+                            shared.push(write.worktree.clone());
+                        }
+                        updated.push(write.worktree);
+                    }
+                    Ok(env_file::LineChange::LeftAlone) => left_alone.push(write.worktree),
+                    Ok(env_file::LineChange::Missing) => {}
+                    Ok(env_file::LineChange::Refused(why)) | Err(why) => {
+                        refused.push(RefusedFile {
+                            worktree: write.worktree,
+                            why,
+                        })
+                    }
                 }
             }
         }
@@ -247,6 +257,8 @@ pub fn secrets_rotate<R: tauri::Runtime>(
         env_files,
         updated,
         left_alone,
+        refused,
+        shared,
     })
 }
 
@@ -260,6 +272,10 @@ pub struct RotateReport {
     pub updated: Vec<String>,
     /// Worktrees whose line no longer held the old value: a hand edit, left alone.
     pub left_alone: Vec<String>,
+    /// Files that no longer pass the write's checks (now tracked, no longer ignored, now a link), left as they were.
+    pub refused: Vec<RefusedFile>,
+    /// Updated files that other accounts on this Mac can read (the person's own mode is kept).
+    pub shared: Vec<String>,
 }
 
 #[tauri::command(async)]
@@ -365,7 +381,7 @@ pub fn secrets_env_write<R: tauri::Runtime>(
     scope: String,
     name: String,
     env_name: String,
-) -> Result<(), String> {
+) -> Result<EnvWriteReport, String> {
     // 1–5, before the value is read at all.
     let target = env_file::check(&project, &worktree)?;
     let value = read_value(vault(), &scope, &name)?;
@@ -382,7 +398,16 @@ pub fn secrets_env_write<R: tauri::Runtime>(
         now_millis(),
     )?;
     let _ = app.emit(CHANGED, json!({}));
-    Ok(())
+    // An existing `.env` keeps the person's own mode; if other accounts can read it, the page says so.
+    Ok(EnvWriteReport {
+        readable_by_others: env_file::readable_by_others(&target.path),
+    })
+}
+
+#[derive(Clone, Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EnvWriteReport {
+    pub readable_by_others: bool,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -403,11 +428,16 @@ pub fn secrets_env_remove<R: tauri::Runtime>(
 ) -> Result<bool, String> {
     let target = env_file::check(&input.project, &input.worktree)?;
     let value = read_value(vault(), &input.scope, &input.name).ok();
-    let removed = env_file::remove_line(
+    let removed = match env_file::remove_line(
         &target.root,
         &input.env_name,
         value.as_ref().map(|v| v.as_str()),
-    )?;
+    )? {
+        env_file::LineChange::Changed => true,
+        // The file failed a check since it was written: nothing was touched, and the page shows why.
+        env_file::LineChange::Refused(why) => return Err(why),
+        env_file::LineChange::LeftAlone | env_file::LineChange::Missing => false,
+    };
     if removed {
         let conn = store.lock_conn()?;
         // Only this worktree's record: other `.env` files that hold the same secret stay listed.
