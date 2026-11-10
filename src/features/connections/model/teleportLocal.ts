@@ -5,6 +5,8 @@
 import { hasPendingApproval, type Session } from "../../sessions/model/session";
 import { buildDeterministicHandoff } from "../../sessions/model/handoff";
 import type { MoveRefusal } from "./teleport";
+import { movedBlocks, teleportStateOf } from "./teleportState";
+import { lockChat, unlockChat } from "./teleportLock";
 import {
   sha256Hex,
   type CanResume,
@@ -20,7 +22,8 @@ import {
 export interface LocalChatPort {
   get(id: string): Promise<Session | null>;
   put(session: Session): Promise<void>;
-  remove(id: string): Promise<void>;
+  /** Keep the chat row with its moved marker and no transcript: the host now holds the live copy. */
+  markMoved(id: string, label: string, at: string): Promise<void>;
 }
 
 const RUNS_HERE: readonly string[] = ["claude", "codex"];
@@ -61,15 +64,25 @@ export function chatToSession(chat: TransferChat, options: { cwd: string }): Ses
  * This Mac as a move endpoint. A chat is live here while its row exists. Freezing is held by this endpoint; the send
  * path that checks it is not wired yet (see the PR notes).
  */
-export function localMoveEndpoint(options: { machineId: string; port: LocalChatPort; cwd: string }): MoveEndpoint {
+export function localMoveEndpoint(options: {
+  machineId: string;
+  port: LocalChatPort;
+  cwd: string;
+  /** The name a person sees for a machine id (the host's name). Defaults to the id. */
+  labelFor?: (machineId: string) => string;
+}): MoveEndpoint {
   const { machineId, port, cwd } = options;
+  const labelFor = options.labelFor ?? ((id: string) => id);
   const frozen = new Map<string, string>();
   const incoming = new Map<string, { moveId: string; payload: MovePayload }>();
   return {
     id: machineId,
     async read(chatId): Promise<ChatRecord | null> {
       const session = await port.get(chatId);
-      return session ? { owner: machineId, live: sessionToChat(session) } : null;
+      if (!session) return null;
+      const state = teleportStateOf(session);
+      if (state.moved) return { owner: state.host, live: null };
+      return { owner: machineId, live: sessionToChat(session) };
     },
     async freeze(chatId, moveId) {
       if (frozen.has(chatId)) return false;
@@ -97,10 +110,12 @@ export function localMoveEndpoint(options: { machineId: string; port: LocalChatP
       if (!copy || copy.moveId !== moveId) return;
       await port.put(chatToSession(copy.payload.chat, { cwd }));
       incoming.delete(chatId);
+      unlockChat(chatId);
     },
-    async release(chatId, moveId) {
+    async release(chatId, moveId, _to) {
       if (frozen.get(chatId) !== moveId) throw new Error("This move did not freeze the chat");
-      await port.remove(chatId);
+      await port.markMoved(chatId, labelFor(_to), new Date().toISOString());
+      lockChat(chatId);
       frozen.delete(chatId);
     },
   };

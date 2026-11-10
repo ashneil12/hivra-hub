@@ -6,6 +6,8 @@ import type { Session } from "../../sessions/model/session";
 import { HostTeleportStore } from "../../../../host/teleport/store";
 import { teleportRpc } from "../../../../host/teleport/rpc";
 import { moveChat, planMove } from "./teleport";
+import { movedBlocks, teleportStateOf } from "./teleportState";
+import { isChatLocked, unlockChat } from "./teleportLock";
 import { sessionToChat, chatToSession, localMoveEndpoint, recapForRefusal, type LocalChatPort } from "./teleportLocal";
 import { sshMoveEndpoint, type HostCall } from "./teleportSsh";
 
@@ -42,8 +44,9 @@ function memoryPort(initial: Session[]): LocalChatPort & { all(): Session[] } {
     async put(next) {
       rows.set(next.id, next);
     },
-    async remove(id) {
-      rows.delete(id);
+    async markMoved(id, label, at) {
+      const row = rows.get(id);
+      if (row) rows.set(id, { ...row, blocks: movedBlocks(label, at) } as Session);
     },
     all: () => [...rows.values()],
   };
@@ -105,7 +108,11 @@ describe("WP-177 desktop chat as a move source and target", () => {
     if (!out.ok) throw new Error("plan");
     const there = await moveChat({ chatId: CHAT, from: mac, to: host, approval: { planId: out.plan.planId }, moveId: "out", at: AT });
     expect(there.status).toBe("moved");
-    expect(port.all()).toHaveLength(0);
+    expect(port.all()).toHaveLength(1);
+    expect(teleportStateOf(port.all()[0])).toMatchObject({ moved: true, host: HOST });
+    expect(port.all()[0].blocks.some((b) => b.role === "user")).toBe(false);
+    expect(isChatLocked(CHAT)).toBe(true);
+    expect((await mac.read(CHAT))?.live ?? null).toBeNull();
 
     const onHost = await host.read(CHAT);
     expect(onHost?.live?.transcript).toBe(JSON.stringify(session().blocks));
@@ -114,9 +121,21 @@ describe("WP-177 desktop chat as a move source and target", () => {
     if (!back.ok) throw new Error("plan back");
     const home = await moveChat({ chatId: CHAT, from: host, to: mac, approval: { planId: back.plan.planId }, moveId: "back", at: AT });
     expect(home.status).toBe("moved");
+    expect(isChatLocked(CHAT)).toBe(false);
     const restored = port.all()[0];
     expect(restored).toMatchObject({ id: CHAT, model: "test-model-1", title: "Local chat", cwd: "/projects/local" });
     expect(restored.blocks).toEqual(session().blocks);
+  });
+
+  it("the moved chat reads as owned by the host, with no live copy here", async () => {
+    const port = memoryPort([session()]);
+    const mac = localMoveEndpoint({ machineId: "this-mac", port, cwd: "/projects/local", labelFor: (id) => `Label ${id}` });
+    await mac.freeze(CHAT, "m");
+    await mac.release(CHAT, "m", HOST);
+    unlockChat(CHAT);
+    const record = await mac.read(CHAT);
+    expect(record?.owner).toBe(`Label ${HOST}`);
+    expect(record?.live ?? null).toBeNull();
   });
 
   it("refuses a desktop chat whose CLI is not one the move knows", async () => {
