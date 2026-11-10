@@ -8,7 +8,16 @@ import { SessionPane, type SessionPaneProps } from "./SessionPane";
 
 const runs: never[] = [];
 vi.mock("./Composer", () => ({ Composer: () => null }));
-vi.mock("./AgentTranscript", () => ({ AgentTranscript: () => null }));
+// The pane hands the transcript the list; the transcript draws it (AgentTranscript.lineage.test.ts). The stand-in
+// draws the same list from what it was handed, so this file checks what the pane reads and when.
+vi.mock("./AgentTranscript", async () => {
+  const { createElement: h } = await import("react");
+  const { LineageList } = await import("./LineageList");
+  return {
+    AgentTranscript: ({ lineage }: { lineage?: lineage.Lineage | null }) =>
+      lineage ? h(LineageList, { lineage }) : null,
+  };
+});
 vi.mock("../model/subagentLineage", async (original) => {
   const real = await original<typeof import("../model/subagentLineage")>();
   return { ...real, lineageForThread: vi.fn(real.lineageForThread) };
@@ -87,6 +96,8 @@ describe("the subagent list on the parent thread (render cost)", () => {
 
   it("shows each native child on the parent thread, read off the agent rows it holds", () => {
     act(() => root.render(createElement(SessionPane, props(session))));
+    expect(container.querySelector("[data-lineage-summary]")?.textContent).toBe("1 done");
+    act(() => container.querySelector<HTMLElement>("[data-lineage-toggle]")!.click());
     const row = container.querySelector("[data-lineage-child='toolu_agent']")!;
     expect(row.querySelector("[data-lineage-name]")?.textContent).toBe("Explore the auth module");
     expect(row.querySelector("[data-lineage-model]")?.textContent).toBe("claude-haiku-5");
@@ -107,7 +118,7 @@ describe("the subagent list on the parent thread (render cost)", () => {
         ),
       );
     }
-    expect(container.querySelector("[data-lineage-child='toolu_agent']")).not.toBeNull();
+    expect(container.querySelector("[data-lineage-summary]")?.textContent).toBe("1 done");
     expect(spy()).toHaveBeenCalledTimes(1);
   });
 
@@ -119,7 +130,7 @@ describe("the subagent list on the parent thread (render cost)", () => {
     };
     act(() => root.render(createElement(SessionPane, props(running))));
     expect(spy()).toHaveBeenCalledTimes(2);
-    expect(container.querySelector("[data-lineage-status]")?.textContent).toBe("Working");
+    expect(container.querySelector("[data-lineage-summary]")?.textContent).toBe("1 working");
     act(() => root.render(createElement(SessionPane, props(running, { focused: false }))));
     expect(spy()).toHaveBeenCalledTimes(2);
   });

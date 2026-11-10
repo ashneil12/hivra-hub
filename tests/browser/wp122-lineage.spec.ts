@@ -3,6 +3,13 @@ import { expect, test } from "@playwright/test";
 test("the subagent list on the parent thread", async ({ page }) => {
   await page.goto("/tests/browser/wp122-lineage.html");
   const list = page.locator("#list");
+  // It opens as one line: what the children are doing, and nothing else until the reader asks.
+  await expect(list.locator("[data-lineage-summary]")).toHaveText("1 done, 1 failed");
+  await expect(list.locator("[data-lineage-child]")).toHaveCount(0);
+  const toggle = list.getByRole("button", { name: /Subagents/ });
+  await expect(toggle).toHaveAttribute("aria-expanded", "false");
+  await toggle.click();
+  await expect(toggle).toHaveAttribute("aria-expanded", "true");
   const done = list.locator("[data-lineage-child='toolu_agent']");
   await expect(done.locator("[data-lineage-name]")).toHaveText("Explore the auth module");
   await expect(done.locator("[data-lineage-role]")).toHaveText("explore");

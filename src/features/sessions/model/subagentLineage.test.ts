@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   lineageForThread,
+  lineageTally,
   NOT_REPORTED_BY_CLI,
   type Lineage,
   type LineageChild,
@@ -230,5 +231,36 @@ describe("a CLI that does not report children", () => {
   it("reads the provider name without regard to case or spaces", () => {
     expect(lineageForThread(" Claude ", [agentBlock()])?.reported).toBe(true);
     expect(lineageForThread("CODEX", [agentBlock()])?.reported).toBe(true);
+  });
+});
+
+describe("the one-line tally the list opens with", () => {
+  const child = (status: LineageChild["status"], id: string): LineageChild => ({
+    id,
+    name: id,
+    role: null,
+    model: null,
+    status,
+    result: null,
+    error: null,
+  });
+
+  it("counts each state in a fixed order and leaves out the empty ones", () => {
+    expect(
+      lineageTally([
+        child("done", "a"),
+        child("failed", "b"),
+        child("running", "c"),
+        child("done", "d"),
+        child("cancelled", "e"),
+        child("running", "f"),
+      ]),
+    ).toBe("2 working, 2 done, 1 failed, 1 stopped");
+    expect(lineageTally([child("done", "a")])).toBe("1 done");
+  });
+
+  it("has no dash in it and says nothing for no children", () => {
+    expect(lineageTally([])).toBe("");
+    expect(lineageTally([child("failed", "a"), child("done", "b")])).not.toMatch(/[\u2013\u2014]/);
   });
 });

@@ -180,3 +180,21 @@ export function lineageForThread(
   if (rows.length === 0) return null;
   return reports(provider) ? { reported: true, children: rows } : unreported();
 }
+
+const TALLY_ORDER: ReadonlyArray<readonly [LineageStatus, string]> = [
+  ["running", "working"],
+  ["done", "done"],
+  ["failed", "failed"],
+  ["cancelled", "stopped"],
+];
+
+/**
+ * What the list says about its children before it is opened: how many are in each state. It is the whole list in
+ * one line, so a thread with a dozen children costs one row until the reader asks for the rest.
+ */
+export function lineageTally(children: readonly LineageChild[]): string {
+  return TALLY_ORDER.flatMap(([status, word]) => {
+    const count = children.filter((child) => child.status === status).length;
+    return count > 0 ? [`${count} ${word}`] : [];
+  }).join(", ");
+}

@@ -58,7 +58,6 @@ import {
 import { sessionHasBtwThreads, supportsBtwHarness } from "../model/btw";
 import { BtwSheet, useBtwConversation } from "./BtwSheet";
 import { AgentTranscript } from "./AgentTranscript";
-import { LineageList } from "./LineageList";
 import { lineageForThread } from "../model/subagentLineage";
 import { PooledTranscript, type TranscriptPool } from "./TranscriptPool";
 import { TranscriptFind } from "./TranscriptFind";
@@ -1071,13 +1070,13 @@ const LocalSessionPane = memo(function LocalSessionPane({
               )
             ) : (
               <>
-                {lineage ? <LineageList lineage={lineage} /> : null}
                 <PooledTranscript
                   pool={transcriptPool}
                   sessionId={session.id}
                   onMouseDown={focusPane}
                 >
                   <AgentTranscript
+                    lineage={lineage}
                     blocks={
                       agent && !monoTranscript.viewingOlderPage
                         ? monoPendingTranscriptBlocks(
