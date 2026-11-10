@@ -3,6 +3,7 @@ import {
   blocksBusySend,
   cantRedirectTurn,
   cantTakeFollowUp,
+  followUpWhenBusy,
   redirectNotePlace,
 } from "./cantDo";
 
@@ -34,8 +35,12 @@ describe("can't redirect a running turn", () => {
     expect(cantTakeFollowUp("hermes")).not.toMatch(DASH);
   });
 
-  it("still lets a typed message go when follow-ups wait in the queue", () => {
-    expect(blocksBusySend(true, "steer")).toBe(true);
+  it("queues a typed message instead of turning Send into Stop when the agent cannot redirect", () => {
+    expect(followUpWhenBusy(true, "steer")).toBe("queue");
+    expect(followUpWhenBusy(true, "queue")).toBe("queue");
+    expect(followUpWhenBusy(false, "steer")).toBe("steer");
+    expect(followUpWhenBusy(false, "queue")).toBe("queue");
+    expect(blocksBusySend(true, "steer")).toBe(false);
     expect(blocksBusySend(true, "queue")).toBe(false);
     expect(blocksBusySend(false, "steer")).toBe(false);
     expect(blocksBusySend(false, "queue")).toBe(false);

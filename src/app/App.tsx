@@ -706,9 +706,12 @@ import { useFirstMateCheckoutGuard } from "../features/firstmate/hooks/useFirstM
 import { useSteering } from "../features/firstmate/hooks/useSteering";
 import { firstMateLaunch } from "../features/firstmate/model/checkoutGuard";
 // WP-115: compact an idle Claude chat shortly before its prompt cache expires.
-import { watchIdleClaudeCompaction } from "../integrations/harness/providers/claude/idleCompactWatch";
+import {
+  commitIdleCompactBusy,
+  watchIdleClaudeCompaction,
+} from "../integrations/harness/providers/claude/idleCompactWatch";
 // WP-115: plain sentence when this agent cannot redirect a running turn.
-import { cantRedirectTurn, cantTakeFollowUp } from "../features/sessions/model/cantDo";
+import { cantRedirectTurn, cantTakeFollowUp, followUpWhenBusy } from "../features/sessions/model/cantDo";
 import { withLegacyBriefParts } from "../features/firstmate/model/brief";
 import { viewAfterRemoval, type RemovalOrigin } from "../features/sessions/model/sessionWorkspaceLifecycle";
 import { focusClosesMono, paneFocus } from "./model/paneFocus";
@@ -8598,12 +8601,13 @@ function Workspace({
         }
         const steerable =
           isLiveHarness(current.harness) && canSteerHarness(current.harness);
-        const followUpBehavior =
+        const followUpBehavior = followUpWhenBusy(
+          harnessCannotSteer(current.harness),
           current.worktreePreparing ||
-          intent === "plan" ||
-          intent === "orchestrate" ||
-          operatorCommand.matched ||
-          options?.waitForIdle
+            intent === "plan" ||
+            intent === "orchestrate" ||
+            operatorCommand.matched ||
+            options?.waitForIdle
             ? "queue"
             : // The agent has yielded and only background work is left, which
               // may never end (a dev server). Queuing would park the message
@@ -8616,7 +8620,8 @@ function Workspace({
                 ? steerable
                   ? "steer"
                   : "queue"
-                : (options?.followUpBehavior ?? loadFollowUpBehavior());
+                : (options?.followUpBehavior ?? loadFollowUpBehavior()),
+        );
         if (followUpBehavior === "queue") {
           setSessions((prev) =>
             prev.map((s) =>
@@ -10939,6 +10944,7 @@ function Workspace({
   // WP-115: compact an idle Claude chat shortly before its prompt cache expires.
   const idleCompactEvent = useRef(enqueueHarnessEvent);
   idleCompactEvent.current = enqueueHarnessEvent;
+  const idleCompactOwners = useRef(new Map<string, number>());
   useEffect(() => {
     return watchIdleClaudeCompaction({
       sessions: () => sessionsRef.current,
@@ -10960,6 +10966,26 @@ function Workspace({
         ...firstMateLaunch(session),
       }),
       onEvent: (id, event) => idleCompactEvent.current(id, event),
+      // WP-115: hold the chat busy while compacting, so a send queues and a second look waits.
+      // Claimed once, then published. The store assigns the ref as well, so a
+      // diverged ref is put back afterwards.
+      markBusy: (sessionId, busy) => {
+        const result = commitIdleCompactBusy(
+          sessionState.snapshot(),
+          sessionsRef.current,
+          sessionId,
+          busy,
+          turnGen.current,
+          idleCompactOwners.current,
+        );
+        if (result.store !== sessionState.snapshot()) {
+          setSessions([...result.store]);
+          // Same array means the store publish already pointed the ref at it.
+          if (result.ref === result.store) return result.ok;
+        }
+        if (sessionsRef.current !== result.ref) sessionsRef.current = [...result.ref];
+        return result.ok;
+      },
     });
   }, []);
 

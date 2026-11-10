@@ -94,10 +94,14 @@ function Pane({
   paneId,
   harness,
   blocks,
+  draft = "next",
+  queuedMessages = queued,
 }: {
   paneId: string;
   harness: HarnessId;
   blocks: Block[];
+  draft?: string;
+  queuedMessages?: { id: string; text: string; attachments: [] }[];
 }) {
   const [pool] = useState(() => new TranscriptPool());
   return (
@@ -114,8 +118,8 @@ function Pane({
           runtimeMode: "supervised",
           blocks,
           busy: true,
-          composerSeed: "next",
-          queuedMessages: queued,
+          composerSeed: draft,
+          queuedMessages,
         }}
         visible
         focused
@@ -132,6 +136,7 @@ function Pane({
 createRoot(document.getElementById("root")!).render(
   <>
     <Pane paneId="grok" harness="grok" blocks={[]} />
+    <Pane paneId="grok-empty" harness="grok" blocks={[]} draft="" queuedMessages={[]} />
     <Pane
       paneId="claude"
       harness="claude"

@@ -13,8 +13,14 @@ test("says when the agent cannot redirect, and still lets Claude steer", async (
   await grok.scrollIntoViewIfNeeded();
   await expect(grok.getByRole("note")).toHaveText(sentence);
   await expect(grok.getByRole("button", { name: "Steer" })).toHaveCount(0);
-  await expect(grok.getByRole("button", { name: "Stop" })).toBeVisible();
-  await expect(grok.getByRole("button", { name: "Send" })).toHaveCount(0);
+  // The box already has a message. Send stays Send and the message waits.
+  await expect(grok.getByRole("button", { name: "Send" })).toBeVisible();
+  await expect(grok.getByRole("button", { name: "Stop" })).toHaveCount(0);
+
+  const empty = page.locator("#grok-empty");
+  await empty.scrollIntoViewIfNeeded();
+  await expect(empty.getByRole("button", { name: "Stop" })).toBeVisible();
+  await expect(empty.getByRole("button", { name: "Send" })).toHaveCount(0);
 
   await claude.scrollIntoViewIfNeeded();
   await expect(claude.getByRole("button", { name: "Steer" })).toBeVisible();

@@ -14,11 +14,23 @@ export function cantTakeFollowUp(harness: HarnessId): string {
 }
 
 /**
- * Typed text while a turn runs. Queue still sends (it waits). Steer does not,
- * when this agent cannot redirect.
+ * What a typed message does while a turn runs. A CLI that cannot redirect
+ * cannot steer, so the message waits in the queue and Send stays Send.
+ */
+export function followUpWhenBusy(
+  cannotRedirect: boolean,
+  followUp: string,
+): "queue" | "steer" {
+  if (cannotRedirect || followUp === "queue") return "queue";
+  return "steer";
+}
+
+/**
+ * Send stays Send while the box has text. Stop is the empty box, not a
+ * stand-in for a redirect this agent cannot do.
  */
 export function blocksBusySend(cannotRedirect: boolean, followUp: string): boolean {
-  return cannotRedirect && followUp !== "queue";
+  return followUpWhenBusy(cannotRedirect, followUp) === "steer" && cannotRedirect;
 }
 
 export type RedirectNotePlace = "queue" | "composer" | "none";
