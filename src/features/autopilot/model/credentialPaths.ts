@@ -55,6 +55,12 @@ const PLACES: readonly (readonly string[])[] = [
   ["library", "cookies"],
   ["library", "safari"],
   [".local", "share", "keyrings"],
+  // Round 3 (item 2, Windows): the stores a Windows user's agents, GitHub CLI, rclone, npm and the browsers keep their logins in.
+  ["appdata", "roaming", "github cli"],
+  ["appdata", "roaming", "rclone"],
+  ["appdata", "roaming", "npm", "etc"],
+  ["appdata", "local", "google", "chrome"],
+  ["appdata", "local", "microsoft", "edge"],
 ];
 
 /** Files whose whole name is a login store, whatever extension they carry. */
@@ -83,6 +89,8 @@ const NAMES = new Set([
   ".yarnrc.yml",
   ".yarnrc",
   "fish_history",
+  // Chrome's and Edge's saved passwords file on Windows (its folder is held above).
+  "login data",
 ]);
 
 /** A name that starts this way is a login store, whatever follows (`id_rsa.pub`, `terraform.tfstate.backup`). */
@@ -167,7 +175,17 @@ const INVISIBLE = /\p{Cf}/gu;
  * a path before they open it). Folding too much only ever holds more.
  */
 function fold(path: string): string {
-  return path.trim().normalize("NFKC").replace(INVISIBLE, "").toLowerCase().replace(/\\/g, "/");
+  // Trailing dots and spaces are dropped per segment (round 3, item 2): Windows ignores them, so `.codex.` is `.codex`.
+  // A segment that is only dots (`..`) is kept, since it is a climb.
+  return path
+    .trim()
+    .normalize("NFKC")
+    .replace(INVISIBLE, "")
+    .toLowerCase()
+    .replace(/\\/g, "/")
+    .split("/")
+    .map((part) => part.replace(/(?<=[^. ])[. ]+$/, ""))
+    .join("/");
 }
 
 type Resolved = {
@@ -233,6 +251,7 @@ const processSecrets = (parts: readonly string[]) =>
 function credentialSegments(parts: readonly string[]): boolean {
   if (!parts.length) return false;
   if (parts[parts.length - 1] === "known_hosts") return false;
+  // A Windows 8.3 short name (`CODEX~1`, `AUTH~1.JSO`) hides the real name from a plain check: held (round 3, item 2).
   if (placeAmong(parts) || processSecrets(parts)) return true;
   // A folder that holds logins (`secrets/`, `.ssh/`) makes every file under it a credential place too.
   if (parts.slice(0, -1).some((part) => STEMS.has(part) || NAMES.has(part))) return true;
@@ -248,6 +267,9 @@ export function credentialPath(path: string): boolean {
   const folded = fold(path);
   const written = folded.split(/[/:]/).filter(Boolean);
   if (!written.length) return false;
+  // A Windows 8.3 short name (`CODEX~1`, `AUTH~1.JSO`) in a path hides the real name: held (round 3, item 2). Only inside a
+  // path (more than one segment), so a git revision such as `HEAD~1` is not a file.
+  if (written.length > 1 && written.some((part) => /~\d/.test(part))) return true;
   return credentialSegments(written) || credentialSegments(resolvePath(folded).segments);
 }
 
@@ -300,7 +322,10 @@ const MIN_PROJECT_DEPTH = 3;
 function underHome(parts: readonly string[]): boolean {
   let rest = parts;
   for (;;) {
-    if (rest[0] === "system" && rest[1] === "volumes" && rest[2] === "data") rest = rest.slice(3);
+    // macOS's own prefixes for a path reached another way: /.nofollow/ and /.resolve/<n>/ (round 3, item 3).
+    if (rest[0] === ".nofollow") rest = rest.slice(1);
+    else if (rest[0] === ".resolve" && /^\d+$/.test(rest[1] ?? "")) rest = rest.slice(2);
+    else if (rest[0] === "system" && rest[1] === "volumes" && rest[2] === "data") rest = rest.slice(3);
     else if (rest[0] === "volumes" && rest.length > 1) rest = rest.slice(2);
     else if (rest[0] === "private") rest = rest.slice(1);
     else if (rest[0] === "proc" && rest[2] === "root") rest = rest.slice(3);
@@ -312,6 +337,10 @@ function underHome(parts: readonly string[]): boolean {
 
 const preferencesIn = (parts: readonly string[]) => parts.some((part, i) => part === "library" && parts[i + 1] === "preferences");
 
+/** Fish's startup files and its conf.d folder, which runs every file in it at each shell start (round 3, item 3). */
+const fishStartup = (parts: readonly string[]) =>
+  parts.some((part, i) => part === ".config" && parts[i + 1] === "fish" && (parts[i + 2] === "conf.d" || parts[i + 2] === "config.fish"));
+
 /** A startup file's name, or a backup, a local copy or an editor copy of one (`.zshrc.bak`, `.zshrc.local`, `.zshrc~`). */
 function shellRcName(name: string): boolean {
   if (SHELL_RC.has(name)) return true;
@@ -321,7 +350,7 @@ function shellRcName(name: string): boolean {
 
 /** Whether absolute parts are a shell startup file or a preferences file under a home folder. */
 function homeShellParts(parts: readonly string[]): boolean {
-  return underHome(parts) && (shellRcName(parts[parts.length - 1] ?? "") || preferencesIn(parts));
+  return underHome(parts) && (shellRcName(parts[parts.length - 1] ?? "") || preferencesIn(parts) || fishStartup(parts));
 }
 
 /** The chat's folder as folded absolute parts, or null when there is none. */
@@ -528,6 +557,9 @@ function folderParts(folder: string | undefined): string[] | null {
   return parts && parts.length >= 3 ? parts : null;
 }
 
+/** A brace list with a slash or a climb inside it: `{/etc,src}`, `{../..,src}`, `src/{a,../../etc}` (round 3, item 5). */
+const BRACE_OUTSIDE = /\{[^}]*(\/|\.\.)[^}]*\}/;
+
 /**
  * Whether a folder walk waits for Ash. A walk from the home folder, a parent of the chat's folder, `/`, a credential
  * folder, `..` or anywhere else outside the folder is held. A search that turns the ignore rules off (`-u`, `-uu`,
@@ -541,6 +573,9 @@ export function walkHeld(words: readonly string[], folder: string | undefined): 
   const head = words[0];
   const args = words.slice(1);
   if (ignoreOff(head, args) || (head === "grep" && grepRecurses(args))) return true;
+  // A brace list naming a folder outside the chat's own (`{/etc,src}/*`, `{../..,src}/**`) is held, whatever the command:
+  // zsh expands it before the command runs (round 3, item 5).
+  if (args.some((arg) => BRACE_OUTSIDE.test(arg))) return true;
   if (!walksFolders(head, args)) return false;
   const root = folderParts(folder);
   for (const arg of args) {

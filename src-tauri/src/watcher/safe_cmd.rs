@@ -170,32 +170,137 @@ fn names_login_or_outside(head: &str, args: &[String]) -> Option<&'static str> {
     let search = matches!(head, "rg" | "grep" | "ag" | "fd" | "find");
     let mut pattern_seen = false;
     for arg in args {
-        let word = if arg.starts_with('-') {
-            match arg.split_once('=') {
-                Some((_, value)) => value,
-                None => continue,
+        // A flag's words: its value after `=`, and a path glued on with no space from its first slash (`-f/Users/me/.netrc`,
+        // which the shell hands to the program as one word). Round 3, item 5: the glued form was skipped before.
+        let mut words: Vec<&str> = Vec::new();
+        if arg.starts_with('-') {
+            if let Some((_, value)) = arg.split_once('=') {
+                words.push(value);
+            }
+            if let Some(at) = arg.find('/') {
+                words.push(&arg[at..]);
             }
         } else {
-            arg.as_str()
-        };
-        if search && word.contains(['*', '?', '[']) {
-            return Some(HELD);
+            words.push(arg.as_str());
         }
-        // A search's first bare word is its pattern, as grep reads it; a word with a dot, a slash, a tilde or a
-        // backslash is a path, so it is read as one.
-        if search && head != "find" && !pattern_seen && !word.contains(['.', '/', '~', '\\']) {
-            pattern_seen = true;
-            continue;
-        }
-        let climbs_or_hides = word
-            .split(['/', '\\', ':'])
-            .any(|part| part == ".." || (part.len() > 1 && part.starts_with('.')));
-        let rooted = word.starts_with(['~', '/', '\\']) || is_drive_path(word);
-        if rooted || climbs_or_hides || credential_name(word) {
-            return Some(HELD);
+        for word in words {
+            if search && word.contains(['*', '?', '[']) {
+                return Some(HELD);
+            }
+            // A search's first bare word is its pattern, as grep reads it; a word with a dot, a slash, a tilde or a
+            // backslash is a path, so it is read as one.
+            if search && head != "find" && !pattern_seen && !word.contains(['.', '/', '~', '\\']) {
+                pattern_seen = true;
+                continue;
+            }
+            let climbs_or_hides = word
+                .split(['/', '\\', ':'])
+                .any(|part| part == ".." || (part.len() > 1 && part.starts_with('.')));
+            let rooted = word.starts_with(['~', '/', '\\']) || is_drive_path(word);
+            // Round 3: the shared config list (agentConfigPaths.json) and brace lists that name a folder outside. A word that
+            // is not ASCII is held here: this side has no Unicode folding, so it cannot tell a spelling it would miss.
+            let segments: Vec<&str> = word.split(['/', '\\']).collect();
+            if rooted
+                || climbs_or_hides
+                || credential_name(word)
+                || !word.is_ascii()
+                || braces_outside(word)
+                || protected_config(&segments)
+            {
+                return Some(HELD);
+            }
         }
     }
     None
+}
+
+/// The shared list of agent and tool configs, read at build time from the same file the TypeScript approval check imports
+/// (src/shared/security/agentConfigPaths.json), so the two lists cannot drift (review round 3, item 1).
+const PROTECTED_JSON: &str = include_str!("../../../src/shared/security/agentConfigPaths.json");
+
+struct ProtectedList {
+    files: Vec<String>,
+    dirs: Vec<String>,
+    suffixes: Vec<Vec<String>>,
+}
+
+fn protected_list() -> &'static ProtectedList {
+    static LIST: OnceLock<ProtectedList> = OnceLock::new();
+    LIST.get_or_init(|| {
+        let value: serde_json::Value =
+            serde_json::from_str(PROTECTED_JSON).expect("agentConfigPaths.json parses");
+        let names = |key: &str| -> Vec<String> {
+            value[key]
+                .as_array()
+                .expect("a list of names")
+                .iter()
+                .map(|name| fold_segment(name.as_str().expect("a name")))
+                .collect()
+        };
+        ProtectedList {
+            files: names("files"),
+            dirs: names("dirs"),
+            suffixes: value["pathSuffixes"]
+                .as_array()
+                .expect("pathSuffixes")
+                .iter()
+                .map(|suffix| {
+                    suffix
+                        .as_str()
+                        .expect("a suffix")
+                        .split('/')
+                        .map(fold_segment)
+                        .collect()
+                })
+                .collect(),
+        }
+    })
+}
+
+/// A segment folded as the TypeScript side folds it, for the ASCII names this side reads: lower case, trailing dots and
+/// spaces dropped (`.codex.` is `.codex`).
+fn fold_segment(part: &str) -> String {
+    part.to_ascii_lowercase()
+        .trim_end_matches([' ', '.'])
+        .to_string()
+}
+
+/// Whether the segments of a path name a protected config: a folder in the list, a file in the list, or a listed suffix.
+/// The dot rule is not here: a read's own dot-named file is ordinary, as in safeApproval.ts's read words.
+fn protected_config(segments: &[&str]) -> bool {
+    let list = protected_list();
+    let folded: Vec<String> = segments
+        .iter()
+        .filter(|part| !part.is_empty())
+        .map(|part| fold_segment(part))
+        .collect();
+    let Some(last) = folded.last() else {
+        return false;
+    };
+    if folded.iter().any(|part| list.dirs.contains(part)) || list.files.contains(last) {
+        return true;
+    }
+    list.suffixes.iter().any(|suffix| {
+        folded.len() >= suffix.len() && folded[folded.len() - suffix.len()..] == suffix[..]
+    })
+}
+
+/// A brace list with a slash or a climb inside it (`{/etc,src}`, `{../..,src}`), which a shell expands before the command
+/// runs (round 3, item 5).
+fn braces_outside(word: &str) -> bool {
+    let mut rest = word;
+    while let Some(open) = rest.find('{') {
+        let after = &rest[open + 1..];
+        let Some(close) = after.find('}') else {
+            return false;
+        };
+        let inner = &after[..close];
+        if inner.contains('/') || inner.contains("..") {
+            return true;
+        }
+        rest = &after[close + 1..];
+    }
+    false
 }
 
 fn is_drive_path(word: &str) -> bool {
@@ -432,5 +537,62 @@ mod tests {
         ] {
             assert!(verdict(command).is_some(), "{command} was allowed");
         }
+    }
+}
+
+#[cfg(test)]
+mod round3_tests {
+    use super::*;
+
+    // WP-101 review round 3. Each test is a case the TypeScript side (safeApproval.ts, credentialPaths.ts) already holds.
+
+    #[test]
+    fn the_shared_config_list_parses_and_names_the_configs() {
+        let list = protected_list();
+        assert!(list.files.contains(&"opencode.jsonc".to_string()));
+        assert!(list.files.contains(&"bunfig.toml".to_string()));
+        assert!(list.dirs.contains(&".omp".to_string()));
+        assert!(list
+            .suffixes
+            .iter()
+            .any(|suffix| suffix == &["config", "mise", "config.toml"].map(String::from).to_vec()));
+    }
+
+    #[test]
+    fn a_timer_holds_the_tool_configs_by_name() {
+        for command in [
+            "cat opencode.jsonc",
+            "cat ./mise.local.toml",
+            "grep x lefthook-local.yml",
+            "cat rust-toolchain.toml",
+            "cat sub/bunfig.toml",
+            "cat config/mise/config.toml",
+            "ls .omp",
+        ] {
+            assert!(verdict(command).is_some(), "{command} should be held");
+        }
+    }
+
+    #[test]
+    fn a_glued_short_option_with_a_path_is_held() {
+        assert!(verdict("rg -f/Users/me/x src").is_some());
+        assert!(verdict("grep -f/etc/passwd README.md").is_some());
+    }
+
+    #[test]
+    fn braces_naming_a_folder_outside_are_held() {
+        assert!(verdict("cat '{/etc,src}/x'").is_some());
+        assert!(verdict("ls '{../..,src}'").is_some());
+    }
+
+    #[test]
+    fn a_word_that_is_not_ascii_is_held() {
+        assert!(verdict("cat README-é.md").is_some());
+    }
+
+    #[test]
+    fn a_plain_read_still_runs() {
+        assert!(verdict("cat README.md").is_none());
+        assert!(verdict("rg -n 'foo' src").is_none());
     }
 }

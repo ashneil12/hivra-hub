@@ -19,6 +19,7 @@
 
 import type { ApprovalCall } from "../../sessions/model/session";
 import { credentialInWords, walkHeld } from "./credentialPaths";
+import { isProtectedConfig, segmentsOf } from "./protectedConfig";
 import { splitMcpTool, toolEffect } from "./mcpEffect";
 import { serverTrusted, type TrustedServers } from "./mcpTrust";
 import { shellWords } from "./shellWords";
@@ -43,15 +44,11 @@ const SHELL_TOOLS: ReadonlySet<string> = new Set(["Bash"]);
  * managers run commands, not just the project's files. Names are compared folded (case, width and invisible
  * characters), since the Mac disk is case-insensitive and a name can be written in another form (review H4).
  */
-// Round 2: the config of the other agent harnesses (OpenCode, pi, Grok, Gemini, Cursor rules, Codex overrides) and of the
-// tools that run on every commit or in every shell (mise, pre-commit, lefthook, lint-staged) are guarded too. A hijacked
-// worker writing an MCP command into opencode.json would run it in the next OpenCode chat with no tap.
-const GUARDED_DIRS: ReadonlySet<string> = new Set([".git", ".claude", ".codex", ".cursor", ".husky", ".vscode", ".monocode", ".cargo", "node_modules", ".opencode", ".pi", ".grok"]);
-const GUARDED_FILES: ReadonlySet<string> = new Set([
-  ".mcp.json", ".envrc", ".npmrc", ".yarnrc", ".yarnrc.yml", ".gitmodules", "claude.md", "agents.md",
-  "claude.local.md", "agents.override.md", "gemini.md", "opencode.json", ".cursorrules", "mise.toml",
-  ".pre-commit-config.yaml", "lefthook.yml", ".lintstagedrc.json",
-]);
+// The config of the agent harnesses (OpenCode, omp, pi, Grok, Gemini, Cursor rules, Codex overrides) and of the tools that
+// run on every commit or in every shell (mise, lefthook, lint-staged, pnpm, bun, rust toolchain, git hooks) is held, and
+// so is every dot-named folder or file the tools read skills and settings from. The list is shared with the Rust timer
+// check (protectedConfig.ts; review round 3, item 1). A hijacked worker writing an MCP command into opencode.jsonc would
+// run it in the next OpenCode chat with no tap.
 
 /** A name as a file system that ignores case and form compares it: NFKC, no invisible characters, lower case. */
 export function foldName(name: string): string {
@@ -87,8 +84,7 @@ export function editInside(path: string, folder: string | undefined): SafeVerdic
   if (!parts || parts.length <= root.length || root.some((part, i) => parts[i] !== part))
     return `it edits ${path}, outside the chat's folder`;
   const inner = parts.slice(root.length);
-  if (inner.some((part) => GUARDED_DIRS.has(foldName(part))) || GUARDED_FILES.has(foldName(inner[inner.length - 1])))
-    return `it edits ${path}, which changes how tools run`;
+  if (isProtectedConfig(inner)) return `it edits ${path}, which changes how tools run`;
   return null;
 }
 
@@ -104,6 +100,8 @@ export function readPaths(call: ApprovalCall | undefined): unknown {
 
 /** A string that names a place: a path, a home folder, an address, or a host ("evil.example", "x.y/z", "https://"). */
 const NAMES_PLACE = /[\\/~]|\w\.\w|:\/\//;
+/** A scheme at the start ("http:", "file:", "mailto:"): an address however it is written (review round 3, item 4). */
+const SCHEME = /^[a-z][\w+.-]*:/i;
 
 /**
  * Why an MCP call's arguments can't be read as harmless, or null. An argument that names a path, a URL or a host sends
@@ -114,7 +112,7 @@ function argsReason(args: unknown): SafeVerdict {
   if (!Array.isArray(args)) return "its arguments can't be read plainly, so it waits for Ash";
   for (const value of args) {
     if (typeof value !== "string") return "its arguments can't be read plainly, so it waits for Ash";
-    if (NAMES_PLACE.test(value)) return "its arguments name a file, folder or address, so it waits for Ash";
+    if (NAMES_PLACE.test(value) || SCHEME.test(value)) return "its arguments name a file, folder or address, so it waits for Ash";
   }
   return null;
 }
@@ -329,6 +327,19 @@ const COMMANDS: Readonly<Record<string, (args: readonly string[]) => SafeVerdict
   ps: psRead,
 };
 
+/** Whether one word of a command names a protected config, or a path through a dot-named folder, as an option or bare. */
+function namesProtectedConfig(arg: string, folder: string | undefined): boolean {
+  const root = folder?.replace(/\/+$/, "") ?? "";
+  const values = arg.startsWith("-")
+    ? [arg.includes("=") ? arg.slice(arg.indexOf("=") + 1) : "", arg.includes("/") ? arg.slice(arg.indexOf("/")) : ""]
+    : [arg];
+  return values.some((value) => {
+    // Inside the chat's own folder, the folder's own names are not the config: only the part below it is judged.
+    const inside = root && value.startsWith(`${root}/`) ? value.slice(root.length) : value;
+    return inside !== "" && isProtectedConfig(segmentsOf(inside).filter(Boolean), false);
+  });
+}
+
 function safeCommandInner(command: string, folder: string | undefined): SafeVerdict {
   if (typeof command !== "string") return UNREADABLE_COMMAND;
   if (SHELL_META.test(command)) return "it chains, substitutes or redirects";
@@ -340,6 +351,8 @@ function safeCommandInner(command: string, folder: string | undefined): SafeVerd
   if (typeof check !== "function") return UNREADABLE_COMMAND;
   // WP-101 fix round 2, item B: a walk through folders has to start inside the chat's own, whatever it names.
   if (walkHeld(words, folder)) return "it walks folders outside the chat's own, or reads what a project keeps out of git, so it waits for Ash";
+  // A config the tools read, or a dot-named folder or file, is held as an edit is (review round 3, item 1).
+  if (words.slice(1).some((arg) => namesProtectedConfig(arg, folder))) return "it names a tool's config or a dot-named file, so it waits for Ash";
   return check(words.slice(1));
 }
 

@@ -52,17 +52,37 @@ const HUB_DB = /(?:Application Support\/com\.ash\.monocode-hub[^/\s"']*\/[^\s"';
 const HUB_DB_TOOL = /(^|[\s;&|(`$])(?:\/usr\/bin\/)?sqlite3\b[^;&|]*\bmonocode\.db\b/i;
 
 const KEYCHAIN = /(^|[\s;&|(`$])(\/usr\/bin\/)?security\s+(find-[\w-]+|dump-keychain|export|unlock-keychain)\b/;
-const SECRET_FILES = [
-  /(~|\$HOME|\/Users\/[^/\s]+)\/\.claude\/\.credentials/,
-  /(~|\$HOME|\/Users\/[^/\s]+)\/\.claude\.json\b/,
-  /(~|\$HOME|\/Users\/[^/\s]+)\/\.codex\/auth\.json/,
-  /(~|\$HOME|\/Users\/[^/\s]+)\/\.aws\/credentials/,
-  /(~|\$HOME|\/Users\/[^/\s]+)\/\.netrc\b/,
-  /(~|\$HOME|\/Users\/[^/\s]+)\/\.ssh\/(id_|.*key)/,
-  /(~|\$HOME|\/Users\/[^/\s]+)\/\.config\/gh\/hosts\.yml/,
-  /(~|\$HOME|\/Users\/[^/\s]+)\/\.local\/share\/claude-gpt\//,
-  /\/Library\/Keychains\//,
+/**
+ * The home folder in every spelling a login file's path takes: ~, $HOME, a Mac or Linux home (with the Mac's /.nofollow/
+ * and /.resolve/<n>/ prefixes), and a Windows drive (C:/Users/<me>). Matched against foldForSecrets' text (round 3, item 2).
+ */
+const HOME = String.raw`(?:~|\$\{?home\}?|(?:[a-z]:)?(?:\/\.nofollow|\/\.resolve\/\d+)?\/(?:users|home)\/[^/\s]+)`;
+const SECRET_FILES: readonly RegExp[] = [
+  new RegExp(`${HOME}\\/\\.claude\\/\\.credentials`),
+  new RegExp(`${HOME}\\/\\.claude\\.json\\b`),
+  new RegExp(`${HOME}\\/\\.codex\\/auth\\.json`),
+  new RegExp(`${HOME}\\/\\.aws\\/credentials`),
+  new RegExp(`${HOME}\\/\\.netrc\\b`),
+  new RegExp(`${HOME}\\/\\.ssh\\/(id_|.*key)`),
+  new RegExp(`${HOME}\\/\\.config\\/gh\\/hosts\\.yml`),
+  new RegExp(`${HOME}\\/\\.local\\/share\\/claude-gpt\\/`),
+  // Windows: the same files under the Windows profile, with the 8.3 short names (CODEX~1, AUTH~1.JSO) a Windows path may use.
+  /\/\.?codex~\d\/auth~\d/,
+  // AppData stores: GitHub CLI, rclone, npm's configuration, and the browsers' saved passwords.
+  /\/appdata\/roaming\/github cli\/hosts\.yml/,
+  /\/appdata\/roaming\/rclone\/rclone\.conf/,
+  /\/appdata\/roaming\/npm\/etc\/npmrc/,
+  /\/appdata\/local\/(google\/chrome|microsoft\/edge)\/user data\/.*login data/,
+  /\/library\/keychains\//,
 ];
+
+/**
+ * A command or path as a Mac, Linux or Windows file system compares it for the login-file rules: lower case, one kind of
+ * slash, and trailing dots and spaces dropped per segment (`.codex.\\auth.json` is `.codex/auth.json`).
+ */
+function foldForSecrets(text: string): string {
+  return text.toLowerCase().replace(/\\/g, "/").replace(/(?<=[^. /])[. ]+(?=\/|$)/gm, "");
+}
 const ENV_PATH = /(?:^|[\s"'=:(])((?:~|\$HOME|\/|\.\.)[^\s"';|&)]*\/\.env(?:\.[\w.-]+)?)(?=$|[\s"';|&)])/g;
 
 function expandHome(path: string, home?: string): string {
@@ -89,7 +109,7 @@ export function credentialBlock(
   const texts = [call.command ?? "", ...(call.paths ?? [])].filter(Boolean);
   for (const text of texts) {
     if (KEYCHAIN.test(text)) return CREDENTIAL_BLOCK_MESSAGE;
-    if (SECRET_FILES.some((re) => re.test(text))) return CREDENTIAL_BLOCK_MESSAGE;
+    if (SECRET_FILES.some((re) => re.test(foldForSecrets(text)))) return CREDENTIAL_BLOCK_MESSAGE;
     if (HUB_DB.test(text) || HUB_DB_TOOL.test(text)) return HUB_DB_BLOCK_MESSAGE;
     const padded = ` ${text}`;
     for (const match of padded.matchAll(ENV_PATH)) {
