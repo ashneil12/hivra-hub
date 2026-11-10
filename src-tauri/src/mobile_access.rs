@@ -36,7 +36,8 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             enabled: false,
-            open_router: true,
+            // Hivra: no router port mapping unless the person ticks it. Upstream opened it by default.
+            open_router: false,
             remote_address: String::new(),
             devices: Vec::new(),
         }
@@ -1006,5 +1007,12 @@ mod tests {
         let params = json!({"certificate":phone.certificate,"proof":phone.proof(&key).unwrap()});
         assert!(enroll(&host, &mut inner, &key, &params).is_err());
         assert!(inner.config.devices.is_empty() && !host.path.exists());
+    }
+    #[test]
+    fn a_new_setup_does_not_open_a_router_port() {
+        assert!(!Config::default().open_router);
+        assert!(!Config::default().enabled);
+        let saved: Config = serde_json::from_str(r#"{"enabled":true}"#).unwrap();
+        assert!(!saved.open_router);
     }
 }
