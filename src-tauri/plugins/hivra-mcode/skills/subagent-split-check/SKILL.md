@@ -16,7 +16,6 @@ Default to one main loop with skills loaded on demand. Split only when one
 of the conditions below is clearly met.
 
 Companion to MCode Engineering Notes 01, "More subagents isn't better".
-Plain-text checklist: `checklists/subagent-split.md`.
 
 ## 1. Is there a context reason to split?
 
@@ -50,11 +49,11 @@ of question", do not split. That leads to lossy hand-offs between agents.
 ## 3. Before splitting, check the cheaper fixes
 
 - **Too many tools?** Merge tools by user intent and defer rarely used ones
-  behind tool search (see `tool-budget-audit`).
+  behind tool search.
 - **Prompt too big?** Turn procedures and rules into skills, actions and live
   data into tools, and reference material into something loaded on demand.
 - **Worried about losing state?** Write the plan, decisions and review
-  conclusions into a design or progress doc (see `handoff-doc`). Once state
+  conclusions into a design or progress doc. Once state
   lives in a file, the session can be cleared safely, and the urge to split
   "to protect context" mostly goes away.
 
@@ -74,7 +73,7 @@ If a system already has many subagents:
    score, and run each task more than once.
 6. Keep the subagent only if the merged version is measurably worse.
 
-Use `harness-experiment` for the measuring discipline.
+Measure the merged version the same way before deciding.
 
 ## Output
 

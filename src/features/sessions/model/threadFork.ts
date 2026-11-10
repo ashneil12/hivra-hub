@@ -6,6 +6,7 @@ import {
   type Worktree,
 } from "../../source-control/model/worktrees";
 import { buildDeterministicHandoff } from "./handoff";
+import { isPersistableId } from "./persistableId";
 import { askThreadFork } from "./threadForkAsk";
 import type {
   Attachment,
@@ -16,9 +17,9 @@ import type {
   Session,
 } from "./session";
 
-/** Matches the session store's id check. A path or a space must not be saved. */
+/** The session store's id check, for a value of unknown type. A path or a space must not be saved. */
 function persistableId(value: unknown): value is string {
-  return typeof value === "string" && /^[A-Za-z0-9_-]+$/.test(value);
+  return typeof value === "string" && isPersistableId(value);
 }
 
 export type ForkIds = {
@@ -34,7 +35,8 @@ export type ForkImageAsset = {
 
 /**
  * A generated image's file belongs to the chat that made it and goes with that chat when it is deleted. A fork
- * therefore gets a file of its own instead of sharing the path.
+ * therefore gets a file of its own instead of sharing the path. This covers the chat's own messages only: a side
+ * thread's (btw) messages keep the path they point at, so an image inside one stays shared with the original chat.
  */
 export type ForkImagePort = {
   /** A copy of the file, or null when the original is no longer on disk. Any other failure throws. */
@@ -182,7 +184,8 @@ function copyBlocks(
     delete block.providerTurnId;
     delete block.forkPoint;
     if (block.approval && !block.approval.decided) delete block.approval;
-    if (images && block.role === "image" && typeof block.image?.path === "string") {
+    // An empty path means the picture's file is not on this Mac (an imported chat): there is nothing to copy.
+    if (images && block.role === "image" && typeof block.image?.path === "string" && block.image.path) {
       const file = images.get(block.image.path);
       if (file === undefined) return null;
       if (file === null) {

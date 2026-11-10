@@ -251,6 +251,10 @@ export type AgentRunMeta = {
 export type AttachmentKind = "image" | "audio" | "file";
 
 export type GeneratedImageMeta = {
+  /**
+   * Where the picture's file is, inside the app's generated-images folder. Empty when its file is not on this Mac: a
+   * chat imported from another Mac keeps the picture's name and caption but never its path.
+   */
   path: string;
   name: string;
   mimeType: string;

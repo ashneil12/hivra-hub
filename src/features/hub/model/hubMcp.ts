@@ -387,7 +387,7 @@ export function hasDelegateTool(sessionId: string, harness: string): boolean {
 
 /**
  * Codex config for the same chats. Empty unless this chat leads and the app CLI is known.
- * The connection stays `${MONOCODE_APP_*}` names in env_vars, never a token value.
+ * The connection is only the names MONOCODE_APP_ENDPOINT and MONOCODE_APP_TOKEN in env_vars, never a token value.
  */
 export function registeredCodexLeadConfig(sessionId: string): Record<string, unknown> {
   const cli = registered?.servers.cli;

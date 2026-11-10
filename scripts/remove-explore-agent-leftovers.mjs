@@ -41,7 +41,7 @@ const BODY = {
 /** The first build refused any model id outside this. */
 const SAFE_MODEL = /^[A-Za-z0-9._-]{1,120}$/;
 
-export const FILE_NAMES = { "Explore.md": "Explore", "Plan.md": "Plan" };
+const FILE_NAMES = { "Explore.md": "Explore", "Plan.md": "Plan" };
 
 /** The exact text the first build wrote (`exploreAgentFile` in commit d50f0e60). */
 export function firstBuildAgentFile(name, model) {
@@ -90,7 +90,7 @@ const SKIP = new Set([
   "DerivedData",
 ]);
 
-export const DEFAULT_MAX_DEPTH = 6;
+const DEFAULT_MAX_DEPTH = 6;
 
 function isRealDir(p) {
   try {
@@ -141,7 +141,7 @@ function leftoversIn(folder, home, env) {
  * Whether git tracks `file`: "tracked", "untracked" (in a repository that doesn't know it, or in no repository), or
  * "unknown" when git could not say. Only "untracked" is ever deleted.
  */
-export function trackedState(file) {
+function trackedState(file) {
   const result = spawnSync("git", ["-C", path.dirname(file), "ls-files", "--error-unmatch", "--", path.basename(file)], {
     encoding: "utf8",
     env: { ...process.env, GIT_OPTIONAL_LOCKS: "0", LC_ALL: "C" },

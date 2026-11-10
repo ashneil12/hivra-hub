@@ -143,7 +143,7 @@ export function updateNotificationPreferences(
  * What the gate says about one notice. `quiet` is a routine notice held by quiet hours (WP-164): not shown now, and a
  * caller that has something to say later keeps it. `muted` is dropped for good.
  */
-export type NotificationVerdict = "allow" | "muted" | "quiet";
+type NotificationVerdict = "allow" | "muted" | "quiet";
 
 export function projectNotificationVerdict(
   subject: NotificationSubject,

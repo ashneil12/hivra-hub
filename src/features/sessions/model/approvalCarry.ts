@@ -66,11 +66,3 @@ export function approvalBlocksCarry(session: GateSession): boolean {
 export function parksForApproval(session: GateSession): boolean {
   return !session.backgroundTasks?.length && approvalBlocksCarry(session);
 }
-
-/** An approval still unanswered, including a card whose record never arrived. */
-export function pendingApprovalBlocks(session: Pick<Session, "blocks">): boolean {
-  return session.blocks.some((block) => {
-    if (block.role === "approval" && !block.approval) return true;
-    return !!block.approval && !block.approval.decided;
-  });
-}

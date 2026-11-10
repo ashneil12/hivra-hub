@@ -214,7 +214,7 @@
       "name": "T3 Code",
       "url": "https://github.com/pingdotgg/t3code",
       "licence": "MIT",
-      "gave": "the PR watch rules, honest Claude results, delegation delivery and stop rules, limit auto-resume guards, worktree cleanup cases, 18 recorded Claude transcripts for the test bench, a lead that can start work on any funded CLI (WP-120), a portable mid-thread handoff that says when a harness cannot resume, native subagent lineage with a child's approval answered on the parent thread (WP-122, ideas from the v0.1.0 and v0.1.7 release notes at e85e0094dd4617a1eada1ad7961f2132a79e67b2), forking a chat from a message (WP-123), and copying the files named in .worktreeinclude into a new worktree (WP-138)"
+      "gave": "the PR watch rules, honest Claude results, delegation delivery and stop rules, limit auto-resume guards, worktree cleanup cases, 18 recorded Claude transcripts for the test bench, a lead that can start work on any funded CLI (WP-120), a portable mid-thread handoff that says when a harness cannot resume, native subagent lineage with a child's approval answered on the parent thread (WP-122, ideas from the v0.1.0 and v0.1.7 release notes at e85e0094dd4617a1eada1ad7961f2132a79e67b2), forking a chat from a message (WP-123), copying the files named in .worktreeinclude into a new worktree (WP-138), and one prompt sent to several models from the thread sidebar (docs/user/thread-sidebar.md at e85e0094dd4617a1eada1ad7961f2132a79e67b2)"
     },
     {
       "name": "T3 Code usage",
@@ -251,6 +251,12 @@
       "url": "https://github.com/MiniMax-AI/mcode-stack",
       "licence": "MIT",
       "gave": "team skills a first mate calls by name: whether work should go to a subagent, a review that sees only the diff, the requirement and the test results, and turning a repeated correction into a check (WP-117)"
+    },
+    {
+      "name": "Pierre",
+      "url": "https://github.com/pierrecomputer/pierre",
+      "licence": "Apache-2.0",
+      "gave": "an optional split (side-by-side) diff, pinned as an npm package, with unified staying the default (WP-116)"
     },
     {
       "name": "Claude Code subagents",
@@ -635,6 +641,14 @@
       "copyright": "Copyright (c) 2025 models.dev",
       "where": "src/features/sessions/model/modelsDev.json, src/features/sessions/model/LICENSE.models-dev",
       "how": "The models.dev catalogue trimmed to each model's context window and tool flag, at commit b4b8ca36 (WP-104). The generator and the provider files are not copied. The app reads the file offline."
+    },
+    {
+      "name": "Pierre Diffs",
+      "url": "https://github.com/pierrecomputer/pierre/tree/main/packages/diffs",
+      "licence": "Apache-2.0",
+      "copyright": "Copyright 2025 Pierre Computer Company",
+      "where": "package.json, src/features/source-control/ui/pierreDiff.tsx",
+      "how": "Pinned npm package for the optional split diff view (WP-116)."
     }
   ]
 }

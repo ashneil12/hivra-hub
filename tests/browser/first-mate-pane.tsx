@@ -8,36 +8,21 @@ import {
   TranscriptPool,
   TranscriptPoolOutlet,
 } from "../../src/features/sessions/ui/TranscriptPool";
-import { setHarnessAvailability } from "../../src/integrations/harness/core/availabilityState";
-import { saveChosenClis } from "../../src/features/hub/model/codingTeamHome";
-import { HARNESSES, type HarnessId, type Session } from "../../src/features/sessions/model/session";
+import { type HarnessId, type Session } from "../../src/features/sessions/model/session";
 import { saveTranscriptAnchor, saveTranscriptLayout } from "../../src/features/settings/model/appearance";
 import "../../src/styles/index.css";
+import { installFakeTauri } from "./fakeTauri";
+import { installLeadStripHarnesses } from "./leadCliFixtureSetup";
 
 // The real SessionPane, the pane that actually hosts a first-mate chat's lead strip. Only native IPC is fake.
-Object.assign(window, {
-  __TAURI_EVENT_PLUGIN_INTERNALS__: { unregisterListener: () => {} },
-  __TAURI_INTERNALS__: {
-    metadata: {
-      currentWindow: { label: "main" },
-      currentWebview: { label: "main" },
-    },
-    transformCallback: () => 0,
-    invoke: async (command: string) => {
-      if (command === "plugin:event|listen") return 0;
-      if (command === "plugin:event|unlisten") return;
-      if (command === "control_load") return null;
-      if (command === "session_checkpoint_status") return { files: [] };
-      throw new Error(`Unexpected fixture command: ${command}`);
-    },
-  },
+// Native IPC is faked; any command this page does not expect fails loudly.
+installFakeTauri("main", (command) => {
+  if (command === "control_load") return null;
+  if (command === "session_checkpoint_status") return { files: [] };
+  throw new Error(`Unexpected fixture command: ${command}`);
 });
 
-// Every CLI is installed here. Ash ticked Claude Code, Cursor and Pi at first launch; Codex is installed but was not
-// ticked. So the strip may offer Claude Code only, the one ticked CLI that can lead.
-const availability = Object.fromEntries(HARNESSES.map((id) => [id, true])) as Record<HarnessId, boolean>;
-setHarnessAvailability(availability);
-saveChosenClis(["claude", "cursor", "pi"]);
+installLeadStripHarnesses();
 saveTranscriptAnchor(true);
 saveTranscriptLayout("chat");
 

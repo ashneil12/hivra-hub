@@ -14,11 +14,11 @@ import {
 import {
   backfillClaudeShellCommands,
   backfillCodexShellCommands,
-  isPersistableId,
   persistFingerprint,
   sanitizeSessionForPersist,
   shouldPersistSession,
 } from "./sessionStore";
+import { isPersistableId } from "../model/persistableId";
 
 it("persists sidebar visibility without making the session ephemeral", () => {
   const session = newSession("codex", "/tmp");
@@ -515,6 +515,41 @@ describe("sanitizeSessionForPersist", () => {
       },
     ];
 
+    expect(sanitizeSessionForPersist(session).blocks).toEqual([
+      { id: "u", role: "user", text: "Draw this" },
+    ]);
+  });
+
+  it("keeps a generated image whose file is not on this Mac, with an empty path", () => {
+    const session = newSession("codex", "/repo");
+    session.blocks = [
+      { id: "u", role: "user", text: "Draw this" },
+      {
+        id: "image",
+        role: "image",
+        text: "",
+        image: { path: "", name: "generated-image", mimeType: "image/png", size: 8, alt: "A cat" },
+      },
+    ];
+    expect(sanitizeSessionForPersist(session).blocks[1]).toEqual({
+      id: "image",
+      role: "image",
+      text: "",
+      image: { path: "", name: "generated-image", mimeType: "image/png", size: 8, alt: "A cat" },
+    });
+  });
+
+  it("drops generated image metadata whose path is not text", () => {
+    const session = newSession("codex", "/repo");
+    session.blocks = [
+      { id: "u", role: "user", text: "Draw this" },
+      {
+        id: "image",
+        role: "image",
+        text: "",
+        image: { path: 7, name: "generated-image", mimeType: "image/png", size: 8 } as never,
+      },
+    ];
     expect(sanitizeSessionForPersist(session).blocks).toEqual([
       { id: "u", role: "user", text: "Draw this" },
     ]);

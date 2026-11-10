@@ -115,15 +115,52 @@ pub fn stack_label(id: &str, branch: Option<&str>, pool_slot: bool) -> Option<St
 
 /// `<project>-<label>.localhost` for the app itself.
 pub fn app_hostname(project: &str, label: &str) -> Option<String> {
-    joined_hostname(project, label)
+    let host = format!("{}.localhost", joined_label(project, label)?);
+    valid_hostname(&host).then_some(host)
 }
 
-/// `<service>-<label>.localhost` for one emulated service.
-pub fn service_hostname(service: &str, label: &str) -> Option<String> {
-    joined_hostname(service, label)
+/// `<service>.<project>-<label>.localhost` for one emulated service.
+///
+/// The service is a label of its own, with a dot after it. A hyphen would not do: a project
+/// named `github-shop` on branch `a` is the app `github-shop-a.localhost`, which is also what
+/// project `shop`'s fake GitHub on branch `a` would be called. An app is always one label and
+/// a service two, so no project or branch spelled with hyphens can make one read as the other.
+/// The project is in the name so two projects on the same branch, both faking the same
+/// service, do not publish one hostname.
+pub fn service_hostname(service: &str, project: &str, label: &str) -> Option<String> {
+    let service = sanitize_for_hostname(service);
+    if service.is_empty() {
+        return None;
+    }
+    let host = format!("{service}.{}.localhost", joined_label(project, label)?);
+    valid_hostname(&host).then_some(host)
 }
 
-fn joined_hostname(first: &str, label: &str) -> Option<String> {
+/// The project's part of every name it publishes: the folder's name, and when another project
+/// folder of the same name has a stack here too, a short hash of this folder's path as well.
+/// Two folders called `shop` on one branch would otherwise be one name, and the second would
+/// be refused. `path_key` is the project's canonical path; it is hashed, never shown.
+pub fn project_label(folder: &str, path_key: &str, name_is_shared: bool) -> String {
+    let name = sanitize_for_hostname(folder);
+    if !name_is_shared {
+        return name;
+    }
+    let hash = hex(&Sha256::digest(path_key.as_bytes()));
+    let short = &hash[..PROJECT_HASH];
+    if name.is_empty() {
+        short.to_string()
+    } else {
+        // Too long with a branch for one label is shortened again by `joined_label`.
+        format!("{name}-{short}")
+    }
+}
+
+/// Hex digits of the path hash a shared project name carries.
+const PROJECT_HASH: usize = 6;
+
+/// `<first>-<label>`, kept inside one DNS label. A pair too long for one label is cut and
+/// given the hash of both halves, so a shortened pair stays unique.
+fn joined_label(first: &str, label: &str) -> Option<String> {
     let first = sanitize_for_hostname(first);
     let label = sanitize_for_hostname(label);
     if first.is_empty() || label.is_empty() {
@@ -131,7 +168,6 @@ fn joined_hostname(first: &str, label: &str) -> Option<String> {
     }
     let mut prefix = format!("{first}-{label}");
     if prefix.len() > MAX_LABEL {
-        // Keep the pair unique and inside one label: the hash covers both halves.
         let hash = hex(&Sha256::digest(format!("{first}/{label}").as_bytes()));
         let keep = MAX_LABEL - 7;
         prefix.truncate(keep);
@@ -140,8 +176,7 @@ fn joined_hostname(first: &str, label: &str) -> Option<String> {
         }
         prefix = format!("{prefix}-{}", &hash[..6]);
     }
-    let host = format!("{prefix}.localhost");
-    valid_hostname(&host).then_some(host)
+    Some(prefix)
 }
 
 fn hex(bytes: &[u8]) -> String {
@@ -253,6 +288,94 @@ mod tests {
         assert_eq!(sanitize_for_hostname("  ..a  b..  "), "a-b");
         assert_eq!(sanitize_for_hostname("café"), "caf");
         assert_eq!(sanitize_for_hostname(""), "");
+    }
+
+    #[test]
+    fn a_service_name_carries_the_project_so_one_branch_can_serve_two() {
+        let shop = service_hostname("github", "shop", "feature").unwrap();
+        let blog = service_hostname("github", "blog", "feature").unwrap();
+        assert_eq!(shop, "github.shop-feature.localhost");
+        assert_eq!(blog, "github.blog-feature.localhost");
+        assert_ne!(shop, blog);
+        assert_eq!(shop, service_hostname("github", "shop", "feature").unwrap());
+        // A project or a service that is not a label is repaired, never published raw.
+        assert_eq!(
+            service_hostname("Git Hub", "My Shop", "feat/one").unwrap(),
+            "git-hub.my-shop-feat-one.localhost"
+        );
+        assert!(service_hostname("", "shop", "feature").is_none());
+        assert!(service_hostname("github", "", "feature").is_none());
+        let long = service_hostname(&"g".repeat(40), &"p".repeat(40), &"l".repeat(40)).unwrap();
+        assert!(valid_hostname(&long), "{long}");
+        for label in long.strip_suffix(".localhost").unwrap().split('.') {
+            assert!(label.len() <= MAX_LABEL, "{long}");
+        }
+    }
+
+    /// Joining with a hyphen made `github-shop-a.localhost` two different things: project
+    /// `github-shop`'s app on branch `a`, and project `shop`'s fake GitHub on branch `a`. The
+    /// second would be refused, or (before the registry held names per stack) replace the first.
+    #[test]
+    fn a_fake_service_never_has_the_name_of_another_projects_app() {
+        let app = app_hostname("github-shop", "a").unwrap();
+        let fake = service_hostname("github", "shop", "a").unwrap();
+        assert_eq!(app, "github-shop-a.localhost");
+        assert_eq!(fake, "github.shop-a.localhost");
+        assert_ne!(app, fake);
+        // An app is one label and a service is two, whatever hyphens the parts carry.
+        for (project, label) in [
+            ("shop", "a"),
+            ("github-shop", "a"),
+            ("github", "shop-a"),
+            ("a-b", "c-d"),
+        ] {
+            let app = app_hostname(project, label).unwrap();
+            let fake = service_hostname("github", project, label).unwrap();
+            let app_labels = app.strip_suffix(".localhost").unwrap().split('.').count();
+            let fake_labels = fake.strip_suffix(".localhost").unwrap().split('.').count();
+            assert_eq!(app_labels, 1, "{app}");
+            assert_eq!(fake_labels, 2, "{fake}");
+            assert!(valid_hostname(&app) && valid_hostname(&fake));
+        }
+        // Two services of one project stay apart.
+        assert_ne!(
+            service_hostname("github", "shop", "a").unwrap(),
+            service_hostname("stripe", "shop", "a").unwrap()
+        );
+    }
+
+    #[test]
+    fn two_project_folders_with_one_name_get_a_path_hash_only_when_the_name_repeats() {
+        // Alone, the folder's name is the whole project part.
+        assert_eq!(project_label("shop", "/work/a/shop", false), "shop");
+        assert_eq!(
+            project_label("My Shop", "/work/a/my shop", false),
+            "my-shop"
+        );
+        // Sharing a name, each carries a short hash of its own path.
+        let first = project_label("shop", "/work/a/shop", true);
+        let second = project_label("shop", "/work/b/shop", true);
+        assert_ne!(first, second);
+        for part in [&first, &second] {
+            assert!(part.starts_with("shop-"), "{part}");
+            assert_eq!(part.len(), "shop-".len() + 6, "{part}");
+            assert!(valid_label(part), "{part}");
+        }
+        // The same folder gets the same part every time, so its name survives a restart.
+        assert_eq!(first, project_label("shop", "/work/a/shop", true));
+        // One branch, two folders called shop: two apps and two fake services, no clash.
+        assert_ne!(
+            app_hostname(&first, "a").unwrap(),
+            app_hostname(&second, "a").unwrap()
+        );
+        assert_ne!(
+            service_hostname("github", &first, "a").unwrap(),
+            service_hostname("github", &second, "a").unwrap()
+        );
+        // A folder with no letters or digits of its own is told apart by the hash alone.
+        let bare = project_label("日本", "/work/a/日本", true);
+        assert_eq!(bare.len(), 6, "{bare}");
+        assert!(valid_label(&bare));
     }
 
     #[test]

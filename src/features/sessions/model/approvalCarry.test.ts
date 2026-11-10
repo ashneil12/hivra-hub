@@ -4,7 +4,6 @@ import {
   approvalBlocksCarry,
   carryPastApproval,
   parksForApproval,
-  pendingApprovalBlocks,
 } from "./approvalCarry";
 import { canDispatchQueuedHead, canSteerQueuedHead } from "./messageQueue";
 import { deliverQueuedFollowUp } from "./queuedFollowUp";
@@ -77,7 +76,6 @@ describe("carryPastApproval (WP-146)", () => {
     const missing = chat([user("go"), missingRecord]);
     expect(approvalBlocksCarry(missing)).toBe(true);
     expect(canSteerQueuedHead(missing)).toBe(false);
-    expect(pendingApprovalBlocks(missing)).toBe(true);
     const hidden = chat([user("go"), missingRecord, tool("allow")]);
     expect(approvalBlocksCarry(hidden)).toBe(true);
     expect(canSteerQueuedHead(hidden)).toBe(false);

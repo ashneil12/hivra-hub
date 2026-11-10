@@ -435,8 +435,16 @@ export function wrapHandoffPrompt(
 Prior conversation from ${fromTitle} — this is the thread you are joining, not optional background:
 
 <handoff>
-${body}
+${escapeFenceTag(body, "handoff")}
 </handoff>`;
+}
+
+/**
+ * Stops transcript text from closing its own fence early: a literal `<tag` or `</tag` inside the body
+ * is written with an escaped `<`, so only the wrapper's own closing tag ends the fence.
+ */
+function escapeFenceTag(body: string, tag: string): string {
+  return body.replace(new RegExp(`<(\\/?\\s*${tag})`, "gi"), "&lt;$1");
 }
 
 /**
@@ -463,7 +471,7 @@ export function wrapForkPrompt(
 The chat up to the fork point is the thread you are continuing, not optional background:
 
 <chat_before_fork>
-${body}
+${escapeFenceTag(body, "chat_before_fork")}
 </chat_before_fork>`;
 }
 

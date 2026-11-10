@@ -16,6 +16,9 @@ export type UnifiedDiffFileModel = {
   additions: number;
   deletions: number;
   blocks: UnifiedBlock[];
+  /** Full file texts for the optional split view. Absent for a patch-only review. */
+  beforeText?: string;
+  afterText?: string;
   canStage?: boolean;
   canDiscard?: boolean;
   canStageHunk?: boolean;
