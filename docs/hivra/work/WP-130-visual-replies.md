@@ -25,6 +25,28 @@ Visual replies are one of the feel items praised on [HN 50367589](https://news.y
 3. Detection: only render when the agent marks the payload as a visual reply or it matches a conservative, documented hint. Ordinary Markdown HTML stays as today's Markdown. Tests for false positives on normal replies.
 4. A way to download or open the HTML as a file, and a way to not render (show the source instead).
 
+## Sandbox policy
+
+A visual reply is a shell iframe with the guest iframe inside it. Both sandboxes are exactly `allow-scripts`. Neither gets `allow-same-origin`, so each origin is opaque and unique, and the reply cannot read the parent page, its storage, its cookies or Tauri. It also does not get forms, popups, downloads, modal dialogs or top navigation.
+
+The guest document carries a content security policy, written before the reply so the reply cannot close it:
+
+- With network off (the default): `default-src 'none'`, inline scripts and styles only, images and media from `data:` and `blob:` only, fonts from `data:` only, `connect-src 'none'`.
+- With network on, for that reply only: fetch, images, fonts and media may use `http:`, `https:`, and for fetch also `ws:` and `wss:`. Remote scripts, remote styles, frames, objects, forms and navigation stay off. `script-src` stays `'unsafe-inline'` with no host. The choice is not saved. Closing the reply or leaving the chat turns it off again.
+- Always: `form-action 'none'`, `frame-src 'none'`, `child-src 'none'`, `object-src 'none'`, `base-uri 'none'`.
+
+`navigate-to` is not part of the policy. Chromium and WebKit both report that directive as unrecognized, so it would not block anything.
+
+Each reply is a shell frame with the guest frame inside it. The shell policy sets `frame-src 'none'` and `child-src 'none'`, and it never allows a remote script. A guest that sets `location`, follows a link, or refreshes the page is navigating that inner frame, and both browsers refuse the request. It is not sent. WebKit leaves the guest in place. Chromium may drop the inner page after refusing, so a reply that tries to leave can go blank there. The sandbox also stops the guest navigating its parent or the top page: both throw a security error. Clicks on links that leave the page are cancelled as well. The person saves the file instead. The guest also inherits the shell policy, and the two are combined, so the shell allows the same image, font, media and fetch schemes the guest may opt into. The guest policy is what keeps those off until the person opts in. Opting in does not add a remote script, a frame, a form or a navigation.
+
+A reply over 512 KiB of UTF-8 is not framed. A null byte in the reply is removed so it cannot cut the page short. Theme values are checked before they are written into CSS. A value with a breakout character, or a `url(`, is replaced with a plain fallback.
+
+The host ignores messages from the frame except a height number from that frame, and it caps the height. The frame cannot ask the app to open a link, run a tool or read the page.
+
+Two replies do not share an origin. The shell only forwards a message from its own guest, and it only forwards a theme message back in.
+
+What the browser spec covers, on Chromium and WebKit: a fixture that fetches, loads an image, a script and a nested frame, reads the parent page, sets `location.href`, clicks a link, refreshes, and submits a form. The parent title stays put, `contentDocument` stays closed, and the harness sees no request for those targets. A browser the spec does not run could still treat frame navigation differently. The sandbox would still stop that page from touching the parent.
+
 ## Done when
 
 - [ ] A visual reply renders in a themed sandbox.
