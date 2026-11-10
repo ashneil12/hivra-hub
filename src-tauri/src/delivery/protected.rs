@@ -165,7 +165,14 @@ fn built_in_hit(path: &RepoPath) -> bool {
     }
     path.lower.windows(2).any(|pair| {
         pair[0] == "src-tauri" && pair[1].starts_with("tauri") && pair[1].ends_with(".json")
-    })
+    }) || delivery_source(path)
+}
+
+/// The floor's own source. A merge that can edit this directory can delete the floor.
+fn delivery_source(path: &RepoPath) -> bool {
+    path.lower
+        .windows(3)
+        .any(|window| window[0] == "src-tauri" && window[1] == "src" && window[2] == "delivery")
 }
 
 struct Extra {
@@ -430,6 +437,7 @@ mod tests {
             "photo.tiff",
             ".environment",
             "id_rsa_backup",
+            // Beside the floor's own module, which is held. This file is not.
             "src-tauri/src/lib.rs",
             "src-tauri/Cargo.toml",
             "not.github/workflows/x.yml",
@@ -437,6 +445,30 @@ mod tests {
         ] {
             assert!(hits(&[path], &[]).is_empty(), "{path}");
         }
+    }
+
+    #[test]
+    fn the_floor_holds_its_own_source_and_not_an_ordinary_file_beside_it() {
+        for path in [
+            "src-tauri/src/delivery/merge.rs",
+            "src-tauri/src/delivery/protected.rs",
+            "src-tauri/src/delivery/settings.rs",
+            "src-tauri/src/delivery/mod.rs",
+            "src-tauri/src/delivery/deliver.rs",
+            "src-tauri/src/delivery/events.rs",
+            "src-tauri/src/delivery/github.rs",
+            "src-tauri/src/delivery/teardown.rs",
+            "src-tauri/src/delivery/tests.rs",
+            "apps/desktop/src-tauri/src/delivery/merge.rs",
+        ] {
+            assert_eq!(hits(&[path], &[]), vec![path.to_string()], "{path}");
+        }
+        assert!(
+            hits(&["src-tauri/src/lib.rs"], &[]).is_empty(),
+            "an ordinary file beside the floor is not held"
+        );
+        assert!(hits(&["src-tauri/Cargo.toml"], &[]).is_empty());
+        assert!(hits(&["src/delivery/merge.rs"], &[]).is_empty());
     }
 
     #[test]
