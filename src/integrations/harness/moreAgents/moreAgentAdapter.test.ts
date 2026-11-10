@@ -17,6 +17,7 @@ const fake = vi.hoisted(() => ({
   onExit: new Map<string, (code: number | null) => void>(),
   args: [] as string[],
   refuse: null as string | null,
+  slowSpawnMs: 0,
   spawnCalls: [] as string[],
 }));
 
@@ -27,6 +28,8 @@ vi.mock("../core/child", async (importOriginal) => {
     spawnMoreAgentChild: async (sessionId: string, agentId: string) => {
       fake.spawnCalls.push(`${sessionId}:${agentId}`);
       if (fake.refuse) throw new Error(fake.refuse);
+      // A real spawn answers after the app has forked the process; a stop can arrive in that gap.
+      if (fake.slowSpawnMs) await new Promise((resolve) => setTimeout(resolve, fake.slowSpawnMs));
       const script = path.resolve(process.cwd(), "scripts/fake-acp-agent.mjs");
       const proc = spawn(process.execPath, [script, ...fake.args], { stdio: ["pipe", "pipe", "pipe"] });
       fake.procs.set(sessionId, proc);
@@ -91,6 +94,7 @@ afterEach(async () => {
   }
   fake.args = [];
   fake.refuse = null;
+  fake.slowSpawnMs = 0;
   fake.spawnCalls = [];
   fake.onLine.clear();
   fake.onExit.clear();
@@ -127,12 +131,18 @@ describe("More agents adapter, one turn", () => {
   });
 
   it("a stop during the start ends the process it was starting", async () => {
+    fake.slowSpawnMs = 40;
     openMoreAgentSession("chat-early-stop", "fake");
-    const sending = moreAgentAdapter.sendTurn(turn("chat-early-stop", "hi", [])).catch(() => undefined);
+    const outcome: string[] = [];
+    const sending = moreAgentAdapter.sendTurn(turn("chat-early-stop", "hi", [])).then(
+      () => outcome.push("resolved"),
+      (error: unknown) => outcome.push(error instanceof Error ? error.message : String(error)),
+    );
     await moreAgentAdapter.stopSession("chat-early-stop");
     await sending;
-    await waitFor(() => fake.procs.size === 0);
-    expect(fake.procs.has("chat-early-stop")).toBe(false);
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    expect(outcome).toEqual(["Stopped before it started."]);
+    expect(fake.procs.size).toBe(0);
   });
 
   it("says stop was sent, and never that the agent confirmed it", async () => {
