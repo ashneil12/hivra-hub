@@ -26,14 +26,18 @@ pub const PAGE_CSP: &str = "sandbox allow-scripts; default-src 'none'; script-sr
 pub const VISUAL_CSP: &str = "sandbox allow-scripts; default-src 'none'; script-src 'unsafe-inline'; \
     style-src 'unsafe-inline'; img-src data: blob:; font-src data:; media-src data: blob:; connect-src 'none'; \
     form-action 'none'; frame-src 'none'; child-src 'none'; object-src 'none'; base-uri 'none'";
-/// The same reply after the person allowed the network for it: https and wss only, never plain http or ws, so
-/// localhost, the LAN and the app's own http schemes stay shut. Still no remote script, frame, form or navigation.
+/// The same reply after the person allowed the network for it: https and wss only, never plain http or ws, so a plain
+/// http server, `file:` and the app's own http schemes stay shut. https still names localhost and the LAN (a known
+/// limit, recorded in the WP doc and shown to the person as a note). Still no remote script, frame, form or navigation.
 pub const VISUAL_NETWORK_CSP: &str = "sandbox allow-scripts; default-src 'none'; script-src 'unsafe-inline'; \
     style-src 'unsafe-inline'; img-src data: blob: https:; font-src data: https:; media-src data: blob: https:; \
     connect-src https: wss:; form-action 'none'; frame-src 'none'; child-src 'none'; object-src 'none'; \
     base-uri 'none'";
 /// Keys a visual reply's frame must start with, so its documents stay apart from pages.
 pub const VISUAL_KEY_PREFIX: &str = "visual-";
+/// The largest visual frame document (3.2 MiB). A reply at the source cap (512 KiB, quotes escaped to `&quot;`) fits
+/// with room for the shell and helpers. Kept equal to `VISUAL_FRAME_MAX_BYTES` in visualReply.ts (a unit test there).
+pub const VISUAL_MAX_BYTES: usize = 3_355_443;
 
 /// Which policy a stored document is served with. Set by the command that stored it, never by the key alone.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -101,6 +105,16 @@ impl PageFrames {
         Ok(())
     }
 
+    /// Removes one document; true when it was there.
+    pub fn remove(&self, key: &str) -> bool {
+        let Ok(mut frames) = self.0.lock() else {
+            return false;
+        };
+        let before = frames.len();
+        frames.retain(|(k, _, _)| k != key);
+        frames.len() != before
+    }
+
     pub fn get(&self, key: &str) -> Option<(String, FramePolicy)> {
         let frames = self.0.lock().ok()?;
         frames
@@ -139,8 +153,11 @@ fn put_visual(
     html: String,
     network: bool,
 ) -> Result<String, String> {
-    if !key.starts_with(VISUAL_KEY_PREFIX) {
+    if !key.starts_with(VISUAL_KEY_PREFIX) || !valid_key(key) {
         return Err("That visual reply frame key isn't valid.".into());
+    }
+    if html.len() > VISUAL_MAX_BYTES {
+        return Err("That reply is too big to show.".into());
     }
     let policy = if network {
         FramePolicy::VisualNetwork
@@ -149,6 +166,20 @@ fn put_visual(
     };
     frames.put_with(key, html, policy)?;
     Ok(format!("{PATH_PREFIX}{key}"))
+}
+
+/// WP-130: the frame was replaced or unmounted, so its document leaves the store. Only a visual reply's key.
+#[tauri::command]
+pub fn visual_frame_drop(frames: State<'_, PageFrames>, key: String) -> Result<(), String> {
+    drop_visual(&frames, &key)
+}
+
+fn drop_visual(frames: &PageFrames, key: &str) -> Result<(), String> {
+    if !key.starts_with(VISUAL_KEY_PREFIX) || !valid_key(key) {
+        return Err("That visual reply frame key isn't valid.".into());
+    }
+    frames.remove(key);
+    Ok(())
 }
 
 pub fn serve(frames: Option<&PageFrames>, key: &str) -> tauri::http::Response<Vec<u8>> {
@@ -244,6 +275,34 @@ mod tests {
             serve(Some(&frames), &format!("visual-r-{}", MAX_FRAMES + 4)).status(),
             200
         );
+    }
+
+    #[test]
+    fn a_visual_reply_over_the_frame_cap_is_refused() {
+        let frames = PageFrames::default();
+        assert_eq!(VISUAL_MAX_BYTES, 3_355_443);
+        assert!(put_visual(
+            &frames,
+            "visual-big-0",
+            "x".repeat(VISUAL_MAX_BYTES + 1),
+            false
+        )
+        .is_err());
+        assert_eq!(serve(Some(&frames), "visual-big-0").status(), 404);
+        assert!(put_visual(&frames, "visual-big-1", "x".repeat(VISUAL_MAX_BYTES), false).is_ok());
+    }
+
+    #[test]
+    fn a_replaced_or_unmounted_visual_frame_leaves_the_store_and_a_page_stays() {
+        let frames = PageFrames::default();
+        put_visual(&frames, "visual-gone-0", "<p>x</p>".into(), false).unwrap();
+        assert_eq!(serve(Some(&frames), "visual-gone-0").status(), 200);
+        drop_visual(&frames, "visual-gone-0").unwrap();
+        assert_eq!(serve(Some(&frames), "visual-gone-0").status(), 404);
+        frames.put("pg-keep", "page".into()).unwrap();
+        assert!(drop_visual(&frames, "pg-keep").is_err());
+        assert!(drop_visual(&frames, "visual-../x").is_err());
+        assert_eq!(serve(Some(&frames), "pg-keep").status(), 200);
     }
 
     #[test]

@@ -17,6 +17,13 @@ export const VISUAL_FRAME_MAX_HEIGHT = 2400;
 export const VISUAL_FRAME_PLACEHOLDER_HEIGHT = 240;
 export const VISUAL_HEIGHT_MESSAGE = "hivra:visual-height";
 export const VISUAL_THEME_MESSAGE = "hivra:visual-theme";
+/** Sent by the shell once it has loaded. A frame that never sends it did not load, so the reply shows its source. */
+export const VISUAL_READY_MESSAGE = "hivra:visual-ready";
+/**
+ * The most a served frame document may be (the shell with its escaped guest). A reply at the source cap, with every
+ * character a quote, escapes to about 3.0 MiB, so this leaves room for the helpers. page_frames.rs keeps the same number.
+ */
+export const VISUAL_FRAME_MAX_BYTES = 3_355_443;
 
 export type VisualScheme = "dark" | "light";
 
@@ -72,7 +79,9 @@ const OPEN_CSP = [
  * the shell allows. `frame-src 'none'` is what stops the guest navigating
  * itself: both browsers refuse that request. Srcdoc guests still load.
  * With the network on, only https and wss are allowed: never plain http or
- * ws, so localhost, the LAN and the app's own http schemes stay shut.
+ * ws, so a plain http server, `file:` and the app's own http schemes stay shut.
+ * https still names localhost and the LAN. A content policy cannot tell them
+ * apart; the WP doc records this as a known limit.
  */
 
 /** Locked unless `network` is exactly true. Remote scripts are never added. */
@@ -83,6 +92,18 @@ export function visualCsp(network: boolean): string {
 /** The policy the app serves the shell with: the sandbox, then the same policy as the guest. */
 export function visualFrameCsp(network: boolean): string {
   return `sandbox allow-scripts; ${visualCsp(network)}`;
+}
+
+/** The line shown while the network is on for a reply. Null while it is off. */
+export function networkNote(network: boolean): string | null {
+  if (network !== true) return null;
+  return "Network on for this reply: it can reach any https site, including this machine and your local network over https.";
+}
+
+/** True for the shell's ready message and nothing else. */
+export function isVisualReadyMessage(data: unknown): boolean {
+  if (!data || typeof data !== "object") return false;
+  return (data as { type?: unknown }).type === VISUAL_READY_MESSAGE;
 }
 
 export function visualBytes(source: string): number {
@@ -156,6 +177,9 @@ function themeBlock(theme: VisualTheme): string {
  * shell's frame policy is what blocks that navigation.
  */
 const HELPER = `(function () {
+  ["RTCPeerConnection", "webkitRTCPeerConnection", "RTCDataChannel", "RTCSessionDescription", "RTCIceCandidate"].forEach(function (name) {
+    try { Object.defineProperty(window, name, { value: undefined, configurable: false, writable: false }); } catch (e) {}
+  });
   document.addEventListener("click", function (event) {
     var node = event.target;
     while (node && node.nodeType === 1 && node.tagName !== "A") node = node.parentNode;
@@ -188,6 +212,7 @@ const HELPER = `(function () {
  * parent is ignored. The string must not contain a closing script tag.
  */
 const SHELL = `(function () {
+  try { window.parent.postMessage({ type: "${VISUAL_READY_MESSAGE}" }, "*"); } catch (e) {}
   window.addEventListener("message", function (event) {
     var guest = document.getElementById("hivra-visual-guest");
     if (!guest || !guest.contentWindow) return;
@@ -228,9 +253,11 @@ export function visualDocument(
   if (typeof source !== "string") return null;
   if (visualTooBig(source)) return null;
   const safe = safeTheme(theme);
-  const body = source.replace(/\u0000/g, "");
+  // Link tags are dropped: a preconnect, prefetch or dns-prefetch would reach a host before any policy is asked.
+  const body = source.replace(/\u0000/g, "").replace(/<link\b[^>]*>/gi, "");
   const guest = escapeAttr(guestDocument(body, safe, network === true));
-  return `<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="${visualCsp(network === true)}"><style>html,body{margin:0;height:100%;background:${safe.background}}iframe{display:block;border:0;width:100%;height:100%;background:${safe.background}}</style><script>${SHELL}</script></head><body><iframe id="hivra-visual-guest" title="Visual reply" sandbox="${VISUAL_SANDBOX}" referrerpolicy="no-referrer" srcdoc="${guest}"></iframe></body></html>`;
+  const shell = `<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="${visualCsp(network === true)}"><style>html,body{margin:0;height:100%;background:${safe.background}}iframe{display:block;border:0;width:100%;height:100%;background:${safe.background}}</style><script>${SHELL}</script></head><body><iframe id="hivra-visual-guest" title="Visual reply" sandbox="${VISUAL_SANDBOX}" referrerpolicy="no-referrer" srcdoc="${guest}"></iframe></body></html>`;
+  return visualBytes(shell) > VISUAL_FRAME_MAX_BYTES ? null : shell;
 }
 
 /** A height the host will apply. Anything that is not that message is ignored. */

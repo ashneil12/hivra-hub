@@ -16,8 +16,36 @@ export const VISUAL_REPLY_FILE = "visual-reply.html";
 export type VisualFrameDeps = {
   inApp?: boolean;
   put?: (key: string, html: string, network: boolean) => Promise<string>;
+  drop?: (key: string) => Promise<void>;
   url?: (path: string) => string;
 };
+
+/**
+ * A random id for one frame, or null when the app has no source of randomness. Null means no frame: an id that is
+ * predictable would let one reply's key be guessed, so the reply shows its source instead.
+ */
+export function newFrameId(source: Crypto | null | undefined): string | null {
+  if (typeof source?.getRandomValues !== "function") return null;
+  const bytes = new Uint8Array(6);
+  source.getRandomValues(bytes);
+  return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+/**
+ * Removes a served frame's document from the app's store, when its frame is replaced or unmounted. Outside the app
+ * there is nothing to remove. A refusal is not an error: the store makes room on its own.
+ */
+export async function visualFrameDrop(key: string, deps: VisualFrameDeps = {}): Promise<void> {
+  if (!visualFrameInApp(deps)) return;
+  try {
+    const drop =
+      deps.drop ??
+      ((k: string) => invoke<void>("visual_frame_drop", { key: k }));
+    await drop(key);
+  } catch {
+    // The store refused or is gone; nothing else depends on this document.
+  }
+}
 
 /** A plain key, `visual-<id>-<version>`, at most 64 characters. */
 export function visualFrameKey(id: string, version: number): string {

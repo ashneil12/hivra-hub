@@ -3,10 +3,16 @@ import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   FALLBACK_THEME,
+  VISUAL_FRAME_MAX_BYTES,
   VISUAL_FRAME_MAX_HEIGHT,
   VISUAL_FRAME_MIN_HEIGHT,
+  VISUAL_HEIGHT_MESSAGE,
+  VISUAL_READY_MESSAGE,
   VISUAL_REPLY_MAX_BYTES,
   VISUAL_SANDBOX,
+  isVisualReadyMessage,
+  networkNote,
+  visualBytes,
   visualCsp,
   visualFrameCsp,
   visualDocument,
@@ -249,5 +255,60 @@ describe("visual reply network and served policy", () => {
     const off = guest.indexOf("x-dns-prefetch-control");
     expect(off).toBeGreaterThan(-1);
     expect(off).toBeLessThan(guest.indexOf("&lt;p&gt;chart") > -1 ? guest.indexOf("&lt;p&gt;chart") : guest.indexOf("<p>chart"));
+  });
+});
+
+// WP-130 review, items 2, 4, 5, 6 and 7: what the network choice means, the frame's size cap, the ready message and
+// the guest's own link and peer-connection hardening.
+describe("visual reply review hardening", () => {
+  it("says plainly what the network choice reaches, and only when it is on", () => {
+    expect(networkNote(false)).toBeNull();
+    const note = networkNote(true);
+    expect(note).not.toBeNull();
+    expect(note).toMatch(/https/);
+    expect(note).toMatch(/this machine|local network/);
+    expect(note!.length).toBeLessThan(200);
+    expect(note).not.toMatch(/[–—]/);
+  });
+
+  it("the frame cap is 3.2 MiB and a reply at the source cap, escaped in full, stays under it", () => {
+    expect(VISUAL_FRAME_MAX_BYTES).toBe(3_355_443);
+    for (const network of [false, true]) {
+      const worst = '"'.repeat(VISUAL_REPLY_MAX_BYTES);
+      const doc = visualDocument(worst, FALLBACK_THEME, network)!;
+      expect(doc).not.toBeNull();
+      expect(visualBytes(doc)).toBeLessThanOrEqual(VISUAL_FRAME_MAX_BYTES);
+    }
+  });
+
+  it("a served shell says it has loaded, and only that message counts as ready", () => {
+    expect(isVisualReadyMessage({ type: VISUAL_READY_MESSAGE })).toBe(true);
+    expect(isVisualReadyMessage({ type: VISUAL_HEIGHT_MESSAGE, height: 10 })).toBe(false);
+    expect(isVisualReadyMessage(null)).toBe(false);
+    expect(isVisualReadyMessage("hivra:visual-ready")).toBe(false);
+    const doc = visualDocument("<p>chart</p>", FALLBACK_THEME, false)!;
+    const shell = doc.slice(0, doc.indexOf('id="hivra-visual-guest"'));
+    expect(shell).toContain(VISUAL_READY_MESSAGE);
+  });
+
+  it("drops link hints from the reply, so a preconnect or prefetch is never sent", () => {
+    const hints =
+      '<link rel="preconnect" href="https://example.invalid"><LINK REL=prefetch HREF="https://example.invalid/x"><link rel="dns-prefetch" href="//example.invalid"><p>chart</p>';
+    for (const network of [false, true]) {
+      const doc = visualDocument(hints, FALLBACK_THEME, network)!;
+      expect(doc.toLowerCase()).not.toContain("preconnect");
+      expect(doc).not.toMatch(/<link\b/i);
+      expect(doc).not.toMatch(/rel=["']?prefetch/i);
+      expect(doc).toContain("chart");
+    }
+  });
+
+  it("stubs the peer connection constructors in the guest, before the reply", () => {
+    const doc = visualDocument("<p>chart</p>", FALLBACK_THEME, true)!;
+    const guest = doc.slice(doc.indexOf('id="hivra-visual-guest"'));
+    const stub = guest.indexOf("RTCPeerConnection");
+    expect(stub).toBeGreaterThan(-1);
+    expect(guest.indexOf("webkitRTCPeerConnection")).toBeGreaterThan(-1);
+    expect(stub).toBeLessThan(guest.indexOf("chart"));
   });
 });

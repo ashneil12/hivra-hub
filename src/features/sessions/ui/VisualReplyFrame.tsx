@@ -4,6 +4,8 @@ import {
   VISUAL_FRAME_PLACEHOLDER_HEIGHT,
   VISUAL_SANDBOX,
   VISUAL_THEME_MESSAGE,
+  isVisualReadyMessage,
+  networkNote,
   safeTheme,
   visualDocument,
   visualHeightFromMessage,
@@ -11,12 +13,17 @@ import {
   type VisualTheme,
 } from "../model/visualReply";
 import {
+  newFrameId,
   saveVisualReply,
+  visualFrameDrop,
   visualFrameInApp,
   visualFrameKey,
   visualFrameUrl,
   type VisualFrameDeps,
 } from "../model/visualFrame";
+
+/** A served frame that has not sent its ready message by then did not load: its reply shows as source. */
+export const VISUAL_READY_TIMEOUT_MS = 8000;
 
 /**
  * Colors and fonts from the open page. A visual reply cannot see the app's
@@ -71,59 +78,88 @@ function useVisualTheme(): VisualTheme {
  * shell is served from the app's frame scheme with its own policy (a srcdoc
  * there would inherit the app's policy and the reply's script would not run).
  * `frames` is for the browser proofs, which stand in for the app.
+ *
+ * A reply runs only when the person runs it, or when `autoRun` says it was
+ * written while this window watched (the agent's own live reply). A reply
+ * loaded from history waits for a click, because the agent may have copied
+ * its text from something it read.
  */
-function frameId(): string {
-  const bytes = new Uint8Array(6);
-  globalThis.crypto?.getRandomValues?.(bytes);
-  return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
-}
-
 export function VisualReplyFrame({
   source,
   frames,
+  autoRun,
 }: {
   source: string;
   frames?: VisualFrameDeps;
+  autoRun?: boolean;
 }) {
   const theme = useVisualTheme();
   const inApp = visualFrameInApp(frames);
   const id = useRef<string | null>(null);
   const version = useRef(0);
+  const [ranByPerson, setRanByPerson] = useState(false);
+  const running = ranByPerson || autoRun === true;
   const [served, setServed] = useState<{ doc: string; url?: string } | null>(null);
   const [saveNote, setSaveNote] = useState<string | null>(null);
   const frameRef = useRef<HTMLIFrameElement>(null);
   const [height, setHeight] = useState(VISUAL_FRAME_PLACEHOLDER_HEIGHT);
   const [showSource, setShowSource] = useState(false);
   const [network, setNetwork] = useState(false);
+  const [readyUrl, setReadyUrl] = useState<string | null>(null);
+  const [stalledUrl, setStalledUrl] = useState<string | null>(null);
+  const servedUrl = served?.url ?? null;
+  const servedUrlRef = useRef<string | null>(null);
   const doc = useMemo(
     () => visualDocument(source, theme, network),
     [source, theme, network],
   );
 
   useEffect(() => {
-    if (!doc || !inApp) return;
+    if (!running || !doc || !inApp) return;
     let live = true;
-    if (id.current === null) id.current = frameId();
+    if (id.current === null) id.current = newFrameId(globalThis.crypto);
+    // No source of randomness: no id, so no frame. The reply shows as source.
+    if (id.current === null) {
+      setServed({ doc });
+      return;
+    }
     const key = visualFrameKey(id.current, version.current++);
     void visualFrameUrl(key, doc, network, frames).then((url) => {
       if (live) setServed({ doc, url });
+      else void visualFrameDrop(key, frames);
     });
     return () => {
+      // Replaced or unmounted: the app's store lets this document go.
       live = false;
+      void visualFrameDrop(key, frames);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps -- `frames` is fixed for a frame
-  }, [doc, network, inApp]);
+  }, [doc, network, inApp, running]);
+
+  useEffect(() => {
+    servedUrlRef.current = servedUrl;
+    if (!servedUrl) return;
+    const timer = setTimeout(() => setStalledUrl(servedUrl), VISUAL_READY_TIMEOUT_MS);
+    return () => clearTimeout(timer);
+  }, [servedUrl]);
 
   useLayoutEffect(() => {
     const receive = (event: MessageEvent) => {
       const frame = frameRef.current;
       if (!frame || event.source !== frame.contentWindow) return;
+      if (isVisualReadyMessage(event.data)) {
+        setReadyUrl(servedUrlRef.current);
+        return;
+      }
       const next = visualHeightFromMessage(event.data);
       if (next != null) setHeight(next);
     };
     window.addEventListener("message", receive);
     return () => window.removeEventListener("message", receive);
   }, []);
+
+  // A frame that never said it loaded (its document was evicted, or the scheme refused it) shows the source instead.
+  const stalled = servedUrl !== null && stalledUrl === servedUrl && readyUrl !== servedUrl;
 
   useEffect(() => {
     frameRef.current?.contentWindow?.postMessage(
@@ -134,7 +170,16 @@ export function VisualReplyFrame({
 
   const controls = (
     <div className="mb-2 flex flex-wrap gap-2">
-      {doc ? (
+      {doc && !running ? (
+        <button
+          type="button"
+          className="rounded-md px-2 py-1 text-xs"
+          onClick={() => setRanByPerson(true)}
+        >
+          Run visual reply
+        </button>
+      ) : null}
+      {doc && running ? (
         <button
           type="button"
           className="rounded-md px-2 py-1 text-xs"
@@ -155,7 +200,7 @@ export function VisualReplyFrame({
       >
         Save as file
       </button>
-      {doc ? (
+      {doc && running ? (
         <button
           type="button"
           className="rounded-md px-2 py-1 text-xs"
@@ -166,6 +211,11 @@ export function VisualReplyFrame({
         </button>
       ) : null}
       {saveNote ? <span className="px-2 py-1 text-xs">{saveNote}</span> : null}
+      {networkNote(network) && running ? (
+        <p role="note" className="w-full text-xs">
+          {networkNote(network)}
+        </p>
+      ) : null}
     </div>
   );
 
@@ -174,6 +224,15 @@ export function VisualReplyFrame({
       <div data-visual-reply-frame>
         {controls}
         <p>This reply is too big to show here.</p>
+        <pre>{source}</pre>
+      </div>
+    );
+  }
+
+  if (!running) {
+    return (
+      <div data-visual-reply-frame>
+        {controls}
         <pre>{source}</pre>
       </div>
     );
@@ -195,7 +254,7 @@ export function VisualReplyFrame({
         />
       ) : served?.doc !== doc ? (
         <div data-visual-reply-loading style={{ width: "100%", height }} />
-      ) : served.url ? (
+      ) : served.url && !stalled ? (
         <iframe
           key={served.url}
           ref={frameRef}

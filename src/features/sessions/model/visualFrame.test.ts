@@ -4,7 +4,7 @@
 // <a download> click, which the app's web view cancels (it has no download handler); in the app it now asks where
 // to save and writes the file.
 import { describe, expect, it, vi } from "vitest";
-import { saveVisualReply, visualFrameKey, visualFrameUrl } from "./visualFrame";
+import { newFrameId, saveVisualReply, visualFrameDrop, visualFrameKey, visualFrameUrl } from "./visualFrame";
 
 describe("where a visual reply's frame loads from", () => {
   it("in the app: the shell goes to the app with the network choice, and the frame loads it from the frame scheme", async () => {
@@ -76,5 +76,39 @@ describe("saving a visual reply", () => {
     expect(name).toBe("visual-reply.html");
     expect(blob.type).toBe("application/octet-stream");
     expect(await blob.text()).toBe("<p>chart</p>");
+  });
+});
+
+// WP-130 review, items 4 and 5: a replaced or unmounted frame leaves the app's store, and a missing source of
+// randomness gives no frame at all rather than a predictable id.
+describe("dropping a served frame and naming it", () => {
+  it("in the app a replaced or unmounted frame is dropped from the store", async () => {
+    const drop = vi.fn(async () => undefined);
+    await visualFrameDrop("visual-ab-1", { inApp: true, drop });
+    expect(drop).toHaveBeenCalledWith("visual-ab-1");
+  });
+
+  it("outside the app nothing is dropped, and a refused drop is not an error", async () => {
+    const drop = vi.fn(async () => undefined);
+    await visualFrameDrop("visual-ab-1", { inApp: false, drop });
+    expect(drop).not.toHaveBeenCalled();
+    await expect(
+      visualFrameDrop("visual-ab-1", {
+        inApp: true,
+        drop: async () => {
+          throw new Error("gone");
+        },
+      }),
+    ).resolves.toBeUndefined();
+  });
+
+  it("fails closed without randomness: no id, so no frame", () => {
+    expect(newFrameId(undefined)).toBeNull();
+    expect(newFrameId({} as Crypto)).toBeNull();
+    const id = newFrameId({
+      getRandomValues: (bytes: Uint8Array) => bytes.fill(7),
+    } as unknown as Crypto);
+    expect(id).toBe("070707070707");
+    expect(newFrameId(globalThis.crypto)).toMatch(/^[0-9a-f]{12}$/);
   });
 });
