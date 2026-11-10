@@ -8568,7 +8568,9 @@ function Workspace({
       if (current.busy && !pendingSwitch) {
         // Ash wrote to a chat held on his OK: it can't read him until he decides, so say so now (S14).
         const heldLine =
-          !options?.appRequestId && !options?.monoNote && !options?.queuedMessageId && !options?.monoSessionCompletion
+          !options?.appRequestId && !options?.monoNote && !options?.queuedMessageId && !options?.monoSessionCompletion &&
+          // WP-146: say "waits" only when it does (not for the background-tasks branch, which hands it over now).
+          parksForApproval(current)
             ? waitingOnYouLine(current.blocks)
             : null;
         if (heldLine) {

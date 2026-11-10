@@ -1,6 +1,7 @@
 // Ash writes to a chat that is held on a permission card ("anything stuck?", S14 on Grok): the agent can't read his
 // message until he decides, so it sat unanswered for 10 minutes. The app answers for it at once, in one plain line
 // that names what it is waiting to run and where to say yes or no.
+import { sinceLastUserMessage } from "./approvalCarry";
 import type { Block } from "./session";
 import { needsApproval } from "./transcriptActivity";
 
@@ -23,9 +24,10 @@ function heldCall(block: Block): string {
 
 /** The line the app adds when Ash writes to a chat held on his OK; null when nothing waits on him. */
 export function waitingOnYouLine(blocks: readonly Block[]): string | null {
-  const held = blocks.filter(needsApproval);
+  // The same stretch the gate looks at (approvalCarry.ts): a card from before his last message is history.
+  const held = sinceLastUserMessage(blocks).filter(needsApproval);
   if (!held.length) return null;
   const first = heldCall(held[held.length - 1]!);
   const more = held.length > 1 ? ` (and ${held.length - 1} more)` : "";
-  return `Waiting for approval to ${first}${more}. Your message waits until you allow or deny it.`;
+  return `Waiting for approval to ${first}${more}. Your message waits until you allow or deny it on the card above.`;
 }
