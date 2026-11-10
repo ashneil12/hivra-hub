@@ -1038,6 +1038,8 @@ struct SessionRow {
     worktree_removed: bool,
     automation_id: Option<String>,
     sidebar_hidden: bool,
+    private_chat: bool,
+    private_boundary_id: Option<String>,
 }
 
 fn export_workspace(
@@ -1055,7 +1057,8 @@ fn export_workspace(
     let mut statement = conn.prepare(&format!(
         "SELECT id, cwd, harness, model, model_settings, runtime_mode, title, provider_session_id, blocks_json,
                 created_at, updated_at, branch, context_used, context_window, archived, worktree_cwd, pinned,
-                linked_work_item_json, worktree_removed, automation_id, sidebar_hidden
+                linked_work_item_json, worktree_removed, automation_id, sidebar_hidden,
+                private_chat, private_boundary_id
          FROM sessions {legacy_inbox} ORDER BY created_at, id"
     ))?;
     let rows = statement
@@ -1082,6 +1085,8 @@ fn export_workspace(
                 worktree_removed: row.get::<_, i64>(18)? != 0,
                 automation_id: row.get(19)?,
                 sidebar_hidden: row.get::<_, i64>(20)? != 0,
+                private_chat: row.get::<_, i64>(21)? != 0,
+                private_boundary_id: crate::session_store::boundary_for_read(row.get(22)?),
             })
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -1125,6 +1130,8 @@ fn export_workspace(
             "archived": row.archived,
             "pinned": row.pinned,
             "sidebarHidden": row.sidebar_hidden,
+            "private": row.private_chat,
+            "privateBoundaryId": row.private_boundary_id,
             "linkedWorkItem": row.linked_work_item_json.as_deref().and_then(|raw| serde_json::from_str::<Value>(raw).ok()),
             "automationId": row.automation_id,
             "contextUsed": row.context_used,
@@ -2334,6 +2341,13 @@ fn insert_session(
         automation_id: text("automationId"),
         // A /goal belongs to its Claude conversation on this Mac; it never travels.
         goal: None,
+        // WP-111: a private chat stays private after import. An old file has no flag, so it stays readable.
+        private_chat: file["private"].as_bool().unwrap_or(false),
+        private_boundary_id: match &file["privateBoundaryId"] {
+            Value::Null => None,
+            Value::String(value) => crate::session_store::boundary_for_read(Some(value.clone())),
+            _ => Some("private-boundary-unreadable".to_string()),
+        },
     };
     session_store::upsert_session(conn, &session)?;
     // Keep the chat's own dates, place and flags rather than "made just now".

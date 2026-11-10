@@ -1,8 +1,8 @@
 // The fake-Claude test bench's kickoff (scripts/hub-verify-live.mjs). A dev copy started with a verify plan
 // (src-tauri/src/verify_live.rs: only a dev copy under a temporary HOME) opens a Mono on the plan's scratch project
-// (or an existing one, such as the built-in Chief of Staff, when the plan names it) and sends its first message, once
-// per run: the window's storage lives in that temporary HOME, so every restart of the same run finds the claim and
-// leaves the chat to resume by itself.
+// (or an existing one, when the plan names its id) and sends its first message, once per run: the window's storage
+// lives in that temporary HOME, so every restart of the same run finds the claim and leaves the chat to resume by
+// itself.
 
 import { appIdentity, type AppIdentity, type VerifyPlan } from "./appIdentity";
 
@@ -46,9 +46,11 @@ export type VerifyMonoHost = {
 };
 
 /**
- * The Mono the kickoff goes to: a new one on the plan's project, or (`monoId`) that existing Mono once it works on the
- * project. The hub makes its built-in team and ties it to the projects Ash OS lists a moment after the window is up,
- * so this waits for that (up to `timeoutMs`); null when it never happens, and the walk notices nothing was sent.
+ * The Mono the kickoff goes to: a new one on the plan's project, or (`monoId`) an existing one once it works on the
+ * project. Waits for the one it names (up to `timeoutMs`); null when it never appears, and the walk notices nothing was
+ * sent.
+ *
+ * WP-05: a Mono's id is fresh every time, so a plan names none; the app makes the Mono from the plan's name.
  */
 export async function verifyKickoffMono(
   kickoff: Pick<NonNullable<VerifyPlan["kickoff"]>, "project" | "monoName" | "monoId">,
