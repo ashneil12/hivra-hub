@@ -383,11 +383,12 @@ import {
 } from "../features/source-control/model/worktrees";
 import {
   attachNewChatWorktree,
-  forgetNewChatFolderChoice,
   gitRepositoryOnThisComputer,
-  newChatStaysHere,
-  noteNewChatFolderChoice,
+  newChatWorktreeOpenFor,
   openNewChatWorktree,
+  pendingNewChatOfferCheck,
+  withNewChatFolderChoice,
+  withoutNewChatFolderChoice,
 } from "../features/source-control/model/newChatWorktree";
 import { UsageFooter } from "./shell/UsageFooter";
 import { useProjectBranches } from "../features/source-control/hooks/useProjectBranches";
@@ -6920,6 +6921,7 @@ function Workspace({
       }
       setProjectCwd(normalized);
       setRecents(rememberProject(normalized));
+      const folderChanged = !previous || !sameProjectPath(previous, normalized);
       setSessions((prev) =>
         prev.map((s) => {
           if (s.id !== sessionId) return s;
@@ -6928,7 +6930,7 @@ function Workspace({
           const base = isBlankSession(s)
             ? retargetSessionToProject(s, normalized)
             : s;
-          return {
+          const moved: Session = {
             ...base,
             cwd: normalized,
             branch: undefined,
@@ -6937,13 +6939,12 @@ function Workspace({
             workspaceMode: undefined,
             worktreeBase: undefined,
           };
+          // WP-110: a choice to stay in the old folder does not carry to another one.
+          return folderChanged ? withoutNewChatFolderChoice(moved) : moved;
         }),
       );
       // WP-110: a blank chat moved to another folder follows the worktree setting.
-      if (!previous || !sameProjectPath(previous, normalized)) {
-        forgetNewChatFolderChoice(sessionId);
-        attachNewChatWorktree(sessionId, normalized, setSessions);
-      }
+      if (folderChanged) attachNewChatWorktree(sessionId, normalized, setSessions);
       // The session's project just moved in place; a group only holds tabs that
       // share one project, so drop this tab out if it no longer matches.
       setTabs((prev) => {
@@ -6991,8 +6992,6 @@ function Workspace({
 
   const onWorkspaceModeChange = useCallback(
     (sessionId: string, mode: WorkspaceMode, base?: string) => {
-      // WP-110: choosing this folder keeps this chat out of a default worktree.
-      noteNewChatFolderChoice(sessionId, mode);
       setSessions((prev) =>
         prev.map((session) => {
           if (
@@ -7002,19 +7001,22 @@ function Workspace({
           ) {
             return session;
           }
-          return mode === "worktree"
-            ? base || session.worktreeBase
-              ? {
+          const chosen: Session =
+            mode === "worktree"
+              ? base || session.worktreeBase
+                ? {
+                    ...session,
+                    workspaceMode: "worktree",
+                    worktreeBase: base || session.worktreeBase,
+                  }
+                : session
+              : {
                   ...session,
-                  workspaceMode: "worktree",
-                  worktreeBase: base || session.worktreeBase,
-                }
-              : session
-            : {
-                ...session,
-                workspaceMode: undefined,
-                worktreeBase: undefined,
-              };
+                  workspaceMode: undefined,
+                  worktreeBase: undefined,
+                };
+          // WP-110: choosing this folder keeps this chat out of a default worktree, and it is held on the chat.
+          return withNewChatFolderChoice(chosen, mode);
         }),
       );
     },
@@ -9118,24 +9120,14 @@ function Workspace({
         // WP-110: ask and always start a new chat in a worktree. A refusal keeps
         // the creation function's own message.
         const tree = await openNewChatWorktree(
-          {
+          newChatWorktreeOpenFor(current, {
             setting: loadNewChatWorktree(),
-            firstTurn:
-              isFirstTurn &&
-              !current.worktreeCwd &&
-              !current.providerSessionId &&
-              !current.orchestrationLeadId &&
-              !current.inboxAsk &&
-              !current.worktreeRemoved &&
-              !current.automationId &&
-              !current.ephemeral,
+            isFirstTurn,
             toggleOn: createDraftWorktree,
-            declined: newChatStaysHere(sessionId),
-            cwd: current.cwd,
-            base: current.worktreeBase || "HEAD",
-          },
+          }),
           {
             gitOnThisComputer: gitRepositoryOnThisComputer,
+            offerCheck: pendingNewChatOfferCheck,
             createWorktree,
           },
         );
