@@ -14696,6 +14696,8 @@ function Workspace({
             },
             // WP-70: the shared task list. The handler sets who is asking.
             taskStore: (command, args) => invoke(command, args),
+            // WP-159: the programme board. The handler sets who is asking.
+            programmeStore: (command, args) => invoke(command, args),
             // WP-88: projects on this copy, the activity log, and reviewed memory.
             knownProjects: () => hubData().listProjects().map((project) => ({
               id: project.id,
