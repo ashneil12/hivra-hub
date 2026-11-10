@@ -4,6 +4,7 @@ import { KEYBINDINGS } from "../../settings/model/settings";
 import {
   PALETTE_COMMANDS,
   PALETTE_OMITTED,
+  hasPaletteSpec,
   resolvePaletteRows,
   type PaletteContext,
 } from "./commandRegistry";
@@ -13,7 +14,8 @@ const nowhere: PaletteContext = {
   terminal: false,
   chat: false,
   busy: false,
-  control: false,
+  terminalFocus: false,
+  pickerFocus: false,
   editor: false,
 };
 
@@ -22,7 +24,8 @@ const anywhere: PaletteContext = {
   terminal: true,
   chat: true,
   busy: true,
-  control: false,
+  terminalFocus: false,
+  pickerFocus: false,
   editor: true,
 };
 
@@ -128,11 +131,17 @@ describe("the palette command registry", () => {
     ).toBe("This project has no folder on this computer");
     expect(row("App: Switch Model", nowhere).blockedReason).toBe("Open a chat first");
     expect(
-      row("App: Switch Model", { ...anywhere, control: true }).blockedReason,
+      row("App: Switch Model", { ...anywhere, pickerFocus: true }).blockedReason,
     ).toBe("Click the chat first");
     expect(
-      row("Session: Stop", { ...anywhere, control: true }).blockedReason,
+      row("App: Switch Model", { ...anywhere, terminalFocus: true }).blockedReason,
     ).toBe("Click the chat first");
+    expect(
+      row("Session: Stop", { ...anywhere, terminalFocus: true }).blockedReason,
+    ).toBe("Click the chat first");
+    // Esc stops a chat from the composer, and Switch model works from it too:
+    // the composer is an input, which is not a reason to grey either out.
+    expect(row("Session: Stop", { ...anywhere, pickerFocus: true }).blockedReason).toBeNull();
     expect(row("App: Settings", nowhere).blockedReason).toBeNull();
     expect(row("View: Reload", nowhere).blockedReason).toBeNull();
   });
@@ -193,5 +202,15 @@ describe("the palette command registry", () => {
       expect(entry.label).not.toContain("—");
       expect(entry.label).not.toContain("–");
     }
+  });
+});
+
+describe("the shortcut table and the palette stay in step", () => {
+  it("maps every shortcut row, or lists it as left out on purpose", () => {
+    // A row that is neither would silently open Settings from the palette.
+    const unmapped = KEYBINDINGS.map((row) => row.command).filter(
+      (command) => !hasPaletteSpec(command) && !(command in PALETTE_OMITTED),
+    );
+    expect(unmapped).toEqual([]);
   });
 });

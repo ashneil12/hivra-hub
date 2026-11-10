@@ -17,6 +17,7 @@ import {
 } from "react";
 import { Composer } from "./Composer";
 import { PrivateMark } from "./PrivateMark";
+import { MidThreadSwitchNotice } from "./MidThreadSwitchNotice";
 import { NewChatWorktreeBanner } from "./NewChatWorktreeBanner";
 import { LeadCliNotice } from "../../firstmate/ui/LeadCliNotice";
 import type { Worktree } from "../../source-control/model/worktrees";
@@ -752,6 +753,7 @@ const LocalSessionPane = memo(function LocalSessionPane({
       inboxCard={session.inboxCard}
       noteCard={session.noteCard}
       handoffCard={session.handoffCard}
+      midThreadLine={session.midThread?.line}
       question={session.pendingQuestion}
       onQuoteRequestConsumed={acknowledgeQuote}
       onInboxCardDismiss={() => onInboxCardDismiss?.(session.id)}
@@ -984,6 +986,8 @@ const LocalSessionPane = memo(function LocalSessionPane({
           onSwitch={(cli) => onModelChange(session.id, cli, preferredModelId(cli))}
         />
       ) : null}
+      {/* WP-121: continue this chat, or a labelled recap, until the next send. */}
+      <MidThreadSwitchNotice line={session.midThread?.line} place="header" />
       <div className="flex min-h-0 min-w-0 flex-1">
         <div
           className="relative flex min-h-0 min-w-0 flex-1 flex-col"
