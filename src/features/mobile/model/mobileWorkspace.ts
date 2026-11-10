@@ -55,8 +55,6 @@ import {
   HARNESSES,
   HARNESS_TITLE,
   RUNTIME_MODES,
-  RUNTIME_MODE_HINT,
-  RUNTIME_MODE_LABEL,
   hasPendingApproval,
   newDefaultSession,
   sessionDisplayTitle,
@@ -73,6 +71,11 @@ import {
   resolveModel,
 } from "../../sessions/model/models";
 import { isHarnessAvailable } from "../../../integrations/harness/core/availability";
+import {
+  offeredRuntimeModes,
+  permissionCliForHarness,
+  runtimeModeCopy,
+} from "../../../integrations/harness/core/permissionMatrix";
 import { mobileTranscript } from "./mobileTranscript";
 import {
   CUSTOM_OPTION_ID,
@@ -419,11 +422,10 @@ export async function mobileModels(
         settings: entry.settings ?? [],
       })),
     ),
-    runtimeModes: RUNTIME_MODES.map((id) => ({
-      id,
-      label: RUNTIME_MODE_LABEL[id],
-      hint: RUNTIME_MODE_HINT[id],
-    })),
+    runtimeModes: offeredRuntimeModes(permissionCliForHarness(current.harness)).map((id) => {
+      const copy = runtimeModeCopy(id, permissionCliForHarness(current!.harness));
+      return { id, label: copy.label, hint: copy.hint };
+    }),
     ...mobileProviderAccounts(current.cwd),
     current: {
       harness: current.harness,

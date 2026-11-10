@@ -1218,6 +1218,7 @@ import {
   workspaceSnapshotKey,
 } from "../features/workspace/model/workspaceSnapshot";
 import type { InstalledUpdate } from "./model/updateNotice";
+import { resolvePhoneRuntimeMode } from "../integrations/harness/core/permissionMatrix";
 import {
   bindResumedSessions,
   closeBusyWindow,
@@ -10986,7 +10987,12 @@ function Workspace({
           const resolved = resolveModel(choice.harness ?? session.harness, choice.model ?? session.model);
           onModelSettingsChange(session.id, mergeModelSettings(resolved, choice.modelSettings));
         }
-        if (choice.runtimeMode) onRuntimeModeChange(session.id, choice.runtimeMode);
+        // WP-175: the phone's mode is the stricter of the chat's own mode and its pick, so it can tighten a chat, never loosen it.
+        if (choice.runtimeMode) {
+          const openNow = sessionsRef.current.find((current) => current.id === session.id);
+          const next = resolvePhoneRuntimeMode({ live: openNow?.runtimeMode, saved: session.runtimeMode, payload: choice.runtimeMode });
+          if (next !== (openNow?.runtimeMode ?? session.runtimeMode)) onRuntimeModeChange(session.id, next);
+        }
         return { sessionId: session.id };
       }
       if (method === "session.answerQuestion" || method === "session.keepQuestionOpen") {

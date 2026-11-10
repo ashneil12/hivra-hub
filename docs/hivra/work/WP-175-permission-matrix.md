@@ -63,12 +63,22 @@ Happy is MIT, `Copyright (c) 2026 Happy Coder Contributors`. This package ports 
 - `src/integrations/harness/providers/devin/devin.ts`, `devinProtocol.ts`, `fx/fx.ts`, `fxProtocol.ts`, `antigravity/antigravity.ts` (the refusal rule and mapping lookups; the adapters' own approval handlers are not touched)
 - `README.md`, `docs/hivra/SOURCES.md`, `docs/hivra/credits.json` (Happy's line only)
 
+## Decisions
+
+- **Phone path can only tighten a chat (4.1).** `resolvePhoneRuntimeMode` takes the chat's own mode (live, else saved) and the phone's pick. If both exist, the stricter one is used, so a phone pick of Full access on a Supervised chat leaves it Supervised, and a phone pick of Supervised on a Full access chat tightens it. The phone's `session.configure` calls it. With no chat mode to protect (a new chat), the pick is taken, then Supervised.
+- **New chats from the phone still take the phone's pick (open, for Ash).** `session.start` builds a new chat from the desktop's default and then the phone's payload. The desktop default is not a chat's saved mode, so the phone can still start a chat looser than the desktop default. Ash to decide whether that should follow the same stricter rule.
+- **fx Supervised is named for what it does (4.2).** It reads "fx approves its own requests" with a hint that nothing is asked before fx acts. The behaviour is unchanged and still a known gap.
+- **fx is offered with Full access only (4.2, for now).** The mode picker on fx chats (composer, quick composer, automations, Mono settings, phone sheet) offers Full access alone. The picker was hidden for fx before, so an fx chat showed no mode at all. It now shows the true mode.
+- **Antigravity's Auto is named for what it runs (4.3).** It reads "Default (no AI review)", and its hint says its approvals are not reviewed by an AI. The setting is unchanged. Claude, Devin and the other harnesses keep the shared labels.
+- **Known gaps stay open.** fx Supervised does not ask before it acts (approval handling is WP-14 and WP-146 territory, not touched here). Antigravity default has no AI review, now named as such.
+
 ## Done when
 
-- [ ] One matrix module exists, and every adapter's mapping reads from it.
-- [ ] A refused mode change follows one rule on Claude, Devin, Antigravity and `fx`, and tests pin it.
-- [ ] Plan handling is written down per CLI in the matrix.
-- [ ] The resolution order is one tested function, with no sandbox fallback.
-- [ ] Supervised never sends bypass on any CLI (test).
-- [ ] `SOURCES.md`, `credits.json` and `NOTICE` list Happy (idea only, MIT).
-- [ ] `npm run check` passes. The live check is one real Claude session and one Antigravity session switching mode, run in a dev copy.
+- [x] One matrix module exists, and every adapter's mapping reads from it.
+- [x] A refused mode change follows one rule on Claude, Devin, Antigravity and `fx`, and tests pin it.
+- [x] Plan handling is written down per CLI in the matrix.
+- [x] The resolution order is one tested function, with no sandbox fallback. The phone path uses it (`resolvePhoneRuntimeMode`), so a phone pick can tighten a chat but never loosen it.
+- [x] Supervised never sends bypass on any CLI (test).
+- [x] fx's Supervised and Antigravity's Auto are named for what they do, and fx is offered with Full access only.
+- [ ] `SOURCES.md`, `credits.json` and `NOTICE` list Happy (idea only, MIT). SOURCES and credits.json are done; NOTICE is not.
+- [ ] `npm run check` passes. Scoped checks only so far. The live check is one real Claude session and one Antigravity session switching mode, run in a dev copy, and it has not been run.

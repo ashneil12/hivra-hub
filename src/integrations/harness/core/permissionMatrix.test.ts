@@ -6,8 +6,12 @@ import {
   cliPermissionSetting,
   isTransportFailure,
   isUnsupportedControl,
+  offeredRuntimeModes,
+  permissionCliForHarness,
   refusedModeChange,
+  resolvePhoneRuntimeMode,
   resolveRuntimeMode,
+  runtimeModeCopy,
 } from "./permissionMatrix";
 import { RUNTIME_MODES, type RuntimeMode } from "../../../features/sessions/model/session";
 import { runtimeModeToPermission } from "../providers/claude/claudeProtocol";
@@ -123,5 +127,73 @@ describe("one rule for a refused mode change", () => {
     expect(isTransportFailure(new Error("Invalid mode"))).toBe(false);
     expect(isUnsupportedControl(new Error("Method not found"))).toBe(true);
     expect(isUnsupportedControl(new Error("Invalid mode"))).toBe(false);
+  });
+});
+
+describe("the phone path can never loosen a chat's mode (WP-175 4.1)", () => {
+  it("a phone pick looser than the chat's saved mode leaves the chat on the saved mode", () => {
+    expect(resolvePhoneRuntimeMode({ saved: "supervised", payload: "full-access" })).toBe("supervised");
+    expect(resolvePhoneRuntimeMode({ live: "auto-accept-edits", saved: "auto-accept-edits", payload: "full-access" })).toBe("auto-accept-edits");
+  });
+
+  it("a phone pick stricter than the chat's saved mode is taken", () => {
+    expect(resolvePhoneRuntimeMode({ saved: "full-access", payload: "supervised" })).toBe("supervised");
+    expect(resolvePhoneRuntimeMode({ live: "full-access", saved: "full-access", payload: "auto" })).toBe("auto");
+  });
+
+  it("the chat's live mode outranks its saved mode, and the stricter of the two with the payload wins", () => {
+    expect(resolvePhoneRuntimeMode({ live: "auto", saved: "full-access", payload: "full-access" })).toBe("auto");
+    expect(resolvePhoneRuntimeMode({ live: "full-access", saved: "auto", payload: "auto-accept-edits" })).toBe("auto-accept-edits");
+  });
+
+  it("with no chat mode to protect, the payload is taken, then Supervised", () => {
+    expect(resolvePhoneRuntimeMode({ payload: "full-access" })).toBe("full-access");
+    expect(resolvePhoneRuntimeMode({ payload: "bypassPermissions" as RuntimeMode })).toBe("supervised");
+    expect(resolvePhoneRuntimeMode({})).toBe("supervised");
+  });
+
+  it("never returns a mode looser than the chat's own, for any pair of Hivra modes", () => {
+    for (const own of RUNTIME_MODES) {
+      for (const payload of RUNTIME_MODES) {
+        const next = resolvePhoneRuntimeMode({ saved: own, payload });
+        expect(RUNTIME_MODES.indexOf(next), `${own} + ${payload}`).toBeLessThanOrEqual(RUNTIME_MODES.indexOf(own));
+      }
+    }
+  });
+});
+
+describe("honest mode names on fx and Antigravity (WP-175 4.2 and 4.3)", () => {
+  it("names fx's Supervised for what it does, not as Supervised", () => {
+    const copy = runtimeModeCopy("supervised", "fx");
+    expect(copy.label).toBe("fx approves its own requests");
+    expect(copy.hint).toMatch(/fx/);
+  });
+
+  it("names Antigravity's Auto for what it runs, not as an AI-reviewed Auto", () => {
+    const copy = runtimeModeCopy("auto", "antigravity");
+    expect(copy.label).not.toBe("Auto");
+    expect(copy.label).toMatch(/default/i);
+    expect(copy.hint).toMatch(/not reviewed by an AI/);
+  });
+
+  it("keeps the shared labels for the other CLIs and harnesses", () => {
+    expect(runtimeModeCopy("auto", "claude").label).toBe("Auto");
+    expect(runtimeModeCopy("supervised", null).label).toBe("Supervised");
+    expect(runtimeModeCopy("full-access", "fx").label).toBe("Full access");
+  });
+
+  it("offers fx only with Full access for now", () => {
+    expect(offeredRuntimeModes("fx")).toEqual(["full-access"]);
+    expect(offeredRuntimeModes("claude")).toEqual(RUNTIME_MODES);
+    expect(offeredRuntimeModes("antigravity")).toEqual(RUNTIME_MODES);
+    expect(offeredRuntimeModes("devin")).toEqual(RUNTIME_MODES);
+  });
+
+  it("maps a harness id to its permission CLI, or null for CLIs with no table", () => {
+    expect(permissionCliForHarness("fx")).toBe("fx");
+    expect(permissionCliForHarness("antigravity")).toBe("antigravity");
+    expect(permissionCliForHarness("claude")).toBe("claude");
+    expect(permissionCliForHarness("codex")).toBeNull();
+    expect(permissionCliForHarness(undefined)).toBeNull();
   });
 });

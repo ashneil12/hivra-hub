@@ -1,4 +1,5 @@
 import {
+  RUNTIME_MODE_HINT,
   RUNTIME_MODE_LABEL,
   RUNTIME_MODES,
   type RuntimeMode,
@@ -123,6 +124,79 @@ export function resolveRuntimeMode(sources: {
     }
   }
   return "supervised";
+}
+
+/**
+ * The mode a phone request leaves a chat on (WP-175 4.1). The chat's own mode is
+ * its live mode, else its saved mode. A phone payload that differs from it may
+ * only tighten it: the stricter of the two wins, so the phone can never loosen a
+ * chat. With no chat mode to protect (a new chat), the payload is taken, then
+ * Supervised.
+ */
+export function resolvePhoneRuntimeMode(sources: {
+  live?: unknown;
+  saved?: unknown;
+  payload?: unknown;
+}): RuntimeMode {
+  const own = resolveOwnMode(sources.live, sources.saved);
+  const requested = resolveOwnMode(sources.payload);
+  if (own === undefined) return requested ?? "supervised";
+  if (requested === undefined) return own;
+  return RUNTIME_MODES.indexOf(requested) < RUNTIME_MODES.indexOf(own) ? requested : own;
+}
+
+function resolveOwnMode(...candidates: unknown[]): RuntimeMode | undefined {
+  for (const candidate of candidates) {
+    if (typeof candidate === "string" && (RUNTIME_MODES as string[]).includes(candidate)) {
+      return candidate as RuntimeMode;
+    }
+  }
+  return undefined;
+}
+
+/**
+ * What a mode is called on one CLI (WP-175 4.2 and 4.3). Only where the shared
+ * Hivra name would mislead: fx's Supervised does not ask before it acts, and
+ * Antigravity's Auto is its default mode with no AI review.
+ */
+const CLI_MODE_COPY: Partial<Record<PermissionCli, Partial<Record<RuntimeMode, { label: string; hint: string }>>>> = {
+  fx: {
+    supervised: {
+      label: "fx approves its own requests",
+      hint: "fx runs its own code mode and approves its requests in code. Nothing is asked before it acts.",
+    },
+  },
+  antigravity: {
+    auto: {
+      label: "Default (no AI review)",
+      hint: "Runs Antigravity's default mode. Its approvals are not reviewed by an AI.",
+    },
+  },
+};
+
+/** The modes a picker offers on a CLI. fx is offered with Full access only for now. */
+const CLI_OFFERED_MODES: Partial<Record<PermissionCli, RuntimeMode[]>> = {
+  fx: ["full-access"],
+};
+
+/** The permission CLI a harness id runs on, or null for a harness with no table here. */
+export function permissionCliForHarness(harness: string | null | undefined): PermissionCli | null {
+  return (PERMISSION_CLIS as readonly string[]).includes(harness ?? "") ? (harness as PermissionCli) : null;
+}
+
+/** The label and hint for a mode on a CLI, the shared Hivra copy where the CLI has none of its own. */
+export function runtimeModeCopy(
+  mode: RuntimeMode,
+  cli: PermissionCli | null,
+): { label: string; hint: string } {
+  const own = cli ? CLI_MODE_COPY[cli]?.[mode] : undefined;
+  return own ?? { label: RUNTIME_MODE_LABEL[mode], hint: RUNTIME_MODE_HINT[mode] };
+}
+
+/** The modes a picker offers on a CLI, in the order Hivra lists them. */
+export function offeredRuntimeModes(cli: PermissionCli | null): RuntimeMode[] {
+  const offered = cli ? CLI_OFFERED_MODES[cli] : undefined;
+  return offered ? RUNTIME_MODES.filter((mode) => offered.includes(mode)) : [...RUNTIME_MODES];
 }
 
 /** Strictness across Hivra modes: plan is below Supervised, Full access is the top. */

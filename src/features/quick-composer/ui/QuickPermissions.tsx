@@ -6,12 +6,12 @@ import {
   Shield,
   Sparkles,
 } from "../../../shared/ui/icons";
+import type { RuntimeMode } from "../../sessions/model/session";
 import {
-  RUNTIME_MODES,
-  RUNTIME_MODE_HINT,
-  RUNTIME_MODE_LABEL,
-  type RuntimeMode,
-} from "../../sessions/model/session";
+  offeredRuntimeModes,
+  permissionCliForHarness,
+  runtimeModeCopy,
+} from "../../../integrations/harness/core/permissionMatrix";
 
 const ICONS = {
   supervised: Lock,
@@ -38,16 +38,21 @@ export function QuickPermissionIcon({
 
 export function QuickPermissions({
   value,
+  harness,
   onChange,
   onClose,
 }: {
   value: RuntimeMode;
+  /** The chat's harness: names and offers the modes as its CLI means them (WP-175). */
+  harness?: string | null;
   onChange: (mode: RuntimeMode) => void;
   onClose: () => void;
 }) {
   const root = useRef<HTMLDivElement>(null);
   const id = useId();
-  const [active, setActive] = useState(RUNTIME_MODES.indexOf(value));
+  const cli = permissionCliForHarness(harness);
+  const modes = offeredRuntimeModes(cli);
+  const [active, setActive] = useState(Math.max(0, modes.indexOf(value)));
   useEffect(() => {
     root.current?.focus({ preventScroll: true });
   }, []);
@@ -73,16 +78,15 @@ export function QuickPermissions({
           event.preventDefault();
           const step = event.key === "ArrowDown" ? 1 : -1;
           setActive(
-            (index) =>
-              (index + step + RUNTIME_MODES.length) % RUNTIME_MODES.length,
+            (index) => (index + step + modes.length) % modes.length,
           );
         } else if (event.key === "Enter" || event.key === " ") {
           event.preventDefault();
-          pick(RUNTIME_MODES[active]);
+          pick(modes[active]);
         }
       }}
     >
-      {RUNTIME_MODES.map((mode, index) => (
+      {modes.map((mode, index) => (
         <button
           key={mode}
           id={`${id}-${index}`}
@@ -101,10 +105,10 @@ export function QuickPermissions({
           <QuickPermissionIcon mode={mode} className="size-4 shrink-0" />
           <span className="min-w-0 flex-1">
             <span className="block text-[13px] font-medium">
-              {RUNTIME_MODE_LABEL[mode]}
+              {runtimeModeCopy(mode, cli).label}
             </span>
             <span className="mt-0.5 block text-[11px] text-content/45">
-              {RUNTIME_MODE_HINT[mode]}
+              {runtimeModeCopy(mode, cli).hint}
             </span>
           </span>
           {value === mode ? (
