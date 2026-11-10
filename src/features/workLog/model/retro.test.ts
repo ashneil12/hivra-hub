@@ -37,40 +37,72 @@ describe("retro", () => {
     expect(result.shipped).toEqual(["Done: Still in the week.", "Done: Shipped the panel."]);
     expect(result.report).toContain("Shipped: 2.");
     expect(result.report).toContain("Sent back: 1.");
-    expect(result.ask).toContain("at most 5");
-    expect(result.ask).toContain("Do not apply");
-    expect(result.pending.map((edit) => edit.text)).toEqual([
-      "Keep the line short.",
-      "Work was sent back 1 time this week. Check the brief before the next try.",
-      "1 task failed this week. Say what broke, in one line.",
-    ]);
+    // Nothing here pretends to be a request to the first mate: the summary has no "ask".
+    expect("ask" in result).toBe(false);
+    // Only Ash's own correction becomes a proposed edit. Sent back and failed work is counted, not scripted.
+    expect(result.pending.map((edit) => edit.text)).toEqual(["Keep the line short."]);
+  });
+
+  it("counts sent back and failed work but never turns it into a canned edit", () => {
+    const result = stageRetro(
+      [
+        line("2026-11-09", "outcome", "Sent back: The brief was wrong."),
+        line("2026-11-10", "outcome", "Sent back: The brief was thin."),
+        line("2026-11-10", "outcome", "Failed: The build broke."),
+      ],
+      today,
+    );
+    expect(result.counts).toEqual({ shipped: 0, failed: 1, sentBack: 2, feedback: 0 });
+    expect(result.report).toContain("Sent back: 2.");
+    expect(result.report).toContain("Failed: 1.");
+    expect(result.pending).toEqual([]);
+  });
+
+  it("every proposed edit is one of Ash's own correction lines, word for word", () => {
+    const corrections = ["Keep the line short.", "Name the file you changed."];
+    const result = stageRetro(
+      [
+        line("2026-11-08", "outcome", "Sent back: The brief was wrong."),
+        line("2026-11-09", "outcome", "Failed: The build broke."),
+        line("2026-11-09", "feedback", corrections[0]),
+        line("2026-11-10", "feedback", corrections[1]),
+        line("2026-11-10", "context", "The export is CSV."),
+      ],
+      today,
+    );
+    expect(result.pending.map((edit) => edit.text)).toEqual(corrections);
+    for (const edit of result.pending) {
+      expect(edit.evidence.every((row) => corrections.includes(row.line))).toBe(true);
+    }
+    const text = JSON.stringify(result.pending);
+    expect(text).not.toContain("Check the brief");
+    expect(text).not.toContain("Say what broke");
   });
 
   it("names the log lines behind each edit, and gives an edit an id that follows its words", () => {
     const rows = [
       line("2026-11-09", "outcome", "Sent back: The brief was wrong."),
-      line("2026-11-10", "outcome", "Sent back: The brief was thin."),
-      line("2026-11-10", "outcome", "Failed: The build broke."),
       line("2026-11-08", "feedback", "Keep the line short."),
+      line("2026-11-10", "feedback", "Name the file."),
       line("2026-11-03", "feedback", "Too old to count."),
     ];
     const result = stageRetro(rows, today);
     const byTitle = Object.fromEntries(result.pending.map((edit) => [edit.title, edit]));
+    expect(Object.keys(byTitle)).toEqual(["Correction: Keep the line short.", "Correction: Name the file."]);
     expect(byTitle["Correction: Keep the line short."].evidence).toEqual([
       { day: "2026-11-08", line: "Keep the line short." },
     ]);
-    expect(byTitle["Work sent back"].evidence).toEqual([
-      { day: "2026-11-09", line: "Sent back: The brief was wrong." },
-      { day: "2026-11-10", line: "Sent back: The brief was thin." },
-    ]);
-    expect(byTitle["Failed work"].evidence).toEqual([{ day: "2026-11-10", line: "Failed: The build broke." }]);
     const again = stageRetro(rows, today);
     expect(again.pending.map((edit) => edit.id)).toEqual(result.pending.map((edit) => edit.id));
     expect(new Set(result.pending.map((edit) => edit.id)).size).toBe(result.pending.length);
     expect(result.pending.every((edit) => edit.id.startsWith("retro:"))).toBe(true);
-    const fewer = stageRetro(rows.filter((row) => !row.line.includes("thin")), today);
-    const sentBack = fewer.pending.find((edit) => edit.title === "Work sent back")!;
-    expect(sentBack.id).not.toBe(byTitle["Work sent back"].id);
+    // A different correction is a different edit: the id follows the words.
+    const changed = stageRetro(
+      rows.map((row) => (row.line === "Name the file." ? { ...row, line: "Name the folder." } : row)),
+      today,
+    );
+    expect(changed.pending[1].id).not.toBe(result.pending[1].id);
+    expect(changed.pending[0].id).toBe(result.pending[0].id);
   });
 
   it("gives every correction a title of its own, cut at a word", () => {

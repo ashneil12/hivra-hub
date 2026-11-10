@@ -112,9 +112,9 @@ export function WorkLogPanel({ lines, today: todayProp, stage = stageRetroEdits 
   }
 
   /**
-   * Show the week, then queue its edits as pending learn store changes. Nothing is written to
-   * Opinions here: the learn screen's accept does that. False when the edits could not be queued
-   * or a newer retro took over.
+   * Show the week's summary, then queue an edit for each correction Ash gave as a pending learn
+   * store change. Nothing is written to Opinions here: the learn screen's accept does that. False
+   * when the edits could not be queued or a newer summary took over.
    */
   async function showRetro(rows: WorkLogLine[], mine: number): Promise<boolean> {
     const named = project.trim();
@@ -194,7 +194,7 @@ export function WorkLogPanel({ lines, today: todayProp, stage = stageRetroEdits 
           <SpanButton current={span} value="today" onPick={setSpan} label="Today" />
           <SpanButton current={span} value="week" onPick={setSpan} label="This week" />
           <button type="button" className="rounded-md px-2 py-1 text-[13px] text-content" onClick={() => void runRetro()}>
-            Run a retro
+            Summarize the week
           </button>
           <button
             type="button"
@@ -202,7 +202,7 @@ export function WorkLogPanel({ lines, today: todayProp, stage = stageRetroEdits 
             className="rounded-md px-2 py-1 text-[13px] text-content"
             onClick={toggleWeekly}
           >
-            Weekly retro
+            Summary every week
           </button>
         </div>
       </div>
@@ -210,11 +210,10 @@ export function WorkLogPanel({ lines, today: todayProp, stage = stageRetroEdits 
       {report ? (
         <div data-retro className="flex flex-col gap-2 px-3 text-[13px] text-content">
           <p className="whitespace-pre-wrap">{report.report}</p>
-          {report.ask ? <p className="whitespace-pre-wrap text-content/80">{report.ask}</p> : null}
           {report.pending.length === 0 ? (
-            <p>No edits proposed.</p>
+            <p>No corrections to review.</p>
           ) : (
-            <ul aria-label="Pending edits">
+            <ul aria-label="Corrections to review">
               {report.pending.map((edit) => (
                 <li key={edit.id}>{edit.text}</li>
               ))}

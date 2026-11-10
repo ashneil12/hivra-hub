@@ -27,10 +27,15 @@ test("groups the week by day and kind, and answers today from the log", async ({
   await expect(log.locator("[data-day]")).toHaveCount(1);
   await expect(log.getByText("Done: Wrote the log.")).toHaveCount(0);
 
-  await log.getByRole("button", { name: "Run a retro" }).click();
+  await log.getByRole("button", { name: "Summarize the week" }).click();
   const retro = log.locator("[data-retro]");
   await expect(retro).toContainText("Shipped: 2.");
+  // Sent back and failed work is counted. Only Ash's correction becomes an edit, in his own words.
+  await expect(retro).toContainText("Sent back: 1.");
+  await expect(retro).toContainText("Failed: 1.");
   await expect(retro).toContainText("Keep the work log line short.");
+  await expect(retro).not.toContainText("Check the brief");
+  await expect(retro).not.toContainText("Say what broke");
   await expect(retro).toContainText(
     "1 edit is waiting for you. Accept or reject it in Settings, Memory, Learn from chats.",
   );
@@ -38,7 +43,7 @@ test("groups the week by day and kind, and answers today from the log", async ({
   await expect
     .poll(() => page.evaluate(() => (window as unknown as { __queued?: string[] }).__queued ?? []))
     .toEqual(["Keep the work log line short."]);
-  await expect(log.getByRole("button", { name: "Weekly retro" })).toHaveAttribute("aria-pressed", "false");
+  await expect(log.getByRole("button", { name: "Summary every week" })).toHaveAttribute("aria-pressed", "false");
 });
 
 test("says when nothing is written, and a miss is not an empty log", async ({ page }) => {

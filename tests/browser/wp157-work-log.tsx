@@ -16,10 +16,12 @@ const seed: WorkLogLine[] = [
   line("2026-11-10", "outcome", "Done: Shipped the panel."),
   line("2026-11-10", "outcome", "Done: Other project.", "other"),
   line("2026-11-03", "outcome", "Done: Too old for the week."),
+  line("2026-11-09", "outcome", "Sent back: The brief was wrong."),
+  line("2026-11-09", "outcome", "Failed: The build broke."),
   line("2026-11-10", "feedback", "Keep the work log line short."),
 ];
 
-// The page has no app behind it, so the retro's queue is a stand-in that records what it was given.
+// The page has no app behind it, so the summary's queue is a stand-in that records what it was given.
 async function stage(edits: PendingEdit[]) {
   const holder = window as unknown as { __queued?: string[] };
   holder.__queued = [...(holder.__queued ?? []), ...edits.map((edit) => edit.text)];

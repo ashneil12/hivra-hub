@@ -1,6 +1,10 @@
-// WP-157: a retro reads the last 7 days and proposes edits. It never applies them.
-// The proposals are staged as pending learn store changes (retroStage.ts, retroStore.ts)
-// and the learn store's own accept writes one, only after the person accepts it.
+// WP-157: the weekly summary reads the last 7 days, counts what shipped, failed and was sent
+// back, and proposes an edit for each correction Ash gave (a `feedback` line), word for word.
+// It writes no sentence of its own into an opinion: sent back and failed work is counted, not
+// turned into advice. It never applies anything. The proposals are staged as pending learn store
+// changes (retroStage.ts, retroStore.ts) and the learn store's own accept writes one, only after
+// the person accepts it. It does not ask the first mate: the app has no way for a first mate to
+// stage an edit, so a request sent to one would have nowhere to land.
 
 import { sha256 } from "../../memory/backpass/sha";
 import { isDay, shiftDay, type WorkLogLine } from "./workLog";
@@ -28,7 +32,6 @@ export type RetroResult = {
   shipped: string[];
   counts: RetroCounts;
   report: string;
-  ask: string;
   pending: PendingEdit[];
   applied: false;
 };
@@ -69,16 +72,15 @@ function empty(report: string): RetroResult {
     shipped: [],
     counts: { shipped: 0, failed: 0, sentBack: 0, feedback: 0 },
     report,
-    ask: "",
     pending: [],
     applied: false,
   };
 }
 
 /**
- * The last 7 days, including today. Counts and proposed edits come from the
- * lines. Nothing is written: `applied` stays false, and this function takes
- * no writer.
+ * The last 7 days, including today. The counts come from the outcome lines and the proposed
+ * edits come only from correction lines. Nothing is written: `applied` stays false, and this
+ * function takes no writer.
  */
 export function stageRetro(lines: readonly WorkLogLine[], today: string): RetroResult {
   if (!isDay(today)) return empty("The day should look like 2026-11-10.");
@@ -101,22 +103,6 @@ export function stageRetro(lines: readonly WorkLogLine[], today: string): RetroR
     if (same) same.evidence.push(seen(line));
     else if (pending.length < RETRO_EDIT_CAP) pending.push(edit);
   }
-  if (sentBack > 0 && pending.length < RETRO_EDIT_CAP) {
-    const times = sentBack === 1 ? "1 time" : `${sentBack} times`;
-    pending.push(
-      proposed(
-        "Work sent back",
-        `Work was sent back ${times} this week. Check the brief before the next try.`,
-        sentBackLines.map(seen),
-      ),
-    );
-  }
-  if (failed > 0 && pending.length < RETRO_EDIT_CAP) {
-    const tasks = failed === 1 ? "1 task" : `${failed} tasks`;
-    pending.push(
-      proposed("Failed work", `${tasks} failed this week. Say what broke, in one line.`, failedLines.map(seen)),
-    );
-  }
 
   const shippedLines = shipped.length === 0 ? "Nothing shipped." : shipped.join("\n");
   const report = [
@@ -127,13 +113,7 @@ export function stageRetro(lines: readonly WorkLogLine[], today: string): RetroR
     `Feedback: ${counts.feedback}.`,
     shippedLines,
   ].join("\n");
-  const ask = [
-    `Read the work log from ${from} to ${today}.`,
-    "Report what shipped and the patterns with counts.",
-    "Propose at most 5 concrete edits. Do not apply them. They stay pending until they are accepted.",
-    report,
-  ].join("\n");
-  return { from, to: today, shipped, counts, report, ask, pending, applied: false };
+  return { from, to: today, shipped, counts, report, pending, applied: false };
 }
 
 export function defaultWeeklyRetro(): WeeklyRetro {

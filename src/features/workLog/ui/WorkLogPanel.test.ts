@@ -143,10 +143,10 @@ describe("WorkLogPanel", () => {
       [...container.querySelectorAll("button")].find((button) => button.textContent === name)!.click();
     });
 
-  it("a retro reports the week and queues its edits as pending, leaving Opinions alone", async () => {
+  it("the summary reports the week and queues Ash's corrections as pending, leaving Opinions alone", async () => {
     const stage = vi.fn(async () => queued);
     await render({ lines: [...seed, line("2026-11-10", "feedback", "Keep the line short.")], stage });
-    await click("Run a retro");
+    await click("Summarize the week");
     const retro = container.querySelector("[data-retro]")!;
     expect(retro.textContent).toContain("Shipped: 3.");
     expect(retro.textContent).toContain("Feedback: 1.");
@@ -170,7 +170,7 @@ describe("WorkLogPanel", () => {
       throw new Error(`unexpected ${command}`);
     });
     await render({ lines: [...seed, line("2026-11-10", "feedback", "Keep the line short.")] });
-    await click("Run a retro");
+    await click("Summarize the week");
     expect(container.querySelector("[data-retro]")!.textContent).toContain("1 edit is waiting for you.");
     expect(new Set(commands)).toEqual(new Set(["learn_profile_load", "learn_state_load", "learn_state_cas"]));
     expect(commands).not.toContain("learn_profile_save");
@@ -182,7 +182,7 @@ describe("WorkLogPanel", () => {
       throw new Error("raw failure");
     });
     await render({ lines: [...seed, line("2026-11-10", "feedback", "Keep the line short.")], stage });
-    await click("Run a retro");
+    await click("Summarize the week");
     const retro = container.querySelector("[data-retro]")!;
     expect(retro.textContent).toContain("Shipped: 3.");
     expect(retro.textContent).toContain("The edits could not be queued. Try again.");
@@ -193,29 +193,62 @@ describe("WorkLogPanel", () => {
   it("says why nothing new was queued", async () => {
     const stage = vi.fn(async (): Promise<StageOutcome> => ({ staged: 0, waiting: 0, declined: 1, present: 1, full: 0 }));
     await render({ lines: [...seed, line("2026-11-10", "feedback", "Keep the line short.")], stage });
-    await click("Run a retro");
+    await click("Summarize the week");
     expect(container.querySelector("[data-retro]")!.textContent).toContain(
       "No new edits. The ones found were already saved or turned down.",
     );
 
     stage.mockResolvedValue({ staged: 0, waiting: 0, declined: 0, present: 0, full: 1 });
-    await click("Run a retro");
+    await click("Summarize the week");
     expect(container.querySelector("[data-retro]")!.textContent).toContain(
       "Opinions is full. Remove or merge something there first.",
     );
   });
 
-  it("a week with no edits queues nothing", async () => {
+  it("a week with no corrections queues nothing", async () => {
     const stage = vi.fn(async () => queued);
     await render({ lines: seed, stage });
-    await click("Run a retro");
-    expect(container.querySelector("[data-retro]")!.textContent).toContain("No edits proposed.");
+    await click("Summarize the week");
+    expect(container.querySelector("[data-retro]")!.textContent).toContain("No corrections to review.");
     expect(stage).not.toHaveBeenCalled();
+  });
+
+  it("sent back and failed work is counted in the summary and never queued as an edit", async () => {
+    const stage = vi.fn(async () => queued);
+    await render({
+      lines: [
+        ...seed,
+        line("2026-11-09", "outcome", "Sent back: The brief was wrong."),
+        line("2026-11-10", "outcome", "Failed: The build broke."),
+      ],
+      stage,
+    });
+    await click("Summarize the week");
+    const summary = container.querySelector("[data-retro]")!.textContent ?? "";
+    expect(summary).toContain("Sent back: 1.");
+    expect(summary).toContain("Failed: 1.");
+    expect(summary).toContain("No corrections to review.");
+    expect(summary).not.toContain("Check the brief");
+    expect(summary).not.toContain("Say what broke");
+    expect(stage).not.toHaveBeenCalled();
+  });
+
+  it("is a summary: no request text, and no claim that the first mate was asked", async () => {
+    const stage = vi.fn(async () => queued);
+    await render({ lines: [...seed, line("2026-11-10", "feedback", "Keep the line short.")], stage });
+    await click("Summarize the week");
+    const summary = container.querySelector("[data-retro]")!.textContent ?? "";
+    expect(summary).not.toContain("Read the work log");
+    expect(summary).not.toContain("Propose at most");
+    expect(summary).not.toMatch(/first mate/i);
+    expect(container.textContent).not.toContain("Run a retro");
+    expect(container.textContent).not.toContain("Weekly retro");
   });
 
   it("the weekly routine is off, and turning it on does not ask", async () => {
     await render();
-    const weekly = () => [...container.querySelectorAll("button")].find((button) => button.textContent === "Weekly retro")!;
+    const weekly = () =>
+      [...container.querySelectorAll("button")].find((button) => button.textContent === "Summary every week")!;
     expect(weekly().getAttribute("aria-pressed")).toBe("false");
     await act(async () => {
       weekly().click();
