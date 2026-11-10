@@ -28,6 +28,8 @@ export type AppPolicy = {
   autoResume: boolean;
   notificationPrompt: boolean;
   globalShortcut: boolean;
+  /** The background sweep that deletes the build output of finished worktrees (worktree_autoclean.rs). */
+  clearBuildOutput: boolean;
 };
 
 /**
@@ -114,6 +116,7 @@ const DAILY_POLICY: AppPolicy = {
   autoResume: true,
   notificationPrompt: true,
   globalShortcut: true,
+  clearBuildOutput: true,
 };
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>

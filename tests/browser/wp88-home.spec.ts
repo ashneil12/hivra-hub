@@ -10,7 +10,7 @@ test("the chief chat is at the top and answers across two projects", async ({ pa
   await expect(page.getByRole("button", { name: "Start a chat with Crew" })).toHaveCount(0);
 
   await page.getByLabel("Ask").fill("What's happening?");
-  await page.getByRole("button", { name: "Ask" }).click();
+  await page.getByRole("button", { name: "Send" }).click();
   const reply = page.locator("[data-home-reply]");
   await expect(reply.getByRole("button", { name: /Write the notes/ })).toBeVisible();
   await expect(reply.getByRole("button", { name: /Paint the door/ })).toBeVisible();

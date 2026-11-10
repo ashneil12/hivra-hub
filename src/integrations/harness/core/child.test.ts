@@ -118,6 +118,22 @@ describe("child bridge", () => {
     await vi.runAllTimersAsync();
   });
 
+  it("starts no provider process for a chat with no folder", async () => {
+    installResolvedListeners();
+    const child = await loadChild();
+    const release = await child.acquireHarnessBridge();
+    for (const cwd of ["", "  "]) {
+      await expect(
+        child.spawnChild("probe", "claude", ["-p"], cwd),
+      ).rejects.toThrow("Choose a project folder for this chat first.");
+    }
+    expect(mocks.invoke).not.toHaveBeenCalledWith(
+      "harness_spawn",
+      expect.anything(),
+    );
+    release();
+  });
+
   it("reconciles an exit that arrives before spawn returns its pid", async () => {
     installResolvedListeners();
     const spawned = deferred<number>();

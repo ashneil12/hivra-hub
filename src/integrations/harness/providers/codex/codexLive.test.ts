@@ -67,6 +67,7 @@ import {
   type TurnIntent,
 } from "../../../../features/sessions/model/session";
 import { applyHarnessEvent } from "../../core/apply";
+import { lineageForThread } from "../../../../features/sessions/model/subagentLineage";
 
 function parse() {
   return sent.map((line) => JSON.parse(line) as Record<string, unknown>);
@@ -307,6 +308,49 @@ describe("codex live turn sequence", () => {
     );
     notify("turn/completed", { turn: { id: "turn_2", status: "completed" } });
     await next;
+  });
+
+  it("gives a Codex lead the monocode server without the connection secret", async () => {
+    const token = "f00dfeedcafe1234";
+    const previous = process.env.MONOCODE_APP_TOKEN;
+    process.env.MONOCODE_APP_TOKEN = token;
+    const { setCodexExtraConfig } = await import("./codexExtraConfig");
+    const { setCodexLeadConfig } = await import("./codexLeadConfig");
+    setCodexExtraConfig(() => ({
+      mcp_servers: {
+        monocode: { command: "plugin-bin" },
+        plugin: { command: "plugin" },
+      },
+    }));
+    setCodexLeadConfig(() => ({
+      mcp_servers: {
+        monocode: {
+          command: "/app/monocode",
+          args: ["mcp"],
+          env_vars: ["MONOCODE_APP_ENDPOINT", "MONOCODE_APP_TOKEN"],
+        },
+      },
+    }));
+    try {
+      const { turn } = await startTurn("codex-live");
+      const params = parse().find((message) => message.method === "thread/start")?.params as {
+        config?: { mcp_servers?: Record<string, { command?: string }> };
+      };
+      expect(params.config?.mcp_servers?.monocode).toMatchObject({
+        command: "/app/monocode",
+        args: ["mcp"],
+        env_vars: ["MONOCODE_APP_ENDPOINT", "MONOCODE_APP_TOKEN"],
+      });
+      expect(params.config?.mcp_servers?.plugin).toEqual({ command: "plugin" });
+      expect(JSON.stringify(params)).not.toContain(token);
+      notify("turn/completed", { turn: { id: "turn_1", status: "completed" } });
+      await turn;
+    } finally {
+      setCodexExtraConfig(undefined);
+      setCodexLeadConfig(undefined);
+      if (previous === undefined) delete process.env.MONOCODE_APP_TOKEN;
+      else process.env.MONOCODE_APP_TOKEN = previous;
+    }
   });
 
   it("leaves regular Codex chats persistent", async () => {
@@ -2656,5 +2700,325 @@ describe("codex subagents", () => {
           event.text.includes("Child talking."),
       ),
     ).toBe(false);
+  });
+});
+
+/**
+ * WP-122: a subagent's ask is answered on the parent thread, and the answer goes back to Codex on the request that
+ * asked. The child is the thread a spawn item named; a thread nobody spawned keeps the parent's own path.
+ */
+describe("codex subagent approvals on the parent thread", () => {
+  beforeEach(() => {
+    sent.length = 0;
+    onLine = undefined;
+    writeChild.mockClear();
+  });
+
+  afterEach(async () => {
+    vi.restoreAllMocks();
+    await stopCodexSession("s1");
+    __codexTestReset();
+  });
+
+  function spawnReviewer() {
+    notify("item/started", {
+      threadId: "thr_1",
+      item: {
+        id: "collab_1",
+        type: "collabAgentToolCall",
+        tool: "spawnAgent",
+        status: "inProgress",
+        prompt: "Correctness review\n\nLook for regressions in the diff.",
+        agentsStates: { thr_child: { status: "running" } },
+      },
+    });
+  }
+
+  function askCommand(threadId = "thr_child", id: string | number = "child_approval") {
+    onLine!(
+      JSON.stringify({
+        id,
+        method: "item/commandExecution/requestApproval",
+        params: { threadId, turnId: "turn_child", itemId: "child_cmd", command: "npm test" },
+      }),
+    );
+  }
+
+  const answerTo = (id: string | number) => parse().filter((message) => message.id === id);
+  const requested = (events: HarnessEvent[]) =>
+    events.filter(
+      (event): event is Extract<HarnessEvent, { type: "approval.requested" }> =>
+        event.type === "approval.requested",
+    );
+
+  it.each(["allow", "deny"] as const)(
+    "names the child on a command approval and answers Codex on that request: %s",
+    async (decision) => {
+      const { events, turn } = await startTurn("s1");
+      spawnReviewer();
+      askCommand();
+      await waitFor(() => requested(events).length > 0, "child approval UI");
+      const approval = requested(events)[0]!;
+      expect(approval).toMatchObject({
+        callId: "child_cmd",
+        child: { name: "Correctness review", sessionPort: "thr_child", detail: approval.title },
+      });
+      expect(approval.title).toContain("npm test");
+      const waiting = events.reduce(applyHarnessEvent, newSession("codex", "/repo"));
+      expect(waiting.blocks.find((block) => block.approval)?.approval?.child).toEqual({
+        name: "Correctness review",
+        sessionPort: "thr_child",
+        detail: approval.title,
+      });
+      expect(answerTo("child_approval")).toEqual([]);
+
+      respondCodexApproval("s1", approval.requestId, decision);
+      await waitFor(() => answerTo("child_approval").length > 0, "child answer");
+
+      expect(answerTo("child_approval")).toHaveLength(1);
+      expect(answerTo("child_approval")[0]!.result).toEqual({
+        decision: decision === "allow" ? "accept" : "decline",
+      });
+      expect(events).toContainEqual({ type: "approval.resolved", requestId: approval.requestId, decision });
+      const answered = events.reduce(applyHarnessEvent, newSession("codex", "/repo"));
+      expect(answered.blocks.find((block) => block.approval)?.approval).toMatchObject({
+        decided: decision,
+        child: { name: "Correctness review" },
+      });
+      notify("turn/completed", { turn: { id: "turn_1", status: "completed" } });
+      await turn;
+    },
+  );
+
+  it.each(["allow", "deny"] as const)(
+    "answers a child's filesystem permission request on the parent: %s",
+    async (decision) => {
+      const { events, turn } = await startTurn("s1");
+      spawnReviewer();
+      const permissions = { fileSystem: { read: ["/home/user/.gitconfig"] } };
+      onLine!(
+        JSON.stringify({
+          id: "child_permissions",
+          method: "item/permissions/requestApproval",
+          params: { threadId: "thr_child", turnId: "turn_child", itemId: "child_read", permissions },
+        }),
+      );
+      await waitFor(() => requested(events).length > 0, "child permission UI");
+      const approval = requested(events)[0]!;
+      expect(approval.child).toMatchObject({ name: "Correctness review", sessionPort: "thr_child" });
+      respondCodexApproval("s1", approval.requestId, decision);
+      await waitFor(() => answerTo("child_permissions").length > 0, "child permission answer");
+      expect(answerTo("child_permissions")[0]!.result).toEqual(
+        decision === "allow" ? { scope: "turn", permissions } : { permissions: {} },
+      );
+      expect(events).toContainEqual({ type: "approval.resolved", requestId: approval.requestId, decision });
+      notify("turn/completed", { turn: { id: "turn_1", status: "completed" } });
+      await turn;
+    },
+  );
+
+  it.each(["allow", "deny"] as const)(
+    "answers a child's MCP confirmation on the parent: %s",
+    async (decision) => {
+      const { events, turn } = await startTurn("s1");
+      spawnReviewer();
+      onLine!(
+        JSON.stringify({
+          id: "child_mcp",
+          method: "mcpServer/elicitation/request",
+          params: {
+            threadId: "thr_child",
+            serverName: "example",
+            mode: "form",
+            message: "Read this source?",
+            requestedSchema: {
+              type: "object",
+              properties: { approved: { type: "boolean" } },
+              required: ["approved"],
+            },
+          },
+        }),
+      );
+      await waitFor(() => requested(events).length > 0, "child MCP UI");
+      const approval = requested(events)[0]!;
+      expect(approval.child).toMatchObject({ name: "Correctness review", sessionPort: "thr_child" });
+      respondCodexApproval("s1", approval.requestId, decision);
+      await waitFor(() => answerTo("child_mcp").length > 0, "child MCP answer");
+      expect(answerTo("child_mcp")[0]!.result).toEqual(
+        decision === "allow"
+          ? { action: "accept", content: { approved: true }, _meta: null }
+          : { action: "decline", content: null, _meta: null },
+      );
+      notify("turn/completed", { turn: { id: "turn_1", status: "completed" } });
+      await turn;
+    },
+  );
+
+  it("keeps two children's asks apart and answers each on its own request", async () => {
+    const { events, turn } = await startTurn("s1");
+    spawnReviewer();
+    notify("item/started", {
+      threadId: "thr_1",
+      item: {
+        id: "collab_2",
+        type: "collabAgentToolCall",
+        tool: "spawnAgent",
+        status: "inProgress",
+        prompt: "Test review\n\nRun the suite.",
+        agentsStates: { thr_other: { status: "running" } },
+      },
+    });
+    askCommand("thr_child", "req_a");
+    askCommand("thr_other", "req_b");
+    await waitFor(() => requested(events).length === 2, "both asks");
+    const [first, second] = requested(events);
+    expect(first!.child).toMatchObject({ name: "Correctness review", sessionPort: "thr_child" });
+    expect(second!.child).toMatchObject({ name: "Test review", sessionPort: "thr_other" });
+    respondCodexApproval("s1", second!.requestId, "deny");
+    respondCodexApproval("s1", first!.requestId, "allow");
+    await waitFor(() => answerTo("req_a").length > 0 && answerTo("req_b").length > 0, "both answers");
+    expect(answerTo("req_a")[0]!.result).toEqual({ decision: "accept" });
+    expect(answerTo("req_b")[0]!.result).toEqual({ decision: "decline" });
+    notify("turn/completed", { turn: { id: "turn_1", status: "completed" } });
+    await turn;
+  });
+
+  it("lists a spawned agent on the parent thread, working and then done with what it reported", async () => {
+    const { events, turn } = await startTurn("s1");
+    spawnReviewer();
+    const thread = () =>
+      lineageForThread("codex", events.reduce(applyHarnessEvent, newSession("codex", "/repo")).blocks);
+    expect(thread()).toEqual({
+      reported: true,
+      children: [
+        expect.objectContaining({ id: "collab_1", name: "Correctness review", status: "running", result: null }),
+      ],
+    });
+    notify("item/completed", {
+      threadId: "thr_1",
+      item: {
+        id: "collab_1",
+        type: "collabAgentToolCall",
+        tool: "spawnAgent",
+        status: "completed",
+        model: "gpt-5.4-mini",
+        prompt: "Correctness review\n\nLook for regressions in the diff.",
+        agentsStates: { thr_child: { status: "completed", message: "No regressions found." } },
+      },
+    });
+    notify("turn/completed", { turn: { id: "turn_1", status: "completed" } });
+    await turn;
+    expect(thread()).toEqual({
+      reported: true,
+      children: [
+        expect.objectContaining({
+          id: "collab_1",
+          name: "Correctness review",
+          model: "gpt-5.4-mini",
+          status: "done",
+          result: "No regressions found.",
+          error: null,
+        }),
+      ],
+    });
+  });
+
+  it("lists a spawned agent that failed with its reason", async () => {
+    const { events, turn } = await startTurn("s1");
+    spawnReviewer();
+    notify("item/completed", {
+      threadId: "thr_1",
+      item: {
+        id: "collab_1",
+        type: "collabAgentToolCall",
+        tool: "spawnAgent",
+        status: "completed",
+        prompt: "Correctness review\n\nLook for regressions in the diff.",
+        agentsStates: { thr_child: { status: "errored", message: "The model name was unknown." } },
+      },
+    });
+    notify("turn/completed", { turn: { id: "turn_1", status: "completed" } });
+    await turn;
+    const lineage = lineageForThread("codex", events.reduce(applyHarnessEvent, newSession("codex", "/repo")).blocks);
+    expect(lineage).toEqual({
+      reported: true,
+      children: [
+        expect.objectContaining({
+          name: "Correctness review",
+          status: "failed",
+          error: "The model name was unknown.",
+          result: null,
+        }),
+      ],
+    });
+  });
+
+  it("leaves the parent thread's own asks, and an unspawned thread's, without a child", async () => {
+    const { events, turn } = await startTurn("s1");
+    spawnReviewer();
+    askCommand("thr_1", "parent_approval");
+    askCommand("thr_stranger", "stranger_approval");
+    await waitFor(() => requested(events).length === 2, "both asks");
+    for (const approval of requested(events)) {
+      expect(approval).not.toHaveProperty("child");
+      respondCodexApproval("s1", approval.requestId, "allow");
+    }
+    await waitFor(
+      () => answerTo("parent_approval").length > 0 && answerTo("stranger_approval").length > 0,
+      "both answers",
+    );
+    notify("turn/completed", { turn: { id: "turn_1", status: "completed" } });
+    await turn;
+  });
+
+  it("fails the turn when a child's answer cannot be written, as it does for the parent's", async () => {
+    const { events, turn } = await startTurn("s1");
+    spawnReviewer();
+    askCommand();
+    await waitFor(() => requested(events).length > 0, "child approval UI");
+    let outcome: unknown;
+    void turn.catch((error) => {
+      outcome = error;
+    });
+    writeChild.mockRejectedValueOnce(new Error("Broken pipe"));
+    respondCodexApproval("s1", requested(events)[0]!.requestId, "allow");
+    await waitFor(() => outcome instanceof Error, "failed child answer");
+    expect(outcome).toMatchObject({ message: "Broken pipe" });
+    expect(events).toContainEqual({ type: "session.error", message: "Broken pipe" });
+  });
+
+  it("writes nothing when the server clears the child's ask", async () => {
+    const { events, turn } = await startTurn("s1");
+    spawnReviewer();
+    askCommand();
+    await waitFor(() => requested(events).length > 0, "child approval UI");
+    const approval = requested(events)[0]!;
+    notify("serverRequest/resolved", { threadId: "thr_child", requestId: "child_approval" });
+    await waitFor(() => events.some((event) => event.type === "approval.resolved"), "cleared ask");
+    expect(events).toContainEqual({
+      type: "approval.resolved",
+      requestId: approval.requestId,
+      decision: "cancelled",
+    });
+    expect(answerTo("child_approval")).toEqual([]);
+    notify("turn/completed", { turn: { id: "turn_1", status: "completed" } });
+    await turn;
+  });
+
+  it("does not send a child an answer after the session is stopped", async () => {
+    const { events } = await startTurn("s1");
+    spawnReviewer();
+    askCommand();
+    await waitFor(() => requested(events).length > 0, "child approval UI");
+    const approval = requested(events)[0]!;
+    await stopCodexSession("s1");
+    await waitFor(() => events.some((event) => event.type === "approval.resolved"), "stopped ask");
+    expect(events).toContainEqual({
+      type: "approval.resolved",
+      requestId: approval.requestId,
+      decision: "cancelled",
+    });
+    expect(answerTo("child_approval")).toEqual([]);
+    expect(events.some((event) => event.type === "status")).toBe(false);
   });
 });

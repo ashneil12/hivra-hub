@@ -41,9 +41,9 @@ export function FirstMateInbox({
           className="rounded-md border border-stroke px-3 py-2"
         >
           <h3 className="text-[13px] text-content">{item.title}</h3>
-          {typeof now === "number" && waitingPhrase(item.updatedAt, now) ? (
+          {typeof now === "number" && waitingPhrase(item.since, now) ? (
             <p data-waiting className="text-[12px] text-content/60">
-              {waitingPhrase(item.updatedAt, now)}
+              {waitingPhrase(item.since, now)}
             </p>
           ) : null}
           {item.statusWord ? <p className="text-[12px] text-content/60">{item.statusWord}</p> : null}
