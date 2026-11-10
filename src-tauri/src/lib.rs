@@ -20,6 +20,7 @@ mod background_work;
 pub mod backups;
 mod chat_background;
 mod chat_folder;
+mod chat_media;
 mod checkpoint;
 mod codex_mono_store;
 pub mod connectors;
@@ -906,6 +907,7 @@ pub fn run() {
             fs::read_file_base64,
             fs::read_binary_file,
             fs::read_project_image,
+            fs::read_chat_image,
             fs::allow_video_stream,
             fs::write_attachment,
             fs::save_generated_image,

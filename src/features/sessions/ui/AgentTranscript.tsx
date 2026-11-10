@@ -340,6 +340,11 @@ type Props = {
   /** Saved session that omitted tool output is fetched from. */
   sessionId?: string;
   /**
+   * The saved chat whose records say which folders its local images and videos may come from (a Mono chat's
+   * `localMedia`). Absent for a chat on a connected machine, which shows its own files through the machine.
+   */
+  mediaSessionId?: string;
+  /**
    * Stops a workflow run, for a view of a session another window runs (the
    * floating chat). Without it, only the window running the session stops one.
    */
@@ -406,6 +411,7 @@ function AgentTranscriptComponent({
   onScrollerChange,
   managed = false,
   sessionId,
+  mediaSessionId,
   onStopWorkflow: stopWorkflowElsewhere,
 }: Props) {
   const isMonoChat = !!agentMascot;
@@ -1594,6 +1600,7 @@ function AgentTranscriptComponent({
                 layout={transcriptLayout}
                 bubbleTail={!!agentMascot}
                 localMedia={isMonoChat}
+                mediaSessionId={mediaSessionId}
                 compactFollowUp={isCompactFollowUp(item, itemIndex)}
                 stackedOnPrevious={
                   itemIndex === 0
@@ -2551,6 +2558,7 @@ const TranscriptBlock = memo(function TranscriptBlock({
   embedded = false,
   cwd,
   localMedia = false,
+  mediaSessionId,
   onApproval,
   onSaveNote,
   onSendDraft,
@@ -2588,6 +2596,8 @@ const TranscriptBlock = memo(function TranscriptBlock({
   cwd?: string;
   /** Show local images and videos a reply links to, as Mono chats do. */
   localMedia?: boolean;
+  /** The chat they are shown for: Rust works out from its records which folders they may come from. */
+  mediaSessionId?: string;
   onApproval?: (requestId: number, decision: ApprovalDecision) => void;
   onSaveNote?: (text: string) => void | Promise<void>;
   onSendDraft?: (block: Block) => boolean | void;
@@ -2767,6 +2777,7 @@ const TranscriptBlock = memo(function TranscriptBlock({
         cwd={cwd}
         onOpenFile={onOpenFile}
         localMedia={localMedia}
+        mediaSessionId={mediaSessionId}
       />
       {/* WP-89: Undo sits under the line. The line is the message, so it is not repeated. */}
       {block.monoCard?.type === "worker-default" ? <WorkerDefaultUndo card={block.monoCard} /> : null}
