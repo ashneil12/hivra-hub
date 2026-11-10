@@ -1,17 +1,22 @@
 // WP-88: the morning note is one habit. Adding it again does not replace a habit the person edited.
-// WP-164: the stock text also reads the programme queue and the work log. Edited text stays as it is.
+// WP-164: the stock text also says what to do with the notable events that wait (notifications/model/notableEvents.ts).
+// Edited text stays as it is.
 
 import { nextHabitRunAt, type Habit } from "../../monos/model/monoHabits";
 
 export const MORNING_HABIT_ID = "chief-morning";
 
-/** The morning habit text from before the programme lines. An exact match is still stock. */
+/** The morning habit text from before the notable-event lines. An exact match is still stock. */
 export const MORNING_HABIT_STOCK_INSTRUCTIONS = `Read this copy's projects with app tasks.list, app docs.list and app activity.list.
 Reply with one line per thing worth saying. Each line names something you read, as task:ID, doc:ID or chat:ID, then a few words.
 Do not mention an id you did not read. If nothing is worth saying, reply with exactly NOTHING_TO_REPORT.`;
 
+/**
+ * What the extra text means, for a run that gets one (useMonoHabits adds the waiting events after these lines). It
+ * names only things this app has: the list that follows the instructions, and no source that is not built.
+ */
 const INSTRUCTIONS = `${MORNING_HABIT_STOCK_INSTRUCTIONS}
-Also read the programme queue and the work log summary when they are there. Prefer an outcome line from the work log over a status line.`;
+If a list of notable events still waiting follows, each one is worth saying: give it a plain line of its own, with no id, that says what happened.`;
 
 /** The morning habit, first due after `now`. The id stays put so a second add can see it. */
 export function morningHabit(now: number): Habit {
@@ -32,8 +37,8 @@ function isMorningStock(habit: Habit): boolean {
 }
 
 /**
- * Add the morning habit when it is missing. Stock instructions gain the programme
- * lines. Any other text, even one extra character, is left alone, and so is the
+ * Add the morning habit when it is missing. Stock instructions gain the notable-event
+ * line. Any other text, even one extra character, is left alone, and so is the
  * name and the schedule.
  */
 export function withMorningHabit(habits: readonly Habit[], now: number): Habit[] {

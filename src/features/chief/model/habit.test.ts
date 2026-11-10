@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { appActions } from "../../agent-app/model/agentApp";
 import type { Habit } from "../../monos/model/monoHabits";
 import {
   MORNING_HABIT_ID,
@@ -29,9 +30,7 @@ describe("morning habit", () => {
     expect(created.schedule.time).toBe("08:00");
     expect(created.instructions).toContain("NOTHING_TO_REPORT");
     expect(created.instructions).toContain("app tasks.list");
-    expect(created.instructions).toContain("programme queue");
-    expect(created.instructions).toContain("work log summary");
-    expect(created.instructions).toContain("outcome line");
+    expect(created.instructions).toContain("notable events still waiting");
 
     const edited = habit({ id: MORNING_HABIT_ID, instructions: "The person rewrote this." });
     const next = withMorningHabit([habit(), edited], 5);
@@ -66,8 +65,7 @@ describe("morning habit", () => {
     });
     const next = withMorningHabit([stock], 5);
     expect(next).toHaveLength(1);
-    expect(next[0].instructions).toContain("programme queue");
-    expect(next[0].instructions).toContain("work log summary");
+    expect(next[0].instructions).toContain("notable events still waiting");
     expect(next[0].instructions).not.toBe(MORNING_HABIT_STOCK_INSTRUCTIONS);
     expect(next[0].name).toBe("Dawn");
     expect(next[0].enabled).toBe(false);
@@ -86,11 +84,11 @@ describe("morning habit", () => {
 
     const edited = habit({ id: MORNING_HABIT_ID, instructions: "The person rewrote this." });
     const both = withMorningHabit([stock, edited], 5);
-    expect(both[0].instructions).toContain("programme queue");
+    expect(both[0].instructions).toContain("notable events still waiting");
     expect(both[1].instructions).toBe("The person rewrote this.");
   });
 
-  it("writes the programme lines onto stock text, and a newer edit wins", async () => {
+  it("writes the notable-event line onto stock text, and a newer edit wins", async () => {
     const stock = habit({
       id: MORNING_HABIT_ID,
       instructions: MORNING_HABIT_STOCK_INSTRUCTIONS,
@@ -100,8 +98,7 @@ describe("morning habit", () => {
       written = change([stock]).habits[0].instructions;
       return undefined;
     }, 5);
-    expect(written).toContain("programme queue");
-    expect(written).toContain("outcome line");
+    expect(written).toContain("notable events still waiting");
 
     await ensureMorningHabit("coord", async () => [morningHabit(1)], async () => {
       throw new Error("should not write");
@@ -119,5 +116,14 @@ describe("morning habit", () => {
       throw new Error("timed out");
     }, 5)).rejects.toThrow("timed out");
     expect(writes).toBe(1);
+  });
+
+  it("names only sources this app has", () => {
+    const text = morningHabit(1).instructions;
+    // the lines the first draft of this package added named a queue and a log that were never built
+    expect(text).not.toMatch(/programme queue|work log/i);
+    const named = [...text.matchAll(/\bapp ([a-z]+\.[a-z]+)/g)].map((match) => match[1]);
+    expect(named).toEqual(["tasks.list", "docs.list", "activity.list"]);
+    for (const action of named) expect(appActions()).toContain(action);
   });
 });
