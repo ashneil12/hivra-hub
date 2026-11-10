@@ -178,3 +178,56 @@ test("an author that is not a known builder is refused", () => {
   assert.equal(unknown.ok, false);
   assert.match(unknown.reason, /not a known builder/);
 });
+
+// Item 3: the run reviews the changed files of one change, not the repo.
+const { scopeFiles, readScoped, changedFiles, DEFAULT_FILE_CAP } = await import("./security-review/review.mjs");
+
+test("a diff of three files is in scope and only those files are read", () => {
+  const diff = ["src/a.ts", "src/b.rs", "docs/c.md"];
+  const scope = scopeFiles(diff);
+  assert.equal(scope.ok, true, scope.reason);
+  assert.deepEqual(scope.files, diff);
+  const reads = [];
+  const read = (path) => {
+    reads.push(path);
+    return `content of ${path}`;
+  };
+  const read3 = readScoped(scope.files, read);
+  assert.deepEqual(reads, diff, "exactly the changed files are read, nothing else");
+  assert.equal(read3.length, 3);
+});
+
+test("a diff over the file cap is refused, with a plain line on how to narrow it", () => {
+  const big = Array.from({ length: DEFAULT_FILE_CAP + 1 }, (_, i) => `src/f${i}.ts`);
+  const scope = scopeFiles(big);
+  assert.equal(scope.ok, false);
+  assert.match(scope.reason, /more than \d+ files/);
+  assert.match(scope.reason, /--paths/);
+  assert.equal(scopeFiles(big.slice(0, DEFAULT_FILE_CAP)).ok, true, "exactly the cap is allowed");
+});
+
+test("the changed files come from git's diff of the change, not the whole tree", () => {
+  const folder = mkdtempSync(join(tmpdir(), "wp203-git-"));
+  const git = (...args) => {
+    const run = spawnSync("git", args, { cwd: folder, encoding: "utf8" });
+    assert.equal(run.status, 0, run.stderr);
+    return run.stdout;
+  };
+  try {
+    git("init", "-q", "-b", "main");
+    git("config", "user.email", "test@example.invalid");
+    git("config", "user.name", "test");
+    writeFileSync(join(folder, "kept.ts"), "a\n");
+    writeFileSync(join(folder, "changed.ts"), "a\n");
+    git("add", ".");
+    git("commit", "-q", "-m", "base");
+    git("checkout", "-q", "-b", "feature");
+    writeFileSync(join(folder, "changed.ts"), "b\n");
+    writeFileSync(join(folder, "added.ts"), "b\n");
+    git("add", ".");
+    git("commit", "-q", "-m", "change");
+    assert.deepEqual(changedFiles({ base: "main", head: "feature", cwd: folder }).sort(), ["added.ts", "changed.ts"]);
+  } finally {
+    rmSync(folder, { recursive: true, force: true });
+  }
+});
