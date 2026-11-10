@@ -319,11 +319,18 @@ function choose(
   return { kind: best.kind, id: best.id, reason: `Nothing else is set, so this uses ${best.name}.` };
 }
 
-/** The pick's reason, on the notice the Crew tab already shows. A secret is left for that notice to drop. */
+/**
+ * The pick's reason on a row, where the store keeps it: as `why` on the row's "recorded" line (delegations.rs).
+ * The status notice is left alone. A secret is left for the row to drop.
+ */
 export function withPickReason<T extends CrewWorkerInput>(row: T, pick: Pick<MatePick, "reason">): T {
-  const reason = pick.reason.replace(/\r\n/g, "\n").replace(/[\r\n]/g, " ").trim();
+  const reason = pick.reason.replace(/\s+/g, " ").trim();
   if (!reason) return row;
-  return { ...row, statusNotice: reason };
+  const log = [...(row.log ?? [])];
+  const at = log.findIndex((entry) => entry?.event === "recorded");
+  if (at >= 0) log[at] = { ...log[at], why: reason };
+  else log.unshift({ event: "recorded", why: reason });
+  return { ...row, log };
 }
 
 /** Shown crew rows for one project, so a test can read the reason the person sees. */
@@ -334,4 +341,58 @@ export function crewRowsWithReason(
   now: number,
 ) {
   return crewRows({ project, rows: [withPickReason(row, pick)], now });
+}
+
+/** The parts of a crew route answer the reason reads. `ruleLabel` is the matched rule's first label. */
+export type RouteReasonInput = {
+  cli?: string | null;
+  cliFrom?: string | null;
+  ruleLabel?: string | null;
+  skipped?: readonly { reason?: string | null }[] | null;
+};
+
+function plain(value: string | null | undefined): string {
+  return (value ?? "").replace(/\s+/g, " ").trim();
+}
+
+function sourceSentence(input: RouteReasonInput): string {
+  const cli = plain(input.cli);
+  if (!cli) return "";
+  const name = cliLabel(cli);
+  switch (input.cliFrom) {
+    case "override":
+    case "brief":
+      return `This task asks for ${name}.`;
+    case "rule": {
+      const label = norm(input.ruleLabel ?? "");
+      if (isRoleSlot(label)) return `${roleSlotName(label)} role prefers ${name}.`;
+      return label ? `A crew rule for ${label} picks ${name}.` : `A crew rule picks ${name}.`;
+    }
+    case "mono":
+      return `This Mono's default is ${name}.`;
+    case "project":
+      return `This project's default is ${name}.`;
+    case "system":
+      return `Your default for every worker is ${name}.`;
+    case "default":
+      return `${name} is the first signed-in CLI.`;
+    default:
+      return "";
+  }
+}
+
+/**
+ * WP-141: why a delegated worker runs where it does, from the crew route that picked it. What was skipped
+ * (Never use, the lock) comes first, each once, then where the CLI came from. Empty when the crew chose nothing.
+ */
+export function routeReason(input: RouteReasonInput | null | undefined): string {
+  if (!input) return "";
+  const parts: string[] = [];
+  for (const skip of input.skipped ?? []) {
+    const reason = plain(skip?.reason);
+    if (reason && !parts.includes(reason)) parts.push(reason);
+  }
+  const source = sourceSentence(input);
+  if (source) parts.push(source);
+  return parts.join(" ");
 }

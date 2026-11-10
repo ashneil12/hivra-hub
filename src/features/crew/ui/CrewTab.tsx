@@ -70,6 +70,12 @@ function CrewRowView({
       </div>
       {meta ? <p className="mt-0.5 truncate text-[12px] text-content/50">{meta}</p> : null}
       {row.notice ? <p className="mt-0.5 text-[12px] text-content/60">{row.notice}</p> : null}
+      {/* WP-141: why the crew picked this worker's CLI, kept on its row. */}
+      {row.why ? (
+        <p data-crew-why className="mt-0.5 text-[12px] text-content/50">
+          {row.why}
+        </p>
+      ) : null}
       {row.prUrl && row.prNumber != null ? (
         <button
           type="button"

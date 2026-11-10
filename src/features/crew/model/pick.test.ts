@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { CrewRule } from "./rules";
 import type { Presence } from "./resolve";
-import { crewRowsWithReason, pickMate, type MonoCandidate } from "./pick";
+import { crewRowsWithReason, pickMate, routeReason, type MonoCandidate } from "./pick";
 
 const signed = (...clis: string[]): Presence[] => clis.map((cli) => ({ cli, installed: true, signedIn: true }));
 
@@ -142,8 +142,50 @@ describe("first mate pick", () => {
   it("shows the reason on the crew row, and hides a secret", () => {
     const row = { id: "w1", project: "/work/proj", title: "Build", createdAt: 1, updatedAt: 2 };
     const shown = crewRowsWithReason("/work/proj", row, { reason: "Builder role prefers Codex." }, 10);
-    expect(shown[0]?.notice).toBe("Builder role prefers Codex.");
+    expect(shown[0]?.why).toBe("Builder role prefers Codex.");
+    // The reason sits beside the status notice; it never takes its place.
+    expect(shown[0]?.notice).toBeNull();
     const hidden = crewRowsWithReason("/work/proj", row, { reason: "The key is sk-live-secret" }, 10);
-    expect(hidden[0]?.notice).toBeNull();
+    expect(hidden[0]).not.toHaveProperty("why");
+  });
+});
+
+describe("the reason a delegated worker's row keeps", () => {
+  const lock = "Always use my default is on, so this override was not applied.";
+
+  it("a role rule says the role prefers that CLI", () => {
+    expect(routeReason({ cli: "codex", cliFrom: "rule", ruleLabel: "builder" })).toBe("Builder role prefers Codex.");
+  });
+
+  it("another rule says a crew rule picked it", () => {
+    expect(routeReason({ cli: "cursor", cliFrom: "rule", ruleLabel: "ui" })).toBe("A crew rule for ui picks Cursor.");
+  });
+
+  it("a skipped CLI is said before the pick, once", () => {
+    const skip = { field: "cli", from: "rule", value: "grok", reason: "Grok is on Never use, so it was skipped." };
+    expect(routeReason({ cli: "claude", cliFrom: "system", skipped: [skip, { ...skip, from: "default" }] })).toBe(
+      "Grok is on Never use, so it was skipped. Your default for every worker is Claude Code.",
+    );
+  });
+
+  it("the lock says the first mate's override was not applied", () => {
+    const skip = { field: "cli", from: "override", value: "codex", reason: lock };
+    expect(routeReason({ cli: "claude", cliFrom: "project", skipped: [skip] })).toBe(
+      `${lock} This project's default is Claude Code.`,
+    );
+  });
+
+  it("names each other source in plain words", () => {
+    expect(routeReason({ cli: "codex", cliFrom: "override" })).toBe("This task asks for Codex.");
+    expect(routeReason({ cli: "codex", cliFrom: "brief" })).toBe("This task asks for Codex.");
+    expect(routeReason({ cli: "codex", cliFrom: "mono" })).toBe("This Mono's default is Codex.");
+    expect(routeReason({ cli: "claude", cliFrom: "default" })).toBe("Claude Code is the first signed-in CLI.");
+  });
+
+  it("is empty when the crew chose nothing, and never leaks a newline", () => {
+    expect(routeReason({ cli: null, cliFrom: "none" })).toBe("");
+    expect(routeReason(null)).toBe("");
+    const odd = { field: "cli", from: "rule", value: "x", reason: "Two\nlines." };
+    expect(routeReason({ cli: null, cliFrom: "none", skipped: [odd] })).toBe("Two lines.");
   });
 });

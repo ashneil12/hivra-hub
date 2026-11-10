@@ -940,6 +940,35 @@ describe("tasks.delegate", () => {
     expect(missing.started[0][0]).toMatchObject({ harness: "claude", model: "claude:sonnet-5" });
   });
 
+  it("WP-141: keeps why the crew picked this CLI on the row and tells the lead, skips first", async () => {
+    setHarnessModels("codex", [{ id: "codex:gpt-5", harness: "codex", name: "GPT-5", settings: [] }]);
+    const { source, host, started, api } = fixture();
+    api.crewRoute = vi.fn(async () => ({
+      cli: "codex",
+      cliFrom: "rule",
+      ruleLabel: "builder",
+      modelFrom: "none",
+      effortFrom: "none",
+      skipped: [{ field: "cli", from: "override", value: "cursor", reason: "Always use my default is on, so this override was not applied." }],
+    }));
+    const result = (await handleAgentApp(source, "r-why", "tasks.delegate", { brief: "Build the save screen." }, host)) as {
+      crewWhy?: string;
+    };
+    const why = "Always use my default is on, so this override was not applied. Builder role prefers Codex.";
+    expect(result.crewWhy).toBe(why);
+    expect(started[0][4]).toMatchObject({ pickReason: why });
+  });
+
+  it("WP-141: no reason is kept when the crew chose nothing", async () => {
+    const { source, host, started, api } = fixture();
+    api.crewRoute = vi.fn(async () => ({ cli: null, cliFrom: "none", modelFrom: "none", effortFrom: "none" }));
+    const result = (await handleAgentApp(source, "r-no-why", "tasks.delegate", { brief: "Tidy the title." }, host)) as {
+      crewWhy?: string;
+    };
+    expect(result).not.toHaveProperty("crewWhy");
+    expect(started[0][4]).not.toHaveProperty("pickReason");
+  });
+
   it("does not send another engine's model id when the crew names a CLI and no model", async () => {
     setHarnessModels("codex", [{ id: "codex:gpt-5", harness: "codex", name: "GPT-5", settings: [] }]);
     const { source, host, started, api } = fixture();

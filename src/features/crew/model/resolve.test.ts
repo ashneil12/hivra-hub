@@ -104,6 +104,8 @@ describe("never use and the lock", () => {
 
   it("matches a role label as an ordinary rule, and not a different role", () => {
     const built = resolveRoute({ labels: ["Builder"], paths: [] }, [builder, reviewer], signed("claude"));
+    // WP-141: the matched rule's label goes back, the same as the Rust twin.
+    expect(built.ruleLabel).toBe("builder");
     expect(built.cli).toBe("codex");
     expect(built.cliFrom).toBe("rule");
     expect(built.ruleIndex).toBe(0);

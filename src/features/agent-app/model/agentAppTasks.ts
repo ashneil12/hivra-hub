@@ -54,6 +54,7 @@ import { launchCatalog } from "../../crew/model/launchCatalog";
 import { lineRulesFor } from "../../crew/model/lineRules";
 import type { Catalog, RouteDefaults } from "../../crew/model/resolve";
 import { applyCrewLaunch, callerOverride, crewLabels, crewPaths } from "../../crew/model/taskRoute";
+import { routeReason } from "../../crew/model/pick";
 import { routeDefaults } from "../../crew/model/workerDefault";
 import {
   activityNoteSummary,
@@ -175,6 +176,8 @@ export type DelegationMeta = {
   project?: string;
   /** WP-70: the shared task this work moves. */
   taskId?: string;
+  /** WP-141: why the crew picked this CLI, one plain line kept on the row and shown on the Crew tab. */
+  pickReason?: string;
 };
 
 /** A worker chat as this window has it. */
@@ -272,6 +275,9 @@ export type AgentAppTasksHost = {
     cliFrom?: string | null;
     modelFrom?: string | null;
     effortFrom?: string | null;
+    /** WP-141: the matched rule's first label, and what was skipped (Never use, the lock), for the reason. */
+    ruleLabel?: string | null;
+    skipped?: { reason?: string | null }[] | null;
   } | null | undefined>;
   /**
    * WP-144: fresh-eyes review before builders start. Absent means today's start.
@@ -988,6 +994,8 @@ async function delegate(
   // WP-89: outside a bench the routed CLI may simply not be installed. The worker keeps the chat's own CLI so the
   // work still starts, and this sentence says which CLI was asked for and what it runs on instead.
   let cliFallback: string | undefined;
+  // WP-141: why the crew picked this CLI. Kept on the row and told to the Lead, so a pick is never silent.
+  let crewWhy: string | undefined;
   if (tasks.crewRoute) {
     const baseline = model?.harness ?? source.harness;
     const baselineModel = model?.model ?? source.model;
@@ -1012,6 +1020,8 @@ async function delegate(
       });
       const next = applyCrewLaunch(answer, { harness: baseline, model: baselineModel, effort });
       if (next.harness && isHarnessAvailable(next.harness)) {
+        // Only when the CLI it names is the one this worker runs on; a missing CLI says so in cliFallback instead.
+        if (answer?.cli && answer.cli === next.harness) crewWhy = routeReason(answer) || undefined;
         const moved = next.harness !== baseline || next.model !== baselineModel || next.effort !== effort;
         if (moved) {
           crewChose = next.harness !== model?.harness || next.model !== model?.model;
@@ -1175,6 +1185,7 @@ async function delegate(
     ...(goal ? { goal } : {}),
     ...(hubProject ? { project: hubProject } : {}),
     ...(sharedTask ? { taskId: sharedTask } : {}),
+    ...(crewWhy ? { pickReason: crewWhy } : {}),
   };
   // Always monitored: a task reports back to the chat that delegated it.
   try {
@@ -1210,6 +1221,8 @@ async function delegate(
     ...(route && !crewChose ? { modelWhy: route.why } : {}),
     // WP-89: the CLI asked for isn't installed, so the worker runs on this chat's CLI; the Lead passes the line on.
     ...(cliFallback ? { cliFallback } : {}),
+    // WP-141: why the crew picked this CLI, in plain words the Lead can pass on.
+    ...(crewWhy ? { crewWhy } : {}),
     ...(launch.workspaceMode === "worktree" || (redo?.path && launch.worktreeCwd) ? { isolation: "worktree" } : {}),
     ...(auto && launch.workspaceMode === "worktree"
       ? {

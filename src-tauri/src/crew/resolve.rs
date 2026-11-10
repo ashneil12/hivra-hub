@@ -73,6 +73,9 @@ pub struct Route {
     pub model_from: String,
     pub effort_from: String,
     pub rule_index: Option<usize>,
+    /// WP-141: the matched rule's first label, so a pick can say which role or rule chose it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rule_label: Option<String>,
     /// Planning help and verdict checks (WP-40). Cheap and fast, or just a low effort.
     pub plan_model: Option<String>,
     pub plan_effort: Option<String>,
@@ -450,6 +453,7 @@ pub fn resolve_route(
             "none".into()
         },
         rule_index,
+        rule_label: rule.and_then(|rule| rule.labels.first().cloned()),
         plan_model: None,
         plan_effort: None,
         verdict_model: None,

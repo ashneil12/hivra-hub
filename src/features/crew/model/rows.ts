@@ -26,6 +26,8 @@ export type CrewWorkerInput = {
   goal?: string | null;
   /** WP-84: the shared task this crew moves, when the delegation names one. */
   taskId?: string | null;
+  /** The row's history. WP-141 reads `why` off its "recorded" line. */
+  log?: readonly Record<string, unknown>[] | null;
 };
 
 export type CrewSessionInput = {
@@ -70,6 +72,8 @@ export type CrewRow = {
   status: FirstMateStatus | null;
   statusWord: string | null;
   notice: string | null;
+  /** WP-141: why the crew picked this worker's CLI, when the row kept one. */
+  why?: string;
   howLong: string;
   branch: string | null;
   additions: number | null;
@@ -121,6 +125,13 @@ export function firstPlainLine(value: string | null | undefined, max = 240): str
     return text.slice(0, max);
   }
   return null;
+}
+
+/** WP-141: the reason kept on the row's "recorded" line, as one plain line. A key-like line is not shown. */
+export function pickReasonOf(log: CrewWorkerInput["log"]): string | null {
+  const recorded = (log ?? []).find((entry) => entry && entry.event === "recorded");
+  const why = recorded?.why;
+  return typeof why === "string" ? firstPlainLine(why.replace(/[\r\n]+/g, " "), 240) : null;
 }
 
 function cliOf(harness: string | null | undefined): string | null {
@@ -301,6 +312,7 @@ export function crewRows(input: {
           : input.now
       : input.now;
     const notice = firstPlainLine(row.statusNotice, 240);
+    const why = pickReasonOf(row.log);
     const checkout =
       plainToken(delivery?.checkout, 1024) ??
       plainToken(session?.worktreeCwd, 1024) ??
@@ -313,6 +325,7 @@ export function crewRows(input: {
       status,
       statusWord: status ? statusWord(status) : null,
       notice,
+      ...(why ? { why } : {}),
       howLong: howLong(from, to),
       branch: plainToken(delivery?.branch, 200) ?? plainToken(session?.branch, 200),
       additions: countOf(session?.additions),

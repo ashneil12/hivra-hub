@@ -1506,6 +1506,12 @@ fn never_use_skips_a_named_cli_and_a_role_label_is_a_rule() {
     assert_eq!(built.cli.as_deref(), Some("codex"));
     assert_eq!(built.cli_from, "rule");
     assert_eq!(built.model.as_deref(), Some("gpt-codex"));
+    // WP-141: the matched rule's label goes back, so the row can say "Builder role prefers Codex."
+    assert_eq!(built.rule_label.as_deref(), Some("builder"));
+    assert_eq!(
+        serde_json::to_value(&built).unwrap()["ruleLabel"],
+        serde_json::json!("builder")
+    );
     let other = store::route(
         &conn,
         &query("reviewer", "", PROJECT, "", None, None, who),

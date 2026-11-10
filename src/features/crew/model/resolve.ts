@@ -60,6 +60,8 @@ export type Route = {
   effortFrom: FieldSource;
   /** Index into the merged rule list, when a rule matched. */
   ruleIndex: number | null;
+  /** WP-141: the matched rule's first label, so a pick can say which role or rule chose it. */
+  ruleLabel?: string;
   /** Models and efforts a source set that were skipped, in the order they were tried. */
   skipped: SkippedField[];
 };
@@ -265,6 +267,7 @@ export function resolveRoute(
     modelFrom: model.value ? model.from : "none",
     effortFrom: effort.value ? effort.from : "none",
     ruleIndex,
+    ...(rule?.labels[0] ? { ruleLabel: rule.labels[0] } : {}),
     skipped,
   };
 }

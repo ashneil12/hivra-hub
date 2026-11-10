@@ -152,6 +152,8 @@ export type RecordInput = {
   taskId?: string;
   /** A delegated worker's report must carry a self-review; its settle is refused without one (workerReview.ts). */
   reviewRequired?: boolean;
+  /** WP-141: why the crew picked this CLI. Stored as `why` on the row's "recorded" line. */
+  pickReason?: string;
 };
 
 export type SettleInput = {
