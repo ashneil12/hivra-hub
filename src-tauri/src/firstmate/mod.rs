@@ -8,12 +8,15 @@
 //! - `gates` (WP-40): the completion gates and the verdict check a worker's "done" has to pass.
 //! - the depth cap (`check_depth`): a delegation is never deeper than two (first mate, first mate, workers).
 //! - WP-14's fan-out cap (`check_fanout`): one first mate runs at most `MAX_FANOUT` tasks at once.
+//! - WP-171's `mcp`: delegate_tasks, the multi-part form of delegate_task. Its contract (what each task owns, provides,
+//!   requires and checks), the waves and the checks of what a provider made are in the webview, with the briefs.
 //!
 //! The brief scaffold and the per-CLI read-only launch live in the webview (src/features/firstmate/), where briefs are
 //! written and sessions launched. The role rules are src/features/firstmate/contract.md.
 
 pub mod checkout_guard;
 pub mod gates;
+pub mod mcp;
 pub mod report;
 pub mod status;
 

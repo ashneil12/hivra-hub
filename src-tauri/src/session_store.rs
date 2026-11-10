@@ -32,7 +32,7 @@ CREATE INDEX IF NOT EXISTS sessions_cwd_updated_idx
 /// The newest schema this build writes (`schema_migrations`). A database at a higher version was written by a newer
 /// build: it is refused, never opened or migrated, because this build would misread it (docs/PHASE-1B-DEV-SETUP.md).
 /// Raise it with every new numbered migration; `schema_version_matches_the_migrations` checks.
-pub const SCHEMA_VERSION: i64 = 20;
+pub const SCHEMA_VERSION: i64 = 21;
 
 /// A database newer than this build.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -415,15 +415,11 @@ pub(crate) fn boundary_for_read(value: Option<String>) -> Option<String> {
     stored_boundary(Some(&raw)).or(Some("private-boundary-unreadable".to_string()))
 }
 
-#[tauri::command(async)]
-pub fn session_upsert(
-    store: State<'_, SessionStore>,
-    session: SessionUpsert,
-) -> Result<SessionSummary, String> {
+/// What a saved chat must look like. A blank folder is allowed: it is a chat that came in from an export with no folder
+/// that is a project here (docs/PORTABLE.md), and it has to keep saving (title, pin, a new folder) until one is chosen.
+/// Nothing runs in it: every launcher refuses a blank folder (`chat_folder.rs`).
+fn check_upsert(session: &SessionUpsert) -> Result<(), String> {
     validate_id(&session.id, "session")?;
-    if session.cwd.trim().is_empty() {
-        return Err("cwd is required".into());
-    }
     if let Some(provider_session_id) = &session.provider_session_id {
         if !provider_session_id.is_empty() {
             validate_id(provider_session_id, "provider session")?;
@@ -445,7 +441,15 @@ pub fn session_upsert(
     if !session.blocks.is_array() {
         return Err("blocks must be an array".into());
     }
+    Ok(())
+}
 
+#[tauri::command(async)]
+pub fn session_upsert(
+    store: State<'_, SessionStore>,
+    session: SessionUpsert,
+) -> Result<SessionSummary, String> {
+    check_upsert(&session)?;
     let conn = store.conn.lock().map_err(|_| "Session store is locked")?;
     let summary = upsert_session(&conn, &session).map_err(|e| e.to_string())?;
     Ok(summary)
@@ -477,6 +481,16 @@ pub fn session_list_by_project(
     }
     let conn = store.conn.lock().map_err(|_| "Session store is locked")?;
     list_by_project(&conn, &cwd).map_err(|e| e.to_string())
+}
+
+/// The chats that have no folder (an import cleared it, docs/PORTABLE.md), newest first: the sidebar's "Needs a folder"
+/// group, so none of them is findable only through search.
+#[tauri::command(async)]
+pub fn session_list_folderless(
+    store: State<'_, SessionStore>,
+) -> Result<Vec<SessionSummary>, String> {
+    let conn = store.conn.lock().map_err(|_| "Session store is locked")?;
+    list_folderless(&conn).map_err(|e| e.to_string())
 }
 
 #[tauri::command(async)]
@@ -1270,6 +1284,33 @@ fn ensure_column(conn: &Connection, name: &str, decl: &str) -> rusqlite::Result<
     Ok(())
 }
 
+/// The table of what an import's file named for a cleared folder, with every column. A table made by an earlier build
+/// (before `blocked`, `project_id` or `rest` existed, or on the fly before it was a migration) gets the missing ones.
+fn ensure_imported_chat_folders(conn: &Connection) -> rusqlite::Result<()> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS imported_chat_folders (
+           session_id TEXT PRIMARY KEY,
+           cwd TEXT NOT NULL,
+           worktree_cwd TEXT
+         );",
+    )?;
+    for (column, definition) in [
+        ("blocked", "INTEGER NOT NULL DEFAULT 0"),
+        ("project_id", "TEXT"),
+        ("rest", "TEXT"),
+    ] {
+        let present = conn
+            .prepare("SELECT 1 FROM pragma_table_info('imported_chat_folders') WHERE name = ?1")?
+            .exists([column])?;
+        if !present {
+            conn.execute_batch(&format!(
+                "ALTER TABLE imported_chat_folders ADD COLUMN {column} {definition};"
+            ))?;
+        }
+    }
+    Ok(())
+}
+
 fn migrate(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute(
         "CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -1574,6 +1615,16 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
             params![now_millis()],
         )?;
     }
+    if current < 21 {
+        // An imported chat whose folder was cleared keeps what its file named, as an inert note: the window offers it
+        // back once it passes the import's checks (docs/PORTABLE.md). Nothing runs from this table. (Its columns are
+        // kept whole by `ensure_imported_chat_folders` below, whichever build made the table first.)
+        conn.execute(
+            "INSERT INTO schema_migrations (version, applied_at) VALUES (21, ?1)",
+            params![now_millis()],
+        )?;
+    }
+    ensure_imported_chat_folders(conn)?;
     // Create even when a version row already exists (another build may have
     // used the same numbers, or a previous run recorded the version without
     // the table). Restore writes into these; missing tables look like a
@@ -1633,6 +1684,8 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
     crate::delegations::ensure_tables(conn)?;
     // WP-70
     crate::tasks::ensure_tables(conn)?;
+    // WP-159: the programme board. An older build never reads this table.
+    crate::programme::ensure_tables(conn)?;
     // WP-74: the task and doc search index, after both tables exist.
     crate::finder::ensure_index(conn)?;
     // Hivra WP-11: the first mate's wake queue and timers.
@@ -2312,8 +2365,22 @@ fn ceil_char_boundary(text: &str, mut index: usize) -> usize {
 }
 
 fn list_by_project(conn: &Connection, cwd: &str) -> rusqlite::Result<Vec<SessionSummary>> {
+    list_chats_in(conn, cwd, "AND has_user_message = 1")
+}
+
+/// Every chat that has no folder, with or without a message of its own: an imported chat that was only a draft or a
+/// brief still has to be findable in "Needs a folder".
+fn list_folderless(conn: &Connection) -> rusqlite::Result<Vec<SessionSummary>> {
+    list_chats_in(conn, "", "")
+}
+
+fn list_chats_in(
+    conn: &Connection,
+    cwd: &str,
+    message_filter: &str,
+) -> rusqlite::Result<Vec<SessionSummary>> {
     let git = crate::fs::git_info_for(&crate::fs::expand_home(cwd));
-    let mut statement = conn.prepare(
+    let mut statement = conn.prepare(&format!(
         "SELECT id, cwd, harness, model, runtime_mode, title, provider_session_id,
                 created_at, updated_at, branch, archived, pinned,
                 linked_work_item_json,
@@ -2321,12 +2388,12 @@ fn list_by_project(conn: &Connection, cwd: &str) -> rusqlite::Result<Vec<Session
                 worktree_removed, is_draft, automation_id, sidebar_hidden, private_chat
          FROM sessions
          WHERE cwd = ?1
-           AND has_user_message = 1
+           {message_filter}
            AND id NOT IN (SELECT id FROM sessions WHERE inbox_ask IS NOT NULL)
            AND id NOT IN (SELECT session_id FROM orchestration_workers)
            AND id NOT IN (SELECT item_id FROM trash_items WHERE kind = 'chat')
-         ORDER BY updated_at DESC, id ASC",
-    )?;
+         ORDER BY updated_at DESC, id ASC"
+    ))?;
     let rows = statement.query_map(params![cwd], |row| {
         let stored_branch: Option<String> = row.get(9)?;
         let archived: i64 = row.get(10)?;
@@ -2493,6 +2560,11 @@ fn delete_session_in(tx: &Connection, session_id: &str) -> rusqlite::Result<()> 
     )?;
     tx.execute(
         "DELETE FROM orchestration_sidebar WHERE lead_id = ?1",
+        [session_id],
+    )?;
+    // What an import's file named for this chat's folder goes with the chat.
+    tx.execute(
+        "DELETE FROM imported_chat_folders WHERE session_id = ?1",
         [session_id],
     )?;
     if let Some(parent) = parent.filter(|id| id != session_id) {
@@ -3289,7 +3361,7 @@ mod tests {
                        ON sessions (cwd, has_user_message, updated_at DESC, id, harness,
                                     model, runtime_mode, title, provider_session_id,
                                     created_at, branch, archived, pinned, linked_work_item_json);
-                     DELETE FROM schema_migrations WHERE version IN (16, 17, 18, 19, 20);",
+                     DELETE FROM schema_migrations WHERE version IN (16, 17, 18, 19, 20, 21);",
                 )
                 .unwrap();
                 migrate(&conn).unwrap();
@@ -4135,6 +4207,94 @@ mod tests {
         let restored = get_session(&conn, "s1").unwrap().unwrap();
         assert!(!restored.worktree_removed);
         assert_eq!(restored.branch.as_deref(), Some("main"));
+    }
+
+    /// A chat that came in with no folder (docs/PORTABLE.md) keeps saving while it waits for one; the checks that
+    /// protect the row itself stay.
+    #[test]
+    fn a_chat_with_no_folder_yet_can_still_be_saved() {
+        assert_eq!(check_upsert(&sample("s1", "", "Imported")), Ok(()));
+        assert!(check_upsert(&sample("../s1", "", "Imported")).is_err());
+        let store = SessionStore::open_in_memory().unwrap();
+        let conn = store.conn.lock().unwrap();
+        upsert_session(&conn, &sample("s1", "", "Imported")).unwrap();
+        let saved = get_session(&conn, "s1").unwrap().unwrap();
+        assert_eq!(saved.cwd, "");
+        // Never the branch of whatever checkout the app itself runs in.
+        assert_eq!(saved.branch, None);
+    }
+
+    /// Migration 21: what an import's file named for a cleared folder is kept in a real table, and goes with its chat.
+    #[test]
+    fn the_imported_folder_notes_are_a_migration_and_go_with_their_chat() {
+        let store = SessionStore::open_in_memory().unwrap();
+        let conn = store.conn.lock().unwrap();
+        let columns: Vec<String> = conn
+            .prepare("SELECT name FROM pragma_table_info('imported_chat_folders') ORDER BY cid")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .flatten()
+            .collect();
+        assert_eq!(
+            columns,
+            [
+                "session_id",
+                "cwd",
+                "worktree_cwd",
+                "blocked",
+                "project_id",
+                "rest"
+            ]
+        );
+        // An older database (version 20, no table) gets it.
+        conn.execute_batch(
+            "DROP TABLE imported_chat_folders; DELETE FROM schema_migrations WHERE version = 21;",
+        )
+        .unwrap();
+        migrate(&conn).unwrap();
+        assert_eq!(schema_version(&conn).unwrap(), 21);
+        upsert_session(&conn, &sample("s1", "", "Imported")).unwrap();
+        conn.execute(
+            "INSERT INTO imported_chat_folders (session_id, cwd) VALUES ('s1', '/Users/old/app')",
+            [],
+        )
+        .unwrap();
+        delete_session(&conn, "s1").unwrap();
+        let left: i64 = conn
+            .query_row("SELECT COUNT(*) FROM imported_chat_folders", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(left, 0);
+    }
+
+    /// The "Needs a folder" group: every chat with a conversation and no folder, and no chat that has one.
+    #[test]
+    fn chats_with_no_folder_are_listed_together() {
+        let store = SessionStore::open_in_memory().unwrap();
+        let conn = store.conn.lock().unwrap();
+        let said = json!([{ "id": "u", "role": "user", "text": "hello" }]);
+        for (id, cwd) in [("a", ""), ("b", ""), ("c", "/tmp/a")] {
+            let mut session = sample(id, cwd, id);
+            session.blocks = said.clone();
+            upsert_session(&conn, &session).unwrap();
+        }
+        // An imported chat that never had a message of its own is listed too: it has to be findable.
+        let mut quiet = sample("d", "", "d");
+        quiet.blocks = json!([]);
+        upsert_session(&conn, &quiet).unwrap();
+        let ids: Vec<_> = list_folderless(&conn)
+            .unwrap()
+            .into_iter()
+            .map(|summary| summary.id)
+            .collect();
+        assert_eq!(ids.len(), 3, "{ids:?}");
+        for id in ["a", "b", "d"] {
+            assert!(ids.contains(&id.to_string()), "{id}");
+        }
+        // A chat with a folder still lists only by project, and only once it has a message.
+        assert_eq!(list_by_project(&conn, "").unwrap().len(), 2);
     }
 
     #[test]

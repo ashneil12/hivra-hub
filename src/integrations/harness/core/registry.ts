@@ -5,6 +5,7 @@ import type {
   TaskListMeta,
   TurnIntent,
 } from "../../../features/sessions/model/session";
+import { requireChatFolder } from "./chatFolder";
 import { credentialBlock } from "./credentialGuard";
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { transferProviderSession } from "./child";
@@ -90,6 +91,11 @@ export type HarnessAdapter = {
   keepQuestionOpen?(sessionId: string, requestId: number): void;
   /** Kill the child but keep resume state for later rebind. */
   stopSession(sessionId: string): Promise<void>;
+  /**
+   * True while the chat's CLI still runs work the idle park must not stop: a backgrounded shell or monitor, a subagent
+   * or a follow-up turn on its way. A throw counts as busy. Absent means the provider has no such work to protect.
+   */
+  hasBackgroundWork?(sessionId: string): boolean;
   /** Drop resume state and kill the child (delete, harness switch, idle detach). */
   forgetSession(sessionId: string): Promise<void>;
   /**
@@ -141,6 +147,12 @@ const adapters = new Map<HarnessId, HarnessAdapter>();
 export const HARNESS_IDLE_PARK_MS = 3 * 60_000;
 
 /**
+ * While the CLI still runs background work, the park looks again this often. Once the work ends, the chat gets a full
+ * idle time before it is parked, so the agent can still be woken by the notification that work sends.
+ */
+const BACKGROUND_RECHECK_MS = 30_000;
+
+/**
  * Each warm child is a CLI process of a few hundred MB, plus its MCP servers.
  * Past `limit` idle ones, the least recently settled is parked early, never
  * one `keep` claims (the conversation on screen) unless the limit is zero.
@@ -160,7 +172,12 @@ let idleLimitCheck: ReturnType<typeof setTimeout> | undefined;
 /** Map order is settle order: the first entry has been idle longest. */
 const idleParkTimers = new Map<
   string,
-  { harness: HarnessId; timer: ReturnType<typeof setTimeout> }
+  {
+    harness: HarnessId;
+    timer: ReturnType<typeof setTimeout>;
+    /** The last check found background work, so the idle time starts again once it ends. */
+    wasBusy: boolean;
+  }
 >();
 const sessionOperationTails = new Map<string, Promise<void>>();
 const sessionSteerTails = new Map<string, Promise<void>>();
@@ -218,15 +235,52 @@ function cancelIdlePark(sessionId: string): void {
   idleParkTimers.delete(sessionId);
 }
 
-function scheduleIdlePark(harness: HarnessId, sessionId: string): void {
+/** Whether the provider still runs work for this chat. A provider that throws is treated as busy: keep it warm. */
+function hasBackgroundWork(harness: HarnessId, sessionId: string): boolean {
+  const adapter = getHarness(harness);
+  if (!adapter?.hasBackgroundWork) return false;
+  try {
+    return adapter.hasBackgroundWork(sessionId) === true;
+  } catch {
+    return true;
+  }
+}
+
+function armIdlePark(
+  harness: HarnessId,
+  sessionId: string,
+  delay: number,
+  wasBusy: boolean,
+): void {
   cancelIdlePark(sessionId);
   idleParkTimers.set(sessionId, {
     harness,
+    wasBusy,
     timer: setTimeout(() => {
       idleParkTimers.delete(sessionId);
-      void stopHarnessSession(harness, sessionId);
-    }, HARNESS_IDLE_PARK_MS),
+      parkWhenQuiet(harness, sessionId, wasBusy);
+    }, delay),
   });
+}
+
+function parkWhenQuiet(
+  harness: HarnessId,
+  sessionId: string,
+  wasBusy: boolean,
+): void {
+  if (hasBackgroundWork(harness, sessionId)) {
+    armIdlePark(harness, sessionId, BACKGROUND_RECHECK_MS, true);
+    return;
+  }
+  if (wasBusy) {
+    armIdlePark(harness, sessionId, HARNESS_IDLE_PARK_MS, false);
+    return;
+  }
+  void stopHarnessSession(harness, sessionId);
+}
+
+function scheduleIdlePark(harness: HarnessId, sessionId: string): void {
+  armIdlePark(harness, sessionId, HARNESS_IDLE_PARK_MS, false);
   // Checked once the settling operation has left the queue, so a session
   // with a follow-up already queued is told apart from the one finishing.
   if (idleLimitCheck === undefined) {
@@ -247,6 +301,7 @@ export function enforceHarnessIdleLimit(): void {
   for (const [sessionId, { harness }] of [...idleParkTimers]) {
     if (excess <= 0) return;
     if (sessionOperationTails.has(sessionId)) continue;
+    if (hasBackgroundWork(harness, sessionId)) continue;
     if (limit > 0 && idleParkPolicy.keep(sessionId)) continue;
     excess -= 1;
     void stopHarnessSession(harness, sessionId);
@@ -301,6 +356,8 @@ export function setTurnTextDecorator(fn: ((sessionId: string, text: string) => s
 export function sendHarnessTurn(input: SendTurnInput & { harness: HarnessId }) {
   input = { ...input, text: decorateTurnText(input.sessionId, input.text) };
   return queueSessionOperation(input.sessionId, async () => {
+    // Before the control port or any provider hears of the turn: a chat with no folder starts nothing.
+    requireChatFolder(input.cwd);
     const adapter = requireHarness(input.harness);
     if (!adapter.live) {
       throw new Error(`${input.harness} is not connected yet`);
@@ -379,6 +436,7 @@ export function compactHarnessContext(
   input: CompactContextInput & { harness: HarnessId },
 ): Promise<void> {
   return queueSessionOperation(input.sessionId, async () => {
+    requireChatFolder(input.cwd);
     const adapter = requireHarness(input.harness);
     if (!adapter.live) {
       throw new Error(`${input.harness} is not connected yet`);
@@ -417,6 +475,7 @@ export function rewindHarnessLastTurn(
   input: RewindLastTurnInput & { harness: HarnessId },
 ): Promise<RewindLastTurnResult> {
   return queueSessionOperation(input.sessionId, async () => {
+    requireChatFolder(input.cwd);
     const adapter = requireHarness(input.harness);
     if (!adapter.rewindLastTurn) {
       throw new Error(

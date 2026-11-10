@@ -1,10 +1,10 @@
-# WP-137: Spaces, split view and windows: design only
+# WP-137: Spaces, split view and windows
 
 | Wave | Size | Depends on | Grok OK |
 | --- | --- | --- | --- |
 | T3 parity | M | none in this tree | yes |
 
-This package is design only. It adds this note and the source line for the idea. It does not add product code, a setting, a migration, or UI.
+This package started as design only. The first build is in; see "Status" at the end for what is built and what is left.
 
 ## Goal
 
@@ -144,15 +144,17 @@ A stored filter that names a missing group is ignored. Ignoring it shows the ful
 
 A later build can prove this with a fixed list. Three chats with update times 1, 2, and 3 stay in that order after the filter, a split, and a window focus. A pinned chat stays above a newer unpinned one, and two pins do not swap. Projects hidden by the filter return to their saved rail slots. None of those steps calls `summaryFromSession`.
 
-### No implementation
+### No implementation (design round)
 
-This package stops at the design. No setting, no migration, no component, and no change under `src/` or `src-tauri/`.
+The design round stopped at the design. The build round that followed is described under "Status".
 
 ## Done when
 
 - [x] The design covers spaces, split, windows, and the re-sort rule.
 - [x] It reuses the existing pane split, and explains why there is no WP-109 to reuse.
-- [x] No product UI was added.
+- [x] No product UI was added (design round).
+- [x] Build round, first slice: groups on the project strip and "Show only this group", per window, off by default,
+  with no re-sort (see "Status").
 
 ## Licence
 
@@ -163,3 +165,82 @@ The behaviour in this note is inspired by T3 Code (https://github.com/pingdotgg/
 Source: Sidecar (MIT, Copyright (c) 2025 Marcus Vorwaller). Ideas only, no code copied. Design input only, since WP-137 is design.
 
 Add a chat card of type file (path and line) or diff (a commit or the working tree) that an agent can post, shaped like Sidecar's `sidecar open path:line`. The card opens in the pane tree this WP defines. It is one more card type, not a second layout: no pane, window or space is added for it. No new capability advert is needed, since `app actions.list` already lists the verbs. Done when the design names the card, its refusals (a path outside the project, a missing file) and the pane it opens in, and reuses the existing pane split.
+
+## Status (10 Nov 2026): first slice built
+
+### What the design missed about Hivra
+
+The design reads the rail's project groups (`ProjectRail.tsx`, "New group") as something Ash already has. In Hivra he
+does not see them: the Hub flag hands the rail `hubItems`, which replace its Pinned, Groups and Projects lists, and the
+projects Ash picks from are the project strip (`src/features/hub/ui/ProjectStrip.tsx`), which had no groups. So this
+build brings the existing group list to the strip instead of adding anything new: the same `monocode.projectGroups`
+list and the same assignment map in `projectGroups.ts`. A strip project's assignment is keyed `hub-project:<id>`, a key
+no folder path can take, so the strip and the classic rail never fight over a key. One project, one group.
+
+### Built
+
+- `src/features/hub/model/stripGroups.ts`: the strip's sections (`stripLayout`), this window's filter, and the writes.
+  - With no groups the strip is exactly today's strip. Projects in no group come first, then each group under its
+    heading, all in the saved project order. Nothing sorts.
+  - "Show only this group" is a second, explicit action from a group heading's menu. Making a group, choosing one or
+    opening a project never turns it on. It shows that group's heading and projects and a "Show all" button; the others
+    come back in the same slots when it goes off. The open project and its chats stay as they were.
+  - The filter is view state for one window, kept in that window's `sessionStorage`: a reload keeps it, a new window
+    starts without it, closing the window drops it, and it is never written into the group list or the project order.
+    A stored filter naming a group that is gone is ignored (the full strip). A group with no project on the strip (the
+    list is shared with the classic rail's folder groups) gets no heading, except the group the filter is on, which
+    keeps its heading and "Show all" as an empty section.
+  - A project never vanishes under the filter: one moved out of the shown group (No group, another group, New group)
+    turns this window's filter off, and one made with "+" while the filter is on joins the shown group (if that can't
+    be saved, the filter goes off instead).
+  - Move up / Move down in a project's menu trade places with the neighbour in its own section as the strip draws it
+    (the projects in no group, or its group); each is left out where there is no neighbour that way.
+  - Every write to the shared group list is checked against the list that window last read. If another window changed
+    it since, the write is dropped (not merged, not retried) and the menu says "The groups changed in another window.
+    Nothing was changed here; try again." A rename or delete of a group another window deleted closes its box and says
+    "This group is gone: it was deleted in another window." The strip re-reads the list on another window's `storage`
+    event and on focus.
+  - A blank group name is refused. A second group with a name another group has gets a distinct one ("Work 2"), on
+    create and on rename, and keeps its own id.
+  - Deleting a group asks first ("Its projects stay on the strip."), removes the heading only, and turns this window's
+    filter off if it was on that group.
+- `src/features/hub/ui/StripGroups.tsx`: the heading, its menu (Show only this group or Show all projects, Rename group,
+  Delete group) and the project menu's "Group" chooser (each group, No group, New group). No group colour on the strip
+  or in the chooser: the strip keeps colour for status, and the shared palette has red, orange, yellow and green.
+- Hooks only in upstream-shaped files: one menu item and one mode in `ProjectMenu.tsx` (and its Move up / down reading
+  the strip's sections), the sections in `ProjectStrip.tsx`, one call in `NewProjectView.tsx`'s Create. No change to `App.tsx`, `src-tauri/src/lib.rs` or `SettingsView.tsx`; no setting, no migration, no
+  Rust.
+- Split view and windows: nothing new was built, as the design says. The browser spec proves the existing split tree and
+  a second window with the filter: a split of the open chat, a chat dragged from the list into the split (it fills the
+  split's blank pane, opened once, not copied), and a second window that shares the group list, starts with its own
+  filter off, and whose rename reaches the first window.
+- No re-sort, proved with three chats updated 3, 2 and 1 minutes ago: their order is the same after making a group,
+  turning the filter on, a reload, opening the oldest chat, a split, a drag into the split, a second window, a rename
+  there and a focus back.
+
+### Decisions left to Ash, taken the conservative way
+
+- Overlapping groups (a project in two groups): not built. One project, one group, as the design says until Ash decides.
+- A macOS tray: not built, as the design says.
+- The word "space" is not on screen. The label is "Show only this group".
+
+### Next slice
+
+- Reorder groups on the strip (drag a heading), and collapse a group there. The rail's group order is kept and used, but
+  the strip has no way to change it yet.
+- The addendum's file or diff chat card an agent can post (Sidecar's idea), opening in the pane tree. It needs its own
+  design pass for the card shape and its refusals before a build.
+- Hub projects removed from the strip leave their `hub-project:<id>` assignment behind (harmless: it shows nowhere).
+  A tidy-up on remove is a small follow-up.
+
+### Tests
+
+- `src/features/hub/model/stripGroups.test.ts`: the layout (no heading for a group with no strip project), Move up /
+  down within a section, the filter's storage and when it goes off, a new project joining the shown group, the guarded
+  writes, a group gone in another window, and the naming rules.
+- `src/features/hub/ui/ProjectStrip.groups.test.ts`: the strip with no groups, making a group from the project menu, the
+  filter and its survival across a remount, Show all, delete with its question, a filter naming a missing group, Move up
+  / down within a section, a move to No group under the filter, a folder group with no heading, and the gone note.
+- `src/features/hub/ui/Projects.record.test.ts`: Create while the filter is on puts the new project in the shown group.
+- `tests/browser/wp137-spaces.spec.ts` (`npx playwright test -c tests/browser/wp137.config.ts`, Chromium and WebKit): the
+  whole flow in the real app in a browser, a reload, a split, a drag into the split, and a second window.

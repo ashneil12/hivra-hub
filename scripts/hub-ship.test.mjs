@@ -1260,6 +1260,36 @@ test("SH-1: tidying old ships never archives the ship a rollback under way resto
   assert.deepEqual(retainShips(ships, archive, "20261022-000005-5555555"), [committed, "20261022-000002-2222222"]);
 });
 
+test("SH-1: tidying archives nothing while a ship folder's state can't be read, so a rollback being written keeps its copy", () => {
+  // The Windows 'SH-1: hub:rollback of a ship with two newer ship folders…' failure: a read of the rollback's state.json
+  // during its writer's rename comes back empty, the tidy-up no longer sees which ship the rollback restores from, and
+  // archives it. An unreadable state could be that rollback, so nothing moves until it can be read.
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "hub-ship-test-")));
+  roots.push(root);
+  const ships = path.join(root, "ship");
+  const archive = path.join(root, "archive");
+  const write = (id, text) => {
+    fs.mkdirSync(path.join(ships, id, "backup"), { recursive: true });
+    fs.writeFileSync(path.join(ships, id, "state.json"), text);
+  };
+  const committed = "20261022-000001-1111111";
+  write(committed, JSON.stringify({ id: committed, phase: "committed" }));
+  write("20261022-000002-2222222", JSON.stringify({ id: "20261022-000002-2222222", phase: "rolled-back" }));
+  write("20261022-000003-3333333", JSON.stringify({ id: "20261022-000003-3333333", phase: "rolled-back" }));
+  const rollback = "20261022-000004-aaaaaaa-rollback";
+  // Half written, as a read in the middle of the writer's replace can see it.
+  write(rollback, '{"id":"20261022-000004-aaaaaaa-rollback","phase":"wai');
+  assert.deepEqual(retainShips(ships, archive, "20261022-000003-3333333"), []);
+  assert.ok(fs.existsSync(path.join(ships, committed, "backup")), "the rollback's database copy stays put");
+  // A folder still being staged, with no state yet, is the same unknown.
+  fs.rmSync(path.join(ships, rollback, "state.json"));
+  assert.deepEqual(retainShips(ships, archive, "20261022-000003-3333333"), []);
+  // Once it reads as the rollback it is, the committed ship is protected by name and the rest is tidied as before.
+  write(rollback, JSON.stringify({ id: rollback, phase: "waiting", kind: "rollback", requestedBy: { via: "hub:rollback", rollsBack: committed } }));
+  assert.deepEqual(retainShips(ships, archive, "20261022-000003-3333333"), []);
+  assert.ok(fs.existsSync(path.join(ships, committed, "backup")));
+});
+
 test("SH-4: a superseded ship's LaunchAgent is booted out and its plist removed", { skip: process.platform === "win32" }, async () => {
   const w = world();
   const ships = path.join(w.data, "ship");

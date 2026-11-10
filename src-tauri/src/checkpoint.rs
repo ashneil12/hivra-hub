@@ -1416,7 +1416,10 @@ fn write_manifest(dir: &Path, manifest: &Manifest) -> Result<(), String> {
 
 fn project_root(cwd: &str) -> Result<PathBuf, String> {
     let trimmed = cwd.trim();
-    if trimmed.is_empty() || trimmed == "~" {
+    if trimmed.is_empty() {
+        return Err(crate::chat_folder::NEEDS_FOLDER.into());
+    }
+    if trimmed == "~" {
         return Err("cwd is required".into());
     }
     let root = expand_home(trimmed);

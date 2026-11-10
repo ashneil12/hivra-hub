@@ -356,7 +356,8 @@ function sessionStub(session: Session): WorkspaceSessionStub | null {
   if (!session.id) return null;
   return {
     id: session.id,
-    cwd: session.cwd || "~",
+    // Blank stays blank: a chat with no folder (docs/PORTABLE.md) must not come back as the home folder.
+    cwd: typeof session.cwd === "string" ? session.cwd : "~",
     harness: session.harness,
     model: session.model,
     modelSettings: { ...session.modelSettings },
@@ -425,10 +426,8 @@ function sanitizeStub(raw: unknown): WorkspaceSessionStub | null {
       : {};
   return {
     id: value.id,
-    cwd:
-      typeof value.cwd === "string" && value.cwd.trim()
-        ? value.cwd.trim()
-        : "~",
+    // A snapshot that never wrote a folder is the home folder; a blank one is a chat with none.
+    cwd: typeof value.cwd === "string" ? value.cwd.trim() : "~",
     harness,
     // WP-16: the retired Grok model id reads as the default Claude model. Not written back.
     model: typeof value.model === "string" ? readRetiredGrokModel(value.model, defaultModelId("claude")) : "",
