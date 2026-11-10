@@ -35,3 +35,7 @@ that provides the machines is separate and out of scope here.
 
 - [ ] Tests against a stubbed cloud service: sign-in, pairing, account check failing soft, routine caps, away feed.
 - [ ] `npm run check` passes; a dev-copy check against a staging service once one exists.
+
+## See also
+
+Phone basics (the Expo app already in `mobile/`, off by default, no store publish) are [WP-149](WP-149-mobile-app.md). A relay, a web client, and work that continues with the laptop closed are WP-133, which extends this package. WP-149 does not add a second remote plan and does not replace the decisions above.
