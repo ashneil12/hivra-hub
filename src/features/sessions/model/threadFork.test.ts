@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { memoryReadableBlocks, UNREADABLE_BOUNDARY } from "../../memory/model/privateChat";
 import { temporaryWorktreeBranchName, type Worktree } from "../../source-control/model/worktrees";
@@ -709,6 +710,29 @@ describe("the first send from a fork", () => {
     const source = chat([block({ id: "u1", role: "user", text: "   " })]);
     const fork = forkSessionAtMessage(source, "u1", ids(["fork-1", "b1"]))!;
     expect(pendingForkBrief(fork)).toBeNull();
+  });
+});
+
+describe("the first send from a fork, as the app sends it", () => {
+  // The send path lives in the App component, which a unit test cannot render. The model tests above build the
+  // prompt the way App does; these read App so that dropping a call there fails here (the repo's other App guards).
+  const app = readFileSync(`${process.cwd()}/src/app/App.tsx`, "utf8");
+
+  it("asks for a fork's recap ahead of a handoff's, and not while a harness switch owns the send", () => {
+    expect(app).toMatch(/const queuedFork =\s*live && !pendingSwitch \? pendingForkBrief\(current\) : null;/);
+    expect(app).toMatch(/live && !pendingSwitch && !queuedFork \? pendingHandoff\(current\) : null/);
+    expect(app).toMatch(/: \(queuedFork \?\? queuedHandoff\);/);
+  });
+
+  it("wraps the recap into the prompt like a handoff, with the messages typed since", () => {
+    expect(app).toMatch(/const earlier = queuedFork\s*\? queuedFork\.earlier/);
+    expect(app).toMatch(
+      /wrapHandoffPrompt\(\s*wrap\.text,\s*wrap\.from,\s*turnPrompt\.trim\(\) \|\| CONTINUE_PROMPT,\s*earlier,\s*\)/,
+    );
+  });
+
+  it("clears the saved fork point once a turn is taken, and leaves it for a slash command", () => {
+    expect(app).toMatch(/rawCommand\s*\? ready\s*: consumeForkPoint\(consumeHandoff\(ready\)\)/);
   });
 });
 
