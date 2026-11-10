@@ -141,7 +141,8 @@ pub(super) fn fold_name(name: &str) -> String {
 /// Files a CLI reads as instructions, rules, settings or tool servers from the folder it starts in and the folders above
 /// it (Claude Code, Codex, Gemini, OpenCode, Cursor, Windsurf, Cline, Copilot, Qwen, Hermes, Grok, Crush, AGENT.md). A
 /// deny-list, used only to decide where a written file is read from: what an import may write is an allow-list
-/// (`memory_note_file`). Compared folded (`fold_name`).
+/// (`memory_note_file`). Compared folded (`fold_name`). SOUL.md is left out on purpose: a Mono's own soul is restored
+/// under that name, and holding it would break soul restore.
 pub(super) fn instruction_file(name: &str) -> bool {
     matches!(
         fold_name(name).as_str(),
