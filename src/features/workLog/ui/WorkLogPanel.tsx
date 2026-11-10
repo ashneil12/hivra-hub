@@ -15,9 +15,11 @@ import {
   saveWeeklyRetro,
   stageRetro,
   weeklyRetroDue,
+  type PendingEdit,
   type RetroResult,
   type WeeklyRetro,
 } from "../model/retro";
+import { FILE_FULL, QUEUE_FAILED, stageRetroEdits, type StageOutcome } from "../model/retroStore";
 
 type Span = "today" | "week";
 
@@ -26,7 +28,19 @@ type Props = {
   lines?: WorkLogLine[];
   /** The local day the panel calls today. Tests pass one; the app uses the clock. */
   today?: string;
+  /** Where a retro's edits are queued. The app queues them as pending learn store changes. */
+  stage?: (edits: PendingEdit[], at: string) => Promise<StageOutcome>;
 };
+
+/** What a retro did with its edits, in plain words. */
+function queuedLine(outcome: StageOutcome): string {
+  if (outcome.waiting > 0) {
+    const one = outcome.waiting === 1;
+    return `${outcome.waiting} ${one ? "edit is" : "edits are"} waiting for you. Accept or reject ${one ? "it" : "each one"} in Settings, Memory, Learn from chats.`;
+  }
+  if (outcome.full > 0) return FILE_FULL;
+  return "No new edits. The ones found were already saved or turned down.";
+}
 
 function inSpan(line: WorkLogLine, span: Span, today: string): boolean {
   if (span === "today") return line.day === today;
@@ -38,7 +52,7 @@ function inSpan(line: WorkLogLine, span: Span, today: string): boolean {
  * Settings → Work log (WP-157). One project or every project, grouped by day
  * and kind. "What got done today?" is the outcome lines for today.
  */
-export function WorkLogPanel({ lines, today: todayProp }: Props) {
+export function WorkLogPanel({ lines, today: todayProp, stage = stageRetroEdits }: Props) {
   const seeded = lines !== undefined;
   const today = todayProp && todayProp.trim() ? todayProp : localDay(new Date());
   const [project, setProject] = useState("");
@@ -49,6 +63,8 @@ export function WorkLogPanel({ lines, today: todayProp }: Props) {
   const [routine, setRoutine] = useState<WeeklyRetro>(() => loadWeeklyRetro());
   const [report, setReport] = useState<RetroResult | null>(null);
   const [retroProblem, setRetroProblem] = useState<string | null>(null);
+  const [queued, setQueued] = useState<StageOutcome | null>(null);
+  const [queueProblem, setQueueProblem] = useState<string | null>(null);
   const generation = useRef(0);
   const retroGeneration = useRef(0);
   const askedWeekly = useRef(false);
@@ -95,18 +111,37 @@ export function WorkLogPanel({ lines, today: todayProp }: Props) {
     }
   }
 
-  function showRetro(rows: WorkLogLine[]) {
+  /**
+   * Show the week, then queue its edits as pending learn store changes. Nothing is written to
+   * Opinions here: the learn screen's accept does that. False when the edits could not be queued
+   * or a newer retro took over.
+   */
+  async function showRetro(rows: WorkLogLine[], mine: number): Promise<boolean> {
     const named = project.trim();
     const scoped = named ? rows.filter((line) => line.project === named) : rows;
+    const result = stageRetro(scoped, today);
     setRetroProblem(null);
-    setReport(stageRetro(scoped, today));
+    setQueued(null);
+    setQueueProblem(null);
+    setReport(result);
+    if (result.pending.length === 0) return true;
+    try {
+      const outcome = await stage(result.pending, new Date().toISOString());
+      if (mine !== retroGeneration.current) return false;
+      setQueued(outcome);
+      return true;
+    } catch {
+      if (mine !== retroGeneration.current) return false;
+      setQueueProblem(QUEUE_FAILED);
+      return false;
+    }
   }
 
   async function runRetro() {
     const mine = ++retroGeneration.current;
     const rows = await weekLines(mine);
     if (rows === null || mine !== retroGeneration.current) return;
-    showRetro(rows);
+    await showRetro(rows, mine);
   }
 
   function toggleWeekly() {
@@ -122,10 +157,11 @@ export function WorkLogPanel({ lines, today: todayProp }: Props) {
     if (!seeded && !loaded) return;
     let cancelled = false;
     const mine = ++retroGeneration.current;
-    void weekLines(mine).then((rows) => {
+    void weekLines(mine).then(async (rows) => {
       if (cancelled || rows === null || mine !== retroGeneration.current) return;
+      // A week whose edits could not be queued is not marked as asked, so the next visit tries again.
+      if (!(await showRetro(rows, mine))) return;
       askedWeekly.current = true;
-      showRetro(rows);
       const marked = markAsked(routine, new Date().toISOString());
       setRoutine(marked);
       saveWeeklyRetro(marked);
@@ -184,7 +220,9 @@ export function WorkLogPanel({ lines, today: todayProp }: Props) {
               ))}
             </ul>
           )}
-          <p>Nothing was changed.</p>
+          {queueProblem ? <p>{queueProblem}</p> : null}
+          {queued ? <p>{queuedLine(queued)}</p> : null}
+          <p>Opinions was not changed.</p>
         </div>
       ) : null}
       <p className="px-3 text-[13px] text-content" data-today-answer>

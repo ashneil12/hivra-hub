@@ -5,6 +5,8 @@ import { createRoot, type Root } from "react-dom/client";
 import { createElement } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { WorkLogPanel } from "./WorkLogPanel";
+import type { PendingEdit } from "../model/retro";
+import type { StageOutcome } from "../model/retroStore";
 import type { WorkLogLine } from "../model/workLog";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn(async () => undefined) }));
@@ -40,7 +42,12 @@ describe("WorkLogPanel", () => {
     vi.unstubAllGlobals();
   });
 
-  async function render(props: { lines?: WorkLogLine[] } = { lines: seed }) {
+  async function render(
+    props: {
+      lines?: WorkLogLine[];
+      stage?: (edits: PendingEdit[], at: string) => Promise<StageOutcome>;
+    } = { lines: seed },
+  ) {
     await act(async () => {
       root.render(createElement(WorkLogPanel, { ...props, today: "2026-11-10" }));
     });
@@ -130,20 +137,80 @@ describe("WorkLogPanel", () => {
     expect(container.textContent).toContain("The work log could not be read. Try again.");
   });
 
-  it("a retro reports the week and does not write a learn store change", async () => {
-    await render({
-      lines: [...seed, line("2026-11-10", "feedback", "Keep the line short.")],
+  const queued: StageOutcome = { staged: 1, waiting: 1, declined: 0, present: 0, full: 0 };
+  const click = (name: string) =>
+    act(async () => {
+      [...container.querySelectorAll("button")].find((button) => button.textContent === name)!.click();
     });
-    await act(async () => {
-      [...container.querySelectorAll("button")].find((button) => button.textContent === "Run a retro")!.click();
-    });
+
+  it("a retro reports the week and queues its edits as pending, leaving Opinions alone", async () => {
+    const stage = vi.fn(async () => queued);
+    await render({ lines: [...seed, line("2026-11-10", "feedback", "Keep the line short.")], stage });
+    await click("Run a retro");
     const retro = container.querySelector("[data-retro]")!;
     expect(retro.textContent).toContain("Shipped: 3.");
     expect(retro.textContent).toContain("Feedback: 1.");
     expect(retro.textContent).toContain("Keep the line short.");
-    expect(retro.textContent).toContain("Nothing was changed.");
+    expect(retro.textContent).toContain("1 edit is waiting for you. Accept or reject it in Settings, Memory, Learn from chats.");
+    expect(retro.textContent).toContain("Opinions was not changed.");
+    expect(stage).toHaveBeenCalledTimes(1);
+    const [edits, at] = stage.mock.calls[0] as unknown as [PendingEdit[], string];
+    expect(edits.map((edit) => edit.text)).toEqual(["Keep the line short."]);
+    expect(Number.isFinite(Date.parse(at))).toBe(true);
     expect(invoke).not.toHaveBeenCalled();
-    expect(JSON.stringify(retro.textContent)).not.toContain("learn_profile_save");
+  });
+
+  it("by default it queues through the learn state only, and never saves a profile file", async () => {
+    const commands: string[] = [];
+    vi.mocked(invoke).mockImplementation(async (command: string) => {
+      commands.push(command);
+      if (command === "learn_state_load") return { revision: 3, state: {} };
+      if (command === "learn_profile_load") return { opinions: "# Opinions\n", opinionsSha256: "sha" };
+      if (command === "learn_state_cas") return true;
+      throw new Error(`unexpected ${command}`);
+    });
+    await render({ lines: [...seed, line("2026-11-10", "feedback", "Keep the line short.")] });
+    await click("Run a retro");
+    expect(container.querySelector("[data-retro]")!.textContent).toContain("1 edit is waiting for you.");
+    expect(new Set(commands)).toEqual(new Set(["learn_profile_load", "learn_state_load", "learn_state_cas"]));
+    expect(commands).not.toContain("learn_profile_save");
+    expect(commands).not.toContain("learn_apply_edit");
+  });
+
+  it("says when the edits could not be queued, and still reports the week", async () => {
+    const stage = vi.fn(async () => {
+      throw new Error("raw failure");
+    });
+    await render({ lines: [...seed, line("2026-11-10", "feedback", "Keep the line short.")], stage });
+    await click("Run a retro");
+    const retro = container.querySelector("[data-retro]")!;
+    expect(retro.textContent).toContain("Shipped: 3.");
+    expect(retro.textContent).toContain("The edits could not be queued. Try again.");
+    expect(retro.textContent).not.toContain("raw failure");
+    expect(retro.textContent).not.toContain("is waiting for you");
+  });
+
+  it("says why nothing new was queued", async () => {
+    const stage = vi.fn(async (): Promise<StageOutcome> => ({ staged: 0, waiting: 0, declined: 1, present: 1, full: 0 }));
+    await render({ lines: [...seed, line("2026-11-10", "feedback", "Keep the line short.")], stage });
+    await click("Run a retro");
+    expect(container.querySelector("[data-retro]")!.textContent).toContain(
+      "No new edits. The ones found were already saved or turned down.",
+    );
+
+    stage.mockResolvedValue({ staged: 0, waiting: 0, declined: 0, present: 0, full: 1 });
+    await click("Run a retro");
+    expect(container.querySelector("[data-retro]")!.textContent).toContain(
+      "Opinions is full. Remove or merge something there first.",
+    );
+  });
+
+  it("a week with no edits queues nothing", async () => {
+    const stage = vi.fn(async () => queued);
+    await render({ lines: seed, stage });
+    await click("Run a retro");
+    expect(container.querySelector("[data-retro]")!.textContent).toContain("No edits proposed.");
+    expect(stage).not.toHaveBeenCalled();
   });
 
   it("the weekly routine is off, and turning it on does not ask", async () => {
@@ -158,18 +225,20 @@ describe("WorkLogPanel", () => {
     expect(invoke).not.toHaveBeenCalled();
   });
 
-  it("a weekly routine that is already due asks once and still changes nothing", async () => {
+  it("a weekly routine that is already due asks once, queues its edits and still applies nothing", async () => {
     localStorage.setItem(
       "monocode:work-log-weekly-retro",
       JSON.stringify({ enabled: true, lastAskedAt: null }),
     );
-    await render();
+    const stage = vi.fn(async () => queued);
+    await render({ lines: [...seed, line("2026-11-10", "feedback", "Keep the line short.")], stage });
     await act(async () => {
       await Promise.resolve();
     });
     const retro = container.querySelector("[data-retro]");
     expect(retro?.textContent).toContain("Shipped: 3.");
-    expect(retro?.textContent).toContain("Nothing was changed.");
+    expect(retro?.textContent).toContain("Opinions was not changed.");
+    expect(stage).toHaveBeenCalledTimes(1);
     expect(invoke).not.toHaveBeenCalled();
     const saved = JSON.parse(localStorage.getItem("monocode:work-log-weekly-retro") ?? "{}") as {
       enabled?: boolean;
@@ -177,5 +246,25 @@ describe("WorkLogPanel", () => {
     };
     expect(saved.enabled).toBe(true);
     expect(saved.lastAskedAt).toEqual(expect.any(String));
+  });
+
+  it("a weekly routine whose edits could not be queued is not marked as asked", async () => {
+    localStorage.setItem(
+      "monocode:work-log-weekly-retro",
+      JSON.stringify({ enabled: true, lastAskedAt: null }),
+    );
+    const stage = vi.fn(async () => {
+      throw new Error("busy");
+    });
+    await render({ lines: [...seed, line("2026-11-10", "feedback", "Keep the line short.")], stage });
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(container.querySelector("[data-retro]")?.textContent).toContain("The edits could not be queued. Try again.");
+    const saved = JSON.parse(localStorage.getItem("monocode:work-log-weekly-retro") ?? "{}") as {
+      lastAskedAt?: string | null;
+    };
+    expect(saved.lastAskedAt).toBeNull();
+    expect(stage).toHaveBeenCalledTimes(1);
   });
 });

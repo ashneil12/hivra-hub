@@ -31,7 +31,13 @@ test("groups the week by day and kind, and answers today from the log", async ({
   const retro = log.locator("[data-retro]");
   await expect(retro).toContainText("Shipped: 2.");
   await expect(retro).toContainText("Keep the work log line short.");
-  await expect(retro).toContainText("Nothing was changed.");
+  await expect(retro).toContainText(
+    "1 edit is waiting for you. Accept or reject it in Settings, Memory, Learn from chats.",
+  );
+  await expect(retro).toContainText("Opinions was not changed.");
+  await expect
+    .poll(() => page.evaluate(() => (window as unknown as { __queued?: string[] }).__queued ?? []))
+    .toEqual(["Keep the work log line short."]);
   await expect(log.getByRole("button", { name: "Weekly retro" })).toHaveAttribute("aria-pressed", "false");
 });
 

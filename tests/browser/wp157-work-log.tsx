@@ -2,6 +2,7 @@
 // WorkLogPanel Settings renders, not a copy of its markup.
 import { createRoot } from "react-dom/client";
 import { WorkLogPanel } from "../../src/features/workLog/ui/WorkLogPanel";
+import type { PendingEdit } from "../../src/features/workLog/model/retro";
 import type { WorkLogLine } from "../../src/features/workLog/model/workLog";
 import "../../src/styles/index.css";
 
@@ -18,5 +19,12 @@ const seed: WorkLogLine[] = [
   line("2026-11-10", "feedback", "Keep the work log line short."),
 ];
 
-createRoot(document.getElementById("log")!).render(<WorkLogPanel lines={seed} today="2026-11-10" />);
+// The page has no app behind it, so the retro's queue is a stand-in that records what it was given.
+async function stage(edits: PendingEdit[]) {
+  const holder = window as unknown as { __queued?: string[] };
+  holder.__queued = [...(holder.__queued ?? []), ...edits.map((edit) => edit.text)];
+  return { staged: edits.length, waiting: edits.length, declined: 0, present: 0, full: 0 };
+}
+
+createRoot(document.getElementById("log")!).render(<WorkLogPanel lines={seed} today="2026-11-10" stage={stage} />);
 createRoot(document.getElementById("empty")!).render(<WorkLogPanel lines={[]} today="2026-11-10" />);
