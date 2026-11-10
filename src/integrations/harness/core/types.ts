@@ -261,6 +261,11 @@ export type HarnessSessionInput = {
    * (src/features/firstmate/model/readOnly.ts); for every CLI the app also checks the checkout after each turn.
    */
   firstMate?: boolean;
+  /**
+   * Hivra WP-143: this session is a Mono, a coding team or one of their workers (features/crew/model/crewSession.ts).
+   * Claude Code starts these on Anthropic with a cheap Explore agent passed as a flag (providers/claude/explorePin.ts).
+   */
+  crew?: boolean;
   onEvent: (event: HarnessEvent) => void;
 };
 
