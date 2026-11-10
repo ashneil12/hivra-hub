@@ -208,9 +208,10 @@ pub(super) fn mono_folder_file(relative: &Path) -> bool {
     }
 }
 
-/// A file a CLI reads as instructions, rules or settings, not hidden, at a place that a Mono's folder can hold: an import
-/// keeps such a file beside its original for Ash to review, never under its own name. `relative` is inside the Monos home.
-pub(super) fn instruction_file_for_review(relative: &Path) -> bool {
+/// A file a CLI reads as instructions, rules or settings, at a plain path (no hidden part, in any folder): a memory import
+/// keeps such a file beside its original for Ash to review, never under its own name. `relative` is inside the memory
+/// folder.
+pub(super) fn instruction_file_at(relative: &Path) -> bool {
     let plain_path = relative.components().all(|part| match part {
         Component::Normal(name) => !name.to_string_lossy().starts_with('.'),
         _ => false,
@@ -219,6 +220,46 @@ pub(super) fn instruction_file_for_review(relative: &Path) -> bool {
         && relative
             .file_name()
             .is_some_and(|name| instruction_file(&name.to_string_lossy()))
+}
+
+/// An instruction file inside the Monos home that an import may hold beside its original for review. Only a Mono's own
+/// place takes one: the id folder (`<id>/CLAUDE.md`) and the `memory` and `skills` notes under it, nested as deep as the
+/// folder goes. Anywhere else (the Monos home itself, another depth, a hidden folder) it is refused. `relative` is inside
+/// the Monos home.
+pub(super) fn instruction_file_for_review(relative: &Path) -> bool {
+    let parts: Vec<String> = relative
+        .components()
+        .map(|part| match part {
+            Component::Normal(name) => Some(name.to_string_lossy().into_owned()),
+            _ => None,
+        })
+        .collect::<Option<_>>()
+        .unwrap_or_default();
+    let Some((file, folders)) = parts.split_last() else {
+        return false;
+    };
+    if !instruction_file(file) {
+        return false;
+    }
+    match folders {
+        [] => false,
+        [id] => plain_id(id),
+        [id, dir, rest @ ..] => {
+            plain_id(id)
+                && matches!(dir.as_str(), "memory" | "skills")
+                && rest.iter().all(|folder| note_name(folder))
+        }
+    }
+}
+
+/// A hidden entry a folder may hold without a CLI reading instructions from it (compared lowercased): git's own files,
+/// `.gitignore`, the Finder's `.DS_Store`, and the environment and virtualenv files of a project.
+fn harmless_hidden(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    matches!(
+        lower.as_str(),
+        ".git" | ".gitignore" | ".ds_store" | ".env" | ".venv"
+    ) || lower.starts_with(".env.")
 }
 
 fn plain_id(name: &str) -> bool {
@@ -369,21 +410,20 @@ impl FolderRules {
         self.mono_folders.iter().any(|mono| mono == dir)
     }
 
-    /// A file a CLI would read as instructions sits, right now, in this folder or in a folder above it up to its Mono's
-    /// folder (inclusive), or one of the folders a CLI keeps its settings in sits there (`.claude`, `.codex`, ...). Other
-    /// hidden entries, such as `.env` or `.venv`, don't count. Read from disk when a re-link is offered.
+    /// Whether a folder may be offered back, judged from disk when a re-link is offered: held back when a file a CLI
+    /// reads as instructions sits in this folder or in a folder above it up to its Mono's folder (inclusive), when any
+    /// hidden entry sits there that is not on the short list of harmless ones (`harmless_hidden`, compared lowercased,
+    /// so `.agents`, `.Claude` and any other tool's folder count), or when any entry there is a link.
     pub(super) fn instructions_on_disk(&self, dir: &Path, top: &Path) -> bool {
         let mut here = Some(dir);
         while let Some(folder) = here {
             if let Ok(entries) = std::fs::read_dir(folder) {
                 for entry in entries.flatten() {
                     let name = entry.file_name().to_string_lossy().into_owned();
-                    // Only the names a CLI reads: an instruction file, or the folder one keeps its settings and rules in.
-                    let cli_folder = matches!(
-                        name.as_str(),
-                        ".claude" | ".codex" | ".cursor" | ".gemini" | ".opencode" | ".github"
-                    );
-                    if instruction_file(&name) || cli_folder {
+                    // A link could point anywhere, and an unreadable entry is not known to be harmless.
+                    let link = entry.file_type().map_or(true, |kind| kind.is_symlink());
+                    let hidden_unknown = name.starts_with('.') && !harmless_hidden(&name);
+                    if instruction_file(&name) || hidden_unknown || link {
                         return true;
                     }
                 }
