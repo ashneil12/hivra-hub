@@ -8,6 +8,7 @@ const {
   MORE_AGENT_COPY,
   MoreAgentsChangedError,
   addMoreAgent,
+  approveMoreAgent,
   argsFromLines,
   loadMoreAgents,
   newMoreAgentEntry,
@@ -134,5 +135,26 @@ describe("More agents list writes", () => {
     invoke.mockResolvedValueOnce({ revision: 6, agents: [{ id: "broken" }] });
     await removeMoreAgent(list, 0);
     expect(invoke).toHaveBeenLastCalledWith("more_agents_write", { expectedRevision: 5, agents: [{ id: "broken" }] });
+  });
+});
+
+describe("More agents approvals", () => {
+  it("says which entries the app has approved to run", async () => {
+    invoke.mockResolvedValueOnce({ revision: 2, agents: [good], approved: ["copilot"] });
+    const list = await loadMoreAgents();
+    expect(list.approved).toEqual(["copilot"]);
+  });
+
+  it("treats a missing approval list as nothing approved", async () => {
+    invoke.mockResolvedValueOnce({ revision: 2, agents: [good] });
+    const list = await loadMoreAgents();
+    expect(list.approved).toEqual([]);
+  });
+
+  it("asks the app to record or withdraw one entry's approval, and reads the list back", async () => {
+    invoke.mockResolvedValueOnce({ revision: 2, agents: [good], approved: ["copilot"] });
+    const list = await approveMoreAgent("copilot", true);
+    expect(invoke).toHaveBeenLastCalledWith("more_agents_approve", { id: "copilot", allowed: true });
+    expect(list.approved).toEqual(["copilot"]);
   });
 });

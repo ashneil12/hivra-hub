@@ -34,7 +34,8 @@ export type MoreAgentRow =
   | { usable: true; entry: MoreAgentEntry; raw: unknown }
   | { usable: false; id?: string; name?: string; reason: string; raw: unknown };
 
-export type MoreAgentsList = { revision: number; rows: MoreAgentRow[] };
+/** `approved` is the ids whose current command the person has allowed to run (the app decides; this is for display). */
+export type MoreAgentsList = { revision: number; rows: MoreAgentRow[]; approved: string[] };
 
 /** The words a person sees for each gap in the subset (WP-134's table). No dashes. */
 export const MORE_AGENT_COPY = {
@@ -206,10 +207,13 @@ export function suggestMoreAgentId(name: string): string {
     .slice(0, 48);
 }
 
-type StoredDocument = { revision: number; agents: unknown[] };
+type StoredDocument = { revision: number; agents: unknown[]; approved?: unknown };
 
 function listFrom(doc: StoredDocument): MoreAgentsList {
-  return { revision: doc.revision, rows: parseMoreAgentRows(doc.agents) };
+  const approved = Array.isArray(doc.approved)
+    ? doc.approved.filter((id): id is string => typeof id === "string")
+    : [];
+  return { revision: doc.revision, rows: parseMoreAgentRows(doc.agents), approved };
 }
 
 export class MoreAgentsChangedError extends Error {
@@ -266,18 +270,21 @@ export function removeMoreAgent(list: MoreAgentsList, index: number): Promise<Mo
   );
 }
 
+/** The person's own tap: allow this entry's current command to run, or withdraw that allowance. */
+export async function approveMoreAgent(id: string, allowed: boolean): Promise<MoreAgentsList> {
+  const doc = await invoke<StoredDocument>("more_agents_approve", { id, allowed });
+  notify();
+  return listFrom(doc);
+}
+
+/** The result of checking one entry (src/integrations/harness/moreAgents/checkAgent.ts). */
 export type MoreAgentCheck = {
-  status: "ok" | "not_found" | "wrong_version" | "not_answering" | "gone";
+  status: "ok" | "not_found" | "wrong_version" | "not_answering" | "gone" | "not_approved";
   message: string;
   agentName?: string;
   protocolVersion?: number;
   loadSession?: boolean;
 };
-
-/** Start the agent once on the person's tap, ask `initialize`, then stop it. Nothing is installed or downloaded. */
-export function checkMoreAgent(id: string): Promise<MoreAgentCheck> {
-  return invoke<MoreAgentCheck>("more_agents_check", { id });
-}
 
 /** What the row says about an entry's claimed abilities and the subset it runs on. */
 export function moreAgentSubsetNotes(entry: MoreAgentEntry): string[] {
