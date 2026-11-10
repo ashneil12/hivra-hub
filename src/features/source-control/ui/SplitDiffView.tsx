@@ -1,16 +1,29 @@
-import { Component, type ReactNode, useEffect, useState } from "react";
+import {
+  Component,
+  lazy,
+  Suspense,
+  useEffect,
+  useState,
+  type ReactNode,
+} from "react";
 import { splitFileText, type SplitFileText } from "../model/splitDiff";
 import type { UnifiedDiffFileModel } from "../model/unifiedDiffDocument";
-import { PierreFile } from "./pierreDiff";
 
 // WP-116: optional split view. @pierre/diffs is a pinned package, not copied source.
+// It is large and starts a highlighter, so it loads the first time a file is drawn
+// side by side. Nothing else imports ./pierreDiff, or this would stop being lazy.
+const PierreFile = lazy(() =>
+  import("./pierreDiff").then((module) => ({ default: module.PierreFile })),
+);
 
 type Props = {
   files: readonly UnifiedDiffFileModel[];
   fill: boolean;
 };
 
-function themeName(light: boolean): "github-light" | "github-dark" {
+type Theme = "github-light" | "github-dark";
+
+function themeName(light: boolean): Theme {
   return light ? "github-light" : "github-dark";
 }
 
@@ -26,8 +39,29 @@ export function SplitDiffView({ files, fill }: Props) {
     watch.observe(root, { attributes: true, attributeFilter: ["class"] });
     return () => watch.disconnect();
   }, []);
-  const theme = themeName(light);
 
+  return (
+    <Suspense
+      fallback={
+        <SplitRegion fill={fill}>
+          <p className="px-4 py-6 text-[13px] text-content/45">
+            Loading split view…
+          </p>
+        </SplitRegion>
+      }
+    >
+      <SplitFiles files={files} theme={themeName(light)} fill={fill} />
+    </Suspense>
+  );
+}
+
+function SplitRegion({
+  fill,
+  children,
+}: {
+  fill: boolean;
+  children: ReactNode;
+}) {
   return (
     <div
       role="region"
@@ -38,31 +72,51 @@ export function SplitDiffView({ files, fill }: Props) {
           : "min-w-0 overflow-x-auto"
       }
     >
-      {files.length === 0 ? (
-        <p className="px-4 py-6 text-[13px] text-content/45">No file changes</p>
-      ) : (
-        files.map((file) => {
-          const text = splitFileText(file);
-          if (!text) {
-            return (
-              <FileNote key={file.id} label={file.label}>
-                {file.emptyMessage ??
-                  (file.binary
-                    ? "Binary file changed"
-                    : file.tooLarge
-                      ? "Diff is too large to display"
-                      : "No textual diff")}
-              </FileNote>
-            );
-          }
-          return (
-            <SplitBoundary key={file.id} label={text.name}>
-              <PierreFile file={text} theme={theme} />
-            </SplitBoundary>
-          );
-        })
-      )}
+      {children}
     </div>
+  );
+}
+
+type FilesProps = {
+  files: readonly UnifiedDiffFileModel[];
+  theme: Theme;
+  fill: boolean;
+};
+
+/** The region and its files, inside the Suspense boundary. */
+function SplitFiles({ files, theme, fill }: FilesProps) {
+  return (
+    <SplitRegion fill={fill}>
+      <div>
+        {files.length === 0 ? (
+          <p className="px-4 py-6 text-[13px] text-content/45">
+            No file changes
+          </p>
+        ) : (
+          files.map((file) => {
+            const text = splitFileText(file);
+            return (
+              <div key={file.id}>
+                {text ? (
+                  <SplitBoundary label={text.name}>
+                    <PierreFile file={text} theme={theme} />
+                  </SplitBoundary>
+                ) : (
+                  <FileNote label={file.label}>
+                    {file.emptyMessage ??
+                      (file.binary
+                        ? "Binary file changed"
+                        : file.tooLarge
+                          ? "Diff is too large to display"
+                          : "No textual diff")}
+                  </FileNote>
+                )}
+              </div>
+            );
+          })
+        )}
+      </div>
+    </SplitRegion>
   );
 }
 
