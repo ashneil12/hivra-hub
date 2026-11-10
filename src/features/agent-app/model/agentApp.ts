@@ -114,7 +114,9 @@ import {
 } from "../../monos/model/followedBriefs";
 import {
   handleTasks,
+  isAppDelegate,
   TASK_FIELDS,
+  APP_DELEGATE_FIELDS,
   type AgentAppTasksHost,
   type DelegationMeta,
 } from "./agentAppTasks";
@@ -513,7 +515,11 @@ function shipCaller(source: Session, host: AgentAppHost): void {
 function fields(action: string, input: Record<string, unknown>) {
   const allowed = FIELDS.get(action);
   if (!allowed) throw new Error(`Unknown app action: ${action}`);
-  const unknown = Object.keys(input).filter((key) => !allowed.includes(key));
+  // WP-171: fanout, originalRequest and originalRequestChars are the app's own replay fields. An agent's call has no mark.
+  const replay = action === "tasks.delegate" && isAppDelegate(input);
+  const unknown = Object.keys(input).filter(
+    (key) => !allowed.includes(key) && !(replay && (APP_DELEGATE_FIELDS as readonly string[]).includes(key)),
+  );
   if (unknown.length)
     throw new Error(`Unknown ${action} fields: ${unknown.join(", ")}`);
 }
@@ -1549,9 +1555,13 @@ export async function handleAgentApp(
   if (action.startsWith("tasks.")) {
     // A delegated worker starts like sessions.start, so it waits for the first probe the same way (found by the bench:
     // a Mono briefed right after a launch was told "claude is not available").
-    if (action === "tasks.delegate" && input.lead === undefined) await harnessesProbed();
+    if ((action === "tasks.delegate" && input.lead === undefined) || action === "tasks.fanout") await harnessesProbed();
     const result = await handleTasks(source, requestId, action, input, host, { startLaunch, fileStarted });
     if (action === "tasks.delegate" && input.lead === undefined) host.rooms?.delegated?.(source, result);
+    // WP-171: each task a fan-out handed out (started or waiting) is work that comes back to the room, as one delegate_task is.
+    if (action === "tasks.fanout")
+      for (const task of ((result as { tasks?: unknown }).tasks as unknown[] | undefined) ?? [])
+        if (typeof (task as { childSessionId?: unknown })?.childSessionId === "string") host.rooms?.delegated?.(source, task);
     return result;
   }
   if (action.startsWith("prs.")) return handlePrs(source, action, input, host);

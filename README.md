@@ -102,6 +102,7 @@ in Settings, under About.
 - [activeloopai/hivemind](https://github.com/activeloopai/hivemind): repeated patterns in agent traces codified into SKILL.md files (ideas only; cloud-backed).
 - [AgenticBench](https://agenticbench.org): planted-secret checks on what a coding agent does with a machine and its data, as acceptance-test ideas for the secret vault (ideas only).
 - [Agentlas](https://github.com/agentlas-ai/agentlas-desktop): ideas only: an operating-system boundary around each agent's terminal, with secret paths and protected config paths (design first).
+- [Atomic Agent](https://github.com/AtomicBot-ai/atomic-agent): contracts for a multi-part fan-out (what each part owns, provides and requires, and the checks it must pass), dependency waves, the person's own request quoted in every worker brief, and a few prompt lines (WP-171).
 
 Also [poteto](https://x.com/poteto)'s writing on skills and verification, including the
 [verification skill example](https://github.com/poteto/verification-skill-example).
