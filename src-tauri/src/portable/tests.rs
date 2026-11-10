@@ -33,6 +33,17 @@ const PLANTED: [&str; 4] = [
     "Planted9Secret9Value9X",
 ];
 
+/// What git prints for `args` in `dir` (trimmed of its trailing newline).
+fn git_stdout(dir: &Path, args: &[&str]) -> String {
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(args)
+        .output()
+        .unwrap();
+    String::from_utf8_lossy(&out.stdout).trim_end().to_string()
+}
+
 fn git(dir: &Path, args: &[&str]) {
     let out = Command::new("git")
         .arg("-C")
@@ -5262,6 +5273,21 @@ fn a_restored_monos_history_keeps_only_its_notes() {
     assert!(root.join("evil/notes.md").is_file(), "{report:?}");
     assert!(!root.join("evil/CLAUDE.md").exists());
     assert!(!root.join(".claude/settings.json").exists());
+    // The removal is a commit of its own on top of the history, never an amend of Ash's tip.
+    let source_tip_before_removal = git_stdout(&monos, &["rev-parse", "HEAD"]);
+    assert_eq!(
+        git_stdout(&root, &["rev-parse", "HEAD~1"]),
+        source_tip_before_removal,
+        "the restored tip was amended"
+    );
+    assert_eq!(
+        git_stdout(&root, &["log", "-1", "--format=%an <%ae>|%s"]),
+        "Hivra import <import@hivra.invalid>|Removed instruction and hidden files from an imported history"
+    );
+    assert!(
+        git_stdout(&root, &["status", "--porcelain"]).trim().is_empty(),
+        "the restored Monos home is clean"
+    );
 }
 
 #[test]
@@ -5560,8 +5586,7 @@ fn a_monos_folder_takes_only_the_names_mono_rs_uses() {
 }
 
 #[test]
-fn a_restored_history_loses_instruction_and_hidden_files_but_keeps_everything_else_and_stays_intact(
-) {
+fn a_restored_global_history_keeps_its_instruction_and_hidden_files_and_its_tip_commit() {
     let source_dir = TestDir::new("source");
     let target_dir = TestDir::new("target");
     let out = TestDir::new("out");
@@ -5569,15 +5594,20 @@ fn a_restored_history_loses_instruction_and_hidden_files_but_keeps_everything_el
     let target = env_for(&target_dir.0);
     let docs = source.memory_root.join("docs");
     fs::create_dir_all(docs.join(".claude")).unwrap();
+    fs::create_dir_all(docs.join(".obsidian")).unwrap();
     fs::create_dir_all(docs.join("topics")).unwrap();
     fs::write(docs.join("MEMORY.md"), "# docs\n").unwrap();
     fs::write(docs.join("topics/a.md"), "a\n").unwrap();
     fs::write(docs.join("themes.json"), "{}\n").unwrap();
-    fs::write(docs.join("AGENTS.override.md"), "planted\n").unwrap();
-    fs::write(docs.join(".claude/settings.json"), "{\"hooks\":{}}\n").unwrap();
+    fs::write(docs.join("CLAUDE.md"), "my own rules\n").unwrap();
+    fs::write(docs.join("AGENTS.override.md"), "my own override\n").unwrap();
+    fs::write(docs.join(".gitignore"), ".DS_Store\n").unwrap();
+    fs::write(docs.join(".obsidian/app.json"), "{}\n").unwrap();
+    fs::write(docs.join(".claude/settings.json"), "{\"theme\":\"dark\"}\n").unwrap();
     git(&docs, &["init", "-q", "-b", "main"]);
     git(&docs, &["add", "-A"]);
     git(&docs, &["commit", "-q", "-m", "docs"]);
+    let source_tip = git_stdout(&docs, &["rev-parse", "HEAD"]);
     let dest = out.0.join("export");
     let mut request = export_request(&dest, Form::Folder);
     request.workspace = false;
@@ -5603,28 +5633,28 @@ fn a_restored_history_loses_instruction_and_hidden_files_but_keeps_everything_el
     )
     .unwrap();
     let root = target.memory_root.join("docs");
-    assert!(
-        root.join("themes.json").is_file(),
-        "only instruction and hidden files go"
+    for kept in [
+        "themes.json",
+        "topics/a.md",
+        "CLAUDE.md",
+        "AGENTS.override.md",
+        ".gitignore",
+        ".obsidian/app.json",
+        ".claude/settings.json",
+    ] {
+        assert!(root.join(kept).is_file(), "{kept} was dropped");
+    }
+    assert_eq!(
+        git_stdout(&root, &["rev-parse", "HEAD"]),
+        source_tip,
+        "the tip commit moved"
     );
-    assert!(root.join("topics/a.md").is_file());
-    assert!(!root.join("AGENTS.override.md").exists());
-    assert!(!root.join(".claude/settings.json").exists());
-    let git_out = |args: &[&str]| {
-        let out = Command::new("git")
-            .arg("-C")
-            .arg(&root)
-            .args(args)
-            .output()
-            .unwrap();
-        String::from_utf8_lossy(&out.stdout).into_owned()
-    };
     assert!(
-        git_out(&["status", "--porcelain"]).trim().is_empty(),
+        git_stdout(&root, &["status", "--porcelain"]).trim().is_empty(),
         "the restored folder is clean"
     );
     assert_eq!(
-        git_out(&["log", "--oneline"]).lines().count(),
+        git_stdout(&root, &["log", "--oneline"]).lines().count(),
         1,
         "the history keeps its length"
     );

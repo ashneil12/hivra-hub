@@ -3759,9 +3759,12 @@ fn import_memory(
                             dropped.join(", ")
                         ));
                     }
-                    // Whatever a history's newest tree holds that a CLI would read (instruction and settings files,
-                    // anything hidden) is removed again, in every folder it restores.
-                    prune_unsafe(&target);
+                    // Inside the Monos home, whatever a history's newest tree holds that a CLI would read (instruction and
+                    // settings files, anything hidden) is removed again, as a commit of its own. Elsewhere the folder is
+                    // Ash's own, and it comes back as it was exported.
+                    if inside_monos_home(env, &target).is_some() {
+                        prune_unsafe(&target);
+                    }
                     written.extend(files_under(&target));
                 }
                 Err(why) => {
@@ -3892,8 +3895,12 @@ fn files_under(dir: &Path) -> Vec<PathBuf> {
     out
 }
 
-/// A restored history's newest tree can hold files a CLI reads as instructions or settings and anything hidden: they are
-/// removed again, and the removal is amended into the restored tip so the folder isn't left with a dirty tree.
+/// The message of the commit that takes instruction and hidden files out of a restored Monos home.
+const INSTRUCTIONS_REMOVED: &str = "Removed instruction and hidden files from an imported history";
+
+/// A restored Monos home's newest tree can hold files a CLI reads as instructions or settings, and anything hidden: they
+/// are removed again, and the removal is a commit of its own on top of the history (never an amend of its tip), made
+/// with the same fixed identity and no hooks as the removal of git control files.
 fn prune_unsafe(root: &Path) {
     let mut removed = false;
     for file in files_under(root) {
@@ -3919,9 +3926,9 @@ fn prune_unsafe(root: &Path) {
                 .arg(root)
                 .args([
                     "-c",
-                    "user.name=MonoCode",
+                    "user.name=Hivra import",
                     "-c",
-                    "user.email=import@monocode.invalid",
+                    "user.email=import@hivra.invalid",
                     "-c",
                     "commit.gpgsign=false",
                     "-c",
@@ -3930,9 +3937,15 @@ fn prune_unsafe(root: &Path) {
                 .args(args)
                 .output()
         };
-        // Amended into the restored tip (the history keeps its length), so the folder is clean, not dirty.
         let _ = git(&["add", "-A"]);
-        let _ = git(&["commit", "-q", "--amend", "--no-edit", "--allow-empty"]);
+        let _ = git(&[
+            "commit",
+            "--quiet",
+            "--no-verify",
+            "--no-gpg-sign",
+            "-m",
+            INSTRUCTIONS_REMOVED,
+        ]);
     }
 }
 
