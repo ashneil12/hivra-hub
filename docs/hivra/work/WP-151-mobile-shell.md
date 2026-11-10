@@ -28,4 +28,4 @@ Private development build of the inherited Expo app. Nothing here is submitted t
 
 ## Icons
 
-The asset paths stay as they are, so the existing imports stay. `mobile/scripts/placeholder-icons.py` overwrites those pixels with a placeholder H (app icon, splash, favicon, in-app mark and its inverse, Android adaptive layers) and leaves the native transcript artwork alone. It was not run in this package: the command runner would not start Python. Until it runs, the files are still the inherited MonoCode glyphs.
+The asset paths stay as they are, so the existing imports stay. The inherited glyphs are now a placeholder H (app icon, splash, favicon, in-app mark and its inverse, Android adaptive layers). The native transcript artwork was left alone. The one-shot script that painted those pixels was removed after the images were checked.
