@@ -335,6 +335,13 @@ pub fn apply_to_child(
             record_worker(&conn, &first.mono, &first.executable, &secrets, now)?;
         }
     }
+    // The worker keeps its tool's own environment (HOME, PATH, login), but never the app's `MONOCODE_*` variables: those
+    // carry the control and app tokens, and an inherited copy would reach the tool that holds the key.
+    for (key, _) in std::env::vars_os() {
+        if key.to_string_lossy().starts_with("MONOCODE_") {
+            cmd.env_remove(key);
+        }
+    }
     for (secret, value) in secrets.iter().zip(&values) {
         cmd.env(&secret.env, value.as_str());
     }

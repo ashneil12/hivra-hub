@@ -212,6 +212,27 @@ fn dev_and_daily_names_never_cross_and_a_daily_grant_does_not_verify_in_a_dev_co
 }
 
 #[test]
+fn a_dev_copy_maps_every_secret_service_it_can_form_under_the_dev_prefix() {
+    use crate::hub_keychain::{scoped_service, DEV_PREFIX};
+    use crate::instance::Kind;
+    let long_project = format!("/p/{}", "x".repeat(300));
+    let scopes = [
+        SCOPE_GLOBAL.to_string(),
+        scope_for(Some("/p/hivra")),
+        scope_for(Some(&long_project)),
+    ];
+    for scope in &scopes {
+        for name in [NAME, "a", "stripe-api-key-2"] {
+            let daily = service(scope, name).unwrap();
+            assert!(daily.starts_with("monocode-hub:secret:"), "{daily}");
+            let dev = scoped_service(Kind::Dev, &daily);
+            assert!(dev.starts_with(DEV_PREFIX), "{dev}");
+            assert!(!dev.starts_with("monocode-hub:"), "{dev}");
+        }
+    }
+}
+
+#[test]
 fn the_export_index_holds_the_metadata_and_no_value() {
     let bench = Bench::new();
     let conn = bench.store.lock_conn().unwrap();
@@ -334,6 +355,51 @@ fn a_worker_gets_the_one_variable_and_its_output_is_scrubbed() {
     assert_eq!(worker::scrub_line("other", "plain".into()), "plain");
     worker::forget("worker-1");
     assert_eq!(worker::scrub_line("worker-1", VALUE.into()), VALUE);
+}
+
+/// WP-92 step 6: a worker that holds a key never inherits the app's own `MONOCODE_*` variables. `cmd.get_envs()` shows
+/// only what was set, so this asserts the removal itself: the parent's probe variable must come back as a removal.
+#[test]
+fn the_worker_environment_holds_no_inherited_monocode_value() {
+    const PROBE: &str = "MONOCODE_WP92_INHERIT_PROBE";
+    let bench = Bench::new();
+    let mut conn = bench.store.lock_conn().unwrap();
+    save_value(&bench.vault, &conn, SCOPE_GLOBAL, NAME, None, VALUE, bench.now).unwrap();
+    put_grant(
+        &conn,
+        SCOPE_GLOBAL,
+        NAME,
+        "mono",
+        "Tally",
+        "claude",
+        "always",
+        bench.now,
+    )
+    .unwrap();
+    let outcome = worker::prepare(&bench.vault, &mut conn, worker_request(), bench.now).unwrap();
+    let worker::WorkerOutcome::Ready { secrets } = outcome else {
+        panic!("expected ready, got {outcome:?}");
+    };
+    worker::clear_for_tests();
+    worker::arm("worker-inherit", secrets);
+    drop(conn);
+    // The app's process carries a MONOCODE_* variable; the worker must not inherit it.
+    std::env::set_var(PROBE, "parent-only");
+    let mut cmd = Command::new(if cfg!(windows) { "cmd" } else { "true" });
+    let applied =
+        worker::apply_to_child("worker-inherit", &bench.vault, &mut cmd, &bench.store, bench.now);
+    std::env::remove_var(PROBE);
+    applied.unwrap();
+    let removed: Vec<String> = cmd
+        .get_envs()
+        .filter(|(_, value)| value.is_none())
+        .map(|(key, _)| key.to_string_lossy().into_owned())
+        .collect();
+    assert!(
+        removed.iter().any(|key| key == PROBE),
+        "the worker still inherits {PROBE}: removed = {removed:?}"
+    );
+    worker::forget("worker-inherit");
 }
 
 #[test]
