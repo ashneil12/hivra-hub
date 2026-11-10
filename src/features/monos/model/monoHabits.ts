@@ -367,7 +367,8 @@ export function habitRunPrompt(
   files: MonoFiles,
   habit: Habit,
   now: number,
-  // WP-164: the morning habit passes notable events still waiting. Other runs pass nothing.
+  /** Text the app adds after the habit's instructions: for the morning habit, what finished yesterday and the notable
+   * events still waiting (WP-157, WP-164). Other runs pass none. */
   extra?: string,
 ): string {
   const lastRun = habit.lastRunAt
