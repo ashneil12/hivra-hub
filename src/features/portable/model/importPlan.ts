@@ -392,7 +392,7 @@ export type RustImportRequest = {
     /** The Monos seated here: a chat keeps a Mono's own folder only for one of these. */
     knownMonos: string[];
     /** This Mac's folder for each project the file names, by project id: a folder from another user or home maps through it. */
-    folderMap: { from: string; to: string }[];
+    folderMap: { projectId: string; from: string; to: string }[];
   };
 };
 
@@ -450,14 +450,15 @@ export function pausedHabits(text: string | undefined): string {
   return changed ? `${JSON.stringify(paused, null, 2)}\n` : text;
 }
 
-/** This Mac's folder for each exported project that is a project here too (by id), so a chat's folder from another user or home still maps. */
-export function folderMapFor(exported: PortableProject[], here: Pick<Here, "projects">): { from: string; to: string }[] {
-  const pairs = new Map<string, string>();
-  for (const project of exported) {
-    const local = project.folder ? here.projects.find((p) => p.id === project.id && p.folder) : undefined;
-    if (project.folder && local?.folder) pairs.set(project.folder, local.folder);
-  }
-  return [...pairs].map(([from, to]) => ({ from, to }));
+/**
+ * Each exported project that has a folder in the file: its id and that folder, and this Mac's folder for the same id
+ * (blank when it has none here yet). Rust maps a chat's folder from another user or home through the pair, and keeps
+ * the project's id with a cleared chat so a relink can map it through the project record as it is then.
+ */
+export function folderMapFor(exported: PortableProject[], here: Pick<Here, "projects">): { projectId: string; from: string; to: string }[] {
+  return exported.flatMap((project) =>
+    project.folder ? [{ projectId: project.id, from: project.folder, to: here.projects.find((p) => p.id === project.id)?.folder ?? "" }] : [],
+  );
 }
 
 function soulFor(mono: PortableMono, folders: string[], withMemory: boolean): SetupSoul {

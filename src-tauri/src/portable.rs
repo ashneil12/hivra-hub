@@ -382,6 +382,8 @@ fn plain_name(name: &str) -> bool {
     !name.is_empty()
         && name.len() <= 120
         && !name.starts_with('.')
+        // Windows reads `monos.` and `monos ` as `monos`: a name that ends so is another spelling of a folder.
+        && !name.ends_with(['.', ' '])
         && name
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | ' '))
@@ -1951,9 +1953,15 @@ pub struct WorkspaceImport {
     pub folder_map: Vec<FolderMapping>,
 }
 
+/// A project the file names, for mapping a chat's folder from another Mac: its id and folder in the file, and this Mac's
+/// folder for the same id (blank when the project has none here yet).
 #[derive(Clone, Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct FolderMapping {
+    #[serde(default)]
+    pub project_id: String,
     pub from: String,
+    #[serde(default)]
     pub to: String,
 }
 
@@ -2026,10 +2034,14 @@ pub fn import<G: std::ops::Deref<Target = Connection>>(
     let mut rules = {
         let none = WorkspaceImport::default();
         let ws = request.workspace.as_ref().unwrap_or(&none);
-        let map: Vec<(String, String)> = ws
+        let map: Vec<folders::ProjectMapping> = ws
             .folder_map
             .iter()
-            .map(|pair| (pair.from.clone(), pair.to.clone()))
+            .map(|pair| folders::ProjectMapping {
+                id: pair.project_id.clone(),
+                from: pair.from.clone(),
+                to: pair.to.clone(),
+            })
             .collect();
         FolderRules::load(
             env,
@@ -2086,15 +2098,17 @@ pub(crate) fn relink_candidates(
         return Vec::new();
     };
     let Ok(mut statement) = conn.prepare(
-        "SELECT n.session_id, n.cwd FROM imported_chat_folders n
+        "SELECT n.session_id, n.cwd, n.project_id, n.rest FROM imported_chat_folders n
          JOIN sessions s ON s.id = n.session_id
          WHERE s.cwd = '' AND n.blocked = 0 AND (?1 IS NULL OR n.session_id = ?1)
          ORDER BY n.session_id",
     ) else {
         return Vec::new();
     };
-    let rows: Vec<(String, String)> = statement
-        .query_map([only], |row| Ok((row.get(0)?, row.get(1)?)))
+    let rows: Vec<(String, String, Option<String>, Option<String>)> = statement
+        .query_map([only], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+        })
         .map(|rows| rows.flatten().collect())
         .unwrap_or_default();
     drop(statement);
@@ -2102,12 +2116,38 @@ pub(crate) fn relink_candidates(
     if rows.is_empty() {
         return Vec::new();
     }
-    let rules = FolderRules::load(env, &project_record_folders(env), known, known_monos, &[]);
+    let record = project_record(env);
+    let record_folders: Vec<String> = record.iter().map(|(_, folder)| folder.clone()).collect();
+    let rules = FolderRules::load(env, &record_folders, known, known_monos, &[]);
     rows.into_iter()
-        .filter_map(|(session_id, named)| {
-            let kept = rules.vet(Some(&named), None);
-            (!kept.cwd.is_empty()).then(|| Relink {
-                group: kept.group.clone().unwrap_or_else(|| kept.cwd.clone()),
+        .filter_map(|(session_id, named, project_id, rest)| {
+            // A chat whose file named a project is mapped through the project record as it is now, by id, the way a
+            // Mono's folder is: the project may only have got its folder here since the import.
+            let current = project_id.as_deref().and_then(|id| {
+                record
+                    .iter()
+                    .find(|(known, _)| known == id)
+                    .map(|(_, folder)| {
+                        Path::new(folder)
+                            .join(rest.as_deref().unwrap_or_default())
+                            .to_string_lossy()
+                            .into_owned()
+                    })
+            });
+            let kept = rules.vet(Some(current.as_deref().unwrap_or(&named)), None);
+            if kept.cwd.is_empty() {
+                return None;
+            }
+            // A Mono's folder is checked on disk again: instruction files there now (the import's snapshot may be old)
+            // keep it from being offered.
+            let group = kept.group.clone().unwrap_or_else(|| kept.cwd.clone());
+            if rules.is_mono_folder(Path::new(&group))
+                && rules.instructions_on_disk(Path::new(&kept.cwd), Path::new(&group))
+            {
+                return None;
+            }
+            Some(Relink {
+                group,
                 folder: kept.cwd,
                 session_id,
             })
@@ -2206,6 +2246,14 @@ pub async fn portable_relink_apply(
 /// The folders of the projects in the app's own record (`hub_local_docs`, key `projects`), read through a read-only
 /// connection so the chat store's lock isn't taken before the chats go in. Nothing found reads as no projects.
 fn project_record_folders(env: &Env) -> Vec<String> {
+    project_record(env)
+        .into_iter()
+        .map(|(_, folder)| folder)
+        .collect()
+}
+
+/// The app's own project record as `(id, folder)`, for the projects that have a folder.
+fn project_record(env: &Env) -> Vec<(String, String)> {
     let Ok(Some(conn)) = env.read_db() else {
         return Vec::new();
     };
@@ -2223,8 +2271,11 @@ fn project_record_folders(env: &Env) -> Vec<String> {
         .and_then(Value::as_array)
         .map(|list| {
             list.iter()
-                .filter_map(|project| project.get("folder").and_then(Value::as_str))
-                .map(str::to_string)
+                .filter_map(|project| {
+                    let id = project.get("id").and_then(Value::as_str)?;
+                    let folder = project.get("folder").and_then(Value::as_str)?;
+                    (!folder.trim().is_empty()).then(|| (id.to_string(), folder.to_string()))
+                })
                 .collect()
         })
         .unwrap_or_default()
@@ -3000,8 +3051,15 @@ fn note_named_folder(
     match (&folders.named_cwd, folders.cwd.is_empty()) {
         (Some(named), true) => {
             conn.execute(
-                "INSERT OR REPLACE INTO imported_chat_folders (session_id, cwd, worktree_cwd, blocked) VALUES (?1, ?2, ?3, ?4)",
-                params![id, named, folders.named_worktree, i64::from(folders.named_blocked)],
+                "INSERT OR REPLACE INTO imported_chat_folders (session_id, cwd, worktree_cwd, blocked, project_id, rest) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![
+                    id,
+                    named,
+                    folders.named_worktree,
+                    i64::from(folders.named_blocked),
+                    folders.named_project.as_ref().map(|(id, _)| id),
+                    folders.named_project.as_ref().map(|(_, rest)| rest),
+                ],
             )?;
         }
         _ => {
@@ -3033,6 +3091,12 @@ fn import_memory(
     env.check_writable(&env.memory_root)?;
     for name in wanted_names {
         let target = env.memory_root.join(name);
+        // The Monos home takes only what mono.rs names, and only under its own name: another spelling or a link that
+        // reaches it (a case alias on a case-insensitive disk, `monos.` on Windows) would carry files past that.
+        if let Some(why) = aliases_monos_home(env, name, &target) {
+            report.notes.push(format!("{name} wasn't restored: {why}."));
+            continue;
+        }
         env.check_writable(&target)?;
         let bundle = root.join("memory").join(format!("{name}.git.bundle"));
         let has_bundle = listed
@@ -3046,9 +3110,9 @@ fn import_memory(
                 Ok(()) => {
                     report.memory_history.push(name.clone());
                     fresh = true;
-                    if resolved(&target) == resolved(&env.monos_root) {
-                        prune_to_notes(&target);
-                    }
+                    // Whatever a history's newest tree holds that a CLI would read (instruction and settings files,
+                    // anything hidden) is removed again, in every folder it restores.
+                    prune_unsafe(&target);
                     written.extend(files_under(&target));
                 }
                 Err(why) => {
@@ -3079,12 +3143,19 @@ fn import_memory(
                 ));
                 continue;
             }
-            // A Mono's folder takes its notes: a file a CLI reads as instructions or settings (CLAUDE.md, AGENTS.md, a
-            // settings file) or anything in a hidden folder never goes into one.
-            if let Ok(relative) = dest.strip_prefix(&env.monos_root) {
-                if !folders::mono_note_file(relative) {
+            // A memory import writes notes: `.md` files, never one a CLI reads as instructions, rules or settings
+            // (CLAUDE.md, AGENTS.md, AGENTS.override.md, opencode.json ...), nothing in a hidden folder.
+            if !folders::memory_note_file(&safe) {
+                report.notes.push(format!(
+                    "{path} wasn't written: a memory import only writes notes (.md files), never instructions, rules or settings."
+                ));
+                continue;
+            }
+            // And inside the Monos home (however it is spelled or linked to) only the names a Mono's folder uses.
+            if let Some(relative) = inside_monos_home(env, &dest) {
+                if !folders::mono_folder_file(&relative) {
                     report.notes.push(format!(
-                        "{path} wasn't written: a Mono's folder only takes its notes (.md files), never instructions or settings."
+                        "{path} wasn't written: a Mono's folder only takes SOUL.md, MEMORY.md, soul-template.md and its memory and skills notes."
                     ));
                     continue;
                 }
@@ -3156,15 +3227,123 @@ fn files_under(dir: &Path) -> Vec<PathBuf> {
     out
 }
 
-/// The Monos' home restored from a history keeps only notes: whatever else the bundle's newest tree had (instruction and
-/// settings files, hidden folders) is removed again.
-fn prune_to_notes(root: &Path) {
+/// A restored history's newest tree can hold files a CLI reads as instructions or settings and anything hidden: they are
+/// removed again, and the removal is amended into the restored tip so the folder isn't left with a dirty tree.
+fn prune_unsafe(root: &Path) {
+    let mut removed = false;
     for file in files_under(root) {
-        let keep = file.strip_prefix(root).is_ok_and(folders::mono_note_file);
-        if !keep {
-            let _ = fs::remove_file(&file);
+        let Ok(relative) = file.strip_prefix(root) else {
+            continue;
+        };
+        let hidden = relative.components().any(|part| {
+            matches!(part, Component::Normal(name) if name.to_string_lossy().starts_with('.'))
+        });
+        let instruction = file
+            .file_name()
+            .is_some_and(|name| folders::instruction_file(&name.to_string_lossy()));
+        if (hidden || instruction) && fs::remove_file(&file).is_ok() {
+            removed = true;
         }
     }
+    if removed && root.join(".git").exists() {
+        let git = |args: &[&str]| {
+            let mut command = Command::new("git");
+            crate::hide_window_console(&mut command);
+            command
+                .arg("-C")
+                .arg(root)
+                .args([
+                    "-c",
+                    "user.name=MonoCode",
+                    "-c",
+                    "user.email=import@monocode.invalid",
+                    "-c",
+                    "commit.gpgsign=false",
+                    "-c",
+                    "core.hooksPath=/dev/null",
+                ])
+                .args(args)
+                .output()
+        };
+        // Amended into the restored tip (the history keeps its length), so the folder is clean, not dirty.
+        let _ = git(&["add", "-A"]);
+        let _ = git(&["commit", "-q", "--amend", "--no-edit", "--allow-empty"]);
+    }
+}
+
+/// How a path component is compared when two spellings may be one folder: case-folded (a case-insensitive disk), with
+/// trailing dots and spaces dropped (Windows reads `monos.` and `monos ` as `monos`).
+fn fold_part(part: &std::ffi::OsStr) -> String {
+    part.to_string_lossy()
+        .trim_end_matches(['.', ' '])
+        .to_lowercase()
+}
+
+fn folded(path: &Path) -> Vec<String> {
+    path.components()
+        .filter_map(|part| match part {
+            Component::Normal(name) => Some(fold_part(name)),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Two paths are one place: the same device and inode where the disk says so, else the same resolved path read with
+/// case folded.
+fn same_place(a: &Path, b: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if let (Ok(x), Ok(y)) = (fs::metadata(a), fs::metadata(b)) {
+            return x.dev() == y.dev() && x.ino() == y.ino();
+        }
+    }
+    folded(&resolved(a)) == folded(&resolved(b))
+}
+
+/// The path inside the Monos home that `dest` is, however it is spelled or linked: the resolved paths, the same read
+/// with case folded and trailing dots and spaces dropped, and any folder above `dest` that is the Monos home by identity.
+fn inside_monos_home(env: &Env, dest: &Path) -> Option<PathBuf> {
+    let home = resolved(&env.monos_root);
+    let target = resolved(dest);
+    if let Ok(relative) = target.strip_prefix(&home) {
+        return Some(relative.to_path_buf());
+    }
+    let (home_parts, target_parts) = (folded(&home), folded(&target));
+    if target_parts.starts_with(&home_parts) {
+        let skip = home_parts.len();
+        let below: PathBuf = target
+            .components()
+            .filter(|part| matches!(part, Component::Normal(_)))
+            .skip(skip)
+            .map(|part| part.as_os_str().to_os_string())
+            .collect();
+        return Some(below);
+    }
+    let mut above = Some(target.as_path());
+    while let Some(folder) = above {
+        if folder.exists() && same_place(folder, &env.monos_root) {
+            return Some(target.strip_prefix(folder).ok()?.to_path_buf());
+        }
+        above = folder.parent();
+    }
+    None
+}
+
+/// Why a memory folder named `name` can't be restored because it reaches the Monos home under another name: it spells
+/// the Monos home's name another way (case, trailing dot or space), or it leads there (a link, a case alias).
+fn aliases_monos_home(env: &Env, name: &str, target: &Path) -> Option<&'static str> {
+    let home_name = env.monos_root.file_name()?;
+    if home_name.to_string_lossy() == name {
+        return None;
+    }
+    if fold_part(std::ffi::OsStr::new(name)) == fold_part(home_name) {
+        return Some("it is the Monos home under another spelling");
+    }
+    if target.exists() && same_place(target, &env.monos_root) {
+        return Some("it leads to the Monos home under another name");
+    }
+    None
 }
 
 enum HistoryRefusal {

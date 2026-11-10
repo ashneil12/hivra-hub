@@ -627,7 +627,7 @@ import {
 } from "../features/sessions/model/btw";
 
 import { isEditTool } from "../integrations/harness/core/preview";
-import { CHAT_NEEDS_FOLDER, hasChatFolder } from "../integrations/harness/core/chatFolder";
+import { CHAT_NEEDS_FOLDER, hasChatFolder, withRelinkedFolder } from "../integrations/harness/core/chatFolder";
 import { sessionEditPaths } from "../features/sessions/model/checkpointEdits";
 import { useSessionChangeTotals } from "../features/sessions/ui/SessionReview";
 import {
@@ -6928,6 +6928,14 @@ function Workspace({
       );
     },
     [],
+  );
+
+  // Relink all gave chats their folders in the store: the open copies take the folder and nothing else (no move to
+  // another project, nothing added to the recents, no change of the chat's own work).
+  const onSessionFolderRelinked = useCallback(
+    (sessionId: string, cwd: string) =>
+      setSessions((prev) => withRelinkedFolder(prev, sessionId, cwd)),
+    [setSessions],
   );
 
   const onCwdChange = useCallback(
@@ -17742,7 +17750,7 @@ function Workspace({
       status={historyFailed ? "error" : "idle"}
       pending={historyPending}
       onSelectSession={onSelectSessionFromList}
-      onSetSessionFolder={onCwdChange}
+      onSetSessionFolder={onSessionFolderRelinked}
       onSelectRemoteSession={onSelectRemoteSession}
       onRemoteSessionDeleted={onRemoteSessionDeleted}
       onPrefetchSession={onPrefetchHistorySession}

@@ -82,14 +82,23 @@ pub(super) struct FolderRules {
     mono_folders: Vec<PathBuf>,
     monos_home: PathBuf,
     teams_home: PathBuf,
-    /// Files this import wrote (the memory it restored). A chat can't keep a folder where one that a CLI reads as
-    /// instructions (CLAUDE.md, AGENTS.md, a settings file, anything in a hidden folder) now sits, in it or above it.
-    written: Vec<PathBuf>,
-    /// This Mac's folder for each project the file names, by project id: `(the file's folder, this Mac's folder)`.
-    folder_map: Vec<(String, String)>,
+    /// The folders where an import wrote something a CLI reads as instructions (CLAUDE.md, AGENTS.md, a settings file,
+    /// anything in a hidden folder): a chat can't keep one of them, or a folder below one.
+    instruction_holders: Vec<PathBuf>,
+    memory_root: PathBuf,
+    /// The projects the file names: its id and folder, and this Mac's folder for it when there is one.
+    folder_map: Vec<ProjectMapping>,
     /// Per project: the linked working copies git lists for it (never the main one), when git agrees the project is the
     /// top of its own repository. Read when a chat names a worktree.
     worktrees: OnceCell<Vec<(PathBuf, Vec<PathBuf>)>>,
+}
+
+/// A project the file names: its id and folder, and this Mac's folder for the same id (blank when it has none here yet).
+#[derive(Clone, Debug)]
+pub(super) struct ProjectMapping {
+    pub id: String,
+    pub from: String,
+    pub to: String,
 }
 
 /// What a chat or automation keeps of the folders its file named.
@@ -107,28 +116,45 @@ pub(super) struct Folders {
     pub named_worktree: Option<String>,
     /// The named folder has something this import wrote that a CLI would read as instructions: never offered back.
     pub named_blocked: bool,
+    /// The project the named folder belonged to in the file, and the path below its folder: lets a relink map it through
+    /// the project record as it is then (the project may only get its folder here later).
+    pub named_project: Option<(String, String)>,
     /// The project (or Mono) folder the kept folder sits in: what "Relink all" groups by.
     pub group: Option<String>,
 }
 
-/// Files a CLI reads as instructions or settings from the folder it starts in and the folders above it.
+/// Files a CLI reads as instructions, rules, settings or tool servers from the folder it starts in and the folders above
+/// it (Claude Code, Codex, Gemini, OpenCode, Cursor, Windsurf, Cline, Copilot, Qwen). A deny-list, used only to decide
+/// where a written file is read from: what an import may write is an allow-list (`memory_note_file`).
 pub(super) fn instruction_file(name: &str) -> bool {
     matches!(
         name.to_ascii_lowercase().as_str(),
         "claude.md"
             | "claude.local.md"
             | "agents.md"
+            | "agents.override.md"
             | "gemini.md"
+            | "qwen.md"
+            | "codex.md"
+            | "copilot-instructions.md"
             | "settings.json"
             | "settings.local.json"
             | "mcp.json"
             | ".mcp.json"
+            | "opencode.json"
+            | "opencode.jsonc"
+            | "config.toml"
+            | "hooks.json"
+            | ".cursorrules"
+            | ".windsurfrules"
+            | ".clinerules"
+            | ".aider.conf.yml"
     )
 }
 
-/// A file a Mono's folder may be given by an import: a note (`.md`), never an instruction file, never in a hidden
-/// folder.
-pub(super) fn mono_note_file(relative: &Path) -> bool {
+/// A file a memory import may write anywhere: a note (`.md`), never a file a CLI reads as instructions, nothing in a
+/// hidden folder. `relative` is the path inside the memory folder.
+pub(super) fn memory_note_file(relative: &Path) -> bool {
     let notes = relative
         .extension()
         .is_some_and(|ext| ext.eq_ignore_ascii_case("md"));
@@ -140,6 +166,38 @@ pub(super) fn mono_note_file(relative: &Path) -> bool {
         _ => false,
     });
     notes && plain_names
+}
+
+fn note_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 80
+        && !name.starts_with('.')
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, ' ' | '.' | '-' | '_'))
+}
+
+/// What a Mono's folder may be given by an import, by the names `mono.rs` itself uses: `<id>/SOUL.md`, `MEMORY.md`,
+/// `soul-template.md`, `memory/<name>.md` or `skills/<name>.md`. `relative` is the path inside the Monos home.
+pub(super) fn mono_folder_file(relative: &Path) -> bool {
+    let parts: Vec<String> = relative
+        .components()
+        .map(|part| match part {
+            Component::Normal(name) => Some(name.to_string_lossy().into_owned()),
+            _ => None,
+        })
+        .collect::<Option<_>>()
+        .unwrap_or_default();
+    let named = |name: &str| memory_note_file(Path::new(name)) && note_name(name);
+    match parts.as_slice() {
+        [id, file] => {
+            plain_id(id) && matches!(file.as_str(), "SOUL.md" | "MEMORY.md" | "soul-template.md")
+        }
+        [id, dir, file] => {
+            plain_id(id) && matches!(dir.as_str(), "memory" | "skills") && named(file)
+        }
+        _ => false,
+    }
 }
 
 fn plain_id(name: &str) -> bool {
@@ -158,7 +216,7 @@ impl FolderRules {
         record: &[String],
         extra: &[String],
         known_monos: &[String],
-        folder_map: &[(String, String)],
+        folder_map: &[ProjectMapping],
     ) -> Self {
         let guard = Guard::new(env);
         let mut projects: Vec<PathBuf> = Vec::new();
@@ -186,16 +244,43 @@ impl FolderRules {
             mono_folders,
             monos_home,
             teams_home,
-            written: Vec::new(),
+            instruction_holders: Vec::new(),
+            memory_root: reach(&env.memory_root).unwrap_or_else(|| env.memory_root.clone()),
             folder_map: folder_map.to_vec(),
             worktrees: OnceCell::new(),
         }
     }
 
-    /// Files the import wrote so far (memory files, a restored history).
+    /// Files the import wrote so far (memory files, a restored history): where each is read as instructions from.
     pub(super) fn note_written(&mut self, files: &[PathBuf]) {
-        self.written
-            .extend(files.iter().filter_map(|file| reach(file)));
+        for file in files.iter().filter_map(|file| reach(file)) {
+            if let Some(holder) = self.instruction_holder(&file) {
+                self.instruction_holders.push(holder);
+            }
+        }
+    }
+
+    /// The folder a CLI reads this written file from, when it reads it as instructions: the folder holding it for a file
+    /// named like one (CLAUDE.md, AGENTS.override.md ...), and for anything in a hidden folder below the memory root
+    /// (`lead/.claude/hooks/x.json`) the folder that holds the deepest such hidden folder. A note is read from nowhere.
+    fn instruction_holder(&self, file: &Path) -> Option<PathBuf> {
+        let parent = file.parent()?;
+        let name = file.file_name()?.to_string_lossy().into_owned();
+        // The shallowest hidden folder below the memory root (a slot's own hidden parent isn't one): a CLI started in the
+        // folder that holds it reads everything inside it.
+        let mut outer = None;
+        if let Ok(below) = parent.strip_prefix(&self.memory_root) {
+            let mut walked = self.memory_root.clone();
+            for part in below.components() {
+                let hidden =
+                    matches!(part, Component::Normal(n) if n.to_string_lossy().starts_with('.'));
+                if hidden && outer.is_none() {
+                    outer = Some(walked.clone());
+                }
+                walked.push(part.as_os_str());
+            }
+        }
+        outer.or_else(|| instruction_file(&name).then(|| parent.to_path_buf()))
     }
 
     fn resolve(&self, raw: &str) -> Option<PathBuf> {
@@ -205,46 +290,47 @@ impl FolderRules {
     /// An instruction file this import wrote sits in this folder or above it (so a CLI started here would read it).
     /// Notes written beside it, and folders that merely hold a written file further down, don't count.
     fn reads_written_instructions(&self, dir: &Path) -> bool {
-        self.written.iter().any(|file| {
-            let Some(parent) = file.parent() else {
-                return false;
-            };
-            let name = file
-                .file_name()
-                .map(|name| name.to_string_lossy().into_owned())
-                .unwrap_or_default();
-            let hidden_parent = parent
-                .file_name()
-                .is_some_and(|name| name.to_string_lossy().starts_with('.'));
-            // `.claude/settings.json` is read from the folder that holds `.claude`.
-            let holder = if hidden_parent {
-                parent.parent()
-            } else if instruction_file(&name) {
-                Some(parent)
-            } else {
-                None
-            };
-            holder.is_some_and(|holder| dir.starts_with(holder))
-        })
+        self.instruction_holders
+            .iter()
+            .any(|holder| dir.starts_with(holder))
     }
 
-    /// This Mac's folder for the project a file's folder belongs to, by project id (the window passes each pair).
-    fn remap_project(&self, raw: &str) -> Option<String> {
+    /// A project's folder in the file that can stand for a project: a full path with at least three parts (so never `/`,
+    /// `/Users`, a home folder or anything shallower than one), and not this Mac's own home folder.
+    fn plausible_from(&self, from: &str) -> bool {
+        let path = Path::new(from.trim());
+        path.is_absolute()
+            && path
+                .components()
+                .filter(|part| matches!(part, Component::Normal(_)))
+                .count()
+                >= 3
+            && self.home.as_deref() != Some(path)
+    }
+
+    /// The project a file's folder belongs to: its id, the file's folder for it, and the path below that folder. The
+    /// project whose folder is the deepest match; only that project's pair ever applies to the folder.
+    fn project_of(&self, raw: &str) -> Option<(&ProjectMapping, PathBuf)> {
         let raw = Path::new(raw.trim());
         self.folder_map
             .iter()
-            .filter(|(from, to)| {
-                !from.trim().is_empty() && Path::new(from).is_absolute() && !to.trim().is_empty()
+            .filter(|pair| self.plausible_from(&pair.from))
+            .filter_map(|pair| {
+                let rest = raw.strip_prefix(Path::new(pair.from.trim())).ok()?;
+                Some((pair, rest.to_path_buf()))
             })
-            .filter_map(|(from, to)| {
-                let rest = raw.strip_prefix(Path::new(from)).ok()?;
-                Some((
-                    Path::new(from).components().count(),
-                    PathBuf::from(to).join(rest),
-                ))
-            })
-            .max_by_key(|(depth, _)| *depth)
-            .map(|(_, mapped)| mapped.to_string_lossy().into_owned())
+            .max_by_key(|(pair, _)| Path::new(pair.from.trim()).components().count())
+    }
+
+    /// This Mac's folder for the project a file's folder belongs to, by project id, when it has one here.
+    fn remap_project(&self, raw: &str) -> Option<String> {
+        let (pair, rest) = self.project_of(raw)?;
+        (!pair.to.trim().is_empty()).then(|| {
+            PathBuf::from(pair.to.trim())
+                .join(rest)
+                .to_string_lossy()
+                .into_owned()
+        })
     }
 
     /// What this Mac makes of a folder a file named: its Mono's or its project's own folder for that id, else as written.
@@ -253,6 +339,34 @@ impl FolderRules {
             .map(|dir| dir.to_string_lossy().into_owned())
             .or_else(|| self.remap_project(raw))
             .unwrap_or_else(|| raw.to_string())
+    }
+
+    /// This folder is a Mono's own.
+    pub(super) fn is_mono_folder(&self, dir: &Path) -> bool {
+        self.mono_folders.iter().any(|mono| mono == dir)
+    }
+
+    /// A file a CLI would read as instructions sits, right now, in this folder or in a folder above it up to its Mono's
+    /// folder (inclusive): a hidden folder (other than git's own) counts too. Read from disk when a re-link is offered.
+    pub(super) fn instructions_on_disk(&self, dir: &Path, top: &Path) -> bool {
+        let mut here = Some(dir);
+        while let Some(folder) = here {
+            if let Ok(entries) = std::fs::read_dir(folder) {
+                for entry in entries.flatten() {
+                    let name = entry.file_name().to_string_lossy().into_owned();
+                    let hidden_tool = name.starts_with('.')
+                        && !matches!(name.as_str(), ".git" | ".gitignore" | ".DS_Store");
+                    if instruction_file(&name) || hidden_tool {
+                        return true;
+                    }
+                }
+            }
+            if folder == top || !folder.starts_with(top) {
+                break;
+            }
+            here = folder.parent();
+        }
+        false
     }
 
     /// The Mono folder this one is: `<monos home>/<id>` or `<app data>/mono-teams/<id>`, one that was already here.
@@ -378,6 +492,10 @@ impl FolderRules {
             named_cwd: cwd.map(|raw| self.mapped(raw)),
             named_worktree: worktree.map(str::to_string),
             named_blocked: cwd.is_some_and(|raw| self.names_written_instructions(raw)),
+            named_project: cwd.and_then(|raw| {
+                self.project_of(raw)
+                    .map(|(pair, rest)| (pair.id.clone(), rest.to_string_lossy().into_owned()))
+            }),
             group: None,
         };
         let Some((kept, project, group)) = cwd.and_then(|raw| self.judge(raw)) else {
@@ -403,6 +521,7 @@ impl FolderRules {
             named_cwd: cleared.then(|| cwd.map(|raw| self.mapped(raw))).flatten(),
             named_worktree: cleared.then(|| worktree.map(str::to_string)).flatten(),
             named_blocked: false,
+            named_project: None,
             group: Some(group.to_string_lossy().into_owned()),
         }
     }

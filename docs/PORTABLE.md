@@ -88,18 +88,30 @@ The archive is the same tree under one top folder. Nothing in it is a secret:
      allow-list judges the result. The rules load after the memory is written, and a chat is not kept where this
      import wrote a file a CLI reads as instructions (CLAUDE.md, AGENTS.md, a settings file, anything in a hidden
      folder) in the folder or above it; a note beside it, or a folder that merely holds a written file further down,
-     takes nothing away. A Mono's folder only takes notes (`.md`, never an instruction or settings file, nothing
-     hidden) from an import, and a history restored for the Monos' home is pruned to notes.
+     takes nothing away. A memory import writes notes only, in every folder: `.md` files, never one a CLI reads as
+     instructions, rules or settings (CLAUDE.md, AGENTS.md, AGENTS.override.md, CLAUDE.local.md, GEMINI.md,
+     opencode.json, mcp files, rules files ...), nothing hidden. Inside the Monos home (decided by the resolved path, by
+     device and inode, and with case folded and trailing dots and spaces dropped, so a case alias or `monos.` is the
+     same folder) it writes only the names a Mono's folder uses: `<id>/SOUL.md`, `MEMORY.md`, `soul-template.md`,
+     `memory/<name>.md`, `skills/<name>.md`. A memory folder that reaches the Monos home under another name (another
+     spelling, or a link) is refused, and a memory folder name ending in a dot or a space is never taken. A history
+     restored for a memory folder loses its instruction files and hidden files again (the removal is amended into the
+     restored tip, so the history keeps its length and the folder stays clean); other files stay.
      The folder is stored as this Mac resolves it. A worktree stays only when it is inside the chat's own project, or is
      a linked working copy `git worktree list` names for that project (never the main entry, and only when git says the
      project is the top of its own repository, so a parent repository can't vouch for a plain project inside it).
      Otherwise the folder is cleared and so is the chat's worktree: the chat opens with no folder, shows "Choose a
      project folder for this chat first." with a folder picker, and starts nothing until one is chosen. What the file
-     named (mapped to this Mac's own folder where it can be) is kept as an inert note (`imported_chat_folders`, a
-     real migration, removed with the chat and when relinked; nothing runs from it); the banner offers it back
+     named (mapped to this Mac's own folder where it can be, plus the project's id and the path below its folder) is
+     kept as an inert note (`imported_chat_folders`, a real migration whose columns are kept whole on every open,
+     removed with the chat and when relinked; nothing runs from it). A relink maps a chat's project folder through the
+     project record as it is then, by id, so a project that only got its folder here after the import still finds its
+     chats. The file's folder for a project must be a full path of at least three parts (never `/`, `/Users`, a home
+     folder or this Mac's home folder), and only the deepest project a folder is in maps it; the banner offers it back
      (`portable_relink_candidate`) once it exists here and passes the same checks, and the "Needs a folder" group
      offers one "Relink all N" per project or Mono (`portable_relink_candidates`, `portable_relink_apply`). A note for a
-     folder the import wrote instructions into is marked blocked and never offered. A chat whose folder is in
+     folder the import wrote instructions into is marked blocked and never offered, and a Mono's folder is looked at on
+     disk again when it is offered (an instruction file there or above it, or a hidden tool folder, withholds it). A chat whose folder is in
      `~/agent-memory`, a hidden folder or outside the home folder can't be relinked, and the report says so. The report counts those chats
      (`foldersCleared`) and the automations that lost a folder the same way (`automationFoldersCleared`, they also come
      back paused). A chat with no folder is listed in the sidebar's "Needs a folder" group

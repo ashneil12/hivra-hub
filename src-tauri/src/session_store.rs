@@ -1284,6 +1284,33 @@ fn ensure_column(conn: &Connection, name: &str, decl: &str) -> rusqlite::Result<
     Ok(())
 }
 
+/// The table of what an import's file named for a cleared folder, with every column. A table made by an earlier build
+/// (before `blocked`, `project_id` or `rest` existed, or on the fly before it was a migration) gets the missing ones.
+fn ensure_imported_chat_folders(conn: &Connection) -> rusqlite::Result<()> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS imported_chat_folders (
+           session_id TEXT PRIMARY KEY,
+           cwd TEXT NOT NULL,
+           worktree_cwd TEXT
+         );",
+    )?;
+    for (column, definition) in [
+        ("blocked", "INTEGER NOT NULL DEFAULT 0"),
+        ("project_id", "TEXT"),
+        ("rest", "TEXT"),
+    ] {
+        let present = conn
+            .prepare("SELECT 1 FROM pragma_table_info('imported_chat_folders') WHERE name = ?1")?
+            .exists([column])?;
+        if !present {
+            conn.execute_batch(&format!(
+                "ALTER TABLE imported_chat_folders ADD COLUMN {column} {definition};"
+            ))?;
+        }
+    }
+    Ok(())
+}
+
 fn migrate(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute(
         "CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -1590,20 +1617,14 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
     }
     if current < 21 {
         // An imported chat whose folder was cleared keeps what its file named, as an inert note: the window offers it
-        // back once it passes the import's checks (docs/PORTABLE.md). Nothing runs from this table.
-        conn.execute_batch(
-            "CREATE TABLE IF NOT EXISTS imported_chat_folders (
-               session_id TEXT PRIMARY KEY,
-               cwd TEXT NOT NULL,
-               worktree_cwd TEXT,
-               blocked INTEGER NOT NULL DEFAULT 0
-             );",
-        )?;
+        // back once it passes the import's checks (docs/PORTABLE.md). Nothing runs from this table. (Its columns are
+        // kept whole by `ensure_imported_chat_folders` below, whichever build made the table first.)
         conn.execute(
             "INSERT INTO schema_migrations (version, applied_at) VALUES (21, ?1)",
             params![now_millis()],
         )?;
     }
+    ensure_imported_chat_folders(conn)?;
     // Create even when a version row already exists (another build may have
     // used the same numbers, or a previous run recorded the version without
     // the table). Restore writes into these; missing tables look like a
@@ -4213,7 +4234,17 @@ mod tests {
             .unwrap()
             .flatten()
             .collect();
-        assert_eq!(columns, ["session_id", "cwd", "worktree_cwd", "blocked"]);
+        assert_eq!(
+            columns,
+            [
+                "session_id",
+                "cwd",
+                "worktree_cwd",
+                "blocked",
+                "project_id",
+                "rest"
+            ]
+        );
         // An older database (version 20, no table) gets it.
         conn.execute_batch(
             "DROP TABLE imported_chat_folders; DELETE FROM schema_migrations WHERE version = 21;",

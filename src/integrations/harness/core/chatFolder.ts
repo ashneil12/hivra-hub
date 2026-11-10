@@ -18,3 +18,11 @@ export function requireChatFolder(cwd: string | undefined | null): string {
   if (!hasChatFolder(cwd)) throw new Error(CHAT_NEEDS_FOLDER);
   return cwd;
 }
+
+/**
+ * Relink all gave a chat its folder in the store: the open copy takes the folder and nothing else. No move to another
+ * project, nothing added to the recents, no other chat touched, and a chat that already has a folder keeps it.
+ */
+export function withRelinkedFolder<T extends { id: string; cwd: string }>(sessions: readonly T[], sessionId: string, cwd: string): T[] {
+  return sessions.map((session) => (session.id === sessionId && !hasChatFolder(session.cwd) ? { ...session, cwd } : session));
+}

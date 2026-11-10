@@ -482,7 +482,11 @@ it("sends Rust the seated Monos, and pairs each exported project's folder with t
   // here (or has no folder here) maps nothing.
   const exported = [{ ...PROJECTS[0], template: "product-saas" as const }, { ...PROJECTS[1], template: "product-saas" as const }];
   const hereProjects = [{ ...PROJECTS[0], folder: "/Users/new/Projects/hivra" }, { ...PROJECTS[1], folder: null }];
-  expect(b.plan.folderMapFor(exported, { projects: hereProjects })).toEqual([{ from: PROJECTS[0].folder, to: "/Users/new/Projects/hivra" }]);
+  expect(b.plan.folderMapFor(exported, { projects: hereProjects })).toEqual([
+    { projectId: "hivra", from: PROJECTS[0].folder, to: "/Users/new/Projects/hivra" },
+    // No folder here yet: the pair still goes, so a relink can map the chat once the project gets one.
+    { projectId: "vg-game", from: PROJECTS[1].folder, to: "" },
+  ]);
 });
 
 it("the Mono tick adds exactly the folders the preview listed, and a team folder waits for a Mono that is seated or ticked", async () => {
