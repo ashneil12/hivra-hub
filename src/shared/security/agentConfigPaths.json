@@ -98,5 +98,9 @@
     "config/mise/config.toml",
     ".mise/config.toml"
   ],
+  "pathSequences": [
+    "src/shared/security",
+    "src/features/autopilot/model"
+  ],
   "holdAnyDotSegment": true
 }
