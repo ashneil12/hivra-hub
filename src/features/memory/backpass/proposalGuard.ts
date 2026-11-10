@@ -214,6 +214,17 @@ const SECRET_FILE = new RegExp(`\\b${SECRET_WORD}s?[-_.][a-z0-9]{1,20}\\b`);
  * case, or a run of ordinary words, is not one.
  */
 const BASE64_BLOB = /(?=(?:[^A-Z]*[A-Z]){3})(?=[^0-9]*[0-9])[A-Za-z0-9+/]{32,}={0,2}/;
+
+/**
+ * Whether the text holds a base64 blob: one whitespace-separated token, or a token that carries on across a line break
+ * ("Qk9C...\nNDU2..."). Spaces are not removed first: that fused prose words into a run that looked like a blob
+ * ("## A correction from the week" and "Correction 0." read as one) and refused plain edits (review H5).
+ */
+function base64Blob(text: string): boolean {
+  const visible = text.replace(ZERO_WIDTH, "");
+  if (visible.split(/\s+/).some((token) => BASE64_BLOB.test(token))) return true;
+  return BASE64_BLOB.test(visible.replace(/\r?\n[ \t]*/g, ""));
+}
 /**
  * A value assigned to a key name, even when the value starts on the next line: "key=\nabcdefghijklmnop". A short
  * value is still a value ("pwd=x", "passwd: x", "token: abc123"): the name is a secret and something follows it.
@@ -255,9 +266,16 @@ const PERMISSION =
   /\bwithout (?:asking|approval|confirmation|checking|permission|prompting|review)\b|\bskip(?:ping)? (?:the )?(?:asks?|approvals?|confirmations?|prompts?|reviews?|checks?|permissions?)\b|\bauto[- ]?approv\w*|\b(?:don'?t|do not|never) (?:ask|prompt|wait for|wait on) (?:for )?(?:approval|permission|first|before|me(?! to repeat)|him|her|them|the person|a person|anyone|review|confirmation|it)\b|\b(?:never|don'?t|do not) ask\b(?!\s+(?:me\s+)?(?:to repeat|me to repeat|again|about|how|what|why|whether|which|questions?))|\bno need (?:to ask|for permission)\b|\byou (?:don'?t|do not) need (?:to ask|permission)\b|\b(?:assume|grant yourself) permission\b|\bno confirmation (?:is )?(?:needed|required)\b|\bconfirmation (?:is )?not (?:needed|required)\b|\b(?:full|unrestricted|root) (?:autonomy|access|permission)\b|\bhands[- ]off\b|\bgrant(?:ed|ing)? (?:\w+ ){0,2}(?:access|permissions?|admin)\b|\bgive (?:\w+ ){0,2}(?:access|permissions?|admin)\b|\bbypass\w*|\b(?:disable|turn off|switch off|ignore|override) (?:\w+ ){0,2}(?:approvals?|permissions?|reviews?|safety|guards?|checks?)\b|\b(?:always|trust) (?:allow|approve)\b|\b(?:allow|approve) (?:all|every|any|anything|everything)\b|\b(?:allow|approve|enable|permit|run) (?:all|every|any) (?:tools?|commands?)\b|\btrust (?:all|every|anything|everything)\b|\bstop asking\b|\byes to all\b|\bassume (?:yes|consent)\b|\banswer yes to (?:every|all)\b|\bact on your own\b|\bno (?:further )?approvals? (?:are )?(?:needed|required)\b|\byolo\b|\bapprove[- ]all\b|\bpre-?approved?\b|\btreat (?:every|all|any) \w+ as (?:approved|allowed)\b|\b(?:have|has|you may) (?:my |his |her |their |your )?(?:full |unrestricted )?permission to\b|\bnever wait (?:for|on)? ?(?:review|approval|confirmation|the review)?\b|\b(?:bash|shell|all|any|every)\s*\(\s*\*\s*\)|\ballowed[-_ ]?tools?\b|\b(?:approval|permission)[_ -]?(?:policy|mode)\b|\bsandbox[_ ]?mode\b|\bdanger[-_ ]?full[-_ ]?access\b|\bdelete files freely\b|\bsudo is (?:fine|ok|okay)\b|\bchmod 777\b|\bunprompted\b/;
 
 
+/**
+ * The evidence link a weekly retro writes to its own work log: "[work log 2026-11-10](work-log:2026-11-10)". It is the
+ * app's own form, not a web address, so it is taken out before the matchers read the text. Only that exact shape, with
+ * a day on both sides, is taken out; a link to anything else still reads as a link (review H5).
+ */
+const INTERNAL_WORK_LOG_LINK = /\[work log \d{4}-\d{2}-\d{2}\]\(work-log:\d{4}-\d{2}-\d{2}\)/gi;
+
 /** What `text` adds that a proposal may not, by kind; empty when it adds none of them. */
 export function additionsIn(text: string): Addition[] {
-  const original = String(text ?? "");
+  const original = String(text ?? "").replace(INTERNAL_WORK_LOG_LINK, " ");
   const value = normalised(original);
   if (!value) return [];
   // Words that name a topic rather than carry a value ("the token budget", "the password policy") are taken out before
@@ -318,7 +336,7 @@ export function additionsIn(text: string): Addition[] {
     TOKEN_PREFIX_AS_WRITTEN.test(original) ||
     TOKEN_PREFIX_AS_WRITTEN.test(original.replace(ZERO_WIDTH, "").replace(/\s+/g, "")) ||
     ASSIGNED_KEY.test(unwrapped.toLowerCase()) ||
-    BASE64_BLOB.test(unwrapped) ||
+    base64Blob(original) ||
     hasSecretText(topical) ||
     hasSecretText(unwrapped)
   ) {

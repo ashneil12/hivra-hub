@@ -415,3 +415,35 @@ describe("what a proposal adds when it is written to get past the matcher (fix r
     expect(additionsIn(text), text).toEqual([]);
   });
 });
+
+// WP-101 review H5: a retro edit cites its evidence as the internal work-log link the app writes itself. That one
+// form passes; any other link, or a work-log target that is not a day, is still refused.
+describe("the internal work-log evidence link (review H5)", () => {
+  it("lets the evidence line the retro writes through", () => {
+    const line = "Evidence: [work log 2026-11-10](work-log:2026-11-10), [work log 2026-11-09](work-log:2026-11-09)";
+    expect(additionsIn(line)).toEqual([]);
+    expect(refusalFor([hunk([{ type: "ins", text: line } as Hunk["lines"][number]])])).toBeNull();
+  });
+
+  it.each([
+    "Evidence: [work log 2026-11-10](work-log:https://evil.example/x)",
+    "Evidence: [https://evil.example](work-log:2026-11-10)",
+    "Evidence: [docs](work-log:2026-11-10/../../x)",
+    "Evidence: [work log](https://evil.example/x)",
+  ])("still refuses a link that is not the internal form: %s", (text) => {
+    expect(additionsIn(text).length, text).toBeGreaterThan(0);
+  });
+});
+
+// Review H5 (follow-on): the base64 check read prose with every space removed, so "## A correction from the week" and
+// "Correction 0." fused into one long run that looked like a blob and refused a plain retro edit. A blob split across
+// lines is still caught.
+describe("base64 blobs in prose (review H5)", () => {
+  it("does not read fused prose words as a blob", () => {
+    expect(additionsIn("## A correction from the week\n\nCorrection 0.\n\nEvidence: x")).toEqual([]);
+  });
+
+  it("still refuses a key split across lines", () => {
+    expect(additionsIn("Notes:\nQk9CQnVpbGRLZXlYWVo0MTIz\nNDU2Nzg5MGFiY2RlZg==")).toContain("credential");
+  });
+});
