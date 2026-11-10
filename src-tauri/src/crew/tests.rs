@@ -2048,7 +2048,11 @@ fn a_lock_pauses_on_a_reset_and_wakes_the_first_mate() {
         budget: None,
         policy: Some(&json!({ "neverUse": ["claude"] })),
     });
-    assert!(repeated.skipped.is_empty());
+    // A recorded skip is not an attempt, so a ban that is still there is said again.
+    assert_eq!(repeated.to.as_deref(), Some("grok"));
+    assert_eq!(repeated.skipped.len(), 1);
+    assert_eq!(repeated.skipped[0].cli.as_deref(), Some("claude"));
+    assert_eq!(repeated.skipped[0].outcome, "skipped");
     let again = decide(&input(
         &current,
         &present(who),
@@ -2058,6 +2062,53 @@ fn a_lock_pauses_on_a_reset_and_wakes_the_first_mate() {
     ));
     assert_eq!(again.action, "again");
     assert_eq!(again.reason, "the CLI didn't answer");
+}
+
+/// A skip is not an attempt. Signing in, or taking a CLI off Never use, offers it again. A real attempt does not.
+#[test]
+fn a_skipped_cli_is_offered_again_once_it_can_take_the_work() {
+    let current = Pick {
+        cli: Some("claude".into()),
+        model: None,
+        effort: None,
+    };
+    let skipped = Attempt {
+        at: 1_000,
+        cli: Some("codex".into()),
+        model: None,
+        effort: None,
+        error_class: "Codex isn't signed in, so it was skipped.".into(),
+        outcome: "skipped".into(),
+        to: None,
+    };
+    let offered = decide(&FailureInput {
+        error_class: Some("quota"),
+        text: None,
+        resets_at: None,
+        now: 2_000,
+        current: &current,
+        present: &present(&[("claude", true, true), ("codex", true, true)]),
+        ledger: std::slice::from_ref(&skipped),
+        budget: None,
+        policy: Some(&json!({ "fallback": ["codex"] })),
+    });
+    assert_eq!(offered.action, "reroute");
+    assert_eq!(offered.to.as_deref(), Some("codex"));
+
+    let mut tried = skipped;
+    tried.outcome = "rerouted".into();
+    let blocked = decide(&FailureInput {
+        error_class: Some("quota"),
+        text: None,
+        resets_at: None,
+        now: 2_000,
+        current: &current,
+        present: &present(&[("claude", true, true), ("codex", true, true)]),
+        ledger: std::slice::from_ref(&tried),
+        budget: None,
+        policy: Some(&json!({ "fallback": ["codex"] })),
+    });
+    assert_ne!(blocked.to.as_deref(), Some("codex"));
 }
 
 #[test]

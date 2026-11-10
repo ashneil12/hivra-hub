@@ -60,9 +60,10 @@ fn spent(ledger: &[Attempt]) -> u64 {
 }
 
 fn tried(ledger: &[Attempt], cli: &str) -> bool {
+    // A skip is not an attempt. Signing in, or taking a ban off, offers that CLI again.
     ledger
         .iter()
-        .any(|attempt| attempt.cli.as_deref() == Some(cli))
+        .any(|attempt| attempt.outcome != "skipped" && attempt.cli.as_deref() == Some(cli))
 }
 
 fn attempt(input: &FailureInput<'_>, outcome: &str, to: Option<String>) -> Attempt {
