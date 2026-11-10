@@ -4,6 +4,7 @@
 import { useState, type ReactNode } from "react";
 import { sectionKey, type HomeArrangement, type SectionRef } from "../model/arrangement";
 import type { HomeLine, HomeLineKind } from "../model/lines";
+import { FREE_UP_SPACE } from "../../monos/model/builderScale";
 import type { CatalogPanel } from "../../panels/model/panelTabs";
 import { HOME_MAX_WIDTH, HOME_STAGGER_MS } from "../vendor/homeLayout";
 import "./home.css";
@@ -185,7 +186,25 @@ export function HomeScreen({
                 <Control name={`Hide ${title}`} onClick={() => onHide(key)} />
                 {ref.kind === "panel" ? <Control name={`Unpin ${title}`} onClick={() => onUnpin(key)} /> : null}
               </header>
-              {ref.kind === "builtin" ? rows.map((line) => (
+              {ref.kind === "builtin" ? rows.map((line) => line.kind === "builders" ? (
+                // WP-161: a line about the machine, not a place to open: its text says what is wrong and its one
+                // action opens Settings > Worktrees > Clean up. The text wraps, so the free space is never clipped.
+                <div
+                  key={line.id}
+                  data-home-line="builders"
+                  className="flex min-h-10 w-full items-center gap-3 border-t border-stroke px-3 py-1.5 text-[13px] text-content"
+                >
+                  <span className="min-w-0 flex-1">{line.text}</span>
+                  <button
+                    type="button"
+                    data-home-action="free-up-space"
+                    className="shrink-0 text-[12px] text-content underline-offset-2 hover:underline"
+                    onClick={() => onOpen(line)}
+                  >
+                    {FREE_UP_SPACE}
+                  </button>
+                </div>
+              ) : (
                 <button
                   key={line.id}
                   type="button"

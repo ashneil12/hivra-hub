@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { stripHiddenCharacters } from "../../sessions/model/hiddenText";
 import type { HarnessId, RuntimeMode } from "../../sessions/model/session";
 
 export const AUTOMATIONS_CHANGED = "monocode:automations-changed";
@@ -456,7 +457,11 @@ export async function listAutomations(): Promise<Automation[]> {
 export async function saveAutomation(
   draft: AutomationDraft,
 ): Promise<Automation> {
-  const synced = applyTriggers(draft, draft.triggers);
+  // Whatever reached the draft, a saved prompt never carries hidden characters.
+  const synced = applyTriggers(
+    { ...draft, prompt: stripHiddenCharacters(draft.prompt).text },
+    draft.triggers,
+  );
   const automation: AutomationUpsert = {
     ...synced,
     id: synced.id ?? crypto.randomUUID(),
