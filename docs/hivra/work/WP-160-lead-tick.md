@@ -28,11 +28,48 @@ Tonight's CoS lead ticked every 15 minutes, merged what was safe, and left secur
 
 ## Done when
 
-- [ ] With Lead tick off, nothing runs.
-- [ ] With it on and Ship on green off, the tick launches and checks but never merges.
-- [ ] Security-park rows are never merged.
-- [ ] Tests cover the five steps with fakes; browser spec for the two settings.
+- [x] With Lead tick off, nothing runs.
+- [x] With it on and Ship on green off, the tick launches and checks but never merges.
+- [x] Security-park rows are never merged.
+- [x] Tests cover the five steps with fakes; browser spec for the two settings.
 
 ## Licence
 
 Product behaviour. Reuses Hivra delivery and habits. Ideas only from firstmate's timed wakes (MIT), already in the tree.
+
+## As built
+
+Code: `src/features/leadTick/` (model, hook, Crew tab card), mounted by one hook line in `src/app/App.tsx` and one
+line in `src/features/crew/ui/CrewPanel.tsx`.
+
+- **Settings** (`model/setting.ts`, `model/store.ts`). Per project folder, in the hub document `lead-tick` in the
+  app's database: Lead tick off, every 15 minutes (5 to 240), Ship on green off. The same document keeps each
+  project's last tick, its line, and what was already said once.
+- **When it runs** (`model/schedule.ts`, `hooks/useLeadTick.ts`). The main window looks once a minute while the app
+  is open. A project ticks when its Lead tick is on and its interval has passed. Nothing ticks during quiet hours
+  (WP-164), while the project's Lead chat is working, asking, holding queued messages, paused on a usage limit or
+  stopped resuming (the WP-11 rule), or where the app's policy turns automations off (a dev copy). One tick per
+  project at a time. No LaunchAgent: the Crew card says the tick runs only while Hivra is open, and when no tick ran
+  for more than two intervals it says for how long and that missed ticks are not made up.
+- **One tick** (`model/tick.ts`, `model/ports.ts`), acting as the project's Lead (`teamLeadOf`):
+  1. reads the programme as the first mate (`programme_list`);
+  2. reads the PR watches (`pr_watch_list`) for the programme's `building` and `pr_open` rows by branch: an open pull
+     request moves a row to `pr_open`, a merged one to `merged` with one work log outcome line;
+  3. for a green pull request (open, not a draft, checks passed, none pending, not conflicting): with Ship on green
+     off it says once per head that it waits for the person; with it on it calls delivery's one merge path
+     (`delivery_merge`) as the Lead, never as the person. That path reads the pull request again, refuses red,
+     pending, draft and conflicting ones and open decisions, pins the head, and merges without asking only when the
+     project's Merge without asking is on; otherwise it answers that the person's word is needed, and the tick says
+     so once. A `security_park` row, a parked row, or a package on the WP-155 helper's never-merge list (WP-92,
+     WP-150, WP-158, a security-park label or title) is never sent to it. The rule matches
+     `scripts/hivra-ship-green.mjs` (a test runs both on the same cases). The helper itself is not run: it only
+     prints a command, and a tick does not shell out;
+  4. starts at most one queued, non-parked package when a builder slot is free: the project's worker limit (open
+     workers, waiting workers, and packages already building all count) and the builder health pause (WP-161). It
+     claims the row (`building`), then asks the Lead's own `delegate_task` with the brief path, branch and a definition
+     of done, so the fresh-eyes hold (WP-144) and the worker queue apply. A brief held for review counts as started.
+     A failed start marks the row `failed`;
+  5. writes one activity line (`lead.tick`) when it did something; a quiet tick writes none. What needs the person
+     goes to the batched notable pings as `lead-tick` (WP-164), which quiet hours hold like the rest.
+- **Not in this package:** health scaling beyond the WP-161 gate (WP-161), rebase and stale locks (WP-162), quiet-hours
+  changes (WP-164), overnight scout (WP-165).
