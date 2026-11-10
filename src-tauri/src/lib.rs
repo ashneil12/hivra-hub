@@ -3,6 +3,8 @@ use tauri::Manager;
 mod account_identity;
 // WP-78: the activity log.
 mod activity;
+// WP-157: the work log. Not a numbered migration.
+mod work_log;
 // WP-86: commit attribution. Not a numbered migration.
 mod artifacts;
 mod attribution;
@@ -603,6 +605,11 @@ pub fn run() {
             reminders::reminder_open,
             delegations::delegations_record,
             delegations::delegations_settle,
+            // WP-157: one work log line when checks send work back.
+            delegations::delegations_sent_back,
+            // WP-157: the first mate's work log tool.
+            work_log::work_log_add,
+            work_log::work_log_read,
             delegations::delegations_reattach,
             delegations::delegations_set_question,
             delegations::delegations_set_stall,

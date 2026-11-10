@@ -70,6 +70,7 @@ Adding a source or vendoring a component? Add it to [credits.json](credits.json)
 | [ccdeck](https://github.com/BarganConstantin/ccdeck) | AGPL-3.0 | Ideas only: a live session tree (main agent at the root, subagents as nodes, inspectable tool calls) and a waiting-on-you list ordered questions first and longest wait first. No code | Ideas only, never code | 119 |
 | [Claude Code subagents](https://code.claude.com/docs/en/sub-agents) | public docs | The built-in Explore agent runs on the session model unless an Explore agent sets `model`, and `--agents` defines one for a single session | Ideas only. A hub crew or Mono session on Anthropic passes a cheap Explore agent with `--agents` and writes no file (WP-143). No code copied | 143 |
 | [Memorilla](https://github.com/snap-stanford/memorilla) | Apache-2.0; its PersonalizationV4 data is CC BY 4.0 | An external test set for chat-derived memory, the arm ladder its evaluation reports, and rules for writing a memory question that cannot be guessed | Ideas and data only. The test file is fetched on demand and never copied into the repo. No Memorilla code is copied | 106 |
+| [numbrone](https://github.com/stevenmichaelthomas/numbrone) | MIT | A typed daily work log (outcome, decision, feedback, context), answering "what got done today?" from that log, and retros that propose instruction edits only after the person agrees | Ideas only | 157 |
 
 ## Vision to packages
 

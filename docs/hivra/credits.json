@@ -251,6 +251,12 @@
       "url": "https://github.com/snap-stanford/memorilla",
       "licence": "Apache-2.0; its PersonalizationV4 data is CC BY 4.0",
       "gave": "an external test set for chat-derived memory, the arm ladder its evaluation reports, and rules for writing a memory question that cannot be guessed (WP-106, ideas and data only)"
+    },
+    {
+      "name": "numbrone",
+      "url": "https://github.com/stevenmichaelthomas/numbrone",
+      "licence": "MIT",
+      "gave": "ideas only: a typed daily work log and retros that propose instruction edits only after the person agrees"
     }
   ],
   "components": [
