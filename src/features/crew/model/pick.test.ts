@@ -131,6 +131,53 @@ describe("first mate pick", () => {
     expect(pick.reason).toBe("Codex is on Never use, so it was skipped. Nothing else is set, so this uses Claude Code.");
   });
 
+  it("the person's own default comes before the fallback order", () => {
+    const pick = pickMate({
+      present: signed("claude", "grok", "codex"),
+      defaults: { system: { cli: "codex" } },
+      policy: { lockDefault: false, neverUse: [], fallback: ["grok"] },
+    });
+    expect(pick.cli).toBe("codex");
+    expect(pick.reason).toBe("Your default is Codex.");
+  });
+
+  it("a default at its quota moves down the fallback order, and says so", () => {
+    const pick = pickMate({
+      present: signed("claude", "grok", "codex"),
+      defaults: { system: { cli: "codex" } },
+      pausedClis: ["codex"],
+      policy: { lockDefault: false, neverUse: [], fallback: ["grok"] },
+    });
+    expect(pick.cli).toBe("grok");
+    expect(pick.reason).toBe("Codex is at its quota, so this uses Grok.");
+  });
+
+  it("with Always use my default on, a default at its quota picks nothing else", () => {
+    const pick = pickMate({
+      present: signed("claude", "grok", "codex"),
+      defaults: { system: { cli: "codex" } },
+      pausedClis: ["codex"],
+      policy: { lockDefault: true, neverUse: [], fallback: ["grok"] },
+    });
+    expect(pick.ok).toBe(false);
+    expect(pick.cli).toBeNull();
+    expect(pick.monoId).toBeNull();
+    expect(pick.reason).toBe("Codex is at its quota and Always use my default is on, so nothing else was picked.");
+  });
+
+  it("with Always use my default on, a Mono that fits the role does not replace the default", () => {
+    const pick = pickMate({
+      labels: ["reviewer"],
+      present: signed("claude", "codex"),
+      defaults: { system: { cli: "codex" } },
+      monos: [ada],
+      policy: { lockDefault: true, neverUse: [], fallback: [] },
+    });
+    expect(pick.cli).toBe("codex");
+    expect(pick.monoId).toBeNull();
+    expect(pick.reason).toBe("Your default is Codex.");
+  });
+
   it("a worker already at the cap is not used while another is free", () => {
     const pick = pickMate({
       present: signed("claude", "codex"),

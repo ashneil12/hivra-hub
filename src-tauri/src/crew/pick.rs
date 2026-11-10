@@ -323,6 +323,36 @@ fn take_ask(
     Taken::Miss
 }
 
+/// A role match says the role; the person's own default says so.
+fn default_or_role(choice: &Choice) -> String {
+    if choice.role >= 2 {
+        format!("{} role prefers {}.", choice.role_word, choice.name)
+    } else {
+        format!("Your default is {}.", choice.name)
+    }
+}
+
+/// The CLI a rule or the person's Mono, project or system default names, judged by the same resolver.
+fn person_set_cli(query: &PickQuery, policy: &Value) -> Option<String> {
+    let route = resolve_route(
+        &query.labels,
+        &query.paths,
+        None,
+        None,
+        &query.rules,
+        &query.present,
+        query.defaults.as_ref(),
+        &query.catalog,
+        Some(policy),
+    );
+    matches!(
+        route.cli_from.as_str(),
+        "rule" | "mono" | "project" | "system"
+    )
+    .then_some(route.cli)
+    .flatten()
+}
+
 fn nothing_reason(depth: i64, had_mono: bool) -> String {
     if had_mono && depth >= MAX_MONO_DEPTH {
         depth_sentence(depth)
@@ -356,7 +386,7 @@ fn choose(choices: &[Choice], role_cli: Option<&str>, paused: &[String]) -> Opti
             best.name
         )
     } else if best.role > 0 && best.kind == "cli" {
-        format!("{} role prefers {}.", best.role_word, best.name)
+        default_or_role(best)
     } else if best.role > 0 && best.kind == "mono" {
         format!("{} fits the {} role.", best.name, best.role_word)
     } else if best.fallback_rank < 1000 {
@@ -455,6 +485,9 @@ pub fn pick_mate(query: &PickQuery) -> MatePick {
     } else {
         clis.first().map(|row| row.cli.as_str())
     };
+    // The CLI the person set (a rule, or a Mono, project or system default). It ranks under a role match and above the
+    // fallback order, and with Always use my default on it is the only CLI the pick may use.
+    let set_cli = person_set_cli(query, &policy);
     let mut choices = Vec::new();
     for (stable, row) in clis.iter().enumerate() {
         let rank = fallback.iter().position(|id| id == &row.cli);
@@ -464,6 +497,8 @@ pub fn pick_mate(query: &PickQuery) -> MatePick {
             name: cli_label(&row.cli).to_string(),
             role: if role_cli.as_deref() == Some(row.cli.as_str()) {
                 2
+            } else if set_cli.as_deref() == Some(row.cli.as_str()) {
+                1
             } else {
                 0
             },
@@ -566,8 +601,32 @@ pub fn pick_mate(query: &PickQuery) -> MatePick {
             ),
         );
     }
+    if let (true, Some(set)) = (lock, set_cli.as_deref()) {
+        let mine = choices
+            .iter()
+            .find(|choice| choice.kind == "cli" && choice.id == set);
+        let Some(mine) = mine.filter(|choice| choice.available == 1) else {
+            let name = cli_label(set);
+            let why = if query.paused_clis.iter().any(|id| id == set) {
+                format!("{name} is at its quota and Always use my default is on, so nothing else was picked.")
+            } else {
+                format!("{name} is not free and Always use my default is on, so nothing else was picked.")
+            };
+            return stamp(override_set, none(note(skipped.as_deref(), why)));
+        };
+        let reason = note(skipped.as_deref(), default_or_role(mine));
+        let (model, effort) = fields_for(query, &policy, &mine.id);
+        return stamp(
+            override_set,
+            cli_result(mine.id.clone(), model, effort, reason),
+        );
+    }
     let had_mono = !roster.is_empty();
-    let Some(picked) = choose(&choices, role_cli.as_deref(), &query.paused_clis) else {
+    let Some(picked) = choose(
+        &choices,
+        role_cli.as_deref().or(set_cli.as_deref()),
+        &query.paused_clis,
+    ) else {
         return stamp(
             lock && override_set,
             none(note(skipped.as_deref(), nothing_reason(depth, had_mono))),
@@ -823,6 +882,65 @@ mod tests {
             pick.reason,
             "Codex is on Never use, so it was skipped. Nothing else is set, so this uses Claude Code."
         );
+    }
+
+    fn system_default(cli: &str) -> Option<RouteDefaults> {
+        Some(RouteDefaults {
+            system: Some(super::super::resolve::Pick {
+                cli: Some(cli.into()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        })
+    }
+
+    #[test]
+    fn the_persons_default_comes_before_the_fallback_order() {
+        let pick = pick_mate(&PickQuery {
+            present: signed(&["claude", "grok", "codex"]),
+            defaults: system_default("codex"),
+            policy: Some(json!({ "lockDefault": false, "neverUse": [], "fallback": ["grok"] })),
+            ..PickQuery::default()
+        });
+        assert_eq!(pick.cli.as_deref(), Some("codex"));
+        assert_eq!(pick.reason, "Your default is Codex.");
+        let paused = pick_mate(&PickQuery {
+            present: signed(&["claude", "grok", "codex"]),
+            defaults: system_default("codex"),
+            paused_clis: vec!["codex".into()],
+            policy: Some(json!({ "lockDefault": false, "neverUse": [], "fallback": ["grok"] })),
+            ..PickQuery::default()
+        });
+        assert_eq!(paused.cli.as_deref(), Some("grok"));
+        assert_eq!(paused.reason, "Codex is at its quota, so this uses Grok.");
+    }
+
+    #[test]
+    fn the_lock_keeps_the_default_and_picks_nothing_else_at_quota() {
+        let stuck = pick_mate(&PickQuery {
+            present: signed(&["claude", "grok", "codex"]),
+            defaults: system_default("codex"),
+            paused_clis: vec!["codex".into()],
+            policy: Some(json!({ "lockDefault": true, "neverUse": [], "fallback": ["grok"] })),
+            ..PickQuery::default()
+        });
+        assert!(!stuck.ok);
+        assert_eq!((stuck.cli, stuck.mono_id), (None, None));
+        assert_eq!(
+            stuck.reason,
+            "Codex is at its quota and Always use my default is on, so nothing else was picked."
+        );
+        let kept = pick_mate(&PickQuery {
+            labels: vec!["reviewer".into()],
+            present: signed(&["claude", "codex"]),
+            defaults: system_default("codex"),
+            monos: vec![ada()],
+            policy: Some(json!({ "lockDefault": true, "neverUse": [], "fallback": [] })),
+            ..PickQuery::default()
+        });
+        assert_eq!(kept.cli.as_deref(), Some("codex"));
+        assert_eq!(kept.mono_id, None);
+        assert_eq!(kept.reason, "Your default is Codex.");
     }
 
     #[test]

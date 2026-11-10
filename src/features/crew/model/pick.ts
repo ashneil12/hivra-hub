@@ -180,6 +180,9 @@ export function pickMate(raw: PickInput): MatePick {
   const roleName = roleTitle(matched?.labels[0]);
   const fallback = policy?.fallback ?? [];
   const usual = clis.some((row) => row.cli === "claude") ? "claude" : clis[0]?.cli;
+  // The CLI the person set (a rule, or a Mono, project or system default). It ranks under a role match and above the
+  // fallback order, and with Always use my default on it is the only CLI the pick may use.
+  const setCli = personSetCli(input);
 
   const choices: Choice[] = [];
   clis.forEach((row, stable) => {
@@ -188,7 +191,7 @@ export function pickMate(raw: PickInput): MatePick {
       kind: "cli",
       id: row.cli,
       name: cliLabel(row.cli),
-      role: roleCli === row.cli ? 2 : 0,
+      role: roleCli === row.cli ? 2 : setCli === row.cli ? 1 : 0,
       roleWord: roleName,
       available: paused.has(row.cli) || capped.has(row.cli) ? 0 : 1,
       fallbackRank: rank >= 0 ? rank : 1000,
@@ -227,7 +230,18 @@ export function pickMate(raw: PickInput): MatePick {
     );
   }
 
-  const picked = choose(choices, roleCli, paused);
+  if (lock && setCli) {
+    const mine = choices.find((choice) => choice.kind === "cli" && choice.id === setCli);
+    if (!mine || mine.available !== 1) {
+      const name = cliLabel(setCli);
+      const why = paused.has(setCli)
+        ? `${name} is at its quota and Always use my default is on, so nothing else was picked.`
+        : `${name} is not free and Always use my default is on, so nothing else was picked.`;
+      return stamp(overrideSet, none(note(skipped, why)));
+    }
+    return stamp(overrideSet, finish(input, { kind: "cli", id: mine.id, reason: defaultOrRole(mine) }, note(skipped, defaultOrRole(mine))));
+  }
+  const picked = choose(choices, roleCli ?? setCli, paused);
   const hadMono = roster.length > 0;
   if (!picked) return stamp(lock && overrideSet, none(note(skipped, nothingReason(depth, hadMono))));
   return stamp(lock && overrideSet, finish(input, picked, note(skipped, picked.reason)));
@@ -284,6 +298,24 @@ function finish(input: PickInput, picked: { kind: Kind; id: string; reason: stri
   return cliResult(picked.id, fields.model, fields.effort, reason);
 }
 
+/** A role match says the role; the person's own default says so. */
+function defaultOrRole(choice: Pick<Choice, "role" | "roleWord" | "name">): string {
+  if (choice.role >= 2) return `${choice.roleWord} role prefers ${choice.name}.`;
+  return `Your default is ${choice.name}.`;
+}
+
+/** The CLI a rule or the person's Mono, project or system default names, judged by the same resolver. */
+function personSetCli(input: PickInput): string | undefined {
+  const route = resolveRoute(
+    { labels: [...(input.labels ?? [])], paths: [...(input.paths ?? [])] },
+    input.rules ?? [],
+    input.present ?? [],
+    { defaults: input.defaults, catalog: input.catalog, policy: input.policy },
+  );
+  const set = route.cliFrom === "rule" || route.cliFrom === "mono" || route.cliFrom === "project" || route.cliFrom === "system";
+  return set && route.cli ? route.cli : undefined;
+}
+
 function nothingReason(depth: number, hadMono: boolean): string {
   if (hadMono && depth >= MAX_MONO_DEPTH) return depthSentence(depth);
   return "Nothing available can take it.";
@@ -308,7 +340,7 @@ function choose(
     return { kind: best.kind, id: best.id, reason: `${cliLabel(roleCli)} is at its quota, so this uses ${best.name}.` };
   }
   if (best.role > 0 && best.kind === "cli") {
-    return { kind: "cli", id: best.id, reason: `${best.roleWord} role prefers ${best.name}.` };
+    return { kind: "cli", id: best.id, reason: defaultOrRole(best) };
   }
   if (best.role > 0 && best.kind === "mono") {
     return { kind: "mono", id: best.id, reason: `${best.name} fits the ${best.roleWord} role.` };
