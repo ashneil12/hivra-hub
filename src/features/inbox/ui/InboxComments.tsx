@@ -1,4 +1,5 @@
 import { openUrl } from "@tauri-apps/plugin-opener";
+import { stripHiddenText } from "../../sessions/model/hiddenText";
 import {
   useEffect,
   useRef,
@@ -268,7 +269,7 @@ export function InboxCommentForm({
   }, [draft]);
 
   const submit = async () => {
-    const body = draft.trim();
+    const body = stripHiddenText(draft).text;
     if (!body || posting) return;
     try {
       await onSubmit(body);
