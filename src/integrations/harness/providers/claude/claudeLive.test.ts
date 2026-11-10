@@ -2084,9 +2084,116 @@ describe("claude subagent approvals on the parent thread", () => {
     await turn;
   });
 
+  it("names a subagent's ask that arrives before the child's own frame, and answers it on its request", async () => {
+    const { events, turn } = await startTurn("s1");
+    // The Agent call is open, but the child's assistant frame has not landed: no child is known yet.
+    emit({
+      type: "assistant",
+      session_id: "sess_1",
+      message: {
+        content: [
+          { type: "tool_use", id: "toolu_agent", name: "Task", input: { description: "Explore the auth module", subagent_type: "explore" } },
+        ],
+      },
+    });
+    askForChild("early_permission", "child_read");
+    const approval = events.find((event) => event.type === "approval.requested")!;
+    expect(approval).toMatchObject({ callId: "child_read", child: { name: "a subagent" } });
+    const waiting = events.reduce(applyHarnessEvent, newSession("claude", "/repo"));
+    expect(waiting.blocks.find((block) => block.approval)?.approval?.child).toMatchObject({ name: "a subagent" });
+    respondClaudeApproval("s1", approval.requestId, "allow");
+    await waitFor(() => responseTo("early_permission").length > 0, "early child answer");
+    expect(responseTo("early_permission")).toEqual([
+      expect.objectContaining({
+        response: expect.objectContaining({ response: expect.objectContaining({ behavior: "allow" }) }),
+      }),
+    ]);
+    expect(events).toContainEqual({ type: "approval.resolved", requestId: approval.requestId, decision: "allow" });
+    emit({ type: "result", subtype: "success", session_id: "sess_1" });
+    await turn;
+  });
+
+  it("names an ask that names no call as a subagent's while a subagent is running", async () => {
+    const { events, turn } = await startTurn("s1");
+    emitChildToolCall();
+    emit({
+      type: "control_request",
+      request_id: "anonymous_permission",
+      request: { subtype: "can_use_tool", tool_name: "Read", input: { file_path: "/home/user/.gitconfig" } },
+    });
+    const approval = events.find((event) => event.type === "approval.requested")!;
+    expect(approval).toMatchObject({ child: { name: "a subagent" } });
+    respondClaudeApproval("s1", approval.requestId, "deny");
+    await waitFor(() => responseTo("anonymous_permission").length > 0, "anonymous answer");
+    expect(responseTo("anonymous_permission")).toEqual([
+      expect.objectContaining({
+        response: expect.objectContaining({ response: expect.objectContaining({ behavior: "deny" }) }),
+      }),
+    ]);
+    emit({ type: "result", subtype: "success", session_id: "sess_1" });
+    await turn;
+  });
+
+  it("keeps an unannounced ask plain when no subagent is running", async () => {
+    const { events, turn } = await startTurn("s1");
+    askForChild("plain_permission", "unseen_read");
+    const approval = events.find((event) => event.type === "approval.requested")!;
+    expect(approval).not.toHaveProperty("child");
+    respondClaudeApproval("s1", approval.requestId, "allow");
+    await waitFor(() => responseTo("plain_permission").length > 0, "plain answer");
+    emit({ type: "result", subtype: "success", session_id: "sess_1" });
+    await turn;
+  });
+
+  it("keeps a call the parent announced plain while a subagent is running", async () => {
+    const { events, turn } = await startTurn("s1");
+    emitChildToolCall();
+    emit({
+      type: "assistant",
+      session_id: "sess_1",
+      message: { content: [{ type: "tool_use", id: "parent_bash", name: "Bash", input: { command: "npm test" } }] },
+    });
+    emit({
+      type: "control_request",
+      request_id: "parent_bash_permission",
+      request: { subtype: "can_use_tool", tool_name: "Bash", tool_use_id: "parent_bash", input: { command: "npm test" } },
+    });
+    const approval = events.find((event) => event.type === "approval.requested")!;
+    expect(approval).not.toHaveProperty("child");
+    respondClaudeApproval("s1", approval.requestId, "allow");
+    await waitFor(() => responseTo("parent_bash_permission").length > 0, "parent bash answer");
+    emit({ type: "result", subtype: "success", session_id: "sess_1" });
+    await turn;
+  });
+
+  it("stops treating an unannounced ask as a subagent's once every subagent has reported back", async () => {
+    const { events, turn } = await startTurn("s1");
+    emitChildToolCall();
+    emit({
+      type: "user",
+      session_id: "sess_1",
+      message: { content: [{ type: "tool_result", tool_use_id: "toolu_agent", content: "Auth lives in src/auth." }] },
+    });
+    askForChild("late_permission", "unseen_read");
+    const approval = events.find((event) => event.type === "approval.requested")!;
+    expect(approval).not.toHaveProperty("child");
+    respondClaudeApproval("s1", approval.requestId, "allow");
+    await waitFor(() => responseTo("late_permission").length > 0, "late answer");
+    emit({ type: "result", subtype: "success", session_id: "sess_1" });
+    await turn;
+  });
+
   it("leaves the parent's own asks without a child", async () => {
     const { events, turn } = await startTurn("s1");
     emitChildToolCall();
+    // The parent announces its own call before it asks about it, so the ask is known to be the parent's.
+    emit({
+      type: "assistant",
+      session_id: "sess_1",
+      message: {
+        content: [{ type: "tool_use", id: "parent_read", name: "Read", input: { file_path: "/home/user/.gitconfig" } }],
+      },
+    });
     emit({
       type: "control_request",
       request_id: "parent_permission",

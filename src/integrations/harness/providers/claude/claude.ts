@@ -187,6 +187,8 @@ type InFlightTool = {
   input: Record<string, unknown>;
   partialJson: string;
   title: string;
+  /** An Agent call whose result has come back: its run is over. */
+  settled?: boolean;
 };
 
 type LiveAgentTask = {
@@ -1575,7 +1577,10 @@ function handleUser(live: Live, rec: Record<string, unknown>): void {
         text: result.text,
       });
     }
-    if (isAgentToolName(tool.name)) settleInlineAgentTask(live, tool.id);
+    if (isAgentToolName(tool.name)) {
+      tool.settled = true;
+      settleInlineAgentTask(live, tool.id);
+    }
   }
 }
 
@@ -1789,7 +1794,7 @@ async function handleControlRequest(
 
   const uiId = live.nextApprovalUiId++;
   // WP-122: a child's ask is answered on the parent, and the answer goes to the child port only.
-  const child = control.toolUseId ? live.childTools.get(control.toolUseId) : undefined;
+  const child = childForAsk(live, control);
   if (child) {
     await answerChildClaudeApproval(live, uiId, control.requestId, control.toolUseId, toolName, input, child);
     return;
@@ -1851,6 +1856,40 @@ function waitApproval(
   });
 }
 
+/** What a subagent's ask is called when no child frame has told us who it is. */
+const UNNAMED_CHILD = "a subagent";
+
+/** A delegated run Claude has started and not yet heard back from, or a task still running in the background. */
+function hasOpenDelegatedRun(live: Live): boolean {
+  if (live.agentTasks.size > 0) return true;
+  for (const tool of live.toolsById.values()) {
+    if (isAgentToolName(tool.name) && !tool.settled) return true;
+  }
+  return false;
+}
+
+/**
+ * The child an ask belongs to, or nothing when it is the parent's own.
+ *
+ * A call the child already made names its child. Claude announces the parent's own calls before it asks about
+ * them, so an ask for a call nobody announced (or one that names no call) while a delegated run is open is a
+ * subagent's whose frame has not landed yet. It is shown as "a subagent" rather than as the parent's, and is
+ * answered on its own request id like any other.
+ */
+function childForAsk(
+  live: Live,
+  control: ClaudeControlRequest,
+): { name: string; sessionPort: string } | undefined {
+  const id = control.toolUseId?.trim();
+  const known = id ? live.childTools.get(id) : undefined;
+  if (known) return known;
+  if ((id && live.toolsById.has(id)) || !hasOpenDelegatedRun(live)) return undefined;
+  const sessionPort = (live.claudeSessionId || live.threadId).replace(/\r/g, "").trim();
+  if (!sessionPort || /[\u0000-\u001f]/.test(sessionPort)) return undefined;
+  ensureChildPort(live, sessionPort);
+  return { name: UNNAMED_CHILD, sessionPort };
+}
+
 function rememberChildPort(live: Live, toolUseId: string, name: string, sessionPort: string): void {
   const id = toolUseId.trim();
   const port = sessionPort.replace(/\r/g, "").trim();
@@ -1858,6 +1897,10 @@ function rememberChildPort(live: Live, toolUseId: string, name: string, sessionP
   if (!live.childTools.has(id)) {
     live.childTools.set(id, { name: name.trim() || "Subagent", sessionPort: port });
   }
+  ensureChildPort(live, port);
+}
+
+function ensureChildPort(live: Live, port: string): void {
   if (live.childPorts.has(port)) return;
   live.childPorts.set(port, {
     id: port,
