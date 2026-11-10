@@ -48,6 +48,21 @@ const FILE_NAMES: &[&str] = &[
     "gemini.md",
     "opencode.json",
     ".envrc",
+    // Build and supply-chain inputs: a changed lockfile or manifest can pull in code that runs at build time.
+    "cargo.lock",
+    "cargo.toml",
+    "build.rs",
+    "package.json",
+    "package-lock.json",
+    "npm-shrinkwrap.json",
+    "yarn.lock",
+    "pnpm-lock.yaml",
+    "bun.lock",
+    "bun.lockb",
+    "rust-toolchain",
+    "rust-toolchain.toml",
+    ".npmrc",
+    ".no-mistakes.yaml",
 ];
 
 /// File names protected as themselves or with a dotted suffix (`Dockerfile.prod`).
@@ -58,6 +73,7 @@ const DOTTED_NAMES: &[&str] = &[
     "dockerfile",
     "jenkinsfile",
     ".env",
+    ".cargo",
     ".claude",
     ".codex",
     ".cursor",
@@ -183,17 +199,26 @@ fn built_in_hit(path: &RepoPath) -> bool {
         pair[0] == "src-tauri" && pair[1].starts_with("tauri") && pair[1].ends_with(".json")
     }) || delivery_source(path)
         || capabilities_json(path)
+        || tauri_build_inputs(path)
 }
 
-/// `src-tauri/capabilities/*.json`, including a nested app. The directory is the prefix.
+/// `src-tauri/capabilities/*.json` and `*.toml`, including a nested app. The directory is the prefix.
 fn capabilities_json(path: &RepoPath) -> bool {
     match path.lower.last() {
-        Some(file) if extension_is(file, ".json") => path
+        Some(file) if extension_is(file, ".json") || extension_is(file, ".toml") => path
             .lower
             .windows(2)
             .any(|pair| pair[0] == "src-tauri" && pair[1] == "capabilities"),
         _ => false,
     }
+}
+
+/// Tauri's own build and permission inputs: any `*.plist` directly in `src-tauri/`, and anything under
+/// `src-tauri/permissions/`. These decide what the app may do when it is built and run.
+fn tauri_build_inputs(path: &RepoPath) -> bool {
+    path.lower.windows(2).any(|pair| {
+        pair[0] == "src-tauri" && (pair[1].ends_with(".plist") || pair[1] == "permissions")
+    })
 }
 
 /// The floor's own source. A merge that can edit this directory can delete the floor.
@@ -473,7 +498,6 @@ mod tests {
             "id_rsa_backup",
             // Beside the floor's own module, which is held. This file is not.
             "src-tauri/src/lib.rs",
-            "src-tauri/Cargo.toml",
             "not.github/workflows/x.yml",
             "mydockerfile",
             "src-tauri/capabilities/readme.md",
@@ -504,7 +528,6 @@ mod tests {
             hits(&["src-tauri/src/lib.rs"], &[]).is_empty(),
             "an ordinary file beside the floor is not held"
         );
-        assert!(hits(&["src-tauri/Cargo.toml"], &[]).is_empty());
         assert!(hits(&["src/delivery/merge.rs"], &[]).is_empty());
     }
 
