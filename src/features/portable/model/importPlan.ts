@@ -335,6 +335,8 @@ export type RustImportReport = {
   delegationsAdded: number;
   /** Activity rows added (WP-78). Older builds leave it out. */
   activityAdded?: number;
+  /** Pictures of imported notes left out (a link, a file the manifest doesn't list, one that changed); each is also a line in `notes`. Older builds leave it out. */
+  noteAssetsSkipped?: number;
   memoryFilesAdded: number;
   memoryFilesBeside: number;
   memoryHistory: string[];

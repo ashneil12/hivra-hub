@@ -132,19 +132,56 @@ describe("session pane split buttons", () => {
     return container.querySelector<HTMLButtonElement>(`[data-pane-split="${name}"]`);
   }
 
-  it("shows both buttons on the header when the chat is the only pane", () => {
+  it("gives a chat that is the only pane no header bar, and keeps both buttons in its corner", () => {
     render(props());
-    const header = container.querySelector("[data-pane-header]");
-    expect(header).not.toBeNull();
+    expect(container.querySelector("[data-pane-header]")).toBeNull();
     expect(container.querySelector("[data-split-header]")).toBeNull();
-    expect(header?.querySelector("[data-pane-split='right']")).not.toBeNull();
-    expect(header?.querySelector("[data-pane-split='down']")).not.toBeNull();
+    // No bar sits above the chat: no row of the pane is a header-height strip with a rule under it.
+    const rows = [...(container.querySelector("[data-session-drop]")?.children ?? [])];
+    expect(rows.filter((row) => row.classList.contains("h-9") && row.classList.contains("border-b"))).toEqual([]);
+    const corner = container.querySelector("[data-pane-corner]");
+    expect(corner).not.toBeNull();
+    expect(corner?.querySelector("[data-pane-split='right']")).not.toBeNull();
+    expect(corner?.querySelector("[data-pane-split='down']")).not.toBeNull();
     expect(button("right")?.disabled).toBe(false);
+    expect(button("down")?.disabled).toBe(false);
+  });
+
+  it("shows that corner only while the pane is hovered or a button has focus, and takes no room from the chat", () => {
+    render(props());
+    const corner = container.querySelector("[data-pane-corner]");
+    const pane = container.querySelector("[data-session-drop]");
+    const classes = (corner?.className ?? "").split(/\s+/);
+    expect(classes).toContain("absolute");
+    expect(classes).toContain("opacity-0");
+    expect(classes).toContain("group-hover/pane:opacity-100");
+    expect(classes).toContain("has-[:focus-visible]:opacity-100");
+    expect((pane?.className ?? "").split(/\s+/)).toContain("group/pane");
+    expect(classes).not.toContain("h-9");
+    expect(classes).not.toContain("border-b");
+  });
+
+  it("splits from the corner the way the shortcut does: focus the pane, then split", () => {
+    const onSplit = vi.fn();
+    const onFocus = vi.fn();
+    render(props({ onSplit, onFocus }));
+    act(() => button("down")?.click());
+    expect(onFocus).toHaveBeenCalledWith("chat", "pointer");
+    expect(onSplit).toHaveBeenCalledWith("down");
+  });
+
+  it("keeps a lone private chat's mark on a thin strip, and still no bar of buttons", () => {
+    render(props({ session: { ...props().session, private: true } }));
+    expect(container.querySelector("[data-pane-header]")).toBeNull();
+    expect(container.querySelector("[data-private-chat]")?.textContent).toBe("Private");
+    expect(container.querySelector("[data-pane-corner] [data-pane-split='right']")).not.toBeNull();
+    expect(container.querySelector("[data-pane-corner] [data-private-chat]")).toBeNull();
   });
 
   it("keeps a lone chat bare when nothing can split it", () => {
     render(props({ onSplit: undefined }));
     expect(container.querySelector("[data-pane-header]")).toBeNull();
+    expect(container.querySelector("[data-pane-corner]")).toBeNull();
     expect(container.querySelector("[data-pane-splits]")).toBeNull();
   });
 
@@ -173,6 +210,7 @@ describe("session pane split buttons", () => {
     const header = container.querySelector("[data-split-header]");
     expect(header?.querySelector("[data-pane-split='down']")).not.toBeNull();
     expect(container.querySelector("[data-pane-header]")).toBeNull();
+    expect(container.querySelector("[data-pane-corner]")).toBeNull();
     act(() =>
       button("right")?.dispatchEvent(
         new PointerEvent("pointerdown", { bubbles: true, button: 0 }),
