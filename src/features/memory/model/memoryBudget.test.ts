@@ -2,7 +2,7 @@
 // WP-103: the background budget. Timestamps only, 30 an hour and 200 a day, pruned after two days, and a value read
 // from disk that cannot be read is an empty ledger rather than a crash.
 
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   BUDGET_KEY,
   MEMORY_BUDGET_PER_DAY,
@@ -89,6 +89,26 @@ describe("the background budget", () => {
       localStorage.setItem(BUDGET_KEY, bad);
       expect(loadBudget(NOW)).toEqual([]);
     }
+  });
+
+  it("fails closed: a corrupt ledger means no call, and so does a count that cannot be written", () => {
+    for (const bad of ["{", "42", "null", JSON.stringify({ times: [] })]) {
+      localStorage.setItem(BUDGET_KEY, bad);
+      expect(takeBudget(NOW)).toMatchObject({ ok: false, problem: "storage" });
+    }
+    localStorage.clear();
+    vi.stubGlobal("localStorage", {
+      getItem: () => null,
+      setItem: () => {
+        throw new Error("quota");
+      },
+    });
+    try {
+      expect(takeBudget(NOW)).toMatchObject({ ok: false, problem: "storage" });
+    } finally {
+      vi.unstubAllGlobals();
+    }
+    // A ledger that was never written is simply empty.
     expect(takeBudget(NOW)).toEqual({ ok: true });
     expect(loadBudget(NOW)).toEqual([NOW]);
   });
