@@ -73,6 +73,27 @@ describe("a new chat and the stored setting", () => {
     expect(state.sessions[0].worktreeBase).toBeUndefined();
   });
 
+  it.each(["ask", "always"] as const)(
+    "skips the chat when git times out for %s, and leaves it free to be offered next time",
+    async (value) => {
+      setting(value);
+      vi.mocked(gitBranches).mockRejectedValue(new Error("git_branches timed out"));
+      const { state, setSessions } = windowWith(chat("s"));
+      attachNewChatWorktree("s", "/work/proj", setSessions);
+      expect(state.sessions[0].workspaceMode).toBe("worktree");
+      await settle();
+      expect(state.sessions[0].workspaceMode).toBeUndefined();
+      expect(state.sessions[0].worktreeBase).toBeUndefined();
+      expect(newChatStaysHere(state.sessions[0])).toBe(false);
+
+      vi.mocked(gitBranches).mockResolvedValue(REPO);
+      const next = windowWith(chat("t"));
+      attachNewChatWorktree("t", "/work/proj", next.setSessions);
+      await settle();
+      expect(next.state.sessions[0].workspaceMode).toBe("worktree");
+    },
+  );
+
   it("does nothing for a chat the app started for a Lead", async () => {
     setting("always");
     vi.mocked(gitBranches).mockResolvedValue(REPO);

@@ -354,20 +354,44 @@ describe("the offer on a new chat", () => {
     expect(latest[0].worktreeBase).toBeUndefined();
   });
 
-  it("leaves the offer when git does not answer", async () => {
+  it.each(["ask", "always"] as const)(
+    "skips the chat when git does not answer for %s, and stores no answer about the folder",
+    async (setting) => {
+      const target = chat({ id: "s", cwd: "/work/proj", workspaceMode: "worktree", worktreeBase: "HEAD" });
+      let latest = [target];
+      const git = deferred<boolean>();
+      const done = confirmNewChatWorktreeOffer("s", "/work/proj", {
+        setting: () => setting,
+        gitOnThisComputer: () => git.promise,
+        commit: (update) => {
+          latest = update(latest) ?? latest;
+        },
+      });
+      git.reject(new Error("timed out"));
+      await done;
+      expect(latest[0].workspaceMode).toBeUndefined();
+      expect(latest[0].worktreeBase).toBeUndefined();
+      // A timeout is not "this folder": nothing says the person chose it, and nothing says it is not a repo.
+      expect(newChatStaysHere(latest[0])).toBe(false);
+      expect(beginNewChatWorktreeOffer(latest, "s", "/work/proj", setting)?.[0].workspaceMode).toBe("worktree");
+    },
+  );
+
+  it("does not clear a chat the person changed while a timed-out check was running", async () => {
     const target = chat({ id: "s", cwd: "/work/proj", workspaceMode: "worktree", worktreeBase: "HEAD" });
-    const commits: Array<Session[] | null> = [];
+    let latest = [{ ...target, worktreeBase: "release" }];
     const git = deferred<boolean>();
     const done = confirmNewChatWorktreeOffer("s", "/work/proj", {
-      setting: () => "always",
+      setting: () => "ask",
       gitOnThisComputer: () => git.promise,
       commit: (update) => {
-        commits.push(update([target]));
+        latest = update(latest) ?? latest;
       },
     });
-    git.reject(new Error("unreachable"));
+    git.reject(new Error("timed out"));
     await done;
-    expect(commits).toEqual([]);
+    expect(latest[0].workspaceMode).toBe("worktree");
+    expect(latest[0].worktreeBase).toBe("release");
   });
 
   it("drops the offer when the setting turns off while git is in flight", async () => {

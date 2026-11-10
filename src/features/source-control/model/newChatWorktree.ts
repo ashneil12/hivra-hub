@@ -116,8 +116,8 @@ export function beginNewChatWorktreeOffer(
 }
 
 /**
- * Take the offer back when it is still the one we made. A timeout does not
- * come through here: the caller leaves the offer in place when git does not answer.
+ * Take the offer back when it is still the one we made: git says this is not a
+ * repository, or it did not answer. Nothing is stored about the folder.
  */
 export function clearUnconfirmedNewChatWorktree(
   sessions: readonly Session[],
@@ -138,7 +138,11 @@ export function clearUnconfirmedNewChatWorktree(
   );
 }
 
-/** Ask git, then keep or clear the offer. A throw skips this chat and stores nothing. */
+/**
+ * Ask git, then keep or clear the offer. A throw (git timed out or could not
+ * be reached) skips this chat: the offer is taken back and nothing is stored,
+ * so the next new chat asks again.
+ */
 export async function confirmNewChatWorktreeOffer(
   sessionId: string,
   cwd: string,
@@ -153,7 +157,7 @@ export async function confirmNewChatWorktreeOffer(
   try {
     git = await port.gitOnThisComputer(cwd);
   } catch {
-    return;
+    // Git did not answer: git stays false, so this chat is skipped below.
   }
   port.commit((sessions) => {
     const setting = port.setting();
