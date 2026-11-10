@@ -1,7 +1,7 @@
 // Hivra WP-11: timers a first mate sets (src-tauri/src/watcher/timers.rs): the `timers.*` app actions, reached with
 // `monocode app timers.*`. A due timer becomes a wake in the first mate's queue ([MonoCode watcher]), so a first mate
 // ends its turn instead of polling. Only a first mate's own chat (a Mono's chat or a coding-team chat) sets them.
-import type { Session } from "../../sessions/model/session";
+import { sessionWorkCwd, type Session } from "../../sessions/model/session";
 import { safeCommand } from "../../autopilot/model/safeApproval";
 import { tauriWakeQueue, type Check, type Timer, type WakeQueueBackend } from "../../firstmate/watcher/wakeQueue";
 import type { AgentAppHost } from "./agentApp";
@@ -90,17 +90,20 @@ export async function handleTimers(source: Session, action: string, input: Recor
       const note = typeof input.note === "string" ? input.note.trim() : "";
       if (!note) throw new Error("note must say what this check is for");
       const every = everyMinutes(input.everyMinutes);
+      // Stored with the check: it runs in the folder this chat works in, not wherever the app was started.
+      const cwd = sessionWorkCwd(source);
       const check: Check = await timers.checkSet({
         ownerSession: source.id,
         command,
         pattern,
         note,
         intervalMs: every * 60_000,
+        cwd,
       });
       const gap = every === 1 ? "minute" : `${every} minutes`;
       return {
         id: check.id,
-        note: `Set. The app runs this check every ${gap} and wakes you once as a new turn ([MonoCode watcher]) when it passes or its text matches, even after a restart. It stops after 24 hours. End your turn; don't poll.`,
+        note: `Set. The app runs this check every ${gap}, in ${cwd}, and wakes you once as a new turn ([MonoCode watcher]) when it passes or its text matches, even after a restart. It stops after 24 hours. End your turn; don't poll.`,
       };
     }
   }

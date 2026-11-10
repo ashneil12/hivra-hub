@@ -177,7 +177,7 @@ pub fn watcher_tick(app: AppHandle, store: State<'_, SessionStore>) -> Result<Ti
     };
     let attempts: Vec<_> = due
         .iter()
-        .map(|item| checks::live_attempt(&item.command, &item.pattern))
+        .map(|item| checks::look(item, &checks::LiveRunner))
         .collect();
     if !due.is_empty() {
         let mut conn = store.lock_conn()?;

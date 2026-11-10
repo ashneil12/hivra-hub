@@ -62,8 +62,8 @@ export type WakeQueueBackend = {
   timerSet(input: { ownerSession: string; dueAt: number; note: string }): Promise<Timer>;
   timerCancel(ownerSession: string, id: string): Promise<Timer | null>;
   timers(ownerSession: string): Promise<Timer[]>;
-  /** WP-104: poll a safe command until it exits 0 or its text matches, then one wake. */
-  checkSet(input: { ownerSession: string; command: string; pattern: string; note: string; intervalMs: number }): Promise<Check>;
+  /** WP-104: poll a safe command, in the chat's own folder, until it exits 0 or its text matches, then one wake. */
+  checkSet(input: { ownerSession: string; command: string; pattern: string; note: string; intervalMs: number; cwd: string }): Promise<Check>;
   checkCancel(ownerSession: string, id: string): Promise<Check | null>;
 };
 

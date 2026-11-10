@@ -24,7 +24,7 @@ function fixture(who: "mono" | "team" | "worker") {
       return found ?? null;
     }),
     timers: vi.fn(async (owner) => timers.filter((t) => t.ownerSession === owner && t.state === "armed")),
-    checkSet: vi.fn(async (input: { ownerSession: string; command: string; pattern: string; note: string; intervalMs: number }) => ({
+    checkSet: vi.fn(async (input: { ownerSession: string; command: string; pattern: string; note: string; intervalMs: number; cwd: string }) => ({
       id: "check-1",
       ...input,
       nextAt: input.intervalMs,
@@ -75,11 +75,21 @@ describe("timers.*", () => {
     await expect(handleAgentApp(source, "r2", "timers.check", { command: "git status; rm -rf ~/data", note: "no" }, host)).rejects.toThrow(/doesn't run by itself/);
     const set = (await handleAgentApp(source, "r3", "timers.check", { command: "npm test", note: "the build" }, host)) as { id: string; note: string };
     expect(api.checkSet).toHaveBeenCalledOnce();
-    expect(api.checkSet).toHaveBeenCalledWith({ ownerSession: source.id, command: "npm test", pattern: "", note: "the build", intervalMs: 60_000 });
+    expect(api.checkSet).toHaveBeenCalledWith({ ownerSession: source.id, command: "npm test", pattern: "", note: "the build", intervalMs: 60_000, cwd: "/code/hivra" });
     expect(set.id).toBe("check-1");
     expect(set.note).toContain("[MonoCode watcher]");
     expect(set.note).toContain("don't poll");
     expect(set.note).not.toContain("npm test");
+    expect(set.note).toContain("in /code/hivra,");
+  });
+
+  it("a check runs in the folder the chat works in: its working copy when it has one, else its project", async () => {
+    const { source, host, api } = fixture("mono");
+    await handleAgentApp(source, "r1", "timers.check", { command: "npm test", note: "project" }, host);
+    expect(api.checkSet).toHaveBeenLastCalledWith(expect.objectContaining({ cwd: "/code/hivra" }));
+    const inTree = { ...source, worktreeCwd: "/code/hivra-wt/fix one" };
+    await handleAgentApp(inTree, "r2", "timers.check", { command: "npm test", note: "worktree" }, host);
+    expect(api.checkSet).toHaveBeenLastCalledWith(expect.objectContaining({ cwd: "/code/hivra-wt/fix one" }));
   });
 
   it("takes a pattern and an interval, and refuses one outside a minute to a day", async () => {

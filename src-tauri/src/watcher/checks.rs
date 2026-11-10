@@ -1,10 +1,13 @@
 //! WP-104: a check waits on a command the safe table already allows, then one wake.
 //!
 //! No model runs while it waits. The command is the autopilot list (`safe_cmd`, the same answers as
-//! `safeCommand`), run by the PR watch's process runner with no shell. A miss, a timeout or a missing program is not
-//! a final failure: the row stays armed and the next look is one interval on. Command output is never stored, logged
-//! or put in the wake. The wake is the note only.
+//! `safeCommand`), run by the PR watch's process runner with no shell, in the folder of the chat that set it (stored
+//! with the row, so a restart still runs it there). The program is found the way the app finds every other CLI
+//! (`harness::which_in_path` on the GUI search path), so `npm` is `npm.cmd` on Windows. A miss, a timeout, a missing
+//! program or a folder that has gone is not a final failure: the row stays armed and the next look is one interval on.
+//! Command output is never stored, logged or put in the wake. The wake is the note only.
 
+use std::path::Path;
 use std::process::Command;
 use std::time::Duration;
 
@@ -25,6 +28,7 @@ pub const ARMED_MAX: usize = 5;
 const COMMAND_MAX: usize = 2_000;
 const PATTERN_MAX: usize = 200;
 const NOTE_MAX: usize = 500;
+const CWD_MAX: usize = 4_096;
 const RUN_TIMEOUT: Duration = Duration::from_secs(60);
 
 #[derive(Clone, Debug, Serialize, PartialEq)]
@@ -48,6 +52,8 @@ pub(crate) struct Claimed {
     pub command: String,
     pub pattern: String,
     pub note: String,
+    /// The folder the chat works in. Empty only on a row made before this was stored.
+    pub cwd: String,
     pub generation: i64,
 }
 
@@ -60,6 +66,9 @@ pub struct CheckInput {
     pub pattern: String,
     pub note: String,
     pub interval_ms: i64,
+    /// The folder the chat works in (its working copy, else its project). Required.
+    #[serde(default)]
+    pub cwd: String,
 }
 
 pub(crate) fn ensure_tables(conn: &Connection) -> rusqlite::Result<()> {
@@ -77,19 +86,28 @@ pub(crate) fn ensure_tables(conn: &Connection) -> rusqlite::Result<()> {
            state TEXT NOT NULL,
            wake_id TEXT,
            created_at INTEGER NOT NULL,
-           updated_at INTEGER NOT NULL
+           updated_at INTEGER NOT NULL,
+           cwd TEXT NOT NULL DEFAULT ''
          );
          CREATE INDEX IF NOT EXISTS firstmate_checks_due ON firstmate_checks(state, next_at);",
+    )?;
+    // A table made before the folder was stored: add the column, keep the rows. Those rows have no folder and stop.
+    crate::session_store::ensure_table_column(
+        conn,
+        "firstmate_checks",
+        "cwd",
+        "TEXT NOT NULL DEFAULT ''",
     )
 }
 
 const COLUMNS: &str = "id, owner_session, command, pattern, note, interval_ms, next_at, deadline, \
-                       generation, state, wake_id, created_at, updated_at";
+                       generation, state, wake_id, created_at, updated_at, cwd";
 
 struct RowCheck {
     check: Check,
     command: String,
     pattern: String,
+    cwd: String,
     generation: i64,
 }
 
@@ -97,6 +115,7 @@ fn from_row(row: &Row) -> rusqlite::Result<RowCheck> {
     Ok(RowCheck {
         command: row.get(2)?,
         pattern: row.get(3)?,
+        cwd: row.get(13)?,
         generation: row.get(8)?,
         check: Check {
             id: row.get(0)?,
@@ -127,6 +146,30 @@ fn query(
     rows
 }
 
+/// The folder a check will run in, settled once: a full path to a folder that is there now, `~` and `..` resolved.
+/// Nothing is stored for a path that isn't one.
+fn folder(raw: &str) -> Result<String, String> {
+    const WHICH: &str = "a check runs in the chat's folder";
+    if raw.trim().is_empty() {
+        return Err(format!("{WHICH}: none was given"));
+    }
+    if raw.chars().count() > CWD_MAX || raw.contains('\0') {
+        return Err(format!("{WHICH}: that folder name can't be used"));
+    }
+    let path = crate::fs::expand_home(raw);
+    if !path.is_absolute() {
+        return Err(format!("{WHICH}: that isn't a full path"));
+    }
+    let dir =
+        crate::fs::canonical(&path).map_err(|_| format!("{WHICH}: that folder isn't there"))?;
+    if !dir.is_dir() {
+        return Err(format!("{WHICH}: that isn't a folder"));
+    }
+    dir.to_str()
+        .map(str::to_string)
+        .ok_or_else(|| format!("{WHICH}: that folder name can't be used"))
+}
+
 /// Arm a check. Refuses a command the safe table does not already allow, and does not insert a row then.
 pub fn set(conn: &mut Connection, input: CheckInput, now: i64) -> Result<Check, String> {
     let owner = input.owner_session.trim().to_string();
@@ -152,6 +195,7 @@ pub fn set(conn: &mut Connection, input: CheckInput, now: i64) -> Result<Check, 
     }
     // Parse once here so a command the table allows is also one we can exec with no shell.
     safe_cmd::argv(command)?;
+    let cwd = folder(&input.cwd)?;
     if input.pattern.chars().count() > PATTERN_MAX {
         return Err("the text to watch for is too long".into());
     }
@@ -188,8 +232,8 @@ pub fn set(conn: &mut Connection, input: CheckInput, now: i64) -> Result<Check, 
     };
     tx.execute(
         "INSERT INTO firstmate_checks
-           (id, owner_session, command, pattern, note, interval_ms, next_at, deadline, generation, state, wake_id, created_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 1, ?9, NULL, ?10, ?10)",
+           (id, owner_session, command, pattern, note, interval_ms, next_at, deadline, generation, state, wake_id, created_at, updated_at, cwd)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 1, ?9, NULL, ?10, ?10, ?11)",
         params![
             check.id,
             check.owner_session,
@@ -200,7 +244,8 @@ pub fn set(conn: &mut Connection, input: CheckInput, now: i64) -> Result<Check, 
             check.next_at,
             check.deadline,
             check.state,
-            now
+            now,
+            cwd
         ],
     )
     .map_err(|e| e.to_string())?;
@@ -279,6 +324,7 @@ pub(crate) fn claim_due(conn: &mut Connection, now: i64) -> Result<Vec<Claimed>,
                 command: row.command,
                 pattern: row.pattern,
                 note: row.check.note,
+                cwd: row.cwd,
                 generation: row.generation + 1,
             });
         }
@@ -379,23 +425,42 @@ pub(crate) fn settle(
     }
 }
 
-#[cfg(test)]
-trait Runner {
-    fn run(&self, command: &str, pattern: &str) -> Attempt;
+/// Runs one command in one folder and says what it decided. The live one starts a process; tests pass their own.
+pub(crate) trait Runner {
+    fn run(&self, command: &str, pattern: &str, cwd: &Path) -> Attempt;
 }
 
-/// Claim, run, settle. Tests pass a fake runner and a fake `now`. The real look is `watcher_tick`, which claims, drops
+/// The app's own runner: a real process, no shell, on the GUI search path.
+pub(crate) struct LiveRunner;
+
+impl Runner for LiveRunner {
+    fn run(&self, command: &str, pattern: &str, cwd: &Path) -> Attempt {
+        run_in(command, pattern, cwd, &crate::harness::gui_search_path())
+    }
+}
+
+/// What one claimed look decides. A command the table no longer allows, or a row with no folder, stops the row: it
+/// never runs, and never runs wherever the app happens to be. A folder that has gone waits, and runs again if it
+/// comes back (an unplugged drive or a renamed working copy is not a final failure).
+pub(crate) fn look(item: &Claimed, runner: &impl Runner) -> Attempt {
+    if safe_cmd::verdict(&item.command).is_some() || item.cwd.is_empty() {
+        return Attempt::Stop;
+    }
+    let cwd = Path::new(&item.cwd);
+    if !cwd.is_dir() {
+        return Attempt::Wait;
+    }
+    runner.run(&item.command, &item.pattern, cwd)
+}
+
+/// Claim, look, settle. Tests pass a fake runner and a fake `now`. The real look is `watcher_tick`, which claims, drops
 /// the lock, then settles.
 #[cfg(test)]
 fn poll(conn: &mut Connection, now: i64, runner: &impl Runner) -> Result<Vec<Wake>, String> {
     let due = claim_due(conn, now)?;
     let mut woke = Vec::new();
     for item in due {
-        let attempt = if safe_cmd::verdict(&item.command).is_some() {
-            Attempt::Stop
-        } else {
-            runner.run(&item.command, &item.pattern)
-        };
+        let attempt = look(&item, runner);
         if let Some(wake) = settle(conn, &item, attempt, now)? {
             woke.push(wake);
         }
@@ -403,14 +468,19 @@ fn poll(conn: &mut Connection, now: i64, runner: &impl Runner) -> Result<Vec<Wak
     Ok(woke)
 }
 
-/// The PR watch runner: no shell, the same child setup `gh` uses, a 60s deadline. Output is dropped after the decision.
-pub(crate) fn live_attempt(command: &str, pattern: &str) -> Attempt {
+/// The PR watch runner: no shell, the same child setup `gh` uses, a 60s deadline, in `cwd`. The program is found on
+/// `search` the way the app finds every CLI (`npm` is `npm.cmd` on Windows); one that isn't there waits. Output is
+/// dropped after the decision.
+fn run_in(command: &str, pattern: &str, cwd: &Path, search: &str) -> Attempt {
     let words = match safe_cmd::argv(command) {
         Ok(words) => words,
         Err(_) => return Attempt::Stop,
     };
-    let mut cmd = Command::new(&words[0]);
-    cmd.args(&words[1..]);
+    let Some(program) = crate::harness::which_in_path(search, &words[0]) else {
+        return Attempt::Wait;
+    };
+    let mut cmd = Command::new(program);
+    cmd.args(&words[1..]).current_dir(cwd);
     crate::background_work::configure_child(&mut cmd);
     crate::harness::apply_gui_env(&mut cmd);
     let finished = match crate::pr_watch::bounded::run(cmd, RUN_TIMEOUT) {
@@ -433,7 +503,7 @@ pub(crate) fn live_attempt(command: &str, pattern: &str) -> Attempt {
 mod tests {
     use super::*;
     use crate::session_store::SessionStore;
-    use std::cell::Cell;
+    use std::cell::{Cell, RefCell};
     use std::path::PathBuf;
 
     const MIN: i64 = 60_000;
@@ -451,6 +521,45 @@ mod tests {
             pattern: pattern.into(),
             note: note.into(),
             interval_ms: MIN,
+            cwd: std::env::temp_dir().to_string_lossy().into_owned(),
+        }
+    }
+
+    /// A folder made for one test, under the temp folder, removed when it goes out of scope.
+    struct TempDir(PathBuf);
+
+    impl TempDir {
+        fn new(name: &str) -> Self {
+            let dir = std::env::temp_dir()
+                .join(format!("hivra-wp104-{}", uuid::Uuid::new_v4().simple()))
+                .join(name);
+            std::fs::create_dir_all(&dir).unwrap();
+            TempDir(dir)
+        }
+
+        fn path(&self) -> String {
+            self.0.to_string_lossy().into_owned()
+        }
+
+        fn canonical(&self) -> PathBuf {
+            crate::fs::canonical(&self.0).unwrap()
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let Some(root) = self.0.parent() else {
+                return;
+            };
+            let Ok(root) = crate::fs::canonical(root) else {
+                return;
+            };
+            let Ok(tmp) = crate::fs::canonical(std::env::temp_dir()) else {
+                return;
+            };
+            if root.starts_with(&tmp) && root != tmp {
+                let _ = std::fs::remove_dir_all(&root);
+            }
         }
     }
 
@@ -459,6 +568,7 @@ mod tests {
         stdout: String,
         stderr: String,
         calls: Cell<usize>,
+        cwds: RefCell<Vec<PathBuf>>,
     }
 
     impl Script {
@@ -468,6 +578,7 @@ mod tests {
                 stdout: stdout.into(),
                 stderr: String::new(),
                 calls: Cell::new(0),
+                cwds: RefCell::new(Vec::new()),
             }
         }
 
@@ -477,12 +588,14 @@ mod tests {
                 stdout: String::new(),
                 stderr: String::new(),
                 calls: Cell::new(0),
+                cwds: RefCell::new(Vec::new()),
             }
         }
     }
 
     impl Runner for Script {
-        fn run(&self, _command: &str, pattern: &str) -> Attempt {
+        fn run(&self, _command: &str, pattern: &str, cwd: &Path) -> Attempt {
+            self.cwds.borrow_mut().push(cwd.to_path_buf());
             self.calls.set(self.calls.get() + 1);
             judge(
                 Some(Finish {
@@ -498,7 +611,7 @@ mod tests {
     struct PanicRun;
 
     impl Runner for PanicRun {
-        fn run(&self, command: &str, _: &str) -> Attempt {
+        fn run(&self, command: &str, _: &str, _: &Path) -> Attempt {
             panic!("ran a command: {command}");
         }
     }
@@ -757,6 +870,211 @@ mod tests {
         assert_eq!(check.next_at, check.deadline);
         let woke = poll(&mut conn, DAY, &Script::exit(0, "")).unwrap();
         assert_eq!(woke.len(), 1);
+    }
+
+    #[test]
+    fn a_check_stores_the_chats_folder_and_runs_there() {
+        let folder = TempDir::new("héllo wörld 日本語");
+        let store = store();
+        let mut conn = store.lock_conn().unwrap();
+        let mut one = input("npm test", "", "in the folder");
+        one.cwd = folder.path();
+        let check = set(&mut conn, one, 0).unwrap();
+        let stored: String = conn
+            .query_row(
+                "SELECT cwd FROM firstmate_checks WHERE id = ?1",
+                params![check.id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(PathBuf::from(&stored), folder.canonical());
+        let claimed = claim_due(&mut conn, MIN).unwrap();
+        assert_eq!(claimed.len(), 1);
+        assert_eq!(PathBuf::from(&claimed[0].cwd), folder.canonical());
+        // The look is made in that folder, and nowhere else.
+        let script = Script::exit(0, "");
+        let attempt = look(&claimed[0], &script);
+        assert_eq!(attempt, Attempt::Wake);
+        assert_eq!(*script.cwds.borrow(), vec![folder.canonical()]);
+    }
+
+    #[test]
+    fn a_check_needs_a_real_folder_and_stores_nothing_without_one() {
+        let folder = TempDir::new("real");
+        let store = store();
+        let mut conn = store.lock_conn().unwrap();
+        let file = folder.0.join("a-file.txt");
+        std::fs::write(&file, "x").unwrap();
+        let missing = folder.0.join("not there");
+        let long = format!("/{}", "a".repeat(5_000));
+        for bad in [
+            String::new(),
+            "   ".to_string(),
+            "src".to_string(),
+            "../elsewhere".to_string(),
+            "./here".to_string(),
+            "a\0b".to_string(),
+            file.to_string_lossy().into_owned(),
+            missing.to_string_lossy().into_owned(),
+            long,
+        ] {
+            let mut one = input("pwd", "", "no");
+            one.cwd = bad.clone();
+            assert!(set(&mut conn, one, 0).is_err(), "{bad:?}");
+        }
+        assert!(query(&conn, "", &[]).unwrap().is_empty());
+        // A `..` inside a full path is settled before it is stored.
+        let mut dotted = input("pwd", "", "dotted");
+        dotted.cwd = folder
+            .0
+            .join("real")
+            .join("..")
+            .to_string_lossy()
+            .into_owned();
+        std::fs::create_dir_all(folder.0.join("real")).unwrap();
+        set(&mut conn, dotted, 0).unwrap();
+        let rows = query(&conn, "", &[]).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(PathBuf::from(&rows[0].cwd), folder.canonical());
+    }
+
+    #[test]
+    fn a_folder_that_has_gone_waits_and_comes_back_to_a_wake() {
+        let folder = TempDir::new("comes and goes");
+        let store = store();
+        let mut conn = store.lock_conn().unwrap();
+        let mut one = input("npm test", "", "the build");
+        one.cwd = folder.path();
+        let check = set(&mut conn, one, 0).unwrap();
+        std::fs::remove_dir(&folder.0).unwrap();
+        // Not a final failure: nothing runs, the row stays armed and is looked at again an interval on.
+        assert!(poll(&mut conn, MIN, &PanicRun).unwrap().is_empty());
+        let row = query(&conn, "WHERE id = ?1", &[&check.id]).unwrap();
+        assert_eq!(row[0].check.state, ARMED);
+        assert_eq!(row[0].check.next_at, MIN + MIN);
+        std::fs::create_dir_all(&folder.0).unwrap();
+        let script = Script::exit(0, "");
+        let woke = poll(&mut conn, MIN + MIN, &script).unwrap();
+        assert_eq!(woke.len(), 1);
+        assert_eq!(*script.cwds.borrow(), vec![folder.canonical()]);
+    }
+
+    #[test]
+    fn a_row_with_no_folder_is_stopped_not_run_where_the_app_happens_to_be() {
+        let store = store();
+        let mut conn = store.lock_conn().unwrap();
+        conn.execute(
+            "INSERT INTO firstmate_checks
+               (id, owner_session, command, pattern, note, interval_ms, next_at, deadline, generation, state, wake_id, created_at, updated_at)
+             VALUES ('check-nofolder', 'lead', 'npm test', '', 'old', ?1, ?1, ?2, 1, 'armed', NULL, 0, 0)",
+            params![MIN, DAY],
+        )
+        .unwrap();
+        assert!(poll(&mut conn, MIN, &PanicRun).unwrap().is_empty());
+        let row = query(&conn, "WHERE id = 'check-nofolder'", &[]).unwrap();
+        assert_eq!(row[0].check.state, "refused");
+    }
+
+    #[test]
+    fn a_table_made_before_the_folder_column_gets_it_and_keeps_its_rows() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE firstmate_checks (
+               id TEXT PRIMARY KEY, owner_session TEXT NOT NULL, command TEXT NOT NULL, pattern TEXT NOT NULL,
+               note TEXT NOT NULL, interval_ms INTEGER NOT NULL, next_at INTEGER NOT NULL, deadline INTEGER NOT NULL,
+               generation INTEGER NOT NULL, state TEXT NOT NULL, wake_id TEXT, created_at INTEGER NOT NULL,
+               updated_at INTEGER NOT NULL
+             );
+             INSERT INTO firstmate_checks VALUES ('check-old', 'lead', 'npm test', '', 'old', 60000, 60000, 86400000, 1, 'armed', NULL, 0, 0);",
+        )
+        .unwrap();
+        ensure_tables(&conn).unwrap();
+        ensure_tables(&conn).unwrap();
+        let rows = query(&conn, "", &[]).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].cwd, "");
+        assert_eq!(rows[0].check.id, "check-old");
+    }
+
+    /// A stand-in for npm that exits 0 only when it is run in a folder holding `wp104-marker`. It is a shell script
+    /// on Unix and an `npm.cmd` on Windows, which is the shape the real npm has there.
+    fn fake_npm(dir: &Path) {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let path = dir.join("npm");
+            std::fs::write(&path, "#!/bin/sh\ntest -f wp104-marker\n").unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        #[cfg(windows)]
+        std::fs::write(
+            dir.join("npm.cmd"),
+            "@echo off\r\nif exist wp104-marker exit /b 0\r\nexit /b 1\r\n",
+        )
+        .unwrap();
+    }
+
+    struct Search(String);
+
+    impl Runner for Search {
+        fn run(&self, command: &str, pattern: &str, cwd: &Path) -> Attempt {
+            run_in(command, pattern, cwd, &self.0)
+        }
+    }
+
+    fn path_of(dir: &Path) -> String {
+        std::env::join_paths([dir])
+            .unwrap()
+            .to_string_lossy()
+            .into_owned()
+    }
+
+    #[test]
+    fn npm_is_found_through_the_search_path_and_runs_in_the_chats_folder() {
+        let bin = TempDir::new("bin dir");
+        fake_npm(&bin.0);
+        let project = TempDir::new("project one");
+        let elsewhere = TempDir::new("project two");
+        std::fs::write(project.0.join("wp104-marker"), "").unwrap();
+        let search = path_of(&bin.0);
+        // The shim is found by its Windows name too: `npm` is `npm.cmd` there.
+        let found = crate::harness::which_in_path(&search, "npm").unwrap();
+        assert_eq!(
+            found.file_name().unwrap().to_string_lossy(),
+            if cfg!(windows) { "npm.cmd" } else { "npm" }
+        );
+        assert_eq!(run_in("npm test", "", &project.0, &search), Attempt::Wake);
+        assert_eq!(run_in("npm test", "", &elsewhere.0, &search), Attempt::Wait);
+    }
+
+    #[test]
+    fn a_program_that_is_not_installed_waits() {
+        let empty = TempDir::new("nothing here");
+        let project = TempDir::new("project");
+        let search = path_of(&empty.0);
+        assert_eq!(run_in("npm test", "", &project.0, &search), Attempt::Wait);
+        assert_eq!(run_in("cargo test", "", &project.0, &search), Attempt::Wait);
+    }
+
+    #[test]
+    fn a_real_check_runs_in_its_folder_from_set_to_one_wake() {
+        let bin = TempDir::new("bin");
+        fake_npm(&bin.0);
+        let project = TempDir::new("the chat's project");
+        let store = store();
+        let mut conn = store.lock_conn().unwrap();
+        let mut one = input("npm test", "", "the build");
+        one.cwd = project.path();
+        let check = set(&mut conn, one, 0).unwrap();
+        let runner = Search(path_of(&bin.0));
+        // Not done yet: the marker is missing, so the look waits.
+        assert!(poll(&mut conn, MIN, &runner).unwrap().is_empty());
+        std::fs::write(project.0.join("wp104-marker"), "").unwrap();
+        let woke = poll(&mut conn, MIN + MIN, &runner).unwrap();
+        assert_eq!(woke.len(), 1);
+        assert_eq!(woke[0].key, format!("check:{}", check.id));
+        assert_eq!(woke[0].text, "Your check: the build");
+        assert!(poll(&mut conn, MIN * 5, &runner).unwrap().is_empty());
     }
 
     struct TempDb(PathBuf);
