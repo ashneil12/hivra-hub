@@ -1,5 +1,6 @@
 import { expect, it } from "vitest";
 import {
+  builderHoldLine,
   type HomeChat,
   type HomeDecision,
   type HomeDoc,
@@ -175,4 +176,23 @@ it("empty, missing and untrusted rows are dropped", () => {
     { id: "win", name: "win", folder: "C:\\work\\hivra" },
   ]);
   expect(sanitizeProjects("nope")).toEqual([]);
+});
+
+it("the held-builders line is about the machine: it names the free space and has no project in front", () => {
+  const line = builderHoldLine({
+    id: "builders-disk",
+    text: "New builders are waiting:  24 GB free, under the 30 GB floor\n",
+    action: "Free up space",
+    freeGb: 24,
+    floorGb: 30,
+  });
+  expect(line).toEqual({
+    id: "builders:builders-disk",
+    kind: "builders",
+    text: "New builders are waiting: 24 GB free, under the 30 GB floor",
+    projectId: "",
+    target: "builders-disk",
+    at: 0,
+  });
+  expect(line.text).not.toContain("·");
 });
