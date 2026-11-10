@@ -2772,28 +2772,6 @@ fn a_real_history_bundle_still_restores() {
 
 const MIB: u64 = 1024 * 1024;
 
-/// A sparse file of `size` zero bytes at `relative` in a folder export, listed in the manifest with the hash of those
-/// zeros (the file costs nothing on disk and the hash is computed without holding it).
-fn put_zeros_in_export(dest: &Path, relative: &str, size: u64) {
-    let file = fs::File::create(dest.join(relative)).unwrap();
-    file.set_len(size).unwrap();
-    let zeros = vec![0u8; MIB as usize];
-    let mut hash = Sha256::new();
-    let mut left = size;
-    while left > 0 {
-        let n = left.min(MIB) as usize;
-        hash.update(&zeros[..n]);
-        left -= n as u64;
-    }
-    let manifest_path = dest.join(MANIFEST);
-    let mut manifest: Value =
-        serde_json::from_str(&fs::read_to_string(&manifest_path).unwrap()).unwrap();
-    let files = manifest["files"].as_array_mut().unwrap();
-    files.retain(|f| f["path"] != relative);
-    files.push(json!({"path": relative, "bytes": size, "sha256": hex_of(&hash.finalize())}));
-    fs::write(&manifest_path, manifest.to_string()).unwrap();
-}
-
 /// A file past the size its kind may be is left out, with a line in the report, and never read: the rest of the export
 /// still opens and comes in. (The sizes in the manifest are the attacker's own numbers.)
 #[test]
@@ -2852,19 +2830,12 @@ fn a_file_declared_larger_than_its_kind_is_left_out_with_a_note_and_never_read()
             },
         )
         .unwrap_or_else(|why| panic!("{relative}: the import failed: {why}"));
-        assert!(
-            report
-                .notes
-                .iter()
-                .any(|n| n.contains(relative) && n.contains("left out"))
-                || relative.contains("note-assets") && report.note_assets_skipped == 1
-                || relative.ends_with(".git.bundle")
-                    && report.notes.iter().any(|n| n.contains("history of ash")),
-            "{relative}: nothing said so: {:?}",
-            report.notes
-        );
+        let said = report
+            .notes
+            .iter()
+            .any(|n| n.contains(relative) && n.contains("left out"));
         match relative {
-            "workspace/sessions/chat-1.json" => assert_eq!(report.sessions_added, 0, "{report:?}"),
+            // A note's pictures are said per note, when the note comes in.
             "workspace/note-assets/note-1/1-shot.png" => {
                 assert_eq!(report.note_assets_skipped, 1, "{report:?}");
                 assert!(
@@ -2876,8 +2847,19 @@ fn a_file_declared_larger_than_its_kind_is_left_out_with_a_note_and_never_read()
                     report.notes
                 );
             }
-            "memory/ash.git.bundle" => assert!(report.memory_history.is_empty(), "{report:?}"),
-            _ => {}
+            "workspace/sessions/chat-1.json" => {
+                assert!(said, "{:?}", report.notes);
+                assert_eq!(report.sessions_added, 0, "{report:?}");
+            }
+            "memory/ash.git.bundle" => {
+                assert!(said, "{:?}", report.notes);
+                assert!(report.memory_history.is_empty(), "{report:?}");
+            }
+            _ => {
+                assert!(said, "{:?}", report.notes);
+                let inspected = inspect(&target, &dest.to_string_lossy()).unwrap();
+                assert!(!inspected.files.contains_key(relative), "{relative}");
+            }
         }
         // And the rest of what was asked for came in.
         assert_eq!(report.notes_added, 1, "{relative}: {report:?}");
@@ -3006,8 +2988,22 @@ fn a_file_listed_twice_is_refused_however_it_is_spelled() {
     }
 }
 
-/// Three correctly hashed setup files of 100 MB: Inspect holds no more than a budget of the webview's files whole, so
-/// the third is left out (with a line in the report) and the first two come through.
+/// How much of the webview's files the export lists, so a budget can be set just past them.
+fn webview_bytes_listed(dest: &Path) -> u64 {
+    let manifest: Value =
+        serde_json::from_str(&fs::read_to_string(dest.join(MANIFEST)).unwrap()).unwrap();
+    manifest["files"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|f| is_webview(f["path"].as_str().unwrap()))
+        .map(|f| f["bytes"].as_u64().unwrap())
+        .sum()
+}
+
+/// Inspect holds no more than a budget of the webview's files whole, so the file that would take them past it is left
+/// out (with a line in the report) and the ones before it come through. The budget here is set just past two of three
+/// 100-byte setup files; the real one is `MAX_INSPECT_BYTES`.
 #[test]
 fn inspect_holds_no_more_than_a_budget_of_the_webviews_files() {
     let source_dir = TestDir::new("source");
@@ -3016,32 +3012,37 @@ fn inspect_holds_no_more_than_a_budget_of_the_webviews_files() {
     let source = env_for(&source_dir.0);
     let target = env_for(&target_dir.0);
     let dest = note_export(&source, &out.0);
+    let before = webview_bytes_listed(&dest);
     for name in ["a", "b", "c"] {
-        put_zeros_in_export(&dest, &format!("setup/big-{name}.json"), 100 * MIB);
+        put_in_export(&dest, &format!("setup/big-{name}.json"), &[b' '; 100]);
     }
     let path = dest.to_string_lossy().into_owned();
-    let inspected = finishes_within(120, {
-        let (target, path) = (env_for(&target_dir.0), path.clone());
-        move || inspect(&target, &path)
-    })
-    .unwrap_or_else(|why| panic!("the whole preview was refused: {why}"));
+    let budget = before + 250;
+    let inspected = inspect_within(&target, &path, budget)
+        .unwrap_or_else(|why| panic!("the whole preview was refused: {why}"));
     let big: Vec<&String> = inspected
         .files
         .keys()
         .filter(|name| name.starts_with("setup/big-"))
         .collect();
     assert_eq!(big.len(), 2, "{big:?}");
+    assert!(
+        inspected.files.contains_key("setup/setup.json"),
+        "the ones before it come through"
+    );
 
     let store = open_store(&target);
     let conn = store.lock_conn().unwrap();
-    let report = import_held(
+    let opened = open_export_within(&path, budget).unwrap();
+    let report = import_opened(
         &target,
-        &conn,
+        &opened,
         &ImportRequest {
             path,
             memory: None,
             workspace: None,
         },
+        || Ok(&*conn),
     )
     .unwrap();
     assert!(
@@ -3347,12 +3348,7 @@ fn windows_names_that_are_not_what_they_say_are_unsafe() {
 #[test]
 fn an_export_leaves_out_a_file_an_import_would_not_take() {
     let dir = TestDir::new("writer");
-    let mut writer = Writer {
-        root: dir.0.clone(),
-        secrets: 0,
-        files: Vec::new(),
-        left_out: Vec::new(),
-    };
+    let mut writer = Writer::new(dir.0.clone());
     for (relative, size) in [
         ("setup/big.json", MAX_TEXT_FILE + 1),
         (
@@ -3360,8 +3356,9 @@ fn an_export_leaves_out_a_file_an_import_would_not_take() {
             crate::notes::IMAGE_MAX_BYTES + 1,
         ),
     ] {
+        // Zeros: the allocation costs nothing until it is written, and a file left out is never written.
         writer
-            .bytes(relative, &vec![b' '; size as usize])
+            .bytes(relative, &vec![0u8; size as usize])
             .unwrap_or_else(|why| panic!("{relative}: the whole export failed: {why}"));
         assert!(!dir.0.join(relative).exists(), "{relative} was written");
         assert!(
@@ -3374,9 +3371,12 @@ fn an_export_leaves_out_a_file_an_import_would_not_take() {
         );
     }
     assert!(writer.files.is_empty());
-    // The largest a text file may be goes in.
+    // The largest a picture may be goes in.
     writer
-        .bytes("setup/edge.json", &vec![b' '; MAX_TEXT_FILE as usize])
+        .bytes(
+            "workspace/note-assets/note-1/edge.png",
+            &vec![0u8; crate::notes::IMAGE_MAX_BYTES as usize],
+        )
         .unwrap();
     assert_eq!(writer.files.len(), 1);
 }
@@ -3386,19 +3386,16 @@ fn an_export_leaves_out_a_file_an_import_would_not_take() {
 #[test]
 fn an_export_keeps_the_webviews_files_within_the_budget_inspect_holds() {
     let dir = TestDir::new("writer");
-    let mut writer = Writer {
-        root: dir.0.clone(),
-        secrets: 0,
-        files: Vec::new(),
-        left_out: Vec::new(),
-    };
-    let chunk = vec![b' '; 100 * MIB as usize];
+    let mut writer = Writer::new(dir.0.clone());
+    writer.webview_budget = 250;
     for name in ["a", "b", "c"] {
         writer
-            .bytes(&format!("setup/big-{name}.json"), &chunk)
+            .bytes(&format!("setup/big-{name}.json"), &[b' '; 100])
             .unwrap();
     }
-    assert_eq!(writer.files.len(), 2, "{:?}", writer.files);
+    // Other files don't count toward it.
+    writer.bytes("workspace/notes.json", &[b' '; 1000]).unwrap();
+    assert_eq!(writer.files.len(), 3, "{:?}", writer.files);
     assert!(
         writer
             .left_out
@@ -3413,12 +3410,7 @@ fn an_export_keeps_the_webviews_files_within_the_budget_inspect_holds() {
 #[test]
 fn an_export_leaves_out_a_history_bundle_past_its_cap() {
     let dir = TestDir::new("writer");
-    let mut writer = Writer {
-        root: dir.0.clone(),
-        secrets: 0,
-        files: Vec::new(),
-        left_out: Vec::new(),
-    };
+    let mut writer = Writer::new(dir.0.clone());
     let bundle = dir.0.join("source.bundle");
     fs::write(&bundle, b"01234567890").unwrap();
     writer
@@ -3669,8 +3661,10 @@ fn odd_shapes_in_an_imported_chat_are_dropped_not_kept_and_do_not_fail_the_impor
 }
 
 /// Sets an environment variable for the process and puts it back (tests share one process).
+#[cfg(unix)]
 struct EnvVar(&'static str, Option<std::ffi::OsString>);
 
+#[cfg(unix)]
 impl EnvVar {
     fn set(name: &'static str, value: &Path) -> Self {
         let before = std::env::var_os(name);
@@ -3679,6 +3673,7 @@ impl EnvVar {
     }
 }
 
+#[cfg(unix)]
 impl Drop for EnvVar {
     fn drop(&mut self) {
         match &self.1 {
@@ -3688,6 +3683,7 @@ impl Drop for EnvVar {
     }
 }
 
+#[cfg(unix)]
 /// A bundle whose tree has a filter attribute on every `.md`, an LFS config, a submodule file and attributes in a
 /// folder: what git-lfs (or any filter in the machine's own git config) would act on at checkout.
 fn bundle_with_filter_files(dir: &Path) -> Vec<u8> {
@@ -3794,4 +3790,58 @@ fn an_unpacked_archive_is_in_a_folder_only_this_user_can_open() {
         fs::metadata(&scratch.0).unwrap().permissions().mode() & 0o777,
         0o700
     );
+}
+
+/// What an import holds a whole export to, the export holds itself to before it writes the manifest.
+#[test]
+fn an_export_is_checked_against_the_totals_an_import_takes() {
+    assert!(check_export_limits(MAX_ENTRIES, MAX_UNPACKED).is_ok());
+    let why = check_export_limits(MAX_ENTRIES + 1, 0).unwrap_err();
+    assert!(
+        why.contains("500000") || why.contains("500,000") || why.contains(&MAX_ENTRIES.to_string()),
+        "{why}"
+    );
+    let why = check_export_limits(1, MAX_UNPACKED + 1).unwrap_err();
+    assert!(why.contains("GB"), "{why}");
+}
+
+/// The rule export and import share: what is left out, and why.
+#[test]
+fn the_size_rule_is_one_for_export_and_import() {
+    let reason =
+        |path: &str, size: u64, used: u64| left_out_reason(path, size, used, MAX_INSPECT_BYTES);
+    let text = MAX_TEXT_FILE;
+    assert!(reason("workspace/sessions/a.json", text, 0).is_none());
+    assert!(reason("workspace/sessions/a.json", text + 1, 0).is_some());
+    assert!(reason("workspace/notes.json", 150 * MIB, 0).is_none());
+    let picture = crate::notes::IMAGE_MAX_BYTES;
+    assert!(reason("workspace/note-assets/n/a.png", picture, 0).is_none());
+    assert!(reason("workspace/note-assets/n/a.png", picture + 1, 0).is_some());
+    assert!(reason("memory/ash.git.bundle", MAX_BUNDLE, 0).is_none());
+    assert!(reason("memory/ash.git.bundle", MAX_BUNDLE + 1, 0).is_some());
+    // A memory file called .bundle inside a folder is text, not a history.
+    assert!(reason("memory/ash/x.git.bundle", MAX_BUNDLE, 0).is_some());
+    // The webview's files together: the one that takes them past the budget is out.
+    assert!(reason("setup/a.json", MAX_INSPECT_BYTES, 0).is_none());
+    assert!(reason("setup/a.json", 1, MAX_INSPECT_BYTES).is_some());
+    assert!(reason("workspace/hub/g.json", 100 * MIB, 200 * MIB).is_some());
+    // Other files don't count toward it.
+    assert!(reason("workspace/notes.json", 100 * MIB, MAX_INSPECT_BYTES).is_none());
+}
+
+/// A folder that can't be resolved is only taken for inside when it isn't there at all.
+#[cfg(unix)]
+#[test]
+fn a_folder_that_cannot_be_resolved_is_not_taken_for_inside() {
+    let dir = TestDir::new("inside");
+    let outside = TestDir::new("outside");
+    fs::create_dir_all(dir.0.join("real")).unwrap();
+    fs::write(dir.0.join("file"), "x").unwrap();
+    std::os::unix::fs::symlink(&outside.0, dir.0.join("link")).unwrap();
+    let root = fs::canonicalize(&dir.0).unwrap();
+    assert!(folder_is_inside(&root, &dir.0.join("real")));
+    assert!(folder_is_inside(&root, &dir.0.join("not-there")));
+    // The file is in the way of a folder: ENOTDIR, not "not there".
+    assert!(!folder_is_inside(&root, &dir.0.join("file/sub")));
+    assert!(!folder_is_inside(&root, &dir.0.join("link")));
 }

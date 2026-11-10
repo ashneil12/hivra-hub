@@ -46,18 +46,23 @@ The archive is the same tree under one top folder. Nothing in it is a secret:
 
 1. **Read** (`portable_inspect`): a folder, `.tar.gz` (unpacked to a scratch folder: links, devices and paths that climb
    out are refused) or v1 `.json`. Every listed file must match its SHA-256; a newer format is refused in plain words.
-   What the manifest lists is checked before a byte is read: at most 500,000 files, each with a path inside the export, a
-   size, and no more than its kind may be (a note's picture 20 MB, a memory folder's history bundle 1 GB, any other
-   text or JSON file 64 MB), all of them together no more than 8 GB, and none listed twice (`a/./b`, `a//b` and `A/B`
-   are one file). The export writes by the same limits. Then each listed file, and `manifest.json` itself (64 MB at
-   most), is read through one reader (`plain_file.rs`): a link, a pipe or a device is refused unread (a listed link to
-   `/dev/urandom` can't fill the memory, a pipe can't hang the open), no more bytes are read than the manifest says,
-   and each listed file's folder must really be inside the export (a link above it is refused, and a picked folder
-   that holds the export only as a link isn't taken for it). A file the manifest doesn't list is never read, the fixed
+   What the manifest lists is checked before a byte is read: at most 500,000 files, each with a path inside the export
+   and a size, all of them together no more than 8 GB, and none listed twice (`a/./b`, `a//b` and `A/B` are one file; a
+   disk that tells `A.md` from `a.md` apart can't have both in an export, a limit of this check). A file bigger than its
+   kind (a note's picture 20 MB, a memory folder's history bundle 1 GB, any other text or JSON file 512 MB: a chat holds
+   every tool output, and Claude's own transcript of a long one passes 150 MB), or that would take the webview's files
+   (`setup/`, `workspace/hub/`) past the 256 MB Inspect holds, is not a reason to refuse the lot: it is left out, never
+   hashed or read, and the report says so. The export keeps to the same rule (one function, `left_out_reason`) and to the
+   same totals, so it never writes what an import turns away; too many files, too many bytes or a manifest past 64 MB
+   stops the export with a plain line instead. Then each listed file, and `manifest.json` itself (64 MB at most), is
+   read through one reader (`plain_file.rs`): a link, a pipe or a device is refused unread (a listed link to
+   `/dev/urandom` can't fill the memory, a pipe can't hang the open), no more bytes are read than the manifest says, and
+   each listed file's folder must really be inside the export (a link above it is refused, and a picked folder that
+   holds the export only as a link isn't taken for it). A file the manifest doesn't list is never read, the fixed
    `workspace/*.json` names included; each later read of a listed file hashes the bytes it uses, and one that changed
-   since is left out with a line in the report. A single `.json` is read the same way. Inspect holds at most 128 MB of
-   the webview's files. An archive is unpacked against its byte budget by the size the tar crate really copies (a PAX
-   size overrides the header's) and the bytes really written.
+   since is left out with a line in the report. A single `.json` is read the same way. An archive is unpacked, into a
+   folder only this user can open, against its byte budget by the size the tar crate really copies (a PAX size
+   overrides the header's) and the bytes really written.
 2. **Preview** (`importPlan.ts`): for every item, New / Already here / Differs, and clashes by id and by name (a project
    or Mono or model called the same). New things are ticked; things already here are left alone; Differs keeps Ash's.
 3. **Restore** only adds:
@@ -73,7 +78,10 @@ The archive is the same tree under one top folder. Nothing in it is a secret:
      never handed the bundle's path in the export (`git clone` decides for itself what a path means: a gitfile there
      clones the repository it names, and `<path>.git` beside it is cloned instead): the listed bytes are copied, hashed
      as they go, into a private folder as its only file, checked to begin `# v2 git bundle` or `# v3 git bundle`, and
-     cloned from there. The folder is removed afterwards, also on an error.
+     cloned from there. The folder is removed afterwards, also on an error. Every git command of the restore runs with
+     the machine's own git configuration, attributes and hooks switched off and `GIT_LFS_SKIP_SMUDGE=1` (a filter in
+     that configuration, git-lfs on a Mac that has it, would otherwise run at checkout on paths the history chose), and
+     a `.gitattributes`, `.lfsconfig` or `.gitmodules` in the history is not checked out (the report says which).
    - Workspace: new chats, notes, automations (**paused**), reminders (an overdue one comes back done), delegations
      (**history only**: open ones settle as cancelled, delivery disposed, nothing mirrored to Ash OS again). A chat or
      note already here and different is kept; ticked, the file's comes in as a copy with a new id.

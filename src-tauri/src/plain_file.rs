@@ -12,8 +12,9 @@
 //!    that iCloud has evicted needs, to wait while it comes back);
 //! 4. at most `cap` bytes are read, and a file that holds more is refused as soon as one more byte shows up.
 //!
-//! On Windows the same two looks are for a reparse point (a symlink or a junction): `FILE_FLAG_OPEN_REPARSE_POINT`
-//! opens it as itself, and one that is found is refused.
+//! On Windows the same two looks are for a symlink or a junction (a reparse point whose tag is a name surrogate):
+//! `FILE_FLAG_OPEN_REPARSE_POINT` opens one swapped in after the first look as itself, and the handle's own look refuses
+//! it. A OneDrive placeholder, a deduplicated or compressed file is a file.
 //!
 //! A folder on the way to the file is not looked at: callers that need that (a note's pictures folder) check it.
 
@@ -34,16 +35,10 @@ pub enum Refusal {
     TooBig,
 }
 
-/// Whether `meta` is a link: a symlink, and on Windows any reparse point (a junction too).
+/// Whether `meta` is a link: a symlink, and on Windows a junction too (std counts a reparse point as a link when its
+/// tag is a name surrogate). Other reparse points are not: a OneDrive placeholder, a deduplicated or compressed file is
+/// a file.
 fn is_link(meta: &fs::Metadata) -> bool {
-    #[cfg(windows)]
-    {
-        use std::os::windows::fs::MetadataExt;
-        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
-        if meta.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
-            return true;
-        }
-    }
     meta.file_type().is_symlink()
 }
 
