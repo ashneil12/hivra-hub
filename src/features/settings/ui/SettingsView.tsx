@@ -308,11 +308,15 @@ import { AccountOrderControls, AccountWaterfallSwitch } from "../../providers/ui
 import { orderedAccounts } from "../../providers/model/accountWaterfall";
 import { signInOptions } from "../../providers/model/providerSignIn";
 import {
+  SHOW_ONLY_GROUP_DESCRIPTION,
+  SHOW_ONLY_GROUP_LABEL,
   saveChatListInbox,
   saveComposerAutocorrect,
   savePacedReveal,
+  saveShowOnlyGroup,
   useChatListInbox,
   usePacedReveal,
+  useShowOnlyGroup,
   saveMaskEmails,
   saveNewLayoutPromptDismissed,
   saveRailMonosPinned,
@@ -2843,6 +2847,8 @@ function ThemePreviewBar() {
 function AppearancePage({ appearance }: { appearance: AppearanceSettings }) {
   const percent = Math.round(appearance.opacity * 100);
   const glassDisabled = useColorScheme() === "light";
+  // WP-137b: show one project group on its own. Off keeps today's rail.
+  const showOnlyGroup = useShowOnlyGroup();
   // The inset workspace takes its colours from the workspace theme and has a
   // fixed tint and blur, so the tint and translucency groups only belong to
   // the classic layout. Its one glass switch lives with the theme instead.
@@ -3095,6 +3101,18 @@ function AppearancePage({ appearance }: { appearance: AppearanceSettings }) {
           />
         </Row>
         )}
+        {/* WP-137b: one switch. The filter itself is a second action on the rail. */}
+        <Row
+          id="show-only-group"
+          label={SHOW_ONLY_GROUP_LABEL}
+          description={SHOW_ONLY_GROUP_DESCRIPTION}
+        >
+          <Toggle
+            label={SHOW_ONLY_GROUP_LABEL}
+            on={showOnlyGroup}
+            onChange={saveShowOnlyGroup}
+          />
+        </Row>
         <Row
           id="collapsed-project-rail"
           label="Collapsed project rail"

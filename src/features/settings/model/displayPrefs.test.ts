@@ -2,17 +2,21 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   CHAT_LIST_INBOX_KEY,
+  SHOW_ONLY_GROUP_KEY,
   loadChatListInbox,
   loadComposerAutocorrect,
   loadMaskEmails,
+  loadShowOnlyGroup,
   loadShowRemainingUsage,
   saveChatListInbox,
   saveComposerAutocorrect,
   saveMaskEmails,
+  saveShowOnlyGroup,
   saveShowRemainingUsage,
   subscribeChatListInbox,
   subscribeComposerAutocorrect,
   subscribeMaskEmails,
+  subscribeShowOnlyGroup,
   subscribeShowRemainingUsage,
 } from "./displayPrefs";
 
@@ -48,6 +52,14 @@ const prefs = [
     load: loadChatListInbox,
     save: saveChatListInbox,
     subscribe: subscribeChatListInbox,
+  },
+  {
+    name: "show only one group",
+    key: SHOW_ONLY_GROUP_KEY,
+    defaultValue: false,
+    load: loadShowOnlyGroup,
+    save: saveShowOnlyGroup,
+    subscribe: subscribeShowOnlyGroup,
   },
 ];
 
@@ -139,5 +151,44 @@ describe("chat list inbox migration", () => {
     saveChatListInbox(true);
     expect(localStorage.getItem("monocode.maskEmails")).toBe("0");
     expect(localStorage.getItem(CHAT_LIST_INBOX_KEY)).toBe("1");
+  });
+});
+
+describe("show only one group", () => {
+  afterEach(() => {
+    saveShowOnlyGroup(false);
+    localStorage.removeItem(SHOW_ONLY_GROUP_KEY);
+  });
+
+  it("is off when unset, so the rail is not filtered", () => {
+    localStorage.removeItem(SHOW_ONLY_GROUP_KEY);
+    expect(loadShowOnlyGroup()).toBe(false);
+  });
+
+  it("reads a bad stored value as off", () => {
+    for (const raw of ["", "0", "false", "yes", "on", "2", "true ", " TRUE"]) {
+      localStorage.setItem(SHOW_ONLY_GROUP_KEY, raw);
+      expect(loadShowOnlyGroup(), raw).toBe(false);
+    }
+  });
+
+  it("reads only the saved on values as on", () => {
+    localStorage.setItem(SHOW_ONLY_GROUP_KEY, "1");
+    expect(loadShowOnlyGroup()).toBe(true);
+    localStorage.setItem(SHOW_ONLY_GROUP_KEY, "true");
+    expect(loadShowOnlyGroup()).toBe(true);
+  });
+
+  it("leaves the rail order and the group list alone", () => {
+    localStorage.setItem("monocode.projectGroups", "[{\"id\":\"g\"}]");
+    localStorage.setItem("monocode.projectRailOrder", "[\"a\",\"b\"]");
+    localStorage.setItem("monocode.projectGroupAssignments", "{}");
+    localStorage.setItem("monocode.projectRailPinned", "[\"a\"]");
+    saveShowOnlyGroup(true);
+    expect(localStorage.getItem("monocode.projectGroups")).toBe("[{\"id\":\"g\"}]");
+    expect(localStorage.getItem("monocode.projectRailOrder")).toBe("[\"a\",\"b\"]");
+    expect(localStorage.getItem("monocode.projectGroupAssignments")).toBe("{}");
+    expect(localStorage.getItem("monocode.projectRailPinned")).toBe("[\"a\"]");
+    expect(localStorage.getItem(SHOW_ONLY_GROUP_KEY)).toBe("1");
   });
 });

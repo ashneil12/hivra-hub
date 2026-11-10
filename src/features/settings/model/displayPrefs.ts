@@ -6,6 +6,7 @@ const MASK_EMAILS_KEY = "monocode.maskEmails";
 const COMPOSER_AUTOCORRECT_KEY = "monocode.composerAutocorrect";
 const RAIL_MONOS_PINNED_KEY = "monocode.railMonosPinned";
 export const CHAT_LIST_INBOX_KEY = "monocode.chatListInbox";
+export const SHOW_ONLY_GROUP_KEY = "monocode.showOnlyGroup";
 export const PACED_REVEAL_KEY = "monocode.pacedReveal";
 
 export const SHOW_REMAINING_USAGE_DEFAULT = false;
@@ -14,6 +15,11 @@ export const COMPOSER_AUTOCORRECT_DEFAULT = true;
 export const RAIL_MONOS_PINNED_DEFAULT = false;
 /** Settle, snooze and re-sort for the chat list. Off keeps today's list. */
 export const CHAT_LIST_INBOX_DEFAULT = false;
+/** Let the project rail show one group on its own. Off keeps today's rail. */
+export const SHOW_ONLY_GROUP_DEFAULT = false;
+export const SHOW_ONLY_GROUP_LABEL = "Show only one group";
+export const SHOW_ONLY_GROUP_DESCRIPTION =
+  "On the project rail, a group can be shown on its own. Off keeps today's rail.";
 
 /** Fired on `window` whenever the usage meter direction flips (detail: boolean). */
 export const SHOW_REMAINING_USAGE_CHANGE_EVENT =
@@ -27,6 +33,8 @@ export const COMPOSER_AUTOCORRECT_CHANGE_EVENT =
 export const RAIL_MONOS_PINNED_CHANGE_EVENT = "monocode:railmonospinnedchange";
 /** Fired on `window` whenever settle and snooze for the chat list flips (detail: boolean). */
 export const CHAT_LIST_INBOX_CHANGE_EVENT = "monocode:chatlistinboxchange";
+/** Fired on `window` whenever the project-rail group filter flips (detail: boolean). */
+export const SHOW_ONLY_GROUP_CHANGE_EVENT = "monocode:showonlygroupchange";
 
 function flagStore(key: string, fallback: boolean, event: string) {
   // Holds a saved value only while storage failed to keep it, so the switch
@@ -83,6 +91,11 @@ const chatListInbox = flagStore(
   CHAT_LIST_INBOX_DEFAULT,
   CHAT_LIST_INBOX_CHANGE_EVENT,
 );
+const showOnlyGroup = flagStore(
+  SHOW_ONLY_GROUP_KEY,
+  SHOW_ONLY_GROUP_DEFAULT,
+  SHOW_ONLY_GROUP_CHANGE_EVENT,
+);
 const pacedReveal = flagStore(
   PACED_REVEAL_KEY,
   true,
@@ -133,3 +146,12 @@ export const loadChatListInbox = chatListInbox.load;
 export const saveChatListInbox = chatListInbox.save;
 export const subscribeChatListInbox = chatListInbox.subscribe;
 export const useChatListInbox = chatListInbox.useFlag;
+
+/**
+ * The project rail can show one existing group on its own. Missing, old and
+ * unreadable values stay off, which is today's rail.
+ */
+export const loadShowOnlyGroup = showOnlyGroup.load;
+export const saveShowOnlyGroup = showOnlyGroup.save;
+export const subscribeShowOnlyGroup = showOnlyGroup.subscribe;
+export const useShowOnlyGroup = showOnlyGroup.useFlag;
