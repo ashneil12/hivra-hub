@@ -71,6 +71,7 @@ function fake(options: {
   merge?: Awaited<ReturnType<LeadTickPorts["merge"]>>;
   delegateFails?: boolean;
   listFails?: boolean;
+  watchesFail?: boolean;
 }): Fake {
   const state: Fake = {
     calls: [],
@@ -101,6 +102,7 @@ function fake(options: {
     },
     async watches() {
       state.calls.push("watches");
+      if (options.watchesFail) throw new Error("watch list busy");
       return options.watches ?? [];
     },
     async merge(repo, number) {
@@ -350,6 +352,24 @@ describe("never-merge rule", () => {
 });
 
 describe("lead tick: a watch belongs to its package", () => {
+  it("keeps a watch a Crew Deliver made, whose project is the folder path", async () => {
+    const ports = fake({ rows: [row({ id: "a", status: "building" })], watches: [watch({ project: "/code/app", status: { pr: "merged" }, state: "ended", endReason: "merged" })] });
+    await runLeadTick({ ...base, folder: "/code/app" }, ports);
+    expect(ports.rows[0].status).toBe("merged");
+  });
+
+  it("ships a green Crew Deliver pull request to the merge path", async () => {
+    const ports = fake({ rows: [row({ id: "a", status: "pr_open" })], watches: [watch({ project: "/code/app/" })] });
+    await runLeadTick({ ...base, folder: "/code/app", shipOnGreen: true }, ports);
+    expect(ports.calls).toContain("merge owner/app#7");
+  });
+
+  it("ignores a folder watch for a different project folder", async () => {
+    const ports = fake({ rows: [row({ id: "a", status: "pr_open" })], watches: [watch({ project: "/code/other" })] });
+    await runLeadTick({ ...base, folder: "/code/app", shipOnGreen: true }, ports);
+    expect(ports.calls.some((c) => c.startsWith("merge"))).toBe(false);
+  });
+
   it("ignores another project's pull request on the same branch", async () => {
     const ports = fake({
       rows: [row({ id: "a", status: "pr_open" })],
@@ -406,6 +426,40 @@ describe("lead tick: the merge is checked again on the row", () => {
     const result = await runLeadTick({ ...base, shipOnGreen: true }, ports);
     expect(ports.rows[0].status).toBe("merged");
     expect(result.attention).toEqual([]);
+    expect(ports.outcomes).toEqual(["Merged WP-200: Build the thing (#7)."]);
+  });
+
+  it("does not read a refusal that only mentions 'already merged' as a settled merge", async () => {
+    const question = "Is WP-12 already merged so this can rebase?";
+    const ports = fake({
+      rows: [row({ id: "a", status: "pr_open" })],
+      watches: [watch({})],
+      merge: { outcome: "refused", reason: `A decision on this work is still open: ${question}. It merges once that is answered.` },
+    });
+    const result = await runLeadTick({ ...base, shipOnGreen: true }, ports);
+    expect(ports.rows[0].status).toBe("pr_open");
+    expect(ports.outcomes).toEqual([]);
+    expect(result.attention).toEqual([`#7 (WP-200) was not merged: A decision on this work is still open: ${question}. It merges once that is answered.`]);
+  });
+
+  it("settles a package whose merge GitHub reports as already merged (its exact refusal, any case)", async () => {
+    const ports = fake({
+      rows: [row({ id: "a", status: "pr_open" })],
+      watches: [watch({})],
+      merge: { outcome: "refused", reason: "Owner/App#7 is already merged." },
+    });
+    await runLeadTick({ ...base, shipOnGreen: true }, ports);
+    expect(ports.rows[0].status).toBe("merged");
+  });
+
+  it("never merges a package that left pr_open while CI was being read", async () => {
+    const ports = fake({ rows: [row({ id: "a", status: "pr_open" })], watches: [watch({})] });
+    ports.watches = async () => {
+      ports.rows[0].status = "failed";
+      return [watch({})];
+    };
+    await runLeadTick({ ...base, shipOnGreen: true }, ports);
+    expect(ports.calls.some((c) => c.startsWith("merge"))).toBe(false);
   });
 
   it("never merges a pull request labelled security-park, even with Ship on green on", async () => {
@@ -417,17 +471,50 @@ describe("lead tick: the merge is checked again on the row", () => {
 });
 
 describe("lead tick: a building package with no pull request", () => {
-  it("is settled after six hours, so its builder slot is free", async () => {
+  it("stops holding its builder slot after six hours, and keeps its status", async () => {
     const ports = fake({ rows: [row({ id: "a", status: "building", claimedAt: NOW - 6 * HOUR - 1 })], slot: { ok: false, reason: "full" } });
     const result = await runLeadTick(base, ports);
-    expect(ports.rows[0].status).toBe("failed");
-    expect(result.attention.join(" ")).toContain("WP-200 has no pull request after 6 hours");
+    expect(ports.rows[0].status).toBe("building");
+    expect(result.attention.join(" ")).toContain("WP-200 has no pull request after 6 hours, so it no longer holds a builder slot.");
+  });
+
+  it("does not settle a stale package while the watch list failed to read", async () => {
+    const ports = fake({ rows: [row({ id: "a", status: "building", claimedAt: NOW - 7 * HOUR })], slot: { ok: false, reason: "full" }, watchesFail: true });
+    const result = await runLeadTick(base, ports);
+    expect(ports.rows[0].status).toBe("building");
+    expect(result.attention).toEqual([]);
+  });
+
+  it("stops counting a stale package toward the slot, leaves its status, and says so once", async () => {
+    const stale = row({ id: "a", status: "building", claimedAt: NOW - 7 * HOUR });
+    const queued = row({ id: "b", wp: "WP-202", title: "Second", branch: "wp/202-second" });
+    const ports = fake({ rows: [stale, queued], slot: { ok: false, reason: "full" } });
+    const first = await runLeadTick(base, ports);
+    expect(ports.rows[0].status).toBe("building");
+    expect(ports.calls).toContain("slot 0");
+    expect(first.attention).toHaveLength(1);
+    expect(first.attention[0]).toContain("WP-200 has no pull request after 6 hours");
+    const again = await runLeadTick({ ...base, noted: first.noted }, fake({ rows: [stale, queued], slot: { ok: false, reason: "full" } }));
+    expect(again.attention).toEqual([]);
   });
 
   it("keeps a package that only just started", async () => {
     const ports = fake({ rows: [row({ id: "a", status: "building", claimedAt: NOW - 60_000 })], slot: { ok: false, reason: "full" } });
     await runLeadTick(base, ports);
     expect(ports.rows[0].status).toBe("building");
+  });
+});
+
+describe("lead tick: a closed pull request", () => {
+  it("marks a building package failed when its pull request was closed unmerged, so its slot is free", async () => {
+    const ports = fake({
+      rows: [row({ id: "a", status: "building" })],
+      watches: [watch({ state: "ended", endReason: "closed", status: { pr: "closed" } })],
+      slot: { ok: false, reason: "full" },
+    });
+    const result = await runLeadTick(base, ports);
+    expect(ports.rows[0].status).toBe("failed");
+    expect(result.attention.join(" ")).toContain("#7 (WP-200) was closed without merging.");
   });
 });
 

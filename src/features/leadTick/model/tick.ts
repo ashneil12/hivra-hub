@@ -14,7 +14,10 @@ export type TickWatch = {
   title: string;
   headRef: string;
   headSha: string | null;
-  /** The programme project the watch belongs to (the project's hub id), or null when the watch names none. */
+  /**
+   * The project the watch belongs to: the project's hub id, or the project folder when a Crew delivery made the watch
+   * (delivery names only the folder). Null when the watch names none.
+   */
   project: string | null;
   state: "watching" | "ended";
   endReason: string | null;
@@ -136,15 +139,22 @@ export function neverMergeReason(pr: { title?: string; branch?: string; labels?:
 
 // ---- the tick ------------------------------------------------------------------------------------------------------
 
+function folderKey(path: string): string {
+  return path.replace(/[\\/]+$/, "");
+}
+
 /**
- * The watch for this package: same branch (case-insensitive, as the store matches branches), same project, and not one
- * that ended before the package was claimed (that is an earlier attempt). A live watch first, then the latest ended one.
+ * The watch for this package: same branch (case-insensitive, as the store matches branches), same project (by hub id, or
+ * by folder for a watch a Crew delivery made), and not one that ended before the package was claimed (that is an earlier
+ * attempt). A live watch first, then the latest ended one.
  */
-function watchFor(row: ProgrammePackage, watches: readonly TickWatch[]): TickWatch | undefined {
+function watchFor(row: ProgrammePackage, watches: readonly TickWatch[], folder: string): TickWatch | undefined {
   const branch = row.branch.toLowerCase();
+  const key = folderKey(folder);
   const mine = watches.filter((w) => {
     if (w.headRef.toLowerCase() !== branch) return false;
-    if (w.project !== row.projectId) return false;
+    const same = w.project === row.projectId || (w.project !== null && key !== "" && folderKey(w.project) === key);
+    if (!same) return false;
     if (row.claimedAt !== null && w.endedAt !== null && w.endedAt < row.claimedAt) return false;
     return true;
   });
@@ -158,6 +168,11 @@ function merged(watch: TickWatch): boolean {
 function green(watch: TickWatch): boolean {
   const s = watch.status;
   return s.pr === "open" && !s.draft && s.passed && s.failed.length === 0 && s.pending === 0 && s.mergeable !== "conflicting";
+}
+
+/** merge.rs's refusal for a pull request GitHub already merged: its exact words for this pull request, and nothing else. */
+function alreadyMerged(reason: string, watch: TickWatch): boolean {
+  return reason.trim().toLowerCase() === `${watch.repo}#${watch.number} is already merged.`.toLowerCase();
 }
 
 function brief(row: ProgrammePackage): Record<string, unknown> {
@@ -213,30 +228,28 @@ export async function runLeadTick(input: LeadTickInput, ports: LeadTickPorts): P
   // (c) CI for the programme's pull requests, and (d) ship on green.
   const live = rows.filter((row) => row.status === "building" || row.status === "pr_open");
   let watches: TickWatch[] = [];
+  let watchesRead = false;
   if (live.length) {
     try {
       watches = await ports.watches();
+      watchesRead = true;
     } catch {
       // The PR watch didn't answer: CI is read again next tick. Starting a package does not wait on it.
     }
   }
   for (const found of live) {
     let row = found;
-    const watch = watchFor(row, watches);
+    const watch = watchFor(row, watches, input.folder);
     if (!watch) {
-      // No pull request for a package that has run for hours: settle it, so the builder slot it holds is free.
-      if (row.status === "building" && row.claimedAt !== null && input.now - row.claimedAt >= STALE_BUILD_MS) {
-        try {
-          row = await ports.setStatus(row.id, row.version, "failed");
-          building -= 1;
-          once(
-            noteKey("stale", row.id, String(found.claimedAt)),
-            `${row.wp} has no pull request after 6 hours, so it is marked failed and its builder slot is free.`,
-            attention,
-          );
-        } catch {
-          // The row changed under us: the next tick reads it again.
-        }
+      // A building package with no pull request after 6 hours no longer holds a builder slot. Its status stays as it is: a
+      // pull request that turns up later still moves it on. Not decided on a watch list that didn't answer.
+      if (watchesRead && row.status === "building" && row.claimedAt !== null && input.now - row.claimedAt >= STALE_BUILD_MS) {
+        building -= 1;
+        once(
+          noteKey("stale", row.id, String(found.claimedAt)),
+          `${row.wp} has no pull request after 6 hours, so it no longer holds a builder slot.`,
+          attention,
+        );
       }
       continue;
     }
@@ -250,7 +263,14 @@ export async function runLeadTick(input: LeadTickInput, ports: LeadTickPorts): P
         continue;
       }
       if (watch.status.pr === "closed") {
-        once(noteKey("closed", row.id, String(watch.number)), `${pr} was closed without merging.`, attention);
+        // A building package whose pull request was closed unmerged is failed, so the builder slot it holds is free.
+        let freed = "";
+        if (row.status === "building") {
+          row = await ports.setStatus(row.id, row.version, "failed");
+          building -= 1;
+          freed = ` ${row.wp} is marked failed and its builder slot is free.`;
+        }
+        once(noteKey("closed", row.id, String(watch.number)), `${pr} was closed without merging.${freed}`, attention);
         continue;
       }
       if (row.status === "building") {
@@ -294,6 +314,8 @@ export async function runLeadTick(input: LeadTickInput, ports: LeadTickPorts): P
       did.push(`${current.wp} is already merged (#${watch.number}).`);
       continue;
     }
+    // Only a package still in review merges: one that moved (failed, queued, back to building) while CI was read waits.
+    if (current.status !== "pr_open") continue;
     row = current;
     let outcome: TickMergeOutcome;
     try {
@@ -316,13 +338,14 @@ export async function runLeadTick(input: LeadTickInput, ports: LeadTickPorts): P
       did.push(`Merged ${row.wp} (#${watch.number}).`);
     } else if (outcome.outcome === "needsYou") {
       once(noteKey("ask", String(watch.number), outcome.headSha), `${pr} needs your word to merge: ${outcome.question}`, attention);
-    } else if (/already merged/i.test(outcome.reason)) {
+    } else if (alreadyMerged(outcome.reason, watch)) {
       // GitHub already has it: the package is settled, not refused.
       try {
         await ports.setStatus(row.id, row.version, "merged");
       } catch {
         // The next tick reads the watch and settles the row.
       }
+      ports.outcome(`Merged ${row.wp}: ${row.title} (#${watch.number}).`);
       did.push(`${row.wp} is already merged (#${watch.number}).`);
     } else {
       once(noteKey("refused", String(watch.number), head, outcome.reason), `${pr} was not merged: ${outcome.reason}`, attention);

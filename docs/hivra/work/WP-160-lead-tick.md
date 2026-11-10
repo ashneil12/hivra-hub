@@ -55,10 +55,12 @@ line in `src/features/crew/ui/CrewPanel.tsx`.
 - **One tick** (`model/tick.ts`, `model/ports.ts`), acting as the project's Lead (`teamLeadOf`):
   1. reads the programme as the first mate (`programme_list`);
   2. reads the PR watches (`pr_watch_list`) for the programme's `building` and `pr_open` rows by branch, in the row's
-     own project only, and ignores a watch that ended before the row was claimed: an open pull request moves a row to
-     `pr_open`, a merged one to `merged` with one work log outcome line. A `building` row with no pull request six
-     hours after it was claimed is settled to `failed`, so its builder slot is free. A red CI is said in the line
-     only, since the PR watch already sends the `ci-red` notice;
+     own project only (matched by hub id, or by folder for a watch a Crew delivery made), and ignores a watch that ended
+     before the row was claimed: an open pull request moves a row to `pr_open`, a merged one to `merged` with one work
+     log outcome line. A `building` row with no pull request six hours after it was claimed stops counting toward the
+     builder slots (its status stays, and one line says so); nothing is decided when the watch list didn't answer. A
+     `building` row whose pull request was closed unmerged is settled to `failed`, so its slot is free. A red CI is said
+     in the line only, since the PR watch already sends the `ci-red` notice;
   3. for a green pull request (open, not a draft, checks passed, none pending, not conflicting): with Ship on green
      off it says once per head that it waits for the person; with it on it calls delivery's one merge path
      (`delivery_merge`) as the Lead, never as the person. That path reads the pull request again, refuses red,
