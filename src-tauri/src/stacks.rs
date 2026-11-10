@@ -1793,6 +1793,13 @@ impl Lock {
                     }
                     std::thread::sleep(LOCK_WAIT);
                 }
+                // Windows can refuse the new lock file while another writer still
+                // has it (access denied, sharing violation). That is the same
+                // wait as "already exists", not a final failure. Other errors
+                // still stop. The attempt budget is unchanged.
+                Err(error) if transient_lock(&error) => {
+                    std::thread::sleep(LOCK_WAIT);
+                }
                 Err(error) => return Err(error.to_string()),
             }
         }
@@ -1803,6 +1810,33 @@ impl Lock {
 impl Drop for Lock {
     fn drop(&mut self) {
         let _ = std::fs::remove_file(&self.path);
+    }
+}
+
+/// ERROR_ACCESS_DENIED is 5 and ERROR_SHARING_VIOLATION is 32. The same
+/// numbers are real errno values on Unix (EIO, EPIPE), so they count only
+/// on Windows.
+fn transient_lock(error: &std::io::Error) -> bool {
+    transient_lock_code(cfg!(windows), error.raw_os_error())
+}
+
+fn transient_lock_code(windows: bool, raw: Option<i32>) -> bool {
+    windows && matches!(raw, Some(5) | Some(32))
+}
+
+#[cfg(test)]
+mod transient_lock_tests {
+    use super::transient_lock_code;
+
+    #[test]
+    fn only_windows_sharing_and_access_denied_are_retried() {
+        assert!(transient_lock_code(true, Some(5)));
+        assert!(transient_lock_code(true, Some(32)));
+        assert!(!transient_lock_code(true, Some(2)));
+        assert!(!transient_lock_code(true, None));
+        // 5 and 32 are EIO and EPIPE on Unix, so they must not be retried there.
+        assert!(!transient_lock_code(false, Some(5)));
+        assert!(!transient_lock_code(false, Some(32)));
     }
 }
 
