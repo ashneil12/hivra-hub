@@ -177,8 +177,9 @@ fn note_name(name: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, ' ' | '.' | '-' | '_'))
 }
 
-/// What a Mono's folder may be given by an import, by the names `mono.rs` itself uses: `<id>/SOUL.md`, `MEMORY.md`,
-/// `soul-template.md`, `memory/<name>.md` or `skills/<name>.md`. `relative` is the path inside the Monos home.
+/// What a Mono's folder may be given by an import, by the names `mono.rs` itself uses: `MEMORY.md` at the Monos home,
+/// `<id>/SOUL.md`, `<id>/MEMORY.md`, `<id>/soul-template.md`, and notes (`.md`) under `<id>/memory/` or `<id>/skills/`,
+/// nested as deep as the folder goes. `relative` is the path inside the Monos home.
 pub(super) fn mono_folder_file(relative: &Path) -> bool {
     let parts: Vec<String> = relative
         .components()
@@ -188,16 +189,36 @@ pub(super) fn mono_folder_file(relative: &Path) -> bool {
         })
         .collect::<Option<_>>()
         .unwrap_or_default();
-    let named = |name: &str| memory_note_file(Path::new(name)) && note_name(name);
     match parts.as_slice() {
+        [file] => file == "MEMORY.md",
         [id, file] => {
             plain_id(id) && matches!(file.as_str(), "SOUL.md" | "MEMORY.md" | "soul-template.md")
         }
-        [id, dir, file] => {
-            plain_id(id) && matches!(dir.as_str(), "memory" | "skills") && named(file)
-        }
+        [id, dir, rest @ ..] => match rest.split_last() {
+            Some((last, folders)) => {
+                plain_id(id)
+                    && matches!(dir.as_str(), "memory" | "skills")
+                    && folders.iter().all(|folder| note_name(folder))
+                    && memory_note_file(Path::new(last))
+                    && note_name(last)
+            }
+            None => false,
+        },
         _ => false,
     }
+}
+
+/// A file a CLI reads as instructions, rules or settings, not hidden, at a place that a Mono's folder can hold: an import
+/// keeps such a file beside its original for Ash to review, never under its own name. `relative` is inside the Monos home.
+pub(super) fn instruction_file_for_review(relative: &Path) -> bool {
+    let plain_path = relative.components().all(|part| match part {
+        Component::Normal(name) => !name.to_string_lossy().starts_with('.'),
+        _ => false,
+    });
+    plain_path
+        && relative
+            .file_name()
+            .is_some_and(|name| instruction_file(&name.to_string_lossy()))
 }
 
 fn plain_id(name: &str) -> bool {

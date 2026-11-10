@@ -603,7 +603,12 @@ fn a_round_trip_into_an_empty_data_folder_brings_everything_back_minus_secrets()
                 1,
                 "{name}'s history came back"
             );
-            assert!(!target.memory_root.join(name).join(".gitignore").exists());
+            // A restored history keeps its own files, .gitignore included, exactly as the source folder has them.
+            assert_eq!(
+                target.memory_root.join(name).join(".gitignore").exists(),
+                source.memory_root.join(name).join(".gitignore").exists(),
+                "{name}/.gitignore"
+            );
             let status = Command::new("git")
                 .arg("-C")
                 .arg(target.memory_root.join(name))
@@ -5474,7 +5479,7 @@ fn another_spelling_of_the_monos_home_is_refused_by_name() {
 }
 
 #[test]
-fn a_memory_import_writes_only_notes_in_any_folder() {
+fn a_memory_import_outside_the_monos_home_restores_its_files_as_they_are() {
     let layout = layout();
     let report = import_memory_files(
         &layout,
@@ -5482,32 +5487,63 @@ fn a_memory_import_writes_only_notes_in_any_folder() {
         &[
             ("MEMORY.md", "# ash\n"),
             ("topics/deploy.md", "note"),
-            ("CLAUDE.md", "planted"),
-            ("AGENTS.md", "planted"),
-            ("AGENTS.override.md", "planted"),
-            ("GEMINI.md", "planted"),
-            ("topics/CLAUDE.local.md", "planted"),
+            ("CLAUDE.md", "my rules"),
+            ("AGENTS.md", "my agents"),
+            ("AGENTS.override.md", "my override"),
+            ("GEMINI.md", "my gemini"),
+            ("topics/CLAUDE.local.md", "local rules"),
             ("opencode.json", "{}"),
-            ("topics/settings.json", "{}"),
-            ("data.txt", "not a note"),
+            ("data.txt", "plain text"),
         ],
     );
     let root = layout.target.memory_root.join("ash");
-    for note in ["MEMORY.md", "topics/deploy.md"] {
-        assert!(root.join(note).is_file(), "{note}: {report:?}");
-    }
-    for planted in [
+    for kept in [
+        "MEMORY.md",
+        "topics/deploy.md",
         "CLAUDE.md",
         "AGENTS.md",
         "AGENTS.override.md",
         "GEMINI.md",
         "topics/CLAUDE.local.md",
         "opencode.json",
-        "topics/settings.json",
         "data.txt",
     ] {
-        assert!(!root.join(planted).exists(), "{planted} was written");
+        assert!(root.join(kept).is_file(), "{kept} was not restored: {report:?}");
     }
+    assert_eq!(fs::read_to_string(root.join("CLAUDE.md")).unwrap(), "my rules");
+}
+
+#[test]
+fn inside_the_monos_home_instruction_files_come_in_beside_their_original_for_review() {
+    let layout = layout();
+    assert_eq!(layout.target.monos_root, layout.target.memory_root.join("monos"));
+    let report = import_memory_files(
+        &layout,
+        "monos",
+        &[
+            ("MEMORY.md", "# monos\n"),
+            ("lead/CLAUDE.md", "planted"),
+            ("lead/AGENTS.override.md", "planted override"),
+            ("lead/memory/sub/topic.md", "a nested note"),
+            ("lead/notes.txt", "not a note"),
+        ],
+    );
+    let root = layout.target.monos_root.clone();
+    assert_eq!(fs::read_to_string(root.join("MEMORY.md")).unwrap(), "# monos\n");
+    assert_eq!(fs::read_to_string(root.join("lead/memory/sub/topic.md")).unwrap(), "a nested note");
+    assert_eq!(fs::read_to_string(root.join("lead/CLAUDE.imported.md")).unwrap(), "planted");
+    assert_eq!(
+        fs::read_to_string(root.join("lead/AGENTS.override.imported.md")).unwrap(),
+        "planted override"
+    );
+    for dropped in ["lead/CLAUDE.md", "lead/AGENTS.override.md", "lead/notes.txt"] {
+        assert!(!root.join(dropped).exists(), "{dropped} was written: {report:?}");
+    }
+    assert!(
+        report.notes.iter().any(|n| n.contains("CLAUDE.imported.md") && n.contains("review")),
+        "{:?}",
+        report.notes
+    );
 }
 
 #[test]
@@ -5557,10 +5593,13 @@ fn what_counts_as_a_note_and_as_an_instruction_file() {
 #[test]
 fn a_monos_folder_takes_only_the_names_mono_rs_uses() {
     let allowed = [
+        "MEMORY.md",
         "lead/SOUL.md",
         "lead/MEMORY.md",
         "lead/soul-template.md",
         "lead/memory/today.md",
+        "lead/memory/deep/x.md",
+        "lead/memory/deep/more/x.md",
         "lead/skills/review.md",
     ];
     let refused = [
@@ -5571,9 +5610,9 @@ fn a_monos_folder_takes_only_the_names_mono_rs_uses() {
         "lead/habits.md",
         "lead/memory/CLAUDE.md",
         "lead/memory/.hidden.md",
-        "lead/memory/deep/x.md",
+        "lead/memory/.hidden/x.md",
         "lead/.claude/settings.json",
-        "MEMORY.md",
+        "lead/memory/a b/../x.md",
         "lead",
         "../lead/SOUL.md",
     ];

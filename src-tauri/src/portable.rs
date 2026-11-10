@@ -3801,17 +3801,12 @@ fn import_memory(
                 ));
                 continue;
             }
-            // A memory import writes notes: `.md` files, never one a CLI reads as instructions, rules or settings
-            // (CLAUDE.md, AGENTS.md, AGENTS.override.md, opencode.json ...), nothing in a hidden folder.
-            if !folders::memory_note_file(&safe) {
-                report.notes.push(format!(
-                    "{path} wasn't written: a memory import only writes notes (.md files), never instructions, rules or settings."
-                ));
-                continue;
-            }
-            // And inside the Monos home (however it is spelled or linked to) only the names a Mono's folder uses.
-            if let Some(relative) = inside_monos_home(env, &dest) {
-                if !folders::mono_folder_file(&relative) {
+            // Outside the Monos home a memory folder is Ash's own: its files come back as they were exported. Inside the
+            // Monos home (however it is spelled or linked to) only the names a Mono's folder uses are written; an
+            // instruction file there is kept beside its original, for Ash to review, and anything else is left out.
+            let monos_relative = inside_monos_home(env, &dest);
+            if let Some(relative) = &monos_relative {
+                if !folders::mono_folder_file(relative) && !folders::instruction_file_for_review(relative) {
                     report.notes.push(format!(
                         "{path} wasn't written: a Mono's folder only takes SOUL.md, MEMORY.md, soul-template.md and its memory and skills notes."
                     ));
@@ -3835,6 +3830,23 @@ fn import_memory(
                     continue;
                 }
             };
+            if monos_relative.as_ref().is_some_and(|relative| !folders::mono_folder_file(relative)) {
+                // A history restored here took its instruction files out in a commit of its own: they don't come back.
+                if fresh {
+                    report.notes.push(format!(
+                        "{path} wasn't written: the history of {name} takes its instruction files out, in a commit of its own."
+                    ));
+                    continue;
+                }
+                let review = beside_name(&dest);
+                write_within(&inside, &review, &text)?;
+                report.notes.push(format!(
+                    "{path} came in as {} for you to review: a Mono's folder doesn't take an instruction file under its own name, so nothing was written under that name.",
+                    review.file_name().and_then(|n| n.to_str()).unwrap_or_default()
+                ));
+                written.push(review);
+                continue;
+            }
             // Whether `dest` now holds the export's text because of this restore (a fresh folder's history counts).
             let wrote = match fs::read_to_string(&dest) {
                 Ok(local) if local == text => fresh,
