@@ -24,6 +24,13 @@ import { freshRoomAfter, limitResetAt } from "../../providers/model/accountWater
 import { isOpenDelegation } from "./delegations";
 import { cleanStoredDefault, readProjectWorkerDefault } from "../../crew/model/workerDefault";
 import type { Pick as WorkerPick } from "../../crew/model/resolve";
+import {
+  DEFAULT_BUILDER_SCALE,
+  builderScaleIsDefault,
+  builderScaleToStored,
+  sanitizeBuilderScale,
+  type BuilderScale,
+} from "./builderScale";
 
 export type WorkerLimits = {
   workers: number;
@@ -75,7 +82,9 @@ let settingsCopy: {
   heavy: Set<string>;
   /** WP-89: the worker default for every project, when one is set. */
   workerDefault?: WorkerPick;
-} = { limits: {}, heavy: new Set() };
+  /** WP-161: the shared ceiling and the optional health pauses. */
+  builderScale: BuilderScale;
+} = { limits: {}, heavy: new Set(), builderScale: { ...DEFAULT_BUILDER_SCALE, load: { kind: "default" } } };
 /**
  * Bumped on every local settings write. A refresh that started earlier read the old
  * copy; it must not put that copy back over a write that landed while it was reading.
@@ -115,7 +124,8 @@ const clampCount = (n: unknown, fallback: number) =>
 
 export function workerLimits(project: string): WorkerLimits {
   const saved = settingsCopy.limits[project];
-  const workers = clampCount(saved?.workers, DEFAULT_LIMITS.workers);
+  // WP-161: a project with no ceiling of its own uses the shared max builders (still 6 until raised).
+  const workers = clampCount(saved?.workers, builderScale().maxBuilders);
   return {
     workers,
     heavy: Math.min(workers, clampCount(saved?.heavy, Math.min(workers, DEFAULT_LIMITS.heavy))),
@@ -170,6 +180,28 @@ export function projectWorkerDefault(project: string): WorkerPick | undefined {
 /** WP-89: the worker default for every project, when one is set. */
 export function systemWorkerDefault(): WorkerPick | undefined {
   return cleanStoredDefault(settingsCopy.workerDefault);
+}
+
+/** WP-161: the shared max builders and the optional pauses. A bad value falls back, it is not thrown away whole. */
+export function builderScale(): BuilderScale {
+  return sanitizeBuilderScale(settingsCopy.builderScale);
+}
+
+/**
+ * Saves the shared scale. The default is not stored. This does not stop a builder that is already running:
+ * the saved value has no list of builders to stop.
+ */
+export function setBuilderScale(next: BuilderScale): BuilderScale {
+  const clean = sanitizeBuilderScale(next);
+  wroteSettings();
+  settingsCopy = { ...settingsCopy, builderScale: clean };
+  changed();
+  noteSettingsWrite(
+    (backend.setBuilderScale?.(clean) ?? Promise.resolve(null)).catch((error: unknown) =>
+      console.warn("Could not save the builder scale", error),
+    ),
+  );
+  return clean;
 }
 
 /** Saves (or clears, with undefined) the worker default for every project. A value that isn't usable is dropped. */
@@ -296,11 +328,13 @@ export type WorkerQueueBackend = {
   claim(id: string, by: string): Promise<boolean>;
   /** The claimed job started: out of the queue (only the claimant's finish counts). */
   finish(id: string, by: string): Promise<boolean>;
-  /** Each project's limits, the workers marked heavy, and the system worker default when one is set. */
+  /** Each project's limits, the workers marked heavy, the system worker default, and the builder scale when one is set. */
   settings(): Promise<{
     limits: Record<string, Partial<WorkerLimits>>;
     heavy: string[];
     workerDefault?: WorkerPick;
+    /** WP-161. Absent means the defaults (6, load at 1.6 times the cores, memory and disk off). */
+    builderScale?: unknown;
   }>;
   setLimits(project: string, limits: WorkerLimits): Promise<WorkerLimits>;
   /** The project's own worker model (E7); undefined clears it. `cli` is the WP-89 CLI, absent on an old Claude row. */
@@ -310,6 +344,8 @@ export type WorkerQueueBackend = {
   ): Promise<unknown>;
   /** WP-89: the worker default for every project. Undefined clears it. */
   setWorkerDefault(choice: WorkerPick | undefined): Promise<unknown>;
+  /** WP-161: the shared ceiling and pauses. Optional so a stand-in from before this field still loads. */
+  setBuilderScale?(scale: BuilderScale): Promise<unknown>;
   markHeavy(child: string): Promise<boolean>;
   /** Limits and the heavy list an older build kept in local storage, imported once. */
   importLocalSettings(limits: Record<string, Partial<WorkerLimits>>, heavy: string[]): Promise<boolean>;
@@ -336,6 +372,8 @@ export const tauriWorkerQueue: WorkerQueueBackend = {
       cli: choice?.cli ?? null,
     }),
   setWorkerDefault: (choice) => invoke("worker_default_set", { value: choice ?? null }),
+  // WP-161: null clears a scale that is back to the defaults.
+  setBuilderScale: (scale) => invoke("builder_scale_set", { value: builderScaleToStored(scale) }),
   markHeavy: (child) => invoke<boolean>("worker_heavy_mark", { child }),
   importLocalSettings: (limits, heavy) => invoke<boolean>("worker_settings_import_local", { limits, heavy }),
   subscribe: (onChange) => {
@@ -378,6 +416,7 @@ export function memoryWorkerQueue(
     limits: {} as Record<string, WorkerLimits>,
     heavy: [] as string[],
     workerDefault: undefined as WorkerPick | undefined,
+    builderScale: { ...DEFAULT_BUILDER_SCALE, load: { kind: "default" as const } } as BuilderScale,
     importedSettings: false,
     listeners: new Set<() => void>(),
     list: async () =>
@@ -432,6 +471,7 @@ export function memoryWorkerQueue(
       limits: { ...store.limits },
       heavy: [...store.heavy],
       ...(store.workerDefault ? { workerDefault: store.workerDefault } : {}),
+      ...(builderScaleIsDefault(store.builderScale) ? {} : { builderScale: builderScaleToStored(store.builderScale) }),
     }),
     setLimits: async (project: string, limits: WorkerLimits) => {
       const workers = clampCount(limits.workers, DEFAULT_LIMITS.workers);
@@ -458,6 +498,11 @@ export function memoryWorkerQueue(
       store.workerDefault = choice;
       notify();
       return choice ?? null;
+    },
+    setBuilderScale: async (scale: BuilderScale) => {
+      store.builderScale = sanitizeBuilderScale(scale);
+      notify();
+      return builderScaleToStored(store.builderScale);
     },
     markHeavy: async (child: string) => {
       if (store.heavy.includes(child)) return false;
@@ -497,7 +542,7 @@ export function setWorkerQueueBackend(next: WorkerQueueBackend): Promise<void> {
   noteQueueEdit();
   copy = [];
   wroteSettings();
-  settingsCopy = { limits: {}, heavy: new Set() };
+  settingsCopy = { limits: {}, heavy: new Set(), builderScale: { ...DEFAULT_BUILDER_SCALE, load: { kind: "default" } } };
   loading = undefined;
   unsubscribe = next.subscribe?.(() => void refreshWorkerQueue());
   return loadWorkerQueue();
@@ -567,6 +612,7 @@ export async function refreshWorkerQueue(): Promise<void> {
       limits: settings.limits ?? {},
       heavy: new Set(settings.heavy ?? []),
       ...(settings.workerDefault ? { workerDefault: settings.workerDefault } : {}),
+      builderScale: sanitizeBuilderScale(settings.builderScale ?? DEFAULT_BUILDER_SCALE),
     };
   } catch (error) {
     console.warn("Could not read the waiting workers", error);
@@ -884,7 +930,7 @@ export function resetWorkerPool(): void {
   copy = [];
   settingsEpoch = Promise.resolve();
   wroteSettings();
-  settingsCopy = { limits: {}, heavy: new Set() };
+  settingsCopy = { limits: {}, heavy: new Set(), builderScale: { ...DEFAULT_BUILDER_SCALE, load: { kind: "default" } } };
   loading = undefined;
   changed();
 }

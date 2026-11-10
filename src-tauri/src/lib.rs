@@ -708,6 +708,8 @@ pub fn run() {
             worker_queue::worker_model_set,
             // WP-89: the system-wide worker default, beside a project's own.
             worker_queue::worker_default_set,
+            // WP-161: the shared builder ceiling and the optional health pauses.
+            worker_queue::builder_scale_set,
             worker_queue::worker_heavy_mark,
             worker_queue::worker_settings_import_local,
             autopilot::autopilot_status,
