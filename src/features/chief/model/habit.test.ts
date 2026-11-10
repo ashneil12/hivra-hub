@@ -23,6 +23,10 @@ describe("morning habit", () => {
     expect(created.schedule.time).toBe("08:00");
     expect(created.instructions).toContain("NOTHING_TO_REPORT");
     expect(created.instructions).toContain("app tasks.list");
+    // The run is told the yesterday section exists and what its two states mean.
+    expect(created.instructions).toContain("Finished yesterday");
+    expect(created.instructions).toContain("Nothing finished yesterday.");
+    expect(created.instructions).toMatch(/no such section[^.]*(not|could not)/i);
 
     const edited = habit({ id: MORNING_HABIT_ID, instructions: "The person rewrote this." });
     const next = withMorningHabit([habit(), edited], 5);

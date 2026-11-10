@@ -37,6 +37,8 @@ import {
   type Habit,
 } from "../../features/monos/model/monoHabits";
 import { appPolicy } from "../model/appIdentity";
+import { hubProjectIdFor } from "../../features/hub/model/hubData";
+import { morningWorkLogNote } from "../../features/workLog/model/morningLines";
 
 const TICK_MS = 60_000;
 
@@ -180,6 +182,15 @@ export function useMonoHabits(
       const files = await loadMonoFiles(monoId);
       if (stopped || !findMono(monoId)) return;
       const now = Date.now();
+      // WP-157: the morning run is told what finished yesterday. The app reads the log; the run's own work_log tool
+      // stays refused for a habit run. A read that fails leaves the run with its usual prompt and no claim.
+      const yesterday = await morningWorkLogNote({
+        habitId,
+        now,
+        mono: findMono(monoId),
+        soul: files.soul,
+        projectIdFor: hubProjectIdFor,
+      });
       // Claim after preparation, from the latest definition. A queued habit
       // may have been removed, paused, rescheduled or claimed in another window.
       const habit = await claimHabit(monoId, habitId, now);
@@ -205,7 +216,7 @@ export function useMonoHabits(
       let outcome: ControlOutcome;
       try {
         // /operator gives the run the same app access the Mono has.
-        const prompt = `/operator ${habitRunPrompt(look, files, habit, now)}`;
+        const prompt = `/operator ${habitRunPrompt(look, files, habit, now, yesterday)}`;
         outcome = await watchRun(host, mono.id, habit, run.id, () =>
           host.run(run.id, prompt),
         );

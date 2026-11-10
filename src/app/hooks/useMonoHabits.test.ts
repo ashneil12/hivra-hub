@@ -2,7 +2,9 @@
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { MORNING_HABIT_ID } from "../../features/chief/model/habit";
 import type { Habit } from "../../features/monos/model/monoHabits";
+import { localDay, shiftDay } from "../../features/workLog/model/workLog";
 import {
   holdRunCard,
   takeRunCards,
@@ -19,6 +21,16 @@ const MONO = {
   projects: ["/code/app"],
 };
 
+// The work log is read through the app's own command, so the test answers that command and nothing else.
+const invokeMock = vi.hoisted(() => vi.fn());
+vi.mock("@tauri-apps/api/core", async (original) => ({
+  ...(await original<object>()),
+  invoke: invokeMock,
+}));
+vi.mock("../../features/hub/model/hubData", async (original) => ({
+  ...(await original<object>()),
+  hubProjectIdFor: (folder: string) => (folder === "/code/app" ? "app" : undefined),
+}));
 vi.mock("../../features/monos/model/mono", async (original) => ({
   ...(await original<object>()),
   listMonos: () => [MONO],
@@ -74,6 +86,8 @@ beforeEach(() => {
   fileVersion = 0;
   extraRoots = [];
   vi.clearAllMocks();
+  invokeMock.mockReset();
+  invokeMock.mockRejectedValue(new Error("No native side in a test."));
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   const values = new Map<string, string>();
   vi.stubGlobal("localStorage", {
@@ -639,4 +653,88 @@ it("uses a waiting habit's latest instructions when it launches", async () => {
     "Inspect only the release branch.",
   );
   await vi.waitFor(() => expect(stored[1].lastOutcome).toBe("quiet"));
+});
+
+function morningHabit() {
+  stored = [
+    {
+      id: MORNING_HABIT_ID,
+      name: "Morning",
+      instructions: "Read the projects and say what is worth saying.",
+      schedule: { scheduleKind: "daily", time: "08:00", minute: 0, dayOfWeek: 0 },
+      enabled: true,
+      createdAt: 0,
+      nextRunAt: Date.now() - 60_000,
+    },
+  ];
+}
+
+function logRow(over: Record<string, string>) {
+  return { project: "app", day: yesterday(), kind: "outcome", taskId: "", line: "Done: a thing.", ...over };
+}
+
+function yesterday() {
+  return shiftDay(localDay(new Date()), -1);
+}
+
+it("tells the morning run what finished yesterday, newest first, for this Mono's own project", async () => {
+  invokeMock.mockImplementation(async (command: string) => {
+    if (command !== "work_log_read") throw new Error(`unexpected ${command}`);
+    return [
+      logRow({ line: "Done: first thing." }),
+      logRow({ line: "Done: elsewhere thing.", project: "elsewhere" }),
+      logRow({ kind: "decision", line: "Decided: use CSV. Answer: yes." }),
+      logRow({ line: "Done: second thing." }),
+      logRow({ day: localDay(new Date()), line: "Done: today thing." }),
+    ];
+  });
+  morningHabit();
+  const host = makeHost("Second thing shipped.");
+  mountHost(host);
+  await vi.waitFor(() => expect(host.run).toHaveBeenCalled());
+  expect(invokeMock).toHaveBeenCalledWith("work_log_read", { day: yesterday() });
+  const prompt = host.run.mock.calls[0][1] as string;
+  expect(prompt).toContain("Done: second thing.");
+  expect(prompt.indexOf("Done: second thing.")).toBeLessThan(prompt.indexOf("Done: first thing."));
+  for (const left of ["elsewhere thing", "Decided", "today thing"]) expect(prompt).not.toContain(left);
+  // It sits inside the habit's own fence, after the instructions and before the work begins.
+  expect(prompt.indexOf("Read the projects")).toBeLessThan(prompt.indexOf("Done: second thing."));
+  expect(prompt.indexOf("Done: first thing.")).toBeLessThan(prompt.indexOf("Do the work now"));
+  expect(prompt.indexOf("Done: first thing.")).toBeLessThan(prompt.indexOf("</habit_run>"));
+  await vi.waitFor(() => expect(host.post).toHaveBeenCalled());
+});
+
+it("says nothing finished yesterday when the log has no outcome for it", async () => {
+  invokeMock.mockResolvedValue([logRow({ kind: "feedback", line: "Ash said keep it." })]);
+  morningHabit();
+  const host = makeHost("NOTHING_TO_REPORT");
+  mountHost(host);
+  await vi.waitFor(() => expect(host.run).toHaveBeenCalled());
+  expect((host.run.mock.calls[0][1] as string).split("\n")).toContain("Nothing finished yesterday.");
+});
+
+it("makes no claim about yesterday when the log cannot be read, logs it once, and still runs", async () => {
+  const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+  try {
+    morningHabit();
+    const host = makeHost("Something to say.");
+    mountHost(host);
+    await vi.waitFor(() => expect(host.post).toHaveBeenCalled());
+    const prompt = host.run.mock.calls[0][1] as string;
+    expect(prompt).not.toContain("Nothing finished yesterday.");
+    expect(prompt).not.toContain("Finished yesterday");
+    expect(prompt).toContain("Habit: Morning");
+    expect(warn.mock.calls.filter(([message]) => String(message).includes("work log"))).toHaveLength(1);
+  } finally {
+    warn.mockRestore();
+  }
+});
+
+it("does not read the log for a habit that is not the morning one", async () => {
+  invokeMock.mockResolvedValue([logRow({ line: "Done: a thing." })]);
+  const host = setup("NOTHING_TO_REPORT");
+  await vi.waitFor(() => expect(host.run).toHaveBeenCalled());
+  expect(invokeMock).not.toHaveBeenCalled();
+  expect(host.run.mock.calls[0][1] as string).not.toContain("Done: a thing.");
+  expect(host.run.mock.calls[0][1] as string).not.toContain("Finished yesterday");
 });
