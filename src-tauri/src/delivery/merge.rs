@@ -228,7 +228,9 @@ pub(crate) fn floor_decision(
             } else {
                 format!(" {reason}")
             };
-            let ask = format!("{pr}'s changed files couldn't be read, so it needs your word to merge.{detail}");
+            let ask = format!(
+                "{pr}'s changed files couldn't be read, so it needs your word to merge.{detail}"
+            );
             return match decision {
                 Decision::Ask(question) => Decision::Ask(format!("{question} {ask}")),
                 _ => Decision::Ask(ask),
@@ -539,12 +541,14 @@ pub fn merge(
                 match again {
                     Ok(again) if again.detail.head_sha.as_deref() != Some(head.as_str()) => {
                         super::protected::ChangedFiles::Unread {
-                            reason: "the pull request's head changed while its files were read".into(),
+                            reason: "the pull request's head changed while its files were read"
+                                .into(),
                         }
                     }
                     Ok(again) if again.base_sha.as_deref() != Some(base.as_str()) => {
                         super::protected::ChangedFiles::Unread {
-                            reason: "the pull request's base changed while its files were read".into(),
+                            reason: "the pull request's base changed while its files were read"
+                                .into(),
                         }
                     }
                     Ok(again) => super::protected::judge(listed, again.changed_files),

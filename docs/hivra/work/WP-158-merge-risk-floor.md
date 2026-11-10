@@ -43,3 +43,15 @@ tasklane is Apache-2.0. `protected.rs` is a translation with header, credits.jso
 ## Decision (9 Nov, 23:24 UK)
 
 Build the floor as an optional feature, off by default, behind a per-project setting. With that setting off, a merge decides exactly as it did before this package. The floor stays parked for Ash's review and is not merged in this programme. `floor.rs` (a keyword floor over ticket text) is not built: this package only guards which files a merge touches.
+
+## Review round (PR #198)
+
+- Agent configuration (`.claude/`, `.codex/`, `.cursor/`, `.opencode/`, `.gemini/`, `.mcp.json`, `opencode.json`,
+  `GEMINI.md`) and build and supply-chain files (lockfiles, `package.json`, `Cargo.toml`, `build.rs`, toolchain pins,
+  `.npmrc`, `.cargo/`, Tauri plists and permissions, capability `.toml`, `.no-mistakes.yaml`) are held.
+- The Rust crate roots (`lib.rs`, `main.rs`) and `pr_watch/github.rs` are held.
+- The file list is read for the base and head commits the first read saw (`base...head` through the compare
+  endpoint, capped at 300 files). A base or head that moves during the read asks again. An empty or repeated list is unread.
+- An extra path that matches nothing is refused on write. Protected names show hidden format characters escaped.
+- A decision that opens during the file read stops the merge.
+- Merged Rust is a full compromise either way, so the floor is not the control for it (see the module docs).

@@ -13,7 +13,17 @@
 //! Protected paths for the merge floor (docs/hivra/work/WP-158-merge-risk-floor.md).
 //!
 //! Built-in patterns always apply. A project's extra patterns can only add hits.
-//! A pattern with `*`, `?` or `[` matches nothing, so a bare `*` cannot match every file.
+//! A pattern with `*`, `?` or `[` matches nothing, so a bare `*` cannot match every file, and an extra
+//! pattern that matches nothing is refused when it is written.
+//!
+//! What is held: CI and deploy config, migrations, infrastructure, secrets and key files, git internals, the
+//! hub's own rule files and Tauri config, agent configuration (`.claude/`, `.mcp.json`, `opencode.json`, ...), and
+//! build and supply-chain inputs (lockfiles, manifests, `build.rs`, toolchain pins, `.npmrc`, Tauri plists and
+//! permissions, capability files). The Rust crate roots and the GitHub reader are held too.
+//!
+//! What it is not: a control for merged Rust. A merged change runs with Ash's rights whatever the floor says, so
+//! the floor is a check that asks a person first, not a boundary around code that is already merged. Hold the
+//! project's own review for that. The floor only decides whether a merge without asking may proceed.
 
 /// Directory names that are protected wherever they sit in the path.
 const DIRECTORIES: &[&str] = &[
@@ -219,7 +229,9 @@ fn capabilities_json(path: &RepoPath) -> bool {
 /// Merged Rust is a full compromise anyway: the floor is not the control for it. Holding these is a speed bump.
 fn rust_roots(path: &RepoPath) -> bool {
     path.lower.windows(3).any(|window| {
-        window[0] == "src-tauri" && window[1] == "src" && (window[2] == "lib.rs" || window[2] == "main.rs")
+        window[0] == "src-tauri"
+            && window[1] == "src"
+            && (window[2] == "lib.rs" || window[2] == "main.rs")
     }) || path.lower.windows(4).any(|window| {
         window[0] == "src-tauri"
             && window[1] == "src"
@@ -950,7 +962,11 @@ mod tests {
         ] {
             assert_eq!(hits(&[path], &[]), vec![path.to_string()], "{path}");
         }
-        for path in ["src/package.jsonish.ts", "docs/build.rs.md", "src/lockfile.ts"] {
+        for path in [
+            "src/package.jsonish.ts",
+            "docs/build.rs.md",
+            "src/lockfile.ts",
+        ] {
             assert!(hits(&[path], &[]).is_empty(), "{path}");
         }
     }
@@ -973,6 +989,9 @@ mod tests {
         assert!(parse_file_list("filename:src/a.rs\nfilename:src/a.rs\n").is_err());
         assert!(parse_file_list("src/a.rs\nsrc/a.rs\n").is_err());
         // An old name may repeat: it is not a second file.
-        assert!(parse_file_list("filename:src/new.rs\nprevious:src/old.rs\nprevious:src/old.rs\n").is_ok());
+        assert!(
+            parse_file_list("filename:src/new.rs\nprevious:src/old.rs\nprevious:src/old.rs\n")
+                .is_ok()
+        );
     }
 }
