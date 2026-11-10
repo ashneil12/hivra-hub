@@ -15,7 +15,6 @@ export function useWindowGroupFilter<T>(
   rail: GroupFilterRail<T>,
   knownGroupIds: readonly string[],
   groupIdOf: (item: T) => string | undefined,
-  active = true,
 ): {
   decision: GroupFilterDecision<T>;
   enabled: boolean;
@@ -23,7 +22,7 @@ export function useWindowGroupFilter<T>(
   showEvery: () => void;
 } {
   const settingOn = useShowOnlyGroup();
-  const enabled = settingOn && active;
+  const enabled = settingOn;
   const [groupId, setGroupId] = useState<string | null>(null);
   const enabledRef = useRef(enabled);
   enabledRef.current = enabled;
