@@ -4,6 +4,8 @@
 // The routing core is translated: `Host` decides the upstream, an unknown name is a 404, and
 // an upgrade is forwarded in both directions. Hivra's version is plain HTTP/1.1 only (no TLS,
 // no HTTP/2), runs on std::net threads with no new crate, and writes its own small log.
+// WP-139 (portless 0.17.0, packages/portless/src/utils.ts createLoopbackConnection): 127.0.0.1
+// and ::1 are dialed together and the first connection wins.
 
 //! The local proxy: one per app copy, loopback only.
 //!
@@ -304,12 +306,8 @@ fn serve(mut client: TcpStream, store: &RouteStore, log_path: &Path, timeouts: T
     let _ = peer;
     let upstream = match connect_upstream(route.port) {
         Ok(upstream) => upstream,
-        Err(_) => {
-            let _ = respond_error(
-                &mut client,
-                502,
-                "The app named by this address is not answering.\n",
-            );
+        Err(detail) => {
+            let _ = respond_error(&mut client, 502, &detail);
             log(log_path, &hostname, &head.method, 502, started);
             return;
         }
@@ -627,18 +625,79 @@ fn tunnel(client: TcpStream, upstream: TcpStream) -> Option<u16> {
     Some(101)
 }
 
-fn connect_upstream(port: u16) -> Result<TcpStream, ()> {
-    TcpStream::connect_timeout(
-        &SocketAddr::from((Ipv4Addr::LOCALHOST, port)),
-        CONNECT_TIMEOUT,
-    )
-    .or_else(|_| {
-        TcpStream::connect_timeout(
-            &SocketAddr::from((Ipv6Addr::LOCALHOST, port)),
-            CONNECT_TIMEOUT,
-        )
-    })
-    .map_err(|_| ())
+/// Dial `127.0.0.1` and `::1` together. The first connection wins and the other attempt is
+/// dropped, so a stall on one family does not delay the other. Loopback only.
+fn connect_upstream(port: u16) -> Result<TcpStream, String> {
+    race_loopback(port, CONNECT_TIMEOUT, dial_timeout)
+}
+
+fn dial_timeout(addr: SocketAddr, timeout: Duration) -> std::io::Result<TcpStream> {
+    TcpStream::connect_timeout(&addr, timeout)
+}
+
+/// Start both loopback families at once and keep the first `TcpStream`. Each attempt gets
+/// `timeout` of its own; the caller waits about that long, not twice that, because the dials
+/// overlap. Dropping the receiver lets a late attempt discard its socket instead of holding
+/// the request.
+fn race_loopback<F>(port: u16, timeout: Duration, dial: F) -> Result<TcpStream, String>
+where
+    F: Fn(SocketAddr, Duration) -> std::io::Result<TcpStream> + Send + Sync + 'static,
+{
+    let dial = Arc::new(dial);
+    let targets = [
+        SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port),
+        SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), port),
+    ];
+    let (tx, rx) = std::sync::mpsc::channel();
+    for (index, addr) in targets.into_iter().enumerate() {
+        let tx_thread = tx.clone();
+        let dial = Arc::clone(&dial);
+        if let Err(error) = std::thread::Builder::new()
+            .name(format!("hivra-proxy-dial-{index}"))
+            .spawn(move || {
+                let result = dial(addr, timeout);
+                let _ = tx_thread.send((index, result));
+            })
+        {
+            let _ = tx.send((index, Err(error)));
+        }
+    }
+    drop(tx);
+
+    let mut errors: [Option<std::io::Error>; 2] = [None, None];
+    let mut pending = targets.len();
+    let deadline = Instant::now() + timeout + Duration::from_millis(500);
+    while pending > 0 {
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            break;
+        }
+        match rx.recv_timeout(left) {
+            Ok((_index, Ok(stream))) => return Ok(stream),
+            Ok((index, Err(error))) => {
+                if let Some(slot) = errors.get_mut(index) {
+                    *slot = Some(error);
+                }
+                pending -= 1;
+            }
+            Err(_) => break,
+        }
+    }
+    Err(loopback_failure(&errors))
+}
+
+fn loopback_failure(errors: &[Option<std::io::Error>; 2]) -> String {
+    let hosts = ["127.0.0.1", "::1"];
+    let detail = hosts
+        .iter()
+        .zip(errors.iter())
+        .map(|(host, error)| match error {
+            Some(error) => format!("{host} ({error})"),
+            None => format!("{host} (timed out)"),
+        })
+        .collect::<Vec<_>>()
+        .join("; ");
+    format!("The app named by this address is not answering: {detail}.")
 }
 
 fn respond_error(client: &mut TcpStream, status: u16, body: &str) -> std::io::Result<()> {
@@ -702,7 +761,8 @@ fn log(path: &Path, hostname: &str, method: &str, status: u16, started: Instant)
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::sync::Mutex;
 
     struct Guard(std::path::PathBuf);
 
@@ -1180,5 +1240,151 @@ mod tests {
         let line = log_line("shop-one.localhost", "POST", 201, 12);
         assert_eq!(line, "shop-one.localhost POST 201 12ms\n");
         assert_eq!(log_line("", "", 0, 1), "- - - 1ms\n");
+    }
+
+    /// One accept, then the bytes `marker`. `None` when this machine has no IPv6 loopback.
+    fn oneshot(addr: SocketAddr, marker: &'static [u8]) -> Option<u16> {
+        let listener = match TcpListener::bind(addr) {
+            Ok(listener) => listener,
+            Err(error)
+                if addr.ip().is_ipv6()
+                    && matches!(
+                        error.kind(),
+                        std::io::ErrorKind::AddrNotAvailable | std::io::ErrorKind::Unsupported
+                    ) =>
+            {
+                return None;
+            }
+            Err(error) => panic!("could not bind {addr}: {error}"),
+        };
+        let port = listener.local_addr().unwrap().port();
+        let marker = marker.to_vec();
+        std::thread::spawn(move || {
+            let Ok((mut stream, _)) = listener.accept() else {
+                return;
+            };
+            let _ = stream.write_all(&marker);
+        });
+        Some(port)
+    }
+
+    fn read_marker(stream: &mut TcpStream) -> String {
+        stream
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        let mut buf = [0u8; 2];
+        stream.read_exact(&mut buf).unwrap();
+        String::from_utf8(buf.to_vec()).unwrap()
+    }
+
+    #[test]
+    fn a_v4_only_backend_still_answers() {
+        let port = oneshot(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)), b"v4").unwrap();
+        let started = Instant::now();
+        let mut stream = connect_upstream(port).unwrap();
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "v4 dial took {:?}",
+            started.elapsed()
+        );
+        assert!(stream.peer_addr().unwrap().ip().is_ipv4());
+        assert_eq!(read_marker(&mut stream), "v4");
+    }
+
+    #[test]
+    fn a_v6_only_backend_still_answers() {
+        let Some(port) = oneshot(SocketAddr::from((Ipv6Addr::LOCALHOST, 0)), b"v6") else {
+            return;
+        };
+        let started = Instant::now();
+        let mut stream = connect_upstream(port).unwrap();
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "v6 dial waited on v4: {:?}",
+            started.elapsed()
+        );
+        assert!(stream.peer_addr().unwrap().ip().is_ipv6());
+        assert_eq!(read_marker(&mut stream), "v6");
+    }
+
+    #[test]
+    fn a_v6_only_backend_is_reached_while_ipv4_is_still_dialing() {
+        let Some(port) = oneshot(SocketAddr::from((Ipv6Addr::LOCALHOST, 0)), b"v6") else {
+            return;
+        };
+        // A closed v4 port refuses at once, so it cannot stand in for a stall. This dial sleeps
+        // for the whole timeout on 127.0.0.1 and connects for real on ::1.
+        let timeout = Duration::from_millis(1500);
+        let v4_started = Arc::new(AtomicBool::new(false));
+        let flag = Arc::clone(&v4_started);
+        let started = Instant::now();
+        let mut stream = race_loopback(port, timeout, move |addr, per_try| {
+            if addr.ip().is_ipv4() {
+                flag.store(true, Ordering::SeqCst);
+                std::thread::sleep(per_try);
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    "connection timed out",
+                ))
+            } else {
+                TcpStream::connect_timeout(&addr, per_try)
+            }
+        })
+        .expect("v6 backend");
+        let elapsed = started.elapsed();
+        assert!(
+            elapsed < timeout / 2,
+            "v6 waited for the v4 dial ({elapsed:?}, timeout {timeout:?})"
+        );
+        assert!(stream.peer_addr().unwrap().ip().is_ipv6());
+        assert_eq!(read_marker(&mut stream), "v6");
+        let mut saw_v4 = v4_started.load(Ordering::SeqCst);
+        for _ in 0..50 {
+            if saw_v4 {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+            saw_v4 = v4_started.load(Ordering::SeqCst);
+        }
+        assert!(saw_v4, "the v4 dial never started");
+    }
+
+    #[test]
+    fn a_dual_loopback_failure_names_both_addresses() {
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+        let started = Instant::now();
+        let error = connect_upstream(port).unwrap_err();
+        assert!(
+            started.elapsed() < CONNECT_TIMEOUT + Duration::from_secs(2),
+            "the two families were not dialed together: {:?}",
+            started.elapsed()
+        );
+        assert!(error.contains("127.0.0.1"), "{error}");
+        assert!(error.contains("::1"), "{error}");
+        assert!(
+            !error.contains("0.0.0.0") && !error.contains("not answering: ."),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn loopback_dials_try_only_localhost() {
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let log = Arc::clone(&seen);
+        let error = race_loopback(1, Duration::from_millis(200), move |addr, _timeout| {
+            log.lock().expect("dial log").push(addr.ip());
+            Err(std::io::Error::new(
+                std::io::ErrorKind::ConnectionRefused,
+                "closed",
+            ))
+        })
+        .unwrap_err();
+        let ips = seen.lock().expect("dial log").clone();
+        assert_eq!(ips.len(), 2, "{ips:?}");
+        assert!(ips.iter().all(|ip| ip.is_loopback()), "{ips:?}");
+        assert!(error.contains("127.0.0.1"), "{error}");
+        assert!(error.contains("::1"), "{error}");
     }
 }
