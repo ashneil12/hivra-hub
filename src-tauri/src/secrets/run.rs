@@ -128,10 +128,12 @@ fn read_stream(mut stream: impl Read + Send + 'static) -> mpsc::Receiver<std::io
     rx
 }
 
-fn collect(rx: mpsc::Receiver<std::io::Result<Vec<u8>>>, grace: Duration) -> Vec<u8> {
+/// A stream's bytes, or `None` when its reader did not finish within the grace (a child the command left behind still
+/// holds the pipe open). `None` is not an empty stream: the answer says the output could not be read.
+fn collect(rx: mpsc::Receiver<std::io::Result<Vec<u8>>>, grace: Duration) -> Option<Vec<u8>> {
     match rx.recv_timeout(grace) {
-        Ok(Ok(bytes)) => bytes,
-        _ => Vec::new(),
+        Ok(Ok(bytes)) => Some(bytes),
+        _ => None,
     }
 }
 
@@ -217,6 +219,9 @@ fn refuse(message: &str) -> i32 {
     EXIT_REFUSED
 }
 
+/// What the model is told when a stream could not be read in time.
+pub const OUTPUT_UNREAD: &str = "The output could not be read in time.";
+
 /// One run's result, before it is printed.
 #[derive(Debug)]
 pub struct Outcome {
@@ -224,6 +229,27 @@ pub struct Outcome {
     pub stdout: scrub::Scrubbed,
     pub stderr: scrub::Scrubbed,
     pub timed_out: bool,
+    /// A stream could not be read within the grace after the command ended. The command may have printed an answer;
+    /// an empty `stdout` here is not the same as a silent run.
+    pub unread: bool,
+}
+
+impl Outcome {
+    /// The one JSON object `secret-run` prints. The value never appears in it: both streams are scrubbed.
+    pub fn to_json(&self) -> serde_json::Value {
+        let mut out = json!({
+            "exitCode": self.exit_code,
+            "stdout": self.stdout.text,
+            "stderr": self.stderr.text,
+            "timedOut": self.timed_out,
+            "truncated": self.stdout.truncated || self.stderr.truncated,
+            "outputUnread": self.unread,
+        });
+        if self.unread {
+            out["note"] = json!(OUTPUT_UNREAD);
+        }
+        out
+    }
 }
 
 /// Run the command in the grant. The caller has verified the grant and re-read the value; everything here refuses
@@ -232,6 +258,16 @@ pub fn execute(
     payload: &super::grant::Payload,
     value: &str,
     data: &Path,
+) -> Result<Outcome, String> {
+    execute_with_grace(payload, value, data, READER_GRACE)
+}
+
+/// [`execute`] with the time a stream reader is given after the command ends (the tests shorten it).
+pub fn execute_with_grace(
+    payload: &super::grant::Payload,
+    value: &str,
+    data: &Path,
+    grace: Duration,
 ) -> Result<Outcome, String> {
     if payload.command.iter().any(|arg| arg.contains(value)) {
         return Err(
@@ -300,8 +336,11 @@ pub fn execute(
         }
     };
     let duration_ms = started.elapsed().as_millis() as i64;
-    let out = scrub::stream(&collect(stdout, READER_GRACE), &needles);
-    let err = scrub::stream(&collect(stderr, READER_GRACE), &needles);
+    let out_bytes = collect(stdout, grace);
+    let err_bytes = collect(stderr, grace);
+    let unread = out_bytes.is_none() || err_bytes.is_none();
+    let out = scrub::stream(&out_bytes.unwrap_or_default(), &needles);
+    let err = scrub::stream(&err_bytes.unwrap_or_default(), &needles);
     let exit_code = status.and_then(|status| status.code());
     write_run(payload, &executable, exit_code, timed_out, duration_ms);
     let _ = data;
@@ -310,6 +349,7 @@ pub fn execute(
         stdout: out,
         stderr: err,
         timed_out,
+        unread,
     })
 }
 
@@ -350,16 +390,7 @@ pub fn run_main(args: &[String]) -> i32 {
         Ok(outcome) => outcome,
         Err(why) => return refuse(&why),
     };
-    println!(
-        "{}",
-        json!({
-            "exitCode": outcome.exit_code,
-            "stdout": outcome.stdout.text,
-            "stderr": outcome.stderr.text,
-            "timedOut": outcome.timed_out,
-            "truncated": outcome.stdout.truncated || outcome.stderr.truncated,
-        })
-    );
+    println!("{}", outcome.to_json());
     0
 }
 
@@ -566,5 +597,60 @@ mod tests {
         let printed = json!({ "stdout": out.text }).to_string();
         assert!(!printed.contains("sk_live_abcdefgh"));
         assert!(printed.contains(scrub::MARKER));
+    }
+
+    // ---- fix round 1, item J: output that could not be read in time is not a silent run ----------------------------
+
+    fn payload_for(command: &[&str]) -> super::super::grant::Payload {
+        super::super::grant::Payload {
+            scope: "global".into(),
+            name: "stripe-api-key".into(),
+            version: 1,
+            subject: "Tally".into(),
+            env: "STRIPE_API_KEY".into(),
+            command: command.iter().map(|word| word.to_string()).collect(),
+            cwd: None,
+            nonce: "n".into(),
+            expires_at: i64::MAX,
+            timeout_seconds: 30,
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_stream_that_stays_open_after_the_command_exits_is_reported_as_unread() {
+        let data = std::env::temp_dir();
+        // `sh` exits at once, but the `sleep` it started keeps the output pipe open past the reader's grace.
+        let payload = payload_for(&["sh", "-c", "sleep 4 & echo started"]);
+        let outcome = execute_with_grace(
+            &payload,
+            "sk_live_abcdefgh",
+            &data,
+            Duration::from_millis(250),
+        )
+        .unwrap();
+        assert_eq!(outcome.exit_code, Some(0));
+        assert!(
+            outcome.unread,
+            "the answer must say the output was not read"
+        );
+        assert!(!outcome.timed_out);
+        let printed = outcome.to_json();
+        assert_eq!(printed["outputUnread"], true);
+        assert_eq!(printed["note"], "The output could not be read in time.");
+        // A silent run is a different thing: no output, and nothing unread.
+        let silent = execute_with_grace(
+            &payload_for(&["sh", "-c", "exit 0"]),
+            "sk_live_abcdefgh",
+            &data,
+            Duration::from_secs(5),
+        )
+        .unwrap();
+        assert_eq!(silent.exit_code, Some(0));
+        assert!(!silent.unread);
+        let printed = silent.to_json();
+        assert_eq!(printed["outputUnread"], false);
+        assert!(printed.get("note").is_none());
+        assert_eq!(printed["stdout"], "");
     }
 }
