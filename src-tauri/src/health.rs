@@ -1,14 +1,16 @@
 //! WP-104: machine facts for the Settings health list.
 //!
 //! The sentences live in the webview. This only reports what the machine did: git through the app's
-//! existing git command, free space, a read-only `PRAGMA quick_check`, whether the data folder can be
+//! existing git command, free space, a read-only `PRAGMA quick_check` (once per launch), whether the data folder can be
 //! written, whether the plugins folder can be read, the last backup the app recorded, and one tiny
 //! request when a local model is configured. A timeout is reported as a timeout, not as a failure.
 
+use std::collections::HashMap;
 use std::fs::{self, OpenOptions};
 use std::io::{self, Read};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
 use serde::Serialize;
@@ -234,8 +236,41 @@ fn database_state(path: &Path) -> &'static str {
         Err(_) => "unread",
         Ok(meta) if meta.file_type().is_symlink() => "unread",
         Ok(meta) if !meta.is_file() => "problem",
-        Ok(_) => quick_check(path),
+        Ok(_) => quick_checks().state(path, quick_check),
     }
+}
+
+/// `PRAGMA quick_check` reads the whole file, and Settings asks for the health list on every open and every refresh.
+/// It runs once per launch for a file. Only an answer is kept ("ok" or "problem"): a check that couldn't be read
+/// (busy, locked, a moment's I/O error) is not final and is tried again next time. The lock is held while it runs,
+/// so two windows opening Settings together still run it once.
+struct QuickChecks {
+    seen: Mutex<HashMap<PathBuf, &'static str>>,
+}
+
+impl QuickChecks {
+    fn new() -> Self {
+        Self {
+            seen: Mutex::new(HashMap::new()),
+        }
+    }
+
+    fn state(&self, path: &Path, run: impl FnOnce(&Path) -> &'static str) -> &'static str {
+        let mut seen = self.seen.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(&state) = seen.get(path) {
+            return state;
+        }
+        let state = run(path);
+        if matches!(state, "ok" | "problem") {
+            seen.insert(path.to_path_buf(), state);
+        }
+        state
+    }
+}
+
+fn quick_checks() -> &'static QuickChecks {
+    static CHECKS: OnceLock<QuickChecks> = OnceLock::new();
+    CHECKS.get_or_init(QuickChecks::new)
 }
 
 fn quick_check(path: &Path) -> &'static str {
@@ -357,8 +392,6 @@ fn is_timeout(err: &ureq::Error) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
-    use std::sync::Mutex;
 
     struct Fake {
         git: GitFact,
@@ -674,6 +707,103 @@ mod tests {
         conn.execute_batch("CREATE TABLE t (id INTEGER);").unwrap();
         drop(conn);
         assert_eq!(database_state(&db), "ok");
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn the_database_is_checked_once_per_launch_however_often_settings_opens() {
+        let dir = temp();
+        let db = dir.join("monocode.db");
+        let conn = rusqlite::Connection::open(&db).unwrap();
+        conn.execute_batch("CREATE TABLE t (id INTEGER);").unwrap();
+        drop(conn);
+        let checks = QuickChecks::new();
+        let runs = std::sync::atomic::AtomicUsize::new(0);
+        let run = |path: &Path| {
+            runs.fetch_add(1, Ordering::SeqCst);
+            quick_check(path)
+        };
+        for _ in 0..5 {
+            assert_eq!(checks.state(&db, run), "ok");
+        }
+        assert_eq!(runs.load(Ordering::SeqCst), 1);
+        // Another file is its own check.
+        let other = dir.join("other.db");
+        rusqlite::Connection::open(&other).unwrap();
+        assert_eq!(checks.state(&other, run), "ok");
+        assert_eq!(runs.load(Ordering::SeqCst), 2);
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn a_problem_is_remembered_for_the_launch_too() {
+        let checks = QuickChecks::new();
+        let runs = std::sync::atomic::AtomicUsize::new(0);
+        let run = |_: &Path| {
+            runs.fetch_add(1, Ordering::SeqCst);
+            "problem"
+        };
+        let path = Path::new("monocode.db");
+        assert_eq!(checks.state(path, run), "problem");
+        assert_eq!(checks.state(path, run), "problem");
+        assert_eq!(runs.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn a_check_that_could_not_be_read_is_not_final_and_runs_again() {
+        let checks = QuickChecks::new();
+        let answers = Mutex::new(vec!["ok", "unread", "unread"]);
+        let runs = std::sync::atomic::AtomicUsize::new(0);
+        let run = |_: &Path| {
+            runs.fetch_add(1, Ordering::SeqCst);
+            answers.lock().unwrap().pop().unwrap()
+        };
+        let path = Path::new("monocode.db");
+        assert_eq!(checks.state(path, run), "unread");
+        assert_eq!(checks.state(path, run), "unread");
+        assert_eq!(checks.state(path, run), "ok");
+        assert_eq!(checks.state(path, run), "ok");
+        assert_eq!(runs.load(Ordering::SeqCst), 3);
+    }
+
+    #[test]
+    fn two_windows_opening_settings_together_check_once() {
+        let checks = QuickChecks::new();
+        let runs = std::sync::atomic::AtomicUsize::new(0);
+        let run = |_: &Path| {
+            runs.fetch_add(1, Ordering::SeqCst);
+            std::thread::sleep(Duration::from_millis(60));
+            "ok"
+        };
+        std::thread::scope(|scope| {
+            for _ in 0..6 {
+                scope.spawn(|| assert_eq!(checks.state(Path::new("monocode.db"), run), "ok"));
+            }
+        });
+        assert_eq!(runs.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn collect_asks_the_launch_check_not_the_file_every_time() {
+        let dir = temp();
+        let db = dir.join("monocode.db");
+        let conn = rusqlite::Connection::open(&db).unwrap();
+        conn.execute_batch("CREATE TABLE t (id INTEGER);").unwrap();
+        drop(conn);
+        let port = fake(GitFact {
+            state: "missing".into(),
+            version: None,
+        });
+        assert_eq!(
+            collect(&dir, None, Duration::from_millis(1), &port).database,
+            "ok"
+        );
+        // Damage the file after the first look. The same launch does not read it again.
+        fs::write(&db, "this is not a database any more").unwrap();
+        assert_eq!(
+            collect(&dir, None, Duration::from_millis(1), &port).database,
+            "ok"
+        );
         cleanup(&dir);
     }
 
