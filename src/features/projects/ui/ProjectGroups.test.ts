@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-import { act, createElement } from "react";
+import { act, createElement, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { pathKey } from "../../../shared/lib/paths";
@@ -11,6 +11,10 @@ import {
   saveProjectGroups,
 } from "../model/projectGroups";
 import { savePinnedProjects } from "../model/recents";
+import {
+  SHOW_ONLY_GROUP_KEY,
+  saveShowOnlyGroup,
+} from "../../settings/model/displayPrefs";
 import { ProjectRail } from "../../../app/shell/ProjectRail";
 import { useProjectDiffStats } from "../../source-control/hooks/useProjectDiffStats";
 
@@ -56,6 +60,7 @@ async function renderRail(
     { path: "/work/client", openedAt: 1 },
     { path: "/work/personal", openedAt: 2 },
   ],
+  hubItems?: ReactNode,
 ) {
   await act(async () =>
     root.render(
@@ -65,6 +70,7 @@ async function renderRail(
         recents,
         onSelectProject: vi.fn(),
         onOpenProject: vi.fn(),
+        hubItems,
       }),
     ),
   );
@@ -398,5 +404,114 @@ describe("dragging groups of different heights", () => {
     layoutGroups();
     expect(preview).toEqual(tops);
     expect(settled).toEqual(tops);
+  });
+});
+
+describe("show only this group beside the hub list", () => {
+  const recents = [
+    { path: "/work/client", openedAt: 1 },
+    { path: "/work/personal", openedAt: 2 },
+  ];
+
+  function seedGroups() {
+    saveProjectGroups([
+      { id: "clients", name: "Client work", collapsed: false },
+    ]);
+    saveProjectGroupAssignments({ [pathKey("/work/client")]: "clients" });
+  }
+
+  function hubItems() {
+    return createElement("div", { "data-probe-hub-items": "" });
+  }
+
+  it("leaves the hub list alone while the setting is off or unreadable", async () => {
+    seedGroups();
+    localStorage.setItem(SHOW_ONLY_GROUP_KEY, "yes");
+    await renderRail(true, recents, hubItems());
+    expect(container.querySelector("[data-probe-hub-items]")).not.toBeNull();
+    expect(container.querySelector("[data-project-group]")).toBeNull();
+    expect(container.querySelector("[data-show-only-group]")).toBeNull();
+    expect(
+      container.querySelector("[data-group-filter]")?.getAttribute("data-group-filter"),
+    ).toBe("off");
+  });
+
+  it("shows the groups when the setting is on and does not drop the hub list", async () => {
+    seedGroups();
+    saveShowOnlyGroup(true);
+    await renderRail(true, recents, hubItems());
+    expect(container.querySelector("[data-probe-hub-items]")).not.toBeNull();
+    expect(button("Client work, 1 project")).toBeDefined();
+
+    act(() => button("Client work, 1 project").click());
+    expect(button("personal")).toBeDefined();
+    expect(
+      container.querySelector("[data-group-filter]")?.getAttribute("data-group-filter"),
+    ).toBe("off");
+    act(() => button("Client work, 1 project").click());
+    const stored = localStorage.getItem("monocode.projectGroups");
+    const assignments = localStorage.getItem("monocode.projectGroupAssignments");
+    const railOrder = localStorage.getItem("monocode.projectRailOrder");
+    const pinned = localStorage.getItem("monocode.projectRailPinned");
+
+    act(() => button("Show only this group, Client work").click());
+    expect(button("client")).toBeDefined();
+    expect(container.querySelector('button[aria-label="personal"]')).toBeNull();
+    expect(container.querySelector("[data-probe-hub-items]")).not.toBeNull();
+    expect(
+      container.querySelector("[data-group-filter]")?.getAttribute("data-group-filter"),
+    ).toBe("on");
+
+    act(() => button("Show every project").click());
+    expect(button("personal")).toBeDefined();
+    expect(localStorage.getItem("monocode.projectRailOrder")).toBe(railOrder);
+    expect(localStorage.getItem("monocode.projectRailPinned")).toBe(pinned);
+    expect(localStorage.getItem("monocode.projectGroups")).toBe(stored);
+    expect(localStorage.getItem("monocode.projectGroupAssignments")).toBe(assignments);
+    saveShowOnlyGroup(false);
+  });
+
+  it("does not save an order while a group or a pin is hidden", async () => {
+    saveShowOnlyGroup(true);
+    savePinnedProjects(["/work/client", "/work/personal"]);
+    saveProjectGroups([
+      { id: "a", name: "Alpha", collapsed: false },
+      { id: "b", name: "Beta", collapsed: false },
+    ]);
+    saveProjectGroupAssignments({
+      [pathKey("/work/client")]: "a",
+      [pathKey("/work/personal")]: "b",
+    });
+    await renderRail();
+    act(() => button("Show only this group, Alpha").click());
+    expect(container.querySelector('[data-project-group="b"]')).toBeNull();
+    const groups = localStorage.getItem("monocode.projectGroups");
+    const order = localStorage.getItem("monocode.projectRailOrder");
+    vi.mocked(reorderProjectGroups).mockClear();
+
+    const press = (target: Element) => {
+      act(() => {
+        target.dispatchEvent(
+          new PointerEvent("pointerdown", {
+            bubbles: true,
+            button: 0,
+            pointerId: 1,
+            clientX: 20,
+            clientY: 40,
+          }),
+        );
+      });
+    };
+    press(
+      container.querySelector(
+        '[data-project-group="a"] .project-reorder-item',
+      )!,
+    );
+    press(button("client").closest(".project-reorder-item")!);
+
+    expect(reorderProjectGroups).not.toHaveBeenCalled();
+    expect(localStorage.getItem("monocode.projectGroups")).toBe(groups);
+    expect(localStorage.getItem("monocode.projectRailOrder")).toBe(order);
+    saveShowOnlyGroup(false);
   });
 });

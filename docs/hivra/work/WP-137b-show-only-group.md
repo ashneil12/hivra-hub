@@ -12,6 +12,8 @@ A setting, off by default. With it off, the project rail is today's rail. The sa
 
 With the setting on, each project group offers "Show only this group". That is a second action. Selecting a group, or expanding it, does not turn the filter on. The choice belongs to this window. It is not a field on the group, and it is not written into the saved rail order. Closing the window drops it and writes nothing. A restart shows the full rail.
 
+In the hub, the project's own items replace that group list. They stay. The group list is hidden until this setting is on, which is today's rail with the setting off. Turning the setting on shows the groups beside those items, and the filter then hides the other projects. It does not remove the project's items.
+
 While the filter is on, the rail shows that group's projects and no others. A pinned project that is in the group stays in Pinned, in the same pin order. Other projects are not archived, deleted, or moved. "Show every project" brings them back in the same places.
 
 An empty group shows an empty section. It does not pull in other projects. A requested group id that is not in the list is ignored: the full rail stays in its saved order, and the rail says "That group is no longer there." That is not a successful filter.

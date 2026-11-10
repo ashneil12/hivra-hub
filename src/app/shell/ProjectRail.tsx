@@ -17,6 +17,7 @@ import {
 } from "../../shared/ui/icons";
 import { pinnedPages, requestOpenPage, usePagesVersion } from "../../features/pages/model/pages";
 import {
+  useCallback,
   useEffect,
   useLayoutEffect,
   useMemo,
@@ -74,6 +75,14 @@ import {
   updateProjectGroup,
   type ProjectGroup,
 } from "../../features/projects/model/projectGroups";
+import { groupFilterIsEmpty, groupFilterState } from "../../features/projects/model/groupFilter";
+import { useWindowGroupFilter } from "../../features/projects/model/useWindowGroupFilter";
+import {
+  GroupFilterEmpty,
+  GroupFilterNote,
+  ShowEveryProjectButton,
+  ShowOnlyThisGroupButton,
+} from "../../features/projects/ui/GroupFilterRail";
 import type { LiveAgent } from "../../features/sessions/model/liveAgents";
 import { LiveAgentsPreview } from "../../features/sessions/ui/LiveAgentsPreview";
 import { ProjectLogoIcon } from "../../features/projects/ui/ProjectLogoIcon";
@@ -154,6 +163,8 @@ type Props = {
   /**
    * Hub mode: the project strip sits to the left (so the traffic lights sit
    * over it) and these items replace the Pinned, Groups and Projects lists.
+   * WP-137b: while Show only one group is on, those lists stay so a group can
+   * be shown on its own. These items stay either way.
    */
   hubItems?: ReactNode;
 };
@@ -299,6 +310,47 @@ export function ProjectRail({
       })),
     };
   }, [projectGroupAssignments, projectGroups, sections.projects]);
+  // WP-137b: optional per-window group filter. Off keeps today's rail.
+  // The sortable id lists below stay the full rail. Hidden rows are not
+  // mounted, so a drag cannot start and cannot write a partial order.
+  const filedGroups = useMemo(
+    () =>
+      groupedProjectSections.grouped.map(({ group, items }) => ({
+        id: group.id,
+        items,
+      })),
+    [groupedProjectSections],
+  );
+  const groupFilterRail = useMemo(
+    () => ({
+      pinned: sections.pinned,
+      groups: filedGroups,
+      ungrouped: groupedProjectSections.ungrouped,
+    }),
+    [filedGroups, groupedProjectSections.ungrouped, sections.pinned],
+  );
+  const knownGroupIds = useMemo(
+    () => projectGroups.map((group) => group.id),
+    [projectGroups],
+  );
+  const groupIdOf = useCallback(
+    (project: RecentProject) =>
+      projectGroupIdForPath(project.path, projectGroupAssignments),
+    [projectGroupAssignments],
+  );
+  const groupFilter = useWindowGroupFilter(
+    groupFilterRail,
+    knownGroupIds,
+    groupIdOf,
+  );
+  const visibleGrouped = groupFilter.decision.groups.flatMap((entry) => {
+    const match = groupedProjectSections.grouped.find(
+      (row) => row.group.id === entry.id,
+    );
+    if (match) return [{ group: match.group, items: match.items }];
+    const group = projectGroups.find((item) => item.id === entry.id);
+    return group ? [{ group, items: [] as RecentProject[] }] : [];
+  });
   const busy = useMemo(() => {
     const set = new Set<string>();
     for (const path of busyPaths ?? []) set.add(path);
@@ -484,15 +536,17 @@ export function ProjectRail({
               scrollRef.current = el;
             }}
             className="flex min-h-0 flex-1 flex-col overflow-y-auto overscroll-none pb-2"
+            data-group-filter={groupFilterState(groupFilter.decision)}
           >
             {monos ? <MonoRailSection {...monos} /> : null}
 
             {hubItems ? hubItems : null}
-            {hubItems ? null : <>
-            {sections.pinned.length > 0 ? (
+            {/* WP-137b: the hub list replaces these until the setting is on. */}
+            {hubItems && !groupFilter.enabled ? null : <>
+            {(groupFilter.decision.limited ? groupFilter.decision.pinned : sections.pinned).length > 0 ? (
               <ProjectSection
                 label="Pinned"
-                items={sections.pinned}
+                items={groupFilter.decision.limited ? [...groupFilter.decision.pinned] : sections.pinned}
                 muteStatuses={muteStatuses}
                 cwd={cwd}
                 busy={busy}
@@ -512,19 +566,38 @@ export function ProjectRail({
               />
             ) : null}
 
-            {projectGroups.length > 0 ? (
+            {groupFilter.decision.unavailable ? (
+              <div className="px-2">
+                <GroupFilterNote>{groupFilter.decision.unavailable}</GroupFilterNote>
+                <ShowEveryProjectButton onClick={groupFilter.showEvery} />
+              </div>
+            ) : null}
+            {visibleGrouped.length > 0 ? (
               <div className="mb-2 shrink-0">
                 <ProjectSectionHeader
                   label="Groups"
                   onAddGroup={(x, y) => projectMenu.createGroup(x, y)}
                 />
                 <div className="flex flex-col gap-px px-2">
-                  {groupedProjectSections.grouped.map(({ group, items }) => (
+                  {visibleGrouped.map(({ group, items }) => (
                     <ProjectGroupSection
                       key={group.id}
                       group={group}
                       groupSortable={groupSortable}
                       items={items}
+                      groupFilterAction={
+                        groupFilter.enabled
+                          ? groupFilter.decision.limited
+                            ? "clear"
+                            : "show"
+                          : null
+                      }
+                      groupFilterEmpty={
+                        groupFilter.decision.limited &&
+                        groupFilterIsEmpty(groupFilter.decision)
+                      }
+                      onShowOnlyGroup={() => groupFilter.showOnly(group.id)}
+                      onShowEveryProject={groupFilter.showEvery}
                       muteStatuses={muteStatuses}
                       cwd={cwd}
                       busy={busy}
@@ -555,6 +628,7 @@ export function ProjectRail({
               </div>
             ) : null}
 
+            {groupFilter.decision.limited ? null : (
             <ProjectSection
               label="Projects"
               items={groupedProjectSections.ungrouped}
@@ -581,6 +655,7 @@ export function ProjectRail({
               groupLogos={groupLogos}
               groupMascots={groupMascots}
             />
+            )}
             </>}
           </div>
           <LiveAgentsPreview
@@ -773,6 +848,10 @@ function ProjectGroupSection({
   onReorder,
   onToggleCollapsed,
   onOpenGroupMenu,
+  groupFilterAction = null,
+  groupFilterEmpty = false,
+  onShowOnlyGroup,
+  onShowEveryProject,
   groupLabels,
   groupColors,
   groupCustomColors,
@@ -794,6 +873,10 @@ function ProjectGroupSection({
   onReorder: (ids: string[]) => void;
   onToggleCollapsed: () => void;
   onOpenGroupMenu: (x: number, y: number) => void;
+  groupFilterAction?: "show" | "clear" | null;
+  groupFilterEmpty?: boolean;
+  onShowOnlyGroup?: () => void;
+  onShowEveryProject?: () => void;
   groupLabels: Record<string, string>;
   groupColors: Record<string, number>;
   groupCustomColors: Record<string, string>;
@@ -892,6 +975,17 @@ function ProjectGroupSection({
           <MoreHorizontal className="size-4" strokeWidth={1.75} />
         </button>
       </div>
+      {groupFilterAction === "show" && onShowOnlyGroup ? (
+        <ShowOnlyThisGroupButton
+          groupId={group.id}
+          groupName={group.name}
+          onClick={onShowOnlyGroup}
+        />
+      ) : null}
+      {groupFilterAction === "clear" && onShowEveryProject ? (
+        <ShowEveryProjectButton onClick={onShowEveryProject} />
+      ) : null}
+      {groupFilterEmpty ? <GroupFilterEmpty groupId={group.id} /> : null}
       {expanded ? (
         <div data-project-group-items className="flex flex-col gap-px p-1">
           {items.map((item) => (
