@@ -85,6 +85,21 @@ describe("work_log", () => {
     );
   });
 
+  it("a habit run, the morning one included, can neither add nor read, so the log reaches it only through the app", async () => {
+    const habit = fixture("habit");
+    for (const [action, input] of [
+      ["work_log.add", { kind: "outcome", line: "Done: x." }],
+      ["work_log.read", { day: "2026-11-09" }],
+      ["work_log.read", { from: "2026-11-01", to: "2026-11-09", project: "tally" }],
+    ] as const) {
+      await expect(handleAgentApp(habit.source, "r1", action, input, habit.host)).rejects.toThrow(
+        /habit run doesn't write the work log/,
+      );
+    }
+    expect(habit.api.add).not.toHaveBeenCalled();
+    expect(habit.api.read).not.toHaveBeenCalled();
+  });
+
   it("reads one day or a range, and refuses a mix, a backwards range, and a page of days", async () => {
     const { source, host, api } = fixture("team");
     expect(await handleAgentApp(source, "r1", "work_log.read", { day: "2026-11-10" }, host)).toEqual({ lines: [] });

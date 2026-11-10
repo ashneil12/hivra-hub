@@ -13,8 +13,9 @@ import { appendControlEvent } from "./model/controlText";
 import { installCodingTeamDefault } from "../features/hub/model/codingTeamModel";
 import { noteSessionRuns, RUN_HEARTBEAT_MS, setProcessRunSource } from "../features/monos/model/sessionRuns";
 import { noteToolCalls, setRunToolTextSource } from "../features/hub/model/soulTamper";
+import { parksForApproval } from "../features/sessions/model/approvalCarry";
 import { stripHiddenCharacters } from "../features/sessions/model/hiddenText";
-import { waitingOnYouLine } from "../features/sessions/model/approvalWait";
+import { heldLineForSend } from "../features/sessions/model/approvalWait";
 import { listHarnessRuns } from "../integrations/harness/core/child";
 import { OPEN_CONNECTOR_EVENT } from "../features/hub/model/connectors";
 import { OPEN_HUB_EVENT, OPEN_TEAMS_EVENT } from "../features/hub/model/hubTeams";
@@ -129,6 +130,10 @@ import {
   setLeadDelegator,
 } from "../features/hub/model/leadershipDelegation";
 import { bindCouncilApp } from "../features/council/model/seatSessions";
+import { bindFreshEyesApp } from "../features/fresh-eyes/model/bind";
+import { backendFrom, releaseHeld, resumeReviews, syncHeldDecisions } from "../features/fresh-eyes/model/gate";
+import { bindFreshEyesBackend, bindHeldStarter } from "../features/fresh-eyes/model/held";
+import { subscribeFreshEyes } from "../features/fresh-eyes/model/store";
 import { postLeadReport } from "../features/hub/model/roomReports";
 import { useDelegationTree } from "../features/monos/hooks/useDelegationTree";
 import { usePrWatches } from "../features/pr-watch/hooks/usePrWatches";
@@ -8450,6 +8455,18 @@ function Workspace({
       // A repair is not the person's next message, so it leaves the transcript for that message.
       const portableResume =
         pendingSwitch || options?.ciRepair ? undefined : current.portableResume;
+      // WP-146: tell Ash why his message did not go into a turn that waits on his OK (approvalWait.ts).
+      const sayHeld = () => {
+        const heldLine = heldLineForSend(current, options);
+        if (!heldLine) return;
+        setSessions((prev) =>
+          prev.map((s) =>
+            s.id === sessionId
+              ? { ...s, blocks: [...s.blocks, { id: crypto.randomUUID(), role: "system", text: heldLine, notice: "waiting-on-you" } as Block] }
+              : s,
+          ),
+        );
+      };
 
       // A Mono accepts consecutive messages before its provider is connected.
       // The pending head is delivered once ready; later messages cannot overtake it.
@@ -8519,8 +8536,11 @@ function Workspace({
           !canSteerQueuedHead(current) ||
           !canSteerHarness(current.harness) ||
           operatorCommand.matched
-        )
+        ) {
+          // WP-146: Steer on a message held behind an open approval says why it stayed.
+          if (message) sayHeld();
           return false;
+        }
         const gen = turnGen.current.get(sessionId);
         const change = (update: (session: Session) => Session) => {
           const next = sessionsRef.current.map((session) =>
@@ -8596,20 +8616,10 @@ function Workspace({
       }
 
       if (current.busy && !pendingSwitch && !portableResume) {
-        // Ash wrote to a chat held on his OK: it can't read him until he decides, so say so now (S14).
-        const heldLine =
-          !options?.appRequestId && !options?.monoNote && !options?.queuedMessageId && !options?.monoSessionCompletion
-            ? waitingOnYouLine(current.blocks)
-            : null;
-        if (heldLine) {
-          setSessions((prev) =>
-            prev.map((s) =>
-              s.id === sessionId
-                ? { ...s, blocks: [...s.blocks, { id: crypto.randomUUID(), role: "system", text: heldLine, notice: "waiting-on-you" } as Block] }
-                : s,
-            ),
-          );
-        }
+        // Ash wrote to a chat held on his OK: it can't read him until he decides, so say so now (S14). WP-146: the
+        // same when he presses Steer on a message already waiting (it stays queued), and only when the message
+        // really waits (not for the background-tasks branch, which hands it over now).
+        sayHeld();
         if (
           operatorCommand.matched &&
           options?.queuedMessageId &&
@@ -8622,6 +8632,12 @@ function Workspace({
           flushHarnessEvents();
           return false;
         }
+        // WP-146: a message does not go into a turn that is still waiting on approval. The background-tasks
+        // branch keeps precedence: parksForApproval is false when only background work is left.
+        const parkForApproval = parksForApproval(current);
+        // A message already in the queue (its own Steer button) stays where it is, and the line above says why.
+        // This stays ahead of followUpWhenBusy so it is never added to the queue a second time.
+        if (parkForApproval && options?.queuedMessageId) return false;
         // The app is compacting this idle chat in the background (WP-115). Its
         // busy flag is ours, there is no reply to steer into, and a message
         // written now would land inside the compact.
@@ -8633,6 +8649,7 @@ function Workspace({
         const followUpBehavior = followUpWhenBusy({
           setting: options?.followUpBehavior ?? loadFollowUpBehavior(),
           mustWait: !!(
+            parkForApproval ||
             current.worktreePreparing ||
             intent === "plan" ||
             intent === "orchestrate" ||
@@ -10985,6 +11002,29 @@ function Workspace({
           if (session) void submitSessionRef.current(session.id, text, [], { followsUp: true });
         });
       },
+    });
+  }, []);
+  useEffect(() => {
+    // WP-144: fresh-eyes reviewers are cheap sessions with an empty history. Off until a project turns the review on.
+    let folder = "~";
+    void homeDir().then((dir) => {
+      if (dir.trim()) folder = dir;
+    });
+    return bindFreshEyesApp({
+      sessions: () => sessionsRef.current,
+      add: (session) => {
+        sessionsRef.current = [...sessionsRef.current, session];
+        setSessions(sessionsRef.current);
+      },
+      submit: (sessionId, text, _history, options) => submitSessionRef.current(sessionId, text, [], options),
+      stop: (sessionId) => {
+        void onStopRef.current(sessionId, true);
+      },
+      remove: (sessionId) => {
+        sessionsRef.current = sessionsRef.current.filter((session) => session.id !== sessionId);
+        setSessions(sessionsRef.current);
+      },
+      cwd: () => folder,
     });
   }, []);
   const roomsHost = useRoomRunner({
@@ -13590,6 +13630,59 @@ function Workspace({
       window.clearTimeout(timer);
     };
   }, [pumpWorkersNow]);
+  // WP-144: a brief held for a fresh-eyes review starts when the person approves or skips it. It is the same
+  // tasks.delegate call asked again under the same request ID, with the call that was reviewed, the way a waiting
+  // worker starts, so the checks, the worker limits and the waiting line all apply. The brief is kept with the review
+  // (in the app's database), so a restart does not lose it.
+  const steeringRef = useRef(steering);
+  steeringRef.current = steering;
+  useEffect(() => {
+    const unbind = bindHeldStarter({
+      canStart: (owner) =>
+        !!controlRequestRef.current && sessionsRef.current.some((session) => session.id === owner),
+      start: (owner, requestId, input) => {
+        // Its first ask answered "waiting" and that answer is remembered; this one starts it.
+        appReceipts.current.delete(`${owner}:${requestId}`);
+        return controlRequestRef.current!({
+          namespace: "app",
+          sessionId: owner,
+          requestId,
+          action: "tasks.delegate",
+          input,
+        });
+      },
+    });
+    // The Inbox and the chat that asked, for the review: the question, its close, the person's answer, a note to the chat.
+    const unbindBackend = bindFreshEyesBackend(backendFrom(steeringRef.current.backend));
+    const release = () => void releaseHeld();
+    const off = subscribeFreshEyes(release);
+    // What was left half done by the last run: reviewers that died with the window run again (or the person is asked),
+    // and an approved brief starts. Again every half minute, for a start that failed and for a lease that ran out.
+    const resume = () => {
+      void resumeReviews();
+      release();
+    };
+    resume();
+    const timer = window.setInterval(resume, 30_000);
+    // An answer given in the Inbox or Home reaches the review the same way a click on the crew card does. Only the
+    // person's own answer counts (gate.ts isPersonAnswer): a chat answering ask_person for them does not.
+    const offDecisions = watchDecisions(
+      (event, handler) => listen(event, () => handler()),
+      () => void syncHeldDecisions(),
+    );
+    return () => {
+      window.clearInterval(timer);
+      offDecisions();
+      off();
+      unbindBackend();
+      unbind();
+    };
+  }, []);
+  // A chat opened after a restart can take the brief it asked for.
+  const openChatIds = useMemo(() => sessions.map((session) => session.id).join("\n"), [sessions]);
+  useEffect(() => {
+    void releaseHeld();
+  }, [openChatIds]);
   // A worker the provider refused for its limit keeps its task (H8): with no other account to move to (E5), it
   // carries on by itself, once per refusal. A refusal that named no reset gets E5's (heldRetryAt): the latest usage
   // reading's, else five hours on; a fresh reading that shows room brings the retry forward.
@@ -14702,6 +14795,13 @@ function Workspace({
                     ...(launch.cliFallback ? { cliFallback: launch.cliFallback } : {}),
                   }),
               }),
+              // The Lead a brief names must exist: asked before a fresh-eyes review, so an unknown one is never reviewed.
+              checkLead: (_owner, mono, lead) => {
+                if (!findLeadTarget(mono.id, hubData().listProjects(), lead))
+                  throw new Error(
+                    `No Lead "${lead}" among the ones you can brief (a Lead of a project you and it are both members of).`,
+                  );
+              },
               briefLead: async (owner, mono, input) => {
                 const projects = hubData().listProjects();
                 const target = findLeadTarget(mono.id, projects, input.lead);

@@ -74,6 +74,10 @@ mod jira;
 mod jsonc;
 mod land;
 mod launch_guard;
+// WP-104: daily log and crash records.
+mod diagnostics;
+// WP-104: machine facts for the health list.
+mod health;
 mod linear;
 mod link_preview;
 mod live_turns;
@@ -389,6 +393,8 @@ pub fn run() {
     }
     // Rule 3, then one app per data folder: the lock is held until this process ends.
     let claim = instance::claim(&identity, &version);
+    // WP-104: daily log and crash records, before the rest of startup.
+    diagnostics::install(&claim.data_dir, &version);
     // Before the database opens: finish whatever a ship's runner left (a trial, a restore), or call it off
     // (src/ship.rs). May exit.
     let boot = ship::startup(&identity, &claim.data_dir);
@@ -660,6 +666,9 @@ pub fn run() {
             watcher::watcher_timer_cancel,
             watcher::watcher_timers,
             watcher::watcher_tick,
+            // WP-104: a check waits on a safe command, then one wake.
+            watcher::watcher_check_set,
+            watcher::watcher_check_cancel,
             // Hivra WP-13: crew rules, routing and reroute.
             crew::crew_rules_get,
             crew::crew_rules_set,
@@ -1228,6 +1237,11 @@ pub fn run() {
             outside::outside_approve,
             outside::outside_deny,
             outside::outside_pick_new_port,
+            // WP-104: the logs folder, and the lines the copy action masks.
+            diagnostics::diagnostics_folder,
+            diagnostics::diagnostics_sources,
+            // WP-104: machine facts for the health list.
+            health::health_facts,
         ])
         .build(context)
         .expect("error while building MonoCode");

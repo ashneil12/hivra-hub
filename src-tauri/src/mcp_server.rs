@@ -509,6 +509,22 @@ fn tools() -> Value {
         "type": "boolean",
         "description": "True when the job changes code: it always gets the diff and checks gates."
     });
+    // WP-144: the short reading list a fresh-eyes review sees with the plan. Added here, like gates, so the
+    // literal above stays under json!'s recursion limit.
+    tools[0]["inputSchema"]["properties"]["reading"] = json!({
+        "type": "array",
+        "maxItems": 8,
+        "description": "Optional short reading list. Each entry is a path and its text. Paths that leave the list are dropped.",
+        "items": {
+            "type": "object",
+            "properties": {
+                "path": { "type": "string" },
+                "text": { "type": "string" }
+            },
+            "required": ["path", "text"],
+            "additionalProperties": false
+        }
+    });
     if let Value::Array(list) = &mut tools {
         let after_answer = list
             .iter()
@@ -635,7 +651,7 @@ fn steering_tools() -> Vec<Value> {
     ]
 }
 
-const DELEGATE_APP_FIELDS: [&str; 19] = [
+const DELEGATE_APP_FIELDS: [&str; 20] = [
     "intent",
     "brief",
     "title",
@@ -655,6 +671,7 @@ const DELEGATE_APP_FIELDS: [&str; 19] = [
     "gates",
     "checks",
     "code",
+    "reading",
 ];
 
 /// The tools that make things with Ash (a room, a Mono, a Page, a change to the hub, a lesson for a skill): each is one
@@ -2089,6 +2106,32 @@ mod tests {
                 "checks": ["lint"],
                 "code": true,
             })
+        );
+    }
+
+    /// WP-144: a fresh-eyes reading list is part of the brief the app keeps. It is not an unknown field.
+    #[test]
+    fn reading_is_forwarded_with_the_brief() {
+        let clock = Arc::new(FakeClock::default());
+        let app = FakeApp::new(clock, |_, _, _| {
+            Ok(json!({ "taskId": "t-1", "childSessionId": "app-mono-r", "status": "running" }))
+        });
+        let (outcome, _) = run_tool(
+            &app,
+            "delegate_task",
+            json!({
+                "brief": "Fix the save bug",
+                "reading": [{ "path": "src/note.ts", "text": "save()" }],
+                "clientRequestId": "r-read",
+            }),
+        );
+        assert!(outcome.is_ok(), "{outcome:?}");
+        let calls = app.calls.lock().unwrap();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].0, "tasks.delegate");
+        assert_eq!(
+            calls[0].1["reading"],
+            json!([{ "path": "src/note.ts", "text": "save()" }])
         );
     }
 

@@ -3108,11 +3108,17 @@ fn which_via_login_shell(name: &str) -> Option<PathBuf> {
 }
 
 pub(crate) fn which_in_path(path: &str, name: &str) -> Option<PathBuf> {
+    which_in_path_as(path, name, cfg!(windows))
+}
+
+/// `which_in_path` as a machine of the given kind answers it. The app asks as the machine it runs on; a test passes
+/// `windows: true` to prove the Windows answers (a bare `npm` is `npm.cmd`, `cargo` is `cargo.exe`) on any machine.
+pub(crate) fn which_in_path_as(path: &str, name: &str, windows: bool) -> Option<PathBuf> {
     std::env::split_paths(std::ffi::OsStr::new(path)).find_map(|dir| {
         if dir.as_os_str().is_empty() {
             return None;
         }
-        existing_binary(dir.join(name))
+        existing_binary_as(dir.join(name), windows)
     })
 }
 
@@ -3131,16 +3137,19 @@ fn first_binary_matching(
 }
 
 fn existing_binary(path: PathBuf) -> Option<PathBuf> {
-    #[cfg(windows)]
-    if path.extension().is_none() {
+    existing_binary_as(path, cfg!(windows))
+}
+
+fn existing_binary_as(path: PathBuf, windows: bool) -> Option<PathBuf> {
+    if windows && path.extension().is_none() {
         for ext in ["exe", "cmd", "bat", "com"] {
             let candidate = path.with_extension(ext);
-            if is_executable_file(&candidate) {
+            if is_executable_file_as(&candidate, windows) {
                 return Some(candidate);
             }
         }
     }
-    is_executable_file(&path).then_some(path)
+    is_executable_file_as(&path, windows).then_some(path)
 }
 
 #[cfg(all(test, windows))]
@@ -3194,26 +3203,26 @@ fn path_has_component(path: &Path, needle: &str) -> bool {
     })
 }
 
-fn is_executable_file(path: &Path) -> bool {
+/// Unix runs a file that has an execute bit; Windows runs one named like a program. `windows` picks which rule.
+fn is_executable_file_as(path: &Path, windows: bool) -> bool {
     #[cfg(unix)]
-    {
+    if !windows {
         use std::os::unix::fs::PermissionsExt;
-        std::fs::metadata(path)
+        return std::fs::metadata(path)
             .map(|meta| meta.is_file() && meta.permissions().mode() & 0o111 != 0)
-            .unwrap_or(false)
+            .unwrap_or(false);
     }
     #[cfg(not(unix))]
-    {
-        path.is_file()
-            && path
-                .extension()
-                .and_then(|ext| ext.to_str())
-                .is_some_and(|ext| {
-                    ["exe", "cmd", "bat", "com"]
-                        .iter()
-                        .any(|allowed| ext.eq_ignore_ascii_case(allowed))
-                })
-    }
+    let _ = windows;
+    path.is_file()
+        && path
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .is_some_and(|ext| {
+                ["exe", "cmd", "bat", "com"]
+                    .iter()
+                    .any(|allowed| ext.eq_ignore_ascii_case(allowed))
+            })
 }
 
 /// Resolve `name` the way a terminal would, then fall back to common install
