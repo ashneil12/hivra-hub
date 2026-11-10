@@ -1869,7 +1869,6 @@ function noteBilledCeiling(live: Live, metrics: { costUsd?: number } | undefined
     model: live.target?.model,
     harness: "claude",
     metrics: metrics ?? null,
-    unattended: live.threadId.startsWith("app-"),
   });
   if (verdict.ask && verdict.reason.trim()) {
     live.onEvent({ type: "status", text: verdict.reason.trim() });

@@ -4,7 +4,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { HarnessEvent } from "../../core/types";
 import {
-  ceilingHold,
+  taskCeilingNote,
   resetSpendGate,
   saveSpendLimit,
   saveTaskCeiling,
@@ -119,7 +119,7 @@ describe("a billed Claude turn and its ceiling", () => {
     expect(first.events.some((event) => event.type === "status" && event.text.includes("Continue?"))).toBe(true);
     expect(first.events.some((event) => event.type === "session.error")).toBe(false);
     expect(interrupted()).toBe(false);
-    expect(ceilingHold("ceiling-chat")).toBeUndefined();
+    expect(taskCeilingNote("/repo", "ceiling-chat")?.held ?? "").toBe("");
 
     const second = await startTurn("ceiling-chat", BILLED);
     report(0.9);
@@ -135,7 +135,7 @@ describe("a billed Claude turn and its ceiling", () => {
     await turn;
     const error = events.find((event) => event.type === "session.error");
     expect(error && error.type === "session.error" ? error.message : "").toContain("Task ceiling reached");
-    expect(ceilingHold("ceiling-chat")).toContain("Task ceiling reached");
+    expect(taskCeilingNote("/repo", "ceiling-chat")?.held).toContain("Task ceiling reached");
     await waitFor(() => interrupted(), "interrupt");
   });
 
@@ -161,7 +161,7 @@ describe("a billed Claude turn and its ceiling", () => {
     await limited.turn;
     expect(limited.events.some((event) => event.type === "session.error")).toBe(false);
     expect(interrupted()).toBe(false);
-    expect(ceilingHold("plain-chat")).toBeUndefined();
+    expect(taskCeilingNote("/repo", "plain-chat")?.held ?? "").toBe("");
   });
 
   it("stops an unattended run at the daily ceiling and lets an attended one pass", async () => {

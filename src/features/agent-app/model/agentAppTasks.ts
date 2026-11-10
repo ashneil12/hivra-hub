@@ -1728,12 +1728,16 @@ function modelCaller(source: Session, host: AgentAppHost) {
   return mono;
 }
 
-/** WP-176: the same chat may set a spend limit. A worker, a habit run and the checker may not. */
+/**
+ * WP-176: a first mate's own chat may set a spend limit, and the gate decides what it may do: a first limit or a lower
+ * one only. Raising or clearing needs the person's tap in Settings. The whole-app limit is Settings only. A habit run,
+ * a worker and the checker may not write at all.
+ */
 function spendCaller(source: Session, host: AgentAppHost) {
   const mono =
     host.isMono(source.id) && !host.isHabitRun?.(source.id) ? host.monoOf?.(source.id) : undefined;
   if (!mono || mono.id === CHECKER_MONO_ID)
-    throw new Error("Only a Mono sets a spend limit, from its own chat.");
+    throw new Error("Only a first mate sets a spend limit, from its own chat.");
   return mono;
 }
 
@@ -1858,17 +1862,19 @@ async function workers(source: Session, input: Record<string, unknown>, host: Ag
     const period = input.period === "day" || input.period === "month" ? input.period : null;
     if (!period) throw new Error('period must be "day" or "month".');
     if (input.spendClear !== undefined && input.spendClear !== true) throw new Error("spendClear must be true");
-    const scope = input.scope === "system" ? "app" : "project";
-    if (scope === "project" && !worksOn(spendMono.projects, folder, project))
+    if (input.scope === "system")
+      throw new Error("The whole-app spend limit is set in Settings.");
+    const scope = "project";
+    if (!worksOn(spendMono.projects, folder, project))
       throw new Error("This Mono doesn't work on that project.");
-    const who = scope === "app" ? "" : project;
-    const label = scope === "app" ? "the whole app" : project;
+    const who = project;
+    const label = project;
     const here = spendSnapshot().book;
     if (input.spendClear === true) {
       const exists = here.limits.some((row) => row.scope === scope && row.project === who && row.period === period);
       if (exists) {
-        const dropped = clearSpendLimit(scope, who, period, here.revision);
-        if (!dropped.written) throw new Error("That change didn't stick. Try again.");
+        const dropped = clearSpendLimit(scope, who, period, here.revision, { by: "first-mate" });
+        if (!dropped.written) throw new Error(dropped.reason ?? "That change didn't stick. Try again.");
       }
       spendNote = `Spend limit cleared for ${label}.`;
     } else {
@@ -1885,8 +1891,8 @@ async function workers(source: Session, input: Record<string, unknown>, host: Ag
         warnAt,
       });
       if (!clean) throw new Error("amountUsd must be a positive number.");
-      const saved = saveSpendLimit(clean, spendSnapshot().book.revision);
-      if (!saved.written) throw new Error("That change didn't stick. Try again.");
+      const saved = saveSpendLimit(clean, spendSnapshot().book.revision, { by: "first-mate" });
+      if (!saved.written) throw new Error(saved.reason ?? "That change didn't stick. Try again.");
       const when = clean.period === "day" ? "today" : "this month";
       spendNote = `Spend limit for ${label} is ${formatMeasuredUsd(clean.amountUsd)} ${when}.`;
     }

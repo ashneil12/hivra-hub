@@ -1,4 +1,5 @@
 import { HARNESSES, type HarnessId } from "../../sessions/model/session";
+import { MICRO, toMicro } from "./money";
 
 /**
  * WP-176. Whether a finished turn from this CLI carries `costUsd`.
@@ -22,9 +23,6 @@ export const CLI_REPORTS_MEASURED_COST: Record<HarnessId, boolean> = {
   antigravity: false,
   devin: false,
 };
-
-/** The only name a limit uses for this figure. Never "your bill". */
-export const MEASURED_COST_LABEL = "measured cost";
 
 export function cliReportsCost(harness: string | undefined | null): boolean {
   if (typeof harness !== "string") return false;
@@ -52,10 +50,12 @@ function hasCounts(row: Record<string, unknown>): boolean {
  * when the turn has counts, and empty when it reported nothing. It is never $0
  * unless the CLI itself reported 0.
  */
-export function readTurnPrice(metrics: unknown): TurnPrice {
+export function readTurnPrice(metrics: unknown, opts: { billed?: boolean } = {}): TurnPrice {
   if (!metrics || typeof metrics !== "object" || Array.isArray(metrics)) return { kind: "empty" };
   const row = metrics as Record<string, unknown>;
   const cost = usableCost(row.costUsd);
+  // A custom model's router reports $0 when it has no price for the model. That is not a price, so it is unpriced.
+  if (cost !== undefined && cost === 0 && opts.billed === true) return { kind: "unpriced" };
   if (cost !== undefined) return { kind: "priced", usd: cost };
   if (hasCounts(row) || "costUsd" in row) return { kind: "unpriced" };
   return { kind: "empty" };
@@ -67,11 +67,6 @@ export type ReportedTotal = {
   unpricedTurns: number;
 };
 
-function micro(usd: number): number | undefined {
-  if (!Number.isFinite(usd) || usd < 0) return undefined;
-  const scaled = Math.round(usd * 1_000_000);
-  return Number.isSafeInteger(scaled) ? scaled : undefined;
-}
 
 /** Sum reported prices. An unpriced or non-finite row is counted apart, never added as $0. */
 export function addReportedCost(rows: readonly TurnPrice[]): ReportedTotal {
@@ -84,7 +79,7 @@ export function addReportedCost(rows: readonly TurnPrice[]): ReportedTotal {
       unpricedTurns += 1;
       continue;
     }
-    const part = micro(row.usd);
+    const part = toMicro(row.usd);
     if (part === undefined) {
       unpricedTurns += 1;
       continue;
@@ -93,5 +88,5 @@ export function addReportedCost(rows: readonly TurnPrice[]): ReportedTotal {
     micros = Number.isSafeInteger(next) ? next : Number.MAX_SAFE_INTEGER;
     pricedTurns += 1;
   }
-  return { measuredUsd: micros / 1_000_000, pricedTurns, unpricedTurns };
+  return { measuredUsd: micros / MICRO, pricedTurns, unpricedTurns };
 }

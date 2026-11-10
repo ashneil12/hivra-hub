@@ -1233,6 +1233,7 @@ import {
   setQuitWorkspace,
   type ResumedWorkspace,
 } from "./model/appLifecycle";
+import { wireSpendGate } from "../features/usage/model/spendWiring";
 
 const SearchView = lazySurface(
   async () => {
@@ -1496,6 +1497,9 @@ function leadCodingTeam(monoId: string): HubProject | undefined {
         .find((project) => project.id === lead.projectId && !!project.folder)
     : undefined;
 }
+
+// WP-176: the spend gate reads the hub ids and the Mono and habit registries. Wired once, at module load.
+wireSpendGate();
 
 export default function App(props: AppProps) {
   return (

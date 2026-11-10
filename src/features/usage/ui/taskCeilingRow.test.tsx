@@ -93,7 +93,7 @@ describe("task ceiling on the row", () => {
     quiet.unmount();
   });
 
-  it("a project's rules can tighten its ceiling, and cannot raise or clear one already set", () => {
+  it("a project's rules set its task ceiling exactly: a higher number raises it, and a blank one clears only that", () => {
     expect(ceilingForProject("/work/crew")).toBeNull();
     applyProjectRuleCeiling("/work/crew", null);
     expect(ceilingForProject("/work/crew")).toBeNull();
@@ -103,17 +103,17 @@ describe("task ceiling on the row", () => {
 
     saveTaskCeiling("/work/crew", { hardUsd: 10, dailyUsd: 4, softAt: 0.5 }, spendSnapshot().book.revision);
     applyProjectRuleCeiling("/work/crew", 25);
-    expect(ceilingForProject("/work/crew")).toEqual({ hardUsd: 10, dailyUsd: 4, softAt: 0.5 });
+    expect(ceilingForProject("/work/crew")).toEqual({ hardUsd: 25, dailyUsd: 4, softAt: 0.5 });
+    expect(taskCeilingNote("/work/crew", "app-night")?.line).toBe("Task ceiling $25. Unattended runs stop at $4 today.");
 
     applyProjectRuleCeiling("/work/crew", 6);
     expect(ceilingForProject("/work/crew")).toEqual({ hardUsd: 6, dailyUsd: 4, softAt: 0.5 });
 
     applyProjectRuleCeiling("/work/crew", null);
-    applyProjectRuleCeiling("/work/crew", 0);
-    expect(ceilingForProject("/work/crew")).toEqual({ hardUsd: 6, dailyUsd: 4, softAt: 0.5 });
+    expect(ceilingForProject("/work/crew")).toEqual({ dailyUsd: 4 });
 
     applyProjectRuleCeiling("/work/other", 3);
-    expect(ceilingForProject("/work/crew")?.hardUsd).toBe(6);
+    expect(ceilingForProject("/work/crew")).toEqual({ dailyUsd: 4 });
     expect(ceilingForProject("/work/other")).toEqual({ hardUsd: 3, softAt: 0.8 });
     applyProjectRuleCeiling("", 2);
     applyProjectRuleCeiling("/", 2);

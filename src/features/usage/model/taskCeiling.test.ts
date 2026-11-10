@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { ceilingDecision, holdTaskForCeiling, refuseUnapprovedBilled, sanitizeTaskCeiling } from "./taskCeiling";
+import { ceilingDecision, sanitizeTaskCeiling } from "./taskCeiling";
 import { periodSpend } from "./spend";
 import type { UsageSession } from "./history";
 
@@ -67,11 +67,6 @@ describe("per-task ceiling", () => {
     expect(hard.status).toBe("stop");
     expect(hard.stopRun).toBe(true);
     expect(hard.reason).toContain("$10");
-    const held = holdTaskForCeiling({ id: "t1", needsYou: false, activity: [] }, hard.reason);
-    expect(held.needsYou).toBe(true);
-    expect(held.activity.map((row) => row.text)).toEqual([hard.reason]);
-    const twice = holdTaskForCeiling(held, hard.reason);
-    expect(twice.activity).toHaveLength(1);
   });
 
   it("resets the daily unattended total at local midnight", () => {
@@ -92,9 +87,9 @@ describe("per-task ceiling", () => {
     const before = periodSpend([rows[0] && { ...rows[0], blocks: rows[0].blocks.slice(0, 1) }].filter(Boolean) as UsageSession[], {
       now: night,
       period: "day",
-      scope: "app",
+      match: () => true,
     });
-    const after = periodSpend(rows, { now: morning, period: "day", scope: "app" });
+    const after = periodSpend(rows, { now: morning, period: "day", match: () => true });
     expect(before.measuredUsd).toBeCloseTo(3, 6);
     expect(after.measuredUsd).toBeCloseTo(0.5, 6);
     const stopped = ceilingDecision({
@@ -136,21 +131,6 @@ describe("per-task ceiling", () => {
       continued: false,
     });
     expect(attended.stopRun).toBe(false);
-  });
-
-  it("does not move a task onto a billed model unless the person said yes", () => {
-    const held = refuseUnapprovedBilled({ action: "reroute", to: "custom:paid", billed: true, personOk: false });
-    expect(held.action).toBe("first-mate");
-    expect(held.to).toBeUndefined();
-    expect(refuseUnapprovedBilled({ action: "reroute", to: "custom:paid", billed: true, personOk: undefined }).action).toBe("first-mate");
-    expect(refuseUnapprovedBilled({ action: "reroute", to: "custom:paid", billed: true, personOk: true })).toMatchObject({
-      action: "reroute",
-      to: "custom:paid",
-    });
-    expect(refuseUnapprovedBilled({ action: "reroute", to: "codex", billed: false, personOk: false })).toMatchObject({
-      action: "reroute",
-      to: "codex",
-    });
   });
 });
 

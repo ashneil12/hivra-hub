@@ -4,7 +4,7 @@ import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { UsageSession } from "../model/history";
-import { resetSpendGate, saveSpendLimit, setSpendClock, setSpendSessions } from "../model/spendGate";
+import { resetSpendGate, saveSpendLimit, setSpendClock, setSpendProjectLookup, setSpendSessions } from "../model/spendGate";
 import { SpendLimitLine } from "./SpendLimitLine";
 
 const month = Date.parse("2026-11-10T15:00:00");
@@ -13,7 +13,7 @@ function sessions(costUsd: number): UsageSession[] {
   return [
     {
       id: "chat",
-      cwd: "/work/hivra",
+      cwd: "/work/monocode-hub",
       harness: "claude",
       model: "opus",
       blocks: [{ id: "t1", role: "user", startedAt: month, turnMetrics: { costUsd, inputTokens: 10 } }],
@@ -29,6 +29,10 @@ beforeEach(() => {
   localStorage.clear();
   resetSpendGate();
   setSpendClock(() => month);
+  setSpendProjectLookup({
+    idOf: (folder) => (folder === "/work/monocode-hub" ? "hivra" : undefined),
+    folderOf: (id) => (id === "hivra" ? "/work/monocode-hub" : undefined),
+  });
   setSpendSessions([]);
   container = document.createElement("div");
   document.body.append(container);

@@ -900,7 +900,8 @@ export function builderHold(): BuilderHoldNeed | null {
 /** WP-176: one Needs you line when a queued builder is over a spend limit. Running work is not in this. */
 export function spendHold(): { id: "builders-spend"; text: string; action: typeof RAISE_LIMIT } | null {
   for (const job of queuedWorkers()) {
-    const spend = judgeLaunch({ project: job.project, harness: job.harness, ownerSession: job.ownerSession });
+    // Read for the screen, so it sends no warning: a render must not wake a first mate.
+    const spend = judgeLaunch({ project: job.project, harness: job.harness, ownerSession: job.ownerSession, warn: false });
     if (spend.status === "over" && spend.reason.trim()) {
       return { id: "builders-spend", text: spend.reason.trim(), action: RAISE_LIMIT };
     }

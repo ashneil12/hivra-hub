@@ -1,4 +1,5 @@
 import { isCli, isEffort } from "./clis";
+import { dollarsOrBad, parseDollars } from "../../usage/model/money";
 
 /** One ordered rule. A plugin's rules sit under the person's and are not editable here. */
 export type CrewRule = {
@@ -26,8 +27,6 @@ const MAX_RULES = 40;
 const MAX_ITEMS = 32;
 const MAX_ITEM = 200;
 const MAX_MODEL = 200;
-const MAX_CEILING_USD = 1_000_000_000;
-const MICRO = 1_000_000;
 
 /** Split on `/` and `\\`, drop empty and `.`, and refuse `..` so a rule can't point outside. */
 export function pathSegments(path: string): string[] | null {
@@ -71,18 +70,10 @@ function cleanModel(value: string | undefined): string | undefined {
 
 /** A blank ceiling is off. Anything else is a positive dollar amount, or refused. */
 export function parseCeilingUsd(text: string): number | null | "bad" {
-  const trimmed = text.replace(/\r\n/g, "").trim();
-  if (!trimmed) return null;
-  if (!/^\d+(\.\d+)?$/.test(trimmed)) return "bad";
-  return ceilingUsd(Number(trimmed));
+  return parseDollars(text);
 }
 
-function ceilingUsd(value: number): number | "bad" {
-  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0 || value > MAX_CEILING_USD) return "bad";
-  const micros = Math.round(value * MICRO);
-  if (!Number.isSafeInteger(micros) || micros <= 0) return "bad";
-  return micros / MICRO;
-}
+const ceilingUsd = dollarsOrBad;
 
 /** A stored or imported rule is untrusted. A broken one is dropped, not thrown. */
 export function sanitizeRule(value: unknown, source: CrewRule["source"]): CrewRule | null {

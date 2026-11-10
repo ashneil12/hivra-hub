@@ -26,7 +26,7 @@ import {
   setSpendSessions,
   setSpendWarnSink,
   spendSnapshot,
-  continueTask,
+  setSpendProjectLookup,
 } from "../../usage/model/spendGate";
 import type { UsageSession } from "../../usage/model/history";
 
@@ -59,7 +59,7 @@ const job = (id: string): QueuedWorker => ({
   input: { brief: id },
 });
 
-function sessions(costUsd: number, cwd = "/work/hivra"): UsageSession[] {
+function sessions(costUsd: number, cwd = "/work/monocode-hub"): UsageSession[] {
   return [
     {
       id: "chat",
@@ -76,6 +76,10 @@ beforeEach(() => {
   resetWorkerPool();
   resetSpendGate();
   setSpendClock(() => month);
+  setSpendProjectLookup({
+    idOf: (folder) => (folder === "/work/monocode-hub" ? "hivra" : undefined),
+    folderOf: (id) => (id === "hivra" ? "/work/monocode-hub" : undefined),
+  });
   setBuilderHealth({ freeDiskGb: 100, freeMemoryGb: 16, load1: 1, cores: 8, readAt: month, now: month });
 });
 
@@ -129,9 +133,13 @@ describe("a spend limit at the launch gate", () => {
     expect(nextWorkers({ rows: [], room }).map((row) => row.id)).toEqual(["app-lead-chat-q1"]);
   });
 
-  it("starts a CLI that reports no cost, and says the limit cannot count it", () => {
+  it("a CLI that reports no cost is refused once the limit is over, and says the limit cannot count it under it", () => {
+    // MEDIUM 8: switching to a CLI with no cost does not get round a limit that is already reached.
     setSpendSessions(sessions(80));
     saveSpendLimit({ scope: "project", project: "hivra", period: "month", amountUsd: 10, warnAt: 0.8 }, 0);
+    const refused = admitWorker({ ...ask, harness: "codex" }, { rows: [], room });
+    expect(refused).toMatchObject({ start: false, reason: "spend" });
+    setSpendSessions(sessions(1));
     const started = admitWorker({ ...ask, harness: "codex" }, { rows: [], room });
     expect(started).toEqual({
       start: true,
@@ -214,7 +222,7 @@ describe("a per-task ceiling at the end of a billed turn", () => {
     setSpendSessions([]);
     const first = reviewReportedTurn({
       sessionId: "custom-run",
-      cwd: "/work/hivra",
+      cwd: "/work/monocode-hub",
       model: "custom:missing",
       harness: "claude",
       metrics: { costUsd: 0.6, inputTokens: 3 },
@@ -224,7 +232,7 @@ describe("a per-task ceiling at the end of a billed turn", () => {
     expect(first.stopRun).toBe(false);
     const second = reviewReportedTurn({
       sessionId: "custom-run",
-      cwd: "/work/hivra",
+      cwd: "/work/monocode-hub",
       model: "custom:missing",
       harness: "claude",
       metrics: { costUsd: 0.5, inputTokens: 3 },
@@ -232,10 +240,9 @@ describe("a per-task ceiling at the end of a billed turn", () => {
     });
     expect(second.stopRun).toBe(true);
     expect(second.reason).toContain("Task ceiling reached");
-    continueTask("custom-run");
     const subscription = reviewReportedTurn({
       sessionId: "sub",
-      cwd: "/work/hivra",
+      cwd: "/work/monocode-hub",
       model: "opus",
       harness: "claude",
       metrics: { costUsd: 9, inputTokens: 3 },
@@ -244,7 +251,7 @@ describe("a per-task ceiling at the end of a billed turn", () => {
     setSpendClock(() => nextMonth);
     const tomorrow = reviewReportedTurn({
       sessionId: "custom-next",
-      cwd: "/work/hivra",
+      cwd: "/work/monocode-hub",
       model: "custom:missing",
       harness: "claude",
       metrics: { costUsd: 0.2, inputTokens: 1 },

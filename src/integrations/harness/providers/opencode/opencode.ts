@@ -1509,7 +1509,6 @@ function noteOpenCodeCeiling(live: Live): void {
     model: live.model,
     harness: "opencode",
     metrics: cost == null ? null : { costUsd: cost },
-    unattended: live.threadId.startsWith("app-"),
   });
   if (verdict.ask && verdict.reason.trim()) {
     live.onEvent({ type: "status", text: verdict.reason.trim() });

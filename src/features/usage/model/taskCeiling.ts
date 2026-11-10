@@ -2,10 +2,12 @@
  * WP-176. A spend ceiling for one run on a model its provider bills per token.
  * Off unless the person sets one. The soft share asks once. The hard cap stops
  * that run only. A project or app limit never uses this stop.
+ *
+ * A hold is not stored anywhere. The task's total is summed from the usage rows, so a
+ * run past its cap stays held after a restart until the person raises the ceiling.
  */
 
-const MICRO = 1_000_000;
-const MAX_AMOUNT_USD = 1_000_000_000;
+import { formatUsd, MAX_USD, MICRO, toMicro } from "./money";
 
 export type TaskCeiling = {
   hardUsd?: number;
@@ -37,16 +39,11 @@ const UNSET: CeilingVerdict = { status: "unset", reason: "", stopRun: false, ask
 const OK: CeilingVerdict = { status: "ok", reason: "", stopRun: false, ask: false };
 
 function money(usd: number): number | undefined {
-  if (typeof usd !== "number" || !Number.isFinite(usd) || usd <= 0 || usd > MAX_AMOUNT_USD) return undefined;
-  const scaled = Math.round(usd * MICRO);
-  return Number.isSafeInteger(scaled) ? scaled : undefined;
+  if (typeof usd !== "number" || !Number.isFinite(usd) || usd <= 0 || usd > MAX_USD) return undefined;
+  return toMicro(usd);
 }
 
-function dollars(micros: number): string {
-  const cents = Math.round(micros / 10_000);
-  if (cents % 100 === 0) return `$${cents / 100}`;
-  return `$${(cents / 100).toFixed(2)}`;
-}
+const dollars = (micros: number): string => formatUsd(micros / MICRO);
 
 /** A broken ceiling is dropped. Omitted fields stay off. */
 export function sanitizeTaskCeiling(raw: unknown): TaskCeiling | null {
@@ -68,14 +65,8 @@ export function sanitizeTaskCeiling(raw: unknown): TaskCeiling | null {
   };
 }
 
-function measured(usd: number): number | undefined {
-  if (typeof usd !== "number" || !Number.isFinite(usd) || usd < 0) return undefined;
-  const scaled = Math.round(usd * MICRO);
-  return Number.isSafeInteger(scaled) ? scaled : undefined;
-}
-
 /**
- * Checked at the end of a turn, from the cost the CLI reported. The turn that
+ * Judged at the end of a turn, and again before the next turn starts, from the cost the CLI reported. The turn that
  * crosses the cap has already run, so the total can overshoot by that turn.
  */
 export function ceilingDecision(input: CeilingInput): CeilingVerdict {
@@ -90,8 +81,8 @@ export function ceilingDecision(input: CeilingInput): CeilingVerdict {
       ask: false,
     };
   }
-  const task = measured(input.taskMeasuredUsd);
-  const daily = measured(input.dailyMeasuredUsd);
+  const task = toMicro(input.taskMeasuredUsd);
+  const daily = toMicro(input.dailyMeasuredUsd);
   if (task === undefined || (input.unattended && ceiling.dailyUsd != null && daily === undefined)) {
     return {
       status: "stop",
@@ -128,35 +119,4 @@ export function ceilingDecision(input: CeilingInput): CeilingVerdict {
     };
   }
   return OK;
-}
-
-/** Hold the task for the person and record the reason once. Other fields stay. */
-export function holdTaskForCeiling<T extends { needsYou: boolean; activity: { id: string; text: string }[] }>(
-  task: T,
-  reason: string,
-): T {
-  const text = reason.replace(/\r\n/g, " ").replace(/[\r\n]/g, " ").trim();
-  if (!text) return { ...task, needsYou: true };
-  if (task.activity.some((row) => row.text === text)) return { ...task, needsYou: true };
-  return {
-    ...task,
-    needsYou: true,
-    activity: [...task.activity, { id: `ceiling:${task.activity.length + 1}`, text }],
-  };
-}
-
-/**
- * A reroute onto a billed model needs the person's OK, and the OK has to be
- * exactly true. Anything else leaves the task with the first mate.
- */
-export function refuseUnapprovedBilled(input: {
-  action: string;
-  to?: string;
-  billed: boolean;
-  personOk: boolean | undefined;
-}): { action: string; to?: string; reason: string } {
-  if (input.action === "reroute" && input.billed && input.personOk !== true) {
-    return { action: "first-mate", reason: "A billed model needs your OK before this task moves." };
-  }
-  return { action: input.action, ...(input.to ? { to: input.to } : {}), reason: "" };
 }

@@ -1,6 +1,6 @@
-import { pathKey } from "../../../shared/lib/paths";
 import { dayKey, type UsageSession } from "./history";
 import { addReportedCost, readTurnPrice } from "./cliCost";
+import { formatUsd, MAX_USD, MICRO, toMicro } from "./money";
 
 /**
  * WP-176. A dollar limit for one project or the whole app, for a local day or a calendar month.
@@ -13,15 +13,13 @@ export const SPEND_LIMITS_KEY = "monocode.spendLimits.v1";
 export const DEFAULT_WARN_AT = 0.8;
 const WARN_MIN = 0.5;
 const WARN_MAX = 1;
-const MAX_AMOUNT_USD = 1_000_000_000;
-const MICRO = 1_000_000;
 
 export type SpendScope = "project" | "app";
 export type SpendPeriod = "day" | "month";
 
 export type SpendLimit = {
   scope: SpendScope;
-  /** Empty for the whole app. Otherwise the project id or folder the person named. */
+  /** Empty for the whole app. Otherwise the project key (its hub id). */
   project: string;
   period: SpendPeriod;
   amountUsd: number;
@@ -37,6 +35,7 @@ export type SpendReading = {
   measuredUsd: number;
   pricedTurns: number;
   unpricedTurns: number;
+  /** Whether the CLI that is about to run reports a cost at all. Set by the caller, never by the total. */
   reportsCost: boolean;
   /** The usage rows could not be read. Not a final failure: the next check tries again. */
   unreadable?: boolean;
@@ -49,17 +48,6 @@ export type SpendVerdict = {
   reason: string;
 };
 
-export type SpendBand = {
-  id: "task" | "daily" | "project" | "app";
-  label: string;
-  period: SpendPeriod;
-  amountUsd: number;
-  warnAt: number;
-  reading: SpendReading;
-  /** True only for the per-task hard cap. A project or app limit never stops a running builder. */
-  stopsRun: boolean;
-};
-
 const UNSET: SpendVerdict = { status: "unset", reason: "" };
 const OK: SpendVerdict = { status: "ok", reason: "" };
 
@@ -69,12 +57,6 @@ export function emptyBook(): SpendBook {
 
 function finite(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
-}
-
-function micro(usd: number): number | undefined {
-  if (!Number.isFinite(usd) || usd < 0) return undefined;
-  const scaled = Math.round(usd * MICRO);
-  return Number.isSafeInteger(scaled) ? scaled : undefined;
 }
 
 function cleanProject(value: unknown): string | null {
@@ -91,8 +73,8 @@ export function sanitizeSpendLimit(raw: unknown): SpendLimit | null {
   if (row.scope !== "project" && row.scope !== "app") return null;
   if (row.period !== "day" && row.period !== "month") return null;
   const amount = finite(row.amountUsd);
-  const amountMicro = amount === undefined ? undefined : micro(amount);
-  if (amount === undefined || amount <= 0 || amountMicro === undefined || amount > MAX_AMOUNT_USD) return null;
+  const amountMicro = amount === undefined ? undefined : toMicro(amount);
+  if (amount === undefined || amount <= 0 || amountMicro === undefined || amount > MAX_USD) return null;
   const warn = row.warnAt === undefined ? DEFAULT_WARN_AT : finite(row.warnAt);
   if (warn === undefined || warn < WARN_MIN || warn > WARN_MAX) return null;
   const project = row.scope === "app" ? "" : cleanProject(row.project);
@@ -100,7 +82,7 @@ export function sanitizeSpendLimit(raw: unknown): SpendLimit | null {
   return { scope: row.scope, project, period: row.period, amountUsd: amountMicro / MICRO, warnAt: warn };
 }
 
-function sameLimit(a: Pick<SpendLimit, "scope" | "project" | "period">, b: Pick<SpendLimit, "scope" | "project" | "period">): boolean {
+export function sameLimit(a: Pick<SpendLimit, "scope" | "project" | "period">, b: Pick<SpendLimit, "scope" | "project" | "period">): boolean {
   return a.scope === b.scope && a.project === b.project && a.period === b.period;
 }
 
@@ -177,23 +159,21 @@ export function importSpendLimits(here: SpendBook, incoming: unknown): SpendBook
   return book;
 }
 
-export function formatMeasuredUsd(usd: number): string {
-  const cents = micro(usd);
-  if (cents === undefined) return "";
-  const whole = Math.round(cents / 10_000);
-  if (whole % 100 === 0) return `$${whole / 100}`;
-  return `$${(whole / 100).toFixed(2)}`;
-}
-
-function subject(limit: SpendLimit): string {
-  return limit.scope === "app" ? "the whole app" : limit.project;
-}
+export const formatMeasuredUsd = formatUsd;
 
 function periodWords(period: SpendPeriod): { spent: string; reset: string } {
   return period === "day" ? { spent: "today", reset: "the day" } : { spent: "this month", reset: "the month" };
 }
 
-/** Whole dollars without cents, otherwise two decimals. */
+/** The subject a reason names: the project's key, or the whole app. */
+export function subjectOf(limit: Pick<SpendLimit, "scope" | "project">): string {
+  return limit.scope === "app" ? "the whole app" : limit.project;
+}
+
+/**
+ * One limit against one reading. Over and warn are judged from the measured total first. A reading that has turns
+ * with no price says so, and never reads as a clean total.
+ */
 export function spendAllowed(spent: SpendReading | null | undefined, limit: SpendLimit | null | undefined): SpendVerdict {
   if (!limit) return UNSET;
   const clean = sanitizeSpendLimit(limit);
@@ -201,56 +181,62 @@ export function spendAllowed(spent: SpendReading | null | undefined, limit: Spen
   if (!spent || spent.unreadable || !Number.isFinite(spent.measuredUsd) || spent.measuredUsd < 0) {
     return {
       status: "over",
-      reason: `Spend for ${subject(clean)} could not be read. New builders wait until it can.`,
+      reason: `Spend for ${subjectOf(clean)} could not be read. New builders wait until it can.`,
     };
   }
-  if (!spent.reportsCost || (spent.pricedTurns === 0 && spent.unpricedTurns > 0)) {
-    return { status: "unmeasured", reason: "This CLI reports no cost, so this limit cannot count its work." };
-  }
-  const measured = micro(spent.measuredUsd) ?? 0;
-  const cap = micro(clean.amountUsd) ?? 0;
-  const warnAt = micro(clean.amountUsd * clean.warnAt) ?? cap;
+  const measured = toMicro(spent.measuredUsd) ?? 0;
+  const cap = toMicro(clean.amountUsd) ?? 0;
+  const warnAt = toMicro(clean.amountUsd * clean.warnAt) ?? cap;
   const words = periodWords(clean.period);
   if (measured >= cap) {
     return {
       status: "over",
-      reason: `Spend limit reached for ${subject(clean)}: ${formatMeasuredUsd(spent.measuredUsd)} of ${formatMeasuredUsd(clean.amountUsd)} ${words.spent}. Raise it, or wait for ${words.reset} to reset.`,
+      reason: `Spend limit reached for ${subjectOf(clean)}: ${formatUsd(spent.measuredUsd)} of ${formatUsd(clean.amountUsd)} ${words.spent}. Raise it, or wait for ${words.reset} to reset.`,
     };
   }
   if (measured >= warnAt) {
     return {
       status: "warn",
-      reason: `Measured cost for ${subject(clean)} is ${formatMeasuredUsd(spent.measuredUsd)} of ${formatMeasuredUsd(clean.amountUsd)} ${words.spent}.`,
+      reason: `Measured cost for ${subjectOf(clean)} is ${formatUsd(spent.measuredUsd)} of ${formatUsd(clean.amountUsd)} ${words.spent}.`,
     };
   }
-  // Priced turns under the cap still leave some work uncounted. Say so, never pass it as a clean total.
+  if (!spent.reportsCost) {
+    return { status: "unmeasured", reason: "This CLI reports no cost, so this limit cannot count its work." };
+  }
   if (spent.unpricedTurns > 0) {
     const turns = spent.unpricedTurns === 1 ? "1 turn" : `${spent.unpricedTurns} turns`;
     return {
       status: "unmeasured",
-      reason: `Measured cost for ${subject(clean)} is ${formatMeasuredUsd(spent.measuredUsd)} of ${formatMeasuredUsd(clean.amountUsd)} ${words.spent}. ${turns} reported no cost, so they are not counted.`,
+      reason: `Measured cost for ${subjectOf(clean)} is ${formatUsd(spent.measuredUsd)} of ${formatUsd(clean.amountUsd)} ${words.spent}. ${turns} reported no cost, so they are not counted.`,
     };
   }
   return OK;
 }
 
-export function spendStatusLine(spent: SpendReading, limit: SpendLimit, _label?: string): string {
+export function spendStatusLine(spent: SpendReading, limit: SpendLimit): string {
   const verdict = spendAllowed(spent, limit);
   if (verdict.status === "unmeasured") return verdict.reason;
   if (verdict.status === "unset") return "";
   const clean = sanitizeSpendLimit(limit);
   if (!clean) return "";
   const words = periodWords(clean.period);
-  const cap = micro(clean.amountUsd) ?? 0;
-  const measured = micro(spent.measuredUsd) ?? 0;
+  const cap = toMicro(clean.amountUsd) ?? 0;
+  const measured = toMicro(spent.measuredUsd) ?? 0;
   const percent = cap > 0 ? Math.round((measured / cap) * 100) : 0;
-  return `Spent ${formatMeasuredUsd(spent.measuredUsd)} of ${formatMeasuredUsd(clean.amountUsd)} ${words.spent} (${percent}%). New builders pause at ${formatMeasuredUsd(clean.amountUsd)}.`;
+  return `Spent ${formatUsd(spent.measuredUsd)} of ${formatUsd(clean.amountUsd)} ${words.spent} (${percent}%). New builders pause at ${formatUsd(clean.amountUsd)}.`;
 }
 
 export function periodId(period: SpendPeriod, now: number): string {
   const day = dayKey(now);
   if (!day) return "";
   return period === "day" ? day : day.slice(0, 7);
+}
+
+export function inPeriod(at: number, now: number, period: SpendPeriod): boolean {
+  const day = dayKey(at);
+  const today = dayKey(now);
+  if (!day || !today) return false;
+  return period === "day" ? day === today : day.slice(0, 7) === today.slice(0, 7);
 }
 
 export function warnKey(limit: SpendLimit, now: number): string {
@@ -282,12 +268,7 @@ export async function warnOnce(input: {
   if (!key || warned.has(key)) return false;
   const text = `Measured cost for ${input.label} has crossed the warning share (${periodId(input.limit.period, input.now)}).`;
   try {
-    const result = await input.sink.wake({
-      ownerSession: input.ownerSession,
-      kind: "spend.warn",
-      key,
-      text,
-    });
+    const result = await input.sink.wake({ ownerSession: input.ownerSession, kind: "spend.warn", key, text });
     if (!result?.fresh) {
       warned.add(key);
       return false;
@@ -305,48 +286,29 @@ export async function warnOnce(input: {
   }
 }
 
-/** A project id matches its folder, and a folder matches itself. `want` is already a path key. */
-function projectMatches(cwd: string, want: string): boolean {
-  if (!want) return false;
-  const have = pathKey(cwd);
-  if (have === want) return true;
-  const base = have.split("/").filter(Boolean).pop() ?? "";
-  const wantBase = want.split("/").filter(Boolean).pop() ?? "";
-  return base.length > 0 && (base === want || base === wantBase);
-}
-
-function inPeriod(at: number, now: number, period: SpendPeriod): boolean {
-  const day = dayKey(at);
-  const today = dayKey(now);
-  if (!day || !today) return false;
-  return period === "day" ? day === today : day.slice(0, 7) === today.slice(0, 7);
-}
-
 /**
- * The period total, summed from usage rows. There is no counter to reset.
- * Empty session ids are not folded together, so two unnamed chats are both counted.
+ * The period total, summed from usage rows. There is no counter to reset. `match` says whether a row's folder is the
+ * limit's project, and `billed` says whether a turn's model is billed per token (a turn that reports $0 from such a
+ * model is unpriced, never a $0 price). Empty session ids are not folded together.
  */
 export function periodSpend(
   sessions: readonly UsageSession[] | null | undefined,
-  opts: { now: number; period: SpendPeriod; scope: SpendScope; project?: string },
-): SpendReading {
+  opts: { now: number; period: SpendPeriod; match: (cwd: string) => boolean; billed?: (model: string | undefined) => boolean },
+): Omit<SpendReading, "reportsCost"> {
   if (sessions == null || !Number.isFinite(opts.now)) {
-    return { measuredUsd: 0, pricedTurns: 0, unpricedTurns: 0, reportsCost: true, unreadable: true };
+    return { measuredUsd: 0, pricedTurns: 0, unpricedTurns: 0, unreadable: true };
   }
-  const want = opts.scope === "project" ? pathKey(opts.project ?? "") : "";
   const seenSessions = new Set<string>();
   const seenBlocks = new Set<string>();
   const prices: ReturnType<typeof readTurnPrice>[] = [];
-  for (const session of sessions ?? []) {
+  for (const session of sessions) {
     if (!session || typeof session !== "object") continue;
     const sessionId = typeof session.id === "string" ? session.id : "";
     if (sessionId && seenSessions.has(sessionId)) continue;
     if (sessionId) seenSessions.add(sessionId);
     const cwd = typeof session.cwd === "string" ? session.cwd : "";
-    if (opts.scope === "project" && !projectMatches(cwd, want)) continue;
-    let index = 0;
+    if (!opts.match(cwd)) continue;
     for (const block of session.blocks ?? []) {
-      index += 1;
       if (!block || block.role !== "user" || !block.turnMetrics) continue;
       const blockId = typeof block.id === "string" ? block.id : "";
       if (sessionId && blockId) {
@@ -358,50 +320,9 @@ export function periodSpend(
       if (stamp == null || !Number.isFinite(stamp)) continue;
       const at = Math.min(stamp, opts.now);
       if (!inPeriod(at, opts.now, opts.period)) continue;
-      prices.push(readTurnPrice(block.turnMetrics));
+      const model = block.turnModel?.name ?? session.model;
+      prices.push(readTurnPrice(block.turnMetrics, { billed: opts.billed?.(model) === true }));
     }
   }
-  const total = addReportedCost(prices);
-  return { ...total, reportsCost: true };
-}
-
-function headroom(band: SpendBand): number {
-  if (band.reading.unreadable || !Number.isFinite(band.reading.measuredUsd) || band.reading.measuredUsd < 0) {
-    return Number.NEGATIVE_INFINITY;
-  }
-  const cap = micro(band.amountUsd);
-  const spent = micro(band.reading.measuredUsd);
-  if (cap === undefined || spent === undefined) return Number.NEGATIVE_INFINITY;
-  return cap - spent;
-}
-
-const BAND_RANK: Record<SpendBand["id"], number> = { task: 0, daily: 1, project: 2, app: 3 };
-
-/** The band with the least room left is checked first. A tie keeps the narrower one. */
-export function strictest(bands: readonly SpendBand[]): { band?: SpendBand; verdict: SpendVerdict } {
-  const on = bands.filter((band) => sanitizeSpendLimit({
-    scope: band.id === "app" ? "app" : "project",
-    project: band.id === "app" ? "" : band.label || "limit",
-    period: band.period,
-    amountUsd: band.amountUsd,
-    warnAt: band.warnAt,
-  }));
-  if (!on.length) return { verdict: UNSET };
-  const ranked = [...on].sort((a, b) => headroom(a) - headroom(b) || BAND_RANK[a.id] - BAND_RANK[b.id]);
-  const judged = ranked.map((band) => ({
-    band,
-    verdict: spendAllowed(band.reading, {
-      scope: band.id === "app" ? "app" : "project",
-      project: band.id === "app" ? "" : band.label,
-      period: band.period,
-      amountUsd: band.amountUsd,
-      warnAt: band.warnAt,
-    }),
-  }));
-  return (
-    judged.find((row) => row.verdict.status === "over") ??
-    judged.find((row) => row.verdict.status === "warn") ??
-    judged.find((row) => row.verdict.status === "unmeasured") ??
-    judged.find((row) => row.verdict.status === "ok") ?? { verdict: UNSET }
-  );
+  return addReportedCost(prices);
 }

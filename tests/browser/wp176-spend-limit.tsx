@@ -13,24 +13,27 @@ import {
   type QueuedWorker,
 } from "../../src/features/monos/model/workerPool";
 import { setSpendClock, setSpendSessions } from "../../src/features/usage/model/spendGate";
+import { wireSpendGate } from "../../src/features/usage/model/spendWiring";
 import { SpendLimitLine } from "../../src/features/usage/ui/SpendLimitLine";
 import "../../src/styles/index.css";
 import { installFakeTauri } from "./fakeTauri";
 
 const now = Date.parse("2026-11-10T15:00:00");
-const projects = [{ id: "crew", name: "Crew", shortName: "Crew", iconShape: "folder" as const, folder: "/work/crew" }];
+// The hub id (hivra) is not the folder name, so a limit that matches only by folder or only by id fails here.
+const projects = [{ id: "hivra", name: "Hivra", shortName: "Hivra", iconShape: "folder" as const, folder: "/work/monocode-hub" }];
 
 const base = hubData();
 const src = Object.create(base) as HubDataSource;
 src.listProjects = () => projects;
 setHubDataSource(src);
-setHubSelection({ project: "crew", item: "home" });
+setHubSelection({ project: "hivra", item: "home" });
+wireSpendGate();
 
 setSpendClock(() => now);
 setSpendSessions([
   {
     id: "chat",
-    cwd: "/work/crew",
+    cwd: "/work/monocode-hub",
     harness: "claude",
     model: "opus",
     blocks: [{ id: "t1", role: "user", startedAt: now, turnMetrics: { costUsd: 50, inputTokens: 10 } }],
@@ -66,8 +69,8 @@ document.getElementById("launch")!.addEventListener("click", () => {
       id,
       ownerSession: "lead",
       requestId: id,
-      project: "crew",
-      projectName: "Crew",
+      project: "hivra",
+      projectName: "Hivra",
       title: id,
       heavy: false,
       harness: "claude",
@@ -106,4 +109,4 @@ setHomeOpener((target) => {
 });
 
 createRoot(document.getElementById("shell")!).render(<HomeView />);
-createRoot(document.getElementById("limit")!).render(<SpendLimitLine project="crew" indexed />);
+createRoot(document.getElementById("limit")!).render(<SpendLimitLine project="hivra" indexed />);

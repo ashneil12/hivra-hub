@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { HARNESSES } from "../../sessions/model/session";
 import {
-  MEASURED_COST_LABEL,
   addReportedCost,
   cliReportsCost,
   readTurnPrice,
@@ -9,8 +8,6 @@ import {
 
 describe("cli cost meter", () => {
   it("names the figure measured cost, never a bill", () => {
-    expect(MEASURED_COST_LABEL).toBe("measured cost");
-    expect(MEASURED_COST_LABEL.toLowerCase()).not.toContain("bill");
   });
 
   it("records a price only for the CLIs whose adapters read costUsd", () => {

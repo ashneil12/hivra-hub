@@ -20,7 +20,7 @@ test("a spend limit shows its line, holds a new builder, and lets it start once 
   await page.locator("#launch").click();
   await expect(page.locator("body")).toHaveAttribute("data-admission", "spend");
   const line = page.locator("[data-home-section='needs-you'] [data-home-line='builders']");
-  await expect(line).toContainText("Spend limit reached for crew: $50 of $50 this month.");
+  await expect(line).toContainText("Spend limit reached for hivra: $50 of $50 this month.");
   await expect(line.getByRole("button", { name: "Raise limit" })).toBeVisible();
   expect(await line.innerText()).not.toMatch(/[—–]/);
 

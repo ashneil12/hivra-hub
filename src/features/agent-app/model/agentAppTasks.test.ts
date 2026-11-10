@@ -2373,16 +2373,34 @@ describe("parallel workers per project, with throttling (H8)", () => {
       ]);
       expect(saved.line).toContain("Spend limit for vg-game is $50 this month.");
       expect(saved.line).toContain("runs up to");
+      // A first mate may lower its limit, and may not raise, clear or set the whole-app one (Settings only).
+      await expect(
+        handleAgentApp(source, "raise", "tasks.workers", { scope: "project", amountUsd: 900, period: "month" }, host),
+      ).rejects.toThrow("Raising a spend limit needs your tap in Settings.");
+      await expect(
+        handleAgentApp(source, "clear", "tasks.workers", { scope: "project", spendClear: true, period: "month" }, host),
+      ).rejects.toThrow("Clearing a spend limit needs your tap in Settings.");
+      await expect(
+        handleAgentApp(source, "system", "tasks.workers", { scope: "system", amountUsd: 10, period: "month" }, host),
+      ).rejects.toThrow("The whole-app spend limit is set in Settings.");
+      const lowered = (await handleAgentApp(
+        source,
+        "lower",
+        "tasks.workers",
+        { scope: "project", amountUsd: 20, period: "month" },
+        host,
+      )) as { line: string };
+      expect(lowered.line).toContain("Spend limit for vg-game is $20 this month.");
       for (const who of ["worker", "habit"] as const) {
         const refused = lead(who);
         await expect(
           handleAgentApp(refused.source, who, "tasks.workers", { scope: "project", amountUsd: 10, period: "month" }, refused.host),
-        ).rejects.toThrow("Only a Mono sets a spend limit, from its own chat.");
+        ).rejects.toThrow("Only a first mate sets a spend limit, from its own chat.");
       }
       const checker = lead("checker");
       await expect(
         handleAgentApp(checker.source, "checker", "tasks.workers", { scope: "project", amountUsd: 10, period: "month" }, checker.host),
-      ).rejects.toThrow(/checker only reads|Only a Mono sets a spend limit/);
+      ).rejects.toThrow(/checker only reads|Only a first mate sets a spend limit/);
       await expect(
         handleAgentApp(source, "mono", "tasks.workers", { scope: "mono", amountUsd: 10, period: "month" }, host),
       ).rejects.toThrow("not one Mono");
@@ -2407,17 +2425,10 @@ describe("parallel workers per project, with throttling (H8)", () => {
       )) as { spend: unknown; line: string };
       expect(cleared.spend).toBeNull();
       expect(cleared.line).toContain("Spend limit cleared for vg-game.");
-      const everywhere = (await handleAgentApp(
-        source,
-        "app",
-        "tasks.workers",
-        { scope: "system", amountUsd: 5, period: "day" },
-        host,
-      )) as { spend: { scope: string; project: string; period: string; amountUsd: number }[]; line: string };
-      expect(everywhere.spend).toEqual([
-        expect.objectContaining({ scope: "app", project: "", period: "day", amountUsd: 5, warnAt: 0.8 }),
-      ]);
-      expect(everywhere.line).toContain("Spend limit for the whole app is $5 today.");
+      // The whole-app limit is Settings only: a first mate's chat is refused, and the limit stays as it was.
+      await expect(
+        handleAgentApp(source, "app", "tasks.workers", { scope: "system", amountUsd: 5, period: "day" }, host),
+      ).rejects.toThrow("The whole-app spend limit is set in Settings.");
     });
 
     it("posts a card with the previous setting, and a line in the activity log", async () => {

@@ -43,15 +43,6 @@ function toRow(rule: ShownRule): Row {
   };
 }
 
-function ceilingsOf(rows: readonly Row[]): number | null {
-  const made: CrewRule[] = [];
-  for (const row of rows) {
-    const rule = draftRule(row);
-    if (typeof rule !== "string") made.push(rule);
-  }
-  return taskCeilingFromRules(made);
-}
-
 function ruleText(rule: ShownRule): string {
   const match = rule.labels.length > 0 ? rule.labels.join(", ") : rule.paths.join(", ");
   const pick = [rule.cli ? cliLabel(rule.cli) : "", rule.model ?? "", rule.effort ?? ""].filter(Boolean).join(", ");
@@ -100,8 +91,6 @@ export function CrewRulesPage({ cwd, initial }: Props) {
     const nextRows = Array.isArray(got.rules) ? got.rules.map(toRow) : [];
     setRows(nextRows);
     setRevision(typeof got.revision === "number" ? got.revision : 0);
-    // WP-176: a project's rules can tighten its task ceiling. They cannot raise or clear one.
-    if (scopeNow.current === "project") applyProjectRuleCeiling(cwdNow.current ?? "", ceilingsOf(nextRows));
   }
 
   useEffect(() => {
@@ -227,6 +216,7 @@ export function CrewRulesPage({ cwd, initial }: Props) {
       <BuilderScaleControls showSharedMax />
       {/* WP-176: the measured-cost limit for this project. A running builder is not stopped. */}
       <SpendLimitLine project={cwd ?? ""} indexed />
+      <SpendLimitLine project="" scope="app" />
       <div className="flex gap-2" role="group" aria-label="Where these rules apply">
         <button
           type="button"

@@ -14,7 +14,6 @@ import {
   sanitizeSpendLimit,
   spendAllowed,
   spendStatusLine,
-  strictest,
   warnKey,
   warnOnce,
 } from "./spend";
@@ -192,38 +191,36 @@ describe("spend limits", () => {
         blocks: [{ id: "8", role: "user", startedAt: Date.parse("2026-10-31T23:00:00"), turnMetrics: { costUsd: 30, inputTokens: 1 } }],
       },
     ];
-    const november = periodSpend(sessions, { now: month, period: "month", scope: "project", project: "/work/hivra" });
+    const november = periodSpend(sessions, { now: month, period: "month", match: (cwd: string) => cwd === "/work/hivra" });
     expect(november.measuredUsd).toBeCloseTo(2, 6);
     expect(november.unpricedTurns).toBe(1);
     expect(november.pricedTurns).toBe(3);
     const nextMonth = periodSpend(sessions, {
       now: Date.parse("2026-12-01T00:00:00"),
       period: "month",
-      scope: "project",
-      project: "/work/hivra",
+      match: (cwd: string) => cwd === "/work/hivra",
     });
     expect(nextMonth.measuredUsd).toBe(0);
     expect(nextMonth.pricedTurns).toBe(0);
-    const today = periodSpend(sessions, { now: month, period: "day", scope: "project", project: "/work/hivra" });
+    const today = periodSpend(sessions, { now: month, period: "day", match: (cwd: string) => cwd === "/work/hivra" });
     const tomorrow = periodSpend(sessions, {
       now: Date.parse("2026-11-11T00:05:00"),
       period: "day",
-      scope: "project",
-      project: "/work/hivra",
+      match: (cwd: string) => cwd === "/work/hivra",
     });
     expect(today.pricedTurns).toBe(3);
     expect(tomorrow.pricedTurns).toBe(0);
     expect(periodId("month", month)).toBe("2026-11");
     expect(periodId("day", Date.parse("2026-11-11T00:05:00"))).not.toBe(periodId("day", month));
-    const byName = periodSpend(sessions, { now: month, period: "month", scope: "project", project: "hivra" });
+    const byName = periodSpend(sessions, { now: month, period: "month", match: (cwd: string) => cwd === "/work/hivra" });
     expect(byName.measuredUsd).toBeCloseTo(2, 6);
-    const blank = periodSpend(sessions, { now: month, period: "month", scope: "project", project: "" });
+    const blank = periodSpend(sessions, { now: month, period: "month", match: () => false });
     expect(blank.measuredUsd).toBe(0);
     expect(blank.pricedTurns).toBe(0);
-    const missing = periodSpend(null, { now: month, period: "month", scope: "project", project: "hivra" });
+    const missing = periodSpend(null, { now: month, period: "month", match: (cwd: string) => cwd === "/work/hivra" });
     expect(missing.unreadable).toBe(true);
     expect(missing.measuredUsd).toBe(0);
-    const none = periodSpend([], { now: month, period: "month", scope: "app" });
+    const none = periodSpend([], { now: month, period: "month", match: () => true });
     expect(none.unreadable).toBeUndefined();
     expect(none.measuredUsd).toBe(0);
   });
@@ -258,33 +255,16 @@ describe("spend limits", () => {
     expect(lines).toHaveLength(2);
   });
 
-  it("checks the stricter band first", () => {
-    const reading = { measuredUsd: 9, pricedTurns: 1, unpricedTurns: 0, reportsCost: true };
-    const result = strictest([
-      { id: "app", label: "the whole app", period: "month", amountUsd: 100, warnAt: 0.8, reading, stopsRun: false },
-      { id: "project", label: "hivra", period: "month", amountUsd: 10, warnAt: 0.8, reading, stopsRun: false },
-      { id: "task", label: "task", period: "day", amountUsd: 8, warnAt: 0.8, reading, stopsRun: true },
-    ]);
-    expect(result.band?.id).toBe("task");
-    expect(result.verdict.status).toBe("over");
-    expect(result.band?.stopsRun).toBe(true);
-    const under = strictest([
-      { id: "project", label: "hivra", period: "month", amountUsd: 50, warnAt: 0.8, reading, stopsRun: false },
-    ]);
-    expect(under.verdict.status).toBe("ok");
-  });
-
   it("writes the line the Workers dialog shows", () => {
     const row = limit();
     expect(
       spendStatusLine(
         { measuredUsd: 12.4, pricedTurns: 1, unpricedTurns: 0, reportsCost: true },
         row,
-        "hivra",
       ),
     ).toBe("Spent $12.40 of $50 this month (25%). New builders pause at $50.");
     expect(
-      spendStatusLine({ measuredUsd: 0, pricedTurns: 0, unpricedTurns: 0, reportsCost: false }, row, "hivra"),
+      spendStatusLine({ measuredUsd: 0, pricedTurns: 0, unpricedTurns: 0, reportsCost: false }, row),
     ).toBe("This CLI reports no cost, so this limit cannot count its work.");
   });
 });
