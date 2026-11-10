@@ -1,3 +1,4 @@
+import { syncTeleportLock } from "../../connections/model/teleportLock";
 import { isCliNotice } from "../../../integrations/harness/core/cliNotices";
 import { invoke } from "@tauri-apps/api/core";
 import { boundaryFromDisk } from "../../memory/model/privateChat";
@@ -700,6 +701,7 @@ export function findMonoTranscript(
 
 export async function getSession(sessionId: string): Promise<Session | null> {
   const session = await readSession(sessionId);
+  if (session) syncTeleportLock(session);
   return session ? repairSession(session) : null;
 }
 

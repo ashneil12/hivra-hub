@@ -442,6 +442,12 @@ export function canCompactHarnessContext(id: HarnessId): boolean {
 export function compactHarnessContext(
   input: CompactContextInput & { harness: HarnessId },
 ): Promise<void> {
+  // WP-177: a moved or frozen chat compacts nothing; the refusal is the same promise a failed compact gives.
+  try {
+    assertChatAcceptsTurns(input.sessionId);
+  } catch (error) {
+    return Promise.reject(error);
+  }
   return queueSessionOperation(input.sessionId, async () => {
     requireChatFolder(input.cwd);
     const adapter = requireHarness(input.harness);

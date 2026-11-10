@@ -152,6 +152,8 @@ export function createHostServer(
     dir: join(dirname(engine.store.attachmentDir), "teleport"),
     selfId: engine.store.environmentId,
     providers,
+    // The WP-60 lease root: the first mate's leases, so one place holds every host lease.
+    leaseRoot: join(dirname(engine.store.attachmentDir), "firstmate-leases"),
   });
   const workspace = new WorkspaceCommands(
     engine.store,
@@ -644,6 +646,7 @@ export function createHostServer(
           case "teleport.receive":
           case "teleport.discard":
           case "teleport.activate":
+          case "teleport.holds":
           case "teleport.release":
             if (!isTeleportMethod(input.method)) throw new Error("Unsupported host method");
             result = await teleportRpc(teleport, input.method, params);

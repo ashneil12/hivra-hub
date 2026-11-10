@@ -8,6 +8,7 @@ import type {
   MoveEndpoint,
   MovePayload,
   Provider,
+  Holds,
   ReceiveReply,
 } from "./teleport";
 
@@ -35,5 +36,6 @@ export function sshMoveEndpoint(machineId: string, call: HostCall): MoveEndpoint
     release: async (chatId, moveId, to) => {
       await call("teleport.release", { chatId, moveId, to });
     },
+    holds: (chatId, moveId) => call("teleport.holds", { chatId, moveId }) as Promise<Holds>,
   };
 }

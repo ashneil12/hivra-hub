@@ -46,7 +46,7 @@ export function teleportStateOf(session: Pick<Session, "blocks">): TeleportState
 }
 
 export function chatLocked(session: Pick<Session, "blocks">): boolean {
-  return teleportStateOf(session).moved;
+  return chatLockedFromBlocks(session.blocks);
 }
 
 /** The reason a send is refused, or null when the chat takes a turn. Nothing is sent for a moved chat. */
@@ -59,4 +59,28 @@ export function sendBlockReason(session: Pick<Session, "blocks">): string | null
 /** The marker line and the statement of what the target does with the chat. Plain words, no dashes. */
 export function copyForMoved(host: string, time: string): string {
   return `Moved to ${host}, ${time}. It continues in a fresh session there, started from the saved messages.`;
+}
+
+/** The saved notice a move leaves while it freezes this chat. It lives in the chat, so a restart still sees it. */
+export function frozenBlock(moveId: string): Block {
+  return { id: `teleport-frozen-${moveId}`, role: "system", text: "", notice: "teleport-frozen" } as unknown as Block;
+}
+
+/** The saved notice that carries a moved copy until it is activated here. */
+export function incomingBlock(moveId: string, chatJson: string): Block {
+  return { id: `teleport-incoming-${moveId}`, role: "system", text: chatJson, notice: "teleport-incoming" } as unknown as Block;
+}
+
+export function hasBlock(blocks: Block[], id: string): boolean {
+  return blocks.some((block) => block.id === id);
+}
+
+/** The move ids this chat is frozen for (a freeze is released by its own move, or by a recovery). */
+export function frozenMoves(blocks: Block[]): string[] {
+  return blocks.filter((b) => b.notice === "teleport-frozen").map((b) => b.id.replace(/^teleport-frozen-/, ""));
+}
+
+/** Locked for a send: moved away, or frozen by a move in progress. */
+export function chatLockedFromBlocks(blocks: Block[]): boolean {
+  return teleportStateOf({ blocks }).moved || frozenMoves(blocks).length > 0;
 }

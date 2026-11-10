@@ -1,18 +1,26 @@
 // Moving a chat between this Mac and a host the person has added (WP-177).
 //
-// A move is a custody handover, not a copy. The source freezes the chat. The target takes it under a lease and
-// keeps the copy as incoming, which does not run. The target proves its copy matches the transcript. Only then
-// does the source let go, and only then does the target open the chat. So the chat is never running on both
-// sides, and any failure before the source lets go leaves the chat where it was.
+// A move is a custody handover, and the order is what keeps the chat from being lost:
+//   1. the source freezes the chat,
+//   2. the target stores a copy as incoming (it does not run),
+//   3. the target checks the copy's hash,
+//   4. the target activates its copy (it throws if the copy is missing),
+//   5. only then does the source release its transcript.
+// Every step persists on the machine that does it, so a crash at any point leaves the chat on one machine or the
+// other, and recoverMove finishes or undoes the move from what is stored.
 //
-// Nothing here starts a move by itself. A move needs the person's approval of a plan (planMove), and the plan id
-// must still match when the move runs. The manifest and the payload are built from an allow list, so no login,
-// key or token from either machine can ride along. The transport (the SSH host) is a MoveEndpoint supplied by the
-// caller; this module has no network, no timers and no listener.
+// Secrets: every string in the transcript, the title and the queued messages is redacted with the shared list
+// (src/features/portable/model/secretPatterns.json) before it is planned, so the copy that travels is the redacted
+// one. The plan shows the queued text and how many values were redacted.
+//
+// Approval: a move needs a PersonApproval, which only a trusted click can create (approvePlan). A plan id alone is
+// not an approval. This module has no network, no timers and no listener.
+
+import { redactText, redactValue } from "../../portable/model/secrets";
 
 export type Provider = "claude" | "codex";
 
-/** What a move carries of a chat. The transcript is the provider's own history, copied as it is. */
+/** What a move carries of a chat. The transcript is the chat's saved blocks, as JSON text. */
 export interface ChatSnapshot {
   chatId: string;
   provider: Provider;
@@ -62,6 +70,7 @@ export interface MovePayload {
 
 export type CanResume = { ok: true } | { ok: false; reason: string };
 export type ReceiveReply = { ok: true; transcriptSha256: string } | { ok: false; reason: "held" };
+export type Holds = "live" | "incoming" | "none";
 
 /**
  * Lease for a chat on one machine (WP-60). On the host this is the session lease file, which refuses a second
@@ -74,8 +83,8 @@ export interface LeasePort {
 
 /**
  * One machine's side of a move. The source uses read, freeze, thaw and release. The target uses canResume,
- * receive, discard and activate. Every write names the move, so a late or repeated call cannot touch another
- * move's copy.
+ * receive, activate and discard. holds reports what this machine stores for a move, so recovery can tell where the
+ * chat is. Every write names the move, so a late or repeated call cannot touch another move's copy.
  */
 export interface MoveEndpoint {
   readonly id: string;
@@ -88,10 +97,12 @@ export interface MoveEndpoint {
   receive(chatId: string, moveId: string, payload: MovePayload): Promise<ReceiveReply>;
   /** Remove an incoming copy this move stored. Nothing else is touched. */
   discard(chatId: string, moveId: string): Promise<void>;
-  /** Turn the incoming copy into the live one, owned here. Idempotent. */
+  /** Turn the incoming copy into the live one, owned here. Throws when there is no copy. Idempotent for this move. */
   activate(chatId: string, moveId: string): Promise<void>;
-  /** Drop this machine's live copy and record the new owner. Only after the target confirmed. */
+  /** Drop this machine's transcript and record the new owner. Only after the target activated. */
   release(chatId: string, moveId: string, to: string): Promise<void>;
+  /** What this machine stores for the move: a live copy it activated, an incoming copy, or nothing. */
+  holds(chatId: string, moveId: string): Promise<Holds>;
 }
 
 export interface FreezeRefusal {
@@ -105,7 +116,8 @@ export type MoveRefusalReason =
   | "approval-pending"
   | "approval-missing"
   | "approval-stale"
-  | "transcript-secret-held"
+  | "invalid-session-id"
+  | "id-mismatch"
   | "not-found"
   | "not-owner"
   | "cannot-resume"
@@ -118,6 +130,7 @@ export interface MoveRefusal {
   recapOffered?: boolean;
 }
 
+/** What the person reads before approving. The queued text and the redaction count are shown. */
 export interface MovePlan {
   planId: string;
   chatId: string;
@@ -127,24 +140,31 @@ export interface MovePlan {
   model: string;
   effort: string;
   title: string;
-  queuedCount: number;
+  queued: readonly string[];
+  redactions: number;
   transcriptSha256: string;
-  transcriptSecretHits: number;
 }
 
-export type MoveStage = "read" | "freeze" | "resume-check" | "manifest" | "receive" | "verify" | "release";
+/** Only approvePlan creates one. A plain object with a plan id is refused. */
+export interface PersonApproval {
+  readonly planId: string;
+  readonly grant: symbol;
+}
+
+export type MoveStage = "read" | "freeze" | "resume-check" | "manifest" | "receive" | "verify" | "activate" | "release";
 
 export type MoveResult =
   | { status: "moved"; chatId: string; to: string; from?: string; manifest?: Manifest }
   | { status: "refused"; refusal: MoveRefusal }
   | { status: "failed"; stage: MoveStage; message: string; chatStayedOn: string }
-  | { status: "partial"; stage: "activate"; chatId: string; to: string; moveId: string; message: string };
+  | { status: "partial"; stage: "release"; chatId: string; to: string; moveId: string; message: string }
+  | { status: "recovered"; chatId: string; chatStayedOn: string };
 
 export interface MoveInput {
   chatId: string;
   from: MoveEndpoint;
   to: MoveEndpoint;
-  approval: { planId: string; acceptTranscriptSecrets?: boolean } | null | undefined;
+  approval: PersonApproval | null | undefined;
   moveId: string;
   at: string;
 }
@@ -171,13 +191,6 @@ const MANIFEST_FIELDS = [
   "transcriptSha256",
 ] as const;
 
-const TRANSCRIPT_SECRET_PATTERNS: RegExp[] = [
-  /sk-[A-Za-z0-9_-]{16,}/,
-  /\bBearer\s+[A-Za-z0-9._~+/-]{8,}/i,
-  /-----BEGIN [A-Z ]*PRIVATE KEY-----/,
-  /["']?(?:api[_-]?key|secret|token|password)["']?\s*[:=]\s*["']?[A-Za-z0-9_\-]{16,}/i,
-];
-
 const SECRET_VALUE_PATTERNS: RegExp[] = [
   /sk-[A-Za-z0-9_-]{16,}/,
   /\bBearer\s+[A-Za-z0-9._~+/-]{8,}/i,
@@ -185,16 +198,7 @@ const SECRET_VALUE_PATTERNS: RegExp[] = [
   /\.credentials\.json|\bauth\.json\b|\bkeychain\b/i,
 ];
 
-/**
- * How many values in the transcript look like a key or token. A move with any hit is held until the person says
- * so on the exact plan, because the transcript itself travels.
- */
-export function transcriptSecretHits(transcript: string): number {
-  return TRANSCRIPT_SECRET_PATTERNS.reduce((total, pattern) => {
-    const global = new RegExp(pattern.source, pattern.flags.includes("g") ? pattern.flags : `${pattern.flags}g`);
-    return total + (transcript.match(global) ?? []).length;
-  }, 0);
-}
+const SESSION_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
 
 /** Why a chat that is running or waiting cannot move yet. Null when it can move now. */
 export function freezeRefusal(chat: Pick<ChatSnapshot, "turnRunning" | "approvalPending">): FreezeRefusal | null {
@@ -210,20 +214,83 @@ export async function sha256Hex(text: string): Promise<string> {
   return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
-function pickTransferChat(chat: ChatSnapshot): TransferChat {
-  return {
-    chatId: chat.chatId,
-    provider: chat.provider,
-    providerSessionId: chat.providerSessionId,
-    model: chat.model,
-    effort: chat.effort,
-    title: chat.title,
-    transcript: chat.transcript,
-    queued: [...chat.queued],
-  };
+// The shared list keeps a value only when it mixes letters and digits, so a letters-only password would pass it. A move
+// is stricter: any value written after a secret-looking name is redacted, whatever its characters.
+const ASSIGNED_ANY = /((?:password|passwd|secret|token|api[_-]?key|access[_-]?key|private[_-]?key)(?:\\)?["']?\s*[:=]\s*(?:\\)?["']?)([^\s"',}\]\\]{6,})/gi;
+
+function redactAny(text: string): { text: string; count: number } {
+  let count = 0;
+  const out = text.replace(ASSIGNED_ANY, (_match, head: string) => {
+    count += 1;
+    return `${head}[secret removed]`;
+  });
+  return { text: out, count };
 }
 
-/** The manifest, from an allow list only. The transcript goes in the payload, never in the manifest. */
+function redactString(text: string): { text: string; count: number } {
+  const shared = redactText(text);
+  const strict = redactAny(shared.text);
+  return { text: strict.text, count: shared.count + strict.count };
+}
+
+/** Every string in a parsed value, mapped; keys are kept. Redaction runs on the strings, not on their JSON text. */
+function mapStrings(value: unknown, fn: (text: string) => string): unknown {
+  if (typeof value === "string") return fn(value);
+  if (Array.isArray(value)) return value.map((item) => mapStrings(item, fn));
+  if (value && typeof value === "object") {
+    return Object.fromEntries(Object.entries(value as Record<string, unknown>).map(([key, item]) => [key, mapStrings(item, fn)]));
+  }
+  return value;
+}
+
+/** Redact the transcript (parsed, so every string and secret key is reached), the title and the queued messages. */
+export function redactChat(chat: ChatSnapshot): { chat: ChatSnapshot; redactions: number } {
+  let redactions = 0;
+  let transcript: string;
+  try {
+    const parsed = redactValue(JSON.parse(chat.transcript) as unknown);
+    redactions += parsed.count;
+    const walked = mapStrings(parsed.value, (text) => {
+      const out = redactString(text);
+      redactions += out.count;
+      return out.text;
+    });
+    transcript = JSON.stringify(walked);
+  } catch {
+    const plain = redactString(chat.transcript);
+    redactions += plain.count;
+    transcript = plain.text;
+  }
+  const title = redactString(chat.title);
+  redactions += title.count;
+  const queued = chat.queued.map((text) => {
+    const out = redactString(text);
+    redactions += out.count;
+    return out.text;
+  });
+  return { chat: { ...chat, transcript, title: title.text, queued }, redactions };
+}
+
+/** Throws when the manifest or payload names a different chat than the one being moved. */
+export function assertSameChat(chatId: string, payload: MovePayload): void {
+  if (payload.chat.chatId !== chatId || payload.manifest.chatId !== chatId) {
+    throw new Error("The move names a different chat than the one being moved");
+  }
+}
+
+export function assertManifestClean(manifest: Manifest): void {
+  const allowed: readonly string[] = MANIFEST_FIELDS;
+  for (const key of Object.keys(manifest)) {
+    if (!allowed.includes(key)) throw new Error(`The move manifest has a field this move does not allow: ${key}`);
+  }
+  for (const [key, value] of Object.entries(manifest)) {
+    if (typeof value !== "string") continue;
+    if (SECRET_VALUE_PATTERNS.some((pattern) => pattern.test(value))) {
+      throw new Error(`The move manifest value for ${key} looks like a secret, so the move was stopped`);
+    }
+  }
+}
+
 export function buildManifest(
   chat: ChatSnapshot,
   opts: { moveId: string; from: string; to: string; at: string; transcriptSha256: string },
@@ -246,18 +313,17 @@ export function buildManifest(
   };
 }
 
-/** Throws if the manifest has a field outside the allow list, or a value that looks like a secret. */
-export function assertManifestClean(manifest: Manifest): void {
-  const allowed: readonly string[] = MANIFEST_FIELDS;
-  for (const key of Object.keys(manifest)) {
-    if (!allowed.includes(key)) throw new Error(`The move manifest has a field this move does not allow: ${key}`);
-  }
-  for (const [key, value] of Object.entries(manifest)) {
-    if (typeof value !== "string") continue;
-    if (SECRET_VALUE_PATTERNS.some((pattern) => pattern.test(value))) {
-      throw new Error(`The move manifest value for ${key} looks like a secret, so the move was stopped`);
-    }
-  }
+function pickTransferChat(chat: ChatSnapshot): TransferChat {
+  return {
+    chatId: chat.chatId,
+    provider: chat.provider,
+    providerSessionId: chat.providerSessionId,
+    model: chat.model,
+    effort: chat.effort,
+    title: chat.title,
+    transcript: chat.transcript,
+    queued: [...chat.queued],
+  };
 }
 
 async function buildPayload(
@@ -270,8 +336,8 @@ async function buildPayload(
 }
 
 /**
- * The plan the person approves before anything moves. Refused (with the reason) when the chat cannot move now, so
- * nobody is asked to approve a move that cannot happen.
+ * The plan the person approves before anything moves. The plan carries the redacted chat, so what the person reads is
+ * what travels. Refused with the reason when the chat cannot move now.
  */
 export async function planMove(
   chat: ChatSnapshot,
@@ -280,7 +346,11 @@ export async function planMove(
 ): Promise<{ ok: true; plan: MovePlan } | { ok: false; refusal: MoveRefusal }> {
   const frozen = freezeRefusal(chat);
   if (frozen) return { ok: false, refusal: { reason: frozen.reason, message: frozen.message } };
-  const transcriptSha256 = await sha256Hex(chat.transcript);
+  if (chat.providerSessionId && !SESSION_ID.test(chat.providerSessionId)) {
+    return { ok: false, refusal: { reason: "invalid-session-id", message: "This chat's session id is not in a form a move accepts." } };
+  }
+  const redacted = redactChat(chat);
+  const transcriptSha256 = await sha256Hex(redacted.chat.transcript);
   const basis = {
     chatId: chat.chatId,
     from,
@@ -288,13 +358,29 @@ export async function planMove(
     provider: chat.provider,
     model: chat.model,
     effort: chat.effort,
-    title: chat.title,
-    queuedCount: chat.queued.length,
+    title: redacted.chat.title,
+    queued: redacted.chat.queued,
+    redactions: redacted.redactions,
     transcriptSha256,
-    transcriptSecretHits: transcriptSecretHits(chat.transcript),
   };
   const planId = await sha256Hex(JSON.stringify(basis));
   return { ok: true, plan: { planId, ...basis } };
+}
+
+const grants = new WeakSet<object>();
+
+/** The approval a person's trusted click creates for one plan. Anything else is not an approval. */
+export function approvePlan(plan: MovePlan, gesture: { isTrusted: boolean; type: string }): PersonApproval {
+  if (gesture.isTrusted !== true || gesture.type !== "click") {
+    throw new Error("Only a person's click on the move approves it");
+  }
+  const approval = Object.freeze({ planId: plan.planId, grant: Symbol("person-approval") });
+  grants.add(approval);
+  return approval;
+}
+
+function isGranted(approval: PersonApproval | null | undefined): approval is PersonApproval {
+  return !!approval && typeof approval === "object" && grants.has(approval);
 }
 
 const noop = () => undefined;
@@ -309,12 +395,13 @@ function failed(stage: MoveStage, chatStayedOn: string, error: unknown): MoveRes
 }
 
 /**
- * Hand a chat from one machine to the other. Returns what happened; on every result except "partial" the chat is
- * live on exactly one machine, the one it was on before, or the one it moved to.
+ * Hand a chat from one machine to the other, in the order the module comment gives. Every result except "partial"
+ * leaves the chat live on exactly one machine. "partial" means the target has the chat and the source still holds its
+ * transcript; completeMove finishes it.
  */
 export async function moveChat(input: MoveInput): Promise<MoveResult> {
   const { chatId, from, to, approval, moveId, at } = input;
-  if (!approval) return refuse("approval-missing", "Ask the person to approve this move first.");
+  if (!isGranted(approval)) return refuse("approval-missing", "Ask the person to approve this move first.");
 
   let record: ChatRecord | null;
   try {
@@ -324,18 +411,12 @@ export async function moveChat(input: MoveInput): Promise<MoveResult> {
   }
   if (!record) return refuse("not-found", "This chat is not on this machine.");
   if (record.owner !== from.id) return refuse("not-owner", `This chat is on ${record.owner}, not on this machine.`);
-  if (!record.live) return refuse("not-found", "This chat is not live on this machine.");
+  if (!record.live || record.live.chatId !== chatId) return refuse("id-mismatch", "This chat's record names another chat.");
 
   const planned = await planMove(record.live, from.id, to.id);
   if (!planned.ok) return { status: "refused", refusal: planned.refusal };
   if (planned.plan.planId !== approval.planId) {
     return refuse("approval-stale", "The chat changed after you approved the move. Review it again.");
-  }
-  if (planned.plan.transcriptSecretHits > 0 && approval.acceptTranscriptSecrets !== true) {
-    return refuse(
-      "transcript-secret-held",
-      `This transcript has ${planned.plan.transcriptSecretHits} value(s) that look like a key or token. The move is held. Ask the person whether to move it anyway.`,
-    );
   }
 
   let resume: CanResume;
@@ -368,7 +449,7 @@ export async function moveChat(input: MoveInput): Promise<MoveResult> {
   try {
     // Re-read under the freeze: the copy is the one that is frozen, not the one read before it.
     const now = await from.read(chatId);
-    if (!now || now.owner !== from.id || !now.live) {
+    if (!now || now.owner !== from.id || !now.live || now.live.chatId !== chatId) {
       await undoFreeze();
       return refuse("state-changed", "The chat changed while the move started. Review it again.");
     }
@@ -381,8 +462,10 @@ export async function moveChat(input: MoveInput): Promise<MoveResult> {
       await undoFreeze();
       return refuse("approval-stale", "The chat changed after you approved the move. Review it again.");
     }
-    payload = await buildPayload(now.live, { moveId, from: from.id, to: to.id, at });
+    const redacted = redactChat(now.live).chat;
+    payload = await buildPayload(redacted, { moveId, from: from.id, to: to.id, at });
     assertManifestClean(payload.manifest);
+    assertSameChat(chatId, payload);
   } catch (error) {
     await undoFreeze();
     return failed("manifest", from.id, error);
@@ -406,21 +489,24 @@ export async function moveChat(input: MoveInput): Promise<MoveResult> {
     return failed("verify", from.id, new Error("The copy on the other machine does not match the transcript. Nothing moved."));
   }
 
-  try {
-    await from.release(chatId, moveId, to.id);
-  } catch (error) {
-    await to.discard(chatId, moveId).catch(noop);
-    await undoFreeze();
-    return failed("release", from.id, error);
-  }
-
+  // The target activates before the source lets go. If activation fails, the copy is discarded and the chat stays here.
   try {
     await to.activate(chatId, moveId);
   } catch (error) {
-    // The source has let go, so the chat runs nowhere until the target opens it. completeMove retries that step.
+    // Activation may have stored the live copy before it failed to report: then the target holds the chat.
+    if ((await to.holds(chatId, moveId).catch(() => "none" as Holds)) !== "live") {
+      await to.discard(chatId, moveId).catch(noop);
+      await undoFreeze();
+      return failed("activate", from.id, error);
+    }
+  }
+
+  try {
+    await from.release(chatId, moveId, to.id);
+  } catch (error) {
     return {
       status: "partial",
-      stage: "activate",
+      stage: "release",
       chatId,
       to: to.id,
       moveId,
@@ -430,13 +516,31 @@ export async function moveChat(input: MoveInput): Promise<MoveResult> {
   return { status: "moved", chatId, from: from.id, to: to.id, manifest: payload.manifest };
 }
 
-/** Retry the target's open step of a partial move. Idempotent: an already open chat is reported as moved. */
-export async function completeMove(input: { chatId: string; to: MoveEndpoint; moveId: string }): Promise<MoveResult> {
-  const { chatId, to, moveId } = input;
-  try {
-    await to.activate(chatId, moveId);
-  } catch (error) {
-    return { status: "partial", stage: "activate", chatId, to: to.id, moveId, message: error instanceof Error ? error.message : String(error) };
+/**
+ * Finish or undo a move after a crash or a failed step, from what each machine stores. The chat ends live on one
+ * machine. If the target holds the live copy, the source releases its transcript. If the target holds only an
+ * incoming copy, the copy is discarded and the source thaws. If the target holds nothing, the source thaws.
+ */
+export async function recoverMove(input: { chatId: string; moveId: string; from: MoveEndpoint; to: MoveEndpoint }): Promise<MoveResult> {
+  const { chatId, moveId, from, to } = input;
+  const hold = await to.holds(chatId, moveId);
+  if (hold === "live") {
+    const record = await from.read(chatId);
+    if (record?.live) {
+      try {
+        await from.release(chatId, moveId, to.id);
+      } catch (error) {
+        return { status: "partial", stage: "release", chatId, to: to.id, moveId, message: error instanceof Error ? error.message : String(error) };
+      }
+    }
+    return { status: "moved", chatId, to: to.id, from: from.id };
   }
-  return { status: "moved", chatId, from: "", to: to.id };
+  if (hold === "incoming") await to.discard(chatId, moveId).catch(noop);
+  await from.thaw(chatId, moveId).catch(noop);
+  return { status: "recovered", chatId, chatStayedOn: from.id };
+}
+
+/** Retry the source's release of a partial move. Idempotent: an already released source reports moved. */
+export async function completeMove(input: { chatId: string; from: MoveEndpoint; to: MoveEndpoint; moveId: string }): Promise<MoveResult> {
+  return recoverMove({ chatId: input.chatId, moveId: input.moveId, from: input.from, to: input.to });
 }

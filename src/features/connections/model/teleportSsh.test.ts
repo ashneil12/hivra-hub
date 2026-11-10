@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { HostTeleportStore } from "../../../../host/teleport/store";
 import { teleportRpc } from "../../../../host/teleport/rpc";
 import {
+  approvePlan,
   moveChat,
   planMove,
   sha256Hex,
@@ -13,6 +14,7 @@ import {
   type MoveEndpoint,
   type MovePayload,
 } from "./teleport";
+const CLICK = { isTrusted: true, type: "click" };
 import { sshMoveEndpoint, type HostCall } from "./teleportSsh";
 
 const MAC = "this-mac";
@@ -94,7 +96,7 @@ describe("WP-177 SSH transport for a chat move", () => {
   let store: HostTeleportStore;
   beforeEach(() => {
     dir = mkdtempSync(path.join(tmpdir(), "wp177-ssh-"));
-    store = new HostTeleportStore({ dir, selfId: HOST, providers: ["claude"] });
+    store = new HostTeleportStore({ dir, selfId: HOST, providers: ["claude"], leaseRoot: path.join(dir, "leases") });
   });
   afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
@@ -105,7 +107,7 @@ describe("WP-177 SSH transport for a chat move", () => {
 
     const planned = await planMove(chat, MAC, HOST);
     if (!planned.ok) throw new Error("plan");
-    const there = await moveChat({ chatId: CHAT, from: mac, to: host, approval: { planId: planned.plan.planId }, moveId: "out", at: AT });
+    const there = await moveChat({ chatId: CHAT, from: mac, to: host, approval: approvePlan(planned.plan, CLICK), moveId: "out", at: AT });
     expect(there.status).toBe("moved");
     expect(mac.live()).toBeNull();
 
@@ -115,7 +117,7 @@ describe("WP-177 SSH transport for a chat move", () => {
 
     const back = await planMove(onHost!.live!, HOST, MAC);
     if (!back.ok) throw new Error("plan back");
-    const home = await moveChat({ chatId: CHAT, from: host, to: mac, approval: { planId: back.plan.planId }, moveId: "back", at: AT });
+    const home = await moveChat({ chatId: CHAT, from: host, to: mac, approval: approvePlan(back.plan, CLICK), moveId: "back", at: AT });
     expect(home.status).toBe("moved");
     expect(mac.live()).toMatchObject({ chatId: CHAT, transcript, effort: "high" });
     expect((await host.read(CHAT))?.live ?? null).toBeNull();
@@ -130,7 +132,7 @@ describe("WP-177 SSH transport for a chat move", () => {
     const host = sshMoveEndpoint(HOST, down);
     const planned = await planMove(chat, MAC, HOST);
     if (!planned.ok) throw new Error("plan");
-    const result = await moveChat({ chatId: CHAT, from: mac, to: host, approval: { planId: planned.plan.planId }, moveId: "x", at: AT });
+    const result = await moveChat({ chatId: CHAT, from: mac, to: host, approval: approvePlan(planned.plan, CLICK), moveId: "x", at: AT });
     expect(result.status).toBe("failed");
     expect(mac.live()).toMatchObject({ chatId: CHAT });
   });

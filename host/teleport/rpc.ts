@@ -1,7 +1,7 @@
 // The host RPC for a chat move (WP-177). The desktop reaches these through the SSH host connection, the same path
 // as every other remote call. Each method maps one call onto HostTeleportStore; argument shapes are checked here.
 
-import type { CanResume, ChatRecord, MovePayload, Provider, ReceiveReply } from "../../src/features/connections/model/teleport";
+import type { CanResume, ChatRecord, Holds, MovePayload, Provider, ReceiveReply } from "../../src/features/connections/model/teleport";
 import type { HostTeleportStore } from "./store";
 
 const TELEPORT_METHODS = [
@@ -13,6 +13,7 @@ const TELEPORT_METHODS = [
   "teleport.discard",
   "teleport.activate",
   "teleport.release",
+  "teleport.holds",
 ] as const;
 
 export type TeleportMethod = (typeof TELEPORT_METHODS)[number];
@@ -45,7 +46,7 @@ export async function teleportRpc(
   store: HostTeleportStore,
   method: string,
   params: Record<string, unknown>,
-): Promise<ChatRecord | boolean | CanResume | ReceiveReply | { ok: true } | null> {
+): Promise<ChatRecord | boolean | CanResume | ReceiveReply | Holds | { ok: true } | null> {
   if (!isTeleportMethod(method)) throw new Error("Unsupported teleport operation");
   switch (method) {
     case "teleport.read":
@@ -65,6 +66,8 @@ export async function teleportRpc(
     case "teleport.activate":
       await store.activate(chatId(params), text(params, "moveId", "move id"));
       return { ok: true };
+    case "teleport.holds":
+      return store.holds(chatId(params), text(params, "moveId", "move id"));
     case "teleport.release":
       await store.release(chatId(params), text(params, "moveId", "move id"), text(params, "to", "destination"));
       return { ok: true };

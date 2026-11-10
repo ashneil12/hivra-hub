@@ -532,7 +532,11 @@ export type Block = {
     /** WP-177: the chat moved to another machine. The text names the host; the marker is the chat's only saved trace here. */
     | "teleported"
     /** WP-177: the chat came back to this Mac from another machine. */
-    | "teleported-back";
+    | "teleported-back"
+    /** WP-177: a move froze this chat here until it is released or undone (the move's id is in the block id). */
+    | "teleport-frozen"
+    /** WP-177: a moved copy is stored here, not yet activated (the move's id is in the block id). */
+    | "teleport-incoming";
   /** An agent-to-agent note on a system block (who messaged whom, got stuck, reported; monos/model/agentNotes.ts). */
   agentNote?: import("../../monos/model/agentNotes").AgentNote;
   /** On a still-running note: the tasks it named, and the brief that stays open (one note per task and per brief). */

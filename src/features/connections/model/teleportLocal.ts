@@ -1,34 +1,37 @@
-// This Mac's own chats as the other end of a move (WP-177). A desktop chat (a Session row) becomes the move's chat, and
-// a moved copy becomes a Session row again. The port is the desktop chat store: get, put and remove a row. Nothing here
-// writes the store itself, so the caller decides where the rows live.
+// This Mac's own chats as the other end of a move (WP-177). A desktop chat (a Session row) becomes the move's chat, and a
+// moved copy becomes a Session row again. Every step a move takes here is saved in the chat row as a notice (the freeze,
+// an incoming copy, the marker), so a restart or a crash still knows where the chat is. The port is the desktop chat
+// store: get and put a row. Nothing here writes anything else.
 
-import { hasPendingApproval, type Session } from "../../sessions/model/session";
-import { buildDeterministicHandoff } from "../../sessions/model/handoff";
-import type { MoveRefusal } from "./teleport";
-import { teleportStateOf } from "./teleportState";
-import { lockChat, unlockChat } from "./teleportLock";
+import { hasPendingApproval, type Block, type Session } from "../../sessions/model/session";
 import {
   sha256Hex,
   type CanResume,
   type ChatRecord,
   type ChatSnapshot,
+  type Holds,
   type MoveEndpoint,
-  type MovePayload,
   type Provider,
   type ReceiveReply,
   type TransferChat,
 } from "./teleport";
+import { frozenBlock, frozenMoves, hasBlock, incomingBlock, movedBlocks, teleportStateOf } from "./teleportState";
+import { lockChat, unlockChat } from "./teleportLock";
 
 export interface LocalChatPort {
   get(id: string): Promise<Session | null>;
   put(session: Session): Promise<void>;
-  /** Keep the chat row with its moved marker and no transcript: the host now holds the live copy. */
-  markMoved(id: string, label: string, at: string): Promise<void>;
 }
 
 const RUNS_HERE: readonly string[] = ["claude", "codex"];
+const MOVE_NOTICE = /^teleport-(frozen|incoming)-/;
 
-/** A desktop chat as a move's chat. The transcript is the chat's blocks as saved, not the provider's own file. */
+/** The chat's saved messages, without this module's own notices. */
+function savedBlocks(session: Session): Block[] {
+  return session.blocks.filter((block) => !MOVE_NOTICE.test(block.id));
+}
+
+/** A desktop chat as a move's chat. The transcript is the chat's saved messages as JSON text. */
 export function sessionToChat(session: Session): ChatSnapshot {
   return {
     chatId: session.id,
@@ -37,7 +40,7 @@ export function sessionToChat(session: Session): ChatSnapshot {
     model: session.model,
     effort: session.modelSettings?.effort ?? "",
     title: session.title,
-    transcript: JSON.stringify(session.blocks),
+    transcript: JSON.stringify(savedBlocks(session)),
     queued: (session.queuedMessages ?? []).map((message) => message.text),
     turnRunning: session.busy === true,
     approvalPending: hasPendingApproval(session.blocks),
@@ -60,21 +63,22 @@ export function chatToSession(chat: TransferChat, options: { cwd: string }): Ses
   } as unknown as Session;
 }
 
+function withBlocks(session: Session, blocks: Block[]): Session {
+  return { ...session, blocks } as Session;
+}
+
 /**
- * This Mac as a move endpoint. A chat is live here while its row exists. Freezing is held by this endpoint; the send
- * path that checks it is not wired yet (see the PR notes).
+ * This Mac as a move endpoint. The chat is live here while its row is not moved away. A freeze, an incoming copy and
+ * the released marker are notices in the row, so each survives a restart.
  */
 export function localMoveEndpoint(options: {
   machineId: string;
   port: LocalChatPort;
-  cwd: string;
   /** The name a person sees for a machine id (the host's name). Defaults to the id. */
   labelFor?: (machineId: string) => string;
 }): MoveEndpoint {
-  const { machineId, port, cwd } = options;
+  const { machineId, port } = options;
   const labelFor = options.labelFor ?? ((id: string) => id);
-  const frozen = new Map<string, string>();
-  const incoming = new Map<string, { moveId: string; payload: MovePayload }>();
   return {
     id: machineId,
     async read(chatId): Promise<ChatRecord | null> {
@@ -85,12 +89,16 @@ export function localMoveEndpoint(options: {
       return { owner: machineId, live: sessionToChat(session) };
     },
     async freeze(chatId, moveId) {
-      if (frozen.has(chatId)) return false;
-      frozen.set(chatId, moveId);
+      const session = await port.get(chatId);
+      if (!session || teleportStateOf(session).moved) return false;
+      if (frozenMoves(session.blocks).length > 0) return false;
+      await port.put(withBlocks(session, [...session.blocks, frozenBlock(moveId)]));
       return true;
     },
     async thaw(chatId, moveId) {
-      if (frozen.get(chatId) === moveId) frozen.delete(chatId);
+      const session = await port.get(chatId);
+      if (!session || !hasBlock(session.blocks, `teleport-frozen-${moveId}`)) return;
+      await port.put(withBlocks(session, session.blocks.filter((b) => b.id !== `teleport-frozen-${moveId}`)));
     },
     async canResume(provider, model, effort): Promise<CanResume> {
       if (!RUNS_HERE.includes(provider)) return { ok: false, reason: `this machine does not run ${provider}` };
@@ -98,34 +106,69 @@ export function localMoveEndpoint(options: {
       return { ok: true };
     },
     async receive(chatId, moveId, payload): Promise<ReceiveReply> {
-      if (incoming.has(chatId)) return { ok: false, reason: "held" };
-      incoming.set(chatId, { moveId, payload });
+      const session = await port.get(chatId);
+      if (!session) throw new Error("No saved chat row here to receive the move into");
+      if (payload.chat.chatId !== chatId) throw new Error("The move names a different chat than the one being moved");
+      if (session.blocks.some((b) => b.notice === "teleport-incoming" && b.id !== `teleport-incoming-${moveId}`)) {
+        return { ok: false, reason: "held" };
+      }
+      await port.put(withBlocks(session, [...session.blocks.filter((b) => b.id !== `teleport-incoming-${moveId}`), incomingBlock(moveId, JSON.stringify(payload.chat))]));
       return { ok: true, transcriptSha256: await sha256Hex(payload.chat.transcript) };
     },
     async discard(chatId, moveId) {
-      if (incoming.get(chatId)?.moveId === moveId) incoming.delete(chatId);
+      const session = await port.get(chatId);
+      if (!session || !hasBlock(session.blocks, `teleport-incoming-${moveId}`)) return;
+      await port.put(withBlocks(session, session.blocks.filter((b) => b.id !== `teleport-incoming-${moveId}`)));
     },
     async activate(chatId, moveId) {
-      const copy = incoming.get(chatId);
-      if (!copy || copy.moveId !== moveId) return;
-      await port.put(chatToSession(copy.payload.chat, { cwd }));
-      incoming.delete(chatId);
+      const session = await port.get(chatId);
+      if (!session) throw new Error("No saved chat row here to open the move in");
+      if (hasBlock(session.blocks, `teleported-back-${moveId}`)) return;
+      const copy = session.blocks.find((b) => b.id === `teleport-incoming-${moveId}`);
+      if (!copy) throw new Error("No copy of this chat is stored here to open");
+      const chat = JSON.parse(copy.text) as TransferChat;
+      const saved = JSON.parse(chat.transcript) as Block[];
+      const returned = {
+        id: `teleported-back-${moveId}`,
+        role: "system",
+        text: `Moved back to this Mac`,
+        notice: "teleported-back",
+        startedAt: Date.now(),
+      } as unknown as Block;
+      await port.put({
+        ...session,
+        harness: chat.provider,
+        model: chat.model,
+        modelSettings: chat.effort ? { effort: chat.effort } : {},
+        title: chat.title,
+        providerSessionId: chat.providerSessionId || undefined,
+        queuedMessages: chat.queued.map((text, index) => ({ id: `${chat.chatId}-queued-${index}`, text, attachments: [] })),
+        blocks: [...saved, returned],
+      } as unknown as Session);
       unlockChat(chatId);
     },
     async release(chatId, moveId, to) {
-      if (frozen.get(chatId) !== moveId) throw new Error("This move did not freeze the chat");
-      await port.markMoved(chatId, labelFor(to), new Date().toISOString());
+      const session = await port.get(chatId);
+      if (!session || !hasBlock(session.blocks, `teleport-frozen-${moveId}`)) {
+        throw new Error("This move did not freeze the chat");
+      }
+      // The transcript and the provider session id leave this Mac here: the host holds the live copy.
+      await port.put({
+        ...session,
+        blocks: movedBlocks(labelFor(to), new Date().toISOString()),
+        providerSessionId: undefined,
+        queuedMessages: [],
+      } as unknown as Session);
       lockChat(chatId);
-      frozen.delete(chatId);
+    },
+    async holds(chatId, moveId): Promise<Holds> {
+      const session = await port.get(chatId);
+      if (!session) return "none";
+      if (hasBlock(session.blocks, `teleported-back-${moveId}`)) return "live";
+      if (hasBlock(session.blocks, `teleport-incoming-${moveId}`)) return "incoming";
+      return "none";
     },
   };
 }
 
-/**
- * The recap fallback (WP-121): when the other machine cannot resume the chat, the existing recap brief is built from
- * this chat's own record, for a new chat. Null for any refusal that is not a resume problem.
- */
-export function recapForRefusal(session: Session, refusal: Pick<MoveRefusal, "reason" | "recapOffered">): string | null {
-  if (refusal.reason !== "cannot-resume" || refusal.recapOffered !== true) return null;
-  return buildDeterministicHandoff(session);
-}
+export { recapForRefusal } from "./teleportRecap";

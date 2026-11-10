@@ -12,7 +12,6 @@ vi.mock("../../sessions/data/sessionStore", () => ({
 
 import { upsertSession } from "../../sessions/data/sessionStore";
 import { sessionStoreChatPort } from "./teleportStorePort";
-import { teleportStateOf } from "../model/teleportState";
 
 const session = (): Session =>
   ({
@@ -40,19 +39,4 @@ describe("WP-177 desktop chat store binding", () => {
     expect(store.get("c9")?.title).toBe("Back");
   });
 
-  it("marks a chat moved by saving it with only the marker, so the transcript leaves this Mac", async () => {
-    const port = sessionStoreChatPort();
-    store.set("c9", session());
-    await port.markMoved("c9", "Studio box", "2026-11-10T09:00:00.000Z");
-    const saved = store.get("c9")!;
-    expect(saved.blocks.some((b) => b.role === "user")).toBe(false);
-    expect(teleportStateOf(saved)).toEqual({ moved: true, host: "Studio box", at: "2026-11-10T09:00:00.000Z" });
-    expect(saved.title).toBe("Stored chat");
-  });
-
-  it("does nothing when there is no chat to mark", async () => {
-    const port = sessionStoreChatPort();
-    await port.markMoved("missing", "Studio box", "2026-11-10T09:00:00.000Z");
-    expect(upsertSession).not.toHaveBeenCalled();
-  });
 });

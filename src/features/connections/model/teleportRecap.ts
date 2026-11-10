@@ -28,3 +28,12 @@ export async function startRecapChat(
   deps.open(next.id);
   return next;
 }
+
+/**
+ * The recap fallback (WP-121): when the other machine cannot resume the chat, the existing recap brief is built from this
+ * chat's own record, for a new chat. Null for any refusal that is not a resume problem.
+ */
+export function recapForRefusal(session: Session, refusal: { reason: string; recapOffered?: boolean }): string | null {
+  if (refusal.reason !== "cannot-resume" || refusal.recapOffered !== true) return null;
+  return buildDeterministicHandoff(session);
+}

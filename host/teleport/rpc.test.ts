@@ -14,7 +14,7 @@ describe("WP-177 host teleport RPC", () => {
   let store: HostTeleportStore;
   beforeEach(() => {
     dir = mkdtempSync(path.join(tmpdir(), "wp177-rpc-"));
-    store = new HostTeleportStore({ dir, selfId: "host-a", providers: ["claude"] });
+    store = new HostTeleportStore({ dir, selfId: "host-a", providers: ["claude"], leaseRoot: path.join(dir, "leases") });
   });
   afterEach(() => rmSync(dir, { recursive: true, force: true }));
 

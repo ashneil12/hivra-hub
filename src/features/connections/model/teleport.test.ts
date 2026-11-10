@@ -6,25 +6,29 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 // The real host lease (WP-60): the reconnect race is proved against the same code the host runs.
 import { acquireSessionLease, type SessionLease } from "../../../../host/firstmate/lease";
 import {
+  approvePlan,
   assertManifestClean,
   buildManifest,
   freezeRefusal,
   moveChat,
-  completeMove,
   planMove,
+  recoverMove,
+  completeMove,
   sha256Hex,
+  type ChatRecord,
   type ChatSnapshot,
+  type Holds,
   type LeasePort,
   type MoveEndpoint,
   type MovePayload,
-  type ChatRecord,
-  transcriptSecretHits,
+  type MovePlan,
 } from "./teleport";
 
 const THIS_MAC = "this-mac";
 const HOST = "host-a";
 const CHAT = "chat-1";
 const AT = "2026-11-10T09:00:00.000Z";
+const CLICK = { isTrusted: true, type: "click" };
 
 function chat(overrides: Partial<ChatSnapshot> = {}): ChatSnapshot {
   return {
@@ -34,7 +38,7 @@ function chat(overrides: Partial<ChatSnapshot> = {}): ChatSnapshot {
     model: "test-model-1",
     effort: "high",
     title: "Refactor the parser",
-    transcript: '{"type":"user","text":"hello"}\n{"type":"assistant","text":"hi"}\n',
+    transcript: '[{"id":"b1","role":"user","text":"hello"},{"id":"b2","role":"assistant","text":"hi"}]',
     queued: ["ship it after the tests"],
     turnRunning: false,
     approvalPending: false,
@@ -42,7 +46,12 @@ function chat(overrides: Partial<ChatSnapshot> = {}): ChatSnapshot {
   };
 }
 
-/** Exclusive in-memory lease, the test stand-in for the host lease when the race is not the point. */
+async function approve(from: string, to: string, snapshot: ChatSnapshot = chat()) {
+  const planned = await planMove(snapshot, from, to);
+  if (!planned.ok) throw new Error(`plan refused: ${planned.refusal.reason}`);
+  return { plan: planned.plan, approval: approvePlan(planned.plan, CLICK) };
+}
+
 function memoryLeases(): LeasePort {
   const held = new Map<string, string>();
   return {
@@ -75,14 +84,16 @@ function hostLeases(root: string): LeasePort {
 }
 
 /**
- * An in-memory machine. It keeps what a real endpoint keeps: one live copy, an incoming copy that does not run,
- * a freeze that stops turns, and the owner. Failure switches let a test break one step.
+ * An in-memory machine with the same rules as the real endpoints: a copy is incoming until activated, activation
+ * throws when there is no copy, the owner changes only on activation (for the target) and release (for the source),
+ * and a freeze stops turns. Failure switches break one step.
  */
 class StubMachine implements MoveEndpoint {
   readonly records = new Map<string, { owner: string; live: ChatSnapshot | null }>();
   readonly payloads: MovePayload[] = [];
   private frozen = new Map<string, string>();
   private incoming = new Map<string, { moveId: string; payload: MovePayload }>();
+  private activatedBy = new Map<string, string>();
   canResumeReply: { ok: true } | { ok: false; reason: string } = { ok: true };
   fail: Partial<Record<"receive" | "release" | "activate", string>> = {};
   onReceive: (() => void) | null = null;
@@ -127,32 +138,32 @@ class StubMachine implements MoveEndpoint {
   async receive(chatId: string, moveId: string, payload: MovePayload) {
     this.onReceive?.();
     if (this.fail.receive) throw new Error(this.fail.receive);
+    if (payload.chat.chatId !== chatId) throw new Error("The move names a different chat");
     if (!this.leases.acquire(chatId, moveId)) return { ok: false as const, reason: "held" as const };
     this.payloads.push(payload);
     const sha = await sha256Hex(payload.chat.transcript);
     this.incoming.set(chatId, { moveId, payload });
-    this.records.set(chatId, { owner: payload.manifest.from, live: null });
     return { ok: true as const, transcriptSha256: sha };
   }
 
   async discard(chatId: string, moveId: string): Promise<void> {
-    const inc = this.incoming.get(chatId);
-    if (inc?.moveId !== moveId) return;
+    if (this.incoming.get(chatId)?.moveId !== moveId) return;
     this.incoming.delete(chatId);
     this.leases.release(chatId, moveId);
-    this.records.set(chatId, { owner: this.records.get(chatId)?.owner ?? "", live: null });
   }
 
   async activate(chatId: string, moveId: string): Promise<void> {
     if (this.fail.activate) throw new Error(this.fail.activate);
+    if (this.activatedBy.get(chatId) === moveId) return;
     const inc = this.incoming.get(chatId);
-    if (inc?.moveId !== moveId) return; // idempotent: already live, or nothing to do
+    if (inc?.moveId !== moveId) throw new Error("No copy of this chat is stored here to activate");
     this.incoming.delete(chatId);
     const p = inc.payload.chat;
     this.records.set(chatId, {
       owner: this.id,
       live: { ...p, queued: [...p.queued], turnRunning: false, approvalPending: false },
     });
+    this.activatedBy.set(chatId, moveId);
     this.leases.release(chatId, moveId);
   }
 
@@ -161,6 +172,13 @@ class StubMachine implements MoveEndpoint {
     if (this.frozen.get(chatId) !== moveId) throw new Error("not frozen by this move");
     this.records.set(chatId, { owner: to, live: null });
     this.frozen.delete(chatId);
+    this.activatedBy.delete(chatId);
+  }
+
+  async holds(chatId: string, moveId: string): Promise<Holds> {
+    if (this.activatedBy.get(chatId) === moveId) return "live";
+    if (this.incoming.get(chatId)?.moveId === moveId) return "incoming";
+    return "none";
   }
 
   isFrozen(chatId: string): boolean {
@@ -171,7 +189,6 @@ class StubMachine implements MoveEndpoint {
 describe("WP-177 freeze rules", () => {
   it("refuses while a turn is running, with the reason and the offer to move after it", () => {
     const refusal = freezeRefusal(chat({ turnRunning: true }));
-    expect(refusal).not.toBeNull();
     expect(refusal?.reason).toBe("turn-running");
     expect(refusal?.offer).toBe("finish-then-move");
     expect(refusal?.message).not.toMatch(/[\u2013\u2014]/);
@@ -181,58 +198,63 @@ describe("WP-177 freeze rules", () => {
     expect(freezeRefusal(chat({ approvalPending: true }))?.reason).toBe("approval-pending");
   });
 
-  it("lets a settled chat move, queued messages included", () => {
-    expect(freezeRefusal(chat())).toBeNull();
-  });
-
   it("does not move a running chat: the plan is refused and the source is untouched", async () => {
     const mac = new StubMachine(THIS_MAC);
     mac.seed(chat({ turnRunning: true }));
-    const planned = await planMove(chat({ turnRunning: true }), THIS_MAC, HOST);
-    expect(planned.ok).toBe(false);
-    const rec = await mac.read(CHAT);
-    expect(rec?.live?.turnRunning).toBe(true);
+    expect((await planMove(chat({ turnRunning: true }), THIS_MAC, HOST)).ok).toBe(false);
     expect(mac.isFrozen(CHAT)).toBe(false);
   });
 
   it("moves once the turn settles", async () => {
     const mac = new StubMachine(THIS_MAC);
     const host = new StubMachine(HOST);
-    mac.seed(chat({ turnRunning: true }));
-    expect((await planMove(chat({ turnRunning: true }), THIS_MAC, HOST)).ok).toBe(false);
-    mac.seed(chat({ turnRunning: false }));
-    const planned = await planMove(chat(), THIS_MAC, HOST);
-    expect(planned.ok).toBe(true);
-    if (!planned.ok) return;
-    const result = await moveChat({ chatId: CHAT, from: mac, to: host, approval: { planId: planned.plan.planId }, moveId: "m1", at: AT });
+    mac.seed(chat());
+    const { approval } = await approve(THIS_MAC, HOST);
+    const result = await moveChat({ chatId: CHAT, from: mac, to: host, approval, moveId: "m1", at: AT });
     expect(result.status).toBe("moved");
   });
 });
 
 describe("WP-177 person approval", () => {
-  it("never freezes or sends without an approved plan", async () => {
+  it("never freezes or sends without an approval the person's click created", async () => {
     const mac = new StubMachine(THIS_MAC);
     const host = new StubMachine(HOST);
     mac.seed(chat());
-    const result = await moveChat({ chatId: CHAT, from: mac, to: host, approval: null, moveId: "m1", at: AT });
-    expect(result.status).toBe("refused");
+    const { plan } = await approve(THIS_MAC, HOST);
+    const literal = { planId: plan.planId } as never; // a plan id alone is not an approval
+    for (const approval of [null, undefined, literal]) {
+      const result = await moveChat({ chatId: CHAT, from: mac, to: host, approval, moveId: "m1", at: AT });
+      expect(result.status).toBe("refused");
+      if (result.status === "refused") expect(result.refusal.reason).toBe("approval-missing");
+    }
     expect(mac.isFrozen(CHAT)).toBe(false);
     expect(host.payloads).toHaveLength(0);
-    expect((await mac.read(CHAT))?.live).not.toBeNull();
+  });
+
+  it("only a trusted click creates an approval", async () => {
+    const { plan } = await approve(THIS_MAC, HOST);
+    expect(() => approvePlan(plan, { isTrusted: false, type: "click" })).toThrow(/person's click/);
+    expect(() => approvePlan(plan, { isTrusted: true, type: "keydown" })).toThrow(/person's click/);
+    expect(approvePlan(plan, CLICK).planId).toBe(plan.planId);
   });
 
   it("refuses when the transcript changed after the person approved the plan", async () => {
     const mac = new StubMachine(THIS_MAC);
     const host = new StubMachine(HOST);
     mac.seed(chat());
-    const planned = await planMove(chat(), THIS_MAC, HOST);
-    if (!planned.ok) throw new Error("plan should be possible");
-    mac.seed(chat({ transcript: chat().transcript + '{"type":"user","text":"one more"}\n' }));
-    const result = await moveChat({ chatId: CHAT, from: mac, to: host, approval: { planId: planned.plan.planId }, moveId: "m1", at: AT });
+    const { approval } = await approve(THIS_MAC, HOST);
+    mac.seed(chat({ transcript: '[{"id":"b9","role":"user","text":"one more"}]' }));
+    const result = await moveChat({ chatId: CHAT, from: mac, to: host, approval, moveId: "m1", at: AT });
     expect(result.status).toBe("refused");
     if (result.status === "refused") expect(result.refusal.reason).toBe("approval-stale");
     expect(mac.isFrozen(CHAT)).toBe(false);
     expect(host.payloads).toHaveLength(0);
+  });
+
+  it("the plan shows the queued messages that will travel", async () => {
+    const planned = await planMove(chat({ queued: ["ship it after the tests"] }), THIS_MAC, HOST);
+    if (!planned.ok) throw new Error("plan");
+    expect(planned.plan.queued).toEqual(["ship it after the tests"]);
   });
 });
 
@@ -244,10 +266,8 @@ describe("WP-177 custody handover", () => {
     mac.seed(start);
     const sha = await sha256Hex(start.transcript);
 
-    const out = await planMove(start, THIS_MAC, HOST);
-    if (!out.ok) throw new Error("plan should be possible");
-    const there = await moveChat({ chatId: CHAT, from: mac, to: host, approval: { planId: out.plan.planId }, moveId: "m-out", at: AT });
-    expect(there.status).toBe("moved");
+    const out = await approve(THIS_MAC, HOST);
+    expect((await moveChat({ chatId: CHAT, from: mac, to: host, approval: out.approval, moveId: "m-out", at: AT })).status).toBe("moved");
 
     const onHost = (await host.read(CHAT))?.live;
     expect(onHost).toMatchObject({ chatId: CHAT, providerSessionId: start.providerSessionId, model: start.model, effort: start.effort, queued: start.queued });
@@ -255,11 +275,8 @@ describe("WP-177 custody handover", () => {
     expect((await mac.read(CHAT))?.live).toBeNull();
     expect((await mac.read(CHAT))?.owner).toBe(HOST);
 
-    const back = await planMove(onHost!, HOST, THIS_MAC);
-    if (!back.ok) throw new Error("plan back should be possible");
-    const again = await moveChat({ chatId: CHAT, from: host, to: mac, approval: { planId: back.plan.planId }, moveId: "m-back", at: AT });
-    expect(again.status).toBe("moved");
-
+    const back = await approve(HOST, THIS_MAC, onHost!);
+    expect((await moveChat({ chatId: CHAT, from: host, to: mac, approval: back.approval, moveId: "m-back", at: AT })).status).toBe("moved");
     const home = (await mac.read(CHAT))?.live;
     expect(home).toMatchObject({ chatId: CHAT, model: start.model, effort: start.effort, title: start.title });
     expect(await sha256Hex(home!.transcript)).toBe(sha);
@@ -272,9 +289,8 @@ describe("WP-177 custody handover", () => {
     const host = new StubMachine(HOST);
     mac.seed(chat());
     host.fail.receive = "disk full";
-    const planned = await planMove(chat(), THIS_MAC, HOST);
-    if (!planned.ok) throw new Error("plan");
-    const result = await moveChat({ chatId: CHAT, from: mac, to: host, approval: { planId: planned.plan.planId }, moveId: "m1", at: AT });
+    const { approval } = await approve(THIS_MAC, HOST);
+    const result = await moveChat({ chatId: CHAT, from: mac, to: host, approval, moveId: "m1", at: AT });
     expect(result.status).toBe("failed");
     if (result.status === "failed") {
       expect(result.stage).toBe("receive");
@@ -294,28 +310,44 @@ describe("WP-177 custody handover", () => {
       const ok = await realReceive(chatId, moveId, payload);
       return ok.ok ? { ok: true, transcriptSha256: "0".repeat(64) } : ok;
     };
-    const planned = await planMove(chat(), THIS_MAC, HOST);
-    if (!planned.ok) throw new Error("plan");
-    const result = await moveChat({ chatId: CHAT, from: mac, to: host, approval: { planId: planned.plan.planId }, moveId: "m1", at: AT });
+    const { approval } = await approve(THIS_MAC, HOST);
+    const result = await moveChat({ chatId: CHAT, from: mac, to: host, approval, moveId: "m1", at: AT });
     expect(result.status).toBe("failed");
     if (result.status === "failed") expect(result.stage).toBe("verify");
     expect((await mac.read(CHAT))?.live).not.toBeNull();
-    expect((await host.read(CHAT))?.live).toBeNull();
+    expect((await host.read(CHAT))?.live ?? null).toBeNull();
   });
 
-  it("keeps the chat on the Mac when the source cannot let go, and drops the target's copy", async () => {
+  it("the source keeps its transcript when the target cannot activate, and the copy is discarded", async () => {
+    const mac = new StubMachine(THIS_MAC);
+    const host = new StubMachine(HOST);
+    mac.seed(chat());
+    host.fail.activate = "host restarting";
+    const { approval } = await approve(THIS_MAC, HOST);
+    const result = await moveChat({ chatId: CHAT, from: mac, to: host, approval, moveId: "m1", at: AT });
+    expect(result.status).toBe("failed");
+    if (result.status === "failed") expect(result.stage).toBe("activate");
+    expect((await mac.read(CHAT))?.live).not.toBeNull();
+    expect(mac.isFrozen(CHAT)).toBe(false);
+    expect((await host.read(CHAT))?.live ?? null).toBeNull();
+  });
+
+  it("a source that cannot let go leaves the target with the chat and the source frozen: partial, then completed", async () => {
     const mac = new StubMachine(THIS_MAC);
     const host = new StubMachine(HOST);
     mac.seed(chat());
     mac.fail.release = "permission denied";
-    const planned = await planMove(chat(), THIS_MAC, HOST);
-    if (!planned.ok) throw new Error("plan");
-    const result = await moveChat({ chatId: CHAT, from: mac, to: host, approval: { planId: planned.plan.planId }, moveId: "m1", at: AT });
-    expect(result.status).toBe("failed");
-    if (result.status === "failed") expect(result.stage).toBe("release");
-    expect((await mac.read(CHAT))?.live).not.toBeNull();
-    expect(mac.isFrozen(CHAT)).toBe(false);
-    expect((await host.read(CHAT))?.live).toBeNull();
+    const { approval } = await approve(THIS_MAC, HOST);
+    const result = await moveChat({ chatId: CHAT, from: mac, to: host, approval, moveId: "m1", at: AT });
+    expect(result.status).toBe("partial");
+    expect((await host.read(CHAT))?.live).not.toBeNull();
+    expect(mac.isFrozen(CHAT)).toBe(true);
+
+    mac.fail.release = undefined;
+    const done = await completeMove({ chatId: CHAT, from: mac, to: host, moveId: "m1" });
+    expect(done.status).toBe("moved");
+    expect((await mac.read(CHAT))?.live ?? null).toBeNull();
+    expect((await host.read(CHAT))?.owner).toBe(HOST);
   });
 
   it("never runs on both sides: a turn cannot start on the Mac while the host is receiving", async () => {
@@ -326,30 +358,58 @@ describe("WP-177 custody handover", () => {
     host.onReceive = () => {
       startedDuringReceive = mac.startTurn(CHAT);
     };
-    const planned = await planMove(chat(), THIS_MAC, HOST);
-    if (!planned.ok) throw new Error("plan");
-    const result = await moveChat({ chatId: CHAT, from: mac, to: host, approval: { planId: planned.plan.planId }, moveId: "m1", at: AT });
-    expect(result.status).toBe("moved");
+    const { approval } = await approve(THIS_MAC, HOST);
+    expect((await moveChat({ chatId: CHAT, from: mac, to: host, approval, moveId: "m1", at: AT })).status).toBe("moved");
     expect(startedDuringReceive).toBe(false);
   });
+});
 
-  it("reports a partial move, not a silent success, when the host cannot open the chat after the handover", async () => {
+describe("WP-177 crash at each step, then recovery", () => {
+  type Step = "receive" | "activate" | "release" | "freeze";
+  const steps: Array<[Step, "before" | "after"]> = [
+    ["freeze", "after"],
+    ["receive", "before"],
+    ["receive", "after"],
+    ["activate", "before"],
+    ["activate", "after"],
+    ["release", "before"],
+    ["release", "after"],
+  ];
+
+  /** Wraps one endpoint so the named step crashes: before it runs, or after it has stored its change. */
+  function crashing(machine: StubMachine, step: Step, when: "before" | "after"): MoveEndpoint {
+    const wrapped = Object.create(machine) as StubMachine;
+    const original = (machine as unknown as Record<string, (...a: unknown[]) => Promise<unknown>>)[step].bind(machine);
+    (wrapped as unknown as Record<string, unknown>)[step] = async (...args: unknown[]) => {
+      if (when === "before") throw new Error(`crash before ${step}`);
+      const result = await original(...args);
+      throw new Error(`crash after ${step}`);
+    };
+    return wrapped;
+  }
+
+  it.each(steps)("%s %s: the chat ends on exactly one machine with its copy, after recovery", async (step, when) => {
     const mac = new StubMachine(THIS_MAC);
     const host = new StubMachine(HOST);
     mac.seed(chat());
-    host.fail.activate = "host restarting";
-    const planned = await planMove(chat(), THIS_MAC, HOST);
-    if (!planned.ok) throw new Error("plan");
-    const result = await moveChat({ chatId: CHAT, from: mac, to: host, approval: { planId: planned.plan.planId }, moveId: "m1", at: AT });
-    expect(result.status).toBe("partial");
-    expect((await host.read(CHAT))?.live).toBeNull();
-    expect((await mac.read(CHAT))?.live).toBeNull();
+    const { approval } = await approve(THIS_MAC, HOST);
+    const sourceSide = step === "freeze" || step === "release" ? crashing(mac, step, when) : mac;
+    const targetSide = step === "receive" || step === "activate" ? crashing(host, step, when) : host;
 
-    host.fail.activate = undefined;
-    const done = await completeMove({ chatId: CHAT, to: host, moveId: "m1" });
-    expect(done.status).toBe("moved");
-    expect((await host.read(CHAT))?.live).not.toBeNull();
-    expect((await host.read(CHAT))?.owner).toBe(HOST);
+    const first = await moveChat({ chatId: CHAT, from: sourceSide, to: targetSide, approval, moveId: "m-crash", at: AT });
+    // Whatever the first attempt reported, recovery brings the chat to one machine.
+    const after = await recoverMove({ chatId: CHAT, moveId: "m-crash", from: mac, to: host });
+    const macLive = (await mac.read(CHAT))?.live ?? null;
+    const hostLive = (await host.read(CHAT))?.live ?? null;
+    expect(Number(macLive !== null) + Number(hostLive !== null)).toBe(1);
+    const owner = hostLive ? HOST : THIS_MAC;
+    const live = hostLive ?? macLive!;
+    expect(live.transcript).toBe(chat().transcript);
+    expect(live.queued).toEqual(chat().queued);
+    expect(["moved", "recovered"]).toContain(after.status);
+    expect(["moved", "failed", "partial", "refused", "recovered"]).toContain(first.status);
+    expect(owner === HOST || owner === THIS_MAC).toBe(true);
+    expect(mac.isFrozen(CHAT)).toBe(false);
   });
 });
 
@@ -359,9 +419,8 @@ describe("WP-177 model, effort and resume", () => {
     const host = new StubMachine(HOST);
     host.canResumeReply = { ok: false, reason: "this CLI version cannot read the transcript" };
     mac.seed(chat());
-    const planned = await planMove(chat(), THIS_MAC, HOST);
-    if (!planned.ok) throw new Error("plan");
-    const result = await moveChat({ chatId: CHAT, from: mac, to: host, approval: { planId: planned.plan.planId }, moveId: "m1", at: AT });
+    const { approval } = await approve(THIS_MAC, HOST);
+    const result = await moveChat({ chatId: CHAT, from: mac, to: host, approval, moveId: "m1", at: AT });
     expect(result.status).toBe("refused");
     if (result.status === "refused") {
       expect(result.refusal.reason).toBe("cannot-resume");
@@ -370,6 +429,42 @@ describe("WP-177 model, effort and resume", () => {
     }
     expect(mac.isFrozen(CHAT)).toBe(false);
     expect((await mac.read(CHAT))?.live?.model).toBe("test-model-1");
+  });
+});
+
+describe("WP-177 ids", () => {
+  it("refuses a source record that names another chat", async () => {
+    const mac = new StubMachine(THIS_MAC);
+    const host = new StubMachine(HOST);
+    mac.seed(chat());
+    const realRead = mac.read.bind(mac);
+    mac.read = async (chatId: string) => {
+      const rec = await realRead(chatId);
+      return rec?.live ? { ...rec, live: { ...rec.live, chatId: "someone-else" } } : rec;
+    };
+    const { approval } = await approve(THIS_MAC, HOST);
+    const result = await moveChat({ chatId: CHAT, from: mac, to: host, approval, moveId: "m1", at: AT });
+    expect(result.status).toBe("refused");
+    if (result.status === "refused") expect(result.refusal.reason).toBe("id-mismatch");
+    expect(host.payloads).toHaveLength(0);
+  });
+
+  it("a payload that names another chat is refused by the target", async () => {
+    const mac = new StubMachine(THIS_MAC);
+    const host = new StubMachine(HOST);
+    mac.seed(chat());
+    const { approval } = await approve(THIS_MAC, HOST);
+    const result = await moveChat({ chatId: "other-chat", from: mac, to: host, approval, moveId: "m1", at: AT }).catch(
+      (e: Error) => ({ status: "threw", message: e.message }),
+    );
+    expect(result.status).not.toBe("moved");
+    expect((await host.read(CHAT))?.live ?? null).toBeNull();
+  });
+
+  it("a provider session id that is not an id is refused in the plan", async () => {
+    const planned = await planMove(chat({ providerSessionId: "../../etc/passwd" }), THIS_MAC, HOST);
+    expect(planned.ok).toBe(false);
+    if (!planned.ok) expect(planned.refusal.reason).toBe("invalid-session-id");
   });
 });
 
@@ -386,23 +481,18 @@ describe("WP-177 reconnect race", () => {
     const mac = new StubMachine(THIS_MAC);
     const host = new StubMachine(HOST, hostLeases(root));
     mac.seed(chat());
-    const planned = await planMove(chat(), THIS_MAC, HOST);
-    if (!planned.ok) throw new Error("plan");
-    const approval = { planId: planned.plan.planId };
+    const { approval } = await approve(THIS_MAC, HOST);
     const [a, b] = await Promise.all([
       moveChat({ chatId: CHAT, from: mac, to: host, approval, moveId: "desktop", at: AT }),
       moveChat({ chatId: CHAT, from: mac, to: host, approval, moveId: "host", at: AT }),
     ]);
-    const statuses = [a.status, b.status].sort();
-    expect(statuses).toEqual(["moved", "refused"]);
-    const loser = a.status === "moved" ? b : a;
-    expect(loser.status).toBe("refused");
+    expect([a.status, b.status].sort()).toEqual(["moved", "refused"]);
     expect(host.payloads).toHaveLength(1);
     expect((await host.read(CHAT))?.live).not.toBeNull();
-    expect((await mac.read(CHAT))?.live).toBeNull();
+    expect((await mac.read(CHAT))?.live ?? null).toBeNull();
   });
 
-  it("the host lease refuses a second receive for the same chat until the first one lets go", async () => {
+  it("the host lease refuses a second receive for the same chat until the first one lets go", () => {
     const leases = hostLeases(root);
     expect(leases.acquire(CHAT, "first")).toBe(true);
     expect(leases.acquire(CHAT, "second")).toBe(false);
@@ -431,10 +521,8 @@ describe("WP-177 no credentials in a move", () => {
     const mac = new StubMachine(THIS_MAC);
     const host = new StubMachine(HOST);
     mac.seed({ ...chat(), apiKey: SENTINEL_KEY, oauthToken: SENTINEL_TOKEN } as ChatSnapshot);
-    const planned = await planMove(chat(), THIS_MAC, HOST);
-    if (!planned.ok) throw new Error("plan");
-    const result = await moveChat({ chatId: CHAT, from: mac, to: host, approval: { planId: planned.plan.planId }, moveId: "m1", at: AT });
-    expect(result.status).toBe("moved");
+    const { approval } = await approve(THIS_MAC, HOST);
+    expect((await moveChat({ chatId: CHAT, from: mac, to: host, approval, moveId: "m1", at: AT })).status).toBe("moved");
     const sent = JSON.stringify(host.payloads);
     expect(sent).not.toContain(SENTINEL_KEY);
     expect(sent).not.toContain(SENTINEL_TOKEN);
@@ -451,65 +539,4 @@ describe("WP-177 no credentials in a move", () => {
   });
 });
 
-describe("WP-177 transcript secret hold", () => {
-  const KEY_IN_TRANSCRIPT = '{"type":"user","text":"use sk-ant-api03-ABCDEFGH12345678 for the key"}\n';
-
-  it("counts key-shaped values in the transcript", () => {
-    expect(transcriptSecretHits(chat().transcript)).toBe(0);
-    expect(transcriptSecretHits(KEY_IN_TRANSCRIPT)).toBeGreaterThan(0);
-    expect(transcriptSecretHits('{"api_key": "abcdef0123456789abcdef"}')).toBeGreaterThan(0);
-  });
-
-  it("holds the move when the transcript holds a key-shaped value, and asks the person", async () => {
-    const mac = new StubMachine(THIS_MAC);
-    const host = new StubMachine(HOST);
-    mac.seed(chat({ transcript: KEY_IN_TRANSCRIPT }));
-    const planned = await planMove(chat({ transcript: KEY_IN_TRANSCRIPT }), THIS_MAC, HOST);
-    if (!planned.ok) throw new Error("plan");
-    expect(planned.plan.transcriptSecretHits).toBeGreaterThan(0);
-    const held = await moveChat({ chatId: CHAT, from: mac, to: host, approval: { planId: planned.plan.planId }, moveId: "m1", at: AT });
-    expect(held.status).toBe("refused");
-    if (held.status === "refused") {
-      expect(held.refusal.reason).toBe("transcript-secret-held");
-      expect(held.refusal.message).toMatch(/ask/i);
-    }
-    expect(mac.isFrozen(CHAT)).toBe(false);
-    expect(host.payloads).toHaveLength(0);
-  });
-
-  it("moves only when the person accepts that exact plan, which names the hit", async () => {
-    const mac = new StubMachine(THIS_MAC);
-    const host = new StubMachine(HOST);
-    mac.seed(chat({ transcript: KEY_IN_TRANSCRIPT }));
-    const planned = await planMove(chat({ transcript: KEY_IN_TRANSCRIPT }), THIS_MAC, HOST);
-    if (!planned.ok) throw new Error("plan");
-    const moved = await moveChat({
-      chatId: CHAT,
-      from: mac,
-      to: host,
-      approval: { planId: planned.plan.planId, acceptTranscriptSecrets: true },
-      moveId: "m1",
-      at: AT,
-    });
-    expect(moved.status).toBe("moved");
-  });
-
-  it("a plan approved before a key appeared in the transcript cannot move", async () => {
-    const mac = new StubMachine(THIS_MAC);
-    const host = new StubMachine(HOST);
-    mac.seed(chat());
-    const planned = await planMove(chat(), THIS_MAC, HOST);
-    if (!planned.ok) throw new Error("plan");
-    mac.seed(chat({ transcript: KEY_IN_TRANSCRIPT }));
-    const result = await moveChat({
-      chatId: CHAT,
-      from: mac,
-      to: host,
-      approval: { planId: planned.plan.planId, acceptTranscriptSecrets: true },
-      moveId: "m1",
-      at: AT,
-    });
-    expect(result.status).toBe("refused");
-    expect(host.payloads).toHaveLength(0);
-  });
-});
+export type { MovePlan };

@@ -25,7 +25,7 @@ describe("WP-177 teleport copy", () => {
   });
 
   it("keeps all copy free of em and en dashes", () => {
-    const reasons = ["turn-running", "approval-pending", "cannot-resume", "transcript-secret-held", "held-elsewhere", "not-owner"] as const;
+    const reasons = ["turn-running", "approval-pending", "cannot-resume", "invalid-session-id", "held-elsewhere", "not-owner"] as const;
     for (const reason of reasons) {
       const copy = teleportRefusalCopy({ reason, message: "m", recapOffered: reason === "cannot-resume" });
       expect(`${copy.title} ${copy.body}`).not.toMatch(/[\u2013\u2014]/);
