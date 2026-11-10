@@ -395,6 +395,12 @@ export function takeImportedSpend(raw: unknown): SpendBook {
   return book;
 }
 
+/** The project limits that name this project, plus any app limit. Empty when nothing is set. */
+export function spendFor(project: string): SpendLimit[] {
+  boot();
+  return limitsFor(project);
+}
+
 export function spendLine(project: string, harness: string, scope: SpendScope = "project"): string {
   boot();
   const limit = book.limits.find((row) => row.scope === scope && (scope === "app" || namesProject(row.project, project)));

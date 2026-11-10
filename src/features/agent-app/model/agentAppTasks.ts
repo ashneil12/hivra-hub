@@ -40,6 +40,8 @@ import {
   type DelegationState,
 } from "../../monos/model/delegations";
 import { CHECKER_MONO_ID } from "../../hub/model/hubMcp";
+import { formatMeasuredUsd, sanitizeSpendLimit, type SpendLimit } from "../../usage/model/spend";
+import { clearSpendLimit, saveSpendLimit, spendFor, spendSnapshot } from "../../usage/model/spendGate";
 import { SELF_REVIEW_SHAPE, storedReview } from "../../monos/model/workerReview";
 import { waitingOnAshLine } from "../../hub/model/chatQuestions";
 import { answeredJobRefusal } from "../../monos/model/ashAnswersWorker";
@@ -155,7 +157,24 @@ export const TASK_FIELDS: ReadonlyArray<readonly [string, readonly string[]]> = 
     ],
   ],
   ["tasks.accept", ["taskId", "accept", "reason"]],
-  ["tasks.workers", ["project", "workers", "heavy", "scope", "cli", "model", "effort", "clear"]],
+  [
+    "tasks.workers",
+    [
+      "project",
+      "workers",
+      "heavy",
+      "scope",
+      "cli",
+      "model",
+      "effort",
+      "clear",
+      // WP-176: a measured-cost limit. scope project or system, never mono.
+      "amountUsd",
+      "period",
+      "warnAt",
+      "spendClear",
+    ],
+  ],
   ["tasks.status", ["taskIds"]],
   ["tasks.wait", ["taskIds", "timeoutSeconds"]],
   ["tasks.cancel", ["taskId", "reason"]],
@@ -1552,6 +1571,15 @@ function modelCaller(source: Session, host: AgentAppHost) {
   return mono;
 }
 
+/** WP-176: the same chat may set a spend limit. A worker, a habit run and the checker may not. */
+function spendCaller(source: Session, host: AgentAppHost) {
+  const mono =
+    host.isMono(source.id) && !host.isHabitRun?.(source.id) ? host.monoOf?.(source.id) : undefined;
+  if (!mono || mono.id === CHECKER_MONO_ID)
+    throw new Error("Only a Mono sets a spend limit, from its own chat.");
+  return mono;
+}
+
 function worksOn(projects: readonly string[], folder: string, projectId: string): boolean {
   return projects.some(
     (entry) =>
@@ -1587,12 +1615,20 @@ function saveMonoDefault(
  * WP-89: scope, cli, model, effort and clear set what those workers run on.
  */
 async function workers(source: Session, input: Record<string, unknown>, host: AgentAppHost) {
-  const choosing =
-    input.scope !== undefined ||
+  const settingSpend =
+    input.amountUsd !== undefined ||
+    input.period !== undefined ||
+    input.warnAt !== undefined ||
+    input.spendClear !== undefined;
+  const choosingModel =
     input.cli !== undefined ||
     input.model !== undefined ||
     input.effort !== undefined ||
     input.clear !== undefined;
+  // A scope on its own still means "set the model". A spend limit uses scope too, and must not ask for a model.
+  const choosing = choosingModel || (input.scope !== undefined && !settingSpend);
+  // WP-176: reading a limit needs no special caller. Setting one does, before the project is resolved.
+  const spendMono = settingSpend ? spendCaller(source, host) : undefined;
   const setter = choosing ? modelCaller(source, host) : undefined;
   const { owner, tasks } = taskOwner(source, host);
   if (!tasks.pool) throw new Error("This build starts every worker at once; it has no per-project limit.");
@@ -1654,7 +1690,53 @@ async function workers(source: Session, input: Record<string, unknown>, host: Ag
     rules,
   });
   const rulesLine = crewRuleSentence(rules, catalog);
-  const line = [limitsLine(projectName(folder), limits), changed, force.sentence, rulesLine].filter(Boolean).join(" ");
+  let spendNote = "";
+  if (settingSpend && spendMono) {
+    if (input.scope === undefined)
+      throw new Error("Say whether this is just this Mono, this project, or everything.");
+    if (input.scope !== "mono" && input.scope !== "project" && input.scope !== "system")
+      throw new Error('scope must be "mono", "project" or "system".');
+    if (input.scope === "mono")
+      throw new Error("A spend limit covers this project or everything, not one Mono.");
+    const period = input.period === "day" || input.period === "month" ? input.period : null;
+    if (!period) throw new Error('period must be "day" or "month".');
+    if (input.spendClear !== undefined && input.spendClear !== true) throw new Error("spendClear must be true");
+    const scope = input.scope === "system" ? "app" : "project";
+    if (scope === "project" && !worksOn(spendMono.projects, folder, project))
+      throw new Error("This Mono doesn't work on that project.");
+    const who = scope === "app" ? "" : project;
+    const label = scope === "app" ? "the whole app" : project;
+    const here = spendSnapshot().book;
+    if (input.spendClear === true) {
+      const exists = here.limits.some((row) => row.scope === scope && row.project === who && row.period === period);
+      if (exists) {
+        const dropped = clearSpendLimit(scope, who, period, here.revision);
+        if (!dropped.written) throw new Error("That change didn't stick. Try again.");
+      }
+      spendNote = `Spend limit cleared for ${label}.`;
+    } else {
+      const warnAt = input.warnAt === undefined ? 0.8 : input.warnAt;
+      if (typeof input.amountUsd !== "number" || !Number.isFinite(input.amountUsd) || input.amountUsd <= 0)
+        throw new Error("amountUsd must be a positive number.");
+      if (typeof warnAt !== "number" || !Number.isFinite(warnAt) || warnAt < 0.5 || warnAt > 1)
+        throw new Error("warnAt must be from 0.5 to 1.");
+      const clean = sanitizeSpendLimit({
+        scope,
+        project: who,
+        period,
+        amountUsd: input.amountUsd,
+        warnAt,
+      });
+      if (!clean) throw new Error("amountUsd must be a positive number.");
+      const saved = saveSpendLimit(clean, spendSnapshot().book.revision);
+      if (!saved.written) throw new Error("That change didn't stick. Try again.");
+      const when = clean.period === "day" ? "today" : "this month";
+      spendNote = `Spend limit for ${label} is ${formatMeasuredUsd(clean.amountUsd)} ${when}.`;
+    }
+  }
+  const spendRows = spendFor(project);
+  const spend: SpendLimit[] | null = spendRows.length ? spendRows : null;
+  const line = [limitsLine(projectName(folder), limits), spendNote, changed, force.sentence, rulesLine].filter(Boolean).join(" ");
   if (planned && setter) {
     const previous = current?.cli || current?.model || current?.effort ? current : undefined;
     host.postCard?.(source.id, {
@@ -1693,6 +1775,7 @@ async function workers(source: Session, input: Record<string, unknown>, host: Ag
       project: projectPick ?? null,
       system: systemPick ?? null,
     },
+    spend,
   };
 }
 

@@ -2150,6 +2150,7 @@ describe("parallel workers per project, with throttling (H8)", () => {
         skipped: [],
       },
       scopes: { mono: null, project: null, system: null },
+      spend: null,
     });
     expect(workerLimits("vg-game")).toEqual({ workers: 20, heavy: 4 });
     await expect(handleAgentApp(source, "w2", "tasks.workers", { workers: 40 }, host)).rejects.toThrow("from 1 to 30");
@@ -2335,6 +2336,70 @@ describe("parallel workers per project, with throttling (H8)", () => {
         handleAgentApp(source, "proj", "tasks.workers", { scope: "project", project: "/tmp/other", model: "opus" }, host),
       ).rejects.toThrow("This Mono doesn't work on that project.");
       expect(findMono("vg-game-lead")?.workerDefault).toBeUndefined();
+    });
+
+    it("sets a spend limit from the first mate's own chat, and nobody else", async () => {
+      const { source, host } = lead();
+      const read = (await handleAgentApp(source, "r", "tasks.workers", {}, host)) as { spend: unknown; line: string };
+      expect(read.spend).toBeNull();
+      expect(read.line).not.toContain("Spend limit");
+      const saved = (await handleAgentApp(
+        source,
+        "s",
+        "tasks.workers",
+        { scope: "project", amountUsd: 50, period: "month" },
+        host,
+      )) as { spend: { scope: string; amountUsd: number; period: string; warnAt: number }[]; line: string };
+      expect(saved.spend).toEqual([
+        expect.objectContaining({ scope: "project", project: "vg-game", period: "month", amountUsd: 50, warnAt: 0.8 }),
+      ]);
+      expect(saved.line).toContain("Spend limit for vg-game is $50 this month.");
+      expect(saved.line).toContain("runs up to");
+      for (const who of ["worker", "habit"] as const) {
+        const refused = lead(who);
+        await expect(
+          handleAgentApp(refused.source, who, "tasks.workers", { scope: "project", amountUsd: 10, period: "month" }, refused.host),
+        ).rejects.toThrow("Only a Mono sets a spend limit, from its own chat.");
+      }
+      const checker = lead("checker");
+      await expect(
+        handleAgentApp(checker.source, "checker", "tasks.workers", { scope: "project", amountUsd: 10, period: "month" }, checker.host),
+      ).rejects.toThrow(/checker only reads|Only a Mono sets a spend limit/);
+      await expect(
+        handleAgentApp(source, "mono", "tasks.workers", { scope: "mono", amountUsd: 10, period: "month" }, host),
+      ).rejects.toThrow("not one Mono");
+      await expect(
+        handleAgentApp(source, "noscope", "tasks.workers", { amountUsd: 10, period: "month" }, host),
+      ).rejects.toThrow("Say whether this is just this Mono, this project, or everything.");
+      await expect(
+        handleAgentApp(source, "bad", "tasks.workers", { scope: "project", amountUsd: 0, period: "month" }, host),
+      ).rejects.toThrow("amountUsd must be a positive number.");
+      await expect(
+        handleAgentApp(source, "week", "tasks.workers", { scope: "project", amountUsd: 10, period: "week" }, host),
+      ).rejects.toThrow('period must be "day" or "month".');
+      await expect(
+        handleAgentApp(source, "other", "tasks.workers", { scope: "project", project: "/tmp/other", amountUsd: 10, period: "month" }, host),
+      ).rejects.toThrow("This Mono doesn't work on that project.");
+      const cleared = (await handleAgentApp(
+        source,
+        "clear",
+        "tasks.workers",
+        { scope: "project", period: "month", spendClear: true },
+        host,
+      )) as { spend: unknown; line: string };
+      expect(cleared.spend).toBeNull();
+      expect(cleared.line).toContain("Spend limit cleared for vg-game.");
+      const everywhere = (await handleAgentApp(
+        source,
+        "app",
+        "tasks.workers",
+        { scope: "system", amountUsd: 5, period: "day" },
+        host,
+      )) as { spend: { scope: string; project: string; period: string; amountUsd: number }[]; line: string };
+      expect(everywhere.spend).toEqual([
+        expect.objectContaining({ scope: "app", project: "", period: "day", amountUsd: 5, warnAt: 0.8 }),
+      ]);
+      expect(everywhere.line).toContain("Spend limit for the whole app is $5 today.");
     });
 
     it("posts a card with the previous setting, and a line in the activity log", async () => {
