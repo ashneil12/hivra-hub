@@ -32,3 +32,19 @@ test("quoting a sent message adds a marked quote to the draft", async ({ page })
   await row.getByRole("button", { name: "Quote message" }).click();
   await expect(composer(page)).toHaveValue(/> You said:\n> please check the door/);
 });
+
+test("stashing a draft clears the composer and stays stored across a reload", async ({ page }) => {
+  await openLead(page);
+  await composer(page).fill("hold this thought");
+  await page.getByRole("button", { name: "Stash draft" }).click();
+  await expect(composer(page)).toHaveValue("");
+  await page.getByRole("button", { name: "Restore draft" }).click();
+  await expect(composer(page)).toHaveValue("hold this thought");
+  await page.getByRole("button", { name: "Stash draft" }).click();
+  await expect(composer(page)).toHaveValue("");
+  // This page starts a new chat for the lead after a reload, so the same chat cannot be reopened here. The stored
+  // draft is what a reload of the real app reads back for that chat.
+  await page.reload();
+  const stored = await page.evaluate(() => localStorage.getItem("monocode.composerStash.v1"));
+  expect(stored).toContain("hold this thought");
+});

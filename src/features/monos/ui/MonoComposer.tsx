@@ -43,6 +43,14 @@ import {
   isPasteKey,
   largePasteContents,
 } from "../../sessions/model/largePaste";
+import {
+  canRestoreStash,
+  isStashShortcut,
+  peekStash,
+  restoreAttachments,
+  stashDraft,
+} from "../../sessions/model/draftStash";
+import { DraftStashActions, useStashPresent } from "../../sessions/ui/DraftStashActions";
 
 // Loaded on first open, with its emoji data, so neither weighs on startup.
 const EmojiPickerPopover = lazy(() =>
@@ -146,6 +154,8 @@ export function MonoComposer({
   const earlierDoneRef = useRef(onEarlierEditDone);
   earlierDoneRef.current = onEarlierEditDone;
   const [editingEarlier, setEditingEarlier] = useState(false);
+  // WP-124: a stashed draft for this chat, including one saved in another window.
+  const stashPresent = useStashPresent(sessionId);
   const readGeneration = useRef(0);
   const pendingReadsRef = useRef(0);
   const [pendingReads, setPendingReads] = useState(0);
@@ -217,6 +227,30 @@ export function MonoComposer({
     setText(next);
     setComposerDraft(sessionId, next);
     onDraftChange?.(next);
+  };
+  // WP-124: save the draft and clear the box. A failed save leaves the draft where it is.
+  const stashCurrentDraft = () => {
+    if (!enabled || submittingRef.current || editingEarlier) return;
+    const current = textRef.current;
+    const files = attachmentsRef.current;
+    const saved = stashDraft(sessionId, current, files);
+    if (!saved.ok) return;
+    readGeneration.current += 1;
+    for (const file of files) revokeAttachment(file);
+    update("");
+    attachmentsRef.current = [];
+    setAttachments([]);
+  };
+  const restoreCurrentDraft = () => {
+    if (!enabled || submittingRef.current || editingEarlier) return;
+    if (!canRestoreStash(textRef.current, attachmentsRef.current)) return;
+    const saved = peekStash(sessionId);
+    if (!saved) return;
+    const files = restoreAttachments(saved, () => crypto.randomUUID());
+    update(saved.text);
+    attachmentsRef.current = files;
+    setAttachments(files);
+    field.current?.focus();
   };
   const emojiButton = useRef<HTMLButtonElement>(null);
   const [emojiOpen, setEmojiOpen] = useState(false);
@@ -498,6 +532,13 @@ export function MonoComposer({
           (event.metaKey || event.ctrlKey) &&
           event.shiftKey &&
           isPasteKey(event.nativeEvent);
+        // WP-124: Cmd/Ctrl+Shift+S stashes the draft, or puts it back when the box is empty.
+        if (isStashShortcut(event)) {
+          event.preventDefault();
+          if (canRestoreStash(textRef.current, attachmentsRef.current)) restoreCurrentDraft();
+          else stashCurrentDraft();
+          return;
+        }
         if (
           event.key !== "Enter" ||
           event.shiftKey ||
@@ -621,6 +662,23 @@ export function MonoComposer({
             {dropNotice}
           </p>
         ) : null}
+        <DraftStashActions
+          canStash={
+            enabled &&
+            !submitting &&
+            !editingEarlier &&
+            (text.trim().length > 0 || attachments.length > 0)
+          }
+          canRestore={
+            stashPresent &&
+            enabled &&
+            !submitting &&
+            !editingEarlier &&
+            canRestoreStash(text, attachments)
+          }
+          onStash={stashCurrentDraft}
+          onRestore={restoreCurrentDraft}
+        />
         {editingEarlier ? (
           <p className="flex items-center gap-2 px-3 pt-2 text-xs text-content/55">
             Editing an earlier prompt.

@@ -204,6 +204,14 @@ import {
   type McpTag,
 } from "../model/mcpPicker";
 import { getComposerMcpTags, setComposerMcpTags } from "../model/draftCache";
+import {
+  canRestoreStash,
+  isStashShortcut,
+  peekStash,
+  restoreAttachments,
+  stashDraft,
+} from "../model/draftStash";
+import { DraftStashActions, useStashPresent } from "./DraftStashActions";
 import { type McpConnection } from "../../settings/model/mcp";
 import {
   getCachedMcpSettings,
@@ -520,6 +528,8 @@ export function Composer({
   const [pasteError, setPasteError] = useState<string | null>(null);
   /** A paste or send where hidden characters were removed: news, not a failure. */
   const [pasteNotice, setPasteNotice] = useState<string | null>(null);
+  // WP-124: a stashed draft for this chat, including one saved in another window.
+  const stashPresent = useStashPresent(sessionId);
   const [plusOpen, setPlusOpen] = useState(false);
   const [planSelected, setPlanSelected] = useState(false);
   const [operatorSelected, setOperatorSelected] = useState(false);
@@ -1618,12 +1628,54 @@ export function Composer({
     setPasteError(null);
     syncHasValue("", []);
   };
+  // WP-124: save the draft and clear the box. A failed save leaves the draft where it is.
+  const applyComposerDraft = (next: string, files: Attachment[]) => {
+    const el = ref.current;
+    if (el) {
+      el.value = next;
+      resizeComposer(el);
+    }
+    draftRevisionRef.current += 1;
+    setDraft(next);
+    onDraftChange?.(next);
+    attachmentsRef.current = files;
+    setAttachments(files);
+    syncHasValue(next, files);
+    setSlash(null);
+    setMention(null);
+  };
+  const stashCurrentDraft = () => {
+    if (!sessionId || disabled || editingEarlier || resendEdited) return;
+    const text = ref.current?.value ?? "";
+    const files = attachmentsRef.current;
+    const saved = stashDraft(sessionId, text, files);
+    if (!saved.ok) return;
+    pasteGenerationRef.current += 1;
+    for (const file of files) revokeAttachment(file);
+    applyComposerDraft("", []);
+  };
+  const restoreCurrentDraft = () => {
+    if (!sessionId || disabled || editingEarlier || resendEdited) return;
+    const text = ref.current?.value ?? "";
+    if (!canRestoreStash(text, attachmentsRef.current)) return;
+    const saved = peekStash(sessionId);
+    if (!saved) return;
+    applyComposerDraft(saved.text, restoreAttachments(saved, () => crypto.randomUUID()));
+    ref.current?.focus();
+  };
   const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
     // A paste event carries no modifier keys, so the shortcut is read here (largePaste.ts).
     inlinePasteRef.current =
       (e.metaKey || e.ctrlKey) && e.shiftKey && isPasteKey(e.nativeEvent);
     if (disabled) return;
     if (isImeComposition(e.nativeEvent)) return;
+    // WP-124: Cmd/Ctrl+Shift+S stashes the draft, or puts it back when the box is empty.
+    if (isStashShortcut(e)) {
+      e.preventDefault();
+      if (canRestoreStash(e.currentTarget.value, attachmentsRef.current)) restoreCurrentDraft();
+      else stashCurrentDraft();
+      return;
+    }
     if (creatingSkill) return;
     if (
       e.key === "Enter" &&
@@ -2279,6 +2331,23 @@ export function Composer({
               {pasteNotice}
             </p>
           ) : null}
+          <DraftStashActions
+            canStash={
+              !!sessionId &&
+              !editingEarlier &&
+              !resendEdited &&
+              (draft.trim().length > 0 || attachments.length > 0)
+            }
+            canRestore={
+              stashPresent &&
+              !!sessionId &&
+              !editingEarlier &&
+              !resendEdited &&
+              canRestoreStash(draft, attachments)
+            }
+            onStash={stashCurrentDraft}
+            onRestore={restoreCurrentDraft}
+          />
           {editingEarlier ? (
             <p className="flex items-center gap-2 px-3 pt-2 text-xs text-content/55">
               Editing an earlier prompt.
