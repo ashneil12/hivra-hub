@@ -32,6 +32,7 @@ import { setChatPreviewShown, settleChatPreview, useChatPagePreview } from "../.
 import { OPEN_EDIT_TODAY, todayPreviewWaiting } from "../../selfBuild/model/todayChat";
 import { FLOW_LABEL, type ChangeFlow } from "../../hubChange/model/hubChange";
 import { CalendarBlock, monthOf } from "./CalendarBlock";
+import { noteFrameLoad } from "./frameLoad";
 
 /*
  * Pages: one list of every page (by project), each with a pin. New page is a prompt to a seated Mono; it shows a
@@ -240,7 +241,11 @@ export function BespokeFrame({ pageId, spec, live, title }: { pageId: string; sp
       pageId, title: named.current, live: !!live, asks: spec.permissions,
       approved: () => (live ? approvedPermissions(pageId) : []),
       tapped: () => tappedInside(ref.current),
-      post: (message) => ref.current?.contentWindow?.postMessage(message, "*"),
+      post: (message) => {
+        const win = ref.current?.contentWindow;
+        if (!win) return false;
+        win.postMessage(message, "*");
+      },
       sources: appPageSources(sessions),
       // Built per frame: each handler is the page's own (its key, its grants, its title on a Bot changes row).
       handlers: {
@@ -252,9 +257,17 @@ export function BespokeFrame({ pageId, spec, live, title }: { pageId: string; sp
       onSize: setHeight,
     });
     let loads = 0;
+    let seen: object | null = null;
     const onLoad = () => {
+      // WP-153: WebKit fires load twice for one srcdoc. The same window is still this page.
+      const next = noteFrameLoad(seen, frame?.contentWindow ?? null);
+      seen = next.seen;
+      if (!next.left) {
+        if (seen) loads = Math.max(loads, 1);
+        return;
+      }
       loads += 1;
-      if (loads > 1) setGeneration((g) => g + 1); // it left its own page: a fresh frame, a fresh bridge
+      setGeneration((g) => g + 1); // it left its own page: a fresh frame, a fresh bridge
     };
     const onMessage = (e: MessageEvent) => {
       if (!ref.current || e.source !== ref.current.contentWindow || e.origin !== "null" || loads > 1) return;
