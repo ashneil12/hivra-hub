@@ -224,11 +224,15 @@ pub fn context_window_from_models(
     if model_id.trim().is_empty() {
         return None;
     }
-    let mut request = agent(5).get(&models_url(provider, base_url));
+    let mut request = agent_no_redirects(5).get(&models_url(provider, base_url));
     if provider != "ollama" && !key.trim().is_empty() {
         request = request.set("Authorization", &format!("Bearer {}", key.trim()));
     }
-    let body = request.call().ok()?.into_string().ok()?;
+    let response = request.call().ok()?;
+    if response.status() >= 300 {
+        return None;
+    }
+    let body = response.into_string().ok()?;
     model_window(&serde_json::from_str::<Value>(&body).ok()?, model_id)
 }
 
@@ -364,6 +368,17 @@ fn agent(read_secs: u64) -> ureq::Agent {
         .build()
 }
 
+/// For a call that carries a key to one address: a redirect is not followed, so the key is never offered to the
+/// address the provider named. A 3xx answer comes back as a response, and the caller treats it as a failure.
+fn agent_no_redirects(read_secs: u64) -> ureq::Agent {
+    ureq::AgentBuilder::new()
+        .timeout_connect(Duration::from_secs(10))
+        .timeout_read(Duration::from_secs(read_secs))
+        .timeout_write(Duration::from_secs(30))
+        .redirects(0)
+        .build()
+}
+
 fn host_of(url: &str) -> String {
     url::Url::parse(url)
         .ok()
@@ -393,12 +408,15 @@ pub fn test_key(provider: &str, base_url: &str, model_id: &str, key: &str) -> Ke
     }
     let url = chat_url(provider, base_url);
     let body = json!({"model": model, "messages": [{"role": "user", "content": "Say ok"}], "max_tokens": 1, "stream": false});
-    let result = agent(30)
+    let result = agent_no_redirects(30)
         .post(&url)
         .set("Authorization", &format!("Bearer {}", key.trim()))
         .set("Content-Type", "application/json")
         .send_string(&body.to_string());
     match result {
+        Ok(response) if response.status() >= 300 => fail(
+            "That address answered with a redirect, and the key isn't sent on to another address",
+        ),
         Ok(_) => ok(format!("Connected, {model} replied")),
         Err(ureq::Error::Status(401 | 403, _)) => fail(KEY_FAILED),
         Err(ureq::Error::Status(404, _)) => {
@@ -430,7 +448,11 @@ fn test_ollama(base_url: &str, model: &str) -> KeyTestResult {
         .trim()
         .trim_end_matches('/')
         .trim_end_matches("/v1");
-    match agent(5).get(&format!("{base}/api/tags")).call() {
+    match agent_no_redirects(5)
+        .get(&format!("{base}/api/tags"))
+        .call()
+    {
+        Ok(resp) if resp.status() >= 300 => fail(OLLAMA_DOWN),
         Ok(resp) => {
             if model.is_empty() {
                 return ok(OLLAMA_UP);
@@ -476,6 +498,24 @@ pub async fn model_key_test(
 /// turn is running, and a session that is resumed after a quit shows a stale frozen level. Remembered per route,
 /// so this is one provider call per model per run. Answers `None` when the provider has no such field — an
 /// unknown window must stay unknown rather than becoming a number we invented.
+/// The window lookup for a route the webview gave. A model's key is read, and the provider asked, only when the
+/// route has the provider and the address stored with the key (WP-129). Anything else is "unknown". Ollama has
+/// no key, so it passes through. `read_key` and `lookup` are the Keychain and the network; tests stand in for both.
+pub fn context_window_in(
+    hosts: Option<&std::path::Path>,
+    route: &CustomRoute,
+    read_key: impl FnOnce(&CustomRoute) -> Option<String>,
+    lookup: impl FnOnce(&CustomRoute, Option<&str>) -> Option<u64>,
+) -> Option<u64> {
+    let route = crate::key_binding::bound_route(hosts, route)?;
+    let key = if route.provider == "ollama" {
+        None
+    } else {
+        read_key(&route)
+    };
+    lookup(&route, key.as_deref())
+}
+
 #[tauri::command]
 pub async fn model_context_window(
     provider: String,
@@ -491,16 +531,14 @@ pub async fn model_context_window(
             custom_model_id,
             reasoning_effort: None,
         };
-        if !may_route(&route) {
-            return Ok(None);
-        }
-        let key = if route.provider == "ollama" {
-            None
-        } else {
+        let hosts = crate::key_binding::store_dir();
+        Ok(context_window_in(
+            hosts.as_deref(),
+            &route,
             // No key is not an error for a window lookup: the answer is simply unknown.
-            read_key_in(KEY_SERVICE, &route.custom_model_id).unwrap_or_default()
-        };
-        Ok(remembered_window(&route, key.as_deref()))
+            |bound| read_key_in(KEY_SERVICE, &bound.custom_model_id).unwrap_or_default(),
+            remembered_window,
+        ))
     })
     .await
     .map_err(|_| "The window lookup didn't finish.".to_string())?
@@ -1539,6 +1577,117 @@ mod tests {
             assert_eq!((reads, sent), (0, None), "{given:?}");
         }
         let _ = std::fs::remove_dir_all(&hosts);
+    }
+
+    #[test]
+    fn a_context_window_reads_the_key_only_for_the_address_stored_with_it() {
+        let saved = stored_route();
+        let hosts = hosts_with("window", std::slice::from_ref(&saved));
+        let run = |given: &CustomRoute| {
+            let reads = std::cell::Cell::new(0);
+            let looked = std::cell::RefCell::new(None);
+            let out = context_window_in(
+                Some(&hosts),
+                given,
+                |_| {
+                    reads.set(reads.get() + 1);
+                    Some("test-key1234".to_string())
+                },
+                |r, key| {
+                    *looked.borrow_mut() = Some((r.base_url.clone(), key.map(str::to_string)));
+                    Some(1_000_000)
+                },
+            );
+            (out, reads.get(), looked.into_inner())
+        };
+        let mut same = saved.clone();
+        same.base_url = "https://LLM.Example./v1/".into();
+        let (out, reads, looked) = run(&same);
+        assert_eq!((out, reads), (Some(1_000_000), 1));
+        assert_eq!(
+            looked,
+            Some((
+                "https://llm.example/v1".to_string(),
+                Some("test-key1234".to_string())
+            ))
+        );
+        for base in WRONG_ADDRESSES {
+            let mut given = saved.clone();
+            given.base_url = (*base).into();
+            let (out, reads, looked) = run(&given);
+            assert_eq!((out, reads, looked), (None, 0, None), "{base}");
+        }
+        let mut other_account = saved.clone();
+        other_account.custom_model_id = "custom-2".into();
+        let mut other_provider = saved.clone();
+        other_provider.provider = "openrouter".into();
+        let unsaved = route("xai", "https://api.x.ai/v1", "grok-4-fast");
+        for given in [other_account, other_provider, unsaved] {
+            let (out, reads, looked) = run(&given);
+            assert_eq!((out, reads, looked), (None, 0, None), "{given:?}");
+        }
+        // No data folder: no key. Ollama needs none.
+        let (mut reads, mut asked) = (0, 0);
+        let out = context_window_in(
+            None,
+            &saved,
+            |_| {
+                reads += 1;
+                None
+            },
+            |_, _| {
+                asked += 1;
+                Some(1)
+            },
+        );
+        assert_eq!((out, reads, asked), (None, 0, 0));
+        let local = route("ollama", "http://localhost:11434", "llama3.2");
+        let out = context_window_in(
+            None,
+            &local,
+            |_| panic!("Ollama has no key"),
+            |_, key| {
+                assert_eq!(key, None);
+                Some(8192)
+            },
+        );
+        assert_eq!(out, Some(8192));
+        let _ = std::fs::remove_dir_all(&hosts);
+    }
+
+    #[test]
+    fn a_window_lookup_and_a_key_test_do_not_follow_a_redirect() {
+        for code in [301_u16, 302, 303, 307, 308] {
+            let (out, seen, followed) = crate::key_binding::redirect_probe(code, |base| {
+                context_window_from_models("custom", &format!("{base}/v1"), "m", "fake-key-1234")
+            });
+            assert!(seen.starts_with("get "), "{seen}");
+            assert!(
+                seen.contains("authorization: bearer fake-key-1234"),
+                "{seen}"
+            );
+            assert_eq!((out, followed), (None, false), "{code}");
+
+            let (out, seen, followed) = crate::key_binding::redirect_probe(code, |base| {
+                test_key("custom", &format!("{base}/v1"), "m", "fake-key-1234")
+            });
+            assert!(
+                seen.contains("authorization: bearer fake-key-1234"),
+                "{seen}"
+            );
+            assert!(!out.ok, "{code}: {out:?}");
+            assert!(out.message.contains("redirect"), "{}", out.message);
+            assert!(!followed, "{code}: the redirect was followed");
+
+            // Ollama has no key, and a redirect still does not make it look up.
+            let (out, _, followed) = crate::key_binding::redirect_probe(code, |base| {
+                test_key("ollama", base, "llama3.2", "")
+            });
+            assert_eq!(
+                (out.ok, out.message.as_str(), followed),
+                (false, OLLAMA_DOWN, false)
+            );
+        }
     }
 
     #[test]
