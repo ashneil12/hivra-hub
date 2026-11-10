@@ -3,6 +3,7 @@
 // testing, then it would get throttled. But then it's really a per-project thing". The pool's own decisions.
 import { beforeEach, describe, expect, it } from "vitest";
 import type { Delegation } from "./delegations";
+import { DEFAULT_BUILDER_SCALE } from "./builderScale";
 import {
   admitWorker,
   DEFAULT_LIMITS,
@@ -16,6 +17,8 @@ import {
   pumpWorkers,
   queuedWorkers,
   resetWorkerPool,
+  setBuilderHealth,
+  setBuilderScale,
   setWorkerLimits,
   workerLimits,
   workerPoolHost,
@@ -130,6 +133,41 @@ describe("admitting a worker", () => {
     setWorkerLimits("hivra", { workers: 30, heavy: 30 });
     const rows = Array.from({ length: 29 }, (_, i) => open(`w${i}`));
     expect(admitWorker({ id: "w29", project: "hivra", projectName: "Hivra", heavy: true, harness: "claude" }, { rows, room })).toEqual({ start: true });
+  });
+
+  it("refuses a new launch when the machine is hot, and leaves the running rows and the queue in place", () => {
+    setWorkerLimits("hivra", { workers: 20, heavy: 20 });
+    setBuilderScale({
+      ...DEFAULT_BUILDER_SCALE,
+      maxBuilders: 20,
+      load: { kind: "above", value: 4 },
+      pauseFreeMemoryGb: 2,
+    });
+    setBuilderHealth({ load1: 4, freeMemoryGb: 8, readAt: 5_000, now: 5_000 });
+    const rows = [open("run-1"), open("run-2")];
+    const running = rows.map((row) => row.childSession);
+    const ask = { id: "new", project: "hivra", projectName: "Hivra", heavy: false, harness: "claude" };
+    expect(admitWorker(ask, { rows, room })).toEqual({ start: true });
+    setBuilderHealth({ load1: 4.1, freeMemoryGb: 8, readAt: 6_000, now: 6_000 });
+    const refused = admitWorker({ ...ask, id: "newer" }, { rows, room });
+    expect(refused).toMatchObject({ start: false, reason: "health" });
+    expect(!refused.start && refused.line).toContain("Running builders keep going.");
+    expect(!refused.start && refused.line).not.toMatch(/[—–]/);
+    expect(rows.map((row) => row.childSession)).toEqual(running);
+    enqueueWorker(job("q-hot"));
+    expect(nextWorkers({ rows, room })).toEqual([]);
+    expect(queuedWorkers().map((queued) => queued.id)).toEqual(["q-hot"]);
+    // A full worker count is said first, even when the machine is also hot.
+    setWorkerLimits("hivra", { workers: 1 });
+    expect(admitWorker({ ...ask, id: "third" }, { rows: [open("run-1")], room })).toMatchObject({
+      start: false,
+      reason: "workers",
+    });
+    // A reading that left earlier does not replace the one just taken.
+    setBuilderHealth({ load1: 1, freeMemoryGb: 8, readAt: 7_000, now: 7_000 });
+    setBuilderHealth({ load1: 99, freeMemoryGb: 0.1, readAt: 6_500, now: 7_000 });
+    setWorkerLimits("hivra", { workers: 20 });
+    expect(admitWorker({ ...ask, id: "after" }, { rows, room })).toEqual({ start: true });
   });
 });
 
