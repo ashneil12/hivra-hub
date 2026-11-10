@@ -362,6 +362,15 @@ export function useMobileWorkspace(options: Options) {
                 throw new Error(
                   "Command ID was already used with different input",
                 );
+              // WP-150 L1: a phone decision runs only while Rust still holds its request open (not timed
+              // out, answered, revoked or disabled). A repeat of a decision already run keeps its receipt.
+              if (
+                !existing &&
+                (payload.method === "session.approve" || payload.method === "session.deny")
+              ) {
+                const open = await invoke<boolean>("mobile_admits", { id: payload.id }).catch(() => false);
+                if (open !== true) throw new Error("This approval is no longer open on the phone.");
+              }
               if (!existing && receipts.size >= 1000) {
                 const oldest = receipts.keys().next().value;
                 if (oldest) receipts.delete(oldest);

@@ -36,9 +36,11 @@ export type PublishedApproval = {
   /** The block that carries this call. Unique for good, unlike a session's request ids. */
   blockId: string;
   tool: string;
-  /** The provider's command, unchanged. Null when the tool has none. */
+  /** The provider's command, unchanged. Null when the tool has none. Matching uses this, never `display`. */
   command: string | null;
   paths: string[];
+  /** What the phone shows: the command (or paths) with carriage returns and hidden characters escaped. */
+  display: string;
   project: string;
   at: number;
 };
@@ -98,7 +100,7 @@ export type PairingContext = {
    * take it (the call is gone or the session is not reachable); the phone is then refused
    * and the call stays answerable. Nothing here says "done" for a decision not sent.
    */
-  approve: (sessionId: string, requestId: number, decision: ApprovalDecision) => boolean | void;
+  approve: (sessionId: string, requestId: number, decision: ApprovalDecision) => boolean;
   /** A remote session whose desktop tab is not open cannot take the decision. */
   remoteBlocked: (session: Session) => boolean;
   sources?: PairingSources;
@@ -110,6 +112,11 @@ export type PairingContext = {
    * nothing is answered (fail closed).
    */
   approvals?: (sessions: readonly Session[]) => LiveApprovals;
+  /**
+   * Chats the phone must never see: a private chat (WP-111), saved or live. Their questions and
+   * crew rows are left out of the inbox and crew status. Without it nothing is left out.
+   */
+  privateIds?: ReadonlySet<string>;
 };
 
 const sharedAnswered = new Set<string>();
@@ -137,11 +144,27 @@ function approvable(session: Session): boolean {
   return cleanProject(session.cwd) != null;
 }
 
+/**
+ * Escapes what a person could not see in a command: carriage returns, control characters, and bidi
+ * or zero-width characters. Newlines and tabs stay. The exact text is kept for matching elsewhere.
+ */
+export function escapeForDisplay(text: string): string {
+  return text.replace(
+    /\r|[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F\u061C\u200B-\u200F\u202A-\u202E\u2060-\u2069\uFEFF]/g,
+    (character) =>
+      character === "\r" ? "\\r" : `\\u{${(character.codePointAt(0) ?? 0).toString(16).toUpperCase()}}`,
+  );
+}
+
 function approvalOf(session: Session, block: Block): PublishedApproval | null {
   const approval = block.approval;
   const call = approval?.call;
   const requestId = approval?.requestId;
   if (!approval || approval.decided) return null;
+  // WP-150 H1: only a Bash call the desktop marked complete is shown. Its arguments are all the
+  // phone can see, so an allow runs exactly what it showed. Any other tool (MCP, WebFetch, Write,
+  // Edit, Task) or a Bash call with a sandbox override is never published.
+  if (approval.callComplete !== true || call?.tool !== "Bash") return null;
   // A session's request ids start again at 1 with each harness process. Without
   // the block's own id the answered set cannot tell a new call that reuses one
   // from the call already decided.
@@ -172,6 +195,7 @@ function approvalOf(session: Session, block: Block): PublishedApproval | null {
     tool,
     command,
     paths,
+    display: escapeForDisplay(command ?? paths.join("\n")),
     project,
     at: typeof started === "number" && Number.isFinite(started) ? started : 0,
   };
@@ -293,8 +317,8 @@ export function inboxLines(input: {
       lines.push({
         id: `approval:${approval.conversationId}:${approval.requestId}`,
         kind: "approval",
-        title: approval.tool,
-        body: approval.command ?? approval.paths.join("\n"),
+        title: escapeForDisplay(approval.tool),
+        body: approval.display,
         waiting: waitingPhrase(approval.at, input.now),
         conversationId: approval.conversationId,
         projectId: mobileProjectKey(cleaned),
@@ -590,7 +614,8 @@ async function decide(method: string, params: Record<string, unknown>, ctx: Pair
   if (book.has(key)) throw new Error("This approval was already answered.");
   const session = ctx.sessions.find((item) => item.id === conversationId);
   if (!session || ctx.remoteBlocked(session)) throw new Error("Open this session on the desktop to answer it.");
-  if (ctx.approve(session.id, requestId, decision) === false) {
+  // Only a confirmed take is recorded. A window that could not send it (or sent nothing) is a refusal.
+  if (ctx.approve(session.id, requestId, decision) !== true) {
     throw new Error("Could not send this decision to the desktop. Try again.");
   }
   book.add(key);
@@ -616,7 +641,16 @@ export async function runMobilePairing(
   if (method !== "inbox.list" && method !== "crew.status") throw new Error("Unsupported mobile command");
   const sources = ctx.sources ?? defaultSources();
   const crew = method === "crew.status";
-  const loaded = await readSnapshot(sources, crew);
+  const snapshot = await readSnapshot(sources, crew);
+  // WP-111: a private chat's question and crew row never reach the phone.
+  const hidden = ctx.privateIds ?? new Set<string>();
+  const loaded = {
+    decisions: snapshot.decisions.filter((decision) => !hidden.has((decision.askedBy ?? "").trim())),
+    rows: snapshot.rows.filter(
+      (row) => !(row.childSession && hidden.has(row.childSession)) && !(row.ownerSession && hidden.has(row.ownerSession)),
+    ),
+    checks: snapshot.checks,
+  };
   const pending = (ctx.approvals ?? NO_APPROVALS)(ctx.sessions);
   if (!crew && pending.truncated) throw new Error("Too many approvals to list from the phone.");
   let projects: string[];

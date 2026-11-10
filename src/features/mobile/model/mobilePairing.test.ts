@@ -24,7 +24,8 @@ function session(patch: Partial<Session> = {}): Session {
   };
 }
 
-function tool(requestId: number, call?: ApprovalCall, decided?: "allow" | "deny"): Block {
+/** `complete` is what the desktop says about the call's arguments; a Bash call with its input is complete. */
+function tool(requestId: number, call?: ApprovalCall, decided?: "allow" | "deny", complete = call?.tool === "Bash"): Block {
   return {
     id: `b-${requestId}`,
     role: "tool",
@@ -35,6 +36,7 @@ function tool(requestId: number, call?: ApprovalCall, decided?: "allow" | "deny"
       requestId,
       ...(decided ? { decided } : {}),
       ...(call ? { call } : {}),
+      ...(complete ? { callComplete: true } : {}),
     },
   };
 }
@@ -73,6 +75,7 @@ describe("live approvals", () => {
         tool: "Bash",
         command: "git status --porcelain",
         paths: ["src/a.ts"],
+        display: "git status --porcelain",
         project: PROJECT,
         at: NOW - 12 * 60_000,
       },
@@ -117,6 +120,36 @@ describe("live approvals", () => {
     expect(publishedApprovals(live, new Set(["chat-1"]), new Set()).rows).toEqual([]);
     expect(publishedApprovals(live, new Set(), new Set(["chat-1"])).rows).toEqual([]);
   });
+
+  it("publishes only a Bash call the desktop marks complete, never an MCP, WebFetch, Write, Edit or Task call", () => {
+    // H1: the phone shows and echoes only what a call says. These calls carry arguments the phone
+    // cannot see, so an allow would approve something it never showed. Even a window that marks
+    // one complete gets nothing published: the phone checks the tool name too.
+    const unseen = [
+      { tool: "mcp__github__merge_pull_request" },
+      { tool: "WebFetch" },
+      { tool: "Write", paths: ["src/a.ts"] },
+      { tool: "Edit", paths: ["src/a.ts"] },
+      { tool: "Task" },
+    ];
+    for (const call of unseen) {
+      const rows = liveApprovals([session({ blocks: [tool(7, call, undefined, true)] })]);
+      expect(rows.rows, call.tool).toEqual([]);
+    }
+    // A Bash call the desktop does not mark complete (a sandbox flag, an unknown input key) is not published either.
+    expect(liveApprovals([session({ blocks: [tool(7, SHELL, undefined, false)] })]).rows).toEqual([]);
+  });
+
+  it("shows the phone an escaped display string, and keeps the exact command for matching", () => {
+    // L4: a carriage return and bidi or zero-width characters must not reach the phone unseen.
+    const command = "echo ok\r\u202Eevil\u200B";
+    const rows = liveApprovals([session({ blocks: [tool(1, { tool: "Bash", command })] })]);
+    expect(rows.rows[0].command).toBe(command);
+    const shown = rows.rows[0].display;
+    expect(shown).not.toMatch(/[\r\u202A-\u202E\u2066-\u2069\u200B-\u200F\u2060\uFEFF]/);
+    expect(shown).toContain("\\r");
+    expect(shown).toContain("\\u{202E}");
+  });
 });
 
 describe("approve and deny", () => {
@@ -135,6 +168,7 @@ describe("approve and deny", () => {
       now: NOW,
       approve: (sessionId: string, requestId: number, decision: "allow" | "deny") => {
         calls.push([sessionId, requestId, decision]);
+        return true;
       },
       remoteBlocked: () => remote,
       answered,
@@ -306,6 +340,35 @@ describe("approve and deny", () => {
     await expect(runMobilePairing("session.approve", params, base)).resolves.toMatchObject({ decision: "allow" });
     expect(calls).toHaveLength(2);
   });
+
+  it("treats a window that returns nothing as not sent, so the phone is never told done", async () => {
+    // M1: respondApproval used to return nothing, and an undefined result counted as sent.
+    const live = [session({ blocks: [tool(7, SHELL)] })];
+    const params = { conversationId: "chat-1", requestId: 7, tool: "Bash", command: SHELL.command, paths: SHELL.paths };
+    const silent = {
+      ...ctx(live),
+      approve: (sessionId: string, requestId: number, decision: "allow" | "deny") => {
+        calls.push([sessionId, requestId, decision]);
+        return undefined as unknown as boolean;
+      },
+    };
+    await expect(runMobilePairing("session.approve", params, silent)).rejects.toThrow(/Could not send/);
+    // Nothing was recorded, so the same call can still be answered.
+    expect(answered.size).toBe(0);
+  });
+
+  it("refuses an MCP call the phone was never shown, even when it names the call", async () => {
+    // H1: the phone echoes a tool name and nothing that would let it see the arguments.
+    const live = [session({ blocks: [tool(7, { tool: "mcp__supabase__execute_sql" }, undefined, true)] })];
+    await expect(
+      runMobilePairing(
+        "session.approve",
+        { conversationId: "chat-1", requestId: 7, tool: "mcp__supabase__execute_sql" },
+        ctx(live),
+      ),
+    ).rejects.toThrow(/does not match/);
+    expect(calls).toEqual([]);
+  });
 });
 
 describe("inbox lines", () => {
@@ -356,6 +419,37 @@ describe("inbox lines", () => {
     expect(approval.paths).toEqual(["src/a.ts"]);
     expect(approval.projectId).toBe(encodeURIComponent(PROJECT));
     expect(JSON.stringify(lines)).not.toContain("—");
+  });
+
+  it("keeps a private chat's question out of the inbox", async () => {
+    // L2: a private chat's question carries its text, so the inbox must not offer it.
+    const asked = { ...decision, decisionKey: "secret", askedBy: "private-chat" };
+    const shown = await runMobilePairing("inbox.list", {}, {
+      sessions: [],
+      now: NOW,
+      approve: () => true,
+      remoteBlocked: () => false,
+      sources: sources({ loadDecisions: async () => ({ ok: true, value: [asked, decision] }) }),
+      privateIds: new Set(["private-chat"]),
+    });
+    const lines = (shown as { lines: { conversationId: string | null }[] }).lines;
+    expect(lines.map((line) => line.conversationId)).toEqual(["chat-1"]);
+  });
+
+  it("shows an approval's escaped display text, and the exact command for the echo", () => {
+    const command = "echo a\rb\u202Ec";
+    const lines = inboxLines({
+      projects: [PROJECT],
+      decisions: [],
+      rows: [],
+      deliveries: [],
+      approvals: liveApprovals([session({ blocks: [tool(7, { tool: "Bash", command })] })]).rows,
+      now: NOW,
+    });
+    const approval = lines[0];
+    expect(approval.command).toBe(command);
+    expect(approval.body).toBe(liveApprovals([session({ blocks: [tool(7, { tool: "Bash", command })] })]).rows[0].display);
+    expect(approval.body).not.toMatch(/[\r\u202A-\u202E]/);
   });
 
   it("keeps another project out, and an empty project is an empty list", () => {
@@ -489,6 +583,27 @@ describe("crew status", () => {
     expect(shown.workers[0]).not.toHaveProperty("actions");
     expect(shown.workers[0]).not.toHaveProperty("checkout");
     expect(JSON.stringify(shown)).not.toMatch(/stop|retry|land/);
+  });
+
+  it("leaves a private chat's worker out of the crew status", async () => {
+    // L2: crew status names the chat a worker runs in, so a private one is not shown.
+    const shown = await runMobilePairing("crew.status", {}, {
+      sessions: [],
+      now: NOW,
+      approve: () => true,
+      remoteBlocked: () => false,
+      privateIds: new Set(["private-chat"]),
+      sources: sources({
+        loadCrew: async () => ({
+          ok: true,
+          value: [
+            { id: "w-private", project: PROJECT, title: "Secret", status: "working", childSession: "private-chat", updatedAt: NOW },
+            { id: "w-open", project: PROJECT, title: "Open", status: "working", childSession: "chat-1", updatedAt: NOW },
+          ],
+        }),
+      }),
+    });
+    expect((shown as { workers: { id: string }[] }).workers.map((worker) => worker.id)).toEqual(["w-open"]);
   });
 
   it("says try again when the crew cannot be read, and filters by project id", async () => {

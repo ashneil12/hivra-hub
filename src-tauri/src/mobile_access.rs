@@ -39,6 +39,8 @@ struct Invitation {
 }
 struct Pending {
     window: String,
+    /// The paired device that asked. The answer is refused once it is no longer paired.
+    peer: String,
     reply: oneshot::Sender<Value>,
 }
 /// A phone watching a conversation through the window that owns it.
@@ -353,6 +355,18 @@ pub fn mobile_publish(
         .insert(window.label().into(), catalog);
     Ok(())
 }
+/// The owning window asks, right before it runs a phone approval, whether that approval is still
+/// open. A request that timed out, was answered, or whose device was revoked or disabled is refused.
+#[tauri::command]
+pub fn mobile_admits(window: WebviewWindow, host: State<'_, MobileHost>, id: String) -> bool {
+    let inner = host.inner.lock().unwrap();
+    approval_still_open(
+        &inner,
+        &id,
+        window.label(),
+        crate::instance::policy().phone_access,
+    )
+}
 #[tauri::command]
 pub fn mobile_reply(
     window: WebviewWindow,
@@ -617,6 +631,26 @@ fn is_pairing_method(method: &str) -> bool {
         method,
         "session.approve" | "session.deny" | "inbox.list" | "crew.status"
     )
+}
+
+/// Whether `peer` may use the pairing methods right now: the service is on, phone access is on,
+/// and the peer is still a paired device. handle() and the approval checks both use this.
+fn authorize_pairing(config: &Config, peer: &str, phone_access: bool) -> Result<(), String> {
+    let paired = config
+        .devices
+        .iter()
+        .any(|device| device.fingerprint == peer);
+    pairing_gate(config.enabled, phone_access, paired)
+}
+
+/// An approval the window may still run: its request is pending for this window, and the
+/// device that asked is still paired with access on. A request that timed out, was answered,
+/// or whose device was revoked or disabled is not run.
+fn approval_still_open(inner: &Inner, id: &str, window: &str, phone_access: bool) -> bool {
+    inner.pending.get(id).is_some_and(|pending| {
+        pending.window == window
+            && authorize_pairing(&inner.config, &pending.peer, phone_access).is_ok()
+    })
 }
 
 /// Inbox, crew, and one tool call. Anything short of on, allowed, and paired is a refusal.
@@ -986,11 +1020,7 @@ async fn handle(
         }
         // WP-150: inbox, crew, and one tool call. Refused unless phone access is on.
         if is_pairing_method(method) {
-            pairing_gate(
-                inner.config.enabled,
-                crate::instance::policy().phone_access,
-                true,
-            )?;
+            authorize_pairing(&inner.config, peer, crate::instance::policy().phone_access)?;
         }
         if ![
             "conversation.read",
@@ -1081,6 +1111,7 @@ async fn handle(
             id.clone(),
             Pending {
                 window: owner.clone(),
+                peer: peer.to_string(),
                 reply: send,
             },
         );
@@ -1515,5 +1546,73 @@ mod tests {
         assert!(!Config::default().enabled);
         let saved: Config = serde_json::from_str(r#"{"enabled":true}"#).unwrap();
         assert!(!saved.open_router);
+    }
+
+    #[test]
+    fn pairing_is_authorized_only_for_an_enabled_paired_device_with_phone_access() {
+        let mut config = Config {
+            enabled: true,
+            ..Config::default()
+        };
+        config.devices.push(Device {
+            id: "d1".into(),
+            name: "iPhone".into(),
+            fingerprint: "peer-a".into(),
+        });
+        assert!(authorize_pairing(&config, "peer-a", true).is_ok());
+        assert_eq!(
+            authorize_pairing(&config, "peer-a", false).unwrap_err(),
+            "Phone access is off."
+        );
+        assert_eq!(
+            authorize_pairing(&config, "peer-b", true).unwrap_err(),
+            "Device revoked or not paired"
+        );
+        let mut off = config.clone();
+        off.enabled = false;
+        assert_eq!(
+            authorize_pairing(&off, "peer-a", true).unwrap_err(),
+            "Mobile access disabled"
+        );
+        // A revoked device is refused by the same check that handle() runs, not by a stub.
+        config.devices.clear();
+        assert_eq!(
+            authorize_pairing(&config, "peer-a", true).unwrap_err(),
+            "Device revoked or not paired"
+        );
+    }
+
+    #[test]
+    fn an_approval_in_flight_is_not_run_once_its_window_device_or_access_is_gone() {
+        let (host, _join, _phone) = fixture();
+        let mut inner = host.inner.lock().unwrap();
+        inner.config.devices.push(Device {
+            id: "d1".into(),
+            name: "iPhone".into(),
+            fingerprint: "peer-a".into(),
+        });
+        let (reply, _receiver) = oneshot::channel();
+        inner.pending.insert(
+            "req-1".into(),
+            Pending {
+                window: "main".into(),
+                peer: "peer-a".into(),
+                reply,
+            },
+        );
+        assert!(approval_still_open(&inner, "req-1", "main", true));
+        // Another window, phone access off, a timed-out or answered request, a revoked device, or a disabled service.
+        assert!(!approval_still_open(&inner, "req-1", "other", true));
+        assert!(!approval_still_open(&inner, "req-1", "main", false));
+        assert!(!approval_still_open(&inner, "missing", "main", true));
+        inner.config.devices.clear();
+        assert!(!approval_still_open(&inner, "req-1", "main", true));
+        inner.config.devices.push(Device {
+            id: "d1".into(),
+            name: "iPhone".into(),
+            fingerprint: "peer-a".into(),
+        });
+        inner.config.enabled = false;
+        assert!(!approval_still_open(&inner, "req-1", "main", true));
     }
 }

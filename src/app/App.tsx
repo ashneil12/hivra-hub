@@ -35,6 +35,8 @@ import {
   mobileWorkspaceChoice,
   mobileChoice,
   mobileCatalog,
+  mobilePrivateSessionIds,
+  publishedApprovalRows,
   mobileNewSession,
   mobileProjectId,
   mobileQuestionReply,
@@ -10872,6 +10874,10 @@ function Workspace({
         // WP-150: the inbox and an approve or deny match only the calls the catalog
         // publishes, so a room session or unlisted chat is never offered or answered.
         const published = await mobileCatalog(sessionsRef.current, sessionDefaults?.runtimeMode);
+        // Read after the await: the calls and chats are the window's current ones, not the ones
+        // the catalog was built from. A call decided meanwhile is no longer offered or answered.
+        const listed = new Set(published.sessions.map((session) => session.id));
+        const roster = listMonos();
         return runMobilePairing(method, params, {
           sessions: sessionsRef.current,
           now: Date.now(),
@@ -10879,10 +10885,8 @@ function Workspace({
             mobileApprovalRef.current(sessionId, requestId, decision),
           remoteBlocked: (session) =>
             !!remoteProjectFor(session.cwd) && !remoteSessionActions(session.id),
-          approvals: () => ({
-            rows: published.approvals,
-            truncated: !!published.approvalsTruncated,
-          }),
+          privateIds: await mobilePrivateSessionIds(sessionsRef.current),
+          approvals: (live) => publishedApprovalRows(live, listed, roster),
         });
       }
       const text = typeof params.text === "string" ? params.text.trim() : "";
@@ -12997,11 +13001,9 @@ function Workspace({
       if (remoteProjectFor(session.cwd)) {
         const actions = remoteSessionActions(sessionId);
         if (!actions) return false;
-        actions.approve(requestId, decision);
-        return true;
+        return actions.approve(requestId, decision);
       }
-      respondHarnessApproval(session.harness, sessionId, requestId, decision);
-      return true;
+      return respondHarnessApproval(session.harness, sessionId, requestId, decision);
     },
     [],
   );
