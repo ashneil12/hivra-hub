@@ -26,3 +26,20 @@ test("short text can use OpenRouter, and the coding agent is still the default",
   expect(text).not.toContain("/Users/");
   expect(text.toLowerCase()).not.toContain("api key");
 });
+
+test("Other models shows the address each saved key was saved with", async ({ page }) => {
+  const saved = [
+    { id: "xai-1", name: "Grok", provider: "xai", baseUrl: "https://api.x.ai/v1", modelId: "grok-4" },
+    { id: "or-1", name: "Router", provider: "openrouter", baseUrl: "https://openrouter.ai/api/v1", modelId: "x-ai/grok-4" },
+  ];
+  await page.addInitScript((list) => localStorage.setItem("monocode:custom-models", JSON.stringify(list)), saved);
+  await page.goto("/tests/browser/wp129-text-generation.html?others");
+
+  await expect(page.getByRole("group", { name: "Other models" })).toBeVisible();
+  await expect(page.locator('[data-saved-address="xai-1"]')).toHaveText("https://api.x.ai/v1");
+  await expect(page.locator('[data-saved-address="or-1"]')).toHaveText("https://openrouter.ai/api/v1");
+
+  const text = await page.locator("body").innerText();
+  expect(text).not.toMatch(/[—–]/);
+  expect(text).not.toContain("/Users/");
+});

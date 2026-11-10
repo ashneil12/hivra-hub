@@ -6,7 +6,7 @@ import { customModelsVersion, listCustomModels, subscribeCustomModels } from "..
 import { testCheapModel } from "../model/cheapAsk";
 import { saveMemoryTier, tierLabel, useMemoryTier, type MemoryTier, type TierChoice } from "../model/tier";
 
-export type TierModel = { id: string; name: string };
+export type TierModel = { id: string; name: string; /** The address the saved key was saved with, shown beside the name. */ baseUrl?: string };
 
 const OPTIONS: { tier: MemoryTier; summary: string }[] = [
   {
@@ -85,7 +85,7 @@ export function MemoryTierChoice({
                 {value.model && picked ? null : <option value="">Pick a model</option>}
                 {models.map((model) => (
                   <option key={model.id} value={model.id}>
-                    {model.name}
+                    {model.baseUrl ? `${model.name} · ${model.baseUrl}` : model.name}
                   </option>
                 ))}
               </select>
@@ -128,7 +128,7 @@ export function MemoryTierSetting() {
   return (
     <MemoryTierChoice
       value={choice}
-      models={models.map((model) => ({ id: model.id, name: model.name }))}
+      models={models.map((model) => ({ id: model.id, name: model.name, baseUrl: model.baseUrl }))}
       onChange={saveMemoryTier}
     />
   );
