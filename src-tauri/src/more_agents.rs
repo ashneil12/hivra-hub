@@ -709,7 +709,12 @@ mod tests {
     #[test]
     fn a_webview_command_never_starts_a_more_agent() {
         let d = dir();
-        write_agents(d.path(), 0, vec![entry("wp134", "/opt/approved-agent", &["acp"])]).expect("seed");
+        write_agents(
+            d.path(),
+            0,
+            vec![entry("wp134", "/opt/approved-agent", &["acp"])],
+        )
+        .expect("seed");
         set_approval(d.path(), "wp134", true).expect("approve");
         for (command, args, other_fields) in [
             ("/bin/sh", vec![], false),
@@ -717,8 +722,9 @@ mod tests {
             ("", vec!["-c".to_string(), "id".to_string()], false),
             ("", vec![], true),
         ] {
-            let refused = approved_start(d.path(), "wp134", command, &args, other_fields, "/usr/bin")
-                .expect_err("a webview-supplied start field is refused");
+            let refused =
+                approved_start(d.path(), "wp134", command, &args, other_fields, "/usr/bin")
+                    .expect_err("a webview-supplied start field is refused");
             assert_eq!(refused, NO_COMMAND_FROM_APP);
         }
     }
@@ -727,7 +733,12 @@ mod tests {
     #[test]
     fn a_more_agent_id_outside_the_saved_approved_list_starts_nothing() {
         let d = dir();
-        write_agents(d.path(), 0, vec![entry("wp134", "/opt/approved-agent", &["acp"])]).expect("seed");
+        write_agents(
+            d.path(),
+            0,
+            vec![entry("wp134", "/opt/approved-agent", &["acp"])],
+        )
+        .expect("seed");
         assert_eq!(
             approved_start(d.path(), "wp134", "", &[], false, "/usr/bin").expect_err("unapproved"),
             NOT_APPROVED
@@ -750,9 +761,15 @@ mod tests {
         std::fs::write(&tool, b"#!/bin/sh\n").expect("tool");
         std::fs::set_permissions(&tool, std::fs::Permissions::from_mode(0o755)).expect("chmod");
         let path_value = bin.to_string_lossy().into_owned();
-        write_agents(d.path(), 0, vec![entry("wp134b", "wp134b-tool", &["acp", "--flag"])]).expect("seed");
+        write_agents(
+            d.path(),
+            0,
+            vec![entry("wp134b", "wp134b-tool", &["acp", "--flag"])],
+        )
+        .expect("seed");
         set_approval(d.path(), "wp134b", true).expect("approve");
-        let run = approved_start(d.path(), "wp134b", "", &[], false, &path_value).expect("approved and present");
+        let run = approved_start(d.path(), "wp134b", "", &[], false, &path_value)
+            .expect("approved and present");
         assert_eq!(run.id, "wp134b");
         assert_eq!(run.command, tool.to_string_lossy());
         assert_eq!(run.args, vec!["acp".to_string(), "--flag".to_string()]);
