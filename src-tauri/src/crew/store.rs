@@ -96,8 +96,10 @@ pub struct StoredRules {
     pub rules: Vec<Rule>,
     pub revision: i64,
     pub budget: Option<Value>,
-    /// WP-141. Always an object: lockDefault, neverUse, fallback.
+    /// WP-141. Always an object: lockDefault, neverUse, fallback. For a project with no policy of its own, the system's.
     pub policy: Value,
+    /// WP-141: false when this scope has no policy saved, so `policy` is the one it inherits.
+    pub policy_own: bool,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -403,11 +405,19 @@ pub fn get_rules(conn: &Connection, scope: &str, scope_id: &str) -> Result<Store
     let (scope, scope_id) = scope_key(scope, scope_id)?;
     let rules = read_rules(conn, &scope, &scope_id)?;
     let (revision, budget, policy) = meta(conn, &scope, &scope_id)?;
+    let policy_own = policy.is_some();
+    // A project with no policy of its own shows the system's, the one a route in it actually uses.
+    let policy = if policy_own || scope != "project" {
+        policy_value(policy)
+    } else {
+        saved_policy(conn, "system", "system")?.unwrap_or_else(|| sanitize_policy(&Value::Null))
+    };
     Ok(StoredRules {
         rules,
         revision,
         budget: parse_budget(budget),
-        policy: policy_value(policy),
+        policy,
+        policy_own,
     })
 }
 
@@ -646,6 +656,7 @@ pub fn route_at(
     let merged = merged_rules(conn, query, plugins)?;
     let policy = policy_in_force(conn, query)?;
     let lock = policy.get("lockDefault").and_then(Value::as_bool) == Some(true);
+    let never = listed_never_use(&policy);
     let mut route = resolve_route(
         &query.labels,
         &query.paths,
@@ -670,7 +681,7 @@ pub fn route_at(
                         reason: "Always use my default is on, so another CLI was not used.".into(),
                     });
                 } else {
-                    let next = default_cli_except(&query.present, &cooled);
+                    let next = default_cli_except(&query.present, &cooled, &never);
                     route.cli_from = if next.is_some() {
                         "default".into()
                     } else {
@@ -688,6 +699,20 @@ pub fn route_at(
         }
     }
     Ok(route)
+}
+
+/// The Never use list a policy names, as the resolver reads it.
+fn listed_never_use(policy: &Value) -> Vec<String> {
+    policy
+        .get("neverUse")
+        .and_then(Value::as_array)
+        .map(|rows| {
+            rows.iter()
+                .filter_map(Value::as_str)
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// WP-141: a Mono the first mate may hand the brief to (a Lead it can brief), as the webview names it.

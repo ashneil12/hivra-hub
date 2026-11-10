@@ -2747,6 +2747,88 @@ describe("parallel workers per project, with throttling (H8)", () => {
       }
       expect(started).toEqual([]);
     });
+
+    // MEDIUM 5: a chat cannot change the everyone default while Always use my default is on.
+    it("refuses to change the default for every worker from a chat while the lock is on", async () => {
+      const { source, host, api } = lead();
+      api.crewPolicy = vi.fn(async () => ({ neverUse: [], lock: true }));
+      await expect(
+        handleAgentApp(source, "lock-system", "tasks.workers", { scope: "system", model: "opus", effort: "high" }, host),
+      ).rejects.toThrow("Always use my default is on, so the default for every worker can't be changed from here.");
+      expect(findMono("vg-game-lead")?.workerDefault).toBeUndefined();
+    });
+
+    /** The command's route with a project's Never use and lock. Same resolver as the Rust route. */
+    function policyRoute(policy: Record<string, unknown>, available: string[] = ["claude", "codex"]) {
+      return vi.fn(async (query: CrewRouteQuery) =>
+        resolveRoute(
+          {
+            labels: query.labels,
+            paths: query.paths,
+            ...(query.override ? { override: query.override } : {}),
+          },
+          query.monoRules ?? [],
+          available.map((cli) => ({ cli, installed: true, signedIn: true })),
+          {
+            ...(query.defaults ? { defaults: query.defaults } : {}),
+            catalog: query.catalog ?? launchCatalog(),
+            policy,
+          },
+        ),
+      );
+    }
+
+    // HIGH 1 probes, through the real tasks.delegate. The route's own CLI must win on each of the three.
+    it("does not start on a Never use CLI the Lead named, it starts on the route's CLI", async () => {
+      setHarnessModels("codex", [{ id: "codex:gpt-5", harness: "codex", name: "GPT-5", settings: [] }]);
+      const { source, host, started, api } = lead();
+      api.crewRoute = policyRoute({ neverUse: ["codex"] });
+      const result = await handleAgentApp(
+        source,
+        "never-named",
+        "tasks.delegate",
+        { brief: "Build the title.", model: "codex:gpt-5" },
+        host,
+      );
+      expect(result).not.toMatchObject({ status: "refused" });
+      expect(started).toHaveLength(1);
+      expect(started[0][0]).toMatchObject({ harness: "claude" });
+      expect(started[0][0]).not.toMatchObject({ model: "codex:gpt-5" });
+    });
+
+    it("does not stay on the chat's Claude when Never use bans it, it starts on the route's CLI", async () => {
+      setHarnessModels("codex", [{ id: "codex:gpt-5", harness: "codex", name: "GPT-5", settings: [] }]);
+      const { source, host, started, api } = lead();
+      api.crewRoute = policyRoute({ neverUse: ["claude"] });
+      await handleAgentApp(source, "never-chat", "tasks.delegate", { brief: "Build the title." }, host);
+      expect(started).toHaveLength(1);
+      expect(started[0][0]).toMatchObject({ harness: "codex" });
+    });
+
+    it("refuses the start with the reason when every CLI is on Never use", async () => {
+      const { source, host, started, api } = lead();
+      api.crewRoute = policyRoute({ neverUse: ["claude", "codex"] });
+      await expect(
+        handleAgentApp(source, "never-all", "tasks.delegate", { brief: "Build the title." }, host),
+      ).rejects.toThrow("No CLI can take this work.");
+      expect(started).toEqual([]);
+    });
+
+    it("under the lock with no default set, the Lead's named CLI is dropped and the default starts", async () => {
+      setHarnessModels("codex", [{ id: "codex:gpt-5", harness: "codex", name: "GPT-5", settings: [] }]);
+      const { source, host, started, api } = lead();
+      api.crewRoute = policyRoute({ lockDefault: true });
+      await handleAgentApp(
+        source,
+        "lock-named",
+        "tasks.delegate",
+        { brief: "Build the title.", model: "codex:gpt-5" },
+        host,
+      );
+      expect(started).toHaveLength(1);
+      expect(started[0][0]).toMatchObject({ harness: "claude" });
+      expect(started[0][0]).not.toMatchObject({ model: "codex:gpt-5" });
+    });
   });
 
   it("lets a coding-team chat's workers wait too, in its own project", async () => {

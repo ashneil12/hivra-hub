@@ -24,6 +24,7 @@ createRoot(document.getElementById("root")!).render(
   <StrictMode>
     <CrewDefaults
       cwd="/work/app"
+      projectId="vg-app"
       initial={{
         policy: { lockDefault: false, neverUse: [], fallback: [] },
         rules: [],

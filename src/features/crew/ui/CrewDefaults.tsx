@@ -27,6 +27,8 @@ type Loaded = {
   rules?: unknown;
   revision?: number;
   policy?: unknown;
+  /** False when this scope has no policy of its own, so `policy` is the one it inherits. */
+  policyOwn?: boolean;
   signedIn?: Presence[];
 };
 
@@ -67,18 +69,23 @@ function asRules(value: unknown): CrewRule[] {
 
 export function CrewDefaults({ cwd, projectId, initial }: Props) {
   const folder = cwd?.trim() ?? "";
-  const [scopeChoice, setScopeChoice] = useState<"project" | "system">(folder ? "project" : "system");
-  const place = placeFor(scopeChoice, folder);
+  // "For this project" needs a project: a folder that is not one (a Mono home, ~) has no project place.
+  const projectPlace = Boolean(folder && projectId);
+  const [scopeChoice, setScopeChoice] = useState<"project" | "system">(projectPlace ? "project" : "system");
+  const place = placeFor(scopeChoice, projectPlace ? folder : "");
   const [policy, setPolicy] = useState<CrewPolicy>(() => sanitizePolicy(initial?.policy ?? EMPTY_POLICY));
   const [slots, setSlots] = useState(() => roleSlotsFrom(initial?.rules ?? []));
   const [rules, setRules] = useState<CrewRule[]>(() => asRules(initial?.rules ?? []));
   const [signedIn, setSignedIn] = useState<Presence[]>(initial?.signedIn ?? []);
   const [revision, setRevision] = useState(initial?.revision ?? 0);
+  const [policyOwn, setPolicyOwn] = useState(true);
   const [notice, setNotice] = useState<string | null>(null);
   const [neverDraft, setNeverDraft] = useState("");
   const [fallbackCli, setFallbackCli] = useState("");
   const [reloadTick, setReloadTick] = useState(0);
   const dirty = useRef(false);
+  // Only an edit to the lock or the lists writes the policy. A save of roles alone leaves the scope's policy as it was.
+  const policyEdited = useRef(false);
   const saving = useRef(false);
   const loadGen = useRef(0);
   const placeNow = useRef(place);
@@ -89,6 +96,8 @@ export function CrewDefaults({ cwd, projectId, initial }: Props) {
     setRules(loaded);
     setSlots(roleSlotsFrom(loaded));
     setPolicy(sanitizePolicy(got.policy));
+    setPolicyOwn(got.policyOwn !== false);
+    policyEdited.current = false;
     if (Array.isArray(got.signedIn)) setSignedIn(got.signedIn);
     setRevision(typeof got.revision === "number" ? got.revision : 0);
   }
@@ -128,7 +137,7 @@ export function CrewDefaults({ cwd, projectId, initial }: Props) {
   }, []);
 
   function chooseScope(next: "project" | "system") {
-    if (next === "project" && !folder) return;
+    if (next === "project" && !projectPlace) return;
     if (next === place.scope) return;
     dirty.current = false;
     setNotice(null);
@@ -137,6 +146,7 @@ export function CrewDefaults({ cwd, projectId, initial }: Props) {
 
   function editPolicy(next: CrewPolicy) {
     dirty.current = true;
+    policyEdited.current = true;
     setPolicy(sanitizePolicy(next));
     setNotice(null);
   }
@@ -224,6 +234,14 @@ export function CrewDefaults({ cwd, projectId, initial }: Props) {
         setNotice("Those settings couldn't be saved.");
         return;
       }
+      if (!policyEdited.current) {
+        // The lock and lists were not touched: keep what the scope had, and apply what the roles save returned.
+        apply(wrote);
+        dirty.current = false;
+        window.dispatchEvent(new CustomEvent(CREW_SAVED_EVENT, { detail: { scope: asked.scope, scopeId: asked.scopeId } }));
+        setNotice("Saved.");
+        return;
+      }
       const stored = await invoke<Loaded | undefined>("crew_policy_set", {
         scope: asked.scope,
         scopeId: asked.scopeId,
@@ -272,7 +290,7 @@ export function CrewDefaults({ cwd, projectId, initial }: Props) {
             name="crew-defaults-scope"
             aria-label="For this project"
             checked={place.scope === "project"}
-            disabled={!folder}
+            disabled={!projectPlace}
             onChange={() => chooseScope("project")}
           />
           For this project
@@ -307,6 +325,11 @@ export function CrewDefaults({ cwd, projectId, initial }: Props) {
           );
         })}
       </div>
+      {place.scope === "project" && !policyOwn ? (
+        <p className="text-[12px] text-content/70" data-policy-inherited>
+          From everything. The lock and lists below are the system's until this project changes them.
+        </p>
+      ) : null}
       <label className="flex items-center gap-2 text-[13px] text-content">
         <input
           type="checkbox"

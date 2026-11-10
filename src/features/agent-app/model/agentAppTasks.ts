@@ -53,7 +53,7 @@ import { cliFallbackLine } from "../../crew/model/cliFallback";
 import { launchCatalog } from "../../crew/model/launchCatalog";
 import { lineRulesFor } from "../../crew/model/lineRules";
 import type { Catalog, RouteDefaults } from "../../crew/model/resolve";
-import { applyCrewLaunch, callerOverride, crewLabels, crewPaths } from "../../crew/model/taskRoute";
+import { applyCrewLaunch, callerOverride, crewLabels, crewPaths, crewRefusal } from "../../crew/model/taskRoute";
 import { routeReason } from "../../crew/model/pick";
 import { CLI_ORDER, cliLabel, isCli } from "../../crew/model/clis";
 import { routeDefaults } from "../../crew/model/workerDefault";
@@ -335,7 +335,7 @@ export type AgentAppTasksHost = {
     effortFrom?: string | null;
     /** WP-141: the matched rule's first label, and what was skipped (Never use, the lock), for the reason. */
     ruleLabel?: string | null;
-    skipped?: { reason?: string | null }[] | null;
+    skipped?: { field?: string | null; from?: string | null; value?: string | null; reason?: string | null }[] | null;
   } | null | undefined>;
   /**
    * WP-141: the crew's pick across signed-in CLIs and the Monos this chat may brief, from the person's rules, defaults,
@@ -359,6 +359,8 @@ export type AgentAppTasksHost = {
   }): Promise<{ hold: boolean; why: string }>;
   /** The Lead a brief names exists and this Mono may brief it. Throws when it does not. Checked before a review. */
   checkLead?(source: Session, mono: { id: string; name?: string }, lead: string): void | Promise<void>;
+  /** WP-141: the lock and Never use list in force for a Mono in a folder. Read before a brief or a default change. */
+  crewPolicy?(monoId: string | undefined, folder: string | undefined): Promise<{ neverUse: string[]; lock: boolean }>;
   /** WP-144: the chat's briefs waiting on a fresh-eyes review, each named by the chat it will be. */
   freshEyesWaiting?(ownerSession: string): Promise<{ childSessionId: string; title: string; line: string }[]>;
   /** WP-144: the chat took back a brief waiting on a review (task_cancel). True when one matched. */
@@ -1088,6 +1090,8 @@ async function delegate(
   let cliFallback: string | undefined;
   // WP-141: why the crew picked this CLI. Kept on the row and told to the Lead, so a pick is never silent.
   let crewWhy: string | undefined;
+  // WP-141: the route forced a CLI and named none (every CLI on Never use, or the lock with none installed).
+  let crewRefused: string | undefined;
   if (tasks.crewRoute) {
     const baseline = model?.harness ?? source.harness;
     const baselineModel = model?.model ?? source.model;
@@ -1114,7 +1118,9 @@ async function delegate(
         ...(defaults ? { defaults } : {}),
         ...(Object.keys(catalog).length ? { catalog } : {}),
       });
-      const next = applyCrewLaunch(answer, { harness: baseline, model: baselineModel, effort });
+      const named = { harness: baseline, model: baselineModel, effort };
+      crewRefused = crewRefusal(answer, named);
+      const next = applyCrewLaunch(answer, named);
       if (next.harness && isHarnessAvailable(next.harness)) {
         // Only when the CLI it names is the one this worker runs on; a missing CLI says so in cliFallback instead.
         if (answer?.cli && answer.cli === next.harness) crewWhy = routeReason(answer) || undefined;
@@ -1136,6 +1142,7 @@ async function delegate(
     }
   }
   if (benchRefusal) throw new Error(benchRefusal);
+  if (crewRefused) throw new Error(crewRefused);
   // The worker works on this chat's project (hub/model/hubMcp.ts), so its brief carries that project's memory.
   const memory = await (tasks.memoryBrief ?? workerMemoryBlock)(
     source.id,
@@ -1827,6 +1834,9 @@ async function workers(source: Session, input: Record<string, unknown>, host: Ag
   const planned = choosing ? planWorkerChoice(input, current, launchCatalog()) : undefined;
   if (planned?.scope === "project" && setter && !worksOn(setter.projects, folder, project))
     throw new Error("This Mono doesn't work on that project.");
+  // WP-141: under Always use my default, the default for every worker is Ash's and is not changed from a chat.
+  if (planned?.scope === "system" && (await tasks.crewPolicy?.(owner.mono?.id, folder))?.lock)
+    throw new Error("Always use my default is on, so the default for every worker can't be changed from here.");
   const next = { workers: count(input.workers, "workers"), heavy: count(input.heavy, "heavy") };
   const limits =
     next.workers === undefined && next.heavy === undefined

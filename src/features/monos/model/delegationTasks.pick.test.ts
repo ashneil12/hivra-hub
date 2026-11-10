@@ -25,3 +25,17 @@ it("passes the crew pick and the Lead roster through to tasks.pick", () => {
   });
   expect(bare.crewPick).toBeUndefined();
 });
+
+// LOW 6: the depth check's { fanout: false } reaches the store through the host, not only the mock.
+it("passes the fanout option through the depth check to the store", async () => {
+  const checkDepth = vi.fn(async () => 1);
+  const tasks = delegationTasksHost({
+    backend: { checkDepth } as never,
+    tracker: () => ({}) as never,
+    session: () => undefined,
+    stop: async () => undefined,
+    dropReport: () => undefined,
+  });
+  await tasks.checkDepth?.("mono-lead", { fanout: false });
+  expect(checkDepth).toHaveBeenLastCalledWith("mono-lead", { fanout: false });
+});

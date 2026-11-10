@@ -1,6 +1,6 @@
 import { beforeEach, expect, it, vi } from "vitest";
 import { invoke } from "@tauri-apps/api/core";
-import { crewPickFor, pickMonosFrom, recordCrewFailure, recordCrewPause } from "./host";
+import { crewPickFor, crewPolicyInForce, pickMonosFrom, recordCrewFailure, recordCrewPause } from "./host";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 
@@ -29,6 +29,21 @@ it("records a usage limit with the reset time, and returns the action", async ()
       project: "vg-game",
       mono: "vg-game-lead",
     },
+  });
+});
+
+// HIGH 2: Crew Defaults saves a project's policy under its folder. A failure row carries the hub project id,
+// so the failure must send the folder, or the project's lock, Never use and fallback order are never read.
+it("sends the folder the policy was saved under, not the hub project id of the row", async () => {
+  invokeMock.mockResolvedValue({ action: "reroute", to: "codex" });
+  await recordCrewFailure(
+    { id: "t-hub", project: "hub-proj-c", ownerMono: "vg-game-lead" },
+    { errorClass: "usage_limit", error: "usage limit hit" },
+    { cli: "claude" },
+    "/tmp/proj-c",
+  );
+  expect(invokeMock).toHaveBeenCalledWith("crew_on_failure", {
+    input: expect.objectContaining({ delegationId: "t-hub", project: "/tmp/proj-c", mono: "vg-game-lead" }),
   });
 });
 
@@ -90,4 +105,21 @@ it("WP-141: asks crew_pick with the request, and names each Lead with its role a
     { id: "web-lead", name: "Web lead", role: "reviewer", lead: "web" },
     { id: "game-lead", name: "EXO lead", lead: "vg-game" },
   ]);
+});
+
+// MEDIUM 5: a Lead brief checks the Never use list in force. A Mono's own policy wins, then the project's, then everything's.
+it("reads the Never use list a Mono's brief is judged by: its own, else the project's, else everything's", async () => {
+  invokeMock.mockImplementation((_cmd, args) => {
+    const scope = (args as { scope: string }).scope;
+    if (scope === "mono") return Promise.resolve({ policy: { neverUse: ["lead-x"] }, policyOwn: false });
+    if (scope === "project") return Promise.resolve({ policy: { neverUse: ["lead-p"] }, policyOwn: true });
+    return Promise.resolve({ policy: { neverUse: ["lead-s"] }, policyOwn: true });
+  });
+  expect(await crewPolicyInForce("vg-lead", "/tmp/proj")).toEqual({ neverUse: ["lead-p"], lock: false });
+  invokeMock.mockImplementation((_cmd, args) => {
+    const scope = (args as { scope: string }).scope;
+    if (scope === "mono") return Promise.resolve({ policy: { neverUse: ["lead-m"], lockDefault: true }, policyOwn: true });
+    return Promise.resolve({ policy: { neverUse: ["lead-s"] }, policyOwn: false });
+  });
+  expect(await crewPolicyInForce("vg-lead", "/tmp/proj")).toEqual({ neverUse: ["lead-m"], lock: true });
 });

@@ -66,7 +66,7 @@ import {
 } from "../features/monos/model/delegations";
 import { delegationTasksHost } from "../features/monos/model/delegationTasks";
 import { withCrewAdvice } from "../features/crew/model/advice";
-import { crewPickFor, crewRouteFor, pickMonosFrom, recordCrewFailure, recordCrewPause } from "../features/crew/model/host";
+import { crewPickFor, crewPolicyInForce, crewRouteFor, pickMonosFrom, recordCrewFailure, recordCrewPause } from "../features/crew/model/host";
 import {
   briefCancelled,
   briefSentAt,
@@ -10586,11 +10586,16 @@ function Workspace({
     // WP-13: a failed task is recorded from the CLI the child actually ran.
     crewFailure: (row, result) => {
       const child = sessionsRef.current.find((session) => session.id === row.childSession);
-      return recordCrewFailure(row, result, {
-        cli: child?.harness,
-        model: child?.model,
-        effort: child?.modelSettings?.effort,
-      });
+      return recordCrewFailure(
+        row,
+        result,
+        {
+          cli: child?.harness,
+          model: child?.model,
+          effort: child?.modelSettings?.effort,
+        },
+        row.project ? hubProjectFolder(row.project) : undefined,
+      );
     },
   });
   delegationsRef.current = delegations;
@@ -13798,9 +13803,24 @@ function Workspace({
   }, []);
   useEffect(() => {
     // WP-89: the line in force reads this project's crew rules, and a plugin's.
-    setLineRulesSource((project) =>
-      invoke("crew_rules_get", { scope: "project", scopeId: project, project }),
-    );
+    // WP-141: the line sees the project's rules, then everything's (the project's come first, as the route reads them).
+    setLineRulesSource(async (project) => {
+      const own = await invoke<{ rules?: unknown; plugins?: unknown } | undefined>("crew_rules_get", {
+        scope: "project",
+        scopeId: project,
+        project,
+      });
+      const system = await invoke<{ rules?: unknown } | undefined>("crew_rules_get", {
+        scope: "system",
+        scopeId: "system",
+        project,
+      }).catch(() => undefined);
+      const rules = [
+        ...(Array.isArray(own?.rules) ? own.rules : []),
+        ...(Array.isArray(system?.rules) ? system.rules : []),
+      ];
+      return { rules, plugins: own?.plugins };
+    });
     return () => setLineRulesSource(undefined);
   }, []);
   const removeSessionRef = useRef(onRemoveHistorySession);
@@ -14866,12 +14886,18 @@ function Workspace({
                   }),
               }),
               // The Lead a brief names must exist: asked before a fresh-eyes review, so an unknown one is never reviewed.
-              checkLead: (_owner, mono, lead) => {
-                if (!findLeadTarget(mono.id, hubData().listProjects(), lead))
+              checkLead: async (owner, mono, lead) => {
+                const target = findLeadTarget(mono.id, hubData().listProjects(), lead);
+                if (!target)
                   throw new Error(
                     `No Lead "${lead}" among the ones you can brief (a Lead of a project you and it are both members of).`,
                   );
+                // WP-141: a Lead on Never use is not briefed, whatever the brief says.
+                const policy = await crewPolicyInForce(mono.id, owner.cwd);
+                if (policy.neverUse.includes(target.leadId))
+                  throw new Error(`${target.leadName} is on Never use, so it can't be briefed.`);
               },
+              crewPolicy: (monoId, folder) => crewPolicyInForce(monoId, folder),
               briefLead: async (owner, mono, input) => {
                 const projects = hubData().listProjects();
                 const target = findLeadTarget(mono.id, projects, input.lead);

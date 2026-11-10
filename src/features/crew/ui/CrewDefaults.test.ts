@@ -35,7 +35,7 @@ afterEach(() => {
 
 function show() {
   act(() => {
-    root.render(createElement(CrewDefaults, { cwd: "/work/app" }));
+    root.render(createElement(CrewDefaults, { cwd: "/work/app", projectId: "vg-app" }));
   });
 }
 
@@ -121,6 +121,50 @@ it("loads the lock, the role and the lists, and a save keeps the other rules", a
   expect(container.textContent).toContain("Saved.");
 });
 
+// MEDIUM 3: a project with no policy of its own loads the system's. A save that did not edit the policy must not
+// write a copy of it under the project, which would silently replace the system's Never use and lock.
+it("a save that does not touch the lock or lists does not write the policy", async () => {
+  invokeMock.mockImplementation((cmd: string) => {
+    if (cmd === "crew_rules_get") {
+      return Promise.resolve({
+        rules: [pathRule],
+        revision: 4,
+        policy: { lockDefault: false, neverUse: ["codex"], fallback: [] },
+        policyOwn: false,
+        signedIn: [],
+      });
+    }
+    if (cmd === "crew_rules_set") return Promise.resolve({ revision: 5, rules: [pathRule], policy: { lockDefault: false, neverUse: ["codex"], fallback: [] }, policyOwn: false });
+    return Promise.resolve(undefined);
+  });
+  show();
+  await act(async () => undefined);
+  expect(container.querySelector("[data-policy-inherited]")).not.toBeNull();
+  expect(container.textContent).toContain("From everything");
+  await act(async () => {
+    click("Save");
+  });
+  expect(calls("crew_rules_set")).toHaveLength(1);
+  expect(calls("crew_policy_set")).toEqual([]);
+});
+
+// Item 8: "For this project" needs a project. A Mono home or a plain folder is not one.
+it("offers no project scope for a folder that is not a project", async () => {
+  invokeMock.mockImplementation((cmd: string) => {
+    if (cmd === "crew_rules_get") {
+      return Promise.resolve({ rules: [], revision: 0, policy: { lockDefault: false, neverUse: [], fallback: [] }, signedIn: [] });
+    }
+    return Promise.resolve(undefined);
+  });
+  act(() => {
+    root.render(createElement(CrewDefaults, { cwd: "/tmp/mono-home" }));
+  });
+  await act(async () => undefined);
+  expect(container.querySelector<HTMLInputElement>('[aria-label="For this project"]')?.disabled).toBe(true);
+  expect(container.querySelector<HTMLInputElement>('[aria-label="For everything"]')?.checked).toBe(true);
+  expect(calls("crew_rules_get").at(-1)).toMatchObject({ scope: "system", scopeId: "system" });
+});
+
 it("saves for this project or for everything, and says which", async () => {
   invokeMock.mockImplementation((cmd: string) => {
     if (cmd === "crew_rules_get") {
@@ -160,7 +204,8 @@ it("saves for this project or for everything, and says which", async () => {
     click("Save");
   });
   expect(calls("crew_rules_set").at(-1)).toMatchObject({ scope: "system", scopeId: "system" });
-  expect(calls("crew_policy_set").at(-1)).toMatchObject({ scope: "system", scopeId: "system" });
+  // The lock and lists were not edited here, so only the roles were written.
+  expect(calls("crew_policy_set")).toEqual([]);
 
   act(() => {
     root.render(createElement(CrewDefaults, {}));

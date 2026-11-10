@@ -430,6 +430,8 @@ pub fn pick_mate(query: &PickQuery) -> MatePick {
         })
         .collect();
     let mono_allowed = depth < MAX_MONO_DEPTH;
+    // With Always use my default on, the pick is the default CLI alone: no Mono is offered.
+    let lock = policy.get("lockDefault").and_then(Value::as_bool) == Some(true);
     let roster: Vec<MonoCandidate> = query
         .monos
         .iter()
@@ -446,7 +448,7 @@ pub fn pick_mate(query: &PickQuery) -> MatePick {
     let monos: Vec<&MonoCandidate> = roster
         .iter()
         .filter(|mono| {
-            if !mono_allowed || mono.depth >= MAX_MONO_DEPTH {
+            if lock || !mono_allowed || mono.depth >= MAX_MONO_DEPTH {
                 return false;
             }
             if query.lead_mono_id.as_deref() == Some(mono.id.as_str()) {
@@ -544,7 +546,6 @@ pub fn pick_mate(query: &PickQuery) -> MatePick {
             reason: String::new(),
         });
     }
-    let lock = policy.get("lockDefault").and_then(Value::as_bool) == Some(true);
     let override_set = has_ask(query.override_pick.as_ref());
     let asked = if lock {
         query.brief.as_ref()
@@ -602,7 +603,19 @@ pub fn pick_mate(query: &PickQuery) -> MatePick {
             ),
         );
     }
-    if let (true, Some(set)) = (lock, set_cli.as_deref()) {
+    if lock {
+        // The CLI the person set, else the signed-in default (Claude Code first). Never the fallback order.
+        let Some(set) = set_cli.clone().or_else(|| usual.map(str::to_string)) else {
+            return stamp(
+                override_set,
+                none(note(
+                    skipped.as_deref(),
+                    "Always use my default is on, and no CLI is signed in, so nothing was picked."
+                        .into(),
+                )),
+            );
+        };
+        let set = set.as_str();
         let mine = choices
             .iter()
             .find(|choice| choice.kind == "cli" && choice.id == set);
@@ -942,6 +955,19 @@ mod tests {
         assert_eq!(kept.cli.as_deref(), Some("codex"));
         assert_eq!(kept.mono_id, None);
         assert_eq!(kept.reason, "Your default is Codex.");
+    }
+
+    #[test]
+    fn the_lock_with_nothing_set_picks_the_default_and_offers_no_mono() {
+        let pick = pick_mate(&PickQuery {
+            present: signed(&["codex", "claude"]),
+            monos: vec![ada()],
+            policy: Some(json!({ "lockDefault": true, "neverUse": [], "fallback": ["codex"] })),
+            ..PickQuery::default()
+        });
+        assert_eq!(pick.cli.as_deref(), Some("claude"));
+        assert_eq!(pick.mono_id, None);
+        assert_eq!(pick.reason, "Your default is Claude Code.");
     }
 
     #[test]

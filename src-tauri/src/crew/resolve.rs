@@ -352,11 +352,15 @@ fn pick_effort(
 
 /// Claude Code when it is installed and signed in, else the first signed-in CLI in the given order.
 pub fn default_cli(present: &[Presence]) -> Option<String> {
-    default_cli_except(present, &[])
+    default_cli_except(present, &[], &[])
 }
 
-/// The same default, skipping CLIs that just failed their account.
-pub fn default_cli_except(present: &[Presence], cooled: &[String]) -> Option<String> {
+/// The same default, skipping CLIs that just failed their account and CLIs on Never use.
+pub fn default_cli_except(
+    present: &[Presence],
+    cooled: &[String],
+    never: &[String],
+) -> Option<String> {
     let usable: Vec<&Presence> = present
         .iter()
         .filter(|row| {
@@ -364,6 +368,7 @@ pub fn default_cli_except(present: &[Presence], cooled: &[String]) -> Option<Str
                 && row.signed_in
                 && CREW_CLIS.contains(&row.cli.as_str())
                 && !cooled.iter().any(|cli| cli == &row.cli)
+                && !on_never(never, &row.cli)
         })
         .collect();
     if usable.iter().any(|row| row.cli == "claude") {

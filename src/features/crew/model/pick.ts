@@ -161,11 +161,14 @@ export function pickMate(raw: PickInput): MatePick {
   const capped = new Set(input.atCap ?? []);
   const clis = present.filter((row) => row.installed && row.signedIn && isCli(row.cli) && !banned(policy, row.cli));
   const monoAllowed = depth < MAX_MONO_DEPTH;
+  // With Always use my default on, the pick is the default CLI alone: no Mono is offered.
+  const lock = policy?.lockDefault === true;
   const roster = (input.monos ?? []).map((mono) => {
     const id = cleanMonoId(mono?.id);
     return id ? { ...mono, id } : undefined;
   }).filter((mono): mono is MonoCandidate => !!mono);
   const monos = roster.filter((mono) => {
+    if (lock) return false;
     if (!monoAllowed) return false;
     if ((mono.depth ?? 0) >= MAX_MONO_DEPTH) return false;
     if (input.leadMonoId && mono.id === input.leadMonoId) return false;
@@ -214,7 +217,6 @@ export function pickMate(raw: PickInput): MatePick {
     });
   });
 
-  const lock = policy?.lockDefault === true;
   const override = input.override;
   const overrideSet = hasAsk(override);
   const asked = lock ? input.brief : overrideSet ? override : input.brief ?? override;
@@ -230,11 +232,14 @@ export function pickMate(raw: PickInput): MatePick {
     );
   }
 
-  if (lock && setCli) {
-    const mine = choices.find((choice) => choice.kind === "cli" && choice.id === setCli);
+  if (lock) {
+    // The CLI the person set, else the signed-in default (Claude Code first). Never the fallback order.
+    const target = setCli ?? usual;
+    if (!target) return stamp(overrideSet, none(note(skipped, "Always use my default is on, and no CLI is signed in, so nothing was picked.")));
+    const mine = choices.find((choice) => choice.kind === "cli" && choice.id === target);
     if (!mine || mine.available !== 1) {
-      const name = cliLabel(setCli);
-      const why = paused.has(setCli)
+      const name = cliLabel(target);
+      const why = paused.has(target)
         ? `${name} is at its quota and Always use my default is on, so nothing else was picked.`
         : `${name} is not free and Always use my default is on, so nothing else was picked.`;
       return stamp(overrideSet, none(note(skipped, why)));

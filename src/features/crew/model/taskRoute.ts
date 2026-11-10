@@ -34,6 +34,14 @@ export type CrewRouteQuery = {
   catalog?: Catalog;
 };
 
+/** One thing the route left out: a CLI on Never use, or the Lead's pick the lock dropped. */
+export type CrewRouteSkip = {
+  field?: string | null;
+  from?: string | null;
+  value?: string | null;
+  reason?: string | null;
+};
+
 export type CrewRouteAnswer = {
   cli?: string | null;
   model?: string | null;
@@ -42,6 +50,7 @@ export type CrewRouteAnswer = {
   cliFrom?: string | null;
   modelFrom?: string | null;
   effortFrom?: string | null;
+  skipped?: CrewRouteSkip[] | null;
 };
 
 export type CrewLaunch = {
@@ -111,6 +120,37 @@ function chosen(from: string | null | undefined): boolean {
   return typeof from === "string" && CHOSEN_FROM.has(from);
 }
 
+/** The lock dropped the Lead's pick. Nothing the Lead named may build the launch then. */
+function lockDroppedPick(route: CrewRouteAnswer): boolean {
+  return (route.skipped ?? []).some((skip) => skip?.field === "cli" && skip.from === "override");
+}
+
+/** The route skipped the CLI this launch would run on (Never use, or the lock on a cooled CLI). */
+function launchCliSkipped(route: CrewRouteAnswer, harness: string | undefined): boolean {
+  return Boolean(harness) && (route.skipped ?? []).some((skip) => skip?.field === "cli" && skip.value === harness);
+}
+
+/**
+ * A route that must replace the CLI whatever its source: the lock dropped the Lead's pick, or the
+ * launch's own CLI is on Never use. The route's CLI then wins, even when it came from the signed-in default.
+ */
+export function crewForcesCli(route: CrewRouteAnswer | null | undefined, current: CrewLaunch): boolean {
+  if (!route) return false;
+  return lockDroppedPick(route) || launchCliSkipped(route, current.harness);
+}
+
+/**
+ * The reason a forced CLI cannot be run: the route named no CLI at all. The caller refuses the start with it.
+ * Undefined when nothing forces a change, or the route names a CLI.
+ */
+export function crewRefusal(route: CrewRouteAnswer | null | undefined, current: CrewLaunch): string | undefined {
+  if (!route || route.cli || !crewForcesCli(route, current)) return undefined;
+  const reasons = (route.skipped ?? []).map((skip) => skip?.reason?.trim()).filter((text): text is string => Boolean(text));
+  return reasons.length
+    ? `No CLI can take this work. ${reasons.join(" ")}`
+    : "No CLI can take this work: none is installed and signed in.";
+}
+
 /**
  * The launch fields a crew answer replaces. A field changes when it came from the override,
  * the brief, a matching rule, or a Mono, project or system default. The app's usual rule, or no
@@ -118,9 +158,12 @@ function chosen(from: string | null | undefined): boolean {
  * An unknown CLI leaves the launch as it was. A different CLI does not keep the previous model's id.
  * An effort the model doesn't offer is left off, so the start is not refused for it.
  */
-export function applyCrewLaunch(route: CrewRouteAnswer | null | undefined, current: CrewLaunch): CrewLaunch {
-  if (!route) return current;
-  const cliChosen = chosen(route.cliFrom);
+export function applyCrewLaunch(route: CrewRouteAnswer | null | undefined, named: CrewLaunch): CrewLaunch {
+  if (!route) return named;
+  // The lock dropped the Lead's pick: its model and effort never build the launch either.
+  const current: CrewLaunch = lockDroppedPick(route) ? { harness: named.harness } : named;
+  const forced = crewForcesCli(route, named);
+  const cliChosen = forced ? Boolean(route.cli) : chosen(route.cliFrom);
   const modelChosen = chosen(route.modelFrom);
   const effortChosen = chosen(route.effortFrom);
   if (!cliChosen && !modelChosen && !effortChosen) return current;
@@ -135,7 +178,8 @@ export function applyCrewLaunch(route: CrewRouteAnswer | null | undefined, curre
   const known = asked && knownModel(harness, asked) ? asked : undefined;
   const model = known ?? (same ? current.model : undefined);
   const namedEffort = effortChosen && typeof route.effort === "string" && route.effort.trim() ? route.effort : undefined;
-  const effort = effortFits(harness, model, namedEffort ?? (effortChosen ? undefined : current.effort));
+  const carriedEffort = same ? current.effort : undefined;
+  const effort = effortFits(harness, model, namedEffort ?? (effortChosen ? undefined : carriedEffort));
   return {
     harness,
     ...(model ? { model } : {}),

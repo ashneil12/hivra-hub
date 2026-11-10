@@ -1061,6 +1061,7 @@ fn settings_reports_the_signed_in_list_it_is_given() {
         revision: 4,
         budget: None,
         policy: json!({ "lockDefault": false, "neverUse": [], "fallback": [] }),
+        policy_own: true,
     };
     let view = super::response(
         stored,
@@ -1465,6 +1466,68 @@ fn a_policy_round_trips_and_a_stale_save_does_not_write() {
     .unwrap();
     assert_eq!(project.policy["neverUse"], json!(["pi"]));
     assert!(store::set_policy(&mut conn, "system", "other", &json!({}), 0).is_err());
+}
+
+#[test]
+fn a_project_with_no_policy_of_its_own_shows_the_system_one_until_it_saves_its_own() {
+    let store = memory();
+    let mut conn = store.lock_conn().unwrap();
+    store::set_policy(
+        &mut conn,
+        "system",
+        "system",
+        &json!({ "lockDefault": false, "neverUse": ["codex"], "fallback": [] }),
+        0,
+    )
+    .unwrap();
+    // Saving roles creates the project's row, but no policy of its own.
+    save(
+        &mut conn,
+        "project",
+        PROJECT,
+        vec![draft("builder", "", "grok", "", "")],
+        0,
+        None,
+    )
+    .unwrap();
+    let inherited = store::get_rules(&conn, "project", PROJECT).unwrap();
+    assert!(!inherited.policy_own);
+    assert_eq!(inherited.policy["neverUse"], json!(["codex"]));
+    let own = store::set_policy(
+        &mut conn,
+        "project",
+        PROJECT,
+        &json!({ "lockDefault": true, "neverUse": [], "fallback": [] }),
+        inherited.revision,
+    )
+    .unwrap();
+    assert!(own.policy_own);
+    assert_eq!(own.policy["lockDefault"], true);
+    assert!(
+        store::get_rules(&conn, "system", "system")
+            .unwrap()
+            .policy_own
+    );
+}
+
+#[test]
+fn the_default_skips_a_cli_on_never_use_as_well_as_a_cooled_one() {
+    let signed = present(&[
+        ("claude", true, true),
+        ("codex", true, true),
+        ("grok", true, true),
+    ]);
+    // Claude is cooling after its account failed, and Codex is on Never use: only Grok can take the work.
+    assert_eq!(
+        super::resolve::default_cli_except(&signed, &["claude".into()], &["codex".into()])
+            .as_deref(),
+        Some("grok"),
+    );
+    // Never use alone also keeps the default off the banned CLI, Claude first as usual.
+    assert_eq!(
+        super::resolve::default_cli_except(&signed, &[], &["claude".into()]).as_deref(),
+        Some("codex"),
+    );
 }
 
 fn pick_cli(cli: &str, model: &str, effort: &str) -> Pick {

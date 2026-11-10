@@ -83,6 +83,20 @@ describe("first mate pick", () => {
     expect(brief.reason.startsWith("Always use my default is on")).toBe(true);
   });
 
+  // MEDIUM 4: under the lock with nothing set, the pick is the signed-in default, and no Mono is offered.
+  it("under the lock with nothing set, picks the signed-in default and offers no Mono", () => {
+    const pick = pickMate({
+      labels: ["builder"],
+      rules: [],
+      present: signed("codex", "claude"),
+      monos: [ada],
+      policy: { lockDefault: true, neverUse: [], fallback: ["codex"] },
+    });
+    expect(pick.cli).toBe("claude");
+    expect(pick.monoId).toBeNull();
+    expect(pick.reason).toBe("Your default is Claude Code.");
+  });
+
   it("does not pick a provider that is not signed in", () => {
     const pick = pickMate({
       present: [

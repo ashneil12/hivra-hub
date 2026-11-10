@@ -43,6 +43,8 @@ pub(crate) struct RulesResponse {
     signed_in: Vec<Presence>,
     /// WP-141: always use my default, never use, and the fallback order.
     policy: serde_json::Value,
+    /// WP-141: false when this scope has no policy of its own, so `policy` is the one it inherits.
+    policy_own: bool,
 }
 
 fn response(stored: StoredRules, plugins: Vec<Rule>, signed_in: Vec<Presence>) -> RulesResponse {
@@ -53,6 +55,7 @@ fn response(stored: StoredRules, plugins: Vec<Rule>, signed_in: Vec<Presence>) -
         budget: stored.budget,
         signed_in,
         policy: stored.policy,
+        policy_own: stored.policy_own,
     }
 }
 

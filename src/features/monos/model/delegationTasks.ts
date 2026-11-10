@@ -45,6 +45,8 @@ export type DelegationTasksDeps = {
   briefLead?: AgentAppTasksHost["briefLead"];
   /** Whether the Lead a brief names exists, asked before a fresh-eyes review. */
   checkLead?: AgentAppTasksHost["checkLead"];
+  /** WP-141: the lock and Never use list in force (crew/model/host.ts crewPolicyInForce). */
+  crewPolicy?: AgentAppTasksHost["crewPolicy"];
   /** Where a Mono's work goes: its project's coding team, or its own team (hub/model/monoTeams.ts). */
   monoWork?: AgentAppTasksHost["monoWork"];
   /** Workers per project and the ones waiting for a free worker (H8, workerPool.ts). */
@@ -144,7 +146,7 @@ export function delegationTasksHost(deps: DelegationTasksDeps): AgentAppTasksHos
     ...(deps.firstMate ? { firstMate: deps.firstMate } : {}),
     // Hivra WP-10: the depth cap, checked by the store before anything starts.
     ...(deps.backend.checkDepth
-      ? { checkDepth: (owner: string) => deps.backend.checkDepth!(owner) }
+      ? { checkDepth: (owner: string, opts?: { fanout?: boolean }) => deps.backend.checkDepth!(owner, opts) }
       : {}),
     // Declared, not judged (workerStall.ts never overwrites it): the row is Ash's until it moves.
     cannot: async (by, row, reason) => {
@@ -167,6 +169,7 @@ export function delegationTasksHost(deps: DelegationTasksDeps): AgentAppTasksHos
     },
     ...(deps.briefLead ? { briefLead: deps.briefLead } : {}),
     ...(deps.checkLead ? { checkLead: deps.checkLead } : {}),
+    ...(deps.crewPolicy ? { crewPolicy: deps.crewPolicy } : {}),
     ...(deps.monoWork ? { monoWork: deps.monoWork } : {}),
     ...(deps.pool ? { pool: deps.pool } : {}),
     ...(deps.crewRoute ? { crewRoute: deps.crewRoute } : {}),
