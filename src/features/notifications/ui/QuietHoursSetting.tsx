@@ -9,7 +9,7 @@ import {
 } from "../model/quietHours";
 
 /** From and until, local time, plus the switch. Another window's change updates this one. */
-export function QuietHoursSetting({ onChange }: { onChange?: () => void }) {
+export function QuietHoursSetting() {
   const [quiet, setQuiet] = useState<QuietHours>(() => loadQuietHours());
   useEffect(() => {
     const onStorage = (event: StorageEvent) => {
@@ -23,7 +23,6 @@ export function QuietHoursSetting({ onChange }: { onChange?: () => void }) {
   const apply = (next: QuietHours) => {
     const stored = saveQuietHours(next);
     setQuiet(stored);
-    onChange?.();
   };
 
   return (
