@@ -96,12 +96,14 @@ function Pane({
   blocks,
   draft = "next",
   queuedMessages = queued,
+  idleCompacting = false,
 }: {
   paneId: string;
   harness: HarnessId;
   blocks: Block[];
   draft?: string;
   queuedMessages?: { id: string; text: string; attachments: [] }[];
+  idleCompacting?: boolean;
 }) {
   const [pool] = useState(() => new TranscriptPool());
   return (
@@ -118,6 +120,7 @@ function Pane({
           runtimeMode: "supervised",
           blocks,
           busy: true,
+          ...(idleCompacting ? { idleCompacting: true } : {}),
           composerSeed: draft,
           queuedMessages,
         }}
@@ -141,6 +144,15 @@ createRoot(document.getElementById("root")!).render(
       paneId="claude"
       harness="claude"
       blocks={[{ id: "notice", role: "system", text: IDLE_COMPACT_NOTICE }]}
+    />
+    <Pane paneId="compacting" harness="claude" blocks={[]} idleCompacting />
+    <Pane
+      paneId="compacting-empty"
+      harness="claude"
+      blocks={[]}
+      draft=""
+      queuedMessages={[]}
+      idleCompacting
     />
   </>,
 );

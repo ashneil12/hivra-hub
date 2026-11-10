@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
+  COMPACTING_NOTE,
+  QUEUED_MESSAGE_WAITS,
   cantRedirectTurn,
   cantTakeFollowUp,
   followUpWhenBusy,
@@ -75,9 +77,25 @@ describe("can't redirect a running turn", () => {
   });
 
   it("never queues a queued message a second time", () => {
-    // Its own Steer button. The caller refuses the steer and the message stays where it is.
+    // Its own Steer button. Steered when it can be, refused by the caller when this agent cannot take one.
     expect(busy({ alreadyQueued: true, cannotRedirect: true })).toBe("steer");
     expect(busy({ alreadyQueued: true, compacting: true, steerable: false })).toBe("steer");
+    expect(busy({ alreadyQueued: true })).toBe("steer");
+    // A message that has to wait for an idle chat stays where it is, however it got there.
+    expect(busy({ alreadyQueued: true, mustWait: true })).toBe("stay");
+    expect(busy({ alreadyQueued: true, mustWait: true, cannotRedirect: true })).toBe("stay");
+    expect(busy({ alreadyQueued: true, setting: "queue" })).toBe("stay");
+    // And a new message that has to wait is queued once.
+    expect(busy({ mustWait: true })).toBe("queue");
+  });
+
+  it("says what is going on while the app compacts, without a dash", () => {
+    expect(COMPACTING_NOTE).toBe("Compacting this chat while it's idle. A message you send now waits until that finishes.");
+    expect(COMPACTING_NOTE).not.toMatch(DASH);
+    expect(QUEUED_MESSAGE_WAITS).not.toMatch(DASH);
+    // Beside the box with nothing queued, on the queue (instead of Steer) when a message waits.
+    expect(redirectNotePlace(COMPACTING_NOTE, false, true)).toBe("composer");
+    expect(redirectNotePlace(COMPACTING_NOTE, true, true)).toBe("queue");
   });
 
   it("shows the sentence once, on the queue when a message is waiting and beside the box only when send would steer", () => {

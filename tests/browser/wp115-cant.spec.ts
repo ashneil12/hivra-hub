@@ -32,3 +32,24 @@ test("says when the agent cannot redirect, and still lets Claude steer", async (
     ),
   ).toBeVisible();
 });
+
+test("says the app is compacting, and does not offer Steer into the compact", async ({
+  page,
+}) => {
+  await page.goto(pageUrl);
+  const note =
+    "Compacting this chat while it's idle. A message you send now waits until that finishes.";
+
+  // A message is queued: the sentence sits on the queue in place of Steer.
+  const queuedPane = page.locator("#compacting");
+  await queuedPane.scrollIntoViewIfNeeded();
+  await expect(queuedPane.getByRole("note")).toHaveText(note);
+  await expect(queuedPane.getByRole("button", { name: "Steer" })).toHaveCount(0);
+  // Claude can steer a turn, so only the compact is why. Send stays Send.
+  await expect(queuedPane.getByRole("button", { name: "Send" })).toBeVisible();
+
+  // Nothing is queued: the same sentence shows beside the box.
+  const emptyPane = page.locator("#compacting-empty");
+  await emptyPane.scrollIntoViewIfNeeded();
+  await expect(emptyPane.getByRole("note")).toHaveText(note);
+});

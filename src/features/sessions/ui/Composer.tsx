@@ -316,6 +316,8 @@ type Props = {
   onSteerQueuedMessage?: (messageId: string) => void;
   /** Shown once when this agent cannot redirect a running turn. */
   steerNote?: string;
+  /** Show the note beside the box even when nothing is queued (the app is compacting this chat). */
+  steerNoteBesideBox?: boolean;
   onResumeQueue?: () => void;
   onUsageLimitResume?: () => void;
   onUsageLimitResumeAtReset?: (enabled: boolean) => void;
@@ -438,6 +440,7 @@ export function Composer({
   onQueuedMessageEditingChange,
   onSteerQueuedMessage,
   steerNote,
+  steerNoteBesideBox = false,
   onResumeQueue,
   onUsageLimitResume,
   onUsageLimitResumeAtReset,
@@ -2031,7 +2034,11 @@ export function Composer({
     (message) =>
       message.monoSessionCompletion || appNoteText(message.text) === undefined,
   );
-  const notePlace = redirectNotePlace(steerNote, queueVisible, !allowBusySubmit);
+  const notePlace = redirectNotePlace(
+    steerNote,
+    queueVisible,
+    !allowBusySubmit || steerNoteBesideBox,
+  );
   return (
     <div
       data-composer

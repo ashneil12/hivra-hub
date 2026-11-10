@@ -719,7 +719,13 @@ import {
   watchIdleClaudeCompaction,
 } from "../integrations/harness/providers/claude/idleCompactWatch";
 // WP-115: plain sentence when this agent cannot redirect a running turn.
-import { cantRedirectTurn, cantTakeFollowUp, followUpWhenBusy } from "../features/sessions/model/cantDo";
+import {
+  COMPACTING_NOTE,
+  QUEUED_MESSAGE_WAITS,
+  cantRedirectTurn,
+  cantTakeFollowUp,
+  followUpWhenBusy,
+} from "../features/sessions/model/cantDo";
 import { withLegacyBriefParts } from "../features/firstmate/model/brief";
 import { viewAfterRemoval, type RemovalOrigin } from "../features/sessions/model/sessionWorkspaceLifecycle";
 import { focusClosesMono, paneFocus } from "./model/paneFocus";
@@ -1155,6 +1161,7 @@ import {
   claimAutoContinue,
   resumeBlocked,
   resumePrompt,
+  isTurnRunning,
   shouldWriteInFlightSnapshot,
 } from "../features/sessions/model/inFlight";
 import {
@@ -2596,7 +2603,9 @@ function Workspace({
   const nextBusySessionIds = useMemo(() => {
     const ids = new Set<string>();
     for (const session of sessions) {
-      if (session.busy) {
+      // A chat held for a background compact is not working: it must not spin
+      // in the rail, publish a live turn, or read as finished when it ends.
+      if (isTurnRunning(session)) {
         ids.add(session.id);
         if (session.orchestrationLeadId) ids.add(session.orchestrationLeadId);
       }
@@ -8581,7 +8590,7 @@ function Workspace({
         // The app is compacting this idle chat in the background (WP-115). Its
         // busy flag is ours, there is no reply to steer into, and a message
         // written now would land inside the compact.
-        const compacting = idleCompactOwners.current.has(sessionId);
+        const compacting = !!current.idleCompacting;
         const steerable =
           isLiveHarness(current.harness) &&
           canSteerHarness(current.harness) &&
@@ -8602,6 +8611,15 @@ function Workspace({
           compacting,
           alreadyQueued: !!options?.queuedMessageId,
         });
+        if (followUpBehavior === "stay") {
+          // Already in the queue and not to go in now: it stays where it is.
+          enqueueHarnessEvent(sessionId, {
+            type: "status",
+            text: QUEUED_MESSAGE_WAITS,
+          });
+          flushHarnessEvents();
+          return false;
+        }
         if (followUpBehavior === "queue") {
           setSessions((prev) =>
             prev.map((s) =>
@@ -8641,9 +8659,11 @@ function Workspace({
           // names the redirect; anything not live keeps the mid-turn line.
           enqueueHarnessEvent(sessionId, {
             type: "status",
-            text: harnessCannotSteer(current.harness)
-              ? cantRedirectTurn(current.harness)
-              : cantTakeFollowUp(current.harness),
+            text: compacting
+              ? COMPACTING_NOTE
+              : harnessCannotSteer(current.harness)
+                ? cantRedirectTurn(current.harness)
+                : cantTakeFollowUp(current.harness),
           });
           flushHarnessEvents();
           return false;
@@ -9085,7 +9105,9 @@ function Workspace({
       if (editedResend && canRewindHarnessLastTurn(current.harness)) {
         editedResends.start(sessionId);
         const locked = sessionsRef.current.map((session) =>
-          session.id === sessionId ? { ...session, busy: true } : session,
+          session.id === sessionId
+            ? { ...session, busy: true, idleCompacting: undefined }
+            : session,
         );
         sessionsRef.current = locked;
         syncDockBadge(locked);
@@ -9294,7 +9316,7 @@ function Workspace({
           setSessions((prev) =>
             prev.map((s) => {
               if (s.id !== sessionId || !isPreparingHandoff(s)) return s;
-              return { ...completeHandoff(s, brief), busy: true };
+              return { ...completeHandoff(s, brief), busy: true, idleCompacting: undefined };
             }),
           );
         };
