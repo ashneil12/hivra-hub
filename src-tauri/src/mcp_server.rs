@@ -935,14 +935,33 @@ fn secret_run(call: &mut Call, args: &Value) -> Result<Value, String> {
     spend_grant(&exe, grant)
 }
 
-/// One `monocode secret-run --grant <base64>`: its JSON answer, or its refusal word for word.
-fn spend_grant(exe: &std::path::Path, grant: &str) -> Result<Value, String> {
-    let output = std::process::Command::new(exe)
+/// `monocode secret-run --grant-stdin`, ready to start: the grant is written to its stdin, never put in its arguments
+/// or its environment, so `ps` and Activity Monitor never show it. Its stdout is the answer; its stderr is dropped.
+fn secret_run_command(exe: &std::path::Path) -> std::process::Command {
+    let mut command = std::process::Command::new(exe);
+    command
         .arg(crate::secrets::run::SUBCOMMAND)
-        .arg("--grant")
-        .arg(grant)
-        .stdin(std::process::Stdio::null())
-        .output()
+        .arg("--grant-stdin")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    command
+}
+
+/// One `monocode secret-run --grant-stdin`: its JSON answer, or its refusal word for word.
+fn spend_grant(exe: &std::path::Path, grant: &str) -> Result<Value, String> {
+    use std::io::Write;
+    let mut child = secret_run_command(exe)
+        .spawn()
+        .map_err(|_| "Couldn't start the approved command.".to_string())?;
+    if let Some(mut stdin) = child.stdin.take() {
+        // Dropped at the end of the block: the child sees the end of its input.
+        stdin
+            .write_all(grant.as_bytes())
+            .map_err(|_| "Couldn't start the approved command.".to_string())?;
+    }
+    let output = child
+        .wait_with_output()
         .map_err(|_| "Couldn't start the approved command.".to_string())?;
     let text = String::from_utf8_lossy(&output.stdout);
     let value: Value = serde_json::from_str(text.trim())
@@ -1587,6 +1606,47 @@ mod tests {
         assert_eq!(outcome["state"], "waiting");
         assert_eq!(outcome["decisionKey"], "secret/stripe-api-key/stripe");
         assert!(outcome.get("grant").is_none());
+    }
+
+    #[test]
+    fn the_grant_is_not_in_the_approved_commands_arguments_or_environment() {
+        let command = secret_run_command(std::path::Path::new("/x/monocode"));
+        let args: Vec<String> = command
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(args, vec!["secret-run", "--grant-stdin"]);
+        assert_eq!(
+            command.get_envs().count(),
+            0,
+            "no variable carries it either"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_grant_reaches_the_approved_command_on_stdin_and_nowhere_else() {
+        use std::os::unix::fs::PermissionsExt;
+        let grant = "eyJwYXlsb2FkIjoiR1JBTlQtTUFSS0VSIn0=.c2ln";
+        let dir = std::env::temp_dir().join(format!("mc-spend-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let exe = dir.join("fake-monocode");
+        // A stand-in for `monocode`: it reports what it was given as arguments, in its environment and on stdin.
+        std::fs::write(
+            &exe,
+            "#!/bin/sh\ngrant=$(cat)\nenv_has=no\ncase \"$(env)\" in *GRANT-MARKER*|*eyJwYXlsb2Fk*) env_has=yes;; esac\nprintf '{\"argv\":\"%s\",\"stdin\":\"%s\",\"env_has\":\"%s\"}' \"$*\" \"$grant\" \"$env_has\"\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let answer = spend_grant(&exe, grant).unwrap();
+        assert_eq!(answer["argv"], "secret-run --grant-stdin");
+        assert!(
+            !answer["argv"].as_str().unwrap().contains("eyJ"),
+            "the grant is not in the argument list"
+        );
+        assert_eq!(answer["stdin"], grant, "it came on stdin");
+        assert_eq!(answer["env_has"], "no", "and not in the environment");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

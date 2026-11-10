@@ -1,4 +1,5 @@
-//! WP-92: `monocode secret-run --grant <base64>` — one secret into one child's environment, once.
+//! WP-92: `monocode secret-run --grant-stdin` — one secret into one child's environment, once. The signed grant comes
+//! on stdin, so it is never in the process list.
 //!
 //! The MCP server runs this after `secrets.run` returns a signed grant. It verifies the signature, refuses an expired
 //! grant (60 seconds) and a nonce it has already seen, re-reads the secret (refusing if the version changed or the item
@@ -99,16 +100,40 @@ pub fn resolve_program(program: &str, path: &str) -> Option<PathBuf> {
     })
 }
 
-fn parse_grant(args: &[String]) -> Result<String, String> {
-    let mut iter = args.iter();
-    let mut grant = None;
-    while let Some(arg) = iter.next() {
-        match arg.as_str() {
-            "--grant" => grant = Some(iter.next().ok_or("--grant needs a value")?.clone()),
-            other => return Err(format!("unknown argument {other}")),
-        }
+/// The largest grant read from stdin: a signed payload and its signature, in base64, is a few hundred bytes.
+pub const GRANT_MAX: usize = 16 * 1024;
+
+/// `secret-run --grant-stdin`: the signed grant comes on stdin, never as an argument, so it is not in the process list
+/// (`ps`, Activity Monitor) for the life of the run.
+fn parse_grant(args: &[String]) -> Result<(), String> {
+    match args {
+        [flag] if flag == "--grant-stdin" => Ok(()),
+        [flag, ..] if flag == "--grant" => Err(
+            "The grant comes on stdin, not as an argument: monocode secret-run --grant-stdin"
+                .to_string(),
+        ),
+        _ => Err(
+            "usage: monocode secret-run --grant-stdin (the grant is read from stdin)".to_string(),
+        ),
     }
-    grant.ok_or_else(|| "usage: monocode secret-run --grant <base64>".to_string())
+}
+
+/// The grant, read from stdin: trimmed, not empty, no longer than [`GRANT_MAX`].
+fn read_grant(reader: impl Read) -> Result<String, String> {
+    let mut bytes = Vec::new();
+    reader
+        .take(GRANT_MAX as u64 + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|_| "Couldn't read the grant.".to_string())?;
+    if bytes.len() > GRANT_MAX {
+        return Err("That grant is too long.".into());
+    }
+    let text = String::from_utf8(bytes).map_err(|_| "That grant isn't text.".to_string())?;
+    let text = text.trim();
+    if text.is_empty() {
+        return Err("No grant was given.".into());
+    }
+    Ok(text.to_string())
 }
 
 /// What one stream becomes, plus whether either was cut.
@@ -354,7 +379,7 @@ pub fn execute_with_grace(
 }
 
 pub fn run_main(args: &[String]) -> i32 {
-    let grant = match parse_grant(args) {
+    let grant = match parse_grant(args).and_then(|()| read_grant(std::io::stdin())) {
         Ok(grant) => grant,
         Err(why) => {
             eprintln!("monocode {SUBCOMMAND}: {why}");
@@ -451,13 +476,38 @@ mod tests {
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
+    fn args(list: &[&str]) -> Vec<String> {
+        list.iter().map(|s| s.to_string()).collect()
+    }
+
+    // Changed for fix round 1 (item K): this test pinned `--grant <base64>`, which put the whole grant in the process
+    // list. The only form now is `--grant-stdin`, and the old one is refused.
     #[test]
-    fn the_grant_argument_is_the_only_one_accepted() {
-        let args = |list: &[&str]| list.iter().map(|s| s.to_string()).collect::<Vec<_>>();
-        assert_eq!(parse_grant(&args(&["--grant", "abc"])).unwrap(), "abc");
+    fn the_grant_comes_on_stdin_and_never_as_an_argument() {
+        assert_eq!(parse_grant(&args(&["--grant-stdin"])), Ok(()));
+        let err = parse_grant(&args(&["--grant", "abc"])).unwrap_err();
+        assert!(err.contains("stdin"), "{err}");
         assert!(parse_grant(&args(&[])).is_err());
-        assert!(parse_grant(&args(&["--grant"])).is_err());
+        assert!(parse_grant(&args(&["--grant-stdin", "extra"])).is_err());
         assert!(parse_grant(&args(&["--other", "abc"])).is_err());
+    }
+
+    #[test]
+    fn a_grant_read_from_stdin_is_trimmed_and_bounded() {
+        assert_eq!(
+            read_grant(std::io::Cursor::new(b"  abc123==\n".to_vec())).unwrap(),
+            "abc123=="
+        );
+        assert!(read_grant(std::io::Cursor::new(Vec::new())).is_err());
+        assert!(read_grant(std::io::Cursor::new(b"   \n".to_vec())).is_err());
+        assert!(read_grant(std::io::Cursor::new(vec![b'a'; GRANT_MAX + 1])).is_err());
+        assert_eq!(
+            read_grant(std::io::Cursor::new(vec![b'a'; GRANT_MAX]))
+                .unwrap()
+                .len(),
+            GRANT_MAX
+        );
+        assert!(read_grant(std::io::Cursor::new(vec![0xff, 0xfe])).is_err());
     }
 
     #[cfg(unix)]

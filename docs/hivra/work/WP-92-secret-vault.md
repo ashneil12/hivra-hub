@@ -71,7 +71,7 @@ write a second copy of any of them.
 | `src-tauri/src/instance.rs` | `policy().daily_keychain`, `in_isolated_home`, `Kind::Daily` / `Kind::Dev` | Daily versus dev naming, and the in-memory vault a bench under an isolated HOME gets. |
 | `src-tauri/src/connectors/secrets.rs` | `Login` with a `Debug` that lists field names only, `secrets()`, `redact()` (longest value first, `•••`), and the `SecretStore` trait with a `Keychain` and an in-memory `Memory` | The shape of the vault: a value type whose `Debug` prints the name and never the bytes, a store trait with a keychain impl and a memory impl for tests, and the longest-first rule. The connectors' `redact` is left as it is. |
 | `src-tauri/src/connectors/signing.rs` | `hmac_sha256`, `sign`, `verify` (constant-time compare), `key()` read from the Keychain, a per-install key created on first use, never leaving Rust | The one-run grant: signed with `sign`/`verify` under its own item, created on first use, never handed to the webview. |
-| `src-tauri/src/connectors/launch.rs` | `monocode connector-run`: the app's own binary, signed arguments, refuses an unsigned call, the login in this process's memory only, a cleared environment for local servers, every printed line through `redact` | `monocode secret-run --grant <base64>` is this pattern for one command: same binary, same signed payload, same cleared environment, same redaction. |
+| `src-tauri/src/connectors/launch.rs` | `monocode connector-run`: the app's own binary, signed arguments, refuses an unsigned call, the login in this process's memory only, a cleared environment for local servers, every printed line through `redact` | `monocode secret-run --grant-stdin` is this pattern for one command: same binary, same signed payload (read from stdin, so it is never in the process list), same cleared environment, same redaction. |
 | `src-tauri/src/backups/mod.rs` | `spawn_helper` and `allow_env()`: `.env_clear()` plus an explicit allow-list | The child environment model for `secret-run` and for a worker that is given a secret. |
 | `src-tauri/src/harness.rs` | `login_shell_path()`, `cached_gui_search_path()` | The child's PATH when the app was started from Finder. |
 | `src/features/portable/model/secretPatterns.json` | One pattern list (18 shapes, a secret-key name list, the `[secret removed]` marker) read by the webview and by Rust through `include_str!` | The vault runs this scrubber after its own needle scrub, and the composer, memory and export checks keep using it. One list; no second copy. |
@@ -158,7 +158,9 @@ write a second copy of any of them.
    `monocode-hub:secret-key:grant` (account `key`, created on first use, dev-scoped like every other key). The
    item is named so it can never be mistaken for a secret, whose names always carry a scope segment.
 
-   The MCP server runs its own binary as `monocode secret-run --grant <base64>`. That process verifies the
+   The MCP server runs its own binary as `monocode secret-run --grant-stdin` and writes the grant (a base64 payload
+   and its signature) to that process's stdin, so it is in neither the argument list nor the environment that `ps` or
+   Activity Monitor can show. That process verifies the
    signature, refuses an expired grant (60 seconds), refuses a nonce it has already seen (a small file under the
    copy's data folder), re-reads the secret (refusing if the version changed or the item is gone), checks no argv
    element contains the value, then spawns the command with:
