@@ -190,13 +190,14 @@ describe("the delegate tool", () => {
     expect(withDelegate.at(-1)).toBe(`${fence[1]},EnterWorktree,ExitWorktree,Skill(update-config)`);
   });
 
-  it("is taught to a chat only when its Claude Code session really has it", () => {
+  it("is taught to a chat when its lead CLI really has the tool", () => {
     // Nothing registered yet: no servers, but the fence round the Monos' home is never left off.
     expect(registeredHubMcpArgs("chat-exo")).toEqual(["--disallowedTools", chatDeniedTools().join(",")]);
     expect(hasDelegateTool("chat-exo", "claude")).toBe(false);
     setHubMcpServers({ cli: CLI }, lookups);
     expect(hasDelegateTool("chat-exo", "claude")).toBe(true);
-    expect(hasDelegateTool("chat-exo", "codex")).toBe(false);
+    expect(hasDelegateTool("chat-exo", "codex")).toBe(true);
+    expect(hasDelegateTool("chat-exo", "opencode")).toBe(false);
     expect(hasDelegateTool("habit-run-1", "claude")).toBe(false);
     expect(hasDelegateTool("chat-checker", "claude")).toBe(false);
     expect(config(registeredHubMcpArgs("chat-exo"))!.mcpServers.monocode).toBeDefined();
@@ -228,7 +229,8 @@ describe("a coding-team chat", () => {
     expect(args).toContain(MONOCODE_ALLOWED_TOOLS);
     setHubMcpServers({ cli: CLI }, team);
     expect(hasDelegateTool(TEAM_CHAT, "claude")).toBe(true);
-    expect(hasDelegateTool(TEAM_CHAT, "codex")).toBe(false);
+    expect(hasDelegateTool(TEAM_CHAT, "codex")).toBe(true);
+    expect(hasDelegateTool(TEAM_CHAT, "cursor")).toBe(false);
     expect(hasDelegateTool("plain-1", "claude")).toBe(false);
   });
 

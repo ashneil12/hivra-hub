@@ -296,6 +296,26 @@ fn path_in(dir: &Path, path: &Path) -> bool {
     component_prefix(&path, &dir) && path != dir
 }
 
+/// WP-91: the folder this copy's pool hands its slots out of, or none when the pool can't be kept apart from the
+/// real one (then no checkout is a slot).
+pub(crate) fn slots_dir(env: &PoolEnv) -> Option<PathBuf> {
+    paths_for(env).ok().map(|paths| paths.slots_dir)
+}
+
+/// [`slots_dir`] for the running app.
+pub(crate) fn slots_dir_for(app: &AppHandle) -> Option<PathBuf> {
+    slots_dir(&env_from_app(app))
+}
+
+/// WP-91: whether `path` is a slot of the pool that hands its slots out of `slots_dir`: a folder straight under it,
+/// by the folders' real identity. The folder itself, a folder inside a slot, and a link in it that leads to some
+/// other folder are not slots.
+pub(crate) fn is_slot_in(slots_dir: &Path, path: &Path) -> bool {
+    let (dir, path) = (resolve(slots_dir), resolve(path));
+    path.parent()
+        .is_some_and(|parent| component_prefix(parent, &dir) && component_prefix(&dir, parent))
+}
+
 pub fn env_from_app(app: &AppHandle) -> PoolEnv {
     let dev = crate::instance::kind() != crate::instance::Kind::Daily;
     let data_dir = crate::project_file::data_dir(app).unwrap_or_else(|_| {

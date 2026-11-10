@@ -110,3 +110,82 @@ it("keeps a hidden section hidden and still lists a pinned panel that is not in 
   expect(container.querySelector("[data-home-section='panel:my-panels:missing']")?.textContent).toContain("This panel is not available.");
   expect(container.textContent).toContain("Pin Example board");
 });
+
+it("shows a builders line in Needs you with its own Free up space action, and the action opens it", () => {
+  const opened: HomeLine[] = [];
+  const builders = line({
+    id: "builders:builders-disk",
+    kind: "builders",
+    text: "New builders are waiting: 24 GB free, under the 30 GB floor",
+    projectId: "",
+    target: "builders-disk",
+    at: 0,
+  });
+  draw({ needsYou: [builders, line({})], onOpen: (picked) => opened.push(picked) });
+  const row = container.querySelector("[data-home-section='needs-you'] [data-home-line='builders']");
+  expect(row?.textContent).toContain("New builders are waiting: 24 GB free, under the 30 GB floor");
+  expect(row?.textContent).toContain("Free up space");
+  // The row holds a text and one button; it is not itself a button (no button inside a button).
+  expect(row?.tagName).toBe("DIV");
+  const action = row?.querySelector("button[data-home-action='free-up-space']") as HTMLButtonElement | null;
+  expect(action?.textContent).toBe("Free up space");
+  expect(row?.querySelectorAll("button")).toHaveLength(1);
+  expect(container.querySelector("[data-home-empty]")).toBeNull();
+  // The other line in the section is still a plain button that opens its own place.
+  expect(container.querySelector("button[data-home-line='decision']")?.textContent).toContain("Crew · Should we ship?");
+  act(() => action?.click());
+  expect(opened).toEqual([builders]);
+});
+
+it("asks with one box and one send button, and an empty ask says nothing", () => {
+  const asked: string[] = [];
+  draw({ onAsk: (text) => asked.push(text) });
+  const start = container.querySelector("[data-home-start]")!;
+  // One visible "Ask" at most: the label is the box's accessible name and its placeholder, not a heading over it.
+  expect(start.textContent).not.toContain("Ask");
+  const input = start.querySelector<HTMLInputElement>("input[aria-label='Ask']")!;
+  expect(input.placeholder).toMatch(/Ask what's happening/);
+  const send = start.querySelector<HTMLButtonElement>("button[aria-label='Send']")!;
+  expect(send.disabled).toBe(true);
+  act(() => start.querySelector("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })));
+  expect(asked).toEqual([]);
+});
+
+it("lists every project in the overview, and opens one", () => {
+  const opened: HomeLine[] = [];
+  draw({
+    projects: [
+      line({ id: "project:crew", kind: "project", text: "Crew · needs you", target: "crew" }),
+      line({ id: "project:notes", kind: "project", text: "Notes", projectId: "notes", target: "notes" }),
+    ],
+    onOpen: (item) => opened.push(item),
+  });
+  const section = container.querySelector("[data-home-section='projects']")!;
+  expect(section.querySelector("h2")?.textContent).toBe("Projects");
+  const rows = [...section.querySelectorAll<HTMLButtonElement>("[data-home-line='project']")];
+  expect(rows.map((row) => row.textContent)).toEqual(["Crew · needs you", "Notes"]);
+  act(() => rows[1].click());
+  expect(opened.map((item) => item.target)).toEqual(["notes"]);
+  // A list of projects with nothing happening in them is still a quiet Home.
+  expect(container.querySelector("[data-home-empty]")?.textContent).toContain("All quiet.");
+});
+
+it("says why there are no projects instead of all quiet, and offers the way back", () => {
+  let brought = 0;
+  let made = 0;
+  draw({ noProjects: { inAshOs: true }, onBringOver: () => brought++, onNewProject: () => made++ });
+  const note = container.querySelector("[data-home-no-projects]")!;
+  expect(note.textContent).toContain("Your projects haven't come over from Ash OS yet.");
+  expect(container.querySelector("[data-home-empty]")).toBeNull();
+  act(() => note.querySelector<HTMLButtonElement>("[data-home-action='bring-over']")!.click());
+  act(() => note.querySelector<HTMLButtonElement>("[data-home-action='new-project']")!.click());
+  expect([brought, made]).toEqual([1, 1]);
+
+  draw({ noProjects: { inAshOs: true, busy: true, outcome: "Ash OS didn't answer. Try again when it's running." }, onBringOver: () => brought++ });
+  expect(container.querySelector<HTMLButtonElement>("[data-home-action='bring-over']")?.disabled).toBe(true);
+  expect(container.querySelector("[data-home-import-outcome]")?.textContent).toContain("Ash OS didn't answer.");
+
+  draw({ noProjects: { inAshOs: false }, onBringOver: () => brought++, onNewProject: () => made++ });
+  expect(container.querySelector("[data-home-no-projects]")?.textContent).toContain("No projects yet.");
+  expect(container.querySelector("[data-home-action='bring-over']")).toBeNull();
+});

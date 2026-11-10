@@ -19,6 +19,7 @@ import {
 } from "../backpass/run";
 import { recordRejection } from "../backpass/rejection";
 import { crewMemoryBrief } from "../model/crewBrief";
+import { acceptStaged, listStaged, rejectStaged } from "../../workLog/model/retroStore";
 import { HARNESSES } from "../../sessions/model/session";
 import { learnableChats } from "../model/privateChat";
 import { loadPrivateChatKeys } from "../../sessions/data/privateKeys";
@@ -32,6 +33,9 @@ type ProfileRow = LearnProfiles & {
   agentsSha256: string;
   claudeSha256: string;
 };
+
+/** WP-157: the id of an edit a work log retro left waiting. The retro store decides it, not this file. */
+const RETRO_ID = /^retro:/;
 
 const MAX_CHATS = 12;
 const MAX_CHAT_CHARS = 8_000;
@@ -210,7 +214,9 @@ export function learnPorts(now: () => string = () => new Date().toISOString()): 
       for (const proposal of measured.proposals) pending.set(proposal.id, proposal);
       return measured.proposals.map(show);
     },
+    staged: () => listStaged(),
     accept: async (id) => {
+      if (RETRO_ID.test(id)) return acceptStaged(id);
       const proposal = pending.get(id);
       const which = proposal ? whichOf(proposal.file) : null;
       const original = proposal ? originals.get(proposal.file) : undefined;
@@ -253,6 +259,7 @@ export function learnPorts(now: () => string = () => new Date().toISOString()): 
       return true;
     },
     reject: async (id) => {
+      if (RETRO_ID.test(id)) return rejectStaged(id);
       const proposal = pending.get(id);
       if (!proposal) return false;
       const loaded = await loadState();

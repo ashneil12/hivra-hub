@@ -4,11 +4,14 @@ export type MonoCodeToolCall = {
   action: string;
   label: string;
   command: string;
-  /** One of the delegate tool's MCP tools (mcp__monocode__*), not an app CLI command. */
+  /** One of the delegate tool's MCP tools (mcp__monocode__* or monocode:*), not an app CLI command. */
   delegate?: DelegateToolName;
 };
 
-/** The delegate tool's tools (src-tauri/src/mcp_server.rs), as Claude Code names them: mcp__monocode__<tool>. */
+/**
+ * The delegate tool's tools (src-tauri/src/mcp_server.rs), as Claude Code names them: mcp__monocode__<tool>. A Codex
+ * lead names the same calls monocode:<tool> (its mcpToolCall item joins the server and the tool with a colon).
+ */
 export type DelegateToolName =
   | "delegate_task"
   | "task_status"
@@ -65,7 +68,7 @@ const DELEGATE_TOOLS: Record<
   },
 };
 
-const DELEGATE_TOOL_NAME = /^mcp__monocode__([a-z_]+)$/;
+const DELEGATE_TOOL_NAME = /^(?:mcp__monocode__|monocode:)([a-z_]+)$/;
 
 /** Which delegate tool a tool block called, if it is one. */
 export function delegateToolName(block: Block): DelegateToolName | undefined {

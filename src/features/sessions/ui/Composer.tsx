@@ -118,6 +118,7 @@ import { AccessPicker } from "./AccessPicker";
 import { ComposerRunner } from "./ComposerRunner";
 import { ContextMeter } from "./ContextMeter";
 import { contextCeilingFor } from "../model/contextCeiling";
+import { catalogueVersion, subscribeCatalogue } from "../model/modelCatalogue";
 import { AttachmentChip } from "./AttachmentChip";
 import { BranchPicker } from "../../source-control/ui/BranchPicker";
 import { WorktreePicker } from "../../source-control/ui/WorktreePicker";
@@ -134,9 +135,13 @@ import { FileTypeIcon } from "../../files/ui/FileTypeIcon";
 import { InboxMiniCard } from "../../inbox/ui/InboxMiniCard";
 import { NoteMiniCard } from "../../notes/ui/NoteMiniCard";
 import { HandoffMiniCard } from "./HandoffMiniCard";
+import { MidThreadSwitchNotice } from "./MidThreadSwitchNotice";
 import { ModelControlPills, ModelPicker } from "./ModelPicker";
+import { FanOutPicker } from "./FanOutPicker";
 import { QuestionForm } from "./QuestionForm";
 import { MessageQueue } from "./MessageQueue";
+import { appNoteText } from "../model/appNote";
+import { redirectNotePlace } from "../model/cantDo";
 import { SkillPicker } from "../../skills/ui/SkillPicker";
 import { pathKey, projectKey } from "../../../shared/lib/paths";
 import { consumeQuoteRequest, type QuoteRequest } from "../model/quoteDraft";
@@ -263,6 +268,8 @@ type Props = {
   inboxCard?: InboxComposerCard;
   noteCard?: NoteComposerCard;
   handoffCard?: HandoffComposerCard;
+  /** WP-121: the continue or recap line, until the next send. */
+  midThreadLine?: string;
   question?: UserQuestionPrompt;
   busy?: boolean;
   /** Allow typed text to replace Stop with Send while a turn is running. */
@@ -304,6 +311,11 @@ type Props = {
     attachments: Attachment[],
     options?: ComposerTurnOptions,
   ) => boolean | void;
+  /** WP-135: send this prompt to several models. Absent on surfaces that cannot start those chats. */
+  onCompareModels?: (
+    prompt: string,
+    targets: readonly { provider: HarnessId; model: string }[],
+  ) => boolean | string | Promise<boolean | string | void> | void;
   /** `draft` opens the side question with the text unsent, for a typed `/btw `. */
   onBtwCommand?: (
     text: string,
@@ -318,6 +330,10 @@ type Props = {
   onEditQueuedMessage?: (messageId: string, text: string) => void;
   onQueuedMessageEditingChange?: (messageId?: string) => void;
   onSteerQueuedMessage?: (messageId: string) => void;
+  /** Shown once when this agent cannot redirect a running turn. */
+  steerNote?: string;
+  /** Show the note beside the box even when nothing is queued (the app is compacting this chat). */
+  steerNoteBesideBox?: boolean;
   onResumeQueue?: () => void;
   onUsageLimitResume?: () => void;
   onUsageLimitResumeAtReset?: (enabled: boolean) => void;
@@ -396,6 +412,7 @@ export function Composer({
   inboxCard,
   noteCard,
   handoffCard,
+  midThreadLine,
   question,
   busy = false,
   allowBusySubmit = true,
@@ -429,6 +446,7 @@ export function Composer({
   onQuestionReply,
   onQuestionInteraction,
   onSubmit,
+  onCompareModels,
   canSaveDraft = false,
   onSaveDraft,
   onStop,
@@ -438,6 +456,8 @@ export function Composer({
   onEditQueuedMessage,
   onQueuedMessageEditingChange,
   onSteerQueuedMessage,
+  steerNote,
+  steerNoteBesideBox = false,
   onResumeQueue,
   onUsageLimitResume,
   onUsageLimitResumeAtReset,
@@ -558,6 +578,8 @@ export function Composer({
     loadModelControls,
     () => "menu" as const,
   );
+  // WP-104: a custom route's window loads on first use; draw the context ceiling again when it arrives.
+  useSyncExternalStore(subscribeCatalogue, catalogueVersion, catalogueVersion);
   const controlsBeside = modelControls === "beside";
   const [notes, setNotes] = useState<Note[]>(() => peekNotes() ?? []);
   const [mention, setMention] = useState<MentionToken | null>(null);
@@ -1786,8 +1808,29 @@ export function Composer({
     // WP-94: a hidden character never reaches the draft, so it never reaches the agent (hiddenText.ts).
     const plain = e.clipboardData?.getData("text/plain") ?? "";
     const paste = plain ? stripHiddenCharacters(plain) : null;
+    // A paste that carries an image as well as text keeps the image, whatever happens to the text.
+    const carried = (() => {
+      const files = filesFromClipboard(e.clipboardData);
+      return files.length > 0
+        ? files
+        : (messageFilesFromClipboard(e.clipboardData) ?? []);
+    })();
+    const attachCarried = () => {
+      if (carried.length === 0 || !attachmentsSupported) return;
+      const generation = pasteGenerationRef.current;
+      rememberAttachmentRead(
+        attachmentsFromFiles(carried).then((pasted) => {
+          if (pasteGenerationRef.current !== generation) {
+            pasted.forEach(revokeAttachment);
+            return;
+          }
+          addAttachments(pasted);
+        }),
+      );
+    };
     if (paste && paste.removed > 0 && !paste.text) {
       e.preventDefault();
+      attachCarried();
       setPasteNotice(null);
       setPasteError(
         "That paste had only hidden characters, so nothing was pasted.",
@@ -1802,6 +1845,7 @@ export function Composer({
       inlinePasteRef.current !== true
     ) {
       e.preventDefault();
+      attachCarried();
       const captured = captureDraft(e.currentTarget);
       const generation = pasteGenerationRef.current;
       rememberAttachmentRead(
@@ -1840,6 +1884,7 @@ export function Composer({
     }
     if (paste && paste.removed > 0) {
       e.preventDefault();
+      attachCarried();
       const captured = captureDraft(e.currentTarget);
       if (captured) insertRestoredText(captured, paste.text);
       setPasteNotice(
@@ -2028,6 +2073,15 @@ export function Composer({
       </div>
     </div>
   );
+  const queueVisible = queuedMessages.some(
+    (message) =>
+      message.monoSessionCompletion || appNoteText(message.text) === undefined,
+  );
+  const notePlace = redirectNotePlace(
+    steerNote,
+    queueVisible,
+    !allowBusySubmit || steerNoteBesideBox,
+  );
   return (
     <div
       data-composer
@@ -2068,8 +2122,14 @@ export function Composer({
         onEdit={onEditQueuedMessage}
         onEditingChange={onQueuedMessageEditingChange}
         onSteer={onSteerQueuedMessage}
+        steerNote={notePlace === "queue" ? steerNote : undefined}
         onResume={onResumeQueue}
       />
+      {notePlace === "composer" ? (
+        <p role="note" className="px-2 pb-1 text-[12px] text-content/55">
+          {steerNote}
+        </p>
+      ) : null}
       <div className="relative overflow-visible">
         {mcpPickerOpen ? (
           <div className="absolute inset-x-0 bottom-full z-30 mb-1">
@@ -2311,6 +2371,8 @@ export function Composer({
               onDismiss={onHandoffCardDismiss}
             />
           ) : null}
+
+          <MidThreadSwitchNotice line={midThreadLine} place="composer" />
 
           <div className="relative">
             <div
@@ -2718,15 +2780,37 @@ export function Composer({
               showsStop({ enabled, busy, text: draft, attachments: attachments.length, canStop: !!onStop }) ? (
                 <TurnStopButton onClick={() => onStop?.()} />
               ) : (
-              <ComposerAction
-                busy={busy}
-                disabled={disabled}
-                hasValue={hasValue && !worktreeRemoved}
-                allowBusySubmit={allowBusySubmit}
-                label={draftActive ? "Save draft" : "Send"}
-                onSend={() => submit(ref.current?.value ?? "")}
-                onStop={() => onStop?.()}
-              />
+                <>
+                  {onCompareModels && !compact && !remoteSession ? (
+                    <FanOutPicker
+                      prompt={draft}
+                      disabled={disabled || worktreeRemoved}
+                      allowedHarnesses={allowedModelHarnesses}
+                      onLaunch={async (prompt, targets) => {
+                        const accepted = await onCompareModels(prompt, targets);
+                        if (accepted === false || typeof accepted === "string") return accepted;
+                        pasteGenerationRef.current += 1;
+                        if (ref.current) {
+                          ref.current.value = "";
+                          ref.current.style.height = "auto";
+                        }
+                        setDraft("");
+                        onDraftChange?.("");
+                        syncHasValue("", attachmentsRef.current);
+                        return true;
+                      }}
+                    />
+                  ) : null}
+                  <ComposerAction
+                    busy={busy}
+                    disabled={disabled}
+                    hasValue={hasValue && !worktreeRemoved}
+                    allowBusySubmit={allowBusySubmit}
+                    label={draftActive ? "Save draft" : "Send"}
+                    onSend={() => submit(ref.current?.value ?? "")}
+                    onStop={() => onStop?.()}
+                  />
+                </>
               )}
             </div>
           </div>

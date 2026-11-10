@@ -73,6 +73,12 @@ class MemoryQueue implements WakeQueueBackend {
   async timers() {
     return [];
   }
+  async checkSet(): Promise<never> {
+    throw new Error("not here");
+  }
+  async checkCancel() {
+    return null;
+  }
 }
 
 const stall = (key: string, owner = "lead"): Wake => ({ kind: "stall", route: "queue", ownerSession: owner, key, text: `quiet (${key})` });
