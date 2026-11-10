@@ -6,8 +6,9 @@
 //! holds each folder to what a chat's own can be (`Withheld`) and checks a path against them
 //! (`chat_media_file_via`); this module only names candidates.
 //!
-//! An import writes rows too (chats, delegations), and what it writes is not the user's own record, so no row an
-//! import could write grants a folder by itself:
+//! An import writes rows too (chats, delegations), and what it writes is not the user's own record. Of those rows only
+//! a chat's own folder reaches here, and it does so only as the folder `FolderRules` kept when the import wrote it
+//! (`sessions.cwd` is that vetted folder; `fs.rs` still checks it against `Withheld`). The rest grants nothing by itself:
 //!
 //! - a delegation counts only when its owner is one of the chats the roster gives this chat's Mono, which an import
 //!   cannot name (the roster is the window's own file, and ids are random), not by the Mono id it carries;

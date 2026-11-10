@@ -5633,6 +5633,42 @@ fn a_folder_with_env_or_venv_is_still_offered_but_one_with_instructions_is_not()
 }
 
 #[test]
+fn an_imported_chats_media_roots_are_only_the_folders_folder_rules_keeps() {
+    let layout = layout();
+    let env = layout.target.clone();
+    let project = layout.project.clone();
+    let home = env.home.clone().unwrap();
+    let rules = FolderRules::load(
+        &env,
+        &[project.to_string_lossy().into_owned()],
+        &[],
+        &["lead".into()],
+        &[],
+    );
+    let store = open_store(&env);
+    let conn = store.lock_conn().unwrap();
+    let mono_folder = env.monos_root.join("lead");
+    let cases = [
+        ("in-project", project.join("src/deep")),
+        ("outside", layout.outside.clone()),
+        ("home", home.clone()),
+        ("monos-home", env.monos_root.clone()),
+        ("mono", mono_folder.clone()),
+    ];
+    for (id, cwd) in cases {
+        let file = json!({"title": "T", "cwd": cwd.to_string_lossy(), "private": false,
+               "blocks": [block("u", "user", "hi")],
+               "engine": {"harness": "claude", "model": "m", "runtimeMode": "auto"}});
+        insert_session(&env, &conn, id, "T", &file, &rules).unwrap();
+        let kept = rules.vet(Some(&cwd.to_string_lossy()), None);
+        let allowed: Vec<String> = kept.roots.iter().map(|root| root.to_string_lossy().into_owned()).collect();
+        for root in crate::chat_media::folders(&conn, None, id).folders {
+            assert!(allowed.contains(&root), "{id}: {root} is a media root FolderRules does not keep ({allowed:?})");
+        }
+    }
+}
+
+#[test]
 fn a_monos_folder_takes_only_the_names_mono_rs_uses() {
     let allowed = [
         "MEMORY.md",
