@@ -304,19 +304,39 @@ test("spawnStreaming reports a missing program as a failure with a message", asy
   assert.match(lines.join("\n"), /ENOENT|spawn/i);
 });
 
+/** A child that prints `first`, waits for a file to exist, then prints `second`. No timing guess. */
+function gatedChild(gate, first, second) {
+  const code = [
+    "const fs = require('node:fs');",
+    `process.stdout.write(${JSON.stringify(first)});`,
+    `const timer = setInterval(() => { if (fs.existsSync(${JSON.stringify(gate)})) { clearInterval(timer); process.stdout.write(${JSON.stringify(second)}); } }, 10);`,
+  ].join(" ");
+  return [process.execPath, "-e", code];
+}
+
+async function waitForLine(lines, expected, ms = 10000) {
+  const deadline = Date.now() + ms;
+  while (!lines.includes(expected)) {
+    if (Date.now() > deadline) assert.fail(`timed out waiting for ${JSON.stringify(expected)}; got ${JSON.stringify(lines)}`);
+    await sleep(10);
+  }
+}
+
 test("spawnStreaming gives a line to the log before the command exits", async () => {
-  const lines = [];
-  const child = spawnStreaming(
-    [process.execPath, "-e", "console.log('early'); setTimeout(() => console.log('late'), 400)"],
-    (line) => lines.push(line),
-  );
-  const deadline = Date.now() + 5000;
-  while (!lines.includes("early") && Date.now() < deadline) await sleep(10);
-  const early = lines.includes("early") && !lines.includes("late");
-  const result = await child;
-  assert.equal(early, true, "the first line arrived while the command was still running");
-  assert.equal(result.status, 0);
-  assert.deepEqual(lines, ["early", "late"]);
+  const dir = mkdtempSync(path.join(tmpdir(), "ci-check-gate-"));
+  const gate = path.join(dir, "go");
+  try {
+    const lines = [];
+    const child = spawnStreaming(gatedChild(gate, "early\n", "late\n"), (line) => lines.push(line));
+    await waitForLine(lines, "early");
+    assert.deepEqual(lines, ["early"], "the command is still waiting for the gate, and its first line is already here");
+    writeFileSync(gate, "");
+    const result = await child;
+    assert.equal(result.status, 0);
+    assert.deepEqual(lines, ["early", "late"]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test("spawnStreaming keeps a multibyte character that arrives in two chunks", async () => {
@@ -333,22 +353,21 @@ test("spawnStreaming keeps a multibyte character that arrives in two chunks", as
 });
 
 test("a half-written line is shown after a short quiet spell, so a hung test is named", async () => {
-  const lines = [];
-  const child = spawnStreaming(
-    [
-      process.execPath,
-      "-e",
-      "process.stdout.write('test slow_one ... '); setTimeout(() => process.stdout.write('ok\\n'), 600)",
-    ],
-    (line) => lines.push(line),
-    { idleFlushMs: 40 },
-  );
-  const deadline = Date.now() + 5000;
-  while (!lines.includes("test slow_one ... ") && Date.now() < deadline) await sleep(10);
-  assert.ok(lines.includes("test slow_one ... "), "the partial line appeared while the command was still running");
-  assert.ok(!lines.includes("ok"));
-  await child;
-  assert.deepEqual(lines, ["test slow_one ... ", "ok"]);
+  const dir = mkdtempSync(path.join(tmpdir(), "ci-check-gate-"));
+  const gate = path.join(dir, "go");
+  try {
+    const lines = [];
+    const child = spawnStreaming(gatedChild(gate, "test slow_one ... ", "ok\n"), (line) => lines.push(line), {
+      idleFlushMs: 40,
+    });
+    await waitForLine(lines, "test slow_one ... ");
+    assert.deepEqual(lines, ["test slow_one ... "], "shown while the command is still running");
+    writeFileSync(gate, "");
+    await child;
+    assert.deepEqual(lines, ["test slow_one ... ", "ok"]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test("a last line with no newline is shown when the command ends", async () => {
