@@ -1823,3 +1823,147 @@ fn a_mode_change_does_not_clear_the_floor_and_bad_extras_do_not_either() {
         MergeOutcome::Merged { .. }
     ));
 }
+
+#[test]
+fn extra_protected_paths_only_add_and_a_stale_write_is_refused() {
+    assert_eq!(settings::PROTECTED_EXTRA_LABEL, "Also protect these paths");
+    assert!(!settings::PROTECTED_EXTRA_LABEL.contains('\u{2014}'));
+    assert!(!settings::PROTECTED_EXTRA_LABEL.contains('\u{2013}'));
+
+    let s = store();
+    let project = "/no/such/hivra-wp158-add";
+    let conn = s.lock_conn().unwrap();
+    let missing =
+        settings::add_protected_paths(&conn, "  ", &["docs/a.md".into()], None, 1).unwrap_err();
+    assert!(missing.contains("Which project"), "{missing}");
+
+    let added = settings::add_protected_paths(
+        &conn,
+        project,
+        &[
+            "docs/a.md".into(),
+            "docs/a.md".into(),
+            "docs/b.md".into(),
+            "docs/donnée.md".into(),
+            "*".into(),
+            "  ".into(),
+            "docs/bad\nname.md".into(),
+            "p".repeat(201),
+        ],
+        None,
+        10,
+    )
+    .unwrap();
+    assert_eq!(added.updated_at, Some(10));
+    assert!(
+        !added.protect_paths,
+        "adding a path does not turn the floor on"
+    );
+    assert_eq!(
+        added.protected_extra,
+        vec![
+            "docs/a.md".to_string(),
+            "docs/b.md".to_string(),
+            "docs/donnée.md".to_string(),
+            "*".to_string(),
+        ]
+    );
+    // The same path again changes nothing, so the row's time stays put.
+    let same = settings::add_protected_paths(
+        &conn,
+        project,
+        &["docs/a.md".into(), "  ".into()],
+        Some(10),
+        11,
+    )
+    .unwrap();
+    assert_eq!(same.updated_at, Some(10));
+    assert_eq!(same.protected_extra, added.protected_extra);
+
+    // A second window still holding the "no row yet" time cannot add or turn the floor off.
+    let stale_add =
+        settings::add_protected_paths(&conn, project, &["docs/c.md".into()], None, 12).unwrap_err();
+    assert!(stale_add.contains("another window"), "{stale_add}");
+    let stale_flag = settings::set_protect_paths(&conn, project, false, Some(9), 13).unwrap_err();
+    assert!(stale_flag.contains("another window"), "{stale_flag}");
+    let kept = settings::get(&conn, project).unwrap();
+    assert_eq!(kept.protected_extra, added.protected_extra);
+    assert!(!kept.protect_paths);
+
+    let more =
+        settings::add_protected_paths(&conn, project, &["docs/c.md".into()], Some(10), 14).unwrap();
+    assert_eq!(
+        more.protected_extra,
+        vec![
+            "docs/a.md".to_string(),
+            "docs/b.md".to_string(),
+            "docs/donnée.md".to_string(),
+            "*".to_string(),
+            "docs/c.md".to_string(),
+        ]
+    );
+    let off = settings::set_protect_paths(&conn, project, false, more.updated_at, 15).unwrap();
+    assert!(!off.protect_paths);
+    assert_eq!(off.protected_extra, more.protected_extra);
+    let on = settings::set_protect_paths(&conn, project, true, off.updated_at, 16).unwrap();
+    assert!(on.protect_paths);
+    assert_eq!(on.protected_extra, more.protected_extra);
+    // A stored `*` does not shrink the built-in list.
+    assert_eq!(
+        super::protected::protected_hits(
+            &[".github/workflows/x.yml", "readme.md"],
+            &on.protected_extra
+        ),
+        vec![".github/workflows/x.yml".to_string()]
+    );
+}
+
+#[test]
+fn the_extra_list_stops_at_one_hundred_paths() {
+    let s = store();
+    let project = "/no/such/hivra-wp158-cap";
+    let conn = s.lock_conn().unwrap();
+    let paths: Vec<String> = (0..100).map(|n| format!("keep/{n}.txt")).collect();
+    let full = settings::add_protected_paths(&conn, project, &paths, None, 10).unwrap();
+    assert_eq!(full.protected_extra.len(), 100);
+    let overflow = settings::add_protected_paths(
+        &conn,
+        project,
+        &["one-more.txt".into()],
+        full.updated_at,
+        11,
+    )
+    .unwrap_err();
+    assert_eq!(
+        overflow,
+        format!("{} can hold 100 paths.", settings::PROTECTED_EXTRA_LABEL)
+    );
+    assert!(!overflow.contains('\u{2014}') && !overflow.contains('\u{2013}'));
+    let kept = settings::get(&conn, project).unwrap();
+    assert_eq!(kept.protected_extra.len(), 100);
+    assert!(!kept
+        .protected_extra
+        .iter()
+        .any(|path| path == "one-more.txt"));
+    assert_eq!(kept.updated_at, full.updated_at);
+
+    // Two new paths on a list of 99 are refused together. Neither is written.
+    let project = "/no/such/hivra-wp158-cap-partial";
+    let almost: Vec<String> = (0..99).map(|n| format!("keep/{n}.txt")).collect();
+    let row = settings::add_protected_paths(&conn, project, &almost, None, 20).unwrap();
+    let refused = settings::add_protected_paths(
+        &conn,
+        project,
+        &["extra/a.txt".into(), "extra/b.txt".into()],
+        row.updated_at,
+        21,
+    )
+    .unwrap_err();
+    assert!(refused.contains("100"), "{refused}");
+    let kept = settings::get(&conn, project).unwrap();
+    assert_eq!(kept.protected_extra.len(), 99);
+    assert!(!kept
+        .protected_extra
+        .iter()
+        .any(|path| path.starts_with("extra/")));
+}
