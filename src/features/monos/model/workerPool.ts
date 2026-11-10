@@ -730,13 +730,11 @@ export type AdmitInput = {
   projectName: string;
   heavy: boolean;
   harness: string;
-  /** The first mate chat that asked, when this launch should be allowed to warn it. */
-  ownerSession?: string;
   /** r87: the files or folders it will change, when known. */
   files?: readonly string[];
   /** WP-171: its fan-out link (firstmate/model/fanoutWaves.ts), when it is one task of a contract. Opaque here. */
   fanout?: unknown;
-  /** The chat that asked. When set, its open tasks count toward the fan-out cap. Absent: the cap is not applied. */
+  /** The chat that asked. When set, its open tasks count toward the fan-out cap, and it is the one a spend warning wakes. Absent: neither applies. */
   ownerSession?: string;
 };
 
