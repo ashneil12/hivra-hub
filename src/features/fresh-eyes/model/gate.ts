@@ -12,8 +12,10 @@ import {
   type ReviewRun,
 } from "./review";
 import type { FreshEyesSetting } from "./setting";
+import { beginLaunch, finishLaunch, takeStarter } from "./held";
 import {
   freshEyesStorage,
+  plainRecord,
   projectKey,
   putReview,
   reviewFor,
@@ -66,8 +68,15 @@ export type FreshEyesRequest = {
   plan: string;
   ownerSession: string;
   reading?: unknown;
+  /** The delegate call, kept so Approve can start the same brief. */
+  held?: Record<string, unknown>;
   route?: { cli?: string | null; model?: string | null; effort?: string | null };
   actor?: "person" | "first-mate";
+};
+
+export type FreshEyesOptions = {
+  /** Reviewers run after the delegate call returns. The 35 s app call must not wait on them. */
+  outsideHop?: boolean;
 };
 
 export type FreshEyesDeps = {
@@ -98,6 +107,7 @@ function lineFor(record: ReviewRecord | null, findings: Finding[]): string {
 export async function reviewBeforeCrew(
   input: FreshEyesRequest,
   deps: FreshEyesDeps = {},
+  options?: FreshEyesOptions,
 ): Promise<{ hold: boolean; why: string }> {
   const storage = deps.storage ?? freshEyesStorage();
   let enabled = false;
@@ -116,6 +126,9 @@ export async function reviewBeforeCrew(
     if (record?.status === "editing") return { hold: true, why: lineFor(record, record.findings) };
     const shouldRun = !record || (record.status === "pending" && record.retry);
     const port = deps.port ?? freshEyesPort();
+    if (options?.outsideHop) {
+      return holdOutsideHop(input, project, plan, key, setting, record, shouldRun, port, storage, deps);
+    }
     if (shouldRun && port) {
       const expected = record?.revision ?? 0;
       const run = await runReview({
@@ -167,6 +180,196 @@ export async function reviewBeforeCrew(
   } catch {
     if (!enabled) return { hold: false, why: "" };
     return { hold: true, why: "Fresh-eyes review: waiting on you" };
+  }
+}
+
+function decided(record: ReviewRecord): boolean {
+  return record.status === "approved" || record.status === "skipped_by_person" || record.status === "editing";
+}
+
+function heldBrief(input: FreshEyesRequest, record: ReviewRecord | null): Record<string, unknown> | undefined {
+  return plainRecord(input.held) ?? record?.held;
+}
+
+/**
+ * Write the waiting review and return before the reviewers answer.
+ * The app call is cut at 35 s, so the review cannot sit inside it.
+ */
+async function holdOutsideHop(
+  input: FreshEyesRequest,
+  project: string,
+  plan: string,
+  key: string,
+  setting: FreshEyesSetting,
+  record: ReviewRecord | null,
+  shouldRun: boolean,
+  port: ReviewerPort | undefined,
+  storage: EyesStorage,
+  deps: FreshEyesDeps,
+): Promise<{ hold: boolean; why: string }> {
+  const cleanPlan = plan.replace(/\r\n/g, "\n").trim();
+  if (shouldRun && port) {
+    const expected = record?.revision ?? 0;
+    const held = heldBrief(input, record);
+    const put = await putReview(
+      {
+        project,
+        requestId: input.requestId,
+        revision: expected,
+        status: "pending",
+        findings: record?.findings ?? [],
+        failed: record?.failed ?? [],
+        retry: false,
+        asked: record?.asked ?? false,
+        plan: cleanPlan,
+        ...(held ? { held } : {}),
+      },
+      expected,
+      storage,
+    );
+    const current = put.current ?? reviewFor(project, input.requestId, storage);
+    if (!put.ok) {
+      if (current && mayLaunchBuilders(setting, current)) return { hold: false, why: lineFor(current, current.findings) };
+      return { hold: true, why: lineFor(current, current?.findings ?? []) };
+    }
+    void settleOutside(input, project, key, storage, deps, {
+      plan: cleanPlan,
+      reading: readingEntries(input.reading),
+      count: setting.reviewerCount,
+      choice: reviewerChoice(input.route, setting.model),
+      port,
+      actor: input.actor ?? "first-mate",
+    });
+    return { hold: true, why: lineFor(current, current?.findings ?? []) };
+  }
+  if (shouldRun && !port) {
+    const held = heldBrief(input, record);
+    const put = await putReview(
+      {
+        project,
+        requestId: input.requestId,
+        revision: record?.revision ?? 0,
+        status: "pending",
+        findings: [],
+        failed: [],
+        retry: true,
+        asked: false,
+        plan: cleanPlan,
+        ...(held ? { held } : {}),
+      },
+      record?.revision ?? 0,
+      storage,
+    );
+    record = put.current ?? record;
+  }
+  if (record?.status === "pending") void askOnce(input, project, key, record, setting, storage, deps.ask);
+  return { hold: true, why: lineFor(record, record?.findings ?? []) };
+}
+
+async function settleOutside(
+  input: FreshEyesRequest,
+  project: string,
+  key: string,
+  storage: EyesStorage,
+  deps: FreshEyesDeps,
+  review: {
+    plan: string;
+    reading: ReturnType<typeof readingEntries>;
+    count: number;
+    choice: ReturnType<typeof reviewerChoice>;
+    port: ReviewerPort;
+    actor: "person" | "first-mate";
+  },
+): Promise<void> {
+  try {
+    const run = await runReview({
+      plan: review.plan,
+      reading: review.reading,
+      count: review.count,
+      choice: review.choice,
+      port: review.port,
+    });
+    let record = reviewFor(project, input.requestId, storage);
+    if (!record || decided(record)) return;
+    const accept = review.actor === "first-mate" && firstMateMayAccept(settingFor(project, storage), run);
+    const status: ReviewStatus = accept ? "approved" : "pending";
+    const next: ReviewRecord = {
+      ...record,
+      status,
+      findings: run.findings,
+      failed: run.failed,
+      retry: run.retry,
+      plan: review.plan || record.plan,
+    };
+    let put = await putReview(next, record.revision, storage);
+    record = put.current ?? reviewFor(project, input.requestId, storage);
+    if (!put.ok) {
+      if (!record || decided(record)) return;
+      put = await putReview(
+        { ...record, status, findings: run.findings, failed: run.failed, retry: run.retry },
+        record.revision,
+        storage,
+      );
+      record = put.current ?? reviewFor(project, input.requestId, storage);
+    }
+    if (!record) return;
+    const setting = settingFor(project, storage);
+    if (mayLaunchBuilders(setting, record)) {
+      await launchIfHeld(project, input.requestId, storage);
+      return;
+    }
+    if (record.status === "pending") await askOnce(input, project, key, record, setting, storage, deps.ask);
+  } catch {
+    // The held brief stays. A timeout is not a final failure.
+  }
+}
+
+/** The person's answer on the crew card. Approve and Skip once start the brief that was held. */
+export async function answerFreshEyes(
+  project: string,
+  requestId: string,
+  answer: string,
+  storage: EyesStorage = freshEyesStorage(),
+): Promise<ReviewRecord | null> {
+  const status = statusFromAnswer(answer);
+  const key = projectKey(project);
+  if (!status || !key || !requestId.trim()) return null;
+  let record = reviewFor(key, requestId, storage);
+  if (!record) return null;
+  if (record.status === "pending" || record.status === "editing") {
+    const put = await putReview({ ...record, status, retry: false }, record.revision, storage);
+    record = put.current ?? reviewFor(key, requestId, storage);
+    if (!put.ok && record && (record.status === "pending" || record.status === "editing")) {
+      const again = await putReview({ ...record, status, retry: false }, record.revision, storage);
+      record = again.current ?? reviewFor(key, requestId, storage);
+    }
+  }
+  if (record && (record.status === "approved" || record.status === "skipped_by_person")) {
+    await launchIfHeld(key, requestId, storage);
+  }
+  return record;
+}
+
+async function launchIfHeld(project: string, requestId: string, storage: EyesStorage): Promise<void> {
+  const setting = settingFor(project, storage);
+  const record = reviewFor(project, requestId, storage);
+  if (!mayLaunchBuilders(setting, record)) return;
+  if (!beginLaunch(project, requestId)) return;
+  const starter = takeStarter(project, requestId);
+  if (!starter) {
+    finishLaunch(project, requestId, false);
+    return;
+  }
+  try {
+    const result = await starter();
+    const waiting =
+      !!result &&
+      typeof result === "object" &&
+      (result as { freshEyes?: unknown }).freshEyes === true &&
+      (result as { status?: unknown }).status === "waiting";
+    finishLaunch(project, requestId, !waiting);
+  } catch {
+    finishLaunch(project, requestId, false);
   }
 }
 

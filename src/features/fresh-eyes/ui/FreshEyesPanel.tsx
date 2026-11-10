@@ -1,12 +1,12 @@
 // WP-144: one line on the crew card. A late reply for another project does not land here.
 
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
-import { freshEyesLine, statusFromAnswer } from "../model/gate";
+import { answerFreshEyes, freshEyesLine } from "../model/gate";
 import type { Finding } from "../model/review";
 import {
   freshEyesRevision,
   latestReview,
-  putReview,
+  reviewFor,
   settingFor,
   subscribeFreshEyes,
   writeSetting,
@@ -51,12 +51,11 @@ export function FreshEyesPanel({ project }: { project: string }) {
     const current = review;
     if (!folder || !current) return;
     if (current.status !== "pending" && current.status !== "editing") return;
-    const status = statusFromAnswer(answer);
-    if (!status) return;
     const mine = ++gen.current;
-    const put = await putReview({ ...current, status, retry: false }, current.revision);
+    // Approve and Skip once start the brief this window held. Edit plan does not.
+    await answerFreshEyes(folder, current.requestId, answer);
     if (mine !== gen.current || projectNow.current.trim() !== folder) return;
-    setReview(put.current);
+    setReview(reviewFor(folder, current.requestId));
   }
 
   const findings: readonly Finding[] = enabled && review ? review.findings : [];

@@ -165,17 +165,22 @@ export function delegationTasksHost(deps: DelegationTasksDeps): AgentAppTasksHos
     ...(deps.pool ? { pool: deps.pool } : {}),
     ...(deps.crewRoute ? { crewRoute: deps.crewRoute } : {}),
     // WP-144: off unless this project turned fresh-eyes review on.
+    // Reviewers run after this call returns. control.rs cuts the app call at 35 s.
     freshEyes: (input) =>
-      reviewBeforeCrew(input, {
-        ask: deps.firstMate ? (question) => deps.firstMate!.backend.ask(question) : undefined,
-        lookup: deps.firstMate
-          ? async (project, key) => {
-              const rows = await deps.firstMate!.backend.decisions();
-              const found = rows.find((row) => row.project === project && row.decisionKey === key);
-              return found ? { answer: found.answer, state: found.state } : null;
-            }
-          : undefined,
-      }),
+      reviewBeforeCrew(
+        input,
+        {
+          ask: deps.firstMate ? (question) => deps.firstMate!.backend.ask(question) : undefined,
+          lookup: deps.firstMate
+            ? async (project, key) => {
+                const rows = await deps.firstMate!.backend.decisions();
+                const found = rows.find((row) => row.project === project && row.decisionKey === key);
+                return found ? { answer: found.answer, state: found.state } : null;
+              }
+            : undefined,
+        },
+        { outsideHop: true },
+      ),
     // WP-40: the brief's gates stay with the task, and its first mate accepts an unsure one.
     saveGates: (id, request, folder) => saveGatePlan(id, request, folder),
     decideGates: (owner, id, accept, reason) => decideGateVerdict(owner, id, accept, reason),

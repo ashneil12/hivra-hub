@@ -19,6 +19,8 @@ export type ReviewRecord = {
   /** The inbox question was asked. A failed ask stays false so the next start tries again. */
   asked: boolean;
   plan: string;
+  /** The delegate call kept while builders wait. Disk values are untrusted and dropped unless plain. */
+  held?: Record<string, unknown>;
 };
 
 type FileShape = {
@@ -81,8 +83,21 @@ function emptyFile(): FileShape {
   return { revision: 0, token: "0", settings: {}, reviews: [] };
 }
 
+/** A plain JSON object, or nothing. Cycles and non-objects are dropped. */
+export function plainRecord(value: unknown): Record<string, unknown> | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  try {
+    const cloned = JSON.parse(JSON.stringify(value)) as unknown;
+    if (!cloned || typeof cloned !== "object" || Array.isArray(cloned)) return undefined;
+    return cloned as Record<string, unknown>;
+  } catch {
+    return undefined;
+  }
+}
+
 function normalize(row: ReviewRecord): ReviewRecord {
-  return {
+  const held = plainRecord(row.held);
+  const next: ReviewRecord = {
     ...row,
     retry: row.retry === true,
     asked: row.asked === true,
@@ -90,6 +105,9 @@ function normalize(row: ReviewRecord): ReviewRecord {
     findings: Array.isArray(row.findings) ? row.findings : [],
     plan: typeof row.plan === "string" ? row.plan : "",
   };
+  if (held) next.held = held;
+  else delete next.held;
+  return next;
 }
 
 function isReview(value: unknown): value is ReviewRecord {

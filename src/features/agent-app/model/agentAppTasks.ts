@@ -17,6 +17,7 @@
 //   the goal and the hub project id.
 // - A finished result read through tasks.status counts as received: the row is acknowledged and its report turn
 //   dropped.
+import { dropHeld, isLaunching, keepHeld } from "../../fresh-eyes/model/held";
 import { monoHomeFence } from "../../hub/model/hubMcp";
 import type { QuickLaunch } from "../../quick-composer/model/quickComposer";
 import { modelEffortLabel, modelsFor, resolveModel } from "../../sessions/model/models";
@@ -145,6 +146,8 @@ export const TASK_FIELDS: ReadonlyArray<readonly [string, readonly string[]]> = 
       "gates",
       "checks",
       "code",
+      // WP-144: a short reading list the fresh-eyes reviewers see with the plan.
+      "reading",
       // WP-70: the shared task this work moves. Not a worker's task id.
       "taskId",
     ],
@@ -278,6 +281,8 @@ export type AgentAppTasksHost = {
     plan: string;
     ownerSession: string;
     reading?: unknown;
+    /** The delegate call, kept so a later approval can start this same brief. */
+    held?: Record<string, unknown>;
   }): Promise<{ hold: boolean; why: string }>;
   /**
    * Where a Mono's work goes (hub/model/monoTeams.ts). Absent outside the hub, where a Mono starts workers in its
@@ -785,19 +790,29 @@ async function delegate(
     }
   }
   // WP-144: fresh-eyes review, off unless this project turned it on. Builders wait for approval.
+  // The brief stays a waiting task. Approve starts it; the reviewers do not sit inside this call.
   if (tasks.freshEyes) {
-    const eyes = await tasks.freshEyes({
-      project: source.cwd,
-      requestId,
-      plan: brief,
-      ownerSession: source.id,
-      reading: input.reading,
-    });
+    const heldInput = { ...input };
+    keepHeld(source.cwd, requestId, async () => delegate(source, requestId, heldInput, host, helpers));
+    let eyes: { hold: boolean; why: string } | undefined;
+    try {
+      eyes = await tasks.freshEyes({
+        project: source.cwd,
+        requestId,
+        plan: brief,
+        ownerSession: source.id,
+        reading: input.reading,
+        held: heldInput,
+      });
+    } catch (error) {
+      if (!isLaunching(source.cwd, requestId)) dropHeld(source.cwd, requestId);
+      throw error;
+    }
     if (eyes?.hold === true) {
       return {
         taskId: null,
-        childSessionId: `fresh-eyes-${requestId}`,
-        status: "working",
+        childSessionId: `app-${source.id}-${requestId}`,
+        status: "waiting",
         title,
         freshEyes: true,
         note:
@@ -806,6 +821,7 @@ async function delegate(
             : "Fresh-eyes review: waiting on you",
       };
     }
+    if (!isLaunching(source.cwd, requestId)) dropHeld(source.cwd, requestId);
   }
   // WP-40: a bad gate is refused before a worker starts. Nothing named keeps the routes check alone.
   const gates = gateRequest(input);
