@@ -6,8 +6,7 @@ import {
   worktreeIncludeLines,
 } from "./worktreeIncludeNote";
 
-const NOTE =
-  "1 local file named in .worktreeinclude is in this worktree. A CLI that makes its own worktree will not have it.";
+const NOTE = "1 file named in .worktreeinclude is in this worktree.";
 const SECRET = "SECRET-VALUE-do-not-leak";
 
 afterEach(() => {

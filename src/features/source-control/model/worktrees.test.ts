@@ -88,11 +88,11 @@ describe("working-copy context", () => {
     const secret = "SECRET-VALUE-do-not-leak";
     const selected = sessionInWorktree(session, {
       ...tree,
-      includeNote:
-        "1 local file named in .worktreeinclude is in this worktree. A CLI that makes its own worktree will not have it.",
+      includeNote: "1 file named in .worktreeinclude is in this worktree.",
       includeWarning: `Left hello.txt as it was.\n${secret}`,
     });
-    expect(selected.includeNote).toContain("will not have it.");
+    expect(selected.includeNote).toContain("is in this worktree.");
+    expect(selected.includeNote).not.toContain("CLI");
     expect(selected.includeWarning).toBe("Left hello.txt as it was.");
     expect(selected.includeWarning).not.toContain(secret);
     const listed = sessionInWorktree(
@@ -102,7 +102,7 @@ describe("working-copy context", () => {
     expect(listed.worktreeCwd).toBe(tree.path);
     expect(
       worktreeIncludeLines({ id: session.id, worktreeCwd: tree.path }).note,
-    ).toContain("will not have it.");
+    ).toContain("is in this worktree.");
     resetWorktreeIncludeNotes();
   });
 

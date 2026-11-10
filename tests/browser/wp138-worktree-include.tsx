@@ -4,8 +4,7 @@ import { newSession } from "../../src/features/sessions/model/session";
 import { NewChatWorktreeBanner } from "../../src/features/sessions/ui/NewChatWorktreeBanner";
 import "../../src/styles/index.css";
 
-const note =
-  "2 local files named in .worktreeinclude are in this worktree. A CLI that makes its own worktree will not have them.";
+const note = "2 files named in .worktreeinclude are in this worktree.";
 const warning = "Could not copy .env into this worktree.";
 
 const copied = {

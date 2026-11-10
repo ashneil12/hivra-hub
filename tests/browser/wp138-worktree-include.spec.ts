@@ -1,7 +1,6 @@
 import { expect, test } from "@playwright/test";
 
-const NOTE =
-  "2 local files named in .worktreeinclude are in this worktree. A CLI that makes its own worktree will not have them.";
+const NOTE = "2 files named in .worktreeinclude are in this worktree.";
 const WARNING = "Could not copy .env into this worktree.";
 
 test("the chat header says when include files were copied", async ({ page }) => {

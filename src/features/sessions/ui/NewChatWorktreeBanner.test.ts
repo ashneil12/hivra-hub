@@ -81,15 +81,16 @@ it("shows the include note and warning under the worktree line", async () => {
       cwd: "C:\\work\\repo",
       worktreeCwd: "C:\\work\\repo\\feature",
       branch: "main",
-      includeNote:
-        "2 local files named in .worktreeinclude are in this worktree. A CLI that makes its own worktree will not have them.",
+      includeNote: "2 files named in .worktreeinclude are in this worktree.",
       includeWarning: `Could not copy .env into this worktree.\n${secret}`,
     }),
   );
   expect(host.querySelector("[data-worktree-header]")?.textContent).toBe("feature/main");
   const note = host.querySelector("[data-worktree-include]");
   const warning = host.querySelector("[data-worktree-include-warning]");
-  expect(note?.textContent).toContain("A CLI that makes its own worktree will not have them.");
+  expect(note?.textContent).toBe("2 files named in .worktreeinclude are in this worktree.");
+  // A CLI honours the same file, so the note must not claim it won't have them.
+  expect(host.textContent).not.toContain("CLI");
   expect(warning?.textContent).toBe("Could not copy .env into this worktree.");
   expect(host.textContent).not.toContain(secret);
   expect(host.textContent).not.toMatch(/[—–]/);
