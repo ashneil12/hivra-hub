@@ -1,24 +1,7 @@
 // Shelves, the undo notice, and the snooze time for the optional chat list inbox.
 import { useState } from "react";
-import { saveChatListInbox, useChatListInbox } from "../../settings/model/displayPrefs";
-import {
-  compareInboxOrder,
-  parseSnoozeChoice,
-  snoozeUntil,
-  splitInboxSessions,
-  type ChatAttention,
-  type InboxSortRow,
-} from "../model/chatListInbox";
-import {
-  settleChats,
-  snoozeChats,
-  undoInbox,
-  unsettleChats,
-  unsnoozeChats,
-  useInboxDoc,
-  useInboxNotice,
-  useInboxNow,
-} from "../model/chatListInboxStore";
+import { parseSnoozeChoice } from "../model/chatListInbox";
+import { undoInbox, useInboxNotice } from "../model/chatListInboxStore";
 
 export type InboxShelfRow = { id: string; title: string };
 
@@ -158,75 +141,5 @@ export function SnoozeTimeDialog({
         </button>
       </div>
     </form>
-  );
-}
-
-export type InboxPanelChat = InboxSortRow & { title: string };
-
-/** The real settle, snooze and sort controls, mounted by the browser fixture. */
-export function ChatListInboxPanel({
-  chats,
-  attention,
-}: {
-  chats: readonly InboxPanelChat[];
-  attention?: ReadonlyMap<string, ChatAttention>;
-}) {
-  const enabled = useChatListInbox();
-  const doc = useInboxDoc();
-  const now = useInboxNow(enabled);
-  const split = splitInboxSessions(chats, {
-    enabled,
-    marks: doc.chats,
-    now,
-    attention,
-  });
-  const active = [...split.active].sort((a, b) => compareInboxOrder(a, b, enabled, attention));
-  return (
-    <div className="w-[240px] text-content">
-      <button
-        type="button"
-        role="switch"
-        aria-checked={enabled}
-        aria-label="Settle and snooze"
-        data-inbox-setting
-        className="m-2 rounded-md px-2 py-1 text-[13px]"
-        onClick={() => saveChatListInbox(!enabled)}
-      >
-        Settle and snooze
-      </button>
-      <ul data-chat-list className="m-0 list-none p-0">
-        {active.map((chat) => (
-          <li key={chat.id} data-chat-row={chat.id} className="px-2 py-1 text-[13px]">
-            <span>{chat.title}</span>
-            {enabled ? (
-              <span className="ml-2 inline-flex gap-2">
-                <button type="button" onClick={() => settleChats([chat.id])}>
-                  Settle
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    const until = snoozeUntil("1h", new Date());
-                    if (until != null) snoozeChats([chat.id], until);
-                  }}
-                >
-                  Snooze for 1 hour
-                </button>
-              </span>
-            ) : null}
-          </li>
-        ))}
-      </ul>
-      {enabled ? (
-        <ChatListShelves
-          settled={split.settled}
-          snoozed={split.snoozed}
-          onOpen={() => {}}
-          onUnsettle={(id) => unsettleChats([id])}
-          onUnsnooze={(id) => unsnoozeChats([id])}
-        />
-      ) : null}
-      <ChatListInboxNotice />
-    </div>
   );
 }

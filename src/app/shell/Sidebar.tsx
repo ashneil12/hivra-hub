@@ -229,6 +229,7 @@ import {
   attentionWithApprovals,
   compareInboxOrder,
   inboxMenuChoices,
+  settleHeldBack,
   snoozeUntil,
   splitInboxSessions,
   type ChatAttention,
@@ -1740,11 +1741,12 @@ function SidebarComponent({
     ...(inboxOn
       ? [
           { kind: "sep" as const },
-          ...inboxMenuChoices(menuSessionIds, inboxDoc.chats, new Date(inboxNow)).map(
+          ...inboxMenuChoices(menuSessionIds, inboxDoc.chats, new Date(inboxNow), inboxAttention).map(
             (choice) => ({
               kind: "item" as const,
               id: choice.id,
               label: choice.label,
+              description: choice.description,
               disabled: choice.disabled,
               submenu: choice.children?.map((child) => ({
                 kind: "item" as const,
@@ -1901,6 +1903,8 @@ function SidebarComponent({
     }
     // WP-113: settle and snooze never archive or delete the chat.
     if (id === "inbox-settle") {
+      // An approval waiting on a chat is never hidden: the menu item is off, and a late pick does nothing either.
+      if (settleHeldBack(sessionIds, inboxAttention)) return;
       settleChats(sessionIds);
       return;
     }

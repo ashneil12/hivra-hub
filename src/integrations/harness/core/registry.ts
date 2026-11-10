@@ -401,6 +401,13 @@ export function canSteerHarness(id: HarnessId): boolean {
   return adapter.canSteer !== false;
 }
 
+/** True only when a live adapter says it cannot redirect a running turn. */
+export function harnessCannotSteer(id: HarnessId): boolean {
+  const adapter = adapters.get(id);
+  if (!adapter?.live) return false;
+  return adapter.canSteer === false;
+}
+
 export function canRewindHarnessLastTurn(id: HarnessId): boolean {
   const adapter = adapters.get(id);
   return adapter?.live === true && adapter.rewindLastTurn != null;
@@ -570,8 +577,9 @@ export async function refreshHarnessCatalogs(
       .filter((adapter) => wanted.has(adapter.id))
       .map(async (adapter) => {
         if (!adapter.refreshCatalog) return;
-        // `force` marks an explicit user action (opening the model dropdown);
-        // routine refreshes keep skipping adapters with a live catalog.
+        // `force` marks an explicit user action (Settings, or the provider
+        // update notice); routine refreshes, and opening the model picker,
+        // keep skipping adapters that already hold a catalog.
         if (!options?.force && hasLiveCatalog(adapter.id)) return;
         await adapter.refreshCatalog().catch((error: unknown) => {
           console.debug(`[monocode] ${adapter.id} catalog`, error);
