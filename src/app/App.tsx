@@ -13,6 +13,7 @@ import { appendControlEvent } from "./model/controlText";
 import { installCodingTeamDefault } from "../features/hub/model/codingTeamModel";
 import { noteSessionRuns, RUN_HEARTBEAT_MS, setProcessRunSource } from "../features/monos/model/sessionRuns";
 import { noteToolCalls, setRunToolTextSource } from "../features/hub/model/soulTamper";
+import { stripHiddenCharacters } from "../features/sessions/model/hiddenText";
 import { waitingOnYouLine } from "../features/sessions/model/approvalWait";
 import { listHarnessRuns } from "../integrations/harness/core/child";
 import { OPEN_CONNECTOR_EVENT } from "../features/hub/model/connectors";
@@ -8109,10 +8110,12 @@ function Workspace({
   const submitSession = useCallback(
     (
       sessionId: string,
-      text: string,
+      rawText: string,
       attachments: Attachment[] = [],
       options?: SubmitOptions,
     ): SubmissionAcceptance => {
+      // Every turn is built from here: a hidden character never reaches the agent, whichever surface sent it.
+      const text = stripHiddenCharacters(rawText).text;
       const remote = sessionsRef.current.find(
         (session) => session.id === sessionId,
       );
@@ -11261,7 +11264,11 @@ function Workspace({
                 ...session,
                 queuedMessages: session.queuedMessages?.map((message) =>
                   message.id === messageId
-                    ? { ...message, text, error: undefined }
+                    ? {
+                        ...message,
+                        text: stripHiddenCharacters(text).text,
+                        error: undefined,
+                      }
                     : message,
                 ),
                 editingQueuedMessageId: undefined,
