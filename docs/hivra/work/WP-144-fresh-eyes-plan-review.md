@@ -42,11 +42,16 @@ Before a first mate hands a plan to the crew, Hivra can run a cheap "fresh eyes"
 
 ## How a held brief starts
 
-- With the setting on, `delegate_task` keeps the call (its reading list too) with the review and answers at once with a waiting task, `status: "waiting"`. The reviewers run after that answer, so the call never waits on them (the app call is cut at 35 s and the MCP hop at 40 s).
-- The brief shows in `task_status` under `waiting` and `task_cancel` takes it back.
-- Approve and Skip once (on the crew card, or as an answer in the Inbox) ask `tasks.delegate` again under the same request ID, the way a waiting worker starts. The usual checks, worker limits and waiting line apply. Edit plan does not start it.
-- The brief is stored with the review, so it survives a restart. A brief whose chat is not open yet starts once the chat is.
-- `delegate_task` accepts `reading` (up to 8 entries, each a path and its text).
+- **Held, not started.** With the setting on, `delegate_task` runs every check that can refuse the call cheaply first (gates, depth, isolation, `lead`, `whenBusy`, the model name), so a brief that would fail is never reviewed. Then it keeps the call (its reading list, cut to 8 short entries, too) with the review and answers at once with a waiting task, `status: "waiting"`. A Mono's own team is made only once the brief may start.
+- **Reviewers run after the answer** (the app call is cut at 35 s and the MCP hop at 40 s). The answer says "still running"; asking again says so too, and the person is asked only once the reviewers have answered. A reviewer that does not answer in 4 minutes is stopped, and all of them together get 10 minutes, then the person is asked instead.
+- **What a decision covers.** The review keeps a hash of the call and the chat that asked. The same request ID with any other call (an edited brief) or from another chat is a new review: the held brief is replaced, the reviewers run again, and the Inbox question is a new one (`fresh-eyes/<request>/<hash>`). What starts is what was reviewed.
+- **Only the person answers.** An answer in the Inbox or Home counts when it was given by the person (`user` or `person`); `ask_person` from a chat with the review's key does not.
+- **Approve, Skip once, or the person's answer in the Inbox** ask `tasks.delegate` again under the same request ID with the call that was reviewed, the way a waiting worker starts. The usual checks, worker limits and waiting line apply. Edit plan does not start it. The Inbox question closes with the decision, and on `task_cancel`.
+- **Kept in the app's database** (hub document `fresh-eyes`), so it survives a restart and every window reads the same record. Reviews are capped (40; finished ones go first, anything untouched for two weeks goes) and a brief over 150,000 characters is refused. When the hold cannot be saved or read the delegate is refused in plain words and nothing is held.
+- **Nothing waits forever.** At startup and every half minute, a review whose reviewers died with the window runs again (a lease in the record says no window is on it), one never asked is asked, and an approved brief starts. A chat that may not ask (a Lead under a Mono) has its question asked as the app. A start that fails is tried again after 30 seconds and 2 minutes; when every try failed the chat that asked is told and the person is asked to try again or drop it.
+- **One start.** The start is claimed with a lease written in the record on the revision just read, so two windows start it once.
+- The brief shows in `task_status` under `waiting` and `task_cancel` takes it back. `delegate_task` accepts `reading` (up to 8 entries, each a path and its text).
+- A dev seed does not copy the `fresh-eyes` document (`scripts/hub-seed-dev.mjs`): a held brief names Ash's real chats.
 
 ## Licence
 

@@ -4,7 +4,7 @@
 // stops the whole tree beneath the task (stopTree.ts), a wait marks the chat as waiting (so its workers' questions come
 // back through the wait, not a wake), and an answer is noted for the question router before it reaches the worker.
 import type { AgentAppTasksHost } from "../../agent-app/model/agentAppTasks";
-import { cancelHeld, heldWaiting, reviewBeforeCrew } from "../../fresh-eyes/model/gate";
+import { backendFrom, cancelHeld, heldWaiting, reviewBeforeCrew } from "../../fresh-eyes/model/gate";
 import { decideGateVerdict, saveGatePlan } from "../../firstmate/model/completionGates";
 import type { Session } from "../../sessions/model/session";
 import type { UserQuestionReply } from "../../sessions/model/userQuestion";
@@ -164,26 +164,14 @@ export function delegationTasksHost(deps: DelegationTasksDeps): AgentAppTasksHos
     ...(deps.monoWork ? { monoWork: deps.monoWork } : {}),
     ...(deps.pool ? { pool: deps.pool } : {}),
     ...(deps.crewRoute ? { crewRoute: deps.crewRoute } : {}),
-    // WP-144: off unless this project turned fresh-eyes review on.
-    // Reviewers run after this call returns. control.rs cuts the app call at 35 s.
+    // WP-144: off unless this project turned fresh-eyes review on. Reviewers run after this call returns (control.rs cuts
+    // the app call at 35 s). The Inbox and the chat that asked come from the first mate's own backend.
     freshEyes: (input) =>
-      reviewBeforeCrew(
-        input,
-        {
-          ask: deps.firstMate ? (question) => deps.firstMate!.backend.ask(question) : undefined,
-          lookup: deps.firstMate
-            ? async (project, key) => {
-                const rows = await deps.firstMate!.backend.decisions();
-                const found = rows.find((row) => row.project === project && row.decisionKey === key);
-                return found ? { answer: found.answer, state: found.state } : null;
-              }
-            : undefined,
-        },
-        { outsideHop: true },
-      ),
+      reviewBeforeCrew(input, { ...(deps.firstMate ? { backend: backendFrom(deps.firstMate.backend) } : {}) }),
     // WP-144: a held brief is a waiting task: task_status lists it and task_cancel takes it back.
     freshEyesWaiting: (owner) => heldWaiting(owner),
-    freshEyesCancel: (owner, childSessionId) => cancelHeld(owner, childSessionId),
+    freshEyesCancel: (owner, childSessionId) =>
+      cancelHeld(owner, childSessionId, { ...(deps.firstMate ? { backend: backendFrom(deps.firstMate.backend) } : {}) }),
     // WP-40: the brief's gates stay with the task, and its first mate accepts an unsure one.
     saveGates: (id, request, folder) => saveGatePlan(id, request, folder),
     decideGates: (owner, id, accept, reason) => decideGateVerdict(owner, id, accept, reason),

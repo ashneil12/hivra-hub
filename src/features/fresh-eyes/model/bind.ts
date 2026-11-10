@@ -21,7 +21,12 @@ export type FreshEyesHooks = {
   stop?(sessionId: string): void;
   remove?(sessionId: string): void;
   cwd: string | (() => string);
+  /** How long one reviewer has to answer before it is stopped and counted as timed out. */
+  timeoutMs?: number;
 };
+
+/** One reviewer's time. A session that never answers is stopped, and the review asks the person instead of waiting. */
+export const REVIEWER_TIMEOUT_MS = 4 * 60_000;
 
 const SESSION_MODEL: Record<string, { harness: HarnessId; model: string }> = {
   "claude-haiku-4-5": { harness: "claude", model: "claude:haiku-4.5" },
@@ -71,9 +76,11 @@ export function portFromHooks(hooks: FreshEyesHooks): ReviewerPort {
       try {
         return await new Promise<string>((resolve, reject) => {
           let settled = false;
+          const timer = setTimeout(() => finish(new ReviewerTimeout()), hooks.timeoutMs ?? REVIEWER_TIMEOUT_MS);
           const finish = (error?: Error, value?: string) => {
             if (settled) return;
             settled = true;
+            clearTimeout(timer);
             if (error) reject(error);
             else resolve(value ?? "");
           };

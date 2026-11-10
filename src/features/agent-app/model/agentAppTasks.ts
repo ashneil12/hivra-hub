@@ -44,6 +44,7 @@ import { SELF_REVIEW_SHAPE, storedReview } from "../../monos/model/workerReview"
 import { waitingOnAshLine } from "../../hub/model/chatQuestions";
 import { answeredJobRefusal } from "../../monos/model/ashAnswersWorker";
 import { workerMemoryBlock } from "../../hub/model/hubMemoryPrimer";
+import { readingEntries } from "../../fresh-eyes/model/review";
 import { areasNamed, filesNamed } from "../../monos/model/workerPool";
 import { isHarnessAvailable } from "../../../integrations/harness/core/availability";
 import { sanitizeRule, type CrewRule } from "../../crew/model/rules";
@@ -286,7 +287,7 @@ export type AgentAppTasksHost = {
     held?: Record<string, unknown>;
   }): Promise<{ hold: boolean; why: string }>;
   /** WP-144: the chat's briefs waiting on a fresh-eyes review, each named by the chat it will be. */
-  freshEyesWaiting?(ownerSession: string): { childSessionId: string; title: string; line: string }[];
+  freshEyesWaiting?(ownerSession: string): Promise<{ childSessionId: string; title: string; line: string }[]>;
   /** WP-144: the chat took back a brief waiting on a review (task_cancel). True when one matched. */
   freshEyesCancel?(ownerSession: string, childSessionId: string): Promise<boolean>;
   /**
@@ -794,32 +795,35 @@ async function delegate(
       unbindPhaseLauncher(sharedTask);
     }
   }
-  // WP-144: fresh-eyes review, off unless this project turned it on. Builders wait for approval.
-  // The review keeps this call as a waiting task, and Approve (or Skip once) asks tasks.delegate again under the same
-  // request ID. The reviewers run after this call returns, so it never waits on them.
-  if (tasks.freshEyes) {
+  // WP-144: fresh-eyes review, off unless this project turned it on. It comes after every check that can refuse the call
+  // cheaply (so a brief that would fail is never reviewed) and before anything starts. The review keeps the call as a
+  // waiting task; Approve (or Skip once) asks tasks.delegate again under the same request ID, with the call that was
+  // reviewed. The reviewers run after this call returns, so it never waits on them.
+  const heldForReview = async () => {
+    if (!tasks.freshEyes) return undefined;
+    // The reading list is capped here, so what is kept, reviewed and started is the same short list.
+    const held = { ...input, ...(input.reading !== undefined ? { reading: readingEntries(input.reading) } : {}) };
     const eyes = await tasks.freshEyes({
       project: source.cwd,
       requestId,
       plan: brief,
       ownerSession: source.id,
-      reading: input.reading,
-      held: input,
+      reading: held.reading,
+      held,
     });
-    if (eyes?.hold === true) {
-      return {
-        taskId: null,
-        childSessionId: `app-${source.id}-${requestId}`,
-        status: "waiting",
-        title,
-        freshEyes: true,
-        note:
-          typeof eyes.why === "string" && eyes.why.trim()
-            ? eyes.why
-            : "Fresh-eyes review: waiting on you",
-      };
-    }
-  }
+    if (eyes?.hold !== true) return undefined;
+    return {
+      taskId: null,
+      childSessionId: `app-${source.id}-${requestId}`,
+      status: "waiting",
+      title,
+      freshEyes: true,
+      note:
+        typeof eyes.why === "string" && eyes.why.trim()
+          ? eyes.why
+          : "Fresh-eyes review: waiting on you",
+    };
+  };
   // WP-40: a bad gate is refused before a worker starts. Nothing named keeps the routes check alone.
   const gates = gateRequest(input);
   // Hivra WP-10: never deeper than first mate, first mate, workers.
@@ -833,6 +837,8 @@ async function delegate(
       throw new Error(
         "A coding-team chat hands its work to its own workers; only a Mono briefs a project's Lead. Leave out lead.",
       );
+    const held = await heldForReview();
+    if (held) return held;
     // A Lead is a first mate: its brief comes from the same template, read-only on the project.
     // WP-41: the brief names the pstack skills for this kind of work.
     const leadBrief = renderBrief(
@@ -884,6 +890,7 @@ async function delegate(
   // Every Mono but a Lead works through teams (hub/model/monoTeams.ts): a project's work goes to its coding team as a
   // brief to its Lead, and its own work to a worker in its own team's folder, made the first time.
   let ownTeam: { folder: string; name: string } | undefined;
+  let makesOwnTeam = false;
   if (owner.mono && tasks.monoWork && !tasks.monoWork.isLead(owner.mono.id)) {
     const team = named !== undefined ? tasks.monoWork.codingTeam(named) : undefined;
     if (team)
@@ -896,9 +903,16 @@ async function delegate(
         throw new Error(
           "Your own team's folder isn't a repository, so its workers share it: leave out isolation (or use \"shared\").",
         );
-      ownTeam = await tasks.monoWork.ownTeam(owner.mono);
+      makesOwnTeam = true;
     }
   }
+  // A model the call names must be one this chat can ask for. Checked here, so a bad name is refused before a review.
+  const onBridge = source.harness === "claude" && claudeRunsOnSubscriptionBridge();
+  const askedModel = taskModel(input.model, source, onBridge);
+  const held = await heldForReview();
+  if (held) return held;
+  // The Mono's own team is made now, once the brief may start: its folder is where this worker runs.
+  if (makesOwnTeam && owner.mono && tasks.monoWork) ownTeam = await tasks.monoWork.ownTeam(owner.mono);
   // E7: a worker gets the right model for its job — Sonnet for a usual one, a stronger model (and high effort when it
   // offers one) for a hard one, and a project's own worker model for any of its jobs. A model or effort the caller
   // names always wins, and the route never touches another engine or one of Ash's own models (taskDifficulty.ts).
@@ -930,8 +944,6 @@ async function delegate(
   const projectKey = tasks.hubProjectId?.(folder) ?? folder;
   const difficulty = judgeTask({ heavy, retry: Boolean(redoes), scope: scope.length, hard });
   // On the DeepSeek launcher a Claude name is only a label: a worker it names runs on DeepSeek.
-  const onBridge = source.harness === "claude" && claudeRunsOnSubscriptionBridge();
-  const askedModel = taskModel(input.model, source, onBridge);
   // On the DeepSeek launcher another engine's model runs as DeepSeek instead, and the Lead hears why.
   const offBridgeAsk =
     onBridge && askedModel !== undefined && askedModel.harness !== "claude" ? String(input.model) : undefined;
@@ -1287,7 +1299,7 @@ async function status(source: Session, input: Record<string, unknown>, host: Age
   // Waiting for a free worker: no task yet, only the chat it will be (H8).
   const queued = ids ? [] : (tasks.pool?.queued(source.id) ?? []);
   // WP-144: a brief held for a fresh-eyes review is waiting too, though no worker is queued for it.
-  const reviewed = ids ? [] : (tasks.freshEyesWaiting?.(source.id) ?? []);
+  const reviewed = ids ? [] : await (tasks.freshEyesWaiting?.(source.id) ?? Promise.resolve([])).catch(() => []);
   const team = ids ? [] : await othersOpen(source, tasks);
   return {
     tasks: rows.map((row, index) =>

@@ -130,8 +130,8 @@ import {
 } from "../features/hub/model/leadershipDelegation";
 import { bindCouncilApp } from "../features/council/model/seatSessions";
 import { bindFreshEyesApp } from "../features/fresh-eyes/model/bind";
-import { releaseHeld, syncHeldDecisions } from "../features/fresh-eyes/model/gate";
-import { bindHeldStarter } from "../features/fresh-eyes/model/held";
+import { backendFrom, releaseHeld, resumeReviews, syncHeldDecisions } from "../features/fresh-eyes/model/gate";
+import { bindFreshEyesBackend, bindHeldStarter } from "../features/fresh-eyes/model/held";
 import { subscribeFreshEyes } from "../features/fresh-eyes/model/store";
 import { postLeadReport } from "../features/hub/model/roomReports";
 import { useDelegationTree } from "../features/monos/hooks/useDelegationTree";
@@ -13488,8 +13488,9 @@ function Workspace({
     };
   }, [pumpWorkersNow]);
   // WP-144: a brief held for a fresh-eyes review starts when the person approves or skips it. It is the same
-  // tasks.delegate call asked again under the same request ID, the way a waiting worker starts, so the checks, the
-  // worker limits and the waiting line all apply. The brief is kept with the review, so a restart does not lose it.
+  // tasks.delegate call asked again under the same request ID, with the call that was reviewed, the way a waiting
+  // worker starts, so the checks, the worker limits and the waiting line all apply. The brief is kept with the review
+  // (in the app's database), so a restart does not lose it.
   const steeringRef = useRef(steering);
   steeringRef.current = steering;
   useEffect(() => {
@@ -13508,22 +13509,29 @@ function Workspace({
         });
       },
     });
+    // The Inbox and the chat that asked, for the review: the question, its close, the person's answer, a note to the chat.
+    const unbindBackend = bindFreshEyesBackend(backendFrom(steeringRef.current.backend));
     const release = () => void releaseHeld();
     const off = subscribeFreshEyes(release);
-    release();
-    // An answer given in the Inbox or Home reaches the review the same way a click on the crew card does.
+    // What was left half done by the last run: reviewers that died with the window run again (or the person is asked),
+    // and an approved brief starts. Again every half minute, for a start that failed and for a lease that ran out.
+    const resume = () => {
+      void resumeReviews();
+      release();
+    };
+    resume();
+    const timer = window.setInterval(resume, 30_000);
+    // An answer given in the Inbox or Home reaches the review the same way a click on the crew card does. Only the
+    // person's own answer counts (gate.ts isPersonAnswer): a chat answering ask_person for them does not.
     const offDecisions = watchDecisions(
       (event, handler) => listen(event, () => handler()),
-      () =>
-        void syncHeldDecisions(async (project, key) => {
-          const rows = await steeringRef.current.backend.decisions();
-          const found = rows.find((row) => row.project === project && row.decisionKey === key);
-          return found ? { answer: found.answer, state: found.state } : null;
-        }),
+      () => void syncHeldDecisions(),
     );
     return () => {
+      window.clearInterval(timer);
       offDecisions();
       off();
+      unbindBackend();
       unbind();
     };
   }, []);

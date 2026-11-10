@@ -52,16 +52,22 @@ export function FreshEyesPanel({ project }: { project: string }) {
     if (!folder || !current) return;
     if (current.status !== "pending" && current.status !== "editing") return;
     const mine = ++gen.current;
-    // Approve and Skip once start the brief this window held. Edit plan does not.
-    await answerFreshEyes(folder, current.requestId, answer);
+    // Approve and Skip once start the brief that was held. Edit plan does not. The Inbox question closes with it.
+    await answerFreshEyes(folder, current.requestId, answer, { owner: current.owner });
     if (mine !== gen.current || projectNow.current.trim() !== folder) return;
-    setReview(reviewFor(folder, current.requestId));
+    setReview(reviewFor(folder, current.requestId, undefined, current.owner));
   }
 
   const findings: readonly Finding[] = enabled && review ? review.findings : [];
   const line =
     enabled && review
-      ? freshEyesLine({ enabled: true, status: review.status, findings: review.findings.length })
+      ? freshEyesLine({
+          enabled: true,
+          status: review.status,
+          findings: review.findings.length,
+          running: review.running === true,
+          askFailed: !!review.askError,
+        })
       : null;
 
   return (

@@ -2,15 +2,16 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AgentAppHost } from "../../agent-app/model/agentApp";
 import type { AgentAppTasksHost } from "../../agent-app/model/agentAppTasks";
 import { handleWithBriefParts } from "../../firstmate/testing/briefParts";
-import type { Delegation } from "../../monos/model/delegations";
+import { memoryDisk } from "../../hub/model/localHub/localHub";
+import type { Delegation, DelegationsBackend } from "../../monos/model/delegations";
 import { delegationTasksHost } from "../../monos/model/delegationTasks";
-import type { DelegationsBackend } from "../../monos/model/delegations";
 import { newSession, type Session } from "../../sessions/model/session";
+import { fakeInbox, FINDING, testClock } from "../testing/world";
 import { setFreshEyesPort } from "./bind";
-import { answerFreshEyes, releaseHeld, syncHeldDecisions } from "./gate";
-import { bindHeldStarter, resetHeld } from "./held";
-import { type ReviewerPort } from "./review";
-import { memoryStorage, reviewFor, setFreshEyesStorage, writeSetting } from "./store";
+import { answerFreshEyes, heldWaiting, releaseHeld, START_BACKOFF_MS, syncHeldDecisions } from "./gate";
+import { bindFreshEyesBackend, bindHeldStarter, resetHeld } from "./held";
+import type { ReviewerPort, ReviewerTurn } from "./review";
+import { createEyesStorage, reviewFor, setFreshEyesStorage, writeSetting } from "./store";
 
 vi.mock("../../../integrations/harness/core/availability", () => ({
   isHarnessAvailable: () => true,
@@ -20,10 +21,13 @@ vi.mock("../../../integrations/harness/core/availability", () => ({
 
 const PROJECT = "/tmp/fresh-eyes-project";
 
+let warn: ReturnType<typeof vi.spyOn>;
 afterEach(() => {
+  warn?.mockRestore();
   setFreshEyesStorage(undefined);
   setFreshEyesPort(undefined);
   resetHeld();
+  vi.useRealTimers();
 });
 
 describe("fresh-eyes before a builder starts", () => {
@@ -55,13 +59,7 @@ describe("fresh-eyes before a builder starts", () => {
       tasks,
     } as unknown as AgentAppHost;
 
-    const result = await handleWithBriefParts(
-      source,
-      "r1",
-      "tasks.delegate",
-      { brief: "Fix the save bug." },
-      host,
-    );
+    const result = await handleWithBriefParts(source, "r1", "tasks.delegate", { brief: "Fix the save bug." }, host);
 
     expect(start).not.toHaveBeenCalled();
     expect(result).toMatchObject({
@@ -95,7 +93,7 @@ describe("fresh-eyes before a builder starts", () => {
     ]);
     expect(reviewFor(PROJECT, "r1", storage)?.status).toBe("pending");
 
-    await answerFreshEyes(PROJECT, "r1", "Approve", storage);
+    await answerFreshEyes(PROJECT, "r1", "Approve", { storage });
 
     // One worker started under the same chat, and its delegation row is running with that child session.
     expect(start).toHaveBeenCalledTimes(1);
@@ -112,58 +110,59 @@ describe("fresh-eyes before a builder starts", () => {
 
   it("returns before the reviewers answer: well under the 40 second MCP hop while they are slow", async () => {
     vi.useFakeTimers();
-    try {
-      const world = await heldWorld({ reviewerMs: 120_000 });
-      const { source, host, start, storage } = world;
-      const begun = Date.now();
-      let answered: unknown;
-      const call = handleWithBriefParts(source, "r1", "tasks.delegate", { brief: "Fix the save bug." }, host).then(
-        (value) => {
-          answered = value;
-        },
-      );
-      // No clock time passes: the reviewers (two minutes each) cannot be what the call waits on.
-      await vi.advanceTimersByTimeAsync(0);
-      await call;
-      expect(Date.now() - begun).toBeLessThan(1_000);
-      expect(answered).toMatchObject({ status: "waiting", freshEyes: true });
-      expect(world.reviewed).toBe(1);
-      expect(reviewFor(PROJECT, "r1", storage)?.findings).toEqual([]);
+    const world = await heldWorld({ reviewerMs: 120_000 });
+    const { source, host, start, storage } = world;
+    const begun = Date.now();
+    let answered: unknown;
+    const call = handleWithBriefParts(source, "r1", "tasks.delegate", { brief: "Fix the save bug." }, host).then((value) => {
+      answered = value;
+    });
+    // No clock time passes: the reviewers (two minutes each) cannot be what the call waits on.
+    await vi.advanceTimersByTimeAsync(0);
+    await call;
+    expect(Date.now() - begun).toBeLessThan(1_000);
+    expect(answered).toMatchObject({ status: "waiting", freshEyes: true, note: "Fresh-eyes review: still running" });
+    expect(world.reviewed).toBe(1);
+    expect(reviewFor(PROJECT, "r1", storage)?.findings).toEqual([]);
 
-      // The review finishes in the background and the brief is still waiting on the person.
-      await vi.advanceTimersByTimeAsync(300_000);
-      expect(world.reviewed).toBe(2);
-      expect(reviewFor(PROJECT, "r1", storage)?.findings.length).toBeGreaterThan(0);
-      expect(reviewFor(PROJECT, "r1", storage)?.status).toBe("pending");
-      expect(start).not.toHaveBeenCalled();
-    } finally {
-      vi.useRealTimers();
-    }
+    // The review finishes in the background and the brief is still waiting on the person.
+    await vi.advanceTimersByTimeAsync(300_000);
+    expect(world.reviewed).toBe(2);
+    expect(reviewFor(PROJECT, "r1", storage)?.findings.length).toBeGreaterThan(0);
+    expect(reviewFor(PROJECT, "r1", storage)?.status).toBe("pending");
+    expect(start).not.toHaveBeenCalled();
   });
 
-  it("passes the reading list through to the held brief, the reviewers and the start", async () => {
+  it("passes the reading list through to the held brief, the reviewers and the start, capped", async () => {
     const world = await heldWorld();
     const { source, host, storage } = world;
     const reading = [{ path: "src/note.ts", text: "save()" }];
     await handleWithBriefParts(source, "r1", "tasks.delegate", { brief: "Fix the save bug.", reading }, host);
 
     expect(reviewFor(PROJECT, "r1", storage)?.held).toMatchObject({ brief: "Fix the save bug.", reading });
-    expect(world.seen.some((prompt) => prompt.includes("src/note.ts") && prompt.includes("save()"))).toBe(true);
+    expect(world.port.seen.some((turn) => turn.prompt.includes("src/note.ts") && turn.prompt.includes("save()"))).toBe(true);
 
-    await answerFreshEyes(PROJECT, "r1", "Approve", storage);
+    await answerFreshEyes(PROJECT, "r1", "Approve", { storage });
     expect(world.started).toHaveLength(1);
     expect(world.started[0]).toMatchObject({ requestId: "r1", input: { reading } });
+
+    // A reading list of any size is cut to eight short entries before anything keeps it.
+    const long = Array.from({ length: 20 }, (_, n) => ({ path: `src/file-${n}.ts`, text: "x".repeat(50_000) }));
+    await handleWithBriefParts(source, "r2", "tasks.delegate", { brief: "Another job.", reading: long }, host);
+    const held = reviewFor(PROJECT, "r2", storage)?.held as { reading: { text: string }[] };
+    expect(held.reading).toHaveLength(8);
+    expect(held.reading.every((entry) => entry.text.length <= 8_000)).toBe(true);
   });
 
   it("a review that finishes after Approve neither starts a second worker nor undoes the decision", async () => {
-    const world = await heldWorld({ reviewerMs: 60_000, manual: true });
+    const world = await heldWorld();
     const { source, host, start, storage } = world;
     await handleWithBriefParts(source, "r1", "tasks.delegate", { brief: "Fix the save bug." }, host);
-    await answerFreshEyes(PROJECT, "r1", "Approve", storage);
+    await answerFreshEyes(PROJECT, "r1", "Approve", { storage });
     expect(start).toHaveBeenCalledTimes(1);
 
-    world.release("FINDING: Late.\nBREAK: The review finished after Approve.");
-    await new Promise((resolve) => setTimeout(resolve, 30));
+    world.port.release("FINDING: Late.\nBREAK: The review finished after Approve.");
+    await vi.waitFor(() => expect(reviewFor(PROJECT, "r1", storage)?.running).toBeUndefined());
     expect(start).toHaveBeenCalledTimes(1);
     expect(reviewFor(PROJECT, "r1", storage)?.status).toBe("approved");
     expect(reviewFor(PROJECT, "r1", storage)?.findings).toEqual([]);
@@ -175,8 +174,8 @@ describe("fresh-eyes before a builder starts", () => {
     await handleWithBriefParts(source, "r1", "tasks.delegate", { brief: "Fix the save bug." }, host);
 
     await Promise.all([
-      answerFreshEyes(PROJECT, "r1", "Skip once", storage),
-      answerFreshEyes(PROJECT, "r1", "Skip once", storage),
+      answerFreshEyes(PROJECT, "r1", "Skip once", { storage }),
+      answerFreshEyes(PROJECT, "r1", "Skip once", { storage }),
     ]);
     expect(start).toHaveBeenCalledTimes(1);
     expect(reviewFor(PROJECT, "r1", storage)).toMatchObject({ status: "skipped_by_person", launched: true });
@@ -186,23 +185,118 @@ describe("fresh-eyes before a builder starts", () => {
     const world = await heldWorld();
     const { source, host, start, storage } = world;
     await handleWithBriefParts(source, "r1", "tasks.delegate", { brief: "Fix the save bug." }, host);
-    await answerFreshEyes(PROJECT, "r1", "Edit plan", storage);
-    await releaseHeld(storage);
+    await answerFreshEyes(PROJECT, "r1", "Edit plan", { storage });
+    await releaseHeld({ storage });
     expect(start).not.toHaveBeenCalled();
     expect(reviewFor(PROJECT, "r1", storage)?.status).toBe("editing");
   });
 
-  it("a brief held before a restart still starts when it is approved afterwards", async () => {
-    const world = await heldWorld();
+  it("starts the edit that was reviewed, not the brief the person first saw", async () => {
+    const world = await heldWorld({ answer: FINDING });
     const { source, host, start, storage } = world;
     await handleWithBriefParts(source, "r1", "tasks.delegate", { brief: "Fix the save bug." }, host);
+    await world.reviewsDone("r1");
+    await answerFreshEyes(PROJECT, "r1", "Edit plan", { storage });
 
-    // The app restarts: everything in memory is gone. The review record, on disk, is not.
+    // The first mate sends the edit under the same request ID. It is held and reviewed; nothing starts.
+    const again = await handleWithBriefParts(
+      source,
+      "r1",
+      "tasks.delegate",
+      { brief: "Rename the note button and keep the cursor." },
+      host,
+    );
+    expect(again).toMatchObject({ status: "waiting", freshEyes: true });
+    expect(start).not.toHaveBeenCalled();
+    await vi.waitFor(() => expect(reviewFor(PROJECT, "r1", storage)?.held?.brief).toBe("Rename the note button and keep the cursor."));
+    await world.reviewsDone("r1");
+
+    await answerFreshEyes(PROJECT, "r1", "Approve", { storage });
+    expect(start).toHaveBeenCalledTimes(1);
+    const launched = JSON.stringify(start.mock.calls[0]?.[0]);
+    expect(launched).toContain("keep the cursor");
+    expect(launched).not.toContain("Fix the save bug");
+  });
+
+  it("does not start another brief under the id of an approved one whose start failed", async () => {
+    const world = await heldWorld({ startFails: true, answer: FINDING });
+    const { source, host, start, storage } = world;
+    await handleWithBriefParts(source, "r1", "tasks.delegate", { brief: "Fix the save bug." }, host);
+    await world.reviewsDone("r1");
+    await answerFreshEyes(PROJECT, "r1", "Approve", { storage });
+    expect(start).toHaveBeenCalledTimes(1);
+    expect(reviewFor(PROJECT, "r1", storage)).toMatchObject({ status: "approved", startFailures: 1 });
+
+    // The retry carries something else under the same ID: it is a new brief, so it is held and reviewed.
+    const other = await handleWithBriefParts(source, "r1", "tasks.delegate", { brief: "Delete every note." }, host);
+    expect(other).toMatchObject({ status: "waiting", freshEyes: true });
+    expect(start).toHaveBeenCalledTimes(1);
+    expect(reviewFor(PROJECT, "r1", storage)?.held?.brief).toBe("Delete every note.");
+    expect(reviewFor(PROJECT, "r1", storage)?.status).toBe("pending");
+  });
+
+  it("holds before anything starts or a team is made, and refuses a call that would fail before it is reviewed", async () => {
+    const monoWork = {
+      isLead: () => false,
+      codingTeam: () => undefined,
+      ownTeam: vi.fn(async () => ({ folder: "/tmp/fresh-eyes-team", name: "Team" })),
+    };
+    const world = await heldWorld({ monoWork });
+    const { source, host, storage } = world;
+    source.firstMate = true;
+    const refused: [string, Record<string, unknown>, RegExp][] = [
+      ["a1", { isolation: "shared" }, /own, never the project's main one|checkout of their own/],
+      ["a2", { isolation: "sideways" }, /isolation must be/],
+      ["a3", { whenBusy: "queue" }, /whenBusy is for a brief to a Lead/],
+      ["a4", { heavy: "yes" }, /heavy must be true or false/],
+      ["a5", { gates: "all of them" }, /gates must be a list/],
+      ["a6", { model: "no-such-model-anywhere" }, /./],
+    ];
+    for (const [id, extra, why] of refused) {
+      await expect(
+        handleWithBriefParts(source, id, "tasks.delegate", { brief: "Fix the save bug.", ...extra }, host),
+      ).rejects.toThrow(why);
+      expect(reviewFor(PROJECT, id, storage)).toBeNull();
+    }
+    expect(world.port.seen).toEqual([]);
+
+    // A good call is held, and the Mono's team is not made until the brief may start.
+    const good = await handleWithBriefParts(source, "g1", "tasks.delegate", { brief: "Fix the save bug." }, host);
+    expect(good).toMatchObject({ status: "waiting", freshEyes: true });
+    expect(monoWork.ownTeam).not.toHaveBeenCalled();
+    await answerFreshEyes(PROJECT, "g1", "Approve", { storage });
+    expect(monoWork.ownTeam).toHaveBeenCalledTimes(1);
+    expect(world.start).toHaveBeenCalledTimes(1);
+  });
+
+  it("refuses plainly when the hold cannot be saved, and starts and holds nothing", async () => {
+    warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const world = await heldWorld();
+    const { source, host, start, storage } = world;
+    world.breakWrites();
+    await expect(
+      handleWithBriefParts(source, "r1", "tasks.delegate", { brief: "Fix the save bug." }, host),
+    ).rejects.toThrow(/could not be saved, so this brief was not started or held/);
+    expect(start).not.toHaveBeenCalled();
+    expect(reviewFor(PROJECT, "r1", storage)).toBeNull();
+    const status = (await handleWithBriefParts(source, "s1", "tasks.status", {}, host)) as StatusAnswer;
+    expect(status.waiting).toBeUndefined();
+  });
+
+  it("a brief held before a restart still starts when it is approved afterwards", async () => {
+    const world = await heldWorld();
+    const { source, host, start } = world;
+    await handleWithBriefParts(source, "r1", "tasks.delegate", { brief: "Fix the save bug." }, host);
+
+    // The app restarts: everything in memory is gone. The review record, in the app's database, is not.
     resetHeld();
     setFreshEyesPort(undefined);
+    const restarted = createEyesStorage(world.disk, { windowId: "w2" });
+    setFreshEyesStorage(restarted);
+    bindFreshEyesBackend(world.inbox);
     world.bindStarter();
 
-    await answerFreshEyes(PROJECT, "r1", "Approve", storage);
+    await answerFreshEyes(PROJECT, "r1", "Approve", { storage: restarted });
     expect(start).toHaveBeenCalledTimes(1);
     expect(start.mock.calls[0]?.[1]).toBe("app-mono-lead-r1");
   });
@@ -212,60 +306,83 @@ describe("fresh-eyes before a builder starts", () => {
     const { source, host, start, storage } = world;
     await handleWithBriefParts(source, "r1", "tasks.delegate", { brief: "Fix the save bug." }, host);
 
-    await answerFreshEyes(PROJECT, "r1", "Approve", storage);
+    await answerFreshEyes(PROJECT, "r1", "Approve", { storage });
     expect(start).not.toHaveBeenCalled();
     expect(reviewFor(PROJECT, "r1", storage)?.launched).toBeUndefined();
 
     world.openChat();
-    await releaseHeld(storage);
-    await releaseHeld(storage);
+    await releaseHeld({ storage });
+    await releaseHeld({ storage });
     expect(start).toHaveBeenCalledTimes(1);
     expect(reviewFor(PROJECT, "r1", storage)?.launched).toBe(true);
   });
 
-  it("an answer given in the Inbox starts the held brief", async () => {
-    const world = await heldWorld();
-    const { source, host, start, storage } = world;
+  it("an answer given in the Inbox by the person starts the held brief, and a chat's answer does not", async () => {
+    const world = await heldWorld({ answer: FINDING });
+    const { source, host, start, storage, inbox } = world;
     await handleWithBriefParts(source, "r1", "tasks.delegate", { brief: "Fix the save bug." }, host);
+    await world.reviewsDone("r1");
+    const key = reviewFor(PROJECT, "r1", storage)!.key!;
+    expect(inbox.asked.map((entry) => entry.key)).toEqual([key]);
 
-    await syncHeldDecisions(async () => ({ state: "open", answer: null }), storage);
+    await syncHeldDecisions({ storage });
     expect(start).not.toHaveBeenCalled();
-    await syncHeldDecisions(async (project, key) => {
-      expect(project).toBe(PROJECT);
-      expect(key).toBe("fresh-eyes/r1");
-      return { state: "answered", answer: "Approve" };
-    }, storage);
+    // The first mate answers ask_person on the review's key and says "Approve": that is not the person.
+    inbox.reply(key, "Approve", "chat:mono-lead");
+    warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    await syncHeldDecisions({ storage });
+    expect(start).not.toHaveBeenCalled();
+    expect(reviewFor(PROJECT, "r1", storage)?.status).toBe("pending");
+    // The same row, answered by the person in the Inbox.
+    inbox.rows.find((row) => row.decisionKey === key)!.answeredBy = "user";
+    await syncHeldDecisions({ storage });
     expect(start).toHaveBeenCalledTimes(1);
     expect(reviewFor(PROJECT, "r1", storage)).toMatchObject({ status: "approved", launched: true });
   });
 
-  it("task_cancel takes a held brief back and Approve then starts nothing", async () => {
-    const world = await heldWorld();
-    const { source, host, start, storage } = world;
+  it("task_cancel takes a held brief back, closes its question, and Approve then starts nothing", async () => {
+    const world = await heldWorld({ answer: FINDING });
+    const { source, host, start, storage, inbox } = world;
     await handleWithBriefParts(source, "r1", "tasks.delegate", { brief: "Fix the save bug." }, host);
+    await world.reviewsDone("r1");
+    const key = reviewFor(PROJECT, "r1", storage)!.key!;
 
     const cancelled = await handleWithBriefParts(source, "c1", "tasks.cancel", { taskId: "app-mono-lead-r1" }, host);
     expect(cancelled).toMatchObject({ taskId: "app-mono-lead-r1", status: "cancelled" });
     const status = (await handleWithBriefParts(source, "s1", "tasks.status", {}, host)) as StatusAnswer;
     expect(status.waiting).toBeUndefined();
+    expect(inbox.rows.find((row) => row.decisionKey === key)?.state).toBe("answered");
 
-    await answerFreshEyes(PROJECT, "r1", "Approve", storage);
-    await releaseHeld(storage);
+    await answerFreshEyes(PROJECT, "r1", "Approve", { storage });
+    await releaseHeld({ storage });
     expect(start).not.toHaveBeenCalled();
+    expect((await heldWaiting("mono-lead", { storage })).length).toBe(0);
   });
 
-  it("a start that throws is not tried again on every change, and the brief stays kept", async () => {
-    const world = await heldWorld({ startFails: true });
-    const { source, host, start, storage } = world;
+  it("a start that throws is tried again after a wait, and the chat and the person are told when it never works", async () => {
+    warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const clock = testClock();
+    const world = await heldWorld({ startFails: true, clock });
+    const { source, host, start, storage, inbox } = world;
     await handleWithBriefParts(source, "r1", "tasks.delegate", { brief: "Fix the save bug." }, host);
 
-    await answerFreshEyes(PROJECT, "r1", "Approve", storage);
-    await releaseHeld(storage);
-    await releaseHeld(storage);
+    await answerFreshEyes(PROJECT, "r1", "Approve", { storage });
     expect(start).toHaveBeenCalledTimes(1);
-    expect(reviewFor(PROJECT, "r1", storage)).toMatchObject({ status: "approved" });
-    expect(reviewFor(PROJECT, "r1", storage)?.launched).toBeUndefined();
+    for (const wait of START_BACKOFF_MS) {
+      await releaseHeld({ storage });
+      expect(start.mock.calls.length).toBeGreaterThan(0);
+      clock.advance(wait + 1);
+      await releaseHeld({ storage });
+    }
+    expect(start).toHaveBeenCalledTimes(START_BACKOFF_MS.length + 1);
+    expect(reviewFor(PROJECT, "r1", storage)).toMatchObject({ status: "approved", startGaveUp: true });
     expect(reviewFor(PROJECT, "r1", storage)?.held).toBeDefined();
+    expect(inbox.told).toHaveLength(1);
+    expect(inbox.told[0]).toMatchObject({ owner: "mono-lead" });
+    expect(inbox.asked.some((entry) => entry.key.startsWith("fresh-eyes-start/"))).toBe(true);
+    clock.advance(60 * 60_000);
+    await releaseHeld({ storage });
+    expect(start).toHaveBeenCalledTimes(START_BACKOFF_MS.length + 1);
   });
 });
 
@@ -273,33 +390,54 @@ type StatusAnswer = { tasks: Record<string, unknown>[]; waiting?: Record<string,
 
 /**
  * A project with the review on, the real delegation host over a fake store, and reviewers that answer after
- * `reviewerMs` (or when `release` is called, with `manual`). `start` stands for the app starting a worker chat: it
- * records the delegation row the app would write.
+ * `reviewerMs` (or never, until the test lets them go). `start` stands for the app starting a worker chat: it records the
+ * delegation row the app would write.
  */
-async function heldWorld(options: { reviewerMs?: number; manual?: boolean; open?: boolean; startFails?: boolean } = {}) {
-  const storage = memoryStorage();
+async function heldWorld(
+  options: {
+    reviewerMs?: number;
+    answer?: string;
+    open?: boolean;
+    startFails?: boolean;
+    clock?: ReturnType<typeof testClock>;
+    monoWork?: NonNullable<Parameters<typeof delegationTasksHost>[0]["monoWork"]>;
+  } = {},
+) {
+  const base = memoryDisk();
+  let failing = false;
+  const disk = {
+    ...base,
+    write: async (key: string, value: unknown, rev?: number) => {
+      if (failing) throw new Error("The disk is full.");
+      return base.write(key, value, rev);
+    },
+  };
+  const storage = createEyesStorage(disk, { windowId: "w1", ...(options.clock ? { now: options.clock.now } : {}) });
   setFreshEyesStorage(storage);
   await writeSetting(PROJECT, { enabled: true }, storage);
-  const seen: string[] = [];
+  const inbox = fakeInbox();
+  bindFreshEyesBackend(inbox);
+
+  const seen: ReviewerTurn[] = [];
   let reviewed = 0;
   let release: (text: string) => void = () => undefined;
   const gate = new Promise<string>((resolve) => {
     release = resolve;
   });
-  const port: ReviewerPort = {
+  const port: ReviewerPort & { seen: ReviewerTurn[]; release(text: string): void } = {
+    seen,
+    release: (text) => release(text),
     ask: async (turn) => {
-      seen.push(turn.prompt);
+      seen.push(turn);
       reviewed += 1;
-      if (options.manual) return gate;
       if (options.reviewerMs) {
-        return new Promise<string>((resolve) =>
-          setTimeout(() => resolve("FINDING: A step is missing.\nBREAK: It stops half way."), options.reviewerMs),
-        );
+        return new Promise<string>((resolve) => setTimeout(() => resolve(FINDING), options.reviewerMs));
       }
-      return gate;
+      return options.answer !== undefined ? options.answer : gate;
     },
   };
   setFreshEyesPort(port);
+
   const source: Session = { ...newSession("claude", PROJECT), id: "mono-lead" };
   const rows: Delegation[] = [];
   const start = vi.fn(async (_launch: unknown, id: string, _draft: unknown, notify: string) => {
@@ -312,6 +450,7 @@ async function heldWorld(options: { reviewerMs?: number; manual?: boolean; open?
     session: () => source,
     stop: async () => undefined,
     dropReport: () => undefined,
+    ...(options.monoWork ? { monoWork: options.monoWork } : {}),
   });
   const host = appHost(source, start, tasks);
   const started: { owner: string; requestId: string; input: Record<string, unknown> }[] = [];
@@ -327,18 +466,29 @@ async function heldWorld(options: { reviewerMs?: number; manual?: boolean; open?
     });
   bindStarter();
   return {
+    disk: base,
     storage,
     source,
     rows,
     start,
     host,
-    seen,
+    port,
+    inbox,
     started,
     bindStarter,
-    release,
+    breakWrites: () => {
+      failing = true;
+    },
     openChat: () => {
       open = true;
     },
+    /** The reviewers have answered for this request and the person has been asked. */
+    reviewsDone: (requestId: string) =>
+      vi.waitFor(() => {
+        const row = reviewFor(PROJECT, requestId, storage);
+        expect(row?.running).toBeUndefined();
+        expect(row?.asked).toBe(true);
+      }),
     get reviewed() {
       return reviewed;
     },
@@ -387,9 +537,7 @@ function backend(rows: Delegation[]): DelegationsBackend {
       if (!query.ids?.length && !query.requestIds?.length) {
         return mine.filter((row) => row.state === "running" || row.state === "question");
       }
-      return mine.filter(
-        (row) => query.ids?.includes(row.id) || query.requestIds?.includes(row.requestId),
-      );
+      return mine.filter((row) => query.ids?.includes(row.id) || query.requestIds?.includes(row.requestId));
     },
     listOpen: async () => rows,
     tree: async () => [],
@@ -422,7 +570,7 @@ function appHost(source: Session, start: AgentAppHost["start"], tasks: AgentAppT
     note: vi.fn(async () => null),
     saveNote: vi.fn(),
     isMono: () => true,
-    monoOf: () => ({ id: "lead", name: "Lead", projects: [source.cwd] }),
+    monoOf: () => ({ id: "lead", name: "Lead", projects: [source.cwd], team: "/tmp/fresh-eyes-team" }),
     tasks,
   } as unknown as AgentAppHost;
 }

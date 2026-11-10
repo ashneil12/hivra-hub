@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { bindFreshEyesApp, freshEyesPort, portFromHooks, setFreshEyesPort } from "./bind";
 import { ReviewerTimeout, type ReviewerTurn } from "./review";
 import type { Session } from "../../sessions/model/session";
@@ -13,6 +13,7 @@ const TURN: ReviewerTurn = {
 
 afterEach(() => {
   setFreshEyesPort(undefined);
+  vi.useRealTimers();
 });
 
 describe("fresh-eyes sessions", () => {
@@ -70,6 +71,36 @@ describe("fresh-eyes sessions", () => {
       cwd: "/tmp/app",
     });
     await expect(refused.ask({ ...TURN, persona: "readiness" })).rejects.toThrow(/could not start/);
+  });
+
+  it("stops a reviewer that never answers, and counts it as timed out so the person is asked", async () => {
+    vi.useFakeTimers();
+    const added: Session[] = [];
+    const stopped: string[] = [];
+    const removed: string[] = [];
+    const port = portFromHooks({
+      sessions: () => added,
+      add: (session) => {
+        added.push(session);
+      },
+      // The session starts and then says nothing, ever.
+      submit: () => true,
+      stop: (id) => {
+        stopped.push(id);
+      },
+      remove: (id) => {
+        removed.push(id);
+      },
+      cwd: "/tmp/app",
+      timeoutMs: 60_000,
+    });
+    const caught = port.ask(TURN).catch((error: unknown) => error);
+    await vi.advanceTimersByTimeAsync(59_000);
+    expect(stopped).toEqual([]);
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(await caught).toBeInstanceOf(ReviewerTimeout);
+    expect(stopped).toEqual([added[0]?.id]);
+    expect(removed).toEqual([added[0]?.id]);
   });
 
   it("leaves a port a test already set", () => {
