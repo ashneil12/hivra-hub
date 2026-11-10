@@ -1152,7 +1152,12 @@ impl Runners for AppRunners {
             }
         };
         let name = config.name.clone().unwrap_or_else(|| "Routes check".into());
-        let checkout = match crate::gates::worker_checkout(&checkout.to_string_lossy()) {
+        // WP-91: a worker's checkout may be a slot of the worktree pool.
+        let pool_slots = crate::worktree_pool::slots_dir_for(&self.app);
+        let checkout = match crate::gates::worker_checkout_in(
+            &checkout.to_string_lossy(),
+            pool_slots.as_deref(),
+        ) {
             Ok(path) => path,
             Err(why) => {
                 return Some(CommandEvidence {
