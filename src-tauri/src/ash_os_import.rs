@@ -293,13 +293,22 @@ fn fetch_all(live: bool, inputs: Inputs) -> ImportFound {
 /// Ash OS.
 #[tauri::command(async)]
 pub fn ash_os_import_fetch() -> ImportFound {
+    let live = crate::instance::policy().live_ash_os;
+    // The record's stand-ins are for a dev copy's tests only: the daily app always reads Ash OS's real record.
+    let stand_in = |name: &str| {
+        if live {
+            None
+        } else {
+            std::env::var_os(name).map(PathBuf::from)
+        }
+    };
     fetch_all(
-        crate::instance::policy().live_ash_os,
+        live,
         Inputs {
             port: std::env::var("MONOCODE_HUB_PORT").ok(),
             token_file: std::env::var_os("MONOCODE_HUB_TOKEN_FILE").map(PathBuf::from),
-            db: std::env::var_os("MONOCODE_ASHOS_DB").map(PathBuf::from),
-            projects: std::env::var_os("MONOCODE_ASHOS_PROJECTS").map(PathBuf::from),
+            db: stand_in("MONOCODE_ASHOS_DB"),
+            projects: stand_in("MONOCODE_ASHOS_PROJECTS"),
             home: std::env::var_os("HOME")
                 .or_else(|| std::env::var_os("USERPROFILE"))
                 .map(PathBuf::from),
@@ -686,7 +695,12 @@ mod tests {
         };
         assert_eq!(fetch_all(false, named).projects, json!([]));
         // The same Mac, as the daily app: the real record answers. (So the two above were refusals, not empty reads.)
-        assert_eq!(fetch_all(true, base.clone()).state, ImportState::Found);
+        // (A free port, so nothing ever reaches a real Ash OS on 18767 from a test.)
+        let daily = Inputs {
+            port: Some(free_port().to_string()),
+            ..base.clone()
+        };
+        assert_eq!(fetch_all(true, daily).state, ImportState::Found);
         // A stand-in record a test names: read.
         let stand_in = temp_dir();
         let fixture = disk::tests::Fixture::new(&stand_in);

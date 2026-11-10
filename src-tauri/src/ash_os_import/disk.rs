@@ -12,14 +12,17 @@
 //!
 //! Where it is read from follows the live read's rule: the daily app reads Ash OS's real record; a dev copy reads only
 //! a stand-in a test names with `MONOCODE_ASHOS_DB` (and optionally `MONOCODE_ASHOS_PROJECTS`), never a path inside
-//! the real `~/.local/share/exo-cc-studio` or `~/Projects/exo-cc-studio`.
+//! the real `~/.local/share/exo-cc-studio` or `~/Projects/exo-cc-studio` (nor a hard link to the real record). The
+//! daily app ignores those variables. A strip that names projects none of whose files are there is no answer this
+//! time (the checkout may be elsewhere), never a sure "nothing to import".
 
 use std::fs::File;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
-use rusqlite::{Connection, OpenFlags, OptionalExtension};
+use rusqlite::types::ValueRef;
+use rusqlite::{Connection, OpenFlags, OptionalExtension, Row};
 use serde_json::{json, Map, Value};
 
 use super::{ImportFound, ImportState};
@@ -35,6 +38,10 @@ const MAX_WAL: u64 = 256 * 1024 * 1024;
 const MAX_META: usize = 1024 * 1024;
 const MAX_PROJECT_FILE: u64 = 256 * 1024;
 const MAX_SPEC: usize = 1024 * 1024;
+/// All kept Pages' contents together, in bytes: the live read's whole answer was capped at 32 MB.
+const MAX_SPECS_TOTAL: usize = 24 * 1024 * 1024;
+/// A private copy left behind by a crash is swept once it is this old.
+const STALE_COPY_SECS: u64 = 60 * 60;
 const MAX_STRIP: usize = 100;
 const MAX_MEMBERSHIPS: usize = 5000;
 const MAX_PAGES: usize = 500;
@@ -92,10 +99,16 @@ pub(super) fn resolve(
             .collect();
         let local = db.parent().map(|p| p.join("projects"));
         let named = [Some(db.clone()), local.clone(), projects_env.clone()];
-        if named
-            .iter()
+        let real_dbs: Vec<PathBuf> = [&home, &real_home]
+            .into_iter()
             .flatten()
-            .any(|path| real.iter().any(|r| inside(path, r)))
+            .map(|h| h.join(DATA_SUBPATH).join(DB_NAME))
+            .collect();
+        if named.iter().flatten().any(|path| {
+            path.components()
+                .any(|c| matches!(c, std::path::Component::ParentDir))
+                || real.iter().any(|r| inside(path, r))
+        }) || real_dbs.iter().any(|r| same_file(&db, r))
         {
             return Err("A dev copy never reads Ash OS's real record.".into());
         }
@@ -113,6 +126,23 @@ pub(super) fn resolve(
         db,
         roots: std::iter::once(curated).chain(local).collect(),
     })
+}
+
+/// Whether two paths are the same file on disk (a hard link included). False when either isn't there.
+fn same_file(a: &Path, b: &Path) -> bool {
+    let (Ok(a), Ok(b)) = (std::fs::metadata(a), std::fs::metadata(b)) else {
+        return false;
+    };
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        a.dev() == b.dev() && a.ino() == b.ino()
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (a, b);
+        false
+    }
 }
 
 /// Whether `path` is `root` or inside it, by their real locations when they exist (a symlink or `..` can't dodge it).
@@ -158,8 +188,36 @@ impl Snapshot {
     }
 }
 
+const COPY_PREFIX: &str = "monocode-ashos-read-";
+
+/// Private copies a crash left behind (only this reader's own folders, and only old ones).
+fn sweep_stale_copies(temp: &Path) {
+    let Ok(entries) = std::fs::read_dir(temp) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        if !name.to_string_lossy().starts_with(COPY_PREFIX) {
+            continue;
+        }
+        let Ok(meta) = std::fs::symlink_metadata(entry.path()) else {
+            continue;
+        };
+        let old = meta
+            .modified()
+            .ok()
+            .and_then(|m| m.elapsed().ok())
+            .is_some_and(|age| age.as_secs() > STALE_COPY_SECS);
+        if meta.file_type().is_dir() && old {
+            let _ = std::fs::remove_dir_all(entry.path());
+        }
+    }
+}
+
 fn private_dir() -> Result<PathBuf, String> {
-    let dir = std::env::temp_dir().join(format!("monocode-ashos-read-{}", uuid::Uuid::new_v4()));
+    let temp = std::env::temp_dir();
+    sweep_stale_copies(&temp);
+    let dir = temp.join(format!("{COPY_PREFIX}{}", uuid::Uuid::new_v4()));
     let mut builder = std::fs::DirBuilder::new();
     #[cfg(unix)]
     {
@@ -190,7 +248,20 @@ fn name_of(path: &Path) -> String {
 
 /// Copy `from` (read only) into a new 0600 file `to`, at most `cap` bytes.
 fn copy_capped(from: &Path, to: &Path, cap: u64) -> Result<(), String> {
-    let source = File::open(from).map_err(|_| format!("Couldn't read {}.", name_of(from)))?;
+    // Never through a link, and never waiting on something that isn't a file (a swap after the check can't hang this).
+    let mut open = std::fs::OpenOptions::new();
+    open.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        open.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+    }
+    let source = open
+        .open(from)
+        .map_err(|_| format!("Couldn't read {}.", name_of(from)))?;
+    if !source.metadata().is_ok_and(|m| m.file_type().is_file()) {
+        return Err(format!("{} is not a plain file.", name_of(from)));
+    }
     let mut options = std::fs::OpenOptions::new();
     options.write(true).create_new(true);
     #[cfg(unix)]
@@ -214,7 +285,9 @@ fn copy_capped(from: &Path, to: &Path, cap: u64) -> Result<(), String> {
 /// Copy the database and its write-ahead log (if there is one) into a private folder. None when there is no record.
 /// A record that changed while it was copied is copied again; one that keeps changing is an error (try next start).
 fn snapshot(db: &Path) -> Result<Option<Snapshot>, String> {
-    let wal = PathBuf::from(format!("{}-wal", db.display()));
+    let mut wal = db.as_os_str().to_owned();
+    wal.push("-wal");
+    let wal = PathBuf::from(wal);
     for _ in 0..COPY_TRIES {
         let Some(before_db) = stamp(db)? else {
             return Ok(None);
@@ -331,7 +404,9 @@ fn short_name(name: &str) -> String {
 
 /// A folder as the import takes it: an absolute path that fits, else none.
 fn folder_of(value: Option<&Value>) -> Option<String> {
-    text(value, MAX_FOLDER).filter(|f| f.starts_with('/') && !f.contains('\0'))
+    text(value, MAX_FOLDER).filter(|f| {
+        f.starts_with('/') && !f.contains('\0') && !f.split('/').any(|part| part == "..")
+    })
 }
 
 /// UTC ISO-8601 with a Z, as Ash OS writes it (`iso`): microseconds when there are any.
@@ -365,6 +440,44 @@ fn iso(ts: f64) -> Option<String> {
     })
 }
 
+/// A cell as text: only a TEXT value (SQLite doesn't hold a column to its type, so any other value is left out).
+fn cell_text(row: &Row, i: usize) -> Option<String> {
+    match row.get_ref(i).ok()? {
+        ValueRef::Text(t) => std::str::from_utf8(t).ok().map(str::to_string),
+        _ => None,
+    }
+}
+
+fn cell_f64(row: &Row, i: usize) -> Option<f64> {
+    match row.get_ref(i).ok()? {
+        ValueRef::Real(f) => Some(f),
+        ValueRef::Integer(n) => Some(n as f64),
+        _ => None,
+    }
+}
+
+fn cell_i64(row: &Row, i: usize) -> Option<i64> {
+    match row.get_ref(i).ok()? {
+        ValueRef::Integer(n) => Some(n),
+        ValueRef::Real(f) if f.is_finite() && f.abs() < 9.0e15 => Some(f as i64),
+        _ => None,
+    }
+}
+
+/// A table's column names (an older record may lack some).
+fn columns(conn: &Connection, table: &str) -> Result<std::collections::HashSet<String>, String> {
+    let failed = |_| "Ash OS's record couldn't be read.".to_string();
+    let mut stmt = conn
+        .prepare("SELECT name FROM pragma_table_info(?1)")
+        .map_err(failed)?;
+    let names = stmt
+        .query_map([table], |row| Ok(cell_text(row, 0)))
+        .map_err(failed)?
+        .filter_map(|r| r.ok().flatten())
+        .collect();
+    Ok(names)
+}
+
 fn has_table(conn: &Connection, name: &str) -> Result<bool, String> {
     conn.query_row(
         "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1",
@@ -382,7 +495,7 @@ fn meta(conn: &Connection, key: &str) -> Result<Option<Value>, String> {
         .query_row(
             "SELECT CASE WHEN length(value) <= ?2 THEN value END FROM meta WHERE key=?1",
             rusqlite::params![key, MAX_META as i64],
-            |row| row.get(0),
+            |row| Ok(cell_text(row, 0)),
         )
         .optional()
         .map_err(|_| "Ash OS's record couldn't be read.".to_string())?
@@ -531,6 +644,7 @@ fn projects(
     }
     let empty = Map::new();
     let mut out = Vec::new();
+    let mut named = 0;
     for entry in set {
         let Some(id) = entry.get("id").and_then(Value::as_str) else {
             continue;
@@ -538,6 +652,7 @@ fn projects(
         if !project_id_ok(id) {
             continue;
         }
+        named += 1;
         let Some(p) = project_file(roots, id, notes) else {
             continue;
         };
@@ -578,6 +693,10 @@ fn projects(
         }
         out.push(row);
     }
+    // The strip names projects but none of their files is where the import looks: not a sure "no projects".
+    if named > 0 && out.is_empty() {
+        return Err("Ash OS's project files weren't found.".into());
+    }
     Ok(out)
 }
 
@@ -587,19 +706,26 @@ fn memberships(conn: &Connection, notes: &mut Vec<String>) -> Result<Vec<Value>,
         return Ok(Vec::new());
     }
     let failed = |_| "Ash OS's record couldn't be read.".to_string();
-    let mut stmt = conn
-        .prepare(
-            "SELECT mono_id, project_id, role, added_at FROM hub_mono_projects \
-             ORDER BY project_id, role DESC, mono_id LIMIT ?1",
-        )
-        .map_err(failed)?;
+    let cols = columns(conn, "hub_mono_projects")?;
+    if !cols.contains("mono_id") || !cols.contains("project_id") {
+        notes.push("Left out Monos' projects: their table couldn't be read.".into());
+        return Ok(Vec::new());
+    }
+    let col = |name: &'static str| if cols.contains(name) { name } else { "NULL" };
+    let sql = format!(
+        "SELECT mono_id, project_id, {role}, {added} FROM hub_mono_projects \
+         ORDER BY project_id, {role} DESC, mono_id LIMIT ?1",
+        role = col("role"),
+        added = col("added_at"),
+    );
+    let mut stmt = conn.prepare(&sql).map_err(failed)?;
     let rows = stmt
         .query_map([MAX_MEMBERSHIPS as i64 + 1], |row| {
             Ok((
-                row.get::<_, Option<String>>(0)?,
-                row.get::<_, Option<String>>(1)?,
-                row.get::<_, Option<String>>(2)?,
-                row.get::<_, Option<f64>>(3)?,
+                cell_text(row, 0),
+                cell_text(row, 1),
+                cell_text(row, 2),
+                cell_f64(row, 3),
             ))
         })
         .map_err(failed)?;
@@ -637,41 +763,83 @@ fn pages(conn: &Connection, notes: &mut Vec<String>) -> Result<Vec<Value>, Strin
         return Ok(Vec::new());
     }
     let failed = |_| "Ash OS's record couldn't be read.".to_string();
-    let mut stmt = conn
-        .prepare(
-            "SELECT id, project, mono_id, by_name, title, request, \
-                    CASE WHEN length(spec) <= ?2 THEN spec END, permissions, pin_asked, pinned, pinned_by, kept_at, version \
-             FROM hub_pages WHERE state='kept' ORDER BY kept_at DESC, created_at DESC LIMIT ?1",
-        )
-        .map_err(failed)?;
+    let cols = columns(conn, "hub_pages")?;
+    if !["id", "project", "mono_id", "title", "spec", "state"]
+        .iter()
+        .all(|c| cols.contains(*c))
+    {
+        notes.push("Left out kept Pages: their table couldn't be read.".into());
+        return Ok(Vec::new());
+    }
+    // Each value no longer than it may be (a longer one reads as missing); a column an older record lacks reads as NULL.
+    let capped = |name: &str, max: usize| {
+        if cols.contains(name) {
+            format!("CASE WHEN length({name}) <= {max} THEN {name} END")
+        } else {
+            "NULL".to_string()
+        }
+    };
+    let plain = |name: &str| {
+        if cols.contains(name) {
+            name.to_string()
+        } else {
+            "NULL".to_string()
+        }
+    };
+    let sql = format!(
+        "SELECT {id}, {project}, {mono}, {by}, {title}, {request}, {spec}, {permissions}, {pin_asked}, {pinned}, \
+                {pinned_by}, {kept_at}, {version} \
+         FROM hub_pages WHERE state='kept' ORDER BY {kept_at} DESC, {created_at} DESC LIMIT ?1",
+        id = capped("id", 128),
+        project = capped("project", 48),
+        mono = capped("mono_id", 64),
+        by = capped("by_name", 80),
+        title = capped("title", 200),
+        request = capped("request", 4000),
+        spec = capped("spec", MAX_SPEC),
+        permissions = capped("permissions", 64 * 1024),
+        pin_asked = plain("pin_asked"),
+        pinned = plain("pinned"),
+        pinned_by = capped("pinned_by", 80),
+        kept_at = plain("kept_at"),
+        version = plain("version"),
+        created_at = plain("created_at"),
+    );
+    let mut stmt = conn.prepare(&sql).map_err(failed)?;
     let rows = stmt
-        .query_map(
-            rusqlite::params![MAX_PAGES as i64 + 1, MAX_SPEC as i64],
-            |row| {
-                Ok([
-                    row.get::<_, Option<String>>(0)?.map(Value::String),
-                    row.get::<_, Option<String>>(1)?.map(Value::String),
-                    row.get::<_, Option<String>>(2)?.map(Value::String),
-                    row.get::<_, Option<String>>(3)?.map(Value::String),
-                    row.get::<_, Option<String>>(4)?.map(Value::String),
-                    row.get::<_, Option<String>>(5)?.map(Value::String),
-                    row.get::<_, Option<String>>(6)?.map(Value::String),
-                    row.get::<_, Option<String>>(7)?.map(Value::String),
-                    row.get::<_, Option<i64>>(8)?.map(Value::from),
-                    row.get::<_, Option<i64>>(9)?.map(Value::from),
-                    row.get::<_, Option<String>>(10)?.map(Value::String),
-                    row.get::<_, Option<f64>>(11)?.map(Value::from),
-                    row.get::<_, Option<i64>>(12)?.map(Value::from),
-                ])
-            },
-        )
+        .query_map(rusqlite::params![MAX_PAGES as i64 + 1], |row| {
+            let t = |i| cell_text(row, i).map(Value::String);
+            Ok([
+                t(0),
+                t(1),
+                t(2),
+                t(3),
+                t(4),
+                t(5),
+                t(6),
+                t(7),
+                cell_i64(row, 8).map(Value::from),
+                cell_i64(row, 9).map(Value::from),
+                t(10),
+                cell_f64(row, 11).map(Value::from),
+                cell_i64(row, 12).map(Value::from),
+            ])
+        })
         .map_err(failed)?;
     let mut out = Vec::new();
+    let mut spec_bytes = 0usize;
     for row in rows {
         let [id, project, mono, by, title, request, spec, permissions, pin_asked, pinned, pinned_by, kept_at, version] =
             row.map_err(failed)?;
         if out.len() == MAX_PAGES {
             notes.push(format!("Left out kept Pages past the first {MAX_PAGES}."));
+            break;
+        }
+        spec_bytes += spec.as_ref().and_then(Value::as_str).map_or(0, str::len);
+        if spec_bytes > MAX_SPECS_TOTAL {
+            notes.push(
+                "Left out the oldest kept Pages: together they were too big to bring over.".into(),
+            );
             break;
         }
         let (Some(id), Some(project), Some(mono)) = (
@@ -1163,6 +1331,95 @@ pub(super) mod tests {
     }
 
     #[test]
+    fn a_strip_whose_project_files_are_missing_is_no_answer_this_time() {
+        let base = temp_dir();
+        let fixture = Fixture::new(&base);
+        drop(fixture.standard());
+        // The checkout moved: the strip still names projects, but no file is where the import looks.
+        std::fs::remove_dir_all(fixture.checkout.join("projects")).unwrap();
+        std::fs::remove_dir_all(fixture.data.join("projects")).unwrap();
+        assert_eq!(
+            read(&fixture.record()).unwrap_err(),
+            "Ash OS's project files weren't found."
+        );
+        let _ = std::fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn an_odd_value_or_an_older_table_leaves_out_only_what_it_touches() {
+        let base = temp_dir();
+        let fixture = Fixture::new(&base);
+        let conn = fixture.standard();
+        // SQLite doesn't hold columns to their types: text where a time belongs, a real where a flag belongs, a blob
+        // in meta. And an older record without a column.
+        conn.execute(
+            "UPDATE hub_mono_projects SET added_at='yesterday' WHERE mono_id='cos' AND project_id='hivra'",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE hub_pages SET pinned=1.0, version='three' WHERE id='pg-new'",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE meta SET value=X'00FF' WHERE key='hub_project_overlay'",
+            [],
+        )
+        .unwrap();
+        conn.execute_batch("ALTER TABLE hub_pages DROP COLUMN pin_asked;")
+            .unwrap();
+        drop(conn);
+        let found = read(&fixture.record()).unwrap().expect("a record");
+        let cos = found
+            .memberships
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|m| m["monoId"] == "cos" && m["projectId"] == "hivra")
+            .expect("the membership is kept")
+            .clone();
+        assert_eq!(cos["addedAt"], Value::Null);
+        let pages = found.pages.as_array().unwrap();
+        assert_eq!(pages.len(), 2);
+        let new = pages.iter().find(|p| p["id"] == "pg-new").unwrap();
+        assert_eq!(new["pinned"], json!(true));
+        assert_eq!(new["version"], json!(1));
+        assert_eq!(found.projects.as_array().unwrap().len(), 4);
+        let _ = std::fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn a_folder_that_climbs_out_is_no_folder() {
+        assert_eq!(folder_of(Some(&json!("/work/../etc"))), None);
+        assert_eq!(
+            folder_of(Some(&json!("/work/app"))),
+            Some("/work/app".into())
+        );
+        assert_eq!(folder_of(Some(&json!("~/work/app"))), None);
+    }
+
+    #[test]
+    fn a_copy_a_crash_left_behind_is_swept_and_nothing_else() {
+        let temp = temp_dir();
+        let stale = temp.join(format!("{COPY_PREFIX}old"));
+        let fresh = temp.join(format!("{COPY_PREFIX}new"));
+        let other = temp.join("someone-else");
+        for dir in [&stale, &fresh, &other] {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+        let long_ago = SystemTime::now() - std::time::Duration::from_secs(STALE_COPY_SECS + 60);
+        for dir in [&stale, &other] {
+            File::open(dir).unwrap().set_modified(long_ago).unwrap();
+        }
+        sweep_stale_copies(&temp);
+        assert!(!stale.exists());
+        assert!(fresh.exists());
+        assert!(other.exists());
+        let _ = std::fs::remove_dir_all(temp);
+    }
+
+    #[test]
     fn a_dev_copy_reads_only_a_named_stand_in() {
         let home = temp_dir();
         let real = temp_dir();
@@ -1216,6 +1473,27 @@ pub(super) mod tests {
             }
             let _ = std::fs::remove_dir_all(stand_in);
         }
+        // A hard link to the real record, and a `..` that doesn't resolve yet: refused too.
+        let elsewhere = temp_dir();
+        let hard = elsewhere.join("copy.db");
+        std::fs::hard_link(real.join(DATA_SUBPATH).join(DB_NAME), &hard).unwrap();
+        assert!(resolve(
+            false,
+            Some(hard),
+            None,
+            Some(home.clone()),
+            Some(real.clone())
+        )
+        .is_err());
+        assert!(resolve(
+            false,
+            Some(elsewhere.join("not-yet/../../x.db")),
+            None,
+            Some(home.clone()),
+            Some(real.clone())
+        )
+        .is_err());
+        let _ = std::fs::remove_dir_all(elsewhere);
         // A stand-in a test names: read from there only.
         let stand_in = temp_dir();
         let record = resolve(

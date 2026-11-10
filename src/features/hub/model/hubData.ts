@@ -143,7 +143,11 @@ function startHubBundleLeads(store: HubStore): void {
         ({ memberships }) => memberships,
         () => [],
       )
-      .then((memberships) => runLeads(strip, leadsByProject(memberships)));
+      .then((memberships) => runLeads(strip, leadsByProject(memberships)))
+      // A failed pass is tried again on the next change of the strip, never left as an unhandled rejection.
+      .catch(() => {
+        if (seen === key) seen = "";
+      });
   };
   const runLeads = (strip: HubProject[], leadOf: (projectId: string) => string | undefined) => {
     const result = ensureProjectLeads(strip, register, unregister, { leadOf });

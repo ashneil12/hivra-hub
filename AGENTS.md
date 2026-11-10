@@ -347,7 +347,7 @@ import → "Bring over from Ash OS" runs it again at any time (it only adds). Wh
 runs), the import reads Ash OS's record on disk instead (`ash_os_import/disk.rs`: the database and its log copied
 into a private folder and only the copy opened, plus each strip project's `project.json`) and answers in the live
 reads' shape; Ash OS's files are never written and nothing is made beside them. A dev copy reads only a stand-in
-record named by `MONOCODE_ASHOS_DB` (and `MONOCODE_ASHOS_PROJECTS`), never the real one. Every hub chat denies `mcp__ash-os`, so
+record named by `MONOCODE_ASHOS_DB` (and `MONOCODE_ASHOS_PROJECTS`), never the real one (the daily app ignores both). Every hub chat denies `mcp__ash-os`, so
 Ash's own user-scope Ash OS server never loads in one. The local store's documents carry a revision: a window writes
 only on top of the latest one and every window hears `local-hub://changed`.
 
