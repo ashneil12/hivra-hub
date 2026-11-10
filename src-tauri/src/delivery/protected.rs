@@ -45,11 +45,26 @@ const FILE_NAMES: &[&str] = &[
     "cloudbuild.yaml",
     "agents.md",
     "claude.md",
+    "gemini.md",
+    "opencode.json",
     ".envrc",
 ];
 
 /// File names protected as themselves or with a dotted suffix (`Dockerfile.prod`).
-const DOTTED_NAMES: &[&str] = &["dockerfile", "jenkinsfile", ".env"];
+///
+/// Agent configuration is held here too: a project's `.claude/` (settings, hooks, agents, commands) and `.mcp.json`
+/// load on Ash's Mac when a session starts, so a merge that adds one runs code there.
+const DOTTED_NAMES: &[&str] = &[
+    "dockerfile",
+    "jenkinsfile",
+    ".env",
+    ".claude",
+    ".codex",
+    ".cursor",
+    ".opencode",
+    ".gemini",
+    ".mcp",
+];
 
 /// Secret extensions, including the dot. Matched on the file name, ignoring case.
 const SECRET_EXTENSIONS: &[&str] = &[
@@ -768,5 +783,86 @@ mod tests {
             judge(ReadFiles::Parsed(list), Some(1)),
             ChangedFiles::Listed(_)
         ));
+    }
+
+    #[test]
+    fn agent_configuration_is_held_wherever_it_sits() {
+        // Project settings, hooks and MCP servers load from these, so a merge that adds one runs code on Ash's Mac.
+        for path in [
+            ".claude/settings.json",
+            ".claude/settings.local.json",
+            ".claude/agents/reviewer.md",
+            ".claude/commands/ship.md",
+            "nested/app/.claude/settings.json",
+            ".claude.json",
+            ".mcp.json",
+            "tools/.mcp.json",
+            ".codex/config.toml",
+            ".cursor/rules/rules.mdc",
+            ".opencode/config.json",
+            ".gemini/settings.json",
+            "opencode.json",
+            "GEMINI.md",
+            "docs/GEMINI.md",
+            "CLAUDE.md",
+        ] {
+            assert_eq!(hits(&[path], &[]), vec![path.to_string()], "{path}");
+        }
+        assert!(hits(&["docs/claude-notes.md"], &[]).is_empty());
+        assert!(hits(&["src/codex.ts"], &[]).is_empty());
+    }
+
+    #[test]
+    fn build_and_supply_chain_files_are_held() {
+        for path in [
+            "Cargo.lock",
+            "src-tauri/Cargo.lock",
+            "Cargo.toml",
+            "src-tauri/Cargo.toml",
+            "package.json",
+            "packages/ui/package.json",
+            "package-lock.json",
+            "yarn.lock",
+            "pnpm-lock.yaml",
+            "bun.lock",
+            "bun.lockb",
+            "npm-shrinkwrap.json",
+            "src-tauri/build.rs",
+            ".cargo/config.toml",
+            "rust-toolchain.toml",
+            "rust-toolchain",
+            ".npmrc",
+            "src-tauri/Entitlements.plist",
+            "src-tauri/Info.plist",
+            "src-tauri/capabilities/default.toml",
+            "src-tauri/permissions/app.toml",
+            ".no-mistakes.yaml",
+        ] {
+            assert_eq!(hits(&[path], &[]), vec![path.to_string()], "{path}");
+        }
+        for path in ["src/package.jsonish.ts", "docs/build.rs.md", "src/lockfile.ts"] {
+            assert!(hits(&[path], &[]).is_empty(), "{path}");
+        }
+    }
+
+    #[test]
+    fn the_rust_roots_and_the_github_reader_are_held() {
+        // A `#[path]` on the crate root can point `mod delivery` anywhere, so the roots are held with the floor.
+        for path in [
+            "src-tauri/src/lib.rs",
+            "src-tauri/src/main.rs",
+            "src-tauri/src/pr_watch/github.rs",
+            "apps/desktop/src-tauri/src/lib.rs",
+        ] {
+            assert_eq!(hits(&[path], &[]), vec![path.to_string()], "{path}");
+        }
+    }
+
+    #[test]
+    fn a_name_listed_twice_is_not_a_clean_file_list() {
+        assert!(parse_file_list("filename:src/a.rs\nfilename:src/a.rs\n").is_err());
+        assert!(parse_file_list("src/a.rs\nsrc/a.rs\n").is_err());
+        // An old name may repeat: it is not a second file.
+        assert!(parse_file_list("filename:src/new.rs\nprevious:src/old.rs\nprevious:src/old.rs\n").is_ok());
     }
 }

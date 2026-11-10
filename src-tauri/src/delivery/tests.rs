@@ -7,6 +7,7 @@ use std::process::Command;
 use super::deliver::{self, DeliverInput};
 use super::events::{self, Kind, News};
 use super::github::fake::FakeGithub;
+use super::github::Github;
 use super::merge::{
     self, decide, floor_decision, Allow, Caller, Decision, MergeOutcome, MergeRequest, Method,
 };
@@ -162,6 +163,7 @@ fn pr(state: PrState, head: &str, checks: Vec<Check>) -> PrRead {
         merged_at: None,
         head_ref: "work".into(),
         base_ref: "main".into(),
+        base_sha: Some("ba5e".repeat(10)),
         head_repo: Some("acme/web".into()),
         review_decision: None,
         detail: Detail {
@@ -2100,4 +2102,252 @@ fn the_extra_list_stops_at_one_hundred_paths() {
         .protected_extra
         .iter()
         .any(|path| path.starts_with("extra/")));
+}
+
+// ---- protected-path floor: the review's fixes (WP-158 review round) ----------------------------------------------------
+
+fn api_calls(gh: &FakeGithub) -> usize {
+    gh.runs
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|args| args.first().map(String::as_str) == Some("api"))
+        .count()
+}
+
+fn floor_pr(tag: &str, number: u64, delegation: Option<&str>) -> (SessionStore, PathBuf) {
+    let project = floor_project(tag);
+    let s = store();
+    set_mode(&s, &project, Some(Mode::Pr), true);
+    turn_floor_on(&s, &project);
+    remember_delivery(&s, &project, delegation, number);
+    (s, project)
+}
+
+#[test]
+fn agent_configuration_in_the_diff_asks_even_with_the_switch_on() {
+    let (s, _project) = floor_pr("agent-config", 7, None);
+    let gh = files_of(Ok(".claude/settings.json\n"));
+    let question = asked(&merge::merge(&s, &gh, agent_merge("acme/web"), 20).unwrap());
+    assert!(question.contains(".claude/settings.json"), "{question}");
+    assert!(gh.ran("pr", "merge").is_empty());
+}
+
+#[test]
+fn the_file_list_is_read_for_the_base_and_head_commits_it_judges() {
+    let (s, _project) = floor_pr("pinned", 7, None);
+    let gh = files_of(Ok("readme.md\n"));
+    let merged = merge::merge(&s, &gh, agent_merge("acme/web"), 20).unwrap();
+    assert!(matches!(merged, MergeOutcome::Merged { .. }), "{merged:?}");
+    let base = "ba5e".repeat(10);
+    let runs = gh.runs.lock().unwrap().clone();
+    assert!(
+        runs.iter().any(|args| args.get(1).map(String::as_str)
+            == Some(format!("repos/acme/web/compare/{base}...h1").as_str())),
+        "{runs:?}"
+    );
+    assert!(
+        !runs
+            .iter()
+            .any(|args| args.iter().any(|arg| arg.contains("pulls/7/files"))),
+        "the pull request's own list has no commit pin: {runs:?}"
+    );
+}
+
+#[test]
+fn a_base_that_moves_while_the_files_are_read_is_asked_again() {
+    let (s, _project) = floor_pr("base-moved", 7, None);
+    let mut moved = green("h1");
+    moved.base_sha = Some("dec0".repeat(10));
+    let gh = FakeGithub::new(vec![green("h1"), moved]);
+    *gh.files.lock().unwrap() = Some(Ok("readme.md\n".into()));
+    let question = asked(&merge::merge(&s, &gh, agent_merge("acme/web"), 20).unwrap());
+    assert!(question.contains("base changed"), "{question}");
+    assert!(gh.ran("pr", "merge").is_empty());
+}
+
+#[test]
+fn a_base_that_is_not_a_commit_is_never_listed() {
+    let (s, _project) = floor_pr("base-odd", 7, None);
+    for base in [Some("main".to_string()), None] {
+        let mut read = green("h1");
+        read.base_sha = base;
+        let gh = FakeGithub::new(vec![read]);
+        *gh.files.lock().unwrap() = Some(Ok("readme.md\n".into()));
+        let question = asked(&merge::merge(&s, &gh, agent_merge("acme/web"), 20).unwrap());
+        assert!(question.contains("couldn't be read"), "{question}");
+        assert_eq!(api_calls(&gh), 0, "no list is read without a commit to pin it to");
+        assert!(gh.ran("pr", "merge").is_empty());
+    }
+}
+
+#[test]
+fn a_list_of_three_hundred_files_is_capped_and_asks() {
+    let (s, _project) = floor_pr("cap-300", 7, None);
+    let page: String = (0..300).map(|i| format!("src/f{i}.rs\n")).collect();
+    let gh = files_of(Ok(&page));
+    let question = asked(&merge::merge(&s, &gh, agent_merge("acme/web"), 20).unwrap());
+    assert!(question.contains("300"), "{question}");
+    assert!(gh.ran("pr", "merge").is_empty());
+}
+
+#[test]
+fn an_empty_file_list_asks_even_when_nothing_changed() {
+    let (s, _project) = floor_pr("empty-asks", 7, None);
+    let gh = files_of(Ok(""));
+    reported(&gh, Some(0));
+    let question = asked(&merge::merge(&s, &gh, agent_merge("acme/web"), 20).unwrap());
+    assert!(question.contains("couldn't be read"), "{question}");
+    assert!(gh.ran("pr", "merge").is_empty());
+}
+
+#[test]
+fn a_repeated_filename_asks_instead_of_counting_twice() {
+    let (s, _project) = floor_pr("repeat", 7, None);
+    let gh = files_of(Ok("filename:src/a.rs\nfilename:src/a.rs\n"));
+    let question = asked(&merge::merge(&s, &gh, agent_merge("acme/web"), 20).unwrap());
+    assert!(question.contains("couldn't be read"), "{question}");
+    assert!(gh.ran("pr", "merge").is_empty());
+}
+
+/// `gh` whose second pull-request read fails, the way a timeout or a rate limit does.
+struct SecondReadFails<'a> {
+    inner: &'a FakeGithub,
+    reads: std::sync::atomic::AtomicUsize,
+}
+
+impl Github for SecondReadFails<'_> {
+    fn read_pr(&self, repo: &str, number: u64) -> Result<PrRead, String> {
+        if self.reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 1 {
+            return Err("gh didn't answer within 2 minutes".into());
+        }
+        self.inner.read_pr(repo, number)
+    }
+
+    fn run(&self, dir: Option<&Path>, args: &[String]) -> Result<String, String> {
+        self.inner.run(dir, args)
+    }
+}
+
+#[test]
+fn a_failing_second_read_asks_and_merges_nothing() {
+    let (s, _project) = floor_pr("second-read", 7, None);
+    let gh = files_of(Ok("readme.md\n"));
+    let wrapped = SecondReadFails {
+        inner: &gh,
+        reads: std::sync::atomic::AtomicUsize::new(0),
+    };
+    let question = asked(&merge::merge(&s, &wrapped, agent_merge("acme/web"), 20).unwrap());
+    assert!(question.contains("couldn't be read"), "{question}");
+    assert!(question.contains("2 minutes"), "{question}");
+    assert!(gh.ran("pr", "merge").is_empty());
+}
+
+/// `gh` that runs one thing while the files are read, the way another window's question can land mid-read.
+struct OpensAQuestionWhileReading<'a> {
+    inner: &'a FakeGithub,
+    during_list: Box<dyn Fn() + Send + Sync + 'a>,
+}
+
+impl Github for OpensAQuestionWhileReading<'_> {
+    fn read_pr(&self, repo: &str, number: u64) -> Result<PrRead, String> {
+        self.inner.read_pr(repo, number)
+    }
+
+    fn run(&self, dir: Option<&Path>, args: &[String]) -> Result<String, String> {
+        if args.first().map(String::as_str) == Some("api") {
+            (self.during_list)();
+        }
+        self.inner.run(dir, args)
+    }
+}
+
+#[test]
+fn a_question_opened_during_the_file_read_stops_the_merge() {
+    let s = store();
+    let project = floor_project("mid-read");
+    set_mode(&s, &project, Some(Mode::Pr), true);
+    turn_floor_on(&s, &project);
+    let delegation = task(&mut s.lock_conn().unwrap(), "lead-1", "r-mid", "worker-1");
+    remember_delivery(&s, &project, Some(&delegation), 7);
+    let gh = files_of(Ok("readme.md\n"));
+    let wrapped = OpensAQuestionWhileReading {
+        inner: &gh,
+        during_list: Box::new(|| {
+            delegations::set_question(
+                &mut s.lock_conn().unwrap(),
+                &delegation,
+                Some("Keep the old file format?".into()),
+                None,
+                3,
+            )
+            .unwrap();
+        }),
+    };
+    let refused = merge::merge(&s, &wrapped, agent_merge("acme/web"), 20).unwrap();
+    assert!(
+        matches!(&refused, MergeOutcome::Refused { reason } if reason.contains("Keep the old file format?")),
+        "{refused:?}"
+    );
+    assert!(gh.ran("pr", "merge").is_empty());
+}
+
+#[test]
+fn the_floor_path_merges_only_the_head_it_judged() {
+    let (s, _project) = floor_pr("judged-head", 7, None);
+    let gh = files_of(Ok("readme.md\n"));
+    assert!(matches!(
+        merge::merge(&s, &gh, agent_merge("acme/web"), 20).unwrap(),
+        MergeOutcome::Merged { .. }
+    ));
+    let merges = gh.ran("pr", "merge");
+    assert_eq!(merges.len(), 1);
+    let at = merges[0]
+        .iter()
+        .position(|arg| arg == "--match-head-commit")
+        .expect("the merge names the head");
+    assert_eq!(merges[0].get(at + 1).map(String::as_str), Some("h1"));
+}
+
+#[test]
+fn the_no_checks_question_names_a_protected_file_too() {
+    let (s, _project) = floor_pr("no-checks-named", 7, None);
+    let unchecked = FakeGithub::new(vec![pr(PrState::Open, "h1", vec![])]);
+    *unchecked.files.lock().unwrap() = Some(Ok(".github/workflows/x.yml\n".into()));
+    let question = asked(&merge::merge(&s, &unchecked, agent_merge("acme/web"), 20).unwrap());
+    assert!(question.contains("no checks"), "{question}");
+    assert!(question.contains(".github/workflows/x.yml"), "{question}");
+    assert!(unchecked.ran("pr", "merge").is_empty());
+}
+
+#[test]
+fn a_protected_name_with_a_hidden_format_character_is_shown_escaped() {
+    let (s, _project) = floor_pr("bidi", 7, None);
+    let gh = files_of(Ok("docs/\u{202e}gnp.key\n"));
+    let question = asked(&merge::merge(&s, &gh, agent_merge("acme/web"), 20).unwrap());
+    assert!(!question.contains('\u{202e}'), "{question:?}");
+    assert!(question.contains("\\u{202e}"), "{question}");
+}
+
+#[test]
+fn a_pattern_that_matches_nothing_is_refused_on_write_and_nothing_is_saved() {
+    let s = store();
+    let project = "/no/such/hivra-wp158-glob";
+    let conn = s.lock_conn().unwrap();
+    for bad in [
+        "*",
+        "secret*",
+        "docs/[a].md",
+        "/etc/passwd",
+        "../outside.md",
+        "C:/keys/server.txt",
+        "docs/../x.md",
+    ] {
+        let refused =
+            settings::add_protected_paths(&conn, project, &[bad.into()], None, 10).unwrap_err();
+        assert!(refused.contains("matches nothing"), "{bad}: {refused}");
+    }
+    let kept = settings::get(&conn, project).unwrap();
+    assert!(kept.protected_extra.is_empty());
+    assert_eq!(kept.updated_at, None);
 }
