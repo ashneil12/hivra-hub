@@ -92,4 +92,53 @@ describe("builder scale in the worker store", () => {
     await pool.refreshWorkerQueue();
     expect(pool.builderScale()).toEqual(DEFAULT_BUILDER_SCALE);
   });
+
+  it("the disk pause is on in a fresh store, and a change to it survives a save and a read", async () => {
+    const pool = await window();
+    const store = pool.memoryWorkerQueue();
+    await pool.setWorkerQueueBackend(store);
+    expect(pool.builderScale().pauseFreeDiskGb).toBe(30);
+    // Turned off on purpose: the store keeps a row that says so, and a read brings it back off.
+    pool.setBuilderScale({ ...DEFAULT_BUILDER_SCALE, pauseFreeDiskGb: null });
+    await Promise.resolve();
+    await pool.refreshWorkerQueue();
+    expect(pool.builderScale().pauseFreeDiskGb).toBeNull();
+    expect((await store.settings()).builderScale).toMatchObject({ version: 2, pauseFreeDiskGb: null });
+    // Another floor is kept as it is.
+    pool.setBuilderScale({ ...DEFAULT_BUILDER_SCALE, pauseFreeDiskGb: 50 });
+    await pool.refreshWorkerQueue();
+    expect(pool.builderScale().pauseFreeDiskGb).toBe(50);
+    // Back to 30 is the default again, so the row is dropped and a read still says 30.
+    pool.setBuilderScale({ ...DEFAULT_BUILDER_SCALE, pauseFreeDiskGb: 30 });
+    await pool.refreshWorkerQueue();
+    expect((await store.settings()).builderScale).toBeUndefined();
+    expect(pool.builderScale().pauseFreeDiskGb).toBe(30);
+  });
+
+  it("a row saved before the disk pause was on by default adopts it, and keeps a floor that was chosen", async () => {
+    const pool = await window();
+    const store = pool.memoryWorkerQueue();
+    await pool.setWorkerQueueBackend(store);
+    const read = store.settings.bind(store);
+    // The shape an earlier build wrote: no version, and a null disk pause that only meant "never set".
+    store.settings = async () => ({
+      ...(await read()),
+      builderScale: { maxBuilders: 12, load: "default", pauseFreeMemoryGb: null, pauseFreeDiskGb: null },
+    });
+    await pool.refreshWorkerQueue();
+    expect(pool.builderScale()).toEqual({ ...DEFAULT_BUILDER_SCALE, maxBuilders: 12, pauseFreeDiskGb: 30 });
+    store.settings = async () => ({
+      ...(await read()),
+      builderScale: { maxBuilders: 12, load: "default", pauseFreeMemoryGb: null, pauseFreeDiskGb: 8 },
+    });
+    await pool.refreshWorkerQueue();
+    expect(pool.builderScale().pauseFreeDiskGb).toBe(8);
+    // A row this version wrote with a null is a choice, and stays off.
+    store.settings = async () => ({
+      ...(await read()),
+      builderScale: { version: 2, maxBuilders: 12, load: "default", pauseFreeMemoryGb: null, pauseFreeDiskGb: null },
+    });
+    await pool.refreshWorkerQueue();
+    expect(pool.builderScale().pauseFreeDiskGb).toBeNull();
+  });
 });

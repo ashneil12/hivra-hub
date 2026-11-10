@@ -1,7 +1,13 @@
 // WP-161: the shared ceiling and the optional pauses, on the project Workers dialog and Crew defaults.
 
 import { useWorkerPoolVersion, builderScale, setBuilderScale } from "../model/workerPool";
-import { MAX_BUILDERS, PAUSES_ALL_PROJECTS, scaleLine, type BuilderScale } from "../model/builderScale";
+import {
+  DEFAULT_FREE_DISK_GB,
+  MAX_BUILDERS,
+  PAUSES_ALL_PROJECTS,
+  scaleLine,
+  type BuilderScale,
+} from "../model/builderScale";
 
 const INPUT =
   "w-16 rounded-lg border border-content/10 bg-content/5 px-2 py-1 text-right text-[13px] text-content outline-none focus:border-content/30 disabled:opacity-40";
@@ -119,7 +125,7 @@ export function BuilderScaleControls({ showSharedMax = false }: { showSharedMax?
               checked={scale.pauseFreeDiskGb != null}
               aria-label="Pause when free disk is low"
               data-builder-pause-on="disk"
-              onChange={(event) => setGb("pauseFreeDiskGb", event.target.checked ? "on" : "", 5)}
+              onChange={(event) => setGb("pauseFreeDiskGb", event.target.checked ? "on" : "", DEFAULT_FREE_DISK_GB)}
             />
             Free disk is below
           </span>
@@ -131,7 +137,7 @@ export function BuilderScaleControls({ showSharedMax = false }: { showSharedMax?
             disabled={scale.pauseFreeDiskGb == null}
             aria-label="Free disk limit in GB"
             data-builder-pause="disk"
-            onChange={(event) => setGb("pauseFreeDiskGb", event.target.value, 5)}
+            onChange={(event) => setGb("pauseFreeDiskGb", event.target.value, DEFAULT_FREE_DISK_GB)}
             className={INPUT}
           />
         </label>

@@ -427,6 +427,41 @@ fn clean_gb(value: Option<&Value>) -> Value {
     json!((n * 1000.0).round() / 1000.0)
 }
 
+/// The disk pause is on until a person turns it off: 30 GB free, a floor under which new builders wait.
+const DEFAULT_FREE_DISK_GB: f64 = 30.0;
+/// A stored scale from this version on says "disk pause off" with a null. One without it was written while the pause
+/// was off until a person turned it on, so its null only meant "never set" and reads as the default.
+const SCALE_VERSION: i64 = 2;
+
+/// The disk floor of a stored or incoming scale. A usable number is kept. `current` says a null (or a blank, `false`
+/// or 0) is a person's own "off"; an older row's null is not, so it takes the default. Missing or unusable is the
+/// default, the safe way round.
+fn clean_disk_gb(value: Option<&Value>, current: bool) -> Value {
+    let default = json!(DEFAULT_FREE_DISK_GB);
+    let Some(value) = value else {
+        return default;
+    };
+    if current {
+        match value {
+            Value::Null | Value::Bool(false) => return Value::Null,
+            Value::String(text) if text.is_empty() => return Value::Null,
+            _ => {}
+        }
+    }
+    match finite_f64(value) {
+        Some(n) if n == 0.0 && current => Value::Null,
+        Some(n) if n > 0.0 && n <= 1_000_000.0 => {
+            let rounded = (n * 1000.0).round() / 1000.0;
+            if rounded > 0.0 {
+                json!(rounded)
+            } else {
+                default
+            }
+        }
+        _ => default,
+    }
+}
+
 /// A stored or incoming scale becomes the canonical object, or `None` when it is the defaults.
 /// Not an object is an error (the setter refuses it). A bad field is dropped, not a failure.
 fn clean_builder_scale(value: &Value) -> Result<Option<Value>, String> {
@@ -455,16 +490,21 @@ fn clean_builder_scale(value: &Value) -> Result<Option<Value>, String> {
         },
         _ => json!("default"),
     };
+    let current = object
+        .get("version")
+        .and_then(finite_f64)
+        .is_some_and(|n| n >= SCALE_VERSION as f64);
     let saved = json!({
+        "version": SCALE_VERSION,
         "maxBuilders": max_builders,
         "load": load,
         "pauseFreeMemoryGb": clean_gb(object.get("pauseFreeMemoryGb")),
-        "pauseFreeDiskGb": clean_gb(object.get("pauseFreeDiskGb")),
+        "pauseFreeDiskGb": clean_disk_gb(object.get("pauseFreeDiskGb"), current),
     });
     let is_default = saved["maxBuilders"] == json!(6)
         && saved["load"] == json!("default")
         && saved["pauseFreeMemoryGb"].is_null()
-        && saved["pauseFreeDiskGb"].is_null();
+        && saved["pauseFreeDiskGb"].as_f64() == Some(DEFAULT_FREE_DISK_GB);
     if is_default {
         Ok(None)
     } else {
@@ -1146,6 +1186,7 @@ mod tests {
         let saved = set_builder_scale(
             &conn,
             Some(&json!({
+                "version": 2,
                 "maxBuilders": 20,
                 "load": "off",
                 "pauseFreeMemoryGb": 4,
@@ -1156,21 +1197,24 @@ mod tests {
         assert_eq!(saved["maxBuilders"], json!(20));
         assert_eq!(saved["load"], json!("off"));
         assert_eq!(saved["pauseFreeMemoryGb"].as_f64(), Some(4.0));
+        // A disk pause turned off is kept as off.
         assert!(saved["pauseFreeDiskGb"].is_null());
+        assert_eq!(saved["version"], json!(2));
         assert!(!saved.to_string().contains("kill"));
         assert_eq!(
             settings(&conn).unwrap()["builderScale"]["maxBuilders"],
             json!(20)
         );
-        // The defaults are not stored, so an older reader still sees no key.
+        // The defaults (disk below 30 GB on) are not stored, so an older reader still sees no key.
         assert_eq!(
             set_builder_scale(
                 &conn,
                 Some(&json!({
+                    "version": 2,
                     "maxBuilders": 6,
                     "load": "default",
                     "pauseFreeMemoryGb": null,
-                    "pauseFreeDiskGb": null
+                    "pauseFreeDiskGb": 30
                 })),
             )
             .unwrap(),
@@ -1206,5 +1250,73 @@ mod tests {
             Value::Null
         );
         assert!(settings(&conn).unwrap().get("builderScale").is_none());
+    }
+
+    #[test]
+    fn the_disk_pause_is_on_by_default_and_an_old_row_adopts_that() {
+        let conn = conn();
+        // Nothing stored: the caller's default applies (30 GB), so no key.
+        assert!(settings(&conn).unwrap().get("builderScale").is_none());
+
+        // A row saved before the pause was on by default has no version, and its null only meant "never set".
+        conn.execute(
+            "INSERT INTO worker_queue_meta (key, value) VALUES ('builder_scale', ?1)",
+            params![
+                r#"{"maxBuilders":12,"load":"default","pauseFreeMemoryGb":null,"pauseFreeDiskGb":null}"#
+            ],
+        )
+        .unwrap();
+        let old = settings(&conn).unwrap()["builderScale"].clone();
+        assert_eq!(old["maxBuilders"], json!(12));
+        assert_eq!(old["pauseFreeDiskGb"].as_f64(), Some(30.0));
+        assert_eq!(old["version"], json!(2));
+
+        // An old row with a number a person chose keeps it.
+        conn.execute(
+            "UPDATE worker_queue_meta SET value = ?1 WHERE key = 'builder_scale'",
+            params![
+                r#"{"maxBuilders":12,"load":"default","pauseFreeMemoryGb":null,"pauseFreeDiskGb":5}"#
+            ],
+        )
+        .unwrap();
+        let chosen = settings(&conn).unwrap()["builderScale"].clone();
+        assert_eq!(chosen["pauseFreeDiskGb"].as_f64(), Some(5.0));
+
+        // A row saved by this version with a null means off, and stays off after a read.
+        let off = set_builder_scale(
+            &conn,
+            Some(&json!({
+                "version": 2,
+                "maxBuilders": 6,
+                "load": "default",
+                "pauseFreeMemoryGb": null,
+                "pauseFreeDiskGb": null
+            })),
+        )
+        .unwrap();
+        assert!(off["pauseFreeDiskGb"].is_null());
+        let read = settings(&conn).unwrap()["builderScale"].clone();
+        assert!(read["pauseFreeDiskGb"].is_null());
+        assert_eq!(read["version"], json!(2));
+
+        // This version's row with no disk field at all is the default, and a bad one falls back to it too.
+        let missing = set_builder_scale(
+            &conn,
+            Some(&json!({ "version": 2, "maxBuilders": 8, "load": "default" })),
+        )
+        .unwrap();
+        assert_eq!(missing["pauseFreeDiskGb"].as_f64(), Some(30.0));
+        let bad = set_builder_scale(
+            &conn,
+            Some(&json!({ "version": 2, "maxBuilders": 8, "pauseFreeDiskGb": "lots" })),
+        )
+        .unwrap();
+        assert_eq!(bad["pauseFreeDiskGb"].as_f64(), Some(30.0));
+        let negative = set_builder_scale(
+            &conn,
+            Some(&json!({ "version": 2, "maxBuilders": 8, "pauseFreeDiskGb": -4 })),
+        )
+        .unwrap();
+        assert_eq!(negative["pauseFreeDiskGb"].as_f64(), Some(30.0));
     }
 }

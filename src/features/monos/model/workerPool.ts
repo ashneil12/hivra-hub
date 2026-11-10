@@ -28,11 +28,14 @@ import {
   DEFAULT_BUILDER_SCALE,
   HEALTH_CACHE_MS,
   HEALTH_STALE_MS,
+  builderHoldNeed,
   builderLaunchAllowed,
+  builderScaleFromStored,
   builderScaleIsDefault,
   builderScaleToStored,
   sanitizeBuilderScale,
   type BuilderHealth,
+  type BuilderHoldNeed,
   type BuilderScale,
 } from "./builderScale";
 
@@ -337,7 +340,7 @@ export type WorkerQueueBackend = {
     limits: Record<string, Partial<WorkerLimits>>;
     heavy: string[];
     workerDefault?: WorkerPick;
-    /** WP-161. Absent means the defaults (6, load at 1.6 times the cores, memory and disk off). */
+    /** WP-161. Absent means the defaults (6, load at 1.6 times the cores, memory off, disk below 30 GB). */
     builderScale?: unknown;
   }>;
   setLimits(project: string, limits: WorkerLimits): Promise<WorkerLimits>;
@@ -616,7 +619,8 @@ export async function refreshWorkerQueue(): Promise<void> {
       limits: settings.limits ?? {},
       heavy: new Set(settings.heavy ?? []),
       ...(settings.workerDefault ? { workerDefault: settings.workerDefault } : {}),
-      builderScale: sanitizeBuilderScale(settings.builderScale ?? DEFAULT_BUILDER_SCALE),
+      // A row saved before the disk pause was on by default reads as the new default (builderScaleFromStored).
+      builderScale: builderScaleFromStored(settings.builderScale),
     };
   } catch (error) {
     console.warn("Could not read the waiting workers", error);
@@ -818,6 +822,14 @@ let healthReader: () => Promise<unknown> = defaultHealthReader;
 /** The sample a launch reads. Undefined until a read has landed. */
 export function builderHealth(): BuilderHealth | undefined {
   return healthNow;
+}
+
+/**
+ * WP-161: the Needs you line for builders the disk pause is holding, or null. It reads the same sample and the same
+ * saved pause the launch gate reads, and the queue, so it appears when a builder waits and clears when the disk recovers.
+ */
+export function builderHold(): BuilderHoldNeed | null {
+  return builderHoldNeed(queuedWorkers().length, healthNow, builderScale());
 }
 
 /** Tests stand in for the command. `null` puts the command back. */
@@ -1086,6 +1098,10 @@ export function workerPoolHost(deps: {
   return {
     openRows: deps.openRows,
     admit: (job) => (startingNow.has(job.id) ? { start: true } : admitWorker(job, ctx())),
+    // WP-161: the machine is read before a launch is decided. The pump only reads it once something waits, so without
+    // this the first launch would never meet a pause. A read that fails or is slow leaves the last fresh sample, or
+    // none, which allows. Never throws.
+    refreshHealth: () => refreshBuilderHealth(),
     enqueue: (job, launch) => {
       enqueueWorker(job);
       deps.card?.(job, launch);
@@ -1157,6 +1173,17 @@ export async function pumpWorkers(deps: {
     }
   }
   return started;
+}
+
+/** How often waiting builders are checked against the machine again: a pause that clears lets them start. */
+export const HEALTH_RECHECK_MS = 10_000;
+
+/**
+ * When to look at the machine again for waiting builders, with nothing else changing: soon, while any wait. Under
+ * {@link HEALTH_STALE_MS}, so the sample the Needs you line reads never goes stale between looks.
+ */
+export function nextHealthCheck(now: number): number | undefined {
+  return queuedWorkers().length ? now + HEALTH_RECHECK_MS : undefined;
 }
 
 /** When a waiting worker might start without any row changing: the soonest provider reset among the waiting. */

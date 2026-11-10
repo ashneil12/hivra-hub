@@ -26,8 +26,17 @@ test("max builders and the pauses can each be turned, and running work is left a
   await expect(system.locator("[data-builder-scale-line]")).toContainText("below 2 GB");
   await system.locator("[data-builder-pause='memory']").fill("3");
   await expect(system.locator("[data-builder-scale-line]")).toContainText("below 3 GB");
+  // The disk pause is on by default at 30 GB, in both places, and the person can turn it off or change it.
+  await expect(system.locator("[data-builder-pause-on='disk']")).toBeChecked();
+  await expect(system.locator("[data-builder-pause='disk']")).toHaveValue("30");
+  await expect(project.locator("[data-builder-pause-on='disk']")).toBeChecked();
+  await expect(system.locator("[data-builder-scale-line]")).toContainText("New builders pause when free disk is below 30 GB.");
+  await system.locator("[data-builder-pause-on='disk']").uncheck();
+  await expect(system.locator("[data-builder-scale-line]")).toContainText("Free disk is not checked.");
   await system.locator("[data-builder-pause-on='disk']").check();
-  await expect(system.locator("[data-builder-scale-line]")).toContainText("below 5 GB");
+  await expect(system.locator("[data-builder-pause='disk']")).toHaveValue("30");
+  await system.locator("[data-builder-pause='disk']").fill("40");
+  await expect(system.locator("[data-builder-scale-line]")).toContainText("free disk is below 40 GB");
 
   const line = await system.locator("[data-builder-scale-line]").innerText();
   expect(line).not.toMatch(/[—–]/);
