@@ -2188,7 +2188,10 @@ pub(crate) mod tests {
     #[test]
     fn a_reused_node_pid_is_not_this_stand_in() {
         let stack = Path::new("/stacks/s01234567");
-        let ours = "node index.js start --seed /stacks/s01234567/emulate.config.json";
+        let ours = &format!(
+            "node index.js start --seed {}",
+            stack.join("emulate.config.json").display()
+        );
         // The command line names this stack, but the start time is a different process.
         assert_eq!(
             classify_stand_in(
@@ -2351,13 +2354,38 @@ pub(crate) mod tests {
     /// starts like this one, or a path inside some other folder is not it.
     #[test]
     fn a_command_is_the_stand_in_only_by_its_own_seed_argument() {
+        // Paths are joined the way this system joins them: a Windows command line has `\`.
+        let seed = |dir: &str, file: &str| Path::new(dir).join(file).display().to_string();
         let stack = Path::new("/data/stacks/s0000a001");
-        let ours = "node /tools/emulate/index.js start --seed /data/stacks/s0000a001/emulate.config.json --host 127.0.0.1";
-        let longer = "node /tools/emulate/index.js start --seed /data/stacks/s0000a0010/emulate.config.json --host 127.0.0.1";
-        let nested = "node /tools/emulate/index.js start --seed /other/data/stacks/s0000a001/emulate.config.json";
-        let tail = "tail -f /data/stacks/s0000a001/emulate.log";
-        let other_file = "node x.js --seed /data/stacks/s0000a001/emulate.log";
-        let glued = "node x.js --seed /data/stacks/s0000a001/emulate.config.json.bak";
+        let ours = format!(
+            "node /tools/emulate/index.js start --seed {} --host 127.0.0.1",
+            seed("/data/stacks/s0000a001", "emulate.config.json")
+        );
+        let longer = format!(
+            "node /tools/emulate/index.js start --seed {} --host 127.0.0.1",
+            seed("/data/stacks/s0000a0010", "emulate.config.json")
+        );
+        let nested = format!(
+            "node /tools/emulate/index.js start --seed {}",
+            seed("/other/data/stacks/s0000a001", "emulate.config.json")
+        );
+        let tail = format!("tail -f {}", seed("/data/stacks/s0000a001", "emulate.log"));
+        let other_file = format!(
+            "node x.js --seed {}",
+            seed("/data/stacks/s0000a001", "emulate.log")
+        );
+        let glued = format!(
+            "node x.js --seed {}.bak",
+            seed("/data/stacks/s0000a001", "emulate.config.json")
+        );
+        let (ours, longer, nested, tail, other_file, glued) = (
+            ours.as_str(),
+            longer.as_str(),
+            nested.as_str(),
+            tail.as_str(),
+            other_file.as_str(),
+            glued.as_str(),
+        );
         for (command, expected) in [
             (ours, true),
             (longer, false),
@@ -2370,8 +2398,11 @@ pub(crate) mod tests {
         }
         // A folder with a space in its name (macOS "Application Support") still matches.
         let spaced = Path::new("/Users/me/Library/Application Support/app/stacks/s1");
-        let command = "node /t/index.js start --seed /Users/me/Library/Application Support/app/stacks/s1/emulate.config.json --host 127.0.0.1";
-        assert!(names_seed(command, spaced));
+        let command = format!(
+            "node /t/index.js start --seed {} --host 127.0.0.1",
+            spaced.join("emulate.config.json").display()
+        );
+        assert!(names_seed(&command, spaced));
         // With the start time and node it is ours; the longer id's stand-in is another stack's.
         for (command, expected) in [(ours, Probe::Ours), (longer, Probe::Unknown)] {
             assert_eq!(
