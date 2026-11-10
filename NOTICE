@@ -223,7 +223,8 @@ Third-party components Hivra adds:
   Used in: src-tauri/src/proxy/
   routes.ts, auto.ts, compose.ts and proxy.ts translated line by line to Rust, with their
   tests. TLS, the /etc/hosts sync, the sudo path and the CLI's app launcher are not included
-  (WP-90).
+  (WP-90). WP-139 translates the 0.17.0 parallel loopback dial and the Windows route-lock
+  EPERM retry. TLS, hosts-file sync and sudo stay out.
 
 - emulate's base URLs and file store
   Source: https://github.com/vercel-labs/emulate
