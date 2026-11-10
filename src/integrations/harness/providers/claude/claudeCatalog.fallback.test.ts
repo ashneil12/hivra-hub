@@ -38,7 +38,7 @@ vi.mock("../../core/child", () => ({
     }
   },
 }));
-vi.mock("../../../../platform/tauri/fs", () => ({ homeDir: async () => "/Users/ash" }));
+vi.mock("../../../../platform/tauri/fs", () => ({ homeDir: async () => "/home/tester" }));
 
 import {
   hasListedCatalog,

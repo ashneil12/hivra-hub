@@ -44,9 +44,9 @@ The 9 Nov 9pm X brief: T3 Code users saw Fable 5.2 in the picker without a resta
 ## After review (PR 131)
 
 - The first live catalog a harness gives is a baseline: nothing in it is "new". A model a later live catalog adds is new for seven days from that day (`modelFirstSeen.ts`, `BASELINE_DAY`).
-- The version-filtered built-in list used when `list_models` fails fills the picker but is never recorded as live: `setHarnessModels(harness, models, { live: false })`, and the quick panel is not sent it.
-- Opening the picker does not force a catalog read. A harness that already has a catalog is not probed again; Settings and the provider update notice still force one. A model the CLI learns later shows after a restart or a refresh from Settings.
-- Fable 5.1 is in the built-in list and the Claude fallback. Its minimum, 2.1.255, is the CLI's own wording in the recorded `list_models` row ("Update to 2.1.255+ to use Fable 5.1"). Fable 5.2 has no minimum on record, so the 2.1.280 borrowed from Opus 5.5 is gone and the fallback offers 5.2 wherever it offers 5.1.
+- A built-in list used because the CLI would not list its models fills the picker but is never recorded as live: `setHarnessModels(harness, models, { live: false })`. That covers Claude's version-filtered list and Grok's built-in list; every other harness records only what its CLI listed. The quick panel is not sent such a list.
+- Opening the picker does not force a catalog read. A harness that already has a catalog is not probed again (`ModelPicker.probe.test.ts` opens the real picker several times and counts one read); Settings and the provider update notice still force one. A model the CLI learns later shows after a restart or a refresh from Settings.
+- Fable 5.1 is in the built-in list and the Claude fallback. Its minimum, 2.1.255, is the CLI's own wording in the recorded `list_models` row ("Update to 2.1.255+ to use Fable 5.1"). Fable 5.2 has no minimum on record in this checkout. The 2.1.280 it was gated at is the Opus 5.5 gate from MonoCode (`MINIMUM_CLAUDE_OPUS_5_5_VERSION`), not a figure from another project and not a statement about Fable 5.2, so there is nothing to credit and the number is gone. The fallback offers 5.2 wherever it offers 5.1.
 
 ## Licence
 
