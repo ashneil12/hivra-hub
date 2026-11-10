@@ -516,6 +516,7 @@ fn the_pstack_snapshot_for_the_session_test_is_current() {
     let rpi_dir = host.installed("hivra-rpi");
     let mcode_dir = host.installed("hivra-mcode");
     let record = |tmp: &Tmp| -> Vec<serde_json::Value> {
+        #[allow(clippy::too_many_arguments)] // WP-117: test walker carries one dir per bundled skill pack
         fn walk(
             base: &Path,
             dir: &Path,
