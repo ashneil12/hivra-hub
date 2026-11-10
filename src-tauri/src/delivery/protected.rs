@@ -296,8 +296,8 @@ pub enum ReadFiles {
     Unread { reason: String },
 }
 
-/// GitHub's list-files endpoint returns at most this many files, and still exits 0.
-const FILE_LIST_CEILING: usize = 3000;
+/// GitHub's compare endpoint lists at most this many files, and still exits 0. A list of this many may be short.
+const FILE_LIST_CEILING: usize = 300;
 
 /// The list is the whole diff only when the number of current filenames equals `reported`
 /// (`changedFiles` on the pull request) and is under the API ceiling. An empty list is the
@@ -330,23 +330,33 @@ pub fn judge(read: ReadFiles, reported: Option<u64>) -> ChangedFiles {
 
 /// Current filename, then the old name of a rename. The old name is marked so it is not
 /// counted as another file. A bare line is a current filename (tests, and a list with no renames).
-const FILE_LIST_JQ: &str = r#".[] | "filename:\(.filename)", (select(.previous_filename != null) | "previous:\(.previous_filename)")"#;
+const FILE_LIST_JQ: &str = r#".files[] | "filename:\(.filename)", (select(.previous_filename != null) | "previous:\(.previous_filename)")"#;
 
-/// The pull request's changed paths, renames included (the old name and the new one).
-/// Goes through `Github::run`, which is the existing `gh` reader and its allow-listed
-/// child environment. A list that cannot be read, or that is not a list of paths, is
-/// [`ReadFiles::Unread`] and keeps the reader's error.
-pub fn changed_files(gh: &dyn super::github::Github, repo: &str, number: u64) -> ReadFiles {
-    if number == 0 || crate::pr_watch::github::split_repo(repo).is_none() {
+/// Whether `text` is a full commit id (40 hex digits). Only then is it put in a request path.
+fn is_commit(text: &str) -> bool {
+    text.len() == 40 && text.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+/// The changed paths between two commits, renames included (the old name and the new one), read as
+/// `base...head`. This is the diff of the commits the merge judged, not of whatever the pull request says now:
+/// a head or base that moves can't change what was listed. Goes through `Github::run`, the existing `gh` reader
+/// and its allow-listed child environment. A base or head that is not a commit id is not listed. A list that
+/// cannot be read, or that is not a list of paths, is [`ReadFiles::Unread`] and keeps the reader's error.
+pub fn changed_files_between(
+    gh: &dyn super::github::Github,
+    repo: &str,
+    base: &str,
+    head: &str,
+) -> ReadFiles {
+    if crate::pr_watch::github::split_repo(repo).is_none() || !is_commit(base) || !is_commit(head) {
         return ReadFiles::Unread {
-            reason: "the repository or pull request number is not one GitHub can list".into(),
+            reason: "the repository or the commits to compare are not ones GitHub can list".into(),
         };
     }
     let repo = repo.trim();
     let args = [
         "api".to_string(),
-        "--paginate".to_string(),
-        format!("repos/{repo}/pulls/{number}/files"),
+        format!("repos/{repo}/compare/{base}...{head}"),
         "--jq".to_string(),
         FILE_LIST_JQ.to_string(),
     ];
@@ -648,9 +658,11 @@ mod tests {
     fn an_unreadable_changed_file_list_is_not_an_empty_diff() {
         use super::super::github::fake::FakeGithub;
 
+        let base = "ba5e".repeat(10);
+        let head = "1ead".repeat(10);
         let gh = FakeGithub::new(vec![]);
         *gh.files.lock().unwrap() = Some(Ok(".github/workflows/old.yml\nsrc/renamed.yml\n".into()));
-        match changed_files(&gh, "acme/web", 7) {
+        match changed_files_between(&gh, "acme/web", &base, &head) {
             ReadFiles::Parsed(list) => assert_eq!(
                 list.paths,
                 vec![
@@ -660,9 +672,8 @@ mod tests {
             ),
             ReadFiles::Unread { reason } => panic!("the list was readable: {reason}"),
         }
-        let call = gh.ran("api", "--paginate");
+        let call = gh.ran("api", &format!("repos/acme/web/compare/{base}...{head}"));
         assert_eq!(call.len(), 1);
-        assert_eq!(call[0][2], "repos/acme/web/pulls/7/files");
         let jq = call[0]
             .iter()
             .find(|arg| arg.contains(".filename"))
@@ -679,12 +690,12 @@ mod tests {
 
         // A timeout or any other failure is unread, and the reader's words are kept.
         *gh.files.lock().unwrap() = Some(Err("gh didn't answer within 2 minutes".into()));
-        match changed_files(&gh, "acme/web", 7) {
+        match changed_files_between(&gh, "acme/web", &base, &head) {
             ReadFiles::Unread { reason } => assert!(reason.contains("2 minutes"), "{reason}"),
             ReadFiles::Parsed(_) => panic!("a timeout is not a file list"),
         }
         *gh.files.lock().unwrap() = Some(Ok("{\"message\":\"bad\"}\n".into()));
-        match changed_files(&gh, "acme/web", 7) {
+        match changed_files_between(&gh, "acme/web", &base, &head) {
             ReadFiles::Unread { reason } => {
                 assert!(reason.contains("not a list of paths"), "{reason}")
             }
@@ -693,7 +704,7 @@ mod tests {
 
         // An empty success parses as no files. It is the whole diff only when the count is 0.
         *gh.files.lock().unwrap() = Some(Ok(String::new()));
-        match changed_files(&gh, "acme/web", 7) {
+        match changed_files_between(&gh, "acme/web", &base, &head) {
             ReadFiles::Parsed(list) => {
                 assert!(list.paths.is_empty());
                 assert_eq!(list.filenames, 0);
@@ -703,11 +714,11 @@ mod tests {
 
         let runs_before = gh.runs.lock().unwrap().len();
         assert!(matches!(
-            changed_files(&gh, "../not a repo", 7),
+            changed_files_between(&gh, "../not a repo", &base, &head),
             ReadFiles::Unread { .. }
         ));
         assert!(matches!(
-            changed_files(&gh, "acme/web", 0),
+            changed_files_between(&gh, "acme/web", "main", &head),
             ReadFiles::Unread { .. }
         ));
         assert_eq!(
@@ -742,23 +753,23 @@ mod tests {
             ChangedFiles::Unread { .. }
         ));
 
-        // The API ceiling still returns success. A matching count of 3000 is not the whole diff.
-        let capped = parse_file_list(&page_of(3000)).unwrap();
+        // The compare endpoint stops at 300 and still returns success. A matching count of 300 is not the whole diff.
+        let capped = parse_file_list(&page_of(300)).unwrap();
         assert!(matches!(
-            judge(ReadFiles::Parsed(capped), Some(3000)),
-            ChangedFiles::Unread { reason } if reason.contains("3000")
+            judge(ReadFiles::Parsed(capped), Some(300)),
+            ChangedFiles::Unread { reason } if reason.contains("300")
         ));
-        let over = parse_file_list(&page_of(3001)).unwrap();
+        let over = parse_file_list(&page_of(301)).unwrap();
         assert!(matches!(
-            judge(ReadFiles::Parsed(over), Some(3001)),
+            judge(ReadFiles::Parsed(over), Some(301)),
             ChangedFiles::Unread { .. }
         ));
 
         // Just under the ceiling, a matching count is the whole diff.
-        let under = parse_file_list(&page_of(2999)).unwrap();
+        let under = parse_file_list(&page_of(299)).unwrap();
         assert!(matches!(
-            judge(ReadFiles::Parsed(under), Some(2999)),
-            ChangedFiles::Listed(paths) if paths.len() == 2999
+            judge(ReadFiles::Parsed(under), Some(299)),
+            ChangedFiles::Listed(paths) if paths.len() == 299
         ));
 
         // A missing count is unread, even when the body parsed.
@@ -815,7 +826,7 @@ mod tests {
             }
         }
 
-        // Old names do not trip the 3000 ceiling, and they do not inflate the count.
+        // Old names do not trip the 300 ceiling, and they do not inflate the count.
         let mut many = String::from("filename:src/new.rs\n");
         for i in 0..2999 {
             many.push_str(&format!("previous:src/old{i}.rs\n"));

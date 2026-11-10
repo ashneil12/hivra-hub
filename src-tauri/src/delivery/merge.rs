@@ -512,18 +512,31 @@ pub fn merge(
             .map(|row| row.protected_extra.clone())
             .unwrap_or_default();
         drop(conn);
-        let listed = super::protected::changed_files(gh, &repo, number);
-        let again = gh.read_pr(&repo, number);
-        // The second read carries changedFiles. The list is the whole diff only when that
-        // count equals the number of current filenames and the head has not moved.
-        let files = match again {
-            Ok(again) if again.detail.head_sha.as_deref() == Some(head.as_str()) => {
-                super::protected::judge(listed, again.changed_files)
-            }
-            Ok(_) => super::protected::ChangedFiles::Unread {
-                reason: "the pull request's head changed while its files were read".into(),
+        // The list is for the base and head commits this read saw. Without a base commit there is nothing to pin it to.
+        let files = match read.base_sha.clone() {
+            None => super::protected::ChangedFiles::Unread {
+                reason: "GitHub didn't say which commit this pull request is based on.".into(),
             },
-            Err(error) => super::protected::ChangedFiles::Unread { reason: error },
+            Some(base) => {
+                let listed = super::protected::changed_files_between(gh, &repo, &base, &head);
+                let again = gh.read_pr(&repo, number);
+                // The second read carries changedFiles and the base. The list is the whole diff only when
+                // both are unchanged, the count matches, and the head has not moved.
+                match again {
+                    Ok(again) if again.detail.head_sha.as_deref() != Some(head.as_str()) => {
+                        super::protected::ChangedFiles::Unread {
+                            reason: "the pull request's head changed while its files were read".into(),
+                        }
+                    }
+                    Ok(again) if again.base_sha.as_deref() != Some(base.as_str()) => {
+                        super::protected::ChangedFiles::Unread {
+                            reason: "the pull request's base changed while its files were read".into(),
+                        }
+                    }
+                    Ok(again) => super::protected::judge(listed, again.changed_files),
+                    Err(error) => super::protected::ChangedFiles::Unread { reason: error },
+                }
+            }
         };
         conn = store.lock_conn()?;
         floor_decision(decided, true, &files, &extras, &format!("{repo}#{number}"))

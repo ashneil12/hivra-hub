@@ -709,14 +709,14 @@ fn checked_pr_is_ready_only_when_green_and_gets_one_fix_round_for_red() {
 
     // First red: one fix round.
     assert_eq!(
-        events::record(&conn, "acme/web", 7, Some("h1"), &red_news(), 20).unwrap(),
+        events::record(&conn, "acme/web", 7, Some("1111111111111111111111111111111111111111"), &red_news(), 20).unwrap(),
         vec![d.id.clone()]
     );
     let now = state(&conn);
     assert_eq!((now.state.as_str(), now.fix_rounds), (deliver::FIXING, 1));
     assert!(now.detail.unwrap().contains("one fix round"));
     // Red again after the fix round: failed, and its first mate decides.
-    events::record(&conn, "acme/web", 7, Some("h2"), &red_news(), 30).unwrap();
+    events::record(&conn, "acme/web", 7, Some("2222222222222222222222222222222222222222"), &red_news(), 30).unwrap();
     assert_eq!(state(&conn).state, deliver::FAILED);
     // Every event is kept for WP-11's classifier, tied to the delivery.
     let open = events::open(&conn).unwrap();
@@ -736,12 +736,12 @@ fn checked_pr_is_ready_only_when_green_and_gets_one_fix_round_for_red() {
     let e = checked_delivery(&s, &g);
     let conn = s.lock_conn().unwrap();
     // `by_pr` is the newest delivery of acme/web#7: this one.
-    events::record(&conn, "acme/web", 7, Some("h1"), &red_news(), 50).unwrap();
+    events::record(&conn, "acme/web", 7, Some("1111111111111111111111111111111111111111"), &red_news(), 50).unwrap();
     let green = [News {
         kind: Kind::CiGreen,
         detail: None,
     }];
-    events::record(&conn, "acme/web", 7, Some("h2"), &green, 60).unwrap();
+    events::record(&conn, "acme/web", 7, Some("2222222222222222222222222222222222222222"), &green, 60).unwrap();
     assert_eq!(
         deliver::get(&conn, &e.id).unwrap().unwrap().state,
         deliver::READY
@@ -750,7 +750,7 @@ fn checked_pr_is_ready_only_when_green_and_gets_one_fix_round_for_red() {
         kind: Kind::Merged,
         detail: Some("m3rg3".into()),
     }];
-    events::record(&conn, "acme/web", 7, Some("h2"), &merged, 70).unwrap();
+    events::record(&conn, "acme/web", 7, Some("2222222222222222222222222222222222222222"), &merged, 70).unwrap();
     assert_eq!(
         deliver::get(&conn, &e.id).unwrap().unwrap().state,
         deliver::MERGED
@@ -781,7 +781,7 @@ fn a_checked_pr_already_green_or_red_on_the_first_read_settles_once() {
     let d = checked_delivery(&s, &f);
     let conn = s.lock_conn().unwrap();
     // The watch's first read is "already told", so classify sees no change. The delivery still has to leave checking.
-    let green = green("h1");
+    let green = green("1111111111111111111111111111111111111111");
     assert!(events::classify(&green, Some(&[])).is_empty());
     let moved = events::note_current(&conn, "acme/web", 7, &green, 20).unwrap();
     assert_eq!(moved, vec![d.id.clone()]);
@@ -797,7 +797,7 @@ fn a_checked_pr_already_green_or_red_on_the_first_read_settles_once() {
 
     let red = pr(
         PrState::Open,
-        "h2",
+        "2222222222222222222222222222222222222222",
         vec![check("build", CheckStatus::Failure, true)],
     );
     let g = fixture("first-read-red");
@@ -827,7 +827,7 @@ fn a_checked_pr_already_green_or_red_on_the_first_read_settles_once() {
         32
     )
     .unwrap());
-    events::record(&conn, "acme/web", 7, Some("h3"), &red_news(), 33).unwrap();
+    events::record(&conn, "acme/web", 7, Some("3333333333333333333333333333333333333333"), &red_news(), 33).unwrap();
     assert_eq!(
         deliver::get(&conn, &e.id).unwrap().unwrap().state,
         deliver::FAILED
@@ -838,7 +838,7 @@ fn a_checked_pr_already_green_or_red_on_the_first_read_settles_once() {
 fn pr_watch_reads_classify_as_ci_red_green_merged_and_closed() {
     let red = check("build", CheckStatus::Failure, true);
     let news = events::classify(
-        &green("h1"),
+        &green("1111111111111111111111111111111111111111"),
         Some(&[
             Change::ChecksFailed(vec![red]),
             Change::ChecksPassed {
@@ -857,8 +857,8 @@ fn pr_watch_reads_classify_as_ci_red_green_merged_and_closed() {
         .as_deref()
         .unwrap()
         .contains("actions/runs/99"));
-    assert_eq!(events::classify(&green("h1"), Some(&[])), vec![]);
-    let merged = events::classify(&pr(PrState::Merged, "h1", vec![]), None);
+    assert_eq!(events::classify(&green("1111111111111111111111111111111111111111"), Some(&[])), vec![]);
+    let merged = events::classify(&pr(PrState::Merged, "1111111111111111111111111111111111111111", vec![]), None);
     assert_eq!(
         merged,
         vec![News {
@@ -867,7 +867,7 @@ fn pr_watch_reads_classify_as_ci_red_green_merged_and_closed() {
         }]
     );
     assert_eq!(
-        events::classify(&pr(PrState::Closed, "h1", vec![]), None)[0].kind,
+        events::classify(&pr(PrState::Closed, "1111111111111111111111111111111111111111", vec![]), None)[0].kind,
         Kind::Closed
     );
     assert_eq!(
@@ -876,8 +876,8 @@ fn pr_watch_reads_classify_as_ci_red_green_merged_and_closed() {
     );
     assert_eq!(events::run_id("https://example.com/ci/1"), None);
     // Already green or red, with no *change* since the watch's first read, is still news for a delivery that is checking.
-    let mut quiet = events::classify(&green("h1"), Some(&[]));
-    events::include_current(&mut quiet, &green("h1"), deliver::CHECKING);
+    let mut quiet = events::classify(&green("1111111111111111111111111111111111111111"), Some(&[]));
+    events::include_current(&mut quiet, &green("1111111111111111111111111111111111111111"), deliver::CHECKING);
     assert_eq!(
         quiet,
         vec![News {
@@ -886,19 +886,19 @@ fn pr_watch_reads_classify_as_ci_red_green_merged_and_closed() {
         }]
     );
     let mut already = quiet.clone();
-    events::include_current(&mut already, &green("h1"), deliver::READY);
+    events::include_current(&mut already, &green("1111111111111111111111111111111111111111"), deliver::READY);
     assert_eq!(
         already, quiet,
         "a settled delivery is not told the same thing again"
     );
     assert_eq!(
-        events::current(&pr(PrState::Open, "h1", vec![])),
+        events::current(&pr(PrState::Open, "1111111111111111111111111111111111111111", vec![])),
         None,
         "no checks is not green"
     );
     let pending = pr(
         PrState::Open,
-        "h1",
+        "1111111111111111111111111111111111111111",
         vec![check("build", CheckStatus::Pending, true)],
     );
     assert_eq!(events::current(&pending), None);
@@ -908,7 +908,7 @@ fn pr_watch_reads_classify_as_ci_red_green_merged_and_closed() {
 fn the_fix_round_carries_the_failing_log() {
     let read = pr(
         PrState::Open,
-        "h1",
+        "1111111111111111111111111111111111111111",
         vec![
             check("build", CheckStatus::Failure, true),
             check("lint", CheckStatus::Success, true),
@@ -941,53 +941,53 @@ fn decide_refuses_red_pending_drafts_conflicts_and_open_decisions() {
     };
     let red = pr(
         PrState::Open,
-        "h1",
+        "1111111111111111111111111111111111111111",
         vec![check("build", CheckStatus::Failure, true)],
     );
     assert!(refused(&red, None, &person()).contains("Red is never merged"));
     assert!(refused(&red, None, &Allow::Switch).contains("Red is never merged"));
     let cancelled = pr(
         PrState::Open,
-        "h1",
+        "1111111111111111111111111111111111111111",
         vec![check("build", CheckStatus::Cancelled, false)],
     );
     assert!(refused(&cancelled, None, &person()).contains("failed"));
     let pending = pr(
         PrState::Open,
-        "h1",
+        "1111111111111111111111111111111111111111",
         vec![check("build", CheckStatus::Pending, true)],
     );
     assert!(refused(&pending, None, &person()).contains("still running"));
-    let mut draft = green("h1");
+    let mut draft = green("1111111111111111111111111111111111111111");
     draft.draft = true;
     assert!(refused(&draft, None, &person()).contains("draft"));
-    let mut conflict = green("h1");
+    let mut conflict = green("1111111111111111111111111111111111111111");
     conflict.detail.mergeability = Mergeability::Conflicting;
     assert!(refused(&conflict, None, &person()).contains("conflicts"));
-    assert!(refused(&pr(PrState::Merged, "h1", vec![]), None, &person()).contains("already merged"));
-    assert!(refused(&pr(PrState::Closed, "h1", vec![]), None, &person()).contains("closed"));
-    let open = refused(&green("h1"), Some("Keep the old API?"), &person());
+    assert!(refused(&pr(PrState::Merged, "1111111111111111111111111111111111111111", vec![]), None, &person()).contains("already merged"));
+    assert!(refused(&pr(PrState::Closed, "1111111111111111111111111111111111111111", vec![]), None, &person()).contains("closed"));
+    let open = refused(&green("1111111111111111111111111111111111111111"), Some("Keep the old API?"), &person());
     assert!(open.contains("Keep the old API?"), "{open}");
 
     // Green: the person's word merges, the switch merges, nobody's word asks.
     assert_eq!(
-        decide(&green("h1"), None, &person()),
+        decide(&green("1111111111111111111111111111111111111111"), None, &person()),
         Decision::Merge {
             allowed_by: "person (Inbox)".into()
         }
     );
     assert!(matches!(
-        decide(&green("h1"), None, &Allow::Switch),
+        decide(&green("1111111111111111111111111111111111111111"), None, &Allow::Switch),
         Decision::Merge { .. }
     ));
     assert!(matches!(
-        decide(&green("h1"), None, &Allow::Nobody),
+        decide(&green("1111111111111111111111111111111111111111"), None, &Allow::Nobody),
         Decision::Ask(_)
     ));
     // Only the required checks decide when some are required (as the PR watch counts them).
     let optional_red = pr(
         PrState::Open,
-        "h1",
+        "1111111111111111111111111111111111111111",
         vec![
             check("build", CheckStatus::Success, true),
             check("flaky", CheckStatus::Failure, false),
@@ -998,7 +998,7 @@ fn decide_refuses_red_pending_drafts_conflicts_and_open_decisions() {
         Decision::Merge { .. }
     ));
     // No checks is not green: the switch alone can't merge it.
-    let unchecked = pr(PrState::Open, "h1", vec![]);
+    let unchecked = pr(PrState::Open, "1111111111111111111111111111111111111111", vec![]);
     assert!(matches!(
         decide(&unchecked, None, &Allow::Switch),
         Decision::Ask(_)
@@ -1025,10 +1025,10 @@ fn agent_merge(repo: &str) -> MergeRequest {
 #[test]
 fn an_agent_merge_asks_the_person_and_merges_only_the_head_they_allowed() {
     let s = store();
-    let gh = FakeGithub::new(vec![green("h1")]);
+    let gh = FakeGithub::new(vec![green("1111111111111111111111111111111111111111")]);
     let asked = merge::merge(&s, &gh, agent_merge("acme/web"), 10).unwrap();
     assert!(
-        matches!(&asked, MergeOutcome::NeedsYou { head_sha, .. } if head_sha == "h1"),
+        matches!(&asked, MergeOutcome::NeedsYou { head_sha, .. } if head_sha == "1111111111111111111111111111111111111111"),
         "{asked:?}"
     );
     assert!(
@@ -1038,8 +1038,8 @@ fn an_agent_merge_asks_the_person_and_merges_only_the_head_they_allowed() {
     assert!(activity_at(&s, 10).is_empty(), "asking is not a merge");
 
     // The person allows h1; a push since (h2) needs their word again.
-    merge::approve(&s.lock_conn().unwrap(), "Acme/Web", 7, "h1", "person", 20).unwrap();
-    let moved = FakeGithub::new(vec![green("h2")]);
+    merge::approve(&s.lock_conn().unwrap(), "Acme/Web", 7, "1111111111111111111111111111111111111111", "person", 20).unwrap();
+    let moved = FakeGithub::new(vec![green("2222222222222222222222222222222222222222")]);
     assert!(matches!(
         merge::merge(&s, &moved, agent_merge("acme/web"), 30).unwrap(),
         MergeOutcome::NeedsYou { .. }
@@ -1048,7 +1048,7 @@ fn an_agent_merge_asks_the_person_and_merges_only_the_head_they_allowed() {
 
     let merged = merge::merge(&s, &gh, agent_merge("acme/web"), 40).unwrap();
     assert!(
-        matches!(&merged, MergeOutcome::Merged { head_sha, allowed_by } if head_sha == "h1" && allowed_by.contains("person"))
+        matches!(&merged, MergeOutcome::Merged { head_sha, allowed_by } if head_sha == "1111111111111111111111111111111111111111" && allowed_by.contains("person"))
     );
     let calls = gh.ran("pr", "merge");
     assert_eq!(
@@ -1061,7 +1061,7 @@ fn an_agent_merge_asks_the_person_and_merges_only_the_head_they_allowed() {
             "acme/web",
             "--merge",
             "--match-head-commit",
-            "h1"
+            "1111111111111111111111111111111111111111"
         ]
     );
 
@@ -1085,7 +1085,7 @@ fn an_agent_merge_asks_the_person_and_merges_only_the_head_they_allowed() {
         .unwrap();
     assert_eq!(grant.actor, crate::activity::Who::person());
     assert_eq!(grant.initiator, crate::activity::Who::person());
-    assert!(!grant.summary.contains("h1"), "{}", grant.summary);
+    assert!(!grant.summary.contains("1111111111111111111111111111111111111111"), "{}", grant.summary);
     let merged_row = rows
         .iter()
         .find(|row| row.kind == crate::activity::MERGE)
@@ -1165,7 +1165,7 @@ fn an_agent_merge_uses_only_the_delivery_record() {
     let mut borrow = agent_merge("acme/web");
     borrow.project = Some(loud.project.to_string_lossy().into());
     borrow.delegation_id = Some(clean);
-    let gh = FakeGithub::new(vec![green("h1")]);
+    let gh = FakeGithub::new(vec![green("1111111111111111111111111111111111111111")]);
     let refused = merge::merge(&s, &gh, borrow, 10).unwrap();
     assert!(
         matches!(&refused, MergeOutcome::Refused { reason } if reason.contains("Keep the old file format?")),
@@ -1180,7 +1180,7 @@ fn an_agent_merge_uses_only_the_delivery_record() {
     remember_delivery(&s, &quiet.project, None, 7);
     let mut borrow = agent_merge("acme/web");
     borrow.project = Some(loud.project.to_string_lossy().into());
-    let gh = FakeGithub::new(vec![green("h1")]);
+    let gh = FakeGithub::new(vec![green("1111111111111111111111111111111111111111")]);
     let asked = merge::merge(&s, &gh, borrow, 10).unwrap();
     assert!(
         matches!(&asked, MergeOutcome::NeedsYou { .. }),
@@ -1193,17 +1193,17 @@ fn an_agent_merge_uses_only_the_delivery_record() {
     set_mode(&s, &loud.project, Some(Mode::Pr), true);
     let mut named = agent_merge("acme/web");
     named.project = Some(loud.project.to_string_lossy().into());
-    let gh = FakeGithub::new(vec![green("h1"), green("h1")]);
+    let gh = FakeGithub::new(vec![green("1111111111111111111111111111111111111111"), green("1111111111111111111111111111111111111111")]);
     let asked = merge::merge(&s, &gh, named.clone(), 20).unwrap();
     assert!(
-        matches!(&asked, MergeOutcome::NeedsYou { head_sha, .. } if head_sha == "h1"),
+        matches!(&asked, MergeOutcome::NeedsYou { head_sha, .. } if head_sha == "1111111111111111111111111111111111111111"),
         "{asked:?}"
     );
     assert!(gh.ran("pr", "merge").is_empty());
-    merge::approve(&s.lock_conn().unwrap(), "acme/web", 7, "h1", "person", 21).unwrap();
+    merge::approve(&s.lock_conn().unwrap(), "acme/web", 7, "1111111111111111111111111111111111111111", "person", 21).unwrap();
     let merged = merge::merge(&s, &gh, named, 22).unwrap();
     assert!(
-        matches!(&merged, MergeOutcome::Merged { head_sha, allowed_by } if head_sha == "h1" && allowed_by.contains("person"))
+        matches!(&merged, MergeOutcome::Merged { head_sha, allowed_by } if head_sha == "1111111111111111111111111111111111111111" && allowed_by.contains("person"))
     );
     assert_eq!(gh.ran("pr", "merge").len(), 1);
 }
@@ -1220,7 +1220,7 @@ fn the_switch_merges_green_without_asking_and_never_red() {
 
     let red = FakeGithub::new(vec![pr(
         PrState::Open,
-        "h1",
+        "1111111111111111111111111111111111111111",
         vec![check("build", CheckStatus::Failure, true)],
     )]);
     let refused = merge::merge(&s, &red, request.clone(), 10).unwrap();
@@ -1230,7 +1230,7 @@ fn the_switch_merges_green_without_asking_and_never_red() {
     assert!(red.ran("pr", "merge").is_empty());
     assert!(activity_at(&s, 10).is_empty(), "a red check merges nothing");
 
-    let gh = FakeGithub::new(vec![green("h1")]);
+    let gh = FakeGithub::new(vec![green("1111111111111111111111111111111111111111")]);
     let merged = merge::merge(&s, &gh, request, 20).unwrap();
     assert!(
         matches!(&merged, MergeOutcome::Merged { allowed_by, .. } if allowed_by.contains("merge without asking"))
@@ -1282,7 +1282,7 @@ fn an_open_question_on_the_work_blocks_even_the_persons_merge() {
         2,
     )
     .unwrap();
-    let gh = FakeGithub::new(vec![green("h1")]);
+    let gh = FakeGithub::new(vec![green("1111111111111111111111111111111111111111")]);
     let request = MergeRequest {
         caller: Caller::Person {
             via: "Inbox".into(),
@@ -1341,7 +1341,7 @@ fn an_open_wp14_decision_on_the_trees_task_blocks_the_merge() {
         None
     );
 
-    let gh = FakeGithub::new(vec![green("h1"), green("h1")]);
+    let gh = FakeGithub::new(vec![green("1111111111111111111111111111111111111111"), green("1111111111111111111111111111111111111111")]);
     let request = MergeRequest {
         caller: Caller::Person {
             via: "Inbox".into(),
@@ -1377,7 +1377,7 @@ fn the_inbox_merge_button_goes_through_the_same_path() {
     let s = store();
     let red = FakeGithub::new(vec![pr(
         PrState::Open,
-        "h1",
+        "1111111111111111111111111111111111111111",
         vec![check("build", CheckStatus::Failure, true)],
     )]);
     let error = merge::by_person(&s, &red, "acme/web", 7, Method::Squash, "Inbox", 10).unwrap_err();
@@ -1387,7 +1387,7 @@ fn the_inbox_merge_button_goes_through_the_same_path() {
         activity_at(&s, 10).is_empty(),
         "a refused tap is not a merge"
     );
-    let gh = FakeGithub::new(vec![green("h1")]);
+    let gh = FakeGithub::new(vec![green("1111111111111111111111111111111111111111")]);
     merge::by_person(&s, &gh, "acme/web", 7, Method::Squash, "Inbox", 20).unwrap();
     assert!(gh.ran("pr", "merge")[0].contains(&"--squash".to_string()));
     let log = merge::log(&s.lock_conn().unwrap(), "acme/web", 7).unwrap();
@@ -1519,7 +1519,7 @@ fn protect_also(store: &SessionStore, project: &Path, paths: &[&str]) {
 }
 
 fn files_of(body: Result<&str, &str>) -> FakeGithub {
-    let gh = FakeGithub::new(vec![green("h1")]);
+    let gh = FakeGithub::new(vec![green("1111111111111111111111111111111111111111")]);
     // A readable body agrees with the second pull-request read, unless a test sets another count.
     if let Ok(text) = body {
         if let Ok(list) = super::protected::parse_file_list(text) {
@@ -1542,7 +1542,7 @@ fn asked(outcome: &MergeOutcome) -> String {
 
 #[test]
 fn the_floor_off_decides_exactly_as_before() {
-    let decision = decide(&green("h1"), None, &Allow::Switch);
+    let decision = decide(&green("1111111111111111111111111111111111111111"), None, &Allow::Switch);
     assert_eq!(
         floor_decision(
             decision.clone(),
@@ -1568,8 +1568,9 @@ fn the_floor_off_decides_exactly_as_before() {
         matches!(&merged, MergeOutcome::Merged { allowed_by, .. } if allowed_by.contains("merge without asking")),
         "the floor is off, so a protected diff still merges: {merged:?}"
     );
-    assert!(
-        gh.ran("api", "--paginate").is_empty(),
+    assert_eq!(
+        api_calls(&gh),
+        0,
         "an off floor does not read the file list"
     );
 }
@@ -1747,7 +1748,7 @@ fn an_approval_of_this_head_still_merges_a_protected_diff() {
     let first = merge::merge(&s, &gh, agent_merge("acme/web"), 20).unwrap();
     assert!(matches!(first, MergeOutcome::NeedsYou { .. }), "{first:?}");
     assert!(gh.ran("pr", "merge").is_empty());
-    merge::approve(&s.lock_conn().unwrap(), "acme/web", 7, "h1", "person", 21).unwrap();
+    merge::approve(&s.lock_conn().unwrap(), "acme/web", 7, "1111111111111111111111111111111111111111", "person", 21).unwrap();
     let merged = merge::merge(&s, &gh, agent_merge("acme/web"), 22).unwrap();
     assert!(
         matches!(&merged, MergeOutcome::Merged { allowed_by, .. } if allowed_by.contains("person")),
@@ -1755,7 +1756,7 @@ fn an_approval_of_this_head_still_merges_a_protected_diff() {
     );
     assert_eq!(gh.ran("pr", "merge").len(), 1);
     assert_eq!(
-        gh.ran("api", "--paginate").len(),
+        api_calls(&gh),
         1,
         "an approved head does not read the file list again"
     );
@@ -1777,7 +1778,7 @@ fn the_persons_own_tap_merges_a_protected_diff_without_reading_files() {
     };
     let merged = merge::merge(&s, &gh, request, 20).unwrap();
     assert!(matches!(merged, MergeOutcome::Merged { .. }), "{merged:?}");
-    assert!(gh.ran("api", "--paginate").is_empty());
+    assert_eq!(api_calls(&gh), 0);
 }
 
 #[test]
@@ -1787,7 +1788,7 @@ fn a_moved_head_is_not_merged_on_the_file_list_of_the_old_one() {
     set_mode(&s, &project, Some(Mode::Pr), true);
     turn_floor_on(&s, &project);
     remember_delivery(&s, &project, None, 7);
-    let gh = FakeGithub::new(vec![green("h1"), green("h2")]);
+    let gh = FakeGithub::new(vec![green("1111111111111111111111111111111111111111"), green("2222222222222222222222222222222222222222")]);
     *gh.files.lock().unwrap() = Some(Ok("readme.md\n".into()));
     let outcome = merge::merge(&s, &gh, agent_merge("acme/web"), 20).unwrap();
     let question = asked(&outcome);
@@ -1856,7 +1857,7 @@ fn a_capped_file_list_asks_even_when_the_count_matches() {
     let page: String = (0..3000).map(|i| format!("src/f{i}.rs\n")).collect();
     let gh = files_of(Ok(&page));
     let question = asked(&merge::merge(&s, &gh, agent_merge("acme/web"), 20).unwrap());
-    assert!(question.contains("3000"), "{question}");
+    assert!(question.contains("300"), "{question}");
     assert!(gh.ran("pr", "merge").is_empty());
 }
 
@@ -1891,7 +1892,7 @@ fn red_and_a_pull_request_with_no_checks_do_not_consult_the_floor() {
     remember_delivery(&s, &project, None, 7);
     let red = FakeGithub::new(vec![pr(
         PrState::Open,
-        "h1",
+        "1111111111111111111111111111111111111111",
         vec![check("build", CheckStatus::Failure, true)],
     )]);
     *red.files.lock().unwrap() = Some(Ok(".github/workflows/x.yml\n".into()));
@@ -1902,7 +1903,7 @@ fn red_and_a_pull_request_with_no_checks_do_not_consult_the_floor() {
     );
     assert!(red.ran("api", "--paginate").is_empty());
 
-    let unchecked = FakeGithub::new(vec![pr(PrState::Open, "h1", vec![])]);
+    let unchecked = FakeGithub::new(vec![pr(PrState::Open, "1111111111111111111111111111111111111111", vec![])]);
     *unchecked.files.lock().unwrap() = Some(Ok("readme.md\n".into()));
     let question = asked(&merge::merge(&s, &unchecked, agent_merge("acme/web"), 30).unwrap());
     assert!(question.contains("no checks"), "{question}");
@@ -2143,7 +2144,7 @@ fn the_file_list_is_read_for_the_base_and_head_commits_it_judges() {
     let runs = gh.runs.lock().unwrap().clone();
     assert!(
         runs.iter().any(|args| args.get(1).map(String::as_str)
-            == Some(format!("repos/acme/web/compare/{base}...h1").as_str())),
+            == Some(format!("repos/acme/web/compare/{base}...{}", "1".repeat(40)).as_str())),
         "{runs:?}"
     );
     assert!(
@@ -2157,9 +2158,9 @@ fn the_file_list_is_read_for_the_base_and_head_commits_it_judges() {
 #[test]
 fn a_base_that_moves_while_the_files_are_read_is_asked_again() {
     let (s, _project) = floor_pr("base-moved", 7, None);
-    let mut moved = green("h1");
+    let mut moved = green("1111111111111111111111111111111111111111");
     moved.base_sha = Some("dec0".repeat(10));
-    let gh = FakeGithub::new(vec![green("h1"), moved]);
+    let gh = FakeGithub::new(vec![green("1111111111111111111111111111111111111111"), moved]);
     *gh.files.lock().unwrap() = Some(Ok("readme.md\n".into()));
     let question = asked(&merge::merge(&s, &gh, agent_merge("acme/web"), 20).unwrap());
     assert!(question.contains("base changed"), "{question}");
@@ -2170,7 +2171,7 @@ fn a_base_that_moves_while_the_files_are_read_is_asked_again() {
 fn a_base_that_is_not_a_commit_is_never_listed() {
     let (s, _project) = floor_pr("base-odd", 7, None);
     for base in [Some("main".to_string()), None] {
-        let mut read = green("h1");
+        let mut read = green("1111111111111111111111111111111111111111");
         read.base_sha = base;
         let gh = FakeGithub::new(vec![read]);
         *gh.files.lock().unwrap() = Some(Ok("readme.md\n".into()));
@@ -2306,13 +2307,13 @@ fn the_floor_path_merges_only_the_head_it_judged() {
         .iter()
         .position(|arg| arg == "--match-head-commit")
         .expect("the merge names the head");
-    assert_eq!(merges[0].get(at + 1).map(String::as_str), Some("h1"));
+    assert_eq!(merges[0].get(at + 1).map(String::as_str), Some("1111111111111111111111111111111111111111"));
 }
 
 #[test]
 fn the_no_checks_question_names_a_protected_file_too() {
     let (s, _project) = floor_pr("no-checks-named", 7, None);
-    let unchecked = FakeGithub::new(vec![pr(PrState::Open, "h1", vec![])]);
+    let unchecked = FakeGithub::new(vec![pr(PrState::Open, "1111111111111111111111111111111111111111", vec![])]);
     *unchecked.files.lock().unwrap() = Some(Ok(".github/workflows/x.yml\n".into()));
     let question = asked(&merge::merge(&s, &unchecked, agent_merge("acme/web"), 20).unwrap());
     assert!(question.contains("no checks"), "{question}");
