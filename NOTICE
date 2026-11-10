@@ -313,7 +313,7 @@ Third-party components Hivra adds:
   License: MIT
   Copyright (c) 2026 MiniMax Code
   Used in: src-tauri/plugins/hivra-mcode/skills/subagent-split-check, src-tauri/plugins/hivra-mcode/skills/independent-review, src-tauri/plugins/hivra-mcode/skills/taste-to-checks, src-tauri/plugins/hivra-mcode/skills/long-session-check, src-tauri/plugins/hivra-mcode/skills/context-tax-audit
-  Copied from stacks/ronny/skills at 88f84be7075106d8ce283e5d3a8138cdb8f9a205. The three named skills, plus the short long-session-check and context-tax-audit. Each file adds disable-model-invocation, so Claude Code does not offer it to the model itself; Hivra's skill index lists each one and where it is, and a first mate reads it when the work fits (WP-117). context-tax-audit turns two em dashes into a comma and a full stop. The skill text is otherwise unchanged.
+  Copied from stacks/ronny/skills at 88f84be7075106d8ce283e5d3a8138cdb8f9a205. The three named skills, plus the short long-session-check and context-tax-audit. Each file adds disable-model-invocation, so Claude Code does not offer it to the model itself; Hivra's skill index lists each one and where it is, and a first mate reads it when the work fits (WP-117). context-tax-audit turns two em dashes into a comma and a full stop. Pointers to checklists and skills this plugin does not ship (checklists/*.md, handoff-doc, harness-experiment, evidence-first-review, tool-budget-audit) are dropped or reworded as plain prose. The skill text is otherwise unchanged.
 
 - models.dev's model catalogue
   Source: https://github.com/anomalyco/models.dev

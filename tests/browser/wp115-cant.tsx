@@ -16,23 +16,13 @@ import {
   type HarnessAdapter,
 } from "../../src/integrations/harness/core/registry";
 import "../../src/styles/index.css";
+import { installFakeTauri } from "./fakeTauri";
 
-Object.assign(window, {
-  __TAURI_EVENT_PLUGIN_INTERNALS__: { unregisterListener: () => {} },
-  __TAURI_INTERNALS__: {
-    metadata: {
-      currentWindow: { label: "main" },
-      currentWebview: { label: "main" },
-    },
-    transformCallback: () => 0,
-    invoke: async (command: string) => {
-      if (command === "plugin:event|listen") return 0;
-      if (command === "plugin:event|unlisten") return;
-      if (command === "control_load") return null;
-      if (command === "session_checkpoint_status") return { files: [] };
-      throw new Error(`Unexpected fixture command: ${command}`);
-    },
-  },
+// Native IPC is faked; any command this page does not expect fails loudly.
+installFakeTauri("main", (command) => {
+  if (command === "control_load") return null;
+  if (command === "session_checkpoint_status") return { files: [] };
+  throw new Error(`Unexpected fixture command: ${command}`);
 });
 
 function stub(id: HarnessId, canSteer?: boolean): HarnessAdapter {

@@ -23,7 +23,7 @@ export type ClaudePromptCacheState = {
 };
 
 /** The background watcher stops trying a chat after this many failed compacts in a row. */
-export const IDLE_COMPACT_MAX_FAILURES = 2;
+const IDLE_COMPACT_MAX_FAILURES = 2;
 
 const STORE_KEY = "monocode.claudePromptCache";
 /** Newest first; older chats fall off. */
