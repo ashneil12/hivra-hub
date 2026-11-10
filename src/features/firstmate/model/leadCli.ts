@@ -41,6 +41,12 @@ export const LEAD_CAPABILITY: Record<HarnessId, LeadCapability> = {
 /** Env names Codex passes through to the monocode server. Never the values. */
 export const CODEX_LEAD_ENV_VARS = ["MONOCODE_APP_ENDPOINT", "MONOCODE_APP_TOKEN"] as const;
 
+/**
+ * Just over the longest task_wait (60 minutes), the same limit Claude gets (hubMcp.ts MONOCODE_TOOL_TIMEOUT_MS).
+ * Codex cuts an MCP call off after 300 s unless the server sets tool_timeout_sec, and task_wait runs 10 minutes by default.
+ */
+export const CODEX_LEAD_TOOL_TIMEOUT_SEC = 3900;
+
 export function canLead(harness: string): boolean {
   return harness in LEAD_CAPABILITY && LEAD_CAPABILITY[harness as HarnessId].leads;
 }
@@ -120,6 +126,7 @@ export function codexLeadServer(cli: string): Record<string, unknown> {
     command: cli,
     args: ["mcp"],
     env_vars: [...CODEX_LEAD_ENV_VARS],
+    tool_timeout_sec: CODEX_LEAD_TOOL_TIMEOUT_SEC,
     default_tools_approval_mode: "approve",
   };
 }

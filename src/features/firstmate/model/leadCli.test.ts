@@ -2,7 +2,9 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { HARNESSES } from "../../sessions/model/session";
 import {
+  MONOCODE_TOOL_TIMEOUT_MS,
   hasDelegateTool,
+  monocodeServer,
   registeredCodexLeadConfig,
   setHubMcpServers,
   type HubChatLookups,
@@ -104,6 +106,29 @@ describe("lead capability", () => {
       if (previous === undefined) delete process.env.MONOCODE_APP_TOKEN;
       else process.env.MONOCODE_APP_TOKEN = previous;
     }
+  });
+
+  it("lets a task_wait run its full hour on Codex, as it does on Claude", () => {
+    // Codex cuts an MCP call off after 300 s unless the server says otherwise, and task_wait runs 10 minutes by default.
+    const server = codexLeadServer(CLI);
+    expect(server.tool_timeout_sec).toBe(3900);
+    expect(Number(server.tool_timeout_sec) * 1000).toBe(MONOCODE_TOOL_TIMEOUT_MS);
+    expect(monocodeServer(CLI).timeout).toBe(MONOCODE_TOOL_TIMEOUT_MS);
+    setHubMcpServers({ cli: CLI }, lookups);
+    expect(registeredCodexLeadConfig(TEAM)).toEqual({
+      mcp_servers: { monocode: expect.objectContaining({ tool_timeout_sec: 3900 }) },
+    });
+  });
+
+  it("writes only the Codex server keys the installed Codex reads", () => {
+    // Checked against codex-cli 0.167.0 with a throwaway CODEX_HOME: each key is typed under mcp_servers.<name> (a wrong
+    // value is refused by key name), and default_tools_approval_mode takes auto, prompt, writes or approve. A key
+    // Codex does not know is dropped without a word, so a new key here needs the same check.
+    const server = codexLeadServer(CLI);
+    expect(Object.keys(server).sort()).toEqual(
+      ["args", "command", "default_tools_approval_mode", "env_vars", "tool_timeout_sec"].sort(),
+    );
+    expect(server.default_tools_approval_mode).toBe("approve");
   });
 
   it("lists every capable CLI in the picker, and not the ones that cannot lead", () => {
