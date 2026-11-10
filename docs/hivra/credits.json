@@ -245,6 +245,12 @@
       "url": "https://github.com/baz-scm/gion",
       "licence": "Apache-2.0",
       "gave": "a sparse checkout that fetches only the paths a new worktree needs, used as a pinned tool (WP-118)"
+    },
+    {
+      "name": "Memorilla",
+      "url": "https://github.com/snap-stanford/memorilla",
+      "licence": "Apache-2.0; its PersonalizationV4 data is CC BY 4.0",
+      "gave": "an external test set for chat-derived memory, the arm ladder its evaluation reports, and rules for writing a memory question that cannot be guessed (WP-106, ideas and data only)"
     }
   ],
   "components": [
