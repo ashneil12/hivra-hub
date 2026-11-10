@@ -1,6 +1,6 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { memoryId, type MemoryDoc, type MemoryItem } from "./doc";
-import { fadeOf } from "./fade";
+import { LivedClock, fadeOf } from "./fade";
 import {
   RECALL_FADE_WEIGHT,
   RECALL_MAX_LINES,
@@ -493,5 +493,25 @@ describe("one decision across Monos", () => {
   it("stops with no memories when none of the Monos has any", () => {
     const decision = decide([], MESSAGE, { mateIds: [MATE, B, C] });
     expect(decision.stop).toBe("no_memories");
+  });
+});
+
+describe("the lived-day clock inside a decision", () => {
+  const MESSAGE = "How do you like to write commit messages for a branch?";
+  const OLD = NOW - 20 * 86_400_000;
+
+  it("works out the moment of the decision once, and reads only each memory's last use after that", () => {
+    const items = Array.from({ length: 40 }, (_, n) =>
+      item(`Commit messages for a branch, number ${n}`, { createdAt: OLD, updatedAt: OLD }),
+    );
+    const spy = vi.spyOn(LivedClock.prototype, "at");
+    try {
+      decide(items, MESSAGE);
+      const atNow = spy.mock.calls.filter(([moment]) => new Date(moment as Date | number).getTime() === NOW);
+      expect(atNow).toHaveLength(1);
+      expect(spy).toHaveBeenCalledTimes(items.length + 1);
+    } finally {
+      spy.mockRestore();
+    }
   });
 });

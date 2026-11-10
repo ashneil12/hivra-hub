@@ -23,7 +23,7 @@
 
 import { confidence, type Belief } from "../vendor/mercuryBelief";
 import { mentionsSecret, type MemoryDoc, type MemoryItem } from "./doc";
-import { fadeNow, livedClockOf } from "./fade";
+import { fadeReader, livedClockOf } from "./fade";
 
 /** A turn shows at most this many memories. The one place to change it. */
 export const RECALL_MAX_LINES = 3;
@@ -493,8 +493,8 @@ export function recallDecision(input: RecallDecisionInput): RecallDecision {
   });
 
   const denominator = Math.min(terms.length, RECALL_LEXICAL_TERMS);
-  // The lived-day clock is built once for the whole store, not once per memory.
-  const clock = livedClockOf(doc);
+  // The lived-day clock is built once for the whole store, and its reading of `now` once for the whole decision.
+  const readFade = fadeReader(livedClockOf(doc), now);
   const candidates: RecallCandidate[] = mine.map((item, index) => {
     const factField = FIELD_FACT * ratio(factHits[index], denominator);
     const evidenceField = FIELD_EVIDENCE * ratio(evidenceHits[index], denominator);
@@ -509,7 +509,7 @@ export function recallDecision(input: RecallDecisionInput): RecallDecision {
       tier: TIER_COMPONENT[tier],
       evidence: confidence(beliefOf(item), now),
     };
-    const fade = fadeNow(item, clock, now);
+    const fade = readFade(item);
     const weighed = W_LEXICAL * parts.lexical + W_RECENCY * parts.recency + W_TIER * parts.tier + W_EVIDENCE * parts.evidence;
     const score = Math.max(0, weighed - RECALL_FADE_WEIGHT * (1 - fade));
     const candidate: RecallCandidate = {
