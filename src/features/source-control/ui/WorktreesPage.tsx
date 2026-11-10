@@ -3,6 +3,7 @@ import { CreateWorktreeDialog } from "./CreateWorktreeDialog";
 import { DeleteWorktreeDialog } from "./DeleteWorktreeDialog";
 import { ProjectActionsPanel } from "./ProjectActionsPanel";
 import { NewChatWorktreeSetting } from "./NewChatWorktreeSetting";
+import { WorktreeAutoClearSetting } from "./WorktreeAutoClearSetting";
 import { WorktreeCleanup } from "./WorktreeCleanup";
 import { SparseSlotNote } from "./SparseCheckout";
 import { SparseCheckoutSection } from "./SparseCheckoutSection";
@@ -247,6 +248,7 @@ export function WorktreesPage({
       {project && <SparseCheckoutSection cwd={project} />}
       {project && <WorktreePoolSection cwd={project} />}
       {project && <WorktreeStacks cwd={project} />}
+      <WorktreeAutoClearSetting />
       <WorktreeCleanup project={project} onRemove={onRemove} onChanged={refresh} />
       {creating && (
         <CreateWorktreeDialog
