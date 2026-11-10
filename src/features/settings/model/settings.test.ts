@@ -790,7 +790,7 @@ describe("settings search", () => {
       settingId: "chat-list-inbox",
       label: "Settle and snooze",
     });
-    expect(searchSettings("finished")[0]).toMatchObject({
+    expect(searchSettings("finished chats")[0]).toMatchObject({
       section: "chat",
       settingId: "chat-list-inbox",
     });
@@ -816,6 +816,14 @@ describe("settings search", () => {
       section: "worktrees",
       settingId: "new-chat-worktree",
       label: "New chats and worktrees",
+    });
+  });
+
+  it("finds the switch for clearing finished worktrees' build output", () => {
+    expect(searchSettings("build output")[0]).toMatchObject({
+      section: "worktrees",
+      settingId: "worktree-autoclear",
+      label: "Clear build output of finished worktrees",
     });
   });
 

@@ -101,6 +101,9 @@ pub struct Policy {
     pub notification_prompt: bool,
     /// The quick composer's system-wide shortcut. Only one app can hold it, and the daily app keeps it.
     pub global_shortcut: bool,
+    /// The background sweep that deletes the build output of finished worktrees (`worktree_autoclean.rs`). It acts on
+    /// the real ~/Worktrees, so only the daily app runs it.
+    pub clear_build_output: bool,
 }
 
 impl Policy {
@@ -135,6 +138,7 @@ impl Kind {
             auto_resume: daily,
             notification_prompt: daily,
             global_shortcut: daily,
+            clear_build_output: daily,
         }
     }
 }
