@@ -22,6 +22,17 @@ const LIST_BYTES: usize = 2 * 1024 * 1024;
 /// At most this many files are copied. The rest are reported, not read.
 const FILE_CAP: usize = 100;
 
+/// At most this many bytes are copied in all. A file that would pass it is skipped and
+/// reported, so a stray build output named by a pattern cannot fill the disk.
+const BYTE_CAP: u64 = 50 * 1024 * 1024;
+
+/// How many file names a note or warning spells out before it says how many more.
+const NAMED_FILES: usize = 3;
+
+/// A warning longer than this is rebuilt with counts, so it always fits the one line
+/// the window keeps (worktreeIncludeNote.ts keeps up to 600 characters).
+const WARNING_CHARS: usize = 500;
+
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum Manifest {
     /// No `.worktreeinclude` in this checkout.
@@ -183,18 +194,40 @@ pub(crate) struct IncludeOutcome {
 /// Copy the selected gitignored files from `source` into `dest`. Does not stage them
 /// and does not remove the worktree when a copy fails.
 pub(crate) fn apply(source: &Path, dest: &Path) -> IncludeOutcome {
-    apply_with_list_cap(source, dest, LIST_BYTES)
+    apply_with(source, dest, LIST_BYTES, BYTE_CAP)
 }
 
-/// [`apply`] with the listing cap passed in, so a test can use a small one.
-fn apply_with_list_cap(source: &Path, dest: &Path, list_bytes: usize) -> IncludeOutcome {
+/// The top folder of the repository that holds `dir`. A project can be a subfolder of
+/// its repository, and the worktree is made of the whole repository, so the file, the
+/// listing and the copy all work from the top. `None` when git cannot say.
+fn repo_top(dir: &Path) -> Option<PathBuf> {
+    let (bytes, capped) =
+        crate::fs::git_output_capped(dir, &["rev-parse", "--show-toplevel"], 16 * 1024, None)?;
+    if capped {
+        return None;
+    }
+    let text = String::from_utf8(bytes).ok()?;
+    let line = text.strip_suffix('\n').unwrap_or(&text);
+    let line = line.strip_suffix('\r').unwrap_or(line);
+    if line.is_empty() {
+        return None;
+    }
+    let top = PathBuf::from(line);
+    top.is_dir().then_some(top)
+}
+
+/// [`apply`] with the listing cap and the byte cap passed in, so a test can use small ones.
+fn apply_with(source: &Path, dest: &Path, list_bytes: usize, byte_cap: u64) -> IncludeOutcome {
     if !dest.is_dir() {
         return IncludeOutcome {
             note: None,
             warning: Some("Could not copy listed files into this worktree.".into()),
         };
     }
-    let text = match read_manifest(source) {
+    // Not a repository (or git cannot answer): the manifest is looked for where the
+    // project is, and the listing below then says it could not read it.
+    let top = repo_top(source).unwrap_or_else(|| source.to_path_buf());
+    let text = match read_manifest(&top) {
         Manifest::Missing => {
             return IncludeOutcome {
                 note: None,
@@ -209,7 +242,7 @@ fn apply_with_list_cap(source: &Path, dest: &Path, list_bytes: usize) -> Include
         }
         Manifest::Text(text) => manifest_text(&text),
     };
-    let chosen = choose(source, &text, list_bytes);
+    let chosen = choose(&top, &text, list_bytes);
     if !chosen.readable {
         return IncludeOutcome {
             note: None,
@@ -224,19 +257,28 @@ fn apply_with_list_cap(source: &Path, dest: &Path, list_bytes: usize) -> Include
     }
 
     let mut copied = 0usize;
-    let mut left = Vec::new();
-    let mut failed = Vec::new();
+    let mut unplaced = Unplaced::default();
+    let mut budget = byte_cap;
     for relative in &chosen.paths {
-        match place(source, dest, relative) {
+        match place(&top, dest, relative, &mut budget) {
             Place::Copied | Place::Already => copied += 1,
-            Place::Left => left.push(relative.clone()),
-            Place::Failed => failed.push(relative.clone()),
+            Place::Left => unplaced.left.push(relative.clone()),
+            Place::Failed => unplaced.failed.push(relative.clone()),
+            Place::TooBig => unplaced.too_big.push(relative.clone()),
         }
     }
     IncludeOutcome {
         note: copied_note(copied),
-        warning: warning_text(&failed, &left, chosen.stop),
+        warning: warning_text(&unplaced, chosen.stop, byte_cap),
     }
+}
+
+/// The listed files that did not end up in the worktree, and why.
+#[derive(Default)]
+struct Unplaced {
+    failed: Vec<String>,
+    left: Vec<String>,
+    too_big: Vec<String>,
 }
 
 fn copied_note(copied: usize) -> Option<String> {
@@ -262,27 +304,61 @@ mod note_tests {
             assert!(!note.contains("CLI"), "{note}");
             assert!(!note.contains("will not have"), "{note}");
         }
-        let warning = super::warning_text(&[], &[], super::Stop::None).unwrap_or_default();
+        let warning = super::warning_text(&super::Unplaced::default(), super::Stop::None, 1 << 20)
+            .unwrap_or_default();
         assert!(!warning.contains("CLI"), "{warning}");
     }
 }
 
-fn warning_text(failed: &[String], left: &[String], stop: Stop) -> Option<String> {
-    let mut parts = Vec::new();
-    match failed.len() {
-        0 => {}
-        1 => parts.push(format!(
-            "Could not copy {} into this worktree.",
-            show_path(&failed[0])
-        )),
-        n => parts.push(format!(
-            "Could not copy {n} listed files into this worktree."
-        )),
+fn warning_text(unplaced: &Unplaced, stop: Stop, byte_cap: u64) -> Option<String> {
+    let named = warning_parts(unplaced, stop, byte_cap, true).join(" ");
+    if named.chars().count() <= WARNING_CHARS {
+        return (!named.is_empty()).then_some(named);
     }
-    match left.len() {
-        0 => {}
-        1 => parts.push(format!("Left {} as it was.", show_path(&left[0]))),
-        n => parts.push(format!("Left {n} files as they were.")),
+    // Names that are long and many would not fit the one line the window keeps: say how
+    // many instead.
+    let counted = warning_parts(unplaced, stop, byte_cap, false).join(" ");
+    (!counted.is_empty()).then_some(counted)
+}
+
+fn warning_parts(unplaced: &Unplaced, stop: Stop, byte_cap: u64, name: bool) -> Vec<String> {
+    let Unplaced {
+        failed,
+        left,
+        too_big,
+    } = unplaced;
+    let mut parts = Vec::new();
+    if !failed.is_empty() {
+        parts.push(if name {
+            format!("Could not copy {} into this worktree.", name_files(failed))
+        } else {
+            format!(
+                "Could not copy {} listed files into this worktree.",
+                failed.len()
+            )
+        });
+    }
+    if !left.is_empty() {
+        parts.push(match (name, left.len()) {
+            (true, 1) => format!("Left {} as it was.", name_files(left)),
+            (true, _) => format!("Left {} as they were.", name_files(left)),
+            (false, 1) => "Left 1 file as it was.".to_string(),
+            (false, n) => format!("Left {n} files as they were."),
+        });
+    }
+    if !too_big.is_empty() {
+        let limit = byte_limit_text(byte_cap);
+        parts.push(if name {
+            format!(
+                "Skipped {} to stay under the {limit} limit.",
+                name_files(too_big)
+            )
+        } else {
+            format!(
+                "Skipped {} files to stay under the {limit} limit.",
+                too_big.len()
+            )
+        });
     }
     match stop {
         Stop::None => {}
@@ -291,11 +367,39 @@ fn warning_text(failed: &[String], left: &[String], stop: Stop) -> Option<String
         )),
         Stop::Listing => parts.push("Could not list every file named in .worktreeinclude.".into()),
     }
-    if parts.is_empty() {
-        None
+    parts
+}
+
+/// "50 MB" for the real cap. A cap that is not a whole number of megabytes is only a
+/// test's, and is shown in bytes.
+fn byte_limit_text(cap: u64) -> String {
+    const MB: u64 = 1024 * 1024;
+    if cap >= MB && cap.is_multiple_of(MB) {
+        format!("{} MB", cap / MB)
     } else {
-        Some(parts.join(" "))
+        format!("{cap} byte")
     }
+}
+
+/// Up to [`NAMED_FILES`] names, then how many more: "a", "a and b", "a, b and c",
+/// "a, b, c and 4 more".
+fn name_files(paths: &[String]) -> String {
+    let shown: Vec<String> = paths
+        .iter()
+        .take(NAMED_FILES)
+        .map(|p| show_path(p))
+        .collect();
+    let more = paths.len().saturating_sub(NAMED_FILES);
+    let mut text = match shown.as_slice() {
+        [] => String::new(),
+        [one] => one.clone(),
+        [first @ .., last] if more == 0 => format!("{} and {last}", first.join(", ")),
+        all => all.join(", "),
+    };
+    if more > 0 {
+        text.push_str(&format!(" and {more} more"));
+    }
+    text
 }
 
 /// A path is safe to show. Control characters are dropped so a note stays one line
@@ -314,49 +418,136 @@ enum Place {
     Already,
     Left,
     Failed,
+    /// Copying it would pass the byte cap.
+    TooBig,
 }
 
-fn place(source: &Path, dest: &Path, relative: &str) -> Place {
-    let from = match located(source, relative) {
-        Ok(path) => path,
+/// Open a file for reading without following a link, and without waiting on a pipe.
+/// A path checked a moment ago can be swapped for a link, so the open itself refuses one.
+fn open_source(path: &Path) -> std::io::Result<std::fs::File> {
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        // O_NONBLOCK so a pipe swapped in for the file cannot hold the open forever.
+        options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        // FILE_FLAG_OPEN_REPARSE_POINT: a link is opened as itself, and refused below.
+        options.custom_flags(0x0020_0000);
+    }
+    options.open(path)
+}
+
+/// Whether two handles name the same file. Windows has no cheap answer in std, so the
+/// link refusal at open time is what it relies on.
+fn same_file(left: &std::fs::Metadata, right: &std::fs::Metadata) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        left.dev() == right.dev() && left.ino() == right.ino()
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (left, right);
+        true
+    }
+}
+
+/// The source file, opened and checked after it was opened: a regular file, not a link,
+/// still the file at the checked path, and still inside `source`.
+fn open_checked(source: &Path, relative: &str) -> Result<(std::fs::File, std::fs::Metadata), ()> {
+    let from = located(source, relative)?;
+    let file = open_source(&from).map_err(|_| ())?;
+    let opened = file.metadata().map_err(|_| ())?;
+    if !opened.is_file() {
+        return Err(());
+    }
+    // The path is checked again now that the file is open, so a folder swapped for a
+    // link between the first check and the open is caught here.
+    let again = located(source, relative)?;
+    let now = std::fs::symlink_metadata(&again).map_err(|_| ())?;
+    if again != from || now.file_type().is_symlink() || !same_file(&opened, &now) {
+        return Err(());
+    }
+    Ok((file, opened))
+}
+
+/// The permission bits a copy is created with: the source's own, so a secret that is
+/// private there is private from the first byte.
+#[cfg(unix)]
+fn mode_bits(meta: &std::fs::Metadata) -> u32 {
+    use std::os::unix::fs::PermissionsExt;
+    meta.permissions().mode() & 0o777
+}
+
+/// A new file at `path` that is already private when it is empty, with the source's mode.
+/// Fails when the file exists.
+fn create_new_like(path: &Path, source: &std::fs::Metadata) -> std::io::Result<std::fs::File> {
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(mode_bits(source));
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = source;
+    }
+    options.open(path)
+}
+
+fn place(source: &Path, dest: &Path, relative: &str, budget: &mut u64) -> Place {
+    let (mut input, src_meta) = match open_checked(source, relative) {
+        Ok(opened) => opened,
         Err(()) => return Place::Failed,
     };
-    let src_meta = match std::fs::symlink_metadata(&from) {
-        Ok(meta) if meta.file_type().is_file() => meta,
-        _ => return Place::Failed,
-    };
-    if ensure_parents(dest, relative).is_err() {
+    if ensure_parents(source, dest, relative).is_err() {
         return Place::Failed;
     }
     let to = match located(dest, relative) {
         Ok(path) => path,
         Err(()) => return Place::Failed,
     };
-    match std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&to)
-    {
+    // A file that is already there costs nothing, so only a new copy is held to the cap.
+    let is_new = matches!(
+        std::fs::symlink_metadata(&to),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound
+    );
+    if is_new && src_meta.len() > *budget {
+        return Place::TooBig;
+    }
+    match create_new_like(&to, &src_meta) {
         Ok(mut out) => {
-            let mut input = match std::fs::File::open(&from) {
-                Ok(file) => file,
+            // One byte more than the budget is read, so a file that grew since it was
+            // measured is caught instead of copied whole.
+            let mut limited = std::io::Read::take(&mut input, budget.saturating_add(1));
+            let copied = match std::io::copy(&mut limited, &mut out) {
+                Ok(copied) => copied,
                 Err(_) => {
+                    drop(out);
                     let _ = std::fs::remove_file(&to);
                     return Place::Failed;
                 }
             };
-            if std::io::copy(&mut input, &mut out).is_err() {
-                drop(out);
+            drop(out);
+            if copied > *budget {
                 let _ = std::fs::remove_file(&to);
-                return Place::Failed;
+                return Place::TooBig;
             }
+            *budget -= copied;
             #[cfg(unix)]
             {
-                let _ = std::fs::set_permissions(&to, src_meta.permissions());
-            }
-            #[cfg(not(unix))]
-            {
-                let _ = src_meta.len();
+                // The mode the source has, even where the umask would have narrowed it.
+                use std::os::unix::fs::PermissionsExt;
+                let _ = std::fs::set_permissions(
+                    &to,
+                    std::fs::Permissions::from_mode(mode_bits(&src_meta)),
+                );
             }
             if !stays_inside(dest, &to) {
                 let _ = std::fs::remove_file(&to);
@@ -368,6 +559,11 @@ fn place(source: &Path, dest: &Path, relative: &str) -> Place {
             if !stays_inside(dest, &to) {
                 return Place::Failed;
             }
+            drop(input);
+            let from = match located(source, relative) {
+                Ok(path) => path,
+                Err(()) => return Place::Failed,
+            };
             if same_contents(&from, &to) {
                 Place::Already
             } else {
@@ -465,9 +661,13 @@ fn located(root: &Path, relative: &str) -> Result<PathBuf, ()> {
     Err(())
 }
 
-fn ensure_parents(dest: &Path, relative: &str) -> Result<(), ()> {
+/// The folders above `relative` in `dest`. A folder made here gets the mode its source
+/// folder has (with the owner able to write, so the files can be placed in it).
+fn ensure_parents(source: &Path, dest: &Path, relative: &str) -> Result<(), ()> {
     let root = crate::fs::canonical(dest).map_err(|_| ())?;
+    let source_root = crate::fs::canonical(source).map_err(|_| ())?;
     let mut cur = root.clone();
+    let mut from = source_root;
     let parts: Vec<&str> = relative
         .split('/')
         .filter(|part| !part.is_empty())
@@ -477,6 +677,7 @@ fn ensure_parents(dest: &Path, relative: &str) -> Result<(), ()> {
     }
     for part in &parts[..parts.len() - 1] {
         cur.push(part);
+        from.push(part);
         match std::fs::symlink_metadata(&cur) {
             Ok(meta) if meta.is_dir() && !meta.file_type().is_symlink() => {
                 let canon = crate::fs::canonical(&cur).map_err(|_| ())?;
@@ -487,7 +688,7 @@ fn ensure_parents(dest: &Path, relative: &str) -> Result<(), ()> {
             }
             Ok(_) => return Err(()),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                std::fs::create_dir(&cur).map_err(|_| ())?;
+                make_dir_like(&cur, &from)?;
                 let meta = std::fs::symlink_metadata(&cur).map_err(|_| ())?;
                 if !meta.is_dir() || meta.file_type().is_symlink() {
                     return Err(());
@@ -502,6 +703,25 @@ fn ensure_parents(dest: &Path, relative: &str) -> Result<(), ()> {
         }
     }
     Ok(())
+}
+
+/// Make one folder with the mode of the folder it mirrors. The owner can always write,
+/// or the files that follow could not be placed in it.
+fn make_dir_like(path: &Path, like: &Path) -> Result<(), ()> {
+    // `mut` is only needed where the mode is set.
+    #[cfg_attr(not(unix), allow(unused_mut))]
+    let mut builder = std::fs::DirBuilder::new();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        let meta = std::fs::symlink_metadata(like).map_err(|_| ())?;
+        builder.mode(mode_bits(&meta) | 0o700);
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = like;
+    }
+    builder.create(path).map_err(|_| ())
 }
 
 #[cfg(test)]
@@ -897,6 +1117,246 @@ mod tests {
     }
 
     #[test]
+    fn a_project_folder_below_the_repository_top_is_worked_from_the_top() {
+        let tmp = repo_with_ignore("sub", "app/.env\nsecret.txt\n");
+        let root = tmp.0.join("repo");
+        let app = root.join("app");
+        std::fs::create_dir_all(&app).unwrap();
+        std::fs::write(app.join("main.txt"), "tracked\n").unwrap();
+        git(&root, &["add", "app/main.txt"]);
+        commit(&root, "app");
+        std::fs::write(app.join(".env"), SECRET).unwrap();
+        std::fs::write(root.join("secret.txt"), SECRET).unwrap();
+        // The file at the top names paths from the top. One below it is not read.
+        std::fs::write(root.join(".worktreeinclude"), "app/.env\nsecret.txt\n").unwrap();
+        std::fs::write(app.join(".worktreeinclude"), ".env\n").unwrap();
+
+        // The project is the `app` folder, not the repository.
+        let tree = crate::worktrees::create(&app, "feature/sub", "HEAD", false).unwrap();
+        let dest = std::path::Path::new(&tree.path);
+        assert_eq!(
+            std::fs::read_to_string(dest.join("app").join(".env")).unwrap(),
+            SECRET
+        );
+        assert_eq!(
+            std::fs::read_to_string(dest.join("secret.txt")).unwrap(),
+            SECRET
+        );
+        // Not at the top of the worktree, where the repository does not ignore it and a
+        // `git add -A` would commit it.
+        assert!(!dest.join(".env").exists());
+        let status = git(dest, &["status", "--porcelain"]);
+        assert!(status.trim().is_empty(), "{status}");
+        assert_eq!(
+            tree.include_note.as_deref(),
+            Some("2 files named in .worktreeinclude are in this worktree.")
+        );
+
+        // Only a file below the top: nothing is read from it.
+        std::fs::remove_file(root.join(".worktreeinclude")).unwrap();
+        let other = tmp.0.join("other");
+        std::fs::create_dir(&other).unwrap();
+        let outcome = apply(&app, &other);
+        assert_eq!(std::fs::read_dir(&other).unwrap().count(), 0);
+        assert!(outcome.note.is_none());
+        assert!(outcome.warning.is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_private_file_is_private_from_the_moment_it_exists() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tmp("private");
+        let from = tmp.0.join("source.env");
+        std::fs::write(&from, SECRET).unwrap();
+        std::fs::set_permissions(&from, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let meta = std::fs::symlink_metadata(&from).unwrap();
+        let to = tmp.0.join("copy.env");
+        let created = create_new_like(&to, &meta).unwrap();
+        // Nothing is written yet, and it is already private.
+        let seen = std::fs::metadata(&to).unwrap();
+        assert_eq!(seen.len(), 0);
+        assert_eq!(seen.permissions().mode() & 0o777, 0o600);
+        drop(created);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn copies_and_the_folders_made_for_them_keep_their_source_modes() {
+        use std::os::unix::fs::PermissionsExt;
+        let mode =
+            |path: &std::path::Path| std::fs::metadata(path).unwrap().permissions().mode() & 0o777;
+        let tmp = repo_with_ignore("modes", ".env\nsecrets/\n");
+        let root = tmp.0.join("repo");
+        let inner = root.join("secrets").join("inner");
+        std::fs::create_dir_all(&inner).unwrap();
+        std::fs::write(root.join(".env"), SECRET).unwrap();
+        std::fs::write(inner.join("key"), SECRET).unwrap();
+        std::fs::write(root.join("secrets").join("run.sh"), "#!/bin/sh\n").unwrap();
+        for (path, bits) in [
+            (root.join(".env"), 0o600),
+            (inner.join("key"), 0o600),
+            (root.join("secrets").join("run.sh"), 0o755),
+            (inner.clone(), 0o700),
+            (root.join("secrets"), 0o700),
+        ] {
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(bits)).unwrap();
+        }
+        std::fs::write(root.join(".worktreeinclude"), ".env\nsecrets/\n").unwrap();
+        let dest = tmp.0.join("dest");
+        std::fs::create_dir(&dest).unwrap();
+        let outcome = apply(&root, &dest);
+        assert!(outcome.warning.is_none(), "{:?}", outcome.warning);
+        assert_eq!(mode(&dest.join(".env")), 0o600);
+        assert_eq!(mode(&dest.join("secrets").join("inner").join("key")), 0o600);
+        assert_eq!(mode(&dest.join("secrets").join("run.sh")), 0o755);
+        assert_eq!(mode(&dest.join("secrets")), 0o700);
+        assert_eq!(mode(&dest.join("secrets").join("inner")), 0o700);
+    }
+
+    #[test]
+    fn files_past_the_byte_cap_are_skipped_and_named() {
+        let tmp = repo_with_ignore("bytes", "*.bin\n");
+        let root = tmp.0.join("repo");
+        std::fs::write(root.join("a.bin"), "aaaaaa").unwrap();
+        std::fs::write(root.join("b.bin"), "bbbbbb").unwrap();
+        std::fs::write(root.join("c.bin"), "ccc").unwrap();
+        std::fs::write(root.join(".worktreeinclude"), "*.bin\n").unwrap();
+        let dest = tmp.0.join("dest");
+        std::fs::create_dir(&dest).unwrap();
+        // Ten bytes in all: `a.bin` fits, `b.bin` would pass the cap, `c.bin` still fits.
+        let outcome = apply_with(&root, &dest, LIST_BYTES, 10);
+        assert!(dest.join("a.bin").is_file());
+        assert!(!dest.join("b.bin").exists());
+        assert!(dest.join("c.bin").is_file());
+        assert_eq!(
+            outcome.note.as_deref(),
+            Some("2 files named in .worktreeinclude are in this worktree.")
+        );
+        assert_eq!(
+            outcome.warning.as_deref(),
+            Some("Skipped b.bin to stay under the 10 byte limit.")
+        );
+    }
+
+    #[test]
+    fn the_real_byte_cap_is_fifty_megabytes() {
+        let tmp = repo_with_ignore("bigbytes", "*.bin\n");
+        let root = tmp.0.join("repo");
+        // A sparse file one byte over the cap: it is measured, never read.
+        let big = std::fs::File::create(root.join("big.bin")).unwrap();
+        big.set_len(BYTE_CAP + 1).unwrap();
+        drop(big);
+        std::fs::write(root.join("small.bin"), "small").unwrap();
+        std::fs::write(root.join(".worktreeinclude"), "*.bin\n").unwrap();
+        let dest = tmp.0.join("dest");
+        std::fs::create_dir(&dest).unwrap();
+        let outcome = apply(&root, &dest);
+        assert!(!dest.join("big.bin").exists());
+        assert_eq!(
+            std::fs::read_to_string(dest.join("small.bin")).unwrap(),
+            "small"
+        );
+        assert_eq!(
+            outcome.warning.as_deref(),
+            Some("Skipped big.bin to stay under the 50 MB limit.")
+        );
+    }
+
+    #[test]
+    fn a_warning_names_the_files_it_is_about() {
+        let names = |count: usize| -> Vec<String> {
+            ["a.env", "b.env", "c.env", "d.env", "e.env"][..count]
+                .iter()
+                .map(|name| name.to_string())
+                .collect()
+        };
+        let warn = |unplaced: Unplaced| warning_text(&unplaced, Stop::None, BYTE_CAP).unwrap();
+        let failed = |count| Unplaced {
+            failed: names(count),
+            ..Default::default()
+        };
+        assert_eq!(warn(failed(1)), "Could not copy a.env into this worktree.");
+        assert_eq!(
+            warn(failed(2)),
+            "Could not copy a.env and b.env into this worktree."
+        );
+        assert_eq!(
+            warn(failed(3)),
+            "Could not copy a.env, b.env and c.env into this worktree."
+        );
+        assert_eq!(
+            warn(failed(5)),
+            "Could not copy a.env, b.env, c.env and 2 more into this worktree."
+        );
+        assert_eq!(
+            warn(Unplaced {
+                left: names(2),
+                ..Default::default()
+            }),
+            "Left a.env and b.env as they were."
+        );
+        // Names too long for the one line the window keeps are counted instead.
+        let long: Vec<String> = (0..5).map(|n| format!("{n}{}", "x".repeat(110))).collect();
+        let text = warn(Unplaced {
+            failed: long.clone(),
+            left: long.clone(),
+            too_big: long,
+        });
+        assert!(text.chars().count() <= WARNING_CHARS, "{text}");
+        assert!(text.starts_with("Could not copy 5 listed files into this worktree."));
+        no_secret(&text);
+    }
+
+    #[test]
+    fn two_files_left_as_they_were_are_both_named() {
+        let tmp = repo_with_ignore("left2", "*.env\n");
+        let root = tmp.0.join("repo");
+        std::fs::write(root.join("a.env"), SECRET).unwrap();
+        std::fs::write(root.join("b.env"), SECRET).unwrap();
+        std::fs::write(root.join(".worktreeinclude"), "*.env\n").unwrap();
+        let dest = tmp.0.join("dest");
+        std::fs::create_dir(&dest).unwrap();
+        std::fs::write(dest.join("a.env"), "already\n").unwrap();
+        std::fs::write(dest.join("b.env"), "here\n").unwrap();
+        let outcome = apply(&root, &dest);
+        assert!(outcome.note.is_none());
+        assert_eq!(
+            outcome.warning.as_deref(),
+            Some("Left a.env and b.env as they were.")
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_source_is_opened_without_following_a_link_or_waiting_on_a_pipe() {
+        let tmp = tmp("open");
+        let root = tmp.0.join("repo");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("real.txt"), SECRET).unwrap();
+        std::os::unix::fs::symlink(root.join("real.txt"), root.join("link.txt")).unwrap();
+        // The open itself refuses a link, even one that points at a file in the project.
+        assert!(open_source(&root.join("link.txt")).is_err());
+        assert!(open_source(&root.join("real.txt")).is_ok());
+        assert!(open_checked(&root, "real.txt").is_ok());
+
+        // A pipe swapped in for the file is refused after it is opened, and the open
+        // does not wait for a writer.
+        let pipe = std::ffi::CString::new(root.join("pipe").to_str().unwrap()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(pipe.as_ptr(), 0o600) }, 0);
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let looked_in = root.clone();
+        std::thread::spawn(move || {
+            let _ = sender.send(open_checked(&looked_in, "pipe").is_err());
+        });
+        assert_eq!(
+            receiver.recv_timeout(std::time::Duration::from_secs(10)),
+            Ok(true),
+            "opening a pipe waited or was accepted"
+        );
+    }
+
+    #[test]
     fn a_missing_manifest_leaves_the_worktree_unchanged() {
         let tmp = tmp("absent");
         let root = tmp.0.join("repo");
@@ -928,16 +1388,22 @@ mod tests {
 
     #[test]
     fn copies_names_with_spaces_and_unicode() {
-        let tmp = repo_with_ignore("names", "My Files/\ncafe\u{0301}.env\n");
+        // Composed characters only: macOS lists a name in its composed form and Linux as
+        // it was written, so a decomposed name behaves differently on the two. A composed
+        // one, and a name with no combining marks at all, is found the same way everywhere.
+        let cafe = "caf\u{e9}.env";
+        let nihon = "\u{65e5}\u{672c}\u{8a9e}";
+        let tmp = repo_with_ignore("names", &format!("My Files/\n{cafe}\n{nihon}/\n"));
         let root = tmp.0.join("repo");
         let notes = root.join("My Files");
         std::fs::create_dir_all(&notes).unwrap();
         std::fs::write(notes.join("notes.txt"), "notes\n").unwrap();
-        let cafe = "cafe\u{0301}.env".to_string();
-        std::fs::write(root.join(&cafe), "cafe\n").unwrap();
+        std::fs::write(root.join(cafe), "cafe\n").unwrap();
+        std::fs::create_dir_all(root.join(nihon)).unwrap();
+        std::fs::write(root.join(nihon).join("a.txt"), "nihon\n").unwrap();
         std::fs::write(
             root.join(".worktreeinclude"),
-            format!("My Files/notes.txt\n{cafe}\n"),
+            format!("My Files/notes.txt\n{cafe}\n{nihon}/\n"),
         )
         .unwrap();
         let dest = tmp.0.join("dest");
@@ -947,12 +1413,17 @@ mod tests {
             std::fs::read_to_string(dest.join("My Files").join("notes.txt")).unwrap(),
             "notes\n"
         );
-        // macOS stores names as they were written. The `.gitignore` names the composed
-        // form git lists, so the decomposed spelling is not ignored and stays behind.
-        assert!(!dest.join(&cafe).exists());
+        assert_eq!(std::fs::read_to_string(dest.join(cafe)).unwrap(), "cafe\n");
+        assert_eq!(
+            std::fs::read_to_string(dest.join(nihon).join("a.txt")).unwrap(),
+            "nihon\n"
+        );
         let note = outcome.note.expect("note");
         no_secret(&note);
-        assert!(note.contains("1 file"));
+        assert_eq!(
+            note,
+            "3 files named in .worktreeinclude are in this worktree."
+        );
         assert!(outcome.warning.is_none());
     }
 
@@ -1016,7 +1487,7 @@ mod tests {
         let dest = tmp.0.join("dest");
         std::fs::create_dir(&dest).unwrap();
         // The whole ignored tree is about 14 KB of paths. The two files asked for are far under 4 KB.
-        let outcome = apply_with_list_cap(&root, &dest, 4096);
+        let outcome = apply_with(&root, &dest, 4096, BYTE_CAP);
         assert_eq!(std::fs::read_to_string(dest.join(".env")).unwrap(), SECRET);
         assert_eq!(
             std::fs::read_to_string(dest.join("server").join(".env")).unwrap(),
@@ -1042,7 +1513,7 @@ mod tests {
         std::fs::write(root.join(".worktreeinclude"), "many/\n").unwrap();
         let dest = tmp.0.join("dest");
         std::fs::create_dir(&dest).unwrap();
-        let outcome = apply_with_list_cap(&root, &dest, 1024);
+        let outcome = apply_with(&root, &dest, 1024, BYTE_CAP);
         let copied = std::fs::read_dir(dest.join("many")).unwrap().count();
         assert!(copied > 0 && copied < 200, "{copied}");
         // A path cut in half names nothing, so every file that was copied is a whole file.

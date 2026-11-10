@@ -20,15 +20,19 @@ T3 still does not have this. [Discussion #6905](https://github.com/pingdotgg/t3c
 
 ## File format
 
-`.worktreeinclude` sits at the root of the checkout the worktree is created from, and uses gitignore syntax, as Claude Code's does: patterns, `!` to drop a match, `**`, and `#` comments. `\r\n` line endings are fine. Git does the matching, so escaped characters, negations and directory patterns behave exactly as they do in `.gitignore`.
+`.worktreeinclude` sits at the top of the repository the worktree is created from, and uses gitignore syntax, as Claude Code's does: patterns, `!` to drop a match, `**`, and `#` comments. `\r\n` line endings are fine. Git does the matching, so escaped characters, negations and directory patterns behave exactly as they do in `.gitignore`.
 
 Only files git ignores are copied. A tracked file is already in the new worktree, and an untracked file that is not ignored is the person's work in progress, so both stay where they are. A pattern that names nothing is not an error.
 
 Git is first asked which untracked files the patterns select, and then which of those the checkout's own ignore rules cover, by name. It is never asked to list every ignored file, so a large ignored tree such as `node_modules` cannot fill the listing and hide a later `server/.env`.
 
+When the project folder is a subfolder of its repository, the file, the listing and the copy all work from the top of the repository, as Claude Code's do, and files land at the same path in the new worktree. A `.worktreeinclude` below the top is not read.
+
 Hivra reads the file on disk, including when it is untracked or newer than the last commit. A missing file, or a file that is only comments, changes nothing.
 
-No pattern can reach outside the checkout: an absolute path, a drive letter or a `..` part names nothing git lists under the root. The copy step itself also refuses a link and any path that resolves outside the worktree. At most 100 files are copied; the rest are reported, not copied.
+No pattern can reach outside the checkout: an absolute path, a drive letter or a `..` part names nothing git lists under the root. The copy step itself also refuses a link and any path that resolves outside the worktree. The source is opened without following a link and checked once it is open, so a file swapped for a link between the check and the copy is refused. At most 100 files and 50 MB in all are copied; the rest are named in the warning (up to three names, then a count), not copied.
+
+A copy is created with its source's mode, so a private file is never readable by others while it is written, and a folder made for it takes the source folder's mode. A worktree made for a pull request wake gets none of the files: the code in it is someone else's and could read them.
 
 Copied files are not staged. A file git already placed in the new worktree is left as it is. File contents are never logged and never shown in the note.
 
