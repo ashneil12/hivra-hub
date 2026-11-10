@@ -25,12 +25,15 @@ import {
   hasInFlightSessions,
   inFlightRefs,
   isInFlightSession,
+  isRunningWork,
+  isTurnRunning,
   markTurnInterrupted,
   quitWhileBusyMessage,
   shouldWriteInFlightSnapshot,
   workspaceFromResumed,
 } from "./inFlight";
 import { newSession, type CutWork, type Session } from "./session";
+import { appendUser, stopStreaming } from "../../../integrations/harness/core/apply";
 
 function chat(
   cwd: string,
@@ -602,5 +605,44 @@ describe("a reload cuts a turn (the realtest baseline: cut 1 s after Ash's messa
     });
     expect(cutBeforeAnyOutput(markTurnInterrupted(hidden))).toBe(false);
     expect(resumePrompt(markTurnInterrupted(hidden))).toBe(CONTINUE_PROMPT);
+  });
+});
+
+describe("a chat the app holds busy for a background compact (WP-115)", () => {
+  const held = (patch: Partial<Session> = {}) => chat("/tmp/a", { busy: true, idleCompacting: true, ...patch });
+
+  it("is not a running turn, so it is not in flight, not running work and not saved as cut", () => {
+    const session = held();
+    expect(isTurnRunning(session)).toBe(false);
+    expect(isInFlightSession(session)).toBe(false);
+    expect(isRunningWork(session)).toBe(false);
+    expect(hasInFlightSessions([session])).toBe(false);
+    expect(inFlightRefs([session], [newTab(session.id)])).toEqual([]);
+  });
+
+  it("leaves a real turn beside it counted", () => {
+    const compacting = held();
+    const working = chat("/tmp/b", { busy: true });
+    const refs = inFlightRefs([compacting, working], [newTab(compacting.id), newTab(working.id)]);
+    expect(refs.map((ref) => ref.sessionId)).toEqual([working.id]);
+  });
+
+  it("is a real turn again the moment a message starts one or the chat is stopped", () => {
+    const started = appendUser(held(), "go on");
+    expect(started.idleCompacting).toBeUndefined();
+    expect(isInFlightSession(started)).toBe(true);
+    const stopped = stopStreaming(held());
+    expect(stopped.busy).toBe(false);
+    expect(stopped.idleCompacting).toBeUndefined();
+  });
+
+  it("still counts an approval waiting on the person", () => {
+    const session = held({
+      blocks: [
+        { id: "u1", role: "user", text: "hello" },
+        { id: "a1", role: "approval", text: "run rm", approval: { requestId: 1 } },
+      ],
+    });
+    expect(isInFlightSession(session)).toBe(true);
   });
 });

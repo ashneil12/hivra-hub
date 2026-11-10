@@ -283,6 +283,21 @@ function normalizeImageMime(mime: string): string {
  */
 export const FIRST_MATE_DENY_TOOLS = ["Edit", "Write", "MultiEdit", "NotebookEdit"];
 
+/**
+ * A side question ("by the way", `/btw`) answers from what the chat already did and may look around the project. The
+ * tools it is given are an allowlist (`--tools`): Read, Grep and Glob, and nothing the CLI adds later. A deny list can
+ * only name what is known today, and it missed EnterWorktree, which creates a worktree and a branch in the project
+ * even in plan mode (with only the deny list, Claude Code 2.1.318 still offered it, WebFetch and about twenty others).
+ * The allowlist is what keeps a side question read-only; the plan mode it also runs in is not relied on.
+ */
+export const SIDE_QUESTION_TOOLS = ["Read", "Grep", "Glob"];
+
+/**
+ * Kept behind the allowlist: the file-editing tools and Bash (a shell can write, delete or push) are denied by name as
+ * well, and a deny rule holds in every permission mode, so one dropped from the allowlist by mistake is still refused.
+ */
+export const SIDE_QUESTION_DENY_TOOLS = [...FIRST_MATE_DENY_TOOLS, "Bash"];
+
 export function buildClaudeSpawnArgs(input: {
   model?: string;
   effort?: string;

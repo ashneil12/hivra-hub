@@ -63,8 +63,8 @@ const projects = [
 ];
 
 const inboxItems: FirstMateItem[] = [
-  { id: "ship", kind: "decision", title: "Should we ship?", body: "", statusWord: null, chatId: null, workerIds: [], options: [], recommended: null, project: "C:\\work\\crew", key: "ship", updatedAt: 1 },
-  { id: "font", kind: "decision", title: "Which font?", body: "", statusWord: null, chatId: null, workerIds: [], options: [], recommended: null, project: "C:\\work\\crew", key: "font", updatedAt: 2 },
+  { id: "ship", kind: "decision", title: "Should we ship?", body: "", statusWord: null, chatId: null, workerIds: [], options: [], recommended: null, project: "C:\\work\\crew", key: "ship", since: 1, updatedAt: 1 },
+  { id: "font", kind: "decision", title: "Which font?", body: "", statusWord: null, chatId: null, workerIds: [], options: [], recommended: null, project: "C:\\work\\crew", key: "font", since: 2, updatedAt: 2 },
 ];
 
 const base = hubData();
