@@ -957,7 +957,33 @@ pub fn harness_spawn(
     codex_store: Option<String>,
     devin_ask_edits: Option<bool>,
     custom_route: Option<crate::model_router::CustomRoute>,
+    // WP-134: a More agents entry. Its command and arguments come from the saved list, and only once the person has
+    // approved that command (src-tauri/src/more_agents.rs). The webview sends no command for it.
+    more_agent: Option<String>,
 ) -> Result<u32, String> {
+    let more = match more_agent.as_deref() {
+        None => None,
+        Some(agent) => {
+            if !command.is_empty()
+                || !args.is_empty()
+                || binary_provider.is_some()
+                || account.is_some()
+            {
+                return Err("A More agents start takes no command from the app.".to_string());
+            }
+            let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+            Some(crate::more_agents::approved_spawn(
+                &data_dir,
+                agent,
+                &gui_search_path(),
+            )?)
+        }
+    };
+    let more_run = more.is_some();
+    let (command, args) = match more {
+        Some(run) => (run.command, run.args),
+        None => (command, args),
+    };
     // A bench starts only the plan's wrapper. Before the resolved-binary check, which can itself spawn a probe.
     crate::verify_live::provider_start_allowed(
         crate::verify_live::plan(),
@@ -971,7 +997,9 @@ pub fn harness_spawn(
             workdir.display()
         ));
     }
-    if !is_resolved_harness_binary(&command, binary_provider.as_deref(), binary_path.as_deref()) {
+    if !more_run
+        && !is_resolved_harness_binary(&command, binary_provider.as_deref(), binary_path.as_deref())
+    {
         return Err("harness_spawn: not a resolved harness CLI".to_string());
     }
 
@@ -1093,6 +1121,10 @@ pub fn harness_spawn(
             &session_id,
             task.as_deref(),
         );
+    }
+    // WP-134: a More agents child gets no app environment (keys, the control endpoint): only the allow-list.
+    if more_run {
+        crate::more_agents::restrict_env(&mut cmd, &gui_search_path());
     }
     let mut child =
         spawn_managed(&mut cmd).map_err(|e| format!("Failed to start {command}: {e}"))?;
