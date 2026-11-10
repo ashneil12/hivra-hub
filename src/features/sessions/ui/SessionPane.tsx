@@ -1401,6 +1401,8 @@ const LocalSessionPane = memo(function LocalSessionPane({
                     onSubmit={(text, attachments, options) =>
                       onSubmit(session.id, text, attachments, options)
                     }
+                    model={session.model}
+                    harness={session.harness}
                     // The plan's usage, as the session footer shows it,
                     // which a Mono in full view covers. Its account moves
                     // with the usage-limit notice, not here. A narrow chat

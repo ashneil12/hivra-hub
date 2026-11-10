@@ -52,6 +52,9 @@ import {
 } from "../../sessions/model/draftStash";
 import { DraftStashActions, useStashPresent } from "../../sessions/ui/DraftStashActions";
 import { inlineAfterUndo, type LargePasteUndo } from "../../sessions/model/largePasteUndo";
+import { judgeModelMention, recordMentionIntent, type MentionIntent } from "../../sessions/model/modelMention";
+import { allModels } from "../../sessions/model/models";
+import { HARNESSES, type HarnessId } from "../../sessions/model/session";
 
 // Loaded on first open, with its emoji data, so neither weighs on startup.
 const EmojiPickerPopover = lazy(() =>
@@ -108,6 +111,9 @@ type Props = {
   busy?: boolean;
   /** Stop this chat's own turn (never the work it handed out). */
   onStop?: () => void;
+  /** WP-124: when set, an @model: or @cli: mention is judged on send. It does not switch this chat. */
+  model?: string;
+  harness?: HarnessId;
 };
 
 export { showsStop };
@@ -138,6 +144,8 @@ export function MonoComposer({
   modelLine,
   busy = false,
   onStop,
+  model,
+  harness,
   showContext = false,
   context,
   contextEmpty = false,
@@ -170,6 +178,7 @@ export function MonoComposer({
   // WP-124: the latest large paste, so it can go back to inline text.
   const [largePasteUndo, setLargePasteUndo] = useState<LargePasteUndo | null>(null);
   const submittingRef = useRef(false);
+  const mentionLogRef = useRef<MentionIntent[]>([]);
   /** The paste shortcut was held at the last keydown, since a paste event carries no modifier keys. */
   const inlinePasteRef = useRef(false);
   const [submitting, setSubmitting] = useState(false);
@@ -413,6 +422,21 @@ export function MonoComposer({
       );
     } else setDropNotice(null);
     const message = hidden.text;
+    // WP-124: a mention records intent for a new chat. This chat keeps its model, and the token stays in the text.
+    if (model && harness && (message || attachmentsRef.current.length > 0)) {
+      const judged = judgeModelMention(message, {
+        model,
+        harness,
+        knownModels: allModels().map((item) => item.id),
+        knownClis: HARNESSES,
+      });
+      if (judged.action === "record") {
+        mentionLogRef.current = recordMentionIntent(mentionLogRef.current, judged.intent);
+        setDropNotice(judged.note);
+      } else if (judged.action === "ignore") {
+        setDropNotice(judged.note);
+      }
+    }
     const draft = hidden.text;
     const files = attachmentsRef.current;
     if (!message && !files.length) return;

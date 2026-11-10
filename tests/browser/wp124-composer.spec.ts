@@ -70,3 +70,14 @@ test("a large paste can be put back as text", async ({ page }) => {
   await expect(chip).toHaveCount(0);
   await expect(composer(page)).toHaveValue(large);
 });
+
+test("a CLI mention says it will start a new chat", async ({ page }) => {
+  await openLead(page);
+  await composer(page).fill("use @cli:pi for this");
+  await composer(page).press("Enter");
+  await expect(page.locator("[data-composer-notice]").first()).toHaveText(
+    "This mention will start a new chat.",
+    { timeout: 15_000 },
+  );
+  await expect(composer(page)).toHaveValue("");
+});

@@ -77,7 +77,17 @@ import type {
   WorkspaceMode,
   ComposerTurnOptions,
 } from "../model/session";
-import { HARNESS_TITLE, harnessSupportsAttachments } from "../model/session";
+import { HARNESS_LABEL, HARNESS_TITLE, HARNESSES, harnessSupportsAttachments } from "../model/session";
+import { allModels } from "../model/models";
+import {
+  insertModelMention,
+  judgeModelMention,
+  modelMentionChoices,
+  modelMentionTokenAt,
+  recordMentionIntent,
+  type MentionIntent,
+  type ModelMentionToken,
+} from "../model/modelMention";
 import type {
   UserQuestionPrompt,
   UserQuestionReply,
@@ -531,6 +541,11 @@ export function Composer({
   const [pasteNotice, setPasteNotice] = useState<string | null>(null);
   // WP-124: the latest large paste, so it can go back to inline text.
   const [largePasteUndo, setLargePasteUndo] = useState<LargePasteUndo | null>(null);
+  // WP-124: @model: and @cli: open a picker. A chosen mention stays in the text and does not switch this chat.
+  const [modelMention, setModelMention] = useState<ModelMentionToken | null>(null);
+  const [modelMentionActive, setModelMentionActive] = useState(0);
+  const modelMentionRef = useRef<ModelMentionToken | null>(null);
+  const mentionLogRef = useRef<MentionIntent[]>([]);
   // WP-124: a stashed draft for this chat, including one saved in another window.
   const stashPresent = useStashPresent(sessionId);
   const [plusOpen, setPlusOpen] = useState(false);
@@ -1044,8 +1059,18 @@ export function Composer({
     if (creatingSkill) return;
     const cursor = el.selectionStart ?? 0;
     const token = slashTokenAt(el.value, cursor, hasNativeCommands(harness));
+    const modelToken = modelMentionTokenAt(el.value, cursor);
+    if (
+      modelMentionRef.current?.kind !== modelToken?.kind ||
+      modelMentionRef.current?.query !== modelToken?.query ||
+      modelMentionRef.current?.start !== modelToken?.start
+    ) {
+      setModelMentionActive(0);
+    }
+    modelMentionRef.current = modelToken;
+    setModelMention(modelToken);
     setSlash(token);
-    setMention(token ? null : mentionTokenAt(el.value, cursor));
+    setMention(modelToken || token ? null : mentionTokenAt(el.value, cursor));
   };
 
   const openSessionFolderPicker = useCallback(() => {
@@ -1555,6 +1580,19 @@ export function Composer({
       const confirmed = await confirmEarlierRef.current?.(earlierBlockId);
       if (confirmed !== true) return;
     }
+    // WP-124: a mention records intent for a new chat. This chat keeps its model, and the token stays in the text.
+    const judged = judgeModelMention(submittedText, {
+      model,
+      harness,
+      knownModels: allModels().map((item) => item.id),
+      knownClis: HARNESSES,
+    });
+    if (judged.action === "record") {
+      mentionLogRef.current = recordMentionIntent(mentionLogRef.current, judged.intent);
+      setPasteNotice(judged.note);
+    } else if (judged.action === "ignore") {
+      setPasteNotice(judged.note);
+    }
     // Clear the parent draft before onSubmit. The app can synchronously remount
     // the composer when the first message leaves an empty session (EmptySession →
     // docked layout). If draftRef still holds the sent text, the new instance
@@ -1679,6 +1717,33 @@ export function Composer({
     applyComposerDraft(saved.text, restoreAttachments(saved, () => crypto.randomUUID()));
     ref.current?.focus();
   };
+  const modelChoices = modelMention
+    ? modelMentionChoices(
+        modelMention,
+        allModels().map((item) => ({ id: item.id, name: item.name })),
+        HARNESSES.map((id) => ({ id, name: HARNESS_LABEL[id] })),
+      )
+    : [];
+  const pickModelMention = (id: string) => {
+    const el = ref.current;
+    const token = modelMentionRef.current;
+    if (!el || !token) {
+      setModelMention(null);
+      return;
+    }
+    const next = insertModelMention(el.value, token, id);
+    el.value = next;
+    resizeComposer(el);
+    const caret = Math.min(next.length, token.start + `@${token.kind}:${id}`.length + 1);
+    el.setSelectionRange(caret, caret);
+    draftRevisionRef.current += 1;
+    setDraft(next);
+    onDraftChange?.(next);
+    syncHasValue(next, attachmentsRef.current);
+    modelMentionRef.current = null;
+    setModelMention(null);
+    el.focus();
+  };
   const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
     // A paste event carries no modifier keys, so the shortcut is read here (largePaste.ts).
     inlinePasteRef.current =
@@ -1717,6 +1782,33 @@ export function Composer({
       e.preventDefault();
       openSessionFolderPicker();
       return;
+    }
+
+    // WP-124: the model picker wins over a file mention while @model or @cli is being typed.
+    if (modelMention) {
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        if (modelChoices.length === 0) return;
+        setModelMentionActive((index) => (index + 1) % modelChoices.length);
+        return;
+      }
+      if (e.key === "ArrowUp") {
+        e.preventDefault();
+        if (modelChoices.length === 0) return;
+        setModelMentionActive((index) => (index - 1 + modelChoices.length) % modelChoices.length);
+        return;
+      }
+      if (e.key === "Escape") {
+        e.preventDefault();
+        modelMentionRef.current = null;
+        setModelMention(null);
+        return;
+      }
+      if ((e.key === "Tab" || (e.key === "Enter" && !e.shiftKey)) && modelChoices[modelMentionActive]) {
+        e.preventDefault();
+        pickModelMention(modelChoices[modelMentionActive].id);
+        return;
+      }
     }
 
     if (mentionOpen) {
@@ -2285,6 +2377,29 @@ export function Composer({
                   .finally(() => setCreateBusy(false));
               }}
             />
+          </div>
+        ) : null}
+        {modelMention && !pickerOpen ? (
+          <div className="absolute inset-x-0 bottom-full z-30 mb-1 rounded-lg border border-stroke popover-glass p-1 shadow-2xl">
+            {modelChoices.length === 0 ? (
+              <p className="px-2 py-1 text-xs text-content/55">No match</p>
+            ) : (
+              modelChoices.map((choice, index) => (
+                <button
+                  key={`${modelMention.kind}:${choice.id}`}
+                  type="button"
+                  className={`block w-full rounded px-2 py-1 text-left text-xs ${
+                    index === modelMentionActive ? "bg-content/8 text-content" : "text-content/80"
+                  }`}
+                  onMouseDown={(event) => {
+                    event.preventDefault();
+                    pickModelMention(choice.id);
+                  }}
+                >
+                  {choice.name}
+                </button>
+              ))
+            )}
           </div>
         ) : null}
         {mentionOpen && !pickerOpen ? (
