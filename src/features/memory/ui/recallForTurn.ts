@@ -12,11 +12,13 @@ import { recordRecall } from "../model/lastRecall";
 export async function recalledFence(
   mateId: string | undefined,
   message: string,
-  wide?: { everyMate?: boolean; mateIds?: readonly string[]; sessionId?: string; compacted?: number },
+  wide?: { everyMate?: boolean; mateIds?: readonly string[]; sessionId?: string; compacted?: number; private?: boolean },
   /** WP-100: the engine reading this turn, so a fact another engine wrote says so. */
   readingEngine?: string,
 ): Promise<string | undefined> {
   if (!mateId) return undefined;
+  // WP-111: a private chat is not given memory. Nothing comes in.
+  if (wide?.private === true) return undefined;
   try {
     const loaded = await invoke<{ revision: number; doc: unknown }>("memory_review_load");
     const doc = parseDoc(loaded?.doc);

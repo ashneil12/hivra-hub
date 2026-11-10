@@ -10,7 +10,10 @@ import {
   btwOpenTargetTurnId,
   btwThreadBlocks,
   btwSurfaceHarness,
+  buildSideRecap,
   sessionBtwThreads,
+  sideAnswerToBringBack,
+  type SideRecap,
 } from "../model/btw";
 import { groupTurns } from "../model/transcriptActivity";
 import {
@@ -290,6 +293,7 @@ export function useBtwConversation({
     model: selectedModel,
     modelSettings: selectedModelSettings,
     canStartDraft: btwOpenTargetTurnId(turns, blocks, harness, managed) != null,
+    recapAnchorId: active?.turn[active.turn.length - 1]?.id,
     finishClose,
     selectTab,
     /**
@@ -470,16 +474,35 @@ function morphClips(sheet: HTMLElement, origin: HTMLElement | null) {
  * the session, the active thread, and a composer for it. It morphs out of
  * the session's composer box and folds back into it on close.
  */
+/** Selection text when it sits inside the sheet. Anything else is ignored. */
+function selectedTextWithin(root: HTMLElement | null): string {
+  if (!root || typeof window === "undefined" || !window.getSelection) return "";
+  let selection: Selection | null;
+  try {
+    selection = window.getSelection();
+  } catch {
+    return "";
+  }
+  if (!selection || selection.isCollapsed || selection.rangeCount === 0) return "";
+  const anchor = selection.anchorNode;
+  if (!anchor || !root.contains(anchor)) return "";
+  return selection.toString();
+}
+
 export function BtwSheet({
   btw,
+  blocks,
   cwd,
   visible = true,
   origin,
   onSaveNote,
   onOpenFile,
   onOpenDiff,
+  onAddToMainChat,
 }: {
   btw: BtwConversation;
+  /** Parent transcript the recap is drawn from. */
+  blocks?: Block[];
   cwd?: string;
   visible?: boolean;
   /** The session composer's box, which the sheet grows out of. */
@@ -487,6 +510,8 @@ export function BtwSheet({
   onSaveNote?: (text: string) => void | Promise<void>;
   onOpenFile?: (path: string) => void;
   onOpenDiff?: (path: string) => void;
+  /** Puts the side answer, or the selection, into the parent composer. Does not send. */
+  onAddToMainChat?: (text: string) => void;
 }) {
   const sheetRef = useRef<HTMLElement | null>(null);
   const glassRef = useRef<HTMLDivElement | null>(null);
@@ -525,6 +550,24 @@ export function BtwSheet({
       btw.model,
     ],
   );
+  const recap = useMemo<SideRecap | null>(() => {
+    if (!blocks || !btw.recapAnchorId) return null;
+    const built = buildSideRecap(blocks, btw.recapAnchorId, cwd);
+    return built.turns.length > 0 || built.file ? built : null;
+  }, [blocks, btw.recapAnchorId, cwd]);
+  const sideAnswer =
+    [...messages]
+      .reverse()
+      .find((message) => message.role === "assistant" && message.text.trim())
+      ?.text ?? "";
+  const addAnswerToMainChat = () => {
+    const text = sideAnswerToBringBack(
+      sideAnswer,
+      selectedTextWithin(sheetRef.current),
+    );
+    if (!text) return;
+    onAddToMainChat?.(text);
+  };
 
   // Morph between the composer box and the full sheet. The panel grows out
   // of the session composer's box and folds back into it; a frame in the
@@ -781,6 +824,32 @@ export function BtwSheet({
             </button>
           </div>
 
+          {recap ? (
+            <div
+              data-side-recap
+              className="btw-sheet-body shrink-0 border-b border-content/8 px-4 py-2.5 text-xs leading-4.5 text-content/70"
+            >
+              <div className="text-[10px] font-medium uppercase tracking-[0.08em] text-content/45">
+                Recap
+              </div>
+              {recap.turns.map((turn, index) => (
+                <p key={`${turn.role}-${index}`} className="mt-1">
+                  <span className="text-content/45">
+                    {turn.role === "user" ? "You" : "Assistant"}:{" "}
+                  </span>
+                  {turn.text}
+                </p>
+              ))}
+              {recap.file ? (
+                <p className="mt-1">
+                  Current file: {recap.file.path}
+                  {recap.file.additions != null || recap.file.deletions != null
+                    ? ` (+${recap.file.additions ?? 0} -${recap.file.deletions ?? 0})`
+                    : ""}
+                </p>
+              ) : null}
+            </div>
+          ) : null}
           <div className="btw-sheet-body min-h-0 flex-1">
             <AgentTranscript
               key={activeTabId ?? ""}
@@ -820,6 +889,18 @@ export function BtwSheet({
             </div>
           ) : null}
 
+          {sideAnswer ? (
+            <div className="btw-sheet-body flex justify-end px-3 pb-1">
+              <button
+                type="button"
+                data-add-to-main-chat
+                onClick={addAnswerToMainChat}
+                className="inline-flex h-7 items-center rounded-md px-2.5 text-xs text-content/70 transition-colors hover:bg-content/8 hover:text-content focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
+              >
+                Add to the main chat
+              </button>
+            </div>
+          ) : null}
           {/* Same inset as the docked composer, so the morph starts on its box. */}
           <div className="btw-sheet-composer shrink-0 p-1.5 pt-0">
             {activeTabId ? (

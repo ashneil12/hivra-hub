@@ -9,6 +9,7 @@
 // marked submitted. A timeout or an unreachable model is deferred, not a final
 // failure, and is not marked submitted.
 
+import { withoutPrivateChats } from "../../memory/model/privateChat";
 import { citeKey, dropLinesWithoutSource } from "./provenance";
 import { batchesOf, slicePause } from "./batch";
 import { batchPrompt, sendable } from "./prompt";
@@ -48,6 +49,8 @@ export type RunInput = {
   pause?: (ms: number, cancelled: () => boolean) => Promise<boolean>;
   now?: () => number;
   onProgress?: (event: ProgressEvent) => void;
+  /** WP-111: chats memory must not read. They are not offered and not marked done. */
+  excludedKeys?: ReadonlySet<string>;
 };
 
 type Stop = { status: "failed" | "deferred"; reason: string };
@@ -111,6 +114,8 @@ function thrownMessage(error: unknown): string {
 }
 
 export async function runImport(input: RunInput): Promise<RunSummary> {
+  // WP-111: a private chat is never offered. A missing list means none are known.
+  input = { ...input, units: withoutPrivateChats(input.units, input.excludedKeys ?? new Set()) };
   const pause = input.pause ?? ((ms, cancelled) => slicePause(ms, cancelled, (n) => new Promise((resolve) => setTimeout(resolve, n))));
   const now = input.now ?? (() => Date.now());
   let state = input.state;

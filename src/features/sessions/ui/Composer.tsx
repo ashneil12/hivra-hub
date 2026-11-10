@@ -190,6 +190,8 @@ import {
   BTW_COMMAND,
   consumeBtwCommand,
   consumeBtwPrefix,
+  SIDE_COMMAND,
+  SIDE_QUESTION_UNAVAILABLE,
   supportsBtwHarness,
 } from "../model/btw";
 import { COMPACT_COMMAND, isCompactCommand } from "../model/compact";
@@ -548,6 +550,7 @@ export function Composer({
   const mentionLogRef = useRef<MentionIntent[]>([]);
   // WP-124: a stashed draft for this chat, including one saved in another window.
   const stashPresent = useStashPresent(sessionId);
+  const [sideNotice, setSideNotice] = useState<string | null>(null);
   const [plusOpen, setPlusOpen] = useState(false);
   const [planSelected, setPlanSelected] = useState(false);
   const [operatorSelected, setOperatorSelected] = useState(false);
@@ -642,7 +645,7 @@ export function Composer({
             COUNCIL_COMMAND,
             ...(canSaveDraft && onSaveDraft ? [DRAFT_COMMAND] : []),
             COMPACT_COMMAND,
-            ...(supportsBtwHarness(harness) ? [BTW_COMMAND] : []),
+            ...(supportsBtwHarness(harness) ? [BTW_COMMAND, SIDE_COMMAND] : []),
             ...skills.filter(
               (skill) =>
                 ![OPERATOR_COMMAND.name, "mono", "monocode"].includes(
@@ -1127,16 +1130,20 @@ export function Composer({
     onEarlierPromptConsumed?.(earlierPrompt.id);
   }, [earlierPrompt, onDraftChange, onEarlierPromptConsumed, syncHasValue]);
 
-  // `/btw ` opens the side conversation as soon as it is typed, carrying any
-  // text after it over as the unsent side question.
+  // `/btw ` or `/side ` opens the side conversation as soon as it is typed,
+  // carrying any text after it over as the unsent side question.
   const enterBtwFromPrefix = useCallback(
     (el: HTMLTextAreaElement) => {
-      if (!onBtwCommand || inboxCard || noteCard || handoffCard) return false;
-      if (attachmentsRef.current.length > 0) return false;
       const rest = consumeBtwPrefix(el.value);
-      if (rest == null || onBtwCommand(rest, { draft: true }) === false) {
+      if (rest == null) return false;
+      if (!supportsBtwHarness(harness)) {
+        setSideNotice(SIDE_QUESTION_UNAVAILABLE);
         return false;
       }
+      if (!onBtwCommand || inboxCard || noteCard || handoffCard) return false;
+      if (attachmentsRef.current.length > 0) return false;
+      if (onBtwCommand(rest, { draft: true }) === false) return false;
+      setSideNotice(null);
       el.value = "";
       resizeComposer(el);
       draftRevisionRef.current += 1;
@@ -1149,6 +1156,7 @@ export function Composer({
     },
     [
       handoffCard,
+      harness,
       inboxCard,
       noteCard,
       onBtwCommand,
@@ -1491,6 +1499,17 @@ export function Composer({
     const btwCommand = consumeBtwCommand(value);
     if (
       btwCommand.matched &&
+      !supportsBtwHarness(harness) &&
+      attachmentsRef.current.length === 0 &&
+      !inboxCard &&
+      !noteCard &&
+      !handoffCard
+    ) {
+      setSideNotice(SIDE_QUESTION_UNAVAILABLE);
+      return;
+    }
+    if (
+      btwCommand.matched &&
       onBtwCommand &&
       attachmentsRef.current.length === 0 &&
       !inboxCard &&
@@ -1499,6 +1518,7 @@ export function Composer({
     ) {
       const accepted = onBtwCommand(btwCommand.text);
       if (accepted === false) return;
+      setSideNotice(null);
       pasteGenerationRef.current += 1;
       if (ref.current) {
         ref.current.value = "";
@@ -2509,6 +2529,15 @@ export function Composer({
               </button>
             </p>
           ) : null}
+          {sideNotice ? (
+            <p
+              role="status"
+              data-side-notice
+              className="px-3 pt-2 text-xs text-content/70"
+            >
+              {sideNotice}
+            </p>
+          ) : null}
 
           {inboxCard ? (
             <InboxMiniCard card={inboxCard} onDismiss={onInboxCardDismiss} />
@@ -2579,6 +2608,12 @@ export function Composer({
               onInput={(e) => {
                 const el = e.currentTarget;
                 if (enterBtwFromPrefix(el)) return;
+                if (
+                  consumeBtwPrefix(el.value) == null &&
+                  !consumeBtwCommand(el.value).matched
+                ) {
+                  setSideNotice(null);
+                }
                 resizeComposer(el);
                 draftRevisionRef.current += 1;
                 setDraft(el.value);

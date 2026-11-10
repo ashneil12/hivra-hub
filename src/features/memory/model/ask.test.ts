@@ -62,6 +62,23 @@ describe("dueForAsk", () => {
     expect(dueForAsk(doc([removal]), removal, NOW)).toBe(false);
     const skill = fact({ action: "skill", skill: { name: "a", lesson: "b" }, fade: 0.01, createdAt: NOW - 10 * DAY, updatedAt: NOW - 10 * DAY });
     expect(dueForAsk(doc([skill]), skill, NOW)).toBe(false);
+    // WP-111: parking a fact for a contradiction takes it off the ask card, even if it had already faded.
+    const parked = fact({
+      state: "unreviewed",
+      fade: 0.01,
+      createdAt: NOW - 10 * DAY,
+      updatedAt: NOW - 10 * DAY,
+      dispute: { otherId: memoryId(["notes-lead", "add", "uses pnpm"]), reason: "A newer message says something different", was: "confirmed" },
+    });
+    expect(dueForAsk(doc([parked]), parked, NOW)).toBe(false);
+    const stillConfirmed = fact({
+      state: "confirmed",
+      fade: 0.01,
+      createdAt: NOW - 10 * DAY,
+      updatedAt: NOW - 10 * DAY,
+      dispute: { otherId: memoryId(["notes-lead", "add", "uses yarn"]), reason: "A newer message says something different", was: "confirmed" },
+    });
+    expect(dueForAsk(doc([stillConfirmed]), stillConfirmed, NOW)).toBe(false);
   });
 
   it("stops after three showings, and once it has been answered", () => {

@@ -1227,8 +1227,8 @@ fn an_older_ledger_gains_its_columns_in_place() {
             ("person1".into(), 1, 0),
         ]
     );
-    assert_eq!(crate::session_store::schema_version(&conn).unwrap(), 19);
-    assert_eq!(crate::session_store::SCHEMA_VERSION, 19);
+    assert_eq!(crate::session_store::schema_version(&conn).unwrap(), 20);
+    assert_eq!(crate::session_store::SCHEMA_VERSION, 20);
 }
 
 /// Every name githooks(5) documents, except three that must not be files in

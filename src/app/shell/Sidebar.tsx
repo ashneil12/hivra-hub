@@ -349,6 +349,8 @@ type Props = {
   ) => void;
   onPinSession?: (sessionId: string, pinned: boolean) => void;
   onPinSessions?: (sessionIds: readonly string[], pinned: boolean) => void;
+  /** WP-111: make one chat private, or switch it off. */
+  onPrivateSession?: (sessionId: string, on: boolean) => void;
   onSetSessionLinkedWorkItem?: (
     sessionId: string,
     item: LinkedWorkItem | undefined,
@@ -517,6 +519,7 @@ function SidebarComponent({
   onArchiveSessions: onArchiveLocalSessions,
   onPinSession: onPinLocalSession,
   onPinSessions: onPinLocalSessions,
+  onPrivateSession,
   onSetSessionLinkedWorkItem: onSetLocalSessionLinkedWorkItem,
   reminders = [],
   onSetReminders,
@@ -1603,6 +1606,16 @@ function SidebarComponent({
           },
         ]
       : []),
+    // WP-111: one chat at a time, same as rename.
+    ...(!multipleMenuSessions && onPrivateSession
+      ? [
+          {
+            kind: "item" as const,
+            id: "private",
+            label: menuSessions[0]?.private === true ? "Not private" : "Private",
+          },
+        ]
+      : []),
     ...(!multipleMenuSessions && onRenameSession
       ? [
           {
@@ -1768,6 +1781,10 @@ function SidebarComponent({
       } else {
         for (const id of sessionIds) onPinSession?.(id, !pinned);
       }
+      return;
+    }
+    if (id === "private") {
+      onPrivateSession?.(sessionId, menuSessions[0]?.private !== true);
       return;
     }
     if (id === "rename") {
