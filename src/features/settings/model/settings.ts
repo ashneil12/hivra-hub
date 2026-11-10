@@ -410,6 +410,12 @@ export const SETTINGS_INDEX: SettingsEntry[] = [
     label: "Notes",
     keywords: "notebook markdown rail scratchpad",
   },
+  {
+    id: "review-guide",
+    section: "general",
+    label: "Review guide",
+    keywords: "guide review pull request diff tour inbox github",
+  },
   ...(IS_MAC
     ? [
         {
@@ -1140,6 +1146,47 @@ export function subscribeNotesEnabled(onStoreChange: () => void) {
   window.addEventListener(NOTES_ENABLED_CHANGE_EVENT, onStoreChange);
   return () =>
     window.removeEventListener(NOTES_ENABLED_CHANGE_EVENT, onStoreChange);
+}
+
+const REVIEW_GUIDE_ENABLED_KEY = "monocode.reviewGuideEnabled";
+
+/** Off until the person turns it on. With it off, the inbox has no review guide. */
+export const REVIEW_GUIDE_ENABLED_DEFAULT = false;
+
+/** Fired on `window` when the review guide setting flips. */
+export const REVIEW_GUIDE_ENABLED_CHANGE_EVENT =
+  "monocode:review-guide-enabled-change";
+
+export function loadReviewGuideEnabled(): boolean {
+  return readFlag(REVIEW_GUIDE_ENABLED_KEY) ?? REVIEW_GUIDE_ENABLED_DEFAULT;
+}
+
+export function saveReviewGuideEnabled(value: boolean) {
+  writeFlag(REVIEW_GUIDE_ENABLED_KEY, value);
+  if (typeof window === "undefined") return;
+  window.dispatchEvent(
+    new CustomEvent<boolean>(REVIEW_GUIDE_ENABLED_CHANGE_EVENT, {
+      detail: value,
+    }),
+  );
+}
+
+export function subscribeReviewGuideEnabled(onStoreChange: () => void) {
+  if (typeof window === "undefined") return () => {};
+  window.addEventListener(REVIEW_GUIDE_ENABLED_CHANGE_EVENT, onStoreChange);
+  return () =>
+    window.removeEventListener(
+      REVIEW_GUIDE_ENABLED_CHANGE_EVENT,
+      onStoreChange,
+    );
+}
+
+/**
+ * The guide is a GitHub inbox extra. Off, or any other forge, matches a build
+ * that has no guide at all.
+ */
+export function reviewGuideShown(enabled: boolean, provider: string): boolean {
+  return enabled === true && provider === "github";
 }
 
 const MONOS_ENABLED_KEY = "monocode.monosEnabled";

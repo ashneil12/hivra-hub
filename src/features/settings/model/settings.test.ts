@@ -33,11 +33,14 @@ import {
   loadGridArcadeEnabled,
   loadLiveAgentsEnabled,
   loadNotesEnabled,
+  loadReviewGuideEnabled,
   keybindingPressed,
   matchCustomKeybinding,
   loadQuickComposerShortcut,
   loadTabAnimationsEnabled,
   NOTES_ENABLED_DEFAULT,
+  REVIEW_GUIDE_ENABLED_DEFAULT,
+  reviewGuideShown,
   saveComposerRunner,
   saveAutosave,
   saveCollapsedProjectRailMode,
@@ -49,6 +52,7 @@ import {
   saveGridArcadeEnabled,
   saveLiveAgentsEnabled,
   saveNotesEnabled,
+  saveReviewGuideEnabled,
   saveKeybindingOverride,
   type KeybindingOverride,
   saveQuickComposerShortcut,
@@ -60,6 +64,7 @@ const KEY = "monocode.composerRunner";
 const MODEL_CONTROLS_KEY = "monocode.modelControls";
 const LEGACY_EFFORT_VISIBLE_KEY = "monocode.composerEffortVisible";
 const NOTES_KEY = "monocode.notesEnabled";
+const REVIEW_GUIDE_KEY = "monocode.reviewGuideEnabled";
 const KEYBINDING_OVERRIDES_KEY = "monocode.keybindingOverrides";
 const QUICK_COMPOSER_SHORTCUT_KEY = "monocode.quickComposerShortcut";
 const LIVE_AGENTS_KEY = "monocode.liveAgentsEnabled";
@@ -273,6 +278,37 @@ describe("notes enabled setting", () => {
     expect(loadNotesEnabled()).toBe(false);
     saveNotesEnabled(true);
     expect(loadNotesEnabled()).toBe(true);
+  });
+});
+
+describe("review guide setting", () => {
+  beforeEach(mockLocalStorage);
+  afterEach(() => {
+    localStorage.removeItem(REVIEW_GUIDE_KEY);
+  });
+
+  it("defaults to off, which shows no guide", () => {
+    expect(REVIEW_GUIDE_ENABLED_DEFAULT).toBe(false);
+    expect(loadReviewGuideEnabled()).toBe(false);
+    expect(reviewGuideShown(loadReviewGuideEnabled(), "github")).toBe(false);
+    expect(reviewGuideShown(false, "gitlab")).toBe(false);
+    expect(reviewGuideShown(false, "azuredevops")).toBe(false);
+  });
+
+  it("persists an on switch and still hides other forges", () => {
+    saveReviewGuideEnabled(true);
+    expect(localStorage.getItem(REVIEW_GUIDE_KEY)).toBe("1");
+    expect(loadReviewGuideEnabled()).toBe(true);
+    expect(reviewGuideShown(true, "github")).toBe(true);
+    expect(reviewGuideShown(true, "gitlab")).toBe(false);
+    saveReviewGuideEnabled(false);
+    expect(loadReviewGuideEnabled()).toBe(false);
+    expect(reviewGuideShown(loadReviewGuideEnabled(), "github")).toBe(false);
+  });
+
+  it("treats a bad stored value as off", () => {
+    localStorage.setItem(REVIEW_GUIDE_KEY, "yes");
+    expect(loadReviewGuideEnabled()).toBe(false);
   });
 });
 

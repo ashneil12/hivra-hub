@@ -404,6 +404,7 @@ import {
   loadLiveAgentsEnabled,
   loadModelControls,
   loadNotesEnabled,
+  loadReviewGuideEnabled,
   loadMonosEnabled,
   loadMonoMenuBarIcon,
   loadKeybindingOverrides,
@@ -427,6 +428,7 @@ import {
   saveLiveAgentsEnabled,
   saveModelControls,
   saveNotesEnabled,
+  saveReviewGuideEnabled,
   saveMonosEnabled,
   subscribeMonosEnabled,
   saveKeybindingOverride,
@@ -965,6 +967,9 @@ function GeneralPage({
   const [notificationPermission, setNotificationPermission] =
     useState<NotificationPermission>(cachedNotificationPermission);
   const [notesEnabled, setNotesEnabled] = useState(loadNotesEnabled);
+  const [reviewGuideEnabled, setReviewGuideEnabled] = useState(
+    loadReviewGuideEnabled,
+  );
   const [liveAgentsEnabled, setLiveAgentsEnabled] = useState(
     loadLiveAgentsEnabled,
   );
@@ -1007,6 +1012,10 @@ function GeneralPage({
   const onNotesEnabled = (next: boolean) => {
     saveNotesEnabled(next);
     setNotesEnabled(next);
+  };
+  const onReviewGuideEnabled = (next: boolean) => {
+    saveReviewGuideEnabled(next);
+    setReviewGuideEnabled(next);
   };
 
   const onQuickComposerEnabled = (next: boolean) => {
@@ -1138,6 +1147,18 @@ function GeneralPage({
           description="A global markdown notebook on the project rail. Save a finished turn from the transcript, then mention it later with @note or add it to chat."
         >
           <Toggle label="Notes" on={notesEnabled} onChange={onNotesEnabled} />
+        </Row>
+        {/* WP-132b: review guide, off unless the person turns it on. */}
+        <Row
+          id="review-guide"
+          label="Review guide"
+          description="A short reading tour on a GitHub pull request in the inbox. Off leaves the inbox as it is."
+        >
+          <Toggle
+            label="Review guide"
+            on={reviewGuideEnabled}
+            onChange={onReviewGuideEnabled}
+          />
         </Row>
         {IS_MAC && (
           <Row
