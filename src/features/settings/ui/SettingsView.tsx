@@ -310,8 +310,10 @@ import { AccountOrderControls, AccountWaterfallSwitch } from "../../providers/ui
 import { orderedAccounts } from "../../providers/model/accountWaterfall";
 import { signInOptions } from "../../providers/model/providerSignIn";
 import {
+  saveChatListInbox,
   saveComposerAutocorrect,
   savePacedReveal,
+  useChatListInbox,
   usePacedReveal,
   saveMaskEmails,
   saveNewLayoutPromptDismissed,
@@ -1215,6 +1217,8 @@ function ChatPage() {
   const [formatOnSave, setFormatOnSave] = useState(loadFormatOnSave);
   const [composerRunner, setComposerRunner] = useState(loadComposerRunner);
   const composerAutocorrect = useComposerAutocorrect();
+  // WP-113: optional settle, snooze and re-sort. Off keeps today's list.
+  const chatListInbox = useChatListInbox();
   const [gridArcadeEnabled, setGridArcadeEnabled] = useState(
     loadGridArcadeEnabled,
   );
@@ -1279,6 +1283,20 @@ function ChatPage() {
           description="Replies end with one short paragraph in plain words about what happened and what it means."
         >
           <PlainEnglishSetting />
+        </Row>
+      </Group>
+      {/* WP-113: one switch for settle, snooze and re-sort. */}
+      <Group title="Chat list" description="How the list of chats behaves.">
+        <Row
+          id="chat-list-inbox"
+          label="Settle and snooze"
+          description="Settle finished chats, snooze a chat until a time, and bring a chat that needs you back to the top. Off keeps today's list."
+        >
+          <Toggle
+            label="Settle and snooze"
+            on={chatListInbox}
+            onChange={saveChatListInbox}
+          />
         </Row>
       </Group>
       <Group

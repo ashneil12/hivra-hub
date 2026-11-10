@@ -92,8 +92,25 @@ export function homeFromEnv(env, platform = process.platform) {
 
 export { isIsolatedHome };
 
+/** A git that does not answer is stopped. The wait is not raised on a retry. */
+export const GIT_ANSWER_MS = 15_000;
+
+export function runLimited(exec, file, args, { timeout, label }) {
+  try {
+    return exec(file, args, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout });
+  } catch (error) {
+    if (error?.code === "ETIMEDOUT") {
+      throw new Error(`${label} did not answer within ${Math.round(timeout / 1000)}s`);
+    }
+    throw error;
+  }
+}
+
 const git = (repo, args) =>
-  execFileSync("git", ["-C", repo, ...args], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
+  runLimited(execFileSync, "git", ["-C", repo, ...args], {
+    timeout: GIT_ANSWER_MS,
+    label: `git ${args[0] ?? "command"}`,
+  }).trim();
 
 const codesignPath = () => process.env.MONOCODE_SHIP_CODESIGN || "/usr/bin/codesign";
 
