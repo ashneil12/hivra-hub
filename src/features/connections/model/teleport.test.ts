@@ -18,6 +18,7 @@ import {
   type MoveEndpoint,
   type MovePayload,
   type ChatRecord,
+  transcriptSecretHits,
 } from "./teleport";
 
 const THIS_MAC = "this-mac";
@@ -447,5 +448,68 @@ describe("WP-177 no credentials in a move", () => {
     expect(() => assertManifestClean({ ...manifest, title: "-----BEGIN PRIVATE KEY-----" })).toThrow(/secret/i);
     expect(() => assertManifestClean({ ...manifest, title: "see .credentials.json" })).toThrow(/secret/i);
     expect(() => assertManifestClean({ ...manifest, extra: "x" } as typeof manifest & { extra: string })).toThrow(/field/i);
+  });
+});
+
+describe("WP-177 transcript secret hold", () => {
+  const KEY_IN_TRANSCRIPT = '{"type":"user","text":"use sk-ant-api03-ABCDEFGH12345678 for the key"}\n';
+
+  it("counts key-shaped values in the transcript", () => {
+    expect(transcriptSecretHits(chat().transcript)).toBe(0);
+    expect(transcriptSecretHits(KEY_IN_TRANSCRIPT)).toBeGreaterThan(0);
+    expect(transcriptSecretHits('{"api_key": "abcdef0123456789abcdef"}')).toBeGreaterThan(0);
+  });
+
+  it("holds the move when the transcript holds a key-shaped value, and asks the person", async () => {
+    const mac = new StubMachine(THIS_MAC);
+    const host = new StubMachine(HOST);
+    mac.seed(chat({ transcript: KEY_IN_TRANSCRIPT }));
+    const planned = await planMove(chat({ transcript: KEY_IN_TRANSCRIPT }), THIS_MAC, HOST);
+    if (!planned.ok) throw new Error("plan");
+    expect(planned.plan.transcriptSecretHits).toBeGreaterThan(0);
+    const held = await moveChat({ chatId: CHAT, from: mac, to: host, approval: { planId: planned.plan.planId }, moveId: "m1", at: AT });
+    expect(held.status).toBe("refused");
+    if (held.status === "refused") {
+      expect(held.refusal.reason).toBe("transcript-secret-held");
+      expect(held.refusal.message).toMatch(/ask/i);
+    }
+    expect(mac.isFrozen(CHAT)).toBe(false);
+    expect(host.payloads).toHaveLength(0);
+  });
+
+  it("moves only when the person accepts that exact plan, which names the hit", async () => {
+    const mac = new StubMachine(THIS_MAC);
+    const host = new StubMachine(HOST);
+    mac.seed(chat({ transcript: KEY_IN_TRANSCRIPT }));
+    const planned = await planMove(chat({ transcript: KEY_IN_TRANSCRIPT }), THIS_MAC, HOST);
+    if (!planned.ok) throw new Error("plan");
+    const moved = await moveChat({
+      chatId: CHAT,
+      from: mac,
+      to: host,
+      approval: { planId: planned.plan.planId, acceptTranscriptSecrets: true },
+      moveId: "m1",
+      at: AT,
+    });
+    expect(moved.status).toBe("moved");
+  });
+
+  it("a plan approved before a key appeared in the transcript cannot move", async () => {
+    const mac = new StubMachine(THIS_MAC);
+    const host = new StubMachine(HOST);
+    mac.seed(chat());
+    const planned = await planMove(chat(), THIS_MAC, HOST);
+    if (!planned.ok) throw new Error("plan");
+    mac.seed(chat({ transcript: KEY_IN_TRANSCRIPT }));
+    const result = await moveChat({
+      chatId: CHAT,
+      from: mac,
+      to: host,
+      approval: { planId: planned.plan.planId, acceptTranscriptSecrets: true },
+      moveId: "m1",
+      at: AT,
+    });
+    expect(result.status).toBe("refused");
+    expect(host.payloads).toHaveLength(0);
   });
 });

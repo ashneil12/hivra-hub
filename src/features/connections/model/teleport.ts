@@ -105,6 +105,7 @@ export type MoveRefusalReason =
   | "approval-pending"
   | "approval-missing"
   | "approval-stale"
+  | "transcript-secret-held"
   | "not-found"
   | "not-owner"
   | "cannot-resume"
@@ -128,6 +129,7 @@ export interface MovePlan {
   title: string;
   queuedCount: number;
   transcriptSha256: string;
+  transcriptSecretHits: number;
 }
 
 export type MoveStage = "read" | "freeze" | "resume-check" | "manifest" | "receive" | "verify" | "release";
@@ -142,7 +144,7 @@ export interface MoveInput {
   chatId: string;
   from: MoveEndpoint;
   to: MoveEndpoint;
-  approval: { planId: string } | null | undefined;
+  approval: { planId: string; acceptTranscriptSecrets?: boolean } | null | undefined;
   moveId: string;
   at: string;
 }
@@ -169,12 +171,30 @@ const MANIFEST_FIELDS = [
   "transcriptSha256",
 ] as const;
 
+const TRANSCRIPT_SECRET_PATTERNS: RegExp[] = [
+  /sk-[A-Za-z0-9_-]{16,}/,
+  /\bBearer\s+[A-Za-z0-9._~+/-]{8,}/i,
+  /-----BEGIN [A-Z ]*PRIVATE KEY-----/,
+  /["']?(?:api[_-]?key|secret|token|password)["']?\s*[:=]\s*["']?[A-Za-z0-9_\-]{16,}/i,
+];
+
 const SECRET_VALUE_PATTERNS: RegExp[] = [
   /sk-[A-Za-z0-9_-]{16,}/,
   /\bBearer\s+[A-Za-z0-9._~+/-]{8,}/i,
   /-----BEGIN [A-Z ]*PRIVATE KEY-----/,
   /\.credentials\.json|\bauth\.json\b|\bkeychain\b/i,
 ];
+
+/**
+ * How many values in the transcript look like a key or token. A move with any hit is held until the person says
+ * so on the exact plan, because the transcript itself travels.
+ */
+export function transcriptSecretHits(transcript: string): number {
+  return TRANSCRIPT_SECRET_PATTERNS.reduce((total, pattern) => {
+    const global = new RegExp(pattern.source, pattern.flags.includes("g") ? pattern.flags : `${pattern.flags}g`);
+    return total + (transcript.match(global) ?? []).length;
+  }, 0);
+}
 
 /** Why a chat that is running or waiting cannot move yet. Null when it can move now. */
 export function freezeRefusal(chat: Pick<ChatSnapshot, "turnRunning" | "approvalPending">): FreezeRefusal | null {
@@ -271,6 +291,7 @@ export async function planMove(
     title: chat.title,
     queuedCount: chat.queued.length,
     transcriptSha256,
+    transcriptSecretHits: transcriptSecretHits(chat.transcript),
   };
   const planId = await sha256Hex(JSON.stringify(basis));
   return { ok: true, plan: { planId, ...basis } };
@@ -309,6 +330,12 @@ export async function moveChat(input: MoveInput): Promise<MoveResult> {
   if (!planned.ok) return { status: "refused", refusal: planned.refusal };
   if (planned.plan.planId !== approval.planId) {
     return refuse("approval-stale", "The chat changed after you approved the move. Review it again.");
+  }
+  if (planned.plan.transcriptSecretHits > 0 && approval.acceptTranscriptSecrets !== true) {
+    return refuse(
+      "transcript-secret-held",
+      `This transcript has ${planned.plan.transcriptSecretHits} value(s) that look like a key or token. The move is held. Ask the person whether to move it anyway.`,
+    );
   }
 
   let resume: CanResume;
