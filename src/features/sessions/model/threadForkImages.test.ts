@@ -107,3 +107,13 @@ describe("forking a chat whose image block names a file outside the app's folder
     expect(source.blocks[1].image?.path).toBe(ORIGINAL);
   });
 });
+
+describe("forkImagePort.removeImages", () => {
+  it("removes the named images and carries on when the app skipped a path outside its images folder", async () => {
+    commands({ delete_generated_images: () => ({ removed: 1, skipped: 1 }) });
+    await expect(forkImagePort.removeImages(["/data/generated-images/a.png", "/elsewhere/b.png"])).resolves.toBeUndefined();
+    expect(invoke).toHaveBeenCalledWith("delete_generated_images", {
+      paths: ["/data/generated-images/a.png", "/elsewhere/b.png"],
+    });
+  });
+});
