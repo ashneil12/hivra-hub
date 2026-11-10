@@ -43,7 +43,6 @@ pub const OPEN: &str = "open";
 pub const SAVING: &str = "saving";
 pub const FILLED: &str = "filled";
 pub const DECLINED: &str = "declined";
-pub const EXPIRED: &str = "expired";
 
 /// A request left in `saving` for longer than this (a crash between the keychain write and the row update) reopens at
 /// startup.
