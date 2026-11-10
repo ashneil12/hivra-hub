@@ -1,6 +1,5 @@
 import { afterAll, beforeAll, expect, it } from "vitest";
 import {
-  copyFileSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -19,7 +18,6 @@ import {
   powershellEnvironment,
   psQuote,
 } from "./windows";
-import { copyLockedFile } from "./copyLocked";
 import { version } from "../package.json";
 
 const exec = promisify(execFile);
@@ -40,9 +38,9 @@ beforeAll(async () => {
   directory = mkdtempSync(join(tmpdir(), "monocode-windows-bootstrap-"));
   const source = join(directory, "source");
   mkdirSync(source);
-  // Another test on the same runner can still have node.exe open. A sharing
-  // violation is retried. Any other copy error still fails.
-  copyLockedFile(copyFileSync, process.execPath, join(source, "node.exe"));
+  // Bytes this process already read. Copying the live binary can hit a sharing
+  // violation on Windows while another test still has node.exe open.
+  writeFileSync(join(source, "node.exe"), readFileSync(process.execPath));
   writeFileSync(
     join(source, "host.mjs"),
     `import { appendFileSync } from 'node:fs';
