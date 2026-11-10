@@ -676,6 +676,21 @@ describe("tasks.delegate", () => {
     expect(down).toBe(briefPrompt("EXO lead", scaffold("Look again.", { kind: "own-checkout", mainCheckout: PROJECT }), TEST_GOAL, undefined, workerRules(portOfBrief(down)!)));
   });
 
+  it("tells every worker it has no memory of the chat, never asks the person, and hands back a blocked path exactly (WP-171)", () => {
+    const rules = workerRules(41_000);
+    expect(rules).toMatch(/no memory of the chat that sent you/);
+    expect(rules).toMatch(/the person's own request quoted in it/);
+    expect(rules).toMatch(/Never ask the person a question/);
+    expect(rules).toMatch(/most reasonable reading/);
+    expect(rules).toMatch(/say in your report what you assumed/);
+    expect(rules).toMatch(/nobody can approve it for you/);
+    expect(rules).toMatch(/exactly what was blocked and where/);
+    // One block, and the ones it had are all still there.
+    expect(rules.match(/<worker_rules>/g)).toHaveLength(1);
+    expect(rules).toMatch(/stop and ask your Lead/);
+    expect(rules).not.toMatch(/[\u2014\u2013]/);
+  });
+
   it("waits for the first harness probe before starting a worker (a Mono briefed right after a launch)", async () => {
     const { source, host, started } = fixture([]);
     probe.probed = false;

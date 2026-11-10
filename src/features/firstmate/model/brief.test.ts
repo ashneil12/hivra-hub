@@ -187,5 +187,33 @@ describe("the brief scaffold (Hivra WP-10)", () => {
     for (const extras of [undefined, {}, { originalRequest: "" }, { originalRequest: "   " }])
       expect(renderBrief({ intent: "a", spec: "b" }, { kind: "shared", folder: "/p" }, undefined, extras)).toBe(plain);
   });
+
+  it("carries the delegating lines in Hivra's own section, outside firstmate's vendored text (WP-171)", () => {
+    const start = FIRST_MATE_CONTRACT.indexOf("## Delegating well");
+    expect(start).toBeGreaterThan(0);
+    // The file wraps its lines; the model reads them as one.
+    const section = FIRST_MATE_CONTRACT.slice(start, FIRST_MATE_CONTRACT.indexOf("\n## ", start + 5)).replace(/\s+/g, " ");
+    // Keeps the design and the judgement, and sends weak parts back out.
+    expect(section).toMatch(/Keep the design and the judgement/);
+    expect(section).toMatch(/task_message/);
+    expect(section).toMatch(/what was wrong and what good looks like/);
+    // A worker has no memory of this chat, and the brief has to stand alone.
+    expect(section).toMatch(/no memory of this chat/);
+    expect(section).toMatch(/Do the other two the same way/);
+    // Never asks the person: acts on the most reasonable reading.
+    expect(section).toMatch(/never asks the person/i);
+    expect(section).toMatch(/most reasonable reading/);
+    // A blocked approval is handed back with the exact path.
+    expect(section).toMatch(/exact path or command/);
+    // Parts that depend on each other go out together, with a contract.
+    expect(section).toMatch(/delegate_tasks/);
+    expect(section).not.toMatch(/[\u2014\u2013]/);
+    // None of firstmate's fenced sentences moved into it, and the vendored text is all still there.
+    const vendor = readFileSync(resolve(process.cwd(), "src/features/firstmate/vendor/firstmate-contract.md"), "utf8");
+    for (const block of vendor.matchAll(/<!-- where: contract[\s\S]*?-->\n```\n([\s\S]*?)```/g)) {
+      expect(section).not.toContain(block[1].trim().slice(0, 60));
+      expect(FIRST_MATE_CONTRACT).toContain(block[1].trim());
+    }
+  });
 });
 
