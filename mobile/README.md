@@ -1,6 +1,8 @@
-# Monocode mobile
+# Hivra mobile
 
-The Expo app lives in this directory and has its own npm dependencies and lockfile. The app pairs with the desktop over QUIC and shows its real workspace. Use a Node.js LTS release for development.
+Private development build of the inherited Expo app. It is not submitted to the App Store or Play Store. The phone's bundle id is `com.ash.hivra.mobile`. That is not the desktop app's id (`com.ash.monocode-hub`), which this build does not change. Pairing links from the desktop are still `monocode://pair` until that desktop protocol changes.
+
+The Expo app lives in this directory and has its own npm dependencies and lockfile. The app pairs with the desktop over QUIC and shows its real workspace. Use a Node.js LTS release for development. Do not run the production build, submit, or beta-update scripts.
 
 ## Run locally
 
