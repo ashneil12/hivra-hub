@@ -439,6 +439,7 @@ fn a_round_trip_into_an_empty_data_folder_brings_everything_back_minus_secrets()
                     automations: vec!["auto-1".into()],
                     reminders: true,
                     delegations: true,
+                    known_folders: Vec::new(),
                 }),
             },
         )
@@ -477,7 +478,10 @@ fn a_round_trip_into_an_empty_data_folder_brings_everything_back_minus_secrets()
                 )
                 .unwrap()
             };
-            assert_eq!(row(&conn), scrubbed(&row(&source_conn)), "{id}");
+            // The source's folder isn't a project in this empty copy, so the chat comes in with none (folders.rs).
+            let mut expected = scrubbed(&row(&source_conn));
+            expected[1] = json!("");
+            assert_eq!(row(&conn), expected, "{id}");
         }
         // Provider transcripts aren't on this Mac, so the ids that would resume them are not kept.
         let kept: Option<String> = conn
@@ -516,7 +520,8 @@ fn a_round_trip_into_an_empty_data_folder_brings_everything_back_minus_secrets()
         assert_eq!(
             without_enabled(&definition),
             without_enabled(
-                &json!({"id": "auto-1", "name": "Morning digest", "prompt": "Summarise", "harness": "claude", "model": "m", "cwd": "/x"})
+                // Its folder isn't a project in this empty copy, so it comes back with none (folders.rs).
+                &json!({"id": "auto-1", "name": "Morning digest", "prompt": "Summarise", "harness": "claude", "model": "m", "cwd": ""})
             )
         );
 
@@ -1923,7 +1928,15 @@ fn a_private_chat_stays_private_across_export_and_an_old_file_stays_readable() {
         "blocks": [block("u", "user", "hi")],
         "engine": {"harness": "claude", "model": "m", "runtimeMode": "auto"}
     });
-    insert_session(&target, &conn, "old", "Old", &old).unwrap();
+    insert_session(
+        &target,
+        &conn,
+        "old",
+        "Old",
+        &old,
+        &FolderRules::load(&target, &conn, &[]),
+    )
+    .unwrap();
     let old_row = session_store::get_session(&conn, "old").unwrap().unwrap();
     assert!(!old_row.private_chat);
     assert_eq!(old_row.private_boundary_id, None);
@@ -1937,10 +1950,503 @@ fn a_private_chat_stays_private_across_export_and_an_old_file_stays_readable() {
         "blocks": [block("u", "user", "hi")],
         "engine": {"harness": "claude", "model": "m", "runtimeMode": "auto"}
     });
-    insert_session(&target, &conn, "bad", "Bad", &bad).unwrap();
+    insert_session(
+        &target,
+        &conn,
+        "bad",
+        "Bad",
+        &bad,
+        &FolderRules::load(&target, &conn, &[]),
+    )
+    .unwrap();
     let bad_row = session_store::get_session(&conn, "bad").unwrap().unwrap();
     assert_eq!(
         bad_row.private_boundary_id.as_deref(),
         Some("private-boundary-unreadable")
     );
+}
+
+// ---- the folder an imported chat may keep ---------------------------------------------------------------------------
+// A crafted or foreign export names any folder it likes. The agent, git, checkpoints and terminals then run there, so a
+// chat keeps a folder only when it is a real folder here inside a project this copy already has.
+
+/// A target copy with one project (`root/projects/app`, in the app's own project record) and the places a crafted
+/// export would aim at: a folder beside the project that shares its prefix, one far outside, a link in the project that
+/// points out.
+struct Layout {
+    root: TestDir,
+    target: Env,
+    project: PathBuf,
+    outside: PathBuf,
+}
+
+fn layout() -> Layout {
+    let root = TestDir::new("folders");
+    let project = root.0.join("projects/app");
+    fs::create_dir_all(project.join("src/deep")).unwrap();
+    fs::create_dir_all(root.0.join("projects/app-evil")).unwrap();
+    let outside = root.0.join("outside");
+    fs::create_dir_all(&outside).unwrap();
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(&outside, project.join("escape")).unwrap();
+    let target = env_for(&root.0.join("target"));
+    let store = open_store(&target);
+    let conn = store.lock_conn().unwrap();
+    crate::local_hub::write(
+        &conn,
+        "projects",
+        &json!({"projects": [{"id": "app", "name": "App", "folder": project.to_string_lossy()}]}),
+    )
+    .unwrap();
+    drop(conn);
+    drop(store);
+    Layout {
+        root,
+        target,
+        project,
+        outside,
+    }
+}
+
+/// Chats `(id, cwd, worktreeCwd)` as another copy exported them, imported into the layout's copy. The stored folders
+/// come back by id, with the report.
+fn import_folders(
+    layout: &Layout,
+    chats: &[(&str, String, Option<String>)],
+    known: &[String],
+) -> (BTreeMap<String, (String, Option<String>)>, Value) {
+    let source = env_for(&layout.root.0.join("source"));
+    let store = open_store(&source);
+    let conn = store.lock_conn().unwrap();
+    for (n, (id, cwd, worktree)) in chats.iter().enumerate() {
+        add_session(
+            &conn,
+            id,
+            id,
+            "claude",
+            json!([block("u", "user", "hi")]),
+            1_000 + n as i64,
+        );
+        conn.execute(
+            "UPDATE sessions SET cwd = ?2, worktree_cwd = ?3 WHERE id = ?1",
+            params![id, cwd, worktree],
+        )
+        .unwrap();
+    }
+    drop(conn);
+    drop(store);
+    let dest = layout.root.0.join("export");
+    let mut request = export_request(&dest, Form::Folder);
+    request.memory = None;
+    request.files.clear();
+    export(&source, &request).unwrap();
+
+    let store = open_store(&layout.target);
+    let conn = store.lock_conn().unwrap();
+    let workspace: WorkspaceImport = serde_json::from_value(json!({
+        "sessions": chats.iter().map(|(id, _, _)| *id).collect::<Vec<_>>(),
+        "knownFolders": known,
+    }))
+    .unwrap();
+    let report = import_held(
+        &layout.target,
+        &conn,
+        &ImportRequest {
+            path: dest.to_string_lossy().into_owned(),
+            memory: None,
+            workspace: Some(workspace),
+        },
+    )
+    .unwrap();
+    assert_eq!(report.sessions_added, chats.len(), "{report:?}");
+    let stored = chats
+        .iter()
+        .map(|(id, _, _)| {
+            let row = session_store::get_session(&conn, id).unwrap().unwrap();
+            (id.to_string(), (row.cwd, row.worktree_cwd))
+        })
+        .collect();
+    (stored, serde_json::to_value(&report).unwrap())
+}
+
+fn path(base: &Path, tail: &str) -> String {
+    base.join(tail).to_string_lossy().into_owned()
+}
+
+#[test]
+fn an_imported_chat_keeps_its_folder_only_inside_a_project_this_copy_has() {
+    let layout = layout();
+    let p = &layout.project;
+    let keep = [
+        ("fine", path(p, "src/deep")),
+        ("root", p.to_string_lossy().into_owned()),
+    ];
+    let clear = [
+        // The crafted file's own folder, wherever it lives on this Mac.
+        ("elsewhere", "/tmp/elsewhere".to_string()),
+        ("outside", layout.outside.to_string_lossy().into_owned()),
+        // Shares the project's prefix; is not inside it.
+        ("sibling", path(&layout.root.0, "projects/app-evil")),
+        // Climbs out of the project.
+        ("dotdot", path(p, "src/../../app-evil")),
+        ("missing", path(p, "nope")),
+        // Resolved against whatever folder the app happens to run in.
+        ("relative", "src".to_string()),
+        ("home", "~".to_string()),
+        ("empty", String::new()),
+    ];
+    #[cfg(unix)]
+    let clear = [clear.to_vec(), vec![("link", path(p, "escape"))]].concat();
+    #[cfg(not(unix))]
+    let clear = clear.to_vec();
+    let chats: Vec<(&str, String, Option<String>)> = keep
+        .iter()
+        .chain(clear.iter())
+        .map(|(id, cwd)| (*id, cwd.clone(), None))
+        .collect();
+    let (stored, report) = import_folders(&layout, &chats, &[]);
+    for (id, cwd) in &keep {
+        assert_eq!(&stored[*id].0, cwd, "{id} stays");
+    }
+    for (id, _) in &clear {
+        assert_eq!(stored[*id].0, "", "{id} is cleared, not sent anywhere");
+    }
+    // "empty" named no folder, so it isn't one this import cleared.
+    assert_eq!(report["foldersCleared"], clear.len() - 1, "{report}");
+}
+
+#[test]
+fn a_chat_with_no_folder_in_the_file_has_none_here_not_the_home_folder() {
+    let layout = layout();
+    let source = env_for(&layout.root.0.join("source"));
+    let store = open_store(&source);
+    let conn = store.lock_conn().unwrap();
+    add_session(
+        &conn,
+        "bare",
+        "Bare",
+        "claude",
+        json!([block("u", "user", "hi")]),
+        1_000,
+    );
+    drop(conn);
+    drop(store);
+    let dest = layout.root.0.join("export");
+    let mut request = export_request(&dest, Form::Folder);
+    request.memory = None;
+    request.files.clear();
+    export(&source, &request).unwrap();
+    // A file from a build that never wrote the folder keys.
+    let mut file: Value = serde_json::from_str(
+        &fs::read_to_string(dest.join("workspace/sessions/bare.json")).unwrap(),
+    )
+    .unwrap();
+    file.as_object_mut().unwrap().remove("cwd");
+    file.as_object_mut().unwrap().remove("worktreeCwd");
+    put_in_export(
+        &dest,
+        "workspace/sessions/bare.json",
+        file.to_string().as_bytes(),
+    );
+
+    let store = open_store(&layout.target);
+    let conn = store.lock_conn().unwrap();
+    let report = import_held(
+        &layout.target,
+        &conn,
+        &ImportRequest {
+            path: dest.to_string_lossy().into_owned(),
+            memory: None,
+            workspace: Some(WorkspaceImport {
+                sessions: vec!["bare".into()],
+                ..Default::default()
+            }),
+        },
+    )
+    .unwrap();
+    assert_eq!(report.sessions_added, 1, "{report:?}");
+    let row = session_store::get_session(&conn, "bare").unwrap().unwrap();
+    assert_eq!((row.cwd.as_str(), row.worktree_cwd), ("", None));
+    // It named no folder, so there was nothing for this import to clear.
+    assert_eq!(serde_json::to_value(&report).unwrap()["foldersCleared"], 0);
+}
+
+#[test]
+fn a_worktree_stays_only_when_git_lists_it_for_a_known_project() {
+    let layout = layout();
+    let p = &layout.project;
+    git(p, &["init", "-q"]);
+    fs::write(p.join("a.txt"), "a").unwrap();
+    git(p, &["add", "."]);
+    git(p, &["commit", "-q", "-m", "first"]);
+    let tree = layout.root.0.join("worktrees/feature");
+    git(
+        p,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "feature",
+            &tree.to_string_lossy(),
+        ],
+    );
+    let chats = [
+        // A real worktree of the project, beside it rather than inside it.
+        (
+            "listed",
+            p.to_string_lossy().into_owned(),
+            Some(tree.to_string_lossy().into_owned()),
+        ),
+        // A folder git never listed.
+        (
+            "unlisted",
+            p.to_string_lossy().into_owned(),
+            Some(layout.outside.to_string_lossy().into_owned()),
+        ),
+        // The project's folder is gone, so the working copy it names isn't vouched for either.
+        (
+            "orphan",
+            "/tmp/elsewhere".to_string(),
+            Some(tree.to_string_lossy().into_owned()),
+        ),
+    ];
+    let (stored, report) = import_folders(&layout, &chats, &[]);
+    assert_eq!(
+        stored["listed"],
+        (
+            p.to_string_lossy().into_owned(),
+            Some(tree.to_string_lossy().into_owned())
+        )
+    );
+    assert_eq!(stored["unlisted"], (p.to_string_lossy().into_owned(), None));
+    assert_eq!(stored["orphan"], (String::new(), None));
+    assert_eq!(report["foldersCleared"], 2, "{report}");
+}
+
+#[test]
+fn folders_the_window_lists_count_but_the_home_folder_and_the_root_never_vouch_for_what_is_in_them()
+{
+    let layout = layout();
+    let rail = layout.root.0.join("rail");
+    fs::create_dir_all(rail.join("site")).unwrap();
+    let home = layout.target.home.clone().unwrap();
+    fs::create_dir_all(home.join("Documents")).unwrap();
+    let known = vec![
+        rail.to_string_lossy().into_owned(),
+        home.to_string_lossy().into_owned(),
+        "/".to_string(),
+    ];
+    let chats = [
+        ("rail", path(&rail, "site"), None),
+        ("documents", path(&home, "Documents"), None),
+        (
+            "anywhere",
+            layout.outside.to_string_lossy().into_owned(),
+            None,
+        ),
+    ];
+    let (stored, report) = import_folders(&layout, &chats, &known);
+    assert_eq!(stored["rail"].0, path(&rail, "site"));
+    assert_eq!(stored["documents"].0, "");
+    assert_eq!(stored["anywhere"].0, "");
+    assert_eq!(report["foldersCleared"], 2, "{report}");
+}
+
+#[test]
+fn a_monos_own_folders_here_are_kept() {
+    let layout = layout();
+    let lead = layout.target.monos_root.join("hivra-lead");
+    let team = layout.target.data_dir.join("mono-teams/hivra-lead");
+    fs::create_dir_all(&lead).unwrap();
+    fs::create_dir_all(&team).unwrap();
+    let chats = [
+        ("lead", lead.to_string_lossy().into_owned(), None),
+        ("team", team.to_string_lossy().into_owned(), None),
+        (
+            "memory",
+            layout.target.memory_root.to_string_lossy().into_owned(),
+            None,
+        ),
+    ];
+    fs::create_dir_all(&layout.target.memory_root).unwrap();
+    let (stored, report) = import_folders(&layout, &chats, &[]);
+    assert_eq!(stored["lead"].0, lead.to_string_lossy());
+    assert_eq!(stored["team"].0, team.to_string_lossy());
+    // The memory folder itself isn't a Mono's own folder.
+    assert_eq!(stored["memory"].0, "");
+    assert_eq!(report["foldersCleared"], 1, "{report}");
+}
+
+#[test]
+fn an_imported_automation_loses_a_folder_that_is_not_in_a_project_here() {
+    let layout = layout();
+    let source = env_for(&layout.root.0.join("source"));
+    let store = open_store(&source);
+    let conn = store.lock_conn().unwrap();
+    let definition = |id: &str, cwd: &str, worktree: &str| {
+        json!({"id": id, "name": id, "prompt": "p", "harness": "claude", "model": "m", "cwd": cwd,
+               "workspaceMode": "existing", "worktreeCwd": worktree, "enabled": true, "nextRunAt": 99_000, "updatedAt": 50})
+    };
+    let inside = path(&layout.project, "src");
+    for automation in [
+        definition("away", "/tmp/elsewhere", &path(&layout.outside, "x")),
+        definition("home", &inside, ""),
+    ] {
+        conn.execute(
+            "INSERT INTO automations (id, definition_json, enabled, next_run_at, updated_at) VALUES (?1, ?2, 1, 99000, 50)",
+            params![automation["id"].as_str().unwrap(), automation.to_string()],
+        )
+        .unwrap();
+    }
+    drop(conn);
+    drop(store);
+    let dest = layout.root.0.join("export");
+    let mut request = export_request(&dest, Form::Folder);
+    request.memory = None;
+    request.files.clear();
+    export(&source, &request).unwrap();
+
+    let target_store = open_store(&layout.target);
+    let conn = target_store.lock_conn().unwrap();
+    let report = import_held(
+        &layout.target,
+        &conn,
+        &ImportRequest {
+            path: dest.to_string_lossy().into_owned(),
+            memory: None,
+            workspace: Some(WorkspaceImport {
+                automations: vec!["away".into(), "home".into()],
+                ..Default::default()
+            }),
+        },
+    )
+    .unwrap();
+    assert_eq!(report.automations_added, 2, "{report:?}");
+    let stored = |id: &str| -> Value {
+        let raw: String = conn
+            .query_row(
+                "SELECT definition_json FROM automations WHERE id = ?1",
+                [id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        serde_json::from_str(&raw).unwrap()
+    };
+    let away = stored("away");
+    assert_eq!(
+        (away["cwd"].as_str(), away["worktreeCwd"].as_str()),
+        (Some(""), Some(""))
+    );
+    assert_eq!(away["enabled"], false);
+    assert_eq!(stored("home")["cwd"], inside);
+    let json = serde_json::to_value(&report).unwrap();
+    assert_eq!(json["automationFoldersCleared"], 1, "{json}");
+}
+
+// ---- paths in an imported chat's tool rows ---------------------------------------------------------------------------
+// A tool row's `paths` and `preview.path` feed `sessionEditPaths`, which the window hands to the checkpoint calls
+// (`session_checkpoint_begin_turn`, `session_checkpoint_status`). A file's paths are nobody's choice here either.
+
+fn edit_row(id: &str, paths: &[String], preview: Option<String>) -> Value {
+    let mut tool = json!({"status": "completed", "kind": "edit", "title": "Edit", "paths": paths});
+    if let Some(path) = preview {
+        tool["preview"] = json!({"kind": "diff", "path": path, "steps": []});
+    }
+    json!({"id": id, "role": "tool", "tool": tool})
+}
+
+/// One chat, exported with these blocks and folder, imported into the layout's copy; its stored blocks and the report.
+fn import_blocks(layout: &Layout, cwd: &str, blocks: Vec<Value>) -> (Vec<Value>, Value) {
+    let source = env_for(&layout.root.0.join("source"));
+    let store = open_store(&source);
+    let conn = store.lock_conn().unwrap();
+    let mut all = vec![block("u", "user", "edit please")];
+    all.extend(blocks);
+    add_session(&conn, "tools", "Tools", "claude", json!(all), 1_000);
+    conn.execute(
+        "UPDATE sessions SET cwd = ?2 WHERE id = ?1",
+        params!["tools", cwd],
+    )
+    .unwrap();
+    drop(conn);
+    drop(store);
+    let dest = layout.root.0.join("export-tools");
+    let mut request = export_request(&dest, Form::Folder);
+    request.memory = None;
+    request.files.clear();
+    export(&source, &request).unwrap();
+    let store = open_store(&layout.target);
+    let conn = store.lock_conn().unwrap();
+    let report = import_held(
+        &layout.target,
+        &conn,
+        &ImportRequest {
+            path: dest.to_string_lossy().into_owned(),
+            memory: None,
+            workspace: Some(WorkspaceImport {
+                sessions: vec!["tools".into()],
+                ..Default::default()
+            }),
+        },
+    )
+    .unwrap();
+    let row = session_store::get_session(&conn, "tools").unwrap().unwrap();
+    (
+        row.blocks.as_array().unwrap().clone(),
+        serde_json::to_value(&report).unwrap(),
+    )
+}
+
+#[test]
+fn an_imported_tool_row_keeps_only_paths_inside_the_chats_folder() {
+    let layout = layout();
+    let p = &layout.project;
+    fs::write(layout.outside.join("secret.txt"), "x").unwrap();
+    let inside_abs = path(p, "src/b.rs");
+    let paths: Vec<String> = [
+        "src/a.rs".to_string(),
+        inside_abs.clone(),
+        // A file that no longer exists is still the chat's own.
+        "gone/deleted.rs".to_string(),
+        "../outside.txt".to_string(),
+        "src/../../app-evil/x".to_string(),
+        path(&layout.outside, "secret.txt"),
+        "/etc/hosts".to_string(),
+        "~/.ssh/id_rsa".to_string(),
+        String::new(),
+    ]
+    .into_iter()
+    .chain(cfg!(unix).then(|| path(p, "escape/secret.txt")))
+    .collect();
+    let blocks = vec![
+        edit_row("t1", &paths, Some(path(&layout.outside, "secret.txt"))),
+        edit_row("t2", &[], Some("src/a.rs".to_string())),
+    ];
+    let (stored, report) = import_blocks(&layout, &p.to_string_lossy(), blocks);
+    assert_eq!(
+        stored[1]["tool"]["paths"],
+        json!(["src/a.rs", inside_abs, "gone/deleted.rs"])
+    );
+    assert!(stored[1]["tool"]["preview"].get("path").is_none());
+    // Inside paths, and the rest of the row, are as they were.
+    assert_eq!(stored[2]["tool"]["preview"]["path"], "src/a.rs");
+    assert_eq!(stored[1]["tool"]["status"], "completed");
+    let dropped = paths.len() - 3 + 1;
+    assert_eq!(report["toolPathsDropped"], dropped, "{report}");
+}
+
+#[test]
+fn a_chat_whose_folder_was_cleared_keeps_no_tool_paths_at_all() {
+    let layout = layout();
+    let blocks = vec![edit_row(
+        "t1",
+        &["src/a.rs".to_string(), path(&layout.project, "src/b.rs")],
+        Some("src/a.rs".to_string()),
+    )];
+    let (stored, report) = import_blocks(&layout, "/tmp/elsewhere", blocks);
+    assert_eq!(stored[1]["tool"]["paths"], json!([]));
+    assert!(stored[1]["tool"]["preview"].get("path").is_none());
+    assert_eq!(report["foldersCleared"], 1, "{report}");
+    assert_eq!(report["toolPathsDropped"], 3, "{report}");
 }

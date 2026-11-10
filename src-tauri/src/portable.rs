@@ -36,6 +36,9 @@ use tauri::{AppHandle, Manager, State};
 
 use crate::session_store::{self, now_millis, SessionStore, SessionUpsert};
 
+mod folders;
+use folders::FolderRules;
+
 pub const FORMAT: &str = "monocode-hub-export";
 /// The newest export format this build writes and reads. A newer one is refused, never half-read.
 pub const VERSION: u64 = 2;
@@ -1856,6 +1859,10 @@ pub struct WorkspaceImport {
     pub reminders: bool,
     #[serde(default)]
     pub delegations: bool,
+    /// Folders the window lists as projects (the project rail's), on top of the app's own project record. A chat or
+    /// automation keeps its folder only inside one of these or a project in that record; none given means only the record.
+    #[serde(default)]
+    pub known_folders: Vec<String>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -1880,6 +1887,13 @@ pub struct ImportReport {
     pub delegations_added: usize,
     /// WP-78: activity rows added. A row already stored, or older than 90 days, is not counted.
     pub activity_added: usize,
+    /// Chats whose folder (or worktree) the file named and that isn't inside a project here: it was cleared, so the chat
+    /// asks which project to use before it runs anything.
+    pub folders_cleared: usize,
+    /// Automations that lost a folder or worktree the same way (they come back paused).
+    pub automation_folders_cleared: usize,
+    /// Paths in tool rows and approvals that lay outside the chat's kept folders, dropped.
+    pub tool_paths_dropped: usize,
     pub memory_files_added: usize,
     pub memory_files_beside: usize,
     pub memory_history: Vec<String>,
@@ -2046,6 +2060,8 @@ fn workspace_rows(
     report: &mut ImportReport,
     after: &mut AfterRows,
 ) -> rusqlite::Result<()> {
+    // The projects this copy has before the import adds any: what a chat's or automation's folder is checked against.
+    let rules = FolderRules::load(env, conn, &wanted.known_folders);
     // Notes first: chats' artifact cards point at them.
     let note_ids: BTreeSet<&String> = wanted.notes.iter().collect();
     let copies: BTreeSet<&String> = wanted.note_copies.iter().collect();
@@ -2166,7 +2182,9 @@ fn workspace_rows(
                 file["title"].as_str().unwrap_or("Chat").to_string(),
             )
         };
-        insert_session(env, conn, &target, &title, &file)?;
+        let kept = insert_session(env, conn, &target, &title, &file, &rules)?;
+        report.folders_cleared += usize::from(kept.cleared);
+        report.tool_paths_dropped += kept.paths_dropped;
         if file["monoTranscript"].as_bool() == Some(true) {
             after.transcripts.push(target.clone());
         }
@@ -2190,8 +2208,10 @@ fn workspace_rows(
             if !wanted_ids.contains(&id) || !session_file_id(&id) {
                 continue;
             }
-            // Comes back paused: nothing starts running on this Mac until Ash turns it on.
+            // Comes back paused: nothing starts running on this Mac until Ash turns it on. A folder that isn't a
+            // project here is cleared, so turning it on asks for one.
             automation["enabled"] = json!(false);
+            let cleared = rules.vet_automation(&mut automation);
             let next = automation["nextRunAt"].as_i64().unwrap_or(0);
             let updated = automation["updatedAt"].as_i64().unwrap_or_else(now_millis);
             let changed = conn.execute(
@@ -2200,6 +2220,7 @@ fn workspace_rows(
             )?;
             if changed > 0 {
                 report.automations_added += 1;
+                report.automation_folders_cleared += usize::from(cleared);
             } else {
                 report.kept += 1;
             }
@@ -2303,13 +2324,22 @@ fn copy_note_assets(env: &Env, opened: &Opened, from: &str, to: &str) {
     }
 }
 
+/// What an imported chat lost on the way in.
+struct Kept {
+    /// Its file named a folder that isn't inside a project here.
+    cleared: bool,
+    /// Paths in its tool rows that lay outside its folders.
+    paths_dropped: usize,
+}
+
 fn insert_session(
     env: &Env,
     conn: &Connection,
     id: &str,
     title: &str,
     file: &Value,
-) -> rusqlite::Result<()> {
+    rules: &FolderRules,
+) -> rusqlite::Result<Kept> {
     let engine = &file["engine"];
     let harness = engine["harness"].as_str().unwrap_or("claude").to_string();
     // A provider session id is kept only where it can resume: the daily app, a Claude chat, its transcript here.
@@ -2318,10 +2348,15 @@ fn insert_session(
         .filter(|psid| !env.dev && harness == "claude" && claude_transcript(env, psid).is_some())
         .map(str::to_string);
     let text = |key: &str| file[key].as_str().map(str::to_string);
+    // The file's folder is nobody's choice here: kept only inside a project this copy has (folders.rs). A chat with
+    // none asks for one before it runs; it is never given the home folder.
+    let folders = rules.vet(file["cwd"].as_str(), file["worktreeCwd"].as_str());
+    let mut blocks = file.get("blocks").cloned().unwrap_or(json!([]));
+    let paths_dropped = rules.confine_tool_paths(&mut blocks, &folders.roots);
     let session = SessionUpsert {
         sidebar_hidden: file["sidebarHidden"].as_bool().unwrap_or(false),
         id: id.to_string(),
-        cwd: text("cwd").unwrap_or_else(|| "~".into()),
+        cwd: folders.cwd.clone(),
         harness,
         model: engine["model"].as_str().unwrap_or("").to_string(),
         model_settings: engine.get("modelSettings").cloned().unwrap_or(json!({})),
@@ -2329,13 +2364,13 @@ fn insert_session(
         title: title.to_string(),
         provider_session_id: provider,
         provider_account_id: None,
-        blocks: file.get("blocks").cloned().unwrap_or(json!([])),
+        blocks,
         queued_messages: Vec::new(),
         queue_status: None,
         context_used: file["contextUsed"].as_i64(),
         context_window: file["contextWindow"].as_i64(),
         branch: text("branch"),
-        worktree_cwd: text("worktreeCwd"),
+        worktree_cwd: folders.worktree.clone(),
         worktree_removed: file["worktreeRemoved"].as_bool().unwrap_or(false),
         linked_work_item: file.get("linkedWorkItem").filter(|v| !v.is_null()).cloned(),
         automation_id: text("automationId"),
@@ -2362,7 +2397,10 @@ fn insert_session(
             text("branch"),
         ],
     )?;
-    Ok(())
+    Ok(Kept {
+        cleared: folders.cleared,
+        paths_dropped,
+    })
 }
 
 fn import_memory(
