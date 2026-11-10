@@ -13,6 +13,7 @@ import { appendControlEvent } from "./model/controlText";
 import { installCodingTeamDefault } from "../features/hub/model/codingTeamModel";
 import { noteSessionRuns, RUN_HEARTBEAT_MS, setProcessRunSource } from "../features/monos/model/sessionRuns";
 import { noteToolCalls, setRunToolTextSource } from "../features/hub/model/soulTamper";
+import { approvalBlocksCarry } from "../features/sessions/model/approvalCarry";
 import { waitingOnYouLine } from "../features/sessions/model/approvalWait";
 import { listHarnessRuns } from "../integrations/harness/core/child";
 import { OPEN_CONNECTOR_EVENT } from "../features/hub/model/connectors";
@@ -8579,9 +8580,16 @@ function Workspace({
           flushHarnessEvents();
           return false;
         }
+        // WP-146: do not steer past an approval that is still open, missing, or just denied.
+        // Continuing after a denial is the Steer on a message already queued, not this send.
+        const explicitContinue =
+          options?.followUpBehavior === "steer" && !!options.queuedMessageId;
+        const parkForApproval = approvalBlocksCarry(current, explicitContinue);
+        if (parkForApproval && options?.queuedMessageId) return false;
         const steerable =
           isLiveHarness(current.harness) && canSteerHarness(current.harness);
         const followUpBehavior =
+          parkForApproval ||
           current.worktreePreparing ||
           intent === "plan" ||
           intent === "orchestrate" ||
