@@ -30,6 +30,21 @@ export function browserCachePath(home) {
 }
 
 /**
+ * The runner image's name (ImageOS on GitHub-hosted runners: ubuntu24, ubuntu22, macos14, ...).
+ * It goes into the cache key, because Playwright's browsers are built per Ubuntu release and
+ * `ubuntu-latest` moves between releases while runner.os still says "Linux". The workflow's env
+ * context does not hold variables the runner itself sets, so the script reads it from the process.
+ * The value is written to the step's output file, so anything but a short plain name is "unknown".
+ * @param {Record<string, string | undefined> | undefined} env
+ * @returns {string}
+ */
+export function imageOs(env) {
+  const value = env ? env.ImageOS : undefined;
+  if (typeof value === "string" && /^[A-Za-z0-9._-]{1,40}$/.test(value)) return value;
+  return "unknown";
+}
+
+/**
  * Arguments after `npx`. A hit must not download browsers again.
  * @param {boolean} cacheHit
  * @returns {string[]}
@@ -78,6 +93,10 @@ export function runInstall(cacheHit, spawn) {
 function main(argv) {
   if (argv.includes("--print-cache-path")) {
     process.stdout.write(`path=${browserCachePath(homedir())}\n`);
+    return 0;
+  }
+  if (argv.includes("--print-image-os")) {
+    process.stdout.write(`image-os=${imageOs(process.env)}\n`);
     return 0;
   }
   const flag = argv.indexOf("--cache-hit");

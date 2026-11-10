@@ -13,6 +13,7 @@ import { fileURLToPath } from "node:url";
 
 import {
   browserCachePath,
+  imageOs,
   parseCacheHit,
   playwrightInstallArgs,
   runInstall,
@@ -75,6 +76,30 @@ test("a home directory that is empty, relative or has a newline is refused", () 
   }
 });
 
+test("the image OS is the runner image's ImageOS, and anything unusable is unknown", () => {
+  for (const name of ["ubuntu24", "ubuntu22", "macos14", "win22", "ubuntu-24.04", "a_b"]) {
+    assert.equal(imageOs({ ImageOS: name }), name);
+  }
+  for (const bad of [
+    undefined,
+    "",
+    " ",
+    "ubuntu 24",
+    "ubuntu24\n",
+    "ubuntu24\nevil=1",
+    "ubuntu24\r",
+    "a/b",
+    "../x",
+    "ubuntu24;rm",
+    "x".repeat(41),
+  ]) {
+    assert.equal(imageOs({ ImageOS: bad }), "unknown", JSON.stringify(bad));
+  }
+  assert.equal(imageOs({}), "unknown");
+  assert.equal(imageOs(undefined), "unknown");
+  assert.equal(imageOs({ ImageOS: "x".repeat(40) }), "x".repeat(40));
+});
+
 test("runInstall returns the child status and does not hide a spawn error", () => {
   const hit = runInstall(true, (cmd, args) => {
     assert.equal(cmd, "npx");
@@ -107,15 +132,47 @@ test("the CLI prints one cache-path line and nothing else", () => {
   assert.equal(result.stderr, "");
 });
 
+function printImageOs(env) {
+  return spawnSync(process.execPath, [script, "--print-image-os"], {
+    encoding: "utf8",
+    env: { PATH: process.env.PATH ?? "", ...env },
+  });
+}
+
+test("the CLI prints the image OS as one output line, from the process environment", () => {
+  const result = printImageOs({ ImageOS: "ubuntu24" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, "image-os=ubuntu24\n");
+  assert.equal(result.stderr, "");
+});
+
+test("the CLI prints unknown when ImageOS is missing, and cannot be made to write a second output", () => {
+  assert.equal(printImageOs({}).stdout, "image-os=unknown\n");
+  assert.equal(printImageOs({ ImageOS: "" }).stdout, "image-os=unknown\n");
+  const injected = printImageOs({ ImageOS: "ubuntu24\npath=/tmp/evil" });
+  assert.equal(injected.status, 0, injected.stderr);
+  assert.equal(injected.stdout, "image-os=unknown\n");
+});
+
 test("the browser job caches that directory, caps install at 8 minutes, and retries once", () => {
   const browser = jobBlock("browser");
   assert.match(browser, /timeout-minutes:\s*25/);
   assert.equal((browser.match(/timeout-minutes:\s*8/g) || []).length, 2);
   assert.match(browser, /actions\/cache\/restore@v4/);
   assert.match(browser, /actions\/cache\/save@v4/);
-  assert.match(browser, /ms-playwright-v1-\$\{\{ runner\.os \}\}-\$\{\{ hashFiles\('package-lock\.json'\) \}\}/);
+  // The browsers are built for one Ubuntu release (the system libraries differ), and ubuntu-latest moves
+  // between releases. runner.os says only "Linux", so the image name is in the key as well.
+  assert.match(
+    browser,
+    /key: ms-playwright-v1-\$\{\{ runner\.os \}\}-\$\{\{ steps\.playwright-path\.outputs\.image-os \}\}-\$\{\{ hashFiles\('package-lock\.json'\) \}\}/,
+  );
+  assert.equal((browser.match(/steps\.playwright-path\.outputs\.image-os/g) || []).length, 1);
   assert.doesNotMatch(browser, /hashFiles\('\*\*\/package-lock\.json'\)/);
   assert.match(browser, /ci-playwright-install\.mjs --print-cache-path/);
+  assert.match(browser, /ci-playwright-install\.mjs --print-image-os/);
+  // The env context holds only what a workflow sets. The runner's own ImageOS is not in it, so
+  // ${{ env.ImageOS }} would be empty and the key would not change between images.
+  assert.doesNotMatch(browser, /\$\{\{[^}]*env\.ImageOS/);
   assert.match(browser, /path: \$\{\{ steps\.playwright-path\.outputs\.path \}\}/);
   assert.equal((browser.match(/steps\.playwright-path\.outputs\.path/g) || []).length, 2);
   assert.match(browser, /--cache-hit "\$\{\{ steps\.playwright-cache\.outputs\.cache-hit \}\}"/);

@@ -84,9 +84,14 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
-      - name: Playwright browser cache directory
+      - name: Playwright browser cache directory and image
         id: playwright-path
-        run: node scripts/ci-playwright-install.mjs --print-cache-path >> "$GITHUB_OUTPUT"
+        # The browsers are built for one Ubuntu release, and ubuntu-latest moves between releases while runner.os
+        # still says Linux. The runner's ImageOS names the release. The env context does not hold it (that context
+        # has only what a workflow sets), so the script reads it from the process and prints it as an output.
+        run: |
+          node scripts/ci-playwright-install.mjs --print-cache-path >> "$GITHUB_OUTPUT"
+          node scripts/ci-playwright-install.mjs --print-image-os >> "$GITHUB_OUTPUT"
       - name: Restore Playwright browsers
         id: playwright-cache
         # A cache outage must not skip the browsers. An empty hit flag fails open to a full install.
@@ -94,7 +99,7 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: ${{ steps.playwright-path.outputs.path }}
-          key: ms-playwright-v1-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+          key: ms-playwright-v1-${{ runner.os }}-${{ steps.playwright-path.outputs.image-os }}-${{ hashFiles('package-lock.json') }}
       - name: Install Playwright browsers
         id: playwright-install
         timeout-minutes: 8
