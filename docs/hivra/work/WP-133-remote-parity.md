@@ -30,7 +30,7 @@ Paseo's security and connectivity pages, Orca's site, and the public price pages
 
 ## Read first
 
-- WP-60 and WP-61. SPEC.md sections 9 and 12. Section 11 says the upstream remote host and the mobile app stay as they are.
+- WP-60 and WP-61. `docs/hivra/SPEC.md` sections 9 and 12. Section 11 says the upstream remote host and the mobile app stay as they are.
 - `docs/remote-access.md`, `mobile/README.md`, `mobile/app.json`, `src-tauri/src/mobile_access.rs`, `src-tauri/src/autopilot.rs`.
 - T3 user docs at the commit above: `docs/user/remote-access.md`, `docs/user/background-service.md`, `docs/user/faq.md`. Ideas only. Do not copy their relay.
 - Paseo: `https://paseo.sh/docs/security` and `https://paseo.sh/docs/connectivity`. Not re-fetched here.
@@ -68,11 +68,11 @@ The inherited Expo app is the starting point, not a dead end. It already pairs w
 
 What it is today. The app is still named MonoCode. The Expo owner is `hardbeat920`. The iOS bundle id is `com.hardbeat920.monocode-mobile` (`mobile/app.json`). A Hivra listing would need Ash's own accounts, a new bundle id and a new Expo owner. That is his decision, not a step in this package.
 
-What already works, from the desktop's allow list in `src-tauri/src/mobile_access.rs` and the screens that call it. Read a chat, send, start, stop, rename, archive and delete a session. Answer an agent question (`session.answerQuestion`, `mobile/src/features/sessions/QuestionCard.tsx`). Resume after a usage limit. Read the file tree and a file, and search. Open the changes view, stage, and run the git action (`project.gitAction`), which is the commit and push path. Pick a model and a saved account. Dictate on the phone. `mobile/README.md` still says questions need the desktop. That sentence is stale. The question card answers them.
+What already works, from the desktop's allow list in `src-tauri/src/mobile_access.rs` and the screens that call it. Read a chat, send, start, stop, rename, archive and delete a session. Answer an agent question (`session.answerQuestion`, `mobile/src/features/sessions/QuestionCard.tsx`). Resume after a usage limit. Read the file tree and a file, and search. Open the changes view, stage, and run the git action (`project.gitAction`), which is the commit and push path. Pick a model and a saved account. Dictate on the phone. `mobile/README.md` still says agent approvals and questions need attention on the desktop. The question half is stale: the question card answers them. The approval half is true.
 
 What stays off the phone for a first slice.
 
-- Tool approvals. The transcript the phone shows says "Waiting for approval on desktop", and the allow list has no method that grants or denies one. This is the first gap to close if Ash says go, because the phone already tells him something is waiting and then cannot take the tap. Letting a phone allow a tool call is a security decision, and it stays his.
+- Tool approvals. The phone's session list says "Needs your approval" (`mobile/src/features/sessions/LiveSessions.tsx`), and the allow list has no method that grants or denies one. This is the first gap to close if Ash says go, because the phone already tells him something is waiting and then cannot take the tap. Letting a phone allow a tool call is a security decision, and it stays his.
 - A terminal. There is no terminal route and no terminal method. A shell on a phone is a large jump in trust, and remote-host projects do not have a terminal yet either. It stays on the desktop.
 - Writing a file from the phone. The allow list can read a file. It cannot save one. Editing stays on the desktop until a later package has a reason and a review.
 - Crew, tasks, decisions and the Inbox. None of those methods are in the allow list. They can follow. They are not the first slice.
