@@ -7,6 +7,7 @@ import {
   type OrchestrationRun,
   type OrchestrationTask,
 } from "../model/orchestration";
+import { closingUsageLine } from "../model/closingUsage";
 import {
   goalCheckLine,
   type GoalCheckRun,
@@ -265,6 +266,9 @@ export function GoalGraph({
   const baseline = current?.baseline;
   const latest = current ? lastCheckRun(current) : undefined;
   const verdict = report ? verdictLine(report) : undefined;
+  // WP-148: only a finished run's close names what the children used. A live run keeps the figure off.
+  const usageLine =
+    current?.status === "finished" ? closingUsageLine(current.closingUsage) : undefined;
 
   return (
     <section
@@ -289,6 +293,11 @@ export function GoalGraph({
             className={`${verdict.tone} pt-0.5`}
           >
             {verdict.text}
+          </p>
+        )}
+        {usageLine && (
+          <p data-goal-usage className="pt-0.5 text-content/60">
+            {usageLine}
           </p>
         )}
       </div>

@@ -10,6 +10,7 @@ import {
 } from "../../settings/model/settings";
 import type { Session } from "../model/session";
 import { newChatWorktreeAskLine } from "../../source-control/model/newChatWorktree";
+import { worktreeIncludeLines } from "../../source-control/model/worktreeIncludeNote";
 
 const APP_CHECKOUT = /^mc-[0-9a-f]{6,}$/i;
 
@@ -35,13 +36,25 @@ export function NewChatWorktreeBanner({ session }: { session: Session }) {
     !session.worktreeRemoved &&
     pathKey(session.worktreeCwd) !== pathKey(session.cwd)
   ) {
+    const include = worktreeIncludeLines(session);
+    const line =
+      "shrink-0 truncate border-b border-stroke px-3 py-1 text-xs text-content/70";
     return (
-      <p
-        data-worktree-header=""
-        className="shrink-0 truncate border-b border-stroke px-3 py-1 text-xs text-content/70"
-      >
-        {newChatWorktreeHeaderLabel(session.worktreeCwd, session.branch)}
-      </p>
+      <>
+        <p data-worktree-header="" className={line}>
+          {newChatWorktreeHeaderLabel(session.worktreeCwd, session.branch)}
+        </p>
+        {include.note ? (
+          <p data-worktree-include="" className={line}>
+            {include.note}
+          </p>
+        ) : null}
+        {include.warning ? (
+          <p data-worktree-include-warning="" className={line}>
+            {include.warning}
+          </p>
+        ) : null}
+      </>
     );
   }
   const line = newChatWorktreeAskLine(session, setting);

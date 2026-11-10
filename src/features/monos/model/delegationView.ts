@@ -131,6 +131,14 @@ export function waitingOn(
   ).length;
 }
 
+/** Whether a chat has handed any work out, in any state: it has a crew of workers. */
+export function ownsWork(
+  ownerSession: string,
+  rows: readonly Delegation[],
+): boolean {
+  return rows.some((row) => row.ownerSession === ownerSession);
+}
+
 /** "Waiting on 3", or nothing when it waits on none. */
 export function waitingLabel(count: number): string | undefined {
   return count > 0 ? `Waiting on ${count}` : undefined;
