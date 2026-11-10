@@ -73,7 +73,7 @@ pub struct StackEnv {
 /// The name registry, as the stack code sees it. Tests pass a memory list.
 pub trait NameRegistry: Send + Sync {
     fn add(&self, hostname: &str, port: u16, pid: u32, stack_id: &str) -> Result<(), String>;
-    fn remove(&self, hostname: &str, pid: u32) -> Result<(), String>;
+    fn remove(&self, hostname: &str, pid: u32, stack_id: &str) -> Result<(), String>;
 }
 
 /// The real registry, in `<data>/proxy/routes.json`.
@@ -88,8 +88,9 @@ impl NameRegistry for RouteNames {
             .map_err(|error| error.to_string())
     }
 
-    fn remove(&self, hostname: &str, pid: u32) -> Result<(), String> {
-        self.store.remove_route(hostname, Some(pid))
+    fn remove(&self, hostname: &str, pid: u32, stack_id: &str) -> Result<(), String> {
+        self.store
+            .remove_route_owned(hostname, Some(pid), Some(stack_id))
     }
 }
 
@@ -758,7 +759,7 @@ fn stop_entry(env: &StackEnv, entry: &Entry) -> Result<(), String> {
             } else {
                 entry.owner_pid
             };
-            if let Err(error) = names.remove(&name.hostname, owner) {
+            if let Err(error) = names.remove(&name.hostname, owner, &entry.id) {
                 failure.get_or_insert(error);
             }
         }
@@ -809,7 +810,7 @@ fn retire_names(env: &StackEnv, previous: &Entry, entry: &Entry) {
     };
     for old in &previous.names {
         if !entry.names.iter().any(|name| name.hostname == old.hostname) {
-            let _ = names.remove(&old.hostname, owner);
+            let _ = names.remove(&old.hostname, owner, &previous.id);
         }
     }
 }
@@ -824,7 +825,7 @@ fn publish_names(env: &StackEnv, entry: &Entry) -> Result<(), String> {
     for name in &entry.names {
         if let Err(error) = names.add(&name.hostname, name.port, pid, &entry.id) {
             for hostname in added {
-                let _ = names.remove(hostname, pid);
+                let _ = names.remove(hostname, pid, &entry.id);
             }
             return Err(error);
         }
@@ -2670,11 +2671,13 @@ mod tests {
             Ok(())
         }
 
-        fn remove(&self, hostname: &str, pid: u32) -> Result<(), String> {
+        fn remove(&self, hostname: &str, pid: u32, stack_id: &str) -> Result<(), String> {
             self.routes
                 .lock()
                 .unwrap()
-                .retain(|(name, _, owner, _)| name != hostname || *owner != pid);
+                .retain(|(name, _, owner, held)| {
+                    name != hostname || *owner != pid || (!held.is_empty() && held != stack_id)
+                });
             Ok(())
         }
     }
@@ -4269,6 +4272,75 @@ mod tests {
         let still = routes.route_for_host(&held.hostname).unwrap();
         assert_eq!(still.port, held.port);
         assert_eq!(still.stack_id, held.stack_id);
+    }
+
+    /// Two projects whose folders have the same name, on the same branch, still collide on one
+    /// name. The second is refused, and stopping the refused stack must not take the first
+    /// stack's names away: both run in this process, so the pid alone cannot tell them apart.
+    #[test]
+    fn a_stack_refused_a_name_cannot_remove_it_from_the_stack_that_holds_it() {
+        let fix = Fix::new();
+        let twin_parent = fix.tmp.root.join("twin");
+        std::fs::create_dir_all(&twin_parent).unwrap();
+        let twin = twin_parent.join("main");
+        let twin_tree = twin_parent.join("twin work");
+        git(
+            &twin_parent,
+            &["init", "-b", "main", twin.to_str().unwrap()],
+        );
+        std::fs::write(twin.join("README"), "twin\n").unwrap();
+        git(&twin, &["add", "README"]);
+        git(&twin, &["commit", "-qm", "initial"]);
+        git(
+            &twin,
+            &["worktree", "add", "-b", "a", twin_tree.to_str().unwrap()],
+        );
+        std::fs::write(twin_tree.join("docker-compose.yml"), "services: {}\n").unwrap();
+
+        let routes =
+            crate::proxy::routes::RouteStore::new(crate::proxy::server::proxy_dir(&fix.data));
+        let env = StackEnv {
+            names: Some(Arc::new(RouteNames {
+                store: routes.clone(),
+            })),
+            proxy_port: Some(7400),
+            stand_in: Some(Arc::new(MemoryStandIn::default())),
+            ..fix.env()
+        };
+        maybe_start(
+            &env,
+            &fix.main,
+            &fix.first,
+            true,
+            Some(&emulated_decl()),
+            false,
+            true,
+        )
+        .unwrap();
+        let before = routes.load_routes_raw().unwrap();
+        assert_eq!(before.len(), 3, "{before:?}");
+
+        // Same folder name, same branch: the same names. The second stack is refused.
+        let error = maybe_start(
+            &env,
+            &twin,
+            &twin_tree,
+            true,
+            Some(&emulated_decl()),
+            false,
+            true,
+        )
+        .unwrap_err();
+        assert!(error.contains("main-a.localhost"), "{error}");
+        assert!(error.contains("another stack"), "{error}");
+
+        // Stopping the refused stack leaves the first stack's names in place.
+        down(&env, &twin_tree).unwrap();
+        let mut after = routes.load_routes_raw().unwrap();
+        let mut before = before;
+        before.sort_by(|left, right| left.hostname.cmp(&right.hostname));
+        after.sort_by(|left, right| left.hostname.cmp(&right.hostname));
+        assert_eq!(after, before);
     }
 
     #[test]

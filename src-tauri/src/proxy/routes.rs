@@ -49,10 +49,20 @@ pub struct Route {
 pub struct RouteConflict {
     pub hostname: String,
     pub existing_pid: u32,
+    /// The name belongs to another stack, which may well be a stack of this same process: the
+    /// pid is then no use to a person, so the sentence names the stack instead.
+    pub held_by_stack: bool,
 }
 
 impl std::fmt::Display for RouteConflict {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.held_by_stack {
+            return write!(
+                f,
+                "{} is already a name used by another stack. Stop that stack, or remove it if its worktree is gone.",
+                self.hostname
+            );
+        }
         write!(
             f,
             "{} is already a name used by a running process ({})",
@@ -361,6 +371,7 @@ impl RouteStore {
                     return Err(RouteError::Conflict(RouteConflict {
                         hostname,
                         existing_pid: existing.pid,
+                        held_by_stack: true,
                     }));
                 }
             }
@@ -371,12 +382,14 @@ impl RouteStore {
                 return Err(RouteError::Conflict(RouteConflict {
                     hostname,
                     existing_pid: existing.pid,
+                    held_by_stack: false,
                 }));
             }
             if existing.pid != pid && !force {
                 return Err(RouteError::Conflict(RouteConflict {
                     hostname,
                     existing_pid: existing.pid,
+                    held_by_stack: false,
                 }));
             }
         }
@@ -395,15 +408,34 @@ impl RouteStore {
     }
 
     /// Remove a name, but only while `owner_pid` still owns it. Passing `None` removes it
-    /// unconditionally; the stack code always passes the pid that added it.
+    /// unconditionally. A name a stack holds is not removed by this call: see
+    /// [`Self::remove_route_owned`].
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn remove_route(&self, hostname: &str, owner_pid: Option<u32>) -> Result<(), String> {
+        self.remove_route_owned(hostname, owner_pid, None)
+    }
+
+    /// Remove a name for one stack. A name another stack holds stays, even when this process
+    /// added it: every stack's names are added under this app's pid, so the pid alone cannot say
+    /// whose name it is. A name that records no stack is removed as before.
+    pub fn remove_route_owned(
+        &self,
+        hostname: &str,
+        owner_pid: Option<u32>,
+        stack_id: Option<&str>,
+    ) -> Result<(), String> {
         let hostname = hostname.to_ascii_lowercase();
         let _lock = self.acquire_lock()?;
         let routes = self.load_routes_raw()?;
         let next: Vec<Route> = routes
             .into_iter()
             .filter(|route| {
-                route.hostname != hostname || owner_pid.is_some_and(|pid| route.pid != pid)
+                route.hostname != hostname
+                    || owner_pid.is_some_and(|pid| route.pid != pid)
+                    || route
+                        .stack_id
+                        .as_deref()
+                        .is_some_and(|held| stack_id != Some(held))
             })
             .collect();
         self.save(&next)
@@ -694,6 +726,7 @@ mod tests {
         let other = RouteError::Conflict(RouteConflict {
             hostname: "shop-a.localhost".into(),
             existing_pid: std::process::id(),
+            held_by_stack: false,
         });
         assert_eq!(
             store
@@ -728,11 +761,28 @@ mod tests {
             )
             .unwrap_err();
         assert!(matches!(err, RouteError::Conflict(_)), "{err}");
+        // The sentence names the stack, not this process's own pid.
+        assert!(err.to_string().contains("another stack"), "{err}");
+        assert!(!err.to_string().contains(&pid.to_string()), "{err}");
         // No stack id at all is not a way past the refusal.
         let err = store
             .add_route("github-shop-a.localhost", 22022, pid, true)
             .unwrap_err();
         assert!(matches!(err, RouteError::Conflict(_)), "{err}");
+        assert_eq!(
+            store
+                .route_for_host("github-shop-a.localhost")
+                .unwrap()
+                .port,
+            22011
+        );
+        // Nor is it a way to take the name down: only the stack that holds it removes it.
+        store
+            .remove_route_owned("github-shop-a.localhost", Some(pid), Some("s89abcdef"))
+            .unwrap();
+        store
+            .remove_route("github-shop-a.localhost", Some(pid))
+            .unwrap();
         assert_eq!(
             store
                 .route_for_host("github-shop-a.localhost")
@@ -757,6 +807,10 @@ mod tests {
                 .port,
             22012
         );
+        store
+            .remove_route_owned("github-shop-a.localhost", Some(pid), Some("s01234567"))
+            .unwrap();
+        assert!(store.route_for_host("github-shop-a.localhost").is_none());
         // A stack id read from disk that is not one this app makes is not an identity.
         let raw =
             r#"[{"hostname":"github-shop-a.localhost","port":22012,"pid":1,"stackId":"../x"}]"#;
