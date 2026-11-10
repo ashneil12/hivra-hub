@@ -140,7 +140,7 @@ export function renameSecret(scope: string, name: string, label: string, version
   return invoke(`${COMMAND}secrets_rename`, { scope, name, label, version });
 }
 
-/** Rotate: the new value, and — only on the person's tap — the `.env` lines that still hold the old one. */
+/** Rotate: the new value, and, only on the person's tap, the `.env` lines that still hold the old one. */
 export function rotateSecret(
   scope: string,
   name: string,

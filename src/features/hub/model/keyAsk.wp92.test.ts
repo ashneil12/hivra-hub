@@ -65,7 +65,7 @@ describe("WP-92: the name guessed from the ask is one the vault accepts", () => 
   });
 
   it("keeps only lower-case letters, digits and dashes, and never over 64", () => {
-    const name = secretNameFor("café API key — 100% sicher!! / \\ .. " + "x".repeat(200));
+    const name = secretNameFor("café API key, 100% sicher!! / \\ .. " + "x".repeat(200));
     expect(name).toMatch(/^[a-z0-9][a-z0-9-]*[a-z0-9]$/);
     expect(name.length).toBeLessThanOrEqual(64);
     expect(name).not.toContain("..");

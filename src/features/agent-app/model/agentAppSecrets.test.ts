@@ -46,7 +46,7 @@ function projectChat(): Session {
 }
 
 function monoChat(): Session {
-  return { ...newSession("claude", "/Users/ash/monos/hivra-lead", "claude:opus-5-5"), id: "mono-chat" };
+  return { ...newSession("claude", "/Users/person/monos/hivra-lead", "claude:opus-5-5"), id: "mono-chat" };
 }
 
 function hostFor(who: "project" | "mono"): AgentAppHost {

@@ -112,7 +112,7 @@ fn a_project_id_that_breaks_the_guard_becomes_a_short_hash_and_the_row_keeps_the
     assert!(served.len() <= SERVICE_MAX);
 
     // A path with characters the keychain guard refuses is hashed too, so the store call never fails the guard.
-    let odd = "/Users/ash/my project";
+    let odd = "/Users/person/my project";
     let scope = scope_for(Some(odd));
     assert!(!service(&scope, "k").unwrap().contains("my project"));
 }

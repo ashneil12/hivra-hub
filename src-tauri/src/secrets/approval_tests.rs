@@ -670,7 +670,7 @@ fn save_copy(bench: &Bench, scope: &str, label: &str) {
 fn where_a_key_lives_is_said_in_plain_words() {
     assert_eq!(scope_words(SCOPE_GLOBAL), "Everywhere");
     assert_eq!(
-        scope_words("project./Users/ash/Projects/hivra"),
+        scope_words("project./Users/person/Projects/hivra"),
         "Project: hivra"
     );
     assert_eq!(scope_words("project.C:\\work\\hivra"), "Project: hivra");

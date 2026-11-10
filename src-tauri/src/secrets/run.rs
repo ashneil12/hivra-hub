@@ -1,4 +1,4 @@
-//! WP-92: `monocode secret-run --grant-stdin` — one secret into one child's environment, once. The signed grant comes
+//! WP-92: `monocode secret-run --grant-stdin`, one secret into one child's environment, once. The signed grant comes
 //! on stdin, so it is never in the process list.
 //!
 //! The MCP server runs this after `secrets.run` returns a signed grant. It verifies the signature, refuses an expired

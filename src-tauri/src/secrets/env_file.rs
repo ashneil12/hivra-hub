@@ -1,4 +1,4 @@
-//! WP-92: the other route — a gitignored `.env` in one worktree, on the person's tap.
+//! WP-92: the other route, a gitignored `.env` in one worktree, on the person's tap.
 //!
 //! No tool writes a file; neither `secrets.run` nor a worker's environment route ever touches the disk. This module is
 //! reached only by the Secrets page's own command.
@@ -62,7 +62,7 @@ pub fn inside_project(project: &str, cwd: &str) -> Result<String, String> {
     Ok(crate::fs::path_to_js(&cwd))
 }
 
-/// Steps 1–5: nothing here reads the secret. `project` is the chat's project folder; `worktree` is one path from the
+/// Steps 1 to 5: nothing here reads the secret. `project` is the chat's project folder; `worktree` is one path from the
 /// app's own list.
 pub fn check(project: &str, worktree: &str) -> Result<Target, String> {
     let project_root = crate::fs::canonical(crate::fs::expand_home(project.trim()))

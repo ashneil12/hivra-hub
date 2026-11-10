@@ -2,7 +2,7 @@
 //! (docs/hivra/work/WP-92-secret-vault.md).
 //!
 //! The sentence this module must keep true: **a secret's value exists in the person's keychain and in at most one place
-//! they chose with a tap — the environment of one approved command or worker, or a gitignored `.env` in one worktree —
+//! they chose with a tap, the environment of one approved command or worker, or a gitignored `.env` in one worktree ,
 //! and nowhere else.**
 //!
 //! - One Keychain item per secret, `monocode-hub:secret:<scope>:<name>`, account `value`, written and read only through

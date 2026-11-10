@@ -3,7 +3,7 @@
 //! A first mate names up to three secrets for a worker it delegates. The app checks each name exactly as a command run
 //! does, with the worker's own CLI as the executable, and asks the person first if that CLI has no grant. Only once
 //! every name is approved are the handles armed under the new worker's session id. `harness_spawn` (Rust) reads the
-//! values straight from the Keychain into that one child's environment — they never cross the webview — and the same
+//! values straight from the Keychain into that one child's environment, they never cross the webview, and the same
 //! child's output is scrubbed before it reaches the app's transcript.
 //!
 //! What this route cannot do, said plainly on the card and in WP-92: the whole worker session holds the value, including

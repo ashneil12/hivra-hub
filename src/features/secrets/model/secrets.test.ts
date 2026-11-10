@@ -103,7 +103,7 @@ describe("only reveal brings a value back", () => {
 describe("where a key lives, in plain words", () => {
   it("is Everywhere or Project: <folder name>", () => {
     expect(scopeLabel("global")).toBe("Everywhere");
-    expect(scopeLabel("project./Users/ash/Projects/hivra")).toBe("Project: hivra");
+    expect(scopeLabel("project./Users/person/Projects/hivra")).toBe("Project: hivra");
     expect(scopeLabel("project.C:\\work\\hivra")).toBe("Project: hivra");
   });
 

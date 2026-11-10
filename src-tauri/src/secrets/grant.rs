@@ -1,7 +1,7 @@
 //! WP-92: the signed grant for one run.
 //!
-//! `secrets.run` hands the MCP server a base64 string. Inside is the run it permits — scope, name, version, subject,
-//! the environment variable, the argv, the cwd, a nonce and an expiry — signed with HMAC-SHA256 under
+//! `secrets.run` hands the MCP server a base64 string. Inside is the run it permits, scope, name, version, subject,
+//! the environment variable, the argv, the cwd, a nonce and an expiry, signed with HMAC-SHA256 under
 //! `monocode-hub:secret-key:grant` (account `key`), created on first use and never handed to the webview. The item's
 //! name has no scope segment, so it can never be mistaken for a secret.
 //!

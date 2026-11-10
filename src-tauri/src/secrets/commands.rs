@@ -382,7 +382,7 @@ pub fn secrets_env_write<R: tauri::Runtime>(
     name: String,
     env_name: String,
 ) -> Result<EnvWriteReport, String> {
-    // 1–5, before the value is read at all.
+    // 1 to 5, before the value is read at all.
     let target = env_file::check(&project, &worktree)?;
     let value = read_value(vault(), &scope, &name)?;
     // 6.

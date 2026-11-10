@@ -6,7 +6,7 @@
 //!
 //! 1. the raw value; 2. the value with trailing CR/LF trimmed; 3. its JSON-escaped form (serde_json's escaping);
 //! 4. percent-encoded with upper-case hex; 5. percent-encoded with lower-case hex; 6. form-encoded (`+` for a space);
-//!    7–10. base64 standard with and without padding, URL-safe with and without; 11–12. hex lower and upper case;
+//!    7 to 10. base64 standard with and without padding, URL-safe with and without; 11 to 12. hex lower and upper case;
 //!    13. its NFC and NFD forms (a Mac terminal prints NFD); 14. for a multi-line value, each line of 8 or more
 //!    characters on its own (a PEM printed line by line).
 //!
