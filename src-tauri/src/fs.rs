@@ -685,6 +685,9 @@ pub(crate) fn git_ignored_names(dir: &Path, names: &[&str]) -> Option<HashSet<St
     if names.is_empty() {
         return Some(HashSet::new());
     }
+    if crate::chat_folder::is_blank(dir) {
+        return None;
+    }
     let mut child = git_cmd()
         .arg("-C")
         .arg(dir)
@@ -2568,6 +2571,7 @@ fn git_index_mode(root: &Path, relative: &str) -> Option<String> {
 }
 
 fn git_hash_object(root: &Path, relative: &str, contents: &[u8]) -> Result<String, String> {
+    no_blank_root(root)?;
     let mut child = git_cmd()
         .arg("--no-pager")
         .arg("-C")
@@ -2816,6 +2820,7 @@ impl Drop for GitSelectionIndex {
 }
 
 fn git_selected_context_for(root: &Path, paths: &[String]) -> Result<GitStagedContext, String> {
+    no_blank_root(root)?;
     let paths = git_selected_paths(root, paths)?;
     let index_dir = std::env::temp_dir().join(format!("monocode-git-selection-{}", Uuid::new_v4()));
     let directory = std::fs::DirBuilder::new();
@@ -4606,7 +4611,17 @@ pub(crate) fn canonical(path: impl AsRef<Path>) -> std::io::Result<PathBuf> {
     dunce::canonicalize(path)
 }
 
+/// `git -C ""` changes nowhere, so a blank root would read and write whatever checkout the app runs in. A chat with no
+/// folder (docs/PORTABLE.md) reaches git as a blank root: every git helper here refuses it instead.
+fn no_blank_root(root: &Path) -> Result<(), String> {
+    if crate::chat_folder::is_blank(root) {
+        return Err(crate::chat_folder::NEEDS_FOLDER.into());
+    }
+    Ok(())
+}
+
 pub(crate) fn git_checked(root: &Path, args: &[&str]) -> Result<(), String> {
+    no_blank_root(root)?;
     let mut cmd = git_cmd_for_args(args);
     let output = cmd
         .arg("--no-pager")
@@ -4642,6 +4657,7 @@ fn git_run(root: &Path, args: &[&str]) -> Option<String> {
 }
 
 fn git_output(root: &Path, args: &[&str]) -> Option<Vec<u8>> {
+    no_blank_root(root).ok()?;
     let output = git_cmd_for_args(args)
         .arg("--no-pager")
         .arg("-C")
@@ -4677,6 +4693,7 @@ pub(crate) fn git_output_capped(
     max_bytes: usize,
     cancel: Option<&AtomicBool>,
 ) -> Option<(Vec<u8>, bool)> {
+    no_blank_root(root).ok()?;
     let mut child = git_cmd()
         .arg("--no-pager")
         .arg("-C")
@@ -5009,6 +5026,7 @@ fn checkout_blocked_by_changes(err: &str) -> bool {
 }
 
 fn git_branch_name(root: &Path, name: &str) -> Result<String, String> {
+    no_blank_root(root)?;
     let name = name.trim();
     if name.is_empty() {
         return Err("Branch name cannot be empty".into());
@@ -5152,6 +5170,7 @@ fn git_ahead_behind(root: &Path, base: &str) -> (i64, i64) {
 }
 
 fn git_stdout(root: &Path, args: &[&str]) -> Option<String> {
+    no_blank_root(root).ok()?;
     let output = git_cmd().arg("-C").arg(root).args(args).output().ok()?;
     if !output.status.success() {
         return None;
@@ -9888,5 +9907,28 @@ mod tests {
             "feature"
         );
         assert_eq!(git_head_branch(&repo.0).as_deref(), Some("feature"));
+    }
+
+    /// `git -C ""` changes nowhere, so a chat with no folder would read and write whatever checkout the app runs in.
+    #[test]
+    fn git_never_falls_back_to_the_folder_the_app_runs_in() {
+        let args = ["rev-parse", "--show-toplevel"];
+        // The test runs inside this checkout; that is the folder a blank root would silently read.
+        if git_output(Path::new("."), &args).is_none() {
+            return;
+        }
+        let blank = Path::new("");
+        assert_eq!(git_output(blank, &args), None);
+        assert_eq!(git_run(blank, &args), None);
+        assert_eq!(git_stdout(blank, &args), None);
+        assert!(git_checked(blank, &args).is_err());
+        assert!(git_output_capped(blank, &args, 1024, None).is_none());
+        assert_eq!(git_ignored_names(blank, &["target"]), None);
+        assert!(git_hash_object(blank, "a.txt", b"a").is_err());
+        assert!(git_branch_name(blank, "main").is_err());
+        assert_eq!(git_info_for(blank).branch, None);
+        assert!(git_diff_index_for(blank).files.is_empty());
+        assert!(git_commit_selected_for(blank, "message", &["a.txt".into()]).is_err());
+        assert!(git_push_for(blank).is_err());
     }
 }

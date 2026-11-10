@@ -415,15 +415,11 @@ pub(crate) fn boundary_for_read(value: Option<String>) -> Option<String> {
     stored_boundary(Some(&raw)).or(Some("private-boundary-unreadable".to_string()))
 }
 
-#[tauri::command(async)]
-pub fn session_upsert(
-    store: State<'_, SessionStore>,
-    session: SessionUpsert,
-) -> Result<SessionSummary, String> {
+/// What a saved chat must look like. A blank folder is allowed: it is a chat that came in from an export with no folder
+/// that is a project here (docs/PORTABLE.md), and it has to keep saving (title, pin, a new folder) until one is chosen.
+/// Nothing runs in it: every launcher refuses a blank folder (`chat_folder.rs`).
+fn check_upsert(session: &SessionUpsert) -> Result<(), String> {
     validate_id(&session.id, "session")?;
-    if session.cwd.trim().is_empty() {
-        return Err("cwd is required".into());
-    }
     if let Some(provider_session_id) = &session.provider_session_id {
         if !provider_session_id.is_empty() {
             validate_id(provider_session_id, "provider session")?;
@@ -445,7 +441,15 @@ pub fn session_upsert(
     if !session.blocks.is_array() {
         return Err("blocks must be an array".into());
     }
+    Ok(())
+}
 
+#[tauri::command(async)]
+pub fn session_upsert(
+    store: State<'_, SessionStore>,
+    session: SessionUpsert,
+) -> Result<SessionSummary, String> {
+    check_upsert(&session)?;
     let conn = store.conn.lock().map_err(|_| "Session store is locked")?;
     let summary = upsert_session(&conn, &session).map_err(|e| e.to_string())?;
     Ok(summary)
@@ -4085,6 +4089,21 @@ mod tests {
         let restored = get_session(&conn, "s1").unwrap().unwrap();
         assert!(!restored.worktree_removed);
         assert_eq!(restored.branch.as_deref(), Some("main"));
+    }
+
+    /// A chat that came in with no folder (docs/PORTABLE.md) keeps saving while it waits for one; the checks that
+    /// protect the row itself stay.
+    #[test]
+    fn a_chat_with_no_folder_yet_can_still_be_saved() {
+        assert_eq!(check_upsert(&sample("s1", "", "Imported")), Ok(()));
+        assert!(check_upsert(&sample("../s1", "", "Imported")).is_err());
+        let store = SessionStore::open_in_memory().unwrap();
+        let conn = store.conn.lock().unwrap();
+        upsert_session(&conn, &sample("s1", "", "Imported")).unwrap();
+        let saved = get_session(&conn, "s1").unwrap().unwrap();
+        assert_eq!(saved.cwd, "");
+        // Never the branch of whatever checkout the app itself runs in.
+        assert_eq!(saved.branch, None);
     }
 
     #[test]

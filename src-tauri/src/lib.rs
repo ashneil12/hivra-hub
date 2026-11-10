@@ -19,6 +19,7 @@ mod background_work;
 // WP-75: checked backups, one-item restore, and a full restore through the ship path.
 pub mod backups;
 mod chat_background;
+mod chat_folder;
 mod checkpoint;
 mod codex_mono_store;
 pub mod connectors;
