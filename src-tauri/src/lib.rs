@@ -158,6 +158,7 @@ mod window_transfer;
 #[cfg(windows)]
 mod windows;
 mod worker_queue;
+pub mod worktree_autoclean;
 pub mod worktree_janitor;
 mod worktree_lifecycle;
 mod worktrees;
@@ -492,6 +493,10 @@ pub fn run() {
             worker_queue::init(app.handle());
             autopilot::init(app.handle(), &identity, claim.data_dir.clone());
             pr_watch::init(app.handle());
+            // A finished worktree gives its build output back (worktree_autoclean.rs); the daily app only.
+            if policy.clear_build_output {
+                worktree_autoclean::init(app.handle().clone(), claim.data_dir.clone());
+            }
             control::init(app.handle())?;
             // WP-85: the loopback port for terminal Claude sessions. A failure here does not stop the app.
             terminal_mirror::init(app.handle().clone(), claim.data_dir.clone(), identity.kind);
@@ -868,6 +873,8 @@ pub fn run() {
             verify_stage::verify_stage_status,
             verify_stage::verify_stage_run,
             verify_stage::verify_stage_latest,
+            worktree_autoclean::worktree_autoclean_status,
+            worktree_autoclean::worktree_autoclean_set,
             worktree_janitor::worktree_janitor_report,
             worktree_janitor::worktree_janitor_clean,
             worktree_janitor::worktree_janitor_remove,
