@@ -98,7 +98,31 @@ If Ash later wants a hosted page, it is still only a view of a host he can alrea
 
 No implementation of either client is in this package.
 
-4. The laptop can close only when some other machine is the host. Keep-awake does not do that. No vendor price is quoted, because those pages were not opened.
+### Sleep
+
+The laptop can close only when the machine doing the work is somewhere else. Keep-awake is not that.
+
+What keep-awake actually does. While an autopilot switch is on, the desktop process holds an assertion that blocks idle system sleep (`PreventUserIdleSystemSleep` on macOS, the same idea on Windows and Linux: `src-tauri/src/autopilot.rs`, `src-tauri/src/platform/wake.rs`). The display may still sleep. The assertion ends when the process ends, so a crash does not leave the machine awake. Closing the lid still sleeps a Mac. Quitting the app, or the app being the thing inside the lid, ends the work that lived only in the desktop.
+
+What already survives a closed laptop. A host on another machine keeps its provider sessions when the desktop's SSH forward drops (`docs/remote-access.md`). That other machine has to stay up. On Linux, lingering lets the user service survive logout. On macOS the host Mac has to stay logged in and awake. On Windows it has to stay signed in and awake. T3's background-service doc says the same thing about their own service. A host installed on the laptop does not help, because the laptop is what just went to sleep.
+
+What does not survive yet. The phone's peer is the desktop, so a closed laptop drops the phone even if a host elsewhere is fine. First-mate records and the watcher still live in the desktop (WP-60). A provider session can finish on the host and the crew around it still dies with the laptop until WP-60 runs those records on the host.
+
+Two ways to have a machine that stays up.
+
+A computer he already has, left on. A small machine at home, or any machine he can SSH to. No new vendor invoice. The cost is electricity, which this note does not price, and the time to keep it signed in. This is the path that matches the host package as it exists.
+
+A cloud VM. A Linux virtual machine is the ordinary choice: the host package already supports Linux, and lingering is how it survives logout. A rented Mac is only worth it if a provider CLI refuses to run on Linux. This note does not quote a price for either. Hetzner, DigitalOcean and the Mac-cloud vendors publish numbers, and those pages were not opened while this note was written. Inventing a monthly figure would be worse than leaving it blank. Before any VM exists, Ash opens the current page and picks a monthly cap. The ops are the same as the home machine, plus the provider's firewall, the disk, and that cap.
+
+Ops, either way, in the order they actually fail:
+
+- The machine stays powered, and asleep is not "powered".
+- SSH, or a tailnet he runs, reaches it. A public inbound port is not required for the SSH path.
+- The provider CLIs are installed for the host user and stay signed in. The host uses that user's credentials (`docs/remote-access.md`).
+- The host package matches the desktop version. An unreleased desktop has no published host archive, so a host for a dev build is the manual path in that doc, not an automatic download.
+- Disk holds the checkouts. Nobody is paged when the host is down. This design does not add a pager.
+
+None of this is built here. WP-60 is the package that moves the crew onto the host. A phone that works while the laptop is shut is the later hook named in the phone section. A VM, a domain and a relay are Ash's decisions in the next section.
 
 5. Domain, certificates, Apple and Google developer accounts, hosting, and whether any account exists at all are Ash's. This note lists them. It does not choose them, and it does not build them.
 
