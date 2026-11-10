@@ -1684,6 +1684,8 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
     crate::delegations::ensure_tables(conn)?;
     // WP-70
     crate::tasks::ensure_tables(conn)?;
+    // WP-159: the programme board. An older build never reads this table.
+    crate::programme::ensure_tables(conn)?;
     // WP-74: the task and doc search index, after both tables exist.
     crate::finder::ensure_index(conn)?;
     // Hivra WP-11: the first mate's wake queue and timers.
