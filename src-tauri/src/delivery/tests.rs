@@ -161,6 +161,7 @@ fn pr(state: PrState, head: &str, checks: Vec<Check>) -> PrRead {
         base_ref: "main".into(),
         head_repo: Some("acme/web".into()),
         review_decision: None,
+        labels: Vec::new(),
         detail: Detail {
             head_sha: Some(head.into()),
             checks,
