@@ -57,6 +57,8 @@ import {
 import { sessionHasBtwThreads, supportsBtwHarness } from "../model/btw";
 import { BtwSheet, useBtwConversation } from "./BtwSheet";
 import { AgentTranscript } from "./AgentTranscript";
+import { LineageList } from "./LineageList";
+import { lineageFromBlocks, type StoredSession } from "../model/subagentLineage";
 import { PooledTranscript, type TranscriptPool } from "./TranscriptPool";
 import { TranscriptFind } from "./TranscriptFind";
 import {
@@ -141,6 +143,8 @@ import { markLinkedSessionUpdateSeen } from "../../inbox/model/linkedSessionSeen
 import { RemoteSession } from "../../connections/ui/RemoteSession";
 import { isRemoteProjectPath } from "../../projects/model/recents";
 import type { HostSession } from "../../connections/model/protocol";
+
+const NO_CHILD_TRANSCRIPTS: readonly StoredSession[] = [];
 
 export type SessionPaneProps = {
   session: Session;
@@ -238,6 +242,10 @@ export type SessionPaneProps = {
     requestId: number,
     decision: ApprovalDecision,
   ) => void;
+  /** Sessions that already have a transcript, so a child row can open one. */
+  childTranscripts?: readonly StoredSession[];
+  /** Open a child transcript that Hivra already stored. */
+  onOpenChildTranscript?: (sessionId: string) => void;
   onQuestionReply: (
     sessionId: string,
     requestId: number,
@@ -379,6 +387,8 @@ const LocalSessionPane = memo(function LocalSessionPane({
   onArchiveSession,
   onDeleteSession,
   onApproval,
+  childTranscripts = NO_CHILD_TRANSCRIPTS,
+  onOpenChildTranscript,
   onQuestionReply,
   onQuestionInteraction,
   onOpenFile,
@@ -417,6 +427,23 @@ const LocalSessionPane = memo(function LocalSessionPane({
   );
   const title = sessionDisplayTitle(session.title, session.harness, firstAskOf(session));
   const isEmpty = session.blocks.length === 0;
+  // WP-122: native CLI children, separate from the first-mate crew.
+  const lineage = useMemo(
+    () => lineageFromBlocks(session.harness, session.blocks, childTranscripts),
+    [session.harness, session.blocks, childTranscripts],
+  );
+  const showLineage =
+    lineage.reported
+      ? lineage.children.length > 0
+      : session.blocks.some(
+          (block) =>
+            block.role === "tool" &&
+            !block.workflowRun &&
+            (block.agentRun != null ||
+              block.tool?.kind === "agent" ||
+              block.tool?.kind === "task" ||
+              block.tool?.kind === "subagent"),
+        );
   const editedPaths = useMemo(
     () => (session.busy ? undefined : sessionEditPaths(session.blocks)),
     [session.blocks, session.busy],
@@ -1060,6 +1087,9 @@ const LocalSessionPane = memo(function LocalSessionPane({
               )
             ) : (
               <>
+                {showLineage ? (
+                  <LineageList lineage={lineage} onOpenTranscript={onOpenChildTranscript} />
+                ) : null}
                 <PooledTranscript
                   pool={transcriptPool}
                   sessionId={session.id}
