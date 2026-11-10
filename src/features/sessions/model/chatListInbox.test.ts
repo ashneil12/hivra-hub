@@ -224,6 +224,119 @@ describe("snooze", () => {
   });
 });
 
+describe("a settled chat comes back", () => {
+  const settled = { touch: 10, settledAt: 10 };
+  const approval = chatAttention({
+    busy: true,
+    blocks: [{ id: "p", role: "approval", text: "", approval: { requestId: 1 } } as never],
+  });
+
+  it("when it needs the person: an approval, a question, a failed turn or a usage limit", () => {
+    expect(shelfFor(settled, 20)).toBe("settled");
+    expect(shelfFor(settled, 20, calm)).toBe("settled");
+    expect(approval.needsApproval).toBe(true);
+    expect(shelfFor(settled, 20, approval)).toBe("active");
+    expect(shelfFor(settled, 20, chatAttention({ busy: false, pendingQuestion: { id: "q" }, blocks: [] }))).toBe("active");
+    expect(shelfFor(settled, 20, chatAttention({ busy: false, blocks: [{ id: "e", role: "system", text: "nope", notice: "error" }] }))).toBe("active");
+    expect(shelfFor(settled, 20, chatAttention({ busy: false, usageLimit: { resetsAt: 1 }, blocks: [] }))).toBe("active");
+  });
+
+  it("goes back to the shelf when that need has passed and nothing new was said", () => {
+    const decided = chatAttention({
+      busy: true,
+      blocks: [{ id: "p", role: "approval", text: "", approval: { requestId: 1, decided: "cancelled" } }],
+    });
+    expect(shelfFor(settled, 20, decided)).toBe("settled");
+    expect(shelfFor(settled, 20, calm)).toBe("settled");
+  });
+
+  it("does not come back for a need the app already ignores: a stale approval, a failure mid-turn, a removed worktree", () => {
+    const stale = chatAttention({ busy: false, blocks: [{ id: "p", role: "approval", text: "", approval: { requestId: 1 } }] });
+    expect(shelfFor(settled, 20, stale)).toBe("settled");
+    const failedWhileBusy = chatAttention({ busy: true, blocks: [{ id: "e", role: "system", text: "nope", notice: "error" }] });
+    expect(shelfFor(settled, 20, failedWhileBusy)).toBe("settled");
+    const removed = chatAttention({
+      busy: false,
+      worktreeRemoved: true,
+      pendingQuestion: { id: "q" },
+      usageLimit: { resetsAt: 1 },
+      blocks: [{ id: "e", role: "system", text: "nope", notice: "error" }],
+    });
+    expect(shelfFor(settled, 20, removed)).toBe("settled");
+  });
+
+  it("when the person writes after it was settled, and not for a message from before", () => {
+    const after = chatAttention({ blocks: [{ id: "u", role: "user", text: "one more thing", sentAt: 30 }] });
+    expect(shelfFor(settled, 40, after)).toBe("active");
+    const sameMoment = chatAttention({ blocks: [{ id: "u", role: "user", text: "done", startedAt: 10 }] });
+    expect(shelfFor(settled, 40, sameMoment)).toBe("settled");
+    const before = chatAttention({ blocks: [{ id: "u", role: "user", text: "old", startedAt: 5 }] });
+    expect(shelfFor(settled, 40, before)).toBe("settled");
+    // An old message with no time cannot be shown to be new, so it does not undo a settle.
+    const undated = chatAttention({ blocks: [{ id: "u", role: "user", text: "old" }] });
+    expect(undated.ownMessage).toBe("undated");
+    expect(shelfFor(settled, 40, undated)).toBe("settled");
+    // A note the app wrote into the chat is not the person writing.
+    const note = chatAttention({ blocks: [{ id: "u", role: "user", text: "note", startedAt: 30, monoNote: { from: "x" } }] });
+    expect(shelfFor(settled, 40, note)).toBe("settled");
+  });
+
+  it("when the chat gets a reply after it was settled", () => {
+    const answered = chatAttention({
+      blocks: [
+        { id: "u", role: "user", text: "q", startedAt: 5, durationMs: 40 },
+        { id: "a", role: "assistant", text: "Here you go." },
+      ],
+    });
+    expect(answered.repliedAt).toBe(45);
+    expect(shelfFor(settled, 50, answered)).toBe("active");
+    const earlier = chatAttention({
+      blocks: [
+        { id: "u", role: "user", text: "q", startedAt: 2, durationMs: 4 },
+        { id: "a", role: "assistant", text: "Here you go." },
+      ],
+    });
+    expect(shelfFor(settled, 50, earlier)).toBe("settled");
+    const streaming = chatAttention({
+      blocks: [
+        { id: "u", role: "user", text: "q", startedAt: 5, durationMs: 40 },
+        { id: "a", role: "assistant", text: "Here", streaming: true },
+      ],
+    });
+    expect(shelfFor(settled, 50, streaming)).toBe("settled");
+  });
+
+  it("is only a view: the settle mark stays stored, and a new settle hides the chat again", () => {
+    const wrote = chatAttention({ blocks: [{ id: "u", role: "user", text: "back again", sentAt: 30 }] });
+    const doc: InboxDoc = { rev: 1, chats: { a: settled } };
+    const split = splitInboxSessions([row("a", 1), row("b", 2)], {
+      enabled: true,
+      marks: doc.chats,
+      now: 40,
+      attention: new Map([["a", wrote]]),
+    });
+    expect(split.active.map((item) => item.id).sort()).toEqual(["a", "b"]);
+    expect(split.settled).toEqual([]);
+    expect(doc.chats.a).toEqual(settled);
+    const again = stripInbox(applyInbox(doc, ["a"], { type: "settle", at: 50 }).doc);
+    expect(shelfFor(again.chats.a, 60, wrote)).toBe("settled");
+  });
+
+  it("brings back a chat that is settled and snoozed, and keeps both marks", () => {
+    const both: InboxMark = { touch: 10, settledAt: 10, snoozeAt: 10, snoozeUntil: 500 };
+    expect(shelfFor(both, 20, calm)).toBe("settled");
+    expect(shelfFor(both, 20, approval)).toBe("active");
+  });
+
+  it("stays on the shelf when the setting is off or there is no attention yet", () => {
+    const rows = [row("a", 1)];
+    const off = splitInboxSessions(rows, { enabled: false, marks: { a: settled }, now: 20, attention: new Map([["a", approval]]) });
+    expect(off.active).toEqual(rows);
+    const unknown = splitInboxSessions(rows, { enabled: true, marks: { a: settled }, now: 20 });
+    expect(unknown.settled).toEqual(rows);
+  });
+});
+
 describe("re-sort", () => {
   const rows = [
     row("newer", 100),
@@ -255,16 +368,16 @@ describe("re-sort", () => {
   });
 
   it("keeps folder membership data alone: splitting only hides a settled row from the active list", () => {
-    const folderIds = ["newer", "older-needs"];
+    const folderIds = ["newer", "café"];
     const split = splitInboxSessions(rows, {
       enabled: true,
-      marks: { "older-needs": { touch: 1, settledAt: 1 } },
+      marks: { "café": { touch: 1, settledAt: 1 } },
       now: 5,
       attention,
     });
-    expect(folderIds).toEqual(["newer", "older-needs"]);
-    expect(split.active.some((item) => item.id === "older-needs")).toBe(false);
-    expect(split.settled.map((item) => item.id)).toEqual(["older-needs"]);
+    expect(folderIds).toEqual(["newer", "café"]);
+    expect(split.active.some((item) => item.id === "café")).toBe(false);
+    expect(split.settled.map((item) => item.id)).toEqual(["café"]);
   });
 });
 

@@ -335,10 +335,22 @@ export function wakesEarly(snoozeAt: number, attention: ChatAttention): boolean 
   return attention.ownMessage === "at" && attention.lastUserMessageAt != null && attention.lastUserMessageAt > snoozeAt;
 }
 
+/**
+ * A settled chat comes back, like an archived mail thread, when it needs the person (approval, a question, a failed
+ * turn) or gets a new message: the person writes after it was settled, or a turn finishes after it. A message with no
+ * time cannot be shown to be newer than the settle, so it does not undo one.
+ */
+export function settledWakes(settledAt: number, attention: ChatAttention): boolean {
+  if (attention.needsPerson) return true;
+  const wrote =
+    attention.ownMessage === "at" && attention.lastUserMessageAt != null && attention.lastUserMessageAt > settledAt;
+  return wrote || (attention.repliedAt != null && attention.repliedAt > settledAt);
+}
+
 export function shelfFor(mark: InboxMark | undefined, now: number, attention?: ChatAttention): InboxShelf {
   const kept = cleanMark(mark);
   if (!kept) return "active";
-  if (kept.settledAt != null) return "settled";
+  if (kept.settledAt != null) return attention && settledWakes(kept.settledAt, attention) ? "active" : "settled";
   if (kept.snoozeAt == null || kept.snoozeUntil == null) return "active";
   if (!Number.isFinite(now)) return "snoozed";
   if (now >= kept.snoozeUntil) return "active";
