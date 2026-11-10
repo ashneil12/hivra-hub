@@ -7,24 +7,48 @@
 import { useRef, useState } from "react";
 
 import { keyAskFor, type ChatLike } from "../../hub/model/chatQuestions";
-import { saveNew, slugIsValid, slugOf } from "../model/secrets";
+import { projectScope, saveNew, scopeLabel, slugIsValid, slugOf } from "../model/secrets";
 
 const FAILED = "That key wasn't saved. Try again on a fresh card.";
 const NAME_RULE = "A key's name is lower-case letters, digits and dashes, 1 to 64 characters.";
 
 type KeyAskChat = ChatLike & { id: string };
 
-/** The secret form for the chat's open key ask; nothing when the chat isn't asking for a key. */
-export function SecretKeyAsk({ chat }: { chat?: KeyAskChat | null }) {
+/**
+ * The secret form for the chat's open key ask; nothing when the chat isn't asking for a key. `project` is the folder of
+ * the project the chat works in (what `secrets_run` looks in first); the key is saved for that project unless the person
+ * picks everywhere, and the form says which before anything is saved. A chat with no project saves for everywhere.
+ */
+export function SecretKeyAsk({ chat, project }: { chat?: KeyAskChat | null; project?: string | null }) {
   const asked = chat ? keyAskFor(chat) : null;
   const key = asked && chat ? `${chat.id}\u0000${asked.ask}` : "";
   const [gone, setGone] = useState<string | null>(null);
   if (!asked || gone === key) return null;
-  return <KeyAskForm key={key} ask={asked.ask} suggested={asked.name} onClose={() => setGone(key)} />;
+  return (
+    <KeyAskForm
+      key={key}
+      ask={asked.ask}
+      suggested={asked.name}
+      project={project?.trim() || null}
+      onClose={() => setGone(key)}
+    />
+  );
 }
 
-function KeyAskForm({ ask, suggested, onClose }: { ask: string; suggested: string; onClose: () => void }) {
+function KeyAskForm({
+  ask,
+  suggested,
+  project,
+  onClose,
+}: {
+  ask: string;
+  suggested: string;
+  project: string | null;
+  onClose: () => void;
+}) {
   const [name, setName] = useState(suggested);
+  // A project chat's key is the project's own by default, which is also where `secrets_run` looks first.
+  const [scope, setScope] = useState(project ? projectScope(project) : "global");
   const [show, setShow] = useState(false);
   const [busy, setBusy] = useState(false);
   const [saved, setSaved] = useState(false);
@@ -41,7 +65,7 @@ function KeyAskForm({ ask, suggested, onClose }: { ask: string; suggested: strin
     setBusy(true);
     setError(null);
     try {
-      await saveNew("global", slugOf(name), null, text);
+      await saveNew(scope, slugOf(name), null, text);
       value.current.value = "";
       setSaved(true);
     } catch {
@@ -59,7 +83,7 @@ function KeyAskForm({ ask, suggested, onClose }: { ask: string; suggested: strin
       <p className="mt-1 text-[13px] text-content">{ask}</p>
       {saved ? (
         <div className="mt-3 flex items-center gap-3">
-          <p className="text-[12px] text-content/60">Saved in your Mac's keychain.</p>
+          <p className="text-[12px] text-content/60">Saved for {scopeLabel(scope)}. Saved in your Mac's keychain.</p>
           <button type="button" className="text-[12px] text-content/60 hover:text-content" onClick={onClose}>
             Done
           </button>
@@ -82,6 +106,23 @@ function KeyAskForm({ ask, suggested, onClose }: { ask: string; suggested: strin
           ) : (
             <p className="mt-1 text-[12px] text-content/40">Stored as {slugOf(name) || "…"}</p>
           )}
+          {project ? (
+            <>
+              <label className="mt-2 block text-[12px] text-content/60" htmlFor="secret-key-ask-scope">
+                Who can use it
+              </label>
+              <select
+                id="secret-key-ask-scope"
+                className="mt-1 w-full rounded border border-content/15 bg-transparent px-2 py-1 text-[13px]"
+                value={scope}
+                onChange={(event) => setScope(event.target.value)}
+              >
+                <option value={projectScope(project)}>{scopeLabel(projectScope(project))}</option>
+                <option value="global">{scopeLabel("global")}</option>
+              </select>
+            </>
+          ) : null}
+          <p className="mt-2 text-[12px] text-content/60">It will be saved for: {scopeLabel(scope)}</p>
           <label className="mt-2 block text-[12px] text-content/60" htmlFor="secret-key-ask-value">
             The key
           </label>

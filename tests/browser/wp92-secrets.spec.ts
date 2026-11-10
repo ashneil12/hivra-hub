@@ -90,6 +90,29 @@ test("'Always' for programs that can run any code is off until the person turns 
   expect(await page.evaluate(() => (window as unknown as { __fixture: { setCalls: boolean[] } }).__fixture.setCalls)).toEqual([true, false]);
 });
 
+test("writing a key to a .env that other accounts can read says so", async ({ page }) => {
+  await page.goto("/tests/browser/wp92-secrets.html?project");
+  const stripe = page.locator("li", { hasText: "stripe-api-key" });
+  await stripe.getByRole("button", { name: "Write to a worktree's .env" }).click();
+  await stripe.getByRole("button", { name: "Write", exact: true }).click();
+  await expect(stripe.getByText("This file can be read by other accounts on this Mac.")).toBeVisible();
+  expect(await page.evaluate(() => (window as unknown as { __fixture: { envWrites: string[] } }).__fixture.envWrites)).toEqual([
+    "/work/proj",
+  ]);
+});
+
+test("a row names where its key lives, and says which copy is used when a name is saved both ways", async ({ page }) => {
+  await page.goto("/tests/browser/wp92-secrets.html");
+  const everywhere = page.locator("li", { hasText: "SendGrid everywhere" });
+  const project = page.locator("li", { hasText: "SendGrid project" });
+  await expect(everywhere.getByText("Everywhere", { exact: true })).toBeVisible();
+  await expect(project.getByText("Project: proj", { exact: true })).toBeVisible();
+  await expect(project.getByText("This project's copy is used; there is also one for everywhere.")).toBeVisible();
+  await expect(everywhere.getByText("Projects that have their own copy of this name use that one instead.")).toBeVisible();
+  // A name saved one way only says nothing about copies.
+  await expect(page.locator("li", { hasText: "Stripe" }).getByText(/copy/)).toHaveCount(0);
+});
+
 test("the request card works while mounted under StrictMode, as the app mounts it", async ({ page }) => {
   await page.goto("/tests/browser/wp92-secrets.html");
   const card = page

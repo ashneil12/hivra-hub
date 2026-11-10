@@ -17241,7 +17241,16 @@ function Workspace({
                   {/* WP-92: a pending key request, and a finished turn's key ask, in the chat's own pane. */}
                   <div className="px-3 pt-2 empty:hidden">
                     <SecretCards />
-                    <SecretKeyAsk chat={activeChat} />
+                    {/* WP-92: a project chat's key is saved for that project, where secrets_run looks first (agentAppSecrets where()). */}
+                    <SecretKeyAsk
+                      chat={activeChat}
+                      project={
+                        activeChat && !(monoForSession(activeChat.id) ?? findMono(habitRunMono(activeChat.id) ?? "") ?? chatMonoOwner(activeChat.id))
+                          ? (hubData().listProjects().find((entry) => entry.id === codingTeamChatProject(activeChat.id))?.folder ??
+                            (looksLikeProject(activeChat.cwd) ? activeChat.cwd : undefined))
+                          : undefined
+                      }
+                    />
                   </div>
                   <div
                     className={

@@ -117,7 +117,8 @@ it("shows the Mono, the why, the slug and the scope, and the show toggle only ch
   expect(container.textContent).toContain("Tally needs a key");
   expect(container.textContent).toContain("to list customers");
   expect(container.textContent).toContain("stripe-api-key");
-  expect(container.textContent).toContain("Every project");
+  // Plain words for where the key will live (this line used to say "Every project").
+  expect(container.textContent).toContain("Everywhere");
   const input = container.querySelector<HTMLInputElement>('input[type="password"]')!;
   const show = [...container.querySelectorAll("button")].find((button) => button.textContent === "Show")!;
   await act(async () => {
@@ -125,4 +126,19 @@ it("shows the Mono, the why, the slug and the scope, and the show toggle only ch
   });
   expect(input.type).toBe("text");
   expect(input.value).toBe("");
+});
+it("names a project's scope in plain words, not as a path id", async () => {
+  const container = document.createElement("div");
+  document.body.append(container);
+  const root = createRoot(container);
+  await act(async () => {
+    root.render(
+      createElement(SecretRequestCard, {
+        request: { ...request, id: "req-2", scope: "project./work/hivra", project: "/work/hivra" },
+        onDone: () => {},
+      }),
+    );
+  });
+  expect(container.textContent).toContain("Project: hivra");
+  expect(container.textContent).not.toContain("project./work/hivra");
 });

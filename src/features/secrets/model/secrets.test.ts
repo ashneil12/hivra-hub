@@ -14,6 +14,8 @@ import {
   rotateSecret,
   saveNew,
   saveRequest,
+  copyNotes,
+  scopeLabel,
   slugIsValid,
   slugOf,
   writeEnv,
@@ -96,5 +98,31 @@ describe("only reveal brings a value back", () => {
     expect(localSpy.setItem).not.toHaveBeenCalled();
     expect(sessionSpy.setItem).not.toHaveBeenCalled();
     vi.unstubAllGlobals();
+  });
+});
+describe("where a key lives, in plain words", () => {
+  it("is Everywhere or Project: <folder name>", () => {
+    expect(scopeLabel("global")).toBe("Everywhere");
+    expect(scopeLabel("project./Users/ash/Projects/hivra")).toBe("Project: hivra");
+    expect(scopeLabel("project.C:\\work\\hivra")).toBe("Project: hivra");
+  });
+
+  it("says which copy is used when a name is saved both ways", () => {
+    const row = (scope: string, name: string) => ({ scope, name }) as never;
+    const notes = copyNotes([
+      row("global", "stripe-api-key"),
+      row("project./work/hivra", "stripe-api-key"),
+      row("global", "resend-key"),
+      row("project./work/other", "github-token"),
+    ]);
+    expect(notes.get("project./work/hivra\u0000stripe-api-key")).toBe(
+      "This project's copy is used; there is also one for everywhere.",
+    );
+    expect(notes.get("global\u0000stripe-api-key")).toBe(
+      "Projects that have their own copy of this name use that one instead.",
+    );
+    // A name saved one way only says nothing.
+    expect(notes.has("global\u0000resend-key")).toBe(false);
+    expect(notes.has("project./work/other\u0000github-token")).toBe(false);
   });
 });

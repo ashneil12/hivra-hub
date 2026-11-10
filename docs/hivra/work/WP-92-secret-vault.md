@@ -135,7 +135,8 @@ write a second copy of any of them.
      result is `{exitCode, stdout, stderr, timedOut, truncated}` after scrubbing.
 
    Name resolution: the chat's project scope first, then global. If both exist the project's wins and the result
-   says which it used. If neither does, the tool returns `state: "missing"` and the model calls `secrets.request`.
+   says which it used; the approval card, the Secrets page and the activity record say so too, in plain words
+   ("Everywhere" or "Project: <name>", and "This project's copy is used; there is also one for everywhere"). If neither does, the tool returns `state: "missing"` and the model calls `secrets.request`.
    "Use my Stripe key" therefore means: try `secrets.run` with the obvious slug; if it is missing, ask for it with
    that slug and a why.
 
@@ -374,8 +375,8 @@ write a second copy of any of them.
   - two windows answering one request: one saves, the other is told it was already saved.
 - [ ] Webview tests: the card sends the value once and clears it; a save failure shows one sentence and no value;
     first use asks once, "Always for this Mono" and "Always for this project" stop the asking where they should,
-    "Once" asks again; a project secret wins over a global one and an ambiguous name is refused; rename keeps
-    grants; reveal is a tap and the value is gone when the row closes; delete removes the grants; the old "Needs Ash
+    "Once" asks again; a name saved globally and in a project uses the project's copy, and the card and the Secrets
+    page say which copy a run used; rename keeps grants; reveal is a tap and the value is gone when the row closes; delete removes the grants; the old "Needs Ash
     (provide)" path now opens the card.
 - [ ] Browser specs on Chromium and WebKit: the Secrets page (add, list with last 4, reveal on tap, rename, rotate,
     delete with confirm) and the chat card (paste, Save, and the value is absent from the page's text, the DOM

@@ -65,6 +65,7 @@ it("sends the value once, clears it, and says where it went", async () => {
   });
   expect(saveNew).toHaveBeenCalledTimes(1);
   expect(saveNew.mock.calls[0]).toEqual(["global", "stripe-live-secret-key", null, VALUE]);
+  expect(container.textContent).toContain("Saved for Everywhere");
   expect(input.isConnected).toBe(false);
   expect(container.textContent).toContain("Saved in your Mac's keychain");
   expect(container.textContent).not.toContain(VALUE);
@@ -132,4 +133,48 @@ it("renders nothing once the key ask is answered", async () => {
     }),
   );
   expect(container.textContent).toBe("");
+});
+
+it("says where the key will be saved before it is saved, and it is everywhere for a chat with no project", async () => {
+  const { container } = await render(createElement(SecretKeyAsk, { chat }));
+  expect(container.textContent).toContain("It will be saved for: Everywhere");
+});
+
+it("writes to the project when the ask came from a project chat, and says so first", async () => {
+  const { container } = await render(createElement(SecretKeyAsk, { chat, project: "/work/hivra" }));
+  // Named before anything is saved.
+  expect(container.textContent).toContain("It will be saved for: Project: hivra");
+  const input = container.querySelector<HTMLInputElement>('input[type="password"]')!;
+  await act(async () => {
+    input.value = VALUE;
+  });
+  const save = [...container.querySelectorAll("button")].find((b) => b.textContent === "Save")!;
+  await act(async () => {
+    save.click();
+  });
+  expect(saveNew).toHaveBeenCalledTimes(1);
+  expect(saveNew.mock.calls[0]).toEqual(["project./work/hivra", "stripe-live-secret-key", null, VALUE]);
+  expect(container.textContent).toContain("Saved for Project: hivra");
+  expect(container.textContent).not.toContain(VALUE);
+});
+
+it("lets the person choose everywhere instead of the project", async () => {
+  const { container } = await render(createElement(SecretKeyAsk, { chat, project: "/work/hivra" }));
+  const where = container.querySelector<HTMLSelectElement>("#secret-key-ask-scope")!;
+  expect([...where.options].map((option) => option.textContent)).toEqual(["Project: hivra", "Everywhere"]);
+  await act(async () => {
+    const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")!.set!;
+    setter.call(where, "global");
+    where.dispatchEvent(new Event("change", { bubbles: true }));
+  });
+  expect(container.textContent).toContain("It will be saved for: Everywhere");
+  const input = container.querySelector<HTMLInputElement>('input[type="password"]')!;
+  await act(async () => {
+    input.value = VALUE;
+  });
+  const save = [...container.querySelectorAll("button")].find((b) => b.textContent === "Save")!;
+  await act(async () => {
+    save.click();
+  });
+  expect(saveNew.mock.calls[0]).toEqual(["global", "stripe-live-secret-key", null, VALUE]);
 });

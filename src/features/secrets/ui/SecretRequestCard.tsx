@@ -6,7 +6,15 @@
 import { useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 
-import { beginSave, declineRequest, listRequests, saveRequest, slugOf, type RequestRow } from "../model/secrets";
+import {
+  beginSave,
+  declineRequest,
+  listRequests,
+  saveRequest,
+  scopeLabel,
+  slugOf,
+  type RequestRow,
+} from "../model/secrets";
 
 export const SECRETS_CHANGED = "hivra:secrets-changed";
 
@@ -103,7 +111,7 @@ export function SecretRequestCard({
       <p className="text-[12px] text-content/50">{request.mono ?? "This chat"} needs a key</p>
       <p className="mt-1 text-[13px] text-content">{request.why}</p>
       <p className="mt-2 text-[12px] text-content/60">
-        {request.name} · {slugOf(request.name)} · {request.scope === "global" ? "Every project" : request.scope}
+        {request.name} · {slugOf(request.name)} · {scopeLabel(request.scope)}
       </p>
       <label className="mt-3 block text-[12px] text-content/60" htmlFor={`secret-label-${request.id}`}>
         Label

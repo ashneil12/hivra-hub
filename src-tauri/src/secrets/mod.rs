@@ -171,6 +171,34 @@ pub fn scope_project(scope: &str) -> Option<&str> {
     scope.strip_prefix(SCOPE_PROJECT)
 }
 
+/// Where a secret lives, in plain words: "Everywhere", or "Project: <folder name>".
+pub fn scope_words(scope: &str) -> String {
+    match scope_project(scope) {
+        None => "Everywhere".to_string(),
+        Some(id) => {
+            let name = id
+                .rsplit(['/', '\\'])
+                .find(|part| !part.is_empty())
+                .unwrap_or(id);
+            format!("Project: {name}")
+        }
+    }
+}
+
+/// The sentence that says which copy a run uses when a name is saved both everywhere and for a project.
+pub const PROJECT_COPY_USED: &str =
+    "This project's copy is used; there is also one for everywhere.";
+
+/// Whether a secret lives in a project and the same name is also saved for everywhere (so a run in that project uses
+/// the project's copy and the card says so).
+pub fn has_global_twin(conn: &Connection, row: &SecretRow) -> bool {
+    row.scope != SCOPE_GLOBAL
+        && get_secret(conn, SCOPE_GLOBAL, &row.name)
+            .ok()
+            .flatten()
+            .is_some()
+}
+
 /// Whether a scope is `global` or `project.<id>`.
 pub fn valid_scope(scope: &str) -> bool {
     scope == SCOPE_GLOBAL || scope_project(scope).is_some_and(|p| !p.is_empty())
@@ -1650,6 +1678,7 @@ pub fn display_command(command: &[String]) -> String {
 pub fn run_question(
     mono: &str,
     label: &str,
+    whose: &str,
     command: &[String],
     always_allowed: bool,
     runs_any: bool,
@@ -1664,7 +1693,7 @@ pub fn run_question(
         );
     }
     let mut text = format!(
-        "Let {mono} run `{program}` with {label}?\nThe program is {program}.\nCommand: {line}"
+        "Let {mono} run `{program}` with {label}?\nThe program is {program}.\nKey: {label}, saved for {whose}\nCommand: {line}"
     );
     if runs_any && !always_allowed {
         text.push('\n');
@@ -1925,9 +1954,16 @@ pub fn prepare_run(
     };
     // 3. a live grant for this Mono (then its project), or ask the person first, on a card that shows the whole command.
     let always_allowed = always_allowed_for(conn, &executable);
+    // Which copy this run uses, in plain words: where the key lives, and that a project's copy beats the global one.
+    let whose = if has_global_twin(conn, &row) {
+        format!("{}. {PROJECT_COPY_USED}", scope_words(&row.scope))
+    } else {
+        scope_words(&row.scope)
+    };
     let question = run_question(
         request.mono.as_deref().unwrap_or("this Mono"),
         &row.label,
+        &whose,
         &request.command,
         always_allowed,
         runs_any_code(&executable),
@@ -2001,10 +2037,11 @@ pub fn record_run(
     at: i64,
 ) -> Result<(), String> {
     let summary = format!(
-        "{} ran `{}` with {}: {}",
+        "{} ran `{}` with {} ({}): {}",
         mono,
         executable,
         name,
+        scope_words(scope),
         if timed_out {
             format!("timed out after {}s", duration_ms / 1000)
         } else {
@@ -2027,7 +2064,6 @@ pub fn record_run(
     )
     .map(|_| ())
     .map_err(|e| e.to_string())?;
-    let _ = (scope, executable, exit_code);
     Ok(())
 }
 

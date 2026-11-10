@@ -161,9 +161,10 @@ pub fn prepare(
             });
         }
         let question = format!(
-            "Let {mono} start a worker with {} in its environment? The whole worker session will hold the value, \
+            "Let {mono} start a worker with {} ({}) in its environment? The whole worker session will hold the value, \
              including anything it starts. Running one command with it is narrower: ask for that instead.",
-            row.label
+            row.label,
+            scope_words(&row.scope)
         );
         match ensure_grant(
             conn,

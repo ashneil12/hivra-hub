@@ -239,12 +239,40 @@ export function slug(name: string): Promise<string> {
   return invoke(`${COMMAND}secrets_slug`, { name });
 }
 
-/** Where a secret is: "Your Mac's keychain", or a project's. Plain words for the row. */
+/** Where a secret is, in plain words: "Everywhere", or "Project: <folder name>". */
 export function scopeLabel(scope: string): string {
-  if (scope === "global") return "Every project";
+  if (scope === "global") return "Everywhere";
   const id = scope.startsWith("project.") ? scope.slice("project.".length) : scope;
   const name = id.split(/[\\/]/).filter(Boolean).pop() ?? id;
   return `Project: ${name}`;
+}
+
+/** The scope a project's own copy of a key lives in. */
+export function projectScope(project: string): string {
+  return `project.${project}`;
+}
+
+const PROJECT_COPY_USED = "This project's copy is used; there is also one for everywhere.";
+const PROJECT_COPY_OVERRIDES = "Projects that have their own copy of this name use that one instead.";
+
+/** A row's key, as the page and these notes name it. */
+export function rowKey(row: Pick<SecretRow, "scope" | "name">): string {
+  return `${row.scope}\u0000${row.name}`;
+}
+
+/**
+ * When a name is saved both for everywhere and for a project, a run in that project uses the project's copy. These are
+ * the sentences that say so, one per row that has a same-named twin, keyed by [`rowKey`].
+ */
+export function copyNotes(rows: readonly Pick<SecretRow, "scope" | "name">[]): Map<string, string> {
+  const notes = new Map<string, string>();
+  const everywhere = new Set(rows.filter((row) => row.scope === "global").map((row) => row.name));
+  const inProjects = new Set(rows.filter((row) => row.scope !== "global").map((row) => row.name));
+  for (const row of rows) {
+    if (row.scope === "global" && inProjects.has(row.name)) notes.set(rowKey(row), PROJECT_COPY_OVERRIDES);
+    if (row.scope !== "global" && everywhere.has(row.name)) notes.set(rowKey(row), PROJECT_COPY_USED);
+  }
+  return notes;
 }
 
 /** Who a grant covers, in plain words. */

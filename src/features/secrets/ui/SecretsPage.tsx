@@ -16,6 +16,7 @@ import {
   getAlwaysForAnyCode,
   grantsFor,
   grantLabel,
+  copyNotes,
   last4Label,
   listSecrets,
   renameSecret,
@@ -50,6 +51,9 @@ export function SecretsPage({ project }: { project?: string }) {
   const [revealed, setRevealed] = useState<string | null>(null);
   const [confirmReveal, setConfirmReveal] = useState<string | null>(null);
   const [worktrees, setWorktrees] = useState<Worktree[]>([]);
+
+  // A name saved both for everywhere and for a project: say which copy a run uses.
+  const copies = copyNotes(rows);
 
   const load = () => {
     listSecrets()
@@ -131,6 +135,7 @@ export function SecretsPage({ project }: { project?: string }) {
       <ul className="flex flex-col divide-y divide-content/10">
         {rows.map((row) => {
           const key = `${row.scope}\u0000${row.name}`;
+          const twin = copies.get(key);
           const isOpen = open === key;
           return (
             <li key={key} className="py-3">
@@ -143,6 +148,7 @@ export function SecretsPage({ project }: { project?: string }) {
                 <span className={PLAIN}>last used {dayOf(row.lastUsedAt)}</span>
                 {row.needsValue ? <span className="text-[12px] text-content/80">Needs its value</span> : null}
               </div>
+              {twin ? <p className={`mt-1 ${PLAIN}`}>{twin}</p> : null}
               <div className="mt-1 flex flex-wrap gap-3">
                 {row.needsValue ? <AddValueButton row={row} onDone={load} setError={setError} /> : null}
                 <button
@@ -344,8 +350,8 @@ function AddSecret({
         value={scope}
         onChange={(event) => setScope(event.target.value)}
       >
-        <option value="global">Every project</option>
-        {project ? <option value={`project.${project}`}>This project</option> : null}
+        <option value="global">{scopeLabel("global")}</option>
+        {project ? <option value={`project.${project}`}>{scopeLabel(`project.${project}`)}</option> : null}
       </select>
       <label className={`mt-2 block ${PLAIN}`} htmlFor="secret-add-value">
         The key

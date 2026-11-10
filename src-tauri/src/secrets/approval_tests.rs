@@ -620,3 +620,172 @@ fn turning_the_setting_off_takes_back_the_always_grants_it_allowed() {
     // The ordinary program's Always and a once grant stay; the two run-anything Always grants are gone.
     assert_eq!(left, vec!["mono-1:curl:always", "mono-2:make:once"]);
 }
+
+// ---- fix round 1, item L: which copy a run uses, said in plain words --------------------------------------------------
+
+fn save_copy(bench: &Bench, scope: &str, label: &str) {
+    let conn = bench.store.lock_conn().unwrap();
+    save_value(
+        &bench.vault,
+        &conn,
+        scope,
+        "stripe-api-key",
+        Some(label),
+        "sk_live_a_project_copy_9999",
+        NOW,
+    )
+    .unwrap();
+}
+
+#[test]
+fn where_a_key_lives_is_said_in_plain_words() {
+    assert_eq!(scope_words(SCOPE_GLOBAL), "Everywhere");
+    assert_eq!(
+        scope_words("project./Users/ash/Projects/hivra"),
+        "Project: hivra"
+    );
+    assert_eq!(scope_words("project.C:\\work\\hivra"), "Project: hivra");
+    assert_eq!(scope_words("project./work/proj/"), "Project: proj");
+}
+
+#[test]
+fn the_card_names_the_scope_of_the_key_it_asks_about() {
+    let bench = Bench::new();
+    let (_, key) = ask(&bench, "mono-1", &["curl", "https://api.stripe.com"], NOW);
+    let text = card(&bench, &key).question;
+    assert!(
+        text.lines()
+            .any(|line| line == "Key: stripe-api-key, saved for Everywhere"),
+        "{text}"
+    );
+    assert!(!text.contains("there is also one for everywhere"), "{text}");
+}
+
+#[test]
+fn when_a_name_is_saved_both_ways_the_card_says_the_projects_copy_is_used() {
+    let bench = Bench::new();
+    save_copy(&bench, "project./work/proj", "Stripe for proj");
+    let mut conn = bench.store.lock_conn().unwrap();
+    let outcome = prepare_run(
+        &bench.vault,
+        &mut conn,
+        request_in(
+            Some("/work/proj"),
+            "mono-1",
+            &["curl", "https://api.stripe.com"],
+        ),
+        NOW,
+    )
+    .unwrap();
+    let RunOutcome::Waiting {
+        scope,
+        decision_key,
+        ..
+    } = outcome
+    else {
+        panic!("a card");
+    };
+    // The project's copy is the one asked about.
+    assert_eq!(scope, "project./work/proj");
+    let asked = crate::decisions::get(&conn, "/work/proj", &decision_key)
+        .unwrap()
+        .unwrap();
+    assert!(
+        asked.question.lines().any(|line| line
+            == "Key: Stripe for proj, saved for Project: proj. This project's copy is used; there is also one for everywhere."),
+        "{}",
+        asked.question
+    );
+    // A chat with no project uses the global copy and says nothing about another.
+    drop(conn);
+    let (_, global_key) = ask(
+        &bench,
+        "mono-2",
+        &["curl", "https://api.stripe.com"],
+        NOW + 1,
+    );
+    let global = card(&bench, &global_key).question;
+    assert!(
+        global
+            .lines()
+            .any(|line| line.ends_with("saved for Everywhere")),
+        "{global}"
+    );
+}
+
+#[test]
+fn a_run_is_recorded_in_the_activity_log_with_the_scope_it_used() {
+    let bench = Bench::new();
+    let conn = bench.store.lock_conn().unwrap();
+    record_run(
+        &conn,
+        "project./work/proj",
+        "stripe-api-key",
+        "Tally",
+        "curl",
+        Some(0),
+        false,
+        1_200,
+        NOW,
+    )
+    .unwrap();
+    record_run(
+        &conn,
+        SCOPE_GLOBAL,
+        "stripe-api-key",
+        "Tally",
+        "curl",
+        Some(0),
+        false,
+        800,
+        NOW + 1,
+    )
+    .unwrap();
+    let summaries: Vec<String> = conn
+        .prepare("SELECT summary FROM activity WHERE kind = 'secret.run' ORDER BY seq")
+        .unwrap()
+        .query_map([], |row| row.get(0))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    assert_eq!(
+        summaries,
+        vec![
+            "Tally ran `curl` with stripe-api-key (Project: proj): exit 0",
+            "Tally ran `curl` with stripe-api-key (Everywhere): exit 0",
+        ]
+    );
+}
+
+#[test]
+fn a_workers_card_names_the_scope_too() {
+    let bench = Bench::new();
+    let mut conn = bench.store.lock_conn().unwrap();
+    let outcome = worker::prepare(
+        &bench.vault,
+        &mut conn,
+        worker::WorkerRequest {
+            chat: "chat-1".into(),
+            mono: "Tally".into(),
+            project: None,
+            executable: "claude".into(),
+            secrets: vec![worker::WorkerSecret {
+                name: "stripe-api-key".into(),
+                env: "STRIPE_API_KEY".into(),
+            }],
+        },
+        NOW,
+    )
+    .unwrap();
+    let worker::WorkerOutcome::Waiting { decision_key, .. } = outcome else {
+        panic!("a card");
+    };
+    let asked = crate::decisions::get(&conn, "", &decision_key)
+        .unwrap()
+        .unwrap();
+    assert!(
+        asked.question.contains("(Everywhere)"),
+        "{}",
+        asked.question
+    );
+}
