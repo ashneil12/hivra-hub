@@ -22,14 +22,55 @@ This is T3's most +1 open issue, [cloud sessions #15644](https://github.com/ping
 
 ## Design
 
-1. For each of Cursor, Codex and Claude, write what a public, supported API or CLI already allows: start a cloud job, stream status, pull a result, hand back to local. If the answer is "no public API", say so and stop that vendor's slice.
+### What Hivra already runs
+
+Hivra already starts these three on this machine, as child processes, in the chat's own folder:
+
+- Cursor speaks ACP (`src/integrations/harness/providers/cursor/cursor.ts`).
+- Codex speaks its app protocol (`src/integrations/harness/providers/codex/codex.ts`).
+- Claude Code is the local CLI (`src/integrations/harness/providers/claude/claude.ts`).
+
+A cloud job is not one of those processes pointed at an undocumented switch. WP-61 is a machine the person owns. It is not a vendor cloud agent.
+
+### Cursor
+
+T3's user doc at the pinned commit says Cursor V2 runs through the official `@cursor/sdk` package, documented at https://cursor.com/docs/api/sdk/typescript. That doc requires a paid Cursor plan, and either a browser sign-in or a Cursor API key. It says the adapter uses the SDK's local runtime, in the workspace on the machine. It also says Cursor cloud agents need a repository and a cloud environment, and that T3 does not expose that configuration yet.
+
+So the public integration T3 ships, at that commit, is local. Cloud agents are a Cursor product T3 names and does not drive. The Agents window docs (https://cursor.com/docs/agent/agents-window) are the public page for that product. This package does not copy T3's adapter, and it does not invent method names, REST paths, or CLI flags that were not read from Cursor's own page.
+
+A later package may start a cloud job, read its status, pull a result, and hand it back only when Cursor's own public page, read on that day, documents each of the four. The result Hivra will accept is a branch name or a pull request URL on a repository the person already connected. Hivra then fetches that branch with ordinary git. If the public page does not document one of the four, that step is missing and the Cursor slice stops. No private endpoint, and no reading the Cursor app to guess one.
+
+There is no cloud flag on Hivra's existing Cursor child in the sources read here. That child stays the local agent.
+
+### Codex
+
+No public API for a third-party app to start an OpenAI Codex cloud task.
+
+What is public, and what Hivra already uses, is the local Codex CLI and its app protocol, with the person's ChatGPT or Codex login on this machine. T3's Codex user doc at the same commit describes that login. It does not describe a cloud-task API, a status stream, a result pull, or a handback to a local worktree.
+
+The Codex website, the Codex desktop app, and a GitHub mention are product surfaces. They are not an API this design may call. Stop. No Codex cloud slice. A local Codex chat stays as it is. If OpenAI later publishes a cloud-task API, a new package reads that page first. This one does not keep a private path open.
+
+### Claude
+
+No public API for a third-party app to start a Claude cloud session.
+
+"Dispatch" is not a name in T3's Claude provider doc, and it is not an API this design calls. Hivra already runs Claude Code locally with the person's login. That local run is not a cloud job. A local Agent SDK run is the same kind of thing: it does not keep going on Anthropic's machines after this computer is gone.
+
+Claude Desktop may offer a cloud or remote session in its own window. Without a public API or CLI that a third party is allowed to call, Hivra does not drive it. Stop.
+
+### Out of scope, named so they stay out
+
+Orca's remote machine per worktree, and Paseo's encrypted relay, are not vendor cloud sessions. They belong with WP-133 and WP-61, not here.
+
+Discussion 18019 (on-demand sandboxes) is not this package either. Renting a machine and copying a local Claude, Codex or Cursor login onto it is refused. That copies secrets off the machine, and it is not a public vendor API.
+
 2. A UX sketch: a cloud job looks like a chat with a "running elsewhere" badge, not a second inbox. Handoff back to a local worktree if the vendor supports it.
 3. Legal and billing: list what would need Ash and counsel (stored tokens, spend caps, data leaving the machine). Do not add credentials.
 4. No implementation.
 
 ## Done when
 
-- [ ] Each vendor has a public-capability note or a written "no public API".
+- [x] Each vendor has a public-capability note or a written "no public API".
 - [ ] Ash's legal and billing questions are listed.
 - [ ] No product code and no new secrets.
 
