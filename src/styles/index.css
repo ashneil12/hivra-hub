@@ -2128,6 +2128,14 @@ html.has-user-accent .primary-action:disabled {
   -webkit-text-fill-color: transparent;
 }
 
+/* WP-131: words still being heard stay marked until the person stops. */
+.dictation-partial {
+  font-style: italic;
+  text-decoration: underline dotted;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 2px;
+}
+
 /* Keep selected text hidden so the styled highlight layer still shows through,
    rather than the raw `/command` and `@path` text. */
 .composer-field::selection {

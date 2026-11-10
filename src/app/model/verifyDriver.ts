@@ -281,8 +281,11 @@ export function domRows() {
   return { elements, mainText: clip((main as HTMLElement).innerText ?? "", 12_000), bodyText: clip(document.body.innerText ?? "", 20_000) };
 }
 
-/** What the bench never clicks for Ash: anything that deletes or resets. Ash does that himself (ash-day step 16). */
-export const NEVER_CLICK = /\b(delete|remove|forget|erase|uninstall|reset|wipe|sign out|log out)\b/i;
+/**
+ * What the bench never clicks for Ash: anything that deletes or resets (ash-day step 16), and anything that opens the
+ * microphone (Dictate, and Continue on its explanation). Ash does those himself.
+ */
+export const NEVER_CLICK = /\b(delete|remove|forget|erase|uninstall|reset|wipe|sign out|log out|dictate|continue)\b/i;
 const BUTTONS = 'button, [role="button"], [role="menuitem"]';
 
 function shown(element: HTMLElement): boolean {

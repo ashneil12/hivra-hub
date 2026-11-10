@@ -194,6 +194,8 @@ WP-40's gates; it adds no second run model. It starts when 40 and 82 merge, and 
 | --- | --- | --- | --- | --- |
 | [91](work/WP-91-goal-graph.md) | The goal graph: a finish line proved first, and a live view of the run | L | 14, 40, 82 | yes |
 | [178](work/WP-178-agent-os-sandbox.md) | Agents run inside an OS sandbox, with protected config paths (design first) | M | 60 | no |
+| [174](work/WP-174-idle-reclaim-and-hibernation.md) | Idle reclaim and hibernation, a quiet chat gives back its process | M | 11, 146 | no |
+| Follow-up to [160](work/WP-160-lead-tick.md) | The lead tick opens the PR watch and the delivery row itself, so Ship on green can merge without asking | S | 160 | no |
 
 ## Running it
 
