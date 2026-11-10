@@ -1127,6 +1127,27 @@ it("puts the new chat worktree choice first on the worktrees page", async () => 
   expect(choice?.textContent).not.toMatch(/[—–]/);
 });
 
+it("offers clearing the build output of finished worktrees on the worktrees page, on by default", async () => {
+  await act(async () =>
+    root.render(
+      createElement(WorktreesPage, {
+        cwd: "/repo",
+        onRemove: vi.fn(),
+      }),
+    ),
+  );
+  const setting = container.querySelector('[data-setting-id="worktree-autoclear"]');
+  expect(setting?.id).toBe("setting-worktree-autoclear");
+  expect(setting?.textContent).toContain("Clear build output of finished worktrees");
+  const box = setting?.querySelector('input[type="checkbox"]');
+  expect(box).toBeInstanceOf(HTMLInputElement);
+  expect((box as HTMLInputElement).checked).toBe(true);
+  // It sits beside the report it relates to, after the choice for new chats.
+  const page = container.querySelector('[data-setting-id="project-worktrees"]');
+  expect(page?.firstElementChild?.id).toBe("setting-new-chat-worktree");
+  expect(page?.querySelector("#setting-worktree-cleanup")).not.toBeNull();
+});
+
 it("keeps associated sessions by default when deleting a worktree", async () => {
   vi.mocked(listWorktrees).mockResolvedValue({
     ...result(),

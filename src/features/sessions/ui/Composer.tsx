@@ -125,6 +125,7 @@ import { FileTypeIcon } from "../../files/ui/FileTypeIcon";
 import { InboxMiniCard } from "../../inbox/ui/InboxMiniCard";
 import { NoteMiniCard } from "../../notes/ui/NoteMiniCard";
 import { HandoffMiniCard } from "./HandoffMiniCard";
+import { MidThreadSwitchNotice } from "./MidThreadSwitchNotice";
 import { ModelControlPills, ModelPicker } from "./ModelPicker";
 import { QuestionForm } from "./QuestionForm";
 import { MessageQueue } from "./MessageQueue";
@@ -254,6 +255,8 @@ type Props = {
   inboxCard?: InboxComposerCard;
   noteCard?: NoteComposerCard;
   handoffCard?: HandoffComposerCard;
+  /** WP-121: the continue or recap line, until the next send. */
+  midThreadLine?: string;
   question?: UserQuestionPrompt;
   busy?: boolean;
   /** Allow typed text to replace Stop with Send while a turn is running. */
@@ -387,6 +390,7 @@ export function Composer({
   inboxCard,
   noteCard,
   handoffCard,
+  midThreadLine,
   question,
   busy = false,
   allowBusySubmit = true,
@@ -1753,8 +1757,29 @@ export function Composer({
     // WP-94: a hidden character never reaches the draft, so it never reaches the agent (hiddenText.ts).
     const plain = e.clipboardData?.getData("text/plain") ?? "";
     const paste = plain ? stripHiddenCharacters(plain) : null;
+    // A paste that carries an image as well as text keeps the image, whatever happens to the text.
+    const carried = (() => {
+      const files = filesFromClipboard(e.clipboardData);
+      return files.length > 0
+        ? files
+        : (messageFilesFromClipboard(e.clipboardData) ?? []);
+    })();
+    const attachCarried = () => {
+      if (carried.length === 0 || !attachmentsSupported) return;
+      const generation = pasteGenerationRef.current;
+      rememberAttachmentRead(
+        attachmentsFromFiles(carried).then((pasted) => {
+          if (pasteGenerationRef.current !== generation) {
+            pasted.forEach(revokeAttachment);
+            return;
+          }
+          addAttachments(pasted);
+        }),
+      );
+    };
     if (paste && paste.removed > 0 && !paste.text) {
       e.preventDefault();
+      attachCarried();
       setPasteNotice(null);
       setPasteError(
         "That paste had only hidden characters, so nothing was pasted.",
@@ -1769,6 +1794,7 @@ export function Composer({
       inlinePasteRef.current !== true
     ) {
       e.preventDefault();
+      attachCarried();
       const captured = captureDraft(e.currentTarget);
       const generation = pasteGenerationRef.current;
       rememberAttachmentRead(
@@ -1807,6 +1833,7 @@ export function Composer({
     }
     if (paste && paste.removed > 0) {
       e.preventDefault();
+      attachCarried();
       const captured = captureDraft(e.currentTarget);
       if (captured) insertRestoredText(captured, paste.text);
       setPasteNotice(
@@ -2267,6 +2294,8 @@ export function Composer({
               onDismiss={onHandoffCardDismiss}
             />
           ) : null}
+
+          <MidThreadSwitchNotice line={midThreadLine} place="composer" />
 
           <div className="relative">
             <div
