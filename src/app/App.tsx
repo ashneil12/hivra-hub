@@ -595,6 +595,7 @@ import {
   applyEarlierEdit,
   earlierEditDecision,
 } from "../features/sessions/model/editEarlierPrompt";
+import { withModelSwitchMarker } from "../features/sessions/model/modelSwitch";
 import {
   applyBtwHarnessEvent,
   btwTurnHarness,
@@ -7934,6 +7935,10 @@ function Workspace({
             };
           } else if (plan.kind === "empty") {
             next = { ...next, pendingSwitch: undefined };
+          }
+          // WP-124: a model change on the same CLI leaves a line. A CLI change is a handoff and is not marked here.
+          if (plan.kind === "model" && s.harness === harness) {
+            next = withModelSwitchMarker(s, next);
           }
           return recoverLimit
             ? isMonoSession(sessionId)
