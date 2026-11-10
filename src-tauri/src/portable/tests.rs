@@ -567,8 +567,11 @@ fn a_round_trip_into_an_empty_data_folder_brings_everything_back_minus_secrets()
             .unwrap()
             .unwrap();
         expected.remove("mirror_error");
+        // The restored row is marked as an import's (`imported`), which the source row is not: that is the point of it.
+        expected.remove("imported");
         let mut done_cmp = done.clone();
         done_cmp.remove("mirror_error");
+        assert_eq!(done_cmp.remove("imported"), Some(serde_json::json!(1)));
         assert_eq!(done_cmp, expected);
         let open = table_rows_where(&conn, "delegations", "d-open")
             .unwrap()
@@ -5725,6 +5728,125 @@ fn what_counts_as_a_note_and_as_an_instruction_file() {
     assert!(!folders::instruction_file("today.md"));
 }
 
+#[test]
+fn a_name_folds_the_way_a_case_insensitive_disk_reads_it() {
+    // A Mac disk (APFS, case-insensitive) opens `AGENT` + U+017F (long s) + `.md` as AGENTS.md, and a Windows disk reads a
+    // trailing dot or space as nothing. Every name check folds the same way, so these are all the instruction file.
+    for folded in [
+        "AGENT\u{17F}.md",
+        "agent\u{17F}.MD",
+        "AGENTS.md.",
+        "AGENTS.md ",
+        "\u{FF21}\u{FF27}\u{FF25}\u{FF2E}\u{FF34}\u{FF33}.md",
+    ] {
+        assert!(folders::instruction_file(folded), "{folded}");
+        assert!(!folders::memory_note_file(Path::new(folded)), "{folded}");
+        assert!(
+            folders::instruction_file_at(Path::new(folded)),
+            "{folded} came in under its own name"
+        );
+    }
+    assert_eq!(fold("AGENT\u{17F}.md"), fold("AGENTS.md"));
+    assert_eq!(fold("Docs/AGENT\u{17F}.md "), fold("docs/agents.md"));
+    assert!(prunable_path("AGENT\u{17F}.md"));
+    assert!(prunable_path("topics/AGENT\u{17F}.md"));
+}
+
+#[test]
+fn the_instruction_names_the_other_agent_tools_read_are_held() {
+    for name in [
+        "HERMES.md",
+        "hermes.md",
+        "GROK.md",
+        "AGENT.md",
+        "CRUSH.md",
+        "Crush.MD",
+    ] {
+        assert!(folders::instruction_file(name), "{name}");
+        assert!(!folders::memory_note_file(Path::new(name)), "{name}");
+        assert!(prunable_path(&format!("topics/{name}")), "{name}");
+    }
+    // A plain note with a similar name is still a note.
+    assert!(folders::memory_note_file(Path::new("hermes-notes.md")));
+    assert!(!folders::instruction_file("hermes-notes.md"));
+}
+
+#[test]
+fn a_folder_with_a_name_that_folds_to_instructions_is_held_back() {
+    let layout = layout();
+    assert!(instructions_seen_in(
+        &layout,
+        "folded-long-s",
+        &["AGENT\u{17F}.md"]
+    ));
+    assert!(instructions_seen_in(
+        &layout,
+        "folded-space",
+        &["AGENTS.md "]
+    ));
+    assert!(instructions_seen_in(&layout, "hermes", &["HERMES.md"]));
+    // A hidden name that is only harmless with its dot kept: a trailing dot makes it another name.
+    assert!(instructions_seen_in(&layout, "dotted-env", &[".env."]));
+}
+
+#[test]
+fn a_restored_history_with_thousands_of_hidden_files_still_restores() {
+    // A long prune list goes to git as a pathspec file. As arguments, seven thousand long names overflow the argument
+    // list of macOS, and the restore would be refused with every file left in the folder.
+    let source_dir = TestDir::new("source");
+    let target_dir = TestDir::new("target");
+    let out = TestDir::new("out");
+    let source = env_for(&source_dir.0);
+    let target = env_for(&target_dir.0);
+    let docs = source.memory_root.join("docs");
+    fs::create_dir_all(&docs).unwrap();
+    let padding = "x".repeat(150);
+    for index in 0..7000 {
+        fs::write(docs.join(format!(".hidden-{index:05}-{padding}")), "x\n").unwrap();
+    }
+    let dest = docs_history_export(&out, &source);
+    let store = open_store(&target);
+    let conn = store.lock_conn().unwrap();
+    let report = import_held(
+        &target,
+        &conn,
+        &ImportRequest {
+            path: dest.to_string_lossy().into_owned(),
+            memory: Some(MemoryImport {
+                projects: vec!["docs".into()],
+                keep_both: false,
+                history: true,
+            }),
+            workspace: None,
+        },
+    )
+    .unwrap();
+    let root = target.memory_root.join("docs");
+    assert!(
+        !report
+            .notes
+            .iter()
+            .any(|n| n.contains("couldn't be restored")),
+        "{:?}",
+        report.notes
+    );
+    assert!(root.join(".git").exists(), "{:?}", report.notes);
+    assert!(
+        !git_stdout(&root, &["ls-files"])
+            .lines()
+            .any(|line| line.starts_with(".hidden-")),
+        "hidden files are still tracked"
+    );
+    assert!(
+        !fs::read_dir(&root)
+            .unwrap()
+            .flatten()
+            .any(|entry| entry.file_name().to_string_lossy().starts_with(".hidden-")),
+        "hidden files were restored"
+    );
+    assert!(root.join("topics/a.md").is_file());
+}
+
 /// Whether a folder holding these entries counts as having instructions on disk (a Mono's folder is offered back only
 /// without them).
 fn instructions_seen_in(layout: &Layout, name: &str, entries: &[&str]) -> bool {
@@ -5918,7 +6040,7 @@ fn an_imported_chats_own_delegation_grants_no_worker_worktree_as_a_media_root() 
     )
     .unwrap();
     conn.execute(
-        "INSERT INTO delegations (id, owner_session, owner_mono, root_id, child_session, request_id, state, delivery, created_at, updated_at) VALUES ('d1', 'imported', NULL, 'd1', 'worker', 'd1', 'done', 'delivered', 0, 0)",
+        "INSERT INTO delegations (id, owner_session, owner_mono, root_id, child_session, request_id, state, delivery, created_at, updated_at, imported) VALUES ('d1', 'imported', NULL, 'd1', 'worker', 'd1', 'done', 'delivered', 0, 0, 1)",
         [],
     )
     .unwrap();
