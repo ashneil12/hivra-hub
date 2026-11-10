@@ -49,7 +49,8 @@ export function LeadCliNotice({
               aria-pressed={choice.cli === harness}
               className="rounded border border-stroke px-2 py-0.5 text-content hover:bg-content/10"
               onClick={() => {
-                // `applyLeadSwitch` is the one gate: a stale pick cannot become the lead.
+                // `applyLeadSwitch` is the one gate: a pick that cannot lead, or a CLI
+                // that has gone since the strip drew, is never applied.
                 const next = isHarnessAvailable(choice.cli)
                   ? applyLeadSwitch(harness, choice.cli)
                   : null;

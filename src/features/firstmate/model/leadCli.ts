@@ -60,7 +60,7 @@ export function leadBlockReason(harness: string): string | null {
 export type LeadCliPresence = {
   cli: string;
   installed: boolean;
-  /** Absent counts as signed in. False keeps it out of the picker. */
+  /** Absent means the app did not check, and does not keep the CLI out. False does. */
   signedIn?: boolean;
 };
 
@@ -106,8 +106,8 @@ export function leadSwitchOffer(
 /**
  * The CLI this same chat should lead on after a pick. Only the chat's harness
  * changes, so its id, blocks, crew and memory stay with it. Null when the pick
- * changes nothing or names a CLI that cannot lead, so a stale pick (a tick
- * removed in another window, or an unknown name) changes nothing.
+ * changes nothing, names a CLI that cannot lead, or is not a CLI at all, so a
+ * bad pick never turns the chat into a lead without tools.
  */
 export function applyLeadSwitch(harness: string, cli: string): HarnessId | null {
   if (!isCli(cli) || !canLead(cli) || cli === harness) return null;
