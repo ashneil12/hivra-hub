@@ -13,10 +13,15 @@ import { fileURLToPath } from "node:url";
 
 import {
   browserCachePath,
+  collectDebsCommands,
+  debsCachePath,
   imageOs,
+  KEEP_DEBS_CONF,
   parseCacheHit,
   playwrightInstallArgs,
+  runBestEffort,
   runInstall,
+  seedDebsCommands,
   shouldRetryInstall,
   waitForAptIdle,
 } from "./ci-playwright-install.mjs";
@@ -176,10 +181,11 @@ test("the CLI prints unknown when ImageOS is missing, and cannot be made to writ
   assert.equal(injected.stdout, "image-os=unknown\n");
 });
 
-test("the browser job caches that directory, caps install at 8 minutes, and retries once", () => {
+test("the browser job caches that directory, caps install at 15 minutes, and retries once for 8", () => {
   const browser = jobBlock("browser");
-  assert.match(browser, /timeout-minutes:\s*25/);
-  assert.equal((browser.match(/timeout-minutes:\s*8/g) || []).length, 2);
+  assert.match(browser, /timeout-minutes:\s*35/);
+  assert.equal((browser.match(/timeout-minutes:\s*15\n/g) || []).length, 1);
+  assert.equal((browser.match(/timeout-minutes:\s*8\n/g) || []).length, 1);
   assert.match(browser, /actions\/cache\/restore@v4/);
   assert.match(browser, /actions\/cache\/save@v4/);
   // The browsers are built for one Ubuntu release (the system libraries differ), and ubuntu-latest moves
@@ -188,7 +194,8 @@ test("the browser job caches that directory, caps install at 8 minutes, and retr
     browser,
     /key: ms-playwright-v1-\$\{\{ runner\.os \}\}-\$\{\{ steps\.playwright-path\.outputs\.image-os \}\}-\$\{\{ hashFiles\('package-lock\.json'\) \}\}/,
   );
-  assert.equal((browser.match(/steps\.playwright-path\.outputs\.image-os/g) || []).length, 1);
+  // Once for the browsers' key and once for the .deb files' key.
+  assert.equal((browser.match(/steps\.playwright-path\.outputs\.image-os/g) || []).length, 2);
   assert.doesNotMatch(browser, /hashFiles\('\*\*\/package-lock\.json'\)/);
   assert.match(browser, /ci-playwright-install\.mjs --print-cache-path/);
   assert.match(browser, /ci-playwright-install\.mjs --print-image-os/);
@@ -197,7 +204,11 @@ test("the browser job caches that directory, caps install at 8 minutes, and retr
   assert.doesNotMatch(browser, /\$\{\{[^}]*env\.ImageOS/);
   assert.match(browser, /path: \$\{\{ steps\.playwright-path\.outputs\.path \}\}/);
   assert.equal((browser.match(/steps\.playwright-path\.outputs\.path/g) || []).length, 2);
-  assert.match(browser, /--cache-hit "\$\{\{ steps\.playwright-cache\.outputs\.cache-hit \}\}"/);
+  assert.equal(
+    (browser.match(/--cache-hit "\$\{\{ steps\.playwright-cache\.outputs\.cache-hit \}\}" --debs "\$\{\{ steps\.playwright-path\.outputs\.debs \}\}"/g) || [])
+      .length,
+    2,
+  );
   assert.match(browser, /id: playwright-install-retry/);
   assert.match(browser, /steps\.playwright-install\.outcome == 'failure'/);
   assert.match(browser, /cache-hit != 'true'/);
@@ -231,4 +242,105 @@ test("hang limits from the flake package are on the long jobs, and permissions a
   assert.ok(browserPerms, "browser job lost its permissions block");
   assert.match(browserPerms[0], /contents:\s*read/);
   assert.doesNotMatch(browserPerms[0], /actions:/);
+});
+
+test("the browser job keeps the OS packages' .deb files, restored before the install and saved only after one passed", () => {
+  const browser = jobBlock("browser");
+  assert.match(browser, /ci-playwright-install\.mjs --print-debs-path/);
+  assert.match(
+    browser,
+    /key: apt-debs-v1-\$\{\{ steps\.playwright-path\.outputs\.image-os \}\}-\$\{\{ hashFiles\('package-lock\.json'\) \}\}/,
+  );
+  const restore = browser.slice(
+    browser.indexOf("name: Restore the browsers' OS packages"),
+    browser.indexOf("name: Install Playwright browsers"),
+  );
+  assert.match(restore, /id: apt-debs-cache/);
+  assert.match(restore, /continue-on-error:\s*true/);
+  assert.match(restore, /actions\/cache\/restore@v4/);
+  assert.match(restore, /path: \$\{\{ steps\.playwright-path\.outputs\.debs \}\}/);
+  const save = browser.slice(browser.indexOf("name: Save the browsers' OS packages"), browser.indexOf("Hivra layout"));
+  assert.match(save, /continue-on-error:\s*true/);
+  assert.match(save, /actions\/cache\/save@v4/);
+  assert.match(save, /steps\.apt-debs-cache\.outputs\.cache-hit != 'true'/);
+  assert.match(save, /steps\.apt-debs-cache\.outputs\.cache-primary-key != ''/);
+  assert.match(save, /steps\.playwright-install\.outcome == 'success' \|\| steps\.playwright-install-retry\.outcome == 'success'/);
+  assert.match(save, /key: \$\{\{ steps\.apt-debs-cache\.outputs\.cache-primary-key \}\}/);
+});
+
+test("the .deb directory sits beside Playwright's cache and refuses the same unusable homes", () => {
+  assert.equal(debsCachePath("/home/runner"), "/home/runner/.cache/hivra-apt-debs");
+  for (const home of ["", "relative", "/a/../b", "/a\nb", "/a\0b"]) {
+    assert.throws(() => debsCachePath(home));
+  }
+});
+
+test("seeding writes the keep setting, and copies kept files into apt's archive only when the cache restored them", () => {
+  const miss = seedDebsCommands("/home/runner/.cache/hivra-apt-debs", false);
+  assert.equal(miss.length, 1);
+  const [command, args] = miss[0];
+  assert.equal(command, "sudo");
+  assert.deepEqual(args.slice(0, 2), ["sh", "-c"]);
+  // The text goes in as an argument, never into the shell's script.
+  assert.ok(!args[2].includes("Keep-Downloaded"));
+  assert.equal(args[4], KEEP_DEBS_CONF);
+  assert.match(args[5], /^\/etc\/apt\/apt\.conf\.d\//);
+  assert.match(KEEP_DEBS_CONF, /^APT::Keep-Downloaded-Packages "true";$/m);
+
+  const hit = seedDebsCommands("/home/runner/.cache/hivra-apt-debs", true);
+  assert.equal(hit.length, 2);
+  const [copy, copyArgs] = hit[1];
+  assert.equal(copy, "sudo");
+  assert.equal(copyArgs[0], "find");
+  assert.equal(copyArgs[1], "/home/runner/.cache/hivra-apt-debs");
+  // Never overwrites a file apt already has.
+  assert.ok(copyArgs.includes("--update=none"));
+  assert.ok(copyArgs.includes("/var/cache/apt/archives"));
+  assert.throws(() => seedDebsCommands("../x", true));
+  assert.throws(() => seedDebsCommands("/a/../b", true));
+});
+
+test("collecting copies apt's .deb files into the cached directory without sudo", () => {
+  const commands = collectDebsCommands("/home/runner/.cache/hivra-apt-debs");
+  assert.deepEqual(commands[0], ["mkdir", ["-p", "/home/runner/.cache/hivra-apt-debs"]]);
+  const [command, args] = commands[1];
+  assert.equal(command, "find");
+  assert.equal(args[0], "/var/cache/apt/archives");
+  assert.deepEqual(args.slice(-4), ["-t", "/home/runner/.cache/hivra-apt-debs", "{}", "+"]);
+  assert.ok(commands.every(([name]) => name !== "sudo"));
+  assert.throws(() => collectDebsCommands("relative"));
+});
+
+test("a failed cache command is counted and the rest still run", () => {
+  const ran = [];
+  const failed = runBestEffort(
+    [
+      ["a", []],
+      ["b", []],
+      ["c", []],
+      ["d", []],
+    ],
+    (command) => {
+      ran.push(command);
+      if (command === "a") return { status: 1 };
+      if (command === "b") return { status: null, error: new Error("ENOENT") };
+      if (command === "c") return { status: null };
+      return { status: 0 };
+    },
+  );
+  assert.deepEqual(ran, ["a", "b", "c", "d"]);
+  assert.equal(failed, 3);
+});
+
+test("the CLI refuses a .deb directory that is not an absolute plain path, before installing anything", () => {
+  const result = spawnSync(process.execPath, [script, "--cache-hit", "true", "--debs", "../x"], { encoding: "utf8" });
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /not a usable path/);
+  assert.doesNotMatch(result.stdout + result.stderr, /Installing/);
+});
+
+test("the CLI prints one debs-path line under home", () => {
+  const result = spawnSync(process.execPath, [script, "--print-debs-path"], { encoding: "utf8" });
+  assert.equal(result.status, 0);
+  assert.equal(result.stdout, `debs=${debsCachePath(homedir())}\n`);
 });

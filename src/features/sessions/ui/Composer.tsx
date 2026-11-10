@@ -130,6 +130,8 @@ import { ModelControlPills, ModelPicker } from "./ModelPicker";
 import { FanOutPicker } from "./FanOutPicker";
 import { QuestionForm } from "./QuestionForm";
 import { MessageQueue } from "./MessageQueue";
+import { appNoteText } from "../model/appNote";
+import { redirectNotePlace } from "../model/cantDo";
 import { SkillPicker } from "../../skills/ui/SkillPicker";
 import { pathKey, projectKey } from "../../../shared/lib/paths";
 import { consumeQuoteRequest, type QuoteRequest } from "../model/quoteDraft";
@@ -318,6 +320,10 @@ type Props = {
   onEditQueuedMessage?: (messageId: string, text: string) => void;
   onQueuedMessageEditingChange?: (messageId?: string) => void;
   onSteerQueuedMessage?: (messageId: string) => void;
+  /** Shown once when this agent cannot redirect a running turn. */
+  steerNote?: string;
+  /** Show the note beside the box even when nothing is queued (the app is compacting this chat). */
+  steerNoteBesideBox?: boolean;
   onResumeQueue?: () => void;
   onUsageLimitResume?: () => void;
   onUsageLimitResumeAtReset?: (enabled: boolean) => void;
@@ -440,6 +446,8 @@ export function Composer({
   onEditQueuedMessage,
   onQueuedMessageEditingChange,
   onSteerQueuedMessage,
+  steerNote,
+  steerNoteBesideBox = false,
   onResumeQueue,
   onUsageLimitResume,
   onUsageLimitResumeAtReset,
@@ -2029,6 +2037,15 @@ export function Composer({
       </div>
     </div>
   );
+  const queueVisible = queuedMessages.some(
+    (message) =>
+      message.monoSessionCompletion || appNoteText(message.text) === undefined,
+  );
+  const notePlace = redirectNotePlace(
+    steerNote,
+    queueVisible,
+    !allowBusySubmit || steerNoteBesideBox,
+  );
   return (
     <div
       data-composer
@@ -2069,8 +2086,14 @@ export function Composer({
         onEdit={onEditQueuedMessage}
         onEditingChange={onQueuedMessageEditingChange}
         onSteer={onSteerQueuedMessage}
+        steerNote={notePlace === "queue" ? steerNote : undefined}
         onResume={onResumeQueue}
       />
+      {notePlace === "composer" ? (
+        <p role="note" className="px-2 pb-1 text-[12px] text-content/55">
+          {steerNote}
+        </p>
+      ) : null}
       <div className="relative overflow-visible">
         {mcpPickerOpen ? (
           <div className="absolute inset-x-0 bottom-full z-30 mb-1">

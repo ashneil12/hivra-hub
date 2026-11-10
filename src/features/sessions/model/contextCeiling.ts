@@ -116,9 +116,26 @@ export function effectiveContextWindow(
 /**
  * A chat idle past its prompt cache: the next message would rebuild the whole
  * cache at full price, so a big one is compacted first. Below this size the
- * rebuild costs less than the summary.
+ * rebuild costs less than the summary. Exactly this size still qualifies.
  */
 export const IDLE_COMPACT_MIN_TOKENS = 100_000;
+
+/**
+ * How early a big idle chat is compacted, so the summary is what the cache
+ * holds. A lifetime shorter than this uses half of itself instead.
+ */
+export const IDLE_COMPACT_LEAD_MS = 2 * 60_000;
+
+/** The line a chat shows after that background compact. No dash characters. */
+export const IDLE_COMPACT_NOTICE =
+  "Compacted this idle chat so the next message does not rebuild the whole prompt cache.";
+
+/** Lead before expiry. A lifetime under two minutes is due at half its life. */
+export function idleCompactLeadMs(ttlMs: number): number {
+  if (!Number.isFinite(ttlMs) || ttlMs <= 0) return 0;
+  if (ttlMs < IDLE_COMPACT_LEAD_MS) return ttlMs / 2;
+  return IDLE_COMPACT_LEAD_MS;
+}
 
 export function loadIdleCompact(): boolean {
   return read(IDLE_COMPACT_KEY) !== "false";
@@ -128,19 +145,51 @@ export function saveIdleCompact(on: boolean): void {
   write(IDLE_COMPACT_KEY, on ? "true" : "false");
 }
 
-/** Whether the next message into this chat should compact it first, and why. */
+export type IdleCompactionDue = {
+  idleMs: number;
+  ttlMs: number;
+  used: number;
+  /**
+   * True only once the cache has already expired. A send compacts first in
+   * that case. Earlier than that, only the idle watcher compacts.
+   */
+  expired: boolean;
+};
+
+/**
+ * Whether this chat should be compacted before its prompt cache is rebuilt.
+ * Due once it has been idle for longer than `ttl - lead` (two minutes, or
+ * half the lifetime when that is shorter). Values from disk are untrusted.
+ */
 export function idleCompactionDue(
   state: { lastTurnAt?: number; cacheTtlMs?: number; contextUsed?: number },
   now: number,
   enabled: boolean = loadIdleCompact(),
-): { idleMs: number; ttlMs: number; used: number } | null {
-  if (!enabled) return null;
+): IdleCompactionDue | null {
+  if (!enabled || !Number.isFinite(now)) return null;
   const { lastTurnAt, cacheTtlMs, contextUsed } = state;
-  if (lastTurnAt === undefined || !cacheTtlMs || !contextUsed) return null;
+  if (
+    typeof lastTurnAt !== "number" ||
+    typeof cacheTtlMs !== "number" ||
+    typeof contextUsed !== "number" ||
+    !Number.isFinite(lastTurnAt) ||
+    !Number.isFinite(cacheTtlMs) ||
+    !Number.isFinite(contextUsed) ||
+    cacheTtlMs <= 0
+  ) {
+    return null;
+  }
   if (contextUsed < IDLE_COMPACT_MIN_TOKENS) return null;
   const idleMs = now - lastTurnAt;
-  if (idleMs <= cacheTtlMs) return null;
-  return { idleMs, ttlMs: cacheTtlMs, used: contextUsed };
+  if (!Number.isFinite(idleMs)) return null;
+  const lead = idleCompactLeadMs(cacheTtlMs);
+  if (idleMs <= cacheTtlMs - lead) return null;
+  return {
+    idleMs,
+    ttlMs: cacheTtlMs,
+    used: contextUsed,
+    expired: idleMs > cacheTtlMs,
+  };
 }
 
 /** "5 min", "1 h", "2 h 10 min". */

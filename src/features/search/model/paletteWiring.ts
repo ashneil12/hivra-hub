@@ -55,6 +55,8 @@ export type PaletteSideEffects = {
   newWindow: () => void;
   zoom: (action: ZoomAction) => void;
   editor: (action: "find" | "replace") => void;
+  /** WP-123: fork the chat in focus from its latest message. */
+  forkChat: () => void;
 };
 
 function tabHandlers(
@@ -132,6 +134,8 @@ function appHandlers(
     // WP-110: flip the next-chat worktree between off and ask. Not a composer action.
     "next-chat-worktree": () =>
       saveNewChatWorktree(flippedNewChatWorktree(loadNewChatWorktree())),
+    // WP-123: fork the chat in focus. The palette has no message, so the latest one is used.
+    "fork-from-here": () => side.forkChat(),
   };
 }
 

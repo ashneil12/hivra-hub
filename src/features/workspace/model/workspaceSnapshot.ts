@@ -56,6 +56,8 @@ export type WorkspaceSessionStub = {
   branch?: string;
   worktreeCwd?: string;
   worktreeRemoved?: boolean;
+  /** The person chose this folder for a new chat, so a default worktree leaves it alone. */
+  worktreeDeclined?: boolean;
 };
 
 export type WorkspaceSnapshot = {
@@ -370,6 +372,7 @@ function sessionStub(session: Session): WorkspaceSessionStub | null {
     ...(session.branch ? { branch: session.branch } : {}),
     ...(session.worktreeCwd ? { worktreeCwd: session.worktreeCwd } : {}),
     ...(session.worktreeRemoved ? { worktreeRemoved: true } : {}),
+    ...(session.worktreeDeclined ? { worktreeDeclined: true } : {}),
   };
 }
 
@@ -399,6 +402,7 @@ function sessionFromStub(stub: WorkspaceSessionStub): Session {
     ...(stub.branch ? { branch: stub.branch } : {}),
     ...(stub.worktreeCwd ? { worktreeCwd: stub.worktreeCwd } : {}),
     ...(stub.worktreeRemoved ? { worktreeRemoved: true } : {}),
+    ...(stub.worktreeDeclined ? { worktreeDeclined: true } : {}),
   };
 }
 
@@ -448,6 +452,7 @@ function sanitizeStub(raw: unknown): WorkspaceSessionStub | null {
       ? { worktreeCwd: value.worktreeCwd.trim() }
       : {}),
     ...(value.worktreeRemoved === true ? { worktreeRemoved: true } : {}),
+    ...(value.worktreeDeclined === true ? { worktreeDeclined: true } : {}),
   };
 }
 
