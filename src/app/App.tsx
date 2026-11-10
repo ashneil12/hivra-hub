@@ -377,6 +377,7 @@ import {
   createWorktree,
   detachSessionWorktree,
   checkWorktreeRemoval,
+  listedWorktreeFor,
   listWorktrees,
   namedWorktreeBranch,
   orchestrationWorktreeBranchName,
@@ -398,6 +399,7 @@ import {
   withNewChatFolderChoice,
   withoutNewChatFolderChoice,
 } from "../features/source-control/model/newChatWorktree";
+import { rememberWorktreeInclude } from "../features/source-control/model/worktreeIncludeNote";
 import { UsageFooter } from "./shell/UsageFooter";
 import { useProjectBranches } from "../features/source-control/hooks/useProjectBranches";
 import { useInboxActivity } from "../features/inbox/hooks/useInboxUnseen";
@@ -7142,10 +7144,9 @@ function Workspace({
       try {
         const listed = await listWorktrees(current.cwd);
         if (!isCurrent()) return;
-        const target = listed.worktrees.find(
-          (entry) =>
-            pathKey(entry.path) === pathKey(tree.path) && !entry.missing,
-        );
+        // WP-138: a listing has no .worktreeinclude note, so the one on the tree the picker
+        // just created is carried over and a failed copy is still seen in the chat header.
+        const target = listedWorktreeFor(listed.worktrees, tree);
         if (!target) {
           throw new Error(
             "This worktree is no longer available. Refresh the picker.",
@@ -9229,6 +9230,8 @@ function Workspace({
             proposalDraft = { ...proposalDraft, checkoutCwd: tree.path };
           // The project's setup holds the first turn (and the queue) until it ends.
           const setupHolds = !!(tree.setup?.hold && tree.setup.run);
+          // WP-138: the include note stays with this chat. The session row does not store it.
+          const include = rememberWorktreeInclude(sessionId, tree);
           setSessions((prev) =>
             prev.map((session) =>
               session.id === sessionId
@@ -9239,6 +9242,8 @@ function Workspace({
                     workspaceMode: undefined,
                     worktreeBase: undefined,
                     worktreePreparing: setupHolds ? true : undefined,
+                    ...(include.note ? { includeNote: include.note } : {}),
+                    ...(include.warning ? { includeWarning: include.warning } : {}),
                   }
                 : session,
             ),
@@ -13177,13 +13182,15 @@ function Workspace({
                   orchestrationWorktreeBranchName(task.id),
                   // WP-82: the crew id is the lease holder.
                   task.id,
-                ).then((tree) =>
-                  workspaceIdentity(
+                ).then((tree) => {
+                  // WP-138: the worker's header can say the include files were copied.
+                  rememberWorktreeInclude(task.sessionId, tree);
+                  return workspaceIdentity(
                     projectCwd,
                     tree.path,
                     tree.branch ?? undefined,
-                  ),
-                );
+                  );
+                });
         const checkoutCwd = workspace.checkoutCwd;
         const scratchDir = await invoke<string>("control_attach_worker", {
           leadId: run.leadId,
