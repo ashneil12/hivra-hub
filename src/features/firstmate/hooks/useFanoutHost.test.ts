@@ -67,7 +67,7 @@ describe("the app's fan-out host (WP-171)", () => {
     expect(built.dependency(job)?.reason).toBe("held");
     await writeSetting(PROJECT, { enabled: true }, storage);
     const answer = await reviewBeforeCrew(
-      { project: PROJECT, requestId: "r1-api", plan: "Add the route.", ownerSession: "lead", held: { brief: "Add the route." } },
+      { project: PROJECT, requestId: "f2_r1-api", plan: "Add the route.", ownerSession: "lead", held: { brief: "Add the route." } },
       { storage, port: answering(FINDING), backend: fakeInbox() },
     );
     await answer.settled;

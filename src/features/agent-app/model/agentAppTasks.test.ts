@@ -2763,9 +2763,9 @@ describe("tasks.fanout: contracts and waves in the normal delegate path (WP-171)
       ["docs", 1, "running"],
     ]);
     expect(out.tasks[1].waiting).toMatch(/^Waiting for api to finish and be checked/);
-    expect(startedIds(started)).toEqual(["app-mono-exo-r1-api", "app-mono-exo-r1-docs"]);
-    expect(rows.map((entry) => entry.childSession)).toEqual(["app-mono-exo-r1-api", "app-mono-exo-r1-docs"]);
-    expect(queuedWorkers().map((entry) => entry.id)).toEqual(["app-mono-exo-r1-board"]);
+    expect(startedIds(started)).toEqual(["app-mono-exo-f2_r1-api", "app-mono-exo-f2_r1-docs"]);
+    expect(rows.map((entry) => entry.childSession)).toEqual(["app-mono-exo-f2_r1-api", "app-mono-exo-f2_r1-docs"]);
+    expect(queuedWorkers().map((entry) => entry.id)).toEqual(["app-mono-exo-f2_r1-board"]);
     expect(out.note).toContain("2 started now; 1 waits for what it needs");
     expect(out.note).not.toMatch(/[\u2014\u2013]/);
   });
@@ -2778,7 +2778,7 @@ describe("tasks.fanout: contracts and waves in the normal delegate path (WP-171)
     expect(delegated.mock.calls.map((entry) => [entry[0], (entry[1] as { childSessionId: string }).childSessionId])).toEqual(
       out.tasks.map((task) => [f.source, task.childSessionId]),
     );
-    expect(delegated.mock.calls[1][1]).toMatchObject({ childSessionId: "app-mono-exo-r1-board", title: expect.any(String) });
+    expect(delegated.mock.calls[1][1]).toMatchObject({ childSessionId: "app-mono-exo-f2_r1-board", title: expect.any(String) });
   });
 
   it("with fresh-eyes on, holds each task for its review and keeps its place in the plan for the start", async () => {
@@ -2795,7 +2795,7 @@ describe("tasks.fanout: contracts and waves in the normal delegate path (WP-171)
       ["docs", "running", false],
     ]);
     // The call the review keeps is the one that starts later: it still says which plan it is part of.
-    const held = reviewed.find((entry) => entry.requestId === "r1-api")!.held!;
+    const held = reviewed.find((entry) => entry.requestId === "f2_r1-api")!.held!;
     expect(held.fanout).toMatchObject({ name: "api", plan: "r1" });
     expect(typeof held.originalRequest === "string" || held.originalRequest === undefined).toBe(true);
     expect(out.note).toContain("1 started now");
@@ -2846,7 +2846,7 @@ describe("tasks.fanout: contracts and waves in the normal delegate path (WP-171)
     files[FILE] = 'app.get("/api/score", handler)';
     time.now += 30_000;
     await pump();
-    expect(startedIds(started)).toEqual(["app-mono-exo-r1-api", "app-mono-exo-r1-board"]);
+    expect(startedIds(started)).toEqual(["app-mono-exo-f2_r1-api", "app-mono-exo-f2_r1-board"]);
     expect(queuedWorkers()).toEqual([]);
   });
 
@@ -2866,16 +2866,16 @@ describe("tasks.fanout: contracts and waves in the normal delegate path (WP-171)
     await fan("r1", [api, board, docs]);
     Object.assign(rows[0], { state: "failed", status: "failed", error: "the build broke in src/api/score.ts" });
     await pump();
-    expect(startedIds(started)).toEqual(["app-mono-exo-r1-api", "app-mono-exo-r1-docs"]);
+    expect(startedIds(started)).toEqual(["app-mono-exo-f2_r1-api", "app-mono-exo-f2_r1-docs"]);
     const status = (await handleAgentApp(source, "s1", "tasks.status", {}, host)) as {
       waiting: { childSessionId: string; waiting: string }[];
     };
     expect(status.waiting).toHaveLength(1);
-    expect(status.waiting[0].childSessionId).toBe("app-mono-exo-r1-board");
+    expect(status.waiting[0].childSessionId).toBe("app-mono-exo-f2_r1-board");
     expect(status.waiting[0].waiting).toContain("Held: api failed: the build broke in src/api/score.ts.");
     expect(status.waiting[0].waiting).toContain("Not started: board.");
     // The first mate can take it back, as any waiting task.
-    await handleAgentApp(source, "c1", "tasks.cancel", { taskId: "app-mono-exo-r1-board" }, host);
+    await handleAgentApp(source, "c1", "tasks.cancel", { taskId: "app-mono-exo-f2_r1-board" }, host);
     expect(queuedWorkers()).toEqual([]);
   });
 
@@ -2902,7 +2902,7 @@ describe("tasks.fanout: contracts and waves in the normal delegate path (WP-171)
     ]);
     expect(out.tasks[0].error).toContain("already have 8 tasks running");
     expect(out.tasks[1].error).toContain("It needs api, which did not start");
-    expect(startedIds(started)).toEqual(["app-mono-exo-r1-docs"]);
+    expect(startedIds(started)).toEqual(["app-mono-exo-f2_r1-docs"]);
     expect(queuedWorkers()).toEqual([]);
     expect(rows).toHaveLength(1);
     expect(out.note).toContain("2 did not start");
@@ -2922,7 +2922,7 @@ describe("tasks.fanout: contracts and waves in the normal delegate path (WP-171)
     const again = await fan("r1", [api, board, docs]);
     expect(started).toHaveLength(2);
     expect(again.tasks.find((task) => task.name === "api")).toMatchObject({ alreadyStarted: true });
-    expect(queuedWorkers().map((entry) => entry.id)).toEqual(["app-mono-exo-r1-board"]);
+    expect(queuedWorkers().map((entry) => entry.id)).toEqual(["app-mono-exo-f2_r1-board"]);
   });
 
   it("keeps each task's declared checks as its WP-40 checks gate", async () => {

@@ -75,8 +75,8 @@ describe("a task's link to its fan-out (WP-171)", () => {
     ]);
     const [a] = plan.links;
     expect(a.plan).toBe("req1");
-    expect(a.tasks.a.session).toBe("app-mono-exo-req1-a");
-    expect(a.tasks.b.session).toBe("app-mono-exo-req1-b");
+    expect(a.tasks.a.session).toBe("app-mono-exo-f4_req1-a");
+    expect(a.tasks.b.session).toBe("app-mono-exo-f4_req1-b");
     expect(a.contract).toEqual(parsed.contract);
     expect(JSON.parse(JSON.stringify(a))).toEqual(a);
   });
@@ -87,7 +87,18 @@ describe("a task's link to its fan-out (WP-171)", () => {
     expect(id.length).toBeLessThanOrEqual(100);
     expect(id).toMatch(/^[A-Za-z0-9_-]+$/);
     expect(taskRequestId(long, "a")).not.toBe(taskRequestId(long, "b"));
-    expect(taskRequestId("req1", "a")).toBe("req1-a");
+    expect(taskRequestId("req1", "a")).toBe("f4_req1-a");
+  });
+
+  it("does not share an id with a plain delegate, or with another split of the same characters", () => {
+    expect(taskRequestId("req1", "a")).not.toBe("req1-a");
+    expect(taskRequestId("req1-a", "b")).not.toBe(taskRequestId("req1", "a-b"));
+    const id = taskRequestId("req1", "a");
+    expect(id).toMatch(/^[A-Za-z0-9_-]+$/);
+    expect(id.length).toBeLessThanOrEqual(100);
+    const long = "r".repeat(100);
+    expect(taskRequestId(long, "x".repeat(40)).length).toBeLessThanOrEqual(100);
+    expect(taskRequestId(long, "a")).not.toBe(taskRequestId(long, "b"));
   });
 
   it("reads a stored link back, and refuses one that is not a link", () => {

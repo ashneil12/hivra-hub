@@ -74,9 +74,20 @@ export type FanoutLink = {
 /** How long after a plan was sent a provider that cannot be found is read as late to appear, not as gone. */
 export const NEW_PLAN_GRACE_MS = 60_000;
 
-/** A task's own request id inside a fan-out: the call's, then the task's name, within the 100 characters a request id may have. */
+/**
+ * A task's own request id inside a fan-out, within the 100 characters a request id may have.
+ * `requestId-name` collides with a plain delegate_task, and `req1-a` + `b` collides with `req1` + `a-b`.
+ * The length of the request id is written in front, so one string has only one split.
+ */
 export function taskRequestId(requestId: string, name: string): string {
-  return `${requestId.slice(0, 100 - name.length - 1)}-${name}`;
+  const task = name.slice(0, 96);
+  let kept = requestId;
+  for (let guard = 0; guard < 5; guard++) {
+    const id = `f${String(kept.length)}_${kept}-${task}`;
+    if (id.length <= 100) return id;
+    kept = kept.slice(0, Math.max(0, kept.length - (id.length - 100)));
+  }
+  return `f${String(kept.length)}_${kept}-${task}`.slice(0, 100);
 }
 
 export type PlannedFanout = {
