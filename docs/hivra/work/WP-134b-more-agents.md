@@ -40,7 +40,7 @@ Anything that cannot run shows one of the sentences in the WP-134 table and does
 
 ## Done when
 
-- [ ] More agents is a setting, off by default, and with it off a normal chat still uses the CLI path.
-- [ ] A local command can be added, kept, and removed. A bad entry does not wipe the list. A stale write does not wipe a newer one.
-- [ ] One generic ACP session can send a turn on the desktop path, and every failure in the WP-134 table shows its sentence and is not a success.
-- [ ] An unknown registry id is not passed to `asHarness` or `Kind::from_id`.
+- [x] More agents is a setting, off by default, and with it off a normal chat still uses the CLI path.
+- [x] A local command can be added, kept, and removed. A bad entry does not wipe the list. A stale write does not wipe a newer one.
+- [ ] One generic ACP session can send a turn on the desktop path, and every failure in the WP-134 table shows its sentence and is not a success. Unit tests and a real child process test pass. It has not been run in a live app window, so this stays open.
+- [x] An unknown registry id is not passed to `asHarness` or `Kind::from_id`.
