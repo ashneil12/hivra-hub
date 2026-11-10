@@ -22,7 +22,7 @@ import { pageSessionsHandlers } from "../model/pageSessions";
 import { pageWriteHandlers } from "../model/pageWrites";
 import { pageActionLog, pageActionRunning, usePageActionsVersion } from "../model/pageActions";
 import { appPageSources } from "../model/pageSources";
-import { SANDBOX, bespokeSrcdoc, readTokens, specKey } from "../model/sandbox";
+import { SANDBOX, bespokeSrcdoc, newFrameNonce, readTokens, specKey } from "../model/sandbox";
 import { frameKey, pageFrameUrl } from "../model/pageFrame";
 import { SessionStateContext } from "../../sessions/model/sessionStateStore";
 import { useNow } from "../../hub/model/liveJobs";
@@ -32,7 +32,6 @@ import { setChatPreviewShown, settleChatPreview, useChatPagePreview } from "../.
 import { OPEN_EDIT_TODAY, todayPreviewWaiting } from "../../selfBuild/model/todayChat";
 import { FLOW_LABEL, type ChangeFlow } from "../../hubChange/model/hubChange";
 import { CalendarBlock, monthOf } from "./CalendarBlock";
-import { noteFrameLoad } from "./frameLoad";
 
 /*
  * Pages: one list of every page (by project), each with a pin. New page is a prompt to a seated Mono; it shows a
@@ -215,7 +214,9 @@ export function BespokeFrame({ pageId, spec, live, title }: { pageId: string; sp
   const ref = useRef<HTMLIFrameElement>(null);
   const scheme = loadActiveSchemeId();
   const sessions = useContext(SessionStateContext);
-  const [doc] = useState(() => bespokeSrcdoc(spec, readTokens(), document.documentElement.classList.contains("theme-light") ? "light" : "dark"));
+  // The nonce is built into this frame's document: only that document can say hello with it (pageBridgeHost.ts).
+  const [nonce] = useState(newFrameNonce);
+  const [doc] = useState(() => bespokeSrcdoc(spec, readTokens(), document.documentElement.classList.contains("theme-light") ? "light" : "dark", nonce));
   const [height, setHeight] = useState(460);
   const [generation, setGeneration] = useState(0);
   // In the app the document is served from the app's frame scheme with the page's own policy (a srcdoc frame would
@@ -255,22 +256,15 @@ export function BespokeFrame({ pageId, spec, live, title }: { pageId: string; sp
         ...pageWriteHandlers(named.current),
       },
       onSize: setHeight,
+      nonce,
+      onLost: () => setGeneration((g) => g + 1),
     });
-    let loads = 0;
-    let seen: object | null = null;
-    const onLoad = () => {
-      // WP-153: WebKit fires load twice for one srcdoc. The same window is still this page.
-      const next = noteFrameLoad(seen, frame?.contentWindow ?? null);
-      seen = next.seen;
-      if (!next.left) {
-        if (seen) loads = Math.max(loads, 1);
-        return;
-      }
-      loads += 1;
-      setGeneration((g) => g + 1); // it left its own page: a fresh frame, a fresh bridge
-    };
+    // A frame keeps one contentWindow across navigations, so a window can't tell a page that navigated away from WebKit's
+    // duplicate load of the same srcdoc. Every load asks the document for its nonce again (host.loaded()); one that
+    // can't answer left its page: a fresh frame, a fresh bridge.
+    const onLoad = () => host.loaded();
     const onMessage = (e: MessageEvent) => {
-      if (!ref.current || e.source !== ref.current.contentWindow || e.origin !== "null" || loads > 1) return;
+      if (!ref.current || e.source !== ref.current.contentWindow || e.origin !== "null") return;
       host.receive(e.data);
     };
     frame?.addEventListener("load", onLoad);
