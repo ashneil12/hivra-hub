@@ -57,6 +57,12 @@ const FILES: MonoFiles = {
 beforeEach(() => localStorage.clear());
 
 describe("notable events", () => {
+  it("keeps a lead tick's notice and names it in a ping of its own", () => {
+    const buffer = recordNotable(emptyNotableBuffer(), event({ id: "lead-tick:a", kind: "lead-tick", text: "#7 (WP-200) needs your word to merge." }));
+    expect(buffer.pending.map((e) => e.kind)).toEqual(["lead-tick"]);
+    expect(notablePing(buffer.pending)?.title).toBe("Lead tick needs you");
+  });
+
   it("keeps only real notable kinds, and drops blank, duplicate, or unsafe text", () => {
     let buffer = emptyNotableBuffer();
     buffer = recordNotable(buffer, event());
