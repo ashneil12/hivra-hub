@@ -314,35 +314,31 @@ test("timing fields are only the times that were read", () => {
     { number: "99", sha: SHA_A, createdAt: CREATED, updatedAt: UPDATED },
     NOW,
     { start: "2026-11-09T21:00:00Z", end: "2026-11-09T21:18:00Z" },
-    false,
   );
   assert.equal(
     full,
-    `pr=99 sha=${SHA_A} ci_minutes=15.60 merge_wait_minutes=1.40 builder_start=2026-11-09T21:00:00Z builder_end=2026-11-09T21:18:00Z merged=no`,
+    `pr=99 sha=${SHA_A} ci_minutes=15.60 merge_wait_minutes=1.40 builder_start=2026-11-09T21:00:00Z builder_end=2026-11-09T21:18:00Z`,
   );
 
   const missing = timingFields(
     { number: "99", sha: SHA_A, createdAt: "", updatedAt: "" },
     NOW,
     {},
-    true,
   );
-  assert.equal(missing, `pr=99 sha=${SHA_A} merged=yes`);
+  assert.equal(missing, `pr=99 sha=${SHA_A}`);
   assert.doesNotMatch(missing, /ci_minutes|merge_wait|builder_/);
 
   const onlyCreated = timingFields(
     { number: "99", sha: SHA_A, createdAt: CREATED, updatedAt: "" },
     NOW,
     {},
-    false,
   );
-  assert.equal(onlyCreated, `pr=99 sha=${SHA_A} merged=no`);
+  assert.equal(onlyCreated, `pr=99 sha=${SHA_A}`);
 
   const backwards = timingFields(
     { number: "99", sha: SHA_A, createdAt: UPDATED, updatedAt: CREATED },
     NOW,
     {},
-    false,
   );
   assert.doesNotMatch(backwards, /ci_minutes/);
   assert.match(backwards, /merge_wait_minutes=17\.00/);
@@ -351,7 +347,6 @@ test("timing fields are only the times that were read", () => {
     { number: "99", sha: SHA_A, createdAt: CREATED, updatedAt: UPDATED },
     Date.parse(CREATED),
     {},
-    false,
   );
   assert.match(future, /ci_minutes=15\.60/);
   assert.doesNotMatch(future, /merge_wait_minutes/);
@@ -360,9 +355,8 @@ test("timing fields are only the times that were read", () => {
     { number: "99", sha: SHA_A, createdAt: "yesterday", updatedAt: "later" },
     NOW,
     {},
-    false,
   );
-  assert.equal(junk, `pr=99 sha=${SHA_A} merged=no`);
+  assert.equal(junk, `pr=99 sha=${SHA_A}`);
 });
 
 test("pull request JSON is untrusted", () => {
@@ -408,15 +402,15 @@ test("pull request JSON is untrusted", () => {
   assert.throws(() => parseGhJson(""));
 });
 
-test("arguments: dry-run by default, duplicates collapse, bad input is usage", () => {
-  const dry = parseArgs(["node", "script", "99", "99", "100"]);
-  assert.equal(dry.apply, false);
-  assert.deepEqual(dry.prs, ["99", "100"]);
+test("arguments: --apply is gone, duplicates collapse, bad input is usage", () => {
+  const plain = parseArgs(["node", "script", "99", "99", "100"]);
+  assert.equal(Object.hasOwn(plain, "apply"), false);
+  assert.deepEqual(plain.prs, ["99", "100"]);
+  assert.throws(() => parseArgs(["node", "script", "--apply", "99"]), /--apply was removed/);
 
-  const apply = parseArgs([
+  const full = parseArgs([
     "node",
     "script",
-    "--apply",
     "--repo",
     REPO,
     "--log",
@@ -429,9 +423,8 @@ test("arguments: dry-run by default, duplicates collapse, bad input is usage", (
     "2026-11-09T21:18:00+01:00",
     "99",
   ]);
-  assert.equal(apply.apply, true);
-  assert.equal(apply.logPath, "ship times.log");
-  assert.deepEqual(apply.neverMerge, ["WP-152", "WP-151"]);
+  assert.equal(full.logPath, "ship times.log");
+  assert.deepEqual(full.neverMerge, ["WP-152", "WP-151"]);
 
   assert.throws(() => parseArgs(["node", "script", "--sha", SHA_A, "1", "2"]), /one pull request/);
   assert.throws(() => parseArgs(["node", "script", "--sha", "abc", "1"]), /40 character/);
@@ -442,12 +435,13 @@ test("arguments: dry-run by default, duplicates collapse, bad input is usage", (
   assert.throws(() => parseArgs(["node", "script", "--repo", "not a repo", "1"]), /OWNER\/NAME/);
   assert.throws(() => parseArgs(["node", "script", "99\r", "nope"]), /not a pull request number/);
   assert.equal(parseArgs(["node", "script", "--help"]).help, true);
-  assert.match(USAGE, /--apply/);
+  assert.doesNotMatch(USAGE, /--apply/);
+  assert.match(USAGE, /never runs it/);
   assert.equal(USAGE.includes("—"), false);
   assert.equal(USAGE.includes("–"), false);
 });
 
-test("dry-run prints the pinned command and does not merge", async () => {
+test("a ready pull request prints the pinned command and is not merged", async () => {
   const { calls, gh } = repoGh({ 99: apiPr() });
   const stdout = [];
   const stderr = [];
@@ -459,11 +453,11 @@ test("dry-run prints the pinned command and does not merge", async () => {
     stderr: (line) => stderr.push(line),
   });
   assert.equal(result.code, 0);
-  assert.deepEqual(result.merged, []);
+  assert.deepEqual(result.ready, ["99"]);
   assert.deepEqual(merges(calls), []);
   assert.deepEqual(stderr, []);
   assert.deepEqual(stdout, [
-    `dry-run: gh pr merge 99 --repo ${REPO} --merge --match-head-commit ${SHA_A}`,
+    `ready: gh pr merge 99 --repo ${REPO} --merge --match-head-commit ${SHA_A}`,
   ]);
   assert.deepEqual(runLists(calls)[0].slice(0, 8), [
     "run",
@@ -478,11 +472,10 @@ test("dry-run prints the pinned command and does not merge", async () => {
   assert.equal(calls.some((args) => args[0] === "repo"), false);
 });
 
-test("--apply merges with the pinned sha", async () => {
+test("several ready pull requests print one pinned command each and none is merged", async () => {
   const { calls, gh } = repoGh({ 99: apiPr(), 100: apiPr({ number: 100, headRefOid: SHA_B }) });
   const stdout = [];
   const result = await shipPullRequests(["100", "99", "100"], {
-    apply: true,
     repo: REPO,
     gh,
     now: NOW,
@@ -490,21 +483,18 @@ test("--apply merges with the pinned sha", async () => {
     stderr: quiet,
   });
   assert.equal(result.code, 0);
-  assert.deepEqual(result.merged, ["100", "99"]);
-  assert.deepEqual(merges(calls), [
-    ["pr", "merge", "100", "--repo", REPO, "--merge", "--match-head-commit", SHA_B],
-    ["pr", "merge", "99", "--repo", REPO, "--merge", "--match-head-commit", SHA_A],
+  assert.deepEqual(result.ready, ["100", "99"]);
+  assert.deepEqual(merges(calls), []);
+  assert.deepEqual(stdout, [
+    `ready: gh pr merge 100 --repo ${REPO} --merge --match-head-commit ${SHA_B}`,
+    `ready: gh pr merge 99 --repo ${REPO} --merge --match-head-commit ${SHA_A}`,
   ]);
-  assert.match(stdout[0], new RegExp(`apply: gh pr merge 100 --repo ${REPO} --merge --match-head-commit ${SHA_B}`));
-  assert.ok(stdout.includes("merged 100"));
-  assert.ok(stdout.includes("merged 99"));
 });
 
-test("red, sha mismatch and security-park do not merge, and a bad sibling blocks the batch", async () => {
+test("red, sha mismatch and security-park are refused, and a bad sibling blocks the batch", async () => {
   const redErr = [];
   const red = repoGh({ 99: apiPr() }, () => [apiRun({ conclusion: "failure" })]);
   const redResult = await shipPullRequests(["99"], {
-    apply: true,
     repo: REPO,
     gh: red.gh,
     stdout: quiet,
@@ -512,7 +502,6 @@ test("red, sha mismatch and security-park do not merge, and a bad sibling blocks
   });
   assert.equal(redResult.code, 1);
   assert.match(redErr.join("\n"), /refusing 99: CI is red \(failure\)/);
-  assert.match(redErr.join("\n"), /nothing was merged/);
   assert.deepEqual(merges(red.calls), []);
 
   const stderr = [];
@@ -524,7 +513,6 @@ test("red, sha mismatch and security-park do not merge, and a bad sibling blocks
     (sha) => [apiRun({ headSha: sha })],
   );
   const mixedResult = await shipPullRequests(["99", "100"], {
-    apply: true,
     repo: REPO,
     gh: mixed.gh,
     stdout: (line) => {
@@ -540,7 +528,6 @@ test("red, sha mismatch and security-park do not merge, and a bad sibling blocks
   const mismatch = repoGh({ 99: apiPr() });
   const mismatchErr = [];
   const mismatchResult = await shipPullRequests(["99"], {
-    apply: true,
     repo: REPO,
     sha: SHA_B,
     gh: mismatch.gh,
@@ -553,65 +540,11 @@ test("red, sha mismatch and security-park do not merge, and a bad sibling blocks
   assert.deepEqual(merges(mismatch.calls), []);
 });
 
-test("a head or CI change before merge ships nothing", async () => {
-  let views = 0;
-  const moved = fakeGh((args) => {
-    if (args[0] === "pr" && args[1] === "view") {
-      views += 1;
-      const sha = views === 1 ? SHA_A : SHA_B;
-      return { ok: true, stdout: JSON.stringify(apiPr({ headRefOid: sha })) };
-    }
-    if (args[0] === "run") {
-      const sha = args[args.indexOf("--commit") + 1];
-      return { ok: true, stdout: JSON.stringify([apiRun({ headSha: sha })]) };
-    }
-    if (args[1] === "merge") return { ok: true, stdout: "merged\n" };
-    return { ok: false, status: 1, stderr: "unexpected", stdout: "" };
-  });
-  const movedErr = [];
-  const movedResult = await shipPullRequests(["99"], {
-    apply: true,
-    repo: REPO,
-    gh: moved.gh,
-    stdout: quiet,
-    stderr: (line) => movedErr.push(line),
-  });
-  assert.equal(movedResult.code, 1);
-  assert.match(movedErr.join("\n"), /head sha changed before merge/);
-  assert.match(movedErr.join("\n"), /nothing was merged/);
-  assert.deepEqual(merges(moved.calls), []);
-
-  let lists = 0;
-  const flipped = fakeGh((args) => {
-    if (args[0] === "pr" && args[1] === "view") return { ok: true, stdout: JSON.stringify(apiPr()) };
-    if (args[0] === "run") {
-      lists += 1;
-      const conclusion = lists === 1 ? "success" : "";
-      const status = lists === 1 ? "completed" : "in_progress";
-      return { ok: true, stdout: JSON.stringify([apiRun({ status, conclusion })]) };
-    }
-    if (args[1] === "merge") return { ok: true, stdout: "merged\n" };
-    return { ok: false, status: 1, stderr: "unexpected", stdout: "" };
-  });
-  const flippedErr = [];
-  const flippedResult = await shipPullRequests(["99"], {
-    apply: true,
-    repo: REPO,
-    gh: flipped.gh,
-    stdout: quiet,
-    stderr: (line) => flippedErr.push(line),
-  });
-  assert.equal(flippedResult.code, 1);
-  assert.match(flippedErr.join("\n"), /CI is pending/);
-  assert.doesNotMatch(flippedErr.join("\n"), /CI is red/);
-  assert.deepEqual(merges(flipped.calls), []);
-});
 
 test("a timeout or bad gh output is not a CI verdict", async () => {
   const timed = fakeGh(async () => ({ ok: false, unreachable: true, message: "gh timed out; this is not a CI result" }));
   const timedErr = [];
   const timedResult = await shipPullRequests(["99"], {
-    apply: true,
     repo: REPO,
     gh: timed.gh,
     stdout: quiet,
@@ -627,7 +560,6 @@ test("a timeout or bad gh output is not a CI verdict", async () => {
   });
   const threwErr = [];
   const threwResult = await shipPullRequests(["99"], {
-    apply: true,
     repo: REPO,
     gh: threw.gh,
     stdout: quiet,
@@ -643,7 +575,6 @@ test("a timeout or bad gh output is not a CI verdict", async () => {
   });
   const junkErr = [];
   const junkResult = await shipPullRequests(["99"], {
-    apply: true,
     repo: REPO,
     gh: junk.gh,
     stdout: quiet,
@@ -664,27 +595,6 @@ test("a timeout or bad gh output is not a CI verdict", async () => {
   assert.equal(wrongResult.code, 1);
   assert.match(wrongErr.join("\n"), /could not read the pull request/);
 
-  const recorded = [];
-  const mergeGh = async (args) => {
-    recorded.push(args);
-    if (args[1] === "merge") return { ok: false, status: 1, stderr: "head changed on the server", stdout: "" };
-    if (args[1] === "view") return { ok: true, stdout: JSON.stringify(apiPr()) };
-    if (args[0] === "run") return { ok: true, stdout: JSON.stringify([apiRun()]) };
-    return { ok: false, status: 1, stderr: "unexpected", stdout: "" };
-  };
-  const mergeErr = [];
-  const mergeResult = await shipPullRequests(["99"], {
-    apply: true,
-    repo: REPO,
-    gh: mergeGh,
-    stdout: quiet,
-    stderr: (line) => mergeErr.push(line),
-  });
-  assert.equal(mergeResult.code, 1);
-  assert.match(mergeErr.join("\n"), /merge failed for 99/);
-  assert.match(mergeErr.join("\n"), /not a CI result/);
-  assert.doesNotMatch(mergeErr.join("\n"), /CI is red/);
-  assert.equal(recorded.filter((args) => args[1] === "merge").length, 1);
 });
 
 test("the timing log records read times and nothing else", async () => {
@@ -710,7 +620,7 @@ test("the timing log records read times and nothing else", async () => {
     assert.equal(clocks, 1);
     assert.equal(
       readFileSync(logPath, "utf8").trim(),
-      `pr=99 sha=${SHA_A} ci_minutes=15.60 merge_wait_minutes=1.40 builder_start=2026-11-09T21:00:00Z builder_end=2026-11-09T21:18:00Z merged=no`,
+      `pr=99 sha=${SHA_A} ci_minutes=15.60 merge_wait_minutes=1.40 builder_start=2026-11-09T21:00:00Z builder_end=2026-11-09T21:18:00Z`,
     );
 
     const barePath = path.join(dir, "bare.log");
@@ -724,12 +634,11 @@ test("the timing log records read times and nothing else", async () => {
       stderr: quiet,
     });
     assert.equal(bareResult.code, 0);
-    assert.equal(readFileSync(barePath, "utf8").trim(), `pr=99 sha=${SHA_A} merged=no`);
+    assert.equal(readFileSync(barePath, "utf8").trim(), `pr=99 sha=${SHA_A}`);
 
     const refusedPath = path.join(dir, "refused.log");
     const refused = repoGh({ 99: apiPr({ title: "WP-92: secret vault" }) });
     await shipPullRequests(["99"], {
-      apply: true,
       repo: REPO,
       gh: refused.gh,
       logPath: refusedPath,
@@ -739,20 +648,6 @@ test("the timing log records read times and nothing else", async () => {
     });
     assert.equal(existsSync(refusedPath), false);
 
-    const appliedPath = path.join(dir, "applied.log");
-    const applied = repoGh({ 99: apiPr() });
-    const appliedResult = await shipPullRequests(["99"], {
-      apply: true,
-      repo: REPO,
-      gh: applied.gh,
-      logPath: appliedPath,
-      now: NOW,
-      stdout: quiet,
-      stderr: quiet,
-    });
-    assert.equal(appliedResult.code, 0);
-    assert.match(readFileSync(appliedPath, "utf8"), /merged=yes/);
-    assert.doesNotMatch(readFileSync(appliedPath, "utf8"), /builder_/);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -807,7 +702,8 @@ test("the work note tells the lead the command and does not name a home director
   const doc = readFileSync(docPath, "utf8");
   const source = readFileSync(scriptPath, "utf8");
   assert.match(doc, /## How the lead ships/);
-  assert.match(doc, /node scripts\/hivra-ship-green\.mjs --apply 123/);
+  assert.match(doc, /node scripts\/hivra-ship-green\.mjs 123/);
+  assert.doesNotMatch(doc, /hivra-ship-green\.mjs[^\n]*--apply/);
   assert.match(doc, /--log/);
   assert.match(doc, /--match-head-commit/);
   assert.match(doc, /WP-92/);
@@ -827,7 +723,7 @@ test("missing arguments exit 2 and do not merge", () => {
   assert.equal(none.status, 2);
   assert.equal(none.stdout, "");
   assert.match(none.stderr, /Usage/);
-  assert.doesNotMatch(none.stderr, /^(dry-run|apply|merged) /m);
+  assert.doesNotMatch(none.stderr, /^(ready|dry-run|apply|merged) /m);
 
   const forced = spawnSync(process.execPath, [scriptPath, "--force", "99"], { encoding: "utf8" });
   assert.equal(forced.status, 2);
@@ -855,7 +751,7 @@ test("a gh timeout is not a CI result", { skip: unix ? false : "the stand-in gh 
   }
 });
 
-test("the real script dry-run and apply pin the sha and hide unrelated secrets", {
+test("the real script pins the sha, never merges, and hides unrelated secrets", {
   skip: unix ? false : "the stand-in gh is a shebang script",
 }, () => {
   const dir = mkdtempSync(path.join(tmpdir(), "hivra-ship-green-"));
@@ -914,32 +810,22 @@ process.exit(1);
     };
     const dry = spawnSync(process.execPath, [scriptPath, "--repo", REPO, "99"], { encoding: "utf8", env });
     assert.equal(dry.status, 0, dry.stderr);
-    assert.match(dry.stdout, new RegExp(`dry-run: gh pr merge 99 --repo ${REPO} --merge --match-head-commit ${SHA_A}`));
+    assert.match(dry.stdout, new RegExp(`ready: gh pr merge 99 --repo ${REPO} --merge --match-head-commit ${SHA_A}`));
     assert.doesNotMatch(`${dry.stdout}${dry.stderr}`, /test-token/);
     let calls = readFileSync(logPath, "utf8").trim().split("\n").map((line) => JSON.parse(line));
     assert.equal(calls.some((call) => call.args[1] === "merge"), false);
     assert.equal(calls.every((call) => call.token === "test-token"), true);
     assert.equal(calls.every((call) => call.aws === ""), true);
 
+
     writeFileSync(logPath, "");
     const apply = spawnSync(process.execPath, [scriptPath, "--repo", REPO, "--apply", "99"], {
       encoding: "utf8",
       env,
     });
-    assert.equal(apply.status, 0, apply.stderr);
-    assert.match(apply.stdout, /merged 99/);
-    calls = readFileSync(logPath, "utf8").trim().split("\n").filter(Boolean).map((line) => JSON.parse(line));
-    const merge = calls.find((call) => call.args[1] === "merge");
-    assert.deepEqual(merge.args, [
-      "pr",
-      "merge",
-      "99",
-      "--repo",
-      REPO,
-      "--merge",
-      "--match-head-commit",
-      SHA_A,
-    ]);
+    assert.equal(apply.status, 2);
+    assert.match(apply.stderr, /--apply was removed/);
+    assert.equal(readFileSync(logPath, "utf8"), "");
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
