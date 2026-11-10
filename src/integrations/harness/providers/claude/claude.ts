@@ -22,6 +22,7 @@ import type {
 } from "../../../../features/sessions/model/session";
 import { loadClaudeHooks } from "../../../../features/settings/model/settings";
 import {
+  execChild,
   killChild,
   resolveClaudeBinary,
   spawnChild,
@@ -94,6 +95,7 @@ import { claudeRetryFromMessage } from "./claudeFailure";
 import { withDevCopiesOff } from "./devCopies";
 import { withWorkerNotificationsOff } from "./quietWorkers";
 import { workerCheckoutsArgs } from "./workerCheckouts";
+import { addDirsOf, cheapExploreLaunch } from "./explorePin";
 import { appIdentity, isDevCopy } from "../../../../app/model/appIdentity";
 import {
   GOAL_CHECK_CAP,
@@ -165,7 +167,7 @@ import type {
   SendTurnInput,
   SteerTurnInput,
 } from "../../core/types";
-import { claudeBridgeKind } from "./claudeDeepseekBridge";
+import { claudeBridgeKind, claudeRunsOnSubscriptionBridge } from "./claudeDeepseekBridge";
 import { bridgeLaunchModel } from "../../../../features/sessions/model/deepseekBridge";
 
 /**
@@ -1147,19 +1149,33 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
     },
   );
 
+  const launchArgs = [
+    // Only a chat in Full access starts able to skip permissions; Full
+    // access chosen later on any other process restarts it (claudeLaunchDelta).
+    ...buildClaudeSpawnArgs({ ...launch, settings: withWorkerNotificationsOff(withDevCopiesOff(launch.settings, input.cwd)), allowBypass: launchNext.allowBypass }),
+    ...workerCheckoutsArgs(input.cwd),
+    // WP-30: the same snapshot as the append text, not a second read of the plugin wiring (claudeExtraArgs.ts).
+    ...(await claudeExtraArgs(input.sessionId, undefined, plugins.additions)),
+    // WP-41: the same text the launch key was compared against, not a second read.
+    ...claudeAppendArgs(append),
+  ];
+
+  // WP-143: a crew or Mono session on Anthropic starts with a cheap Explore agent as a flag, when this CLI knows the flag
+  // and the person has no Explore of their own (also not in a folder the session adds). Nothing is written to the
+  // folder, and a failure here only means the session starts without it.
+  const cheapExplore = await cheapExploreLaunch({
+    crew: input.crew === true,
+    anthropic: !claudeRunsOnSubscriptionBridge() && !launch.routedModel,
+    cwd: input.cwd,
+    providerAccountId: input.providerAccountId,
+    addDirs: addDirsOf(launchArgs),
+    cli: { key: path, version: () => execChild(path, ["--version"], input.cwd, "claude") },
+  });
+
   await spawnChild(
     input.sessionId,
     path,
-    [
-      // Only a chat in Full access starts able to skip permissions; Full
-      // access chosen later on any other process restarts it (claudeLaunchDelta).
-      ...buildClaudeSpawnArgs({ ...launch, settings: withWorkerNotificationsOff(withDevCopiesOff(launch.settings, input.cwd)), allowBypass: launchNext.allowBypass }),
-      ...workerCheckoutsArgs(input.cwd),
-      // WP-30: the same snapshot as the append text, not a second read of the plugin wiring (claudeExtraArgs.ts).
-      ...(await claudeExtraArgs(input.sessionId, undefined, plugins.additions)),
-      // WP-41: the same text the launch key was compared against, not a second read.
-      ...claudeAppendArgs(append),
-    ],
+    [...launchArgs, ...cheapExplore.args],
     input.cwd,
     { provider: "claude", id: input.providerAccountId ?? "default" },
     "claude",
@@ -1168,6 +1184,10 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
     // Only a custom ("Other models") id has a route; Claude models never do, so they keep the normal login.
     customModelRoute({ model: input.model, modelSettings: input.modelSettings ?? {} }),
   );
+  // Said only once the process is up: a launch that failed to start never claims the flag went in.
+  if (cheapExplore.sentence) {
+    input.onEvent({ type: "status", key: "explore-pin", text: cheapExplore.sentence });
+  }
 
   liveByThread.set(input.sessionId, live);
   resumeByThread.set(input.sessionId, {

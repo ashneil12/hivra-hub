@@ -253,6 +253,12 @@
       "gave": "an optional split (side-by-side) diff, pinned as an npm package, with unified staying the default (WP-116)"
     },
     {
+      "name": "Claude Code subagents",
+      "url": "https://code.claude.com/docs/en/sub-agents",
+      "licence": "public docs",
+      "gave": "a cheap Explore agent passed to a crew session as a flag, so its search does not run on the lead model (ideas only, WP-143)"
+    },
+    {
       "name": "Memorilla",
       "url": "https://github.com/snap-stanford/memorilla",
       "licence": "Apache-2.0; its PersonalizationV4 data is CC BY 4.0",
