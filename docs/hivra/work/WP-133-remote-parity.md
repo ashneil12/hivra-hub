@@ -38,9 +38,31 @@ Paseo's security and connectivity pages, Orca's site, and the public price pages
 
 ## Design
 
-The five decisions. Later notes in this file spell out the comparison. The recommendation itself is here.
+### Architecture
 
-1. Local-first stays. The source of truth is the machine that holds the checkout and runs the agents: this desktop, or a background host on a machine that stays up. Phone, web and a second desktop are thin views. Reachability order: loopback and the SSH host that already exists, then a LAN or a tailnet the person runs, then an opt-in relay that cannot read the session and does not need an account. T3 Connect is not the model to copy. There is no concrete reason here to reject that relay model. There is a concrete reason not to run one yet: SPEC section 12 still says a hosted multi-user relay is not now, and this package does not start one.
+Three roles.
+
+The source of truth is the machine that holds the checkout and runs the agents. For a project on this computer, that is the desktop. For a project opened on another machine, that is the host. `docs/remote-access.md` already says the host owns the provider processes and the session database, and that closing the desktop does not stop a host session. A client does not keep a second copy of that truth.
+
+A background host is that same host package, on a machine that stays up. It binds to loopback only. The desktop reaches it through an SSH forward. On Linux the user service can survive logout. On macOS the Mac has to stay logged in and awake. On Windows the desktop session has to stay signed in and awake. A host on the laptop dies when the laptop sleeps. A host on another machine does not.
+
+A client is a thin view: the phone, a web page, or a second desktop. It sends commands and shows results. It does not run the agents. When the desktop is only driving a remote host, it is already that kind of client for sessions. The phone is not. It talks to the desktop process, not to the host (`mobile/README.md`).
+
+Four ways to reach the host.
+
+SSH only is what ships. Add machine uses the person's own SSH. The forward is loopback on the laptop. There is no Hivra account, no public listener and no relay. This stays the default and the trust floor. It is not enough on its own for a phone somewhere else, or for a browser, unless the person already has a path to that machine. Remote projects also still have no terminal, as that same doc says.
+
+A LAN, or a tailnet the person runs (Tailscale, or any VPN they already use). T3 documents both, and a new T3 service answers only on that machine until local-network access is turned on. Hivra should support this path and should not operate the network. No account, no machine cap, no relay bill. It asks every person to bring a network, so it cannot be the only future path. It also cannot be dropped. Anything that listens beyond loopback stays off until the person turns it on. The host today does not listen beyond loopback at all.
+
+An opt-in untrusted relay, with no account required to use the app. "Paseo-style" in this note means the properties, not a copy of a product whose pages were not re-fetched: the relay cannot read the session, the app works with no account, the relay is off until that machine's owner turns it on, and there is no cap tied to a chat plan. Pairing stays a one-time code, as the phone and the SSH host already do, not a user directory. Nothing read for this note is a concrete reason to reject that list. The concrete reason not to run it now is SPEC section 12: a hosted multi-user relay is not now. An untrusted relay is still a public service. Someone pays for it, someone answers abuse, and it still shows metadata (who is online, when, and how much). This package writes the properties. It does not deploy a relay.
+
+T3 Connect is rejected as a copy. It needs their account. A free account links 3 machines, Pro links 10, Premier links 100, and phones and browsers do not count. Their own FAQ says it keeps disconnecting, and treats Tailscale as the fallback. Their FAQ also says the relay only sets up a Cloudflare tunnel and does not proxy the session. Even if that is true, the account, the cap and the disconnects are enough. Do not copy the tunnel, the telemetry, the hosted site, or the name. Their user docs do not name Clerk. Do not add a third-party account kit anyway.
+
+If Ash later says go, the order is: keep SSH and loopback as the default, add a LAN or a user-run tailnet only when the person turns it on, and leave the untrusted relay as a written target rather than a server.
+
+SPEC section 11 says the upstream remote host and the mobile app are kept and not rewritten. A later package adds a small hook. It does not fork those trees. WP-60 still owns the part this note does not: first-mate records and the watcher have to run on the host, or a closed laptop that was the desktop still loses the crew even when the host keeps the provider session.
+
+The other four decisions:
 
 2. The inherited Expo app is the starting point, not a dead end, and this package does not publish it. If Ash later says go, the first slice is chats (already there), approvals (not there) and diffs (already there). A terminal stays on the desktop. Files stay read-only until a later package.
 
@@ -52,8 +74,8 @@ The five decisions. Later notes in this file spell out the comparison. The recom
 
 ## Done when
 
-- [ ] WP-61 is updated or explicitly cross-linked, not forked in silence.
-- [ ] A recommended relay model is written, with T3 Connect rejected as a copy target.
+- [x] WP-61 is updated or explicitly cross-linked, not forked in silence.
+- [x] A recommended relay model is written, with T3 Connect rejected as a copy target.
 - [ ] Ash's open decisions are listed.
 - [ ] No product code, no relay server, no store listing work.
 

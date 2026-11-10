@@ -84,7 +84,7 @@ Every item of Ash's vision maps to packages, so nothing is dropped.
 | Built-in testing and verification | 40, 41, 42 |
 | Browser and desktop control | 43, 44 |
 | Memory learned from chat history | 50, 51 |
-| Always on (Hivra Cloud) | 60, 61 |
+| Always on (Hivra Cloud) | 60, 61, 133 |
 | Opinionated, minimal, not robotic, UI that flows | 03, 04, 05, 06, 15 |
 | Mergeable with upstream, Windows working | 01, 02, 09, PLAN.md upstream rules |
 | Named Hivra, sources credited | 07, 08 |
