@@ -257,6 +257,11 @@ export type WarnSink = {
 
 const warned = new Set<string>();
 
+/** Tests start from a period that has not warned yet. */
+export function resetSpendWarnings(): void {
+  warned.clear();
+}
+
 /** One wake and one activity line per limit per period. A failed send is not remembered. */
 export async function warnOnce(input: {
   limit: SpendLimit;
@@ -292,6 +297,16 @@ export async function warnOnce(input: {
   }
 }
 
+/** A project id matches its folder, and a folder matches itself. `want` is already a path key. */
+function projectMatches(cwd: string, want: string): boolean {
+  if (!want) return false;
+  const have = pathKey(cwd);
+  if (have === want) return true;
+  const base = have.split("/").filter(Boolean).pop() ?? "";
+  const wantBase = want.split("/").filter(Boolean).pop() ?? "";
+  return base.length > 0 && (base === want || base === wantBase);
+}
+
 function inPeriod(at: number, now: number, period: SpendPeriod): boolean {
   const day = dayKey(at);
   const today = dayKey(now);
@@ -307,20 +322,20 @@ export function periodSpend(
   sessions: readonly UsageSession[] | null | undefined,
   opts: { now: number; period: SpendPeriod; scope: SpendScope; project?: string },
 ): SpendReading {
-  if (!Number.isFinite(opts.now)) {
+  if (sessions == null || !Number.isFinite(opts.now)) {
     return { measuredUsd: 0, pricedTurns: 0, unpricedTurns: 0, reportsCost: true, unreadable: true };
   }
   const want = opts.scope === "project" ? pathKey(opts.project ?? "") : "";
   const seenSessions = new Set<string>();
   const seenBlocks = new Set<string>();
-  const prices = [];
+  const prices: ReturnType<typeof readTurnPrice>[] = [];
   for (const session of sessions ?? []) {
     if (!session || typeof session !== "object") continue;
     const sessionId = typeof session.id === "string" ? session.id : "";
     if (sessionId && seenSessions.has(sessionId)) continue;
     if (sessionId) seenSessions.add(sessionId);
     const cwd = typeof session.cwd === "string" ? session.cwd : "";
-    if (opts.scope === "project" && pathKey(cwd) !== want) continue;
+    if (opts.scope === "project" && !projectMatches(cwd, want)) continue;
     let index = 0;
     for (const block of session.blocks ?? []) {
       index += 1;

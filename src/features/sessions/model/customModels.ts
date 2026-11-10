@@ -110,6 +110,18 @@ export function findCustomModel(model: string | undefined): CustomModel | undefi
   return listCustomModels().find((m) => m.id === id);
 }
 
+/**
+ * WP-176: a per-task ceiling applies only to a model a provider bills per token.
+ * A subscription CLI is not one. An unknown custom model is treated as billed.
+ * A model served by Ollama on this machine is not.
+ */
+export function isBilledModel(model: string | undefined): boolean {
+  if (!isCustomModelId(model)) return false;
+  const found = findCustomModel(model);
+  if (!found) return true;
+  return found.provider !== "ollama";
+}
+
 let version = 0;
 export function customModelsVersion(): number {
   return version;

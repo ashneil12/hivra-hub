@@ -10,6 +10,7 @@ import {
   periodId,
   periodSpend,
   putLimit,
+  resetSpendWarnings,
   sanitizeSpendLimit,
   spendAllowed,
   spendStatusLine,
@@ -202,9 +203,21 @@ describe("spend limits", () => {
     expect(tomorrow.pricedTurns).toBe(0);
     expect(periodId("month", month)).toBe("2026-11");
     expect(periodId("day", Date.parse("2026-11-11T00:05:00"))).not.toBe(periodId("day", month));
+    const byName = periodSpend(sessions, { now: month, period: "month", scope: "project", project: "hivra" });
+    expect(byName.measuredUsd).toBeCloseTo(2, 6);
+    const blank = periodSpend(sessions, { now: month, period: "month", scope: "project", project: "" });
+    expect(blank.measuredUsd).toBe(0);
+    expect(blank.pricedTurns).toBe(0);
+    const missing = periodSpend(null, { now: month, period: "month", scope: "project", project: "hivra" });
+    expect(missing.unreadable).toBe(true);
+    expect(missing.measuredUsd).toBe(0);
+    const none = periodSpend([], { now: month, period: "month", scope: "app" });
+    expect(none.unreadable).toBeUndefined();
+    expect(none.measuredUsd).toBe(0);
   });
 
   it("warns once per period, and a failed wake can be tried again", async () => {
+    resetSpendWarnings();
     const row = limit();
     const seen: string[] = [];
     const lines: string[] = [];

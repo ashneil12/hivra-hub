@@ -239,42 +239,52 @@ function currentHealth(health: BuilderHealth | null | undefined): BuilderHealth 
 
 /**
  * Whether a new builder may start. The ceiling is not read here: raising max builders cannot
- * ignore a pause. A missing or stale sample allows the launch. A pause never names a builder to stop.
+ * ignore a pause. A missing or stale sample is not a health pause. A spend limit still applies.
+ * A pause never names a builder to stop.
  */
-export function builderLaunchAllowed(health: BuilderHealth | null | undefined, limits: BuilderScale): LaunchDecision {
+export function builderLaunchAllowed(
+  health: BuilderHealth | null | undefined,
+  limits: BuilderScale,
+  spend?: { status?: string; reason?: string } | null,
+): LaunchDecision {
   const sample = currentHealth(health);
-  if (!sample) return ALLOWED;
-  const scale = sanitizeBuilderScale(limits);
-  const load1 = finiteMetric(sample.load1);
-  if (scale.load.kind !== "off" && load1 !== undefined) {
-    const cores = finiteMetric(sample.cores);
-    const threshold =
-      scale.load.kind === "above"
-        ? scale.load.value
-        : cores !== undefined && cores > 0
-          ? round3(LOAD_PER_CORE * cores)
-          : undefined;
-    if (threshold !== undefined && load1 > threshold) {
+  if (sample) {
+    const scale = sanitizeBuilderScale(limits);
+    const load1 = finiteMetric(sample.load1);
+    if (scale.load.kind !== "off" && load1 !== undefined) {
+      const cores = finiteMetric(sample.cores);
+      const threshold =
+        scale.load.kind === "above"
+          ? scale.load.value
+          : cores !== undefined && cores > 0
+            ? round3(LOAD_PER_CORE * cores)
+            : undefined;
+      if (threshold !== undefined && load1 > threshold) {
+        return {
+          ok: false,
+          reason: `The load average is ${shown(load1)}, which exceeds ${shown(threshold)}. Running builders keep going.`,
+        };
+      }
+    }
+    const memoryCut = scale.pauseFreeMemoryGb;
+    const freeMemory = finiteMetric(sample.freeMemoryGb);
+    if (memoryCut != null && freeMemory !== undefined && freeMemory < memoryCut) {
       return {
         ok: false,
-        reason: `The load average is ${shown(load1)}, which exceeds ${shown(threshold)}. Running builders keep going.`,
+        reason: `Free memory is ${shown(freeMemory)} GB, which is below ${shown(memoryCut)} GB. Running builders keep going.`,
+      };
+    }
+    const disk = diskHold(sample, scale);
+    if (disk) {
+      return {
+        ok: false,
+        reason: `Free disk is ${shown(disk.freeGb)} GB, which is below ${shown(disk.floorGb)} GB. Running builders keep going.`,
       };
     }
   }
-  const memoryCut = scale.pauseFreeMemoryGb;
-  const freeMemory = finiteMetric(sample.freeMemoryGb);
-  if (memoryCut != null && freeMemory !== undefined && freeMemory < memoryCut) {
-    return {
-      ok: false,
-      reason: `Free memory is ${shown(freeMemory)} GB, which is below ${shown(memoryCut)} GB. Running builders keep going.`,
-    };
-  }
-  const disk = diskHold(sample, scale);
-  if (disk) {
-    return {
-      ok: false,
-      reason: `Free disk is ${shown(disk.freeGb)} GB, which is below ${shown(disk.floorGb)} GB. Running builders keep going.`,
-    };
+  // WP-176: a spend limit is the same gate. Health wins when both apply. Over refuses a new launch only.
+  if (spend?.status === "over" && typeof spend.reason === "string" && spend.reason.trim()) {
+    return { ok: false, reason: spend.reason.trim() };
   }
   return ALLOWED;
 }

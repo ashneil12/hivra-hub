@@ -11,7 +11,7 @@
 //   order and limit marks, providers/model/accountWaterfall.ts), new workers wait until one rejoins; a running worker
 //   the provider refuses keeps its task (App.tsx holds its report) and carries on on the next account with room, or
 //   at the reset.
-// - No cost ceiling: Ash handles cost himself, so nothing here counts money or tokens.
+// - WP-176: a project or app spend limit can hold a new builder. Nothing here stops one that is already running.
 // Workers never step on each other: several in one repo each get a checkout of their own (agentAppTasks.ts), across
 // every chat working on the project, not only the one delegating.
 import { useSyncExternalStore } from "react";
@@ -38,6 +38,7 @@ import {
   type BuilderHoldNeed,
   type BuilderScale,
 } from "./builderScale";
+import { judgeLaunch, RAISE_LIMIT, resetSpendGate, useLiveSpendSink } from "../../usage/model/spendGate";
 
 export type WorkerLimits = {
   workers: number;
@@ -677,8 +678,8 @@ export function dequeueWorker(id: string): Promise<boolean> {
 
 // ---- deciding ----------------------------------------------------------------------------------------------------
 
-export type WaitReason = "workers" | "heavy" | "limit" | "files" | "health";
-export type Admission = { start: true } | { start: false; reason: WaitReason; line: string };
+export type WaitReason = "workers" | "heavy" | "limit" | "files" | "health" | "spend";
+export type Admission = { start: true; line?: string } | { start: false; reason: WaitReason; line: string };
 
 const clock = (ms: number) => new Date(ms).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
 
@@ -702,6 +703,8 @@ export type AdmitInput = {
   projectName: string;
   heavy: boolean;
   harness: string;
+  /** The first mate chat that asked, when this launch should be allowed to warn it. */
+  ownerSession?: string;
   /** r87: the files or folders it will change, when known. */
   files?: readonly string[];
 };
@@ -832,6 +835,17 @@ export function builderHold(): BuilderHoldNeed | null {
   return builderHoldNeed(queuedWorkers().length, healthNow, builderScale());
 }
 
+/** WP-176: one Needs you line when a queued builder is over a spend limit. Running work is not in this. */
+export function spendHold(): { id: "builders-spend"; text: string; action: typeof RAISE_LIMIT } | null {
+  for (const job of queuedWorkers()) {
+    const spend = judgeLaunch({ project: job.project, harness: job.harness, ownerSession: job.ownerSession });
+    if (spend.status === "over" && spend.reason.trim()) {
+      return { id: "builders-spend", text: spend.reason.trim(), action: RAISE_LIMIT };
+    }
+  }
+  return null;
+}
+
 /** Tests stand in for the command. `null` puts the command back. */
 export function setBuilderHealthReader(reader: (() => Promise<unknown>) | null): void {
   healthReader = reader ?? defaultHealthReader;
@@ -943,8 +957,14 @@ function decide(job: AdmitInput, load: ProjectLoad, limits: WorkerLimits, room: 
     return { start: false, reason: "heavy", line: waitLine("heavy", job.projectName, limits) };
   if (!room.room) return { start: false, reason: "limit", line: waitLine("limit", job.projectName, limits, room) };
   // WP-161: health is after the counts and the provider. Raising the ceiling does not skip it.
-  const gate = builderLaunchAllowed(healthNow, builderScale());
-  if (!gate.ok) return { start: false, reason: "health", line: gate.reason };
+  // WP-176: the spend limit is the same gate. A disk or load pause wins. Over holds a new launch only.
+  const spend = judgeLaunch({ project: job.project, harness: job.harness, ownerSession: job.ownerSession });
+  const gate = builderLaunchAllowed(healthNow, builderScale(), spend);
+  if (!gate.ok) {
+    const spendRefusal = spend.status === "over" && gate.reason === spend.reason;
+    return { start: false, reason: spendRefusal ? "spend" : "health", line: gate.reason };
+  }
+  if (spend.status === "unmeasured" && spend.reason.trim()) return { start: true, line: spend.reason.trim() };
   return { start: true };
 }
 
@@ -993,7 +1013,7 @@ export function queuedLine(job: QueuedWorker, ctx: AdmitContext): string {
   const shared = sharedWith(job, ctx.rows);
   if (shared) return filesWaitLine(shared);
   const why = decide(job, load, limits, room);
-  return why.start ? "Starting now." : why.line;
+  return why.start ? why.line ?? "Starting now." : why.line;
 }
 
 // ---- a running worker the provider refused -----------------------------------------------------------------------
@@ -1073,6 +1093,7 @@ export function resetWorkerPool(): void {
   healthTimeoutMs = 3_000;
   healthNow = undefined;
   loading = undefined;
+  resetSpendGate();
   changed();
 }
 
@@ -1094,6 +1115,7 @@ export function workerPoolHost(deps: {
     launch: { cwd: string; harness: string; model?: string; ranFrom?: string; ranEffort?: string; cliFallback?: string },
   ): void;
 }): WorkerPoolHost {
+  useLiveSpendSink();
   const ctx = (): AdmitContext => ({ rows: deps.openRows(), room: deps.room });
   return {
     openRows: deps.openRows,

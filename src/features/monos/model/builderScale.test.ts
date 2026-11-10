@@ -208,6 +208,30 @@ describe("builderLaunchAllowed", () => {
       expect(both.reason).not.toContain("Free memory");
     }
   });
+
+  it("refuses a spend limit with no health sample, and a disk pause still wins", () => {
+    const over = {
+      status: "over",
+      reason: "Spend limit reached for hivra: $50 of $50 this month. Raise it, or wait for the month to reset.",
+    };
+    expect(builderLaunchAllowed(undefined, DEFAULT_BUILDER_SCALE, over)).toEqual({ ok: false, reason: over.reason });
+    expect(builderLaunchAllowed(null, DEFAULT_BUILDER_SCALE, over)).toEqual({ ok: false, reason: over.reason });
+    const disk = builderLaunchAllowed({ freeDiskGb: 10 }, DEFAULT_BUILDER_SCALE, over);
+    expect(disk.ok).toBe(false);
+    if (!disk.ok) {
+      expect(disk.reason).toContain("Free disk");
+      expect(disk.reason).not.toContain("Spend limit");
+    }
+    expect(builderLaunchAllowed(undefined, DEFAULT_BUILDER_SCALE, { status: "warn", reason: "near" })).toEqual({
+      ok: true,
+      reason: "",
+    });
+    expect(builderLaunchAllowed(undefined, DEFAULT_BUILDER_SCALE, { status: "over", reason: "   " })).toEqual({
+      ok: true,
+      reason: "",
+    });
+    expect(builderLaunchAllowed(undefined, DEFAULT_BUILDER_SCALE).ok).toBe(true);
+  });
 });
 
 describe("the disk pause is on by default at 30 GB", () => {
