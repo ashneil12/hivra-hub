@@ -378,7 +378,7 @@ import {
 import {
   attachNewChatWorktree,
   gitRepositoryOnThisComputer,
-  newChatStaysHere,
+  newChatWorktreeOpenFor,
   openNewChatWorktree,
   withNewChatFolderChoice,
 } from "../features/source-control/model/newChatWorktree";
@@ -9129,22 +9129,11 @@ function Workspace({
         // WP-110: ask and always start a new chat in a worktree. A refusal keeps
         // the creation function's own message.
         const tree = await openNewChatWorktree(
-          {
+          newChatWorktreeOpenFor(current, {
             setting: loadNewChatWorktree(),
-            firstTurn:
-              isFirstTurn &&
-              !current.worktreeCwd &&
-              !current.providerSessionId &&
-              !current.orchestrationLeadId &&
-              !current.inboxAsk &&
-              !current.worktreeRemoved &&
-              !current.automationId &&
-              !current.ephemeral,
+            isFirstTurn,
             toggleOn: createDraftWorktree,
-            declined: newChatStaysHere(current),
-            cwd: current.cwd,
-            base: current.worktreeBase || "HEAD",
-          },
+          }),
           {
             gitOnThisComputer: gitRepositoryOnThisComputer,
             createWorktree,

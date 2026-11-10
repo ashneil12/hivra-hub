@@ -620,7 +620,7 @@ describe("a new chat's choice to stay in its folder across a reload", () => {
     const { persistQuitState, loadResumedWorkspace } = await import("./appLifecycle");
     const { newSession: fresh } = await import("../../features/sessions/model/session");
     const { newTab: freshTab } = await import("../../features/workspace/model/layout");
-    const { newChatStaysHere, openNewChatWorktree } = await import(
+    const { newChatStaysHere, newChatWorktreeOpenFor, openNewChatWorktree } = await import(
       "../../features/source-control/model/newChatWorktree"
     );
 
@@ -652,14 +652,7 @@ describe("a new chat's choice to stay in its folder across a reload", () => {
     const port = { gitOnThisComputer: vi.fn(async () => true), createWorktree: create };
     const send = (session: NonNullable<typeof kept>) =>
       openNewChatWorktree(
-        {
-          setting: "always",
-          firstTurn: true,
-          toggleOn: false,
-          declined: newChatStaysHere(session),
-          cwd: session.cwd,
-          base: "HEAD",
-        },
+        newChatWorktreeOpenFor(session, { setting: "always", isFirstTurn: true, toggleOn: false }),
         port,
       );
     expect(await send(kept!)).toBeNull();

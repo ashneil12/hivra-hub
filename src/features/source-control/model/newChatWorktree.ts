@@ -16,7 +16,10 @@ export const NEW_CHAT_WORKTREE_ASK =
 
 export type NewChatWorktreeOpen = {
   setting: NewChatWorktree;
-  /** False for a chat that continues one, a worker, an inbox ask, or an automation. */
+  /**
+   * False for a chat that continues one, a worker (one the app started for a
+   * Lead), an inbox ask, or an automation. `newChatWorktreeOpenFor` decides it.
+   */
   firstTurn: boolean;
   /** The composer toggle is already on "New worktree". */
   toggleOn: boolean;
@@ -48,6 +51,14 @@ function localFolder(cwd: string): boolean {
 
 function readable(session: Session | undefined): session is Session {
   return !!session && typeof session.cwd === "string" && Array.isArray(session.blocks);
+}
+
+/**
+ * A chat the app started for a Lead or another chat (`app-<chat>-<request>`).
+ * Its brief says where it works, so a default worktree never moves it.
+ */
+function startedThroughApp(sessionId: string): boolean {
+  return sessionId.startsWith("app-");
 }
 
 /** The person chose this folder for this chat. The choice is held on the chat and saved with the open tabs. */
@@ -90,7 +101,7 @@ export function beginNewChatWorktreeOffer(
   setting: NewChatWorktree,
 ): Session[] | null {
   if (setting !== "ask" && setting !== "always") return null;
-  if (!localFolder(cwd)) return null;
+  if (!localFolder(cwd) || startedThroughApp(sessionId)) return null;
   const session = sessions.find((entry) => entry.id === sessionId);
   if (!session || newChatStaysHere(session) || !canOffer(session, cwd)) return null;
   return sessions.map((entry) =>
@@ -209,6 +220,35 @@ export async function openNewChatWorktree(
     input.base || "HEAD",
     false,
   );
+}
+
+/**
+ * What a send asks `openNewChatWorktree`. The chat decides whether this is a
+ * first turn the default may act on: not one that continues a chat, not a
+ * Lead, an inbox ask, an automation, a worker the app started, or a chat that
+ * already has or lost a worktree. A person who chose this folder is `declined`.
+ */
+export function newChatWorktreeOpenFor(
+  session: Session,
+  send: { setting: NewChatWorktree; isFirstTurn: boolean; toggleOn: boolean },
+): NewChatWorktreeOpen {
+  return {
+    setting: send.setting,
+    firstTurn:
+      send.isFirstTurn &&
+      !session.worktreeCwd &&
+      !session.providerSessionId &&
+      !session.orchestrationLeadId &&
+      !session.inboxAsk &&
+      !session.worktreeRemoved &&
+      !session.automationId &&
+      !session.ephemeral &&
+      !startedThroughApp(session.id),
+    toggleOn: send.toggleOn,
+    declined: newChatStaysHere(session),
+    cwd: session.cwd,
+    base: session.worktreeBase || "HEAD",
+  };
 }
 
 /** The palette moves between off and ask. Always becomes ask, and is never written. */

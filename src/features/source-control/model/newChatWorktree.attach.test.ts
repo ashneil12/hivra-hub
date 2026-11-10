@@ -73,6 +73,15 @@ describe("a new chat and the stored setting", () => {
     expect(state.sessions[0].worktreeBase).toBeUndefined();
   });
 
+  it("does nothing for a chat the app started for a Lead", async () => {
+    setting("always");
+    vi.mocked(gitBranches).mockResolvedValue(REPO);
+    const { state, setSessions } = windowWith(chat("app-s1-r2"));
+    attachNewChatWorktree("app-s1-r2", "/work/proj", setSessions);
+    await settle();
+    expect(state.sessions[0].workspaceMode).toBeUndefined();
+  });
+
   it("does nothing for a chat whose person chose this folder", async () => {
     setting("always");
     vi.mocked(gitBranches).mockResolvedValue(REPO);

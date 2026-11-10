@@ -15,6 +15,7 @@ import {
   flippedNewChatWorktree,
   newChatStaysHere,
   newChatWorktreeAskLine,
+  newChatWorktreeOpenFor,
   openNewChatWorktree,
   withNewChatFolderChoice,
   withoutNewChatFolderChoice,
@@ -427,6 +428,99 @@ describe("the offer on a new chat", () => {
   });
 });
 
+describe("a chat the app started for a Lead", () => {
+  const opened = (session: Session, setting: NewChatWorktree, toggleOn = false) =>
+    newChatWorktreeOpenFor(session, { setting, isFirstTurn: true, toggleOn });
+
+  it.each(["ask", "always"] as const)(
+    "is never offered a worktree for %s, whatever its id after app-",
+    (setting) => {
+      for (const id of ["app-x-y", "app-s1-r2", "app-s1-lead-0f3a"]) {
+        const worker = chat({ id, cwd: "/work/proj" });
+        expect(beginNewChatWorktreeOffer([worker], id, "/work/proj", setting)).toBeNull();
+      }
+      const ordinary = chat({ id: "application-1", cwd: "/work/proj" });
+      expect(beginNewChatWorktreeOffer([ordinary], ordinary.id, "/work/proj", setting)).not.toBeNull();
+    },
+  );
+
+  it("is not moved into a new worktree by always, and git is not even asked", async () => {
+    const create = vi.fn(async () => tree());
+    const git = vi.fn(async () => true);
+    const worktree = await openNewChatWorktree(
+      opened(chat({ id: "app-x-y", cwd: "/work/proj" }), "always"),
+      port({ createWorktree: create, gitOnThisComputer: git }),
+    );
+    expect(worktree).toBeNull();
+    expect(create).not.toHaveBeenCalled();
+    expect(git).not.toHaveBeenCalled();
+  });
+
+  it("is moved by always when it is an ordinary new chat (the same input, another id)", async () => {
+    const create = vi.fn(async () => tree("/wt/ordinary"));
+    const worktree = await openNewChatWorktree(
+      opened(chat({ id: "s-1", cwd: "/work/proj" }), "always"),
+      port({ createWorktree: create }),
+    );
+    expect(worktree?.path).toBe("/wt/ordinary");
+  });
+
+  it("still gets the worktree its launch asked for, because that is the toggle and not the default", async () => {
+    const create = vi.fn(async () => tree("/wt/asked"));
+    const worktree = await openNewChatWorktree(
+      opened(chat({ id: "app-x-y", cwd: "/work/proj", workspaceMode: "worktree" }), "always", true),
+      port({ createWorktree: create }),
+    );
+    expect(worktree?.path).toBe("/wt/asked");
+    expect(create).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("what a send asks the worktree function", () => {
+  const ask = (session: Session, over: Partial<Parameters<typeof newChatWorktreeOpenFor>[1]> = {}) =>
+    newChatWorktreeOpenFor(session, { setting: "always", isFirstTurn: true, toggleOn: false, ...over });
+
+  it("carries the setting, the toggle, the folder and the base", () => {
+    const session = chat({ id: "s", cwd: "/work/proj", worktreeBase: "release" });
+    expect(ask(session)).toEqual({
+      setting: "always",
+      firstTurn: true,
+      toggleOn: false,
+      declined: false,
+      cwd: "/work/proj",
+      base: "release",
+    });
+    expect(ask(chat({ id: "s2", cwd: "/work/proj" }), { setting: "ask", toggleOn: true })).toMatchObject({
+      setting: "ask",
+      toggleOn: true,
+      base: "HEAD",
+    });
+  });
+
+  it.each<[string, Partial<Session>, boolean]>([
+    ["a new blank chat", {}, true],
+    ["a chat with a worktree already", { worktreeCwd: "/wt" }, false],
+    ["a chat that continues one", { providerSessionId: "prov-1" }, false],
+    ["a Lead", { orchestrationLeadId: "lead-1" }, false],
+    ["an inbox ask", { inboxAsk: {} as Session["inboxAsk"] }, false],
+    ["a chat whose worktree was removed", { worktreeRemoved: true }, false],
+    ["an automation", { automationId: "auto-1" }, false],
+    ["an ephemeral chat", { ephemeral: true }, false],
+    ["a worker the app started", { id: "app-x-y" }, false],
+  ])("treats %s as a first turn only when it is new: %s", (_name, over, firstTurn) => {
+    expect(ask(chat({ id: "s", cwd: "/work/proj", ...over })).firstTurn).toBe(firstTurn);
+  });
+
+  it("is not a first turn when the caller says the chat has already started", () => {
+    expect(ask(chat({ id: "s", cwd: "/work/proj" }), { isFirstTurn: false }).firstTurn).toBe(false);
+  });
+
+  it("says declined for a chat whose person chose this folder", () => {
+    const stayed = withNewChatFolderChoice(chat({ id: "s", cwd: "/work/proj" }), "current");
+    expect(ask(stayed).declined).toBe(true);
+  });
+});
+
 describe("choosing this folder", () => {
   it("is held on the chat, and choosing a worktree takes it back", () => {
     const blank = chat({ id: "s", cwd: "/work/proj" });
@@ -468,14 +562,7 @@ describe("choosing this folder", () => {
     const create = vi.fn(async () => tree("/wt/plain"));
     const send = (session: Session) =>
       openNewChatWorktree(
-        {
-          setting: "always",
-          firstTurn: true,
-          toggleOn: false,
-          declined: newChatStaysHere(session),
-          cwd: session.cwd,
-          base: "HEAD",
-        },
+        newChatWorktreeOpenFor(session, { setting: "always", isFirstTurn: true, toggleOn: false }),
         port({ createWorktree: create }),
       );
     expect(await send(kept!)).toBeNull();
