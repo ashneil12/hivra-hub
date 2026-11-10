@@ -155,24 +155,29 @@ export type Flush = {
   ping: NotablePing | null;
   /** What the ping names, so a caller whose ping could not be shown can put them back. */
   released: NotableEvent[];
+  /** The clock before this flush moved it, so a ping that was not shown can give it back. */
+  previousFlushAt: number;
 };
 
 /**
- * One ping when the interval has passed. Inside the quiet window held notices stay behind and everything else
- * leaves. Nothing due comes back as the same buffer, so a caller does not write. A bad clock does not flush and does
- * not throw.
+ * One ping when the interval has passed, or at once when the quiet window has ended on notices it held. Inside the
+ * window held notices stay behind and everything else leaves. Nothing due comes back as the same buffer, so a caller
+ * does not write. A bad clock does not flush and does not throw.
  */
 export function flushNotable(buffer: NotableBuffer, now: number, options: FlushOptions = {}): Flush {
-  const none: Flush = { buffer, ping: null, released: [] };
+  const none: Flush = { buffer, ping: null, released: [], previousFlushAt: buffer.lastFlushAt };
   if (!buffer.pending.length || !Number.isFinite(now)) return none;
   const intervalMs = options.intervalMs;
   const interval = intervalMs !== undefined && Number.isFinite(intervalMs) && intervalMs > 0 ? intervalMs : NOTABLE_FLUSH_MS;
   const keepHeld = isQuietHour(now, options.quiet ?? defaultQuietHours());
   const released = buffer.pending.filter((event) => !(keepHeld && event.kind === "held"));
   if (!released.length) return none;
+  // The window ending is its own reason to send: what was held all night is not made to wait out an interval that a
+  // failure ping just before the end started.
+  const windowEnded = !keepHeld && released.some((event) => event.kind === "held");
   const due =
     buffer.lastFlushAt === 0 ||
-    (now >= buffer.lastFlushAt && now - buffer.lastFlushAt >= interval);
+    (now >= buffer.lastFlushAt && (windowEnded || now - buffer.lastFlushAt >= interval));
   if (!due) return none;
   return {
     buffer: {
@@ -182,6 +187,7 @@ export function flushNotable(buffer: NotableBuffer, now: number, options: FlushO
     },
     ping: notablePing(released),
     released,
+    previousFlushAt: buffer.lastFlushAt,
   };
 }
 
@@ -297,15 +303,81 @@ export function commitFlush(
       // try again on the next pass; the events are still pending
     }
   }
-  return { buffer: read(), ping: null, released: [], saved: false };
+  const buffer = read();
+  return { buffer, ping: null, released: [], previousFlushAt: buffer.lastFlushAt, saved: false };
+}
+
+/**
+ * A ping that was not shown: its events go back, and the clock goes back to what it was before the flush, so the next
+ * look sends it again instead of waiting out an interval for a ping that never went out. A clock someone else has moved
+ * since (another flush) is left alone.
+ */
+export function commitUnsent(
+  read: ReadBuffer,
+  save: SaveBuffer,
+  sent: Pick<Flush, "released" | "previousFlushAt"> & { flushedAt: number },
+  attempts = 3,
+): boolean {
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    const current = read();
+    const have = new Set(current.pending.map((event) => event.id));
+    const back = sent.released.filter((event) => !have.has(event.id));
+    const next: NotableBuffer = {
+      revision: current.revision + 1,
+      lastFlushAt: current.lastFlushAt === sent.flushedAt ? sent.previousFlushAt : current.lastFlushAt,
+      pending: capped(ordered([...current.pending, ...back])),
+    };
+    try {
+      if (save(current.revision, next)) return true;
+    } catch {
+      // another pass: the events are still in the caller's hands
+    }
+  }
+  return false;
+}
+
+/**
+ * The morning habit's extra note, and the ids of the events it names (a run that finishes drops those, so the next
+ * morning does not repeat them). Any other habit, or a read that throws, adds nothing.
+ */
+export function morningHabitNotes(
+  habitId: string,
+  read: ReadBuffer = readNotableBuffer,
+): { text: string; ids: string[] } {
+  if (habitId !== MORNING_HABIT_ID) return { text: "", ids: [] };
+  try {
+    const buffer = read();
+    return {
+      text: morningNotableNote(buffer),
+      // Only the lines the note shows: "And 12 more" names nothing, so those 12 stay for the next run.
+      ids: buffer.pending.slice(0, MORNING_NOTE_LIMIT).map((event) => event.id),
+    };
+  } catch {
+    return { text: "", ids: [] };
+  }
 }
 
 /** The morning habit's extra note. Any other habit, or a read that throws, adds nothing. */
 export function morningHabitExtra(habitId: string, read: ReadBuffer = readNotableBuffer): string {
-  if (habitId !== MORNING_HABIT_ID) return "";
-  try {
-    return morningNotableNote(read());
-  } catch {
-    return "";
+  return morningHabitNotes(habitId, read).text;
+}
+
+/** Drops events a finished morning run was shown. One recorded since stays. True when nothing is left to drop. */
+export function commitSeen(read: ReadBuffer, save: SaveBuffer, ids: readonly string[], attempts = 3): boolean {
+  const seen = new Set(ids);
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    const current = read();
+    if (!current.pending.some((event) => seen.has(event.id))) return true;
+    const next: NotableBuffer = {
+      revision: current.revision + 1,
+      lastFlushAt: current.lastFlushAt,
+      pending: current.pending.filter((event) => !seen.has(event.id)),
+    };
+    try {
+      if (save(current.revision, next)) return true;
+    } catch {
+      // another pass
+    }
   }
+  return false;
 }

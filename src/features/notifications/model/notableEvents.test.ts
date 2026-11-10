@@ -1,18 +1,22 @@
 // @vitest-environment happy-dom
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { morningHabit } from "../../chief/model/habit";
+import { MORNING_HABIT_ID, morningHabit } from "../../chief/model/habit";
 import { habitRunPrompt } from "../../monos/model/monoHabits";
 import type { MonoLook } from "../../monos/model/mono";
 import type { MonoFiles } from "../../monos/model/monoFiles";
 import {
+  MORNING_NOTE_LIMIT,
   NOTABLE_BUFFER_KEY,
   NOTABLE_FLUSH_MS,
   NOTABLE_PENDING_LIMIT,
   commitFlush,
   commitNotable,
+  commitSeen,
+  commitUnsent,
   emptyNotableBuffer,
   flushNotable,
   morningHabitExtra,
+  morningHabitNotes,
   morningNotableNote,
   notableMemory,
   notablePing,
@@ -283,15 +287,25 @@ describe("held notices and quiet hours", () => {
     expect(single.ping).toEqual({ title: "While you were away", body: "Fix login: done" });
   });
 
-  it("waits out the ping interval after a failure, even for notices that were held", () => {
+  it("sends the held notices the minute the window ends, even right after a failure ping", () => {
     const first = flushNotable(
       recordNotable(emptyNotableBuffer(), event({ id: "red", at: 1 })),
       at(7, 50),
       { quiet },
     );
     const buffer = recordNotable(first.buffer, held("h1", "Fix login: done", 2));
-    expect(flushNotable(buffer, at(8, 0), { quiet }).ping).toBeNull();
-    expect(flushNotable(buffer, at(8, 20), { quiet }).ping?.title).toBe("While you were away");
+    expect(flushNotable(buffer, at(7, 59), { quiet }).ping).toBeNull();
+    const ended = flushNotable(buffer, at(8, 0), { quiet });
+    expect(ended.ping?.title).toBe("While you were away");
+    expect(ended.buffer.pending).toEqual([]);
+  });
+
+  it("still makes a failure wait out the interval, also just after held notices went", () => {
+    const ended = flushNotable(recordNotable(emptyNotableBuffer(), held("h1", "Fix login: done", 1)), at(8, 0), { quiet });
+    expect(ended.ping).not.toBeNull();
+    const again = recordNotable(ended.buffer, event({ id: "red", at: 5 }));
+    expect(flushNotable(again, at(8, 10), { quiet }).ping).toBeNull();
+    expect(flushNotable(again, at(8, 30), { quiet }).ping?.title).toBe("CI failed");
   });
 
   it("keeps the morning note naming what was held", () => {
@@ -315,6 +329,46 @@ describe("held notices and quiet hours", () => {
     }
     expect(failures.pending).toHaveLength(NOTABLE_PENDING_LIMIT);
     expect(failures.pending[0].id).toBe("f2");
+  });
+
+  it("gives the clock back with the events of a ping that was not shown, but not one another flush moved", () => {
+    const store = notableMemory();
+    commitNotable(store.read, store.save, event({ id: "a", at: 1 }));
+    const flushed = commitFlush(store.read, store.save, at(12, 0), { quiet });
+    expect(store.read().lastFlushAt).toBe(at(12, 0));
+    expect(
+      commitUnsent(store.read, store.save, {
+        released: flushed.released,
+        previousFlushAt: flushed.previousFlushAt,
+        flushedAt: flushed.buffer.lastFlushAt,
+      }),
+    ).toBe(true);
+    expect(store.read().pending.map((item) => item.id)).toEqual(["a"]);
+    expect(store.read().lastFlushAt).toBe(0);
+
+    // A later flush moved the clock on: it stays, and an event that is already back is not doubled.
+    commitFlush(store.read, store.save, at(13, 0), { quiet });
+    commitNotable(store.read, store.save, event({ id: "a", at: 1 }));
+    commitUnsent(store.read, store.save, { released: flushed.released, previousFlushAt: 0, flushedAt: at(12, 0) });
+    expect(store.read().lastFlushAt).toBe(at(13, 0));
+    expect(store.read().pending.map((item) => item.id)).toEqual(["a"]);
+  });
+
+  it("drops only the events a morning run was shown, and only the lines the note names", () => {
+    const store = notableMemory();
+    for (let index = 0; index < MORNING_NOTE_LIMIT + 3; index += 1) {
+      commitNotable(store.read, store.save, event({ id: `e${index}`, text: `item ${index}`, at: 10 + index }));
+    }
+    const notes = morningHabitNotes(MORNING_HABIT_ID, store.read);
+    expect(notes.ids).toHaveLength(MORNING_NOTE_LIMIT);
+    expect(notes.text).toContain("And 3 more.");
+    expect(morningHabitNotes("other", store.read)).toEqual({ text: "", ids: [] });
+
+    commitNotable(store.read, store.save, event({ id: "late", text: "after the run started", at: 5_000 }));
+    expect(commitSeen(store.read, store.save, notes.ids)).toBe(true);
+    expect(store.read().pending.map((item) => item.id)).toEqual(["e40", "e41", "e42", "late"]);
+    expect(commitSeen(store.read, store.save, notes.ids)).toBe(true);
+    expect(commitSeen(store.read, () => false, ["late"])).toBe(false);
   });
 
   it("commits a flush that holds back what the window holds", () => {

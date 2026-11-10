@@ -2,10 +2,11 @@
 // whether a ping is due and sends it. A tick of the app calls `flushNotableDue` too, so a held notice leaves when the
 // quiet window ends and a second failure inside an interval leaves when the interval does.
 
-import { announceNotablePing, type PingResult } from "./notifications";
+import { announceNotablePing, notablePingsOn, type PingResult } from "./notifications";
 import {
   commitFlush,
   commitNotable,
+  commitUnsent,
   readNotableBuffer,
   saveNotableBuffer,
   type NotableBuffer,
@@ -21,6 +22,8 @@ export type NotableDeps = {
   save: (expectedRevision: number, next: NotableBuffer) => boolean;
   now: () => number;
   quiet: () => QuietHours;
+  /** Whether a ping would be shown at all: banners on, and not denied by the system. */
+  on: () => boolean;
   send: (ping: NotablePing) => Promise<PingResult>;
 };
 
@@ -30,16 +33,20 @@ export function liveNotableDeps(): NotableDeps {
     save: saveNotableBuffer,
     now: Date.now,
     quiet: loadQuietHours,
+    on: notablePingsOn,
     send: announceNotablePing,
   };
 }
 
 /**
- * Sends the one ping that is due, if any. The buffer is cleared first and stays cleared when the ping was shown, or
- * when notifications are off (a person who turned banners off is owed none). A ping the system refused goes back into
- * the buffer, so the next look tries again. Resolves null when nothing was due.
+ * Sends the one ping that is due, if any. With banners off or denied nothing is sent and nothing is cleared, so the
+ * morning habit still names what waited (it drops what it was shown, notableEvents.ts). Otherwise the buffer is cleared
+ * first and stays cleared once the ping was shown. A ping the system refused goes back into the buffer and gives the
+ * clock back, so the very next look tries again rather than waiting out an interval. Resolves null when nothing was
+ * due.
  */
 export async function flushNotableDue(deps: NotableDeps = liveNotableDeps()): Promise<PingResult | null> {
+  if (!deps.on()) return "off";
   const flushed = commitFlush(deps.read, deps.save, deps.now(), { quiet: deps.quiet() });
   if (!flushed.ping) return null;
   let result: PingResult;
@@ -48,8 +55,12 @@ export async function flushNotableDue(deps: NotableDeps = liveNotableDeps()): Pr
   } catch {
     result = "failed";
   }
-  if (result === "failed") {
-    for (const event of flushed.released) commitNotable(deps.read, deps.save, event);
+  if (result !== "shown") {
+    commitUnsent(deps.read, deps.save, {
+      released: flushed.released,
+      previousFlushAt: flushed.previousFlushAt,
+      flushedAt: flushed.buffer.lastFlushAt,
+    });
   }
   return result;
 }

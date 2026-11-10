@@ -386,17 +386,21 @@ export type PingResult = "shown" | "off" | "failed";
 export const NOTABLE_PING_ID = "programme-notices";
 
 /**
- * One batched programme ping (notableEvents.ts). It belongs to no chat, so the window being focused does not
- * excuse it; the same OS policy as any banner otherwise.
+ * Whether a batched programme ping would be shown: banners on and not denied. It belongs to no chat, so the window
+ * being focused does not excuse it.
  */
-export async function announceNotablePing(ping: NotablePing): Promise<PingResult> {
-  const decision = shouldNotify({
+export function notablePingsOn(): boolean {
+  return shouldNotify({
     enabled: loadNotificationsEnabled(),
     permission,
     windowFocused,
     sessionVisible: false,
   });
-  if (!decision) return "off";
+}
+
+/** One batched programme ping (notableEvents.ts), under the same OS policy as any banner. */
+export async function announceNotablePing(ping: NotablePing): Promise<PingResult> {
+  if (!notablePingsOn()) return "off";
   try {
     await invoke("show_notification", {
       sessionId: NOTABLE_PING_ID,
