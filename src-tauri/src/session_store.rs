@@ -1216,7 +1216,7 @@ pub fn workspace_get_snapshot(store: State<'_, SessionStore>) -> Result<Option<V
 }
 
 /// Add `column` to `table` when it is absent.
-fn ensure_table_column(
+pub(crate) fn ensure_table_column(
     conn: &Connection,
     table: &str,
     column: &str,
