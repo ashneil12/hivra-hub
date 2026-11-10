@@ -171,6 +171,10 @@ describe("who may change the programme", () => {
     const host = bare({
       isMono: () => true,
       monoOf: () => ({ id: "lead", projects: ["crew", "notes"] }),
+      knownProjects: () => [
+        { id: "crew", name: "Crew", folder: "/work/crew" },
+        { id: "notes", name: "Notes", folder: "/work/notes" },
+      ],
       programmeStore: store,
     });
     const source = session();
@@ -183,5 +187,35 @@ describe("who may change the programme", () => {
       actor: { id: "chat-1", project: "notes", kind: "first-mate" },
       input: { id: "programme-1", version: 2, status: "building" },
     });
+  });
+
+  it("files a Mono's package under the hub project Home reads, not the folder", async () => {
+    const store = vi.fn(async () => [row()]);
+    const host = bare({
+      isMono: () => true,
+      monoOf: () => ({ id: "lead", projects: ["/work/crew"] }),
+      knownProjects: () => [{ id: "crew", name: "Crew", folder: "/work/crew" }],
+      programmeStore: store,
+    });
+    const source = session();
+    await handleProgramme(source, "programme.list", {}, host);
+    await handleProgramme(source, "programme.list", { project: "Crew" }, host);
+    await handleProgramme(source, "programme.list", { project: "crew" }, host);
+    expect(store.mock.calls.map((call) => (call as unknown[])[1])).toEqual([
+      { actor: { id: "chat-1", project: "crew", kind: "first-mate" } },
+      { actor: { id: "chat-1", project: "crew", kind: "first-mate" } },
+      { actor: { id: "chat-1", project: "crew", kind: "first-mate" } },
+    ]);
+    await expect(handleProgramme(source, "programme.list", { project: "/work/other" }, host)).rejects.toThrow(
+      "That project isn't this chat's.",
+    );
+    const stranger = bare({
+      isMono: () => true,
+      monoOf: () => ({ id: "lead", projects: ["/work/gone"] }),
+      knownProjects: () => [{ id: "crew", name: "Crew", folder: "/work/crew" }],
+      programmeStore: store,
+    });
+    await expect(handleProgramme(source, "programme.list", {}, stranger)).rejects.toThrow("Not a project on this copy.");
+    expect(store).toHaveBeenCalledTimes(3);
   });
 });

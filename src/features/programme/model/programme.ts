@@ -4,6 +4,7 @@
 import type { Session } from "../../sessions/model/session";
 import type { AgentAppHost } from "../../agent-app/model/agentApp";
 import { CHECKER_MONO_ID } from "../../hub/model/hubMcp";
+import { copyProjects, resolveProject, sameProject } from "../../chief/model/reads";
 
 export const PROGRAMME_CHANGED = "programme://changed";
 
@@ -15,6 +16,7 @@ const CHECKER = "The checker only reads. It never changes the programme.";
 const NOT_THIS = "That project isn't this chat's.";
 const NAME_PROJECT = "Name the project this programme belongs to.";
 const UNAVAILABLE = "The programme isn't available in this chat.";
+const NOT_COPY = "Not a project on this copy.";
 
 export const PROGRAMME_FIELDS: ReadonlyArray<readonly [string, readonly string[]]> = [
   ["programme.list", ["project"]],
@@ -170,7 +172,7 @@ export async function collectProgramme(
   }
 }
 
-type MateHost = Pick<AgentAppHost, "isMono" | "isHabitRun" | "monoOf" | "codingTeamOf" | "programmeStore">;
+type MateHost = Pick<AgentAppHost, "isMono" | "isHabitRun" | "monoOf" | "codingTeamOf" | "knownProjects" | "programmeStore">;
 
 function ownProjects(source: Pick<Session, "id">, host: MateHost): string[] {
   return (host.monoOf?.(source.id)?.projects ?? []).map((project) => project.trim()).filter((project) => project !== "");
@@ -187,12 +189,20 @@ function mateProject(source: Session, host: MateHost, named: unknown): string {
     return team.project;
   }
   const projects = ownProjects(source, host);
+  const known = copyProjects(host.knownProjects?.());
+  let mine: string;
   if (named === undefined) {
-    if (projects.length === 1) return projects[0];
-    throw new Error(NAME_PROJECT);
+    if (projects.length !== 1) throw new Error(NAME_PROJECT);
+    mine = projects[0];
+  } else {
+    const match = typeof named === "string" ? projects.find((project) => sameProject(named, project, known)) : undefined;
+    if (!match) throw new Error(NOT_THIS);
+    mine = match;
   }
-  if (typeof named !== "string" || !projects.includes(named.trim())) throw new Error(NOT_THIS);
-  return named.trim();
+  // A Mono names its projects by folder. The board is filed under the hub project id, the one Home reads.
+  const project = resolveProject(mine, known);
+  if (!project) throw new Error(NOT_COPY);
+  return project.id;
 }
 
 function idOf(value: unknown): string {
