@@ -27,5 +27,5 @@ export function waitingOnYouLine(blocks: readonly Block[]): string | null {
   if (!held.length) return null;
   const first = heldCall(held[held.length - 1]!);
   const more = held.length > 1 ? ` (and ${held.length - 1} more)` : "";
-  return `Waiting on you: it asked to ${first}${more}. It reads your message once you Allow or Deny that on the card above.`;
+  return `Waiting for approval to ${first}${more}. Your message waits until you allow or deny it.`;
 }

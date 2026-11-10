@@ -8,7 +8,7 @@ const held = (command: string, decided?: "allow"): Block =>
 describe("waitingOnYouLine (S14: a chat held on Ash's OK answers him at once)", () => {
   it("names what it waits to run and where to decide", () => {
     expect(waitingOnYouLine([held("npm install zod --workspace @tally/api")])).toBe(
-      "Waiting on you: it asked to run `npm install zod --workspace @tally/api`. It reads your message once you Allow or Deny that on the card above.",
+      "Waiting for approval to run `npm install zod --workspace @tally/api`. Your message waits until you allow or deny it.",
     );
   });
 
