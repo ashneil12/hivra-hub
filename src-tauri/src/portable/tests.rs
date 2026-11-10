@@ -1944,3 +1944,1904 @@ fn a_private_chat_stays_private_across_export_and_an_old_file_stays_readable() {
         Some("private-boundary-unreadable")
     );
 }
+
+// ---- a folder export's note pictures (symlinks, the manifest, the hash) --------------------------------------------
+
+/// What the seeded note's picture holds.
+const PICTURE: [u8; 7] = [0x89, b'P', b'N', b'G', 1, 2, 3];
+
+/// A folder export of the seeded source copy: note-1 with its one listed picture, `1-shot.png`.
+fn note_export(source: &Env, out: &Path) -> PathBuf {
+    seed(source);
+    let dest = out.join("export");
+    export(source, &export_request(&dest, Form::Folder)).unwrap();
+    assert!(dest
+        .join("workspace/note-assets/note-1/1-shot.png")
+        .is_file());
+    dest
+}
+
+/// An import of note-1 only.
+fn note_import(dest: &Path) -> ImportRequest {
+    ImportRequest {
+        path: dest.to_string_lossy().into_owned(),
+        memory: None,
+        workspace: Some(WorkspaceImport {
+            notes: vec!["note-1".into()],
+            ..Default::default()
+        }),
+    }
+}
+
+/// Every file under `dir` (empty when there is no such folder), by name relative to it, with `/` on every platform.
+fn files_under(dir: &Path) -> Vec<String> {
+    fn walk(base: &Path, dir: &Path, out: &mut Vec<String>) {
+        let Ok(entries) = fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                walk(base, &path, out);
+            } else {
+                out.push(
+                    path.strip_prefix(base)
+                        .unwrap()
+                        .to_string_lossy()
+                        .replace('\\', "/"),
+                );
+            }
+        }
+    }
+    let mut out = Vec::new();
+    walk(dir, dir, &mut out);
+    out.sort();
+    out
+}
+
+/// No picture folder here holds a byte of `secret`.
+fn assert_not_in_pictures(env: &Env, secret: &str) {
+    let root = env.data_dir.join(NOTE_ASSET_DIR);
+    for name in files_under(&root) {
+        let bytes = fs::read(root.join(&name)).unwrap();
+        assert!(
+            !String::from_utf8_lossy(&bytes).contains(secret),
+            "{name} carries the secret"
+        );
+    }
+}
+
+/// A file in the export that is a link to a private key, and not listed in the manifest: it must not be copied.
+#[cfg(unix)]
+#[test]
+fn an_unlisted_link_in_a_picture_folder_never_copies_what_it_points_at() {
+    let source_dir = TestDir::new("source");
+    let target_dir = TestDir::new("target");
+    let outside = TestDir::new("outside");
+    let out = TestDir::new("out");
+    let source = env_for(&source_dir.0);
+    let target = env_for(&target_dir.0);
+    let dest = note_export(&source, &out.0);
+    fs::write(outside.0.join("id_rsa"), PRIVATE_KEY).unwrap();
+    std::os::unix::fs::symlink(
+        outside.0.join("id_rsa"),
+        dest.join("workspace/note-assets/note-1/x.png"),
+    )
+    .unwrap();
+
+    let store = open_store(&target);
+    let conn = store.lock_conn().unwrap();
+    let report = import_held(&target, &conn, &note_import(&dest)).unwrap();
+    assert!(
+        !target.data_dir.join("note-assets/note-1/x.png").exists(),
+        "the link was followed and its target copied in"
+    );
+    assert_not_in_pictures(&target, "OPENSSH PRIVATE KEY");
+    assert_eq!(
+        fs::read(target.data_dir.join("note-assets/note-1/1-shot.png")).unwrap(),
+        PICTURE,
+        "the listed picture still comes in"
+    );
+    assert_eq!(report.note_assets_skipped, 1, "{report:?}");
+    assert_eq!(
+        report.notes,
+        vec!["1 picture of note note-1 was not copied (the export doesn't list it).".to_string()]
+    );
+}
+
+/// A LISTED picture that is a link to a file with the very bytes the manifest hashes: the hash alone can't catch
+/// it, the link itself must be refused. An export that lists one is not opened at all; one swapped in after the
+/// export was checked is left out of the copy.
+#[cfg(unix)]
+#[test]
+fn a_listed_picture_that_is_a_link_is_refused_even_when_the_hash_matches() {
+    let source_dir = TestDir::new("source");
+    let target_dir = TestDir::new("target");
+    let outside = TestDir::new("outside");
+    let out = TestDir::new("out");
+    let source = env_for(&source_dir.0);
+    let target = env_for(&target_dir.0);
+    let dest = note_export(&source, &out.0);
+    let picture = dest.join("workspace/note-assets/note-1/1-shot.png");
+    fs::write(outside.0.join("same-bytes.png"), PICTURE).unwrap();
+    let opened = open_export(&dest.to_string_lossy()).unwrap();
+    fs::remove_file(&picture).unwrap();
+    std::os::unix::fs::symlink(outside.0.join("same-bytes.png"), &picture).unwrap();
+
+    // Swapped after the check: the copy leaves it out and says why.
+    let left_out = copy_note_assets(&target, &opened, "note-1", "note-1");
+    assert_eq!(left_out, vec!["it is a link"]);
+    assert_eq!(
+        files_under(&target.data_dir.join(NOTE_ASSET_DIR)),
+        Vec::<String>::new(),
+        "a link was followed and its target copied in"
+    );
+
+    // Listed as a link from the start: the export isn't opened.
+    let store = open_store(&target);
+    let conn = store.lock_conn().unwrap();
+    let why = import_held(&target, &conn, &note_import(&dest)).unwrap_err();
+    assert!(
+        why.contains("workspace/note-assets/note-1/1-shot.png") && why.contains("link"),
+        "{why}"
+    );
+    assert_eq!(
+        files_under(&target.data_dir.join(NOTE_ASSET_DIR)),
+        Vec::<String>::new()
+    );
+}
+
+/// The picture folder of the note, the folder of all notes' pictures, or the workspace folder is a link to a
+/// folder that holds the listed picture (so every listed hash still matches) and one more file. An export that lists
+/// files in such a folder isn't opened; one swapped for a link after the check is not followed by the copy.
+#[cfg(unix)]
+#[test]
+fn a_linked_picture_folder_is_never_followed() {
+    for linked in [
+        "workspace",
+        "workspace/note-assets",
+        "workspace/note-assets/note-1",
+    ] {
+        let source_dir = TestDir::new("source");
+        let target_dir = TestDir::new("target");
+        let outside = TestDir::new("outside");
+        let out = TestDir::new("out");
+        let source = env_for(&source_dir.0);
+        let target = env_for(&target_dir.0);
+        let dest = note_export(&source, &out.0);
+        // Opened (and so checked) while the folders are real; swapped for links after.
+        let opened = open_export(&dest.to_string_lossy()).unwrap();
+        let real = dest.join(linked);
+        let elsewhere = outside.0.join("moved");
+        fs::rename(&real, &elsewhere).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, &real).unwrap();
+        // Something the link reaches that the export never listed.
+        let reached = if linked == "workspace/note-assets/note-1" {
+            elsewhere.clone()
+        } else if linked == "workspace/note-assets" {
+            elsewhere.join("note-1")
+        } else {
+            elsewhere.join("note-assets/note-1")
+        };
+        fs::write(reached.join("unlisted.png"), PRIVATE_KEY).unwrap();
+
+        assert_eq!(
+            copy_note_assets(&target, &opened, "note-1", "note-1"),
+            vec!["its folder is a link"],
+            "{linked}"
+        );
+        assert_eq!(
+            files_under(&target.data_dir.join(NOTE_ASSET_DIR)),
+            Vec::<String>::new(),
+            "{linked} is a link and was followed"
+        );
+        assert_not_in_pictures(&target, "OPENSSH PRIVATE KEY");
+
+        // Listed in a linked folder from the start: not opened.
+        let store = open_store(&target);
+        let conn = store.lock_conn().unwrap();
+        let why = import_held(&target, &conn, &note_import(&dest)).unwrap_err();
+        assert!(why.contains("outside"), "{linked}: {why}");
+        assert_eq!(
+            files_under(&target.data_dir.join(NOTE_ASSET_DIR)),
+            Vec::<String>::new()
+        );
+    }
+}
+
+/// A plain file in the picture folder that the manifest doesn't list isn't copied; the listed one is.
+#[test]
+fn an_unlisted_file_in_a_picture_folder_is_not_copied() {
+    let source_dir = TestDir::new("source");
+    let target_dir = TestDir::new("target");
+    let out = TestDir::new("out");
+    let source = env_for(&source_dir.0);
+    let target = env_for(&target_dir.0);
+    let dest = note_export(&source, &out.0);
+    fs::write(
+        dest.join("workspace/note-assets/note-1/extra.png"),
+        PRIVATE_KEY,
+    )
+    .unwrap();
+
+    let store = open_store(&target);
+    let conn = store.lock_conn().unwrap();
+    let report = import_held(&target, &conn, &note_import(&dest)).unwrap();
+    assert_eq!(
+        files_under(&target.data_dir.join(NOTE_ASSET_DIR)),
+        vec!["note-1/1-shot.png".to_string()]
+    );
+    assert_eq!(report.note_assets_skipped, 1, "{report:?}");
+}
+
+/// A listed picture that changes after the export was checked (the import opens, checks every hash, and only then
+/// copies) is not copied: what lands is only bytes that hash as the manifest says.
+#[test]
+fn a_picture_that_changed_after_the_check_is_not_copied() {
+    let source_dir = TestDir::new("source");
+    let target_dir = TestDir::new("target");
+    let out = TestDir::new("out");
+    let source = env_for(&source_dir.0);
+    let target = env_for(&target_dir.0);
+    let dest = note_export(&source, &out.0);
+    let opened = open_export(&dest.to_string_lossy()).unwrap();
+    // The same call copies the picture while it still hashes as listed.
+    assert!(copy_note_assets(&target, &opened, "note-1", "control").is_empty());
+    assert_eq!(
+        fs::read(target.data_dir.join("note-assets/control/1-shot.png")).unwrap(),
+        PICTURE
+    );
+
+    let picture = dest.join("workspace/note-assets/note-1/1-shot.png");
+    // Swapped for other bytes of the same length (only the hash can tell), then for a longer file (past the size the
+    // manifest gives).
+    for swapped in [&b"KEYBYTE"[..], PRIVATE_KEY.as_bytes()] {
+        assert_eq!(swapped.len() == PICTURE.len(), swapped == b"KEYBYTE");
+        fs::write(&picture, swapped).unwrap();
+        let left_out = copy_note_assets(&target, &opened, "note-1", "note-1");
+        assert_eq!(left_out, vec!["it changed after the export was checked"]);
+        assert_eq!(
+            files_under(&target.data_dir.join(NOTE_ASSET_DIR)),
+            vec!["control/1-shot.png".to_string()]
+        );
+    }
+    assert_not_in_pictures(&target, "OPENSSH PRIVATE KEY");
+    assert_not_in_pictures(&target, "KEYBYTE");
+}
+
+/// A note id is one plain name. `..` would read the export's workspace folder as pictures, or write them beside the
+/// data folder's own files.
+#[test]
+fn a_note_id_that_is_not_one_plain_name_copies_nothing() {
+    let source_dir = TestDir::new("source");
+    let target_dir = TestDir::new("target");
+    let out = TestDir::new("out");
+    let source = env_for(&source_dir.0);
+    let target = env_for(&target_dir.0);
+    let dest = note_export(&source, &out.0);
+    let opened = open_export(&dest.to_string_lossy()).unwrap();
+    open_store(&target);
+    // A plain id copies.
+    assert!(copy_note_assets(&target, &opened, "note-1", "note-1").is_empty());
+    let before = files_under(&target.data_dir);
+    assert!(before.contains(&"note-assets/note-1/1-shot.png".to_string()));
+
+    for (from, to) in [
+        ("..", "note-1"),
+        (".", "note-1"),
+        ("note-1/../..", "note-1"),
+        ("", "note-1"),
+        ("note-1", ".."),
+        ("note-1", "../escape"),
+        ("note-1", "a/b"),
+        ("note-1", ""),
+    ] {
+        assert_eq!(
+            copy_note_assets(&target, &opened, from, to),
+            vec!["the note's id isn't one plain name"],
+            "from {from:?} to {to:?}"
+        );
+        assert_eq!(
+            files_under(&target.data_dir),
+            before,
+            "from {from:?} to {to:?} wrote something"
+        );
+    }
+}
+
+/// The normal case: a listed picture that hashes as listed comes in, owner-only; one already here is kept; a hidden
+/// file the Finder leaves in the folder is passed over without a word.
+#[test]
+fn a_listed_picture_that_hashes_as_listed_is_copied_and_never_replaces_one_already_here() {
+    let source_dir = TestDir::new("source");
+    let target_dir = TestDir::new("target");
+    let out = TestDir::new("out");
+    let source = env_for(&source_dir.0);
+    let target = env_for(&target_dir.0);
+    let dest = note_export(&source, &out.0);
+    fs::write(dest.join("workspace/note-assets/note-1/.DS_Store"), "junk").unwrap();
+
+    let store = open_store(&target);
+    let conn = store.lock_conn().unwrap();
+    let report = import_held(&target, &conn, &note_import(&dest)).unwrap();
+    let picture = target.data_dir.join("note-assets/note-1/1-shot.png");
+    assert_eq!(fs::read(&picture).unwrap(), PICTURE);
+    assert_eq!(
+        files_under(&target.data_dir.join(NOTE_ASSET_DIR)),
+        vec!["note-1/1-shot.png".to_string()]
+    );
+    assert_eq!(report.note_assets_skipped, 0, "{report:?}");
+    assert!(report.notes.is_empty(), "{:?}", report.notes);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(
+            fs::metadata(&picture).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+    }
+
+    // A second restore of the same note into a copy of the data folder that kept its own picture: that one stays.
+    let opened = open_export(&dest.to_string_lossy()).unwrap();
+    fs::write(&picture, "mine").unwrap();
+    assert!(copy_note_assets(&target, &opened, "note-1", "note-1").is_empty());
+    assert_eq!(fs::read_to_string(&picture).unwrap(), "mine");
+}
+
+// ---- reading a folder export's files and its own pictures (links, pipes, sizes, what the manifest lists) ------------
+
+/// Runs `f` on its own thread. A read that waits on a pipe, or never reaches the end of a device, would hang the whole
+/// run (or fill the memory first), so one that is still going after `seconds` stops the process, not just the test.
+fn finishes_within<T: Send + 'static>(seconds: u64, f: impl FnOnce() -> T + Send + 'static) -> T {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(f());
+    });
+    match rx.recv_timeout(std::time::Duration::from_secs(seconds)) {
+        Ok(value) => value,
+        Err(_) => {
+            eprintln!(
+                "still reading after {seconds}s: a file that never ends, or a pipe, is being read"
+            );
+            std::process::exit(70);
+        }
+    }
+}
+
+/// `open_export` on its own thread, as what it says when it refuses.
+fn open_refused(dest: &Path) -> Result<String, ()> {
+    let path = dest.to_string_lossy().into_owned();
+    match finishes_within(5, move || open_export(&path).map(|_| ())) {
+        Ok(()) => Err(()),
+        Err(why) => Ok(why),
+    }
+}
+
+fn edit_manifest(dest: &Path, edit: impl FnOnce(&mut Value)) {
+    let path = dest.join(MANIFEST);
+    let mut manifest: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+    edit(&mut manifest);
+    fs::write(&path, manifest.to_string()).unwrap();
+}
+
+#[cfg(unix)]
+fn make_pipe(path: &Path) {
+    let c_path = std::ffi::CString::new(path.to_string_lossy().as_bytes()).unwrap();
+    assert_eq!(unsafe { libc::mkfifo(c_path.as_ptr(), 0o600) }, 0);
+}
+
+/// A listed file that is a link to a device that never ends: reading it to the end would fill the memory and take
+/// the app down. It must be refused at the link, without reading a byte.
+#[cfg(unix)]
+#[test]
+fn a_listed_file_that_links_to_an_endless_device_is_refused_unread() {
+    let source_dir = TestDir::new("source");
+    let out = TestDir::new("out");
+    let source = env_for(&source_dir.0);
+    let dest = note_export(&source, &out.0);
+    let listed = dest.join("memory/ash/MEMORY.md");
+    fs::remove_file(&listed).unwrap();
+    std::os::unix::fs::symlink("/dev/urandom", &listed).unwrap();
+
+    let why = open_refused(&dest).expect("an export with a link to a device was opened");
+    assert!(
+        why.contains("memory/ash/MEMORY.md") && why.contains("link"),
+        "{why}"
+    );
+}
+
+/// A listed file that is a link to a plain file holding exactly the bytes the manifest hashes: the hash can't catch
+/// it, the link itself must be refused.
+#[cfg(unix)]
+#[test]
+fn a_listed_file_that_is_a_link_is_refused_even_when_the_hash_matches() {
+    let source_dir = TestDir::new("source");
+    let out = TestDir::new("out");
+    let outside = TestDir::new("outside");
+    let source = env_for(&source_dir.0);
+    let dest = note_export(&source, &out.0);
+    let listed = dest.join("memory/ash/MEMORY.md");
+    let bytes = fs::read(&listed).unwrap();
+    fs::write(outside.0.join("same.md"), bytes).unwrap();
+    fs::remove_file(&listed).unwrap();
+    std::os::unix::fs::symlink(outside.0.join("same.md"), &listed).unwrap();
+
+    let why = open_refused(&dest).expect("a listed link was opened");
+    assert!(
+        why.contains("memory/ash/MEMORY.md") && why.contains("link"),
+        "{why}"
+    );
+}
+
+/// A pipe where a listed file should be: a plain read waits for a writer that never comes.
+#[cfg(unix)]
+#[test]
+fn a_listed_file_that_is_a_pipe_does_not_hang_the_open() {
+    let source_dir = TestDir::new("source");
+    let out = TestDir::new("out");
+    let source = env_for(&source_dir.0);
+    let dest = note_export(&source, &out.0);
+    let listed = dest.join("memory/ash/MEMORY.md");
+    fs::remove_file(&listed).unwrap();
+    make_pipe(&listed);
+
+    let why = open_refused(&dest).expect("an export with a pipe in it was opened");
+    assert!(
+        why.contains("memory/ash/MEMORY.md") && why.contains("plain file"),
+        "{why}"
+    );
+}
+
+/// The manifest says a file holds fewer bytes than it does: only that many are read, and the hash (of the whole
+/// file) can't match them.
+#[test]
+fn a_file_longer_than_the_manifest_says_is_cut_at_that_size_and_fails_its_hash() {
+    let source_dir = TestDir::new("source");
+    let out = TestDir::new("out");
+    let source = env_for(&source_dir.0);
+    let dest = note_export(&source, &out.0);
+    edit_manifest(&dest, |manifest| {
+        for file in manifest["files"].as_array_mut().unwrap() {
+            if file["path"] == "memory/ash/MEMORY.md" {
+                file["bytes"] = json!(3);
+            }
+        }
+    });
+
+    let why = open_refused(&dest).expect("a file longer than listed was accepted");
+    assert!(
+        why.contains("memory/ash/MEMORY.md") && why.contains("damaged"),
+        "{why}"
+    );
+}
+
+/// The manifest itself is read like any other file: not through a link.
+#[cfg(unix)]
+#[test]
+fn a_manifest_that_is_a_link_is_refused() {
+    let source_dir = TestDir::new("source");
+    let out = TestDir::new("out");
+    let outside = TestDir::new("outside");
+    let source = env_for(&source_dir.0);
+    let dest = note_export(&source, &out.0);
+    fs::rename(dest.join(MANIFEST), outside.0.join("manifest.json")).unwrap();
+    std::os::unix::fs::symlink(outside.0.join("manifest.json"), dest.join(MANIFEST)).unwrap();
+
+    assert!(
+        open_refused(&dest).is_ok(),
+        "a manifest that is a link was read"
+    );
+}
+
+/// A file the manifest doesn't list is never read, whatever its name: the fixed workspace files included.
+#[test]
+fn a_workspace_file_the_manifest_does_not_list_is_never_read() {
+    let source_dir = TestDir::new("source");
+    let target_dir = TestDir::new("target");
+    let out = TestDir::new("out");
+    let source = env_for(&source_dir.0);
+    let target = env_for(&target_dir.0);
+    let dest = note_export(&source, &out.0);
+    let opened = open_export(&dest.to_string_lossy()).unwrap();
+    assert!(opened.json("workspace/notes.json").is_some(), "the control");
+    assert!(opened.read("memory/ash/MEMORY.md").is_some(), "the control");
+
+    // The files are all still there, only the manifest stops listing them.
+    edit_manifest(&dest, |manifest| {
+        manifest["files"].as_array_mut().unwrap().retain(|f| {
+            !f["path"]
+                .as_str()
+                .is_some_and(|p| p.starts_with("workspace/") && p.ends_with(".json"))
+        });
+    });
+    let opened = open_export(&dest.to_string_lossy()).unwrap();
+    for fixed in [
+        "workspace/notes.json",
+        "workspace/automations.json",
+        "workspace/reminders.json",
+        "workspace/delegations.json",
+        "workspace/doc-versions.json",
+        "workspace/doc-mentions.json",
+        "workspace/activity.json",
+        "workspace/sessions/chat-1.json",
+    ] {
+        assert!(dest.join(fixed).is_file(), "{fixed} is on disk");
+        assert!(opened.read(fixed).is_none(), "{fixed} was read unlisted");
+        assert!(opened.json(fixed).is_none(), "{fixed} was read unlisted");
+    }
+    // A name that was never a file of the export, listed or not.
+    assert!(opened.read("memory/ash/not-there.md").is_none());
+
+    let store = open_store(&target);
+    let conn = store.lock_conn().unwrap();
+    let report = import_held(&target, &conn, &note_import(&dest)).unwrap();
+    assert_eq!(report.notes_added + report.notes_copied, 0, "{report:?}");
+    assert!(
+        conn.query_row("SELECT COUNT(*) FROM notes", [], |row| row.get::<_, i64>(0))
+            .unwrap()
+            == 0,
+        "a note came in from a file the manifest doesn't list"
+    );
+}
+
+/// The bytes a read hands back are the ones that hash as listed: a listed file changed after the check is not used.
+#[test]
+fn a_listed_file_changed_after_the_check_is_not_read() {
+    let source_dir = TestDir::new("source");
+    let out = TestDir::new("out");
+    let source = env_for(&source_dir.0);
+    let dest = note_export(&source, &out.0);
+    let opened = open_export(&dest.to_string_lossy()).unwrap();
+    let listed = dest.join("memory/ash/MEMORY.md");
+    assert!(opened.read("memory/ash/MEMORY.md").is_some(), "the control");
+    // Other bytes of the same length (only the hash can tell), then a longer file (past the size the manifest gives).
+    let length = fs::read(&listed).unwrap().len();
+    for swapped in ["x".repeat(length), "y".repeat(length + 1000)] {
+        fs::write(&listed, swapped).unwrap();
+        assert!(
+            opened.read("memory/ash/MEMORY.md").is_none(),
+            "{length}: a file that no longer hashes as listed was used"
+        );
+    }
+}
+
+/// A listed picture whose name has a separator isn't one of the note's pictures: it isn't read, whatever is behind
+/// the folder it names.
+#[test]
+fn a_listed_picture_name_with_a_separator_is_refused() {
+    let source_dir = TestDir::new("source");
+    let target_dir = TestDir::new("target");
+    let out = TestDir::new("out");
+    let source = env_for(&source_dir.0);
+    let target = env_for(&target_dir.0);
+    let dest = note_export(&source, &out.0);
+    fs::create_dir_all(dest.join("workspace/note-assets/note-1/sub")).unwrap();
+    put_in_export(&dest, "workspace/note-assets/note-1/sub/x.png", &PICTURE);
+
+    let store = open_store(&target);
+    let conn = store.lock_conn().unwrap();
+    let report = import_held(&target, &conn, &note_import(&dest)).unwrap();
+    assert_eq!(
+        files_under(&target.data_dir.join(NOTE_ASSET_DIR)),
+        vec!["note-1/1-shot.png".to_string()]
+    );
+    assert_eq!(report.note_assets_skipped, 1, "{report:?}");
+    assert_eq!(
+        report.notes,
+        vec![
+            "1 picture of note note-1 was not copied (its name isn't one plain file name)."
+                .to_string()
+        ]
+    );
+
+    // And one that climbs out of its folder doesn't even open.
+    put_in_export(&dest, "workspace/note-assets/note-1/x.png", &PICTURE);
+    edit_manifest(&dest, |manifest| {
+        for file in manifest["files"].as_array_mut().unwrap() {
+            if file["path"] == "workspace/note-assets/note-1/x.png" {
+                file["path"] = json!("workspace/note-assets/note-1/../note-1/x.png");
+            }
+        }
+    });
+    let why = open_refused(&dest).expect("a path that climbs out was opened");
+    assert!(why.contains("bad path"), "{why}");
+}
+
+/// The picture folder of a note on this Mac, or the folder of them all, is a link: the export doesn't follow it (it
+/// would carry out whatever the link reaches), and says so.
+#[cfg(unix)]
+#[test]
+fn an_export_does_not_follow_a_linked_picture_folder_in_the_data_folder() {
+    for linked in ["note-assets", "note-assets/note-1"] {
+        let source_dir = TestDir::new("source");
+        let out = TestDir::new("out");
+        let outside = TestDir::new("outside");
+        let source = env_for(&source_dir.0);
+        seed(&source);
+        let real = source.data_dir.join(linked);
+        let elsewhere = outside.0.join("moved");
+        fs::rename(&real, &elsewhere).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, &real).unwrap();
+        let reached = if linked == "note-assets" {
+            elsewhere.join("note-1")
+        } else {
+            elsewhere.clone()
+        };
+        fs::write(reached.join("private.png"), PRIVATE_KEY).unwrap();
+
+        let dest = out.0.join("export");
+        let report = export(&source, &export_request(&dest, Form::Folder)).unwrap();
+        let carried: Vec<String> = export_texts(&dest)
+            .into_keys()
+            .filter(|name| name.starts_with("workspace/note-assets/"))
+            .collect();
+        assert_eq!(
+            carried,
+            Vec::<String>::new(),
+            "{linked} is a link and was followed"
+        );
+        assert!(
+            report
+                .notes
+                .iter()
+                .any(|n| n.contains("note-assets") && n.contains("link")),
+            "{linked}: {:?}",
+            report.notes
+        );
+    }
+}
+
+/// A picture past the size a note takes is left out of the export, not read to the end.
+#[test]
+fn an_export_leaves_out_a_picture_past_the_size_a_note_takes() {
+    let source_dir = TestDir::new("source");
+    let out = TestDir::new("out");
+    let source = env_for(&source_dir.0);
+    seed(&source);
+    let huge = source.data_dir.join("note-assets/note-1/huge.png");
+    let file = fs::File::create(&huge).unwrap();
+    file.set_len(crate::notes::IMAGE_MAX_BYTES + 1).unwrap();
+    drop(file);
+
+    let dest = out.0.join("export");
+    let report = export(&source, &export_request(&dest, Form::Folder)).unwrap();
+    let carried: Vec<String> = export_texts(&dest)
+        .into_keys()
+        .filter(|name| name.starts_with("workspace/note-assets/"))
+        .collect();
+    assert_eq!(
+        carried,
+        vec!["workspace/note-assets/note-1/1-shot.png".to_string()]
+    );
+    assert!(
+        report
+            .notes
+            .iter()
+            .any(|n| n.contains("huge.png") && n.contains("too large")),
+        "{:?}",
+        report.notes
+    );
+}
+
+// ---- round 2: the history bundle, sizes by kind, the manifest's own list, tar sizes ----------------------------------
+
+/// A repository somewhere else with one file, `EVIL.md`, in its only commit.
+fn evil_repo(dir: &Path) -> PathBuf {
+    let repo = dir.join("evil");
+    fs::create_dir_all(&repo).unwrap();
+    fs::write(repo.join("EVIL.md"), "carried in from elsewhere\n").unwrap();
+    git(&repo, &["init", "-q", "-b", "main"]);
+    git(&repo, &["add", "-A"]);
+    git(&repo, &["commit", "-q", "-m", "evil"]);
+    repo
+}
+
+/// A folder export of the seeded memory (ash and hivra, with their history), no workspace.
+fn memory_export(source: &Env, out: &Path) -> PathBuf {
+    seed(source);
+    let dest = out.join("export");
+    let mut request = export_request(&dest, Form::Folder);
+    request.workspace = false;
+    export(source, &request).unwrap();
+    assert!(dest.join("memory/ash.git.bundle").is_file());
+    dest
+}
+
+fn history_import(dest: &Path) -> ImportRequest {
+    ImportRequest {
+        path: dest.to_string_lossy().into_owned(),
+        memory: Some(MemoryImport {
+            projects: vec!["ash".into()],
+            keep_both: false,
+            history: true,
+        }),
+        workspace: None,
+    }
+}
+
+/// The subjects of the commits in the memory folder this import made.
+fn history_subjects(target: &Env, name: &str) -> Vec<String> {
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(target.memory_root.join(name))
+        .args(["log", "--format=%s"])
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_SYSTEM", "/dev/null")
+        .output()
+        .unwrap();
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .map(str::to_string)
+        .collect()
+}
+
+/// A listed, correctly hashed `memory/ash.git.bundle` that is a gitfile: `git clone` takes its path for a repository
+/// and clones the one it names. It is no bundle, so it is never handed to git.
+#[cfg(unix)]
+#[test]
+fn a_history_bundle_that_is_a_gitfile_never_clones_the_repo_it_names() {
+    let source_dir = TestDir::new("source");
+    let target_dir = TestDir::new("target");
+    let out = TestDir::new("out");
+    let outside = TestDir::new("outside");
+    let source = env_for(&source_dir.0);
+    let target = env_for(&target_dir.0);
+    let dest = memory_export(&source, &out.0);
+    let repo = evil_repo(&outside.0);
+    put_in_export(
+        &dest,
+        "memory/ash.git.bundle",
+        format!("gitdir: {}\n", repo.join(".git").display()).as_bytes(),
+    );
+
+    let store = open_store(&target);
+    let conn = store.lock_conn().unwrap();
+    let report = import_held(&target, &conn, &history_import(&dest)).unwrap();
+    assert!(
+        !target.memory_root.join("ash/EVIL.md").exists(),
+        "git cloned a repository the export only pointed at"
+    );
+    assert_eq!(history_subjects(&target, "ash"), Vec::<String>::new());
+    assert!(report.memory_history.is_empty(), "{report:?}");
+    assert!(
+        report
+            .notes
+            .iter()
+            .any(|n| n.contains("history of ash") && n.contains("wasn't restored")),
+        "{:?}",
+        report.notes
+    );
+    // The files themselves still come in.
+    assert!(target.memory_root.join("ash/MEMORY.md").is_file());
+}
+
+/// A real, listed bundle, and an unlisted bare repository beside it named `<bundle>.git`: `git clone` tries that
+/// name first and clones the bare repository instead. The bundle's own bytes are what restores.
+#[test]
+fn a_bare_repo_beside_the_history_bundle_is_not_what_gets_cloned() {
+    let source_dir = TestDir::new("source");
+    let target_dir = TestDir::new("target");
+    let out = TestDir::new("out");
+    let outside = TestDir::new("outside");
+    let source = env_for(&source_dir.0);
+    let target = env_for(&target_dir.0);
+    let dest = memory_export(&source, &out.0);
+    let repo = evil_repo(&outside.0);
+    for beside in ["memory/ash.git.bundle.git", "memory/ash.git.bundle.bundle"] {
+        let bare = dest.join(beside);
+        git(
+            &outside.0,
+            &[
+                "clone",
+                "-q",
+                "--bare",
+                &repo.to_string_lossy(),
+                &bare.to_string_lossy(),
+            ],
+        );
+    }
+    let store = open_store(&target);
+    let conn = store.lock_conn().unwrap();
+    let report = import_held(&target, &conn, &history_import(&dest)).unwrap();
+    assert!(
+        !target.memory_root.join("ash/EVIL.md").exists(),
+        "git cloned the bare repository beside the bundle"
+    );
+    assert_eq!(report.memory_history, vec!["ash".to_string()], "{report:?}");
+    assert_eq!(history_subjects(&target, "ash"), vec!["memory".to_string()]);
+}
+
+/// The normal case: a real bundle restores the folder's history, and it is a plain file in a private folder when
+/// git reads it.
+#[test]
+fn a_real_history_bundle_still_restores() {
+    let source_dir = TestDir::new("source");
+    let target_dir = TestDir::new("target");
+    let out = TestDir::new("out");
+    let source = env_for(&source_dir.0);
+    let target = env_for(&target_dir.0);
+    let dest = memory_export(&source, &out.0);
+
+    let store = open_store(&target);
+    let conn = store.lock_conn().unwrap();
+    let report = import_held(&target, &conn, &history_import(&dest)).unwrap();
+    assert_eq!(report.memory_history, vec!["ash".to_string()], "{report:?}");
+    assert_eq!(history_subjects(&target, "ash"), vec!["memory".to_string()]);
+    assert!(target.memory_root.join("ash/MEMORY.md").is_file());
+}
+
+const MIB: u64 = 1024 * 1024;
+
+/// A file past the size its kind may be is left out, with a line in the report, and never read: the rest of the export
+/// still opens and comes in. (The sizes in the manifest are the attacker's own numbers.)
+#[test]
+fn a_file_declared_larger_than_its_kind_is_left_out_with_a_note_and_never_read() {
+    // (what is declared too large, what to ask the import for, how it shows)
+    for relative in [
+        "setup/setup.json",
+        "workspace/sessions/chat-1.json",
+        "workspace/note-assets/note-1/1-shot.png",
+        "memory/ash.git.bundle",
+    ] {
+        let source_dir = TestDir::new("source");
+        let target_dir = TestDir::new("target");
+        let out = TestDir::new("out");
+        let source = env_for(&source_dir.0);
+        let target = env_for(&target_dir.0);
+        let dest = note_export(&source, &out.0);
+        let declared = match relative {
+            "workspace/note-assets/note-1/1-shot.png" => 21 * MIB,
+            "memory/ash.git.bundle" => 2048 * MIB,
+            _ => 4096 * MIB,
+        };
+        edit_manifest(&dest, |manifest| {
+            for file in manifest["files"].as_array_mut().unwrap() {
+                if file["path"] == relative {
+                    file["bytes"] = json!(declared);
+                }
+            }
+        });
+        // The export still opens: only that file is out.
+        let opened = open_export(&dest.to_string_lossy())
+            .unwrap_or_else(|why| panic!("{relative}: the whole export was refused: {why}"));
+        assert!(opened.read(relative).is_none(), "{relative} was read");
+        assert!(
+            opened.read("memory/ash/MEMORY.md").is_some(),
+            "the rest opens"
+        );
+
+        let store = open_store(&target);
+        let conn = store.lock_conn().unwrap();
+        let report = import_held(
+            &target,
+            &conn,
+            &ImportRequest {
+                path: dest.to_string_lossy().into_owned(),
+                memory: Some(MemoryImport {
+                    projects: vec!["ash".into()],
+                    keep_both: false,
+                    history: true,
+                }),
+                workspace: Some(WorkspaceImport {
+                    notes: vec!["note-1".into()],
+                    sessions: vec!["chat-1".into()],
+                    ..Default::default()
+                }),
+            },
+        )
+        .unwrap_or_else(|why| panic!("{relative}: the import failed: {why}"));
+        let said = report
+            .notes
+            .iter()
+            .any(|n| n.contains(relative) && n.contains("left out"));
+        match relative {
+            // A note's pictures are said per note, when the note comes in.
+            "workspace/note-assets/note-1/1-shot.png" => {
+                assert_eq!(report.note_assets_skipped, 1, "{report:?}");
+                assert!(
+                    report
+                        .notes
+                        .iter()
+                        .any(|n| n.contains("too large for a note picture")),
+                    "{:?}",
+                    report.notes
+                );
+            }
+            "workspace/sessions/chat-1.json" => {
+                assert!(said, "{:?}", report.notes);
+                assert_eq!(report.sessions_added, 0, "{report:?}");
+            }
+            "memory/ash.git.bundle" => {
+                assert!(said, "{:?}", report.notes);
+                assert!(report.memory_history.is_empty(), "{report:?}");
+            }
+            _ => {
+                assert!(said, "{:?}", report.notes);
+                let inspected = inspect(&target, &dest.to_string_lossy()).unwrap();
+                assert!(!inspected.files.contains_key(relative), "{relative}");
+            }
+        }
+        // And the rest of what was asked for came in.
+        assert_eq!(report.notes_added, 1, "{relative}: {report:?}");
+    }
+}
+
+/// Large by nature: a chat holds every tool output, and Claude's own transcript of one is far past 64 MB. A file of
+/// 65 MB is an ordinary file of its kind.
+#[test]
+fn a_session_file_larger_than_64_mb_is_read() {
+    let source_dir = TestDir::new("source");
+    let target_dir = TestDir::new("target");
+    let out = TestDir::new("out");
+    let source = env_for(&source_dir.0);
+    let target = env_for(&target_dir.0);
+    let dest = note_export(&source, &out.0);
+    let mut bytes = fs::read(dest.join("workspace/sessions/chat-1.json")).unwrap();
+    bytes.resize(65 * MIB as usize, b' ');
+    put_in_export(&dest, "workspace/sessions/chat-1.json", &bytes);
+
+    let opened = open_export(&dest.to_string_lossy())
+        .unwrap_or_else(|why| panic!("a 65 MB chat refused the export: {why}"));
+    assert!(opened.json("workspace/sessions/chat-1.json").is_some());
+    let store = open_store(&target);
+    let conn = store.lock_conn().unwrap();
+    let report = import_held(
+        &target,
+        &conn,
+        &ImportRequest {
+            path: dest.to_string_lossy().into_owned(),
+            memory: None,
+            workspace: Some(WorkspaceImport {
+                sessions: vec!["chat-1".into()],
+                ..Default::default()
+            }),
+        },
+    )
+    .unwrap();
+    assert_eq!(report.sessions_added, 1, "{report:?}");
+}
+
+#[test]
+fn a_listed_file_with_no_size_is_refused() {
+    let source_dir = TestDir::new("source");
+    let out = TestDir::new("out");
+    let source = env_for(&source_dir.0);
+    let dest = note_export(&source, &out.0);
+    edit_manifest(&dest, |manifest| {
+        for file in manifest["files"].as_array_mut().unwrap() {
+            if file["path"] == "memory/ash/MEMORY.md" {
+                file.as_object_mut().unwrap().remove("bytes");
+            }
+        }
+    });
+    let why = open_refused(&dest).expect("a file with no size was opened");
+    assert!(
+        why.contains("memory/ash/MEMORY.md") && why.contains("how big"),
+        "{why}"
+    );
+}
+
+/// Nine bundles of a gigabyte each are listed: more than an archive may unpack to. Nothing is read for it.
+#[test]
+fn sizes_that_add_up_past_what_an_archive_may_hold_are_refused() {
+    let source_dir = TestDir::new("source");
+    let out = TestDir::new("out");
+    let source = env_for(&source_dir.0);
+    let dest = note_export(&source, &out.0);
+    edit_manifest(&dest, |manifest| {
+        let files = manifest["files"].as_array_mut().unwrap();
+        for n in 0..9 {
+            files.push(json!({"path": format!("memory/p{n}.git.bundle"), "bytes": 1024 * 1024 * 1024u64, "sha256": "0"}));
+        }
+    });
+    let why = open_refused(&dest).expect("an export listing nine gigabytes was opened");
+    assert!(why.contains("too large"), "{why}");
+}
+
+#[test]
+fn more_listed_files_than_an_archive_may_hold_are_refused() {
+    let source_dir = TestDir::new("source");
+    let out = TestDir::new("out");
+    let source = env_for(&source_dir.0);
+    let dest = note_export(&source, &out.0);
+    let manifest = fs::read_to_string(dest.join(MANIFEST)).unwrap();
+    let mut value: Value = serde_json::from_str(&manifest).unwrap();
+    value["files"] = Value::Null;
+    let head = value.to_string();
+    // "files":null is replaced by that many empty entries; nothing is hashed for an export this long.
+    let empties = vec!["{}"; MAX_ENTRIES + 1].join(",");
+    fs::write(
+        dest.join(MANIFEST),
+        head.replace("\"files\":null", &format!("\"files\":[{empties}]")),
+    )
+    .unwrap();
+    let why = open_refused(&dest).expect("an export listing too many files was opened");
+    assert!(why.contains("too many"), "{why}");
+}
+
+/// The same file listed again under another spelling is hashed again and again: refused, however it is spelled.
+#[test]
+fn a_file_listed_twice_is_refused_however_it_is_spelled() {
+    for again in [
+        "memory/ash/MEMORY.md",
+        "memory/./ash/MEMORY.md",
+        "memory/ash//MEMORY.md",
+        "Memory/Ash/memory.md",
+    ] {
+        let source_dir = TestDir::new("source");
+        let out = TestDir::new("out");
+        let source = env_for(&source_dir.0);
+        let dest = note_export(&source, &out.0);
+        edit_manifest(&dest, |manifest| {
+            let files = manifest["files"].as_array_mut().unwrap();
+            let first = files
+                .iter()
+                .find(|f| f["path"] == "memory/ash/MEMORY.md")
+                .unwrap()
+                .clone();
+            let mut second = first;
+            second["path"] = json!(again);
+            files.push(second);
+        });
+        let why = open_refused(&dest).unwrap_or_else(|()| panic!("{again}: opened"));
+        assert!(why.contains("more than once"), "{again}: {why}");
+    }
+}
+
+/// How much of the webview's files the export lists, so a budget can be set just past them.
+fn webview_bytes_listed(dest: &Path) -> u64 {
+    let manifest: Value =
+        serde_json::from_str(&fs::read_to_string(dest.join(MANIFEST)).unwrap()).unwrap();
+    manifest["files"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|f| is_webview(f["path"].as_str().unwrap()))
+        .map(|f| f["bytes"].as_u64().unwrap())
+        .sum()
+}
+
+/// Inspect holds no more than a budget of the webview's files whole, so the file that would take them past it is left
+/// out (with a line in the report) and the ones before it come through. The budget here is set just past two of three
+/// 100-byte setup files; the real one is `MAX_INSPECT_BYTES`.
+#[test]
+fn inspect_holds_no_more_than_a_budget_of_the_webviews_files() {
+    let source_dir = TestDir::new("source");
+    let target_dir = TestDir::new("target");
+    let out = TestDir::new("out");
+    let source = env_for(&source_dir.0);
+    let target = env_for(&target_dir.0);
+    let dest = note_export(&source, &out.0);
+    let before = webview_bytes_listed(&dest);
+    for name in ["a", "b", "c"] {
+        put_in_export(&dest, &format!("setup/big-{name}.json"), &[b' '; 100]);
+    }
+    let path = dest.to_string_lossy().into_owned();
+    let budget = before + 250;
+    let inspected = inspect_within(&target, &path, budget)
+        .unwrap_or_else(|why| panic!("the whole preview was refused: {why}"));
+    let big: Vec<&String> = inspected
+        .files
+        .keys()
+        .filter(|name| name.starts_with("setup/big-"))
+        .collect();
+    assert_eq!(big.len(), 2, "{big:?}");
+    assert!(
+        inspected.files.contains_key("setup/setup.json"),
+        "the ones before it come through"
+    );
+
+    let store = open_store(&target);
+    let conn = store.lock_conn().unwrap();
+    let opened = open_export_within(&path, budget).unwrap();
+    let report = import_opened(
+        &target,
+        &opened,
+        &ImportRequest {
+            path,
+            memory: None,
+            workspace: None,
+        },
+        || Ok(&*conn),
+    )
+    .unwrap();
+    assert!(
+        report
+            .notes
+            .iter()
+            .any(|n| n.contains("setup/big-c.json") && n.contains("left out")),
+        "{:?}",
+        report.notes
+    );
+}
+
+/// A tar.gz with one file whose header says it holds nothing and whose PAX record says `size` bytes: the tar crate
+/// copies the PAX size.
+fn pax_sized_archive(path: &Path, size: usize) {
+    use std::io::Write;
+    fn header(name: &str, kind: tar::EntryType, size: u64) -> [u8; 512] {
+        let mut header = tar::Header::new_gnu();
+        header.set_path(name).unwrap();
+        header.set_entry_type(kind);
+        header.set_size(size);
+        header.set_mode(0o644);
+        header.set_cksum();
+        *header.as_bytes()
+    }
+    let mut body = format!(" size={size}\n");
+    let mut length = body.len() + 1;
+    while format!("{length}{body}").len() != length {
+        length += 1;
+    }
+    body = format!("{length}{body}");
+    let pad = |out: &mut Vec<u8>| out.resize(out.len().div_ceil(512) * 512, 0);
+
+    let mut tar_bytes = Vec::new();
+    tar_bytes.extend_from_slice(&header("pax", tar::EntryType::XHeader, body.len() as u64));
+    tar_bytes.extend_from_slice(body.as_bytes());
+    pad(&mut tar_bytes);
+    tar_bytes.extend_from_slice(&header("export/zeros.bin", tar::EntryType::Regular, 0));
+    tar_bytes.resize(tar_bytes.len() + size, 0);
+    pad(&mut tar_bytes);
+    tar_bytes.resize(tar_bytes.len() + 1024, 0);
+    let mut gz =
+        flate2::write::GzEncoder::new(fs::File::create(path).unwrap(), flate2::Compression::fast());
+    gz.write_all(&tar_bytes).unwrap();
+    gz.finish().unwrap();
+}
+
+/// The size the budget is checked against is the one the tar crate will copy (a PAX size overrides the header's), and
+/// what is copied never runs past what is left of the budget.
+#[test]
+fn a_pax_size_cannot_get_past_the_unpack_budget() {
+    let dir = TestDir::new("pax");
+    let archive = dir.0.join("pax.tar.gz");
+    pax_sized_archive(&archive, 3 * 1024 * 1024);
+    // The control: the same archive unpacks within a budget that fits it.
+    assert!(unpack_within(&archive, 4 * 1024 * 1024).is_ok());
+    let why = unpack_within(&archive, 1024 * 1024)
+        .err()
+        .expect("3 MiB came out of a 1 MiB budget");
+    assert!(why.contains("too large"), "{why}");
+}
+
+/// A single picked `.json` is read like any other file the export names: not past the size a manifest can be, and
+/// not through a link.
+#[test]
+fn a_picked_json_file_is_read_through_the_plain_reader() {
+    let dir = TestDir::new("single");
+    let v1 = json!({"format": V1_FORMAT, "version": 1}).to_string();
+    let plain = dir.0.join("setup.json");
+    fs::write(&plain, &v1).unwrap();
+    assert!(matches!(
+        open_export(&plain.to_string_lossy()),
+        Ok(Opened::V1(_))
+    ));
+
+    // Valid JSON, padded to one byte past what a manifest may be: never read whole.
+    let padded = dir.0.join("padded.json");
+    let mut bytes = v1.clone().into_bytes();
+    bytes.resize(MAX_MANIFEST as usize + 1, b' ');
+    fs::write(&padded, bytes).unwrap();
+    assert!(open_export(&padded.to_string_lossy()).is_err());
+
+    #[cfg(unix)]
+    {
+        let link = dir.0.join("link.json");
+        std::os::unix::fs::symlink(&plain, &link).unwrap();
+        assert!(open_export(&link.to_string_lossy()).is_err());
+    }
+}
+
+/// A listed workspace file that changes between the check and the import isn't used, and the report says so.
+#[test]
+fn a_listed_workspace_file_that_changed_after_the_check_is_reported() {
+    let source_dir = TestDir::new("source");
+    let target_dir = TestDir::new("target");
+    let out = TestDir::new("out");
+    let source = env_for(&source_dir.0);
+    let target = env_for(&target_dir.0);
+    let dest = note_export(&source, &out.0);
+    let opened = open_export(&dest.to_string_lossy()).unwrap();
+    fs::write(dest.join("workspace/notes.json"), "[]").unwrap();
+
+    let store = open_store(&target);
+    let conn = store.lock_conn().unwrap();
+    let report = import_opened(&target, &opened, &note_import(&dest), || Ok(&*conn)).unwrap();
+    assert_eq!(report.notes_added, 0, "{report:?}");
+    assert!(
+        report
+            .notes
+            .iter()
+            .any(|n| n.contains("workspace/notes.json") && n.contains("changed")),
+        "{:?}",
+        report.notes
+    );
+}
+
+/// The export's own folder holds a link to a folder elsewhere with the very files the manifest lists: each listed
+/// file's folder must be inside the export, so the export isn't opened.
+#[cfg(unix)]
+#[test]
+fn a_listed_file_in_a_folder_that_leads_outside_the_export_is_refused() {
+    for linked in ["memory", "memory/ash", "workspace"] {
+        let source_dir = TestDir::new("source");
+        let out = TestDir::new("out");
+        let outside = TestDir::new("outside");
+        let source = env_for(&source_dir.0);
+        let dest = note_export(&source, &out.0);
+        let real = dest.join(linked);
+        let elsewhere = outside.0.join("moved");
+        fs::rename(&real, &elsewhere).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, &real).unwrap();
+        let why = open_refused(&dest).unwrap_or_else(|()| panic!("{linked}: opened"));
+        assert!(why.contains("outside"), "{linked}: {why}");
+    }
+}
+
+/// An export root that is a link to somewhere else inside the picked folder isn't taken for the export.
+#[cfg(unix)]
+#[test]
+fn an_export_folder_that_is_a_link_inside_the_picked_folder_is_not_taken() {
+    let source_dir = TestDir::new("source");
+    let out = TestDir::new("out");
+    let outside = TestDir::new("outside");
+    let source = env_for(&source_dir.0);
+    let dest = note_export(&source, &out.0);
+    let picked = outside.0.join("picked");
+    fs::create_dir_all(&picked).unwrap();
+    std::os::unix::fs::symlink(&dest, picked.join("export")).unwrap();
+    assert!(
+        open_refused(&picked).is_ok(),
+        "a linked folder was the export"
+    );
+    // The control: the same export, as a real folder inside the picked one.
+    fs::remove_file(picked.join("export")).unwrap();
+    fs::rename(&dest, picked.join("export")).unwrap();
+    assert!(open_refused(&picked).is_err(), "the control opens");
+}
+
+/// The folder git reads a history bundle from is the importer's alone, and goes with it.
+#[cfg(unix)]
+#[test]
+fn a_private_scratch_folder_is_owner_only_and_goes_when_dropped() {
+    use std::os::unix::fs::PermissionsExt;
+    let scratch = Scratch::private("test").unwrap();
+    let path = scratch.0.clone();
+    assert_eq!(
+        fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+        0o700
+    );
+    assert!(fs::read_dir(&path).unwrap().next().is_none());
+    drop(scratch);
+    assert!(!path.exists());
+}
+
+/// The copy git is given: the bytes that hash as listed and nothing else, in a file only this user can open, and
+/// never a file that isn't a bundle, a link, or one that no longer hashes as listed.
+#[test]
+fn a_listed_bundle_is_copied_only_as_the_bytes_that_hash_as_listed() {
+    let source_dir = TestDir::new("source");
+    let out = TestDir::new("out");
+    let source = env_for(&source_dir.0);
+    let dest = memory_export(&source, &out.0);
+    let bundle = dest.join("memory/ash.git.bundle");
+    let bytes = fs::read(&bundle).unwrap();
+    assert!(
+        BUNDLE_HEADERS.contains(&&bytes[..16]),
+        "the control is a bundle"
+    );
+    let listed_for = |bytes: &[u8]| Listed {
+        path: "memory/ash.git.bundle".into(),
+        declared: bytes.len() as u64,
+        sha256: sha256_hex(bytes),
+    };
+    let scratch = Scratch::private("test").unwrap();
+    let copy = scratch.0.join("copy");
+
+    copy_listed_bundle(&bundle, &listed_for(&bytes), &copy).unwrap();
+    assert_eq!(fs::read(&copy).unwrap(), bytes);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(
+            fs::metadata(&copy).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+    }
+
+    // Other bytes of the same length, a longer file, a shorter one: none hashes as listed.
+    for (n, other) in [
+        vec![b'x'; bytes.len()],
+        [bytes.clone(), vec![0; 10]].concat(),
+        bytes[..bytes.len() - 1].to_vec(),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        fs::write(&bundle, &other).unwrap();
+        let copy = scratch.0.join(format!("changed-{n}"));
+        assert!(
+            matches!(
+                copy_listed_bundle(&bundle, &listed_for(&bytes), &copy),
+                Err(HistoryRefusal::NotAsListed)
+            ),
+            "{n}"
+        );
+    }
+
+    // Hashes as listed and isn't a bundle (a gitfile, text, nothing).
+    for (n, text) in [&b"gitdir: /elsewhere/.git\n"[..], b"hello", b""]
+        .into_iter()
+        .enumerate()
+    {
+        fs::write(&bundle, text).unwrap();
+        let copy = scratch.0.join(format!("not-{n}"));
+        assert!(
+            matches!(
+                copy_listed_bundle(&bundle, &listed_for(text), &copy),
+                Err(HistoryRefusal::NotABundle)
+            ),
+            "{n}"
+        );
+    }
+
+    #[cfg(unix)]
+    {
+        fs::write(&bundle, &bytes).unwrap();
+        let aside = scratch.0.join("aside.bundle");
+        fs::rename(&bundle, &aside).unwrap();
+        std::os::unix::fs::symlink(&aside, &bundle).unwrap();
+        assert!(matches!(
+            copy_listed_bundle(&bundle, &listed_for(&bytes), &scratch.0.join("link-copy")),
+            Err(HistoryRefusal::NotAsListed)
+        ));
+    }
+}
+
+/// Names Windows doesn't take for what they say are refused in an export's paths there (the check itself runs
+/// everywhere so it is tested everywhere).
+#[test]
+fn windows_names_that_are_not_what_they_say_are_unsafe() {
+    for name in [
+        "CON",
+        "con",
+        "NUL.txt",
+        "aux.md",
+        "COM1",
+        "lpt9.png",
+        "a:stream",
+        "x.",
+        "x ",
+        "C:",
+        "COM0",
+        "LPT0",
+        "CONIN$",
+        "conout$",
+        "CONOUT$.txt",
+        "COM\u{b9}",
+        "com\u{b2}.md",
+        "COM\u{b3}",
+        "LPT\u{b9}",
+        "lpt\u{b2}.txt",
+        "LPT\u{b3}",
+    ] {
+        assert!(windows_unsafe_name(name), "{name}");
+    }
+    for name in [
+        "MEMORY.md",
+        "console.md",
+        "COM10",
+        "LPT",
+        "nul-ish",
+        "a.b",
+        "1-shot.png",
+        "CONIN",
+        "COM\u{b9}x",
+    ] {
+        assert!(!windows_unsafe_name(name), "{name}");
+    }
+}
+
+/// What an export writes is what an import will take: a file past the size its kind may be is left out of the export,
+/// with a line saying so, and the rest is written.
+#[test]
+fn an_export_leaves_out_a_file_an_import_would_not_take() {
+    let dir = TestDir::new("writer");
+    let mut writer = Writer::new(dir.0.clone());
+    for (relative, size) in [
+        ("setup/big.json", MAX_TEXT_FILE + 1),
+        (
+            "workspace/note-assets/note-1/big.png",
+            crate::notes::IMAGE_MAX_BYTES + 1,
+        ),
+    ] {
+        // Zeros: the allocation costs nothing until it is written, and a file left out is never written.
+        writer
+            .bytes(relative, &vec![0u8; size as usize])
+            .unwrap_or_else(|why| panic!("{relative}: the whole export failed: {why}"));
+        assert!(!dir.0.join(relative).exists(), "{relative} was written");
+        assert!(
+            writer
+                .left_out
+                .iter()
+                .any(|n| n.contains(relative) && n.contains("left out")),
+            "{relative}: {:?}",
+            writer.left_out
+        );
+    }
+    assert!(writer.files.is_empty());
+    // The largest a picture may be goes in.
+    writer
+        .bytes(
+            "workspace/note-assets/note-1/edge.png",
+            &vec![0u8; crate::notes::IMAGE_MAX_BYTES as usize],
+        )
+        .unwrap();
+    assert_eq!(writer.files.len(), 1);
+}
+
+/// The webview's files are held whole by Inspect, so the export keeps them within the same budget: the file that
+/// would take them past it is left out with a line.
+#[test]
+fn an_export_keeps_the_webviews_files_within_the_budget_inspect_holds() {
+    let dir = TestDir::new("writer");
+    let mut writer = Writer::new(dir.0.clone());
+    writer.webview_budget = 250;
+    for name in ["a", "b", "c"] {
+        writer
+            .bytes(&format!("setup/big-{name}.json"), &[b' '; 100])
+            .unwrap();
+    }
+    // Other files don't count toward it.
+    writer.bytes("workspace/notes.json", &[b' '; 1000]).unwrap();
+    assert_eq!(writer.files.len(), 3, "{:?}", writer.files);
+    assert!(
+        writer
+            .left_out
+            .iter()
+            .any(|n| n.contains("setup/big-c.json") && n.contains("left out")),
+        "{:?}",
+        writer.left_out
+    );
+}
+
+/// A history bundle past its cap is left out of the export with a line: the memory files still go.
+#[test]
+fn an_export_leaves_out_a_history_bundle_past_its_cap() {
+    let dir = TestDir::new("writer");
+    let mut writer = Writer::new(dir.0.clone());
+    let bundle = dir.0.join("source.bundle");
+    fs::write(&bundle, b"01234567890").unwrap();
+    writer
+        .binary("memory/ash.git.bundle", &bundle, 10)
+        .unwrap_or_else(|why| panic!("the whole export failed: {why}"));
+    assert!(writer.files.is_empty());
+    assert!(
+        writer
+            .left_out
+            .iter()
+            .any(|n| n.contains("history") && n.contains("left out")),
+        "{:?}",
+        writer.left_out
+    );
+}
+
+/// A chat file as another machine, or someone writing one by hand, could make it: every place a block can name a
+/// file on disk, with paths that mean something on the machine that wrote them.
+fn crafted_chat() -> Value {
+    json!({
+        "title": "Crafted",
+        "cwd": "/tmp",
+        "engine": {"harness": "claude", "model": "m", "runtimeMode": "auto"},
+        "blocks": [
+            {"id": "u1", "role": "user", "text": "look", "attachments": [
+                {"id": "a1", "name": "id_rsa", "mimeType": "application/octet-stream", "kind": "file", "size": 1679,
+                 "path": "/Users/someone/.ssh/id_rsa"},
+                {"id": "a2", "name": "shot.png", "mimeType": "image/png", "kind": "image", "size": 10,
+                 "path": "/Users/someone/Desktop/shot.png", "copyFromPath": true}
+            ]},
+            {"id": "i1", "role": "image", "text": "",
+             "image": {"path": "/Users/someone/.ssh/leak.png", "name": "generated-image", "mimeType": "image/png",
+                       "size": 10, "alt": "a cat"}},
+            {"id": "t1", "role": "tool", "text": "", "tool": {"title": "Read", "preview": {"kind": "read", "path": "/Users/someone/notes.md"}}},
+            {"id": "a3", "role": "assistant", "text": "done", "btwThreads": [
+                {"id": "th", "sourceEndBlockId": "a3", "createdAt": 1, "updatedAt": 2, "status": "ready", "messages": [
+                    {"id": "m1", "role": "assistant", "text": "x", "createdAt": 1, "blocks": [
+                        {"id": "bi", "role": "image", "text": "",
+                         "image": {"path": "/etc/hosts.png", "name": "side", "mimeType": "image/png", "size": 1}},
+                        {"id": "bu", "role": "user", "text": "", "attachments": [
+                            {"id": "z", "name": "passwd", "mimeType": "text/plain", "kind": "file", "size": 1, "path": "/etc/passwd"}
+                        ]}
+                    ]}
+                ]}
+            ]}
+        ]
+    })
+}
+
+const FOREIGN_PATHS: [&str; 6] = [
+    "/Users/someone/.ssh/id_rsa",
+    "/Users/someone/Desktop/shot.png",
+    "/Users/someone/.ssh/leak.png",
+    "/etc/hosts.png",
+    "/etc/passwd",
+    "copyFromPath",
+];
+
+#[test]
+fn an_imported_chat_keeps_no_file_path_from_the_file() {
+    let source_dir = TestDir::new("paths-source");
+    let target_dir = TestDir::new("paths-target");
+    let out = TestDir::new("paths-out");
+    let source = env_for(&source_dir.0);
+    let store = open_store(&source);
+    let conn = store.lock_conn().unwrap();
+    add_session(
+        &conn,
+        "plain",
+        "Plain",
+        "claude",
+        json!([block("p", "user", "hi")]),
+        1_000,
+    );
+    drop(conn);
+    drop(store);
+    let dest = out.0.join("export");
+    let mut request = export_request(&dest, Form::Folder);
+    request.memory = None;
+    request.files.clear();
+    export(&source, &request).unwrap();
+    // The export is crafted: its chat file names files the importing Mac has, whatever machine wrote it.
+    put_in_export(
+        &dest,
+        "workspace/sessions/crafted.json",
+        crafted_chat().to_string().as_bytes(),
+    );
+
+    let target = env_for(&target_dir.0);
+    let target_store = open_store(&target);
+    let conn = target_store.lock_conn().unwrap();
+    let report = import_held(
+        &target,
+        &conn,
+        &ImportRequest {
+            path: dest.to_string_lossy().into_owned(),
+            memory: None,
+            workspace: Some(WorkspaceImport {
+                sessions: vec!["crafted".into(), "plain".into()],
+                ..Default::default()
+            }),
+        },
+    )
+    .unwrap();
+    assert_eq!(report.sessions_added, 2);
+
+    let stored = session_store::get_session(&conn, "crafted")
+        .unwrap()
+        .unwrap();
+    let text = stored.blocks.to_string();
+    for foreign in FOREIGN_PATHS {
+        assert!(
+            !text.contains(foreign),
+            "{foreign} survived the import: {text}"
+        );
+    }
+    let blocks = stored.blocks.as_array().unwrap();
+    // Every block is still there, in order.
+    let ids: Vec<&str> = blocks.iter().map(|b| b["id"].as_str().unwrap()).collect();
+    assert_eq!(ids, ["u1", "i1", "t1", "a3"]);
+    // An image block keeps what it says about the picture and says its file is not here: an empty path.
+    assert_eq!(
+        blocks[1]["image"],
+        json!({"path": "", "name": "generated-image", "mimeType": "image/png", "size": 10, "alt": "a cat"})
+    );
+    // An attachment keeps its name and kind, and no path.
+    assert_eq!(
+        blocks[0]["attachments"],
+        json!([
+            {"id": "a1", "name": "id_rsa", "mimeType": "application/octet-stream", "kind": "file", "size": 1679},
+            {"id": "a2", "name": "shot.png", "mimeType": "image/png", "kind": "image", "size": 10}
+        ])
+    );
+    // A side thread's blocks are held to the same rule.
+    let side = &blocks[3]["btwThreads"][0]["messages"][0]["blocks"];
+    assert_eq!(side[0]["image"]["path"], "");
+    assert_eq!(side[0]["image"]["name"], "side");
+    assert_eq!(side[1]["attachments"][0].get("path"), None);
+    assert_eq!(side[1]["attachments"][0]["name"], "passwd");
+    // Nothing else about the chat is touched: a tool row's own path is not a file this import reads.
+    assert_eq!(
+        blocks[2]["tool"]["preview"]["path"],
+        "/Users/someone/notes.md"
+    );
+    assert_eq!(blocks[3]["text"], "done");
+    // The chat that named no file comes back as it was, and the import says what it left out.
+    let plain = session_store::get_session(&conn, "plain").unwrap().unwrap();
+    assert_eq!(plain.blocks, json!([block("p", "user", "hi")]));
+    assert!(
+        report.notes.iter().any(|n| n.contains("5 file paths")),
+        "{:?}",
+        report.notes
+    );
+
+    // Looking at the same file again finds the chat already here: paths are not what makes two chats differ.
+    let again = inspect(&target, &dest.to_string_lossy()).unwrap();
+    let status = |id: &str| {
+        again
+            .workspace
+            .as_ref()
+            .unwrap()
+            .sessions
+            .iter()
+            .find(|session| session.id == id)
+            .unwrap()
+            .status
+    };
+    assert_eq!(status("crafted"), Status::Same);
+    assert_eq!(status("plain"), Status::Same);
+    // The Mac that made the export, with its paths in place, sees the same.
+    let from_source = inspect(&source, &dest.to_string_lossy()).unwrap();
+    assert_eq!(
+        from_source
+            .workspace
+            .unwrap()
+            .sessions
+            .iter()
+            .find(|s| s.id == "plain")
+            .unwrap()
+            .status,
+        Status::Same
+    );
+}
+
+#[test]
+fn an_imported_mono_transcript_index_holds_no_file_path_either() {
+    let target_dir = TestDir::new("paths-mono");
+    let target = env_for(&target_dir.0);
+    let store = open_store(&target);
+    let conn = store.lock_conn().unwrap();
+    let mut file = crafted_chat();
+    file["monoTranscript"] = json!(true);
+    insert_session(&target, &conn, "mono-chat", "Mono", &file).unwrap();
+    crate::mono_transcript::migrate_transcript(&conn, "mono-chat").unwrap();
+
+    let indexed: Vec<String> = conn
+        .prepare("SELECT block_json FROM mono_blocks WHERE session_id = 'mono-chat' ORDER BY seq")
+        .unwrap()
+        .query_map([], |row| row.get(0))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert_eq!(indexed.len(), 4, "the transcript was indexed");
+    for row in &indexed {
+        for foreign in FOREIGN_PATHS {
+            assert!(!row.contains(foreign), "{foreign} in the index: {row}");
+        }
+    }
+    let paths = crate::mono_transcript::generated_image_paths(&conn, "mono-chat").unwrap();
+    assert!(paths.iter().all(String::is_empty), "{paths:?}");
+}
+
+#[test]
+fn odd_shapes_in_an_imported_chat_are_dropped_not_kept_and_do_not_fail_the_import() {
+    let target_dir = TestDir::new("paths-odd");
+    let target = env_for(&target_dir.0);
+    let store = open_store(&target);
+    let conn = store.lock_conn().unwrap();
+    let file = json!({
+        "title": "Odd",
+        "cwd": "/tmp",
+        "engine": {"harness": "claude", "model": "m", "runtimeMode": "auto"},
+        "blocks": [
+            {"id": "n", "role": "image", "text": "", "image": {"path": 7, "name": "n", "mimeType": "image/png", "size": 1}},
+            {"id": "r", "role": "image", "text": "", "image": {"path": "../../.ssh/id_rsa", "name": "r", "mimeType": "image/png", "size": 1}},
+            {"id": "a", "role": "user", "text": "", "attachments": null},
+            {"id": "b", "role": "user", "text": "", "attachments": ["not an object", {"id": "c", "name": "c", "path": 5}]},
+            {"id": "e", "role": "image", "text": "", "image": null},
+            {"id": "w", "role": "assistant", "text": "", "btwThreads": [{"id": "t", "pendingBlocks": [
+                {"id": "p", "role": "user", "text": "", "attachments": [{"id": "d", "name": "d", "path": "/etc/shadow"}]}
+            ]}]}
+        ]
+    });
+    insert_session(&target, &conn, "odd", "Odd", &file).unwrap();
+    let stored = session_store::get_session(&conn, "odd").unwrap().unwrap();
+    let text = stored.blocks.to_string();
+    for foreign in ["../../.ssh/id_rsa", "/etc/shadow"] {
+        assert!(!text.contains(foreign), "{foreign}: {text}");
+    }
+    let blocks = stored.blocks.as_array().unwrap();
+    assert_eq!(blocks[0]["image"]["path"], "");
+    assert_eq!(blocks[1]["image"]["path"], "");
+    assert_eq!(blocks[3]["attachments"][1].get("path"), None);
+    assert_eq!(
+        blocks[5]["btwThreads"][0]["pendingBlocks"][0]["attachments"][0].get("path"),
+        None
+    );
+}
+
+/// Sets an environment variable for the process and puts it back (tests share one process).
+#[cfg(unix)]
+struct EnvVar(&'static str, Option<std::ffi::OsString>);
+
+#[cfg(unix)]
+impl EnvVar {
+    fn set(name: &'static str, value: &Path) -> Self {
+        let before = std::env::var_os(name);
+        std::env::set_var(name, value);
+        Self(name, before)
+    }
+}
+
+#[cfg(unix)]
+impl Drop for EnvVar {
+    fn drop(&mut self) {
+        match &self.1 {
+            Some(value) => std::env::set_var(self.0, value),
+            None => std::env::remove_var(self.0),
+        }
+    }
+}
+
+#[cfg(unix)]
+/// A bundle whose tree has a filter attribute on every `.md`, an LFS config, a submodule file and attributes in a
+/// folder: what git-lfs (or any filter in the machine's own git config) would act on at checkout.
+fn bundle_with_filter_files(dir: &Path) -> Vec<u8> {
+    let repo = dir.join("filtered");
+    fs::create_dir_all(repo.join("sub")).unwrap();
+    fs::write(repo.join(".gitattributes"), "*.md filter=evil\n").unwrap();
+    fs::write(repo.join("sub/.gitattributes"), "* text\n").unwrap();
+    fs::write(
+        repo.join(".lfsconfig"),
+        "[lfs]\n\turl = http://127.0.0.1:9/\n",
+    )
+    .unwrap();
+    fs::write(
+        repo.join(".gitmodules"),
+        "[submodule \"x\"]\n\tpath = x\n\turl = ./x\n",
+    )
+    .unwrap();
+    fs::write(repo.join("A.md"), "a\n").unwrap();
+    git(&repo, &["init", "-q", "-b", "main"]);
+    git(&repo, &["add", "-A"]);
+    git(&repo, &["commit", "-q", "-m", "filtered"]);
+    let bundle = dir.join("filtered.bundle");
+    git(
+        &repo,
+        &["bundle", "create", &bundle.to_string_lossy(), "--all"],
+    );
+    fs::read(bundle).unwrap()
+}
+
+/// The machine's own git configuration (Ash's has git-lfs filters in it) is not read while a history is restored,
+/// and the files that tell git what to run at checkout are not restored with it: no filter or hook of the history
+/// runs, and a bundle can't bring an LFS server, a submodule or an attribute in.
+#[cfg(unix)]
+#[test]
+fn restoring_a_history_runs_no_filter_and_drops_the_files_that_name_one() {
+    let source_dir = TestDir::new("source");
+    let target_dir = TestDir::new("target");
+    let out = TestDir::new("out");
+    let outside = TestDir::new("outside");
+    let source = env_for(&source_dir.0);
+    let target = env_for(&target_dir.0);
+    let dest = memory_export(&source, &out.0);
+    put_in_export(
+        &dest,
+        "memory/ash.git.bundle",
+        &bundle_with_filter_files(&outside.0),
+    );
+    let marker = outside.0.join("FILTER-RAN");
+    let config = outside.0.join("gitconfig");
+    fs::write(
+        &config,
+        format!(
+            "[filter \"evil\"]\n\tsmudge = cat && touch '{}'\n\tclean = cat\n",
+            marker.display()
+        ),
+    )
+    .unwrap();
+    let _global = EnvVar::set("GIT_CONFIG_GLOBAL", &config);
+
+    let store = open_store(&target);
+    let conn = store.lock_conn().unwrap();
+    let report = import_held(&target, &conn, &history_import(&dest)).unwrap();
+    assert!(
+        !marker.exists(),
+        "a filter from the machine's git config ran"
+    );
+    assert_eq!(report.memory_history, vec!["ash".to_string()], "{report:?}");
+    assert_eq!(
+        fs::read_to_string(target.memory_root.join("ash/A.md")).unwrap(),
+        "a\n",
+        "the history's files still come back"
+    );
+    for dropped in [
+        ".gitattributes",
+        "sub/.gitattributes",
+        ".lfsconfig",
+        ".gitmodules",
+    ] {
+        assert!(
+            !target.memory_root.join("ash").join(dropped).exists(),
+            "{dropped} was restored"
+        );
+    }
+    assert!(
+        report
+            .notes
+            .iter()
+            .any(|n| n.contains("history of ash") && n.contains(".gitattributes")),
+        "{:?}",
+        report.notes
+    );
+}
+
+/// The folder an archive is unpacked into is the importer's alone.
+#[cfg(unix)]
+#[test]
+fn an_unpacked_archive_is_in_a_folder_only_this_user_can_open() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = TestDir::new("unpack");
+    let archive = dir.0.join("a.tar.gz");
+    pax_sized_archive(&archive, 10);
+    let scratch = unpack(&archive).unwrap();
+    assert_eq!(
+        fs::metadata(&scratch.0).unwrap().permissions().mode() & 0o777,
+        0o700
+    );
+}
+
+/// What an import holds a whole export to, the export holds itself to before it writes the manifest.
+#[test]
+fn an_export_is_checked_against_the_totals_an_import_takes() {
+    assert!(check_export_limits(MAX_ENTRIES, MAX_UNPACKED).is_ok());
+    let why = check_export_limits(MAX_ENTRIES + 1, 0).unwrap_err();
+    assert!(
+        why.contains("500000") || why.contains("500,000") || why.contains(&MAX_ENTRIES.to_string()),
+        "{why}"
+    );
+    let why = check_export_limits(1, MAX_UNPACKED + 1).unwrap_err();
+    assert!(why.contains("GB"), "{why}");
+}
+
+/// The rule export and import share: what is left out, and why.
+#[test]
+fn the_size_rule_is_one_for_export_and_import() {
+    let reason =
+        |path: &str, size: u64, used: u64| left_out_reason(path, size, used, MAX_INSPECT_BYTES);
+    let text = MAX_TEXT_FILE;
+    assert!(reason("workspace/sessions/a.json", text, 0).is_none());
+    assert!(reason("workspace/sessions/a.json", text + 1, 0).is_some());
+    assert!(reason("workspace/notes.json", 150 * MIB, 0).is_none());
+    let picture = crate::notes::IMAGE_MAX_BYTES;
+    assert!(reason("workspace/note-assets/n/a.png", picture, 0).is_none());
+    assert!(reason("workspace/note-assets/n/a.png", picture + 1, 0).is_some());
+    assert!(reason("memory/ash.git.bundle", MAX_BUNDLE, 0).is_none());
+    assert!(reason("memory/ash.git.bundle", MAX_BUNDLE + 1, 0).is_some());
+    // A memory file called .bundle inside a folder is text, not a history.
+    assert!(reason("memory/ash/x.git.bundle", MAX_BUNDLE, 0).is_some());
+    // The webview's files together: the one that takes them past the budget is out.
+    assert!(reason("setup/a.json", MAX_INSPECT_BYTES, 0).is_none());
+    assert!(reason("setup/a.json", 1, MAX_INSPECT_BYTES).is_some());
+    assert!(reason("workspace/hub/g.json", 100 * MIB, 200 * MIB).is_some());
+    // Other files don't count toward it.
+    assert!(reason("workspace/notes.json", 100 * MIB, MAX_INSPECT_BYTES).is_none());
+}
+
+/// A folder that can't be resolved is only taken for inside when it isn't there at all.
+#[cfg(unix)]
+#[test]
+fn a_folder_that_cannot_be_resolved_is_not_taken_for_inside() {
+    let dir = TestDir::new("inside");
+    let outside = TestDir::new("outside");
+    fs::create_dir_all(dir.0.join("real")).unwrap();
+    fs::write(dir.0.join("file"), "x").unwrap();
+    std::os::unix::fs::symlink(&outside.0, dir.0.join("link")).unwrap();
+    let root = fs::canonicalize(&dir.0).unwrap();
+    assert!(folder_is_inside(&root, &dir.0.join("real")));
+    assert!(folder_is_inside(&root, &dir.0.join("not-there")));
+    // The file is in the way of a folder: ENOTDIR, not "not there".
+    assert!(!folder_is_inside(&root, &dir.0.join("file/sub")));
+    assert!(!folder_is_inside(&root, &dir.0.join("link")));
+}

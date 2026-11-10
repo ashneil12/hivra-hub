@@ -279,7 +279,7 @@ export function MonoHome() {
             <Image
               source={MONOCODE_MARK}
               style={[styles.mark, { tintColor: colors.content }]}
-              accessibilityLabel="Monocode"
+              accessibilityLabel="Hivra"
               accessibilityIgnoresInvertColors
             />
           </View>

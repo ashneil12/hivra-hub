@@ -12,6 +12,7 @@ import {
   truncateBeforeLastUserTurn,
 } from "./editLastTurn";
 import { newSession, type Block } from "./session";
+import { consumeForkPoint, forkSessionAtMessage } from "./threadFork";
 
 function chat(blocks: Block[]) {
   return { ...newSession("pi", "/tmp"), blocks };
@@ -238,4 +239,30 @@ describe("editLastTurn", () => {
     ).toBe(false);
     expect(canEditLastTurn({ ...chat([]), harness: "claude" })).toBe(false);
   });
+});
+
+describe("editing a fork's last turn", () => {
+  const blocks: Block[] = [
+    { id: "u1", role: "user", text: "Plan the launch" },
+    { id: "a1", role: "assistant", text: "Friday it is" },
+  ];
+  const fresh = () => {
+    const rest = ["fork-1", "b1", "b2"];
+    return { next: () => rest.shift() ?? "spare" };
+  };
+
+  // Editing cuts the chat back to the last user turn, which would take the block that carries the fork's saved
+  // recap with it, so the first message after an edit would reach the agent without the earlier chat.
+  it.each(["pi", "omp", "opencode"] as const)(
+    "waits on %s until the fork has sent its first message",
+    (harness) => {
+      const source = { ...newSession(harness, "/tmp"), id: "sess-1", blocks };
+      const fork = forkSessionAtMessage(source, "a1", fresh())!;
+      expect(fork.blocks.some((block) => block.forkPoint)).toBe(true);
+      expect(canEditLastTurn(source)).toBe(true);
+      expect(canEditLastTurn(fork)).toBe(false);
+      expect(prepareEditedResend(fork)).toBeNull();
+      expect(canEditLastTurn(consumeForkPoint(fork))).toBe(true);
+    },
+  );
 });
