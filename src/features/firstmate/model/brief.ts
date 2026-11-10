@@ -90,15 +90,20 @@ export function sectionProblem(value: unknown): string | undefined {
   return undefined;
 }
 
+/** What is wrong with each of the brief's model-written sections, one phrase each; none when it can go out. */
+export function briefProblems(parts: Partial<Record<keyof BriefParts, unknown>>): string[] {
+  return (Object.keys(LABEL) as (keyof BriefParts)[]).flatMap((key) => {
+    const problem = sectionProblem(parts[key]);
+    return problem ? [`${LABEL[key].name} (${LABEL[key].field}) ${problem}`] : [];
+  });
+}
+
 /**
  * The refusal for a brief whose model-written sections are empty or placeholders, in words the model can act on; none
  * when it can go out.
  */
 export function checkBrief(parts: Partial<Record<keyof BriefParts, unknown>>): string | undefined {
-  const problems = (Object.keys(LABEL) as (keyof BriefParts)[]).flatMap((key) => {
-    const problem = sectionProblem(parts[key]);
-    return problem ? [`${LABEL[key].name} (${LABEL[key].field}) ${problem}`] : [];
-  });
+  const problems = briefProblems(parts);
   if (!problems.length) return undefined;
   return `Not sent: ${problems.join("; ")}. Fill intent with the person's own ask, brief with the build instructions, and goal with the condition that finishes it, then send it again.`;
 }

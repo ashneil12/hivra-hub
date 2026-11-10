@@ -308,6 +308,13 @@ Third-party components Hivra adds:
   Used in: src/features/memory/model/orderScan.ts
   external_content.py's injection scan translated to TypeScript, with its cases ported (WP-111). The fence and the warning sentence are not used. A match refuses a proposed memory and is noted on recall. It never deletes one.
 
+- Atomic Agent's fan-out contract
+  Source: https://github.com/AtomicBot-ai/atomic-agent
+  License: MIT
+  Copyright (c) 2026 Atomic Bot
+  Used in: src/features/firstmate/model/fanoutContract.ts
+  The contract's kinds of provide, its description and search-path rules, the contract block and per-task lines, and the requires-cycle walk, translated to TypeScript at commit 1b4e641525c5b1427b48ff6b8d9932dc26bd8256 (WP-171). Hivra reads the contract from each task of one delegate_tasks call, refuses a requirement nothing provides and a provide nobody could check before anything starts, and runs a declared check as the task's WP-40 checks gate.
+
 MonoCode
 ========
 MonoCode is not affiliated with, endorsed by, or sponsored by the makers of the
