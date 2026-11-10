@@ -4682,8 +4682,16 @@ mod tests {
                 return;
             };
             let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
+            // Read the whole request before answering. Windows resets a connection that is closed with request bytes
+            // still unread, and Node then reports ECONNRESET instead of the answer.
+            let mut request = Vec::new();
             let mut buf = [0u8; 1024];
-            let _ = std::io::Read::read(&mut stream, &mut buf);
+            while !request.windows(4).any(|end| end == b"\r\n\r\n") {
+                match std::io::Read::read(&mut stream, &mut buf) {
+                    Ok(0) | Err(_) => break,
+                    Ok(read) => request.extend_from_slice(&buf[..read]),
+                }
+            }
             let body = b"from-the-fake";
             let head = format!(
                 "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
@@ -4691,6 +4699,9 @@ mod tests {
             );
             let _ = std::io::Write::write_all(&mut stream, head.as_bytes());
             let _ = std::io::Write::write_all(&mut stream, body);
+            // Close the sending side first and let the client hang up, so the close is never a reset.
+            let _ = stream.shutdown(std::net::Shutdown::Write);
+            let _ = std::io::Read::read(&mut stream, &mut buf);
         });
         let output = Command::new("node")
             .args([
@@ -6352,9 +6363,12 @@ mod tests {
                 let bin = temp.root.join("bin");
                 std::fs::create_dir_all(&bin).unwrap();
                 let node = bin.join("node");
+                // Asked for its version it answers; started as the stand-in it stays up a moment, as the real one
+                // does. One that exits at once has gone by the time its start time is read, which macOS cannot do
+                // for a process that has ended (Linux still can), so the start was refused on a quick runner.
                 std::fs::write(
                     &node,
-                    "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo v24.0.0; fi\nexit 0\n",
+                    "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo v24.0.0; exit 0; fi\nsleep 2\nexit 0\n",
                 )
                 .unwrap();
                 std::fs::set_permissions(&node, std::fs::Permissions::from_mode(0o755)).unwrap();
