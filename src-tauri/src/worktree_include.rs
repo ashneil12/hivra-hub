@@ -695,6 +695,9 @@ mod tests {
     fn init_repo(root: &std::path::Path) {
         std::fs::create_dir_all(root).unwrap();
         git(root, &["init", "-b", "main"]);
+        // Windows runners default to core.autocrlf=true, which turns checked-out
+        // "committed\n" into "committed\r\n" and breaks the byte compares below.
+        git(root, &["config", "core.autocrlf", "false"]);
         git(
             root,
             &[
