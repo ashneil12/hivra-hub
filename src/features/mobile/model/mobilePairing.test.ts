@@ -1,0 +1,427 @@
+import { beforeEach, describe, expect, it } from "vitest";
+import { newSession, type ApprovalCall, type Block, type Session } from "../../sessions/model/session";
+import type { DecisionInput } from "../../crew/model/inbox";
+import type { CrewWorkerInput } from "../../crew/model/rows";
+import {
+  clearMobileApprovals,
+  crewStatus,
+  inboxLines,
+  liveApprovals,
+  publishedApprovals,
+  runMobilePairing,
+  type PairingSources,
+} from "./mobilePairing";
+
+const PROJECT = "/work/my proj";
+const NOW = 1_700_000_000_000;
+
+function session(patch: Partial<Session> = {}): Session {
+  return {
+    ...newSession("claude", PROJECT),
+    id: "chat-1",
+    busy: true,
+    ...patch,
+  };
+}
+
+function tool(requestId: number, call?: ApprovalCall, decided?: "allow" | "deny"): Block {
+  return {
+    id: `b-${requestId}`,
+    role: "tool",
+    text: "Run command",
+    startedAt: NOW - 12 * 60_000,
+    tool: { title: "Bash", kind: "execute", command: call && "command" in (call ?? {}) ? (call as { command?: string }).command : undefined },
+    approval: {
+      requestId,
+      ...(decided ? { decided } : {}),
+      ...(call ? { call } : {}),
+    },
+  };
+}
+
+const SHELL = { tool: "Bash", command: "git status --porcelain", paths: ["src/a.ts"] };
+
+function sources(patch: Partial<PairingSources> = {}): PairingSources {
+  return {
+    loadCrew: async () => ({ ok: true, value: [] }),
+    loadDecisions: async () => ({ ok: true, value: [] }),
+    loadDeliveries: async () => ({ ok: true, value: [] }),
+    loadChecks: async () => ({ ok: true, value: [] }),
+    ...patch,
+  };
+}
+
+describe("live approvals", () => {
+  it("publishes one undecided call and drops a finished turn, a worker, a duplicate, and a call with no tool", () => {
+    const rows = liveApprovals([
+      session({ blocks: [tool(7, SHELL), tool(8, SHELL, "allow")] }),
+      session({ id: "done", busy: false, blocks: [tool(9, SHELL)] }),
+      session({ id: "worker", orchestrationLeadId: "lead", blocks: [tool(10, SHELL)] }),
+      session({
+        id: "dup",
+        blocks: [tool(11, SHELL), tool(11, { ...SHELL, command: "rm -rf /" })],
+      }),
+      session({ id: "blank", blocks: [tool(12, { tool: "  ", paths: [] })] }),
+      session({ id: "hidden", sidebarHidden: true, blocks: [tool(13, SHELL)] }),
+    ]);
+    expect(rows.truncated).toBe(false);
+    expect(rows.rows).toEqual([
+      {
+        conversationId: "chat-1",
+        requestId: 7,
+        tool: "Bash",
+        command: "git status --porcelain",
+        paths: ["src/a.ts"],
+        project: PROJECT,
+        at: NOW - 12 * 60_000,
+      },
+    ]);
+  });
+
+  it("keeps a command exactly, including spaces and a windows path", () => {
+    const command = "echo café \r\nC:\\work\\my proj";
+    const rows = liveApprovals([
+      session({ blocks: [tool(1, { tool: "Bash", command, paths: ["C:\\work\\my proj\\a.ts"] })] }),
+    ]);
+    expect(rows.rows[0].command).toBe(command);
+    expect(rows.rows[0].paths).toEqual(["C:\\work\\my proj\\a.ts"]);
+  });
+
+  it("refuses the whole list when more than 64 calls are waiting", () => {
+    const blocks = Array.from({ length: 65 }, (_, i) => tool(i, SHELL));
+    expect(liveApprovals([session({ blocks })])).toEqual({ rows: [], truncated: true });
+  });
+
+  it("publishes a Mono's own call without adding that chat to the session list", () => {
+    const live = [session({ blocks: [tool(7, SHELL)] })];
+    const listed = new Set<string>();
+    expect(publishedApprovals(live, listed, new Set(["chat-1"])).rows).toHaveLength(1);
+    expect(publishedApprovals(live, new Set(["chat-1"]), new Set()).rows).toHaveLength(1);
+    expect(publishedApprovals(live, listed, new Set(["other"])).rows).toEqual([]);
+  });
+});
+
+describe("approve and deny", () => {
+  let calls: Array<[string, number, "allow" | "deny"]>;
+  const answered = new Set<string>();
+
+  beforeEach(() => {
+    calls = [];
+    answered.clear();
+    clearMobileApprovals();
+  });
+
+  function ctx(sessions: Session[], remote = false) {
+    return {
+      sessions,
+      now: NOW,
+      approve: (sessionId: string, requestId: number, decision: "allow" | "deny") => {
+        calls.push([sessionId, requestId, decision]);
+      },
+      remoteBlocked: () => remote,
+      answered,
+      sources: sources(),
+    };
+  }
+
+  it("allows only a matching request id and returns the exact command", async () => {
+    const live = [session({ blocks: [tool(7, SHELL)] })];
+    const result = await runMobilePairing(
+      "session.approve",
+      {
+        conversationId: "chat-1",
+        requestId: 7,
+        tool: "Bash",
+        command: "git status --porcelain",
+        paths: ["src/a.ts"],
+      },
+      ctx(live),
+    );
+    expect(calls).toEqual([["chat-1", 7, "allow"]]);
+    expect(result).toEqual({
+      requestId: 7,
+      decision: "allow",
+      tool: "Bash",
+      command: "git status --porcelain",
+      paths: ["src/a.ts"],
+    });
+  });
+
+  it("does not allow when the request id, command, or paths differ", async () => {
+    const live = [session({ blocks: [tool(7, SHELL)] })];
+    const base = {
+      conversationId: "chat-1",
+      requestId: 7,
+      tool: "Bash",
+      command: "git status --porcelain",
+      paths: ["src/a.ts"],
+    };
+    for (const params of [
+      { ...base, requestId: 8 },
+      { ...base, requestId: "7" },
+      { ...base, requestId: 7.5 },
+      { ...base, command: "git status" },
+      { ...base, command: "git status --porcelain\n" },
+      { ...base, paths: ["src/b.ts"] },
+      { ...base, paths: [] },
+      { ...base, tool: "Shell" },
+      { conversationId: "missing", requestId: 7, tool: "Bash", command: SHELL.command, paths: SHELL.paths },
+    ]) {
+      calls = [];
+      await expect(runMobilePairing("session.approve", params, ctx(live))).rejects.toThrow(
+        /does not match|Missing approval request/,
+      );
+      expect(calls).toEqual([]);
+    }
+  });
+
+  it("denies without ever defaulting to allow, and a second decision is refused", async () => {
+    const live = [session({ blocks: [tool(7, SHELL)] })];
+    const params = {
+      conversationId: "chat-1",
+      requestId: 7,
+      tool: "Bash",
+      command: SHELL.command,
+      paths: SHELL.paths,
+    };
+    const result = await runMobilePairing("session.deny", params, ctx(live));
+    expect(result).toMatchObject({ decision: "deny", command: SHELL.command });
+    expect(calls).toEqual([["chat-1", 7, "deny"]]);
+    await expect(runMobilePairing("session.deny", params, ctx(live))).rejects.toThrow(/already/);
+    expect(calls).toEqual([["chat-1", 7, "deny"]]);
+    await expect(
+      runMobilePairing("session.approve", { ...params, decision: "deny" }, ctx(live)),
+    ).rejects.toThrow(/does not match/);
+    await expect(
+      runMobilePairing("session.approve", { ...params, all: true }, ctx([session({ blocks: [tool(3, SHELL)] })])),
+    ).rejects.toThrow(/One tool call/);
+    expect(calls).toEqual([["chat-1", 7, "deny"]]);
+  });
+
+  it("does not approve a remote session the desktop cannot reach", async () => {
+    const live = [session({ blocks: [tool(7, SHELL)] })];
+    await expect(
+      runMobilePairing(
+        "session.approve",
+        { conversationId: "chat-1", requestId: 7, tool: "Bash", command: SHELL.command, paths: SHELL.paths },
+        ctx(live, true),
+      ),
+    ).rejects.toThrow(/desktop/);
+    expect(calls).toEqual([]);
+  });
+});
+
+describe("inbox lines", () => {
+  const decision: DecisionInput = {
+    project: PROJECT,
+    decisionKey: "ship",
+    question: "Ship it now?",
+    options: ["Ship it", "Wait"],
+    recommended: "Ship it",
+    state: "open",
+    updatedAt: NOW - 60 * 60_000,
+    askedBy: "chat-1",
+  };
+  const rows: CrewWorkerInput[] = [
+    {
+      id: "q",
+      project: PROJECT,
+      title: "Which name?",
+      status: "needs-you",
+      childSession: "chat-1",
+      updatedAt: NOW - 5 * 60_000,
+    },
+    {
+      id: "bad",
+      project: PROJECT,
+      title: "Save bug",
+      status: "failed",
+      statusNotice: "The save did not finish.",
+      updatedAt: NOW - 2 * 60_000,
+    },
+  ];
+
+  it("puts the oldest question first, then an approval with its exact command, then a failure", () => {
+    const lines = inboxLines({
+      projects: [PROJECT],
+      decisions: [decision],
+      rows,
+      deliveries: [],
+      approvals: liveApprovals([session({ blocks: [tool(7, SHELL)] })]).rows,
+      now: NOW,
+    });
+    expect(lines.map((line) => line.kind)).toEqual(["decision", "question", "approval", "failure"]);
+    expect(lines[0].waiting).toBe("waiting 1 hour");
+    expect(lines[1].waiting).toBe("waiting 5 minutes");
+    const approval = lines[2];
+    expect(approval.command).toBe("git status --porcelain");
+    expect(approval.requestId).toBe(7);
+    expect(approval.paths).toEqual(["src/a.ts"]);
+    expect(approval.projectId).toBe(encodeURIComponent(PROJECT));
+    expect(JSON.stringify(lines)).not.toContain("—");
+  });
+
+  it("keeps another project out, and an empty project is an empty list", () => {
+    expect(
+      inboxLines({
+        projects: ["/elsewhere"],
+        decisions: [decision],
+        rows,
+        deliveries: [],
+        approvals: [],
+        now: NOW,
+      }),
+    ).toEqual([]);
+    expect(
+      inboxLines({ projects: [], decisions: [decision], rows, deliveries: [], approvals: [], now: NOW }),
+    ).toEqual([]);
+  });
+
+  it("reads the store or says to try again, and never answers a decision", async () => {
+    const listed = await runMobilePairing(
+      "inbox.list",
+      {},
+      {
+        sessions: [],
+        now: NOW,
+        approve: () => {
+          throw new Error("should not approve");
+        },
+        remoteBlocked: () => false,
+        sources: sources({
+          loadDecisions: async () => ({ ok: true, value: [decision] }),
+          loadCrew: async () => ({ ok: true, value: rows }),
+        }),
+      },
+    );
+    expect(listed).toMatchObject({ lines: [{ kind: "decision" }, { kind: "question" }, { kind: "failure" }] });
+    await expect(
+      runMobilePairing("inbox.list", {}, {
+        sessions: [],
+        now: NOW,
+        approve: () => undefined,
+        remoteBlocked: () => false,
+        sources: sources({ loadDecisions: async () => ({ ok: false }) }),
+      }),
+    ).rejects.toThrow("Inbox could not be read. Try again.");
+    await expect(
+      runMobilePairing("decision.answer", { key: "ship" }, {
+        sessions: [],
+        now: NOW,
+        approve: () => undefined,
+        remoteBlocked: () => false,
+        sources: sources(),
+      }),
+    ).rejects.toThrow("Unsupported mobile command");
+  });
+
+  it("keeps the first read when a later one is empty, and a checks failure is not an inbox failure", async () => {
+    let reads = 0;
+    const listed = await runMobilePairing("inbox.list", {}, {
+      sessions: [],
+      now: NOW,
+      approve: () => undefined,
+      remoteBlocked: () => false,
+      sources: sources({
+        loadDecisions: async () => ({ ok: true, value: [decision] }),
+        loadCrew: async () => {
+          reads += 1;
+          return reads === 1 ? { ok: true, value: rows } : { ok: true, value: [] };
+        },
+        loadChecks: async () => ({ ok: false }),
+      }),
+    });
+    expect(reads).toBe(1);
+    expect(listed).toMatchObject({
+      lines: [{ kind: "decision" }, { kind: "question" }, { kind: "failure" }],
+    });
+  });
+});
+
+describe("crew status", () => {
+  it("is read only and keeps the branch, pull request, and checks", () => {
+    const shown = crewStatus({
+      projects: [PROJECT],
+      rows: [
+        {
+          id: "w",
+          project: PROJECT,
+          title: "Home page",
+          status: "working",
+          childSession: "chat-1",
+          createdAt: NOW - 60_000,
+          updatedAt: NOW,
+        },
+      ],
+      sessions: [{ id: "chat-1", harness: "claude", model: "opus", branch: "feat/page" }],
+      deliveries: [{ delegationId: "w", state: "open", url: "https://github.com/acme/app/pull/4", number: 4, branch: "feat/page", updatedAt: NOW }],
+      checks: [{ number: 4, url: "https://github.com/acme/app/pull/4", passed: false, pending: 1, failed: [], checks: 2 }],
+      now: NOW,
+    });
+    expect(shown.workers).toHaveLength(1);
+    expect(shown.workers[0]).toMatchObject({
+      id: "w",
+      title: "Home page",
+      status: "working",
+      branch: "feat/page",
+      prNumber: 4,
+      sessionId: "chat-1",
+    });
+    expect(shown.workers[0]).not.toHaveProperty("actions");
+    expect(shown.workers[0]).not.toHaveProperty("checkout");
+    expect(JSON.stringify(shown)).not.toMatch(/stop|retry|land/);
+  });
+
+  it("says try again when the crew cannot be read, and filters by project id", async () => {
+    await expect(
+      runMobilePairing("crew.status", {}, {
+        sessions: [],
+        now: NOW,
+        approve: () => undefined,
+        remoteBlocked: () => false,
+        sources: sources({ loadCrew: async () => ({ ok: false }) }),
+      }),
+    ).rejects.toThrow("Crew status could not be read. Try again.");
+    const shown = await runMobilePairing(
+      "crew.status",
+      { projectId: encodeURIComponent(PROJECT) },
+      {
+        sessions: [],
+        now: NOW,
+        approve: () => undefined,
+        remoteBlocked: () => false,
+        sources: sources({
+          loadCrew: async () => ({
+            ok: true,
+            value: [
+              { id: "here", project: PROJECT, title: "Here", status: "working", createdAt: NOW, updatedAt: NOW },
+              { id: "there", project: "/elsewhere", title: "There", status: "working", createdAt: NOW, updatedAt: NOW },
+            ],
+          }),
+        }),
+      },
+    );
+    expect(shown).toMatchObject({ workers: [{ id: "here" }] });
+    await expect(
+      runMobilePairing("crew.status", { projectId: "%E0%A4%A" }, {
+        sessions: [],
+        now: NOW,
+        approve: () => undefined,
+        remoteBlocked: () => false,
+        sources: sources(),
+      }),
+    ).rejects.toThrow("Project is no longer available.");
+    await expect(
+      runMobilePairing("crew.status", { projectId: encodeURIComponent(PROJECT) }, {
+        sessions: [],
+        now: NOW,
+        approve: () => undefined,
+        remoteBlocked: () => false,
+        sources: sources({
+          loadCrew: async () => ({ ok: true, value: [] }),
+          loadChecks: async () => ({ ok: false }),
+        }),
+      }),
+    ).rejects.toThrow("Crew status could not be read. Try again.");
+  });
+});
