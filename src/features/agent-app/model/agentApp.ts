@@ -1539,6 +1539,10 @@ export async function handleAgentApp(
     if ((action === "tasks.delegate" && input.lead === undefined) || action === "tasks.fanout") await harnessesProbed();
     const result = await handleTasks(source, requestId, action, input, host, { startLaunch, fileStarted });
     if (action === "tasks.delegate" && input.lead === undefined) host.rooms?.delegated?.(source, result);
+    // WP-171: each task a fan-out handed out (started or waiting) is work that comes back to the room, as one delegate_task is.
+    if (action === "tasks.fanout")
+      for (const task of ((result as { tasks?: unknown }).tasks as unknown[] | undefined) ?? [])
+        if (typeof (task as { childSessionId?: unknown })?.childSessionId === "string") host.rooms?.delegated?.(source, task);
     return result;
   }
   if (action.startsWith("prs.")) return handlePrs(source, action, input, host);

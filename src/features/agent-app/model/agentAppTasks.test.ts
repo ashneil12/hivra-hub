@@ -2769,6 +2769,17 @@ describe("tasks.fanout: contracts and waves in the normal delegate path (WP-171)
     expect(out.note).not.toMatch(/[\u2014\u2013]/);
   });
 
+  it("tells a room each task it handed out, as delegate_task does, so the work comes back to the room", async () => {
+    const f = fanned();
+    const delegated = vi.fn();
+    (f.host as { rooms?: unknown }).rooms = { delegated };
+    const out = await f.fan("r1", [api, board, docs]);
+    expect(delegated.mock.calls.map((entry) => [entry[0], (entry[1] as { childSessionId: string }).childSessionId])).toEqual(
+      out.tasks.map((task) => [f.source, task.childSessionId]),
+    );
+    expect(delegated.mock.calls[1][1]).toMatchObject({ childSessionId: "app-mono-exo-r1-board", title: expect.any(String) });
+  });
+
   it("starts all of them at once when none needs another, up to the first mate's eight", async () => {
     const { fan, started } = fanned();
     const many = Array.from({ length: 8 }, (_, i) => ({ name: `t${i}`, brief: `Do part ${i}.`, goal: `part ${i} works` }));
