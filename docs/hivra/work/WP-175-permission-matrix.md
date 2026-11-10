@@ -59,6 +59,9 @@ Happy is MIT, `Copyright (c) 2026 Happy Coder Contributors`. This package ports 
 - `src/integrations/harness/providers/antigravity/antigravityProtocol.ts`
 - `src/integrations/harness/providers/claude/claudeLaunch.ts`
 - `src/integrations/harness/providers/claude/claudeProtocol.ts`
+- `src/integrations/harness/core/permissionMatrix.ts` and its test
+- `src/integrations/harness/providers/devin/devin.ts`, `devinProtocol.ts`, `fx/fx.ts`, `fxProtocol.ts`, `antigravity/antigravity.ts` (the refusal rule and mapping lookups; the adapters' own approval handlers are not touched)
+- `README.md`, `docs/hivra/SOURCES.md`, `docs/hivra/credits.json` (Happy's line only)
 
 ## Done when
 
