@@ -304,3 +304,156 @@ fn only_the_person_answers_an_irreversible_step() {
         .applied
     );
 }
+
+#[test]
+fn old_decision_rows_default_to_standing_with_no_keys() {
+    let conn = rusqlite::Connection::open_in_memory().unwrap();
+    conn.execute_batch(
+        "CREATE TABLE decisions (
+           project TEXT NOT NULL DEFAULT '',
+           decision_key TEXT NOT NULL,
+           question TEXT NOT NULL,
+           options TEXT NOT NULL DEFAULT '[]',
+           recommended TEXT,
+           asked_by TEXT NOT NULL,
+           asked_by_mono TEXT,
+           waiting TEXT NOT NULL DEFAULT '[]',
+           state TEXT NOT NULL,
+           answer TEXT,
+           answered_by TEXT,
+           answered_at INTEGER,
+           created_at INTEGER NOT NULL,
+           updated_at INTEGER NOT NULL,
+           version INTEGER NOT NULL DEFAULT 1,
+           PRIMARY KEY (project, decision_key)
+         );",
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO decisions (project, decision_key, question, options, asked_by, waiting, state, answer, answered_at, created_at, updated_at, version)
+         VALUES ('hivra', 'retention', 'Keep them?', '[\"Keep\",\"Delete\"]', 'fm', '[]', 'answered', 'Keep', 5, 1, 5, 2)",
+        [],
+    )
+    .unwrap();
+    ensure_tables(&conn).unwrap();
+    ensure_tables(&conn).unwrap();
+    let row = get(&conn, "hivra", "retention").unwrap().unwrap();
+    assert!(row.standing);
+    assert!(row.keys.is_empty());
+    assert_eq!(row.retired_at, None);
+    assert_eq!(row.retired_reason, None);
+    assert_eq!(row.answer.as_deref(), Some("Keep"));
+    assert_eq!(row.standing_id, "S-1");
+    assert_eq!(row.version, 2);
+}
+
+#[test]
+fn standing_answers_stay_off_and_a_reworded_question_still_asks() {
+    let store = store();
+    let mut conn = store.lock_conn().unwrap();
+    assert!(!standing_enabled(&conn).unwrap());
+    // A value read from disk that is not exactly "on" does not enable it.
+    conn.execute(
+        "INSERT INTO decision_settings (key, value) VALUES ('standing_answers', ' yes ')",
+        [],
+    )
+    .unwrap();
+    assert!(!standing_enabled(&conn).unwrap());
+    set_standing_enabled(&conn, true).unwrap();
+    assert!(standing_enabled(&conn).unwrap());
+    set_standing_enabled(&conn, false).unwrap();
+    assert!(!standing_enabled(&conn).unwrap());
+
+    ask(&mut conn, ask_input("fm", "retention", &[]), 2).unwrap();
+    answer(
+        &mut conn,
+        "hivra",
+        "retention",
+        "Keep 30 days",
+        Some("user".into()),
+        3,
+    )
+    .unwrap();
+    let mut again = ask_input("fm", "retention-wording", &[]);
+    again.question = "Keep deleted sessions for 30 days, or delete them for good?".into();
+    let out = ask(&mut conn, again, 4).unwrap();
+    assert!(out.created);
+    assert_eq!(out.decision.state, OPEN);
+    assert!(out.decision.answer.is_none());
+    assert_eq!(list(&conn, 10).unwrap().len(), 2);
+    let kept = get(&conn, "hivra", "retention").unwrap().unwrap();
+    assert_eq!(kept.state, ANSWERED);
+    assert_eq!(kept.answer.as_deref(), Some("Keep 30 days"));
+    assert!(kept.standing);
+}
+
+#[test]
+fn asking_again_keeps_standing_keys_and_a_retire_reason() {
+    let store = store();
+    let mut conn = store.lock_conn().unwrap();
+    ask(&mut conn, ask_input("fm", "retention", &[]), 2).unwrap();
+    conn.execute(
+        "UPDATE decisions SET keys = ?, standing = 0 WHERE decision_key = 'retention'",
+        [r#"["sessions","retention"]"#],
+    )
+    .unwrap();
+    let mut again = ask_input("fm", "retention", &[]);
+    again.question = "A different wording that must not replace the first".into();
+    let second = ask(&mut conn, again, 3).unwrap();
+    assert!(!second.created);
+    assert_eq!(
+        second.decision.keys,
+        vec!["sessions".to_string(), "retention".to_string()]
+    );
+    assert!(!second.decision.standing);
+    assert_eq!(
+        second.decision.question,
+        "Keep deleted sessions for 30 days, or delete them for good?"
+    );
+
+    answer(
+        &mut conn,
+        "hivra",
+        "retention",
+        "Keep 30 days",
+        Some("user".into()),
+        4,
+    )
+    .unwrap();
+    let empty = retire(&mut conn, "hivra", "retention", "   ", 5).unwrap_err();
+    assert!(empty.contains("empty"), "{empty}");
+    let too_long = retire(&mut conn, "hivra", "retention", &"x".repeat(301), 5).unwrap_err();
+    assert!(too_long.contains("at most 300"), "{too_long}");
+    let missing = retire(&mut conn, "hivra", "no-such-key", "The host changed", 5).unwrap();
+    assert!(!missing.applied);
+    assert!(missing.decision.is_none());
+
+    let retired = retire(&mut conn, "hivra", "retention", "  The host changed  ", 6).unwrap();
+    assert!(retired.applied);
+    let row = retired.decision.unwrap();
+    assert_eq!(row.retired_at, Some(6));
+    assert_eq!(row.retired_reason.as_deref(), Some("The host changed"));
+    assert_eq!(row.state, ANSWERED);
+    assert_eq!(row.answer.as_deref(), Some("Keep 30 days"));
+    assert!(row.standing_id.starts_with("S-"));
+
+    let twice = retire(&mut conn, "hivra", "retention", "A later reason", 7).unwrap();
+    assert!(!twice.applied);
+    assert_eq!(
+        twice.decision.unwrap().retired_reason.as_deref(),
+        Some("The host changed")
+    );
+
+    let off = set_standing(&mut conn, "hivra", "retention", true, 8)
+        .unwrap()
+        .unwrap();
+    assert!(off.standing);
+    assert_eq!(off.retired_reason.as_deref(), Some("The host changed"));
+    let on = set_standing(&mut conn, "hivra", "retention", false, 9)
+        .unwrap()
+        .unwrap();
+    assert!(!on.standing);
+    assert!(set_standing(&mut conn, "hivra", "missing", false, 10)
+        .unwrap()
+        .is_none());
+}

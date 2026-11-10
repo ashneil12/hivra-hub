@@ -13,6 +13,10 @@
 //!   first mate that asked. The rows' questions go back to their first mate, so they read as working again.
 //!
 //! Own table, made by `ensure_tables` (no numbered migration, so upstream's migration numbers can't collide).
+//!
+//! WP-156 adds standing answers on the same table: `standing`, `keys`, `retired_at`, `retired_reason`. An answered
+//! row is standing unless Ash turns that off or retires it. The feature itself stays off (`decision_settings`) until
+//! it is turned on, and while it is off, asking and answering keep the exact-key behaviour above.
 
 use rusqlite::{params, Connection, OptionalExtension, Row, TransactionBehavior};
 use serde::{Deserialize, Serialize};
@@ -58,8 +62,60 @@ pub(crate) fn ensure_tables(conn: &Connection) -> rusqlite::Result<()> {
            version INTEGER NOT NULL DEFAULT 1,
            PRIMARY KEY (project, decision_key)
          );
-         CREATE INDEX IF NOT EXISTS decisions_open ON decisions(state, created_at);",
+         CREATE INDEX IF NOT EXISTS decisions_open ON decisions(state, created_at);
+         CREATE TABLE IF NOT EXISTS decision_settings (
+           key TEXT PRIMARY KEY,
+           value TEXT NOT NULL
+         );",
+    )?;
+    // Columns added after the first rows. An old store gets the defaults here; a new one takes the same path.
+    ensure_decision_columns(conn)
+}
+
+fn ensure_decision_columns(conn: &Connection) -> rusqlite::Result<()> {
+    for (name, decl) in [
+        ("standing", "INTEGER NOT NULL DEFAULT 1"),
+        ("keys", "TEXT NOT NULL DEFAULT '[]'"),
+        ("retired_at", "INTEGER"),
+        ("retired_reason", "TEXT"),
+    ] {
+        let exists = conn
+            .prepare("SELECT 1 FROM pragma_table_info('decisions') WHERE name = ?1")?
+            .exists([name])?;
+        if !exists {
+            conn.execute(
+                &format!("ALTER TABLE decisions ADD COLUMN {name} {decl}"),
+                [],
+            )?;
+        }
+    }
+    Ok(())
+}
+
+/// The settings key for WP-156. Only the exact value `on` enables standing answers. Anything else, including a missing
+/// row, leaves them off.
+const STANDING_SETTING: &str = "standing_answers";
+
+pub fn standing_enabled(conn: &Connection) -> Result<bool, String> {
+    let value: Option<String> = conn
+        .query_row(
+            "SELECT value FROM decision_settings WHERE key = ?1",
+            [STANDING_SETTING],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|e| e.to_string())?;
+    Ok(value.as_deref().map(str::trim) == Some("on"))
+}
+
+pub fn set_standing_enabled(conn: &Connection, enabled: bool) -> Result<(), String> {
+    conn.execute(
+        "INSERT INTO decision_settings (key, value) VALUES (?1, ?2)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        params![STANDING_SETTING, if enabled { "on" } else { "off" }],
     )
+    .map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
@@ -82,11 +138,25 @@ pub struct Decision {
     pub created_at: i64,
     pub updated_at: i64,
     pub version: i64,
+    /// Answered rows are standing unless this is turned off. Open rows carry it for when they are answered.
+    pub standing: bool,
+    /// Short match words. Empty until a later step fills them. Untrusted text is read back as a list or nothing.
+    pub keys: Vec<String>,
+    pub retired_at: Option<i64>,
+    pub retired_reason: Option<String>,
+    /// Stable label, `S-<rowid>`. Guidance, not a permission.
+    pub standing_id: String,
 }
 
 const COLUMNS: &str =
     "project, decision_key, question, options, recommended, asked_by, asked_by_mono, waiting, \
-     state, answer, answered_by, answered_at, created_at, updated_at, version";
+     state, answer, answered_by, answered_at, created_at, updated_at, version, \
+     standing, keys, retired_at, retired_reason";
+/// `rowid` is not written; it only names the standing answer.
+const READ_COLUMNS: &str =
+    "project, decision_key, question, options, recommended, asked_by, asked_by_mono, waiting, \
+     state, answer, answered_by, answered_at, created_at, updated_at, version, \
+     standing, keys, retired_at, retired_reason, rowid";
 
 fn json_list(text: String) -> Vec<String> {
     serde_json::from_str(&text).unwrap_or_default()
@@ -109,12 +179,17 @@ fn from_row(row: &Row) -> rusqlite::Result<Decision> {
         created_at: row.get(12)?,
         updated_at: row.get(13)?,
         version: row.get(14)?,
+        standing: row.get::<_, i64>(15)? != 0,
+        keys: json_list(row.get(16)?),
+        retired_at: row.get(17)?,
+        retired_reason: row.get(18)?,
+        standing_id: format!("S-{}", row.get::<_, i64>(19)?),
     })
 }
 
 pub fn get(conn: &Connection, project: &str, key: &str) -> Result<Option<Decision>, String> {
     conn.query_row(
-        &format!("SELECT {COLUMNS} FROM decisions WHERE project = ?1 AND decision_key = ?2"),
+        &format!("SELECT {READ_COLUMNS} FROM decisions WHERE project = ?1 AND decision_key = ?2"),
         [project, key],
         from_row,
     )
@@ -132,7 +207,7 @@ pub fn list(conn: &Connection, answered: usize) -> Result<Vec<Decision>, String>
             answered.min(100),
         ),
     ] {
-        let sql = format!("SELECT {COLUMNS} FROM decisions WHERE {filter}");
+        let sql = format!("SELECT {READ_COLUMNS} FROM decisions WHERE {filter}");
         let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
         let rows = if filter.contains("?1") {
             stmt.query_map([limit as i64], from_row)
@@ -150,7 +225,7 @@ pub fn list(conn: &Connection, answered: usize) -> Result<Vec<Decision>, String>
 fn save(conn: &Connection, d: &Decision) -> Result<(), String> {
     conn.execute(
         &format!(
-            "INSERT INTO decisions ({COLUMNS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
+            "INSERT INTO decisions ({COLUMNS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)
              ON CONFLICT (project, decision_key) DO UPDATE SET waiting = excluded.waiting, state = excluded.state,
                answer = excluded.answer, answered_by = excluded.answered_by, answered_at = excluded.answered_at,
                updated_at = excluded.updated_at, version = excluded.version"
@@ -171,6 +246,10 @@ fn save(conn: &Connection, d: &Decision) -> Result<(), String> {
             d.created_at,
             d.updated_at,
             d.version,
+            if d.standing { 1 } else { 0 },
+            json!(d.keys).to_string(),
+            d.retired_at,
+            d.retired_reason,
         ],
     )
     .map_err(|e| e.to_string())?;
@@ -417,6 +496,11 @@ pub fn ask(conn: &mut Connection, input: AskInput, now: i64) -> Result<AskOutcom
         created_at: now,
         updated_at: now,
         version: 0,
+        standing: true,
+        keys: Vec::new(),
+        retired_at: None,
+        retired_reason: None,
+        standing_id: String::new(),
     });
     let added: Vec<String> = task_ids
         .into_iter()
@@ -441,6 +525,9 @@ pub fn ask(conn: &mut Connection, input: AskInput, now: i64) -> Result<AskOutcom
         decision.updated_at = now;
         decision.version += 1;
         save(&tx, &decision)?;
+        // Re-read so the standing id is the stored row, not a guess, and a lost race is visible.
+        decision =
+            get(&tx, &project, &key)?.ok_or_else(|| "The decision was not stored".to_string())?;
     }
     tx.commit().map_err(|e| e.to_string())?;
     if decision.state == OPEN {
@@ -565,6 +652,135 @@ pub fn answer(
     })
 }
 
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct StandingCitation {
+    pub task_id: String,
+    pub cited_at: i64,
+}
+
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RetireOutcome {
+    /// False when there is no such decision, or it was already retired.
+    pub applied: bool,
+    pub decision: Option<Decision>,
+    /// Tasks that relied on it. Empty until a citation is recorded.
+    pub relied: Vec<StandingCitation>,
+}
+
+/// Retire one standing answer. The row stays, with the reason. A second retire changes nothing.
+/// Two windows: the write lands only if the version still matches and it is not already retired.
+pub fn retire(
+    conn: &mut Connection,
+    project: &str,
+    key: &str,
+    reason: &str,
+    now: i64,
+) -> Result<RetireOutcome, String> {
+    let reason = plain(reason, "The reason", 300)?;
+    let project = project.trim();
+    let key = key.trim();
+    let tx = conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|e| e.to_string())?;
+    let Some(mut decision) = get(&tx, project, key)? else {
+        return Ok(RetireOutcome {
+            applied: false,
+            decision: None,
+            relied: Vec::new(),
+        });
+    };
+    if decision.retired_at.is_some() {
+        return Ok(RetireOutcome {
+            applied: false,
+            decision: Some(decision),
+            relied: Vec::new(),
+        });
+    }
+    let version = decision.version;
+    decision.retired_at = Some(now);
+    decision.retired_reason = Some(reason);
+    decision.updated_at = now;
+    decision.version += 1;
+    let changed = tx
+        .execute(
+            "UPDATE decisions SET retired_at = ?1, retired_reason = ?2, updated_at = ?3, version = ?4
+             WHERE project = ?5 AND decision_key = ?6 AND version = ?7 AND retired_at IS NULL",
+            params![
+                decision.retired_at,
+                decision.retired_reason,
+                decision.updated_at,
+                decision.version,
+                decision.project,
+                decision.decision_key,
+                version,
+            ],
+        )
+        .map_err(|e| e.to_string())?;
+    if changed == 0 {
+        let current = get(&tx, project, key)?;
+        tx.commit().map_err(|e| e.to_string())?;
+        return Ok(RetireOutcome {
+            applied: false,
+            decision: current,
+            relied: Vec::new(),
+        });
+    }
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(RetireOutcome {
+        applied: true,
+        decision: Some(decision),
+        relied: Vec::new(),
+    })
+}
+
+/// Turn reuse on or off for one answer. Missing key: nothing to change.
+pub fn set_standing(
+    conn: &mut Connection,
+    project: &str,
+    key: &str,
+    standing: bool,
+    now: i64,
+) -> Result<Option<Decision>, String> {
+    let project = project.trim();
+    let key = key.trim();
+    let tx = conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|e| e.to_string())?;
+    let Some(mut decision) = get(&tx, project, key)? else {
+        return Ok(None);
+    };
+    if decision.standing == standing {
+        return Ok(Some(decision));
+    }
+    let version = decision.version;
+    decision.standing = standing;
+    decision.updated_at = now;
+    decision.version += 1;
+    let changed = tx
+        .execute(
+            "UPDATE decisions SET standing = ?1, updated_at = ?2, version = ?3
+             WHERE project = ?4 AND decision_key = ?5 AND version = ?6",
+            params![
+                if standing { 1 } else { 0 },
+                decision.updated_at,
+                decision.version,
+                decision.project,
+                decision.decision_key,
+                version,
+            ],
+        )
+        .map_err(|e| e.to_string())?;
+    if changed == 0 {
+        let current = get(&tx, project, key)?;
+        tx.commit().map_err(|e| e.to_string())?;
+        return Ok(current);
+    }
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(Some(decision))
+}
+
 fn announce(app: &AppHandle, decision: Option<&Decision>, released: &[SteerMessage]) {
     if let Some(d) = decision {
         let _ = app.emit(CHANGED, json!({ "keys": [d.decision_key] }));
@@ -620,6 +836,63 @@ pub fn decisions_list(
     answered: Option<usize>,
 ) -> Result<Vec<Decision>, String> {
     list(&*store.lock_conn()?, answered.unwrap_or(20))
+}
+
+#[tauri::command(async)]
+pub fn decisions_standing_enabled(store: State<'_, SessionStore>) -> Result<bool, String> {
+    standing_enabled(&*store.lock_conn()?)
+}
+
+#[tauri::command(async)]
+pub fn decisions_set_standing_enabled(
+    store: State<'_, SessionStore>,
+    enabled: bool,
+) -> Result<bool, String> {
+    let conn = store.lock_conn()?;
+    set_standing_enabled(&conn, enabled)?;
+    standing_enabled(&conn)
+}
+
+#[tauri::command(async)]
+pub fn decisions_retire(
+    app: AppHandle,
+    store: State<'_, SessionStore>,
+    project: Option<String>,
+    key: String,
+    reason: String,
+) -> Result<RetireOutcome, String> {
+    let outcome = retire(
+        &mut *store.lock_conn()?,
+        project.as_deref().unwrap_or(""),
+        &key,
+        &reason,
+        now_millis(),
+    )?;
+    if outcome.applied {
+        announce(&app, outcome.decision.as_ref(), &[]);
+    }
+    Ok(outcome)
+}
+
+#[tauri::command(async)]
+pub fn decisions_set_standing(
+    app: AppHandle,
+    store: State<'_, SessionStore>,
+    project: Option<String>,
+    key: String,
+    standing: bool,
+) -> Result<Option<Decision>, String> {
+    let outcome = set_standing(
+        &mut *store.lock_conn()?,
+        project.as_deref().unwrap_or(""),
+        &key,
+        standing,
+        now_millis(),
+    )?;
+    if let Some(decision) = outcome.as_ref() {
+        announce(&app, Some(decision), &[]);
+    }
+    Ok(outcome)
 }
 
 #[cfg(test)]
