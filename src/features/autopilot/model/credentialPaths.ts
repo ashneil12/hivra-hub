@@ -138,10 +138,11 @@ const INVISIBLE = /\p{Cf}/gu;
 
 /**
  * A path as a Mac compares names: compatibility forms folded (a fullwidth `.` is `.`), invisible characters gone, lower
- * case (the Kelvin sign is `k`), one kind of slash. Folding too much only ever holds more.
+ * case (the Kelvin sign is `k`), one kind of slash, and no space or line break around it (Claude Code's file tools trim
+ * a path before they open it). Folding too much only ever holds more.
  */
 function fold(path: string): string {
-  return path.normalize("NFKC").replace(INVISIBLE, "").toLowerCase().replace(/\\/g, "/");
+  return path.trim().normalize("NFKC").replace(INVISIBLE, "").toLowerCase().replace(/\\/g, "/");
 }
 
 type Resolved = {
@@ -196,11 +197,15 @@ function placeAmong(parts: readonly string[]): boolean {
   });
 }
 
+/** A process's environment and command line (`/proc/<pid>/environ`): what `ps e` and `ps -o command` are held for. */
+const processSecrets = (parts: readonly string[]) =>
+  parts.some((part, i) => part === "proc" && (parts[i + 2] === "environ" || parts[i + 2] === "cmdline"));
+
 /** Whether these (folded) parts name a credential place or a credential file. */
 function credentialSegments(parts: readonly string[]): boolean {
   if (!parts.length) return false;
   if (parts[parts.length - 1] === "known_hosts") return false;
-  if (placeAmong(parts)) return true;
+  if (placeAmong(parts) || processSecrets(parts)) return true;
   // A folder that holds logins (`secrets/`, `.ssh/`) makes every file under it a credential place too.
   if (parts.slice(0, -1).some((part) => STEMS.has(part) || NAMES.has(part))) return true;
   return credentialName(parts[parts.length - 1]);
@@ -262,7 +267,7 @@ const MIN_PROJECT_DEPTH = 3;
 /**
  * Whether absolute parts sit inside a person's home folder, however the path got there: `/Users/…` and `/home/…` in
  * any case, the Mac's own other names for them (`/System/Volumes/Data/Users/…`, `/Volumes/<disk>/Users/…`, a
- * `/private` prefix), and root's home (`/var/root`, `/root`).
+ * `/private` prefix), Linux's (`/proc/<pid>/root/…`), and root's home (`/var/root`, `/root`).
  */
 function underHome(parts: readonly string[]): boolean {
   let rest = parts;
@@ -270,6 +275,7 @@ function underHome(parts: readonly string[]): boolean {
     if (rest[0] === "system" && rest[1] === "volumes" && rest[2] === "data") rest = rest.slice(3);
     else if (rest[0] === "volumes" && rest.length > 1) rest = rest.slice(2);
     else if (rest[0] === "private") rest = rest.slice(1);
+    else if (rest[0] === "proc" && rest[2] === "root") rest = rest.slice(3);
     else break;
   }
   if ((rest[0] === "users" || rest[0] === "home") && rest.length > 1) return true;
@@ -325,7 +331,9 @@ function homeShellFile(word: string, folder?: string): boolean {
  * first bare word as a pattern, so a search for the word `token` is a search, not a file, and passes. A word that
  * contains a glob does not: `rg -g '*netrc*'` names files, and ripgrep matches a leading dot, so the command is held
  * whether or not the glob itself is a credential name. The same holds for `find -name`, `-iname` and `-path`. A glob
- * glued on with `=` (`--include=*netrc*`, `--glob=*history*`) is the same word.
+ * glued on with `=` (`--include=*netrc*`, `--glob=*history*`) is the same word, and so is a path glued to a short option
+ * (`grep -f/Users/me/.zshrc`). `folder` is the chat's folder, which a relative path that climbs out of it is resolved
+ * against.
  */
 export function credentialInWords(words: readonly string[], folder?: string): string | null {
   const head = words[0]?.replace(/^-+/, "") ?? "";

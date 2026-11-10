@@ -408,6 +408,24 @@ describe("a home file under another spelling (fix round 4, finding 1)", () => {
     expect(credentialInWords(["cat", "/Users/ash/.zshrc"], "/")).not.toBeNull();
   });
 
+  // Claude Code's file tools trim a path and resolve it before they open it, so a leading or trailing space is not a way out.
+  it("reads a path with spaces or line breaks around it as the path it opens", () => {
+    for (const word of [" /Users/ash/.zshrc", "/Users/ash/.zshrc ", "\t/Users/ash/.zshrc", "\n/Users/ash/.zshrc\n", "  ~/.zshrc  ", " /./users/ash/Library/Preferences/x.plist"])
+      expect(credentialInWords(["cat", word], FOLDER), JSON.stringify(word)).not.toBeNull();
+    expect(credentialPath(" ~/.ssh/id_rsa ")).toBe(true);
+    expect(credentialInPaths(["\n/Users/ash/.zshrc"], FOLDER)).not.toBeNull();
+  });
+
+  // The Linux names for the same thing: /proc/<pid>/root is the whole file system, and a process's environment and
+  // command line are files that print what `ps e` is already held for.
+  it("holds the Linux spellings of a home folder, and a process's environment", () => {
+    for (const word of ["/proc/self/root/home/someone/.zshrc", "/proc/1/root/Users/someone/.zshrc", "/proc/self/root/root/.bashrc", "/./proc/self/root/home/someone/.profile"])
+      expect(credentialInWords(["cat", word], FOLDER), word).not.toBeNull();
+    for (const word of ["/proc/self/environ", "/proc/1/environ", "/proc/self/cmdline", "/PROC/self/ENVIRON", "/proc/./self/environ", "//proc//1//cmdline"])
+      expect(credentialPath(word), word).toBe(true);
+    for (const word of ["/proc/cpuinfo", "/proc/self/status", "/proc/meminfo", "environ", "src/proc/environ.ts"]) expect(credentialPath(word), word).toBe(false);
+  });
+
   it("lets through what is not a home shell file, whatever the spelling", () => {
     for (const word of [
       "/./Users/someone/notes.txt",
