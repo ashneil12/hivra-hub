@@ -24,6 +24,8 @@ describe("waitingOnYouLine (S14: a chat held on Ash's OK answers him at once)", 
     expect(line).not.toContain("npm run old");
     expect(waitingOnYouLine([held("npm run old"), user("go on")])).toBeNull();
     expect(waitingOnYouLine([user("a"), held("npm test"), user("half typed", true)])).toContain("`npm test`");
+    const note: Block = { id: "note", role: "user", text: "note", internal: true };
+    expect(waitingOnYouLine([user("a"), held("npm test"), note])).toContain("`npm test`");
   });
 
   it("counts more than one card and keeps a long command short", () => {

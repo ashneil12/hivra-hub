@@ -26,11 +26,14 @@ export function carryPastApproval(record: ApprovalRecord): Carry {
 
 type GateSession = Pick<Session, "busy" | "blocks" | "backgroundTasks">;
 
-/** Where the current stretch starts: just after the last message Ash sent (a saved draft is not one). */
+/**
+ * Where the current stretch starts: just after the last message Ash sent. A saved draft is not one, and neither is
+ * a hidden turn the app wrote (a room note, a checker's note): it must not hide a card that is still open.
+ */
 export function sinceLastUserMessage(blocks: readonly Block[]): readonly Block[] {
   for (let i = blocks.length - 1; i >= 0; i--) {
     const block = blocks[i];
-    if (block?.role === "user" && !block.draft) return blocks.slice(i + 1);
+    if (block?.role === "user" && !block.draft && !block.internal) return blocks.slice(i + 1);
   }
   return blocks;
 }

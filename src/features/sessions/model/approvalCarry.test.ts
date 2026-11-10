@@ -103,7 +103,9 @@ describe("only approvals after Ash's last message count (WP-146)", () => {
       { id: "a2", role: "assistant", text: "Working on it." },
     ]);
     expect(approvalBlocksCarry(session)).toBe(false);
+    // The queued follow-up steers the running turn, and a message he sends now does not park either.
     expect(canSteerQueuedHead(session)).toBe(true);
+    expect(parksForApproval(session)).toBe(false);
   });
 
   it("an old open card before his last message is history, not a hold", () => {
@@ -122,6 +124,14 @@ describe("only approvals after Ash's last message count (WP-146)", () => {
   it("a saved draft is not a message he sent", () => {
     const session = chat([user("go"), tool(), user("half typed", { draft: true })]);
     expect(approvalBlocksCarry(session)).toBe(true);
+  });
+
+  it("a hidden note the app wrote is not a message he sent: it does not hide an open card", () => {
+    const note = user("note from the room", { internal: true });
+    expect(approvalBlocksCarry(chat([user("go"), tool(), note]))).toBe(true);
+    expect(canSteerQueuedHead(chat([user("go"), missingRecord, note]))).toBe(false);
+    // His own message after it still ends the stretch.
+    expect(approvalBlocksCarry(chat([user("go"), tool(), note, user("next")]))).toBe(false);
   });
 
   it("holds when the chat has no message of his at all", () => {
@@ -185,10 +195,24 @@ describe("parksForApproval: the send path's question (WP-146)", () => {
     expect(parksForApproval(chat([user("old"), tool(), user("new")]))).toBe(false);
   });
 
+  it("an old deny plus a new busy turn does not park", () => {
+    const session = chat([user("first"), tool("deny"), user("second")]);
+    expect(parksForApproval(session)).toBe(false);
+  });
+
   it("leaves the background-tasks branch alone: with only background work left the agent reads it now", () => {
     const session = chat([user("go"), tool()], { backgroundTasks: ["dev server"] });
     expect(approvalBlocksCarry(session)).toBe(true);
     expect(parksForApproval(session)).toBe(false);
     expect(parksForApproval({ ...session, backgroundTasks: [] })).toBe(true);
+  });
+
+  it("a queued follow-up keeps the same precedence: background work steers it, no background work holds it", () => {
+    const session = chat([user("go"), tool()], { backgroundTasks: ["dev server"] });
+    expect(canSteerQueuedHead(session)).toBe(true);
+    expect(canSteerQueuedHead({ ...session, backgroundTasks: [] })).toBe(false);
+    // Background work alone changes nothing for a chat with no open card.
+    expect(canSteerQueuedHead(chat([user("go")], { backgroundTasks: ["dev server"] }))).toBe(true);
+    expect(canSteerQueuedHead(chat([user("go")], { backgroundTasks: [] }))).toBe(true);
   });
 });
