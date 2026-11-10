@@ -1,8 +1,11 @@
 /**
  * Sends a parent's allow or deny to the child session that asked.
  * The child port is the only place an answer is written. A missing port, a
- * port that does not match its key, or a write that throws is unreachable:
- * that is not a deny, and it is not sent to the parent.
+ * port that does not match its key, or a port that refuses the write is
+ * unreachable: that is not a deny, and it is not sent to the parent. A write
+ * that was accepted and then failed in transit is not "unreachable" either:
+ * it rejects, so the caller fails the turn exactly as it does when it cannot
+ * deliver the parent's own answer.
  */
 
 export type ChildAnswer = {
@@ -12,7 +15,11 @@ export type ChildAnswer = {
 
 export type SessionPort = {
   id: string;
-  write: (answer: ChildAnswer) => void;
+  /**
+   * Throwing means the port refused the answer. A rejected promise means the
+   * transport broke while sending it.
+   */
+  write: (answer: ChildAnswer) => void | Promise<unknown>;
 };
 
 export type ChildApproval = {
@@ -48,24 +55,27 @@ export function childApprovalFrom(value: unknown): ChildApproval | undefined {
 
 /**
  * Writes one allow or deny to the named child port.
- * Returns "unreachable" without writing when the port is missing, the port's
- * id does not match the key, the ids are empty, or the write throws.
+ * Resolves "unreachable" without writing when the port is missing, the port's
+ * id does not match the key, the ids are empty, or the port throws. Rejects
+ * when the write was started and the transport failed.
  */
-export function forwardChildAnswer(
+export async function forwardChildAnswer(
   approval: { requestId: string; sessionPort: string },
   decision: "allow" | "deny",
   ports: ReadonlyMap<string, SessionPort>,
-): "sent" | "unreachable" {
+): Promise<"sent" | "unreachable"> {
   if (decision !== "allow" && decision !== "deny") return "unreachable";
   const requestId = typeof approval.requestId === "string" ? approval.requestId.replace(/\r/g, "").trim() : "";
   const sessionPort = typeof approval.sessionPort === "string" ? cleanPort(approval.sessionPort) : "";
   if (!requestId || !sessionPort) return "unreachable";
   const port = ports.get(sessionPort);
   if (!port || port.id !== sessionPort) return "unreachable";
+  let written: void | Promise<unknown>;
   try {
-    port.write({ requestId, decision });
+    written = port.write({ requestId, decision });
   } catch {
     return "unreachable";
   }
+  await written;
   return "sent";
 }

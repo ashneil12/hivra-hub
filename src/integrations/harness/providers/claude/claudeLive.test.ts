@@ -1969,6 +1969,188 @@ describe("claude subagents", () => {
   });
 });
 
+/**
+ * WP-122: a subagent's permission ask is answered on the parent thread, and the answer goes back to Claude on the
+ * request it asked. These drive the real adapter with the frames Claude prints (the child's frames carry the
+ * parent conversation's session id, as in claude_nested_subagent_model).
+ */
+describe("claude subagent approvals on the parent thread", () => {
+  /** The Agent call, then a call the subagent made under it: that is how the adapter learns a call belongs to a child. */
+  function emitChildToolCall(childToolId = "child_read") {
+    emit({
+      type: "assistant",
+      session_id: "sess_1",
+      message: {
+        content: [
+          {
+            type: "tool_use",
+            id: "toolu_agent",
+            name: "Task",
+            input: { description: "Explore the auth module", subagent_type: "explore" },
+          },
+        ],
+      },
+    });
+    emit({
+      type: "assistant",
+      session_id: "sess_1",
+      parent_tool_use_id: "toolu_agent",
+      message: {
+        model: "claude-haiku-5",
+        content: [
+          { type: "tool_use", id: childToolId, name: "Read", input: { file_path: "/home/user/.gitconfig" } },
+        ],
+      },
+    });
+  }
+
+  function askForChild(requestId = "child_permission", toolUseId = "child_read") {
+    emit({
+      type: "control_request",
+      request_id: requestId,
+      session_id: "sess_1",
+      parent_tool_use_id: "toolu_agent",
+      request: {
+        subtype: "can_use_tool",
+        tool_name: "Read",
+        tool_use_id: toolUseId,
+        input: { file_path: "/home/user/.gitconfig" },
+      },
+    });
+  }
+
+  const responseTo = (requestId: string) =>
+    parse().filter(
+      (message) => (message.response as Record<string, unknown> | undefined)?.request_id === requestId,
+    );
+
+  it.each(["allow", "deny"] as const)(
+    "names the child on its approval and writes the answer back to Claude: %s",
+    async (decision) => {
+      const { events, turn } = await startTurn("s1");
+      emitChildToolCall();
+      askForChild();
+      const approval = events.find((event) => event.type === "approval.requested")!;
+      expect(approval).toMatchObject({
+        callId: "child_read",
+        child: { name: "Explore the auth module", sessionPort: "sess_1", detail: "Read /home/user/.gitconfig" },
+      });
+      const waiting = events.reduce(applyHarnessEvent, newSession("claude", "/repo"));
+      expect(waiting.blocks.find((block) => block.approval)?.approval?.child).toEqual({
+        name: "Explore the auth module",
+        sessionPort: "sess_1",
+        detail: "Read /home/user/.gitconfig",
+      });
+      expect(responseTo("child_permission")).toEqual([]);
+
+      respondClaudeApproval("s1", approval.requestId, decision);
+      await waitFor(() => responseTo("child_permission").length > 0, "child answer");
+
+      expect(responseTo("child_permission")).toEqual([
+        expect.objectContaining({
+          type: "control_response",
+          response: expect.objectContaining({
+            response: expect.objectContaining({ behavior: decision }),
+          }),
+        }),
+      ]);
+      expect(events).toContainEqual({ type: "approval.resolved", requestId: approval.requestId, decision });
+      const answered = events.reduce(applyHarnessEvent, newSession("claude", "/repo"));
+      expect(answered.blocks.find((block) => block.approval)?.approval).toMatchObject({
+        decided: decision,
+        child: { name: "Explore the auth module" },
+      });
+      emit({ type: "result", subtype: "success", session_id: "sess_1" });
+      await turn;
+    },
+  );
+
+  it("keeps two children's asks apart and answers each on its own request", async () => {
+    const { events, turn } = await startTurn("s1");
+    emitChildToolCall("child_a");
+    emitChildToolCall("child_b");
+    askForChild("req_a", "child_a");
+    askForChild("req_b", "child_b");
+    const asks = events.filter((event) => event.type === "approval.requested");
+    expect(asks).toHaveLength(2);
+    respondClaudeApproval("s1", asks[1]!.requestId, "deny");
+    respondClaudeApproval("s1", asks[0]!.requestId, "allow");
+    await waitFor(() => responseTo("req_a").length > 0 && responseTo("req_b").length > 0, "both answers");
+    const behavior = (id: string) =>
+      (responseTo(id)[0]!.response as { response: { behavior: string } }).response.behavior;
+    expect(behavior("req_a")).toBe("allow");
+    expect(behavior("req_b")).toBe("deny");
+    emit({ type: "result", subtype: "success", session_id: "sess_1" });
+    await turn;
+  });
+
+  it("leaves the parent's own asks without a child", async () => {
+    const { events, turn } = await startTurn("s1");
+    emitChildToolCall();
+    emit({
+      type: "control_request",
+      request_id: "parent_permission",
+      request: {
+        subtype: "can_use_tool",
+        tool_name: "Read",
+        tool_use_id: "parent_read",
+        input: { file_path: "/home/user/.gitconfig" },
+      },
+    });
+    const approval = events.find((event) => event.type === "approval.requested")!;
+    expect(approval).not.toHaveProperty("child");
+    respondClaudeApproval("s1", approval.requestId, "allow");
+    await waitFor(() => responseTo("parent_permission").length > 0, "parent answer");
+    emit({ type: "result", subtype: "success", session_id: "sess_1" });
+    await turn;
+  });
+
+  it("fails the turn when a child's answer cannot be written, as it does for the parent's", async () => {
+    const { events, turn } = await startTurn("s1");
+    emitChildToolCall();
+    askForChild();
+    const approval = events.find((event) => event.type === "approval.requested")!;
+    let outcome: unknown;
+    void turn.catch((error) => {
+      outcome = error;
+    });
+    writeChild.mockRejectedValueOnce(new Error("Broken pipe"));
+    respondClaudeApproval("s1", approval.requestId, "allow");
+    await waitFor(() => outcome instanceof Error, "failed child answer");
+    expect(outcome).toMatchObject({ message: "Broken pipe" });
+    expect(events).toContainEqual({ type: "session.error", message: "Broken pipe" });
+  });
+
+  it("writes nothing when Claude cancels the child's ask", async () => {
+    const { events, turn } = await startTurn("s1");
+    emitChildToolCall();
+    askForChild();
+    const approval = events.find((event) => event.type === "approval.requested")!;
+    emit({ type: "control_cancel_request", request_id: "child_permission" });
+    await waitFor(() => events.some((event) => event.type === "approval.resolved"), "cancelled ask");
+    expect(events).toContainEqual({
+      type: "approval.resolved",
+      requestId: approval.requestId,
+      decision: "cancelled",
+    });
+    expect(responseTo("child_permission")).toEqual([]);
+    emit({ type: "result", subtype: "success", session_id: "sess_1" });
+    await turn;
+  });
+
+  it("does not send a child an answer after the session is stopped", async () => {
+    const { events } = await startTurn("s1");
+    emitChildToolCall();
+    askForChild();
+    const approval = events.find((event) => event.type === "approval.requested")!;
+    await stopClaudeSession("s1");
+    await waitFor(() => events.some((event) => event.type === "approval.resolved"), "stopped ask");
+    expect(events).toContainEqual({ type: "approval.resolved", requestId: approval.requestId, decision: "deny" });
+    expect(responseTo("child_permission")).toEqual([]);
+    expect(events.some((event) => event.type === "status")).toBe(false);
+  });
+});
+
 describe("claude background tasks", () => {
   it("keeps the turn working through a background command and Claude's follow-up", async () => {
     const { events, turn } = await startTurn("s1");

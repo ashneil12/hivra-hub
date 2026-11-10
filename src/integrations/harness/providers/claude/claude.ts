@@ -1852,12 +1852,14 @@ function rememberChildPort(live: Live, toolUseId: string, name: string, sessionP
   if (live.childPorts.has(port)) return;
   live.childPorts.set(port, {
     id: port,
+    // A failed write rejects, as it does for the parent's own answer, so the turn fails instead of
+    // showing an answer Claude never got.
     write: (answer) => {
       const input = live.childInputs.get(answer.requestId) ?? {};
-      void writeJson(
+      return writeJson(
         live.threadId,
         buildControlResponse(answer.requestId, toClaudePermissionResult(answer.decision, input)),
-      ).catch(() => undefined);
+      );
     },
   });
 }
@@ -1884,28 +1886,30 @@ async function answerChildClaudeApproval(
     call: approvalCall(toolName, input),
     child: { name: child.name, sessionPort: child.sessionPort, detail: title },
   });
-  for (;;) {
-    const decision = await pending;
-    if (decision === "cancelled") {
-      live.childInputs.delete(requestId);
-      live.onEvent({ type: "approval.resolved", requestId: uiId, decision });
-      return;
+  try {
+    for (;;) {
+      const decision = await pending;
+      if (decision === "cancelled") {
+        live.onEvent({ type: "approval.resolved", requestId: uiId, decision });
+        return;
+      }
+      const sent = await forwardChildAnswer(
+        { requestId, sessionPort: child.sessionPort },
+        decision,
+        live.childPorts,
+      );
+      if (sent === "sent" || live.muteUpdates || live.cancelled) {
+        live.onEvent({ type: "approval.resolved", requestId: uiId, decision });
+        return;
+      }
+      live.onEvent({
+        type: "status",
+        text: "The subagent is not reachable, so the answer was not sent.",
+      });
+      pending = waitApproval(live, uiId, requestId, input);
     }
-    const sent = forwardChildAnswer(
-      { requestId, sessionPort: child.sessionPort },
-      decision,
-      live.childPorts,
-    );
-    if (sent === "sent" || live.muteUpdates || live.cancelled) {
-      live.childInputs.delete(requestId);
-      live.onEvent({ type: "approval.resolved", requestId: uiId, decision });
-      return;
-    }
-    live.onEvent({
-      type: "status",
-      text: "The subagent is not reachable, so the answer was not sent.",
-    });
-    pending = waitApproval(live, uiId, requestId, input);
+  } finally {
+    live.childInputs.delete(requestId);
   }
 }
 

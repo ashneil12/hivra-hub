@@ -8,7 +8,7 @@ function port(id: string, write: SessionPort["write"]): SessionPort {
 }
 
 describe("forwardChildAnswer", () => {
-  it("sends allow only to the child port", () => {
+  it("sends allow only to the child port", async () => {
     const child: { requestId: string; decision: string }[] = [];
     const parent: { requestId: string; decision: string }[] = [];
     const ports = new Map<string, SessionPort>([
@@ -17,14 +17,14 @@ describe("forwardChildAnswer", () => {
     ]);
 
     expect(
-      forwardChildAnswer({ requestId: "req-9", sessionPort: "child-1" }, "allow", ports),
+      await forwardChildAnswer({ requestId: "req-9", sessionPort: "child-1" }, "allow", ports),
     ).toBe("sent");
 
     expect(child).toEqual([{ requestId: "req-9", decision: "allow" }]);
     expect(parent).toEqual([]);
   });
 
-  it("sends deny only to the child port", () => {
+  it("sends deny only to the child port", async () => {
     const child: { requestId: string; decision: string }[] = [];
     const parent: { requestId: string; decision: string }[] = [];
     const ports = new Map<string, SessionPort>([
@@ -33,79 +33,79 @@ describe("forwardChildAnswer", () => {
     ]);
 
     expect(
-      forwardChildAnswer({ requestId: "req-9", sessionPort: "child-1" }, "deny", ports),
+      await forwardChildAnswer({ requestId: "req-9", sessionPort: "child-1" }, "deny", ports),
     ).toBe("sent");
 
     expect(child).toEqual([{ requestId: "req-9", decision: "deny" }]);
     expect(parent).toEqual([]);
   });
 
-  it("delivers two answers in order and does not collapse them", () => {
+  it("delivers two answers in order and does not collapse them", async () => {
     const child: string[] = [];
     const ports = new Map<string, SessionPort>([
       ["child-1", port("child-1", (answer) => child.push(answer.decision))],
     ]);
 
-    expect(forwardChildAnswer({ requestId: "a", sessionPort: "child-1" }, "allow", ports)).toBe("sent");
-    expect(forwardChildAnswer({ requestId: "b", sessionPort: "child-1" }, "deny", ports)).toBe("sent");
+    expect(await forwardChildAnswer({ requestId: "a", sessionPort: "child-1" }, "allow", ports)).toBe("sent");
+    expect(await forwardChildAnswer({ requestId: "b", sessionPort: "child-1" }, "deny", ports)).toBe("sent");
 
     expect(child).toEqual(["allow", "deny"]);
   });
 
-  it("does not write anyone when the child port is missing", () => {
+  it("does not write anyone when the child port is missing", async () => {
     const parent: unknown[] = [];
     const ports = new Map<string, SessionPort>([
       ["parent", port("parent", (answer) => parent.push(answer))],
     ]);
 
     expect(
-      forwardChildAnswer({ requestId: "req-9", sessionPort: "child-1" }, "deny", ports),
+      await forwardChildAnswer({ requestId: "req-9", sessionPort: "child-1" }, "deny", ports),
     ).toBe("unreachable");
     expect(parent).toEqual([]);
   });
 
-  it("does not write a port whose id does not match its key", () => {
+  it("does not write a port whose id does not match its key", async () => {
     const wrote: unknown[] = [];
     const ports = new Map<string, SessionPort>([
       ["child-1", port("other", (answer) => wrote.push(answer))],
     ]);
 
     expect(
-      forwardChildAnswer({ requestId: "req-9", sessionPort: "child-1" }, "allow", ports),
+      await forwardChildAnswer({ requestId: "req-9", sessionPort: "child-1" }, "allow", ports),
     ).toBe("unreachable");
     expect(wrote).toEqual([]);
   });
 
-  it("does not write anyone for an empty request or port", () => {
+  it("does not write anyone for an empty request or port", async () => {
     const wrote: unknown[] = [];
     const ports = new Map<string, SessionPort>([
       ["child-1", port("child-1", (answer) => wrote.push(answer))],
       ["parent", port("parent", (answer) => wrote.push(answer))],
     ]);
 
-    expect(forwardChildAnswer({ requestId: "  ", sessionPort: "child-1" }, "allow", ports)).toBe(
+    expect(await forwardChildAnswer({ requestId: "  ", sessionPort: "child-1" }, "allow", ports)).toBe(
       "unreachable",
     );
-    expect(forwardChildAnswer({ requestId: "req-9", sessionPort: " \n " }, "deny", ports)).toBe(
+    expect(await forwardChildAnswer({ requestId: "req-9", sessionPort: " \n " }, "deny", ports)).toBe(
       "unreachable",
     );
-    expect(forwardChildAnswer({ requestId: "", sessionPort: "" }, "deny", ports)).toBe("unreachable");
+    expect(await forwardChildAnswer({ requestId: "", sessionPort: "" }, "deny", ports)).toBe("unreachable");
     expect(wrote).toEqual([]);
   });
 
-  it("trims the request and the port before it writes", () => {
+  it("trims the request and the port before it writes", async () => {
     const wrote: unknown[] = [];
     const ports = new Map<string, SessionPort>([
       ["child 1", port("child 1", (answer) => wrote.push(answer))],
     ]);
 
     expect(
-      forwardChildAnswer({ requestId: "  req-9\r", sessionPort: " child 1 " }, "allow", ports),
+      await forwardChildAnswer({ requestId: "  req-9\r", sessionPort: " child 1 " }, "allow", ports),
     ).toBe("sent");
     expect(wrote).toEqual([{ requestId: "req-9", decision: "allow" }]);
   });
 
-  it("is unreachable when the write throws, and does not write the parent", () => {
+  it("is unreachable when the write throws, and does not write the parent", async () => {
     const parent: unknown[] = [];
     let attempts = 0;
     const ports = new Map<string, SessionPort>([
@@ -120,13 +120,43 @@ describe("forwardChildAnswer", () => {
     ]);
 
     expect(
-      forwardChildAnswer({ requestId: "req-9", sessionPort: "child-1" }, "deny", ports),
+      await forwardChildAnswer({ requestId: "req-9", sessionPort: "child-1" }, "deny", ports),
     ).toBe("unreachable");
     expect(attempts).toBe(1);
     expect(parent).toEqual([]);
   });
 
-  it("does not treat a removed port as a parent deny", () => {
+  it("rejects when the write was accepted and the transport then failed, and does not write the parent", async () => {
+    const parent: unknown[] = [];
+    const ports = new Map<string, SessionPort>([
+      ["child-1", port("child-1", async () => Promise.reject(new Error("Broken pipe")))],
+      ["parent", port("parent", (answer) => parent.push(answer))],
+    ]);
+
+    await expect(
+      forwardChildAnswer({ requestId: "req-9", sessionPort: "child-1" }, "allow", ports),
+    ).rejects.toThrow("Broken pipe");
+    expect(parent).toEqual([]);
+  });
+
+  it("waits for an asynchronous write before it says sent", async () => {
+    const order: string[] = [];
+    const ports = new Map<string, SessionPort>([
+      [
+        "child-1",
+        port("child-1", async () => {
+          await Promise.resolve();
+          order.push("written");
+        }),
+      ],
+    ]);
+
+    await forwardChildAnswer({ requestId: "req-9", sessionPort: "child-1" }, "allow", ports);
+    order.push("sent");
+    expect(order).toEqual(["written", "sent"]);
+  });
+
+  it("does not treat a removed port as a parent deny", async () => {
     const child: string[] = [];
     const parent: string[] = [];
     const ports = new Map<string, SessionPort>([
@@ -134,11 +164,11 @@ describe("forwardChildAnswer", () => {
       ["parent", port("parent", (answer) => parent.push(answer.decision))],
     ]);
 
-    expect(forwardChildAnswer({ requestId: "req-9", sessionPort: "child-1" }, "allow", ports)).toBe(
+    expect(await forwardChildAnswer({ requestId: "req-9", sessionPort: "child-1" }, "allow", ports)).toBe(
       "sent",
     );
     ports.delete("child-1");
-    expect(forwardChildAnswer({ requestId: "req-9", sessionPort: "child-1" }, "deny", ports)).toBe(
+    expect(await forwardChildAnswer({ requestId: "req-9", sessionPort: "child-1" }, "deny", ports)).toBe(
       "unreachable",
     );
 
@@ -146,14 +176,14 @@ describe("forwardChildAnswer", () => {
     expect(parent).toEqual([]);
   });
 
-  it("does not send a decision that is not allow or deny", () => {
+  it("does not send a decision that is not allow or deny", async () => {
     const wrote: unknown[] = [];
     const ports = new Map<string, SessionPort>([
       ["child-1", port("child-1", (answer) => wrote.push(answer))],
     ]);
 
     expect(
-      forwardChildAnswer(
+      await forwardChildAnswer(
         { requestId: "req-9", sessionPort: "child-1" },
         "cancelled" as "allow",
         ports,

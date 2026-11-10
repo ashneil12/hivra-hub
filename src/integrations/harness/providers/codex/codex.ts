@@ -129,7 +129,7 @@ type Live = {
   subagentThreads: Map<string, string>;
   /** WP-122: child thread id -> the port an approval answer is written to. */
   childPorts: Map<string, SessionPort>;
-  childSenders: Map<string, (answer: ChildAnswer) => void>;
+  childSenders: Map<string, (answer: ChildAnswer) => Promise<void>>;
   /** Child notifications that arrived before their row was known. */
   pendingSubagent: Map<string, Array<{ method: string; params: unknown }>>;
   /** Agent rows still running, by call id, with the name to settle them under. */
@@ -1502,15 +1502,12 @@ async function handleServerRequest(
           kind: "other",
           title: confirmation.title,
         },
-        (decision) => {
-          void live.rpc
-            .respond(id, {
-              action: decision === "allow" ? "accept" : "decline",
-              content: decision === "allow" ? confirmation.content : null,
-              _meta: null,
-            })
-            .catch(() => undefined);
-        },
+        (decision) =>
+          live.rpc.respond(id, {
+            action: decision === "allow" ? "accept" : "decline",
+            content: decision === "allow" ? confirmation.content : null,
+            _meta: null,
+          }),
       );
       return;
     }
@@ -1578,16 +1575,11 @@ async function handleServerRequest(
     if (live.runtimeMode === "supervised") {
       const child = childThread(live, threadId);
       if (child) {
-        await answerChildApproval(live, uiId, id, mapped.kind, threadId, child, mapped.event, (decision) => {
-          if (decision === "allow") {
-            const rec = asRecord(params);
-            void live.rpc
-              .respond(id, { scope: "turn", permissions: rec?.permissions ?? {} })
-              .catch(() => undefined);
-          } else {
-            void live.rpc.respond(id, { permissions: {} }).catch(() => undefined);
-          }
-        });
+        await answerChildApproval(live, uiId, id, mapped.kind, threadId, child, mapped.event, (decision) =>
+          decision === "allow"
+            ? live.rpc.respond(id, { scope: "turn", permissions: asRecord(params)?.permissions ?? {} })
+            : live.rpc.respond(id, { permissions: {} }),
+        );
         return;
       }
       const pending = waitApproval(live, uiId, id, mapped.kind, threadId);
@@ -1629,11 +1621,9 @@ async function handleServerRequest(
 
   const child = childThread(live, threadId);
   if (child) {
-    await answerChildApproval(live, uiId, id, mapped.kind, threadId, child, mapped.event, (decision) => {
-      void live.rpc
-        .respond(id, { decision: toCodexApprovalDecision(decision, mapped.kind) })
-        .catch(() => undefined);
-    });
+    await answerChildApproval(live, uiId, id, mapped.kind, threadId, child, mapped.event, (decision) =>
+      live.rpc.respond(id, { decision: toCodexApprovalDecision(decision, mapped.kind) }),
+    );
     return;
   }
   const pending = waitApproval(live, uiId, id, mapped.kind, threadId);
@@ -1677,26 +1667,30 @@ function ensureChildPort(live: Live, threadId: string): void {
       const send = live.childSenders.get(answer.requestId);
       if (!send) throw new Error("missing child sender");
       live.childSenders.delete(answer.requestId);
-      send(answer);
+      // A failed write rejects, as it does for the parent's own answer, so the turn fails instead of
+      // showing an answer Codex never got.
+      return send(answer);
     },
   });
 }
 
-function deliverChildDecision(
+async function deliverChildDecision(
   live: Live,
   threadId: string,
   requestId: string,
   decision: "allow" | "deny",
-  send: (decision: "allow" | "deny") => void,
-): "sent" | "unreachable" | "parent" {
+  send: (decision: "allow" | "deny") => Promise<void>,
+): Promise<"sent" | "unreachable" | "parent"> {
   if (!threadId || threadId === live.threadId || !live.subagentThreads.has(threadId)) return "parent";
   const sessionPort = childPortId(threadId);
   const port = sessionPort ? live.childPorts.get(sessionPort) : undefined;
   if (!sessionPort || !port || port.id !== sessionPort) return "unreachable";
   live.childSenders.set(requestId, (answer) => send(answer.decision));
-  const result = forwardChildAnswer({ requestId, sessionPort }, decision, live.childPorts);
-  if (result !== "sent") live.childSenders.delete(requestId);
-  return result;
+  try {
+    return await forwardChildAnswer({ requestId, sessionPort }, decision, live.childPorts);
+  } finally {
+    live.childSenders.delete(requestId);
+  }
 }
 
 async function answerChildApproval(
@@ -1707,7 +1701,7 @@ async function answerChildApproval(
   threadId: string,
   child: { name: string; sessionPort: string },
   event: Extract<HarnessEvent, { type: "approval.requested" }>,
-  send: (decision: "allow" | "deny") => void,
+  send: (decision: "allow" | "deny") => Promise<void>,
 ): Promise<void> {
   const detail = event.title.trim();
   let pending = waitApproval(live, uiId, rpcId, kind, threadId);
@@ -1721,14 +1715,14 @@ async function answerChildApproval(
       live.onEvent({ type: "approval.resolved", requestId: uiId, decision });
       return;
     }
-    const sent = deliverChildDecision(live, threadId, String(rpcId), decision, send);
+    const sent = await deliverChildDecision(live, threadId, String(rpcId), decision, send);
     if (sent === "sent") {
       live.onEvent({ type: "approval.resolved", requestId: uiId, decision });
       return;
     }
     if (sent === "parent") {
       live.onEvent({ type: "approval.resolved", requestId: uiId, decision });
-      send(decision);
+      await send(decision);
       return;
     }
     if (live.muteUpdates || live.cancelled) {
