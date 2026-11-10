@@ -567,7 +567,8 @@ export function appendUser(
 ): Session {
   session = settlePendingApprovals(session);
   return appendBlock(
-    { ...session, busy: true, turnReady: false },
+    // A real turn starts: any background compact hold is over (WP-115).
+    { ...session, busy: true, turnReady: false, idleCompacting: undefined },
     {
       id: crypto.randomUUID(),
       role: "user",
@@ -613,6 +614,7 @@ export function stopStreaming(session: Session, endedAt = Date.now()): Session {
     ...settled,
     busy: false,
     turnReady: false,
+    idleCompacting: undefined,
     pendingQuestion: undefined,
     blocks: stampTurnDuration(
       withoutTurnRepeats(

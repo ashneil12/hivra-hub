@@ -29,6 +29,16 @@ it("persists sidebar visibility without making the session ephemeral", () => {
   expect(persistFingerprint(hidden)).not.toBe(persistFingerprint(session));
 });
 
+it("never writes the hold a background compact puts on a chat", () => {
+  const session = newSession("claude", "/tmp");
+  session.blocks = [{ id: "u", role: "user", text: "Review" }];
+  const held = { ...session, busy: true, idleCompacting: true };
+  const payload = sanitizeSessionForPersist(held) as Record<string, unknown>;
+  expect(payload).not.toHaveProperty("idleCompacting");
+  expect(payload).not.toHaveProperty("busy");
+  expect(persistFingerprint(held)).toBe(persistFingerprint(session));
+});
+
 it("persists a private chat and its boundary, and drops a boundary that is not an id", () => {
   const session = newSession("codex", "/tmp");
   session.blocks = [{ id: "u", role: "user", text: "Review" }];
