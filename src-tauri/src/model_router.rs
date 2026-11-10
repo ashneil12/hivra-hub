@@ -310,7 +310,7 @@ pub async fn model_key_save(
         // WP-129: the address stored with the key is the only host short text may send it to. A new key
         // never keeps the old key's host. A missing or bad address does not undo the save: Other models
         // still use the key, and short text will not.
-        if let Some(dir) = crate::text_generation::store_dir() {
+        if let Some(dir) = crate::key_binding::store_dir() {
             let route = match (provider, model_id, base_url) {
                 (Some(provider), Some(model_id), Some(base_url)) => Some(CustomRoute {
                     provider,
@@ -321,7 +321,7 @@ pub async fn model_key_save(
                 }),
                 _ => None,
             };
-            crate::text_generation::rebind_model_key(&dir, &custom_model_id, route.as_ref());
+            crate::key_binding::rebind(&dir, &custom_model_id, route.as_ref());
         }
         Ok(())
     })
@@ -340,8 +340,8 @@ pub fn delete_key_in(service: &str, custom_model_id: &str) -> Result<bool, Strin
     let deleted = delete_outcome(crate::hub_keychain::delete(service, custom_model_id))?;
     // WP-129: drop the host stored for this key. No folder is created when there is none.
     if service == KEY_SERVICE {
-        if let Some(dir) = crate::text_generation::store_dir() {
-            crate::text_generation::remove_model_binding(&dir, custom_model_id);
+        if let Some(dir) = crate::key_binding::store_dir() {
+            crate::key_binding::remove(&dir, custom_model_id);
         }
     }
     Ok(deleted)
@@ -1346,8 +1346,11 @@ pub fn quick_complete(
     let token = session_token(&route.provider, key)?;
     let deadline = Duration::from_millis(timeout_ms.clamp(1, QUICK_PICK_MAX_MS));
     let body = quick_pick_body(&route.model_id, system, prompt);
+    // The key goes to this one URL. A redirect is not followed, so the key is never offered to the address
+    // the provider named, and any 3xx answer is an error here.
     let response = ureq::AgentBuilder::new()
         .timeout(deadline)
+        .redirects(0)
         .build()
         .post(&chat_url(&route.provider, &route.base_url))
         .set("Authorization", &format!("Bearer {token}"))
@@ -1357,6 +1360,12 @@ pub fn quick_complete(
             ureq::Error::Status(code, _) => format!("The quick model answered with error {code}."),
             ureq::Error::Transport(_) => "The quick model didn't answer in time.".to_string(),
         })?;
+    if response.status() >= 300 {
+        return Err(format!(
+            "The quick model answered with error {}.",
+            response.status()
+        ));
+    }
     let value: Value = response
         .into_string()
         .ok()
@@ -1366,6 +1375,29 @@ pub fn quick_complete(
         .as_str()
         .map(str::to_string)
         .ok_or_else(|| "The quick model gave no text.".to_string())
+}
+
+/// The quick pick for a route the webview gave. A model's key is read, and a request made, only when the
+/// route has the provider and the address that were stored when the key was saved (WP-129). Ollama has no
+/// key, so it passes through. `read_key` and `send` are the Keychain and the network; tests stand in for both.
+pub fn quick_pick_in(
+    hosts: Option<&std::path::Path>,
+    route: &CustomRoute,
+    read_key: impl FnOnce(&CustomRoute) -> Result<Option<String>, String>,
+    send: impl FnOnce(&CustomRoute, Option<&str>) -> Result<String, String>,
+) -> Result<String, String> {
+    if !may_route(route) {
+        return Err("That model can't be used for a quick pick.".into());
+    }
+    let Some(route) = crate::key_binding::bound_route(hosts, route) else {
+        return Err(crate::key_binding::NOT_STORED_FOR_THIS.into());
+    };
+    let key = if route.provider == "ollama" {
+        None
+    } else {
+        read_key(&route)?
+    };
+    send(&route, key.as_deref())
 }
 
 #[tauri::command]
@@ -1387,17 +1419,20 @@ pub async fn model_quick_pick(
             custom_model_id,
             reasoning_effort: None,
         };
-        let key = if route.provider == "ollama" {
-            None
-        } else {
-            read_key_in(KEY_SERVICE, &route.custom_model_id)?
-        };
-        quick_complete(
+        let hosts = crate::key_binding::store_dir();
+        quick_pick_in(
+            hosts.as_deref(),
             &route,
-            key.as_deref(),
-            &system,
-            &prompt,
-            timeout_ms.unwrap_or(QUICK_PICK_MAX_MS),
+            |bound| read_key_in(KEY_SERVICE, &bound.custom_model_id),
+            |bound, key| {
+                quick_complete(
+                    bound,
+                    key,
+                    &system,
+                    &prompt,
+                    timeout_ms.unwrap_or(QUICK_PICK_MAX_MS),
+                )
+            },
         )
     })
     .await
@@ -1407,6 +1442,159 @@ pub async fn model_quick_pick(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A temporary folder of stored key hosts, with one key saved for `saved` (if any).
+    fn hosts_with(name: &str, saved: &[CustomRoute]) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("wp129-router-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        for route in saved {
+            crate::key_binding::record(&dir, route).unwrap();
+        }
+        dir
+    }
+
+    /// The addresses a key must never be sent to when it was saved for `https://llm.example/v1`.
+    const WRONG_ADDRESSES: &[&str] = &[
+        "https://evil.example/v1",
+        "https://llm.example@evil.example/v1",
+        "https://user@llm.example/v1",
+        "https://user:pw@llm.example/v1",
+        "https://llm.example.evil.example/v1",
+        "https://evil.example\\@llm.example/v1",
+        "https://llm.example:8443/v1",
+        "https://llm.example/v1/extra",
+        "https://llm.example/v1?x=1",
+        "https://llm.example/v1#x",
+        "http://llm.example/v1",
+        "https://sub.llm.example/v1",
+    ];
+
+    fn stored_route() -> CustomRoute {
+        let mut saved = route("custom", "https://llm.example/v1", "grok-fast");
+        saved.custom_model_id = "custom-1".into();
+        saved
+    }
+
+    #[test]
+    fn a_quick_pick_reads_the_key_only_for_the_address_stored_with_it() {
+        let saved = stored_route();
+        let hosts = hosts_with("quick", std::slice::from_ref(&saved));
+        let run = |given: &CustomRoute| {
+            let reads = std::cell::Cell::new(0);
+            let sent = std::cell::RefCell::new(None);
+            let out = quick_pick_in(
+                Some(&hosts),
+                given,
+                |_| {
+                    reads.set(reads.get() + 1);
+                    Ok(Some("test-key1234".to_string()))
+                },
+                |r, key| {
+                    *sent.borrow_mut() = Some((r.base_url.clone(), key.map(str::to_string)));
+                    Ok("picked".to_string())
+                },
+            );
+            (out, reads.get(), sent.into_inner())
+        };
+
+        // The address it was saved with, written another way, goes to the saved address.
+        let mut same = saved.clone();
+        same.base_url = "https://LLM.Example./v1/".into();
+        let (out, reads, sent) = run(&same);
+        assert_eq!(out, Ok("picked".to_string()));
+        assert_eq!(reads, 1);
+        assert_eq!(
+            sent,
+            Some((
+                "https://llm.example/v1".to_string(),
+                Some("test-key1234".to_string())
+            ))
+        );
+
+        // Any other address: refused, the key is never read and nothing is sent.
+        for base in WRONG_ADDRESSES {
+            let mut given = saved.clone();
+            given.base_url = (*base).into();
+            let (out, reads, sent) = run(&given);
+            // Refused either as an address no router uses (plain http off this Mac) or as not the stored one.
+            assert!(
+                [
+                    crate::key_binding::NOT_STORED_FOR_THIS.to_string(),
+                    "That model can't be used for a quick pick.".to_string()
+                ]
+                .contains(out.as_ref().unwrap_err()),
+                "{base}: {out:?}"
+            );
+            assert_eq!((reads, sent), (0, None), "{base}");
+        }
+        // Another account, another provider, and a key with nothing stored at all.
+        let mut other_account = saved.clone();
+        other_account.custom_model_id = "custom-2".into();
+        let mut other_provider = saved.clone();
+        other_provider.provider = "openrouter".into();
+        let unsaved = route("xai", "https://api.x.ai/v1", "grok-4-fast");
+        for given in [other_account, other_provider, unsaved] {
+            let (out, reads, sent) = run(&given);
+            assert!(out.is_err(), "{given:?}");
+            assert_eq!((reads, sent), (0, None), "{given:?}");
+        }
+        let _ = std::fs::remove_dir_all(&hosts);
+    }
+
+    #[test]
+    fn a_quick_pick_with_no_data_folder_uses_no_key_and_ollama_needs_none() {
+        let saved = stored_route();
+        let mut reads = 0;
+        let out = quick_pick_in(
+            None,
+            &saved,
+            |_| {
+                reads += 1;
+                Ok(Some("test-key1234".to_string()))
+            },
+            |_, _| Ok("picked".to_string()),
+        );
+        assert!(out.is_err());
+        assert_eq!(reads, 0);
+        let local = route("ollama", "http://localhost:11434", "llama3.2");
+        let out = quick_pick_in(
+            None,
+            &local,
+            |_| panic!("Ollama has no key"),
+            |_, key| {
+                assert_eq!(key, None);
+                Ok("picked".to_string())
+            },
+        );
+        assert_eq!(out, Ok("picked".to_string()));
+        // A Claude model is never routed, with its own plain sentence.
+        let claude = route("custom", "https://llm.example/v1", "claude-sonnet");
+        let out = quick_pick_in(None, &claude, |_| Ok(None), |_, _| Ok(String::new()));
+        assert_eq!(
+            out,
+            Err("That model can't be used for a quick pick.".to_string())
+        );
+    }
+
+    #[test]
+    fn a_quick_pick_does_not_follow_a_redirect() {
+        for code in [301_u16, 302, 303, 307, 308] {
+            let (out, seen, followed) = crate::key_binding::redirect_probe(code, |base| {
+                let r = route("custom", &format!("{base}/v1"), "fake-model");
+                quick_complete(&r, Some("fake-key-1234"), "s", "p", 1_500)
+            });
+            assert!(
+                seen.contains("authorization: bearer fake-key-1234"),
+                "{seen}"
+            );
+            assert_eq!(
+                out,
+                Err(format!("The quick model answered with error {code}.")),
+                "{code}"
+            );
+            assert!(!followed, "{code}: the redirect was followed");
+        }
+    }
 
     #[test]
     fn a_quick_pick_never_uses_a_claude_model_and_sends_a_tiny_request() {

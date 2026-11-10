@@ -9,10 +9,13 @@ use std::sync::OnceLock;
 use std::time::Duration;
 
 use regex::Regex;
-use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::history_import::{classify, AskOutcome, PostResult};
+use crate::key_binding::{
+    base_string, cleaned, from_json, host_for_url, normalize_base, read_one, safe_account, to_json,
+    write_atomic, NormalUrl,
+};
 use crate::model_router::{may_route, read_key_in, session_token, CustomRoute, KEY_SERVICE};
 
 /// Commit and pull request prompts carry a patch. This is the ceiling, in characters.
@@ -258,66 +261,6 @@ fn prompt_has_secret(prompt: &str) -> bool {
     })
 }
 
-/// A base address after parsing: lowercase host, no trailing dot, no userinfo, no query or fragment,
-/// and the default port left off. The request is built from these parts, never from the raw string.
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct NormalUrl {
-    scheme: String,
-    host: String,
-    port: Option<u16>,
-    path: String,
-}
-
-fn normalize_base(raw: &str) -> Option<NormalUrl> {
-    let parsed = url::Url::parse(raw.trim()).ok()?;
-    if !parsed.username().is_empty() || parsed.password().is_some() {
-        return None;
-    }
-    if parsed.query().is_some() || parsed.fragment().is_some() {
-        return None;
-    }
-    if parsed.scheme() != "http" && parsed.scheme() != "https" {
-        return None;
-    }
-    let host = parsed.host_str()?;
-    let host = host
-        .trim_matches(['[', ']'])
-        .trim_end_matches('.')
-        .to_ascii_lowercase();
-    if host.is_empty() || host.contains('@') || host.contains('/') || host.contains('\\') {
-        return None;
-    }
-    let path = parsed.path().trim_end_matches('/').to_string();
-    if path.split('/').any(|part| part == "." || part == "..") {
-        return None;
-    }
-    Some(NormalUrl {
-        scheme: parsed.scheme().to_string(),
-        host,
-        port: parsed.port(),
-        path,
-    })
-}
-
-fn host_for_url(host: &str) -> String {
-    if host.contains(':') {
-        format!("[{host}]")
-    } else {
-        host.to_string()
-    }
-}
-
-fn base_string(url: &NormalUrl) -> String {
-    let port = url.port.map(|port| format!(":{port}")).unwrap_or_default();
-    format!(
-        "{}://{}{}{}",
-        url.scheme,
-        host_for_url(&url.host),
-        port,
-        url.path
-    )
-}
-
 /// `http://localhost:11434` becomes `http://localhost:11434/v1/chat/completions`. A base that already
 /// ends in `/v1` only gains `/chat/completions`.
 fn completions_from(provider: &str, url: &NormalUrl) -> String {
@@ -409,206 +352,37 @@ pub fn bound_completions_url(
     Some(completions_from(&given.provider, &given_url))
 }
 
-fn safe_account(id: &str) -> bool {
-    !id.is_empty()
-        && id != "."
-        && id != ".."
-        && id.len() <= 120
-        && !id.contains("..")
-        && !id.contains('/')
-        && !id.contains('\\')
-        && id
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-struct StoredRoute {
-    provider: String,
-    base_url: String,
-    model_id: String,
-    custom_model_id: String,
-}
-
-fn cleaned(route: &CustomRoute, url: &NormalUrl) -> CustomRoute {
-    CustomRoute {
-        provider: route.provider.clone(),
-        base_url: base_string(url),
-        model_id: route.model_id.trim().to_string(),
-        custom_model_id: route.custom_model_id.clone(),
-        reasoning_effort: None,
-    }
-}
-
-fn stored_from(route: &CustomRoute) -> StoredRoute {
-    StoredRoute {
-        provider: route.provider.clone(),
-        base_url: route.base_url.clone(),
-        model_id: route.model_id.clone(),
-        custom_model_id: route.custom_model_id.clone(),
-    }
-}
-
-fn route_from_stored(stored: StoredRoute) -> Option<CustomRoute> {
-    if !matches!(
-        stored.provider.as_str(),
-        "xai" | "openrouter" | "deepseek" | "ollama" | "custom"
-    ) {
-        return None;
-    }
-    normalize_base(&stored.base_url)?;
-    if stored.provider != "ollama" && !safe_account(&stored.custom_model_id) {
-        return None;
-    }
-    if stored.provider == "ollama"
-        && !stored.custom_model_id.is_empty()
-        && !safe_account(&stored.custom_model_id)
-    {
-        return None;
-    }
-    Some(CustomRoute {
-        provider: stored.provider,
-        base_url: stored.base_url,
-        model_id: stored.model_id,
-        custom_model_id: stored.custom_model_id,
-        reasoning_effort: None,
-    })
-}
-
-fn parse_stored(text: &str) -> Option<CustomRoute> {
-    if text.len() > 4_096 {
-        return None;
-    }
-    route_from_stored(serde_json::from_str(text).ok()?)
-}
-
-/// This copy's short-text folder. Missing when there is no data folder yet.
+/// This copy's short-text folder: the saved route. Missing when there is no data folder yet.
 pub fn store_dir() -> Option<PathBuf> {
     let id = crate::instance::current().identifier.clone();
     crate::instance::data_dir(&id).map(|dir| dir.join("text-generation"))
 }
 
-fn write_atomic(root: &Path, path: &Path, bytes: &[u8]) -> Result<(), ()> {
-    let root = crate::fs::canonical(root).map_err(|_| ())?;
-    let parent = crate::fs::canonical(path.parent().ok_or(())?).map_err(|_| ())?;
-    if !parent.starts_with(&root) {
-        return Err(());
-    }
-    let name = path.file_name().and_then(|name| name.to_str()).ok_or(())?;
-    if name.is_empty()
-        || name == "."
-        || name == ".."
-        || name.contains('/')
-        || name.contains('\\')
-        || name.contains('\0')
-    {
-        return Err(());
-    }
-    let path = parent.join(name);
-    if path.parent() != Some(parent.as_path()) {
-        return Err(());
-    }
-    let tmp = parent.join(format!("{name}.tmp"));
-    fs::write(&tmp, bytes).map_err(|_| ())?;
-    if fs::rename(&tmp, &path).is_err() {
-        if path.starts_with(&root) {
-            let _ = fs::remove_file(&path);
-        }
-        fs::rename(&tmp, &path).map_err(|_| ())?;
-    }
-    Ok(())
-}
-
 fn read_route(dir: &Path) -> Option<CustomRoute> {
-    let text = fs::read_to_string(dir.join("route.json")).ok()?;
-    parse_stored(&text)
+    from_json(&fs::read_to_string(dir.join("route.json")).ok()?)
 }
 
-fn read_models(dir: &Path) -> Vec<CustomRoute> {
-    let root = dir.join("models");
-    let Ok(entries) = fs::read_dir(&root) else {
-        return Vec::new();
-    };
-    let mut out = Vec::new();
-    for entry in entries.flatten() {
-        if out.len() >= 500 {
-            break;
-        }
-        let Some(name) = entry.file_name().to_str().map(str::to_string) else {
-            continue;
-        };
-        if !safe_account(&name) {
-            continue;
-        }
-        let Ok(text) = fs::read_to_string(entry.path()) else {
-            continue;
-        };
-        let Some(route) = parse_stored(&text) else {
-            continue;
-        };
-        if route.custom_model_id == name {
-            out.push(route);
-        }
-    }
-    out
+/// What is stored for a key, as the list `bound_completions_url` looks the account up in.
+fn stored_hosts(hosts: &Path, account: &str) -> Vec<CustomRoute> {
+    read_one(hosts, account).into_iter().collect()
 }
 
-fn model_file(dir: &Path, account: &str) -> Option<PathBuf> {
-    if !safe_account(account) {
-        return None;
-    }
-    let root = dir.join("models");
-    fs::create_dir_all(&root).ok()?;
-    let root = crate::fs::canonical(&root).ok()?;
-    let path = root.join(account);
-    if path.parent()? != root {
-        return None;
-    }
-    Some(path)
-}
-
-/// Remember the address that belongs to this key. Called only when the key itself is saved.
-pub fn record_model_binding(dir: &Path, route: &CustomRoute) -> Result<(), ()> {
-    let url = normalize_base(&route.base_url).ok_or(())?;
-    if !host_allowed(&route.provider, &url) || route.model_id.trim().is_empty() {
-        return Err(());
-    }
-    let clean = cleaned(route, &url);
-    let path = model_file(dir, &clean.custom_model_id).ok_or(())?;
-    let root = path.parent().ok_or(())?;
-    let bytes = serde_json::to_vec(&stored_from(&clean)).map_err(|_| ())?;
-    write_atomic(root, &path, &bytes)
-}
-
-/// A key was just saved for `account`. Store the address it was saved with, or drop what was stored for
-/// the account before: a new key must not inherit the old key's host. With no usable address nothing is
-/// stored, and short text will not send that key anywhere.
-pub fn rebind_model_key(dir: &Path, account: &str, route: Option<&CustomRoute>) {
-    if let Some(route) = route {
-        if route.custom_model_id == account && record_model_binding(dir, route).is_ok() {
-            return;
-        }
-    }
-    remove_model_binding(dir, account);
-}
-
-/// Remember which saved model short text uses. A custom address must already be the one stored
-/// with that key. A named provider must be its one known host.
-pub fn remember_route(dir: &Path, route: &CustomRoute) -> Result<(), ()> {
+/// Remember which saved model short text uses. A key's address must already be the one stored with
+/// that key, and a named provider must be its one known host.
+pub fn remember_route(dir: &Path, hosts: &Path, route: &CustomRoute) -> Result<(), ()> {
     let url = normalize_base(&route.base_url).ok_or(())?;
     let clean = cleaned(route, &url);
-    if !may_route(&clean) || bound_completions_url(&clean, &clean, &read_models(dir)).is_none() {
+    let models = stored_hosts(hosts, &clean.custom_model_id);
+    if !may_route(&clean) || bound_completions_url(&clean, &clean, &models).is_none() {
         return Err(());
     }
     fs::create_dir_all(dir).map_err(|_| ())?;
     let root = crate::fs::canonical(dir).map_err(|_| ())?;
     let path = root.join("route.json");
-    let bytes = serde_json::to_vec(&stored_from(&clean)).map_err(|_| ())?;
-    write_atomic(&root, &path, &bytes)
+    write_atomic(&root, &path, &to_json(&clean).ok_or(())?)
 }
 
-/// Drop the saved short-text route. Model bindings stay until the key is deleted.
+/// Drop the saved short-text route. The addresses stored with keys stay until the key is deleted.
 pub fn forget_route(dir: &Path) -> Result<(), ()> {
     let path = dir.join("route.json");
     if !path.exists() {
@@ -620,25 +394,6 @@ pub fn forget_route(dir: &Path) -> Result<(), ()> {
         return Err(());
     }
     fs::remove_file(path).map_err(|_| ())
-}
-
-/// Drop the address stored for one key, and only that file.
-pub fn remove_model_binding(dir: &Path, account: &str) {
-    if !safe_account(account) {
-        return;
-    }
-    let root = dir.join("models");
-    if !root.is_dir() {
-        return;
-    }
-    let Ok(root) = crate::fs::canonical(&root) else {
-        return;
-    };
-    let path = root.join(account);
-    if path.parent() != Some(root.as_path()) {
-        return;
-    }
-    let _ = fs::remove_file(path);
 }
 
 /// Ask, and turn the reply into text or a plain error. `post` is the only way out; it is given a URL,
@@ -723,11 +478,12 @@ fn key_for(route: &CustomRoute) -> Result<Option<String>, String> {
     read_key_in(KEY_SERVICE, &route.custom_model_id)
 }
 
-/// The whole ask against one store folder. The key is read only after the route matches the saved
-/// short-text route and the host stored with that key, so a different account is never loaded.
-/// `read_key` and `post` are the Keychain and the network; tests stand in for both.
+/// The whole ask against the store folders: `dir` holds the saved short-text route and `hosts` holds the
+/// address stored with each key. The key is read only after the route matches both, so a different
+/// account is never loaded. `read_key` and `post` are the Keychain and the network; tests stand in for both.
 pub fn ask_in(
     dir: &Path,
+    hosts: &Path,
     route: &CustomRoute,
     prompt: &str,
     read_key: impl FnOnce(&CustomRoute) -> Result<Option<String>, String>,
@@ -740,7 +496,7 @@ pub fn ask_in(
     let Some(saved) = read_route(dir) else {
         return not_this();
     };
-    let models = read_models(dir);
+    let models = stored_hosts(hosts, &route.custom_model_id);
     if bound_completions_url(route, &saved, &models).is_none() {
         return not_this();
     }
@@ -757,13 +513,18 @@ pub fn ask_in(
 /// One short reply. The arguments are the route and the prompt: there is no path to write.
 #[tauri::command]
 pub async fn text_generation_ask(route: CustomRoute, prompt: String) -> Result<AskOutcome, String> {
-    let Some(dir) = store_dir() else {
+    let (Some(dir), Some(hosts)) = (store_dir(), crate::key_binding::store_dir()) else {
         return Ok(refused("That model can't be used for this."));
     };
     tauri::async_runtime::spawn_blocking(move || {
-        ask_in(&dir, &route, &prompt, key_for, |url, token, body| {
-            post_chat(url, token, body, DEADLINE)
-        })
+        ask_in(
+            &dir,
+            &hosts,
+            &route,
+            &prompt,
+            key_for,
+            |url, token, body| post_chat(url, token, body, DEADLINE),
+        )
     })
     .await
     .map_err(|_| "The model call didn't finish.".to_string())
@@ -772,10 +533,10 @@ pub async fn text_generation_ask(route: CustomRoute, prompt: String) -> Result<A
 /// Save the short-text route. The address is checked here; the caller does not choose a host.
 #[tauri::command]
 pub async fn text_generation_remember(route: CustomRoute) -> Result<(), String> {
-    let Some(dir) = store_dir() else {
+    let (Some(dir), Some(hosts)) = (store_dir(), crate::key_binding::store_dir()) else {
         return Err("That model can't be used for this.".to_string());
     };
-    tauri::async_runtime::spawn_blocking(move || remember_route(&dir, &route))
+    tauri::async_runtime::spawn_blocking(move || remember_route(&dir, &hosts, &route))
         .await
         .map_err(|_| "That model can't be used for this.".to_string())?
         .map_err(|()| "That model can't be used for this.".to_string())
@@ -850,9 +611,9 @@ mod tests {
         quiet(given, given, std::slice::from_ref(given));
     }
 
-    fn completions_for(dir: &Path, given: &CustomRoute) -> Option<String> {
+    fn completions_for(dir: &Path, hosts: &Path, given: &CustomRoute) -> Option<String> {
         let saved = read_route(dir)?;
-        bound_completions_url(given, &saved, &read_models(dir))
+        bound_completions_url(given, &saved, &stored_hosts(hosts, &given.custom_model_id))
     }
 
     #[test]
@@ -1467,120 +1228,46 @@ mod tests {
 
     #[test]
     fn a_redirect_is_not_followed() {
-        use std::io::{Read, Write};
-        use std::net::TcpListener;
         let key = "provider-key-12345678";
         for code in [301_u16, 302, 303, 307, 308] {
-            let elsewhere = TcpListener::bind("127.0.0.1:0").unwrap();
-            elsewhere.set_nonblocking(true).unwrap();
-            let other = elsewhere.local_addr().unwrap().port();
-            let upstream = TcpListener::bind("127.0.0.1:0").unwrap();
-            let port = upstream.local_addr().unwrap().port();
-            let server = std::thread::spawn(move || {
-                let (mut stream, _) = upstream.accept().unwrap();
-                // Read the whole request, body included, so closing the socket is not a reset.
-                let mut seen = Vec::new();
-                let mut buf = [0u8; 2048];
-                loop {
-                    let text = String::from_utf8_lossy(&seen).to_ascii_lowercase();
-                    if let Some(end) = text.find("\r\n\r\n") {
-                        let length = text
-                            .lines()
-                            .find_map(|line| line.strip_prefix("content-length:"))
-                            .and_then(|value| value.trim().parse::<usize>().ok())
-                            .unwrap_or(0);
-                        if seen.len() >= end + 4 + length {
-                            break;
-                        }
-                    }
-                    let n = stream.read(&mut buf).unwrap();
-                    if n == 0 {
-                        break;
-                    }
-                    seen.extend_from_slice(&buf[..n]);
-                }
-                let reply = format!(
-                    "HTTP/1.1 {code} Moved\r\nLocation: http://127.0.0.1:{other}/stolen\r\n\
-                     Content-Length: 0\r\nConnection: close\r\n\r\n"
-                );
-                let _ = stream.write_all(reply.as_bytes());
-                String::from_utf8_lossy(&seen).to_ascii_lowercase()
+            let (out, seen, followed) = crate::key_binding::redirect_probe(code, |base| {
+                post_chat(
+                    &format!("{base}/v1/chat/completions"),
+                    key,
+                    "{}",
+                    Duration::from_secs(5),
+                )
             });
-            let out = post_chat(
-                &format!("http://127.0.0.1:{port}/v1/chat/completions"),
-                key,
-                "{}",
-                Duration::from_secs(5),
-            );
-            let seen = server.join().unwrap();
             assert!(
                 seen.contains(&format!("authorization: bearer {key}")),
                 "{seen}"
             );
             assert_eq!(out, PostResult::Status(code), "{code}");
-            std::thread::sleep(Duration::from_millis(150));
-            let followed = elsewhere.accept();
-            assert!(
-                matches!(&followed, Err(e) if e.kind() == std::io::ErrorKind::WouldBlock),
-                "{code}: the redirect was followed"
-            );
+            assert!(!followed, "{code}: the redirect was followed");
         }
     }
 
-    fn temp_store(name: &str) -> PathBuf {
+    /// The short-text folder and the folder of stored key hosts, both new.
+    fn temp_store(name: &str) -> (PathBuf, PathBuf) {
         let dir = std::env::temp_dir().join(format!("wp129-{name}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
-        dir
+        let hosts = dir.join("hosts");
+        (dir, hosts)
     }
 
-    #[test]
-    fn saving_a_key_again_replaces_or_drops_the_host_stored_with_it() {
-        let dir = temp_store("rebind");
-        let first = with_account(route("custom", "https://llm.example/v1", "m"), "custom-1");
-        let bound = |dir: &Path| completions_for(dir, &first);
-        rebind_model_key(&dir, "custom-1", Some(&first));
-        remember_route(&dir, &first).unwrap();
-        assert!(bound(&dir).is_some());
-
-        // The same account saved again with an address that cannot be used. The old host is not kept.
-        let bad = with_account(route("custom", "http://llm.example/v1", "m"), "custom-1");
-        rebind_model_key(&dir, "custom-1", Some(&bad));
-        assert!(!dir.join("models").join("custom-1").exists());
-        assert!(bound(&dir).is_none());
-
-        // Saved with no address at all: nothing is bound.
-        rebind_model_key(&dir, "custom-1", Some(&first));
-        assert!(bound(&dir).is_some());
-        rebind_model_key(&dir, "custom-1", None);
-        assert!(bound(&dir).is_none());
-
-        // Saved for a new address: the key follows the new address, and the old one is gone.
-        let moved = with_account(route("custom", "https://other.example/v1", "m"), "custom-1");
-        rebind_model_key(&dir, "custom-1", Some(&first));
-        rebind_model_key(&dir, "custom-1", Some(&moved));
-        assert!(bound(&dir).is_none());
-        remember_route(&dir, &moved).unwrap();
-        assert_eq!(
-            completions_for(&dir, &moved).as_deref(),
-            Some("https://other.example/v1/chat/completions")
-        );
-
-        // An address for another account is not this account's.
-        let other = with_account(route("custom", "https://llm.example/v1", "m"), "custom-2");
-        rebind_model_key(&dir, "custom-1", Some(&other));
-        assert!(!dir.join("models").join("custom-1").exists());
-        assert!(!dir.join("models").join("custom-2").exists());
-        let _ = fs::remove_dir_all(&dir);
-    }
-
-    /// Runs the whole command path on a temporary store, with the Keychain and the network stood in.
+    /// Runs the whole command path on temporary stores, with the Keychain and the network stood in.
     /// Returns the outcome, how many times the key was read and the URL that was posted, if any.
-    fn run_ask(dir: &Path, given: &CustomRoute) -> (AskOutcome, usize, Option<String>) {
+    fn run_ask(
+        dir: &Path,
+        hosts: &Path,
+        given: &CustomRoute,
+    ) -> (AskOutcome, usize, Option<String>) {
         let reads = std::cell::Cell::new(0);
         let mut posted = None;
         let outcome = ask_in(
             dir,
+            hosts,
             given,
             "Say hi",
             |_| {
@@ -1597,19 +1284,19 @@ mod tests {
 
     #[test]
     fn the_key_is_read_only_for_the_saved_route_on_its_own_host() {
-        let dir = temp_store("ask");
+        let (dir, hosts) = temp_store("ask");
         let saved = with_account(xai(), "text-key");
         // Nothing saved yet: nothing is read and nothing is sent.
-        let (outcome, reads, posted) = run_ask(&dir, &saved);
+        let (outcome, reads, posted) = run_ask(&dir, &hosts, &saved);
         assert_eq!((outcome.kind.as_str(), reads, posted), ("refused", 0, None));
 
-        record_model_binding(&dir, &saved).unwrap();
+        crate::key_binding::record(&hosts, &saved).unwrap();
         // A key is bound, but no short-text route is saved yet.
-        let (outcome, reads, posted) = run_ask(&dir, &saved);
+        let (outcome, reads, posted) = run_ask(&dir, &hosts, &saved);
         assert_eq!((outcome.kind.as_str(), reads, posted), ("refused", 0, None));
 
-        remember_route(&dir, &saved).unwrap();
-        let (outcome, reads, posted) = run_ask(&dir, &saved);
+        remember_route(&dir, &hosts, &saved).unwrap();
+        let (outcome, reads, posted) = run_ask(&dir, &hosts, &saved);
         assert!(outcome.ok, "{outcome:?}");
         assert_eq!(reads, 1);
         assert_eq!(
@@ -1625,7 +1312,7 @@ mod tests {
         ] {
             let mut given = saved.clone();
             given.base_url = base.into();
-            let (outcome, reads, posted) = run_ask(&dir, &given);
+            let (outcome, reads, posted) = run_ask(&dir, &hosts, &given);
             assert_eq!(
                 (outcome.kind.as_str(), reads, posted),
                 ("refused", 0, None),
@@ -1640,7 +1327,7 @@ mod tests {
         other_provider.provider = "openrouter".into();
         other_provider.base_url = "https://openrouter.ai/api/v1".into();
         for given in [other_account, other_model, other_provider] {
-            let (outcome, reads, posted) = run_ask(&dir, &given);
+            let (outcome, reads, posted) = run_ask(&dir, &hosts, &given);
             assert_eq!(
                 (outcome.kind.as_str(), reads, posted),
                 ("refused", 0, None),
@@ -1652,14 +1339,15 @@ mod tests {
 
     #[test]
     fn a_failing_keychain_or_a_missing_key_sends_nothing() {
-        let dir = temp_store("keyless");
+        let (dir, hosts) = temp_store("keyless");
         let saved = with_account(xai(), "text-key");
-        record_model_binding(&dir, &saved).unwrap();
-        remember_route(&dir, &saved).unwrap();
+        crate::key_binding::record(&hosts, &saved).unwrap();
+        remember_route(&dir, &hosts, &saved).unwrap();
         for key in [Err("denied".to_string()), Ok(None)] {
             let mut called = false;
             let outcome = ask_in(
                 &dir,
+                &hosts,
                 &saved,
                 "Say hi",
                 |_| key.clone(),
@@ -1676,55 +1364,72 @@ mod tests {
     }
 
     #[test]
-    fn the_saved_route_on_disk_keeps_the_key_on_its_host() {
-        let dir = std::env::temp_dir().join(format!("wp129-disk-{}", std::process::id()));
+    fn a_proxy_address_is_stored_for_other_commands_but_short_text_refuses_it() {
+        // A person may point a named provider at a proxy. The binding keeps that address, and short text
+        // still sends only to the provider's own host.
+        let (dir, hosts) = temp_store("proxy");
+        let proxied = with_account(
+            route("xai", "https://proxy.example/v1", "grok-3"),
+            "text-key",
+        );
+        crate::key_binding::record(&hosts, &proxied).unwrap();
+        assert!(remember_route(&dir, &hosts, &proxied).is_err());
+        assert!(!dir.join("route.json").exists());
         let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn plain_http_custom_is_stored_but_short_text_refuses_it() {
+        let (dir, hosts) = temp_store("httpcustom");
+        let local = with_account(route("custom", "http://127.0.0.1:9/v1", "m"), "custom-http");
+        crate::key_binding::record(&hosts, &local).unwrap();
+        assert!(remember_route(&dir, &hosts, &local).is_err());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_saved_route_on_disk_keeps_the_key_on_its_host() {
+        let (dir, hosts) = temp_store("disk");
         let custom = with_account(route("custom", "https://llm.example/v1", "m"), "custom-1");
         let other = with_account(xai(), "other-key");
         let text = with_account(route("xai", "https://API.X.AI./v1", "grok-3"), "text-key");
         let text_saved = with_account(xai(), "text-key");
-        record_model_binding(&dir, &custom).unwrap();
-        record_model_binding(&dir, &other).unwrap();
-        record_model_binding(&dir, &text_saved).unwrap();
-        assert!(record_model_binding(
-            &dir,
-            &with_account(route("custom", "http://127.0.0.1:9/v1", "m"), "custom-http")
-        )
-        .is_err());
-        assert!(!dir.join("models").join("custom-http").exists());
-        assert!(dir.join("models").join("custom-1").is_file());
-        assert!(dir.join("models").join("other-key").is_file());
-        remember_route(&dir, &text).unwrap();
+        crate::key_binding::record(&hosts, &custom).unwrap();
+        crate::key_binding::record(&hosts, &other).unwrap();
+        crate::key_binding::record(&hosts, &text_saved).unwrap();
+        assert!(hosts.join("custom-1").is_file());
+        assert!(hosts.join("other-key").is_file());
+        remember_route(&dir, &hosts, &text).unwrap();
         let raw = fs::read_to_string(dir.join("route.json")).unwrap();
         assert!(raw.contains("https://api.x.ai/v1"), "{raw}");
         assert!(!raw.contains("API"), "{raw}");
         assert!(!raw.contains("x.ai."), "{raw}");
         assert_eq!(
-            completions_for(&dir, &text_saved).as_deref(),
+            completions_for(&dir, &hosts, &text_saved).as_deref(),
             Some("https://api.x.ai/v1/chat/completions")
         );
         let mut shifted = text_saved.clone();
         shifted.base_url = "https://api.x.ai:8443/v1".into();
-        assert!(completions_for(&dir, &shifted).is_none());
-        assert!(completions_for(&dir, &other).is_none());
+        assert!(completions_for(&dir, &hosts, &shifted).is_none());
+        assert!(completions_for(&dir, &hosts, &other).is_none());
 
-        remember_route(&dir, &custom).unwrap();
+        remember_route(&dir, &hosts, &custom).unwrap();
         assert_eq!(
-            completions_for(&dir, &custom).as_deref(),
+            completions_for(&dir, &hosts, &custom).as_deref(),
             Some("https://llm.example/v1/chat/completions")
         );
         let mut custom_port = custom.clone();
         custom_port.base_url = "https://llm.example:8443/v1".into();
-        assert!(completions_for(&dir, &custom_port).is_none());
+        assert!(completions_for(&dir, &hosts, &custom_port).is_none());
         let mut custom_path = custom.clone();
         custom_path.base_url = "https://llm.example/v1/extra".into();
-        assert!(completions_for(&dir, &custom_path).is_none());
-        assert!(completions_for(&dir, &other).is_none());
+        assert!(completions_for(&dir, &hosts, &custom_path).is_none());
+        assert!(completions_for(&dir, &hosts, &other).is_none());
 
         let before = fs::read_to_string(dir.join("route.json")).unwrap();
         assert!(remember_route(
             &dir,
+            &hosts,
             &with_account(
                 route("xai", "https://api.x.ai@evil.example/v1", "grok-3"),
                 "text-key"
@@ -1733,18 +1438,19 @@ mod tests {
         .is_err());
         assert!(remember_route(
             &dir,
+            &hosts,
             &with_account(route("xai", "http://127.0.0.1:9/v1", "grok-3"), "text-key")
         )
         .is_err());
         assert_eq!(fs::read_to_string(dir.join("route.json")).unwrap(), before);
 
-        fs::write(dir.join("models").join("custom-1"), "{").unwrap();
+        fs::write(hosts.join("custom-1"), "{").unwrap();
         assert!(
-            completions_for(&dir, &custom).is_none(),
+            completions_for(&dir, &hosts, &custom).is_none(),
             "corrupt json is missing"
         );
         fs::write(dir.join("route.json"), "{").unwrap();
-        assert!(completions_for(&dir, &text_saved).is_none());
+        assert!(completions_for(&dir, &hosts, &text_saved).is_none());
 
         let _ = fs::remove_dir_all(&dir);
     }
