@@ -303,6 +303,8 @@ write a second copy of any of them.
     connector's settings moves an already-saved login into the vault (one click, one confirm) but nothing migrates
     silently. The connector still gets its launcher signature and its redaction; this only changes where its login
     comes from.
+    A connector whose server address is a field the person types (Zapier's and Composio's `{mcp_url}`) cannot use a
+    saved key at all: the key is never sent to an address the person typed, and the launch says so in plain words.
 
 14. **Dev copies and benches never see the daily secrets.** Every service name comes from
     `hub_keychain::scoped_service`, so a dev copy only ever forms `monocode-hub-dev:secret:…`, and the dev keychain
@@ -413,9 +415,15 @@ assumed one.
   untrusted script in that webview; if that ever changed, this would be the first thing to close. The Rust side
   already refuses what an agent can reach (a chat's answer to a secret card, an agent-made secret card, an "Always"
   for a program that can run any code while the setting is off).
-- **A worker keeps its own tool's environment.** The worker route adds the one approved variable and no `MONOCODE_*`
-  value, but it does not clear the rest of the tool's environment (the tool needs its own HOME, PATH and login). The
-  app's tokens stay out of a worker because the app's grant check refuses workers, not because the spawn removes them.
+- **A worker keeps its own tool's environment.** The worker route adds the one approved variable and removes any
+  `MONOCODE_*` variable the app itself was started with, but it does not clear the rest of the tool's environment (the
+  tool needs its own HOME, PATH and login). Step 6 says "cleared environment"; this is the narrower thing the code does,
+  and the difference is open for Ash to decide. The app's tokens stay out of a worker because the app's grant check
+  refuses workers as well as the spawn removing them.
+- **A program is found when a run starts, not when it is approved.** The run looks the approved name up on the login
+  shell's PATH at that moment. A file placed earlier on that PATH under the same name would run under the same approval,
+  and an "Always" approval is kept by name. Placing a file there needs write access to a folder on the person's PATH, the
+  same access their own tools need. Pinning the approval to one file's path is the fix; it is not built.
 - **A dev copy can be seeded with plaintext values through its environment.** `MONOCODE_SECRET_VAULT_SEED` exists for
   tests under a temporary HOME and is read by dev copies only; a daily copy refuses it. A value placed there is
   visible to `ps` and to a crash report of that process, so it is for dummy values.
