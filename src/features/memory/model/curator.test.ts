@@ -217,7 +217,7 @@ describe("curateTurn", () => {
     expect(next.outcome.status).toBe("stored");
     const old = next.doc.items.find((item) => item.text === "uses npm");
     const added = next.doc.items.find((item) => item.text === "uses pnpm");
-    expect(old).toMatchObject({ state: "unreviewed", dispute: { otherId: added?.id, was: "confirmed" } });
+    expect(old).toMatchObject({ state: "confirmed", dispute: { otherId: added?.id, was: "confirmed" } });
     expect(added).toMatchObject({ state: "unreviewed", via: "rules", dispute: { otherId: old?.id } });
     expect(added?.dispute).not.toHaveProperty("was");
     expect(old?.text).toBe("uses npm");

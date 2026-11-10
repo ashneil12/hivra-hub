@@ -362,6 +362,13 @@ export const SETTINGS_INDEX: SettingsEntry[] = [
       "project file .monocode project.json setup run dev slot check ship import trust buttons",
   },
   {
+    id: "worktree-autoclear",
+    section: "worktrees",
+    label: "Clear build output of finished worktrees",
+    keywords:
+      "disk space automatic auto finished merged closed pull request accepted target node_modules test-results playwright-report build output delete free",
+  },
+  {
     id: "worktree-cleanup",
     section: "worktrees",
     label: "Clean up worktrees",
