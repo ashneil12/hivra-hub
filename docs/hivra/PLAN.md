@@ -193,6 +193,7 @@ WP-40's gates; it adds no second run model. It starts when 40 and 82 merge, and 
 | WP | Title | Size | Depends on | Grok OK |
 | --- | --- | --- | --- | --- |
 | [91](work/WP-91-goal-graph.md) | The goal graph: a finish line proved first, and a live view of the run | L | 14, 40, 82 | yes |
+| [174](work/WP-174-idle-reclaim-and-hibernation.md) | Idle reclaim and hibernation, a quiet chat gives back its process | M | 11, 146 | no |
 
 ## Running it
 
