@@ -3,6 +3,10 @@ import { expect, test } from "@playwright/test";
 test("crew defaults shows the lock, the roles, the lists and what is in force", async ({ page }) => {
   await page.goto("/tests/browser/crew-defaults.html");
   await expect(page.getByRole("heading", { name: "Crew defaults" })).toBeVisible();
+  await expect(page.getByRole("radio", { name: "For this project" })).toBeChecked();
+  await page.getByRole("radio", { name: "For everything" }).check();
+  await expect(page.getByRole("radio", { name: "For everything" })).toBeChecked();
+  await expect(page.getByRole("radio", { name: "For this project" })).not.toBeChecked();
   await expect(page.getByRole("heading", { name: "Default for every worker" })).toBeVisible();
   await expect(page.getByLabel("Builder CLI")).toBeVisible();
   await expect(page.getByLabel("Reviewer CLI")).toBeVisible();

@@ -46,9 +46,11 @@ type Props = {
   initial?: CrewDefaultsInitial;
 };
 
-function placeOf(cwd: string | undefined): { scope: "project" | "system"; scopeId: string } {
-  const folder = cwd?.trim() ?? "";
-  if (folder) return { scope: "project", scopeId: folder };
+function placeFor(
+  choice: "project" | "system",
+  folder: string,
+): { scope: "project" | "system"; scopeId: string } {
+  if (choice === "project" && folder) return { scope: "project", scopeId: folder };
   return { scope: "system", scopeId: "system" };
 }
 
@@ -69,7 +71,9 @@ function withSlots(others: readonly CrewRule[], slots: Partial<Record<RoleSlot, 
 }
 
 export function CrewDefaults({ cwd, projectId, initial }: Props) {
-  const place = placeOf(cwd);
+  const folder = cwd?.trim() ?? "";
+  const [scopeChoice, setScopeChoice] = useState<"project" | "system">(folder ? "project" : "system");
+  const place = placeFor(scopeChoice, folder);
   const [policy, setPolicy] = useState<CrewPolicy>(() => sanitizePolicy(initial?.policy ?? EMPTY_POLICY));
   const [slots, setSlots] = useState(() => roleSlotsFrom(initial?.rules ?? []));
   const [others, setOthers] = useState<CrewRule[]>(() => (initial?.rules ?? []).filter((rule) => !isRoleSlotRule(rule)));
@@ -127,6 +131,14 @@ export function CrewDefaults({ cwd, projectId, initial }: Props) {
     window.addEventListener(CREW_SAVED_EVENT, onSaved);
     return () => window.removeEventListener(CREW_SAVED_EVENT, onSaved);
   }, []);
+
+  function chooseScope(next: "project" | "system") {
+    if (next === "project" && !folder) return;
+    if (next === place.scope) return;
+    dirty.current = false;
+    setNotice(null);
+    setScopeChoice(next);
+  }
 
   function editPolicy(next: CrewPolicy) {
     dirty.current = true;
@@ -247,6 +259,30 @@ export function CrewDefaults({ cwd, projectId, initial }: Props) {
     <section className="flex flex-col gap-4" data-setting-id="crew-defaults">
       <h2 className="text-sm font-medium text-content">Crew defaults</h2>
       <p className="text-[13px] text-content/70">What the crew uses unless a task names something else.</p>
+      <fieldset className="flex flex-col gap-1">
+        <legend className="text-[13px] font-medium text-content">Where this is saved</legend>
+        <label className="flex items-center gap-2 text-[13px] text-content">
+          <input
+            type="radio"
+            name="crew-defaults-scope"
+            aria-label="For this project"
+            checked={place.scope === "project"}
+            disabled={!folder}
+            onChange={() => chooseScope("project")}
+          />
+          For this project
+        </label>
+        <label className="flex items-center gap-2 text-[13px] text-content">
+          <input
+            type="radio"
+            name="crew-defaults-scope"
+            aria-label="For everything"
+            checked={place.scope === "system"}
+            onChange={() => chooseScope("system")}
+          />
+          For everything
+        </label>
+      </fieldset>
       <WorkerDefaultControl scope="system" title="Default for every worker" projectFolder={cwd} />
       {projectId ? (
         <WorkerDefaultControl scope="project" projectId={projectId} projectFolder={cwd} title="Default for this project" />

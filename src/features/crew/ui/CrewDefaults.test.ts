@@ -114,6 +114,56 @@ it("loads the lock, the role and the lists, and a save keeps the other rules", a
   expect(container.textContent).toContain("Saved.");
 });
 
+it("saves for this project or for everything, and says which", async () => {
+  invokeMock.mockImplementation((cmd: string) => {
+    if (cmd === "crew_rules_get") {
+      return Promise.resolve({
+        rules: [],
+        revision: 2,
+        policy: { lockDefault: false, neverUse: [], fallback: [] },
+        signedIn: [],
+      });
+    }
+    if (cmd === "crew_rules_set") return Promise.resolve({ revision: 3, rules: [] });
+    if (cmd === "crew_policy_set") {
+      return Promise.resolve({
+        revision: 4,
+        rules: [],
+        policy: { lockDefault: false, neverUse: [], fallback: [] },
+      });
+    }
+    return Promise.resolve(undefined);
+  });
+  show();
+  await act(async () => undefined);
+  const project = container.querySelector<HTMLInputElement>('[aria-label="For this project"]');
+  const everything = container.querySelector<HTMLInputElement>('[aria-label="For everything"]');
+  expect(project?.checked).toBe(true);
+  expect(everything?.checked).toBe(false);
+  expect(container.textContent).toContain("For this project");
+  expect(container.textContent).toContain("For everything");
+  expect(calls("crew_rules_get").at(-1)).toMatchObject({ scope: "project", scopeId: "/work/app" });
+  await act(async () => {
+    everything?.click();
+  });
+  await act(async () => undefined);
+  expect(everything?.checked).toBe(true);
+  expect(calls("crew_rules_get").at(-1)).toMatchObject({ scope: "system", scopeId: "system" });
+  await act(async () => {
+    click("Save");
+  });
+  expect(calls("crew_rules_set").at(-1)).toMatchObject({ scope: "system", scopeId: "system" });
+  expect(calls("crew_policy_set").at(-1)).toMatchObject({ scope: "system", scopeId: "system" });
+
+  act(() => {
+    root.render(createElement(CrewDefaults, {}));
+  });
+  await act(async () => undefined);
+  expect(container.querySelector<HTMLInputElement>('[aria-label="For this project"]')?.disabled).toBe(true);
+  expect(container.querySelector<HTMLInputElement>('[aria-label="For everything"]')?.checked).toBe(true);
+  expect(calls("crew_rules_get").at(-1)).toMatchObject({ scope: "system", scopeId: "system" });
+});
+
 it("a late load does not turn the lock back off", async () => {
   let resolveGet: (value: unknown) => void = () => undefined;
   invokeMock.mockImplementation((cmd: string) => {

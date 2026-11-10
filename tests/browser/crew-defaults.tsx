@@ -23,6 +23,7 @@ const signedIn = [
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
     <CrewDefaults
+      cwd="/work/app"
       initial={{
         policy: { lockDefault: false, neverUse: [], fallback: [] },
         rules: [],
