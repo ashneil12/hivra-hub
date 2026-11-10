@@ -110,3 +110,29 @@ it("keeps a hidden section hidden and still lists a pinned panel that is not in 
   expect(container.querySelector("[data-home-section='panel:my-panels:missing']")?.textContent).toContain("This panel is not available.");
   expect(container.textContent).toContain("Pin Example board");
 });
+
+it("shows a builders line in Needs you with its own Free up space action, and the action opens it", () => {
+  const opened: HomeLine[] = [];
+  const builders = line({
+    id: "builders:builders-disk",
+    kind: "builders",
+    text: "New builders are waiting: 24 GB free, under the 30 GB floor",
+    projectId: "",
+    target: "builders-disk",
+    at: 0,
+  });
+  draw({ needsYou: [builders, line({})], onOpen: (picked) => opened.push(picked) });
+  const row = container.querySelector("[data-home-section='needs-you'] [data-home-line='builders']");
+  expect(row?.textContent).toContain("New builders are waiting: 24 GB free, under the 30 GB floor");
+  expect(row?.textContent).toContain("Free up space");
+  // The row holds a text and one button; it is not itself a button (no button inside a button).
+  expect(row?.tagName).toBe("DIV");
+  const action = row?.querySelector("button[data-home-action='free-up-space']") as HTMLButtonElement | null;
+  expect(action?.textContent).toBe("Free up space");
+  expect(row?.querySelectorAll("button")).toHaveLength(1);
+  expect(container.querySelector("[data-home-empty]")).toBeNull();
+  // The other line in the section is still a plain button that opens its own place.
+  expect(container.querySelector("button[data-home-line='decision']")?.textContent).toContain("Crew · Should we ship?");
+  act(() => action?.click());
+  expect(opened).toEqual([builders]);
+});
