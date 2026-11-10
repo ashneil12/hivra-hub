@@ -595,6 +595,7 @@ import {
   shouldAskOutgoingAgent,
   type HandoffComposerCard,
   userMessagesAfterHandoff,
+  wrapForkPrompt,
   wrapHandoffPrompt,
   wrapRecoveredPrompt,
 } from "../features/sessions/model/handoff";
@@ -9254,6 +9255,8 @@ function Workspace({
           to: HarnessId;
           text: string;
           portable?: boolean;
+          /** WP-123: a fork's recap, worded as a fork's rather than a handoff's. */
+          fork?: boolean;
         } | null = handoffCard
           ? {
               from: handoffCard.from,
@@ -9555,12 +9558,18 @@ function Workspace({
                       turnPrompt.trim() || CONTINUE_PROMPT,
                       earlier,
                     )
-                  : wrapHandoffPrompt(
-                      wrap.text,
-                      wrap.from,
-                      turnPrompt.trim() || CONTINUE_PROMPT,
-                      earlier,
-                    )
+                  : wrap.fork
+                    ? wrapForkPrompt(
+                        wrap.text,
+                        turnPrompt.trim() || CONTINUE_PROMPT,
+                        earlier,
+                      )
+                    : wrapHandoffPrompt(
+                        wrap.text,
+                        wrap.from,
+                        turnPrompt.trim() || CONTINUE_PROMPT,
+                        earlier,
+                      )
                 : turnPrompt,
             ),
           );
