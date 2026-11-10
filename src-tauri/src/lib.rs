@@ -3,6 +3,8 @@ use tauri::Manager;
 mod account_identity;
 // WP-78: the activity log.
 mod activity;
+// WP-157: the work log. Not a numbered migration.
+mod work_log;
 // WP-86: commit attribution. Not a numbered migration.
 mod artifacts;
 mod attribution;
@@ -122,6 +124,8 @@ mod reminders;
 mod remote;
 mod remote_ssh;
 mod resources;
+// WP-161: load, free memory and free disk. The command takes no path.
+mod builder_health;
 mod room_council;
 mod rooms;
 mod search;
@@ -156,6 +160,7 @@ mod window_transfer;
 #[cfg(windows)]
 mod windows;
 mod worker_queue;
+pub mod worktree_autoclean;
 pub mod worktree_janitor;
 // WP-138: copy the files named in .worktreeinclude when a worktree is created.
 mod worktree_include;
@@ -492,6 +497,10 @@ pub fn run() {
             worker_queue::init(app.handle());
             autopilot::init(app.handle(), &identity, claim.data_dir.clone());
             pr_watch::init(app.handle());
+            // A finished worktree gives its build output back (worktree_autoclean.rs); the daily app only.
+            if policy.clear_build_output {
+                worktree_autoclean::init(app.handle().clone(), claim.data_dir.clone());
+            }
             control::init(app.handle())?;
             // WP-85: the loopback port for terminal Claude sessions. A failure here does not stop the app.
             terminal_mirror::init(app.handle().clone(), claim.data_dir.clone(), identity.kind);
@@ -597,6 +606,11 @@ pub fn run() {
             reminders::reminder_open,
             delegations::delegations_record,
             delegations::delegations_settle,
+            // WP-157: one work log line when checks send work back.
+            delegations::delegations_sent_back,
+            // WP-157: the first mate's work log tool.
+            work_log::work_log_add,
+            work_log::work_log_read,
             delegations::delegations_reattach,
             delegations::delegations_set_question,
             delegations::delegations_set_stall,
@@ -710,6 +724,8 @@ pub fn run() {
             worker_queue::worker_model_set,
             // WP-89: the system-wide worker default, beside a project's own.
             worker_queue::worker_default_set,
+            // WP-161: the shared builder ceiling and the optional health pauses.
+            worker_queue::builder_scale_set,
             worker_queue::worker_heavy_mark,
             worker_queue::worker_settings_import_local,
             autopilot::autopilot_status,
@@ -866,6 +882,8 @@ pub fn run() {
             verify_stage::verify_stage_status,
             verify_stage::verify_stage_run,
             verify_stage::verify_stage_latest,
+            worktree_autoclean::worktree_autoclean_status,
+            worktree_autoclean::worktree_autoclean_set,
             worktree_janitor::worktree_janitor_report,
             worktree_janitor::worktree_janitor_clean,
             worktree_janitor::worktree_janitor_remove,
@@ -1170,6 +1188,8 @@ pub fn run() {
             window_transfer::take_window_transfer,
             chat_background::save_chat_background,
             resources::resource_usage,
+            // WP-161: the health sample the builder pause reads. No path argument.
+            builder_health::builder_health,
             resources::resource_processes,
             resources::resource_stop_tool,
             chat_background::remove_chat_background,

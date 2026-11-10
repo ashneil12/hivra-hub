@@ -1,4 +1,5 @@
 import { withoutEmDashes } from "../../../shared/text/noEmDash";
+import { stripHiddenCharacters } from "../../../features/sessions/model/hiddenText";
 import { withoutTurnRepeats } from "./turnRepeats";
 import { isCliNotice } from "./cliNotices";
 import type {
@@ -330,11 +331,8 @@ function mergeTurnMetrics(
     ...(event.cacheHitPercent != null
       ? { cacheHitPercent: event.cacheHitPercent }
       : {}),
-    // WP-108: a price the CLI reported. Messages from one turn merge into the same row, so the
-    // latest reported price adds to what the turn already has.
-    ...(event.costUsd != null
-      ? { costUsd: (current.turnMetrics?.costUsd ?? 0) + event.costUsd }
-      : {}),
+    // WP-108: a price the CLI reported. Each report is the turn's cost so far, so a later one replaces it.
+    ...(event.costUsd != null ? { costUsd: event.costUsd } : {}),
   };
   const blocks = session.blocks.slice();
   blocks[userIndex] = { ...current, turnMetrics: metrics };
@@ -573,7 +571,8 @@ export function appendUser(
     {
       id: crypto.randomUUID(),
       role: "user",
-      text,
+      // Hidden characters never reach a user turn, whoever built it (hiddenText.ts).
+      text: stripHiddenCharacters(text).text,
       startedAt: Date.now(),
       ...turnModelFields(session),
       ...(attachments.length > 0 ? { attachments } : {}),
@@ -597,7 +596,7 @@ export function appendSteerUser(
       {
         id: crypto.randomUUID(),
         role: "user",
-        text,
+        text: stripHiddenCharacters(text).text,
         sentAt: Date.now(),
         ...turnModelFields(session),
         ...(attachments.length > 0 ? { attachments } : {}),
