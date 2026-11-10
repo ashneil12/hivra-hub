@@ -425,6 +425,35 @@ pub fn secrets_env_remove<R: tauri::Runtime>(
     Ok(removed)
 }
 
+/// The per-install choice about "Always" for programs that can run any code. Off unless the person turned it on.
+#[tauri::command(async)]
+pub fn secrets_always_for_any_code(store: State<'_, SessionStore>) -> Result<bool, String> {
+    Ok(always_for_any_code(&*store.lock_conn()?))
+}
+
+#[derive(Clone, Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AlwaysSetting {
+    pub on: bool,
+    /// Turning it off takes back the "Always" grants it had allowed for such programs.
+    pub removed_grants: usize,
+}
+
+#[tauri::command(async)]
+pub fn secrets_set_always_for_any_code<R: tauri::Runtime>(
+    app: AppHandle<R>,
+    store: State<'_, SessionStore>,
+    on: bool,
+) -> Result<AlwaysSetting, String> {
+    let conn = store.lock_conn()?;
+    let removed_grants = set_always_for_any_code(&conn, on)?;
+    let _ = app.emit(CHANGED, json!({}));
+    Ok(AlwaysSetting {
+        on: always_for_any_code(&conn),
+        removed_grants,
+    })
+}
+
 /// A card's scope/label helper: the slug the card will store, so the person sees it before typing.
 #[tauri::command(async)]
 pub fn secrets_slug(name: String) -> Result<String, String> {

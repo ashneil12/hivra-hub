@@ -169,6 +169,8 @@ export function scrub(db) {
     wipe("secretGrants", "secret_grants");
     wipe("secretRequests", "secret_requests");
     wipe("secretEnvWrites", "secret_env_writes");
+    // The per-install choice about "Always" for programs that can run any code: a dev copy starts with it off.
+    wipe("secretSettings", "secret_settings");
     db.exec("COMMIT");
   } catch (error) {
     db.exec("ROLLBACK");

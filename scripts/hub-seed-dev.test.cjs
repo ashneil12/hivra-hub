@@ -106,6 +106,9 @@ function dailyFixture(root, { schema = 19 } = {}) {
     CREATE TABLE secret_env_writes (scope TEXT NOT NULL, name TEXT NOT NULL, worktree TEXT NOT NULL,
       env_name TEXT NOT NULL, written_at INTEGER NOT NULL, PRIMARY KEY (scope, name, worktree));
     INSERT INTO secret_env_writes VALUES ('project./p/a', 'resend-key', '/p/a', 'RESEND_API_KEY', 1);
+    -- The person's choice about "Always" for programs that can run any code: a dev copy starts with it off.
+    CREATE TABLE secret_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+    INSERT INTO secret_settings VALUES ('always_for_any_code', '1');
   `);
   // Leave the last writes in the WAL, as a running daily app would.
   db.exec("PRAGMA wal_autocheckpoint = 0; UPDATE sessions SET title = 'Chat one (latest)' WHERE id = 's1';");
@@ -171,6 +174,7 @@ test("a seed copies every chat, clears what would act on Ash's behalf, and never
     secretGrants: 2,
     secretRequests: 1,
     secretEnvWrites: 1,
+    secretSettings: 1,
   });
   assert.deepEqual(rows(path.join(to, "monocode.db"), "SELECT count(*) AS n FROM sessions WHERE goal_json IS NOT NULL"), [{ n: 0 }], "no chat's /goal comes along");
   const copy = path.join(to, "monocode.db");
@@ -180,7 +184,7 @@ test("a seed copies every chat, clears what would act on Ash's behalf, and never
     { id: "s2", title: "Chat two", blocks_json: '[{"role":"user","text":"yo"}]', provider_session_id: null, queued_messages_json: "[]", queue_status: null },
     { id: "s3", title: "Chat three", blocks_json: "[]", provider_session_id: null, queued_messages_json: "[]", queue_status: null },
   ]);
-  for (const table of ["in_flight_sessions", "workspace_snapshot", "worktree_removals", "automations", "automation_runs", "automation_event_claims", "session_reminders", "orchestration_runs", "orchestration_sidebar", "orchestration_workers", "delegations", "delegation_chat_binds", "steer_messages", "decisions", "autopilot_switches", "autopilot_resumes", "pr_watches", "pr_watch_wakes", "secrets", "secret_grants", "secret_requests", "secret_env_writes"])
+  for (const table of ["in_flight_sessions", "workspace_snapshot", "worktree_removals", "automations", "automation_runs", "automation_event_claims", "session_reminders", "orchestration_runs", "orchestration_sidebar", "orchestration_workers", "delegations", "delegation_chat_binds", "steer_messages", "decisions", "autopilot_switches", "autopilot_resumes", "pr_watches", "pr_watch_wakes", "secrets", "secret_grants", "secret_requests", "secret_env_writes", "secret_settings"])
     assert.deepEqual(rows(copy, `SELECT count(*) AS n FROM ${table}`), [{ n: 0 }], table);
   assert.deepEqual(rows(copy, "SELECT count(*) AS n FROM autopilot_log"), [{ n: 1 }], "the autopilot log is history and stays");
   assert.deepEqual(rows(copy, "SELECT body FROM notes"), [{ body: "kept" }], "everything else is kept");

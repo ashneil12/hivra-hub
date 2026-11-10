@@ -50,6 +50,8 @@ fn main() {
             "secrets_index",
             "secrets_env_files",
             "secrets_worker_arm",
+            "secrets_always_for_any_code",
+            "secrets_set_always_for_any_code",
             "connectors_state",
             "connector_save_login",
             "connector_turn_on",

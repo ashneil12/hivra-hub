@@ -175,7 +175,7 @@ pub fn prepare(
                 name: row.name.clone(),
                 executable: executable.to_string(),
                 question,
-                options: approval_options(project.is_some()),
+                options: approval_options(project.is_some(), always_allowed_for(conn, executable)),
                 recommended: "Once".into(),
             },
             now,

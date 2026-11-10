@@ -262,6 +262,18 @@ write a second copy of any of them.
     free pass: the approval is about what runs with it, not about who typed it. A `once` grant is deleted by
     compare-and-swap, so two runs racing it cannot both spend it.
 
+    The card always shows the whole command line (program and arguments, never the value) and names the program. The
+    approval stays per program, but a program that can run any code (`python`, `python3`, `node`, `deno`, `bun`,
+    `ruby`, `perl`, `php`, `make`, `xargs`, `awk`, `sed`, `find`, `osascript`, `npx`, `npm`, `pnpm`, `yarn`, `uv`,
+    `uvx`, `cargo`, `go`, `java`, `lua`, `Rscript`, `swift`; matched by basename, `.exe` ignored) gets a card that
+    offers Once only, with the line "This can run any code, so it asks every time." A setting on the Secrets page
+    (one value per install, off by default: "Let me choose 'Always' for programs that can run any code", with the
+    warning "'Always' lets an agent use this key for anything, without asking you. Leave this off unless you are
+    sure.") lets a person who knows the risk choose Always for those programs too; the card then shows the same
+    warning under its buttons. The app checks the setting where an `always` grant is written, so the webview cannot
+    go around it, and turning it off takes back the Always grants it had allowed. The card's words are the app's own:
+    an agent's `ask_person` cannot make a `secret/` card.
+
 11. **Resolution, rename, rotate, delete.** "Use my Stripe API key" is a slug lookup, so the card shows the slug it
     will store (`stripe-api-key`) and the person can edit the label only. Rename changes the label; the slug stays,
     so every agent and grant that names it keeps working. Rotate (replace the value) writes a new value to the same

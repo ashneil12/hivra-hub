@@ -40,6 +40,8 @@ pub fn init<R: Runtime>() -> TauriPlugin<R> {
             crate::secrets::commands::secrets_index,
             crate::secrets::commands::secrets_env_files,
             crate::secrets::commands::secrets_worker_arm,
+            crate::secrets::commands::secrets_always_for_any_code,
+            crate::secrets::commands::secrets_set_always_for_any_code,
             crate::connectors::commands::connectors_state,
             crate::connectors::commands::connector_save_login,
             // WP-92: one click on a connector moves its saved key into the vault.

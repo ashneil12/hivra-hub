@@ -263,6 +263,10 @@ pub(crate) fn ensure_tables(conn: &Connection) -> rusqlite::Result<()> {
            env_name TEXT NOT NULL,
            written_at INTEGER NOT NULL,
            PRIMARY KEY (scope, name, worktree)
+         );
+         CREATE TABLE IF NOT EXISTS secret_settings (
+           key TEXT PRIMARY KEY,
+           value TEXT NOT NULL
          );",
     )
 }
@@ -1089,6 +1093,11 @@ pub fn put_grant(
     mode: &str,
     now: i64,
 ) -> Result<(), String> {
+    // The one place an `always` grant is written: a program that can run any code only gets one when the person has
+    // turned that on for this install. Checked here, so no caller (and no webview) can go around it.
+    if mode == "always" && runs_any_code(executable) && !always_for_any_code(conn) {
+        return Err(ALWAYS_REFUSED.into());
+    }
     conn.execute(
         "INSERT INTO secret_grants (scope, name, subject_kind, subject_id, executable, mode, created_at)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
@@ -1382,14 +1391,240 @@ fn decision_key(name: &str, executable: &str) -> String {
     safe.chars().take(120).collect()
 }
 
-/// The approval options. "Always for this project" only exists when the chat has a project.
-pub fn approval_options(has_project: bool) -> Vec<String> {
-    let mut options = vec!["Once".to_string(), "Always for this Mono".to_string()];
-    if has_project {
-        options.push("Always for this project".into());
+/// The approval options. "Always for this project" only exists when the chat has a project, and the two "Always"
+/// answers only exist when the program is not one that can run any code (or the person has turned that on).
+pub fn approval_options(has_project: bool, always_allowed: bool) -> Vec<String> {
+    let mut options = vec!["Once".to_string()];
+    if always_allowed {
+        options.push("Always for this Mono".to_string());
+        if has_project {
+            options.push("Always for this project".into());
+        }
     }
     options.push("No".into());
     options
+}
+
+/// Whether the card may offer "Always" for this program: any program, unless it can run any code and the person has not
+/// turned the choice on.
+pub fn always_allowed_for(conn: &Connection, executable: &str) -> bool {
+    !runs_any_code(executable) || always_for_any_code(conn)
+}
+
+// ---- programs that can run any code, and the person's choice about them ------------------------------------------------
+
+/// Programs that run whatever code they are handed (WP-92 step 10): approving one with the key in its environment is
+/// approving arbitrary code. Matched by basename, `.exe` ignored.
+pub const RUN_ANYTHING: [&str; 26] = [
+    "python",
+    "python3",
+    "node",
+    "deno",
+    "bun",
+    "ruby",
+    "perl",
+    "php",
+    "make",
+    "xargs",
+    "awk",
+    "sed",
+    "find",
+    "osascript",
+    "npx",
+    "npm",
+    "pnpm",
+    "yarn",
+    "uv",
+    "uvx",
+    "cargo",
+    "go",
+    "java",
+    "lua",
+    "rscript",
+    "swift",
+];
+
+/// The line the card carries for such a program while "Always" is not allowed.
+pub const RUN_ANYTHING_NOTE: &str = "This can run any code, so it asks every time.";
+
+/// The warning that sits beside the setting and under the "Always" buttons.
+pub const ALWAYS_WARNING: &str =
+    "'Always' lets an agent use this key for anything, without asking you. Leave this off unless you are sure.";
+
+/// What a refused "Always" says.
+pub const ALWAYS_REFUSED: &str = "This can run any code, so it asks every time. To allow Always for programs like this, turn on \"Let me choose 'Always' for programs that can run any code\" on the Secrets page.";
+
+/// The program a path names: the part after the last `/` or `\`.
+pub fn program_base(executable: &str) -> &str {
+    executable.rsplit(['/', '\\']).next().unwrap_or(executable)
+}
+
+/// Whether this program can run any code it is handed. The basename is compared in lower case with `.exe` (and the
+/// Windows `.cmd` and `.bat` wrappers) and a trailing version (`python3.12`) taken off.
+pub fn runs_any_code(executable: &str) -> bool {
+    let mut name = program_base(executable.trim()).to_ascii_lowercase();
+    for ext in [".exe", ".cmd", ".bat"] {
+        if let Some(stripped) = name.strip_suffix(ext) {
+            name = stripped.to_string();
+            break;
+        }
+    }
+    let bare = name.trim_end_matches(|c: char| c.is_ascii_digit() || c == '.' || c == '-');
+    RUN_ANYTHING.contains(&name.as_str()) || (!bare.is_empty() && RUN_ANYTHING.contains(&bare))
+}
+
+const SETTING_ALWAYS_ANY_CODE: &str = "always_for_any_code";
+
+/// The person's per-install choice: may "Always" be picked for a program that can run any code. Off unless the row says
+/// exactly `1`; a store that cannot be read is off too.
+pub fn always_for_any_code(conn: &Connection) -> bool {
+    conn.query_row(
+        "SELECT value FROM secret_settings WHERE key = ?1",
+        params![SETTING_ALWAYS_ANY_CODE],
+        |row| row.get::<_, String>(0),
+    )
+    .optional()
+    .ok()
+    .flatten()
+    .as_deref()
+        == Some("1")
+}
+
+/// Turn the choice on or off. Turning it off also takes back every "Always" it had allowed for a program that can run
+/// any code, so "off" means those programs ask every time again; the number taken back is returned.
+pub fn set_always_for_any_code(conn: &Connection, on: bool) -> Result<usize, String> {
+    conn.execute(
+        "INSERT INTO secret_settings (key, value) VALUES (?1, ?2)
+         ON CONFLICT (key) DO UPDATE SET value = excluded.value",
+        params![SETTING_ALWAYS_ANY_CODE, if on { "1" } else { "0" }],
+    )
+    .map_err(|e| e.to_string())?;
+    if on {
+        return Ok(0);
+    }
+    let mut stmt = conn
+        .prepare(
+            "SELECT scope, name, subject_kind, subject_id, executable FROM secret_grants WHERE mode = 'always'",
+        )
+        .map_err(|e| e.to_string())?;
+    let always: Vec<(String, String, String, String, String)> = stmt
+        .query_map([], |row| {
+            Ok((
+                row.get(0)?,
+                row.get(1)?,
+                row.get(2)?,
+                row.get(3)?,
+                row.get(4)?,
+            ))
+        })
+        .map_err(|e| e.to_string())?
+        .collect::<rusqlite::Result<_>>()
+        .map_err(|e| e.to_string())?;
+    let mut removed = 0;
+    for (scope, name, kind, subject, executable) in always {
+        if !runs_any_code(&executable) {
+            continue;
+        }
+        removed += conn
+            .execute(
+                "DELETE FROM secret_grants WHERE scope = ?1 AND name = ?2 AND subject_kind = ?3
+                 AND subject_id = ?4 AND executable = ?5 AND mode = 'always'",
+                params![scope, name, kind, subject, executable],
+            )
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(removed)
+}
+
+/// The most the card shows of a command line. A command that cannot be shown whole is not asked about.
+pub const COMMAND_LINE_MAX: usize = 1_400;
+
+/// One word of a command as the card shows it: control characters written out, and a word with a space, a quote or a
+/// shell character in single quotes, so the words stay apart and no argument can start a line of its own.
+fn display_word(word: &str) -> String {
+    let mut shown = String::new();
+    for c in word.chars() {
+        match c {
+            '\n' => shown.push_str("\\n"),
+            '\r' => shown.push_str("\\r"),
+            '\t' => shown.push_str("\\t"),
+            c if c.is_control() => shown.push_str(&format!("\\x{:02x}", c as u32)),
+            c => shown.push(c),
+        }
+    }
+    let plain = !shown.is_empty()
+        && !shown.chars().any(|c| {
+            c.is_whitespace()
+                || matches!(
+                    c,
+                    '\'' | '"'
+                        | '\\'
+                        | '$'
+                        | '`'
+                        | '!'
+                        | ';'
+                        | '&'
+                        | '|'
+                        | '<'
+                        | '>'
+                        | '('
+                        | ')'
+                        | '*'
+                        | '['
+                        | ']'
+                        | '{'
+                        | '}'
+                        | '~'
+                        | '#'
+                )
+        });
+    if plain {
+        shown
+    } else {
+        format!("'{}'", shown.replace('\'', "'\\''"))
+    }
+}
+
+/// The whole command as the card shows it.
+pub fn display_command(command: &[String]) -> String {
+    command
+        .iter()
+        .map(|word| display_word(word))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// The words on a secret run's card: who asks to run what, the exact command, and (for a program that can run any code)
+/// why it is asked every time or what "Always" would mean. The first line is the title the Inbox shows; the others sit
+/// under it. Never the value.
+pub fn run_question(
+    mono: &str,
+    label: &str,
+    command: &[String],
+    always_allowed: bool,
+    runs_any: bool,
+) -> Result<String, String> {
+    let executable = command.first().map(String::as_str).unwrap_or("");
+    let program = program_base(executable);
+    let line = display_command(command);
+    if line.chars().count() > COMMAND_LINE_MAX {
+        return Err(
+            "That command is too long to show on the approval card, so it wasn't run. Put the long part in a file and pass the file's path instead."
+                .into(),
+        );
+    }
+    let mut text = format!(
+        "Let {mono} run `{program}` with {label}?\nThe program is {program}.\nCommand: {line}"
+    );
+    if runs_any && !always_allowed {
+        text.push('\n');
+        text.push_str(RUN_ANYTHING_NOTE);
+    }
+    if runs_any && always_allowed {
+        text.push_str("\nWarning: ");
+        text.push_str(ALWAYS_WARNING);
+    }
+    Ok(text)
 }
 
 /// One first-use approval: what the card asks, and for whom.
@@ -1460,44 +1695,62 @@ pub fn ensure_grant(
                 return Ok(ApprovalOutcome::Denied { decision_key: key });
             }
             let mono = asked_for;
-            if answer == "Always for this project" {
-                if let Some(project) = input.project.as_deref() {
+            let granted = (|| -> Result<bool, String> {
+                if answer == "Always for this project" {
+                    if let Some(project) = input.project.as_deref() {
+                        put_grant(
+                            conn,
+                            &input.scope,
+                            &input.name,
+                            "project",
+                            project,
+                            &input.executable,
+                            "always",
+                            now,
+                        )?;
+                    }
+                } else if answer == "Always for this Mono" {
                     put_grant(
                         conn,
                         &input.scope,
                         &input.name,
-                        "project",
-                        project,
+                        "mono",
+                        mono,
                         &input.executable,
                         "always",
                         now,
                     )?;
+                } else {
+                    // "Once": it is spent here. Two racing runs cannot both spend it.
+                    put_grant(
+                        conn,
+                        &input.scope,
+                        &input.name,
+                        "mono",
+                        mono,
+                        &input.executable,
+                        "once",
+                        now,
+                    )?;
+                    if !spend_once(conn, &input.scope, &input.name, mono, &input.executable)? {
+                        return Ok(false);
+                    }
                 }
-            } else if answer == "Always for this Mono" {
-                put_grant(
-                    conn,
-                    &input.scope,
-                    &input.name,
-                    "mono",
-                    mono,
-                    &input.executable,
-                    "always",
-                    now,
-                )?;
-            } else {
-                // "Once": it is spent here. Two racing runs cannot both spend it.
-                put_grant(
-                    conn,
-                    &input.scope,
-                    &input.name,
-                    "mono",
-                    mono,
-                    &input.executable,
-                    "once",
-                    now,
-                )?;
-                if !spend_once(conn, &input.scope, &input.name, mono, &input.executable)? {
-                    return Ok(ApprovalOutcome::Waiting { decision_key: key });
+                Ok(true)
+            })();
+            match granted {
+                Ok(true) => {}
+                Ok(false) => return Ok(ApprovalOutcome::Waiting { decision_key: key }),
+                Err(why) => {
+                    if why == ALWAYS_REFUSED {
+                        // An "Always" the person's setting does not allow grants nothing and is not kept: the next run
+                        // is asked again, on the card that offers what is allowed.
+                        let _ = conn.execute(
+                            "DELETE FROM decisions WHERE project = ?1 AND decision_key = ?2",
+                            params![project, key],
+                        );
+                    }
+                    return Err(why);
                 }
             }
             // The answer has become a grant: clear the card so the next run (after a revoke, or a second once) asks
@@ -1510,20 +1763,33 @@ pub fn ensure_grant(
         }
         _ => {
             // The person is asked through the same decision store the Inbox already shows.
-            crate::decisions::ask(
+            let outcome = crate::decisions::ask(
                 conn,
                 crate::decisions::AskInput {
                     asked_by: input.chat.clone(),
                     asked_by_mono: input.mono.clone(),
                     project: input.project.clone(),
                     key: key.clone(),
-                    question: input.question,
-                    options: input.options,
-                    recommended: Some(input.recommended),
+                    question: input.question.clone(),
+                    options: input.options.clone(),
+                    recommended: Some(input.recommended.clone()),
                     task_ids: Vec::new(),
                 },
                 now,
             )?;
+            if !outcome.created {
+                // Still waiting on the person: the card shows what is being asked now, not an older command line.
+                crate::decisions::refresh_open(
+                    conn,
+                    project,
+                    &key,
+                    &input.question,
+                    &input.options,
+                    Some(&input.recommended),
+                    input.mono.as_deref(),
+                    now,
+                )?;
+            }
             Ok(ApprovalOutcome::Waiting { decision_key: key })
         }
     }
@@ -1554,14 +1820,28 @@ pub fn prepare_run(
             scope: scope_for(project.as_deref()),
         });
     };
-    if !has_value(vault, &row.scope, &row.name)? {
-        return Ok(RunOutcome::Missing {
-            name: row.name,
-            scope: row.scope,
-        });
-    }
+    let value = match vault.read(&service(&row.scope, &row.name)?, ACCOUNT)? {
+        Some(value) if !value.is_empty() => Zeroizing::new(value),
+        _ => {
+            return Ok(RunOutcome::Missing {
+                name: row.name,
+                scope: row.scope,
+            })
+        }
+    };
     // The command: argv only, never a shell.
     let executable = executable_of(&request.command)?;
+    // The card puts the whole command line in a database row, so a command that holds the value never gets that far.
+    if request
+        .command
+        .iter()
+        .any(|arg| arg.contains(value.as_str()))
+    {
+        return Err(
+            "That command already holds the key in its own words, so it wasn't run. Name the key through the environment instead."
+                .into(),
+        );
+    }
     if !valid_env_name(&request.env) {
         return Err(
             "The environment variable's name is capital letters, digits and underscores, like STRIPE_API_KEY."
@@ -1593,7 +1873,15 @@ pub fn prepare_run(
         None | Some(0) => TIMEOUT_DEFAULT,
         Some(seconds) => seconds.min(TIMEOUT_MAX),
     };
-    // 3. a live grant for this Mono (then its project), or ask the person first.
+    // 3. a live grant for this Mono (then its project), or ask the person first, on a card that shows the whole command.
+    let always_allowed = always_allowed_for(conn, &executable);
+    let question = run_question(
+        request.mono.as_deref().unwrap_or("this Mono"),
+        &row.label,
+        &request.command,
+        always_allowed,
+        runs_any_code(&executable),
+    )?;
     match ensure_grant(
         conn,
         Approval {
@@ -1603,13 +1891,8 @@ pub fn prepare_run(
             scope: row.scope.clone(),
             name: row.name.clone(),
             executable: executable.clone(),
-            question: format!(
-                "Let {} run `{}` with {}?",
-                request.mono.as_deref().unwrap_or("this Mono"),
-                executable,
-                row.label
-            ),
-            options: approval_options(project.is_some()),
+            question,
+            options: approval_options(project.is_some(), always_allowed),
             recommended: "Once".into(),
         },
         now,
@@ -1698,6 +1981,8 @@ pub fn record_run(
     Ok(())
 }
 
+#[cfg(test)]
+mod approval_tests;
 #[cfg(test)]
 mod security_tests;
 #[cfg(test)]

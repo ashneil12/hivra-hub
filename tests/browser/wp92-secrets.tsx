@@ -88,6 +88,9 @@ const pendingRequest = {
 };
 let pendingSave = false;
 let beginCalls = 0;
+// The per-install choice about "Always" for programs that can run any code: off until the person turns it on.
+const fixture = { alwaysAnyCode: false, setCalls: [] as boolean[] };
+(window as unknown as { __fixture: typeof fixture }).__fixture = fixture;
 
 const tauri = installFakeTauri("secrets-fixture", (command, args) => {
   const cmd = command.replace("plugin:hub|", "");
@@ -181,6 +184,12 @@ const tauri = installFakeTauri("secrets-fixture", (command, args) => {
       ];
     case "secrets_env_files":
       return [];
+    case "secrets_always_for_any_code":
+      return fixture.alwaysAnyCode;
+    case "secrets_set_always_for_any_code":
+      fixture.alwaysAnyCode = args.on === true;
+      fixture.setCalls.push(fixture.alwaysAnyCode);
+      return { on: fixture.alwaysAnyCode, removedGrants: 0 };
     default:
       throw new Error(`no fixture for ${command}`);
   }

@@ -198,6 +198,23 @@ export function removeEnv(input: {
   return invoke(`${COMMAND}secrets_env_remove`, { input });
 }
 
+/** The label and the warning beside the setting, and the same warning under the "Always" buttons on a card. */
+export const ANY_CODE_LABEL = "Let me choose 'Always' for programs that can run any code";
+export const ANY_CODE_WARNING =
+  "'Always' lets an agent use this key for anything, without asking you. Leave this off unless you are sure.";
+
+export type AlwaysSetting = { on: boolean; removedGrants: number };
+
+/** Whether "Always" may be picked for a program that can run any code. One value per install; off unless turned on. */
+export function getAlwaysForAnyCode(): Promise<boolean> {
+  return invoke(`${COMMAND}secrets_always_for_any_code`);
+}
+
+/** Turning it off also takes back the "Always" approvals it had allowed for such programs. */
+export function setAlwaysForAnyCode(on: boolean): Promise<AlwaysSetting> {
+  return invoke(`${COMMAND}secrets_set_always_for_any_code`, { on });
+}
+
 export function slug(name: string): Promise<string> {
   return invoke(`${COMMAND}secrets_slug`, { name });
 }

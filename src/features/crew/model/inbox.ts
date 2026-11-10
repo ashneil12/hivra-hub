@@ -29,6 +29,8 @@ export type FirstMateItem = {
   workerIds: string[];
   options: string[];
   recommended: string | null;
+  /** WP-92: a line that sits under the answer buttons (a secret card's warning about "Always"). */
+  note?: string | null;
   project: string;
   key: string | null;
   updatedAt: number;
@@ -49,6 +51,24 @@ function inProject(path: string | null | undefined, project: string): boolean {
 function firstLine(value: string | null | undefined, max: number): string {
   const line = (value ?? "").replace(/\r\n/g, "\n").split("\n")[0]?.trim() ?? "";
   return line.slice(0, max);
+}
+
+const SECRET_WARNING = "Warning: ";
+
+/**
+ * WP-92: a secret's approval card is the app's own words over several lines: a title, then the exact command and why it
+ * asks, then (when "Always" is offered for a program that can run any code) a warning for under the buttons. Only a
+ * `secret/` key is read this way; the app alone makes those (an agent's `ask_person` cannot).
+ */
+function secretCardParts(question: string | null | undefined): { title: string; body: string; note: string | null } {
+  const lines = (question ?? "").replace(/\r\n/g, "\n").split("\n").map((line) => line.trim()).filter(Boolean);
+  const note = lines.find((line, at) => at > 0 && line.startsWith(SECRET_WARNING));
+  const body = lines.filter((line, at) => at > 0 && line !== note);
+  return {
+    title: (lines[0] ?? "").slice(0, 160),
+    body: body.join("\n").slice(0, 1_800),
+    note: note ? note.slice(SECRET_WARNING.length) : null,
+  };
 }
 
 /** The first plain line of a failure. A stack frame or a secret is not shown. */
@@ -138,11 +158,13 @@ export function inboxItems(input: {
     const choice = optionsOf(decision.options, decision.recommended);
     const waiting = waitingOf(decision.waiting);
     for (const id of waiting) waitingOnDecision.add(id);
+    const secret = key.startsWith("secret/") ? secretCardParts(decision.question) : null;
     items.push({
       id: `decision:${project}:${key}`,
       kind: "decision",
-      title: firstLine(decision.question, 160) || "A decision is waiting",
-      body: "",
+      title: (secret ? secret.title : firstLine(decision.question, 160)) || "A decision is waiting",
+      body: secret ? secret.body : "",
+      note: secret ? secret.note : null,
       statusWord: "needs you",
       chatId: firstLine(decision.askedBy, 200) || null,
       workerIds: waiting,

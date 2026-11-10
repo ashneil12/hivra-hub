@@ -483,6 +483,65 @@ pub fn answered_by_person(answered_by: Option<&str>) -> bool {
     is_person(answered_by)
 }
 
+/// WP-92: a secret's approval card (`secret/<name>/<program>`) is made by the app alone, with the app's own words about
+/// the exact command. An agent's `ask_person` reaches the store through `decisions_ask`, and it may not pick a key that
+/// would put its own words on a card the person approves a secret run on.
+pub fn check_ask_key(key: &str) -> Result<(), String> {
+    if key.trim().starts_with("secret/") {
+        return Err(
+            "A key's approval card is made by the app when you run a command with that key; only the app can ask it. \
+             Call secrets_run and the person is asked."
+                .into(),
+        );
+    }
+    Ok(())
+}
+
+/// WP-92: a secret's card that nobody has answered shows what is being asked now. The same Mono asking again with other
+/// arguments changes the words (and only the words) so the person never answers a stale command line. A card another
+/// Mono asked, or one already answered, is left alone.
+#[allow(clippy::too_many_arguments)]
+pub fn refresh_open(
+    conn: &Connection,
+    project: &str,
+    key: &str,
+    question: &str,
+    options: &[String],
+    recommended: Option<&str>,
+    by_mono: Option<&str>,
+    now: i64,
+) -> Result<bool, String> {
+    if !key.starts_with("secret/") {
+        return Ok(false);
+    }
+    let Some(card) = get(conn, project, key)? else {
+        return Ok(false);
+    };
+    if card.state != OPEN || card.asked_by_mono.as_deref() != by_mono {
+        return Ok(false);
+    }
+    let question = plain(question, "The question", QUESTION_MAX)?;
+    if card.question == question && card.options == options {
+        return Ok(false);
+    }
+    let changed = conn
+        .execute(
+            "UPDATE decisions SET question = ?3, options = ?4, recommended = ?5, updated_at = ?6, version = version + 1
+             WHERE project = ?1 AND decision_key = ?2 AND state = 'open' AND version = ?7",
+            params![
+                project,
+                key,
+                question,
+                json!(options).to_string(),
+                recommended,
+                now,
+                card.version
+            ],
+        )
+        .map_err(|e| e.to_string())?;
+    Ok(changed == 1)
+}
+
 pub fn answer(
     conn: &mut Connection,
     project: &str,
@@ -585,6 +644,7 @@ pub fn decisions_ask(
     store: State<'_, SessionStore>,
     input: AskInput,
 ) -> Result<AskOutcome, String> {
+    check_ask_key(&input.key)?;
     let outcome = ask(&mut *store.lock_conn()?, input, now_millis())?;
     if outcome.created || !outcome.added.is_empty() {
         announce(&app, Some(&outcome.decision), &outcome.released);
