@@ -32,6 +32,7 @@ import {
   applyMobileChoice,
   mobileWorkspaceChoice,
   mobileChoice,
+  mobileCatalog,
   mobileNewSession,
   mobileProjectId,
   mobileQuestionReply,
@@ -10672,6 +10673,12 @@ function Workspace({
         method === "session.approve" ||
         method === "session.deny"
       ) {
+        // WP-150: the inbox shows the calls the catalog published, so it cannot offer a
+        // line (a room session, an unlisted chat) the phone could never answer.
+        const published =
+          method === "inbox.list"
+            ? await mobileCatalog(sessionsRef.current, sessionDefaults?.runtimeMode)
+            : null;
         return runMobilePairing(method, params, {
           sessions: sessionsRef.current,
           now: Date.now(),
@@ -10679,6 +10686,14 @@ function Workspace({
             mobileApprovalRef.current(sessionId, requestId, decision),
           remoteBlocked: (session) =>
             !!remoteProjectFor(session.cwd) && !remoteSessionActions(session.id),
+          ...(published
+            ? {
+                approvals: () => ({
+                  rows: published.approvals,
+                  truncated: !!published.approvalsTruncated,
+                }),
+              }
+            : {}),
         });
       }
       const text = typeof params.text === "string" ? params.text.trim() : "";

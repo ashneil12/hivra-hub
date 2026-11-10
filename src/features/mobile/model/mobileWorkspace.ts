@@ -216,11 +216,10 @@ export async function mobileCatalog(
   // WP-150: the calls a paired phone may approve. A Mono's own chat is not a session card.
   // The poll itself does not return these. A Mono's room sessions are left out: answering
   // one goes through the Mono relay, which the phone's direct approval does not use.
-  const approvals = publishedApprovals(
+  const approvals = publishedApprovalRows(
     live,
     new Set(sessions.keys()),
-    new Set(monos.flatMap((mono) => (mono.sessionId ? [mono.sessionId] : []))),
-    new Set(roster.flatMap((mono) => Object.values(mono.roomSessions ?? {}))),
+    roster,
   );
   return {
     projects,
@@ -229,6 +228,25 @@ export async function mobileCatalog(
     approvals: approvals.rows,
     ...(approvals.truncated ? { approvalsTruncated: true as const } : {}),
   };
+}
+
+/**
+ * WP-150: the calls the phone may show and answer, filtered the same way everywhere:
+ * a listed chat or a Mono's own one-to-one chat, never a room session. The catalog
+ * publishes these; `inbox.list` shows these, so it cannot offer a line the phone
+ * could never answer.
+ */
+export function publishedApprovalRows(
+  live: readonly Session[],
+  listedSessionIds: ReadonlySet<string>,
+  roster: readonly { sessionId?: string | null; roomSessions?: Record<string, string> }[],
+) {
+  return publishedApprovals(
+    live,
+    listedSessionIds,
+    new Set(roster.flatMap((mono) => (mono.sessionId ? [mono.sessionId] : []))),
+    new Set(roster.flatMap((mono) => Object.values(mono.roomSessions ?? {}))),
+  );
 }
 /** The worktree a session works in, so the phone shows its changes and files
  *  rather than the checkout's; none once the worktree is gone. */

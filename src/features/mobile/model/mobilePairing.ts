@@ -99,6 +99,12 @@ export type PairingContext = {
   sources?: PairingSources;
   /** Remembers a decision so a second call cannot allow it again. */
   answered?: Set<string>;
+  /**
+   * The calls the inbox may show. Defaults to `liveApprovals`; the desktop passes the
+   * same filtered rows the catalog publishes, so a room-session or unlisted call is not
+   * shown to the phone as an approval it could never answer.
+   */
+  approvals?: (sessions: readonly Session[]) => LiveApprovals;
 };
 
 const sharedAnswered = new Set<string>();
@@ -600,7 +606,7 @@ export async function runMobilePairing(
   const sources = ctx.sources ?? defaultSources();
   const crew = method === "crew.status";
   const loaded = await readSnapshot(sources, crew);
-  const pending = liveApprovals(ctx.sessions);
+  const pending = (ctx.approvals ?? liveApprovals)(ctx.sessions);
   if (!crew && pending.truncated) throw new Error("Too many approvals to list from the phone.");
   let projects: string[];
   try {

@@ -376,6 +376,27 @@ describe("inbox lines", () => {
       lines: [{ kind: "decision" }, { kind: "question" }, { kind: "failure" }],
     });
   });
+
+  it("shows only the calls the desktop published, not a room session the phone could never answer", async () => {
+    // A room-session call is in liveApprovals but not in the published catalog. The
+    // inbox must build its lines from the published rows, or it offers a line whose
+    // approve the Rust gate then refuses.
+    const room = session({ blocks: [tool(7, SHELL)] });
+    const base = {
+      now: NOW,
+      approve: () => undefined,
+      remoteBlocked: () => false,
+      sources: sources(),
+    };
+    const unfiltered = await runMobilePairing("inbox.list", {}, { ...base, sessions: [room] });
+    expect(unfiltered).toMatchObject({ lines: [{ kind: "approval", requestId: 7 }] });
+    const filtered = await runMobilePairing("inbox.list", {}, {
+      ...base,
+      sessions: [room],
+      approvals: () => publishedApprovals([room], new Set(), new Set(), new Set(["chat-1"])),
+    });
+    expect(filtered).toEqual({ lines: [] });
+  });
 });
 
 describe("crew status", () => {
