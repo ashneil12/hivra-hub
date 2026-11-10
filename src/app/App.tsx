@@ -832,6 +832,7 @@ import {
   setWindowFocused,
 } from "../features/notifications/model/notifications";
 import { useInputNotifications } from "../features/notifications/hooks/useInputNotifications";
+import { useNotablePings } from "../features/notifications/hooks/useNotablePings";
 import { archiveFocusedSession } from "../features/sessions/model/archiveShortcut";
 import {
   adjacentItemId,
@@ -2785,6 +2786,8 @@ function Workspace({
     [sessions],
   );
   useInputNotifications(promptableSessions, activeSessionId);
+  // WP-164: held notices leave when quiet hours end; a failure waits no longer than its ping interval.
+  useNotablePings();
   // Model, effort and permission changes reach a running turn's CLI now.
   useLiveHarnessSettings(sessions);
 

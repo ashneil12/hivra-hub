@@ -3,10 +3,17 @@ import { HARNESS_TITLE, sessionDisplayTitle, type Session } from "../../sessions
 import { loadSoundsEnabled, playCue } from "../../settings/model/sounds";
 import {
   allowsProjectNotification,
+  projectNotificationVerdict,
   type NotificationSubject,
 } from "./notificationPreferences";
 import { monoReplyText } from "../../monos/model/monoReaction";
 import { knownNotificationProject } from "./notificationProjects";
+import {
+  commitNotable,
+  readNotableBuffer,
+  saveNotableBuffer,
+  type NotablePing,
+} from "./notableEvents";
 
 const KEY = "monocode.notifications";
 
@@ -287,7 +294,8 @@ async function notifyProjectSession(
   sessionVisible: boolean,
   subject: NotificationSubject,
 ): Promise<boolean> {
-  if (!allowsProjectNotification(subject)) return false;
+  const verdict = projectNotificationVerdict(subject);
+  if (verdict === "muted") return false;
   const decision = shouldNotify({
     enabled: loadNotificationsEnabled(),
     permission,
@@ -296,6 +304,17 @@ async function notifyProjectSession(
   });
   if (!decision) return false;
   const { title, subtitle, body } = notificationText(session, event);
+  if (verdict === "quiet") {
+    // WP-164: quiet hours hold this banner and its sound. It is kept, and leaves as one ping when the window ends
+    // (notableDelivery.ts). Only a banner that would have been shown is kept.
+    commitNotable(readNotableBuffer, saveNotableBuffer, {
+      id: `held:${session.id}:${subject.occurredAt ?? Date.now()}`,
+      kind: "held",
+      text: `${subtitle}: ${body}`,
+      at: subject.occurredAt ?? Date.now(),
+    });
+    return false;
+  }
   try {
     await invoke("show_notification", {
       sessionId: session.id,
@@ -350,4 +369,36 @@ export async function announceStuckWorker(notice: {
     }
   }
   playCue("inputRequested", subject);
+}
+
+/** `shown`: the system took it. `off`: notifications are off or denied, so none is owed. `failed`: try again later. */
+export type PingResult = "shown" | "off" | "failed";
+
+/** Click target of a batched ping. It names no chat, so a click only brings the app forward. */
+export const NOTABLE_PING_ID = "programme-notices";
+
+/**
+ * One batched programme ping (notableEvents.ts). It belongs to no chat, so the window being focused does not
+ * excuse it; the same OS policy as any banner otherwise.
+ */
+export async function announceNotablePing(ping: NotablePing): Promise<PingResult> {
+  const decision = shouldNotify({
+    enabled: loadNotificationsEnabled(),
+    permission,
+    windowFocused,
+    sessionVisible: false,
+  });
+  if (!decision) return "off";
+  try {
+    await invoke("show_notification", {
+      sessionId: NOTABLE_PING_ID,
+      title: "MonoCode",
+      subtitle: ping.title,
+      body: ping.body,
+      sound: loadSoundsEnabled(),
+    });
+    return "shown";
+  } catch {
+    return "failed";
+  }
 }
