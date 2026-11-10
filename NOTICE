@@ -322,6 +322,13 @@ Third-party components Hivra adds:
   Used in: src/features/sessions/model/modelsDev.json, src/features/sessions/model/LICENSE.models-dev
   The models.dev catalogue trimmed to each model's context window and tool flag, at commit b4b8ca36 (WP-104). The generator and the provider files are not copied. The app reads the file offline. Licence text in src/features/sessions/model/LICENSE.models-dev.
 
+- Pierre Diffs
+  Source: https://github.com/pierrecomputer/pierre/tree/main/packages/diffs
+  License: Apache-2.0
+  Copyright 2025 Pierre Computer Company
+  Used in: package.json, src/features/source-control/ui/pierreDiff.tsx
+  Pinned npm package for the optional split diff view (WP-116).
+
 MonoCode
 ========
 MonoCode is not affiliated with, endorsed by, or sponsored by the makers of the
