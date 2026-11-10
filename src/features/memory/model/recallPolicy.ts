@@ -9,11 +9,15 @@
 // the weights below still add up to one. Row-Bot asks a SQLite retrieval layer for candidates and
 // scores what comes back; here the store is small enough to score in one pass. Its memory statuses
 // (archived, needs review, superseded) become Hivra's: a fact with a removal waiting on the person
-// is archived, one with an update waiting is superseded, and an unreviewed proposal needs review.
+// is archived, one with an update waiting is superseded, and an unreviewed proposal needs review. Reading
+// several Monos in one decision is Hivra's own.
 // The word gates follow Mnemos (github.com/Riley-Coyote/mnemos-mcp, mnemos/cue.py and
 // mnemos/store/fts.py, Apache-2.0, ideas only, no code copied): at least four content words, two
 // distinctive shared words, at most three lines, and never the same memory twice in a conversation
 // (that last rule lives in shownMemory.ts).
+//
+// One decision covers every Mono a turn reads: their memories are scored together, so the three lines
+// are the three best across all of them, not three each.
 
 import { confidence, type Belief } from "../vendor/mercuryBelief";
 import { mentionsSecret, type MemoryDoc, type MemoryItem } from "./doc";
@@ -138,6 +142,8 @@ export type RecallField = "fact" | "evidence" | "label" | "none";
 
 export type RecallCandidate = {
   id: string;
+  /** The Mono this memory belongs to, since one decision can read several. */
+  mateId: string;
   score: number;
   parts: RecallScoreParts;
   matchedField: RecallField;
@@ -147,7 +153,10 @@ export type RecallCandidate = {
 };
 
 export type RecallDecision = {
+  /** The Mono the turn belongs to. */
   mateId: string;
+  /** Every Mono this decision read, the turn's own first. */
+  mateIds: string[];
   query: string;
   /** Set when the turn produced no memory at all. */
   stop?: RecallStop;
@@ -155,13 +164,16 @@ export type RecallDecision = {
   broad: boolean;
   /** Ids the policy picked, best first. These are the lines that go into the fence. */
   picked: string[];
-  /** Every memory this Mono has, with its score and either picked or why it was not. */
+  /** Every memory of the Monos it read, with its score and either picked or why it was not. */
   candidates: RecallCandidate[];
 };
 
 export type RecallDecisionInput = {
   doc: MemoryDoc;
+  /** The Mono the turn belongs to. Its memories are always read. */
   mateId: string;
+  /** Other Monos whose memories this turn reads too. Scored together with `mateId`'s, under one cap. */
+  mateIds?: readonly string[];
   /** The latest message. The gates read this. */
   message: string;
   /** Earlier messages of the same conversation, most recent first (Row-Bot reads up to two). */
@@ -373,7 +385,7 @@ function isCrowded(sorted: readonly RecallCandidate[]): boolean {
 }
 
 /** The reasons the screen counts, once per rejected memory. */
-export function tallyRejections(decision: RecallDecision): Map<RecallRejectReason, number> {
+export function tallyRejections(decision: Pick<RecallDecision, "candidates">): Map<RecallRejectReason, number> {
   const tally = new Map<RecallRejectReason, number>();
   for (const candidate of decision.candidates) {
     if (candidate.picked || !candidate.reason) continue;
@@ -383,14 +395,15 @@ export function tallyRejections(decision: RecallDecision): Map<RecallRejectReaso
 }
 
 /**
- * Row-Bot's build_auto_recall, for one Mono and one message. Pure: it reads the doc and returns
+ * Row-Bot's build_auto_recall, for one message and the Monos that read it. Pure: it reads the doc and returns
  * what to show and why everything else was left out.
  */
 export function recallDecision(input: RecallDecisionInput): RecallDecision {
   const { doc, mateId, message, recent = [], now, mode } = input;
   const latest = message.trim();
   const query = buildQuery(message, recent);
-  const base: RecallDecision = { mateId, query, broad: false, picked: [], candidates: [] };
+  const mateIds = [...new Set([mateId, ...(input.mateIds ?? [])])];
+  const base: RecallDecision = { mateId, mateIds, query, broad: false, picked: [], candidates: [] };
   const stop = (reason: RecallStop): RecallDecision => ({ ...base, stop: reason });
 
   if (!latest) return stop("empty_message");
@@ -401,7 +414,8 @@ export function recallDecision(input: RecallDecisionInput): RecallDecision {
     if (contentWords(latest).length < RECALL_MIN_CONTENT_WORDS && !asksFromSelf(latest)) return stop("too_few_words");
   }
 
-  const mine = doc.items.filter((item) => item.mateId === mateId);
+  const reading = new Set(mateIds);
+  const mine = doc.items.filter((item) => reading.has(item.mateId));
   if (!mine.length) return stop("no_memories");
 
   // A fact with a removal waiting on the person is archived; one with an update waiting is
@@ -483,6 +497,7 @@ export function recallDecision(input: RecallDecisionInput): RecallDecision {
     const score = W_LEXICAL * parts.lexical + W_RECENCY * parts.recency + W_TIER * parts.tier + W_EVIDENCE * parts.evidence;
     const candidate: RecallCandidate = {
       id: item.id,
+      mateId: item.mateId,
       score: Math.round(score * 10_000) / 10_000,
       parts,
       matchedField,

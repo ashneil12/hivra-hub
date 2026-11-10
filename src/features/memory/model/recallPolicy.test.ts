@@ -330,3 +330,82 @@ describe("Row-Bot cases carried over", () => {
     expect(decision.candidates[0].reason).toBe("needs_review");
   });
 });
+
+describe("one decision across Monos", () => {
+  const MESSAGE = "What do you remember about writing small commits on a branch?";
+  const B = "b-lead";
+  const C = "c-lead";
+
+  const a1 = item("Writing small commits on every branch");
+  const a2 = item("Likes small commits");
+  const b1 = item("Remember to write small commits", { mateId: B });
+  const b2 = item("Branch names follow the ticket", { mateId: B });
+  const c1 = item("Small commits keep every branch reviewable", { mateId: C });
+  const c2 = item("Writing notes for a branch", { mateId: C });
+  const store = [a1, a2, b1, b2, c1, c2];
+
+  function across(extra: Partial<Parameters<typeof recallDecision>[0]> = {}): RecallDecision {
+    return decide(store, MESSAGE, { mateIds: [MATE, B, C], ...extra });
+  }
+
+  it("shows at most three memories for every Mono together, not three each", () => {
+    const decision = across();
+    expect(decision.picked).toHaveLength(RECALL_MAX_LINES);
+    expect(decision.picked).toHaveLength(3);
+  });
+
+  it("picks the three strongest wherever they live", () => {
+    const decision = across();
+    expect(decision.picked[0]).toBe(a1.id);
+    expect([...decision.picked].sort()).toEqual([a1.id, b1.id, c1.id].sort());
+    expect(candidateFor(decision, a2.id)!.reason).toBe("held_back");
+    expect(candidateFor(decision, c2.id)!.reason).toBe("held_back");
+  });
+
+  it("scores every memory of every Mono it reads, and says whose each one is", () => {
+    const decision = across();
+    expect(decision.candidates.map((candidate) => candidate.id).sort()).toEqual(store.map((memory) => memory.id).sort());
+    expect(candidateFor(decision, b1.id)!.mateId).toBe(B);
+    expect(candidateFor(decision, a1.id)!.mateId).toBe(MATE);
+  });
+
+  it("reads the Mono the turn belongs to first, and always", () => {
+    const decision = across({ mateIds: [C, B] });
+    expect(decision.mateId).toBe(MATE);
+    expect(decision.mateIds).toEqual([MATE, C, B]);
+    expect(candidateFor(decision, a1.id)).toBeDefined();
+  });
+
+  it("does not read a Mono it was not given", () => {
+    const decision = across({ mateIds: [MATE, B] });
+    expect(candidateFor(decision, c1.id)).toBeUndefined();
+    expect(candidateFor(decision, c2.id)).toBeUndefined();
+  });
+
+  it("reads only the Mono the turn belongs to when no others are given", () => {
+    const decision = decide(store, MESSAGE);
+    expect(decision.mateIds).toEqual([MATE]);
+    expect(decision.candidates.map((candidate) => candidate.id).sort()).toEqual([a1.id, a2.id].sort());
+  });
+
+  it("counts a crowd across every Mono, so alike scores from different Monos still show one line", () => {
+    const text = "Note about the atlas schedule timing question";
+    const alike = [MATE, B, C].map((mateId) => item(text, { mateId }));
+    const decision = decide(alike, "atlas schedule timing question", { mateIds: [MATE, B, C] });
+    expect(decision.broad).toBe(true);
+    expect(decision.picked).toHaveLength(1);
+  });
+
+  it("does not send a memory twice, whichever Mono it belongs to", () => {
+    const decision = across({ exclude: new Set([a1.id, b1.id]) });
+    expect(decision.picked).not.toContain(a1.id);
+    expect(decision.picked).not.toContain(b1.id);
+    expect(candidateFor(decision, b1.id)!.reason).toBe("already_shown");
+    expect(decision.picked).toContain(c1.id);
+  });
+
+  it("stops with no memories when none of the Monos has any", () => {
+    const decision = decide([], MESSAGE, { mateIds: [MATE, B, C] });
+    expect(decision.stop).toBe("no_memories");
+  });
+});
