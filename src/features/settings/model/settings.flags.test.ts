@@ -67,6 +67,13 @@ describe.each([
     "monocode:live-agents-enabled-change",
   ],
   [
+    "monocode.moreAgentsEnabled",
+    settings.loadMoreAgentsEnabled,
+    settings.saveMoreAgentsEnabled,
+    false,
+    "monocode:more-agents-enabled-change",
+  ],
+  [
     "monocode.monosEnabled",
     settings.loadMonosEnabled,
     settings.saveMonosEnabled,
