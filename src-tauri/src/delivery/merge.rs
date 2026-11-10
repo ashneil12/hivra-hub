@@ -216,9 +216,15 @@ pub(crate) fn floor_decision(
         return decision;
     };
     let paths = match files {
-        super::protected::ChangedFiles::Unread => {
+        super::protected::ChangedFiles::Unread { reason } => {
+            let reason = reason.trim();
+            let detail = if reason.is_empty() {
+                String::new()
+            } else {
+                format!(" {reason}")
+            };
             return Decision::Ask(format!(
-                "{pr}'s changed files couldn't be read, so it needs your word to merge."
+                "{pr}'s changed files couldn't be read, so it needs your word to merge.{detail}"
             ));
         }
         super::protected::ChangedFiles::Listed(paths) => paths,
@@ -508,9 +514,16 @@ pub fn merge(
         drop(conn);
         let listed = super::protected::changed_files(gh, &repo, number);
         let again = gh.read_pr(&repo, number);
+        // The second read carries changedFiles. The list is the whole diff only when that
+        // count equals the number of current filenames and the head has not moved.
         let files = match again {
-            Ok(again) if again.detail.head_sha.as_deref() == Some(head.as_str()) => listed,
-            _ => super::protected::ChangedFiles::Unread,
+            Ok(again) if again.detail.head_sha.as_deref() == Some(head.as_str()) => {
+                super::protected::judge(listed, again.changed_files)
+            }
+            Ok(_) => super::protected::ChangedFiles::Unread {
+                reason: "the pull request's head changed while its files were read".into(),
+            },
+            Err(error) => super::protected::ChangedFiles::Unread { reason: error },
         };
         conn = store.lock_conn()?;
         floor_decision(decided, true, &files, &extras, &format!("{repo}#{number}"))

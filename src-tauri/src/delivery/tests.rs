@@ -173,6 +173,7 @@ fn pr(state: PrState, head: &str, checks: Vec<Check>) -> PrRead {
         },
         remarks: Some(Vec::new()),
         rate: None,
+        changed_files: None,
     }
 }
 
@@ -1488,6 +1489,12 @@ fn protect_also(store: &SessionStore, project: &Path, paths: &[&str]) {
 
 fn files_of(body: Result<&str, &str>) -> FakeGithub {
     let gh = FakeGithub::new(vec![green("h1")]);
+    // A readable body agrees with the second pull-request read, unless a test sets another count.
+    if let Ok(text) = body {
+        if let Ok(list) = super::protected::parse_file_list(text) {
+            gh.reads.lock().unwrap()[0].changed_files = Some(list.filenames as u64);
+        }
+    }
     *gh.files.lock().unwrap() = Some(match body {
         Ok(text) => Ok(text.to_string()),
         Err(text) => Err(text.to_string()),
@@ -1509,7 +1516,9 @@ fn the_floor_off_decides_exactly_as_before() {
         floor_decision(
             decision.clone(),
             false,
-            &ChangedFiles::Unread,
+            &ChangedFiles::Unread {
+                reason: "gh didn't answer".into(),
+            },
             &["*".to_string()],
             "acme/web#7",
         ),
@@ -1585,9 +1594,18 @@ fn the_floor_names_at_most_five_files_and_an_unreadable_list_asks() {
         allowed
     );
 
-    let unread_decision = floor_decision(allowed, true, &ChangedFiles::Unread, &[], "acme/web#7");
+    let unread_decision = floor_decision(
+        allowed,
+        true,
+        &ChangedFiles::Unread {
+            reason: "gh didn't answer within 2 minutes".into(),
+        },
+        &[],
+        "acme/web#7",
+    );
     let unread = asked_decision(&unread_decision);
     assert!(unread.contains("couldn't be read"), "{unread}");
+    assert!(unread.contains("2 minutes"), "{unread}");
     assert!(!unread.contains("secret"), "{unread}");
 }
 
@@ -1625,17 +1643,17 @@ fn yolo_merges_a_clean_diff_and_asks_for_a_protected_path() {
 }
 
 #[test]
-fn an_unreadable_file_list_asks_and_does_not_repeat_the_reader_error() {
+fn an_unreadable_file_list_asks_and_keeps_the_reader_error() {
     let project = floor_project("unread");
     let s = store();
     set_mode(&s, &project, Some(Mode::Pr), true);
     turn_floor_on(&s, &project);
     remember_delivery(&s, &project, None, 7);
-    let gh = files_of(Err("secret-token-in-error"));
+    let gh = files_of(Err("gh didn't answer within 2 minutes"));
     let outcome = merge::merge(&s, &gh, agent_merge("acme/web"), 20).unwrap();
     let question = asked(&outcome);
     assert!(question.contains("couldn't be read"), "{question}");
-    assert!(!question.contains("secret-token"), "{question}");
+    assert!(question.contains("2 minutes"), "{question}");
     assert!(gh.ran("pr", "merge").is_empty());
     assert!(matches!(outcome, MergeOutcome::NeedsYou { .. }));
 }
@@ -1743,7 +1761,94 @@ fn a_moved_head_is_not_merged_on_the_file_list_of_the_old_one() {
     let outcome = merge::merge(&s, &gh, agent_merge("acme/web"), 20).unwrap();
     let question = asked(&outcome);
     assert!(question.contains("couldn't be read"), "{question}");
+    assert!(question.contains("head changed"), "{question}");
     assert!(gh.ran("pr", "merge").is_empty());
+}
+
+fn reported(gh: &FakeGithub, count: Option<u64>) {
+    gh.reads.lock().unwrap()[0].changed_files = count;
+}
+
+#[test]
+fn a_short_file_list_asks_even_when_the_page_is_clean() {
+    let project = floor_project("short");
+    let s = store();
+    set_mode(&s, &project, Some(Mode::Pr), true);
+    turn_floor_on(&s, &project);
+    remember_delivery(&s, &project, None, 7);
+    // GitHub's first page is 30 files. This pull request has 60, and none of the first page is protected.
+    let page: String = (0..30).map(|i| format!("src/f{i}.rs\n")).collect();
+    let gh = files_of(Ok(&page));
+    reported(&gh, Some(60));
+    let question = asked(&merge::merge(&s, &gh, agent_merge("acme/web"), 20).unwrap());
+    assert!(question.contains("couldn't be read"), "{question}");
+    assert!(question.contains("60"), "{question}");
+    assert!(gh.ran("pr", "merge").is_empty());
+}
+
+#[test]
+fn an_empty_file_list_merges_only_when_nothing_changed() {
+    let project = floor_project("empty");
+    let s = store();
+    set_mode(&s, &project, Some(Mode::Pr), true);
+    turn_floor_on(&s, &project);
+    remember_delivery(&s, &project, None, 7);
+
+    let none = files_of(Ok(""));
+    let merged = merge::merge(&s, &none, agent_merge("acme/web"), 20).unwrap();
+    assert!(
+        matches!(merged, MergeOutcome::Merged { .. }),
+        "changedFiles 0 is an empty diff: {merged:?}"
+    );
+
+    let short = files_of(Ok(""));
+    reported(&short, Some(5));
+    let question = asked(&merge::merge(&s, &short, agent_merge("acme/web"), 30).unwrap());
+    assert!(question.contains("couldn't be read"), "{question}");
+    assert!(question.contains('5'), "{question}");
+    assert!(short.ran("pr", "merge").is_empty());
+
+    let missing = files_of(Ok("readme.md\n"));
+    reported(&missing, None);
+    let question = asked(&merge::merge(&s, &missing, agent_merge("acme/web"), 40).unwrap());
+    assert!(question.contains("didn't say"), "{question}");
+    assert!(missing.ran("pr", "merge").is_empty());
+}
+
+#[test]
+fn a_capped_file_list_asks_even_when_the_count_matches() {
+    let project = floor_project("capped");
+    let s = store();
+    set_mode(&s, &project, Some(Mode::Pr), true);
+    turn_floor_on(&s, &project);
+    remember_delivery(&s, &project, None, 7);
+    let page: String = (0..3000).map(|i| format!("src/f{i}.rs\n")).collect();
+    let gh = files_of(Ok(&page));
+    let question = asked(&merge::merge(&s, &gh, agent_merge("acme/web"), 20).unwrap());
+    assert!(question.contains("3000"), "{question}");
+    assert!(gh.ran("pr", "merge").is_empty());
+}
+
+#[test]
+fn a_rename_counts_the_current_name_and_still_holds_the_old_path() {
+    let project = floor_project("rename");
+    let s = store();
+    set_mode(&s, &project, Some(Mode::Pr), true);
+    turn_floor_on(&s, &project);
+    remember_delivery(&s, &project, None, 7);
+
+    let protected = files_of(Ok("filename:src/new.rs\nprevious:.env\n"));
+    let question = asked(&merge::merge(&s, &protected, agent_merge("acme/web"), 20).unwrap());
+    assert!(question.contains(".env"), "{question}");
+    assert!(!question.contains("couldn't be read"), "{question}");
+    assert!(protected.ran("pr", "merge").is_empty());
+
+    let ordinary = files_of(Ok("filename:src/new.rs\nprevious:src/old.rs\n"));
+    let merged = merge::merge(&s, &ordinary, agent_merge("acme/web"), 30).unwrap();
+    assert!(
+        matches!(merged, MergeOutcome::Merged { .. }),
+        "a rename of an ordinary file is one file: {merged:?}"
+    );
 }
 
 #[test]

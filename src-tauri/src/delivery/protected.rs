@@ -200,19 +200,72 @@ fn extra_hit(path: &RepoPath, extra: &Extra) -> bool {
 }
 
 /// What `gh` said the pull request changes. `Unread` is a failure to read, including a
-/// timeout: the floor treats that as protected, and a later try can read the list again.
+/// timeout, or a list that is not the whole diff. The floor asks, and a later try can read again.
+/// `reason` is the reader's own words, kept so the ask says why.
 pub enum ChangedFiles {
     Listed(Vec<String>),
-    Unread,
+    Unread { reason: String },
 }
+
+/// A parsed file list, before it is compared with GitHub's changed-file count.
+/// `filenames` counts current names only. A rename's old name is in `paths` and is not counted.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FileList {
+    pub paths: Vec<String>,
+    pub filenames: usize,
+}
+
+/// The raw read. A parsed body is not yet the whole diff: [`judge`] decides that.
+pub enum ReadFiles {
+    Parsed(FileList),
+    Unread { reason: String },
+}
+
+/// GitHub's list-files endpoint returns at most this many files, and still exits 0.
+const FILE_LIST_CEILING: usize = 3000;
+
+/// The list is the whole diff only when the number of current filenames equals `reported`
+/// (`changedFiles` on the pull request) and is under the API ceiling. An empty list is the
+/// whole diff only when `reported` is 0. Anything else is unread, including a missing count.
+pub fn judge(read: ReadFiles, reported: Option<u64>) -> ChangedFiles {
+    let list = match read {
+        ReadFiles::Unread { reason } => return ChangedFiles::Unread { reason },
+        ReadFiles::Parsed(list) => list,
+    };
+    if list.filenames >= FILE_LIST_CEILING {
+        return ChangedFiles::Unread {
+            reason: format!(
+                "GitHub's file list stops at {FILE_LIST_CEILING} files, so this one may be short."
+            ),
+        };
+    }
+    match reported {
+        Some(count) if count == list.filenames as u64 => ChangedFiles::Listed(list.paths),
+        Some(count) => ChangedFiles::Unread {
+            reason: format!(
+                "GitHub says this pull request changes {count} files, but the list has {}.",
+                list.filenames
+            ),
+        },
+        None => ChangedFiles::Unread {
+            reason: "GitHub didn't say how many files this pull request changes.".into(),
+        },
+    }
+}
+
+/// Current filename, then the old name of a rename. The old name is marked so it is not
+/// counted as another file. A bare line is a current filename (tests, and a list with no renames).
+const FILE_LIST_JQ: &str = r#".[] | "filename:\(.filename)", (select(.previous_filename != null) | "previous:\(.previous_filename)")"#;
 
 /// The pull request's changed paths, renames included (the old name and the new one).
 /// Goes through `Github::run`, which is the existing `gh` reader and its allow-listed
 /// child environment. A list that cannot be read, or that is not a list of paths, is
-/// [`ChangedFiles::Unread`].
-pub fn changed_files(gh: &dyn super::github::Github, repo: &str, number: u64) -> ChangedFiles {
+/// [`ReadFiles::Unread`] and keeps the reader's error.
+pub fn changed_files(gh: &dyn super::github::Github, repo: &str, number: u64) -> ReadFiles {
     if number == 0 || crate::pr_watch::github::split_repo(repo).is_none() {
-        return ChangedFiles::Unread;
+        return ReadFiles::Unread {
+            reason: "the repository or pull request number is not one GitHub can list".into(),
+        };
     }
     let repo = repo.trim();
     let args = [
@@ -220,20 +273,24 @@ pub fn changed_files(gh: &dyn super::github::Github, repo: &str, number: u64) ->
         "--paginate".to_string(),
         format!("repos/{repo}/pulls/{number}/files"),
         "--jq".to_string(),
-        ".[] | .filename, (.previous_filename // empty)".to_string(),
+        FILE_LIST_JQ.to_string(),
     ];
     match gh.run(None, &args) {
-        Ok(body) => match parse_changed_files(&body) {
-            Ok(paths) => ChangedFiles::Listed(paths),
-            Err(()) => ChangedFiles::Unread,
+        Ok(body) => match parse_file_list(&body) {
+            Ok(list) => ReadFiles::Parsed(list),
+            Err(()) => ReadFiles::Unread {
+                reason: "the file list was not a list of paths".into(),
+            },
         },
-        Err(_) => ChangedFiles::Unread,
+        Err(error) => ReadFiles::Unread { reason: error },
     }
 }
 
 /// One path per line, as `gh api --jq` prints them. `null` and blanks are skipped.
 /// JSON, a NUL, or a control character means the body is not a path list.
-pub(crate) fn parse_changed_files(body: &str) -> Result<Vec<String>, ()> {
+/// `filename:` lines count toward the changed-file total. `previous:` lines are old names
+/// of a rename: they are held, and they are not counted.
+pub(crate) fn parse_file_list(body: &str) -> Result<FileList, ()> {
     let trimmed = body.trim();
     if (trimmed.starts_with('{') || trimmed.starts_with('[')) && trimmed.contains(['"', ':']) {
         return Err(());
@@ -242,6 +299,7 @@ pub(crate) fn parse_changed_files(body: &str) -> Result<Vec<String>, ()> {
         return Err(());
     }
     let mut paths = Vec::new();
+    let mut filenames = 0usize;
     for line in body.split(['\n', '\r']) {
         let line = line.trim();
         if line.is_empty() || line == "null" {
@@ -250,12 +308,31 @@ pub(crate) fn parse_changed_files(body: &str) -> Result<Vec<String>, ()> {
         if line.chars().any(char::is_control) {
             return Err(());
         }
-        if paths.iter().any(|seen: &String| seen == line) {
+        let (path, is_filename) = marked_path(line);
+        if path.is_empty() {
             continue;
         }
-        paths.push(line.to_string());
+        if is_filename {
+            filenames += 1;
+        }
+        if paths.iter().any(|seen: &String| seen == &path) {
+            continue;
+        }
+        paths.push(path);
     }
-    Ok(paths)
+    Ok(FileList { paths, filenames })
+}
+
+/// `filename:` is the current name. `previous:` is the old name of a rename.
+/// Anything else is a current name, so a list with no renames stays a list of paths.
+fn marked_path(line: &str) -> (String, bool) {
+    if let Some(path) = line.strip_prefix("filename:") {
+        (path.to_string(), true)
+    } else if let Some(path) = line.strip_prefix("previous:") {
+        (path.to_string(), false)
+    } else {
+        (line.to_string(), true)
+    }
 }
 
 /// Paths from `paths` that the floor holds. Built-ins always count. `extras` only add.
@@ -426,55 +503,61 @@ mod tests {
         assert!(hits(&["./"], &[]).is_empty());
     }
 
+    fn listed(body: &str) -> Result<Vec<String>, ()> {
+        parse_file_list(body).map(|list| list.paths)
+    }
+
     #[test]
     fn a_changed_file_list_keeps_both_names_of_a_rename_and_rejects_a_body_that_is_not_paths() {
         assert_eq!(
-            parse_changed_files(".github/workflows/old.yml\nsrc/new name.yml\n").unwrap(),
+            listed(".github/workflows/old.yml\nsrc/new name.yml\n").unwrap(),
             vec![
                 ".github/workflows/old.yml".to_string(),
                 "src/new name.yml".to_string()
             ]
         );
         assert_eq!(
-            parse_changed_files("src/a.rs\r\nsrc/a.rs\r\nnull\r\n\r\n").unwrap(),
+            listed("src/a.rs\r\nsrc/a.rs\r\nnull\r\n\r\n").unwrap(),
             vec!["src/a.rs".to_string()]
         );
         assert_eq!(
-            parse_changed_files("migrations\\001.sql\n").unwrap(),
+            listed("migrations\\001.sql\n").unwrap(),
             vec!["migrations\\001.sql".to_string()]
         );
-        assert!(parse_changed_files("").unwrap().is_empty());
-        assert!(parse_changed_files("{\"filename\":\"a\"}\n").is_err());
-        assert!(parse_changed_files("[{\"filename\":\"a\"}]\n").is_err());
-        assert!(parse_changed_files("src/a.rs\0hidden/.env\n").is_err());
+        assert!(listed("").unwrap().is_empty());
+        assert!(listed("{\"filename\":\"a\"}\n").is_err());
+        assert!(listed("[{\"filename\":\"a\"}]\n").is_err());
+        assert!(listed("src/a.rs\0hidden/.env\n").is_err());
         // A one-line name that merely starts with a brace is still a path.
-        assert_eq!(
-            parse_changed_files("{notes}\n").unwrap(),
-            vec!["{notes}".to_string()]
-        );
+        assert_eq!(listed("{notes}\n").unwrap(), vec!["{notes}".to_string()]);
     }
 
     #[test]
     fn an_unreadable_changed_file_list_is_not_an_empty_diff() {
         use super::super::github::fake::FakeGithub;
-        use super::ChangedFiles;
 
         let gh = FakeGithub::new(vec![]);
         *gh.files.lock().unwrap() = Some(Ok(".github/workflows/old.yml\nsrc/renamed.yml\n".into()));
         match changed_files(&gh, "acme/web", 7) {
-            ChangedFiles::Listed(paths) => assert_eq!(
-                paths,
+            ReadFiles::Parsed(list) => assert_eq!(
+                list.paths,
                 vec![
                     ".github/workflows/old.yml".to_string(),
                     "src/renamed.yml".to_string()
                 ]
             ),
-            ChangedFiles::Unread => panic!("the list was readable"),
+            ReadFiles::Unread { reason } => panic!("the list was readable: {reason}"),
         }
         let call = gh.ran("api", "--paginate");
         assert_eq!(call.len(), 1);
         assert_eq!(call[0][2], "repos/acme/web/pulls/7/files");
-        assert!(call[0].contains(&"--jq".to_string()));
+        let jq = call[0]
+            .iter()
+            .find(|arg| arg.contains(".filename"))
+            .expect("jq");
+        assert!(jq.contains(".previous_filename"), "{jq}");
+        assert!(jq.contains("filename:"), "{jq}");
+        assert!(jq.contains("previous:"), "{jq}");
         assert!(
             call[0]
                 .iter()
@@ -482,38 +565,154 @@ mod tests {
             "the file list request must not carry a token: {call:?}"
         );
 
-        // A timeout or any other failure is unread, and the error text is dropped.
+        // A timeout or any other failure is unread, and the reader's words are kept.
         *gh.files.lock().unwrap() = Some(Err("gh didn't answer within 2 minutes".into()));
-        assert!(matches!(
-            changed_files(&gh, "acme/web", 7),
-            ChangedFiles::Unread
-        ));
+        match changed_files(&gh, "acme/web", 7) {
+            ReadFiles::Unread { reason } => assert!(reason.contains("2 minutes"), "{reason}"),
+            ReadFiles::Parsed(_) => panic!("a timeout is not a file list"),
+        }
         *gh.files.lock().unwrap() = Some(Ok("{\"message\":\"bad\"}\n".into()));
-        assert!(matches!(
-            changed_files(&gh, "acme/web", 7),
-            ChangedFiles::Unread
-        ));
+        match changed_files(&gh, "acme/web", 7) {
+            ReadFiles::Unread { reason } => {
+                assert!(reason.contains("not a list of paths"), "{reason}")
+            }
+            ReadFiles::Parsed(_) => panic!("json is not a file list"),
+        }
 
-        // An empty success is an empty diff, not a failure.
+        // An empty success parses as no files. It is the whole diff only when the count is 0.
         *gh.files.lock().unwrap() = Some(Ok(String::new()));
-        assert!(matches!(
-            changed_files(&gh, "acme/web", 7),
-            ChangedFiles::Listed(paths) if paths.is_empty()
-        ));
+        match changed_files(&gh, "acme/web", 7) {
+            ReadFiles::Parsed(list) => {
+                assert!(list.paths.is_empty());
+                assert_eq!(list.filenames, 0);
+            }
+            ReadFiles::Unread { reason } => panic!("an empty body is a list of nothing: {reason}"),
+        }
 
         let runs_before = gh.runs.lock().unwrap().len();
         assert!(matches!(
             changed_files(&gh, "../not a repo", 7),
-            ChangedFiles::Unread
+            ReadFiles::Unread { .. }
         ));
         assert!(matches!(
             changed_files(&gh, "acme/web", 0),
-            ChangedFiles::Unread
+            ReadFiles::Unread { .. }
         ));
         assert_eq!(
             gh.runs.lock().unwrap().len(),
             runs_before,
             "a bad repo or number never calls gh"
         );
+    }
+
+    fn page_of(filenames: usize) -> String {
+        (0..filenames)
+            .map(|i| format!("filename:src/f{i}.rs\n"))
+            .collect()
+    }
+
+    #[test]
+    fn a_short_or_capped_file_list_is_not_the_whole_diff() {
+        // Page one of a two-page diff (GitHub's default page is 30). The count says there is more.
+        let page_one = parse_file_list(&page_of(30)).unwrap();
+        assert_eq!(page_one.filenames, 30);
+        match judge(ReadFiles::Parsed(page_one), Some(60)) {
+            ChangedFiles::Unread { reason } => {
+                assert!(reason.contains("60"), "{reason}");
+                assert!(reason.contains("30"), "{reason}");
+            }
+            ChangedFiles::Listed(_) => panic!("page one is not the whole diff"),
+        }
+
+        let two = parse_file_list("filename:src/a.rs\nfilename:src/b.rs\n").unwrap();
+        assert!(matches!(
+            judge(ReadFiles::Parsed(two), Some(5)),
+            ChangedFiles::Unread { .. }
+        ));
+
+        // The API ceiling still returns success. A matching count of 3000 is not the whole diff.
+        let capped = parse_file_list(&page_of(3000)).unwrap();
+        assert!(matches!(
+            judge(ReadFiles::Parsed(capped), Some(3000)),
+            ChangedFiles::Unread { reason } if reason.contains("3000")
+        ));
+        let over = parse_file_list(&page_of(3001)).unwrap();
+        assert!(matches!(
+            judge(ReadFiles::Parsed(over), Some(3001)),
+            ChangedFiles::Unread { .. }
+        ));
+
+        // Just under the ceiling, a matching count is the whole diff.
+        let under = parse_file_list(&page_of(2999)).unwrap();
+        assert!(matches!(
+            judge(ReadFiles::Parsed(under), Some(2999)),
+            ChangedFiles::Listed(paths) if paths.len() == 2999
+        ));
+
+        // A missing count is unread, even when the body parsed.
+        let one = parse_file_list("filename:readme.md\n").unwrap();
+        assert!(matches!(
+            judge(ReadFiles::Parsed(one), None),
+            ChangedFiles::Unread { reason } if reason.contains("didn't say")
+        ));
+
+        // An empty list allows only when GitHub says nothing changed.
+        let empty = parse_file_list("").unwrap();
+        assert!(matches!(
+            judge(ReadFiles::Parsed(empty.clone()), Some(0)),
+            ChangedFiles::Listed(paths) if paths.is_empty()
+        ));
+        match judge(ReadFiles::Parsed(empty), Some(5)) {
+            ChangedFiles::Unread { reason } => assert!(reason.contains('5'), "{reason}"),
+            ChangedFiles::Listed(_) => panic!("an empty list is not five files"),
+        }
+
+        // The reader's error is kept, and a count is not consulted.
+        match judge(
+            ReadFiles::Unread {
+                reason: "gh didn't answer within 2 minutes".into(),
+            },
+            Some(0),
+        ) {
+            ChangedFiles::Unread { reason } => assert!(reason.contains("2 minutes"), "{reason}"),
+            ChangedFiles::Listed(_) => panic!("a timeout is not an empty diff"),
+        }
+    }
+
+    #[test]
+    fn a_rename_counts_the_current_name_and_keeps_the_old_one() {
+        let body = "filename:src/new name.rs\nprevious:.github/workflows/old.yml\n";
+        let list = parse_file_list(body).unwrap();
+        assert_eq!(list.filenames, 1, "previous_filename is not another file");
+        assert_eq!(
+            list.paths,
+            vec![
+                "src/new name.rs".to_string(),
+                ".github/workflows/old.yml".to_string()
+            ]
+        );
+        match judge(ReadFiles::Parsed(list), Some(1)) {
+            ChangedFiles::Listed(paths) => {
+                assert_eq!(
+                    protected_hits(&paths, &[] as &[&str]),
+                    vec![".github/workflows/old.yml".to_string()]
+                );
+            }
+            ChangedFiles::Unread { reason } => {
+                panic!("a complete rename is the whole diff: {reason}")
+            }
+        }
+
+        // Old names do not trip the 3000 ceiling, and they do not inflate the count.
+        let mut many = String::from("filename:src/new.rs\n");
+        for i in 0..2999 {
+            many.push_str(&format!("previous:src/old{i}.rs\n"));
+        }
+        let list = parse_file_list(&many).unwrap();
+        assert_eq!(list.filenames, 1);
+        assert!(matches!(
+            judge(ReadFiles::Parsed(list), Some(1)),
+            ChangedFiles::Listed(_)
+        ));
     }
 }

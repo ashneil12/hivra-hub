@@ -24,7 +24,7 @@ fn pull_request_query() -> String {
   viewer {{ login }} \
   rateLimit {{ remaining resetAt cost }} \
   repository(owner: $owner, name: $name) {{ nameWithOwner pullRequest(number: $number) {{ \
-    number url title state isDraft merged mergedAt closedAt mergeCommit {{ oid }} \
+    number url title state isDraft merged mergedAt closedAt mergeCommit {{ oid }} changedFiles \
     headRefOid headRefName baseRefName headRepository {{ nameWithOwner }} mergeable reviewDecision author {{ login }} \
     commits(last: 1) {{ nodes {{ commit {{ oid statusCheckRollup {{ state contexts(first: 100) {{ totalCount \
       pageInfo {{ hasNextPage endCursor }} nodes {{ {CHECK_FIELDS} }} }} }} }} }} }} \
@@ -75,6 +75,9 @@ pub struct PrRead {
     /// Comments, reviews and review comments, oldest first. `None` when the read could not see them all.
     pub remarks: Option<Vec<Remark>>,
     pub rate: Option<RateLimit>,
+    /// How many files GitHub says this pull request changes (`changedFiles`). `None` when the read
+    /// didn't say, which the merge floor treats as unread.
+    pub changed_files: Option<u64>,
 }
 
 impl PrRead {
@@ -576,6 +579,7 @@ pub fn parse(json: &str) -> Result<PrRead, ReadError> {
         },
         remarks: Some(remarks),
         rate,
+        changed_files: pr.get("changedFiles").and_then(Value::as_u64),
     })
 }
 
