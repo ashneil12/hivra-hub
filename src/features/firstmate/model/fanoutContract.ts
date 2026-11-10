@@ -143,7 +143,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function projectPath(value: unknown): string {
   const raw = typeof value === "string" ? value.trim() : "";
   const bad = () => fail(`A path must be relative and inside the project: "${typeof value === "string" ? value : String(value)}" is not.`);
-  if (!raw || raw.length > 400 || raw.includes("\\") || raw.includes("\0")) return bad();
+  if (!raw || raw.length > 400 || raw.includes("\\") || /[\0\r\n]/.test(raw)) return bad();
   if (raw.startsWith("/") || raw.startsWith("~") || /^[A-Za-z]:/.test(raw)) return bad();
   const clean = raw.replace(/^(?:\.\/)+/, "").replace(/\/+$/, "");
   if (!clean || clean === "." || clean.split("/").some((part) => part === ".." || part === "")) return bad();
@@ -175,7 +175,7 @@ function names(value: unknown, field: string, task: string, max: number): string
   for (const item of list(value, field, task, max)) {
     if (typeof item !== "string" || !item.trim() || item.trim().length > MAX_NAME_CHARS)
       fail(`Task ${task}: ${field} must list short names, each a non-empty string.`);
-    const name = (item as string).trim();
+    const name = (item as string).replace(/\s+/g, " ").trim();
     if (!out.includes(name)) out.push(name);
   }
   return out;
@@ -335,7 +335,7 @@ function parseProvides(value: unknown, task: string): ContractProvide[] {
     const kind = item.kind as ProvideKind;
     if (typeof item.name !== "string" || !item.name.trim() || item.name.trim().length > MAX_NAME_CHARS)
       fail(`Task ${task}: a provide needs a name, the literal one other tasks will require.`);
-    const name = kind === "file" ? projectPath(item.name) : (item.name as string).trim();
+    const name = kind === "file" ? projectPath(item.name) : (item.name as string).replace(/\s+/g, " ").trim();
     if (kind === "file" && GLOB_CHARS.test(name)) fail(`Task ${task}: a file provide names one file, not a pattern ("${name}").`);
     if (out.some((entry) => entry.name === name)) fail(`Task ${task} provides "${name}" twice.`);
     const found: ContractProvide = { task, kind, name };

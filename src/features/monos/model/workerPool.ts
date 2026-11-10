@@ -19,6 +19,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import type { WorkerPoolHost } from "../../agent-app/model/agentAppTasks";
 import type { Delegation } from "./delegations";
+import type { DependencyWait } from "../../firstmate/model/fanoutWaves";
 import type { ProviderRateLimits } from "../../providers/model/rateLimits";
 import { freshRoomAfter, limitResetAt } from "../../providers/model/accountWaterfall";
 import { isOpenDelegation } from "./delegations";
@@ -623,7 +624,8 @@ export function dequeueWorker(id: string): Promise<boolean> {
 
 // ---- deciding ----------------------------------------------------------------------------------------------------
 
-export type WaitReason = "workers" | "heavy" | "limit" | "files";
+/** WP-171: `requires` waits for the tasks of its fan-out that provide what it needs; `held` is that wait when one of them failed. */
+export type WaitReason = "workers" | "heavy" | "limit" | "files" | "requires" | "held";
 export type Admission = { start: true } | { start: false; reason: WaitReason; line: string };
 
 const clock = (ms: number) => new Date(ms).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
@@ -650,6 +652,8 @@ export type AdmitInput = {
   harness: string;
   /** r87: the files or folders it will change, when known. */
   files?: readonly string[];
+  /** WP-171: its fan-out link (firstmate/model/fanoutWaves.ts), when it is one task of a contract. Opaque here. */
+  fanout?: unknown;
 };
 
 // ---- r87: two jobs never change the same files at once ------------------------------------------------------------
@@ -755,7 +759,20 @@ export type AdmitContext = {
   heavy?: (childSession: string) => boolean;
   /** What waits already (queue order); defaults to the saved queue. */
   queue?: readonly QueuedWorker[];
+  /**
+   * WP-171: what a task of a fan-out still waits for, from the rows (firstmate/model/fanoutWaves.ts dependencyVerdict);
+   * undefined when everything it needs is delivered. Absent: no task waits for another.
+   */
+  dependency?: (job: { id: string; fanout: unknown }) => DependencyWait | undefined;
 };
+
+/** The wait a job's dependencies put on it now, or undefined (it needs nothing, or has it). */
+function dependencyWait(job: { id: string; fanout?: unknown }, ctx: AdmitContext): DependencyWait | undefined {
+  return job.fanout === undefined ? undefined : ctx.dependency?.({ id: job.id, fanout: job.fanout });
+}
+
+/** A queued job's fan-out link, kept in its stored delegate input. */
+const queuedFanout = (job: QueuedWorker): unknown => job.input?.fanout;
 
 function decide(job: AdmitInput, load: ProjectLoad, limits: WorkerLimits, room: ProviderRoom): Admission {
   if (load.running >= limits.workers)
@@ -776,9 +793,16 @@ export function admitWorker(job: AdmitInput, ctx: AdmitContext): Admission {
   const room = ctx.room(job.harness);
   // What already waits in this project starts first, except a heavy job that waits only for a heavy-test slot.
   const heavyFull = load.heavy >= limits.heavy;
+  // WP-171: a task that waits for a provider holds no seat, so it never holds up work that needs nothing.
   const ahead = (ctx.queue ?? queuedWorkers()).filter(
-    (q) => q.project === job.project && q.id !== job.id && !(q.heavy && heavyFull),
+    (q) =>
+      q.project === job.project &&
+      q.id !== job.id &&
+      !(q.heavy && heavyFull) &&
+      !dependencyWait({ id: q.id, fanout: queuedFanout(q) }, ctx),
   );
+  const needed = dependencyWait(job, ctx);
+  if (needed) return { start: false, reason: needed.reason, line: needed.line };
   const shared = sharedWith(job, ctx.rows, ahead);
   if (shared) return { start: false, reason: "files", line: filesWaitLine(shared) };
   return decide(job, { running: load.running + ahead.length, heavy: load.heavy + ahead.filter((q) => q.heavy).length }, limits, room);
@@ -795,6 +819,8 @@ export function nextWorkers(ctx: AdmitContext): QueuedWorker[] {
     const limits = (ctx.limits ?? workerLimits)(job.project);
     // Another window is starting it: it takes its place, but isn't this window's to start.
     const claimed = isClaimed(job);
+    // WP-171: not until everything it needs is delivered; it keeps its place and takes no seat meanwhile.
+    if (!claimed && dependencyWait({ id: job.id, fanout: queuedFanout(job) }, ctx)) continue;
     if (!claimed && sharedWith(job, ctx.rows, start)) continue;
     if (!claimed && !decide(job, load, limits, ctx.room(job.harness)).start) continue;
     if (!claimed) start.push(job);
@@ -808,6 +834,8 @@ export function queuedLine(job: QueuedWorker, ctx: AdmitContext): string {
   const limits = (ctx.limits ?? workerLimits)(job.project);
   const load = projectLoad(job.project, ctx.rows, ctx.heavy);
   const room = ctx.room(job.harness);
+  const needed = dependencyWait({ id: job.id, fanout: queuedFanout(job) }, ctx);
+  if (needed) return needed.line;
   const shared = sharedWith(job, ctx.rows);
   if (shared) return filesWaitLine(shared);
   const why = decide(job, load, limits, room);
@@ -901,15 +929,18 @@ const startingNow = new Set<string>();
 export function workerPoolHost(deps: {
   openRows(): Delegation[];
   room(harness: string): ProviderRoom;
+  /** WP-171: what a task of a fan-out still waits for (AdmitContext.dependency). Absent: it can't wait for a provider. */
+  dependency?: AdmitContext["dependency"];
   /** Put the waiting worker's card in its chat (it shows "Waiting for a free worker" until it starts). */
   card?(
     job: QueuedWorker,
     launch: { cwd: string; harness: string; model?: string; ranFrom?: string; ranEffort?: string; cliFallback?: string },
   ): void;
 }): WorkerPoolHost {
-  const ctx = (): AdmitContext => ({ rows: deps.openRows(), room: deps.room });
+  const ctx = (): AdmitContext => ({ rows: deps.openRows(), room: deps.room, dependency: deps.dependency });
   return {
     openRows: deps.openRows,
+    waitsOnProviders: deps.dependency !== undefined,
     admit: (job) => (startingNow.has(job.id) ? { start: true } : admitWorker(job, ctx())),
     enqueue: (job, launch) => {
       enqueueWorker(job);
@@ -948,6 +979,14 @@ export function workerPoolHost(deps: {
 export async function pumpWorkers(deps: {
   openRows(): Delegation[];
   room(harness: string): ProviderRoom;
+  /** WP-171: what a task of a fan-out still waits for (AdmitContext.dependency). */
+  dependency?: AdmitContext["dependency"];
+  /**
+   * WP-171: bring what `dependency` reads up to date before anyone is started: the rows of the providers the waiting
+   * tasks need, and the check of what each finished provider made. A failure is ignored: what could not be read stays
+   * unknown, and a task whose provider is unknown does not start.
+   */
+  settle?(queue: readonly QueuedWorker[]): Promise<void>;
   /** The owner chat can't take it any more (removed): the job is dropped. */
   ownerGone?(job: QueuedWorker): boolean;
   /** Its chat isn't loaded in this window right now: it keeps its place and starts once it is. */
@@ -958,7 +997,10 @@ export async function pumpWorkers(deps: {
   for (const job of queuedWorkers()) if (deps.ownerGone?.(job)) await dequeueWorker(job.id);
   const queue = queuedWorkers().filter((job) => deps.canStart?.(job) ?? true);
   if (!queue.length) return [];
-  const ready = nextWorkers({ rows: deps.openRows(), room: deps.room, queue }).filter((job) => !startingNow.has(job.id));
+  await deps.settle?.(queue).catch(() => undefined);
+  const ready = nextWorkers({ rows: deps.openRows(), room: deps.room, queue, dependency: deps.dependency }).filter(
+    (job) => !startingNow.has(job.id),
+  );
   const started: QueuedWorker[] = [];
   for (const job of ready) {
     startingNow.add(job.id);

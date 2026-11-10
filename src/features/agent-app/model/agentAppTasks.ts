@@ -113,6 +113,8 @@ export type WorkerPoolHost = {
   unqueue(owner: string, id: string): boolean;
   limits(project: string): WorkerLimits;
   setLimits(project: string, next: Partial<WorkerLimits>): WorkerLimits;
+  /** WP-171: this host can hold a task of a fan-out until the tasks that provide what it requires are delivered. */
+  waitsOnProviders?: boolean;
   /** The project's own worker model (E7), when Ash chose one; else undefined for the usual Sonnet. */
   model(project: string): WorkerModel | undefined;
   /** WP-89: the project's worker default, CLI included. Absent on a host that only knows the Claude ladder. */

@@ -1,0 +1,168 @@
+// @vitest-environment happy-dom
+// WP-171: a task of a fan-out waits for the tasks that provide what it requires, in the same queue every waiting worker
+// uses. Waiting for a provider is not a worker limit: it never counts against the project, and never holds up work that
+// needs nothing.
+import { beforeEach, describe, expect, it } from "vitest";
+import type { Delegation } from "./delegations";
+import {
+  admitWorker,
+  enqueueWorker,
+  forgetFiles,
+  nextWorkers,
+  pumpWorkers,
+  queuedLine,
+  queuedWorkers,
+  resetWorkerPool,
+  setWorkerLimits,
+  type AdmitContext,
+  type ProviderRoom,
+  type QueuedWorker,
+} from "./workerPool";
+import type { DependencyWait } from "../../firstmate/model/fanoutWaves";
+
+const room = (): ProviderRoom => ({ room: true });
+const row = (child: string, state: Delegation["state"] = "running") =>
+  ({ childSession: child, project: "tally", state, follow: null, title: child }) as Pick<
+    Delegation,
+    "project" | "state" | "childSession" | "follow" | "title"
+  >;
+const job = (id: string, extra: Partial<QueuedWorker> = {}): QueuedWorker => ({
+  id,
+  ownerSession: "lead",
+  requestId: id,
+  project: "tally",
+  projectName: "Tally",
+  title: `Job ${id}`,
+  heavy: false,
+  harness: "claude",
+  queuedAt: 0,
+  input: { brief: id },
+  ...extra,
+});
+const needs = (id: string): QueuedWorker => job(id, { input: { brief: id, fanout: { for: id } } });
+
+/** The dependency check a test controls: what each waiting task waits for right now. */
+function context(waits: Record<string, DependencyWait | undefined>, rest: Partial<AdmitContext> = {}): AdmitContext {
+  return {
+    rows: [],
+    room,
+    dependency: ({ fanout }) => waits[(fanout as { for: string }).for],
+    ...rest,
+  };
+}
+const admitInput = (id: string) => ({ id, project: "tally", projectName: "Tally", heavy: false, harness: "claude", fanout: { for: id } });
+const WAIT: DependencyWait = { reason: "requires", line: "Waiting for api to finish and be checked. It starts by itself then." };
+const HELD: DependencyWait = { reason: "held", line: "Held: api failed: boom. Cancel each held task with task_cancel." };
+
+beforeEach(() => {
+  resetWorkerPool();
+  forgetFiles();
+});
+
+describe("a fan-out's dependents in the worker queue (WP-171)", () => {
+  it("waits for its provider even when the project has room, and says what for", () => {
+    expect(admitWorker(admitInput("board"), context({ board: WAIT }))).toEqual({ start: false, reason: "requires", line: WAIT.line });
+  });
+
+  it("holds when a provider failed, with the first mate's line", () => {
+    expect(admitWorker(admitInput("board"), context({ board: HELD }))).toEqual({ start: false, reason: "held", line: HELD.line });
+  });
+
+  it("starts at once when everything it needs is delivered, or it needs nothing", () => {
+    expect(admitWorker(admitInput("board"), context({ board: undefined })).start).toBe(true);
+    expect(admitWorker({ ...admitInput("plain"), fanout: undefined }, context({ plain: WAIT })).start).toBe(true);
+  });
+
+  it("is still held back by a full project: delivery is not a seat", () => {
+    setWorkerLimits("tally", { workers: 1, heavy: 1 });
+    const out = admitWorker(admitInput("board"), context({ board: undefined }, { rows: [row("w1")] }));
+    expect(out).toMatchObject({ start: false, reason: "workers" });
+  });
+
+  it("does not hold up work that needs nothing, nor count against the project's limit", () => {
+    setWorkerLimits("tally", { workers: 1, heavy: 1 });
+    const queue = [needs("board"), needs("docs")];
+    const waits = { board: WAIT, docs: WAIT };
+    // Two dependents wait in the queue, yet a new independent job still gets the one free seat.
+    const out = admitWorker({ ...admitInput("plain"), fanout: undefined }, context(waits, { queue }));
+    expect(out).toEqual({ start: true });
+  });
+
+  it("the queue starts a dependent only once what it needs is delivered, and skips it until then", () => {
+    const board = needs("board");
+    const plain = job("plain");
+    const waits: Record<string, DependencyWait | undefined> = { board: WAIT };
+    expect(nextWorkers(context(waits, { queue: [board, plain] })).map((q) => q.id)).toEqual(["plain"]);
+    waits.board = HELD;
+    expect(nextWorkers(context(waits, { queue: [board, plain] })).map((q) => q.id)).toEqual(["plain"]);
+    waits.board = undefined;
+    expect(nextWorkers(context(waits, { queue: [board, plain] })).map((q) => q.id)).toEqual(["board", "plain"]);
+  });
+
+  it("keeps a held task in the queue for the first mate to cancel or redo", () => {
+    const board = needs("board");
+    expect(nextWorkers(context({ board: HELD }, { queue: [board] }))).toEqual([]);
+    expect(queuedLine(board, context({ board: HELD }))).toBe(HELD.line);
+    expect(queuedLine(board, context({ board: WAIT }))).toBe(WAIT.line);
+  });
+
+  it("only counts the seats of the workers that can start: a waiting dependent holds none", () => {
+    setWorkerLimits("tally", { workers: 2, heavy: 1 });
+    const queue = [needs("board"), job("a"), job("b")];
+    const started = nextWorkers(context({ board: WAIT }, { queue })).map((q) => q.id);
+    expect(started).toEqual(["a", "b"]);
+  });
+
+  it("a task that is not part of a fan-out is untouched", () => {
+    expect(queuedLine(job("plain"), context({}))).toBe("Starting now.");
+    expect(nextWorkers({ rows: [], room, queue: [job("plain")] }).map((q) => q.id)).toEqual(["plain"]);
+  });
+});
+
+describe("the pump settles what a dependent waits on before it starts anything (WP-171)", () => {
+  it("brings the providers up to date first, then starts the dependent that is now ready", async () => {
+    const board = needs("board");
+    await enqueueWorker(board);
+    const waits: Record<string, DependencyWait | undefined> = { board: WAIT };
+    const events: string[] = [];
+    const started: string[] = [];
+    const deps = {
+      openRows: () => [],
+      room,
+      dependency: ({ fanout }: { fanout: unknown }) => {
+        events.push("asked");
+        return waits[(fanout as { for: string }).for];
+      },
+      settle: async () => {
+        events.push("settled");
+        waits.board = undefined;
+      },
+      start: async (queued: QueuedWorker) => {
+        started.push(queued.id);
+      },
+    };
+    await pumpWorkers(deps);
+    expect(events[0]).toBe("settled");
+    expect(started).toEqual(["board"]);
+    expect(queuedWorkers()).toEqual([]);
+  });
+
+  it("starts nothing, and keeps the task waiting, when settling throws", async () => {
+    await enqueueWorker(needs("board"));
+    const started: string[] = [];
+    await pumpWorkers({
+      openRows: () => [],
+      room,
+      dependency: () => WAIT,
+      settle: async () => {
+        throw new Error("the rows could not be read");
+      },
+      start: async (queued) => {
+        started.push(queued.id);
+      },
+    });
+    expect(started).toEqual([]);
+    expect(queuedWorkers().map((q) => q.id)).toEqual(["board"]);
+  });
+});
+
