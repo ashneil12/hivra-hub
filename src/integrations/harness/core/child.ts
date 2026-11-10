@@ -387,6 +387,10 @@ export async function spawnChild(
     ...(devinAskEdits ? { devinAskEdits } : {}),
     ...(customRoute ? { customRoute } : {}),
   });
+  notePid(sessionId, pid);
+}
+
+function notePid(sessionId: string, pid: unknown): void {
   if (typeof pid !== "number" || pid <= 0) return;
   livePid.set(sessionId, pid);
   const exits = pendingExit.get(sessionId);
@@ -395,6 +399,28 @@ export async function spawnChild(
   if (!exited) return;
   livePid.delete(sessionId);
   exitHandlers.get(sessionId)?.(exited.code);
+}
+
+/**
+ * WP-134: start a More agents entry. The webview names the entry only; Rust reads the saved list and runs that entry's
+ * own command and arguments through the same spawn path as the eleven CLIs (src-tauri/src/more_agents.rs).
+ */
+export async function spawnMoreAgentChild(
+  sessionId: string,
+  agentId: string,
+  cwd: string,
+): Promise<void> {
+  livePid.delete(sessionId);
+  pendingExit.delete(sessionId);
+  ownedChildren.add(sessionId);
+  const pid = await invoke<number>("harness_spawn", {
+    sessionId,
+    command: "",
+    args: [],
+    cwd,
+    moreAgent: agentId,
+  });
+  notePid(sessionId, pid);
 }
 
 export function writeChild(sessionId: string, line: string): Promise<void> {
