@@ -1,6 +1,8 @@
 // WP-146: never carry a conversation past an unapproved action (OpenBot 644d07d).
 // An open approval parks the turn, and a missing record does not count as allowed.
-// Only the approvals since Ash's last message count: older cards belong to turns he already moved past.
+// While the chat is busy every open card counts, wherever it sits: a card attaches to the tool block it belongs to
+// by call id, and that block can sit before Ash's last message. Cards from earlier turns are settled when a turn
+// stops or the next one starts (apply.ts), so an open one is always this turn's.
 // A denial is an answer, not a hold: the agent hears it and goes on without that call.
 
 import type { Block, Session } from "./session";
@@ -29,6 +31,7 @@ type GateSession = Pick<Session, "busy" | "blocks" | "backgroundTasks">;
 /**
  * Where the current stretch starts: just after the last message Ash sent. A saved draft is not one, and neither is
  * a hidden turn the app wrote (a room note, a checker's note): it must not hide a card that is still open.
+ * Only a card whose record never arrived is judged by position: nothing ever settles it, so an old one is history.
  */
 export function sinceLastUserMessage(blocks: readonly Block[]): readonly Block[] {
   for (let i = blocks.length - 1; i >= 0; i--) {
@@ -38,19 +41,21 @@ export function sinceLastUserMessage(blocks: readonly Block[]): readonly Block[]
   return blocks;
 }
 
+/** A card the provider asked for whose record never arrived: it has nothing to say yes or no to. */
+function isMissingRecord(block: Block): boolean {
+  return block.role === "approval" && !block.approval;
+}
+
 /**
  * True when a follow-up must not enter this turn.
- * Any open card since Ash's last message, or a card whose record never arrived, waits.
- * A later allow does not hide an earlier open card. A card from before his last message,
- * or one left behind once the turn has finished, is history.
+ * While the chat is busy, any open card waits, wherever it sits in the chat. A later allow does not hide an
+ * earlier open card, and neither does a later message of Ash's. A card whose record never arrived waits too, when
+ * it came after his last message. A card left behind once the turn has finished is history.
  */
 export function approvalBlocksCarry(session: GateSession): boolean {
   if (session.busy === false) return false;
-  return sinceLastUserMessage(session.blocks).some((block) => {
-    if (!block) return false;
-    if (block.role === "approval" && !block.approval) return true;
-    return !!block.approval && carryPastApproval(block.approval) === "wait";
-  });
+  if (session.blocks.some((block) => !!block.approval && carryPastApproval(block.approval) === "wait")) return true;
+  return sinceLastUserMessage(session.blocks).some(isMissingRecord);
 }
 
 /**
