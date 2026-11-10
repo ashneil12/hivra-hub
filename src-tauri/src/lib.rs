@@ -34,6 +34,8 @@ mod tasks; // WP-70: tasks shared by the person and their agents. // WP-77: labe
 
 // Hivra WP-12: delivery modes and the one merge path.
 mod delivery;
+// WP-162: update a package branch from main, and the programme lead lease.
+pub mod programme;
 // Hivra WP-81: a pinned tool, downloaded and checked, then the local gate before GitHub.
 mod delivery_gate;
 mod pinned_tool;
@@ -629,6 +631,11 @@ pub fn run() {
             delivery::delivery_merges,
             delivery::delivery_events_open,
             delivery::delivery_events_consume,
+            // WP-162: update a package branch from main.
+            programme::programme_update_settings_get,
+            programme::programme_update_settings_set,
+            programme::programme_bind_checkout,
+            programme::programme_update_from_main,
             // Hivra WP-81: the check before work goes to GitHub.
             delivery_gate::gate_setting_get,
             delivery_gate::gate_setting_set,

@@ -1638,6 +1638,8 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
     crate::attribution::ensure_tables(conn)?;
     // WP-76: the trash ledger. Not a numbered migration: an older build simply never reads it.
     crate::trash::ensure_table(conn)?;
+    // WP-162: package update settings and checkouts. In place, so an older build still opens this file.
+    crate::programme::ensure_tables(conn)?;
     Ok(())
 }
 
