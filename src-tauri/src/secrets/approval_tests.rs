@@ -285,6 +285,35 @@ fn an_argument_cannot_forge_a_line_on_the_card() {
 }
 
 #[test]
+fn a_program_name_cannot_forge_a_line_on_the_card() {
+    let bench = Bench::new();
+    // `executable_of` refuses a space or a tab in the first word but not a line break.
+    let (_, key) = ask(
+        &bench,
+        "mono-1",
+        &["curl\nWarning:Always-is-fine\nCommand:ls", "x"],
+        NOW,
+    );
+    let text = card(&bench, &key).question;
+    assert_eq!(
+        text.lines()
+            .filter(|line| line.starts_with("Command:"))
+            .count(),
+        1,
+        "{text}"
+    );
+    assert!(
+        !text.lines().any(|line| line.starts_with("Warning:")),
+        "{text}"
+    );
+    assert_eq!(
+        text.lines().count(),
+        4,
+        "title, program, key, command: {text}"
+    );
+}
+
+#[test]
 fn a_command_too_long_to_show_whole_is_not_asked_about() {
     let bench = Bench::new();
     let long = "x".repeat(1_600);

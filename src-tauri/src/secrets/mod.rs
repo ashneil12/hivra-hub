@@ -1629,11 +1629,10 @@ pub fn set_always_for_any_code(conn: &Connection, on: bool) -> Result<usize, Str
 /// The most the card shows of a command line. A command that cannot be shown whole is not asked about.
 pub const COMMAND_LINE_MAX: usize = 1_400;
 
-/// One word of a command as the card shows it: control characters written out, and a word with a space, a quote or a
-/// shell character in single quotes, so the words stay apart and no argument can start a line of its own.
-fn display_word(word: &str) -> String {
-    let mut shown = String::new();
-    for c in word.chars() {
+/// A name shown on a card with every control character written out, so nothing in it can start a line of its own.
+fn escape_controls(text: &str) -> String {
+    let mut shown = String::with_capacity(text.len());
+    for c in text.chars() {
         match c {
             '\n' => shown.push_str("\\n"),
             '\r' => shown.push_str("\\r"),
@@ -1642,6 +1641,13 @@ fn display_word(word: &str) -> String {
             c => shown.push(c),
         }
     }
+    shown
+}
+
+/// One word of a command as the card shows it: control characters written out, and a word with a space, a quote or a
+/// shell character in single quotes, so the words stay apart and no argument can start a line of its own.
+fn display_word(word: &str) -> String {
+    let shown = escape_controls(word);
     let plain = !shown.is_empty()
         && !shown.chars().any(|c| {
             c.is_whitespace()
@@ -1696,7 +1702,14 @@ pub fn run_question(
     runs_any: bool,
 ) -> Result<String, String> {
     let executable = command.first().map(String::as_str).unwrap_or("");
-    let program = program_base(executable);
+    // Every name that goes on a line of the card is written out first: a program, a label or a Mono's name with a line
+    // break in it must not be able to forge a line (a warning, or a different command).
+    let program = escape_controls(program_base(executable));
+    let (mono, label, whose) = (
+        escape_controls(mono),
+        escape_controls(label),
+        escape_controls(whose),
+    );
     let line = display_command(command);
     if line.chars().count() > COMMAND_LINE_MAX {
         return Err(
