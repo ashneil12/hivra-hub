@@ -239,6 +239,12 @@
       "url": "https://github.com/BarganConstantin/ccdeck",
       "licence": "AGPL-3.0",
       "gave": "ideas only: a live session tree (main agent at the root, subagents as nodes, inspectable tool calls) and a waiting-on-you list ordered questions first and longest wait first"
+    },
+    {
+      "name": "tasklane",
+      "url": "https://github.com/kunci115/tasklane",
+      "licence": "Apache-2.0",
+      "gave": "a protected-path floor so CI, migrations, key files and git internals still need a person's word before a merge, even when merge without asking is on (WP-158)"
     }
   ],
   "components": [
