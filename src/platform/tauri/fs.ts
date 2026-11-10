@@ -649,8 +649,14 @@ export function saveGeneratedImage(input: {
   return invoke<GeneratedImageAsset>("save_generated_image", input);
 }
 
-export function deleteGeneratedImages(paths: string[]): Promise<void> {
-  return invoke<void>("delete_generated_images", { paths });
+/** What a generated-image delete did. `skipped` counts paths it refused (outside the images folder); they are left alone. */
+export type GeneratedImageDeletion = {
+  removed: number;
+  skipped: number;
+};
+
+export function deleteGeneratedImages(paths: string[]): Promise<GeneratedImageDeletion> {
+  return invoke<GeneratedImageDeletion>("delete_generated_images", { paths });
 }
 
 export function writeTextFile(path: string, content: string): Promise<void> {

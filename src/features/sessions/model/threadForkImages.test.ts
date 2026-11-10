@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const invoke = vi.hoisted(() => vi.fn());
 vi.mock("@tauri-apps/api/core", () => ({ invoke }));
 
-import { copyGeneratedImage } from "./threadForkImages";
+import { copyGeneratedImage, forkImagePort } from "./threadForkImages";
 
 const ORIGINAL = "/data/generated-images/one.png";
 
@@ -65,5 +65,15 @@ describe("copyGeneratedImage", () => {
       },
     });
     await expect(copyGeneratedImage(ORIGINAL, "cat.png")).rejects.toBe("Too many open files");
+  });
+});
+
+describe("forkImagePort.removeImages", () => {
+  it("removes the named images and carries on when the app skipped a path outside its images folder", async () => {
+    commands({ delete_generated_images: () => ({ removed: 1, skipped: 1 }) });
+    await expect(forkImagePort.removeImages(["/data/generated-images/a.png", "/elsewhere/b.png"])).resolves.toBeUndefined();
+    expect(invoke).toHaveBeenCalledWith("delete_generated_images", {
+      paths: ["/data/generated-images/a.png", "/elsewhere/b.png"],
+    });
   });
 });

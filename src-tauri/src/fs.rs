@@ -5942,8 +5942,20 @@ fn save_generated_image_sync(
     })
 }
 
+/// What one generated-image delete did. `skipped` counts the paths it refused (outside the
+/// generated-images folder, or not a file); the files they name are never touched.
+#[derive(Serialize, Debug, Default, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct GeneratedImageDeletion {
+    pub removed: usize,
+    pub skipped: usize,
+}
+
 #[tauri::command]
-pub async fn delete_generated_images(app: AppHandle, paths: Vec<String>) -> Result<(), String> {
+pub async fn delete_generated_images(
+    app: AppHandle,
+    paths: Vec<String>,
+) -> Result<GeneratedImageDeletion, String> {
     tauri::async_runtime::spawn_blocking(move || delete_generated_images_sync(&app, &paths))
         .await
         .map_err(|e| e.to_string())?
@@ -5952,26 +5964,63 @@ pub async fn delete_generated_images(app: AppHandle, paths: Vec<String>) -> Resu
 pub(crate) fn delete_generated_images_sync(
     app: &AppHandle,
     paths: &[String],
-) -> Result<(), String> {
-    let root = app
+) -> Result<GeneratedImageDeletion, String> {
+    let dir = app
         .path()
         .app_data_dir()
         .map_err(|e| e.to_string())?
-        .join(GENERATED_IMAGE_DIR)
+        .join(GENERATED_IMAGE_DIR);
+    delete_generated_images_in(&dir, paths)
+}
+
+/// Remove each named image that sits inside `dir`, one by one. A path outside it, or one that is
+/// not a file, is refused and counted in `skipped` (logged once, without the path); it never stops
+/// the rest. A file that is already gone is not counted. A real I/O failure on an inside file is
+/// collected the same way, so later images are still removed, and comes back as the `Err` once every
+/// path has been tried.
+pub(crate) fn delete_generated_images_in(
+    dir: &Path,
+    paths: &[String],
+) -> Result<GeneratedImageDeletion, String> {
+    let root = dir
         .canonicalize()
         .map_err(|error| format!("Generated image directory is unavailable: {error}"))?;
+    let mut done = GeneratedImageDeletion::default();
+    let mut failures: Vec<String> = Vec::new();
     for path in paths {
         let candidate = match PathBuf::from(path).canonicalize() {
             Ok(candidate) => candidate,
             Err(error) if error.kind() == ErrorKind::NotFound => continue,
-            Err(error) => return Err(error.to_string()),
+            Err(error) => {
+                failures.push(error.to_string());
+                continue;
+            }
         };
         if !candidate.starts_with(&root) || !candidate.is_file() {
-            return Err("Invalid generated image path".into());
+            done.skipped += 1;
+            continue;
         }
-        std::fs::remove_file(candidate).map_err(|error| error.to_string())?;
+        match std::fs::remove_file(candidate) {
+            Ok(()) => done.removed += 1,
+            Err(error) => failures.push(error.to_string()),
+        }
     }
-    Ok(())
+    if done.skipped > 0 {
+        eprintln!(
+            "Generated image delete skipped {} path(s) outside the generated images folder",
+            done.skipped
+        );
+    }
+    match failures.first() {
+        None => Ok(done),
+        Some(first) => Err(format!(
+            "{} of {} generated images could not be removed ({} removed, {} skipped): {first}",
+            failures.len(),
+            paths.len(),
+            done.removed,
+            done.skipped
+        )),
+    }
 }
 
 fn is_png(bytes: &[u8]) -> bool {
@@ -6594,6 +6643,122 @@ mod tests {
         assert!(!is_png(&[0xff, 0xd8, 0xff, 0x00]));
         assert!(!is_png(b"<html>"));
         assert!(!is_png(&[]));
+    }
+
+    /// A data folder holding a generated-images folder and, beside it, a file the delete must never touch.
+    fn images_with_outsider(label: &str) -> (Tmp, PathBuf, PathBuf) {
+        let data = tmp(label);
+        let images = data.0.join(GENERATED_IMAGE_DIR);
+        std::fs::create_dir_all(&images).unwrap();
+        let outsider = data.0.join("outsider.png");
+        std::fs::write(&outsider, "keep me").unwrap();
+        (data, images, outsider)
+    }
+
+    #[test]
+    fn a_delete_with_one_outside_path_still_removes_the_inside_images() {
+        let (_data, images, outsider) = images_with_outsider("delete-outside");
+        let first = images.join("one.png");
+        let second = images.join("two.png");
+        std::fs::write(&first, "1").unwrap();
+        std::fs::write(&second, "2").unwrap();
+        // The refused path comes first: it must not stop the two real images after it.
+        let paths = [
+            outsider.to_string_lossy().into_owned(),
+            first.to_string_lossy().into_owned(),
+            second.to_string_lossy().into_owned(),
+        ];
+        let done = delete_generated_images_in(&images, &paths).unwrap();
+        assert_eq!(
+            done,
+            GeneratedImageDeletion {
+                removed: 2,
+                skipped: 1
+            }
+        );
+        assert!(!first.exists());
+        assert!(!second.exists());
+        assert_eq!(std::fs::read_to_string(&outsider).unwrap(), "keep me");
+    }
+
+    #[test]
+    fn a_delete_skips_a_folder_and_leaves_a_missing_path_uncounted() {
+        let (_data, images, _outsider) = images_with_outsider("delete-folder");
+        let folder = images.join("not-a-file");
+        std::fs::create_dir_all(&folder).unwrap();
+        let real = images.join("real.png");
+        std::fs::write(&real, "x").unwrap();
+        let gone = images.join("already-gone.png");
+        let paths = [
+            folder.to_string_lossy().into_owned(),
+            gone.to_string_lossy().into_owned(),
+            real.to_string_lossy().into_owned(),
+        ];
+        let done = delete_generated_images_in(&images, &paths).unwrap();
+        assert_eq!(
+            done,
+            GeneratedImageDeletion {
+                removed: 1,
+                skipped: 1
+            }
+        );
+        assert!(folder.is_dir());
+        assert!(!real.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_link_inside_the_folder_to_an_outside_file_is_skipped_and_the_file_survives() {
+        let (_data, images, outsider) = images_with_outsider("delete-link");
+        let link = images.join("link.png");
+        std::os::unix::fs::symlink(&outsider, &link).unwrap();
+        let real = images.join("real.png");
+        std::fs::write(&real, "x").unwrap();
+        let paths = [
+            link.to_string_lossy().into_owned(),
+            real.to_string_lossy().into_owned(),
+        ];
+        let done = delete_generated_images_in(&images, &paths).unwrap();
+        assert_eq!(
+            done,
+            GeneratedImageDeletion {
+                removed: 1,
+                skipped: 1
+            }
+        );
+        assert_eq!(std::fs::read_to_string(&outsider).unwrap(), "keep me");
+        assert!(!real.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_real_failure_on_an_inside_file_is_reported_after_the_rest_are_removed() {
+        use std::os::unix::fs::PermissionsExt;
+        let (_data, images, _outsider) = images_with_outsider("delete-io");
+        let locked_dir = images.join("locked");
+        std::fs::create_dir_all(&locked_dir).unwrap();
+        let stuck = locked_dir.join("stuck.png");
+        std::fs::write(&stuck, "s").unwrap();
+        let later = images.join("later.png");
+        std::fs::write(&later, "l").unwrap();
+        std::fs::set_permissions(&locked_dir, std::fs::Permissions::from_mode(0o555)).unwrap();
+        let unlock =
+            || std::fs::set_permissions(&locked_dir, std::fs::Permissions::from_mode(0o755));
+        // A user who may write anyway (root) cannot make this delete fail, so there is nothing to prove.
+        if std::fs::File::create(locked_dir.join("probe")).is_ok() {
+            unlock().unwrap();
+            return;
+        }
+        let paths = [
+            stuck.to_string_lossy().into_owned(),
+            later.to_string_lossy().into_owned(),
+        ];
+        let result = delete_generated_images_in(&images, &paths);
+        unlock().unwrap();
+        let error = result.unwrap_err();
+        assert!(error.starts_with("1 of 2 generated images"), "{error}");
+        assert!(stuck.exists());
+        assert!(!later.exists(), "one failing file stopped the rest");
     }
 
     #[test]

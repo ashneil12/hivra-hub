@@ -30,5 +30,7 @@ export async function copyGeneratedImage(path: string, name: string): Promise<Fo
 
 export const forkImagePort: ForkImagePort = {
   copyImage: copyGeneratedImage,
-  removeImages: deleteGeneratedImages,
+  removeImages: async (paths) => {
+    await deleteGeneratedImages(paths);
+  },
 };
