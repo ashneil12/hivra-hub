@@ -95,6 +95,20 @@ describe("UsagePage", () => {
     });
   }
 
+  const NOTE = "Estimated cost is what the same use would cost at API prices";
+
+  /** How many times the page-level estimate note is drawn. */
+  function noteCount(): number {
+    return [...container.querySelectorAll("p")].filter((item) => item.textContent?.includes(NOTE)).length;
+  }
+
+  /** Every leaf element that shows a dollar figure. */
+  function dollarFigures(): Element[] {
+    return [...container.querySelectorAll("*")].filter(
+      (element) => element.children.length === 0 && /\$\d/.test(element.textContent ?? ""),
+    );
+  }
+
   it("shows today, the last 7 days and the last 30 days, and never the prompt", async () => {
     await render({ sessions: seeded(), now: NOW });
 
@@ -112,7 +126,7 @@ describe("UsagePage", () => {
     expect(container.textContent).toContain("Estimated cost");
     expect(container.textContent).toContain("what the same use would cost at API prices");
     expect(container.textContent).toContain("flat fee");
-    expect(container.textContent).toContain("estimated, not your bill");
+    expect(container.textContent).not.toContain("estimated, not your bill");
     expect(container.textContent).toContain("Cost reported for 1 of 2 turns");
     expect(container.textContent).toContain("Cost not reported by this engine");
     expect(container.textContent).not.toContain(secret);
@@ -131,7 +145,7 @@ describe("UsagePage", () => {
     expect(container.textContent).not.toContain("estimated, not your bill");
   });
 
-  it("labels a dollar figure as an estimate and leaves an unpriced engine alone", async () => {
+  it("shows a dollar figure plain under the one page note, and leaves an unpriced engine alone", async () => {
     await render({
       sessions: [
         session("priced", "/work/priced", "claude", "sonnet-5", [
@@ -153,13 +167,40 @@ describe("UsagePage", () => {
       ],
       now: NOW,
     });
-    expect(container.textContent).toContain("$1.25 (estimated, not your bill)");
-    expect(container.textContent).toContain("Cost not reported by this engine");
+    const priced = [...container.querySelectorAll("td")].filter((cell) =>
+      cell.textContent?.includes("$1.25"),
+    );
+    expect(priced.length).toBeGreaterThan(0);
+    for (const cell of priced) expect(cell.textContent).toBe("$1.25");
     const unpriced = [...container.querySelectorAll("td")].find((cell) =>
       cell.textContent?.includes("Cost not reported by this engine"),
     );
-    expect(unpriced?.textContent).not.toContain("estimated, not your bill");
-    expect(container.textContent.match(/estimated, not your bill/g)?.length).toBeGreaterThan(0);
+    expect(unpriced?.textContent).toBe("Cost not reported by this engine");
+    expect(noteCount()).toBe(1);
+  });
+
+  it("does not repeat the estimate label next to the page note", async () => {
+    // The seeded history has a fully priced turn and a partly priced window, so both cost shapes are on the page.
+    await render({ sessions: seeded(), now: NOW });
+    expect(noteCount()).toBe(1);
+    const figures = dollarFigures();
+    expect(figures.length).toBeGreaterThan(0);
+    for (const figure of figures) {
+      expect(figure.textContent).not.toMatch(/estimat/i);
+      expect(figure.textContent).not.toMatch(/not your bill/i);
+    }
+    expect(container.textContent).not.toContain("estimated, not your bill");
+    // The cost column heading and the note say it once, in the page's own words.
+    expect(container.textContent?.match(/not your bill/g)).toHaveLength(1);
+  });
+
+  it("draws a dollar figure only where the page note is drawn", async () => {
+    await render({ sessions: [], now: NOW });
+    expect(dollarFigures()).toEqual([]);
+    expect(noteCount()).toBe(0);
+    await render({ sessions: seeded(), now: NOW });
+    expect(dollarFigures().length).toBeGreaterThan(0);
+    expect(noteCount()).toBe(1);
   });
 
   it("copies the history as CSV", async () => {

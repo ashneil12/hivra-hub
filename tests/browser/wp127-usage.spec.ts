@@ -24,7 +24,7 @@ test("keeps the open chat's one context ring in view while the thread scrolls", 
   expect(before && after && Math.abs(before.y - after.y) < 1).toBe(true);
 });
 
-test("filters usage by provider and model, and labels a dollar figure", async ({ page }) => {
+test("filters usage by provider and model, and keeps one estimate note beside the dollar figures", async ({ page }) => {
   await page.goto(pageUrl);
   const usage = page.locator("#usage");
   const provider = usage.getByLabel("Provider");
@@ -34,11 +34,23 @@ test("filters usage by provider and model, and labels a dollar figure", async ({
   await expect(model).toHaveValue("");
   await expect(usage.getByRole("table", { name: "By model" })).toContainText("sonnet-5");
   await expect(usage.getByRole("table", { name: "By model" })).toContainText("gpt-5");
-  await expect(usage).toContainText("$0.50 (estimated, not your bill)");
+  // One page-level note says the cost is an estimate; no figure repeats it inline beside that note.
+  const note = usage.getByText("Estimated cost is what the same use would cost at API prices", { exact: false });
+  await expect(note).toHaveCount(1);
+  await expect(note).toContainText("this is not your bill");
+  await expect(usage.getByRole("columnheader", { name: "Estimated cost" }).first()).toBeVisible();
+  await expect(
+    usage.getByRole("table", { name: "By model" }).getByRole("row", { name: /sonnet-5/ }).getByRole("cell").last(),
+  ).toHaveText("$0.50");
+  await expect(usage.getByRole("region", { name: "Last 30 days" })).toContainText("$0.50. Cost reported for 1 of 2 turns");
+  await expect(usage).not.toContainText("estimated, not your bill");
+  await expect(usage).not.toContainText("(estimated");
   await expect(usage).not.toContainText("hunter2");
   await expect(usage).not.toContainText("must not travel");
 
   await provider.selectOption("codex");
+  await expect(note).toHaveCount(1);
+  await expect(usage).not.toContainText("estimated, not your bill");
   await expect(usage.getByRole("table", { name: "By model" })).toContainText("gpt-5");
   await expect(usage.getByRole("table", { name: "By model" })).not.toContainText("sonnet-5");
   await expect(model.locator("option")).toHaveText(["All", "gpt-5"]);
