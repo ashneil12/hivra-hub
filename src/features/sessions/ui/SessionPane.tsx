@@ -1,6 +1,6 @@
 import { GripVertical, X } from "../../../shared/ui/icons";
 import type { LayoutNode, SplitDir } from "../../workspace/model/layout";
-import { PaneSplitButtons } from "../../workspace/ui/PaneSplitButtons";
+import { PaneSplitButtons, PaneSplitCorner } from "../../workspace/ui/PaneSplitButtons";
 import { MonoDraftsInChat } from "../../selfBuild/ui/MonoDraftCard";
 import { TeamDraftsInChat } from "../../selfBuild/ui/TeamDraftCard";
 import { useSessionSnapshot } from "../model/sessionStateStore";
@@ -892,7 +892,7 @@ const LocalSessionPane = memo(function LocalSessionPane({
       style={projectBackgroundStyle}
       className={`${
         agent && !projectBackground ? "" : "chat-pane-background "
-      }relative isolate flex h-full min-h-0 min-w-0 flex-1 flex-col`}
+      }group/pane relative isolate flex h-full min-h-0 min-w-0 flex-1 flex-col`}
       onMouseDown={() => onFocus(session.id, "pointer")}
     >
       {projectBackground?.effect === "gradient-blur" ||
@@ -959,21 +959,14 @@ const LocalSessionPane = memo(function LocalSessionPane({
             <X className="size-3" strokeWidth={1.75} />
           </button>
         </div>
-      ) : session.private === true && !splitButtons ? (
+      ) : session.private === true ? (
         <div className="flex h-7 shrink-0 items-center px-3">
           {/* WP-111 */}
           <PrivateMark on />
         </div>
-      ) : splitButtons ? (
-        <div
-          data-pane-header=""
-          className="flex h-9 shrink-0 items-center justify-end border-b border-stroke px-1.5"
-        >
-          {/* WP-111 */}
-          {session.private === true ? <PrivateMark on /> : null}
-          {splitButtons}
-        </div>
       ) : null}
+      {/* A chat on its own has no header bar: its split buttons show in the corner while the pane is hovered. */}
+      {!inSplit && splitButtons ? <PaneSplitCorner>{splitButtons}</PaneSplitCorner> : null}
       {/* WP-110: which worktree this chat runs in, and the ask line before the first send. */}
       <NewChatWorktreeBanner session={session} />
       <div className="flex min-h-0 min-w-0 flex-1">
