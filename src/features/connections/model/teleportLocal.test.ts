@@ -6,7 +6,7 @@ import type { Session } from "../../sessions/model/session";
 import { HostTeleportStore } from "../../../../host/teleport/store";
 import { teleportRpc } from "../../../../host/teleport/rpc";
 import { moveChat, planMove } from "./teleport";
-import { sessionToChat, chatToSession, localMoveEndpoint, type LocalChatPort } from "./teleportLocal";
+import { sessionToChat, chatToSession, localMoveEndpoint, recapForRefusal, type LocalChatPort } from "./teleportLocal";
 import { sshMoveEndpoint, type HostCall } from "./teleportSsh";
 
 const HOST = "host-a";
@@ -23,8 +23,8 @@ function session(overrides: Partial<Session> = {}): Session {
     title: "Local chat",
     cwd: "/projects/local",
     blocks: [
-      { id: "b1", kind: "user", text: "hello" },
-      { id: "b2", kind: "assistant", text: "hi there" },
+      { id: "b1", role: "user", text: "hello" },
+      { id: "b2", role: "assistant", text: "hi there" },
     ],
     providerSessionId: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
     queuedMessages: [{ id: "q1", text: "then this", attachments: [] }],
@@ -83,7 +83,7 @@ describe("WP-177 desktop chat as a move source and target", () => {
     const busy = sessionToChat(session({ busy: true }));
     expect(busy.turnRunning).toBe(true);
     const waiting = sessionToChat(
-      session({ blocks: [{ id: "a", kind: "approval", approval: { decided: false } } as never] }),
+      session({ blocks: [{ id: "a", role: "assistant", text: "", approval: { decided: false } } as never] }),
     );
     expect(waiting.approvalPending).toBe(true);
   });
@@ -124,5 +124,19 @@ describe("WP-177 desktop chat as a move source and target", () => {
     const mac = localMoveEndpoint({ machineId: "this-mac", port, cwd: "/projects/local" });
     const answer = await mac.canResume("opencode" as never, "test-model-1", "high");
     expect(answer.ok).toBe(false);
+  });
+});
+
+describe("WP-177 recap fallback", () => {
+  it("builds the existing recap brief when the target cannot resume", () => {
+    const brief = recapForRefusal(session(), { reason: "cannot-resume", message: "no CLI", recapOffered: true });
+    expect(brief).not.toBeNull();
+    expect(brief).toContain("hello");
+    expect(brief).toContain("hi there");
+  });
+
+  it("offers no recap for a refusal that is not a resume problem", () => {
+    expect(recapForRefusal(session(), { reason: "turn-running", message: "busy" })).toBeNull();
+    expect(recapForRefusal(session(), { reason: "cannot-resume", message: "no CLI" })).toBeNull();
   });
 });
