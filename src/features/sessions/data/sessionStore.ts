@@ -15,6 +15,7 @@ import { recoverCursorSubagents } from "../../../integrations/harness/providers/
 import { dropHarnessSession } from "../../../integrations/harness/core/registry";
 import { isProviderErrorClass } from "../../../integrations/harness/core/providerFailure";
 import { persistableAttachment } from "../model/attachments";
+import { isPersistableId } from "../model/persistableId";
 import { ARTIFACT_KINDS } from "../../artifacts/artifacts";
 import type { ContextUsage } from "../model/contextUsage";
 import {
@@ -166,11 +167,6 @@ export function shouldPersistSession(session: Session): boolean {
       (isMonoSession(session.id) &&
         (session.blocks.length > 0 || !!session.monoTranscript)))
   );
-}
-
-/** Matches Rust `validate_id` — a path here fails the whole upsert. */
-export function isPersistableId(value: string): boolean {
-  return /^[A-Za-z0-9_-]+$/.test(value);
 }
 
 function persistableMeta(

@@ -14,11 +14,11 @@ import {
 import {
   backfillClaudeShellCommands,
   backfillCodexShellCommands,
-  isPersistableId,
   persistFingerprint,
   sanitizeSessionForPersist,
   shouldPersistSession,
 } from "./sessionStore";
+import { isPersistableId } from "../model/persistableId";
 
 it("persists sidebar visibility without making the session ephemeral", () => {
   const session = newSession("codex", "/tmp");
