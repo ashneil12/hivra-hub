@@ -216,12 +216,9 @@ function answeredWithin<T>(work: Promise<T>, waitMs: number): Promise<T> {
  * folder is not one. A throw, or no answer within `NEW_CHAT_GIT_WAIT_MS`, is
  * left to the caller, so a timeout is not "not a repo".
  */
-export async function gitRepositoryOnThisComputer(
-  cwd: string,
-  waitMs: number = NEW_CHAT_GIT_WAIT_MS,
-): Promise<boolean> {
+export async function gitRepositoryOnThisComputer(cwd: string): Promise<boolean> {
   if (!localFolder(cwd)) return false;
-  const listed = await answeredWithin(gitBranches(cwd), waitMs);
+  const listed = await answeredWithin(gitBranches(cwd), NEW_CHAT_GIT_WAIT_MS);
   return listed.detached || listed.current !== null || listed.branches.length > 0;
 }
 

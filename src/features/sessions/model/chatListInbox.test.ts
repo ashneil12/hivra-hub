@@ -530,6 +530,91 @@ describe("an approval with no time", () => {
   });
 });
 
+describe("an approval listed from elsewhere on a chat that has its own need", () => {
+  // The Sidebar's approval ids list a chat for its own need and also a Lead whose worker asks. The second set names the
+  // ids listed because of a worker, so a Lead with an open question of its own is not mistaken for a chat that is only
+  // listed for that question: the worker's approval has no time and is never hidden.
+  const settled = { touch: 10, settledAt: 10 };
+  const now = new Date(2026, 5, 2, 9, 0, 0, 0);
+  const settleOf = (ids: string[], attention?: ReadonlyMap<string, ChatAttention>) =>
+    inboxMenuChoices(ids, {}, now, attention).find((choice) => choice.id === "inbox-settle")!;
+  const question = () => chatAttention({ busy: false, pendingQuestion: { requestId: 1, askedAt: 5 }, blocks: [] });
+
+  it("is still an approval with no time, so Settle is off and a settled chat comes back", () => {
+    const listed = attentionWithApprovals(new Map([["lead", question()]]), new Set(["lead"]), new Set(["lead"]));
+    expect(listed.get("lead")).toMatchObject({ needsApproval: true, hasQuestion: true, approvalUndated: true, needAt: 5 });
+    // Its question was asked before the settle, which on its own keeps a settled chat on the shelf; the approval does not.
+    expect(shelfFor(settled, 40, question())).toBe("settled");
+    expect(shelfFor(settled, 40, listed.get("lead"))).toBe("active");
+    expect(settleOf(["lead"], listed)).toMatchObject({
+      label: "Settle",
+      disabled: true,
+      description: "Answer its approval first",
+    });
+    // It goes back to the shelf once the approval is answered (no longer listed), and the settle is open again.
+    const answered = attentionWithApprovals(new Map([["lead", question()]]), new Set(["lead"]));
+    expect(shelfFor(settled, 40, answered.get("lead"))).toBe("settled");
+    expect(settleOf(["lead"], answered).disabled).toBeFalsy();
+  });
+
+  it("keeps a chat that is only listed for its own open question settleable", () => {
+    // Listed in the approval ids, but not because of a worker: its question has a time, so a settle holds.
+    const listed = attentionWithApprovals(new Map([["a", question()]]), new Set(["a"]), new Set());
+    expect(listed.get("a")?.approvalUndated).toBeFalsy();
+    expect(shelfFor(settled, 40, listed.get("a"))).toBe("settled");
+    expect(settleOf(["a"], listed).disabled).toBeFalsy();
+    // A worker's approval on another chat does not hold this one back.
+    const other = attentionWithApprovals(
+      new Map([["a", question()], ["lead", question()]]),
+      new Set(["a", "lead"]),
+      new Set(["lead"]),
+    );
+    expect(other.get("a")?.approvalUndated).toBeFalsy();
+    expect(settleOf(["a"], other).disabled).toBeFalsy();
+    expect(settleOf(["a", "lead"], other)).toMatchObject({ disabled: true, description: "Answer their approvals first" });
+  });
+
+  it("holds a chat back for a worker's approval on top of its own approval card with a time", () => {
+    const own = chatAttention({
+      busy: true,
+      blocks: [{ id: "p", role: "approval", text: "", approval: { requestId: 1, at: 5 } } as never],
+    });
+    expect(own.approvalUndated).toBeFalsy();
+    // Its own card alone is listed and stays settleable (asked before the settle).
+    const alone = attentionWithApprovals(new Map([["a", own]]), new Set(["a"]), new Set());
+    expect(alone.get("a")?.approvalUndated).toBeFalsy();
+    expect(shelfFor(settled, 40, alone.get("a"))).toBe("settled");
+    // A worker's approval listed on the same chat has no time, and keeps the time the chat already had.
+    const both = attentionWithApprovals(new Map([["a", own]]), new Set(["a"]), new Set(["a"]));
+    expect(both.get("a")).toMatchObject({ needsApproval: true, approvalUndated: true, needAt: 5 });
+    expect(shelfFor(settled, 40, both.get("a"))).toBe("active");
+    expect(settleOf(["a"], both).disabled).toBe(true);
+  });
+
+  it("treats a chat with a failed turn and a worker's approval as holding an approval too", () => {
+    const failed: ChatAttention = { ...calm, failed: true, needsPerson: true, needAt: 5 };
+    const listed = attentionWithApprovals(new Map([["a", failed]]), new Set(["a"]), new Set(["a"]));
+    expect(listed.get("a")).toMatchObject({ needsApproval: true, failed: true, approvalUndated: true });
+    expect(shelfFor(settled, 40, listed.get("a"))).toBe("active");
+  });
+
+  it("is the same as before for a calm Lead or an id the attention map has never heard of", () => {
+    const lead = attentionWithApprovals(new Map([["lead", calm]]), new Set(["lead"]), new Set(["lead"]));
+    expect(lead.get("lead")).toMatchObject({ needsApproval: true, approvalUndated: true });
+    const remote = attentionWithApprovals(new Map(), new Set(["r"]), new Set());
+    expect(remote.get("r")).toMatchObject({ needsApproval: true, approvalUndated: true });
+    // An id named as a worker's but not listed is not added.
+    const stray = attentionWithApprovals(new Map([["x", calm]]), new Set(["a"]), new Set(["x"]));
+    expect(stray.get("x")).toEqual(calm);
+  });
+
+  it("keeps a snoozed chat's early wake for a worker's approval on a chat with a question", () => {
+    const snoozed = { touch: 10, snoozeAt: 10, snoozeUntil: 500 };
+    const listed = attentionWithApprovals(new Map([["lead", question()]]), new Set(["lead"]), new Set(["lead"]));
+    expect(shelfFor(snoozed, 40, listed.get("lead"))).toBe("active");
+  });
+});
+
 describe("re-sort", () => {
   const rows = [
     row("newer", 100),

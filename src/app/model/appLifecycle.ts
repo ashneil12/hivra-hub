@@ -114,12 +114,6 @@ export function setQuitWorkspace(
 }
 
 /**
- * Persist this window for a quit the coordinator has already confirmed.
- * Exiting is `confirm_quit`'s job, once every window has reported ready.
- * `shipUpdate` names the ship when the quit is for an update: cut turns are
- * marked with it, so they resume with its receipt.
- */
-/**
  * A quit ends a compact the app is running for an idle chat (WP-115). It is not a
  * turn, so Quit did not ask about it, but the CLI should be told to stop rather
  * than be cut mid-write, and the watcher then lets go of the chat and its claim.
@@ -134,6 +128,12 @@ async function cancelIdleCompactions(sessions: Session[]): Promise<void> {
   ]);
 }
 
+/**
+ * Persist this window for a quit the coordinator has already confirmed.
+ * Exiting is `confirm_quit`'s job, once every window has reported ready.
+ * `shipUpdate` names the ship when the quit is for an update: cut turns are
+ * marked with it, so they resume with its receipt.
+ */
 export async function handleQuitRequested(shipUpdate?: string): Promise<boolean> {
   if (liveWorkspace) {
     liveWorkspace.flush();

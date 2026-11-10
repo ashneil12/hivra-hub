@@ -849,10 +849,6 @@ mod tests {
         ));
     }
 
-    fn env_block(dir: &Path, name: &str, body: &str) {
-        put(dir, name, body);
-    }
-
     #[test]
     fn a_settings_env_block_naming_another_backend_is_not_anthropic() {
         let scratch = Scratch::new();
@@ -866,7 +862,7 @@ mod tests {
         ] {
             // The value is not looked at: even an off value, or one that is not a string, is the name present.
             for value in ["\"1\"", "\"0\"", "\"\"", "false", "{\"nested\": 1}"] {
-                env_block(
+                put(
                     &config,
                     "settings.json",
                     &format!("{{\"env\": {{\"OTHER\": \"x\", \"{name}\": {value}}}}}"),
@@ -888,7 +884,7 @@ mod tests {
             "  \n",
             "\u{feff}{}",
         ] {
-            env_block(&config, "settings.json", body);
+            put(&config, "settings.json", body);
             assert!(!settings_select_other_backend(Some(&config), &project), "{body:?}");
         }
     }
@@ -901,7 +897,7 @@ mod tests {
         fs::create_dir_all(&deep).unwrap();
         for file in ["settings.json", "settings.local.json", "settings.team.json"] {
             let dir = project.join(".claude");
-            env_block(
+            put(
                 &dir,
                 file,
                 "{\"env\": {\"CLAUDE_CODE_USE_BEDROCK\": \"1\"}}",
@@ -925,7 +921,7 @@ mod tests {
         }
         assert!(!settings_select_other_backend(Some(&config), &project));
         // A file that is not settings is not read.
-        env_block(
+        put(
             &project.join(".claude"),
             "notes.json",
             "{\"env\": {\"ANTHROPIC_BASE_URL\": \"x\"}}",
@@ -943,7 +939,7 @@ mod tests {
             "{\"env\": \"CLAUDE_CODE_USE_BEDROCK=1\"}",
             "{\"env\": {\"A\": 1},}",
         ] {
-            env_block(&config, "settings.json", body);
+            put(&config, "settings.json", body);
             assert!(
                 settings_select_other_backend(Some(&config), &project),
                 "{body:?}"
@@ -955,10 +951,10 @@ mod tests {
             "{{\"pad\": \"{}\"}}",
             "x".repeat(SETTINGS_MAX_BYTES as usize)
         );
-        env_block(&config, "settings.json", &big);
+        put(&config, "settings.json", &big);
         assert!(settings_select_other_backend(Some(&config), &project));
         // A folder that can't be reasoned about, as for agents.
-        env_block(&config, "settings.json", "{}");
+        put(&config, "settings.json", "{}");
         assert!(settings_select_other_backend(
             Some(&config),
             Path::new("relative")
@@ -981,13 +977,13 @@ mod tests {
             &[]
         ));
         // The session's own settings.
-        env_block(
+        put(
             &config,
             "settings.json",
             "{\"env\": {\"ANTHROPIC_BASE_URL\": \"https://gw\"}}",
         );
         assert!(flag_blocked(none, Some(&config), &project, &[]));
-        env_block(&config, "settings.json", "{}");
+        put(&config, "settings.json", "{}");
         assert!(!flag_blocked(none, Some(&config), &project, &[]));
         // An Explore.
         put(&config.join("agents"), "Explore.md", "x");
@@ -998,12 +994,12 @@ mod tests {
     fn reading_settings_changes_nothing() {
         let scratch = Scratch::new();
         let (project, config) = scratch.pair();
-        env_block(
+        put(
             &config,
             "settings.json",
             "{\"env\": {\"ANTHROPIC_API_KEY\": \"sk-ant-secret\"}}",
         );
-        env_block(
+        put(
             &project.join(".claude"),
             "settings.local.json",
             "{\"env\": {\"X\": \"1\"}}",

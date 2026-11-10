@@ -22,7 +22,7 @@ Signs a correction should become a check:
 
 - we wrote the same review comment on two agent PRs;
 - the same thing went wrong after compaction or in a new session;
-- `evidence-first-review` found a miss that a mechanical check would catch.
+- a review found a miss that a mechanical check would catch.
 
 One-off quirks stay out. Only encode what has happened more than once or caused
 real damage.
