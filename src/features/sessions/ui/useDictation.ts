@@ -10,6 +10,40 @@ import {
   type Selection,
 } from "../model/dictation";
 
+/**
+ * Writes the draft the way dictation changes it: only the differing span is replaced, through the field's own
+ * editing command, so Undo takes back the dictated words and nothing else. It only does that while the field has
+ * focus (the command edits the focused field). Otherwise, or if the command does not apply, the value is set.
+ */
+export function writeDraftKeepingUndo(el: HTMLTextAreaElement, next: string): void {
+  const current = el.value;
+  if (current === next) return;
+  if (typeof document !== "undefined" && document.activeElement === el) {
+    let start = 0;
+    const limit = Math.min(current.length, next.length);
+    while (start < limit && current.charCodeAt(start) === next.charCodeAt(start)) start += 1;
+    let tailCurrent = current.length;
+    let tailNext = next.length;
+    while (
+      tailCurrent > start &&
+      tailNext > start &&
+      current.charCodeAt(tailCurrent - 1) === next.charCodeAt(tailNext - 1)
+    ) {
+      tailCurrent -= 1;
+      tailNext -= 1;
+    }
+    el.setSelectionRange(start, tailCurrent);
+    let applied = false;
+    try {
+      applied = document.execCommand("insertText", false, next.slice(start, tailNext));
+    } catch {
+      applied = false;
+    }
+    if (applied && el.value === next) return;
+  }
+  el.value = next;
+}
+
 function browserStorage(): DictationStorage | null {
   try {
     if (typeof localStorage === "undefined") return null;
@@ -67,6 +101,7 @@ export function useDictation(input: {
       if (supported) controllerRef.current?.ask();
     },
     accept: () => controllerRef.current?.accept(),
+    cancel: () => controllerRef.current?.cancel(),
     decline: () => controllerRef.current?.decline(),
     stop: () => controllerRef.current?.stop(),
     seal: () => controllerRef.current?.seal(),

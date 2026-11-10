@@ -10,9 +10,5 @@
 	<string>MonoCode opens project folders you choose, including Documents.</string>
 	<key>NSDownloadsFolderUsageDescription</key>
 	<string>MonoCode opens project folders you choose, including Downloads.</string>
-	<key>NSMicrophoneUsageDescription</key>
-	<string>MonoCode uses the microphone so dictation can write what you say into the draft. Audio stays on this Mac.</string>
-	<key>NSSpeechRecognitionUsageDescription</key>
-	<string>MonoCode uses on-device speech recognition to turn what you say into draft text. Audio stays on this Mac.</string>
 </dict>
 </plist>

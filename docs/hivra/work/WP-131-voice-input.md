@@ -26,11 +26,13 @@ T3 documents voice input in [voice-input.md](https://github.com/pingdotgg/t3code
 
 ## What this slice does on each platform
 
-- **macOS (the only platform with dictation):** the Dictate button and the Dictate row in the plus menu. The first
-  press explains what happens and asks to continue. Continue asks macOS for the microphone and speech recognition
-  permissions (System Settings > Privacy & Security). Recognition runs on the Mac only: if the Mac cannot recognise
-  the language on the device, dictation refuses to start rather than send audio away. Speech recognition may need the
-  language's on-device model to be downloaded first. Dictation writes into the draft and never sends it.
+- **macOS:** off in this build. The Dictate button and the Dictate row in the plus menu are shown only where the
+  desktop recogniser is available, so they are hidden here. The recogniser is not in the main app: the microphone
+  usage strings and the audio-input entitlement were removed from the Hub, because a child process of the app would
+  inherit a microphone grant the app holds (project actions, git hooks, setup scripts). The planned path is a helper
+  bundle inside the app with its own usage strings, entitlement and disclaimed start. That helper is not built yet.
+  The composer code (the explain step, the waiting state with Cancel, the draft write that keeps Undo, the partial
+  marking and the never-send rule) stays tested with a fake recogniser, ready for the helper.
 - **Windows:** no dictation in this slice. The control is hidden, not shown as a broken button.
 - **Linux:** no dictation in this slice. The control is hidden. A Linux path is a follow-up (see PR.md).
 - **Phone:** unchanged. The phone's own dictation bar is not touched by this slice.

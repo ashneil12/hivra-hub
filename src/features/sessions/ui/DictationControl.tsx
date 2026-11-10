@@ -99,10 +99,21 @@ export function DictationListening({ onStop }: { onStop: () => void }) {
   );
 }
 
-export function DictationWaiting() {
+export function DictationWaiting({ onCancel }: { onCancel: () => void }) {
   return (
-    <span data-dictation-waiting className="shrink-0 text-[11px] text-content/55">
-      {DICTATION_WAITING}
+    <span className="flex shrink-0 items-center gap-1">
+      <span data-dictation-waiting className="text-[11px] text-content/55">
+        {DICTATION_WAITING}
+      </span>
+      <button
+        type="button"
+        aria-label="Cancel dictation"
+        onMouseDown={(event) => event.preventDefault()}
+        onClick={onCancel}
+        className="rounded-md border border-current/20 px-2 py-0.5 text-[11px] text-content"
+      >
+        Cancel
+      </button>
     </span>
   );
 }

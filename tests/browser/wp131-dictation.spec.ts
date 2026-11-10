@@ -89,3 +89,44 @@ test("the control is not offered where the desktop recogniser is not available",
   await page.waitForTimeout(300);
   await expect(dictate(page)).toHaveCount(0);
 });
+
+// Review fixes (PR #196): cancel while waiting, undo, and hiding the composer.
+
+test("Cancel ends a dictation that is waiting for permission", async ({ page }) => {
+  await page.goto("/tests/browser/wp131-dictation.html?hold");
+  await expect(dictate(page)).toBeVisible({ timeout: 15_000 });
+  await dictate(page).click();
+  await page.getByRole("button", { name: "Continue" }).click();
+  await expect(page.getByText("Waiting for permission")).toBeVisible();
+  await page.getByRole("button", { name: "Cancel dictation" }).click();
+  await expect(page.getByText("Waiting for permission")).toHaveCount(0);
+  await expect(dictate(page)).toBeVisible();
+  expect((await calls(page)).starts).toBe(0);
+});
+
+// WebKit merges the typed words and the dictated words into one undo step, so this is checked on Chromium only.
+test("Undo takes back the dictated words and keeps what the person typed before them", async ({ page, browserName }) => {
+  test.skip(browserName === "webkit", "WebKit undoes typing and dictation as one step");
+  await page.goto("/tests/browser/wp131-dictation.html");
+  await expect(dictate(page)).toBeVisible({ timeout: 15_000 });
+  await draft(page).click();
+  await draft(page).pressSequentially("hello ");
+  await dictate(page).click();
+  await page.getByRole("button", { name: "Continue" }).click();
+  await expect(page.locator("[data-dictation-status]")).toHaveText("Still listening");
+  await emit(page, { session: 1, text: "buy milk", finished: false, error: false });
+  await expect(draft(page)).toHaveValue("hello buy milk");
+  await draft(page).press("ControlOrMeta+z");
+  await expect(draft(page)).toHaveValue("hello ");
+});
+
+test("hiding the composer ends a live dictation", async ({ page }) => {
+  await page.goto("/tests/browser/wp131-dictation.html");
+  await expect(dictate(page)).toBeVisible({ timeout: 15_000 });
+  await dictate(page).click();
+  await page.getByRole("button", { name: "Continue" }).click();
+  await expect(page.locator("[data-dictation-status]")).toHaveText("Still listening");
+  await emit(page, { session: 1, text: "buy", finished: false, error: false });
+  await page.evaluate(() => (window as unknown as { __setEnabled: (value: boolean) => void }).__setEnabled(false));
+  await expect.poll(async () => (await calls(page)).stops).toEqual([1]);
+});

@@ -45,7 +45,7 @@ mod pinned_tool;
 mod crew;
 mod devin_config;
 mod devin_usage;
-// WP-131: desktop dictation into the composer draft (macOS only; never sends).
+// WP-131: desktop dictation into the composer draft. Off in this build (see dictation.rs); never sends.
 mod dictation;
 pub mod disclaim;
 mod explore_agent; // WP-143: read-only check for an Explore agent the person already defined.

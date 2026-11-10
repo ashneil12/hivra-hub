@@ -2,6 +2,8 @@
 // is a port (the Mac's on-device speech API, or a stub in tests). Audio is not
 // part of this model.
 
+import { stripHiddenCharacters } from "./hiddenText";
+
 export type Selection = { start: number; end: number };
 
 export type DictationRange = { start: number; end: number };
@@ -48,13 +50,13 @@ export const DICTATION_NO_MICROPHONE =
 
 export const DICTATION_BUSY = "Dictation is already on.";
 
-export const DICTATION_NOT_HERE =
-  "Dictation in this version only runs on a Mac, and only on the device.";
+export const DICTATION_NOT_HERE = "Dictation is off in this version of the app.";
 
 export const DICTATION_STOPPED =
   "Dictation stopped. What was heard so far stays in the draft.";
 
 export const DICTATION_NOTES = [
+  DICTATION_NOT_HERE,
   DICTATION_DENIED,
   DICTATION_NOT_ON_DEVICE,
   DICTATION_NO_MICROPHONE,
@@ -119,17 +121,23 @@ export function clampSelection(text: string, selection: Partial<Selection> | nul
   return { start: Math.min(start, end), end: Math.max(start, end) };
 }
 
+/** The most one utterance may add to the draft. Speech at a normal pace never comes near it. */
+export const MAX_UTTERANCE_CHARS = 4000;
+
 /**
  * The recogniser's words, placed at the selection. An empty utterance leaves
  * the draft alone (it does not delete the selection). Neighbours get a single
- * space. The span covers the words only, so the draft can mark them.
+ * space. The span covers the words only, so the draft can mark them. Hidden
+ * characters are removed, and the words are cut to MAX_UTTERANCE_CHARS (well
+ * under the large-paste limit, so dictation never becomes an attachment).
  */
 export function placeUtterance(
   base: string,
   selection: Partial<Selection> | null | undefined,
   utterance: unknown,
 ): { text: string; span: DictationRange | null; cursor: number } {
-  const words = typeof utterance === "string" ? utterance.trim() : "";
+  const spoken = typeof utterance === "string" ? stripHiddenCharacters(utterance).text : "";
+  const words = Array.from(spoken).slice(0, MAX_UTTERANCE_CHARS).join("").trim();
   const { start, end } = clampSelection(base, selection);
   if (!words) return { text: base, span: null, cursor: end };
   const before = base.slice(0, start);
@@ -284,6 +292,9 @@ export type DictationController = {
   stop(): void;
   seal(): void;
   onTyped(text: string): void;
+  cancel(): void;
+  /** Chunks held for a later publish. Idle keeps none; a start in flight keeps only the latest. */
+  readonly pending: number;
   dispose(): void;
 };
 
@@ -304,6 +315,8 @@ export function createDictationController(deps: {
   let arming = false;
   const buffer: DictationChunk[] = [];
   let disposed = false;
+  /** The draft as the controller last left it. Text that differs from this was written from outside dictation. */
+  const draftChanged = () => deps.getText() !== view.text;
 
   const publish = (event: DictationEvent) => {
     if (disposed && event.type !== "seal") return;
@@ -330,8 +343,16 @@ export function createDictationController(deps: {
       finished: chunk.finished === true,
       error: chunk.error === true,
     };
-    if (arming || view.session == null) {
+    if (arming) {
+      // The engine can speak before its start answers. Only the latest words matter, so keep just those.
+      buffer.length = 0;
       buffer.push(safe);
+      return;
+    }
+    if (view.session == null) return;
+    if ((view.phase === "listening" || view.phase === "settling") && draftChanged()) {
+      // Add to chat, Ask Alfred, an MCP tag or an undo wrote into the draft. Their text wins, as typing does.
+      publish({ type: "typed", text: deps.getText() });
       return;
     }
     if (safe.session === view.session) publish({ type: "chunk", ...safe });
@@ -400,6 +421,17 @@ export function createDictationController(deps: {
     },
     onTyped(text: string) {
       publish({ type: "typed", text });
+    },
+    cancel() {
+      if (disposed || view.phase !== "authorizing") return;
+      // A start still in flight is stopped when it answers, because its attempt is no longer current.
+      generation += 1;
+      arming = false;
+      buffer.length = 0;
+      publish({ type: "cancel" });
+    },
+    get pending() {
+      return buffer.length;
     },
     dispose() {
       disposed = true;

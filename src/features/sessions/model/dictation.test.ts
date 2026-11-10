@@ -412,3 +412,72 @@ it("the reducer ignores a chunk from another session, even if the controller wer
   expect(view.provisional).toBeNull();
   expect(view.session).toBe(4);
 });
+
+// Review fixes (PR #196, HIGH 1, MEDIUM 3, LOW 4).
+
+it("keeps no chunks while idle, and while the engine is starting only the latest one", async () => {
+  const box = harness(memory());
+  box.engine.emit({ session: 1, text: "said before any start" });
+  expect(box.controller.pending).toBe(0);
+  box.engine.holdStart();
+  box.controller.ask();
+  box.controller.accept();
+  for (let i = 0; i < 500; i += 1) box.engine.emit({ session: 1, text: `word ${i}` });
+  expect(box.controller.pending).toBeLessThanOrEqual(1);
+  box.engine.release();
+  await Promise.resolve();
+  await Promise.resolve();
+  expect(box.controller.view.text).toBe("word 499");
+  expect(box.writes.length).toBeLessThanOrEqual(2);
+});
+
+it("text added elsewhere while listening is kept, and the next partial does not overwrite it", async () => {
+  const box = harness(markedStore());
+  box.controller.ask();
+  await Promise.resolve();
+  box.engine.emit({ session: 1, text: "buy milk" });
+  expect(box.controller.view.text).toBe("buy milk");
+  // Add to chat, Ask Alfred or an MCP tag writes into the draft from outside dictation.
+  box.setText("buy milk. Also check the invoice");
+  box.engine.emit({ session: 1, text: "buy oat milk" });
+  expect(box.controller.view.text).toBe("buy milk. Also check the invoice");
+  expect(box.controller.view.phase).toBe("idle");
+  expect(box.engine.stops).toEqual([1]);
+});
+
+it("cancel while the permission prompt is up stops the start that comes back", async () => {
+  const box = harness(memory());
+  box.engine.holdStart();
+  box.controller.ask();
+  box.controller.accept();
+  expect(box.controller.view.phase).toBe("authorizing");
+  box.controller.cancel();
+  expect(box.controller.view.phase).toBe("idle");
+  box.engine.release();
+  await Promise.resolve();
+  await Promise.resolve();
+  expect(box.engine.stops).toEqual([1]);
+  expect(box.controller.view.phase).toBe("idle");
+  expect(box.controller.view.session).toBeNull();
+});
+
+it("dictated words lose hidden characters and are capped in size", () => {
+  expect(placeUtterance("", null, "buy​ milk").text).toBe("buy milk");
+  const long = placeUtterance("", null, "word ".repeat(10_000));
+  expect(long.text.length).toBeLessThanOrEqual(4000);
+});
+
+it("unmounting the composer stops a live session", async () => {
+  const box = harness(markedStore());
+  box.controller.ask();
+  await Promise.resolve();
+  expect(box.controller.view.phase).toBe("listening");
+  box.controller.dispose();
+  expect(box.engine.stops).toEqual([1]);
+});
+
+function markedStore(): DictationStorage {
+  const store = memory();
+  markDictationExplained(store);
+  return store;
+}

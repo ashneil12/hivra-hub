@@ -42,7 +42,7 @@ import {
   DictationProvisional,
   DictationWaiting,
 } from "./DictationControl";
-import { useDictation } from "./useDictation";
+import { useDictation, writeDraftKeepingUndo } from "./useDictation";
 import {
   isFileReferenceText,
   messageFilesFromClipboard,
@@ -711,7 +711,7 @@ export function Composer({
   // WP-131: dictation writes into this draft and never sends it.
   const dictation = useDictation({
     port: tauriDictationPort,
-    enabled: !disabled && !worktreeRemoved,
+    enabled: enabled && !disabled && !worktreeRemoved,
     getText: () => ref.current?.value ?? "",
     getSelection: () => ({
       start: ref.current?.selectionStart ?? 0,
@@ -720,7 +720,7 @@ export function Composer({
     write: (text, cursor) => {
       const el = ref.current;
       if (!el) return;
-      el.value = text;
+      writeDraftKeepingUndo(el, text);
       const caret = Math.max(0, Math.min(text.length, cursor));
       el.setSelectionRange(caret, caret);
       resizeComposer(el);
@@ -2343,7 +2343,11 @@ export function Composer({
           ) : null}
           {dictation.phase === "explain" ? (
             <DictationExplainDialog
-              onContinue={() => dictation.accept()}
+              onContinue={() => {
+                // Dictation writes into this draft, so the draft takes focus; Undo then works on the dictated words.
+                ref.current?.focus();
+                dictation.accept();
+              }}
               onNotNow={() => dictation.decline()}
             />
           ) : null}
@@ -2652,6 +2656,7 @@ export function Composer({
                     <DictationMenuRow
                       onAsk={() => {
                         setPlusOpen(false);
+                        ref.current?.focus();
                         dictation.ask();
                       }}
                     />
@@ -2770,9 +2775,14 @@ export function Composer({
             {dictation.phase === "listening" ? (
               <DictationListening onStop={() => dictation.stop()} />
             ) : dictation.phase === "authorizing" ? (
-              <DictationWaiting />
+              <DictationWaiting onCancel={() => dictation.cancel()} />
             ) : dictation.supported && !disabled && !worktreeRemoved && dictation.phase === "idle" ? (
-              <DictationAskButton onAsk={() => dictation.ask()} />
+              <DictationAskButton
+                onAsk={() => {
+                  ref.current?.focus();
+                  dictation.ask();
+                }}
+              />
             ) : null}
             <div className="flex shrink-0 items-center gap-1">
               {turnStop &&
