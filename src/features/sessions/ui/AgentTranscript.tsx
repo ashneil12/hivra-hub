@@ -48,8 +48,11 @@ import {
 } from "react";
 import { flushSync } from "react-dom";
 import { AttachmentChip } from "./AttachmentChip";
+import { ChildApprovalNote } from "./ChildApprovalNote";
 import { ForkFromHereButton } from "./ForkFromHereButton";
 import { GeneratedImage } from "./GeneratedImage";
+import { LineageList } from "./LineageList";
+import type { Lineage } from "../model/subagentLineage";
 import { MonocodeSparkles } from "./MonocodeSparkles";
 import { OrchestratorConstellation } from "./OrchestratorConstellation";
 import { PlanStepsBurst } from "./PlanStepsBurst";
@@ -251,6 +254,8 @@ const HISTORY_TRIM_DELAY_MS = 2000;
 
 type Props = {
   blocks: Block[];
+  /** WP-122: the native subagents this thread started. Drawn at the top of the scroll content, never beside it. */
+  lineage?: Lineage | null;
   /** Archived messages render immediately, even when first loaded in this visit. */
   historicalBlockIds?: ReadonlySet<string>;
   initialTurns?: number;
@@ -343,6 +348,7 @@ type Props = {
 
 function AgentTranscriptComponent({
   blocks: sourceBlocks,
+  lineage,
   historicalBlockIds,
   initialTurns = INITIAL_TURNS,
   pageSize = TURN_PAGE_SIZE,
@@ -1257,6 +1263,7 @@ function AgentTranscriptComponent({
             </button>
           </div>
         ) : null}
+        {lineage ? <LineageList lineage={lineage} /> : null}
         {visibleTurns.map((turn, turnIndex) => {
           // A checker's note and the answer to it: one quiet line (an approval it waits on still shows as usual).
           if (isMonoCheckPrompt(turn[0]) && !turn.some(needsApproval))
@@ -5541,7 +5548,7 @@ function ApprovalControls({
 }) {
   const approval = block.approval;
   if (!approval || approval.decided || !onApproval) return null;
-  return (
+  const controls = (
     <div data-approval-controls className="mt-1.5 flex gap-2 font-sans">
       <button
         type="button"
@@ -5559,6 +5566,14 @@ function ApprovalControls({
       </button>
       <span className="self-center text-[11px] text-content/50">Waiting for approval</span>
     </div>
+  );
+  // WP-122: a child's ask is named here. The buttons stay the parent's.
+  if (!approval.child) return controls;
+  return (
+    <>
+      <ChildApprovalNote name={approval.child.name} detail={approval.child.detail} />
+      {controls}
+    </>
   );
 }
 
