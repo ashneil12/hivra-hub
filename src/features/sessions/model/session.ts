@@ -627,6 +627,13 @@ export type Session = {
   /** The provider has accepted this turn and can take live follow-ups. */
   turnReady?: boolean;
   /**
+   * The app holds this chat busy for a background compact (WP-115). It is not
+   * a turn: Quit, the in-flight list and a restore ignore it, so a quit or a
+   * crash during the compact never reads as a cut turn. In-memory only (never
+   * written to the database), and cleared by whatever starts or ends a turn.
+   */
+  idleCompacting?: boolean;
+  /**
    * What the live turn is waiting on after the agent yielded with work still
    * running in the background. In-memory only.
    */
