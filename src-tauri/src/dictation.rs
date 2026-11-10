@@ -140,6 +140,7 @@ impl<L: Clone> Sessions<L> {
         }
     }
 
+    #[cfg(target_os = "macos")]
     fn live(&self, id: u64) -> Option<L> {
         self.current
             .as_ref()
