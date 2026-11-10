@@ -27,6 +27,7 @@ import {
   type HandoffFile,
   type TaskHandoff,
 } from "./orchestrationGoal";
+import { sumChildUsage, usageFromSession } from "./closingUsage";
 import {
   normalizeOrchestrationRun,
   orchestrationCheckoutCwd,
@@ -2200,10 +2201,29 @@ Run the whole check again and report what you observed.`,
               });
           }
         }
+        const current = this.run(run.leadId)!;
+        // WP-148: the close counts what the children had recorded. A session that cannot be read is left out, never
+        // stored as zero, and never stops the run from finishing.
+        const closingUsage = sumChildUsage(
+          current.tasks.map((task) => {
+            let usage: ReturnType<typeof usageFromSession>;
+            try {
+              usage = usageFromSession(this.host?.session(task.sessionId));
+            } catch {
+              usage = undefined;
+            }
+            return { sessionId: task.sessionId, usage };
+          }),
+        );
         const result = await record(
-          { ...this.run(run.leadId)!, status: "finished" },
+          {
+            ...current,
+            status: "finished",
+            closingUsage,
+          },
           {
             finished: true,
+            ...(closingUsage ? { usage: closingUsage } : {}),
             ...(cleanupPending.length ? { cleanupPending } : {}),
           },
         );
