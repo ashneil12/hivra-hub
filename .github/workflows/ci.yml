@@ -72,6 +72,7 @@ jobs:
       matrix:
         shard: [1, 2, 3, 4]
     runs-on: ubuntu-latest
+    # GitHub's default job timeout is 360 minutes, which is too long for a hang.
     permissions:
       contents: read
     steps:
@@ -231,6 +232,7 @@ jobs:
       # temporary HOME `world()` makes. HOME and USERPROFILE here are also temporary,
       # so a drill cannot fall through to the runner's real profile on any OS.
       - name: hub:ship -- --drill-rollback under a temporary HOME
+        timeout-minutes: 10
         env:
           HOME: ${{ runner.temp }}/monocode-hub-ship-home
           USERPROFILE: ${{ runner.temp }}/monocode-hub-ship-home
