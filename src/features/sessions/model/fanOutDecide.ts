@@ -6,13 +6,15 @@ import {
   type FanOutCleanup,
   type FanOutWorktree,
 } from "./fanOut";
-import { listCompares, putCompare } from "./fanOutStore";
+import { getCompare, putCompare } from "./fanOutStore";
 
 export type FanOutDecision =
   | { ok: true; record: CompareRecord; changed: boolean }
   | { ok: false; code: string };
 
 export type FanOutCleanupPort = {
+  /** Stop the loser's running turn. It is called first, so nothing is still writing when the worktree is looked at. A throw means it may still be running. */
+  stop: (childId: string) => Promise<void>;
   /** Trusted worktree roots. A throw or an empty list means try again later. */
   allowedRoots: readonly string[] | (() => Promise<readonly string[]>);
   /** Janitor verdict. A throw has not answered. */
@@ -30,7 +32,7 @@ const inflight = new Set<string>();
 
 function defaultStore(): CompareStore {
   return {
-    get: (id) => listCompares().find((record) => record.id === id) ?? null,
+    get: getCompare,
     put: putCompare,
   };
 }
@@ -103,6 +105,15 @@ export function settleFanOutCleanup(
   };
 }
 
+/** A path with ".." or equal to a root, or outside every root, is not inside a trusted root. */
+function insideTrustedRoot(path: string, allowedRoots: readonly string[]): boolean {
+  if (!path.trim() || hasDotDot(path)) return false;
+  return allowedRoots.some((root) => {
+    if (typeof root !== "string" || !root.trim() || hasDotDot(root)) return false;
+    return isEqualOrInside(path, root) && pathKey(path) !== pathKey(root);
+  });
+}
+
 /**
  * The path a discard may hand to the janitor. A path with ".." or outside every
  * trusted root is blocked. No assigned worktree means there is nothing to remove.
@@ -115,15 +126,10 @@ export function fanOutCleanupPlan(
   const child = record.children.find((item) => item.id === childId);
   if (!child || child.worktree.kind !== "assigned") return { kind: "none" };
   const path = child.worktree.path;
-  if (!path.trim() || hasDotDot(path)) return { kind: "outside" };
-  const inside = allowedRoots.some((root) => {
-    if (typeof root !== "string" || !root.trim() || hasDotDot(root)) return false;
-    return isEqualOrInside(path, root) && pathKey(path) !== pathKey(root);
-  });
-  return inside ? { kind: "remove", path } : { kind: "outside" };
+  return insideTrustedRoot(path, allowedRoots) ? { kind: "remove", path } : { kind: "outside" };
 }
 
-async function readRoots(port: FanOutCleanupPort): Promise<readonly string[]> {
+async function readRoots(port: Pick<FanOutCleanupPort, "allowedRoots">): Promise<readonly string[]> {
   const roots = port.allowedRoots;
   return typeof roots === "function" ? roots() : roots;
 }
@@ -145,8 +151,9 @@ async function commit(
 }
 
 /**
- * Discard one loser and, when the janitor says it can go, remove its worktree.
- * A timeout or a janitor that has not answered leaves the discard pending.
+ * Discard one loser: stop it if it is running, then, when the janitor says its worktree can go, remove it.
+ * A loser that could not be stopped, a timeout, or a janitor that has not answered leaves the discard pending,
+ * and discarding again picks it up from there.
  */
 export async function discardFanOutLoser(
   compareId: string,
@@ -170,6 +177,11 @@ export async function discardFanOutLoser(
     const latest = store.get(compareId) ?? reserved.record;
     const state = latest.cleanup?.[childId] ?? (latest.discardedIds.includes(childId) ? "pending" : undefined);
     if (state && state !== "pending") return { ok: true, record: latest, changed: false };
+    try {
+      await port.stop(childId);
+    } catch {
+      return { ok: false, code: "cleanup-later" };
+    }
     let roots: readonly string[];
     try {
       roots = await readRoots(port);
@@ -219,4 +231,24 @@ export function pickFanOutInStore(
 export function fanOutWinnerStays(worktree: FanOutWorktree | null): string {
   if (worktree?.kind === "assigned") return "This worktree stays. Nothing was copied back.";
   return "This chat stays. Nothing was copied back.";
+}
+
+/**
+ * Give back worktrees made for a compare that never started. Each path goes through the same checks as a discard:
+ * inside a trusted root, and only when the janitor says it can go. A path that fails either check, or a janitor that
+ * has not answered, leaves that worktree where it is for the worktree clean-up in Settings.
+ */
+export async function releaseFanOutWorktrees(
+  paths: readonly string[],
+  port: Pick<FanOutCleanupPort, "allowedRoots" | "inspect" | "remove">,
+): Promise<void> {
+  const roots = await readRoots(port);
+  for (const path of paths) {
+    if (!insideTrustedRoot(path, roots)) continue;
+    try {
+      if ((await port.inspect(path)) === "remove") await port.remove(path);
+    } catch {
+      // Left for the clean-up. One worktree that will not go does not stop the next.
+    }
+  }
 }

@@ -6,6 +6,7 @@ import {
   fanOutWinnerStays,
   pickFanOutInStore,
   pickFanOutWinner,
+  releaseFanOutWorktrees,
 } from "./fanOutDecide";
 import { fanOutCompareRows } from "./fanOutView";
 import { compareFromUnknown, listCompares, putCompare, resetCompares } from "./fanOutStore";
@@ -46,10 +47,12 @@ function record() {
 function port(over: Partial<{
   inspect: (path: string) => Promise<"remove" | "keep">;
   remove: (path: string) => Promise<void>;
+  stop: (childId: string) => Promise<void>;
   allowedRoots: readonly string[] | (() => Promise<readonly string[]>);
 }> = {}) {
   return {
     allowedRoots: [POOL],
+    stop: vi.fn(async () => undefined),
     inspect: vi.fn(async () => "remove" as const),
     remove: vi.fn(async () => undefined),
     ...over,
@@ -98,6 +101,62 @@ describe("pick and discard", () => {
     expect(discarded.record.autoMerge).toBe(false);
     expect(await discardFanOutLoser(current.id, "child-a", cleanup)).toMatchObject({ ok: false, code: "winner" });
     expect(cleanup.remove).toHaveBeenCalledTimes(1);
+  });
+
+  it("stops a running loser before the janitor looks at its worktree", async () => {
+    putCompare(record());
+    const calls: string[] = [];
+    const cleanup = port({
+      stop: vi.fn(async (childId: string) => {
+        calls.push(`stop:${childId}`);
+      }),
+      inspect: vi.fn(async (path: string) => {
+        calls.push(`inspect:${path}`);
+        return "remove" as const;
+      }),
+      remove: vi.fn(async (path: string) => {
+        calls.push(`remove:${path}`);
+      }),
+    });
+    const discarded = await discardFanOutLoser("compare-1", "child-b", cleanup);
+    expect(discarded.ok).toBe(true);
+    expect(calls).toEqual(["stop:child-b", `inspect:${POOL}/b`, `remove:${POOL}/b`]);
+    expect(cleanup.stop).not.toHaveBeenCalledWith("child-a");
+  });
+
+  it("leaves the worktree alone, and the discard pending, when the loser cannot be stopped", async () => {
+    putCompare(record());
+    const cleanup = port({
+      stop: vi.fn(async () => Promise.reject(new Error("still running"))),
+    });
+    const first = await discardFanOutLoser("compare-1", "child-b", cleanup);
+    expect(first).toMatchObject({ ok: false, code: "cleanup-later" });
+    expect(cleanup.inspect).not.toHaveBeenCalled();
+    expect(cleanup.remove).not.toHaveBeenCalled();
+    const pending = listCompares().find((item) => item.id === "compare-1");
+    expect(pending?.discardedIds).toEqual(["child-b"]);
+    expect(pending?.cleanup?.["child-b"] ?? "pending").toBe("pending");
+    cleanup.stop.mockResolvedValueOnce(undefined);
+    const retried = await discardFanOutLoser("compare-1", "child-b", cleanup);
+    expect(retried.ok).toBe(true);
+    if (!retried.ok) return;
+    expect(retried.record.cleanup?.["child-b"]).toBe("removed");
+    expect(cleanup.stop).toHaveBeenCalledTimes(2);
+  });
+
+  it("stops the loser even when there is no worktree to remove", async () => {
+    const current = record();
+    current.children = current.children.map((child) =>
+      child.id === "child-b"
+        ? { ...child, worktree: { kind: "stay", reason: "no-free-worktree" } }
+        : child,
+    );
+    putCompare(current);
+    const cleanup = port();
+    const discarded = await discardFanOutLoser("compare-1", "child-b", cleanup);
+    expect(discarded.ok).toBe(true);
+    expect(cleanup.stop).toHaveBeenCalledWith("child-b");
+    expect(cleanup.remove).not.toHaveBeenCalled();
   });
 
   it("does not delete when the janitor keeps the worktree", async () => {
@@ -271,5 +330,34 @@ describe("pick and discard", () => {
     expect(kept?.cleanup).toEqual({ "child-b": "removed" });
     expect(kept?.autoMerge).toBe(false);
     expect(compareFromUnknown({ ...current, autoMerge: true })).toBeNull();
+  });
+});
+
+describe("releaseFanOutWorktrees", () => {
+  it("removes a worktree inside the trusted root that the janitor says can go", async () => {
+    const cleanup = port();
+    await releaseFanOutWorktrees([`${POOL}/a`], cleanup);
+    expect(cleanup.inspect).toHaveBeenCalledWith(`${POOL}/a`);
+    expect(cleanup.remove).toHaveBeenCalledWith(`${POOL}/a`);
+  });
+
+  it("leaves a worktree the janitor keeps, one outside the root, one that climbs out, and the root itself", async () => {
+    const cleanup = port({ inspect: vi.fn(async () => "keep" as const) });
+    await releaseFanOutWorktrees([`${POOL}/a`], cleanup);
+    expect(cleanup.remove).not.toHaveBeenCalled();
+    const open = port();
+    await releaseFanOutWorktrees(["/other/tree", `${POOL}/../secret`, POOL], open);
+    expect(open.inspect).not.toHaveBeenCalled();
+    expect(open.remove).not.toHaveBeenCalled();
+  });
+
+  it("goes on to the next worktree when one will not go", async () => {
+    const cleanup = port({
+      remove: vi.fn(async (path: string) => {
+        if (path.endsWith("/a")) throw new Error("busy");
+      }),
+    });
+    await releaseFanOutWorktrees([`${POOL}/a`, `${POOL}/b`], cleanup);
+    expect(cleanup.remove).toHaveBeenCalledTimes(2);
   });
 });

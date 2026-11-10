@@ -1,7 +1,7 @@
-// WP-135: the real compare picker, with made-up models and a fake git port.
+// WP-135: the real compare picker, with made-up models and a fake git port. `?worktrees=reject` makes every worktree create fail.
 import { useState } from "react";
 import { createRoot } from "react-dom/client";
-import { launchFanOut } from "../../src/features/sessions/model/fanOutLaunch";
+import { fanOutRefusalLine, launchFanOut } from "../../src/features/sessions/model/fanOutLaunch";
 import type { FanOutChoice } from "../../src/features/sessions/model/fanOutChoices";
 import { FanOutPicker } from "../../src/features/sessions/ui/FanOutPicker";
 import "../../src/styles/index.css";
@@ -13,6 +13,8 @@ const choices: FanOutChoice[] = [
   { provider: "pi", model: "four", label: "Pi: four" },
   { provider: "hermes", model: "five", label: "Hermes: five" },
 ];
+
+const rejectWorktrees = new URLSearchParams(window.location.search).get("worktrees") === "reject";
 
 function Page() {
   const [started, setStarted] = useState(0);
@@ -27,13 +29,13 @@ function Page() {
             { prompt, targets, cwd: "/work/proj" },
             {
               git: async () => true,
-              createWorktree: async (_cwd, branch) => ({
-                path: `/work/trees/${branch.replace(/[^\w]+/g, "-")}`,
-                branch,
-              }),
+              createWorktree: async (_cwd, branch) => {
+                if (rejectWorktrees) throw new Error("worktree busy");
+                return { path: `/work/trees/${branch.replace(/[^\w]+/g, "-")}`, branch };
+              },
             },
           );
-          if (!result.ok) return false;
+          if (!result.ok) return fanOutRefusalLine(result.code);
           setStarted(result.sessions.length);
           return true;
         }}

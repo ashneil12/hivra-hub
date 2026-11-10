@@ -300,7 +300,7 @@ type Props = {
   onCompareModels?: (
     prompt: string,
     targets: readonly { provider: HarnessId; model: string }[],
-  ) => boolean | Promise<boolean | void> | void;
+  ) => boolean | string | Promise<boolean | string | void> | void;
   /** `draft` opens the side question with the text unsent, for a typed `/btw `. */
   onBtwCommand?: (
     text: string,
@@ -2687,7 +2687,7 @@ export function Composer({
                       allowedHarnesses={allowedModelHarnesses}
                       onLaunch={async (prompt, targets) => {
                         const accepted = await onCompareModels(prompt, targets);
-                        if (accepted === false) return false;
+                        if (accepted === false || typeof accepted === "string") return accepted;
                         pasteGenerationRef.current += 1;
                         if (ref.current) {
                           ref.current.value = "";

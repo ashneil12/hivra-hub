@@ -724,11 +724,15 @@ import { firstTurnAccount, providerName, reactToLimit, workerRoom } from "../fea
 import { claudeRunsOnSubscriptionBridge } from "../integrations/harness/providers/claude/claudeDeepseekBridge";
 import { getCachedRateLimits } from "../features/providers/model/rateLimitsCache";
 import { waitsOnlyOnItsLead } from "../features/monos/model/workerStuck";
-import { discardFanOutLoser, pickFanOutInStore } from "../features/sessions/model/fanOutDecide";
+import {
+  discardFanOutLoser,
+  pickFanOutInStore,
+  releaseFanOutWorktrees,
+} from "../features/sessions/model/fanOutDecide";
 import { fanOutJanitorPort } from "../features/sessions/model/fanOutJanitor";
-import { launchFanOut } from "../features/sessions/model/fanOutLaunch";
+import { fanOutRefusalLine, launchFanOut } from "../features/sessions/model/fanOutLaunch";
 import { listCompares, putCompare, subscribeCompares } from "../features/sessions/model/fanOutStore";
-import { fanOutCompareRows } from "../features/sessions/model/fanOutView";
+import { fanOutCompareRows, fanOutNotStartedLines } from "../features/sessions/model/fanOutView";
 import {
   HARNESSES,
   HARNESS_LABEL,
@@ -16442,7 +16446,18 @@ function Workspace({
     create: () => createMono().id,
   });
 
-  // WP-135: the composer confirms the cap and the paid turns, then this starts one chat per model.
+  // WP-135: a discarded loser is stopped first, the same as pressing Stop in that chat.
+  const stopFanOutChild = useCallback(
+    async (childId: string) => {
+      const child = sessionsRef.current.find((session) => session.id === childId);
+      if (!child?.busy) return;
+      await onStop(childId);
+    },
+    [onStop],
+  );
+
+  // WP-135: the composer confirms the cap and the paid turns, then this starts one chat per model, each in its own
+  // worktree. A model that could not get a worktree does not start, and a compare that cannot start two says why.
   const fanOutBusy = useRef(new Set<string>());
   const onCompareModels = useCallback(
     async (
@@ -16470,9 +16485,15 @@ function Workspace({
               const tree = await createWorktree(cwd, branch, source.worktreeBase || "HEAD", false);
               return { path: tree.path, branch: tree.branch ?? branch };
             },
+            release: (paths) =>
+              releaseFanOutWorktrees(
+                paths,
+                fanOutJanitorPort(source.cwd, onRemoveWorktree, stopFanOutChild),
+              ),
           },
         );
-        if (!result.ok || !putCompare(result.record)) return false;
+        if (!result.ok) return fanOutRefusalLine(result.code);
+        if (!putCompare(result.record)) return false;
         const known = new Set(sessionsRef.current.map((session) => session.id));
         const added = result.sessions.filter((session) => !known.has(session.id));
         if (added.length === 0) return false;
@@ -16484,7 +16505,7 @@ function Workspace({
         fanOutBusy.current.delete(sessionId);
       }
     },
-    [onSubmit],
+    [onSubmit, onRemoveWorktree, stopFanOutChild],
   );
 
   // WP-135: the compare sits on the chat it was started from. Picking leaves the winner's worktree.
@@ -16494,13 +16515,18 @@ function Workspace({
     if (!record) return null;
     return {
       rows: fanOutCompareRows(record, sessionsRef.current),
+      notStarted: fanOutNotStartedLines(record),
       onPick: (childId: string) => {
         pickFanOutInStore(record.id, childId);
       },
       onDiscard: (childId: string) => {
         const source = sessionsRef.current.find((item) => item.id === sessionId);
         if (!source) return;
-        return discardFanOutLoser(record.id, childId, fanOutJanitorPort(source.cwd, onRemoveWorktree));
+        return discardFanOutLoser(
+          record.id,
+          childId,
+          fanOutJanitorPort(source.cwd, onRemoveWorktree, stopFanOutChild),
+        );
       },
     };
   };

@@ -8,9 +8,17 @@ import {
 } from "../../source-control/model/worktreeJanitor";
 import type { FanOutCleanupPort } from "./fanOutDecide";
 
-/** Roots and verdicts for one project. A throw means the janitor has not answered. */
-export function fanOutJanitorPort(cwd: string, onRemove: RemoveWorktree): FanOutCleanupPort {
+/**
+ * Roots and verdicts for one project, and the stop a discard needs. A throw means the janitor has not answered
+ * (or, for `stop`, that the chat may still be running).
+ */
+export function fanOutJanitorPort(
+  cwd: string,
+  onRemove: RemoveWorktree,
+  stop: (childId: string) => Promise<void>,
+): FanOutCleanupPort {
   return {
+    stop,
     allowedRoots: async () => {
       const listed = await listWorktrees(cwd);
       const root = typeof listed.defaultRoot === "string" ? listed.defaultRoot.trim() : "";

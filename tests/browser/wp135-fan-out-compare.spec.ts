@@ -7,8 +7,10 @@ test("a compare can pick one chat and discard the other", async ({ page }) => {
   const loser = page.locator("[data-fan-out-child='child-b']");
   await expect(winner).toContainText("Working");
   await expect(winner).toContainText("The flake was a shared clock.");
-  await expect(loser).toContainText("Idle");
+  await expect(winner.locator("[data-fan-out-spend]")).toHaveText("Spent $0.25");
+  await expect(loser).toContainText("Working");
   await expect(loser).toContainText("No reply yet");
+  await expect(loser.locator("[data-fan-out-spend]")).toHaveText("Spent: no price reported");
 
   await winner.getByRole("button", { name: "Pick this one" }).click();
   await expect(winner.locator("[data-fan-out-winner]")).toHaveText(
@@ -19,6 +21,9 @@ test("a compare can pick one chat and discard the other", async ({ page }) => {
   await loser.getByRole("button", { name: "Discard" }).click();
   await expect(loser.locator("[data-fan-out-cleanup]")).toHaveText("Its worktree was removed.");
   await expect(page.locator("[data-fan-out-removed]")).toHaveText("/work/trees/b");
+  // The running loser was stopped before its worktree went.
+  await expect(page.locator("[data-fan-out-order]")).toHaveText("stop:child-b,remove:/work/trees/b");
+  await expect(loser).toContainText("Idle");
   await expect(page.getByRole("button", { name: "Merge" })).toHaveCount(0);
 
   const text = await page.locator("body").innerText();

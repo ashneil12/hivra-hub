@@ -4,6 +4,8 @@ import type { FanOutCompareRow } from "../model/fanOutView";
 
 export type FanOutCompareModel = {
   rows: readonly FanOutCompareRow[];
+  /** Models asked for that did not start, one plain line each. */
+  notStarted?: readonly string[];
   onPick: (childId: string) => void | Promise<unknown>;
   onDiscard: (childId: string) => void | Promise<unknown>;
 };
@@ -27,6 +29,7 @@ export function FanOutCompare({ view }: { view: FanOutCompareModel }) {
             <p>{row.status}</p>
             <p>{row.excerpt}</p>
             <p>{row.worktree}</p>
+            <p data-fan-out-spend="">{row.spend}</p>
             {row.winnerLine ? <p data-fan-out-winner="">{row.winnerLine}</p> : null}
             {row.cleanupLine ? <p data-fan-out-cleanup="">{row.cleanupLine}</p> : null}
             <div className="mt-1 flex gap-2">
@@ -40,7 +43,7 @@ export function FanOutCompare({ view }: { view: FanOutCompareModel }) {
               </button>
               <button
                 type="button"
-                disabled={busy !== null || row.winner || row.discarded}
+                disabled={busy !== null || !row.canDiscard}
                 onClick={() => run(row.id, view.onDiscard)}
                 className="rounded-md border border-current/20 px-2 py-1 disabled:opacity-40"
               >
@@ -50,6 +53,13 @@ export function FanOutCompare({ view }: { view: FanOutCompareModel }) {
           </li>
         ))}
       </ul>
+      {view.notStarted?.length ? (
+        <ul data-fan-out-not-started="" className="mt-2 space-y-1">
+          {view.notStarted.map((line) => (
+            <li key={line}>{line}</li>
+          ))}
+        </ul>
+      ) : null}
     </section>
   );
 }

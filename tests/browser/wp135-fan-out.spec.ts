@@ -25,3 +25,19 @@ test("the composer can compare one prompt on up to four models", async ({ page }
   expect(text).not.toMatch(/[—–]/);
   expect(text).not.toContain("/Users/");
 });
+
+test("a compare that cannot give two chats their own worktree starts nothing and says so", async ({ page }) => {
+  await page.goto("/tests/browser/wp135-fan-out.html?worktrees=reject");
+
+  await page.getByRole("button", { name: "Compare models" }).click();
+  await page.getByRole("checkbox", { name: "Claude: one" }).check();
+  await page.getByRole("checkbox", { name: "Codex: two" }).check();
+  await page.getByRole("button", { name: "Review" }).click();
+  await page.getByRole("button", { name: "Start chats" }).click();
+
+  await expect(page.locator("[data-fan-out-panel]")).toContainText("could get their own worktree");
+  await expect(page.locator("[data-fan-out-started]")).toHaveText("No chats yet");
+
+  const text = await page.locator("body").innerText();
+  expect(text).not.toMatch(/[—–]/);
+});

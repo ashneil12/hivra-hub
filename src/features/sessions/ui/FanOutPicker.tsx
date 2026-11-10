@@ -28,7 +28,7 @@ type Props = {
   onLaunch: (
     prompt: string,
     targets: readonly FanOutTargetRef[],
-  ) => boolean | Promise<boolean | void> | void;
+  ) => boolean | string | Promise<boolean | string | void> | void;
 };
 
 export function FanOutPicker({
@@ -94,6 +94,11 @@ export function FanOutPicker({
     setBusy(true);
     try {
       const accepted = await onLaunch(prompt, selected);
+      if (typeof accepted === "string") {
+        // Nothing started. The reason says why, in the words of the compare itself.
+        setNotice(accepted);
+        return;
+      }
       if (accepted === false) {
         setNotice("That compare did not start.");
         return;

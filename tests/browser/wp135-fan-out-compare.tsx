@@ -1,4 +1,4 @@
-// WP-135: the compare view, with made-up chats and a janitor that can remove one loser.
+// WP-135: the compare view, with made-up chats, a loser that is still running, and a janitor that can remove it.
 import { useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { assignFanOutWorktrees, planFanOut, replaceFanOutChildren, type CompareRecord } from "../../src/features/sessions/model/fanOut";
@@ -38,6 +38,8 @@ function Page() {
   const held = useRef<CompareRecord>(written.record);
   const [, setRevision] = useState(written.record.revision);
   const [removed, setRemoved] = useState("none");
+  const [stopped, setStopped] = useState<string[]>([]);
+  const [order, setOrder] = useState<string[]>([]);
   const store = {
     get: (id: string) => (held.current.id === id ? held.current : null),
     put: (record: CompareRecord) => {
@@ -50,9 +52,16 @@ function Page() {
     {
       id: "child-a",
       busy: true,
-      blocks: [{ role: "assistant", text: "The flake was a shared clock." }],
+      blocks: [
+        { role: "user", turnMetrics: { costUsd: 0.25 } },
+        { role: "assistant", text: "The flake was a shared clock." },
+      ],
     },
-    { id: "child-b", blocks: [] },
+    {
+      id: "child-b",
+      busy: !stopped.includes("child-b"),
+      blocks: [{ role: "user", turnMetrics: { inputTokens: 900, outputTokens: 40 } }],
+    },
   ]);
   return (
     <>
@@ -68,9 +77,14 @@ function Page() {
               childId,
               {
                 allowedRoots: ["/work/trees"],
+                stop: async (id) => {
+                  setStopped((list) => [...list, id]);
+                  setOrder((list) => [...list, `stop:${id}`]);
+                },
                 inspect: async () => "remove",
                 remove: async (path) => {
                   setRemoved(path);
+                  setOrder((list) => [...list, `remove:${path}`]);
                 },
               },
               store,
@@ -78,6 +92,7 @@ function Page() {
         }}
       />
       <p data-fan-out-removed="">{removed}</p>
+      <p data-fan-out-order="">{order.join(",") || "none"}</p>
     </>
   );
 }

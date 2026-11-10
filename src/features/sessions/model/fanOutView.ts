@@ -1,9 +1,24 @@
 // WP-135: the lines the compare view shows. One winner, no merge.
+import { formatUsd } from "../../usage/model/history";
 import { HARNESS_TITLE, type HarnessId } from "./session";
 import { worktreeNote, type CompareRecord, type FanOutChild, type FanOutCleanup } from "./fanOut";
 import { fanOutWinnerStays } from "./fanOutDecide";
 
-export type FanOutExcerptBlock = { role?: string; text?: string; internal?: boolean };
+/** The token and price fields a finished turn carries, as the engine reported them. */
+export type FanOutTurnMetrics = {
+  inputTokens?: number;
+  outputTokens?: number;
+  cacheReadTokens?: number;
+  cacheWriteTokens?: number;
+  costUsd?: number;
+};
+
+export type FanOutExcerptBlock = {
+  role?: string;
+  text?: string;
+  internal?: boolean;
+  turnMetrics?: FanOutTurnMetrics;
+};
 
 export type FanOutCompareSession = {
   id: string;
@@ -20,8 +35,12 @@ export type FanOutCompareRow = {
   status: string;
   excerpt: string;
   worktree: string;
+  /** What this chat has spent, from the prices its engine reported. Never estimated. */
+  spend: string;
   winner: boolean;
   discarded: boolean;
+  /** Discard can be pressed: not the winner, and not a discard that already finished. A pending one can be tried again. */
+  canDiscard: boolean;
   winnerLine: string | null;
   cleanupLine: string | null;
 };
@@ -43,6 +62,50 @@ export function fanOutLastMessage(blocks: readonly FanOutExcerptBlock[] | undefi
     return text.length > 180 ? `${text.slice(0, 177)}...` : text;
   }
   return "No reply yet";
+}
+
+function usable(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null;
+}
+
+/**
+ * What one chat spent. Only a price the engine reported is added up; a turn with token counts and no price is
+ * counted as such, and nothing is worked out from a price table.
+ */
+export function fanOutChildSpend(blocks: readonly FanOutExcerptBlock[] | undefined): string {
+  let spent = 0;
+  let priced = 0;
+  let unpriced = 0;
+  for (const block of blocks ?? []) {
+    const metrics = block?.turnMetrics;
+    if (!metrics) continue;
+    const cost = usable(metrics.costUsd);
+    if (cost != null) {
+      spent += cost;
+      priced += 1;
+      continue;
+    }
+    const counted = [
+      metrics.inputTokens,
+      metrics.outputTokens,
+      metrics.cacheReadTokens,
+      metrics.cacheWriteTokens,
+    ].some((value) => usable(value) != null);
+    if (counted) unpriced += 1;
+  }
+  if (priced === 0) {
+    return unpriced > 0 ? "Spent: no price reported" : "Spent: nothing reported yet";
+  }
+  const note = unpriced > 0 ? ` (${unpriced} ${unpriced === 1 ? "turn" : "turns"} had no price)` : "";
+  return `Spent ${formatUsd(spent)}${note}`;
+}
+
+/** One line for each model that was asked for and did not start. */
+export function fanOutNotStartedLines(record: CompareRecord): string[] {
+  return (record.notStarted ?? []).map(
+    (target) =>
+      `${HARNESS_TITLE[target.provider]}: ${target.model} did not start. No own worktree could be made for it.`,
+  );
 }
 
 function cleanupLine(state: FanOutCleanup | undefined, discarded: boolean): string | null {
@@ -74,8 +137,11 @@ export function fanOutCompareRows(
       status: fanOutChildStatus(session ?? null),
       excerpt: fanOutLastMessage(session?.blocks),
       worktree: worktreeNote(child.worktree),
+      spend: fanOutChildSpend(session?.blocks),
       winner,
       discarded,
+      canDiscard:
+        !winner && (!discarded || (record.cleanup?.[child.id] ?? "pending") === "pending"),
       winnerLine: winner ? fanOutWinnerStays(child.worktree) : null,
       cleanupLine: cleanupLine(record.cleanup?.[child.id], discarded),
     };

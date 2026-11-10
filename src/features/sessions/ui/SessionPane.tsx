@@ -199,12 +199,12 @@ export type SessionPaneProps = {
     attachments: Attachment[],
     options?: ComposerTurnOptions,
   ) => boolean | void;
-  /** WP-135: start the same prompt on several models. */
+  /** WP-135: start the same prompt on several models. A string is the reason nothing started. */
   onCompareModels?: (
     sessionId: string,
     prompt: string,
     targets: readonly { provider: HarnessId; model: string }[],
-  ) => boolean | Promise<boolean | void> | void;
+  ) => boolean | string | Promise<boolean | string | void> | void;
   /** WP-135: the compare started from this chat, when there is one. */
   fanOutForSession?: (sessionId: string) => FanOutCompareModel | null;
   onSaveDraft: (
