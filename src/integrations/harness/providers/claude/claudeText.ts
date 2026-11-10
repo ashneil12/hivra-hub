@@ -18,6 +18,7 @@ import {
   parseJsonLine,
   previewFromTool,
   resolveClaudeApiModelId,
+  SIDE_QUESTION_DENY_TOOLS,
   streamDeltaFromEvent,
   stringField,
   summarizeToolRequest,
@@ -117,13 +118,24 @@ function pickTextModel(requested?: string): string {
   return versioned[0]?.id ?? TEXT_MODEL;
 }
 
+/** `args` with `tools` added to its last `--disallowedTools` list (or a new one), so one deny list never replaces another. */
+function withDeniedTools(args: readonly string[], tools: readonly string[]): string[] {
+  const at = args.lastIndexOf("--disallowedTools");
+  if (at < 0 || at + 1 >= args.length) return [...args, "--disallowedTools", tools.join(",")];
+  const next = [...args];
+  next[at + 1] = [args[at + 1], ...tools].filter(Boolean).join(",");
+  return next;
+}
+
 /**
  * A call that only wants text back (a title, commit or PR text, a branch name, the room's gate: everything it needs is
- * in the prompt) starts with no tools at all. One whose answer streams into a chat ("by the way") keeps its tools. Both
- * carry the hub's fence round the Monos' home, as every Claude process the app starts does.
+ * in the prompt) starts with no tools at all. One whose answer streams into a chat ("by the way") keeps its read
+ * tools but not the ones that change things (SIDE_QUESTION_DENY_TOOLS). Both carry the hub's fence round the Monos'
+ * home, as every Claude process the app starts does.
  */
 export function textCallToolArgs(streams: boolean): string[] {
-  return [...(streams ? [] : ["--tools", ""]), ...claudeGuardArgs()];
+  const guard = claudeGuardArgs();
+  return streams ? withDeniedTools(guard, SIDE_QUESTION_DENY_TOOLS) : ["--tools", "", ...guard];
 }
 
 /** Stop every call still running (the app is closing, or the helpers are being reset). */

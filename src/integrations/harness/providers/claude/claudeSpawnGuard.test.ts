@@ -70,14 +70,71 @@ describe("the guard on every Claude process", () => {
     expect(hasFence(call.args)).toBe(true);
   });
 
-  it("a helper call that streams into a chat keeps its tools but carries the fence", async () => {
+  it("a helper call that streams into a chat keeps its read tools and carries the fence", async () => {
     await expect(
       runClaudeTextPrompt({ cwd: "/p", prompt: "by the way?", onEvent: () => undefined }),
     ).rejects.toThrow();
     expect(noTools(spawned[0].args)).toBe(false);
     expect(hasFence(spawned[0].args)).toBe(true);
     expect(textCallToolArgs(false)).toEqual(["--tools", "", ...FENCE()]);
-    expect(textCallToolArgs(true)).toEqual(FENCE());
+    // The five a side question may not use (see the side question block below) ride in the fence's own list.
+    expect(textCallToolArgs(true)[0]).toBe("--disallowedTools");
+    expect(textCallToolArgs(true)[1]).toBe([...chatDeniedTools(), "Edit", "Write", "MultiEdit", "NotebookEdit", "Bash"].join(","));
+  });
+
+  describe("a side question (the app's by-the-way call: streams into a chat, plan intent)", () => {
+    // The same input App.tsx hands runHarnessTextPrompt, which hands it on to the Claude adapter untouched.
+    const ask = () =>
+      runClaudeTextPrompt({
+        cwd: "/p",
+        prompt: "What does this file do?",
+        intent: "plan",
+        model: "claude-sonnet-5-5",
+        onEvent: () => undefined,
+      });
+    /** Every tool the CLI is told to deny, from each `--disallowedTools` it was given. */
+    const denied = (args: string[]) =>
+      args.flatMap((arg, i) => (args[i - 1] === "--disallowedTools" ? arg.split(",") : []));
+    const lastList = (args: string[]) => args[args.lastIndexOf("--disallowedTools") + 1]?.split(",") ?? [];
+
+    it("is started with Edit, Write, MultiEdit, NotebookEdit and Bash denied", async () => {
+      await expect(ask()).rejects.toThrow();
+      expect(spawned).toHaveLength(1);
+      for (const tool of ["Edit", "Write", "MultiEdit", "NotebookEdit", "Bash"]) {
+        expect(denied(spawned[0].args), tool).toContain(tool);
+      }
+    });
+
+    it("carries them in the same list as the fence, so one deny list never drops the other", async () => {
+      await expect(ask()).rejects.toThrow();
+      const last = lastList(spawned[0].args);
+      for (const tool of ["Edit", "Write", "MultiEdit", "NotebookEdit", "Bash", ...chatDeniedTools()]) {
+        expect(last, tool).toContain(tool);
+      }
+    });
+
+    it("still reads: it keeps its tools, minus those five, and the fence", async () => {
+      await expect(ask()).rejects.toThrow();
+      expect(noTools(spawned[0].args)).toBe(false);
+      expect(denied(spawned[0].args)).not.toContain("Read");
+      expect(denied(spawned[0].args)).not.toContain("Grep");
+      expect(hasFence(spawned[0].args)).toBe(true);
+      expect(spawned[0].args).toContain("plan");
+    });
+
+    it("denies them when the hub has registered no fence too", async () => {
+      setClaudeGuardArgs(undefined);
+      await expect(ask()).rejects.toThrow();
+      for (const tool of ["Edit", "Write", "MultiEdit", "NotebookEdit", "Bash"]) {
+        expect(lastList(spawned[0].args), tool).toContain(tool);
+      }
+    });
+
+    it("leaves the helpers that need no tools as they were: no tools at all, not a deny list of five", async () => {
+      await expect(runClaudeTextPrompt({ cwd: "/p", prompt: "Title this chat" })).rejects.toThrow();
+      expect(noTools(spawned[0].args)).toBe(true);
+      expect(textCallToolArgs(false)).toEqual(["--tools", "", ...FENCE()]);
+    });
   });
 
   it("the model-catalog probe: no tools, and the fence", async () => {

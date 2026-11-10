@@ -283,6 +283,13 @@ function normalizeImageMime(mime: string): string {
  */
 export const FIRST_MATE_DENY_TOOLS = ["Edit", "Write", "MultiEdit", "NotebookEdit"];
 
+/**
+ * A side question ("by the way", `/btw`) answers from what the chat already did and may look around the project, but
+ * it never changes anything: no file-editing tool, and no Bash (a shell can write, delete or push). Deny rules hold in
+ * every permission mode, so this does not depend on the plan mode it also runs in. Read, Grep and Glob stay.
+ */
+export const SIDE_QUESTION_DENY_TOOLS = [...FIRST_MATE_DENY_TOOLS, "Bash"];
+
 export function buildClaudeSpawnArgs(input: {
   model?: string;
   effort?: string;
