@@ -2770,24 +2770,52 @@ fn a_real_history_bundle_still_restores() {
     assert!(target.memory_root.join("ash/MEMORY.md").is_file());
 }
 
-/// What a file is allowed to be, by kind, is checked from the manifest before a byte is read: the numbers are the
-/// attacker's, and a hashed file of any declared size would otherwise be read whole.
+const MIB: u64 = 1024 * 1024;
+
+/// A sparse file of `size` zero bytes at `relative` in a folder export, listed in the manifest with the hash of those
+/// zeros (the file costs nothing on disk and the hash is computed without holding it).
+fn put_zeros_in_export(dest: &Path, relative: &str, size: u64) {
+    let file = fs::File::create(dest.join(relative)).unwrap();
+    file.set_len(size).unwrap();
+    let zeros = vec![0u8; MIB as usize];
+    let mut hash = Sha256::new();
+    let mut left = size;
+    while left > 0 {
+        let n = left.min(MIB) as usize;
+        hash.update(&zeros[..n]);
+        left -= n as u64;
+    }
+    let manifest_path = dest.join(MANIFEST);
+    let mut manifest: Value =
+        serde_json::from_str(&fs::read_to_string(&manifest_path).unwrap()).unwrap();
+    let files = manifest["files"].as_array_mut().unwrap();
+    files.retain(|f| f["path"] != relative);
+    files.push(json!({"path": relative, "bytes": size, "sha256": hex_of(&hash.finalize())}));
+    fs::write(&manifest_path, manifest.to_string()).unwrap();
+}
+
+/// A file past the size its kind may be is left out, with a line in the report, and never read: the rest of the export
+/// still opens and comes in. (The sizes in the manifest are the attacker's own numbers.)
 #[test]
-fn a_file_declared_larger_than_its_kind_allows_is_refused_before_it_is_read() {
-    const GIB: u64 = 1024 * 1024 * 1024;
-    for (relative, declared) in [
-        ("setup/setup.json", 4 * GIB),
-        ("workspace/sessions/chat-1.json", 65 * 1024 * 1024),
-        ("workspace/note-assets/note-1/1-shot.png", 21 * 1024 * 1024),
-        ("memory/ash.git.bundle", 2 * GIB),
+fn a_file_declared_larger_than_its_kind_is_left_out_with_a_note_and_never_read() {
+    // (what is declared too large, what to ask the import for, how it shows)
+    for relative in [
+        "setup/setup.json",
+        "workspace/sessions/chat-1.json",
+        "workspace/note-assets/note-1/1-shot.png",
+        "memory/ash.git.bundle",
     ] {
         let source_dir = TestDir::new("source");
+        let target_dir = TestDir::new("target");
         let out = TestDir::new("out");
         let source = env_for(&source_dir.0);
+        let target = env_for(&target_dir.0);
         let dest = note_export(&source, &out.0);
-        if relative == "setup/setup.json" {
-            assert!(dest.join(relative).is_file(), "{relative} is listed");
-        }
+        let declared = match relative {
+            "workspace/note-assets/note-1/1-shot.png" => 21 * MIB,
+            "memory/ash.git.bundle" => 2048 * MIB,
+            _ => 4096 * MIB,
+        };
         edit_manifest(&dest, |manifest| {
             for file in manifest["files"].as_array_mut().unwrap() {
                 if file["path"] == relative {
@@ -2795,12 +2823,100 @@ fn a_file_declared_larger_than_its_kind_allows_is_refused_before_it_is_read() {
                 }
             }
         });
-        let why = open_refused(&dest).unwrap_or_else(|()| panic!("{relative}: opened"));
+        // The export still opens: only that file is out.
+        let opened = open_export(&dest.to_string_lossy())
+            .unwrap_or_else(|why| panic!("{relative}: the whole export was refused: {why}"));
+        assert!(opened.read(relative).is_none(), "{relative} was read");
         assert!(
-            why.contains(relative) && why.contains("too large"),
-            "{relative}: {why}"
+            opened.read("memory/ash/MEMORY.md").is_some(),
+            "the rest opens"
         );
+
+        let store = open_store(&target);
+        let conn = store.lock_conn().unwrap();
+        let report = import_held(
+            &target,
+            &conn,
+            &ImportRequest {
+                path: dest.to_string_lossy().into_owned(),
+                memory: Some(MemoryImport {
+                    projects: vec!["ash".into()],
+                    keep_both: false,
+                    history: true,
+                }),
+                workspace: Some(WorkspaceImport {
+                    notes: vec!["note-1".into()],
+                    sessions: vec!["chat-1".into()],
+                    ..Default::default()
+                }),
+            },
+        )
+        .unwrap_or_else(|why| panic!("{relative}: the import failed: {why}"));
+        assert!(
+            report
+                .notes
+                .iter()
+                .any(|n| n.contains(relative) && n.contains("left out"))
+                || relative.contains("note-assets") && report.note_assets_skipped == 1
+                || relative.ends_with(".git.bundle")
+                    && report.notes.iter().any(|n| n.contains("history of ash")),
+            "{relative}: nothing said so: {:?}",
+            report.notes
+        );
+        match relative {
+            "workspace/sessions/chat-1.json" => assert_eq!(report.sessions_added, 0, "{report:?}"),
+            "workspace/note-assets/note-1/1-shot.png" => {
+                assert_eq!(report.note_assets_skipped, 1, "{report:?}");
+                assert!(
+                    report
+                        .notes
+                        .iter()
+                        .any(|n| n.contains("too large for a note picture")),
+                    "{:?}",
+                    report.notes
+                );
+            }
+            "memory/ash.git.bundle" => assert!(report.memory_history.is_empty(), "{report:?}"),
+            _ => {}
+        }
+        // And the rest of what was asked for came in.
+        assert_eq!(report.notes_added, 1, "{relative}: {report:?}");
     }
+}
+
+/// Large by nature: a chat holds every tool output, and Claude's own transcript of one is far past 64 MB. A file of
+/// 65 MB is an ordinary file of its kind.
+#[test]
+fn a_session_file_larger_than_64_mb_is_read() {
+    let source_dir = TestDir::new("source");
+    let target_dir = TestDir::new("target");
+    let out = TestDir::new("out");
+    let source = env_for(&source_dir.0);
+    let target = env_for(&target_dir.0);
+    let dest = note_export(&source, &out.0);
+    let mut bytes = fs::read(dest.join("workspace/sessions/chat-1.json")).unwrap();
+    bytes.resize(65 * MIB as usize, b' ');
+    put_in_export(&dest, "workspace/sessions/chat-1.json", &bytes);
+
+    let opened = open_export(&dest.to_string_lossy())
+        .unwrap_or_else(|why| panic!("a 65 MB chat refused the export: {why}"));
+    assert!(opened.json("workspace/sessions/chat-1.json").is_some());
+    let store = open_store(&target);
+    let conn = store.lock_conn().unwrap();
+    let report = import_held(
+        &target,
+        &conn,
+        &ImportRequest {
+            path: dest.to_string_lossy().into_owned(),
+            memory: None,
+            workspace: Some(WorkspaceImport {
+                sessions: vec!["chat-1".into()],
+                ..Default::default()
+            }),
+        },
+    )
+    .unwrap();
+    assert_eq!(report.sessions_added, 1, "{report:?}");
 }
 
 #[test]
@@ -2890,26 +3006,52 @@ fn a_file_listed_twice_is_refused_however_it_is_spelled() {
     }
 }
 
-/// Two correctly hashed setup files, each as large as a text file may be: Inspect would read both whole and send
-/// them to the window. It holds no more than a budget.
+/// Three correctly hashed setup files of 100 MB: Inspect holds no more than a budget of the webview's files whole, so
+/// the third is left out (with a line in the report) and the first two come through.
 #[test]
 fn inspect_holds_no_more_than_a_budget_of_the_webviews_files() {
     let source_dir = TestDir::new("source");
+    let target_dir = TestDir::new("target");
     let out = TestDir::new("out");
     let source = env_for(&source_dir.0);
+    let target = env_for(&target_dir.0);
     let dest = note_export(&source, &out.0);
-    let size = 50 * 1024 * 1024;
-    let zeros = vec![b' '; size];
     for name in ["a", "b", "c"] {
-        put_in_export(&dest, &format!("setup/big-{name}.json"), &zeros);
+        put_zeros_in_export(&dest, &format!("setup/big-{name}.json"), 100 * MIB);
     }
-    let result = finishes_within(60, {
-        let target = env_for(&TestDir::new("target").0);
-        let path = dest.to_string_lossy().into_owned();
+    let path = dest.to_string_lossy().into_owned();
+    let inspected = finishes_within(120, {
+        let (target, path) = (env_for(&target_dir.0), path.clone());
         move || inspect(&target, &path)
-    });
-    let why = result.expect_err("150 MB of setup files was inspected");
-    assert!(why.contains("too large to preview"), "{why}");
+    })
+    .unwrap_or_else(|why| panic!("the whole preview was refused: {why}"));
+    let big: Vec<&String> = inspected
+        .files
+        .keys()
+        .filter(|name| name.starts_with("setup/big-"))
+        .collect();
+    assert_eq!(big.len(), 2, "{big:?}");
+
+    let store = open_store(&target);
+    let conn = store.lock_conn().unwrap();
+    let report = import_held(
+        &target,
+        &conn,
+        &ImportRequest {
+            path,
+            memory: None,
+            workspace: None,
+        },
+    )
+    .unwrap();
+    assert!(
+        report
+            .notes
+            .iter()
+            .any(|n| n.contains("setup/big-c.json") && n.contains("left out")),
+        "{:?}",
+        report.notes
+    );
 }
 
 /// A tar.gz with one file whose header says it holds nothing and whose PAX record says `size` bytes: the tar crate
@@ -3161,52 +3303,136 @@ fn a_listed_bundle_is_copied_only_as_the_bytes_that_hash_as_listed() {
 #[test]
 fn windows_names_that_are_not_what_they_say_are_unsafe() {
     for name in [
-        "CON", "con", "NUL.txt", "aux.md", "COM1", "lpt9.png", "a:stream", "x.", "x ", "C:",
+        "CON",
+        "con",
+        "NUL.txt",
+        "aux.md",
+        "COM1",
+        "lpt9.png",
+        "a:stream",
+        "x.",
+        "x ",
+        "C:",
+        "COM0",
+        "LPT0",
+        "CONIN$",
+        "conout$",
+        "CONOUT$.txt",
+        "COM\u{b9}",
+        "com\u{b2}.md",
+        "COM\u{b3}",
+        "LPT\u{b9}",
+        "lpt\u{b2}.txt",
+        "LPT\u{b3}",
     ] {
         assert!(windows_unsafe_name(name), "{name}");
     }
     for name in [
         "MEMORY.md",
         "console.md",
-        "COM0",
         "COM10",
         "LPT",
         "nul-ish",
         "a.b",
         "1-shot.png",
+        "CONIN",
+        "COM\u{b9}x",
     ] {
         assert!(!windows_unsafe_name(name), "{name}");
     }
 }
 
-/// What an export writes is what an import will take: a file past the size its kind may be is refused at the
-/// export, not written into one nothing can open.
+/// What an export writes is what an import will take: a file past the size its kind may be is left out of the export,
+/// with a line saying so, and the rest is written.
 #[test]
-fn an_export_refuses_a_file_an_import_would_not_take() {
+fn an_export_leaves_out_a_file_an_import_would_not_take() {
     let dir = TestDir::new("writer");
     let mut writer = Writer {
         root: dir.0.clone(),
         secrets: 0,
         files: Vec::new(),
+        left_out: Vec::new(),
     };
     for (relative, size) in [
         ("setup/big.json", MAX_TEXT_FILE + 1),
-        ("memory/ash/big.md", MAX_TEXT_FILE + 1),
         (
             "workspace/note-assets/note-1/big.png",
             crate::notes::IMAGE_MAX_BYTES + 1,
         ),
     ] {
-        let why = writer
+        writer
             .bytes(relative, &vec![b' '; size as usize])
-            .expect_err("a file no import takes was written");
-        assert!(why.contains(relative) && why.contains("too large"), "{why}");
+            .unwrap_or_else(|why| panic!("{relative}: the whole export failed: {why}"));
         assert!(!dir.0.join(relative).exists(), "{relative} was written");
+        assert!(
+            writer
+                .left_out
+                .iter()
+                .any(|n| n.contains(relative) && n.contains("left out")),
+            "{relative}: {:?}",
+            writer.left_out
+        );
     }
+    assert!(writer.files.is_empty());
     // The largest a text file may be goes in.
     writer
         .bytes("setup/edge.json", &vec![b' '; MAX_TEXT_FILE as usize])
         .unwrap();
+    assert_eq!(writer.files.len(), 1);
+}
+
+/// The webview's files are held whole by Inspect, so the export keeps them within the same budget: the file that
+/// would take them past it is left out with a line.
+#[test]
+fn an_export_keeps_the_webviews_files_within_the_budget_inspect_holds() {
+    let dir = TestDir::new("writer");
+    let mut writer = Writer {
+        root: dir.0.clone(),
+        secrets: 0,
+        files: Vec::new(),
+        left_out: Vec::new(),
+    };
+    let chunk = vec![b' '; 100 * MIB as usize];
+    for name in ["a", "b", "c"] {
+        writer
+            .bytes(&format!("setup/big-{name}.json"), &chunk)
+            .unwrap();
+    }
+    assert_eq!(writer.files.len(), 2, "{:?}", writer.files);
+    assert!(
+        writer
+            .left_out
+            .iter()
+            .any(|n| n.contains("setup/big-c.json") && n.contains("left out")),
+        "{:?}",
+        writer.left_out
+    );
+}
+
+/// A history bundle past its cap is left out of the export with a line: the memory files still go.
+#[test]
+fn an_export_leaves_out_a_history_bundle_past_its_cap() {
+    let dir = TestDir::new("writer");
+    let mut writer = Writer {
+        root: dir.0.clone(),
+        secrets: 0,
+        files: Vec::new(),
+        left_out: Vec::new(),
+    };
+    let bundle = dir.0.join("source.bundle");
+    fs::write(&bundle, b"01234567890").unwrap();
+    writer
+        .binary("memory/ash.git.bundle", &bundle, 10)
+        .unwrap_or_else(|why| panic!("the whole export failed: {why}"));
+    assert!(writer.files.is_empty());
+    assert!(
+        writer
+            .left_out
+            .iter()
+            .any(|n| n.contains("history") && n.contains("left out")),
+        "{:?}",
+        writer.left_out
+    );
 }
 
 /// A chat file as another machine, or someone writing one by hand, could make it: every place a block can name a
@@ -3439,5 +3665,133 @@ fn odd_shapes_in_an_imported_chat_are_dropped_not_kept_and_do_not_fail_the_impor
     assert_eq!(
         blocks[5]["btwThreads"][0]["pendingBlocks"][0]["attachments"][0].get("path"),
         None
+    );
+}
+
+/// Sets an environment variable for the process and puts it back (tests share one process).
+struct EnvVar(&'static str, Option<std::ffi::OsString>);
+
+impl EnvVar {
+    fn set(name: &'static str, value: &Path) -> Self {
+        let before = std::env::var_os(name);
+        std::env::set_var(name, value);
+        Self(name, before)
+    }
+}
+
+impl Drop for EnvVar {
+    fn drop(&mut self) {
+        match &self.1 {
+            Some(value) => std::env::set_var(self.0, value),
+            None => std::env::remove_var(self.0),
+        }
+    }
+}
+
+/// A bundle whose tree has a filter attribute on every `.md`, an LFS config, a submodule file and attributes in a
+/// folder: what git-lfs (or any filter in the machine's own git config) would act on at checkout.
+fn bundle_with_filter_files(dir: &Path) -> Vec<u8> {
+    let repo = dir.join("filtered");
+    fs::create_dir_all(repo.join("sub")).unwrap();
+    fs::write(repo.join(".gitattributes"), "*.md filter=evil\n").unwrap();
+    fs::write(repo.join("sub/.gitattributes"), "* text\n").unwrap();
+    fs::write(
+        repo.join(".lfsconfig"),
+        "[lfs]\n\turl = http://127.0.0.1:9/\n",
+    )
+    .unwrap();
+    fs::write(
+        repo.join(".gitmodules"),
+        "[submodule \"x\"]\n\tpath = x\n\turl = ./x\n",
+    )
+    .unwrap();
+    fs::write(repo.join("A.md"), "a\n").unwrap();
+    git(&repo, &["init", "-q", "-b", "main"]);
+    git(&repo, &["add", "-A"]);
+    git(&repo, &["commit", "-q", "-m", "filtered"]);
+    let bundle = dir.join("filtered.bundle");
+    git(
+        &repo,
+        &["bundle", "create", &bundle.to_string_lossy(), "--all"],
+    );
+    fs::read(bundle).unwrap()
+}
+
+/// The machine's own git configuration (Ash's has git-lfs filters in it) is not read while a history is restored,
+/// and the files that tell git what to run at checkout are not restored with it: no filter or hook of the history
+/// runs, and a bundle can't bring an LFS server, a submodule or an attribute in.
+#[cfg(unix)]
+#[test]
+fn restoring_a_history_runs_no_filter_and_drops_the_files_that_name_one() {
+    let source_dir = TestDir::new("source");
+    let target_dir = TestDir::new("target");
+    let out = TestDir::new("out");
+    let outside = TestDir::new("outside");
+    let source = env_for(&source_dir.0);
+    let target = env_for(&target_dir.0);
+    let dest = memory_export(&source, &out.0);
+    put_in_export(
+        &dest,
+        "memory/ash.git.bundle",
+        &bundle_with_filter_files(&outside.0),
+    );
+    let marker = outside.0.join("FILTER-RAN");
+    let config = outside.0.join("gitconfig");
+    fs::write(
+        &config,
+        format!(
+            "[filter \"evil\"]\n\tsmudge = cat && touch '{}'\n\tclean = cat\n",
+            marker.display()
+        ),
+    )
+    .unwrap();
+    let _global = EnvVar::set("GIT_CONFIG_GLOBAL", &config);
+
+    let store = open_store(&target);
+    let conn = store.lock_conn().unwrap();
+    let report = import_held(&target, &conn, &history_import(&dest)).unwrap();
+    assert!(
+        !marker.exists(),
+        "a filter from the machine's git config ran"
+    );
+    assert_eq!(report.memory_history, vec!["ash".to_string()], "{report:?}");
+    assert_eq!(
+        fs::read_to_string(target.memory_root.join("ash/A.md")).unwrap(),
+        "a\n",
+        "the history's files still come back"
+    );
+    for dropped in [
+        ".gitattributes",
+        "sub/.gitattributes",
+        ".lfsconfig",
+        ".gitmodules",
+    ] {
+        assert!(
+            !target.memory_root.join("ash").join(dropped).exists(),
+            "{dropped} was restored"
+        );
+    }
+    assert!(
+        report
+            .notes
+            .iter()
+            .any(|n| n.contains("history of ash") && n.contains(".gitattributes")),
+        "{:?}",
+        report.notes
+    );
+}
+
+/// The folder an archive is unpacked into is the importer's alone.
+#[cfg(unix)]
+#[test]
+fn an_unpacked_archive_is_in_a_folder_only_this_user_can_open() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = TestDir::new("unpack");
+    let archive = dir.0.join("a.tar.gz");
+    pax_sized_archive(&archive, 10);
+    let scratch = unpack(&archive).unwrap();
+    assert_eq!(
+        fs::metadata(&scratch.0).unwrap().permissions().mode() & 0o777,
+        0o700
     );
 }

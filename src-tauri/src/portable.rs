@@ -674,6 +674,8 @@ struct Writer {
     root: PathBuf,
     secrets: usize,
     files: Vec<(String, u64, String)>,
+    /// Plain lines about files that were left out of the export and why.
+    left_out: Vec<String>,
 }
 
 impl Writer {
@@ -812,6 +814,7 @@ pub fn export(env: &Env, request: &ExportRequest) -> Result<ExportReport, String
         root: staging.0.clone(),
         secrets: 0,
         files: Vec::new(),
+        left_out: Vec::new(),
     };
     let mut counts = request.counts.clone();
     let mut notes = Vec::new();
@@ -829,6 +832,8 @@ pub fn export(env: &Env, request: &ExportRequest) -> Result<ExportReport, String
         export_note_assets(env, &mut writer, &counts, &mut notes)?;
         counts.remove("noteIds");
     }
+
+    notes.append(&mut writer.left_out);
 
     // The last net: nothing written may still look like a secret.
     for (relative, _, _) in &writer.files {
