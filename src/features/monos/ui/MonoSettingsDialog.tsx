@@ -30,6 +30,7 @@ import {
 } from "../model/mono";
 import { closeTree, openTree } from "../model/monoTreeStore";
 import { ensureMorningHabit } from "../../chief/model/habit";
+import { RepoWatchHabitSwitch } from "../../repoWatch/ui/RepoWatchHabitSwitch";
 import { soulAsks } from "../../chief/model/scope";
 import { loadHabits, updateHabits } from "../model/monoHabits";
 import { ConfirmReset } from "./ConfirmReset";
@@ -305,6 +306,16 @@ function GeneralSection({
           />
         </SettingGroup>
       ) : null}
+
+      <SettingGroup>
+        {/* WP-166: weekly repo watch. Off until it is turned on. */}
+        <RepoWatchHabitSwitch
+          load={() => loadHabits(monoId)}
+          update={async (change) => {
+            await updateHabits(monoId, (habits) => ({ habits: change(habits), result: undefined }));
+          }}
+        />
+      </SettingGroup>
 
       {onReset ? (
         <>

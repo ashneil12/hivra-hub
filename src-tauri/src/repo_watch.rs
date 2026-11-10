@@ -3,11 +3,14 @@
 //! so a stale write is refused and the caller reads again.
 
 use std::fs;
-use std::io::ErrorKind;
+use std::io::{ErrorKind, Read};
 use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 use regex::Regex;
+use serde::Serialize;
 use serde_json::{json, Value};
 
 use crate::portable::scrubber;
@@ -238,6 +241,398 @@ pub fn repo_watch_cas(project: String, expected: u64, body: String) -> Result<bo
     cas(Path::new(&project), expected, &body)
 }
 
+const FETCH_TIMEOUT: Duration = Duration::from_secs(20);
+
+const ENV_KEYS: &[&str] = &[
+    "HOME",
+    "USER",
+    "LOGNAME",
+    "TMPDIR",
+    "TEMP",
+    "TMP",
+    "LANG",
+    "LC_ALL",
+    "LC_CTYPE",
+    "SHELL",
+    "SYSTEMROOT",
+    "WINDIR",
+    "USERPROFILE",
+    "APPDATA",
+    "LOCALAPPDATA",
+    "HOMEDRIVE",
+    "HOMEPATH",
+    "PROGRAMDATA",
+];
+
+/// gh and git only. PATH is the one we were given, never a token from the environment.
+pub fn passed_env(source: &[(&str, &str)], path: &str) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    for key in ENV_KEYS {
+        if let Some((_, value)) = source.iter().find(|(name, _)| name == key) {
+            out.push(((*key).to_string(), (*value).to_string()));
+        }
+    }
+    out.push(("PATH".into(), path.into()));
+    out.push(("GH_PROMPT_DISABLED".into(), "1".into()));
+    out.push(("GIT_TERMINAL_PROMPT".into(), "0".into()));
+    out.push(("NO_COLOR".into(), "1".into()));
+    out
+}
+
+pub fn allow_program(program: &str) -> bool {
+    program == "gh" || program == "git"
+}
+
+pub struct RunOutput {
+    pub started: bool,
+    pub timed_out: bool,
+    pub success: bool,
+    pub stdout: String,
+}
+
+pub trait CommandRunner {
+    fn run(&mut self, program: &str, args: &[String], env: &[(String, String)]) -> RunOutput;
+}
+
+fn not_started() -> RunOutput {
+    RunOutput {
+        started: false,
+        timed_out: false,
+        success: false,
+        stdout: String::new(),
+    }
+}
+
+struct ProcessRunner;
+
+impl CommandRunner for ProcessRunner {
+    fn run(&mut self, program: &str, args: &[String], env: &[(String, String)]) -> RunOutput {
+        if !allow_program(program) {
+            return not_started();
+        }
+        let mut command = Command::new(program);
+        command.env_clear();
+        for (key, value) in env {
+            command.env(key, value);
+        }
+        command
+            .args(args)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null());
+        crate::hide_window_console(&mut command);
+        let mut child = match command.spawn() {
+            Ok(child) => child,
+            Err(_) => return not_started(),
+        };
+        let started = Instant::now();
+        let status = loop {
+            match child.try_wait() {
+                Ok(Some(status)) => break status,
+                Ok(None) if started.elapsed() > FETCH_TIMEOUT => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return RunOutput {
+                        started: true,
+                        timed_out: true,
+                        success: false,
+                        stdout: String::new(),
+                    };
+                }
+                Ok(None) => std::thread::sleep(Duration::from_millis(50)),
+                Err(_) => {
+                    return RunOutput {
+                        started: true,
+                        timed_out: false,
+                        success: false,
+                        stdout: String::new(),
+                    }
+                }
+            }
+        };
+        let mut stdout = String::new();
+        if let Some(mut pipe) = child.stdout.take() {
+            let _ = pipe.read_to_string(&mut stdout);
+        }
+        RunOutput {
+            started: true,
+            timed_out: false,
+            success: status.success(),
+            stdout,
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FetchBodies {
+    pub rejected: bool,
+    pub started: bool,
+    pub timed_out: bool,
+    pub unreachable: bool,
+    pub repo_status: u16,
+    pub repo_body: String,
+    pub compare_status: u16,
+    pub compare_body: String,
+    pub release_status: u16,
+    pub release_body: String,
+    pub release_missing: bool,
+    pub release_unchecked: bool,
+    pub remote_head: String,
+}
+
+fn blank_fetch() -> FetchBodies {
+    FetchBodies {
+        rejected: false,
+        started: false,
+        timed_out: false,
+        unreachable: false,
+        repo_status: 0,
+        repo_body: String::new(),
+        compare_status: 0,
+        compare_body: String::new(),
+        release_status: 0,
+        release_body: String::new(),
+        release_missing: false,
+        release_unchecked: false,
+        remote_head: String::new(),
+    }
+}
+
+fn clean_body(text: &str) -> String {
+    let (redacted, _) = scrubber().redact_text(text);
+    hide_home(&redacted)
+}
+
+fn safe_slug(part: &str) -> bool {
+    let bytes = part.as_bytes();
+    !bytes.is_empty()
+        && bytes.len() <= 100
+        && part != "."
+        && part != ".."
+        && !part.starts_with('.')
+        && bytes
+            .iter()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+}
+
+fn github_slug(url: &str) -> Option<(String, String)> {
+    let rest = url.strip_prefix("https://github.com/")?;
+    if rest.contains(['?', '#', '\\', '@']) {
+        return None;
+    }
+    let mut parts = rest.split('/');
+    let owner = parts.next()?;
+    let repo = parts.next()?;
+    if parts.next().is_some() {
+        return None;
+    }
+    let repo = repo.strip_suffix(".git").unwrap_or(repo);
+    if !safe_slug(owner) || !safe_slug(repo) {
+        return None;
+    }
+    Some((owner.to_string(), repo.to_string()))
+}
+
+fn pin_ok(pin: &str) -> bool {
+    let bytes = pin.as_bytes();
+    (7..=40).contains(&bytes.len()) && bytes.iter().all(|byte| byte.is_ascii_hexdigit())
+}
+
+fn compare_ref(branch: &str) -> String {
+    if branch.is_empty()
+        || branch.contains("..")
+        || branch.contains([' ', '?', '#', '\\'])
+        || !branch
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '/' | '-'))
+    {
+        return "HEAD".into();
+    }
+    branch.to_string()
+}
+
+fn default_branch(body: &str) -> String {
+    let Ok(value) = serde_json::from_str::<Value>(body) else {
+        return "HEAD".into();
+    };
+    compare_ref(
+        value
+            .get("default_branch")
+            .and_then(Value::as_str)
+            .unwrap_or("HEAD"),
+    )
+}
+
+fn first_sha(text: &str) -> String {
+    let Some(word) = text.split_whitespace().next() else {
+        return String::new();
+    };
+    if (7..=40).contains(&word.len()) && word.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        word.to_ascii_lowercase()
+    } else {
+        String::new()
+    }
+}
+
+/// One public compare. A timeout drops the output. A bad address does not run a command.
+pub fn check_pin(
+    url: &str,
+    pin: &str,
+    runner: &mut dyn CommandRunner,
+    source: &[(&str, &str)],
+    path: &str,
+) -> FetchBodies {
+    let Some((owner, repo)) = github_slug(url) else {
+        let mut body = blank_fetch();
+        body.rejected = true;
+        return body;
+    };
+    if !pin_ok(pin) {
+        let mut body = blank_fetch();
+        body.started = true;
+        return body;
+    }
+    let env = passed_env(source, path);
+    let repo_args = vec![
+        "api".into(),
+        "--hostname".into(),
+        "github.com".into(),
+        format!("repos/{owner}/{repo}"),
+    ];
+    let repo_out = runner.run("gh", &repo_args, &env);
+    if repo_out.timed_out {
+        let mut body = blank_fetch();
+        body.started = true;
+        body.timed_out = true;
+        return body;
+    }
+    if !repo_out.started {
+        let remote = runner.run(
+            "git",
+            &[
+                "ls-remote".into(),
+                format!("https://github.com/{owner}/{repo}.git"),
+                "HEAD".into(),
+            ],
+            &env,
+        );
+        let mut body = blank_fetch();
+        body.timed_out = remote.timed_out;
+        body.unreachable = !remote.timed_out && (!remote.started || !remote.success);
+        if remote.success && !remote.timed_out {
+            body.remote_head = first_sha(&remote.stdout);
+        }
+        return body;
+    }
+    if !repo_out.success {
+        let mut body = blank_fetch();
+        body.started = true;
+        body.unreachable = true;
+        return body;
+    }
+    let branch = default_branch(&repo_out.stdout);
+    let compare_out = runner.run(
+        "gh",
+        &[
+            "api".into(),
+            "--hostname".into(),
+            "github.com".into(),
+            format!("repos/{owner}/{repo}/compare/{pin}...{branch}"),
+        ],
+        &env,
+    );
+    if compare_out.timed_out {
+        let mut body = blank_fetch();
+        body.started = true;
+        body.timed_out = true;
+        return body;
+    }
+    let release_out = runner.run(
+        "gh",
+        &[
+            "api".into(),
+            "--hostname".into(),
+            "github.com".into(),
+            format!("repos/{owner}/{repo}/releases/latest"),
+        ],
+        &env,
+    );
+    let mut body = blank_fetch();
+    body.started = true;
+    body.repo_status = 200;
+    body.repo_body = clean_body(&repo_out.stdout);
+    if compare_out.success {
+        body.compare_status = 200;
+        body.compare_body = clean_body(&compare_out.stdout);
+    } else {
+        body.unreachable = true;
+    }
+    if release_out.timed_out {
+        body.release_unchecked = true;
+    } else if release_out.success {
+        body.release_status = 200;
+        body.release_body = clean_body(&release_out.stdout);
+    } else if release_out.stdout.contains("Not Found") {
+        body.release_missing = true;
+        body.release_status = 404;
+    } else {
+        body.release_unchecked = true;
+    }
+    body
+}
+
+pub fn write_summary(project: &Path, markdown: &str) -> Result<(), String> {
+    let _hold = gate().lock().unwrap_or_else(|error| error.into_inner());
+    let root = canonical_dir(project)?;
+    let folder = root.join(".hivra");
+    if is_symlink(&folder) {
+        let target = crate::fs::canonical(&folder)
+            .map_err(|_| "The summary folder is not inside the project.".to_string())?;
+        if !target.starts_with(&root) {
+            return Err("The summary folder is not inside the project.".into());
+        }
+    }
+    let file = folder.join("repo-watch-changes.md");
+    if is_symlink(&file) || !file.starts_with(&root) {
+        return Err("The summary file is a link. It was left alone.".into());
+    }
+    let clean = clean_body(markdown);
+    if clean.len() > MAX_BYTES {
+        return Err("That summary is too large.".into());
+    }
+    atomic_write(&file, clean.as_bytes()).map_err(|error| {
+        if error.contains("this time") {
+            "Could not write the summary this time.".into()
+        } else if error.contains("link") {
+            error
+        } else {
+            "Could not write the summary.".into()
+        }
+    })
+}
+
+#[tauri::command(async)]
+pub fn repo_watch_fetch(url: String, pin_sha: String) -> FetchBodies {
+    let source: Vec<(String, String)> = std::env::vars().collect();
+    let pairs: Vec<(&str, &str)> = source
+        .iter()
+        .map(|(key, value)| (key.as_str(), value.as_str()))
+        .collect();
+    check_pin(
+        &url,
+        &pin_sha,
+        &mut ProcessRunner,
+        &pairs,
+        &crate::harness::cached_gui_search_path(),
+    )
+}
+
+#[tauri::command(async)]
+pub fn repo_watch_write_summary(project: String, body: String) -> Result<(), String> {
+    write_summary(Path::new(&project), &body)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -380,5 +775,211 @@ mod tests {
     fn windows_skips_the_symlink_case() {
         // Creating a symlink here needs extra privileges. The path jail still
         // refuses a folder that is not a project, which is covered above.
+    }
+
+    struct RecordedCall {
+        program: String,
+        args: Vec<String>,
+        env: Vec<(String, String)>,
+    }
+
+    struct Fake {
+        calls: Vec<RecordedCall>,
+        script: Vec<RunOutput>,
+    }
+
+    impl CommandRunner for Fake {
+        fn run(&mut self, program: &str, args: &[String], env: &[(String, String)]) -> RunOutput {
+            self.calls.push(RecordedCall {
+                program: program.to_string(),
+                args: args.to_vec(),
+                env: env.to_vec(),
+            });
+            self.script.pop().unwrap_or_else(not_started)
+        }
+    }
+
+    fn source() -> Vec<(&'static str, &'static str)> {
+        vec![
+            ("HOME", "/tmp/home"),
+            ("PATH", "/should/not/pass"),
+            ("GH_TOKEN", PLANTED),
+            ("GITHUB_TOKEN", PLANTED),
+        ]
+    }
+
+    #[test]
+    fn the_child_env_has_no_token() {
+        let env = passed_env(&source(), "/usr/bin");
+        assert!(env.iter().all(|(key, value)| key != "GH_TOKEN"
+            && key != "GITHUB_TOKEN"
+            && !value.contains(PLANTED)));
+        assert!(env
+            .iter()
+            .any(|(key, value)| key == "PATH" && value == "/usr/bin"));
+        assert!(env
+            .iter()
+            .any(|(key, value)| key == "GIT_TERMINAL_PROMPT" && value == "0"));
+        assert!(!allow_program("bash"));
+        assert!(allow_program("gh") && allow_program("git"));
+    }
+
+    #[test]
+    fn a_bad_address_runs_no_command() {
+        let mut fake = Fake {
+            calls: vec![],
+            script: vec![],
+        };
+        let body = check_pin(
+            "https://github.com/acme/../secret",
+            "abc1234",
+            &mut fake,
+            &source(),
+            "/usr/bin",
+        );
+        assert!(body.rejected);
+        assert!(fake.calls.is_empty());
+    }
+
+    #[test]
+    fn a_timeout_drops_the_output() {
+        let mut fake = Fake {
+            calls: vec![],
+            script: vec![RunOutput {
+                started: true,
+                timed_out: true,
+                success: false,
+                stdout: format!("see {PLANTED} /Users/example/notes"),
+            }],
+        };
+        let body = check_pin(
+            "https://github.com/acme/web",
+            "abc1234",
+            &mut fake,
+            &source(),
+            "/usr/bin",
+        );
+        assert!(body.timed_out);
+        assert!(body.repo_body.is_empty());
+        assert!(!format!("{body:?}").contains(PLANTED));
+    }
+
+    #[test]
+    fn gh_missing_falls_back_to_git_and_a_release_404_is_not_a_failure() {
+        let mut fake = Fake {
+            calls: vec![],
+            script: vec![
+                RunOutput {
+                    started: true,
+                    timed_out: false,
+                    success: false,
+                    stdout: "{\"message\":\"Not Found\"}".into(),
+                },
+                RunOutput {
+                    started: true,
+                    timed_out: false,
+                    success: true,
+                    stdout: "{\"ahead_by\":0,\"commits\":[]}".into(),
+                },
+                RunOutput {
+                    started: true,
+                    timed_out: false,
+                    success: true,
+                    stdout: "{\"default_branch\":\"release/1\"}".into(),
+                },
+                RunOutput {
+                    started: false,
+                    timed_out: false,
+                    success: false,
+                    stdout: String::new(),
+                },
+            ],
+        };
+        let fell = check_pin(
+            "https://github.com/acme/web",
+            "abc1234",
+            &mut fake,
+            &source(),
+            "/usr/bin",
+        );
+        assert!(!fell.started);
+        assert_eq!(fake.calls.len(), 2);
+        assert_eq!(fake.calls[1].program, "git");
+        assert_eq!(fake.calls[1].args[0], "ls-remote");
+        assert!(fake.calls[1].args[1].ends_with("acme/web.git"));
+        assert!(fake.calls[1]
+            .env
+            .iter()
+            .all(|(key, _)| key != "GH_TOKEN" && key != "GITHUB_TOKEN"));
+
+        let mut fake = Fake {
+            calls: vec![],
+            script: vec![
+                RunOutput {
+                    started: true,
+                    timed_out: false,
+                    success: false,
+                    stdout: "{\"message\":\"Not Found\"}".into(),
+                },
+                RunOutput {
+                    started: true,
+                    timed_out: false,
+                    success: true,
+                    stdout: "{\"ahead_by\":2,\"commits\":[]}".into(),
+                },
+                RunOutput {
+                    started: true,
+                    timed_out: false,
+                    success: true,
+                    stdout: "{\"default_branch\":\"my branch\"}".into(),
+                },
+            ],
+        };
+        let body = check_pin(
+            "https://github.com/acme/web",
+            "abc1234",
+            &mut fake,
+            &source(),
+            "/usr/bin",
+        );
+        assert_eq!(body.compare_status, 200);
+        assert!(body.release_missing);
+        assert!(!body.unreachable);
+        let compare = &fake.calls[1].args[3];
+        assert!(compare.contains("abc1234...HEAD"), "{compare}");
+        assert!(!body.compare_body.contains(PLANTED));
+    }
+
+    #[test]
+    fn the_summary_file_drops_a_token_and_refuses_a_link() {
+        let tmp = Tmp::new();
+        let project = tmp.path.join("proj");
+        fs::create_dir_all(&project).unwrap();
+        write_summary(&project, &format!("see {PLANTED} in /Users/example/notes")).unwrap();
+        let text =
+            fs::read_to_string(project.join(".hivra").join("repo-watch-changes.md")).unwrap();
+        assert!(!text.contains(PLANTED));
+        assert!(!text.contains("/Users/example"));
+        assert!(text.contains("[secret removed]"));
+        assert!(text.contains("a local path"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_summary_link_is_left_alone() {
+        use std::os::unix::fs::symlink;
+        let tmp = Tmp::new();
+        let project = tmp.path.join("proj");
+        let outside = tmp.path.join("outside.md");
+        fs::create_dir_all(project.join(".hivra")).unwrap();
+        fs::write(&outside, "keep").unwrap();
+        symlink(
+            &outside,
+            project.join(".hivra").join("repo-watch-changes.md"),
+        )
+        .unwrap();
+        let err = write_summary(&project, "hello").unwrap_err();
+        assert!(err.contains("link"));
+        assert_eq!(fs::read_to_string(&outside).unwrap(), "keep");
     }
 }

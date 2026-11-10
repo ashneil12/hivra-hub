@@ -37,6 +37,8 @@ import {
   type Habit,
 } from "../../features/monos/model/monoHabits";
 import { appPolicy } from "../model/appIdentity";
+import { REPO_WATCH_HABIT_ID } from "../../features/repoWatch/model/habit";
+import { runRepoWatchHabit } from "../../features/repoWatch/model/run";
 
 const TICK_MS = 60_000;
 
@@ -186,6 +188,40 @@ export function useMonoHabits(
       const record = findMono(monoId);
       if (!habit || stopped || !record) return;
       const look = monoLook(record);
+      if (habit.id === REPO_WATCH_HABIT_ID) {
+        // WP-166: compare pinned repos. This does not start a model turn.
+        let watched;
+        try {
+          watched = await runRepoWatchHabit({
+            projectRoot: mono.cwd,
+            monoId,
+            monoName: look.name,
+            actorId: monoId,
+            signal: { get aborted() { return stopped; } },
+          });
+        } catch {
+          watched = { outcome: "failed" as const, reply: "", error: "The check did not finish." };
+        }
+        if (stopped || watched.cancelled) return;
+        const report = watched.outcome === "posted" ? habitReport(watched.reply) : undefined;
+        if (report) host.post(monoSessionId, habit, report, look.name);
+        await updateHabits(monoId, (habits) => ({
+          habits: habits.map((entry) =>
+            entry.id === habit.id
+              ? afterRun(entry, Date.now(), {
+                  kind: watched.outcome === "failed" ? "failed" : watched.outcome,
+                  ...(watched.outcome === "failed"
+                    ? { error: watched.error ?? "The check did not finish." }
+                    : {}),
+                  ...(report ? { report } : {}),
+                  startedAt: now,
+                })
+              : entry,
+          ),
+          result: undefined,
+        }));
+        return;
+      }
       const run: Session = {
         // Nobody is watching a habit's run, so it cannot stop to ask before
         // each step. Anything the harness still asks goes to the user below.

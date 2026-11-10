@@ -30,6 +30,12 @@ vi.mock("../../features/monos/model/mono", async (original) => ({
     projects: [{ path: "/code/app", name: "app" }],
   }),
 }));
+vi.mock("../../features/repoWatch/model/run", () => ({
+  runRepoWatchHabit: vi.fn(async () => ({
+    outcome: "quiet",
+    reply: "NOTHING_TO_REPORT",
+  })),
+}));
 vi.mock("../../features/monos/model/monoFiles", async (original) => {
   const actual =
     await original<typeof import("../../features/monos/model/monoFiles")>();
@@ -259,6 +265,26 @@ it("posts nothing when the run has nothing to say", async () => {
   await vi.waitFor(() => expect(stored[0].lastOutcome).toBe("quiet"));
   expect(host.post).not.toHaveBeenCalled();
   expect(host.remove).toHaveBeenCalled();
+});
+
+it("checks pinned repos without starting a model turn", async () => {
+  stored = [
+    {
+      id: "repo-watch",
+      name: "Repo watch",
+      instructions: "Compare pinned repositories.",
+      schedule: { scheduleKind: "weekly", time: "09:00", minute: 0, dayOfWeek: 1 },
+      enabled: true,
+      createdAt: 0,
+      nextRunAt: Date.now() - 60_000,
+    },
+  ];
+  const host = makeHost("should not run");
+  mountHost(host);
+  await vi.waitFor(() => expect(stored[0].lastOutcome).toBe("quiet"));
+  expect(host.run).not.toHaveBeenCalled();
+  expect(host.add).not.toHaveBeenCalled();
+  expect(host.post).not.toHaveBeenCalled();
 });
 
 function dueHabit() {

@@ -1183,6 +1183,8 @@ pub fn run() {
             // WP-166: project pin list and the upstream check.
             repo_watch::repo_watch_load,
             repo_watch::repo_watch_cas,
+            repo_watch::repo_watch_fetch,
+            repo_watch::repo_watch_write_summary,
             // WP-86: commits on a task, and the agents behind a pull request.
             attribution::attribution_for_task,
             attribution::attribution_for_commits,

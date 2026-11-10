@@ -98,6 +98,28 @@ test("a late load does not wipe an import", async ({ page }) => {
   await expect(late.getByText("Added 1 repository.")).toBeVisible();
 });
 
+test("turns the weekly check on without removing it when switched off", async ({ page }) => {
+  await page.goto(pageUrl);
+  const habit = page.locator("#habit");
+  const toggle = habit.getByRole("switch", { name: "Watch upstream repos" });
+  await expect(toggle).toHaveAttribute("aria-checked", "false");
+  await toggle.click();
+  await expect(toggle).toHaveAttribute("aria-checked", "true");
+  await expect.poll(() => page.evaluate(() => window.repoWatchHabits.map((habit) => habit.id))).toEqual(["repo-watch"]);
+  await expect.poll(() => page.evaluate(() => window.repoWatchHabits[0]?.enabled)).toBe(true);
+  await toggle.click();
+  await expect(toggle).toHaveAttribute("aria-checked", "false");
+  await expect.poll(() => page.evaluate(() => window.repoWatchHabits)).toHaveLength(1);
+  await expect.poll(() => page.evaluate(() => window.repoWatchHabits[0]?.enabled)).toBe(false);
+});
+
+test("leaves the switch up when habits cannot be read", async ({ page }) => {
+  await page.goto(pageUrl);
+  const down = page.locator("#habit-down");
+  await expect(down.getByRole("switch", { name: "Watch upstream repos" })).toBeVisible();
+  await expect(down.getByText("Could not read habits this time.")).toBeVisible();
+});
+
 test("asks for a project before it offers import", async ({ page }) => {
   await page.goto(pageUrl);
   const none = page.locator("#none");
@@ -114,5 +136,6 @@ declare global {
       loadStarted: boolean;
       releaseLoad: () => void;
     };
+    repoWatchHabits: { id: string; enabled: boolean }[];
   }
 }

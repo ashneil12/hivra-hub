@@ -3,7 +3,9 @@
 // touches a real project or the network.
 import { createRoot } from "react-dom/client";
 import { RepoWatchPage } from "../../src/features/repoWatch/ui/RepoWatchPage";
+import { RepoWatchHabitSwitch } from "../../src/features/repoWatch/ui/RepoWatchHabitSwitch";
 import { memoryPinIo, type PinIo } from "../../src/features/repoWatch/model/pinStore";
+import type { Habit } from "../../src/features/monos/model/monoHabits";
 import "../../src/styles/index.css";
 
 type Control = {
@@ -65,3 +67,26 @@ control.releaseLoad = () => {
 page(document.getElementById("late")!, lateIo, "/work/My Project");
 
 page(document.getElementById("none")!, memoryPinIo(), "  ");
+
+const habitState: { habits: Habit[] } = { habits: [] };
+(window as unknown as { repoWatchHabits: Habit[] }).repoWatchHabits = habitState.habits;
+createRoot(document.getElementById("habit")!).render(
+  <RepoWatchHabitSwitch
+    load={async () => habitState.habits}
+    update={async (change) => {
+      habitState.habits = change(habitState.habits);
+      (window as unknown as { repoWatchHabits: Habit[] }).repoWatchHabits = habitState.habits;
+    }}
+  />,
+);
+
+createRoot(document.getElementById("habit-down")!).render(
+  <RepoWatchHabitSwitch
+    load={async () => {
+      throw new Error("timed out");
+    }}
+    update={async () => {
+      throw new Error("should not save");
+    }}
+  />,
+);
