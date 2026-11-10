@@ -615,6 +615,70 @@ describe("a read that walks folders", () => {
       ["grep", "-r", "x", "src"],
     ])
       expect(walkHeld(words, FOLDER), words.join(" ")).toBe(true);
+    // WP-101 fix round 4, finding 2: fd and ag have their own short flags for the same thing. fd -H shows hidden files,
+    // fd -I turns every ignore file off, ag -U and --skip-vcs-ignores skip the VCS ignore files, ag -a and -t search
+    // files an ignore rule skips, and ripgrep's -. is --hidden. Each one is held wherever the search starts.
+    for (const words of [
+      ["fd", "-H", "netrc", "."],
+      ["fd", "-I", "netrc", "."],
+      ["fd", "-H", "."],
+      ["fd", "-HI", "."],
+      ["fd", "-IH", "."],
+      ["fd", "-H", "-I", "."],
+      ["fd", "-tf", "-H", "foo"],
+      ["fd", "-eH", "foo"],
+      ["fd", "-uH", "foo"],
+      ["fd", "-u", "foo"],
+      ["fd", "-uu", "foo"],
+      ["fd", "--hidden", "foo"],
+      ["fd", "--hid", "foo"],
+      ["fd", "--no-ignore", "foo"],
+      ["fd", "--no-ignore-vcs", "foo"],
+      ["fd", "--no-ignore-parent", "foo"],
+      ["fd", "--no-global-ignore-file", "foo"],
+      ["fd", "--unrestricted", "foo"],
+      ["fd", "--unr", "foo"],
+      ["ag", "--skip-vcs-ignores", "."],
+      ["ag", "--skip-vcs-ignores", "foo", "src"],
+      ["ag", "--skip-vcs", "foo", "src"],
+      ["ag", "-U", "foo", "src"],
+      ["ag", "-u", "foo", "src"],
+      ["ag", "-a", "foo", "src"],
+      ["ag", "-t", "foo", "src"],
+      ["ag", "-ia", "foo", "src"],
+      ["ag", "--all-types", "foo", "src"],
+      ["ag", "--all-text", "foo", "src"],
+      ["ag", "--unrestricted", "foo", "src"],
+      ["ag", "--hidden", "foo", "src"],
+      ["rg", "-.", "foo", "src"],
+      ["rg", "-n.", "foo", "src"],
+      ["rg", "-.n", "foo", "src"],
+      ["rg", "--hidden", "foo", "src"],
+    ])
+      expect(walkHeld(words, FOLDER), words.join(" ")).toBe(true);
+    // The same letters mean something harmless elsewhere: they are not read as ignore-off for any other program or case.
+    for (const words of [
+      ["rg", "-H", "foo", "src"],
+      ["rg", "-I", "foo", "src"],
+      ["rg", "-i", "foo", "src"],
+      ["rg", "-n", "-w", "foo", "src"],
+      ["rg", "-A", "2", "foo", "src"],
+      ["grep", "-H", "TODO", "README.md"],
+      ["grep", "-I", "TODO", "README.md"],
+      ["grep", "-hn", "TODO", "README.md"],
+      ["fd", "-i", "foo"],
+      ["fd", "-h"],
+      ["fd", "-e", "ts", "-t", "f", "foo"],
+      ["fd", "-L", "foo"],
+      ["fd", "--type", "f", "foo"],
+      ["fd", "--extension", "ts", "foo"],
+      ["ag", "-i", "foo", "src"],
+      ["ag", "-A", "2", "foo", "src"],
+      ["ag", "-C2", "foo", "src"],
+      ["ag", "-l", "foo", "src"],
+      ["ag", "--smart-case", "foo", "src"],
+    ])
+      expect(walkHeld(words, FOLDER), words.join(" ")).toBe(false);
     // Recursive grep waits wherever it starts, including a missing folder and one too shallow to be a chat's own.
     expect(walkHeld(["grep", "-r", "x", "src"], undefined)).toBe(true);
     expect(walkHeld(["grep", "-r", "x", "src"], "/Users/ash")).toBe(true);

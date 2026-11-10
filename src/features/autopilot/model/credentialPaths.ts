@@ -341,18 +341,41 @@ export function credentialInText(text: string): boolean {
 
 // ---- reads that walk folders --------------------------------------------------------------------------------------
 
-/** Options that make a search ignore the project's ignore rules. `--no-ignore*` is matched by prefix, not listed one by one. */
-const UNRESTRICTED = new Set(["--unrestricted"]);
+/**
+ * Long options, from any of the search tools, that turn the ignore rules off or show hidden files: ripgrep's
+ * `--no-ignore*`, `--hidden`, `--unrestricted`, fd's `--no-global-ignore-file`, ag's `--skip-vcs-ignores`, `--all-types`
+ * and `--all-text`. A name matches when it starts with one (`--no-ignore-vcs`) or abbreviates one from four characters
+ * (`--hid`, `--skip-vcs`): some of these programs take an abbreviation, and holding one too many costs a tap.
+ */
+const IGNORE_OFF_LONG: readonly string[] = ["--hidden", "--unrestricted", "--no-ignore", "--no-global-ignore", "--skip-vcs-ignores", "--all-types", "--all-text"];
 
 /**
- * Whether an argument turns a search's ignore rules off: `--no-ignore` and anything that starts that way, `--hidden`
- * (with `=` stripped), `--unrestricted`, or a short cluster that carries `u` (`-u`, `-uu`, `-uuu`, `-nu`). A prefix is
- * one way only, so `--no-heading` and `--no-filename` are not `--no-ignore`.
+ * Whether an argument turns a search's ignore rules off or shows hidden files. A long name is matched above. A short
+ * cluster is: one that carries `u` in any case (`-u`, `-uu`, `-uuu`, `-nu`, `-U`) for every tool, and per tool the
+ * letters that mean the same there. fd: `-H` (hidden) and `-I` (no ignore files), capital only, since `-h` is help and
+ * `-i` is ignore-case. ag: `-a` and `-t` search every file an ignore rule skips. ripgrep: `-.` is `--hidden`. For
+ * ripgrep and grep `-H` is `--with-filename`, which is harmless, so the letter is only read for the tool it means
+ * something in. A prefix is one way only, so `--no-heading` and `--no-filename` are not `--no-ignore`.
  */
-function unrestricted(arg: string): boolean {
-  const name = arg.split("=", 1)[0].toLowerCase();
-  if (name === "--hidden" || name.startsWith("--no-ignore") || UNRESTRICTED.has(name)) return true;
-  return /^-[^-]/.test(name) && name.slice(1).includes("u");
+function unrestricted(head: string, arg: string): boolean {
+  const name = arg.split("=", 1)[0];
+  if (name.startsWith("--")) {
+    const long = name.toLowerCase();
+    return IGNORE_OFF_LONG.some((option) => long.startsWith(option) || (long.length >= 4 && option.startsWith(long)));
+  }
+  if (!/^-[^-]/.test(name)) return false;
+  const cluster = name.slice(1);
+  if (cluster.toLowerCase().includes("u")) return true;
+  switch (head) {
+    case "rg":
+      return cluster.includes(".");
+    case "fd":
+      return /[HI]/.test(cluster);
+    case "ag":
+      return /[at]/.test(cluster);
+    default:
+      return false;
+  }
 }
 
 /**
@@ -366,7 +389,7 @@ function ignoreOff(head: string, args: readonly string[]): boolean {
       return name === "--hidden" || name.startsWith("--no-ignore");
     });
   }
-  return (head === "rg" || head === "ag" || head === "grep" || head === "fd") && args.some(unrestricted);
+  return (head === "rg" || head === "ag" || head === "grep" || head === "fd") && args.some((arg) => unrestricted(head, arg));
 }
 
 /** Whether `grep` walks the tree. It has no ignore list, so any of these is held wherever it starts. */

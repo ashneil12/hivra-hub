@@ -326,6 +326,26 @@ describe("a tool approval under autopilot", () => {
       expect(approvalVerdict(bash(command), FOLDER), command).toMatchObject({ kind: "allow" });
   });
 
+  // WP-101 fix round 4, finding 2: fd and ag short flags that turn the ignore rules off or show hidden files.
+  it("holds an fd or ag search that shows hidden or ignored files, and ripgrep's -. (fix round 4, finding 2)", () => {
+    for (const command of [
+      "fd -H netrc .",
+      "fd -I netrc .",
+      "fd -H .",
+      "fd -HI .",
+      "fd -H -I .",
+      "fd -tf -H foo",
+      "ag --skip-vcs-ignores .",
+      "ag --skip-vcs-ignores foo src",
+      "ag -U foo src",
+      "ag -a foo src",
+      "rg -. foo src",
+    ])
+      expect(approvalVerdict(bash(command), FOLDER), command).toMatchObject({ kind: "held" });
+    for (const command of ["fd foo", "fd -e ts foo", "fd -i foo", "fd --type f foo", "ag foo src", "ag -i foo src", "rg -H foo src", "rg -n foo src", "grep -I TODO README.md"])
+      expect(approvalVerdict(bash(command), FOLDER), command).toMatchObject({ kind: "allow" });
+  });
+
   // `git diff A B` with a path outside the repository is a file compare with no flag. Given two folders it prints every
   // file in them, hidden ones too, so it can dump a home folder without ever naming a login file.
   it("holds a git diff that compares paths outside the chat's folder (fix round 4, finding 1)", () => {
