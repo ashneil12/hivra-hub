@@ -51,6 +51,9 @@ function probe(label: string): string {
     "/hivra-visual-relative",
     "hivra-visual-relative.png",
     "https://example.invalid/hivra-visual-remote",
+    // Known limit: `https:` also names this machine and the local network. Off, these fail; on, they open (the doc says so).
+    "https://127.0.0.1/hivra-visual-local",
+    "https://localhost/hivra-visual-local",
   ];
   return `<p>probe ${label}</p><script>
 (function () {
@@ -85,7 +88,8 @@ function probe(label: string): string {
     img.onerror = function () { r.loads["img " + t] = "failed"; done(); };
     img.src = t;
   });
-  setTimeout(finish, 4000);
+  // The spec waits for every load to settle; this is only a backstop for a load that never settles.
+  setTimeout(finish, 30000);
   send();
 })();
 </script>`;
@@ -98,6 +102,13 @@ const frames = {
     return `page-${key}`;
   },
   url: (path: string) => `http://monoartifact.localhost/${path}`,
+};
+
+// A served key the scheme does not hold: the frame gets a 404 and never says it loaded.
+const missing = {
+  inApp: true,
+  put: async (key: string) => `page-${key}`,
+  url: (path: string) => `http://monoartifact.localhost/${path}-missing`,
 };
 
 function Page() {
@@ -118,7 +129,8 @@ function Page() {
         setProbes((current) => ({ ...current, [label]: data }));
       }
       const outer = [...document.querySelectorAll("iframe")].some((frame) => frame.contentWindow === event.source);
-      if (outer && data.type !== "hivra:visual-height") setForwarded((n) => n + 1);
+      // The shell passes on only a height from its guest. Its own ready message is not forwarded, so it is not counted.
+      if (outer && data.type !== "hivra:visual-height" && data.type !== "hivra:visual-ready") setForwarded((n) => n + 1);
     };
     window.addEventListener("message", onMessage);
     return () => window.removeEventListener("message", onMessage);
@@ -127,14 +139,20 @@ function Page() {
     <main>
       <h1>Visual replies in the app</h1>
       <pre data-probes={JSON.stringify(probes)} data-forwarded={forwarded} />
+      <div data-reply="restored">
+        <VisualReplyFrame source={probe("restored")} frames={frames} />
+      </div>
       <div data-reply="served">
-        <VisualReplyFrame source={probe("served")} frames={frames} />
+        <VisualReplyFrame source={probe("served")} frames={frames} autoRun />
       </div>
       <div data-reply="net">
-        <VisualReplyFrame source={probe("net")} frames={frames} />
+        <VisualReplyFrame source={probe("net")} frames={frames} autoRun />
       </div>
       <div data-reply="srcdoc">
-        <VisualReplyFrame source={probe("srcdoc")} frames={{ inApp: false }} />
+        <VisualReplyFrame source={probe("srcdoc")} frames={{ inApp: false }} autoRun />
+      </div>
+      <div data-reply="missing">
+        <VisualReplyFrame source={'<p id="missing-source">the source stays</p>'} frames={missing} autoRun />
       </div>
     </main>
   );

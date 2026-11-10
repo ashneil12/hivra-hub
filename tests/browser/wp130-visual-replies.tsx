@@ -114,7 +114,7 @@ function Page() {
       <Frame source={FORM} label="form" />
       <Frame source={BREAKOUT} label="breakout" />
       <div data-themed-reply>
-        <VisualReplyFrame source={'<p id="themed">chart</p>'} />
+        <VisualReplyFrame source={'<p id="themed">chart</p>'} autoRun />
       </div>
     </main>
   );
