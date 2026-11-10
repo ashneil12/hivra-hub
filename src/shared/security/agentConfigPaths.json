@@ -1,0 +1,46 @@
+{
+  "version": 1,
+  "files": [
+    "agents.md",
+    "agents.override.md",
+    "claude.md",
+    "claude.local.md",
+    "gemini.md",
+    "qwen.md",
+    "codex.md",
+    "opencode.json",
+    "opencode.jsonc",
+    ".cursorrules",
+    ".windsurfrules",
+    ".clinerules",
+    ".aider.conf.yml",
+    "vite.config.ts"
+  ],
+  "dirs": [
+    ".claude",
+    ".codex",
+    ".cursor",
+    ".gemini",
+    ".opencode",
+    ".omp",
+    ".pi",
+    ".agents",
+    ".githooks",
+    ".grok",
+    ".fx",
+    ".hermes",
+    ".devin",
+    ".qwen",
+    ".windsurf",
+    ".cline",
+    ".aider",
+    ".husky",
+    ".monocode",
+    ".worktreeinclude"
+  ],
+  "pathSuffixes": [
+    "config/mise/config.toml",
+    ".mise/config.toml"
+  ],
+  "holdAnyDotSegment": true
+}

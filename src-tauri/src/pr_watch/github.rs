@@ -25,7 +25,7 @@ fn pull_request_query() -> String {
   rateLimit {{ remaining resetAt cost }} \
   repository(owner: $owner, name: $name) {{ nameWithOwner pullRequest(number: $number) {{ \
     number url title state isDraft merged mergedAt closedAt mergeCommit {{ oid }} changedFiles \
-    headRefOid headRefName baseRefName baseRefOid headRepository {{ nameWithOwner }} mergeable reviewDecision author {{ login }} \
+    headRefOid headRefName baseRefName baseRef {{ target {{ oid }} }} headRepository {{ nameWithOwner }} mergeable reviewDecision author {{ login }} \
     commits(last: 1) {{ nodes {{ commit {{ oid statusCheckRollup {{ state contexts(first: 100) {{ totalCount \
       pageInfo {{ hasNextPage endCursor }} nodes {{ {CHECK_FIELDS} }} }} }} }} }} }} \
     comments(last: 50) {{ totalCount nodes {{ {REMARK_FIELDS} isMinimized }} }} \
@@ -68,8 +68,8 @@ pub struct PrRead {
     pub merged_at: Option<String>,
     pub head_ref: String,
     pub base_ref: String,
-    /// The base branch's commit when this read was taken (`baseRefOid`). `None` when GitHub didn't say.
-    pub base_sha: Option<String>,
+    /// The base branch's current tip (`baseRef.target.oid`). `None` when GitHub shows no such branch.
+    pub base_tip: Option<String>,
     /// The repository the head branch is in (`headRepository`); `None` when GitHub shows none (a deleted fork).
     pub head_repo: Option<String>,
     pub review_decision: Option<String>,
@@ -582,7 +582,10 @@ pub fn parse(json: &str) -> Result<PrRead, ReadError> {
         remarks: Some(remarks),
         rate,
         changed_files: pr.get("changedFiles").and_then(Value::as_u64),
-        base_sha: text(pr, "baseRefOid"),
+        base_tip: pr
+            .pointer("/baseRef/target/oid")
+            .and_then(Value::as_str)
+            .map(str::to_string),
     })
 }
 

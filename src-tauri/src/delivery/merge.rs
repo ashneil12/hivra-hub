@@ -515,7 +515,16 @@ pub fn merge(
             None => Allow::Nobody,
         },
     };
-    let decided = decide(&read, open.as_deref(), &allow);
+    // The pull request must still be on the branch the delivery pushed. A head pointed at another branch is not the
+    // work the delivery judged, so it is refused. The delivery row is the only record of that branch.
+    let decided = match delivery.as_ref().and_then(|row| row.branch.as_deref()) {
+        Some(expected) if expected != read.head_ref => Decision::Refuse(format!(
+            "{repo}#{number} is on the branch {}, but its delivery pushed {}. Nothing was merged.",
+            super::protected::show(&read.head_ref),
+            super::protected::show(expected),
+        )),
+        _ => decide(&read, open.as_deref(), &allow),
+    };
     // WP-158: only the switch consults the floor, and only once the project has turned it on. That covers a green
     // merge and the no-checks question the switch still asks, so the question can name a protected file. The
     // person's own tap, and an approval of this exact head, are already their word.
@@ -528,10 +537,10 @@ pub fn merge(
             .map(|row| row.protected_extra.clone())
             .unwrap_or_default();
         drop(conn);
-        // The list is for the base and head commits this read saw. Without a base commit there is nothing to pin it to.
-        let files = match read.base_sha.clone() {
+        // The list is for the base branch's current tip and the head this read saw. Without a tip there is nothing to pin it to.
+        let files = match read.base_tip.clone() {
             None => super::protected::ChangedFiles::Unread {
-                reason: "GitHub didn't say which commit this pull request is based on.".into(),
+                reason: "GitHub didn't say where the base branch is now.".into(),
             },
             Some(base) => {
                 let listed = super::protected::changed_files_between(gh, &repo, &base, &head);
@@ -545,7 +554,7 @@ pub fn merge(
                                 .into(),
                         }
                     }
-                    Ok(again) if again.base_sha.as_deref() != Some(base.as_str()) => {
+                    Ok(again) if again.base_tip.as_deref() != Some(base.as_str()) => {
                         super::protected::ChangedFiles::Unread {
                             reason: "the pull request's base changed while its files were read"
                                 .into(),

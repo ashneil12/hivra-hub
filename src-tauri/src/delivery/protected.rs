@@ -25,6 +25,8 @@
 //! the floor is a check that asks a person first, not a boundary around code that is already merged. Hold the
 //! project's own review for that. The floor only decides whether a merge without asking may proceed.
 
+use unicode_normalization::UnicodeNormalization;
+
 /// Directory names that are protected wherever they sit in the path.
 const DIRECTORIES: &[&str] = &[
     ".github",
@@ -113,6 +115,64 @@ const SECRET_EXTENSIONS: &[&str] = &[
 /// Key file names protected as themselves or with a dotted suffix (`id_rsa.pub`).
 const KEY_NAMES: &[&str] = &["id_rsa", "id_dsa", "id_ecdsa", "id_ed25519"];
 
+/// The shared protected list (`src/shared/security/agentConfigPaths.json`), the same file #201 reads. Its names are folded
+/// the way a path's segments are, once, at first use. A list that does not parse is a build-time mistake the tests catch.
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SharedList {
+    version: u32,
+    files: Vec<String>,
+    dirs: Vec<String>,
+    path_suffixes: Vec<String>,
+    hold_any_dot_segment: bool,
+}
+
+struct Shared {
+    files: Vec<String>,
+    dirs: Vec<String>,
+    suffixes: Vec<Vec<String>>,
+    hold_any_dot_segment: bool,
+}
+
+const SHARED_LIST_JSON: &str = include_str!("../../../src/shared/security/agentConfigPaths.json");
+
+fn shared_list() -> &'static Shared {
+    static LIST: std::sync::OnceLock<Shared> = std::sync::OnceLock::new();
+    LIST.get_or_init(|| {
+        let list: SharedList = serde_json::from_str(SHARED_LIST_JSON)
+            .expect("agentConfigPaths.json is a valid shared list");
+        assert_eq!(list.version, 1, "agentConfigPaths.json is version 1");
+        Shared {
+            files: list.files.iter().map(|name| fold(name)).collect(),
+            dirs: list.dirs.iter().map(|name| fold(name)).collect(),
+            suffixes: list
+                .path_suffixes
+                .iter()
+                .map(|suffix| segments(suffix))
+                .collect(),
+            hold_any_dot_segment: list.hold_any_dot_segment,
+        }
+    })
+}
+
+/// One name, compared the way Windows and macOS users read it: NFKC, then lower case, with the long s (U+017F, which
+/// NFKC maps to `s` and a plain lower-case pass does not) and trailing dots and spaces removed.
+fn fold(segment: &str) -> String {
+    let nfkc: String = segment.nfkc().collect();
+    nfkc.to_lowercase()
+        .replace('\u{17f}', "s")
+        .trim_end_matches(['.', ' '])
+        .to_string()
+}
+
+/// The folded segments of a path written in the list (`config/mise/config.toml`).
+fn segments(text: &str) -> Vec<String> {
+    text.split('/')
+        .map(fold)
+        .filter(|segment| !segment.is_empty())
+        .collect()
+}
+
 struct RepoPath {
     display: String,
     lower: Vec<String>,
@@ -134,14 +194,25 @@ fn repo_path(raw: &str) -> Option<RepoPath> {
         if part.is_empty() || part == "." {
             continue;
         }
-        if part == ".." || part.contains('\0') {
+        if part.contains('\0') {
             suspicious = true;
         }
         let clean: String = part.chars().filter(|c| *c != '\0').collect();
+        // `..` in any width (a fullwidth dot pair normalises to it) is a parent step, so the path is untrusted.
+        let normal: String = clean.nfkc().collect();
+        if normal.len() >= 2 && normal.chars().all(|c| c == '.') {
+            suspicious = true;
+        }
         if clean.is_empty() {
             continue;
         }
-        lower.push(clean.to_lowercase());
+        let folded = fold(&clean);
+        // A name that folds to nothing (`..`, `...`) is kept as written, so a dot-only segment still reads as itself.
+        lower.push(if folded.is_empty() {
+            clean.to_lowercase()
+        } else {
+            folded
+        });
         display_parts.push(clean);
     }
     if display_parts.is_empty() {
@@ -207,10 +278,44 @@ fn built_in_hit(path: &RepoPath) -> bool {
     }
     path.lower.windows(2).any(|pair| {
         pair[0] == "src-tauri" && pair[1].starts_with("tauri") && pair[1].ends_with(".json")
-    }) || delivery_source(path)
+    }) || shared_hit(path)
+        || delivery_source(path)
         || capabilities_json(path)
         || tauri_build_inputs(path)
         || rust_roots(path)
+}
+
+/// The shared list's rules: a hidden segment anywhere, a folder name anywhere, a file name, or a path ending in a listed
+/// suffix. The list is `src/shared/security/agentConfigPaths.json`.
+fn shared_hit(path: &RepoPath) -> bool {
+    let list = shared_list();
+    if list.hold_any_dot_segment
+        && path
+            .lower
+            .iter()
+            .any(|segment| segment.starts_with('.') && segment != "." && segment != "..")
+    {
+        return true;
+    }
+    if path
+        .lower
+        .iter()
+        .any(|segment| list.dirs.iter().any(|dir| dir == segment))
+    {
+        return true;
+    }
+    if path
+        .lower
+        .last()
+        .is_some_and(|file| list.files.iter().any(|name| name == file))
+    {
+        return true;
+    }
+    list.suffixes.iter().any(|suffix| {
+        !suffix.is_empty()
+            && path.lower.len() >= suffix.len()
+            && path.lower[path.lower.len() - suffix.len()..] == suffix[..]
+    })
 }
 
 /// `src-tauri/capabilities/*.json` and `*.toml`, including a nested app. The directory is the prefix.
@@ -236,7 +341,7 @@ fn rust_roots(path: &RepoPath) -> bool {
         window[0] == "src-tauri"
             && window[1] == "src"
             && window[2] == "pr_watch"
-            && window[3] == "github.rs"
+            && (window[3] == "github.rs" || window[3] == "mod.rs" || window[3] == "eval.rs")
     })
 }
 
@@ -462,7 +567,7 @@ pub fn check_extra(raw: &str) -> Result<(), String> {
 pub fn show(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     for c in text.chars() {
-        if is_format_char(c) {
+        if needs_escape(c) {
             out.push_str(&format!("\\u{{{:x}}}", c as u32));
         } else {
             out.push(c);
@@ -471,12 +576,17 @@ pub fn show(text: &str) -> String {
     out
 }
 
-/// Unicode format characters (general category Cf) that a name can hide behind: soft hyphen, the bidi controls,
-/// zero-width marks and joiners, word joiners, the BOM and the tag characters.
-fn is_format_char(c: char) -> bool {
+/// Characters a name can hide behind: Unicode format characters (general category Cf: soft hyphen, the bidi controls,
+/// zero-width marks and joiners, word joiners, the BOM and the tag characters), the line and paragraph separators
+/// (U+2028, U+2029), and variation selectors (which change how the glyph before them looks).
+fn needs_escape(c: char) -> bool {
     matches!(
         c as u32,
-        0x00AD
+        0x2028
+            | 0x2029
+            | 0xFE00..=0xFE0F
+            | 0xE0100..=0xE01EF
+            | 0x00AD
             | 0x0600..=0x0605
             | 0x061C
             | 0x06DD
@@ -533,7 +643,11 @@ mod tests {
             assert_eq!(hits(&[&rooted], &[]), vec![rooted], "{dir}");
         }
         assert!(hits(&["notmigrations/a.sql"], &[]).is_empty());
-        assert!(hits(&["src/.gitignore"], &[]).is_empty());
+        // Any hidden segment is held (the shared list's rule), so a dotfile beside the code is held too.
+        assert_eq!(
+            hits(&["src/.gitignore"], &[]),
+            vec!["src/.gitignore".to_string()]
+        );
         assert_eq!(hits(&[".git/config"], &[]), vec![".git/config".to_string()]);
     }
 
@@ -589,13 +703,11 @@ mod tests {
             "readme.md",
             "src/environment.ts",
             "src/envelope.rs",
-            "src/.gitignore",
             "notes/poem.txt",
             "photo.tiff",
-            ".environment",
             "id_rsa_backup",
-            // Beside the floor's own module, which is held. This file is not.
-            "src-tauri/src/pr_watch/mod.rs",
+            // Beside the floor's own module and the PR reader, which are held. This file is not.
+            "src-tauri/src/pr_watch/wake.rs",
             "not.github/workflows/x.yml",
             "mydockerfile",
             "src-tauri/capabilities/readme.md",
@@ -623,7 +735,7 @@ mod tests {
             assert_eq!(hits(&[path], &[]), vec![path.to_string()], "{path}");
         }
         assert!(
-            hits(&["src-tauri/src/pr_watch/mod.rs"], &[]).is_empty(),
+            hits(&["src-tauri/src/pr_watch/wake.rs"], &[]).is_empty(),
             "an ordinary file beside the floor is not held"
         );
         assert!(hits(&["src/delivery/merge.rs"], &[]).is_empty());
@@ -993,5 +1105,88 @@ mod tests {
             parse_file_list("filename:src/new.rs\nprevious:src/old.rs\nprevious:src/old.rs\n")
                 .is_ok()
         );
+    }
+
+    #[test]
+    fn the_shared_list_loads_and_holds_every_harness_folder_and_root_file() {
+        // The shared list (src/shared/security/agentConfigPaths.json) is the one list #198 and #201 hold.
+        assert!(shared_list()
+            .files
+            .iter()
+            .any(|name| name == "opencode.jsonc"));
+        for path in [
+            "opencode.jsonc",
+            "docs/opencode.jsonc",
+            ".pi/extensions/tools.ts",
+            ".omp/extensions/tools.ts",
+            "CLAUDE.local.md",
+            "AGENTS.override.md",
+            ".agents/skills/review/SKILL.md",
+            ".grok/settings.json",
+            ".fx/skills/x/SKILL.md",
+            ".hermes/config.yaml",
+            ".devin/config.json",
+            ".qwen/settings.json",
+            "QWEN.md",
+            "codex.md",
+            ".cursorrules",
+            ".windsurfrules",
+            ".clinerules",
+            ".aider.conf.yml",
+            "vite.config.ts",
+            ".husky/pre-push",
+            ".monocode/project.json",
+            ".worktreeinclude",
+            "config/mise/config.toml",
+            "apps/web/.mise/config.toml",
+        ] {
+            assert_eq!(hits(&[path], &[]), vec![path.to_string()], "{path}");
+        }
+        assert!(hits(&["docs/pi-notes.md"], &[]).is_empty());
+        assert!(hits(&["src/qwen.ts"], &[]).is_empty());
+    }
+
+    #[test]
+    fn names_are_compared_after_nfkc_and_the_long_s_is_s() {
+        // U+017F (long s) is a compatibility form of `s`. `package.j\u{17f}on` is `package.json` to npm and to the OS.
+        for path in [
+            "package.j\u{17f}on",
+            "src-tauri/build.r\u{17f}",
+            "agent\u{17f}.md",
+            "ＣＬＡＵＤＥ.md",
+        ] {
+            assert_eq!(hits(&[path], &[]), vec![path.to_string()], "{path:?}");
+        }
+    }
+
+    #[test]
+    fn trailing_dots_and_spaces_are_not_part_of_a_name() {
+        // Windows drops trailing dots and spaces, so `Cargo.lock.` is the lock file.
+        for path in [
+            "Cargo.lock.",
+            "docs/opencode.json. ",
+            "tools /GEMINI.md",
+            "pkg/Cargo.toml..",
+        ] {
+            assert!(!hits(&[path], &[]).is_empty(), "{path:?}");
+        }
+    }
+
+    #[test]
+    fn the_pr_watch_root_files_are_held_with_the_github_reader() {
+        for path in [
+            "src-tauri/src/pr_watch/mod.rs",
+            "src-tauri/src/pr_watch/eval.rs",
+        ] {
+            assert_eq!(hits(&[path], &[]), vec![path.to_string()], "{path}");
+        }
+    }
+
+    #[test]
+    fn show_escapes_line_separators_and_variation_selectors() {
+        assert_eq!(show("a\u{2028}b\u{2029}c"), "a\\u{2028}b\\u{2029}c");
+        assert_eq!(show("pkg\u{fe0f}.json"), "pkg\\u{fe0f}.json");
+        assert_eq!(show("pkg\u{e0100}.json"), "pkg\\u{e0100}.json");
+        assert_eq!(show("plain name.json"), "plain name.json");
     }
 }

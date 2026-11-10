@@ -163,7 +163,7 @@ fn pr(state: PrState, head: &str, checks: Vec<Check>) -> PrRead {
         merged_at: None,
         head_ref: "work".into(),
         base_ref: "main".into(),
-        base_sha: Some("ba5e".repeat(10)),
+        base_tip: Some("ba5e".repeat(10)),
         head_repo: Some("acme/web".into()),
         review_decision: None,
         detail: Detail {
@@ -2342,7 +2342,7 @@ fn the_file_list_is_read_for_the_base_and_head_commits_it_judges() {
 fn a_base_that_moves_while_the_files_are_read_is_asked_again() {
     let (s, _project) = floor_pr("base-moved", 7, None);
     let mut moved = green("1111111111111111111111111111111111111111");
-    moved.base_sha = Some("dec0".repeat(10));
+    moved.base_tip = Some("dec0".repeat(10));
     let gh = FakeGithub::new(vec![
         green("1111111111111111111111111111111111111111"),
         moved,
@@ -2358,7 +2358,7 @@ fn a_base_that_is_not_a_commit_is_never_listed() {
     let (s, _project) = floor_pr("base-odd", 7, None);
     for base in [Some("main".to_string()), None] {
         let mut read = green("1111111111111111111111111111111111111111");
-        read.base_sha = base;
+        read.base_tip = base;
         let gh = FakeGithub::new(vec![read]);
         *gh.files.lock().unwrap() = Some(Ok("readme.md\n".into()));
         let question = asked(&merge::merge(&s, &gh, agent_merge("acme/web"), 20).unwrap());
@@ -2370,6 +2370,25 @@ fn a_base_that_is_not_a_commit_is_never_listed() {
         );
         assert!(gh.ran("pr", "merge").is_empty());
     }
+}
+
+#[test]
+fn a_pull_request_on_another_branch_than_the_delivery_is_refused() {
+    // The delivery pushed `work`. A pull request whose head has since been pointed at another branch is not the work
+    // the delivery judged, so it is refused rather than merged.
+    let (s, _project) = floor_pr("other-head", 7, None);
+    let mut read = green("1111111111111111111111111111111111111111");
+    read.head_ref = "someone-else".into();
+    let gh = FakeGithub::new(vec![read]);
+    *gh.files.lock().unwrap() = Some(Ok("readme.md\n".into()));
+    match merge::merge(&s, &gh, agent_merge("acme/web"), 20).unwrap() {
+        MergeOutcome::Refused { reason } => {
+            assert!(reason.contains("someone-else"), "{reason}");
+            assert!(reason.contains("work"), "{reason}");
+        }
+        other => panic!("expected a refusal, got {other:?}"),
+    }
+    assert!(gh.ran("pr", "merge").is_empty());
 }
 
 #[test]
