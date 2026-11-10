@@ -26,6 +26,7 @@ import { taskListText } from "../../../features/sessions/model/taskList";
 import { isReviewablePlan } from "../../../features/sessions/model/plan";
 import { resolveModel } from "../../../features/sessions/model/models";
 import type { HarnessEvent } from "./types";
+import { childApprovalFrom } from "../../../features/sessions/model/childApproval";
 import { usageLimitFromError } from "../../../features/sessions/model/usageLimit";
 import { providerRetryText } from "./providerFailure";
 
@@ -958,6 +959,12 @@ function attachApproval(
   session: Session,
   event: Extract<HarnessEvent, { type: "approval.requested" }>,
 ): Session {
+  const child = childApprovalFrom(event.child);
+  const approval = {
+    requestId: event.requestId,
+    ...(event.call ? { call: event.call } : {}),
+    ...(child ? { child } : {}),
+  };
   const index = findToolForApproval(session, event);
   if (index >= 0) {
     const blocks = session.blocks.slice();
@@ -989,10 +996,9 @@ function attachApproval(
             }
           : prev.tool,
       approval: {
-        requestId: event.requestId,
+        ...approval,
         // The same request sent again is not a new ask: it keeps the time it was first made.
         at: (prev.approval?.requestId === event.requestId ? prev.approval.at : undefined) ?? Date.now(),
-        ...(event.call ? { call: event.call } : {}),
       },
     };
     return { ...session, blocks };
@@ -1011,7 +1017,7 @@ function attachApproval(
       kind: event.kind,
       ...(preview ? { preview } : {}),
     },
-    approval: { requestId: event.requestId, at: Date.now(), ...(event.call ? { call: event.call } : {}) },
+    approval: { ...approval, at: Date.now() },
   });
 }
 

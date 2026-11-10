@@ -1,4 +1,6 @@
 import type { HarnessId } from "./session";
+import { findCustomModel } from "./customModels";
+import { catalogueWindow, loadCatalogue } from "./modelCatalogue";
 
 /**
  * How big a long-running chat may grow before Claude Code compacts it.
@@ -93,15 +95,33 @@ function clampCeiling(tokens: number): number {
 /**
  * The size a chat compacts at, or undefined to leave it to the provider.
  * Only Claude Code takes a ceiling today.
+ * A custom model asks the bundled catalogue first, then these ceilings.
  */
 export function contextCeilingFor(
   session: { harness: HarnessId; model: string },
   choice: ContextCeilingChoice = loadContextCeilingChoice(),
+  catalogue?: unknown,
 ): number | undefined {
   if (session.harness !== "claude" || choice === "off") return undefined;
-  return clampCeiling(
-    choice === "model" ? modelContextCeiling(session.model) : choice,
-  );
+  const tokens = choice === "model" ? tokensForModel(session.model, catalogue) : choice;
+  return clampCeiling(tokens);
+}
+
+/** WP-104: the catalogue window for a custom route (its provider's row first), otherwise the family ceiling. */
+function tokensForModel(model: string, catalogue: unknown): number {
+  const custom = findCustomModel(model);
+  if (!custom) return modelContextCeiling(model);
+  const known = catalogueWindow(custom.modelId, catalogue, custom.provider);
+  if (known !== undefined) return known;
+  return modelContextCeiling(custom.modelId || model);
+}
+
+/**
+ * WP-104: a custom route's window comes from the bundled catalogue, which is read the first time one asks. A turn about
+ * to start waits here, so its ceiling is the catalogue's and not the family default. Any other model costs nothing.
+ */
+export async function warmContextCeiling(model: string): Promise<void> {
+  if (findCustomModel(model)) await loadCatalogue();
 }
 
 /** The room a chat actually has: its window, capped by its ceiling. */

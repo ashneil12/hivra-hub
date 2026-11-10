@@ -4572,7 +4572,8 @@ pub(crate) fn resolve_repo_path(root: &Path, relative: &str) -> Result<String, S
 /// Any git can start a filter: in an LFS repo `status`, `diff`, `add`, and
 /// checkouts all run `git-lfs`, which a Finder launch's bare PATH lacks. The
 /// cached search path finds it without waiting on the login shell.
-fn git_cmd() -> Command {
+/// WP-104: the health list reads `git --version` through this same command.
+pub(crate) fn git_cmd() -> Command {
     let mut cmd = Command::new("git");
     crate::background_work::configure_child(&mut cmd);
     crate::hide_window_console(&mut cmd);
