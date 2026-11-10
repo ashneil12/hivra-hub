@@ -119,6 +119,7 @@ import {
   type DelegationMeta,
 } from "./agentAppTasks";
 import { handleTaskStore, isTaskStoreAction, TASK_STORE_FIELDS } from "../../tasks/model/agentTasks";
+import { handleProgramme, isProgrammeAction, PROGRAMME_FIELDS } from "../../programme/model/programme";
 import { handlePrs, PR_FIELDS, type AgentAppPrsHost } from "./agentAppPrs";
 import { handleTimers, TIMER_FIELDS, type AgentAppTimersHost } from "./agentAppTimers";
 import { handleWorkLog, WORK_LOG_FIELDS, type WorkLogBackend } from "./agentAppWorkLog";
@@ -354,6 +355,14 @@ export type AgentAppHost = {
       input?: Record<string, unknown>;
     },
   ): Promise<unknown>;
+  /** WP-159: the programme board. The handler sets who is asking; the model cannot. */
+  programmeStore?(
+    command: "programme_list" | "programme_enqueue" | "programme_set_status" | "programme_park",
+    args: {
+      actor: { id: string; project: string; kind: "first-mate" };
+      input?: Record<string, unknown>;
+    },
+  ): Promise<unknown>;
   /** The PR watch (agentAppPrs.ts, src-tauri/src/pr_watch); a Mono's own chat or a coding-team chat only. */
   prs?: AgentAppPrsHost;
   /** Hivra WP-11: timers a first mate sets (agentAppTimers.ts); the app's own store when absent. */
@@ -445,6 +454,8 @@ const FIELDS = new Map<string, readonly string[]>([
   ...TASK_FIELDS,
   // WP-70: the shared task list. Not the delegation tools above.
   ...TASK_STORE_FIELDS,
+  // WP-159: the programme board. Not the per-job worker queue.
+  ...PROGRAMME_FIELDS,
   ...AUTOPILOT_FIELDS,
   ...PR_FIELDS,
   ...TIMER_FIELDS,
@@ -1533,6 +1544,8 @@ export async function handleAgentApp(
   checkerLane(source, action, host);
   // WP-70: the shared task list. Not the delegation tools below.
   if (isTaskStoreAction(action)) return handleTaskStore(source, action, input, host);
+  // WP-159: the programme board. A worker is refused before the store is called.
+  if (isProgrammeAction(action)) return handleProgramme(source, action, input, host);
   if (action.startsWith("tasks.")) {
     // A delegated worker starts like sessions.start, so it waits for the first probe the same way (found by the bench:
     // a Mono briefed right after a launch was told "claude is not available").
