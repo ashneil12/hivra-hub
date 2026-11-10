@@ -18,6 +18,7 @@ import {
 import { Composer } from "./Composer";
 import { PrivateMark } from "./PrivateMark";
 import { MidThreadSwitchNotice } from "./MidThreadSwitchNotice";
+import { ChatFolderBanner } from "./ChatFolderBanner";
 import { NewChatWorktreeBanner } from "./NewChatWorktreeBanner";
 import { LeadCliNotice } from "../../firstmate/ui/LeadCliNotice";
 import { askThreadFork } from "../model/threadForkAsk";
@@ -1015,6 +1016,10 @@ const LocalSessionPane = memo(function LocalSessionPane({
       ) : null}
       {/* A chat on its own has no header bar: its split buttons show in the corner while the pane is hovered. */}
       {!inSplit && splitButtons ? <PaneSplitCorner>{splitButtons}</PaneSplitCorner> : null}
+      {/* A chat that came in from an export with no folder here: nothing runs until one is chosen. */}
+      {!remote ? (
+        <ChatFolderBanner session={session} onChoose={(cwd) => onCwdChange(session.id, cwd)} />
+      ) : null}
       {/* WP-110: which worktree this chat runs in, and the ask line before the first send. */}
       <NewChatWorktreeBanner session={session} />
       {/* WP-120: when this CLI cannot lead, the strip says why and offers a switch. */}
