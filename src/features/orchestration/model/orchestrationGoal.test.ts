@@ -15,6 +15,7 @@ import {
   type StoredDecision,
 } from "./orchestration";
 import { validateGoal, validateGoalCheck } from "./orchestrationPlan";
+import { watchDecisions } from "./decisionWatch";
 import {
   goalCheckLine,
   normalizeCheckRun,
@@ -613,6 +614,34 @@ describe("an irreversible step", () => {
         expect.objectContaining({ project: "/repo" }),
       );
     }
+  });
+
+  it("starts the step when the app says a decision was answered, without the lead or a reload", async () => {
+    const f = fixture();
+    const listeners = new Map<string, () => void>();
+    const off = vi.fn();
+    const stop = watchDecisions(
+      async (event, handler) => {
+        listeners.set(event, handler);
+        return off;
+      },
+      () => f.manager.decisionsChanged(),
+    );
+    await vi.waitFor(() => expect(listeners.has("hivra:decisions-changed")).toBe(true));
+    await f.start();
+    const id = await f.delegate({ irreversible: true, reason: "it spends money" });
+    await vi.waitFor(() => expect(f.store.askDecision).toHaveBeenCalledTimes(1));
+    expect(f.host.createWorker).not.toHaveBeenCalled();
+    // The person approves in the Inbox: the store holds the answer, and the app emits its event.
+    f.parked[0] = { ...f.parked[0], answered: true, answer: "Approve" };
+    listeners.get("hivra:decisions-changed")!();
+    await vi.waitFor(() => expect(f.host.createWorker).toHaveBeenCalledTimes(1));
+    expect(
+      f.manager.run("lead")!.tasks.find((entry) => entry.id === id)!.irreversibleAnswered,
+    ).toBe(true);
+    stop();
+    expect(off).toHaveBeenCalledOnce();
+    await f.manager.stopRun("lead");
   });
 
   it("leaves an ordinary task alone", async () => {
@@ -1328,5 +1357,63 @@ describe("the decision an irreversible step raises", () => {
       });
       expect("project" in input).toBe(false);
     }
+  });
+});
+
+describe("watching for answered decisions", () => {
+  it("calls back for every event, and stops for good once it is stopped", async () => {
+    let handler: (() => void) | undefined;
+    const off = vi.fn();
+    const seen = vi.fn();
+    const stop = watchDecisions(async (_event, next) => {
+      handler = next;
+      return off;
+    }, seen);
+    await vi.waitFor(() => expect(handler).toBeDefined());
+    handler!();
+    handler!();
+    expect(seen).toHaveBeenCalledTimes(2);
+    stop();
+    expect(off).toHaveBeenCalledOnce();
+    handler!();
+    expect(seen).toHaveBeenCalledTimes(2);
+    stop();
+    expect(off).toHaveBeenCalledOnce();
+  });
+
+  it("is stopped even before the listener is ready, and survives a listener that cannot start", async () => {
+    let ready!: (off: () => void) => void;
+    const off = vi.fn();
+    const stop = watchDecisions(
+      () => new Promise<() => void>((resolve) => (ready = resolve)),
+      vi.fn(),
+    );
+    stop();
+    ready(off);
+    await vi.waitFor(() => expect(off).toHaveBeenCalledOnce());
+    // Outside the app there is no event bus: nothing to watch, nothing to throw.
+    const none = watchDecisions(async () => {
+      throw new Error("no tauri");
+    }, vi.fn());
+    await Promise.resolve();
+    expect(() => none()).not.toThrow();
+  });
+
+  it("does not let one failing callback end the watch", async () => {
+    let handler!: () => void;
+    const seen = vi
+      .fn()
+      .mockImplementationOnce(() => {
+        throw new Error("boom");
+      })
+      .mockImplementation(() => {});
+    watchDecisions(async (_event, next) => {
+      handler = next;
+      return () => {};
+    }, seen);
+    await vi.waitFor(() => expect(handler).toBeDefined());
+    expect(() => handler()).not.toThrow();
+    handler();
+    expect(seen).toHaveBeenCalledTimes(2);
   });
 });
