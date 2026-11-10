@@ -6,18 +6,18 @@
 
 ## Goal
 
-Once CI is honestly green, a non-security pull request that has passed the lead check can merge within a few minutes of that green, and every shipped pull request can leave a short record of CI time and merge-wait time.
+Once CI is honestly green, the lead can see within a minute which pull requests have a real CI success on their head sha, and each one can leave a short record of CI time and wait time. The script only reports. A merge goes through review and the app's one merge path.
 
 ## Why
 
 Measured 9 Nov 2026 22:12-22:22 UK. #99 opened at 15:18 and merged at 15:35 (16.5 minutes) when CI was a 15.6-minute success. #106 opened at 21:17 and merged at 21:46 (29 minutes) after CI finished at 21:36: ten minutes of merge wait, and that was a good case. Earlier pull requests the same day took 55-100 minutes open-to-merge, mostly because CI was red on known flakes or stuck in Playwright install. The lead tick was 30 minutes and is now 15, so a finished run can still sit for a quarter of an hour. There is no single place that records CI time and merge-wait time for the morning rundown.
 
-This package does not change GitHub workflow permissions, does not add a bot token, and does not turn on a merge queue. The lead already has `gh` rights to merge. The work is a small, tested script plus this note.
+This package does not change GitHub workflow permissions, does not add a bot token, and does not turn on a merge queue. The work is a small, tested read-only script plus this note. The script does not merge anything and has no option that does: merges go through review and `src-tauri/src/delivery/merge.rs` (the Inbox's merge button, a first mate's `pr_merge`, a delivery), which refuses red or pending checks, asks for the person's word unless the project's merge-without-asking switch is on, and merges only the head it judged.
 
 ## Read first
 
 - The measurements in Why, above. They are the reason this package exists.
-- Merge rules already in use: merge commit only, pin to the head sha, never force-push, never merge WP-92 or another security-park package, compare failing check titles not counts. Title comparison stays with the lead. This script only ships a real success.
+- Merge rules already in use: merge commit only, pin to the head sha, never force-push, never merge WP-92 or another security-park package, compare failing check titles not counts. Title comparison stays with the lead. This script only reports a real success; the merge itself is `merge.rs`.
 - `scripts/ci-ok.mjs` (WP-105's required check). Do not add a second required-check workflow.
 
 ## Build
@@ -28,69 +28,63 @@ This package does not change GitHub workflow permissions, does not add a bot tok
    - Refuse security-park titles, labels, and a hard-coded list that includes WP-92 plus the packages marked never-merge (WP-150, WP-158). Extra ids can be passed on the command line.
    - Read the latest CI run for the pull request head sha. Exit non-zero if the run is red, pending, missing, or the head sha does not match.
    - Optionally append a line to a log file (path as an argument, default off) with: pull request number, head sha, builder start and end if provided, CI minutes from the run's created and updated times, and minutes from CI completion to now. Do not invent times.
-   - Print the exact `gh` merge command it would run, and only run it with `--apply` (default is dry-run). Merge method is `merge`, pinned to the sha.
+   - Print one report line for each pull request that passed. It merges nothing: it never runs a merge and has no option that does.
    - Not request or store tokens. Use the environment's existing `gh` auth.
-3. **Tests** with a fake `gh` covering: green is mergeable; red CI refuses; sha mismatch refuses; security-park refuses; dry-run prints and does not merge; `--apply` calls merge with the pinned sha.
+3. **Tests** with a fake `gh` covering: green is reported; red CI refuses; sha mismatch refuses; security-park refuses; the report never runs a merge; the removed merge option is refused at the command line and by the function.
 4. **Out of scope.** Do not add a GitHub Actions workflow with `contents: write` or `pull-requests: write`. Do not enable a merge queue or change branch protection. Do not auto-merge from Actions. Do not weaken the lead check (`npm run check` stays with the lead, one package at a time).
 
 ## How the lead ships
 
-Run the lead check first. This script does not run it. Ship only when that check exits 0.
+Run the lead check first. This script does not run it. Go on only when that check exits 0.
 
 Then confirm CI on the pull request head is a real success. After WP-153, green means the suite passed, not "only known flakes". This script reads the latest CI run for that sha and refuses anything else.
 
-Dry-run (prints the merge command, does not merge):
+The report (it reads GitHub and changes nothing):
 
 ```sh
 node scripts/hivra-ship-green.mjs 123
 ```
 
-Merge, with a merge commit pinned to the head sha the script just read:
-
-```sh
-node scripts/hivra-ship-green.mjs --apply 123
-```
-
 From outside a checkout, pass the repo as well:
 
 ```sh
-node scripts/hivra-ship-green.mjs --repo OWNER/NAME --apply 123
+node scripts/hivra-ship-green.mjs --repo OWNER/NAME 123
 ```
 
-The command it prints and, with `--apply`, runs is:
+A pull request that passes prints one line and the script exits 0:
 
-```sh
-gh pr merge 123 --repo OWNER/NAME --merge --match-head-commit <head sha>
+```text
+pass: 123 <head sha> (CI success; a merge goes through review and the app's merge.rs)
 ```
 
-It does not pass `--auto`. `gh pr merge --auto --merge` is a separate manual option for when GitHub should merge the moment its own checks pass. This script merges only after it has already seen a success, and only for a pull request that is not security-park. It re-reads the head sha immediately before the merge and pins that sha, so a push that lands in between is not merged.
+That line is a report, not a merge command. The script does not merge and has no option that does. The merge goes through review and the app's one merge path, `src-tauri/src/delivery/merge.rs`: the Inbox's merge button, a first mate's `pr_merge` or a delivery. That path reads the pull request fresh, refuses red or pending checks, asks for the person's word unless the project's merge-without-asking switch is on, and merges only the head it judged. Do not type a merge command by hand from this output.
 
-Several numbers are one batch. If any one fails the checks, none of them are merged. If a merge call fails after an earlier one in the batch has already merged, that earlier one stays merged. Run the script again for the rest.
+Several numbers are one batch. If any one is refused, the script prints each refusal and exits 1, and it prints no pass line and writes no timing line for the batch. Run it again without the refused number.
 
-Timings are off unless you pass a log path. The script appends one line per pull request that passed the checks. `ci_minutes` is the CI run's updated time minus its created time. `merge_wait_minutes` is now minus the run's updated time. `builder_start` and `builder_end` are written only when you pass them. A time the script did not read is left out. It does not fill one in. `merged=yes` after `--apply` succeeds, and `merged=no` on a dry-run.
+Timings are off unless you pass a log path. The script appends one line per pull request that passed the checks. `ci_minutes` is the CI run's updated time minus its created time. `merge_wait_minutes` is now minus the run's updated time, which is how long the finished run had waited when the lead looked. `builder_start` and `builder_end` are written only when you pass them. A time the script did not read is left out. It does not fill one in. `merged=no` is always written, because the script merges nothing.
 
 ```sh
-node scripts/hivra-ship-green.mjs --apply --log ship-times.log --builder-start 2026-11-09T21:00:00Z --builder-end 2026-11-09T21:18:00Z 123
+node scripts/hivra-ship-green.mjs --log ship-times.log --builder-start 2026-11-09T21:00:00Z --builder-end 2026-11-09T21:18:00Z 123
 ```
 
 A line looks like this (fields with no reading are absent):
 
 ```text
-pr=123 sha=<head> ci_minutes=15.60 merge_wait_minutes=1.40 builder_start=2026-11-09T21:00:00Z builder_end=2026-11-09T21:18:00Z merged=yes
+pr=123 sha=<head> ci_minutes=15.60 merge_wait_minutes=1.40 builder_start=2026-11-09T21:00:00Z builder_end=2026-11-09T21:18:00Z merged=no
 ```
 
-After the merge, rebase or merge main into open siblings that do not conflict. Never pass `--force`. Never pass `--no-verify`. Never push main. Never merge a security-park package.
+After a merge, rebase or merge main into open siblings that do not conflict. Never pass `--force`. Never pass `--no-verify`. Never push main. Never merge a security-park package.
 
 Built-in never-merge packages are WP-92, WP-150 and WP-158. A `security-park` label (any spelling of that label) is refused too. Add another id without editing the script:
 
 ```sh
-node scripts/hivra-ship-green.mjs --never-merge WP-152 --apply 123
+node scripts/hivra-ship-green.mjs --never-merge WP-152 123
 ```
 
 A title, branch or label that names one of those packages is refused even when CI is green.
 
 ## Done when
 
-- [ ] `scripts/hivra-ship-green.mjs` exists, is dry-run by default, and its tests pass.
+- [ ] `scripts/hivra-ship-green.mjs` exists, reports and logs only, and its tests pass.
 - [ ] This note tells the lead the exact command, including how timings are logged.
-- [ ] `PR.md` is clear that this does not merge anything by itself in CI.
+- [ ] `PR.md` is clear that this script merges nothing, in CI or by hand, and that merges go through review and `merge.rs`.

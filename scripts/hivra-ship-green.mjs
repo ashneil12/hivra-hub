@@ -1,7 +1,9 @@
 #!/usr/bin/env node
-// WP-155: ship a pull request once its latest CI run is a real success.
-// Dry-run by default. --apply merges with a merge commit pinned to the head sha.
-// Uses the gh login already on the machine. Does not read, print or store tokens.
+// WP-155: report a pull request whose latest CI run is a real success, and log where the time went.
+// It merges nothing. A merge goes through review and the app's one merge path (src-tauri/src/delivery/merge.rs),
+// which refuses red or pending checks, asks for the person's word unless the project's merge-without-asking
+// switch is on, and merges only the head it judged.
+// Reads through the gh login already on the machine. Does not read, print or store tokens.
 // Not a GitHub Actions workflow, and it does not change workflow permissions.
 
 import { spawnSync } from "node:child_process";
@@ -61,19 +63,21 @@ const GH_ENV_KEYS = [
   "REQUESTS_CA_BUNDLE",
 ];
 
-export const USAGE = `Usage: node scripts/hivra-ship-green.mjs [--apply] [--repo OWNER/NAME] [--log FILE] [--sha SHA] [--builder-start TIME] [--builder-end TIME] [--never-merge WP-N[,WP-N...]] PR [PR...]
+export const USAGE = `Usage: node scripts/hivra-ship-green.mjs [--repo OWNER/NAME] [--log FILE] [--sha SHA] [--builder-start TIME] [--builder-end TIME] [--never-merge WP-N[,WP-N...]] PR [PR...]
 
-Dry-run is the default. It prints the merge command and does not run it.
---apply runs: gh pr merge PR --repo OWNER/NAME --merge --match-head-commit SHA
+This script merges nothing. It reads the latest CI run for each pull request's head sha and reports a pass.
+A merge goes through review and the app's own merge path (merge.rs), which refuses red or pending checks,
+asks for the person's word unless the project's merge-without-asking switch is on, and merges only the head it judged.
+--apply was removed and is refused.
 
 The pull request is refused when CI is red, CI is pending, the head sha does not match, or the pull request is a security-park package.
 Built-in never-merge packages: WP-92, WP-150, WP-158. A security-park label is refused too. --never-merge adds more package ids.
 
 --log FILE appends one line for each pull request that passed the checks.
 The line includes the PR number, the head sha, ci_minutes and merge_wait_minutes when the CI run has both times, and builder_start and builder_end only when those arguments were passed.
-merged=yes after a merge, merged=no on a dry-run. A time that was not read is left out.
+merged is always no: this script does not merge. A time that was not read is left out.
 
-This script does not run the lead check. Run that first, and only ship when it exits 0.
+This script does not run the lead check. Run that first, and only look for a pass when it exits 0.
 `;
 
 /**
@@ -166,7 +170,6 @@ export function securityParkReason(pr, extraIds) {
  */
 export function parseArgs(argv) {
   const opts = {
-    apply: false,
     help: false,
     repo: "",
     logPath: "",
@@ -189,8 +192,9 @@ export function parseArgs(argv) {
       break;
     }
     if (arg === "--apply") {
-      opts.apply = true;
-      continue;
+      throw new Error(
+        "--apply was removed: merges go through review and merge.rs, never from this script",
+      );
     }
     if (arg === "--help" || arg === "-h") {
       opts.help = true;
@@ -426,11 +430,13 @@ export function refuseBeforeCi(pr, options) {
 }
 
 /**
- * @param {string[]} args
+ * What a passing pull request prints. It is not a merge command: a merge goes through review and merge.rs.
+ * @param {string} number
+ * @param {string} sha
  * @returns {string}
  */
-export function formatCommand(args) {
-  return ["gh", ...args].join(" ");
+export function reportLine(number, sha) {
+  return `pass: ${number} ${sha} (CI success; a merge goes through review and the app's merge.rs)`;
 }
 
 /**
@@ -446,24 +452,13 @@ export function evaluatePullRequest(pr, runs, options) {
   if (!options.repo || !REPO_NAME.test(options.repo)) {
     return { ok: false, number: pr.number, message: "could not read the repo name" };
   }
-  const mergeArgs = [
-    "pr",
-    "merge",
-    pr.number,
-    "--repo",
-    options.repo,
-    "--merge",
-    "--match-head-commit",
-    pr.sha,
-  ];
   return {
     ok: true,
     number: pr.number,
     sha: pr.sha,
     createdAt: ci.run.createdAt,
     updatedAt: ci.run.updatedAt,
-    mergeArgs,
-    commandLine: formatCommand(mergeArgs),
+    reportLine: reportLine(pr.number, pr.sha),
   };
 }
 
@@ -483,15 +478,14 @@ export function formatTimingLine(fields) {
 
 /**
  * Times come only from the CI run and the clock the caller passes.
- * A missing or backwards timestamp is left out.
+ * A missing or backwards timestamp is left out. merged is always no: this script merges nothing.
  * @param {{ number: string, sha: string, createdAt: string, updatedAt: string }} plan
  * @param {number} nowMs
  * @param {{ start?: string, end?: string }} builder
- * @param {boolean} merged
  */
-export function timingFields(plan, nowMs, builder, merged) {
+export function timingFields(plan, nowMs, builder) {
   /** @type {Record<string, string>} */
-  const fields = { pr: plan.number, sha: plan.sha, merged: merged ? "yes" : "no" };
+  const fields = { pr: plan.number, sha: plan.sha, merged: "no" };
   const created = Date.parse(plan.createdAt);
   const updated = Date.parse(plan.updatedAt);
   if (Number.isFinite(created) && Number.isFinite(updated) && updated >= created) {
@@ -709,12 +703,12 @@ async function inspect(gh, repo, number, options) {
 }
 
 /**
+ * Append one timing line. This script never merges, so the line always says merged=no.
  * @param {{ logPath?: string, now?: number | (() => number), builderStart?: string, builderEnd?: string }} options
  * @param {{ number: string, sha: string, createdAt: string, updatedAt: string }} plan
- * @param {boolean} merged
  * @param {(line: string) => void} err
  */
-function writeTiming(options, plan, merged, err) {
+function writeTiming(options, plan, err) {
   if (!options.logPath) return { ok: true };
   let nowMs;
   try {
@@ -723,17 +717,14 @@ function writeTiming(options, plan, merged, err) {
     err(error instanceof Error ? error.message : String(error));
     return { ok: false };
   }
-  const line = timingFields(
-    plan,
-    nowMs,
-    { start: options.builderStart || "", end: options.builderEnd || "" },
-    merged,
-  );
+  const line = timingFields(plan, nowMs, {
+    start: options.builderStart || "",
+    end: options.builderEnd || "",
+  });
   try {
     appendFileSync(options.logPath, `${line}\n`, "utf8");
   } catch (error) {
-    if (merged) err(`merged ${plan.number} but could not write the timing log`);
-    else err("could not write the timing log");
+    err("could not write the timing log");
     if (error instanceof Error && error.message) err(error.message);
     return { ok: false };
   }
@@ -741,9 +732,10 @@ function writeTiming(options, plan, merged, err) {
 }
 
 /**
+ * Read each pull request's latest CI run and report a pass. Merges nothing: a merge goes through review and
+ * the app's own merge path (merge.rs). `apply` is not accepted; a caller that passes it gets a usage refusal.
  * @param {string[]} numbers
  * @param {{
- *   apply?: boolean,
  *   repo?: string,
  *   logPath?: string,
  *   sha?: string,
@@ -755,12 +747,18 @@ function writeTiming(options, plan, merged, err) {
  *   stdout?: (line: string) => void,
  *   stderr?: (line: string) => void,
  * }} [options]
- * @returns {Promise<{ code: number, merged: string[] }>}
+ * @returns {Promise<{ code: number }>}
  */
 export async function shipPullRequests(numbers, options = {}) {
   const out = options.stdout ?? ((line) => console.log(line));
   const err = options.stderr ?? ((line) => console.error(line));
   const gh = options.gh ?? ((args) => Promise.resolve(runGh(args)));
+
+  // The removed option is refused here too, so an old caller cannot reach GitHub with a stale intent.
+  if (/** @type {{ apply?: unknown }} */ (options).apply) {
+    err("--apply was removed: merges go through review and merge.rs, never from this script");
+    return { code: 2 };
+  }
 
   const unique = [];
   const seen = new Set();
@@ -768,108 +766,53 @@ export async function shipPullRequests(numbers, options = {}) {
     const number = normalizePrNumber(raw);
     if (!number) {
       err(`not a pull request number: ${String(raw).trim() || "(empty)"}`);
-      return { code: 2, merged: [] };
+      return { code: 2 };
     }
     if (seen.has(number)) continue;
     seen.add(number);
     unique.push(number);
   }
-  if (unique.length === 0) return { code: 2, merged: [] };
+  if (unique.length === 0) return { code: 2 };
   if (options.repo && !REPO_NAME.test(options.repo)) {
     err("--repo must look like OWNER/NAME");
-    return { code: 2, merged: [] };
+    return { code: 2 };
   }
   if (options.sha && !SHA40.test(options.sha.toLowerCase())) {
     err("--sha must be a 40 character hex sha");
-    return { code: 2, merged: [] };
+    return { code: 2 };
   }
   if (options.sha && unique.length > 1) {
     err("--sha applies to one pull request");
-    return { code: 2, merged: [] };
+    return { code: 2 };
   }
 
   const repoResult = await readRepo(gh, options.repo || "");
   if (!repoResult.ok) {
     err(repoResult.message);
-    return { code: 1, merged: [] };
+    return { code: 1 };
   }
   const repo = repoResult.repo;
 
-  /** @type {Array<{ ok: true, number: string, sha: string, createdAt: string, updatedAt: string, mergeArgs: string[], commandLine: string }>} */
-  const plans = [];
+  /** @type {Array<{ ok: true, number: string, sha: string, createdAt: string, updatedAt: string, reportLine: string }>} */
+  const passes = [];
   /** @type {Array<{ ok: false, number: string, message: string }>} */
   const refusals = [];
   for (const number of unique) {
     const decision = await inspect(gh, repo, number, options);
     if (!decision.ok) refusals.push(decision);
-    else plans.push(decision);
+    else passes.push(decision);
   }
   if (refusals.length > 0) {
     for (const refusal of refusals) err(`refusing ${refusal.number}: ${refusal.message}`);
-    if (options.apply) err("nothing was merged");
-    return { code: 1, merged: [] };
+    return { code: 1 };
   }
 
-  if (!options.apply) {
-    for (const plan of plans) {
-      out(`dry-run: ${plan.commandLine}`);
-      const logged = writeTiming(options, plan, false, err);
-      if (!logged.ok) return { code: 1, merged: [] };
-    }
-    return { code: 0, merged: [] };
+  for (const pass of passes) {
+    out(pass.reportLine);
+    const logged = writeTiming(options, pass, err);
+    if (!logged.ok) return { code: 1 };
   }
-
-  // Re-read every pull request before merging any of them. A push that landed
-  // while the first pass was running must not merge, and must not leave the
-  // others merged either. The sha pin is the check for a push during the merge itself.
-  /** @type {typeof plans} */
-  const confirmed = [];
-  /** @type {Array<{ number: string, message: string }>} */
-  const moved = [];
-  for (const plan of plans) {
-    const again = await inspect(gh, repo, plan.number, options);
-    if (!again.ok) moved.push(again);
-    else if (again.sha !== plan.sha) moved.push({ number: plan.number, message: "head sha changed before merge" });
-    else confirmed.push(again);
-  }
-  if (moved.length > 0) {
-    for (const refusal of moved) err(`refusing ${refusal.number}: ${refusal.message}`);
-    err("nothing was merged");
-    return { code: 1, merged: [] };
-  }
-
-  /** @type {string[]} */
-  const merged = [];
-  for (const plan of confirmed) {
-    out(`apply: ${plan.commandLine}`);
-    let result;
-    try {
-      result = await gh(plan.mergeArgs);
-    } catch {
-      err(`could not reach GitHub to merge ${plan.number}; this is not a CI result`);
-      return { code: 1, merged };
-    }
-    if (!result || result.ok !== true) {
-      if (result && result.unreachable) {
-        const timedOut = /timed out/i.test(result.message || "");
-        err(
-          timedOut
-            ? `gh timed out while merging ${plan.number}; check the pull request before retrying. This is not a CI result.`
-            : `could not reach GitHub to merge ${plan.number}; this is not a CI result`,
-        );
-      } else {
-        err(`merge failed for ${plan.number}; this is not a CI result`);
-        const detail = result ? clip(result.stderr || "") || clip(result.stdout || "") : "";
-        if (detail) err(detail);
-      }
-      return { code: 1, merged };
-    }
-    merged.push(plan.number);
-    out(`merged ${plan.number}`);
-    const logged = writeTiming(options, plan, true, err);
-    if (!logged.ok) return { code: 1, merged };
-  }
-  return { code: 0, merged };
+  return { code: 0 };
 }
 
 /**
@@ -895,7 +838,6 @@ export async function main(argv = process.argv) {
   }
   try {
     const result = await shipPullRequests(opts.prs, {
-      apply: opts.apply,
       repo: opts.repo,
       logPath: opts.logPath,
       sha: opts.sha,
