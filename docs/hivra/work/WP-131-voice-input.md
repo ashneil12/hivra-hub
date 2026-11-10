@@ -24,6 +24,17 @@ T3 documents voice input in [voice-input.md](https://github.com/pingdotgg/t3code
 2. Never auto-send. A partial transcript is clearly marked until the person stops talking. Browser or desktop spec as applicable; WebKit and Chromium if the control is in the webview.
 3. Document macOS, and say plainly what Windows and Linux can do in this slice. If Linux cannot be done honestly in this package, leave a follow-up in PR.md rather than a broken button.
 
+## What this slice does on each platform
+
+- **macOS (the only platform with dictation):** the Dictate button and the Dictate row in the plus menu. The first
+  press explains what happens and asks to continue. Continue asks macOS for the microphone and speech recognition
+  permissions (System Settings > Privacy & Security). Recognition runs on the Mac only: if the Mac cannot recognise
+  the language on the device, dictation refuses to start rather than send audio away. Speech recognition may need the
+  language's on-device model to be downloaded first. Dictation writes into the draft and never sends it.
+- **Windows:** no dictation in this slice. The control is hidden, not shown as a broken button.
+- **Linux:** no dictation in this slice. The control is hidden. A Linux path is a follow-up (see PR.md).
+- **Phone:** unchanged. The phone's own dictation bar is not touched by this slice.
+
 ## Done when
 
 - [ ] Desktop dictation writes into the draft and does not send.
