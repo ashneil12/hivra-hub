@@ -2309,19 +2309,26 @@ pub(crate) mod tests {
     #[test]
     fn the_kill_after_the_wait_is_sent_only_while_the_group_is_still_there() {
         let looks = std::cell::Cell::new(0);
-        for (gone_after, expected) in [
+        // The wait is a deadline, not a count of looks: a busy runner can sleep well past each 25 ms step. A group that
+        // goes part way gets a wait long enough to reach its last look on any runner (it returns as soon as the group
+        // is gone, so the test stays quick); only the group that never goes waits the short one out.
+        for (gone_after, grace, expected) in [
             // Never gone: it ignored SIGTERM, so it gets SIGKILL.
-            (usize::MAX, vec![libc::SIGTERM, libc::SIGKILL]),
+            (
+                usize::MAX,
+                Duration::from_millis(200),
+                vec![libc::SIGTERM, libc::SIGKILL],
+            ),
             // Gone at the first look: nothing more is sent.
-            (0, vec![libc::SIGTERM]),
+            (0, Duration::from_secs(30), vec![libc::SIGTERM]),
             // Gone part way through the wait: nothing more is sent.
-            (3, vec![libc::SIGTERM]),
+            (3, Duration::from_secs(30), vec![libc::SIGTERM]),
         ] {
             looks.set(0);
             let sent = Mutex::new(Vec::new());
             end_group(
                 4242,
-                Duration::from_millis(200),
+                grace,
                 || {
                     looks.set(looks.get() + 1);
                     looks.get() <= gone_after
