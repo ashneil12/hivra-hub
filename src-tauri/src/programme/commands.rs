@@ -99,13 +99,20 @@ fn move_status(
     }
 }
 
+/// Merged rows are left out unless the caller asks for them (`includeMerged`).
 #[tauri::command(async)]
 pub fn programme_list(
     store: State<'_, SessionStore>,
     actor: ActorBody,
+    include_merged: Option<bool>,
 ) -> Result<Vec<Package>, String> {
     let conn = store.lock_conn()?;
-    store::list(&conn, &Actor::from(actor))
+    let actor = Actor::from(actor);
+    if include_merged.unwrap_or(false) {
+        store::list_with(&conn, &actor, true, store::LIST_MAX)
+    } else {
+        store::list(&conn, &actor)
+    }
 }
 
 #[tauri::command(async)]
