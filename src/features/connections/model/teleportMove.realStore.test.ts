@@ -15,6 +15,9 @@ vi.mock("@tauri-apps/api/core", () => ({
       return { id: session.id };
     }
     if (command === "session_get") return backend.get(String(args.sessionId)) ?? null;
+    if (command === "session_list_by_project" || command === "session_list_folderless" || command === "session_list_linked") {
+      return [...backend.values()].map((row) => ({ ...row }));
+    }
     if (command === "session_delete") {
       backend.delete(String(args.sessionId));
       return null;
@@ -153,7 +156,7 @@ describe("WP-177 startup recovery, called at launch", () => {
       JSON.parse(JSON.stringify((await teleportRpc(host2, method, JSON.parse(JSON.stringify(params)), "dev-desktop")) ?? null));
     const local = localMoveEndpoint({ machineId: MAC, port: sessionStoreChatPort(), labelFor: () => "Studio box" });
     const rows: Session[] = [];
-    expect(await launchRecovery([CHAT], { port: sessionStoreChatPort(), local, remoteFor: () => sshMoveEndpoint(HOST, call), onRow: (r) => rows.push(r) })).toEqual([]);
+    expect(await launchRecovery(["/projects/app"], { port: sessionStoreChatPort(), local, remoteFor: () => sshMoveEndpoint(HOST, call), onRow: (r) => rows.push(r) })).toEqual([]);
     expect(rows).toEqual([]);
 
     // A move that stopped before the Mac released: the launch finishes it and tells the app.
@@ -163,10 +166,37 @@ describe("WP-177 startup recovery, called at launch", () => {
     const { approvePlan, moveChat } = await import("./teleport");
     const stopped = { ...local, release: async () => { throw new Error("process stopped"); } };
     await moveChat({ chatId: CHAT, from: stopped, to: sshMoveEndpoint(HOST, call), approval: approvePlan(planned.plan, click()), moveId: "launch-1", at: "t" });
-    const lines = await launchRecovery([CHAT], { port: sessionStoreChatPort(), local, remoteFor: () => sshMoveEndpoint(HOST, call), onRow: (r) => rows.push(r) });
+    const lines = await launchRecovery(["/projects/app"], { port: sessionStoreChatPort(), local, remoteFor: () => sshMoveEndpoint(HOST, call), onRow: (r) => rows.push(r) });
     expect(lines).toEqual([expect.objectContaining({ chatId: CHAT, status: "moved" })]);
     expect(rows).toHaveLength(1);
     expect(teleportStateOf(rows[0])).toMatchObject({ moved: true });
     rmSync(dir2, { recursive: true, force: true });
+  });
+});
+
+describe("WP-177 startup recovery finds every move in the store", () => {
+  beforeEach(() => {
+    backend.clear();
+    forgetMovedRowsForTests();
+    unlockChat(CHAT);
+  });
+
+  it("the scan returns a frozen chat that no tab shows, and an incoming copy, and not an ordinary chat", async () => {
+    const { findMovedChatIds } = await import("./teleportMove");
+    await upsertSession({ ...savedChat(), id: "plain-1" } as Session);
+    await upsertSession({ ...savedChat(), id: "frozen-1" } as Session);
+    const local = localMoveEndpoint({ machineId: MAC, port: sessionStoreChatPort(), labelFor: () => "Studio box" });
+    expect(await local.freeze("frozen-1", "m-frozen", HOST)).toBe(true);
+
+    await upsertSession({ ...savedChat(), id: "incoming-1" } as Session);
+    expect(await localMoveEndpoint({ machineId: MAC, port: sessionStoreChatPort() }).freeze("incoming-1", "m-out", HOST)).toBe(true);
+    await localMoveEndpoint({ machineId: MAC, port: sessionStoreChatPort(), labelFor: () => "Studio box" }).release("incoming-1", "m-out", HOST);
+    await localMoveEndpoint({ machineId: MAC, port: sessionStoreChatPort() }).receive("incoming-1", "m-in", {
+      chat: { chatId: "incoming-1", provider: "claude", providerSessionId: "", model: "m", effort: "high", title: "t", transcript: "[]", queued: [] },
+      manifest: { format: "hivra-teleport-v1", chatId: "incoming-1", to: MAC, from: HOST },
+    } as never);
+
+    const ids = await findMovedChatIds(["/projects/app"]);
+    expect(ids.sort()).toEqual(["frozen-1", "incoming-1"]);
   });
 });

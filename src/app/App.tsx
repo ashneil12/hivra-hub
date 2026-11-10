@@ -3545,7 +3545,12 @@ function Workspace({
   useEffect(() => {
     if (launchRecoveryStarted.current || sessions.length === 0) return;
     launchRecoveryStarted.current = true;
-    void launchRecovery(sessions.map((session) => session.id), {
+    // Every project folder the hub knows, not only the open tabs': a move's chat can sit in a project nobody has open.
+    const knownFolders = hubData()
+      .listProjects()
+      .map((project) => project.folder ?? "")
+      .filter((folder) => folder.trim() !== "");
+    void launchRecovery([...sessions.map((session) => session.cwd), ...knownFolders], {
       onRow: (row) => {
         applyTeleportRow(sessionsRef, setSessions, row);
       },

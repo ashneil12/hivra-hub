@@ -12,6 +12,9 @@ vi.mock("@tauri-apps/api/core", () => ({
       return { id: session.id };
     }
     if (command === "session_get") return backend.get(String(args.sessionId)) ?? null;
+    if (command === "session_list_by_project" || command === "session_list_folderless" || command === "session_list_linked") {
+      return [...backend.values()].map((row) => ({ ...row }));
+    }
     return null;
   }),
 }));
@@ -21,7 +24,16 @@ import { persistQuitState } from "../../../app/model/appLifecycle";
 import { sessionStoreChatPort } from "./teleportStorePort";
 import { localMoveEndpoint } from "../model/teleportLocal";
 import { teleportStateOf } from "../model/teleportState";
-import { unlockChat } from "../model/teleportLock";
+import { isChatLocked, unlockChat } from "../model/teleportLock";
+
+class TestMouseEvent {
+  readonly type: string;
+  isTrusted = false;
+  constructor(type: string) {
+    this.type = type;
+  }
+}
+(globalThis as unknown as { MouseEvent: unknown }).MouseEvent = TestMouseEvent;
 
 const CHAT = "quit-chat-1";
 
@@ -82,5 +94,60 @@ describe("WP-177 HIGH A: a quit after a move keeps the moved row", () => {
     unlockChat(CHAT);
     await upsertSession(preMove());
     expect(teleportStateOf((await getSession(CHAT))!)).toMatchObject({ moved: true });
+  });
+});
+
+// The quit-and-reopen proof through the real stores: a move to a host store (a loopback stand-in: the same store the
+// host runs, reached through the JSON wire), a quit with App still holding the pre-move copy, then a reopen where the
+// in-memory state is gone and only the saved rows remain.
+describe("WP-177 quit after a move, then reopen: the row stays moved and the chat is not live on the Mac", () => {
+  it("the moved row and the host copy survive; the Mac does not run the chat", async () => {
+    const os = await import("node:os");
+    const path = await import("node:path");
+    const fs = await import("node:fs");
+    const { HostTeleportStore } = await import("../../../../host/teleport/store");
+    const { teleportRpc } = await import("../../../../host/teleport/rpc");
+    const { sshMoveEndpoint } = await import("../model/teleportSsh");
+    const { approvePlan, moveChat, planMove } = await import("../model/teleport");
+    const { launchRecovery } = await import("../model/teleportMove");
+    const { forgetMovedRowsForTests: forget } = await import("../../../features/sessions/data/sessionStore");
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "wp177-quit-"));
+    try {
+      const host = new HostTeleportStore({ dir, selfId: "host-a", providers: ["claude"], leaseRoot: path.join(dir, "leases") });
+      const wire = async (method: string, params: Record<string, unknown>) =>
+        JSON.parse(JSON.stringify((await teleportRpc(host, method, JSON.parse(JSON.stringify(params)), "dev-desktop")) ?? null));
+
+      await upsertSession({ ...preMove(), id: "quit-reopen" } as Session);
+      const local = localMoveEndpoint({ machineId: "this-mac", port: sessionStoreChatPort(), labelFor: () => "Studio box" });
+      const planned = await planMove((await local.read("quit-reopen"))!.live!, "this-mac", "host-a");
+      if (!planned.ok) throw new Error("plan");
+      const moved = await moveChat({
+        chatId: "quit-reopen",
+        from: local,
+        to: sshMoveEndpoint("host-a", wire),
+        approval: approvePlan(planned.plan, Object.assign(new TestMouseEvent("click"), { isTrusted: true }) as never),
+        moveId: "quit-1",
+        at: "2026-11-10T09:00:00.000Z",
+      });
+      expect(moved.status).toBe("moved");
+
+      // Quit: App's list still holds the pre-move copy and persists it.
+      await persistQuitState([{ ...preMove(), id: "quit-reopen" } as Session], [], "", "/projects/quit", new Map(), "quit");
+
+      // Reopen: a new process. The in-memory state is gone; the saved rows are what is left.
+      forget();
+      unlockChat("quit-reopen");
+      const reopened = await getSession("quit-reopen");
+      expect(teleportStateOf(reopened!)).toMatchObject({ moved: true, host: "Studio box" });
+      expect(reopened!.blocks.some((b) => b.role === "user")).toBe(false);
+      expect(isChatLocked("quit-reopen")).toBe(true);
+      // Launch recovery finds nothing to finish, and does not bring the chat back.
+      expect(await launchRecovery(["/projects/quit"], { port: sessionStoreChatPort(), local, remoteFor: () => sshMoveEndpoint("host-a", wire), onRow: () => undefined })).toEqual([]);
+      expect(teleportStateOf((await getSession("quit-reopen"))!).moved).toBe(true);
+      // The host runs the chat; the Mac does not.
+      expect((await host.read("quit-reopen", "dev-desktop"))?.live?.title).toBe("Before the move");
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

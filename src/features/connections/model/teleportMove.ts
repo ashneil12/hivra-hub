@@ -56,12 +56,32 @@ export async function listPairedHosts(): Promise<Array<{ id: string; name: strin
 }
 
 /**
+ * Every chat in the saved store that still carries a move's freeze or incoming copy, whether or not any tab shows it.
+ * The store's listings give the ids; each row is then read, because a summary does not carry the move's notices.
+ */
+export async function findMovedChatIds(projectCwds: string[]): Promise<string[]> {
+  const store = await import("../../sessions/data/sessionStore");
+  const summaries = [
+    ...(await store.listFolderlessSessions()),
+    ...(await store.listLinkedSessions()),
+    ...(await Promise.all([...new Set(projectCwds)].map((cwd) => store.listSessionsByProject(cwd)))).flat(),
+  ];
+  const ids = [...new Set(summaries.map((summary) => summary.id))];
+  const found: string[] = [];
+  for (const id of ids) {
+    const row = await store.readSession(id);
+    if (row?.blocks.some((b) => b.notice === "teleport-frozen" || b.notice === "teleport-incoming")) found.push(id);
+  }
+  return found;
+}
+
+/**
  * Startup recovery as the app runs it at launch. The deps are the app's real ones by default: this Mac's saved store,
  * and the SSH host reached through the same remote request every other host call uses. `onRow` gets each row a
  * recovery changed, so the app's list holds the stored state.
  */
 export async function launchRecovery(
-  chatIds: string[],
+  projectCwds: string[],
   deps: {
     port?: LocalChatPort;
     local?: MoveEndpoint;
@@ -78,6 +98,7 @@ export async function launchRecovery(
   const local = deps.local ?? localMoveEndpoint({ machineId: "this-mac", port });
   const remoteFor =
     deps.remoteFor ?? ((peer: string) => sshMoveEndpoint(peer, (method, params) => remoteRequest(peer, method, params)));
+  const chatIds = await findMovedChatIds(projectCwds);
   const lines = await recoverSavedMoves({ chatIds, port, local, remoteFor });
   if (deps.onRow) {
     for (const line of new Set(lines.map((l) => l.chatId))) {
