@@ -40,7 +40,9 @@ Agentlas 2.0 claims an OS-sandboxed terminal for each downloaded agent, with no 
 
 ## Owned paths
 
-- None yet. This package is design first: it names paths once the design is agreed. `src/app/App.tsx`, `src-tauri/src/lib.rs` and `src/features/settings/ui/SettingsView.tsx` stay hook only.
+- `scripts/agent-sandbox-probe.mjs` and its test: the macOS measurement. It runs probes under a temporary HOME and starts no agent.
+- `src/integrations/harness/core/protectedPaths.ts` and its test: the protected-paths list, the matcher, and the report-only after-turn check.
+- `src/app/App.tsx`, `src-tauri/src/lib.rs` and `src/features/settings/ui/SettingsView.tsx` stay hook only. Nothing in them changed.
 
 ## Done when
 
@@ -48,6 +50,60 @@ Agentlas 2.0 claims an OS-sandboxed terminal for each downloaded agent, with no 
 - [ ] Ash picks the mechanism per platform before any build.
 - [ ] Once built, on a dev copy: an agent that reads ~/.ssh is refused, one that writes .git/hooks is refused, a run whose boundary fails does not start, and each refusal shows in the activity log.
 - [ ] `npm run check` passes. Native checks stay open until seen in a dev copy on Ash's Mac.
+
+## Measured (WP-178, 10 Nov 2026)
+
+Measured with `node scripts/agent-sandbox-probe.mjs` on one Mac (macOS 26.6.2) under a temporary HOME and a scratch
+project. No dev copy was launched and no agent was started. The native check (a dev copy on Ash's Mac) is still open.
+
+### Platform matrix
+
+| Platform | Boundary | Measured | What it stops | What it cannot stop | Startup cost |
+| --- | --- | --- | --- | --- | --- |
+| macOS | `sandbox-exec`, denylist profile (allow default; deny reads and writes of `~/.ssh` and `~/.zshrc`, deny writes of `.git/hooks` and `.git/config`) | Yes. Refused: read `~/.ssh`, read `~/.zshrc`, write `.git/hooks/pre-commit`, write `.git/config`. Allowed: read a file outside the list, write `src/`, read the README. | The listed paths only | Anything not on the list (a file in `~/Documents` was read). Network, since the profile is allow default. Writes inside the project, by design. Keychain and environment variables: not measured. | `/usr/bin/true`: median 1.2 to 3.0 ms plain, 6.7 to 12.5 ms under the profile. `git status`: median 9.3 to 25.5 ms plain, 14.5 to 32.5 ms under it. Ranges are three runs of 5 to 20 on this Mac; load from other builds moves them. |
+| macOS | Deny-default allowlist | Not measured. Every profile tried refused the exec of `/usr/bin/true` (exit 71), and a broader one aborted (exit 134). | Unknown | Unknown | Unknown until a profile starts a binary |
+| Linux | Landlock (kernel 5.13 or later) | Not measured: no Linux machine in this session | n/a | n/a | n/a |
+| Windows | AppContainer, restricted token or job objects | Not measured: no Windows machine in this session | n/a | n/a | n/a |
+
+The pick per platform is Ash's (below). The macOS denylist is the only boundary measured to work here, and it leaks
+everything outside its list. The deny-default profile is what would close that gap, and it does not start yet.
+
+### What the measurement shows about the existing guards
+
+- The WP-10 checkout guard (`src-tauri/src/firstmate/checkout_guard.rs`) reads `git status`. Reproduced: writing
+  `.git/hooks/pre-commit` and appending to `.git/config` leave `git status` unchanged. So the guard cannot see either
+  file. The after-turn check for protected paths needs fingerprints of the protected files, taken by the caller.
+- `src/integrations/harness/core/credentialGuard.ts` already passes Claude Code deny rules for `~/.ssh/**` and other
+  credential files, but only for Claude, and only as a rule the CLI applies. A process boundary would cover every CLI
+  and every shell command, which is the gap this package is for.
+- `scripts/bench-sandbox.mjs` already runs the bench's agents under a seatbelt profile. That is a test harness, not
+  the app's runtime. It is a precedent for the mechanism, not a boundary for real runs.
+
+### What is built, and what is not
+
+- Built: the probe and its test (`scripts/agent-sandbox-probe.mjs`), the protected-paths list with 31 tests in
+  `protectedPaths.ts`, and `checkTurnForProtectedPaths`, the report-only after-turn check.
+- Not built, on purpose: the check is not wired into a turn (the fingerprint snapshot needs a Rust command in
+  `lib.rs`, a shared hotspot, and waits on the mechanism). No confinement of any runtime. The secret-paths list (item 3),
+  fail-closed startup (item 4) and refusal logging (item 5) are not built in this round.
+
+### Decisions for Ash
+
+1. macOS: keep the denylist as the first boundary (measured, cheap, leaks outside its list), or hold until the
+   deny-default profile starts a binary and its cost is measured?
+2. Linux and Windows: measure on a real machine before picking, or pick now and measure later?
+3. After-turn check: wire it into every turn (needs a Rust fingerprint command in `lib.rs`), or keep it on first-mate
+   turns only, as WP-10 does?
+4. Secret-paths list: build it in the next round, with the same report-only first step?
+
+### Done when, status
+
+- [ ] Design doc with the platform matrix, measured startup cost and what each boundary cannot stop. macOS measured;
+  Linux and Windows not measured. A Claude agent that did not write it reviews it: pending.
+- [ ] Ash picks the mechanism per platform before any build: pending (decisions above).
+- [ ] Once built, on a dev copy: pending. Nothing is built that confines a runtime.
+- [ ] `npm run check` passes. Not run; scoped checks run instead (tsc, the two test files, node test). Native checks
+  stay open until seen in a dev copy on Ash's Mac.
 
 ## Licence
 
