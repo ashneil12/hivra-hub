@@ -59,6 +59,12 @@ The archive is the same tree under one top folder. Nothing in it is a secret:
      (**history only**: open ones settle as cancelled, delivery disposed, nothing mirrored to Ash OS again). A chat or
      note already here and different is kept; ticked, the file's comes in as a copy with a new id.
    - A provider session id is kept only where it can resume: the daily app, a Claude chat, its transcript on this Mac.
+   - **No file path from the file is kept.** Paths in an export name files on the Mac that made it, or were written by
+     hand: never files of this one. In every imported chat (side threads and Mono transcripts included) a generated
+     image keeps its name, caption and size with an empty path, an attachment keeps its name and kind and loses its
+     path, and a room message's attachments are replaced by a line naming them. The chat shows them as "not on this
+     Mac". The import preview compares chats without paths, so a chat that came in from a file still reads as "already
+     here". The report says how many paths were left out.
 
 **Engine-agnostic.** Every Mono and every chat names its engine. A Mono with an engine starts new conversations on it
 (`monoWorkspace.ts`); an engine this build doesn't know falls back to the default.

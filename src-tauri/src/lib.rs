@@ -916,6 +916,8 @@ pub fn run() {
             fs::allow_video_stream,
             fs::write_attachment,
             fs::save_generated_image,
+            fs::copy_generated_image,
+            fs::read_generated_image,
             fs::delete_generated_images,
             fs::read_text_file,
             fs::mobile_list_dir,
