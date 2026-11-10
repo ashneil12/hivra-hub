@@ -74,6 +74,7 @@ import { isHarnessAvailable } from "../../../integrations/harness/core/availabil
 import {
   offeredRuntimeModes,
   permissionCliForHarness,
+  resolvePhoneRuntimeMode,
   runtimeModeCopy,
 } from "../../../integrations/harness/core/permissionMatrix";
 import { mobileTranscript } from "./mobileTranscript";
@@ -520,7 +521,8 @@ export function applyMobileChoice(
       model,
       choice.modelSettings ?? session.modelSettings,
     ),
-    runtimeMode: choice.runtimeMode ?? session.runtimeMode,
+    // WP-175: the stricter of the default the chat starts from and the phone's pick.
+    runtimeMode: resolvePhoneRuntimeMode({ saved: session.runtimeMode, payload: choice.runtimeMode }),
   };
 }
 

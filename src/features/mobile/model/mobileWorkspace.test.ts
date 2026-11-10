@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
-import { newSession } from "../../sessions/model/session";
-import { mobileQuestionReply } from "./mobileWorkspace";
+import { newDefaultSession, newSession } from "../../sessions/model/session";
+import { applyMobileChoice, mobileQuestionReply } from "./mobileWorkspace";
 
 const prompt = {
   requestId: 1,
@@ -90,5 +90,22 @@ describe("mobile catalog private chats", () => {
     vi.doUnmock("../../sessions/data/sessionStore");
     vi.doUnmock("../../monos/model/mono");
     vi.doUnmock("../../projects/model/recents");
+  });
+});
+
+describe("a new chat from the phone takes the stricter of the default and the pick (WP-175)", () => {
+  it("does not loosen the default when the phone asks for more access", () => {
+    const session = newDefaultSession("~", "supervised");
+    expect(applyMobileChoice(session, { runtimeMode: "full-access" }).runtimeMode).toBe("supervised");
+  });
+
+  it("tightens the default when the phone asks for less access", () => {
+    const session = newDefaultSession("~", "full-access");
+    expect(applyMobileChoice(session, { runtimeMode: "auto" }).runtimeMode).toBe("auto");
+  });
+
+  it("keeps the default when the phone sends no mode", () => {
+    const session = newDefaultSession("~", "auto-accept-edits");
+    expect(applyMobileChoice(session, {}).runtimeMode).toBe("auto-accept-edits");
   });
 });
