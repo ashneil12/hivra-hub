@@ -2,8 +2,10 @@ import { afterEach, expect, it } from "vitest";
 import {
   rememberWorktreeInclude,
   resetWorktreeIncludeNotes,
+  withCreatedInclude,
   worktreeIncludeLine,
   worktreeIncludeLines,
+  worktreeIncludeLinesOf,
 } from "./worktreeIncludeNote";
 
 const NOTE = "1 file named in .worktreeinclude is in this worktree.";
@@ -80,4 +82,28 @@ it("uses the session fields, and a Windows path still matches the kept note", ()
       includeWarning: "Could not read .worktreeinclude.",
     }),
   ).toEqual({ warning: "Could not read .worktreeinclude." });
+});
+
+it("reads the lines off a create result and drops a second line", () => {
+  expect(
+    worktreeIncludeLinesOf({
+      includeNote: NOTE,
+      includeWarning: `Could not copy .env into this worktree.\n${SECRET}`,
+    }),
+  ).toEqual({ note: NOTE, warning: "Could not copy .env into this worktree." });
+  expect(worktreeIncludeLinesOf({})).toEqual({});
+});
+
+it("puts a create result's lines on the listed worktree, and leaves a plain one alone", () => {
+  const listed = { path: "/w" };
+  const merged = withCreatedInclude(listed, {
+    includeNote: NOTE,
+    includeWarning: `Left .env as it was.\n${SECRET}`,
+  });
+  expect(merged).toEqual({
+    path: "/w",
+    includeNote: NOTE,
+    includeWarning: "Left .env as it was.",
+  });
+  expect(withCreatedInclude(listed, {})).toBe(listed);
 });

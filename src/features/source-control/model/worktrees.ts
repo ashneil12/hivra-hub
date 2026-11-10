@@ -14,7 +14,7 @@ import {
   type WorktreeSetup,
 } from "../../projects/model/projectActions";
 import { janitorRemovalHead } from "./worktreeJanitor";
-import { rememberWorktreeInclude } from "./worktreeIncludeNote";
+import { rememberWorktreeInclude, withCreatedInclude } from "./worktreeIncludeNote";
 
 export type Worktree = {
   path: string;
@@ -233,6 +233,21 @@ export function detachSessionWorktree<T extends { cwd: string; worktreeCwd?: str
     busy: false,
     queueStatus: "paused" as const,
   };
+}
+
+/**
+ * The worktree a picker asked for, from a fresh listing. A listing has no .worktreeinclude
+ * note, so the note and warning on the tree the picker was given (a create result) are
+ * carried over; a failed copy would otherwise never be seen.
+ */
+export function listedWorktreeFor(
+  listed: readonly Worktree[],
+  tree: Worktree,
+): Worktree | undefined {
+  const found = listed.find(
+    (entry) => pathKey(entry.path) === pathKey(tree.path) && !entry.missing,
+  );
+  return found ? withCreatedInclude(found, tree) : undefined;
 }
 
 /** Existing working copies stay bound; removed ones can be replaced in place. */

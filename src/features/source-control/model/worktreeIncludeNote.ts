@@ -76,6 +76,37 @@ export function worktreeIncludeLines(session: {
   };
 }
 
+/** The lines a create result carries, safe to show. */
+export function worktreeIncludeLinesOf(tree: {
+  includeNote?: string;
+  includeWarning?: string;
+}): WorktreeIncludeLines {
+  const note = worktreeIncludeLine(tree.includeNote);
+  const warning = worktreeIncludeLine(tree.includeWarning);
+  return {
+    ...(note ? { note } : {}),
+    ...(warning ? { warning } : {}),
+  };
+}
+
+/**
+ * A worktree from a fresh listing, with the note and warning of the create result that
+ * made it. A listing never has them, so a picker that re-reads the list after a create
+ * would otherwise lose a failed copy.
+ */
+export function withCreatedInclude<T extends { includeNote?: string; includeWarning?: string }>(
+  listed: T,
+  created: { includeNote?: string; includeWarning?: string },
+): T {
+  const lines = worktreeIncludeLinesOf(created);
+  if (!lines.note && !lines.warning) return listed;
+  return {
+    ...listed,
+    ...(lines.note ? { includeNote: lines.note } : {}),
+    ...(lines.warning ? { includeWarning: lines.warning } : {}),
+  };
+}
+
 /** Test hook. A window starts with nothing kept. */
 export function resetWorktreeIncludeNotes() {
   remembered.clear();

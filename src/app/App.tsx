@@ -365,6 +365,7 @@ import {
   createWorktree,
   detachSessionWorktree,
   checkWorktreeRemoval,
+  listedWorktreeFor,
   listWorktrees,
   namedWorktreeBranch,
   orchestrationWorktreeBranchName,
@@ -7087,10 +7088,9 @@ function Workspace({
       try {
         const listed = await listWorktrees(current.cwd);
         if (!isCurrent()) return;
-        const target = listed.worktrees.find(
-          (entry) =>
-            pathKey(entry.path) === pathKey(tree.path) && !entry.missing,
-        );
+        // WP-138: a listing has no .worktreeinclude note, so the one on the tree the picker
+        // just created is carried over and a failed copy is still seen in the chat header.
+        const target = listedWorktreeFor(listed.worktrees, tree);
         if (!target) {
           throw new Error(
             "This worktree is no longer available. Refresh the picker.",
