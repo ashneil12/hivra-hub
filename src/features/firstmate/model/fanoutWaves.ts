@@ -187,7 +187,7 @@ function readContract(value: unknown, known: (name: unknown) => string): Contrac
   const owned: Record<string, string> = {};
   for (const [path, owner] of Object.entries(owners)) {
     const clean = projectPath(path);
-    if (Object.hasOwn(owned, clean)) throw new Error("a path twice");
+    if (Object.prototype.hasOwnProperty.call(owned, clean)) throw new Error("a path twice");
     owned[clean] = known(owner);
   }
   return {
