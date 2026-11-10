@@ -16007,6 +16007,12 @@ function Workspace({
   };
   const paletteStopTargetRef = useRef<string | null>(null);
   paletteStopTargetRef.current = paletteStopTarget;
+  // WP-123: the chat Fork from here acts on: the one in view, and none while a file tab is.
+  const paletteForkTargetRef = useRef<string | null>(null);
+  paletteForkTargetRef.current =
+    activeSessionId && !(activeFile && isFilesystemTab(activeFile))
+      ? activeSessionId
+      : null;
   const runPaletteCommandFromFinder = useCallback(
     (row: Parameters<typeof runPaletteRow>[0]) =>
       runPaletteCommand(row, actions.current, {
@@ -16042,7 +16048,7 @@ function Workspace({
         },
         // WP-123: fork the chat in focus from its latest message.
         forkChat: () => {
-          const id = paletteTargetsRef.current.archive;
+          const id = paletteForkTargetRef.current;
           if (!id) return;
           forkFocusedChat(sessionsRef.current.find((session) => session.id === id));
         },
