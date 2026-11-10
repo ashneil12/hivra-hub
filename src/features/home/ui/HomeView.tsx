@@ -24,6 +24,17 @@ import { openFromHome, targetFor } from "../model/opener";
 import { HOME_DOC_KEY, changeHome, type HomeDoc } from "../model/store";
 import { HomeScreen } from "./HomeScreen";
 import { keepListening } from "./listenRetry";
+import { ProgrammePanel } from "../../programme/ui/ProgrammePanel";
+import {
+  applyProgrammeLoad,
+  collectProgramme,
+  PROGRAMME_CHANGED,
+  READ_NOTICE,
+  READ_NOTICE_AFTER,
+  programmeShows,
+  retryDelayMs,
+  type ProgrammePackage,
+} from "../../programme/model/programme";
 
 const TASKS_CHANGED = "tasks://changed";
 const RETRY_MS = 2000;
@@ -41,6 +52,15 @@ export function HomeView() {
   const [failed, setFailed] = useState(false);
   const [report, setReport] = useState<string | undefined>(undefined);
   const [reply, setReply] = useState<{ text?: string; notes?: { id: string; kind: string; text: string; projectId: string }[] } | undefined>(undefined);
+  // WP-159: the programme card. A failed read keeps the last rows and does not mark Home failed.
+  const [programme, setProgramme] = useState<ProgrammePackage[]>([]);
+  const [programmeNotice, setProgrammeNotice] = useState<string | undefined>(undefined);
+  const programmeToken = useRef(0);
+  // The rows on screen (kept when a board fails), the read a notice was set by, and the failed reads in a row.
+  const programmeRows = useRef<ProgrammePackage[]>([]);
+  const programmeNoticeAt = useRef(-1);
+  const programmeFails = useRef(0);
+  const reloadProgramme = useRef<() => void>(() => undefined);
   const [bringing, setBringing] = useState<{ busy: boolean; outcome?: string }>({ busy: false });
   const ashOs = useSyncExternalStore(subscribeAshOsImport, lastAshOsImport, lastAshOsImport);
   useHubDataVersion();
@@ -118,6 +138,61 @@ export function HomeView() {
 
   useEffect(() => {
     let stopped = false;
+    let timer = 0;
+    let laterTimer = 0;
+    let unlisten: (() => void) | undefined;
+    const load = () => {
+      window.clearTimeout(timer);
+      const mine = ++programmeToken.current;
+      const projects = hubData().listProjects().map((project) => project.id).filter((id) => id.trim() !== "");
+      void collectProgramme(projects, (project) =>
+        invoke("programme_list", { actor: { id: "person", project, kind: "person" } }),
+      ).then((loaded) => {
+        if (stopped) return;
+        const applied = applyProgrammeLoad(mine, programmeToken.current, loaded, programmeRows.current, programmeNoticeAt.current);
+        if ("drop" in applied) return;
+        programmeRows.current = applied.rows;
+        setProgramme(applied.rows);
+        if (applied.clearNotice) setProgrammeNotice(undefined);
+        if (!applied.retry) {
+          programmeFails.current = 0;
+          return;
+        }
+        // A board that did not answer keeps its rows. Retry with a longer wait each time, and say so after a few.
+        programmeFails.current += 1;
+        if (programmeFails.current >= READ_NOTICE_AFTER) {
+          programmeNoticeAt.current = mine;
+          setProgrammeNotice(READ_NOTICE);
+        }
+        timer = window.setTimeout(load, retryDelayMs(programmeFails.current));
+      });
+    };
+    reloadProgramme.current = load;
+    load();
+    keepListening(
+      () => listen(PROGRAMME_CHANGED, () => {
+        if (!stopped) load();
+      }).then((stop) => {
+        if (stopped) {
+          stop();
+          return () => undefined;
+        }
+        unlisten = stop;
+        return stop;
+      }),
+      { stopped: () => stopped, retryMs: RETRY_MS, later: (fn, ms) => (laterTimer = window.setTimeout(fn, ms)) },
+    );
+    return () => {
+      stopped = true;
+      programmeToken.current += 1;
+      window.clearTimeout(timer);
+      window.clearTimeout(laterTimer);
+      unlisten?.();
+    };
+  }, [projectKey]);
+
+  useEffect(() => {
+    let stopped = false;
     const mono = listMonos().find((item) => readsEveryProject(item));
     if (!mono) return undefined;
     void loadHabits(mono.id).then((habits) => {
@@ -163,6 +238,28 @@ export function HomeView() {
     chats: snap?.chats ?? [],
   });
   const summary = summaryLines(report, snap?.summaryOff === true, readings);
+  function programmeSaid(error: unknown): string {
+    if (typeof error === "string" && error.trim()) return error;
+    if (error instanceof Error && error.message.trim()) return error.message;
+    return "The programme is busy. Try again.";
+  }
+
+  async function clearPark(row: ProgrammePackage) {
+    try {
+      await invoke("programme_clear", {
+        actor: { id: "person", project: row.projectId, kind: "person" },
+        input: { id: row.id, version: row.version },
+      });
+      setProgrammeNotice(undefined);
+      reloadProgramme.current();
+    } catch (error) {
+      // The notice stays until a complete read that starts after it (the reload below is the one that shows the board as it is now).
+      reloadProgramme.current();
+      programmeNoticeAt.current = programmeToken.current;
+      setProgrammeNotice(programmeSaid(error));
+    }
+  }
+
   async function onAsk(text: string) {
     const current = snapRef.current;
     const next = await asks.current?.ask(text, {
@@ -220,6 +317,9 @@ export function HomeView() {
       onUnpin={(key) => void update((doc) => ({ ...doc, arrangement: unpin(doc.arrangement, key) }))}
       onAsk={(text) => void onAsk(text)}
       renderPanel={(panel) => <PanelFrame plugin={panel.plugin} panelId={panel.panelId} spec={panel.spec} />}
+      programme={programmeShows(programme, programmeNotice) ? (
+        <ProgrammePanel rows={programme} notice={programmeNotice} onClear={(row) => void clearPark(row)} />
+      ) : undefined}
     />
   );
 }
