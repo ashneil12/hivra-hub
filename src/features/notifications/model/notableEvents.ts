@@ -14,7 +14,9 @@ export const NOTABLE_PENDING_LIMIT = 200;
 const TEXT_MAX = 160;
 const ID_MAX = 200;
 
-const NOTABLE_KINDS = ["ci-red", "held"] as const;
+// WP-160: `lead-tick` is what a lead tick needs the person for (a merge waiting on their word, a package it could not
+// start, a parked pull request that went green). It batches like the rest.
+const NOTABLE_KINDS = ["ci-red", "held", "lead-tick"] as const;
 export type NotableKind = (typeof NOTABLE_KINDS)[number];
 
 export type NotableEvent = {
@@ -36,6 +38,7 @@ export type NotablePing = { title: string; body: string };
 const LABELS: Record<NotableKind, string> = {
   "ci-red": "CI failed",
   held: "While you were away",
+  "lead-tick": "Lead tick needs you",
 };
 
 export function emptyNotableBuffer(): NotableBuffer {

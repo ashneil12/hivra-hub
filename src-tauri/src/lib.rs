@@ -19,6 +19,7 @@ mod background_work;
 // WP-75: checked backups, one-item restore, and a full restore through the ship path.
 pub mod backups;
 mod chat_background;
+mod chat_folder;
 mod chat_media;
 mod checkpoint;
 mod codex_mono_store;
@@ -34,6 +35,8 @@ mod github_issues;
 // WP-91: the goal graph — a finish line proved first, write scopes, handoffs, repairs and the run verdict.
 pub mod goal_graph;
 mod tasks; // WP-70: tasks shared by the person and their agents. // WP-77: labelled GitHub issues become tasks.
+           // WP-159: the programme of packages a first mate keeps. Not the per-job worker queue.
+mod programme;
 
 // Hivra WP-12: delivery modes and the one merge path.
 mod delivery;
@@ -44,6 +47,8 @@ mod pinned_tool;
 mod crew;
 mod devin_config;
 mod devin_usage;
+// WP-131: desktop dictation into the composer draft. Off in this build (see dictation.rs); never sends.
+mod dictation;
 pub mod disclaim;
 mod explore_agent; // WP-143: read-only check for an Explore agent the person already defined.
 mod external_editor;
@@ -551,12 +556,17 @@ pub fn run() {
             menu::dispatch(app, event.id().as_ref());
         })
         .invoke_handler(tauri::generate_handler![
+            // WP-131: desktop dictation.
+            dictation::dictation_support,
+            dictation::dictation_start,
+            dictation::dictation_stop,
             mobile_access::mobile_status,
             mobile_access::mobile_configure,
             mobile_access::mobile_invite,
             mobile_access::mobile_cancel_invite,
             mobile_access::mobile_revoke,
             mobile_access::mobile_publish,
+            mobile_access::mobile_admits,
             mobile_access::mobile_reply,
             mobile_access::mobile_push,
             remote::remote_machines,
@@ -709,6 +719,12 @@ pub fn run() {
             tasks::commands::tasks_views_save,
             tasks::commands::tasks_views_delete,
             tasks::commands::tasks_statuses,
+            // WP-159: the programme of packages a first mate keeps. Not the per-job worker queue.
+            programme::commands::programme_list,
+            programme::commands::programme_enqueue,
+            programme::commands::programme_set_status,
+            programme::commands::programme_park,
+            programme::commands::programme_clear,
             // WP-74: full-text search over tasks and docs.
             finder::finder_search,
             // WP-77: labelled GitHub issues become tasks. Reads only.
@@ -1044,6 +1060,7 @@ pub fn run() {
             pty::pty_kill_all,
             session_store::session_upsert,
             session_store::session_list_by_project,
+            session_store::session_list_folderless,
             session_store::session_rebase_project,
             session_store::session_list_linked,
             // WP-108: counts and names only, for the usage history page.
@@ -1080,6 +1097,8 @@ pub fn run() {
             artifacts::artifacts_upsert,
             artifacts::artifacts_delete,
             page_frames::page_frame_put,
+            page_frames::visual_frame_put,
+            page_frames::visual_frame_drop,
             page_http::page_http_fetch,
             page_http::page_source_token_set,
             page_http::page_source_token_exists,
@@ -1124,6 +1143,10 @@ pub fn run() {
             portable::portable_mono_files,
             portable::portable_find_skills,
             portable::portable_paths_exist,
+            portable::portable_project_folder_checks,
+            portable::portable_relink_candidate,
+            portable::portable_relink_candidates,
+            portable::portable_relink_apply,
             portable::portable_session_engines,
             portable::portable_export,
             portable::portable_inspect,

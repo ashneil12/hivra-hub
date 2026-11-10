@@ -37,6 +37,9 @@ use tauri::{AppHandle, Manager, State};
 use crate::plain_file::{self, Refusal};
 use crate::session_store::{self, now_millis, SessionStore, SessionUpsert};
 
+mod folders;
+use folders::{refused_project_folder, FolderRules};
+
 pub const FORMAT: &str = "monocode-hub-export";
 /// The newest export format this build writes and reads. A newer one is refused, never half-read.
 pub const VERSION: u64 = 2;
@@ -437,6 +440,8 @@ fn plain_name(name: &str) -> bool {
     !name.is_empty()
         && name.len() <= 120
         && !name.starts_with('.')
+        // Windows reads `monos.` and `monos ` as `monos`: a name that ends so is another spelling of a folder.
+        && !name.ends_with(['.', ' '])
         && name
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | ' '))
@@ -706,7 +711,7 @@ impl Writer {
         }
     }
 
-    fn text(&mut self, relative: &str, text: &str) -> Result<(), String> {
+    fn text(&mut self, relative: &str, text: &str) -> Result<bool, String> {
         let path = safe_relative(relative)
             .ok_or_else(|| format!("Not a path inside an export: {relative}"))?;
         // A file without secrets goes byte for byte as it is (a Mono's habits.json stays as written).
@@ -735,7 +740,7 @@ impl Writer {
         self.raw(relative, &path, clean.as_bytes())
     }
 
-    fn json(&mut self, relative: &str, value: &Value) -> Result<(), String> {
+    fn json(&mut self, relative: &str, value: &Value) -> Result<bool, String> {
         let mut value = value.clone();
         self.secrets += scrubber().redact_value(&mut value);
         let text = serde_json::to_string_pretty(&value).map_err(|e| e.to_string())?;
@@ -746,14 +751,14 @@ impl Writer {
 
     /// A binary file (a git bundle) copied as it is: a plain file that is not a link. One past `cap` bytes is left out of
     /// the export, with a line, rather than failing it.
-    fn binary(&mut self, relative: &str, source: &Path, cap: u64) -> Result<(), String> {
+    fn binary(&mut self, relative: &str, source: &Path, cap: u64) -> Result<bool, String> {
         match plain_file::read(source, cap) {
             Ok(bytes) => self.bytes(relative, &bytes),
             Err(Refusal::TooBig) => {
                 self.left_out.push(format!(
                     "The history in {relative} is larger than an export may hold of one file, so it was left out of the export."
                 ));
-                Ok(())
+                Ok(false)
             }
             Err(why) => Err(format!(
                 "{} {}.",
@@ -768,13 +773,14 @@ impl Writer {
     }
 
     /// A binary file whose bytes are already in hand (an image), written as they are.
-    fn bytes(&mut self, relative: &str, bytes: &[u8]) -> Result<(), String> {
+    fn bytes(&mut self, relative: &str, bytes: &[u8]) -> Result<bool, String> {
         let path = safe_relative(relative)
             .ok_or_else(|| format!("Not a path inside an export: {relative}"))?;
         self.raw(relative, &path, bytes)
     }
 
-    fn raw(&mut self, relative: &str, path: &Path, bytes: &[u8]) -> Result<(), String> {
+    /// Writes the file, or leaves it out with a line: true when it was written.
+    fn raw(&mut self, relative: &str, path: &Path, bytes: &[u8]) -> Result<bool, String> {
         let canonical = canonical_relative(path);
         // The limits an import holds a file to (`left_out_reason`): a file past them is left out with a line, so the
         // export never holds a file the import would turn away.
@@ -796,19 +802,19 @@ impl Writer {
             self.left_out.push(format!(
                 "{relative} {why}, so it was left out of the export."
             ));
-            return Ok(());
+            return Ok(false);
         }
         // An import refuses an export that names one file twice (a name that differs only in capitals included).
         if !self.seen.insert(fold(&canonical)) {
             self.left_out.push(format!(
                 "{relative} has the same name as a file already in the export, apart from capitals, so it was left out of the export."
             ));
-            return Ok(());
+            return Ok(false);
         }
         write_private(&self.root.join(path), bytes)?;
         self.files
             .push((relative.to_string(), bytes.len() as u64, sha256_hex(bytes)));
-        Ok(())
+        Ok(true)
     }
 }
 
@@ -834,6 +840,49 @@ fn archive_stem(path: &Path) -> String {
 }
 
 pub fn export(env: &Env, request: &ExportRequest) -> Result<ExportReport, String> {
+    export_within(env, request, MAX_INSPECT_BYTES)
+}
+
+/// The file that holds the setup itself: the one webview file an export never goes without.
+const SETUP_FILE: &str = "setup/setup.json";
+
+/// The webview's files, setup/setup.json first: should the budget leave one out, it is never that one.
+fn write_webview_files(
+    writer: &mut Writer,
+    files: &BTreeMap<String, String>,
+) -> Result<(), String> {
+    if let Some(text) = files.get(SETUP_FILE) {
+        writer.text(SETUP_FILE, text)?;
+    }
+    for (path, text) in files.iter().filter(|(path, _)| path.as_str() != SETUP_FILE) {
+        writer.text(path, text)?;
+    }
+    Ok(())
+}
+
+/// Setup files that together are past what the preview holds stop the export with one line, before anything is
+/// written, rather than an export that leaves some of them out.
+fn check_webview_total(
+    files: &BTreeMap<String, String>,
+    webview_budget: u64,
+) -> Result<(), String> {
+    let total: u64 = files.values().map(|text| text.len() as u64).sum();
+    if total > webview_budget {
+        return Err(format!(
+            "The setup files come to {:.1} MB; an export holds at most {} MB of them. Leave something out and try again.",
+            total as f64 / 1024.0 / 1024.0,
+            (webview_budget / 1024 / 1024).max(1)
+        ));
+    }
+    Ok(())
+}
+
+/// `export`, holding the webview's files to `webview_budget` bytes.
+fn export_within(
+    env: &Env,
+    request: &ExportRequest,
+    webview_budget: u64,
+) -> Result<ExportReport, String> {
     let mut destination = crate::fs::expand_home(request.destination.trim());
     if request.destination.trim().is_empty() || !destination.is_absolute() {
         return Err("Pick where the export goes.".into());
@@ -863,14 +912,15 @@ pub fn export(env: &Env, request: &ExportRequest) -> Result<ExportReport, String
         }
     }
 
+    check_webview_total(&request.files, webview_budget)?;
+
     let staging = Scratch::beside(&destination, "export")?;
     let mut writer = Writer::new(staging.0.clone());
+    writer.webview_budget = webview_budget;
     let mut counts = request.counts.clone();
     let mut notes = Vec::new();
 
-    for (path, text) in &request.files {
-        writer.text(path, text)?;
-    }
+    write_webview_files(&mut writer, &request.files)?;
     if let Some(choice) = &request.memory {
         export_memory(env, choice, &mut writer, &mut counts, &mut notes)?;
     }
@@ -1075,8 +1125,9 @@ fn export_memory(
         for (relative, _) in memory_files(&dir) {
             let text =
                 fs::read_to_string(dir.join(&relative)).map_err(|e| format!("{relative}: {e}"))?;
-            writer.text(&format!("memory/{name}/{relative}"), &text)?;
-            files += 1;
+            if writer.text(&format!("memory/{name}/{relative}"), &text)? {
+                files += 1;
+            }
         }
         if choice.history && dir.join(".git").exists() {
             match history_bundle(&dir) {
@@ -1167,6 +1218,35 @@ fn claude_transcript(env: &Env, provider_session_id: &str) -> Option<PathBuf> {
         let candidate = dir.path().join(&name);
         candidate.is_file().then_some(candidate)
     })
+}
+
+/// The name Claude Code gives a folder's transcripts: every character that isn't a letter or digit becomes `-`.
+fn claude_project_dir_name(folder: &str) -> String {
+    folder
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect()
+}
+
+/// The transcript is in the Claude project folder of this working folder, not just somewhere on this Mac.
+fn claude_transcript_for(env: &Env, provider_session_id: &str, folder: &str) -> bool {
+    session_file_id(provider_session_id)
+        && env.claude_home.as_ref().is_some_and(|home| {
+            home.join("projects")
+                .join(claude_project_dir_name(folder))
+                .join(format!("{provider_session_id}.jsonl"))
+                .is_file()
+        })
+}
+
+/// Another chat here already resumes this provider conversation.
+fn provider_id_held(conn: &Connection, provider_session_id: &str, own_id: &str) -> bool {
+    conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sessions WHERE provider_session_id = ?1 AND id != ?2)",
+        params![provider_session_id, own_id],
+        |row| row.get(0),
+    )
+    .unwrap_or(true)
 }
 
 struct SessionRow {
@@ -1293,41 +1373,63 @@ fn export_workspace(
             "providerTranscript": pointer,
             "blocks": blocks,
         });
-        writer
+        // Only a chat the export holds is counted: one the writer left out is in its notes instead.
+        if writer
             .json(&format!("workspace/sessions/{id}.json"), &file)
-            .map_err(|e| rusqlite::Error::ToSqlConversionFailure(e.into()))?;
-        sessions += 1;
+            .map_err(|e| rusqlite::Error::ToSqlConversionFailure(e.into()))?
+        {
+            sessions += 1;
+        }
     }
     counts.insert("sessions".into(), json!(sessions));
 
-    let notes = table_rows(conn, "notes", "created_at, id")?;
-    counts.insert("notes".into(), json!(notes.len()));
-    let note_ids: Vec<Value> = notes.iter().filter_map(|n| n.get("id").cloned()).collect();
-    counts.insert("noteIds".into(), Value::Array(note_ids));
     let wrote = |writer: &mut Writer, path: &str, value: Value| {
         writer
             .json(path, &value)
             .map_err(|e| rusqlite::Error::ToSqlConversionFailure(e.into()))
     };
-    wrote(
+    // A table's count is what its file holds in the export: nothing, when the writer left the file out.
+    let counted = |writer: &mut Writer,
+                   counts: &mut Map<String, Value>,
+                   key: &str,
+                   path: &str,
+                   rows: Vec<Value>| {
+        let len = rows.len();
+        let written = wrote(writer, path, Value::Array(rows))?;
+        counts.insert(key.into(), json!(if written { len } else { 0 }));
+        Ok::<(), rusqlite::Error>(())
+    };
+    let notes = table_rows(conn, "notes", "created_at, id")?;
+    let note_ids: Vec<Value> = notes.iter().filter_map(|n| n.get("id").cloned()).collect();
+    let note_count = notes.len();
+    // Notes left out of the export take their pictures with them: none are exported for notes it doesn't hold.
+    if wrote(
         writer,
         "workspace/notes.json",
         Value::Array(notes.into_iter().map(Value::Object).collect()),
-    )?;
+    )? {
+        counts.insert("notes".into(), json!(note_count));
+        counts.insert("noteIds".into(), Value::Array(note_ids));
+    } else {
+        counts.insert("notes".into(), json!(0));
+        counts.insert("noteIds".into(), Value::Array(Vec::new()));
+    }
     // WP-72: a page's history and mentions travel with the note. An older export has neither file.
     let doc_versions = table_rows(conn, "note_versions", "note_id, version")?;
-    counts.insert("docVersions".into(), json!(doc_versions.len()));
-    wrote(
+    counted(
         writer,
+        counts,
+        "docVersions",
         "workspace/doc-versions.json",
-        Value::Array(doc_versions.into_iter().map(Value::Object).collect()),
+        doc_versions.into_iter().map(Value::Object).collect(),
     )?;
     let doc_mentions = table_rows(conn, "note_mentions", "note_id, kind, target_id")?;
-    counts.insert("docMentions".into(), json!(doc_mentions.len()));
-    wrote(
+    counted(
         writer,
+        counts,
+        "docMentions",
         "workspace/doc-mentions.json",
-        Value::Array(doc_mentions.into_iter().map(Value::Object).collect()),
+        doc_mentions.into_iter().map(Value::Object).collect(),
     )?;
 
     let automations: Vec<Value> = table_rows(conn, "automations", "updated_at, id")?
@@ -1338,19 +1440,25 @@ fn export_workspace(
                 .and_then(|raw| serde_json::from_str(raw).ok())
         })
         .collect();
-    counts.insert("automations".into(), json!(automations.len()));
-    wrote(
+    counted(
         writer,
+        counts,
+        "automations",
         "workspace/automations.json",
-        Value::Array(automations),
+        automations,
     )?;
 
     let reminders: Vec<Value> = table_rows(conn, "session_reminders", "due_at, session_id")?
         .into_iter()
         .map(|row| json!({"sessionId": row.get("session_id"), "dueAt": row.get("due_at"), "firedAt": row.get("fired_at")}))
         .collect();
-    counts.insert("reminders".into(), json!(reminders.len()));
-    wrote(writer, "workspace/reminders.json", Value::Array(reminders))?;
+    counted(
+        writer,
+        counts,
+        "reminders",
+        "workspace/reminders.json",
+        reminders,
+    )?;
 
     let delegations: Vec<Value> = table_rows(conn, "delegations", "created_at, id")?
         .into_iter()
@@ -1361,19 +1469,25 @@ fn export_workspace(
             Value::Object(row)
         })
         .collect();
-    counts.insert("delegations".into(), json!(delegations.len()));
-    wrote(
+    counted(
         writer,
+        counts,
+        "delegations",
         "workspace/delegations.json",
-        Value::Array(delegations),
+        delegations,
     )?;
 
     // WP-78: the activity log rides with the workspace. Rows past 90 days stay
     // out, and the writer scrubs the summaries again.
     let activity = crate::activity::export_rows(conn)
         .map_err(|e| rusqlite::Error::ToSqlConversionFailure(e.into()))?;
-    counts.insert("activity".into(), json!(activity.len()));
-    wrote(writer, "workspace/activity.json", Value::Array(activity))?;
+    counted(
+        writer,
+        counts,
+        "activity",
+        "workspace/activity.json",
+        activity,
+    )?;
     Ok(())
 }
 
@@ -1434,7 +1548,9 @@ fn export_note_assets(
         for name in names {
             let relative = format!("workspace/{NOTE_ASSET_DIR}/{id}/{name}");
             match plain_file::read(&dir.join(&name), crate::notes::IMAGE_MAX_BYTES) {
-                Ok(bytes) => writer.bytes(&relative, &bytes)?,
+                Ok(bytes) => {
+                    writer.bytes(&relative, &bytes)?;
+                }
                 Err(why) => notes.push(format!(
                     "{NOTE_ASSET_DIR}/{id}/{name} was not exported: {}.",
                     match why {
@@ -1605,6 +1721,16 @@ struct Listing {
     /// Lines for the report about files left out (see `left_out_reason`), and the paths they are.
     left_out: Vec<String>,
     left_out_paths: HashSet<String>,
+    /// Each file left out and why, for the preview.
+    too_big: Vec<LeftOutFile>,
+}
+
+/// A file an export lists that an import will leave out, and why (`left_out_reason`), for the preview.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LeftOutFile {
+    pub path: String,
+    pub reason: String,
 }
 
 /// Every file a manifest lists, checked against what an export may be before anything is read from the disk: no more
@@ -1626,6 +1752,7 @@ fn list_files(manifest: &Value, webview_budget: u64) -> Result<Listing, String> 
         index: HashMap::with_capacity(entries.len()),
         left_out: Vec::new(),
         left_out_paths: HashSet::new(),
+        too_big: Vec::new(),
     };
     let mut seen: HashSet<String> = HashSet::with_capacity(entries.len());
     let mut total = 0u64;
@@ -1656,6 +1783,10 @@ fn list_files(manifest: &Value, webview_budget: u64) -> Result<Listing, String> 
                     .left_out
                     .push(format!("{relative} {why}, so it was left out."));
             }
+            listing.too_big.push(LeftOutFile {
+                path: relative.to_string(),
+                reason: why,
+            });
             listing.left_out_paths.insert(canonical);
             continue;
         }
@@ -1687,6 +1818,8 @@ enum Opened {
         /// Lines about listed files that were left out (`left_out_reason`), and which paths they are.
         left_out: Vec<String>,
         left_out_paths: HashSet<String>,
+        /// Each file left out and why, for the preview.
+        too_big: Vec<LeftOutFile>,
         /// Listed files that were fine when the export was checked and weren't when they were read, for the report.
         problems: Mutex<Vec<String>>,
         _scratch: Option<Scratch>,
@@ -1956,6 +2089,7 @@ fn open_export_within(path: &str, webview_budget: u64) -> Result<Opened, String>
         index,
         left_out,
         left_out_paths,
+        too_big,
     } = list_files(&manifest, webview_budget)?;
     // Every listed file must be there, in a folder of the export itself, a plain file (not a link, a pipe or a
     // device), unchanged.
@@ -1998,6 +2132,7 @@ fn open_export_within(path: &str, webview_budget: u64) -> Result<Opened, String>
         index,
         left_out,
         left_out_paths,
+        too_big,
         problems: Mutex::new(Vec::new()),
         _scratch: scratch,
     })
@@ -2081,17 +2216,42 @@ pub struct Inspection {
     pub workspace: Option<WorkspacePreview>,
     /// Where imported memory goes on this copy.
     pub memory_target: String,
+    /// Files the export lists that an import will leave out (too big for their kind, or past what the preview holds).
+    pub left_out: Vec<LeftOutFile>,
 }
 
 /// Two chats are the same when their words and blocks match. File paths are left out of the comparison: an import
-/// never keeps them (`drop_imported_file_paths`), so a chat that came in from this file must still read as here.
+/// never keeps them (`drop_imported_file_paths`), and keeps a tool row's paths only inside the chat's kept folder
+/// (`FolderRules::confine_tool_paths`), so a chat that came in from this file must still read as here.
 fn blocks_digest(title: &str, blocks: &[Value]) -> String {
     let mut blocks = Value::Array(blocks.to_vec());
     drop_imported_file_paths(&mut blocks);
+    drop_tool_paths(&mut blocks);
     let mut text = String::from(title);
     text.push('\n');
     text.push_str(&serde_json::to_string(&blocks).unwrap_or_default());
     sha256_hex(text.as_bytes())
+}
+
+/// Empties the paths an import may drop from a chat's tool rows and approvals (`FolderRules::confine_tool_paths`), for
+/// the comparison only.
+fn drop_tool_paths(blocks: &mut Value) {
+    let Some(list) = blocks.as_array_mut() else {
+        return;
+    };
+    for block in list {
+        for pointer in ["/tool/paths", "/approval/call/paths"] {
+            if let Some(paths) = block.pointer_mut(pointer) {
+                *paths = json!([]);
+            }
+        }
+        if let Some(preview) = block
+            .pointer_mut("/tool/preview")
+            .and_then(Value::as_object_mut)
+        {
+            preview.remove("path");
+        }
+    }
 }
 
 fn local_session_digest(conn: &Connection, id: &str) -> rusqlite::Result<Option<String>> {
@@ -2179,9 +2339,14 @@ fn inspect_within(env: &Env, path: &str, webview_budget: u64) -> Result<Inspecti
                 memory: Vec::new(),
                 workspace: None,
                 memory_target: env.memory_root.to_string_lossy().into_owned(),
+                left_out: Vec::new(),
             })
         }
         Opened::V2 { manifest, .. } => manifest.clone(),
+    };
+    let left_out = match &opened {
+        Opened::V2 { too_big, .. } => too_big.clone(),
+        Opened::V1(_) => Vec::new(),
     };
     let listed = opened.listed();
     let files: BTreeMap<String, String> = listed
@@ -2241,6 +2406,7 @@ fn inspect_within(env: &Env, path: &str, webview_budget: u64) -> Result<Inspecti
         memory: memory.into_values().collect(),
         workspace,
         memory_target: env.memory_root.to_string_lossy().into_owned(),
+        left_out,
     })
 }
 
@@ -2421,6 +2587,29 @@ pub struct WorkspaceImport {
     pub reminders: bool,
     #[serde(default)]
     pub delegations: bool,
+    /// Folders the window lists as projects (the project rail's), on top of the app's own project record. A chat or
+    /// automation keeps its folder only inside one of these or a project in that record; none given means only the record.
+    #[serde(default)]
+    pub known_folders: Vec<String>,
+    /// The Monos seated here (their ids): a chat keeps a Mono's own folder only for one of these.
+    #[serde(default)]
+    pub known_monos: Vec<String>,
+    /// This Mac's folder for each project the file names, by project id: `{from: the file's folder, to: this Mac's}`.
+    /// A chat's folder from another Mac (another user name, another home) is mapped through it, then judged as usual.
+    #[serde(default)]
+    pub folder_map: Vec<FolderMapping>,
+}
+
+/// A project the file names, for mapping a chat's folder from another Mac: its id and folder in the file, and this Mac's
+/// folder for the same id (blank when the project has none here yet).
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FolderMapping {
+    #[serde(default)]
+    pub project_id: String,
+    pub from: String,
+    #[serde(default)]
+    pub to: String,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -2445,6 +2634,13 @@ pub struct ImportReport {
     pub delegations_added: usize,
     /// WP-78: activity rows added. A row already stored, or older than 90 days, is not counted.
     pub activity_added: usize,
+    /// Chats whose folder (or worktree) the file named and that isn't inside a project here: it was cleared, so the chat
+    /// asks which project to use before it runs anything.
+    pub folders_cleared: usize,
+    /// Automations that lost a folder or worktree the same way (they come back paused).
+    pub automation_folders_cleared: usize,
+    /// Paths in tool rows and approvals that lay outside the chat's kept folders, dropped.
+    pub tool_paths_dropped: usize,
     /// Pictures of imported notes that were left out: a link, a file the manifest doesn't list, one that changed
     /// after the export was checked. Each is also said in `notes`.
     pub note_assets_skipped: usize,
@@ -2483,18 +2679,267 @@ fn import_opened<G: std::ops::Deref<Target = Connection>>(
     if opened.root().is_none() {
         return Ok(report);
     }
+    // Memory first (never under the chat store's lock). What it wrote is remembered as files: a chat can't keep a folder
+    // where one that a CLI reads as instructions now sits.
+    let mut written = Vec::new();
     if let Some(memory) = &request.memory {
-        import_memory(env, opened, memory, &mut report)?;
+        import_memory(env, opened, memory, &mut report, &mut written)?;
     }
+    // The folder rules load after it: a Mono's folder is one of a Mono seated here (never whatever is on disk), so a
+    // memory folder in the file (`monos/evil`) is nobody's, and a fresh Mac's restored Monos are theirs once seated. The
+    // project record is read without holding the chat store's lock.
+    let mut rules = {
+        let none = WorkspaceImport::default();
+        let ws = request.workspace.as_ref().unwrap_or(&none);
+        let map: Vec<folders::ProjectMapping> = ws
+            .folder_map
+            .iter()
+            .map(|pair| folders::ProjectMapping {
+                id: pair.project_id.clone(),
+                from: pair.from.clone(),
+                to: pair.to.clone(),
+            })
+            .collect();
+        FolderRules::load(
+            env,
+            &project_record_folders(env),
+            &ws.known_folders,
+            &ws.known_monos,
+            &map,
+        )
+    };
+    rules.note_written(&written);
     if let Some(workspace) = &request.workspace {
         let conn = lock()?;
-        import_workspace(env, &conn, opened, workspace, &mut report).map_err(|e| e.to_string())?;
+        import_workspace(env, &conn, opened, workspace, &mut report, &rules)
+            .map_err(|e| e.to_string())?;
+        // Said in the report, so nobody finds out by surprise.
+        if report.sessions_added + report.sessions_copied + report.automations_added > 0 {
+            report.notes.push(
+                "Every restored chat and automation comes back supervised, whatever its file said; raise it for the ones you want freer."
+                    .to_string(),
+            );
+        }
+        if report.folders_cleared + report.automation_folders_cleared > 0 {
+            report.notes.push(
+                "A chat or automation whose folder is in ~/agent-memory, in a hidden folder or outside your home folder can't be relinked; choose a folder for it."
+                    .to_string(),
+            );
+        }
     }
     // Files left out for their size, and a listed file that was fine when the export was checked and wasn't when it
     // was read: not used, and said.
     report.notes.extend(opened.left_out_notes().iter().cloned());
     report.notes.extend(opened.take_problems());
     Ok(report)
+}
+
+/// One chat that came in with no folder and can have one back now.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Relink {
+    pub session_id: String,
+    /// The folder as this Mac resolves it.
+    pub folder: String,
+    /// The project (or Mono) folder it sits in: what "Relink all" groups by.
+    pub group: String,
+}
+
+/// The chats that came in with no folder and can have the folder their file named back: it exists here, passes the
+/// same allow-list, sits inside a project this copy has or in the folder of a Mono seated here, and is not one the
+/// import itself wrote instructions into. A chat that has a folder, one with no note, and one whose folder still
+/// doesn't qualify are left out. Nothing runs from the note itself.
+pub(crate) fn relink_candidates(
+    env: &Env,
+    only: Option<&str>,
+    known: &[String],
+    known_monos: &[String],
+) -> Vec<Relink> {
+    let Ok(Some(conn)) = env.read_db() else {
+        return Vec::new();
+    };
+    let Ok(mut statement) = conn.prepare(
+        "SELECT n.session_id, n.cwd, n.project_id, n.rest FROM imported_chat_folders n
+         JOIN sessions s ON s.id = n.session_id
+         WHERE s.cwd = '' AND n.blocked = 0 AND (?1 IS NULL OR n.session_id = ?1)
+         ORDER BY n.session_id",
+    ) else {
+        return Vec::new();
+    };
+    let rows: Vec<(String, String, Option<String>, Option<String>)> = statement
+        .query_map([only], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+        })
+        .map(|rows| rows.flatten().collect())
+        .unwrap_or_default();
+    drop(statement);
+    drop(conn);
+    if rows.is_empty() {
+        return Vec::new();
+    }
+    let record = project_record(env);
+    let record_folders: Vec<String> = record.iter().map(|(_, folder)| folder.clone()).collect();
+    let rules = FolderRules::load(env, &record_folders, known, known_monos, &[]);
+    rows.into_iter()
+        .filter_map(|(session_id, named, project_id, rest)| {
+            // A chat whose file named a project is mapped through the project record as it is now, by id, the way a
+            // Mono's folder is: the project may only have got its folder here since the import.
+            let current = project_id.as_deref().and_then(|id| {
+                record
+                    .iter()
+                    .find(|(known, _)| known == id)
+                    .map(|(_, folder)| {
+                        Path::new(folder)
+                            .join(rest.as_deref().unwrap_or_default())
+                            .to_string_lossy()
+                            .into_owned()
+                    })
+            });
+            let kept = rules.vet(Some(current.as_deref().unwrap_or(&named)), None);
+            if kept.cwd.is_empty() {
+                return None;
+            }
+            // A Mono's folder is checked on disk again: instruction files there now (the import's snapshot may be old)
+            // keep it from being offered.
+            let group = kept.group.clone().unwrap_or_else(|| kept.cwd.clone());
+            if rules.is_mono_folder(Path::new(&group))
+                && rules.instructions_on_disk(Path::new(&kept.cwd), Path::new(&group))
+            {
+                return None;
+            }
+            Some(Relink {
+                group,
+                folder: kept.cwd,
+                session_id,
+            })
+        })
+        .collect()
+}
+
+pub(crate) fn relink_candidate(
+    env: &Env,
+    session_id: &str,
+    known: &[String],
+    known_monos: &[String],
+) -> Option<String> {
+    relink_candidates(env, Some(session_id), known, known_monos)
+        .into_iter()
+        .next()
+        .map(|relink| relink.folder)
+}
+
+/// Gives these chats their folders back and forgets their notes. Only a chat that still has none is touched.
+pub(crate) fn apply_relinks(
+    conn: &Connection,
+    relinks: &[Relink],
+) -> rusqlite::Result<Vec<Relink>> {
+    let mut applied = Vec::new();
+    for relink in relinks {
+        let changed = conn.execute(
+            "UPDATE sessions SET cwd = ?1, worktree_cwd = NULL WHERE id = ?2 AND cwd = ''",
+            params![relink.folder, relink.session_id],
+        )?;
+        conn.execute(
+            "DELETE FROM imported_chat_folders WHERE session_id = ?1",
+            [&relink.session_id],
+        )?;
+        if changed > 0 {
+            applied.push(relink.clone());
+        }
+    }
+    Ok(applied)
+}
+
+#[tauri::command]
+pub async fn portable_relink_candidate(
+    app: AppHandle,
+    session_id: String,
+    known_folders: Vec<String>,
+    known_monos: Vec<String>,
+) -> Result<Option<String>, String> {
+    let env = Env::for_app(&app)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        relink_candidate(&env, &session_id, &known_folders, &known_monos)
+    })
+    .await
+    .map_err(|e| e.to_string())
+}
+
+/// Every chat with no folder that can have one back, for the sidebar's "Relink all" (one button per project or Mono).
+#[tauri::command]
+pub async fn portable_relink_candidates(
+    app: AppHandle,
+    known_folders: Vec<String>,
+    known_monos: Vec<String>,
+) -> Result<Vec<Relink>, String> {
+    let env = Env::for_app(&app)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        relink_candidates(&env, None, &known_folders, &known_monos)
+    })
+    .await
+    .map_err(|e| e.to_string())
+}
+
+/// Relinks these chats: each is checked again now, then given its folder in the store. The window updates the ones it
+/// has open to the same folder.
+#[tauri::command]
+pub async fn portable_relink_apply(
+    app: AppHandle,
+    store: State<'_, SessionStore>,
+    session_ids: Vec<String>,
+    known_folders: Vec<String>,
+    known_monos: Vec<String>,
+) -> Result<Vec<Relink>, String> {
+    let env = Env::for_app(&app)?;
+    let wanted: BTreeSet<String> = session_ids.into_iter().collect();
+    let candidates = tauri::async_runtime::spawn_blocking(move || {
+        relink_candidates(&env, None, &known_folders, &known_monos)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .into_iter()
+    .filter(|relink| wanted.contains(&relink.session_id))
+    .collect::<Vec<_>>();
+    let conn = store.lock_conn()?;
+    apply_relinks(&conn, &candidates).map_err(|e| e.to_string())
+}
+
+/// The folders of the projects in the app's own record (`hub_local_docs`, key `projects`), read through a read-only
+/// connection so the chat store's lock isn't taken before the chats go in. Nothing found reads as no projects.
+fn project_record_folders(env: &Env) -> Vec<String> {
+    project_record(env)
+        .into_iter()
+        .map(|(_, folder)| folder)
+        .collect()
+}
+
+/// The app's own project record as `(id, folder)`, for the projects that have a folder.
+fn project_record(env: &Env) -> Vec<(String, String)> {
+    let Ok(Some(conn)) = env.read_db() else {
+        return Vec::new();
+    };
+    let raw: Option<String> = conn
+        .query_row(
+            "SELECT json FROM hub_local_docs WHERE key = 'projects'",
+            [],
+            |row| row.get(0),
+        )
+        .ok();
+    let Some(doc) = raw.and_then(|raw| serde_json::from_str::<Value>(&raw).ok()) else {
+        return Vec::new();
+    };
+    doc.get("projects")
+        .and_then(Value::as_array)
+        .map(|list| {
+            list.iter()
+                .filter_map(|project| {
+                    let id = project.get("id").and_then(Value::as_str)?;
+                    let folder = project.get("folder").and_then(Value::as_str)?;
+                    (!folder.trim().is_empty()).then(|| (id.to_string(), folder.to_string()))
+                })
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 fn new_id() -> String {
@@ -2516,10 +2961,11 @@ fn import_workspace(
     opened: &Opened,
     wanted: &WorkspaceImport,
     report: &mut ImportReport,
+    rules: &FolderRules,
 ) -> rusqlite::Result<()> {
     let tx = conn.unchecked_transaction()?;
     let mut after = AfterRows::default();
-    workspace_rows(env, &tx, opened, wanted, report, &mut after)?;
+    workspace_rows(env, &tx, opened, wanted, report, &mut after, rules)?;
     tx.commit()?;
     for (from, to) in &after.note_assets {
         let left_out = copy_note_assets(env, opened, from, to);
@@ -2631,6 +3077,7 @@ fn workspace_rows(
     wanted: &WorkspaceImport,
     report: &mut ImportReport,
     after: &mut AfterRows,
+    rules: &FolderRules,
 ) -> rusqlite::Result<()> {
     // Notes first: chats' artifact cards point at them.
     let note_ids: BTreeSet<&String> = wanted.notes.iter().collect();
@@ -2724,6 +3171,8 @@ fn workspace_rows(
     let mut paths_left_out = 0;
     let session_ids: BTreeSet<&String> = wanted.sessions.iter().collect();
     let session_copies: BTreeSet<&String> = wanted.session_copies.iter().collect();
+    // Chats that came in with this import under their own id: the only ones a delegation row may name.
+    let mut came_in: BTreeSet<String> = BTreeSet::new();
     for id in session_ids {
         if !session_file_id(id) {
             continue;
@@ -2753,7 +3202,10 @@ fn workspace_rows(
                 file["title"].as_str().unwrap_or("Chat").to_string(),
             )
         };
-        paths_left_out += insert_session(env, conn, &target, &title, &file)?;
+        let kept = insert_session(env, conn, &target, &title, &file, rules)?;
+        report.folders_cleared += usize::from(kept.cleared);
+        report.tool_paths_dropped += kept.paths_dropped;
+        paths_left_out += kept.files_left_out;
         if file["monoTranscript"].as_bool() == Some(true) {
             after.transcripts.push(target.clone());
         }
@@ -2761,6 +3213,7 @@ fn workspace_rows(
             report.sessions_copied += 1;
         } else {
             report.sessions_added += 1;
+            came_in.insert(id.clone());
         }
     }
 
@@ -2783,8 +3236,12 @@ fn workspace_rows(
             if !wanted_ids.contains(&id) || !session_file_id(&id) {
                 continue;
             }
-            // Comes back paused: nothing starts running on this Mac until Ash turns it on.
+            // Comes back paused: nothing starts running on this Mac until Ash turns it on. A folder that isn't a
+            // project here is cleared, so turning it on asks for one.
             automation["enabled"] = json!(false);
+            // A file doesn't choose how freely it runs: supervised, as imported chats are.
+            automation["runtimeMode"] = json!(IMPORTED_RUNTIME_MODE);
+            let cleared = rules.vet_automation(&mut automation);
             let next = automation["nextRunAt"].as_i64().unwrap_or(0);
             let updated = automation["updatedAt"].as_i64().unwrap_or_else(now_millis);
             let changed = conn.execute(
@@ -2793,6 +3250,7 @@ fn workspace_rows(
             )?;
             if changed > 0 {
                 report.automations_added += 1;
+                report.automation_folders_cleared += usize::from(cleared);
             } else {
                 report.kept += 1;
             }
@@ -2838,10 +3296,25 @@ fn workspace_rows(
             let Some(mut row) = delegation.as_object().cloned() else {
                 continue;
             };
-            // History only: nothing here runs it, reports it or copies it to Ash OS again.
-            let open = matches!(
+            // Only a row whose chats both came in with this import: one naming a chat that was here already would
+            // attach history (and a report to deliver) to something the file doesn't own.
+            let both_came_in = ["owner_session", "child_session"].iter().all(|key| {
+                row.get(*key)
+                    .and_then(Value::as_str)
+                    .is_some_and(|id| came_in.contains(id))
+            });
+            if !both_came_in {
+                continue;
+            }
+            // History only: nothing here runs it, reports it or copies it to Ash OS again. Any state that isn't a
+            // finished one settles as cancelled.
+            let open = !matches!(
                 row.get("state").and_then(Value::as_str),
-                Some(crate::delegations::RUNNING | crate::delegations::QUESTION)
+                Some(
+                    crate::delegations::COMPLETED
+                        | crate::delegations::FAILED
+                        | crate::delegations::CANCELLED
+                )
             );
             if open {
                 row.insert("state".into(), json!(crate::delegations::CANCELLED));
@@ -3077,6 +3550,20 @@ fn left_out_note(from: &str, reasons: &[&str]) -> String {
     format!("{count} of {note} {verb} not copied ({}).", why.join("; "))
 }
 
+/// How an imported chat or automation runs: a file never chooses it. `full-access` maps to a provider's bypass-permissions
+/// mode, so every mode a file names comes in as supervised, and the person raises it for that chat.
+const IMPORTED_RUNTIME_MODE: &str = "supervised";
+
+/// What an imported chat lost on the way in.
+struct Kept {
+    /// Its file named a folder that isn't inside a project here.
+    cleared: bool,
+    /// Paths in its tool rows that lay outside its folders.
+    paths_dropped: usize,
+    /// Generated-image and attachment paths left out of its blocks (`drop_imported_file_paths`).
+    files_left_out: usize,
+}
+
 /// Paths in an import come from the Mac that made the export, or from a file written by hand: never from this Mac.
 /// A chat that kept them would read whatever they name the first time it shows the picture, copies the message or
 /// sends it again. So the path of every generated image and of every attachment in the chat's blocks, side threads
@@ -3112,32 +3599,48 @@ fn drop_imported_file_paths(value: &mut Value) -> usize {
     }
 }
 
-/// Adds the chat to the store. Returns how many file paths in its blocks were left out (`drop_imported_file_paths`).
+/// Adds the chat to the store. Returns what it lost on the way in (`Kept`).
 fn insert_session(
     env: &Env,
     conn: &Connection,
     id: &str,
     title: &str,
     file: &Value,
-) -> rusqlite::Result<usize> {
+    rules: &FolderRules,
+) -> rusqlite::Result<Kept> {
     let engine = &file["engine"];
     let harness = engine["harness"].as_str().unwrap_or("claude").to_string();
-    // A provider session id is kept only where it can resume: the daily app, a Claude chat, its transcript here.
+    let text = |key: &str| file[key].as_str().map(str::to_string);
+    // The file's folder is nobody's choice here: kept only inside a project this copy has (folders.rs). A chat with
+    // none asks for one before it runs; it is never given the home folder.
+    let folders = rules.vet(file["cwd"].as_str(), file["worktreeCwd"].as_str());
+    // A provider session id is kept only where it can resume and is this chat's own: the daily app, a Claude chat that
+    // isn't private, no other chat here holds it, and its transcript lives in the project folder of the chat's vetted
+    // folder (a chat with none keeps none).
+    let private = file["private"].as_bool().unwrap_or(false);
+    let work_folder = folders.worktree.as_deref().unwrap_or(&folders.cwd);
     let provider = file["providerTranscript"]["providerSessionId"]
         .as_str()
-        .filter(|psid| !env.dev && harness == "claude" && claude_transcript(env, psid).is_some())
+        .filter(|psid| {
+            !env.dev
+                && harness == "claude"
+                && !private
+                && !work_folder.is_empty()
+                && claude_transcript_for(env, psid, work_folder)
+                && !provider_id_held(conn, psid, id)
+        })
         .map(str::to_string);
-    let text = |key: &str| file[key].as_str().map(str::to_string);
     let mut blocks = file.get("blocks").cloned().unwrap_or(json!([]));
-    let paths_left_out = drop_imported_file_paths(&mut blocks);
+    let files_left_out = drop_imported_file_paths(&mut blocks);
+    let paths_dropped = rules.confine_tool_paths(&mut blocks, &folders.roots);
     let session = SessionUpsert {
         sidebar_hidden: file["sidebarHidden"].as_bool().unwrap_or(false),
         id: id.to_string(),
-        cwd: text("cwd").unwrap_or_else(|| "~".into()),
+        cwd: folders.cwd.clone(),
         harness,
         model: engine["model"].as_str().unwrap_or("").to_string(),
         model_settings: engine.get("modelSettings").cloned().unwrap_or(json!({})),
-        runtime_mode: engine["runtimeMode"].as_str().unwrap_or("auto").to_string(),
+        runtime_mode: IMPORTED_RUNTIME_MODE.to_string(),
         title: title.to_string(),
         provider_session_id: provider,
         provider_account_id: None,
@@ -3147,7 +3650,7 @@ fn insert_session(
         context_used: file["contextUsed"].as_i64(),
         context_window: file["contextWindow"].as_i64(),
         branch: text("branch"),
-        worktree_cwd: text("worktreeCwd"),
+        worktree_cwd: folders.worktree.clone(),
         worktree_removed: file["worktreeRemoved"].as_bool().unwrap_or(false),
         linked_work_item: file.get("linkedWorkItem").filter(|v| !v.is_null()).cloned(),
         automation_id: text("automationId"),
@@ -3162,6 +3665,7 @@ fn insert_session(
         },
     };
     session_store::upsert_session(conn, &session)?;
+    note_named_folder(conn, id, &folders)?;
     // Keep the chat's own dates, place and flags rather than "made just now".
     conn.execute(
         "UPDATE sessions SET created_at = ?2, updated_at = ?3, archived = ?4, pinned = ?5, branch = ?6 WHERE id = ?1",
@@ -3174,7 +3678,43 @@ fn insert_session(
             text("branch"),
         ],
     )?;
-    Ok(paths_left_out)
+    Ok(Kept {
+        cleared: folders.cleared,
+        paths_dropped,
+        files_left_out,
+    })
+}
+
+/// What the file named for a chat whose folder was cleared, kept as an inert note nothing runs from: the window offers
+/// it back (`portable_relink_candidate`) once it exists here and passes the same checks. A chat that kept its folder
+/// has no note.
+fn note_named_folder(
+    conn: &Connection,
+    id: &str,
+    folders: &folders::Folders,
+) -> rusqlite::Result<()> {
+    match (&folders.named_cwd, folders.cwd.is_empty()) {
+        (Some(named), true) => {
+            conn.execute(
+                "INSERT OR REPLACE INTO imported_chat_folders (session_id, cwd, worktree_cwd, blocked, project_id, rest) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![
+                    id,
+                    named,
+                    folders.named_worktree,
+                    i64::from(folders.named_blocked),
+                    folders.named_project.as_ref().map(|(id, _)| id),
+                    folders.named_project.as_ref().map(|(_, rest)| rest),
+                ],
+            )?;
+        }
+        _ => {
+            conn.execute(
+                "DELETE FROM imported_chat_folders WHERE session_id = ?1",
+                [id],
+            )?;
+        }
+    }
+    Ok(())
 }
 
 fn import_memory(
@@ -3182,6 +3722,7 @@ fn import_memory(
     opened: &Opened,
     wanted: &MemoryImport,
     report: &mut ImportReport,
+    written: &mut Vec<PathBuf>,
 ) -> Result<(), String> {
     let Some(root) = opened.root() else {
         return Ok(());
@@ -3195,6 +3736,12 @@ fn import_memory(
     env.check_writable(&env.memory_root)?;
     for name in wanted_names {
         let target = env.memory_root.join(name);
+        // The Monos home takes only what mono.rs names, and only under its own name: another spelling or a link that
+        // reaches it (a case alias on a case-insensitive disk, `monos.` on Windows) would carry files past that.
+        if let Some(why) = aliases_monos_home(env, name, &target) {
+            report.notes.push(format!("{name} wasn't restored: {why}."));
+            continue;
+        }
         env.check_writable(&target)?;
         let bundle = root.join("memory").join(format!("{name}.git.bundle"));
         let history = opened.listed_file(&format!("memory/{name}.git.bundle"));
@@ -3203,15 +3750,25 @@ fn import_memory(
         if let (true, Some(history), false) = (wanted.history, history, target.exists()) {
             fs::create_dir_all(&env.memory_root).map_err(|e| e.to_string())?;
             match restore_history(&bundle, history, &target) {
-                Ok(dropped) => {
+                Ok(restored) => {
                     report.memory_history.push(name.clone());
                     fresh = true;
-                    if !dropped.is_empty() {
+                    if !restored.control.is_empty() {
                         report.notes.push(format!(
                             "The history of {name} held {} (files that tell git what to run or fetch); they were not restored.",
-                            dropped.join(", ")
+                            restored.control.join(", ")
                         ));
                     }
+                    // Whatever the history's newest tree held that a CLI would read as instructions or settings, or that is
+                    // hidden, was removed in a commit of its own, in every folder (`restore_history`). The export's tip stays
+                    // under refs/hivra/imported-tip.
+                    if !restored.pruned.is_empty() {
+                        report.notes.push(format!(
+                            "The history of {name} held {} (instruction, settings or hidden files); they were removed in a commit of its own, and the export's tip is kept as refs/hivra/imported-tip.",
+                            restored.pruned.join(", ")
+                        ));
+                    }
+                    written.extend(files_under(&target));
                 }
                 Err(why) => {
                     let _ = fs::remove_dir_all(&target);
@@ -3247,6 +3804,37 @@ fn import_memory(
                 ));
                 continue;
             }
+            // A memory import writes notes only, in every folder: `.md` files, nothing hidden (round 6 restored this for
+            // folders outside the Monos home too). An instruction file (CLAUDE.md, AGENTS.md, settings, rules ...) never
+            // comes in under its own name, in any folder: it is held beside its original, for Ash to review. Inside the
+            // Monos home only the names a Mono's folder uses are written, and an instruction file is held for review only
+            // where a Mono keeps one (`folders::instruction_file_for_review`). Trust is never decided by a folder's name.
+            let monos_relative = inside_monos_home(env, &dest);
+            let instruction = match &monos_relative {
+                Some(relative) => folders::instruction_file_for_review(relative),
+                None => folders::instruction_file_at(&safe),
+            };
+            match &monos_relative {
+                Some(relative) => {
+                    if !folders::mono_folder_file(relative) && !instruction {
+                        report.notes.push(format!(
+                            "{path} wasn't written: a Mono's folder only takes SOUL.md, MEMORY.md, soul-template.md and its memory and skills notes."
+                        ));
+                        continue;
+                    }
+                }
+                None => {
+                    if !folders::memory_note_file(&safe) && !instruction {
+                        // A file a restored history brought in is already here: nothing is reported for it.
+                        if !(fresh && dest.exists()) {
+                            report.notes.push(format!(
+                                "{path} wasn't written: a memory import only writes notes (.md files), never instructions, rules or settings."
+                            ));
+                        }
+                        continue;
+                    }
+                }
+            }
             // Memory is text: a file that isn't UTF-8 is skipped, never written as nothing over what is here.
             let text = match opened.read_text(path) {
                 Ok(text) => text,
@@ -3264,16 +3852,29 @@ fn import_memory(
                     continue;
                 }
             };
+            if instruction {
+                // Never under its own name, here or in a restored history: beside its original, for Ash to review.
+                let review = beside_name(&dest);
+                write_within(&inside, &review, &text)?;
+                report.notes.push(format!(
+                    "{path} came in as {} for you to review: an instruction file is never written under its own name here, so nothing was written under that name.",
+                    review.file_name().and_then(|n| n.to_str()).unwrap_or_default()
+                ));
+                written.push(review);
+                continue;
+            }
             // Whether `dest` now holds the export's text because of this restore (a fresh folder's history counts).
             let wrote = match fs::read_to_string(&dest) {
                 Ok(local) if local == text => fresh,
                 Ok(_) if fresh => {
                     write_within(&inside, &dest, &text)?;
+                    written.push(dest.clone());
                     true
                 }
                 Ok(_) => {
                     if wanted.keep_both {
                         write_within(&inside, &beside_name(&dest), &text)?;
+                        written.push(beside_name(&dest));
                         report.memory_files_beside += 1;
                     } else {
                         report.kept += 1;
@@ -3282,6 +3883,7 @@ fn import_memory(
                 }
                 Err(_) => {
                     write_within(&inside, &dest, &text)?;
+                    written.push(dest.clone());
                     report.memory_files_added += 1;
                     true
                 }
@@ -3296,6 +3898,118 @@ fn import_memory(
         }
     }
     Ok(())
+}
+
+/// Every file under a folder (the repository's own `.git` left out): what a restored history put there.
+fn files_under(dir: &Path) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(next) = stack.pop() {
+        let Ok(entries) = fs::read_dir(&next) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if entry.file_name() == ".git" {
+                continue;
+            }
+            match entry.file_type() {
+                Ok(kind) if kind.is_dir() => stack.push(path),
+                Ok(kind) if kind.is_file() => out.push(path),
+                _ => {}
+            }
+        }
+    }
+    out
+}
+
+/// The message of the commit that takes instruction and hidden files out of a restored history (in every folder).
+const INSTRUCTIONS_REMOVED: &str = "Removed instruction and hidden files from an imported history";
+
+/// Whether a file of a restored history is one a CLI reads as instructions or settings, or anything hidden: those are
+/// removed in the restore's own commit, in every folder. `relative` is inside the folder.
+fn prunable_path(relative: &str) -> bool {
+    let parts: Vec<&str> = relative.split('/').collect();
+    let hidden = parts.iter().any(|part| part.starts_with('.'));
+    let instruction = parts
+        .last()
+        .is_some_and(|name| folders::instruction_file(name));
+    hidden || instruction
+}
+
+/// How a path component is compared when two spellings may be one folder: case-folded (a case-insensitive disk), with
+/// trailing dots and spaces dropped (Windows reads `monos.` and `monos ` as `monos`).
+fn fold_part(part: &std::ffi::OsStr) -> String {
+    part.to_string_lossy()
+        .trim_end_matches(['.', ' '])
+        .to_lowercase()
+}
+
+fn folded(path: &Path) -> Vec<String> {
+    path.components()
+        .filter_map(|part| match part {
+            Component::Normal(name) => Some(fold_part(name)),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Two paths are one place: the same device and inode where the disk says so, else the same resolved path read with
+/// case folded.
+fn same_place(a: &Path, b: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if let (Ok(x), Ok(y)) = (fs::metadata(a), fs::metadata(b)) {
+            return x.dev() == y.dev() && x.ino() == y.ino();
+        }
+    }
+    folded(&resolved(a)) == folded(&resolved(b))
+}
+
+/// The path inside the Monos home that `dest` is, however it is spelled or linked: the resolved paths, the same read
+/// with case folded and trailing dots and spaces dropped, and any folder above `dest` that is the Monos home by identity.
+fn inside_monos_home(env: &Env, dest: &Path) -> Option<PathBuf> {
+    let home = resolved(&env.monos_root);
+    let target = resolved(dest);
+    if let Ok(relative) = target.strip_prefix(&home) {
+        return Some(relative.to_path_buf());
+    }
+    let (home_parts, target_parts) = (folded(&home), folded(&target));
+    if target_parts.starts_with(&home_parts) {
+        let skip = home_parts.len();
+        let below: PathBuf = target
+            .components()
+            .filter(|part| matches!(part, Component::Normal(_)))
+            .skip(skip)
+            .map(|part| part.as_os_str().to_os_string())
+            .collect();
+        return Some(below);
+    }
+    let mut above = Some(target.as_path());
+    while let Some(folder) = above {
+        if folder.exists() && same_place(folder, &env.monos_root) {
+            return Some(target.strip_prefix(folder).ok()?.to_path_buf());
+        }
+        above = folder.parent();
+    }
+    None
+}
+
+/// Why a memory folder named `name` can't be restored because it reaches the Monos home under another name: it spells
+/// the Monos home's name another way (case, trailing dot or space), or it leads there (a link, a case alias).
+fn aliases_monos_home(env: &Env, name: &str, target: &Path) -> Option<&'static str> {
+    let home_name = env.monos_root.file_name()?;
+    if home_name.to_string_lossy() == name {
+        return None;
+    }
+    if fold_part(std::ffi::OsStr::new(name)) == fold_part(home_name) {
+        return Some("it is the Monos home under another spelling");
+    }
+    if target.exists() && same_place(target, &env.monos_root) {
+        return Some("it leads to the Monos home under another name");
+    }
+    None
 }
 
 #[derive(Debug)]
@@ -3356,11 +4070,16 @@ fn copy_listed_bundle(source: &Path, listed: &Listed, copy: &Path) -> Result<(),
 /// there clones the repository it names, and `<path>.git` beside it is cloned in its place), so the hash of the file
 /// would limit nothing. The listed bytes are copied, hashed as they go, into a private folder as its only file, and
 /// git clones that; the folder goes when this returns, however it returns.
+///
+/// Whatever the newest tree holds that a CLI would read as instructions or settings, or that is hidden, is removed in a
+/// commit of its own on top of the export's tip, in every folder (`prunable_path`). The tip itself is kept under
+/// `refs/hivra/imported-tip` first, so nothing of the export is lost. Every commit here runs under the isolated git of
+/// this function, so a failed commit refuses the restore (the caller removes the folder).
 fn restore_history(
     bundle: &Path,
     listed: &Listed,
     target: &Path,
-) -> Result<Vec<String>, HistoryRefusal> {
+) -> Result<Restored, HistoryRefusal> {
     let scratch = Scratch::private("history").map_err(|_| HistoryRefusal::Failed)?;
     let copy = scratch.0.join("history.bundle");
     copy_listed_bundle(bundle, listed, &copy)?;
@@ -3378,6 +4097,12 @@ fn restore_history(
     fs::create_dir(&hooks).map_err(|_| HistoryRefusal::Failed)?;
     let git = || {
         let mut command = Command::new("git");
+        #[cfg(test)]
+        INHERITED_GIT_ENV.with(|vars| {
+            for (name, value) in vars.borrow().iter() {
+                command.env(name, value);
+            }
+        });
         command
             .env("GIT_CONFIG_GLOBAL", &config)
             .env("GIT_CONFIG_SYSTEM", &config)
@@ -3405,6 +4130,14 @@ fn restore_history(
     {
         return Err(HistoryRefusal::Failed);
     }
+    // The export's tip, as it came, under a ref of its own: the removal below is a commit on top of it, never an amend.
+    if !ok(git()
+        .arg("-C")
+        .arg(target)
+        .args(["update-ref", IMPORTED_TIP, "HEAD"]))
+    {
+        return Err(HistoryRefusal::Failed);
+    }
     let listing = git()
         .arg("-C")
         .arg(target)
@@ -3415,9 +4148,11 @@ fn restore_history(
         return Err(HistoryRefusal::Failed);
     }
     // Plain files only (a hidden one like .gitignore is still a plain file; git itself refuses `..` and `.git`), and
-    // not the files that tell git what to run or fetch: a bundle doesn't get to bring those in.
+    // not the files that tell git what to run or fetch, nor the instruction and hidden files a CLI would read: a bundle
+    // doesn't get to bring those in, in any folder.
     let mut dropped: Vec<String> = Vec::new();
     let mut dropped_paths: Vec<String> = Vec::new();
+    let mut pruned_paths: Vec<String> = Vec::new();
     for entry in listing.stdout.split(|b| *b == 0).filter(|e| !e.is_empty()) {
         let entry = String::from_utf8_lossy(entry);
         let (meta, path) = entry.split_once('\t').unwrap_or((&entry, ""));
@@ -3434,6 +4169,8 @@ fn restore_history(
             if !dropped.iter().any(|d| d == known) {
                 dropped.push((*known).to_string());
             }
+        } else if prunable_path(path) {
+            pruned_paths.push(path.to_string());
         }
     }
     // The index without them, then the files out of the index: they are never in the folder when git checks the rest
@@ -3457,14 +4194,85 @@ fn restore_history(
     {
         return Err(HistoryRefusal::Failed);
     }
+    // Their removal is a commit of its own, made while nothing is configured (this same isolated git). A commit that
+    // fails refuses the restore, so no deletion is left uncommitted for a later checkout to undo.
+    let commit = |message: &str| {
+        ok(git()
+            .arg("-C")
+            .arg(target)
+            .args(["-c", "user.name=Hivra import"])
+            .args(["-c", "user.email=import@hivra.invalid"])
+            .args(["-c", "commit.gpgsign=false"])
+            .args(["commit", "--quiet", "--no-verify", "--no-gpg-sign", "-m"])
+            .arg(message))
+    };
+    // Left in HEAD, the control files would be one `git reset --hard` (under the machine's own config, filters and all)
+    // from coming back and acting on the folder.
+    if !dropped_paths.is_empty() && !commit(CONTROL_FILES_REMOVED) {
+        return Err(HistoryRefusal::Failed);
+    }
+    // The instruction and hidden files are taken out of the folder and of HEAD in a commit of their own, in every folder.
+    let pruned_and_committed = || {
+        ok(git()
+            .arg("-C")
+            .arg(target)
+            .args(["rm", "--quiet", "--"])
+            .args(pruned_paths.iter().map(|path| format!(":(literal){path}"))))
+            && commit(INSTRUCTIONS_REMOVED)
+    };
+    if !pruned_paths.is_empty() && !pruned_and_committed() {
+        return Err(HistoryRefusal::Failed);
+    }
+    // And should one come back by another way, git-lfs in this folder fetches nothing and runs no filter.
+    for (key, value) in [
+        ("lfs.fetchexclude", "*"),
+        ("filter.lfs.process", ""),
+        ("filter.lfs.smudge", ""),
+        ("filter.lfs.clean", ""),
+        ("filter.lfs.required", "false"),
+    ] {
+        if !ok(git()
+            .arg("-C")
+            .arg(target)
+            .args(["config", "--local", key, value]))
+        {
+            return Err(HistoryRefusal::Failed);
+        }
+    }
     // The bundle was a scratch file: don't leave a remote pointing at it.
     let _ = git()
         .arg("-C")
         .arg(target)
         .args(["remote", "remove", "origin"])
         .output();
-    Ok(dropped)
+    Ok(Restored {
+        control: dropped,
+        pruned: pruned_paths,
+    })
 }
+
+/// What a restored history left out: the files that tell git what to run or fetch (`control`), and the instruction,
+/// settings and hidden files a CLI would read (`pruned`), both removed in the restore's own commits.
+#[derive(Debug)]
+struct Restored {
+    control: Vec<String>,
+    pruned: Vec<String>,
+}
+
+/// Where an export's history tip is kept, once restored: a ref of its own, so nothing of the export is lost when the
+/// removal commit goes on top of it.
+const IMPORTED_TIP: &str = "refs/hivra/imported-tip";
+
+#[cfg(test)]
+thread_local! {
+    /// What a test hands the git commands of a history restore on its thread, standing in for the environment the app
+    /// was started with (the machine's own git config, say) without setting anything for the whole test process.
+    static INHERITED_GIT_ENV: std::cell::RefCell<Vec<(std::ffi::OsString, std::ffi::OsString)>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// The message of the commit that takes a history's git control files out of its HEAD.
+const CONTROL_FILES_REMOVED: &str = "Removed git control files from an imported history";
 
 /// Files in a history that tell git what to run or fetch (filters, an LFS server, submodules): never restored.
 const GIT_CONTROL_FILES: [&str; 3] = [".gitattributes", ".lfsconfig", ".gitmodules"];
@@ -3734,6 +4542,25 @@ pub async fn portable_session_engines(
     tauri::async_runtime::spawn_blocking(move || session_engines(&env, &ids))
         .await
         .map_err(|e| e.to_string())?
+}
+
+/// The project folders an export names that can never be adopted (the folder isn't on this Mac, or it is the home
+/// folder, a folder that holds it, `/`, `/Volumes` or the app's data folder), each with why. A folder that can be
+/// adopted is left out. The import asks again as it registers, so ticking a folder never overrides this.
+#[tauri::command]
+pub async fn portable_project_folder_checks(
+    app: AppHandle,
+    paths: Vec<String>,
+) -> Result<BTreeMap<String, String>, String> {
+    let env = Env::for_app(&app)?;
+    Ok(project_folder_checks(&env, &paths))
+}
+
+fn project_folder_checks(env: &Env, paths: &[String]) -> BTreeMap<String, String> {
+    paths
+        .iter()
+        .filter_map(|path| refused_project_folder(env, path).map(|why| (path.clone(), why)))
+        .collect()
 }
 
 #[tauri::command]

@@ -109,6 +109,31 @@ export function answerOf(picked: string): ImportAnswer {
 
 let started = false;
 
+// The last run's decision, for Home: while the projects are still in Ash OS ("later"), Home says so and offers to try
+// again, instead of showing an empty hub with no reason.
+let last: ImportDecision | undefined;
+const listeners = new Set<() => void>();
+
+function noteDecision(decision: ImportDecision | undefined): ImportDecision | undefined {
+  if (decision) {
+    last = decision;
+    for (const listener of listeners) listener();
+  }
+  return decision;
+}
+
+/** The decision from this launch's last run, if one ran. */
+export function lastAshOsImport(): ImportDecision | undefined {
+  return last;
+}
+
+export function subscribeAshOsImport(listener: () => void): () => void {
+  listeners.add(listener);
+  return () => {
+    listeners.delete(listener);
+  };
+}
+
 /** The window that asks: only the main one, never a hidden quick-session or floating window (WP-04 review). */
 export const IMPORT_WINDOW = "main";
 
@@ -134,12 +159,13 @@ export async function startAshOsImport(
   if ((await (deps.label ?? currentWindowLabel)()) !== IMPORT_WINDOW) return undefined;
   if (started) return undefined;
   started = true;
-  return runAshOsImport(hub, deps.importDeps ?? appImportDeps()).catch(() => undefined);
+  return runAshOsImport(hub, deps.importDeps ?? appImportDeps()).then(noteDecision, () => undefined);
 }
 
 /** Tests only. */
 export function resetAshOsImportStartForTest(): void {
   started = false;
+  last = undefined;
 }
 
 /** Whether Settings offers the row: not once the app knows there is nothing to bring over ("none": no Ash OS here). */
@@ -149,8 +175,10 @@ export async function offersAshOsImport(hub: LocalHub): Promise<boolean> {
 }
 
 /** Settings → "Bring over from Ash OS": run it again, whatever was decided before. */
-export function importFromAshOsAgain(hub: LocalHub, deps: ImportDeps = appImportDeps()): Promise<ImportDecision> {
-  return runAshOsImport(hub, deps, { again: true });
+export async function importFromAshOsAgain(hub: LocalHub, deps: ImportDeps = appImportDeps()): Promise<ImportDecision> {
+  const decision = await runAshOsImport(hub, deps, { again: true });
+  noteDecision(decision);
+  return decision;
 }
 
 /** One line for Settings on how it went. */

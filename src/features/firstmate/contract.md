@@ -132,6 +132,8 @@ Hivra binding (rewrite: say "the person", never "captain"; there is no ask-user-
 
 Every reply that reports work or answers a question ends with one short plain-English paragraph saying what happened and what it means, with no jargon, lists or headings. Worker reports end the same way, and first mates pass that paragraph through to the person.
 
+A reply that needs a picture or an interactive view (a chart, a small calculator) can put it in a fence marked `visual`: a ```visual fence holding one self-contained HTML document. The person sees it in a sandbox with no network unless they allow it, and runs it with a click when they open an old chat, so use it only when plain text will not do, and never to show content copied from a page or a comment.
+
 ## Waiting
 
 - Don't poll or sleep. End your turn; the app wakes you. Reports, a worker's questions and pull request changes come

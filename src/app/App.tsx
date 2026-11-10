@@ -26,6 +26,7 @@ import { hubDefaultsOn } from "../features/hub/model/hubDefaults";
 import { hubMonoRank } from "../features/hub/model/hubData";
 import { liveMonosNote } from "../features/hub/model/liveMonos";
 import { recoverMobileUsage } from "../features/mobile/model/mobileUsageLimit";
+import { runMobilePairing } from "../features/mobile/model/mobilePairing";
 import { sessionConversationPage } from "../features/agent-app/model/sessionConversation";
 import { useMobileWorkspace } from "../features/mobile/hooks/useMobileWorkspace";
 import { hasMobileAttachments, mobileAttachments } from "../features/mobile/model/mobileAttachments";
@@ -33,6 +34,9 @@ import {
   applyMobileChoice,
   mobileWorkspaceChoice,
   mobileChoice,
+  mobileCatalog,
+  mobilePrivateSessionIds,
+  publishedApprovalRows,
   mobileNewSession,
   mobileProjectId,
   mobileQuestionReply,
@@ -139,6 +143,7 @@ import { useDelegationTree } from "../features/monos/hooks/useDelegationTree";
 import { usePrWatches } from "../features/pr-watch/hooks/usePrWatches";
 // Hivra WP-11: the first mate's wake queue.
 import { useFirstMateWakes } from "../features/firstmate/hooks/useFirstMateWakes";
+import { useLeadTick } from "../features/leadTick/hooks/useLeadTick";
 // WP-43: Stop stays on screen while a browser is showing.
 import { DrivingBar } from "../features/browser/ui/DrivingBar";
 // Hivra WP-60: a remote project's report, shown in the chat that started it.
@@ -629,6 +634,7 @@ import {
 } from "../features/sessions/model/btw";
 
 import { isEditTool } from "../integrations/harness/core/preview";
+import { CHAT_NEEDS_FOLDER, hasChatFolder, withRelinkedFolder } from "../integrations/harness/core/chatFolder";
 import { sessionEditPaths } from "../features/sessions/model/checkpointEdits";
 import { useSessionChangeTotals } from "../features/sessions/ui/SessionReview";
 import {
@@ -6934,6 +6940,14 @@ function Workspace({
     [],
   );
 
+  // Relink all gave chats their folders in the store: the open copies take the folder and nothing else (no move to
+  // another project, nothing added to the recents, no change of the chat's own work).
+  const onSessionFolderRelinked = useCallback(
+    (sessionId: string, cwd: string) =>
+      setSessions((prev) => withRelinkedFolder(prev, sessionId, cwd)),
+    [setSessions],
+  );
+
   const onCwdChange = useCallback(
     (sessionId: string, cwd: string) => {
       const normalized = normalizeProjectPath(cwd);
@@ -8370,6 +8384,16 @@ function Workspace({
       if (isPreparingHandoff(current)) return false;
       saveRecentModelChoice(current.harness, current.model);
       const initialWorkCwd = sessionWorkCwd(current);
+      // A chat that came in from an export with no folder here asks for one before anything runs (the harness seam
+      // refuses it too, so nothing starts however the turn was reached).
+      if (!hasChatFolder(initialWorkCwd)) {
+        enqueueHarnessEvent(sessionId, {
+          type: "session.error",
+          message: CHAT_NEEDS_FOLDER,
+        });
+        flushHarnessEvents();
+        return false;
+      }
       const createDraftWorktree =
         !current.worktreeCwd && current.workspaceMode === "worktree";
       const accountProvider = supportsProviderAccounts(current.harness)
@@ -10704,6 +10728,12 @@ function Workspace({
     queueWake: (ownerId, message) =>
       queueMonoSessionCompletionRef.current(ownerId, message),
   });
+  // WP-160: the First Mate's lead tick, while the app is open.
+  useLeadTick({
+    sessions: () => sessionsRef.current,
+    open: async (id) => (await ensureOpenSession(id)) ?? undefined,
+    openRows: () => openDelegationRows(),
+  });
   const prWatchVersion = useSyncExternalStore(
     prWatches.subscribe,
     prWatches.snapshot,
@@ -10830,6 +10860,10 @@ function Workspace({
   saveDraftRef.current = onSaveDraft;
   const ensureOpenSessionRef = useRef(ensureOpenSession);
   ensureOpenSessionRef.current = ensureOpenSession;
+  // WP-150: inbox, crew status, and one tool call. Refused in Rust when phone access is off.
+  const mobileApprovalRef = useRef<
+    (sessionId: string, requestId: number, decision: ApprovalDecision) => boolean
+  >(() => false);
   // Hivra WP-14: a first mate's messages to its running workers, stored first and delivered from the store.
   const steering = useSteering(sessions, {
     chat: async (id) => (await ensureOpenSessionRef.current(id)) ?? undefined,
@@ -10842,6 +10876,31 @@ function Workspace({
     sessions,
     defaultRuntimeMode: sessionDefaults?.runtimeMode,
     command: async (method, params, commandId) => {
+      // WP-150: inbox, crew status, and one tool call. Refused in Rust when phone access is off.
+      if (
+        method === "inbox.list" ||
+        method === "crew.status" ||
+        method === "session.approve" ||
+        method === "session.deny"
+      ) {
+        // WP-150: the inbox and an approve or deny match only the calls the catalog
+        // publishes, so a room session or unlisted chat is never offered or answered.
+        const published = await mobileCatalog(sessionsRef.current, sessionDefaults?.runtimeMode);
+        // Read after the await: the calls and chats are the window's current ones, not the ones
+        // the catalog was built from. A call decided meanwhile is no longer offered or answered.
+        const listed = new Set(published.sessions.map((session) => session.id));
+        const roster = listMonos();
+        return runMobilePairing(method, params, {
+          sessions: sessionsRef.current,
+          now: Date.now(),
+          approve: (sessionId, requestId, decision) =>
+            mobileApprovalRef.current(sessionId, requestId, decision),
+          remoteBlocked: (session) =>
+            !!remoteProjectFor(session.cwd) && !remoteSessionActions(session.id),
+          privateIds: await mobilePrivateSessionIds(sessionsRef.current),
+          approvals: (live) => publishedApprovalRows(live, listed, roster),
+        });
+      }
       const text = typeof params.text === "string" ? params.text.trim() : "";
       if (
         (method === "session.start" || method === "conversation.send") &&
@@ -12914,10 +12973,12 @@ function Workspace({
     return () => window.removeEventListener("keydown", onEscape);
   }, [onStopFromUser]);
 
+  // Returns false when the decision was not sent (the call is gone), so the phone is
+  // told the truth and the call stays answerable.
   const onApproval = useCallback(
-    (sessionId: string, requestId: number, decision: ApprovalDecision) => {
+    (sessionId: string, requestId: number, decision: ApprovalDecision): boolean => {
       const session = sessionsRef.current.find((s) => s.id === sessionId);
-      if (!session || session.worktreeRemoved) return;
+      if (!session || session.worktreeRemoved) return false;
       // An approval a habit's hidden run asked for, put to the user in the
       // Mono's chat: answer the run, and settle the question in the chat.
       if (isMonoSession(sessionId)) {
@@ -12945,17 +13006,20 @@ function Workspace({
                 : "allow"
               : "cancelled",
           );
-          return;
+          // No relay waiting: the block was settled as cancelled, the tool did not run.
+          return !!(relay && run);
         }
       }
       if (remoteProjectFor(session.cwd)) {
-        remoteSessionActions(sessionId)?.approve(requestId, decision);
-        return;
+        const actions = remoteSessionActions(sessionId);
+        if (!actions) return false;
+        return actions.approve(requestId, decision);
       }
-      respondHarnessApproval(session.harness, sessionId, requestId, decision);
+      return respondHarnessApproval(session.harness, sessionId, requestId, decision);
     },
     [],
   );
+  mobileApprovalRef.current = onApproval;
 
   const onQuestionReply = useCallback(
     (sessionId: string, requestId: number, reply: UserQuestionReply) => {
@@ -14714,6 +14778,8 @@ function Workspace({
             },
             // WP-70: the shared task list. The handler sets who is asking.
             taskStore: (command, args) => invoke(command, args),
+            // WP-159: the programme board. The handler sets who is asking.
+            programmeStore: (command, args) => invoke(command, args),
             // WP-88: projects on this copy, the activity log, and reviewed memory.
             knownProjects: () => hubData().listProjects().map((project) => ({
               id: project.id,
@@ -17771,6 +17837,7 @@ function Workspace({
       status={historyFailed ? "error" : "idle"}
       pending={historyPending}
       onSelectSession={onSelectSessionFromList}
+      onSetSessionFolder={onSessionFolderRelinked}
       onSelectRemoteSession={onSelectRemoteSession}
       onRemoteSessionDeleted={onRemoteSessionDeleted}
       onPrefetchSession={onPrefetchHistorySession}

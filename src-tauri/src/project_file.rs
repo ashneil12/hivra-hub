@@ -504,6 +504,9 @@ pub fn hash(bytes: &[u8]) -> String {
 
 /// The main checkout of the repository that `cwd` belongs to (a worktree resolves to its main checkout).
 pub fn main_checkout(cwd: &Path) -> Result<PathBuf, String> {
+    if crate::chat_folder::is_blank(cwd) {
+        return Err(crate::chat_folder::NEEDS_FOLDER.into());
+    }
     let trees = crate::worktrees::list(cwd)?;
     let main = trees.first().ok_or("No working copies found")?;
     let main = PathBuf::from(&main.path);

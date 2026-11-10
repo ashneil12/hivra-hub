@@ -1,4 +1,5 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import { newSession } from "../../sessions/model/session";
 import { mobileQuestionReply } from "./mobileWorkspace";
 
 const prompt = {
@@ -54,5 +55,40 @@ describe("mobile question replies", () => {
     ).toBeUndefined();
     expect(mobileQuestionReply({ kind: "maybe" }, prompt)).toBeUndefined();
     expect(mobileQuestionReply(null, prompt)).toBeUndefined();
+  });
+});
+
+describe("mobile catalog private chats", () => {
+  it("keeps a private chat off the phone's session list, live or saved", async () => {
+    // L2: a private chat's title and state must not reach the phone through the workspace poll.
+    vi.resetModules();
+    vi.doMock("../../sessions/data/sessionStore", () => ({
+      getSession: async () => undefined,
+      listSessionsByProject: async () => [
+        { id: "saved-private", cwd: "/work/p", title: "Secret", harness: "claude", model: "opus", updatedAt: 1, private: true },
+        { id: "saved-open", cwd: "/work/p", title: "Open", harness: "claude", model: "opus", updatedAt: 2 },
+      ],
+    }));
+    vi.doMock("../../monos/model/mono", () => ({
+      listMonos: () => [],
+      monoLook: () => ({ name: "" }),
+      monoState: () => ({ status: "idle" }),
+    }));
+    vi.doMock("../../projects/model/recents", async (importOriginal) => ({
+      ...(await importOriginal<typeof import("../../projects/model/recents")>()),
+      loadRecents: () => [{ path: "/work/p" }],
+      loadPinnedProjects: () => [],
+    }));
+    const { mobileCatalog } = await import("./mobileWorkspace");
+    const live = [
+      { ...newSession("claude", "/work/p"), id: "live-private", private: true },
+      { ...newSession("claude", "/work/p"), id: "live-open" },
+    ];
+    const catalog = await mobileCatalog(live as never);
+    const ids = catalog.sessions.map((session) => session.id).sort();
+    expect(ids).toEqual(["live-open", "saved-open"]);
+    vi.doUnmock("../../sessions/data/sessionStore");
+    vi.doUnmock("../../monos/model/mono");
+    vi.doUnmock("../../projects/model/recents");
   });
 });

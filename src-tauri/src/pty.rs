@@ -133,7 +133,7 @@ pub fn pty_spawn(
     cols: u16,
     rows: u16,
 ) -> Result<(), String> {
-    let workdir = working_dir(&cwd);
+    let workdir = working_dir(&cwd)?;
     let _reservation = crate::worktree_lifecycle::reserve_spawn(&workdir)?;
     if let Some(prev) = host.remove(&id) {
         terminate(prev.pid);
@@ -461,12 +461,17 @@ fn spawn_windows(
     Ok(())
 }
 
-fn working_dir(cwd: &str) -> std::path::PathBuf {
+/// Where a terminal starts. A folder that has gone missing falls back to the home folder, but a chat with no folder at
+/// all gets no terminal (docs/PORTABLE.md): it would start in the home folder without anyone having chosen that.
+fn working_dir(cwd: &str) -> Result<std::path::PathBuf, String> {
+    if cwd.trim().is_empty() {
+        return Err(crate::chat_folder::NEEDS_FOLDER.into());
+    }
     let path = expand_home(cwd);
     if path.is_dir() {
-        return path;
+        return Ok(path);
     }
-    dirs_home().map(std::path::PathBuf::from).unwrap_or(path)
+    Ok(dirs_home().map(std::path::PathBuf::from).unwrap_or(path))
 }
 
 fn default_shell() -> (String, Vec<String>) {
@@ -822,6 +827,20 @@ mod label_tests {
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
+
+    /// A chat with no folder gets no terminal: the shell would otherwise start in the home folder.
+    #[test]
+    fn a_terminal_for_a_chat_with_no_folder_is_refused_not_started_in_the_home_folder() {
+        for blank in ["", "  "] {
+            assert_eq!(
+                working_dir(blank),
+                Err(crate::chat_folder::NEEDS_FOLDER.to_string()),
+                "{blank:?}"
+            );
+        }
+        let temp = std::env::temp_dir();
+        assert_eq!(working_dir(&temp.to_string_lossy()), Ok(temp));
+    }
 
     #[test]
     fn login_args_for_common_shells() {

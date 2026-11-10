@@ -123,6 +123,8 @@ export function scrub(db) {
     wipe("inFlightTurns", "in_flight_sessions");
     wipe("workspaceSnapshot", "workspace_snapshot");
     wipe("worktreeRemovals", "worktree_removals");
+    // What an import's file named for a chat's folder (src-tauri/src/portable.rs): paths from Ash's Mac, never a copy's.
+    wipe("importedChatFolders", "imported_chat_folders");
     // Runs and claims first: they reference automations.
     wipe("automationRuns", "automation_runs");
     wipe("automationEventClaims", "automation_event_claims");
