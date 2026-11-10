@@ -21,7 +21,9 @@ struct Device {
     name: String,
     fingerprint: String,
 }
-#[derive(Clone, Serialize, Deserialize)]
+// Hivra: every field defaults to off or empty. Upstream's Default opened a router port (open_router: true); here no
+// port mapping happens unless the person ticks it.
+#[derive(Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct Config {
     enabled: bool,
@@ -31,17 +33,6 @@ struct Config {
     remote_address: String,
     #[serde(default)]
     devices: Vec<Device>,
-}
-impl Default for Config {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            // Hivra: no router port mapping unless the person ticks it. Upstream opened it by default.
-            open_router: false,
-            remote_address: String::new(),
-            devices: Vec::new(),
-        }
-    }
 }
 struct Invitation {
     expires: u64,
