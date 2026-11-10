@@ -228,4 +228,19 @@ mod tests {
         );
         assert_eq!(models[3].id, "claude-opus-5-5");
     }
+
+    #[test]
+    fn maps_a_live_fable_5_2_row() {
+        let models = models(&json!([
+            {"value":"fable","resolvedModel":"claude-fable-5-2","displayName":"Fable","description":"Fast and capable"},
+            {"value":"claude-fable-5-2[1m]","resolvedModel":"claude-fable-5-2","displayName":"Claude Fable 5.2"}
+        ]));
+        assert_eq!(
+            models.iter().map(|m| m.name.as_str()).collect::<Vec<_>>(),
+            ["Fable 5.2", "Claude Fable 5.2"]
+        );
+        assert_eq!(models[0].id, "fable");
+        assert_eq!(models[1].id, "claude-fable-5-2");
+        assert_eq!(models[1].controls[0].current, "1m");
+    }
 }

@@ -98,13 +98,14 @@ fn installed(name: &str) -> Outcome {
     Outcome::Installed { name: name.into() }
 }
 
-/// Pins run in defaults.json order: pstack, then the starter Monos (no skills, so no extra plugin dir), then Creator, then hivra-rpi.
+/// Pins run in defaults.json order: pstack, then the starter Monos (no skills, so no extra plugin dir), then Creator, then hivra-rpi, then hivra-mcode.
 fn both_installed() -> Vec<Outcome> {
     vec![
         installed("pstack"),
         installed("starter-monos"),
         installed("hivra-creator"),
         installed("hivra-rpi"),
+        installed("hivra-mcode"),
     ]
 }
 
@@ -122,6 +123,9 @@ fn both_given() -> Vec<Outcome> {
         Outcome::AlreadyGiven {
             name: "hivra-rpi".into(),
         },
+        Outcome::AlreadyGiven {
+            name: "hivra-mcode".into(),
+        },
     ]
 }
 
@@ -129,6 +133,7 @@ fn every_skill() -> Vec<String> {
     let mut skills = pstack_skills();
     skills.extend(skills_in(&carried("hivra-creator").join("skills")));
     skills.extend(skills_in(&carried("hivra-rpi").join("skills")));
+    skills.extend(skills_in(&carried("hivra-mcode").join("skills")));
     skills.sort();
     skills
 }
@@ -263,7 +268,7 @@ fn a_fresh_install_has_pstack_on_everywhere() {
 
     // Claude Code: one --plugin-dir per plugin. Codex and the other `.agents/skills` readers: a link each.
     let wired = wiring::session_wiring(&host, None, Some("<CLI>"), &Default::default()).unwrap();
-    assert_eq!(wired.claude_plugin_dirs.len(), 3);
+    assert_eq!(wired.claude_plugin_dirs.len(), 4);
     let mut claude_skills = Vec::new();
     for dir in &wired.claude_plugin_dirs {
         claude_skills.extend(skills_in(&Path::new(dir).join("skills")));
@@ -359,6 +364,7 @@ fn switched_off_stays_off_and_removed_stays_removed() {
         names(&host.root.join("installed")),
         vec![
             "hivra-creator".to_string(),
+            "hivra-mcode".to_string(),
             "hivra-rpi".to_string(),
             "starter-monos".to_string()
         ]
@@ -367,6 +373,7 @@ fn switched_off_stays_off_and_removed_stays_removed() {
         names(&host.root.join("data")),
         vec![
             "hivra-creator".to_string(),
+            "hivra-mcode".to_string(),
             "hivra-rpi".to_string(),
             "starter-monos".to_string()
         ]
@@ -386,6 +393,7 @@ fn switched_off_stays_off_and_removed_stays_removed() {
     );
     // A removed default is not put back. Uninstall the rest, and only the memory that they were given stays.
     registry::uninstall(&host, "hivra-creator").unwrap();
+    registry::uninstall(&host, "hivra-mcode").unwrap();
     registry::uninstall(&host, "hivra-rpi").unwrap();
     registry::uninstall(&host, "starter-monos").unwrap();
     defaults::ensure(&host);
@@ -436,6 +444,7 @@ fn a_pstack_the_person_installed_themselves_is_left_alone() {
             installed("starter-monos"),
             installed("hivra-creator"),
             installed("hivra-rpi"),
+            installed("hivra-mcode"),
         ]
     );
     let entry = &registry::read(&host).unwrap().plugins["pstack"];
@@ -505,13 +514,16 @@ fn the_pstack_snapshot_for_the_session_test_is_current() {
     let pstack_dir = host.installed("pstack");
     let creator_dir = host.installed("hivra-creator");
     let rpi_dir = host.installed("hivra-rpi");
+    let mcode_dir = host.installed("hivra-mcode");
     let record = |tmp: &Tmp| -> Vec<serde_json::Value> {
+        #[allow(clippy::too_many_arguments)] // WP-117: test walker carries one dir per bundled skill pack
         fn walk(
             base: &Path,
             dir: &Path,
             pstack_dir: &Path,
             creator_dir: &Path,
             rpi_dir: &Path,
+            mcode_dir: &Path,
             rel: &dyn Fn(&str) -> String,
             out: &mut Vec<serde_json::Value>,
         ) {
@@ -535,13 +547,16 @@ fn the_pstack_snapshot_for_the_session_test_is_current() {
                     continue;
                 }
                 let meta = std::fs::symlink_metadata(&path).unwrap();
-                if path == pstack_dir || path == creator_dir || path == rpi_dir {
+                if path == pstack_dir || path == creator_dir || path == rpi_dir || path == mcode_dir
+                {
                     let carried = if path == pstack_dir {
                         "pstack"
                     } else if path == creator_dir {
                         "hivra-creator"
-                    } else {
+                    } else if path == rpi_dir {
                         "hivra-rpi"
+                    } else {
+                        "hivra-mcode"
                     };
                     out.push(json!({ "path": name, "carried": carried }));
                 } else if meta.file_type().is_symlink() {
@@ -554,7 +569,16 @@ fn the_pstack_snapshot_for_the_session_test_is_current() {
                     out.push(json!({ "path": name, "link": target }));
                 } else if meta.is_dir() {
                     out.push(json!({ "path": name, "dir": true }));
-                    walk(base, &path, pstack_dir, creator_dir, rpi_dir, rel, out);
+                    walk(
+                        base,
+                        &path,
+                        pstack_dir,
+                        creator_dir,
+                        rpi_dir,
+                        mcode_dir,
+                        rel,
+                        out,
+                    );
                 } else {
                     let raw = std::fs::read_to_string(&path).unwrap();
                     // lock.json lists every bundled plugin. The snapshot is the pstack wiring, so the
@@ -575,6 +599,7 @@ fn the_pstack_snapshot_for_the_session_test_is_current() {
             &pstack_dir,
             &creator_dir,
             &rpi_dir,
+            &mcode_dir,
             &rel,
             &mut out,
         );
