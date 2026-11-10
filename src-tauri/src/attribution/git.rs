@@ -45,25 +45,15 @@ pub(crate) enum GitFail {
     Rejected,
 }
 
-/// One extra try when git is missing or the wait expires. A command git
-/// rejected is not tried again. The timeout itself is unchanged.
-const TRANSIENT_ATTEMPTS: u32 = 2;
-
 /// Run a child and kill it when the wait exceeds `timeout`.
+/// A timeout or a missing program is `Unavailable`. A command that runs and
+/// fails is `Rejected`. Neither is started again: a second child would hide
+/// a hang, and a caller that still wants another read does that itself.
 pub fn run_limited(mut cmd: Command, timeout: Duration) -> Result<String, GitFail> {
     cmd.stdin(Stdio::null());
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::null());
-    let mut attempt = 0;
-    loop {
-        attempt += 1;
-        match run_once(&mut cmd, timeout) {
-            Err(GitFail::Unavailable) if attempt < TRANSIENT_ATTEMPTS => {
-                thread::sleep(Duration::from_millis(50));
-            }
-            other => return other,
-        }
-    }
+    run_once(&mut cmd, timeout)
 }
 
 fn run_once(cmd: &mut Command, timeout: Duration) -> Result<String, GitFail> {
@@ -306,39 +296,134 @@ pub fn read_commit(repo: &Path, sha: &str) -> Result<CommitView, GitFail> {
 
 #[cfg(test)]
 mod tests {
+    use std::path::{Path, PathBuf};
     use std::process::Command;
-    use std::time::{Duration, Instant};
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::time::Duration;
 
+    static NEXT_ONCE: AtomicU64 = AtomicU64::new(0);
+
+    /// A scratch folder under the temp dir. Each child appends one line to
+    /// `log` before it hangs or exits, so a second start is a second line.
+    struct Once {
+        dir: PathBuf,
+        log: PathBuf,
+    }
+
+    impl Once {
+        fn new() -> Self {
+            let n = NEXT_ONCE.fetch_add(1, Ordering::Relaxed);
+            let dir =
+                std::env::temp_dir().join(format!("hivra-git-once-{}-{n}", std::process::id()));
+            std::fs::create_dir_all(&dir).unwrap();
+            Self {
+                log: dir.join("tries"),
+                dir,
+            }
+        }
+
+        fn tries(&self) -> usize {
+            match std::fs::read_to_string(&self.log) {
+                Ok(text) => text.lines().filter(|line| !line.is_empty()).count(),
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => 0,
+                Err(err) => panic!("could not read the start log: {err}"),
+            }
+        }
+    }
+
+    impl Drop for Once {
+        fn drop(&mut self) {
+            let Ok(dir) = crate::fs::canonical(&self.dir) else {
+                return;
+            };
+            let Ok(temp) = crate::fs::canonical(std::env::temp_dir()) else {
+                return;
+            };
+            if dir != temp && dir.starts_with(&temp) {
+                let _ = std::fs::remove_dir_all(dir);
+            }
+        }
+    }
+
+    fn write_script(path: &Path, body: &str) {
+        std::fs::write(path, body).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = std::fs::metadata(path).unwrap().permissions();
+            perms.set_mode(0o755);
+            std::fs::set_permissions(path, perms).unwrap();
+        }
+    }
+
+    /// The child records one start, then becomes the long wait. `exec` keeps
+    /// the same pid, so killing the child kills the wait.
     #[cfg(unix)]
-    fn hang() -> Command {
-        let mut cmd = Command::new("sleep");
-        cmd.arg("30");
+    fn hang(once: &Once) -> Command {
+        let script = once.dir.join("hang.sh");
+        write_script(
+            &script,
+            "#!/bin/sh\nprintf 'x\\n' >> \"$HIVRA_TRIES\"\nexec sleep 30\n",
+        );
+        let mut cmd = Command::new(script);
+        cmd.env("HIVRA_TRIES", &once.log);
         cmd
     }
 
     #[cfg(windows)]
-    fn hang() -> Command {
-        let mut cmd = Command::new("ping");
-        cmd.args(["-n", "30", "127.0.0.1"]);
+    fn hang(once: &Once) -> Command {
+        let script = once.dir.join("hang.bat");
+        write_script(
+            &script,
+            "@echo off\r\necho x>>\"%HIVRA_TRIES%\"\r\nping -n 30 127.0.0.1 >nul\r\n",
+        );
+        let path = script.to_string_lossy().into_owned();
+        let mut cmd = Command::new("cmd");
+        cmd.args(["/C", path.as_str()]);
+        cmd.env("HIVRA_TRIES", &once.log);
+        cmd
+    }
+
+    #[cfg(unix)]
+    fn reject(once: &Once) -> Command {
+        let script = once.dir.join("reject.sh");
+        write_script(
+            &script,
+            "#!/bin/sh\nprintf 'x\\n' >> \"$HIVRA_TRIES\"\nexit 1\n",
+        );
+        let mut cmd = Command::new(script);
+        cmd.env("HIVRA_TRIES", &once.log);
+        cmd
+    }
+
+    #[cfg(windows)]
+    fn reject(once: &Once) -> Command {
+        let script = once.dir.join("reject.bat");
+        write_script(
+            &script,
+            "@echo off\r\necho x>>\"%HIVRA_TRIES%\"\r\nexit /b 1\r\n",
+        );
+        let path = script.to_string_lossy().into_owned();
+        let mut cmd = Command::new("cmd");
+        cmd.args(["/C", path.as_str()]);
+        cmd.env("HIVRA_TRIES", &once.log);
         cmd
     }
 
     #[test]
     fn a_timeout_is_a_failure() {
-        let started = Instant::now();
-        let result = super::run_limited(hang(), Duration::from_millis(300));
+        let once = Once::new();
+        let result = super::run_limited(hang(&once), Duration::from_secs(2));
         assert!(matches!(result, Err(super::GitFail::Unavailable)));
-        // Two tries of the same 300 ms wait, not a longer timeout.
-        assert!(started.elapsed() < Duration::from_secs(5));
+        // The child writes one line before it waits. A second start is a second line.
+        assert_eq!(once.tries(), 1);
     }
 
     #[test]
     fn a_rejected_command_is_not_tried_again() {
-        let started = Instant::now();
-        let mut cmd = Command::new("git");
-        cmd.arg("not-a-command");
-        let result = super::run_limited(cmd, Duration::from_secs(3));
+        let once = Once::new();
+        let result = super::run_limited(reject(&once), Duration::from_secs(15));
         assert!(matches!(result, Err(super::GitFail::Rejected)));
-        assert!(started.elapsed() < Duration::from_secs(3));
+        assert_eq!(once.tries(), 1);
     }
 }
