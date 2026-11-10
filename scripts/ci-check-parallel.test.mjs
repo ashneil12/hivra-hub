@@ -44,8 +44,7 @@ test("the two halves are the web commands and the rust commands, in order, each 
   assert.deepEqual(CHECK_GROUPS[1].commands, [
     ["cargo", "fmt", "--check"],
     ["cargo", "clippy", "--workspace", "--all-targets", "--", "-D", "warnings"],
-    ["cargo", "check"],
-    ["cargo", "test"],
+    ["cargo", "nextest", "run", "--workspace", "--profile", "ci"],
   ]);
 });
 
@@ -63,7 +62,7 @@ test("both halves pass, every line carries its half's tag, and a warning is not 
   assert.deepEqual(result.failed, []);
   assert.ok(logs.includes("[web] $ npm test"));
   assert.ok(logs.includes("[web] npm ok"));
-  assert.ok(logs.includes("[rust] $ cargo test"));
+  assert.ok(logs.includes("[rust] $ cargo nextest run --workspace --profile ci"));
   assert.ok(logs.includes("[rust] warning: unused"));
   assert.ok(logs.includes("[web] Web checks: passed"));
   assert.ok(logs.includes("[rust] Rust checks: passed"));
@@ -149,7 +148,7 @@ test("a web failure still runs the rust half, and does not run the later web com
   const result = await pending;
   assert.equal(result.ok, false);
   assert.deepEqual(result.failed, ["Web checks"]);
-  assert.ok(seen.filter((name) => name === "cargo").length >= 4);
+  assert.equal(seen.filter((name) => name === "cargo").length, 3);
   assert.ok(logs.includes("[web] web broke"));
   assert.ok(logs.includes("[web] exited 2"));
   assert.ok(logs.includes("[web] Web checks: failed (exit 2)"));
@@ -464,7 +463,7 @@ test("the real script passes when both halves pass, with every line tagged", { s
     for (const line of run.out.trimEnd().split("\n")) assert.match(line, /^\[(web|rust)\]( |$)/, line);
     const web = run.out.split("\n").filter((line) => line.startsWith("[web] "));
     assert.ok(web.indexOf("[web] $ npm test") < web.indexOf("[web] $ npx tsc --noEmit"));
-    assert.ok(run.out.includes("[rust] cargo test finished"));
+    assert.ok(run.out.includes("[rust] cargo nextest run --workspace --profile ci finished"));
     assert.ok(run.out.includes("[web] Web checks: passed"));
     assert.ok(run.out.includes("[rust] Rust checks: passed"));
     assert.doesNotMatch(run.out, /Failed:/);
@@ -499,7 +498,14 @@ test("macOS stays one check job and runs the two halves together", () => {
   assert.match(check, /node scripts\/ci-check-parallel\.mjs/);
   assert.match(check, /if: matrix\.part == 'all'/);
   assert.match(check, /run: npm test[\s\S]*?\n {8}if: matrix\.part == 'web'/);
-  assert.match(check, /run: cargo test\n {8}if: matrix\.part == 'rust'/);
+  assert.match(check, /run: cargo nextest run --workspace --profile ci\n {8}if: matrix\.part == 'rust'/);
+  assert.doesNotMatch(check, /\n {6}- run: cargo check\n/);
+  assert.doesNotMatch(check, /\n {6}- run: cargo test\n/);
+  assert.match(check, /taiki-e\/install-action@[0-9a-f]{40}/);
+  assert.match(check, /tool: cargo-nextest@0\.9\.151/);
+  assert.match(check, /if: matrix\.part != 'web'/);
+  assert.doesNotMatch(check, /\n\s+permissions:/);
+  assert.doesNotMatch(check, /\$\{\{\s*secrets\./);
   assert.match(check, /--shard=\{0\}/);
   assert.match(check, /dtolnay\/rust-toolchain@stable[\s\S]*if: matrix\.part != 'web'/);
   assert.doesNotMatch(check, /matrix\.part != 'rust'/);

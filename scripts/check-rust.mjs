@@ -4,6 +4,9 @@
 // that ran its checks used to keep 9-12 GB of build output each; with the shared cache it keeps almost nothing and
 // the dependencies are built once for every worktree. Two checks at once wait for each other on cargo's lock.
 //
+// CI runs the same tests through cargo-nextest (WP-173). This script stays on `cargo test`, so it works where nextest
+// is not installed.
+//
 // Refuses to start under the disk floor (scripts/disk-guard.mjs). CI is left as it was (its own target/).
 // MONOCODE_OWN_TARGET=1 keeps the build output in this worktree for a run.
 

@@ -22,11 +22,13 @@ export const CHECK_GROUPS = [
   {
     name: "Rust checks",
     tag: "rust",
+    // WP-173: nextest retries a failed test once and stops a hung test. There is no
+    // `cargo check` here, because clippy --all-targets already checks every target.
+    // No `cargo test --doc`: the workspace members have no doctests.
     commands: [
       ["cargo", "fmt", "--check"],
       ["cargo", "clippy", "--workspace", "--all-targets", "--", "-D", "warnings"],
-      ["cargo", "check"],
-      ["cargo", "test"],
+      ["cargo", "nextest", "run", "--workspace", "--profile", "ci"],
     ],
   },
 ];
