@@ -125,6 +125,9 @@ export function builderScaleToStored(scale: BuilderScale): StoredBuilderScale | 
   };
 }
 
+/** Said wherever the pauses are shown: one setting for the whole machine, not one per project. */
+export const PAUSES_ALL_PROJECTS = "These pauses apply to all projects.";
+
 /** The plain sentence under the settings. */
 export function scaleLine(scale: BuilderScale): string {
   const clean = sanitizeBuilderScale(scale);

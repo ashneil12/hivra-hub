@@ -153,3 +153,16 @@ it("shows a lost save when the stored revision is not the one just written", asy
   });
   expect(sets().at(-1)?.revision).toBe(1);
 });
+
+it("says on Crew defaults that the builder pauses apply to all projects", async () => {
+  invokeMock.mockImplementation((cmd: string) =>
+    cmd === "crew_rules_get"
+      ? Promise.resolve({ rules: [], plugins: [], revision: 0, signedIn: [] })
+      : Promise.resolve(undefined),
+  );
+  show();
+  await act(async () => undefined);
+  const pauses = container.querySelector("[data-builder-pauses]");
+  expect(pauses?.textContent).toContain("Pause new builders when");
+  expect(pauses?.textContent).toContain("These pauses apply to all projects.");
+});

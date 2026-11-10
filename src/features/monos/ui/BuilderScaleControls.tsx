@@ -1,7 +1,7 @@
 // WP-161: the shared ceiling and the optional pauses, on the project Workers dialog and Crew defaults.
 
 import { useWorkerPoolVersion, builderScale, setBuilderScale } from "../model/workerPool";
-import { MAX_BUILDERS, scaleLine, type BuilderScale } from "../model/builderScale";
+import { MAX_BUILDERS, PAUSES_ALL_PROJECTS, scaleLine, type BuilderScale } from "../model/builderScale";
 
 const INPUT =
   "w-16 rounded-lg border border-content/10 bg-content/5 px-2 py-1 text-right text-[13px] text-content outline-none focus:border-content/30 disabled:opacity-40";
@@ -63,6 +63,7 @@ export function BuilderScaleControls({ showSharedMax = false }: { showSharedMax?
       ) : null}
       <fieldset className="flex flex-col gap-2 border-0 p-0" data-builder-pauses>
         <legend className="text-[13px] text-content">Pause new builders when</legend>
+        <p className="text-[12px] leading-4 text-content/60" data-builder-pauses-scope>{PAUSES_ALL_PROJECTS}</p>
         <p className="text-[12px] leading-4 text-content/60">Running builders keep going. Each check can be turned off.</p>
         <label className="flex items-center justify-between gap-2 text-[13px] text-content">
           <span className="flex items-center gap-2">

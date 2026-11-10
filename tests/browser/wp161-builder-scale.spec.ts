@@ -11,6 +11,9 @@ test("max builders and the pauses can each be turned, and running work is left a
   await expect(system.getByText("Running builders keep going. Each check can be turned off.")).toBeVisible();
   await expect(project.getByLabel("Max builders")).toBeVisible();
   await expect(project.getByText("Pause new builders when")).toBeVisible();
+  // The pauses are one setting for every project, and both places say so.
+  await expect(system.getByText("These pauses apply to all projects.")).toBeVisible();
+  await expect(project.getByText("These pauses apply to all projects.")).toBeVisible();
 
   await system.locator("[data-builder-max]").fill("20");
   await expect(system.locator("[data-builder-scale-line]")).toContainText("1.6 times the number of cores");
