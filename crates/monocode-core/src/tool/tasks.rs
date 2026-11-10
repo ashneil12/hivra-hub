@@ -741,8 +741,14 @@ mod tests {
     use serde_json::json;
     #[test]
     fn desktop_names_fable_5_2() {
-        assert_eq!(desktop_model_name("claude-fable-5-2"), Some("Claude Fable 5.2"));
-        assert_eq!(desktop_model_name("claude:fable-5-2"), Some("Claude Fable 5.2"));
+        assert_eq!(
+            desktop_model_name("claude-fable-5-2"),
+            Some("Claude Fable 5.2")
+        );
+        assert_eq!(
+            desktop_model_name("claude:fable-5-2"),
+            Some("Claude Fable 5.2")
+        );
         assert_eq!(desktop_model_name("claude-fable-5"), Some("Claude Fable 5"));
     }
 
