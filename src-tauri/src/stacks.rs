@@ -3249,13 +3249,18 @@ mod tests {
 
     #[test]
     fn two_writers_do_not_lose_a_stack() {
+        use std::sync::mpsc::{self, TryRecvError};
+
         let fix = Fix::new();
         let dir = registry_dir(&fix.data);
+        let (holding_tx, holding_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
         let left = {
             let dir = dir.clone();
             std::thread::spawn(move || {
                 update(&dir, |store| {
-                    std::thread::sleep(Duration::from_millis(40));
+                    holding_tx.send(()).unwrap();
+                    release_rx.recv().unwrap();
                     store.stacks.push(Entry {
                         id: "s01234567".into(),
                         key: "left".into(),
@@ -3281,10 +3286,15 @@ mod tests {
                 })
             })
         };
+        // The first writer is inside the lock. The second must not finish until it is let go.
+        holding_rx.recv().unwrap();
+        let (started_tx, started_rx) = mpsc::channel();
+        let (done_tx, done_rx) = mpsc::channel();
         let right = {
             let dir = dir.clone();
             std::thread::spawn(move || {
-                update(&dir, |store| {
+                started_tx.send(()).unwrap();
+                let result = update(&dir, |store| {
                     store.stacks.push(Entry {
                         id: "s89abcdef".into(),
                         key: "right".into(),
@@ -3307,11 +3317,27 @@ mod tests {
                         note: None,
                     });
                     Ok(())
-                })
+                });
+                done_tx.send(result).unwrap();
             })
         };
+        started_rx.recv().unwrap();
+        for _ in 0..64 {
+            match done_rx.try_recv() {
+                Ok(result) => {
+                    panic!("the other writer finished while the lock was held: {result:?}")
+                }
+                Err(TryRecvError::Disconnected) => {
+                    panic!("the other writer stopped while the lock was held")
+                }
+                Err(TryRecvError::Empty) => std::thread::yield_now(),
+            }
+        }
+        release_tx.send(()).unwrap();
         left.join().unwrap().unwrap();
-        right.join().unwrap().unwrap();
+        let result = done_rx.recv().unwrap();
+        right.join().unwrap();
+        result.unwrap();
         let store = load(&dir).unwrap();
         assert_eq!(store.stacks.len(), 2);
         assert_eq!(store.revision, 2);
