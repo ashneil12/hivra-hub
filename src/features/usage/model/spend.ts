@@ -223,6 +223,14 @@ export function spendAllowed(spent: SpendReading | null | undefined, limit: Spen
       reason: `Measured cost for ${subject(clean)} is ${formatMeasuredUsd(spent.measuredUsd)} of ${formatMeasuredUsd(clean.amountUsd)} ${words.spent}.`,
     };
   }
+  // Priced turns under the cap still leave some work uncounted. Say so, never pass it as a clean total.
+  if (spent.unpricedTurns > 0) {
+    const turns = spent.unpricedTurns === 1 ? "1 turn" : `${spent.unpricedTurns} turns`;
+    return {
+      status: "unmeasured",
+      reason: `Measured cost for ${subject(clean)} is ${formatMeasuredUsd(spent.measuredUsd)} of ${formatMeasuredUsd(clean.amountUsd)} ${words.spent}. ${turns} reported no cost, so they are not counted.`,
+    };
+  }
   return OK;
 }
 

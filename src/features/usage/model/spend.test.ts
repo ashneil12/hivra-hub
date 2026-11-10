@@ -97,6 +97,18 @@ describe("spend limits", () => {
     expect(SPEND_LIMITS_KEY).toBe("monocode.spendLimits.v1");
   });
 
+  it("never passes silently when some turns in the total are unpriced", () => {
+    // A priced total under the cap still says that some work is not counted. Over and warn still win.
+    const row = limit();
+    const partial = spendAllowed({ measuredUsd: 10, pricedTurns: 1, unpricedTurns: 2, reportsCost: true }, row);
+    expect(partial.status).toBe("unmeasured");
+    expect(partial.reason).toContain("2 turns");
+    expect(partial.reason).toContain("not counted");
+    expect(partial.reason).not.toMatch(/[\u2013\u2014]/);
+    expect(spendAllowed({ measuredUsd: 50, pricedTurns: 3, unpricedTurns: 1, reportsCost: true }, row).status).toBe("over");
+    expect(spendAllowed({ measuredUsd: 40, pricedTurns: 2, unpricedTurns: 1, reportsCost: true }, row).status).toBe("warn");
+  });
+
   it("says ok, warn, over, unmeasured, or unset", () => {
     const row = limit();
     expect(spendAllowed({ measuredUsd: 10, pricedTurns: 1, unpricedTurns: 0, reportsCost: true }, row).status).toBe("ok");
