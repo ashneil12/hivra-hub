@@ -8,6 +8,13 @@
 //!
 //! A dev copy (src/instance.rs) never reaches the live Ash OS: it imports only from a stand-in named by both
 //! `MONOCODE_HUB_PORT` and `MONOCODE_HUB_TOKEN_FILE`, and never from port 18767 or the live key file.
+//!
+//! Ash OS no longer runs as a service, but its record stayed on disk. When the live read gives nothing, the import
+//! reads that record instead (`disk.rs`, through a private copy, never the file itself) and answers in exactly the
+//! live reads' shape. A dev copy reads only a stand-in record named by `MONOCODE_ASHOS_DB` (and optionally
+//! `MONOCODE_ASHOS_PROJECTS` for the curated projects), never Ash OS's real one.
+
+mod disk;
 
 use std::io::Read;
 use std::path::PathBuf;
@@ -237,23 +244,77 @@ fn fetch(endpoint: &Endpoint) -> ImportFound {
     }
 }
 
-/// `ash_os_import_fetch()`: what a reachable Ash OS holds, for the one-time import. Never writes to Ash OS.
-#[tauri::command(async)]
-pub fn ash_os_import_fetch() -> ImportFound {
-    let endpoint = resolve(
-        crate::instance::policy().live_ash_os,
-        std::env::var("MONOCODE_HUB_PORT").ok(),
-        std::env::var_os("MONOCODE_HUB_TOKEN_FILE").map(PathBuf::from),
-        std::env::var_os("HOME")
-            .or_else(|| std::env::var_os("USERPROFILE"))
-            .map(PathBuf::from),
-        crate::instance::real_home(),
-    );
-    match endpoint {
+/// What the import is pointed at: the live service's overrides and the on-disk record's.
+#[derive(Debug, Clone, Default)]
+struct Inputs {
+    port: Option<String>,
+    token_file: Option<PathBuf>,
+    db: Option<PathBuf>,
+    projects: Option<PathBuf>,
+    home: Option<PathBuf>,
+    real_home: Option<PathBuf>,
+}
+
+/// The live read, then Ash OS's record on disk when the live read found nothing (not running, no key, no such call).
+/// The record's answer stands in for the live one in the same shape; with no record the live answer stands, and a
+/// record that couldn't be read this time decides nothing (`unreachable`, tried again next start).
+fn fetch_all(live: bool, inputs: Inputs) -> ImportFound {
+    let found = match resolve(
+        live,
+        inputs.port,
+        inputs.token_file,
+        inputs.home.clone(),
+        inputs.real_home.clone(),
+    ) {
         Ok(endpoint) => fetch(&endpoint),
         // A dev copy with no stand-in, or no home to find the key in: nothing to import from, for good.
         Err(message) => ImportFound::not_found(ImportState::Absent, message),
+    };
+    if found.state == ImportState::Found {
+        return found;
     }
+    let Ok(record) = disk::resolve(
+        live,
+        inputs.db,
+        inputs.projects,
+        inputs.home,
+        inputs.real_home,
+    ) else {
+        return found;
+    };
+    match disk::read(&record) {
+        Ok(Some(from_disk)) => from_disk,
+        Ok(None) => found,
+        Err(message) => ImportFound::not_found(ImportState::Unreachable, message),
+    }
+}
+
+/// `ash_os_import_fetch()`: what Ash OS holds (live, or its record on disk), for the one-time import. Never writes to
+/// Ash OS.
+#[tauri::command(async)]
+pub fn ash_os_import_fetch() -> ImportFound {
+    let live = crate::instance::policy().live_ash_os;
+    // The record's stand-ins are for a dev copy's tests only: the daily app always reads Ash OS's real record.
+    let stand_in = |name: &str| {
+        if live {
+            None
+        } else {
+            std::env::var_os(name).map(PathBuf::from)
+        }
+    };
+    fetch_all(
+        live,
+        Inputs {
+            port: std::env::var("MONOCODE_HUB_PORT").ok(),
+            token_file: std::env::var_os("MONOCODE_HUB_TOKEN_FILE").map(PathBuf::from),
+            db: stand_in("MONOCODE_ASHOS_DB"),
+            projects: stand_in("MONOCODE_ASHOS_PROJECTS"),
+            home: std::env::var_os("HOME")
+                .or_else(|| std::env::var_os("USERPROFILE"))
+                .map(PathBuf::from),
+            real_home: crate::instance::real_home(),
+        },
+    )
 }
 
 #[cfg(test)]
@@ -526,5 +587,152 @@ mod tests {
                 .message()
                 .contains("never sends"));
         }
+    }
+
+    /// A port nothing listens on.
+    fn free_port() -> u16 {
+        TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port()
+    }
+
+    #[test]
+    fn ash_os_not_running_reads_its_record_on_disk_in_the_live_shape() {
+        // The daily app on a Mac where Ash OS is set up (its key is there) but no longer runs; its record stayed.
+        let home = temp_dir();
+        let key = home.join(TOKEN_SUBPATH);
+        std::fs::create_dir_all(key.parent().unwrap()).unwrap();
+        std::fs::write(&key, SECRET).unwrap();
+        let fixture = disk::tests::Fixture::new(&home);
+        drop(fixture.standard());
+        let inputs = Inputs {
+            port: Some(free_port().to_string()),
+            home: Some(home.clone()),
+            ..Inputs::default()
+        };
+        let found = fetch_all(true, inputs.clone());
+        assert_eq!(found.state, ImportState::Found, "{found:?}");
+        // The same shape the live reads give: every project row carries the live row's fields.
+        for project in found.projects.as_array().unwrap() {
+            let keys: Vec<&String> = project.as_object().unwrap().keys().collect();
+            for field in [
+                "id",
+                "name",
+                "shortName",
+                "iconShape",
+                "folder",
+                "workOwner",
+                "status",
+            ] {
+                assert!(
+                    keys.iter().any(|k| *k == field),
+                    "{field} missing in {project}"
+                );
+            }
+        }
+        assert_eq!(found.projects.as_array().unwrap().len(), 4);
+        assert_eq!(found.projects[3]["archived"], true);
+        assert_eq!(found.memberships.as_array().unwrap().len(), 6);
+        assert_eq!(found.pages.as_array().unwrap().len(), 2);
+        // Serialized for the webview exactly as the live answer is.
+        let wire = serde_json::to_value(&found).unwrap();
+        assert_eq!(wire["state"], "found");
+        // No key and no service: the record still answers.
+        std::fs::remove_file(&key).unwrap();
+        assert_eq!(fetch_all(true, inputs.clone()).state, ImportState::Found);
+        // No record either: the live answer stands (no key: absent, for good).
+        std::fs::remove_file(fixture.db()).unwrap();
+        assert_eq!(fetch_all(true, inputs).state, ImportState::Absent);
+        let _ = std::fs::remove_dir_all(home);
+    }
+
+    #[test]
+    fn a_live_answer_wins_over_the_record() {
+        let home = temp_dir();
+        let token = home.join("token");
+        std::fs::write(&token, SECRET).unwrap();
+        drop(disk::tests::Fixture::new(&home).standard());
+        let (port, _) = stand_in(vec![(
+            "ash-hub-projects",
+            json!({"projects": [{"id": "live-one"}]}),
+        )]);
+        let found = fetch_all(
+            true,
+            Inputs {
+                port: Some(port.to_string()),
+                token_file: Some(token),
+                home: Some(home.clone()),
+                ..Inputs::default()
+            },
+        );
+        assert_eq!(found.projects, json!([{"id": "live-one"}]));
+        let _ = std::fs::remove_dir_all(home);
+    }
+
+    #[test]
+    fn a_dev_copy_never_reads_the_real_record() {
+        // The real record under both HOME and the real home, and the live key beside it.
+        let home = temp_dir();
+        std::fs::create_dir_all(home.join(TOKEN_SUBPATH).parent().unwrap()).unwrap();
+        std::fs::write(home.join(TOKEN_SUBPATH), SECRET).unwrap();
+        let real = disk::tests::Fixture::new(&home);
+        drop(real.standard());
+        let base = Inputs {
+            home: Some(home.clone()),
+            real_home: Some(home.clone()),
+            ..Inputs::default()
+        };
+        // Nothing named: nothing read.
+        let found = fetch_all(false, base.clone());
+        assert_eq!(found.state, ImportState::Absent);
+        assert_eq!(found.projects, json!([]));
+        // The real record named: refused, nothing read.
+        let named = Inputs {
+            db: Some(real.db()),
+            ..base.clone()
+        };
+        assert_eq!(fetch_all(false, named).projects, json!([]));
+        // The same Mac, as the daily app: the real record answers. (So the two above were refusals, not empty reads.)
+        // (A free port, so nothing ever reaches a real Ash OS on 18767 from a test.)
+        let daily = Inputs {
+            port: Some(free_port().to_string()),
+            ..base.clone()
+        };
+        assert_eq!(fetch_all(true, daily).state, ImportState::Found);
+        // A stand-in record a test names: read.
+        let stand_in = temp_dir();
+        let fixture = disk::tests::Fixture::new(&stand_in);
+        drop(fixture.standard());
+        let found = fetch_all(
+            false,
+            Inputs {
+                db: Some(fixture.db()),
+                projects: Some(fixture.checkout.join("projects")),
+                ..base
+            },
+        );
+        assert_eq!(found.state, ImportState::Found, "{found:?}");
+        assert_eq!(found.projects.as_array().unwrap().len(), 4);
+        let _ = std::fs::remove_dir_all(home);
+        let _ = std::fs::remove_dir_all(stand_in);
+    }
+
+    #[test]
+    fn a_record_that_cannot_be_read_decides_nothing() {
+        let home = temp_dir();
+        let fixture = disk::tests::Fixture::new(&home);
+        std::fs::write(fixture.db(), b"not a database at all, just bytes").unwrap();
+        let found = fetch_all(
+            true,
+            Inputs {
+                port: Some(free_port().to_string()),
+                home: Some(home.clone()),
+                ..Inputs::default()
+            },
+        );
+        assert_eq!(found.state, ImportState::Unreachable, "{found:?}");
+        let _ = std::fs::remove_dir_all(home);
     }
 }

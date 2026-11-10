@@ -309,3 +309,44 @@ test("a big graph folds its quiet layers, and the person's folds win", async ({ 
   await expect(node(page, "t-c1")).toHaveCount(0);
   await expect(layerToggle(page, 3)).toHaveAttribute("aria-expanded", "false");
 });
+
+test("a finished run's close names the usage its children recorded", async ({ page }) => {
+  await open(page);
+  const finished = run(
+    [task("t-plan", { status: "completed", accepted: true, handoff: handoff(true) })],
+    [["t-plan"]],
+    {
+      status: "finished",
+      closingUsage: { inputTokens: 12, outputTokens: 340 },
+      goalReport: {
+        goal: GOAL,
+        verdict: "verified",
+        reasons: [],
+        layers: [["t-plan"]],
+        criticalPath: [],
+        bottlenecks: [],
+        lint: [],
+        ready: [],
+        cyclesLeft: {},
+        replan: [],
+        extendsLeft: 2,
+      },
+    },
+  );
+  await commit(page, finished);
+  await expect(page.locator("[data-goal-usage]")).toHaveText("Children used 12 in, 340 out.");
+
+  const live = liveRun();
+  (live as { closingUsage?: unknown }).closingUsage = { outputTokens: 340 };
+  await commit(page, live);
+  await expect(page.locator("[data-goal-usage]")).toHaveCount(0);
+
+  const quiet = run(
+    [task("t-plan", { status: "completed", accepted: true, handoff: handoff(true) })],
+    [["t-plan"]],
+    { status: "finished", closingUsage: { outputTokens: 0, inputTokens: "no" } },
+  );
+  await commit(page, quiet);
+  await expect(page.locator("[data-goal-usage]")).toHaveCount(0);
+  await expect(page.locator("[data-goal-graph]")).not.toContainText("Children used");
+});

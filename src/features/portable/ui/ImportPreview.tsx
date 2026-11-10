@@ -111,6 +111,12 @@ export function ImportPreview({ pending, onBack, onRestore, inline }: {
     }
   };
 
+  // Every project folder the file wants to register. Only one this Mac has and Rust doesn't refuse can be ticked.
+  const folderRows = plan.projects.filter((x) => x.state === "new" && x.project.folder);
+  const folderTickable = (x: (typeof folderRows)[number]) => x.folderHere === true && !x.folderRefused;
+  const tickable = folderRows.filter((x) => folderTickable(x) && choices.projects.has(x.project.id));
+  const allTicked = tickable.length > 0 && tickable.every((x) => choices.projectFolders.has(x.project.id));
+
   return (
     <div className={`mx-auto flex max-w-[720px] flex-col gap-6 ${inline ? "" : "px-8 py-8"}`} data-portable-preview>
       <div className="flex flex-col gap-1">
@@ -138,6 +144,34 @@ export function ImportPreview({ pending, onBack, onRestore, inline }: {
         </Section>
       ) : null}
 
+      {folderRows.length ? (
+        <Section title="Project folders" testId="project-folders">
+          <p className={NOTE}>
+            These folders come from the file. A folder you tick becomes that project's code folder, and its chats keep their folder. Nothing is ticked for you: a project you leave unticked still comes in, without a folder, and its chats ask you to choose one.
+          </p>
+          {folderRows.some((x) => folderTickable(x)) ? (
+            <div className="px-2 pb-1">
+              <button
+                type="button"
+                data-project-folders-all=""
+                className="rounded-md border border-stroke px-2 py-0.5 text-xs text-content hover:bg-content/5"
+                onClick={() =>
+                  set((c) => ({ ...c, projectFolders: allTicked ? new Set() : new Set(folderRows.filter((x) => folderTickable(x) && c.projects.has(x.project.id)).map((x) => x.project.id)) }))
+                }
+              >
+                {allTicked ? "Untick all" : "Tick all"}
+              </button>
+            </div>
+          ) : null}
+          {folderRows.map((x) => (
+            <Row key={x.project.id} testId={`project-folder-${x.project.id}`}
+              tick={<Tick on={choices.projectFolders.has(x.project.id)} disabled={!folderTickable(x) || !choices.projects.has(x.project.id)} onClick={() => set((c) => ({ ...c, projectFolders: toggle(c.projectFolders, x.project.id) }))} label={`${x.project.name} folder`} />}
+              title={x.project.folder}
+              sub={`${x.project.name}: ${x.folderHere !== true ? "isn't on this Mac, so it comes in without a folder" : x.folderRefused ? `can't be adopted, because ${x.folderRefused}` : choices.projectFolders.has(x.project.id) ? "will be this project's folder" : "left out: the project comes in without a folder"}`} />
+          ))}
+        </Section>
+      ) : null}
+
       {plan.monos.length ? (
         <Section title={`Monos (${plan.monos.filter((m) => choices.monos.has(m.mono.id)).length} of ${plan.monos.length})`} testId="monos">
           {plan.monos.map((m) => (
@@ -158,6 +192,12 @@ export function ImportPreview({ pending, onBack, onRestore, inline }: {
                 <div className="flex items-center gap-2 py-0.5 pl-9 text-[12px] text-content/60" data-portable-replace={m.mono.id}>
                   <Tick on={choices.replaceSouls.has(m.mono.id)} onClick={() => set((c) => ({ ...c, replaceSouls: toggle(c.replaceSouls, m.mono.id) }))} label={`Use the file's soul for ${m.mono.name}`} />
                   Use the file's soul and habits instead of its own (otherwise it only gains what it lacks)
+                </div>
+              ) : null}
+              {m.state === "here" && choices.monos.has(m.mono.id) && m.folders.length ? (
+                <div className="flex items-center gap-2 py-0.5 pl-9 text-[12px] text-content/60" data-portable-mono-projects={m.mono.id}>
+                  <Tick on={choices.monoProjects.has(m.mono.id)} onClick={() => set((c) => ({ ...c, monoProjects: toggle(c.monoProjects, m.mono.id) }))} label={`Add the projects the file lists for ${m.mono.name}`} />
+                  Also add its projects ({m.folders.map(folderName).join(", ")}). Unticked, it keeps its own list.
                 </div>
               ) : null}
             </div>
