@@ -1,9 +1,9 @@
 // WP-146: never carry a conversation past an unapproved action (OpenBot 644d07d).
-// A pending approval parks the turn. A missing record does not count as allowed.
-// Denying does not start the next step; continuing after a denial is its own step.
-// Allowing, then continuing, works. A card left after the turn has ended is history.
+// An open approval parks the turn, and a missing record does not count as allowed.
+// Only the approvals since Ash's last message count: older cards belong to turns he already moved past.
+// A denial is an answer, not a hold: the agent hears it and goes on without that call.
 
-import type { Session } from "./session";
+import type { Block, Session } from "./session";
 
 export type ApprovalDecision = "allow" | "deny" | "cancelled";
 
@@ -16,43 +16,47 @@ export type Carry = "wait" | "continue";
 
 /**
  * Whether the conversation may move past this one approval.
- * A missing record and an open decision both wait. A denial waits until
- * `explicitContinue`. Allow, and a request the turn already cancelled, may continue.
+ * A missing record and an open decision wait. Any answer (allow, deny, or a request the
+ * turn already cancelled) lets it continue.
  */
-export function carryPastApproval(
-  record: ApprovalRecord,
-  explicitContinue = false,
-): Carry {
+export function carryPastApproval(record: ApprovalRecord): Carry {
   if (record == null) return "wait";
-  if (record.decided == null) return "wait";
-  if (record.decided === "deny") return explicitContinue ? "continue" : "wait";
-  return "continue";
+  return record.decided == null ? "wait" : "continue";
 }
 
-type GateSession = Pick<Session, "busy" | "blocks">;
+type GateSession = Pick<Session, "busy" | "blocks" | "backgroundTasks">;
+
+/** Where the current stretch starts: just after the last message Ash sent (a saved draft is not one). */
+export function sinceLastUserMessage(blocks: readonly Block[]): readonly Block[] {
+  for (let i = blocks.length - 1; i >= 0; i--) {
+    const block = blocks[i];
+    if (block?.role === "user" && !block.draft) return blocks.slice(i + 1);
+  }
+  return blocks;
+}
 
 /**
  * True when a follow-up must not enter this turn.
- * Any open card, or a card whose record never arrived, waits. A later allow does not
- * hide an earlier one. `explicitContinue` is only the separate step after a denial.
- * It does not skip a pending approval, and it does not skip a missing record.
- * A card left behind once the turn has finished is history.
+ * Any open card since Ash's last message, or a card whose record never arrived, waits.
+ * A later allow does not hide an earlier open card. A card from before his last message,
+ * or one left behind once the turn has finished, is history.
  */
-export function approvalBlocksCarry(
-  session: GateSession,
-  explicitContinue = false,
-): boolean {
+export function approvalBlocksCarry(session: GateSession): boolean {
   if (session.busy === false) return false;
-  let latest: ApprovalRecord | undefined;
-  for (const block of session.blocks) {
-    if (!block) continue;
+  return sinceLastUserMessage(session.blocks).some((block) => {
+    if (!block) return false;
     if (block.role === "approval" && !block.approval) return true;
-    if (!block.approval) continue;
-    if (block.approval.decided == null) return true;
-    latest = block.approval;
-  }
-  if (latest === undefined) return false;
-  return carryPastApproval(latest, explicitContinue) === "wait";
+    return !!block.approval && carryPastApproval(block.approval) === "wait";
+  });
+}
+
+/**
+ * Whether the send path parks a new message behind an open approval.
+ * Not while the agent has yielded with only background work left: that branch hands the
+ * message to the agent now, because a dev server may never end.
+ */
+export function parksForApproval(session: GateSession): boolean {
+  return !session.backgroundTasks?.length && approvalBlocksCarry(session);
 }
 
 /** An approval still unanswered, including a card whose record never arrived. */
