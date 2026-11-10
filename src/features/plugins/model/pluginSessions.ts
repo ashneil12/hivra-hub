@@ -51,4 +51,16 @@ export function registerPluginSessions(
   });
 }
 
-if (isTauri()) registerPluginSessions();
+/**
+ * Whether the app is running inside Tauri. A test mock of the Tauri core may not define isTauri at all, and reading a
+ * missing export throws at import, so the check is guarded: no Tauri host means nothing is registered.
+ */
+function insideTauri(): boolean {
+  try {
+    return isTauri();
+  } catch {
+    return false;
+  }
+}
+
+if (insideTauri()) registerPluginSessions();
