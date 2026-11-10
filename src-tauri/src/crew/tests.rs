@@ -1306,6 +1306,7 @@ fn a_destination_is_not_skipped_just_because_an_earlier_try_named_it() {
         present: &who,
         ledger: &ledger,
         budget: Some(&json!(2)),
+        policy: None,
     });
     assert_eq!(decision.action, "reroute");
     assert_eq!(decision.to.as_deref(), Some("cursor"));
@@ -1672,4 +1673,284 @@ fn a_lock_keeps_a_cooled_cli() {
         stayed.skipped[0].reason,
         "Always use my default is on, so another CLI was not used."
     );
+}
+
+fn classes(conn: &Connection, id: &str) -> Vec<(String, String)> {
+    let mut statement = conn
+        .prepare(
+            "SELECT outcome, error_class FROM crew_attempts WHERE delegation_id = ?1 ORDER BY n",
+        )
+        .unwrap();
+    statement
+        .query_map([id], |row| Ok((row.get(0)?, row.get(1)?)))
+        .unwrap()
+        .map(|row| row.unwrap())
+        .collect()
+}
+
+fn input<'a>(
+    current: &'a Pick,
+    who: &'a [Presence],
+    class: &'a str,
+    resets_at: Option<i64>,
+    policy: Option<&'a Value>,
+) -> FailureInput<'a> {
+    FailureInput {
+        error_class: Some(class),
+        text: None,
+        resets_at,
+        now: 1_000,
+        current,
+        present: who,
+        ledger: &[],
+        budget: None,
+        policy,
+    }
+}
+
+/// The person's list replaces presence order. A ban, a signed-out CLI and a missing CLI are said, then stored.
+#[test]
+fn fallback_order_is_walked_and_a_ban_is_on_the_ledger() {
+    let store = memory();
+    let mut conn = store.lock_conn().unwrap();
+    store::set_policy(
+        &mut conn,
+        "system",
+        "system",
+        &json!({
+            "lockDefault": false,
+            "neverUse": ["codex"],
+            "fallback": ["codex", "cursor", "pi", "grok", "nope\ncli"]
+        }),
+        0,
+    )
+    .unwrap();
+    let row = fail_row(&mut conn, "worker-order", Some("quota"), None);
+    let moved = store::on_failure(
+        &mut conn,
+        &failure(
+            &row.id,
+            None,
+            None,
+            "claude",
+            &[
+                ("claude", true, true),
+                ("codex", true, true),
+                ("cursor", true, false),
+                ("grok", true, true),
+            ],
+            None,
+            None,
+        ),
+        1_200,
+    )
+    .unwrap();
+    assert_eq!(moved.action, "reroute");
+    assert_eq!(moved.to.as_deref(), Some("grok"));
+    assert_eq!(
+        moved.reason,
+        "Codex is on Never use, so it was skipped. Cursor isn't signed in, so it was skipped. Pi isn't installed here, so it was skipped. Claude Code can't take it, so this uses Grok."
+    );
+    let rows = classes(&conn, &row.id);
+    assert_eq!(rows[0].0, "skipped");
+    assert_eq!(rows[0].1, "Codex is on Never use, so it was skipped.");
+    assert_eq!(rows[1].1, "Cursor isn't signed in, so it was skipped.");
+    assert_eq!(rows[2].1, "Pi isn't installed here, so it was skipped.");
+    assert_eq!(rows[3].0, "rerouted");
+    assert_eq!(rows.len(), 4);
+}
+
+/// A Mono with no saved policy does not take the project's list. Its own list does apply.
+#[test]
+fn a_mono_does_not_borrow_the_project_fallback() {
+    let store = memory();
+    let mut conn = store.lock_conn().unwrap();
+    store::set_policy(
+        &mut conn,
+        "project",
+        PROJECT,
+        &json!({ "lockDefault": false, "neverUse": [], "fallback": ["grok"] }),
+        0,
+    )
+    .unwrap();
+    let who = &[
+        ("claude", true, true),
+        ("codex", true, true),
+        ("grok", true, true),
+    ];
+    let row = fail_row(&mut conn, "worker-mono", Some("quota"), None);
+    let borrowed = store::on_failure(
+        &mut conn,
+        &failure(
+            &row.id,
+            None,
+            None,
+            "claude",
+            who,
+            Some(PROJECT),
+            Some("ada"),
+        ),
+        1_200,
+    )
+    .unwrap();
+    assert_eq!(borrowed.to.as_deref(), Some("codex"));
+    assert_eq!(borrowed.reason, "the account can't take it");
+    store::set_policy(
+        &mut conn,
+        "mono",
+        "ada",
+        &json!({ "lockDefault": false, "neverUse": [], "fallback": ["grok"] }),
+        0,
+    )
+    .unwrap();
+    let own = fail_row(&mut conn, "worker-mono-own", Some("quota"), None);
+    let used = store::on_failure(
+        &mut conn,
+        &failure(
+            &own.id,
+            None,
+            None,
+            "claude",
+            who,
+            Some(PROJECT),
+            Some("ada"),
+        ),
+        1_200,
+    )
+    .unwrap();
+    assert_eq!(used.to.as_deref(), Some("grok"));
+    assert_eq!(used.reason, "Claude Code can't take it, so this uses Grok.");
+}
+
+/// The lock does not switch. A known reset waits. No reset wakes the first mate. One CLI still waits as before.
+#[test]
+fn a_lock_pauses_on_a_reset_and_wakes_the_first_mate() {
+    let store = memory();
+    let mut conn = store.lock_conn().unwrap();
+    store::set_policy(
+        &mut conn,
+        "system",
+        "system",
+        &json!({ "lockDefault": true, "neverUse": [], "fallback": ["codex"] }),
+        0,
+    )
+    .unwrap();
+    let who = &[("claude", true, true), ("codex", true, true)];
+    let waiting = fail_row(&mut conn, "worker-wait", Some("quota"), Some(9_000));
+    let paused = store::on_failure(
+        &mut conn,
+        &failure(&waiting.id, None, None, "claude", who, None, None),
+        1_200,
+    )
+    .unwrap();
+    assert_eq!(paused.action, "pause");
+    assert_eq!(paused.to, None);
+    assert_eq!(paused.until, Some(9_000));
+    assert_eq!(
+        paused.reason,
+        "Always use my default is on, so another CLI was not used."
+    );
+    assert_eq!(hold_count(&conn, &waiting.id), 1);
+    assert_eq!(outcomes(&conn, &waiting.id), vec!["paused".to_string()]);
+
+    let stuck = fail_row(&mut conn, "worker-wake", Some("quota"), None);
+    let woken = store::on_failure(
+        &mut conn,
+        &failure(&stuck.id, None, None, "claude", who, None, None),
+        1_200,
+    )
+    .unwrap();
+    assert_eq!(woken.action, "first-mate");
+    assert_eq!(woken.to, None);
+    assert_eq!(
+        woken.reason,
+        "Always use my default is on, so another CLI was not used."
+    );
+    assert_eq!(hold_count(&conn, &stuck.id), 0);
+
+    let current = Pick {
+        cli: Some("claude".into()),
+        model: None,
+        effort: None,
+    };
+    let alone = present(&[("claude", true, true)]);
+    let still = decide(&input(
+        &current,
+        &alone,
+        "usage_limit",
+        Some(5_000),
+        Some(&json!({ "lockDefault": true })),
+    ));
+    assert_eq!(still.action, "pause");
+    assert_eq!(still.reason, "waiting for a usage limit to reset");
+    let due = decide(&input(
+        &current,
+        &present(who),
+        "usage_limit",
+        Some(1_000),
+        Some(&json!({ "lockDefault": true })),
+    ));
+    assert_eq!(due.action, "resume");
+    assert_eq!(due.reason, "the usage limit has reset");
+    let off = decide(&input(
+        &current,
+        &present(who),
+        "quota",
+        None,
+        Some(&json!({ "fallback": ["grok"] })),
+    ));
+    assert_eq!(off.action, "first-mate");
+    assert_eq!(
+        off.reason,
+        "Grok isn't installed here, so it was skipped. no other worker can take it"
+    );
+    let banned = decide(&input(
+        &current,
+        &present(&[
+            ("claude", true, true),
+            ("codex", true, true),
+            ("grok", true, true),
+        ]),
+        "quota",
+        None,
+        Some(&json!({ "neverUse": ["codex"] })),
+    ));
+    assert_eq!(banned.to.as_deref(), Some("grok"));
+    assert_eq!(
+        banned.reason,
+        "Codex is on Never use, so it was skipped. Claude Code can't take it, so this uses Grok."
+    );
+    let itself = decide(&input(
+        &current,
+        &present(&[("claude", true, true), ("grok", true, true)]),
+        "quota",
+        None,
+        Some(&json!({ "neverUse": ["claude"] })),
+    ));
+    assert_eq!(
+        itself.reason,
+        "Claude Code is on Never use, so it was skipped. Claude Code can't take it, so this uses Grok."
+    );
+    let held = vec![itself.skipped[0].clone()];
+    let repeated = decide(&FailureInput {
+        error_class: Some("quota"),
+        text: None,
+        resets_at: None,
+        now: 1_000,
+        current: &current,
+        present: &present(&[("claude", true, true), ("grok", true, true)]),
+        ledger: &held,
+        budget: None,
+        policy: Some(&json!({ "neverUse": ["claude"] })),
+    });
+    assert!(repeated.skipped.is_empty());
+    let again = decide(&input(
+        &current,
+        &present(who),
+        "timeout",
+        None,
+        Some(&json!({ "lockDefault": true })),
+    ));
+    assert_eq!(again.action, "again");
+    assert_eq!(again.reason, "the CLI didn't answer");
 }

@@ -582,26 +582,25 @@ fn saved_policy(conn: &Connection, scope: &str, raw: &str) -> Result<Option<Valu
     Ok(text.map(|text| policy_value(Some(text))))
 }
 
-fn policy_in_force(conn: &Connection, query: &RouteQuery) -> Result<Value, String> {
-    if let Some(id) = query
-        .mono
-        .as_deref()
-        .map(str::trim)
-        .filter(|id| !id.is_empty())
-    {
+/// A Mono does not borrow the project or the system. A project uses its own when that column is set.
+fn policy_for(
+    conn: &Connection,
+    mono: Option<&str>,
+    project: Option<&str>,
+) -> Result<Value, String> {
+    if let Some(id) = mono.map(str::trim).filter(|id| !id.is_empty()) {
         return Ok(saved_policy(conn, "mono", id)?.unwrap_or_else(|| sanitize_policy(&Value::Null)));
     }
-    if let Some(id) = query
-        .project
-        .as_deref()
-        .map(str::trim)
-        .filter(|id| !id.is_empty())
-    {
+    if let Some(id) = project.map(str::trim).filter(|id| !id.is_empty()) {
         if let Some(policy) = saved_policy(conn, "project", id)? {
             return Ok(policy);
         }
     }
     Ok(saved_policy(conn, "system", "system")?.unwrap_or_else(|| sanitize_policy(&Value::Null)))
+}
+
+fn policy_in_force(conn: &Connection, query: &RouteQuery) -> Result<Value, String> {
+    policy_for(conn, query.mono.as_deref(), query.project.as_deref())
 }
 
 pub fn route_at(
@@ -781,11 +780,19 @@ fn refused(reason: &str) -> FailureResult {
     }
 }
 
+fn write_decision(tx: &Connection, id: &str, decision: &Decision) -> Result<(), String> {
+    for skip in &decision.skipped {
+        append_attempt(tx, id, skip)?;
+    }
+    append_attempt(tx, id, &decision.attempt)
+}
+
 fn record_failure(
     tx: &Connection,
     input: &FailureQuery,
     now: i64,
 ) -> Result<Result<Decision, FailureResult>, String> {
+    let policy = policy_for(tx, input.mono.as_deref(), input.project.as_deref())?;
     let Some(row) = crate::delegations::get(tx, &input.delegation_id)? else {
         let ledger = Vec::new();
         let decision = decide(&FailureInput {
@@ -797,6 +804,7 @@ fn record_failure(
             present: &input.present,
             ledger: &ledger,
             budget: None,
+            policy: Some(&policy),
         });
         return Ok(Err(result_of(&decision, false)));
     };
@@ -817,12 +825,13 @@ fn record_failure(
         present: &input.present,
         ledger: &ledger,
         budget: budget.as_ref(),
+        policy: Some(&policy),
     });
     if decision.action == "resume" {
         return Ok(Err(result_of(&decision, false)));
     }
     if decision.action == "pause" {
-        append_attempt(tx, &row.id, &decision.attempt)?;
+        write_decision(tx, &row.id, &decision)?;
         write_hold(
             tx,
             &row.id,
@@ -831,7 +840,7 @@ fn record_failure(
             &input.current,
         )?;
     } else {
-        append_attempt(tx, &row.id, &decision.attempt)?;
+        write_decision(tx, &row.id, &decision)?;
         delete_hold(tx, &row.id)?;
     }
     Ok(Ok(decision))
