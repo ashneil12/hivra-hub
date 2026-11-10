@@ -80,6 +80,8 @@ What stays off the phone for a first slice.
 
 What ships first, if he says go, in this order: the chats and questions that already work, then approvals, with diffs as they already are. Files stay a reader. The terminal stays on the desktop.
 
+Any action a phone or web client takes goes through the same approval gates as the same action on the desktop. A remote client gets no shortcut: no skipped prompt, no auto-allow, and no approval that the desktop would have asked for. A later package that adds a remote action must show that it meets this rule.
+
 How it connects. Pairing is a one-time code, QUIC with mutual TLS, and the desktop's identity is pinned by that code. The desktop must stay awake (`mobile/README.md`). Mobile access itself defaults to off (`enabled: false` in `src-tauri/src/mobile_access.rs`). Dev copies refuse phone access (`phone_access` in `src-tauri/src/instance.rs`). The router-mapping flag defaults to on, but it only acts after mobile access is turned on. This package does not change that default. Widening it, or turning mapping on for anyone who has not asked, is out. Changing the default so mapping stays off until a separate tap would be a behaviour change on upstream mobile code, which SPEC section 11 says not to touch. That change is an Ash decision, not a silent edit.
 
 The phone cannot reach the SSH host. Closing the laptop ends the peer the phone knows. A later package that wants the phone while the laptop is shut has to teach the host to speak the phone's protocol, or teach the phone to be a client of the host. That is the large piece. It is not started here. SPEC section 11 still says the mobile app is kept, so that later package is a small hook, not a rewrite.
@@ -89,6 +91,8 @@ The phone cannot reach the SSH host. Closing the laptop ends the peer the phone 
 There is no separate web client in this repo. The desktop UI is the Tauri webview. `docs/remote-access.md` already allows a person to put their own HTTPS reverse proxy in front of the loopback host, and it accepts plain HTTP only for a loopback address. The credential stays in the native app. It is not put in browser storage.
 
 Recommend a local client, not a signed-in hosted site.
+
+A client never sends a Keychain key or a provider key as a bearer token to an address the person did not set. The only credential a client carries is the device credential the host issues, and it goes only to the address the person entered, over HTTPS or to loopback.
 
 A local client means a page the desktop or the host serves, on loopback, or on a LAN or tailnet address the person has already chosen to open. No account. The same device credential the host already issues is enough. It defaults to off, or to loopback only, until that person turns a wider address on. This matches the host that already exists, and it does not need a domain or a certificate from a public authority. A tailnet HTTPS name, if the person uses one, is their network's certificate, not Hivra's.
 
