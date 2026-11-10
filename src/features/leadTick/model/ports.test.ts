@@ -2,6 +2,27 @@ import { describe, expect, it } from "vitest";
 import { DEFAULT_BUILDER_SCALE } from "../../monos/model/builderScale";
 import { appPorts, outcomeOf, slotAnswer, type PortHost } from "./ports";
 
+function pkg(id: string) {
+  return {
+    id,
+    projectId: "app",
+    wp: "WP-300",
+    title: "Build it",
+    briefPath: "docs/hivra/work/WP-300.md",
+    branch: `wp/300-${id}`,
+    status: "queued",
+    securityPark: false,
+    priority: 0,
+    notes: "",
+    parkReason: null,
+    version: 1,
+    createdAt: 1,
+    updatedAt: 1,
+    claimedAt: null,
+    finishedAt: null,
+  };
+}
+
 const scale = { ...DEFAULT_BUILDER_SCALE, load: { kind: "default" as const } };
 
 describe("builder slot", () => {
@@ -56,6 +77,23 @@ describe("app ports", () => {
     const ports = appPorts(h.value, "/code/app", context);
     expect(await ports.list()).toEqual([]);
     expect(h.calls[0]).toEqual({ command: "programme_list", args: { actor: { id: "s-lead", project: "app", kind: "first-mate" } } });
+  });
+
+  it("hands the tick the board best first, whatever order the store answered in", async () => {
+    const h = host();
+    const low = { ...pkg("low"), priority: 0, createdAt: 1 };
+    const high = { ...pkg("high"), priority: 5, createdAt: 9 };
+    h.value.invoke = async (command) => (command === "programme_list" ? [low, high] : null);
+    const rows = await appPorts(h.value, "/code/app", context).list();
+    expect(rows.map((row) => row.id)).toEqual(["high", "low"]);
+  });
+
+  it("keeps a row with a long title or note, so the tick still sees it", async () => {
+    const h = host();
+    const long = { ...pkg("long"), title: "t".repeat(400), notes: "n".repeat(2500) };
+    h.value.invoke = async (command) => (command === "programme_list" ? [long] : null);
+    const rows = await appPorts(h.value, "/code/app", context).list();
+    expect(rows.map((row) => row.id)).toEqual(["long"]);
   });
 
   it("merges through delivery's merge path as the First Mate, never as the person", async () => {

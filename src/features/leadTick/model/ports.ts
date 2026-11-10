@@ -5,7 +5,7 @@
 
 import { builderLaunchAllowed, type BuilderHealth, type BuilderScale } from "../../monos/model/builderScale";
 import type { WorkerLimits } from "../../monos/model/workerPool";
-import { readPackage, type ProgrammePackage, type ProgrammeStatus } from "../../programme/model/programme";
+import { collectProgramme, readPackage, type ProgrammePackage, type ProgrammeStatus } from "../../programme/model/programme";
 import type { LeadContext } from "./schedule";
 import type { LeadTickPorts, SlotAnswer, TickMergeOutcome, TickWatch } from "./tick";
 
@@ -65,12 +65,11 @@ export function appPorts(host: PortHost, folder: string, context: LeadContext): 
   const actor = { id: context.lead.sessionId, project: context.projectId, kind: "first-mate" };
   return {
     async list() {
-      const rows = await host.invoke("programme_list", { actor });
-      if (!Array.isArray(rows)) throw new Error("The programme isn't available.");
-      return rows.flatMap((row) => {
-        const read = readPackage(row);
-        return read ? [read] : [];
-      });
+      // The same read the Home card makes: rows best first (the tick starts the first queued one), and a read that
+      // fails or doesn't answer with a list is "unavailable", which the tick reports and retries next time.
+      const loaded = await collectProgramme([context.projectId], () => host.invoke("programme_list", { actor }));
+      if ("unavailable" in loaded) throw new Error("The programme isn't available.");
+      return loaded.rows;
     },
     async setStatus(id: string, version: number, status: ProgrammeStatus) {
       return rowOf(await host.invoke("programme_set_status", { actor, input: { id, version, status } }));
