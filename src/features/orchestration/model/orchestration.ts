@@ -30,6 +30,7 @@ import {
 import {
   normalizeOrchestrationRun,
   orchestrationCheckoutCwd,
+  orchestrationProjectCwd,
   orchestrationWorkspace,
   workspaceIdentity,
   type OrchestrationDispatch,
@@ -109,6 +110,11 @@ export type OrchestrationHost = {
     decision: ApprovalDecision,
   ): void;
   answerQuestion(id: string, requestId: number, reply: UserQuestionReply): void;
+  /**
+   * WP-91: the project a decision about this run's folder sits under (the hub project's id, as a delegation's project
+   * is named). Without it, or when it names nothing, the folder itself is the project.
+   */
+  decisionProject?(projectCwd: string): string | undefined;
 };
 /** A WP-14 decision raised through the app's decision store (`decisions_ask`). */
 export type StoredDecision = {
@@ -130,6 +136,7 @@ type Storage = {
     taskId: string;
     title: string;
     reason: string;
+    project?: string;
   }): Promise<StoredDecision>;
   decisions(): Promise<StoredDecision[]>;
 };
@@ -137,6 +144,25 @@ type Storage = {
 /** The decision key for an irreversible step: stable for the run and the task, so re-raising never duplicates it. */
 export const irreversibleDecisionKey = (leadId: string, taskId: string) =>
   `irreversible/${leadId}/${taskId}`;
+
+/**
+ * What `decisions_ask` is given for an irreversible step. The project is the one the run works in: a decision with
+ * none is under no project, which the Inbox and Home both leave out, so nobody would ever see it to answer it.
+ */
+export const decisionAskInput = (input: {
+  leadId: string;
+  taskId: string;
+  title: string;
+  reason: string;
+  project?: string;
+}) => ({
+  askedBy: input.leadId,
+  ...(input.project?.trim() ? { project: input.project.trim() } : {}),
+  key: irreversibleDecisionKey(input.leadId, input.taskId),
+  question: `${input.title} cannot be undone: ${input.reason} Approve it, or send it back with your words.`,
+  options: ["Approve", "Send back"],
+  recommended: "Send back",
+});
 
 const decisionRecord = (value: unknown): StoredDecision | null => {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
@@ -167,15 +193,9 @@ const storage: Storage = {
   disable: (sessionId) => invoke("control_disable", { sessionId }),
   scopes: (cwd, files) => invoke("control_scopes", { cwd, files }),
   resolvePath: (path) => invoke("control_write_path", { path }),
-  askDecision: async ({ leadId, taskId, title, reason }) => {
+  askDecision: async (input) => {
     const outcome = (await invoke("decisions_ask", {
-      input: {
-        askedBy: leadId,
-        key: irreversibleDecisionKey(leadId, taskId),
-        question: `${title} cannot be undone: ${reason} Approve it, or send it back with your words.`,
-        options: ["Approve", "Send back"],
-        recommended: "Send back",
-      },
+      input: decisionAskInput(input),
     })) as { decision?: unknown };
     const decision = decisionRecord(outcome?.decision);
     if (!decision) throw new Error("The decision store answered nothing");
@@ -753,6 +773,19 @@ export class Orchestrator {
     return entry;
   }
 
+  /** The project an irreversible step's decision sits under: the host's name for it, else the run's folder. */
+  private decisionProject(leadId: string): string | undefined {
+    const run = this.run(leadId);
+    if (!run) return undefined;
+    const folder = orchestrationProjectCwd(run);
+    try {
+      return this.host?.decisionProject?.(folder)?.trim() || folder;
+    } catch (error) {
+      console.error("Could not name the decision's project", error);
+      return folder;
+    }
+  }
+
   /**
    * WP-91: the person's stand on an irreversible step. Raised before the task's first dispatch and answered only by
    * the person; an unanswered one means that part does not start.
@@ -779,6 +812,7 @@ export class Orchestrator {
           taskId: task.id,
           title: task.title,
           reason: task.irreversibleReason ?? "it cannot be undone",
+          project: this.decisionProject(leadId),
         });
       } catch (error) {
         console.error("Could not park the irreversible step", error);

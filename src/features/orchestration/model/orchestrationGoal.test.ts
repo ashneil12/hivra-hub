@@ -4,6 +4,7 @@
  */
 import { describe, expect, it, vi } from "vitest";
 import {
+  decisionAskInput,
   describeGoalReport,
   goalRunView,
   Orchestrator,
@@ -578,6 +579,40 @@ describe("an irreversible step", () => {
     const task = f.manager.run("lead")!.tasks.find((entry) => entry.id === sentBack)!;
     expect(task.error).toContain("use a copy first");
     expect(f.host.createWorker).toHaveBeenCalledTimes(1);
+  });
+
+  it("is raised under the run's project, so the person sees it where the run's other questions are", async () => {
+    const f = fixture();
+    // The host names the hub project a folder belongs to, the way a delegation's project is named.
+    f.manager.bind({
+      ...f.host,
+      decisionProject: (folder: string) => (folder === "/repo" ? "hivra" : folder),
+    } as OrchestrationHost);
+    await f.start();
+    await f.delegate({ irreversible: true, reason: "it migrates the shared database" });
+    await vi.waitFor(() => expect(f.store.askDecision).toHaveBeenCalledTimes(1));
+    expect(f.store.askDecision).toHaveBeenCalledWith(
+      expect.objectContaining({ leadId: "lead", project: "hivra" }),
+    );
+  });
+
+  it("falls back to the project's folder when the host names no hub project, or cannot say", async () => {
+    for (const decisionProject of [
+      undefined,
+      () => "",
+      () => {
+        throw new Error("the hub is not loaded");
+      },
+    ]) {
+      const f = fixture();
+      f.manager.bind({ ...f.host, decisionProject } as unknown as OrchestrationHost);
+      await f.start();
+      await f.delegate({ irreversible: true, reason: "it spends money" });
+      await vi.waitFor(() => expect(f.store.askDecision).toHaveBeenCalledTimes(1));
+      expect(f.store.askDecision).toHaveBeenCalledWith(
+        expect.objectContaining({ project: "/repo" }),
+      );
+    }
   });
 
   it("leaves an ordinary task alone", async () => {
@@ -1259,5 +1294,39 @@ describe("finishing a run", () => {
     expect(
       f.manager.run("lead")?.checkRuns?.some((entry) => entry.layer === "app"),
     ).toBe(true);
+  });
+});
+
+describe("the decision an irreversible step raises", () => {
+  it("names its project when it has one, and keeps its stable key and its two answers", () => {
+    const input = decisionAskInput({
+      leadId: "lead",
+      taskId: "t1",
+      title: "Migrate",
+      reason: "it migrates the shared database",
+      project: "hivra",
+    });
+    expect(input).toMatchObject({
+      askedBy: "lead",
+      project: "hivra",
+      key: irreversibleDecisionKey("lead", "t1"),
+      options: ["Approve", "Send back"],
+      recommended: "Send back",
+    });
+    expect(input.question).toContain("Migrate cannot be undone");
+    expect(input.question).toContain("it migrates the shared database");
+  });
+
+  it("leaves the project out rather than send an empty one", () => {
+    for (const project of ["", "   ", undefined]) {
+      const input = decisionAskInput({
+        leadId: "lead",
+        taskId: "t1",
+        title: "Migrate",
+        reason: "it spends money",
+        project,
+      });
+      expect("project" in input).toBe(false);
+    }
   });
 });
