@@ -382,7 +382,9 @@ import {
   gitRepositoryOnThisComputer,
   newChatWorktreeOpenFor,
   openNewChatWorktree,
+  pendingNewChatOfferCheck,
   withNewChatFolderChoice,
+  withoutNewChatFolderChoice,
 } from "../features/source-control/model/newChatWorktree";
 import { UsageFooter } from "./shell/UsageFooter";
 import { useProjectBranches } from "../features/source-control/hooks/useProjectBranches";
@@ -6924,7 +6926,7 @@ function Workspace({
           const base = isBlankSession(s)
             ? retargetSessionToProject(s, normalized)
             : s;
-          return {
+          const moved: Session = {
             ...base,
             cwd: normalized,
             branch: undefined,
@@ -6932,9 +6934,9 @@ function Workspace({
             worktreeRemoved: undefined,
             workspaceMode: undefined,
             worktreeBase: undefined,
-            // WP-110: a choice to stay in the old folder does not carry to another one.
-            ...(folderChanged ? { worktreeDeclined: undefined } : {}),
           };
+          // WP-110: a choice to stay in the old folder does not carry to another one.
+          return folderChanged ? withoutNewChatFolderChoice(moved) : moved;
         }),
       );
       // WP-110: a blank chat moved to another folder follows the worktree setting.
@@ -9121,6 +9123,7 @@ function Workspace({
           }),
           {
             gitOnThisComputer: gitRepositoryOnThisComputer,
+            offerCheck: pendingNewChatOfferCheck,
             createWorktree,
           },
         );

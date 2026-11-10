@@ -649,7 +649,11 @@ describe("a new chat's choice to stay in its folder across a reload", () => {
     const create = vi.fn(async () => {
       throw new Error("a worktree must not be created for this chat");
     });
-    const port = { gitOnThisComputer: vi.fn(async () => true), createWorktree: create };
+    const port = {
+      gitOnThisComputer: vi.fn(async () => true),
+      offerCheck: () => null,
+      createWorktree: create,
+    };
     const send = (session: NonNullable<typeof kept>) =>
       openNewChatWorktree(
         newChatWorktreeOpenFor(session, { setting: "always", isFirstTurn: true, toggleOn: false }),

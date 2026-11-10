@@ -27,10 +27,17 @@ export type NewChatWorktreeOpen = {
   declined: boolean;
   cwd: string;
   base: string;
+  /**
+   * Set while the worktree on the composer is still the one the offer switched on (nothing chosen on the chat since):
+   * the chat to look the offer's own git check up by. Absent when the person or a launch chose the worktree.
+   */
+  offerChat?: string;
 };
 
 export type NewChatWorktreePort = {
   gitOnThisComputer: (cwd: string) => Promise<boolean>;
+  /** The offer's git check for this chat while it is still running (`pendingNewChatOfferCheck`), else null. */
+  offerCheck: (sessionId: string) => Promise<boolean> | null;
   createWorktree: (
     cwd: string,
     branch: string,
@@ -54,11 +61,15 @@ function readable(session: Session | undefined): session is Session {
 }
 
 /**
- * A chat the app started for a Lead or another chat (`app-<chat>-<request>`).
- * Its brief says where it works, so a default worktree never moves it.
+ * A chat the app starts, not one a person opens: a worker (`app-<chat>-<request>`), a council seat
+ * (`council:<room>:<seat>`), or a Mono's or a Lead's chat (`firstMate`). Its brief or its role says where it works (a
+ * Lead works in its project folder and hands work to workers), so a default worktree never moves it. One check, used
+ * by the offer, the send and the take-back, so the kinds cannot drift apart.
  */
-function startedThroughApp(sessionId: string): boolean {
-  return sessionId.startsWith("app-");
+export function startedByTheApp(session: Pick<Session, "id" | "firstMate">): boolean {
+  return (
+    session.id.startsWith("app-") || session.id.startsWith("council:") || session.firstMate === true
+  );
 }
 
 /** The person chose this folder for this chat. The choice is held on the chat and saved with the open tabs. */
@@ -91,6 +102,21 @@ function canOffer(session: Session, cwd: string): boolean {
 }
 
 /**
+ * The worktree mode on this chat is still the one the offer switched on: no worktree, base or folder choice has been put
+ * on it since, and it is not a chat the app started (those are never offered one, so their mode came from a launch).
+ */
+function modeIsTheOffers(session: Session): boolean {
+  return (
+    session.workspaceMode === "worktree" &&
+    !session.worktreeCwd &&
+    !session.worktreeRemoved &&
+    (!session.worktreeBase || session.worktreeBase === "HEAD") &&
+    !newChatStaysHere(session) &&
+    !startedByTheApp(session)
+  );
+}
+
+/**
  * Switch a new blank chat onto a worktree before the git check returns, so the
  * composer shows that choice at once. Returns null when nothing should change.
  */
@@ -101,9 +127,11 @@ export function beginNewChatWorktreeOffer(
   setting: NewChatWorktree,
 ): Session[] | null {
   if (setting !== "ask" && setting !== "always") return null;
-  if (!localFolder(cwd) || startedThroughApp(sessionId)) return null;
+  if (!localFolder(cwd)) return null;
   const session = sessions.find((entry) => entry.id === sessionId);
-  if (!session || newChatStaysHere(session) || !canOffer(session, cwd)) return null;
+  if (!session || startedByTheApp(session) || newChatStaysHere(session) || !canOffer(session, cwd)) {
+    return null;
+  }
   return sessions.map((entry) =>
     entry.id === sessionId
       ? {
@@ -125,12 +153,9 @@ export function clearUnconfirmedNewChatWorktree(
   cwd: string,
 ): Session[] | null {
   const session = sessions.find((entry) => entry.id === sessionId);
-  if (!session || session.workspaceMode !== "worktree") return null;
-  if (session.worktreeCwd || session.worktreeRemoved) return null;
-  if (session.worktreeBase && session.worktreeBase !== "HEAD") return null;
+  if (!session || !modeIsTheOffers(session)) return null;
   if (!readable(session) || !isBlankSession(session)) return null;
   if (!sameProjectPath(session.cwd, cwd)) return null;
-  if (newChatStaysHere(session)) return null;
   return sessions.map((entry) =>
     entry.id === sessionId
       ? { ...entry, workspaceMode: undefined, worktreeBase: undefined }
@@ -200,6 +225,35 @@ export async function gitRepositoryOnThisComputer(
   return listed.detached || listed.current !== null || listed.branches.length > 0;
 }
 
+/** The offers still waiting on git, one check per chat. It leaves the map as soon as it settles. */
+const offerChecks = new Map<string, { cwd: string; check: Promise<boolean> }>();
+
+/**
+ * The one git check for this chat's offer. The offer and a send that comes before git has answered both wait on this
+ * same promise, so git is asked once and neither waits past `NEW_CHAT_GIT_WAIT_MS` (the limit is `ask`'s own). A chat
+ * that moves to another folder gets a new check.
+ */
+export function newChatOfferCheck(
+  sessionId: string,
+  cwd: string,
+  ask: (cwd: string) => Promise<boolean> = gitRepositoryOnThisComputer,
+): Promise<boolean> {
+  const held = offerChecks.get(sessionId);
+  if (held && sameProjectPath(held.cwd, cwd)) return held.check;
+  const entry = { cwd, check: ask(cwd) };
+  offerChecks.set(sessionId, entry);
+  const settled = () => {
+    if (offerChecks.get(sessionId) === entry) offerChecks.delete(sessionId);
+  };
+  entry.check.then(settled, settled);
+  return entry.check;
+}
+
+/** The offer's git check for this chat while git has not answered it yet, else null. */
+export function pendingNewChatOfferCheck(sessionId: string): Promise<boolean> | null {
+  return offerChecks.get(sessionId)?.check ?? null;
+}
+
 /** Apply the setting to a chat that is already in the list. */
 export function attachNewChatWorktree(
   sessionId: string,
@@ -212,7 +266,7 @@ export function attachNewChatWorktree(
   );
   void confirmNewChatWorktreeOffer(sessionId, cwd, {
     setting: loadNewChatWorktree,
-    gitOnThisComputer: gitRepositoryOnThisComputer,
+    gitOnThisComputer: (folder) => newChatOfferCheck(sessionId, folder),
     commit: (update) => {
       setSessions((prev) => update(prev) ?? prev);
     },
@@ -223,6 +277,8 @@ export function attachNewChatWorktree(
  * The worktree for this send, or null when this chat stays in its folder.
  * Ask creates only when the composer toggle is on. Always also creates on a
  * first turn in a git repo unless the person chose this folder.
+ * A toggle that is still the offer's own waits for the offer's git check (time-limited, shared with the offer): a
+ * git that never answers, or says this is not a repository, sends the chat on in this folder.
  * Does not catch: a refusal from createWorktree keeps its message.
  */
 export async function openNewChatWorktree(
@@ -241,6 +297,17 @@ export async function openNewChatWorktree(
       return null;
     }
     if (!git) return null;
+  } else if (input.offerChat !== undefined) {
+    const asking = port.offerCheck(input.offerChat);
+    if (asking) {
+      let git = false;
+      try {
+        git = await asking;
+      } catch {
+        return null;
+      }
+      if (!git) return null;
+    }
   }
   return port.createWorktree(
     input.cwd,
@@ -253,8 +320,9 @@ export async function openNewChatWorktree(
 /**
  * What a send asks `openNewChatWorktree`. The chat decides whether this is a
  * first turn the default may act on: not one that continues a chat, not a
- * Lead, an inbox ask, an automation, a worker the app started, or a chat that
- * already has or lost a worktree. A person who chose this folder is `declined`.
+ * Lead, an inbox ask, an automation, a chat the app started (`startedByTheApp`),
+ * or a chat that already has or lost a worktree. A person who chose this folder
+ * is `declined`. `offerChat` is set while the toggle is still the offer's own.
  */
 export function newChatWorktreeOpenFor(
   session: Session,
@@ -271,11 +339,12 @@ export function newChatWorktreeOpenFor(
       !session.worktreeRemoved &&
       !session.automationId &&
       !session.ephemeral &&
-      !startedThroughApp(session.id),
+      !startedByTheApp(session),
     toggleOn: send.toggleOn,
     declined: newChatStaysHere(session),
     cwd: session.cwd,
     base: session.worktreeBase || "HEAD",
+    ...(modeIsTheOffers(session) ? { offerChat: session.id } : {}),
   };
 }
 

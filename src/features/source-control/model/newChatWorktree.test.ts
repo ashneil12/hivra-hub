@@ -13,10 +13,13 @@ import {
   clearUnconfirmedNewChatWorktree,
   confirmNewChatWorktreeOffer,
   flippedNewChatWorktree,
+  newChatOfferCheck,
+  pendingNewChatOfferCheck,
   newChatStaysHere,
   newChatWorktreeAskLine,
   newChatWorktreeOpenFor,
   openNewChatWorktree,
+  startedByTheApp,
   withNewChatFolderChoice,
   withoutNewChatFolderChoice,
   NEW_CHAT_WORKTREE_ASK,
@@ -50,6 +53,7 @@ function tree(path = "/work/proj-wt", dirty: boolean | null = false): Worktree {
 function port(overrides: Partial<NewChatWorktreePort> = {}): NewChatWorktreePort {
   return {
     gitOnThisComputer: vi.fn(async () => true),
+    offerCheck: () => null,
     createWorktree: vi.fn(async () => tree()),
     ...overrides,
   };
@@ -226,6 +230,118 @@ describe("openNewChatWorktree", () => {
     );
     expect(opened).not.toBeNull();
     expect(create).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("a send that comes while the offer's git check is running", () => {
+  const offered = { setting: "ask" as const, firstTurn: true, toggleOn: true, declined: false, cwd: "/work/proj", base: "HEAD", offerChat: "s" };
+
+  it("waits for that check, then makes the worktree when git says this is a repository", async () => {
+    const create = vi.fn(async () => tree());
+    const check = deferred<boolean>();
+    const git = vi.fn();
+    let outcome: "pending" | "done" = "pending";
+    const sent = openNewChatWorktree(offered, port({ createWorktree: create, gitOnThisComputer: git, offerCheck: () => check.promise })).then((worktree) => {
+      outcome = "done";
+      return worktree;
+    });
+    await Promise.resolve();
+    expect(outcome).toBe("pending");
+    expect(create).not.toHaveBeenCalled();
+    check.resolve(true);
+    expect((await sent)?.path).toBe("/work/proj-wt");
+    expect(create).toHaveBeenCalledTimes(1);
+    expect(git).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["says this is not a repository", (check: ReturnType<typeof deferred<boolean>>) => check.resolve(false)],
+    ["does not answer in time", (check: ReturnType<typeof deferred<boolean>>) => check.reject(new Error("git did not answer in time"))],
+  ])("goes on in this folder when git %s", async (_name, finish) => {
+    const create = vi.fn(async () => tree());
+    const check = deferred<boolean>();
+    const sent = openNewChatWorktree(offered, port({ createWorktree: create, offerCheck: () => check.promise }));
+    finish(check);
+    expect(await sent).toBeNull();
+    expect(create).not.toHaveBeenCalled();
+  });
+
+  it("makes the worktree at once when no check is running, and does not ask git", async () => {
+    const create = vi.fn(async () => tree());
+    const git = vi.fn();
+    const looked = vi.fn(() => null);
+    expect((await openNewChatWorktree(offered, port({ createWorktree: create, gitOnThisComputer: git, offerCheck: looked })))?.path).toBe("/work/proj-wt");
+    expect(looked).toHaveBeenCalledWith("s");
+    expect(git).not.toHaveBeenCalled();
+  });
+
+  it("does not look for a check when the worktree is not the offer's own", async () => {
+    const looked = vi.fn(() => new Promise<boolean>(() => {}));
+    const { offerChat: _gone, ...chosen } = offered;
+    expect((await openNewChatWorktree(chosen, port({ offerCheck: looked })))?.path).toBe("/work/proj-wt");
+    expect(looked).not.toHaveBeenCalled();
+  });
+
+  it("is told it is the offer's own only while nothing has been chosen on the chat", () => {
+    const ask = (session: Session) =>
+      newChatWorktreeOpenFor(session, { setting: "ask", isFirstTurn: true, toggleOn: true }).offerChat;
+    const mode = { workspaceMode: "worktree" as const, worktreeBase: "HEAD" };
+    expect(ask(chat({ id: "s", ...mode }))).toBe("s");
+    expect(ask(chat({ id: "s", workspaceMode: "worktree" }))).toBe("s");
+    expect(ask(chat({ id: "s", ...mode, worktreeBase: "release" }))).toBeUndefined();
+    expect(ask(chat({ id: "s" }))).toBeUndefined();
+    expect(ask(chat({ id: "s", ...mode, worktreeCwd: "/wt" }))).toBeUndefined();
+    expect(ask(withNewChatFolderChoice(chat({ id: "s", ...mode }), "current"))).toBeUndefined();
+    expect(ask(chat({ id: "app-x-y", ...mode }))).toBeUndefined();
+    expect(ask(chat({ id: "council:r:a-1", ...mode }))).toBeUndefined();
+    expect(ask(chat({ id: "s", ...mode, firstMate: true }))).toBeUndefined();
+  });
+});
+
+describe("the offer's one git check per chat", () => {
+  it("is shared by whoever asks while it runs, and is dropped when it settles", async () => {
+    const answer = deferred<boolean>();
+    const ask = vi.fn(() => answer.promise);
+    const first = newChatOfferCheck("shared-1", "/work/proj", ask);
+    const second = newChatOfferCheck("shared-1", "/work/proj/", ask);
+    expect(second).toBe(first);
+    expect(ask).toHaveBeenCalledTimes(1);
+    expect(pendingNewChatOfferCheck("shared-1")).toBe(first);
+    answer.resolve(true);
+    await first;
+    await Promise.resolve();
+    expect(pendingNewChatOfferCheck("shared-1")).toBeNull();
+    // A later offer asks again: nothing about the folder is kept.
+    const again = vi.fn(async () => false);
+    expect(await newChatOfferCheck("shared-1", "/work/proj", again)).toBe(false);
+    expect(again).toHaveBeenCalledTimes(1);
+  });
+
+  it("is dropped when git fails, and the failure still reaches whoever waits", async () => {
+    const answer = deferred<boolean>();
+    const check = newChatOfferCheck("shared-2", "/work/proj", () => answer.promise);
+    answer.reject(new Error("timed out"));
+    await expect(check).rejects.toThrow("timed out");
+    await Promise.resolve();
+    expect(pendingNewChatOfferCheck("shared-2")).toBeNull();
+  });
+
+  it("is one per chat, and a chat moved to another folder gets its own", async () => {
+    const one = deferred<boolean>();
+    const two = deferred<boolean>();
+    const a = newChatOfferCheck("shared-3", "/work/one", () => one.promise);
+    const b = newChatOfferCheck("shared-3", "/work/two", () => two.promise);
+    const other = newChatOfferCheck("shared-4", "/work/one", () => Promise.resolve(true));
+    expect(b).not.toBe(a);
+    expect(other).not.toBe(a);
+    expect(pendingNewChatOfferCheck("shared-3")).toBe(b);
+    // The old folder's answer does not take the new folder's check away.
+    one.resolve(true);
+    await a;
+    await Promise.resolve();
+    expect(pendingNewChatOfferCheck("shared-3")).toBe(b);
+    two.resolve(true);
+    await b;
   });
 });
 
@@ -497,6 +613,101 @@ describe("a chat the app started for a Lead", () => {
     );
     expect(worktree?.path).toBe("/wt/asked");
     expect(create).toHaveBeenCalledTimes(1);
+  });
+});
+
+// One check says "the app started this chat": a worker, a council seat, a Mono's or a Lead's chat. The default never
+// moves any of them into a new worktree, however the check is reached.
+describe("a chat the app started", () => {
+  const KINDS: [string, Partial<Session>][] = [
+    ["a worker (app- id)", { id: "app-s1-r2" }],
+    ["a worker for a Lead (app- id with a lead part)", { id: "app-s1-lead-0f3a" }],
+    ["a council seat", { id: "council:room-9:claude-anthropic-1" }],
+    ["a Mono's or a Lead's chat", { id: "mono-chat-1", firstMate: true }],
+  ];
+  const ORDINARY: [string, Partial<Session>][] = [
+    ["an ordinary chat", { id: "s-1" }],
+    ["a chat whose id only starts like a worker", { id: "application-1" }],
+    ["a chat whose id only starts like a council seat", { id: "councillor-2" }],
+    ["a chat with the first mate flag off", { id: "s-2", firstMate: false }],
+  ];
+
+  it.each(KINDS)("startedByTheApp is true for %s", (_name, over) => {
+    expect(startedByTheApp(chat(over))).toBe(true);
+  });
+
+  it.each(ORDINARY)("startedByTheApp is false for %s", (_name, over) => {
+    expect(startedByTheApp(chat(over))).toBe(false);
+  });
+
+  it.each(KINDS)("is not offered a worktree for ask or always: %s", (_name, over) => {
+    for (const setting of ["ask", "always"] as const) {
+      const session = chat({ cwd: "/work/proj", ...over });
+      expect(beginNewChatWorktreeOffer([session], session.id, "/work/proj", setting)).toBeNull();
+    }
+  });
+
+  it.each(ORDINARY)("is offered a worktree for ask and always: %s", (_name, over) => {
+    for (const setting of ["ask", "always"] as const) {
+      const session = chat({ cwd: "/work/proj", ...over });
+      expect(beginNewChatWorktreeOffer([session], session.id, "/work/proj", setting)).not.toBeNull();
+    }
+  });
+
+  it.each(KINDS)("is not a first turn the default may act on: %s", (_name, over) => {
+    const open = newChatWorktreeOpenFor(chat({ cwd: "/work/proj", ...over }), {
+      setting: "always",
+      isFirstTurn: true,
+      toggleOn: false,
+    });
+    expect(open.firstTurn).toBe(false);
+  });
+
+  it.each(KINDS)("is not moved into a new worktree by always, and git is not asked: %s", async (_name, over) => {
+    const create = vi.fn(async () => tree());
+    const git = vi.fn(async () => true);
+    const worktree = await openNewChatWorktree(
+      newChatWorktreeOpenFor(chat({ cwd: "/work/proj", ...over }), {
+        setting: "always",
+        isFirstTurn: true,
+        toggleOn: false,
+      }),
+      port({ createWorktree: create, gitOnThisComputer: git }),
+    );
+    expect(worktree).toBeNull();
+    expect(create).not.toHaveBeenCalled();
+    expect(git).not.toHaveBeenCalled();
+  });
+
+  it.each(ORDINARY)("is moved by always when it is a new chat: %s", async (_name, over) => {
+    const create = vi.fn(async () => tree("/wt/ordinary"));
+    const worktree = await openNewChatWorktree(
+      newChatWorktreeOpenFor(chat({ cwd: "/work/proj", ...over }), {
+        setting: "always",
+        isFirstTurn: true,
+        toggleOn: false,
+      }),
+      port({ createWorktree: create }),
+    );
+    expect(worktree?.path).toBe("/wt/ordinary");
+  });
+
+  it.each(KINDS)("keeps a worktree its launch asked for, because that is the toggle: %s", async (_name, over) => {
+    const create = vi.fn(async () => tree("/wt/asked"));
+    const worktree = await openNewChatWorktree(
+      newChatWorktreeOpenFor(chat({ cwd: "/work/proj", workspaceMode: "worktree", ...over }), {
+        setting: "always",
+        isFirstTurn: true,
+        toggleOn: true,
+      }),
+      port({ createWorktree: create }),
+    );
+    expect(worktree?.path).toBe("/wt/asked");
+  });
+
+  it.each(KINDS)("does not lose the worktree its launch asked for when git is slow or says no: %s", (_name, over) => {
+    const asked = chat({ cwd: "/work/proj", workspaceMode: "worktree", worktreeBase: "HEAD", ...over });
+    expect(clearUnconfirmedNewChatWorktree([asked], asked.id, "/work/proj")).toBeNull();
   });
 });
 
