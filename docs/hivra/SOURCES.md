@@ -94,3 +94,8 @@ Every item of Ash's vision maps to packages, so nothing is dropped.
 | Agents learn from past chats with evidence; the person's opinions and voice | 83 |
 | Research and plan before building, terminal sessions in Hivra, who made each commit, a stack per worktree (HumanLayer, 4 Nov) | 84, 85, 86, 87 |
 | Each worktree has its own web address, and its tests meet fake outside services (portless, emulate, 5 Nov) | 82, 87, 90 |
+| An optional overnight draft of the next packages, off until the person turns it on | 165 |
+
+## Overnight drafts (WP-165)
+
+WP-165 reads the sources table above and a watch summary the person approved. It drafts a package only when that summary names a source already in the table. It does not add a source, and it does not copy code. The habit stays off until the person turns it on.
