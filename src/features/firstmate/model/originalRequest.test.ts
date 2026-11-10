@@ -6,6 +6,7 @@ import {
   originalRequestOf,
   pickOriginalRequest,
   quoteOriginalRequest,
+  readOriginalRequest,
   type RequestBlock,
 } from "./originalRequest";
 
@@ -107,6 +108,17 @@ describe("the person's own request, as a worker's brief quotes it (WP-171)", () 
       const quoted = quoteOriginalRequest("short ask");
       expect(quoted).toContain("> short ask");
       expect(quoted).not.toContain("Cut here");
+    });
+
+    it("cuts a huge request to the quote budget when it is first read, and the quote still says how long it was", () => {
+      const huge = "z".repeat(200_000);
+      const picked = pickOriginalRequest({ current: huge, earlier: [] });
+      expect(picked?.length).toBe(ORIGINAL_REQUEST_CHAR_BUDGET);
+      const read = readOriginalRequest([user(huge)]);
+      expect(read).toEqual({ text: "z".repeat(ORIGINAL_REQUEST_CHAR_BUDGET), chars: 200_000 });
+      const quoted = quoteOriginalRequest(read!.text, read!.chars);
+      expect(quoted).toContain("(Cut here: the request is 200,000 characters and only the first 16,000 are quoted.)");
+      expect(quoted).not.toContain("z".repeat(ORIGINAL_REQUEST_CHAR_BUDGET + 1));
     });
   });
 });

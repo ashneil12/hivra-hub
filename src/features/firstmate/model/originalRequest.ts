@@ -55,9 +55,10 @@ function personMessages(blocks: readonly RequestBlock[]): string[] {
 
 /**
  * The request to quote: the person's latest message when it says enough on its own, otherwise (a short follow-up) the
- * message before it and then the follow-up. With no current message, the last thing the person said.
+ * message before it and then the follow-up. With no current message, the last thing the person said. A request past
+ * the quote budget is cut here, at the first read; {@link readOriginalRequest} keeps the length for the cut note.
  */
-export function pickOriginalRequest(input: { current: string; earlier: readonly string[] }): string | undefined {
+function selectRequest(input: { current: string; earlier: readonly string[] }): string | undefined {
   const previous = [...input.earlier].reverse().find((text) => text.trim())?.trim();
   const current = input.current.trim();
   if (!current) return previous;
@@ -68,23 +69,57 @@ export function pickOriginalRequest(input: { current: string; earlier: readonly 
   return `${previous.length > room ? `${previous.slice(0, Math.max(0, room))}…` : previous}${tail}`;
 }
 
-/** The request to quote in a brief sent from this chat, or undefined when the person has said nothing. */
-export function originalRequestOf(blocks: readonly RequestBlock[] | undefined): string | undefined {
+/** The words a brief can carry: at most the quote budget. `chars` is how long the request was before the cut. */
+export function boundRequest(text: string, knownChars?: number): { text: string; chars: number } {
+  const trimmed = text.trim();
+  const known =
+    typeof knownChars === "number" && Number.isFinite(knownChars) ? Math.max(0, Math.floor(knownChars)) : undefined;
+  const chars = known !== undefined && known >= trimmed.length ? known : trimmed.length;
+  const body =
+    trimmed.length > ORIGINAL_REQUEST_CHAR_BUDGET ? trimmed.slice(0, ORIGINAL_REQUEST_CHAR_BUDGET) : trimmed;
+  return { text: body, chars };
+}
+
+export function pickOriginalRequest(input: { current: string; earlier: readonly string[] }): string | undefined {
+  const full = selectRequest(input);
+  if (full === undefined) return undefined;
+  return full.length > ORIGINAL_REQUEST_CHAR_BUDGET ? full.slice(0, ORIGINAL_REQUEST_CHAR_BUDGET) : full;
+}
+
+/**
+ * The request to quote in a brief sent from this chat, cut to the quote budget, or undefined when the person has
+ * said nothing. `chars` is the length before the cut, so the brief can say what was left out.
+ */
+export function readOriginalRequest(
+  blocks: readonly RequestBlock[] | undefined,
+): { text: string; chars: number } | undefined {
   const said = personMessages(blocks ?? []);
   if (!said.length) return undefined;
-  return pickOriginalRequest({ current: said[said.length - 1], earlier: said.slice(0, -1) });
+  const full = selectRequest({ current: said[said.length - 1], earlier: said.slice(0, -1) });
+  if (!full) return undefined;
+  return boundRequest(full);
+}
+
+/** The request's words, or undefined when the person has said nothing. */
+export function originalRequestOf(blocks: readonly RequestBlock[] | undefined): string | undefined {
+  return readOriginalRequest(blocks)?.text;
 }
 
 const count = (n: number) => n.toLocaleString("en-US");
 
-/** The brief section's body: what the quote is for, then the request, every line behind ">", cut at the bound with a note. */
-export function quoteOriginalRequest(request: string): string {
+/**
+ * The brief section's body: what the quote is for, then the request, every line behind ">", cut at the bound with a
+ * note. `chars` is how long the request was before it was cut at the first read; without it, the length is this text's.
+ */
+export function quoteOriginalRequest(request: string, chars?: number): string {
   const clipped = request.length > ORIGINAL_REQUEST_CHAR_BUDGET ? request.slice(0, ORIGINAL_REQUEST_CHAR_BUDGET) : request;
+  const known = typeof chars === "number" && Number.isFinite(chars) ? Math.max(0, Math.floor(chars)) : request.length;
+  const full = known > clipped.length ? known : request.length;
   const lines = [
     "Context only: your task is the Spec below. This is the person's own message, which the first mate split into tasks. Use it for the names, formats, constraints and look your part must agree with, and do only your own task. If it disagrees with your Spec, do what the Spec says and note the difference at the top of your report. Every line of the quote starts with \">\".",
     ...clipped.split(/\r?\n/).map((line) => (line ? `> ${line}` : ">")),
   ];
-  if (clipped.length < request.length)
-    lines.push(`(Cut here: the request is ${count(request.length)} characters and only the first ${count(ORIGINAL_REQUEST_CHAR_BUDGET)} are quoted.)`);
+  if (clipped.length < full)
+    lines.push(`(Cut here: the request is ${count(full)} characters and only the first ${count(ORIGINAL_REQUEST_CHAR_BUDGET)} are quoted.)`);
   return lines.join("\n");
 }

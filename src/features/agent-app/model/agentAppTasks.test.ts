@@ -3071,5 +3071,37 @@ describe("a brief quotes the person's own request (WP-171)", () => {
     await expect(handleAgentApp(source, "r1", "tasks.delegate", { brief: "Do it.", originalRequest: 4 }, host)).rejects.toThrow(/originalRequest must be the person's request/);
     expect(started).toEqual([]);
   });
+
+  it("trims a request past the old ceiling instead of refusing, and a waiting copy stays under the queue's size limit", async () => {
+    const huge = "q".repeat(250_000);
+    const { source, host, started } = withBlocks([]);
+    await handleAgentApp(source, "r1", "tasks.delegate", { brief: "Do part of it.", originalRequest: huge }, host);
+    const text = quoted((started[0][0] as { prompt: string }).prompt);
+    expect(text).toContain("(Cut here: the request is 250,000 characters and only the first 16,000 are quoted.)");
+    expect(text).not.toContain("q".repeat(16_001));
+
+    resetWorkerPool();
+    const rows: Delegation[] = [];
+    const f = fixture(rows, "mono");
+    f.source.blocks = [said("m".repeat(180_000))];
+    f.api.pool = workerPoolHost({ openRows: () => rows.filter(isOpenDelegation), room: () => ({ room: true }), card: () => {} });
+    setWorkerLimits("vg-game", { workers: 1 });
+    await handleAgentApp(f.source, "first", "tasks.delegate", { brief: "Part one.", title: "one" }, f.host);
+    await handleAgentApp(f.source, "second", "tasks.delegate", { brief: "Part two.", title: "two" }, f.host);
+    const waiting = queuedWorkers().find((job) => job.requestId === "second");
+    expect(waiting).toBeTruthy();
+    // worker_queue.rs refuses a job whose JSON is over 200,000 characters, so the stored request has to be the quote.
+    expect(JSON.stringify(waiting).length).toBeLessThan(200_000);
+    rows[0].state = "completed";
+    await pumpWorkers({
+      openRows: () => rows.filter(isOpenDelegation),
+      room: () => ({ room: true }),
+      start: (job) => handleAgentApp(f.source, job.requestId, "tasks.delegate", job.input, f.host),
+    });
+    expect(f.started).toHaveLength(2);
+    expect(quoted((f.started[1][0] as { prompt: string }).prompt)).toContain(
+      "(Cut here: the request is 180,000 characters and only the first 16,000 are quoted.)",
+    );
+  });
 });
 
