@@ -119,17 +119,78 @@ describe("lead tick cadence", () => {
     expect(second.runs).toHaveLength(1);
   });
 
-  it("nothing ticks during quiet hours, and the tick comes back when they end", async () => {
+  it("keeps ticking through quiet hours, and marks what it tells the person as held", async () => {
     // Quiet from 11:00 to 13:00; it is noon.
-    const { scheduler, runs, store } = setup({ quiet: { enabled: true, start: "11:00", end: "13:00" } });
+    const { store } = setup();
     await store.writeSetting("/code/app", { enabled: true, intervalMinutes: 5 });
+    const told: { lines: string[]; held: boolean }[] = [];
+    const scheduler = new LeadTickScheduler({
+      store,
+      now: () => Date.now(),
+      quiet: () => ({ enabled: true, start: "11:00", end: "13:00" }),
+      allowed: () => true,
+      resolve: async () => ({ projectId: "app", lead: { monoId: "m", name: "Lead", sessionId: "s" }, look: { busy: false, asking: false, queued: false, limited: false, resumeStopped: false } }),
+      ports: () => ({}) as LeadTickPorts,
+      run: async () => ({ line: "Started WP-1.", attention: ["#7 (WP-200) needs your word to merge."], noted: [] }),
+      tell: (_folder, lines, _at, held) => told.push({ lines: [...lines], held }),
+    });
     scheduler.start();
-    await advance(59 * MIN);
-    expect(runs).toEqual([]);
+    await advance(0);
+    scheduler.stop();
+    expect(told).toEqual([{ lines: ["#7 (WP-200) needs your word to merge."], held: true }]);
+    expect(store.runFor("/code/app")?.lastLine).toBe("Started WP-1.");
+  });
+
+  it("backs off when the run cannot be recorded, instead of ticking again the next minute", async () => {
+    const { store } = setup();
+    await store.writeSetting("/code/app", { enabled: true, intervalMinutes: 5 });
+    let failures = 1;
+    const record = store.recordRun;
+    store.recordRun = async (folder, run) => {
+      if (failures > 0) {
+        failures -= 1;
+        throw new Error("database is busy");
+      }
+      return record(folder, run);
+    };
+    const started: number[] = [];
+    const scheduler = new LeadTickScheduler({
+      store,
+      now: () => Date.now(),
+      quiet: () => ({ enabled: false, start: "22:00", end: "08:00" }),
+      allowed: () => true,
+      resolve: async () => ({ projectId: "app", lead: { monoId: "m", name: "Lead", sessionId: "s" }, look: { busy: false, asking: false, queued: false, limited: false, resumeStopped: false } }),
+      ports: () => ({}) as LeadTickPorts,
+      run: async () => {
+        started.push(Date.now());
+        return { line: "Nothing to do this tick.", attention: [], noted: [] };
+      },
+    });
+    scheduler.start();
+    await advance(4 * MIN);
+    expect(started).toHaveLength(1);
     await advance(2 * MIN);
     scheduler.stop();
-    expect(runs).toHaveLength(1);
-    expect(new Date(runs[0].at).getHours()).toBe(13);
+    expect(started).toHaveLength(2);
+  });
+
+  it("keeps every said-once key up to the store's limit", async () => {
+    const { store } = setup();
+    await store.writeSetting("/code/app", { enabled: true, intervalMinutes: 5 });
+    const keys = Array.from({ length: 60 }, (_, index) => `key-${index}`);
+    const scheduler = new LeadTickScheduler({
+      store,
+      now: () => Date.now(),
+      quiet: () => ({ enabled: false, start: "22:00", end: "08:00" }),
+      allowed: () => true,
+      resolve: async () => ({ projectId: "app", lead: { monoId: "m", name: "Lead", sessionId: "s" }, look: { busy: false, asking: false, queued: false, limited: false, resumeStopped: false } }),
+      ports: () => ({}) as LeadTickPorts,
+      run: async () => ({ line: "Nothing to do this tick.", attention: [], noted: keys }),
+    });
+    scheduler.start();
+    await advance(0);
+    scheduler.stop();
+    expect(store.runFor("/code/app")?.noted).toEqual(keys);
   });
 
   it("nothing ticks while the Lead is busy or blocked, and it ticks once the Lead is free", async () => {

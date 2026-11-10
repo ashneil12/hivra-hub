@@ -93,9 +93,11 @@ export function useLeadTick(host: LeadTickHost): void {
           context,
         ),
       run: runLeadTick,
-      tell: (folder, lines, at) => {
+      // Inside quiet hours the ping is kept as a held notice, which leaves when the window ends (notableEvents.ts).
+      tell: (folder, lines, at, held) => {
         lines.forEach((text, index) => {
-          void noteNotable({ id: `lead-tick:${at}:${index}:${folder.slice(-120)}`, kind: "lead-tick", text, at }).catch(() => undefined);
+          const kind = held ? "held" : "lead-tick";
+          void noteNotable({ id: `lead-tick:${at}:${index}:${folder.slice(-120)}`, kind, text, at }).catch(() => undefined);
         });
       },
     });

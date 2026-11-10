@@ -1,7 +1,9 @@
 // WP-160: when a lead tick runs. The main window looks once a minute while the app is open; a project whose Lead tick
-// is on and whose interval has passed gets one tick. Nothing ticks during quiet hours (WP-164), while the Lead is busy
-// or waiting on something (the WP-11 rule: never into a busy or blocked chat), or where the app's policy turns
-// automations off (a dev copy). There is no LaunchAgent: a closed or sleeping app misses ticks, and the Crew card says so.
+// is on and whose interval has passed gets one tick. The tick runs through quiet hours (WP-164): quiet hours hold the
+// pings it sends the person, not the work. It does not run while the Lead is busy or waiting on something (the WP-11
+// rule: never into a busy or blocked chat), or where the app's policy turns automations off (a dev copy). A tick whose
+// run could not be recorded backs off before the next. There is no LaunchAgent: a closed or sleeping app misses ticks,
+// and the Crew card says so.
 
 import { isQuietHour, type QuietHours } from "../../notifications/model/quietHours";
 import type { LeadTickSetting } from "./setting";
@@ -9,6 +11,8 @@ import type { LeadTickRun, LeadTickStore } from "./store";
 import type { LeadTickInput, LeadTickPorts, LeadTickResult } from "./tick";
 
 export const LEAD_TICK_LOOK_MS = 60_000;
+/** After a run that could not be recorded, the project waits this long before it is looked at again. */
+export const LEAD_TICK_BACKOFF_MS = 5 * 60_000;
 
 /** What the WP-11 watcher reads of a chat (watcher/look.ts `lookAt`). */
 export type LeadLook = { busy: boolean; asking: boolean; queued: boolean; limited: boolean; resumeStopped: boolean };
@@ -29,8 +33,11 @@ export type SchedulerDeps = {
   resolve(folder: string): Promise<LeadContext | { skip: string }>;
   ports(folder: string, context: LeadContext): LeadTickPorts;
   run(input: LeadTickInput, ports: LeadTickPorts): Promise<LeadTickResult>;
-  /** Hands what needs the person to the batched notable pings (WP-164). Routine progress is never told. */
-  tell?(folder: string, lines: readonly string[], at: number): void;
+  /**
+   * Hands what needs the person to the batched notable pings (WP-164). Routine progress is never told. `held` is true
+   * inside quiet hours: those pings wait for the window to end.
+   */
+  tell?(folder: string, lines: readonly string[], at: number, held: boolean): void;
 };
 
 /** Why the Lead can't take a tick now, or null when it can. */
@@ -52,6 +59,7 @@ function due(setting: LeadTickSetting, run: LeadTickRun | undefined, now: number
 export class LeadTickScheduler {
   private timer: ReturnType<typeof setInterval> | undefined;
   private running = new Set<string>();
+  private backoff = new Map<string, number>();
   private looking = false;
 
   constructor(private readonly deps: SchedulerDeps) {}
@@ -80,14 +88,17 @@ export class LeadTickScheduler {
         return;
       }
       const now = this.deps.now();
-      if (isQuietHour(now, this.deps.quiet())) return;
       for (const [folder, setting] of Object.entries(this.deps.store.settings())) {
         if (this.running.has(folder)) continue;
+        if ((this.backoff.get(folder) ?? 0) > now) continue;
         if (!due(setting, this.deps.store.runFor(folder), now)) continue;
         this.running.add(folder);
         started.push(
           this.tickOne(folder, setting, now)
-            .catch((error: unknown) => console.warn("The lead tick failed", error))
+            .catch((error: unknown) => {
+              console.warn("The lead tick failed", error);
+              this.backoff.set(folder, this.deps.now() + LEAD_TICK_BACKOFF_MS);
+            })
             .finally(() => this.running.delete(folder)),
         );
       }
@@ -109,11 +120,12 @@ export class LeadTickScheduler {
     // A busy or blocked Lead is looked at again next minute; nothing is recorded, so it is still due.
     if (leadBlockedReason(context.look)) return;
     const result = await this.deps.run(
-      { folder, shipOnGreen: setting.shipOnGreen, noted: before?.noted ?? [] },
+      { folder, shipOnGreen: setting.shipOnGreen, noted: before?.noted ?? [], now },
       this.deps.ports(folder, context),
     );
+    // Recorded first: if the record fails nothing is told, and the backoff keeps the next look from running it again.
     await store.recordRun(folder, { at: now, line: result.line, noted: result.noted });
-    if (result.attention.length) this.deps.tell?.(folder, result.attention, now);
+    if (result.attention.length) this.deps.tell?.(folder, result.attention, now, isQuietHour(now, this.deps.quiet()));
   }
 }
 
@@ -130,7 +142,7 @@ export function missedTicksLine(setting: LeadTickSetting, run: LeadTickRun | und
   if (!setting.enabled || !run) return null;
   const gap = now - run.lastTickAt;
   if (gap <= 2 * setting.intervalMinutes * 60_000) return null;
-  return `No tick ran for ${span(gap)}. The lead tick runs only while Hivra is open and awake, outside quiet hours and while the Lead is free; ticks it misses are not made up.`;
+  return `No tick ran for ${span(gap)}. The lead tick runs only while Hivra is open and awake and the Lead is free; ticks it misses are not made up.`;
 }
 
 /** Said under the switch whenever it is on. */
