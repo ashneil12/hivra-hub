@@ -827,6 +827,76 @@ mod tests {
     }
 
     #[test]
+    fn a_leading_slash_anchors_a_pattern_and_a_bare_name_matches_at_any_depth() {
+        let tmp = repo_with_ignore("anchor", ".env\nsecret.txt\n");
+        let root = tmp.0.join("repo");
+        for path in [
+            ".env",
+            "server/.env",
+            "secret.txt",
+            "server/secret.txt",
+            "a/b/secret.txt",
+            "a/server/secret.txt",
+        ] {
+            let file = root.join(path);
+            std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+            std::fs::write(file, SECRET).unwrap();
+        }
+
+        // `/.env` is the root file only; a bare `secret.txt` is found at every depth.
+        std::fs::write(root.join(".worktreeinclude"), "/.env\nsecret.txt\n").unwrap();
+        let first = tmp.0.join("first");
+        std::fs::create_dir(&first).unwrap();
+        let outcome = apply(&root, &first);
+        for path in [".env", "secret.txt", "server/secret.txt", "a/b/secret.txt"] {
+            assert!(first.join(path).is_file(), "{path} should be copied");
+        }
+        assert!(!first.join("server/.env").exists(), "/.env is anchored");
+        assert_eq!(
+            outcome.note.as_deref(),
+            Some("5 files named in .worktreeinclude are in this worktree.")
+        );
+
+        // A bare `.env` is found at every depth; `server/secret.txt` has a slash in the
+        // middle, so it is anchored to the root and `a/server/secret.txt` is not named.
+        std::fs::write(root.join(".worktreeinclude"), ".env\nserver/secret.txt\n").unwrap();
+        let second = tmp.0.join("second");
+        std::fs::create_dir(&second).unwrap();
+        let outcome = apply(&root, &second);
+        for path in [".env", "server/.env", "server/secret.txt"] {
+            assert!(second.join(path).is_file(), "{path} should be copied");
+        }
+        for path in ["secret.txt", "a/b/secret.txt", "a/server/secret.txt"] {
+            assert!(!second.join(path).exists(), "{path} is not named");
+        }
+        assert_eq!(
+            outcome.note.as_deref(),
+            Some("3 files named in .worktreeinclude are in this worktree.")
+        );
+        assert!(outcome.warning.is_none());
+    }
+
+    #[test]
+    fn a_tracked_file_that_is_also_ignored_is_not_copied() {
+        let tmp = repo_with_ignore("forced", ".env\n");
+        let root = tmp.0.join("repo");
+        std::fs::write(root.join(".env"), "committed\n").unwrap();
+        git(&root, &["add", "-f", ".env"]);
+        commit(&root, "force the ignored file in");
+        std::fs::write(root.join(".env"), SECRET).unwrap();
+        std::fs::write(root.join(".worktreeinclude"), ".env\n").unwrap();
+        let tree = crate::worktrees::create(&root, "feature/forced", "HEAD", false).unwrap();
+        let dest = std::path::Path::new(&tree.path);
+        // Git put the committed bytes there; the include does not replace them.
+        assert_eq!(
+            std::fs::read_to_string(dest.join(".env")).unwrap(),
+            "committed\n"
+        );
+        assert!(tree.include_note.is_none());
+        assert!(tree.include_warning.is_none());
+    }
+
+    #[test]
     fn a_missing_manifest_leaves_the_worktree_unchanged() {
         let tmp = tmp("absent");
         let root = tmp.0.join("repo");
