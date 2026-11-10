@@ -17,15 +17,17 @@ import {
 class Fake implements RegistryDriver {
   methods: string[] = [];
   calls: { method: string; params: unknown }[] = [];
+  windows: { method: string; timeoutMs: number; idle: boolean }[] = [];
   errors: { code: number }[] = [];
   responses: unknown[] = [];
   closed = false;
   private onReq: ((id: number, method: string, params: unknown) => void) | null = null;
   private onNote: ((method: string, params: unknown) => void) | null = null;
   constructor(private readonly script: (method: string, fake: Fake) => Promise<unknown> | unknown) {}
-  request(method: string, params: unknown, _timeoutMs: number) {
+  request(method: string, params: unknown, timeoutMs: number, options?: { idle?: boolean }) {
     this.methods.push(method);
     this.calls.push({ method, params });
+    this.windows.push({ method, timeoutMs, idle: options?.idle === true });
     return Promise.resolve(this.script(method, this));
   }
   notify() {
@@ -88,6 +90,25 @@ describe("runRegistryExchange", () => {
     });
     expect(events).toContainEqual({ type: "notice", text: NO_MODELS });
     expect(events).toContainEqual({ type: "notice", text: NEVER_ASKS });
+  });
+
+  it("gives a turn a window of silence, so a live agent that goes quiet is not waited on forever", async () => {
+    const fake = new Fake((method) => okInit(method));
+    await runRegistryExchange({
+      driver: fake,
+      cwd: "/work/demo",
+      text: "hello",
+      isCurrent: () => true,
+      emit: () => undefined,
+    });
+    const prompt = fake.windows.find((row) => row.method === "session/prompt");
+    expect(prompt?.idle).toBe(true);
+    expect(prompt?.timeoutMs ?? 0).toBeGreaterThan(0);
+    // Setup steps keep their own fixed deadlines.
+    for (const row of fake.windows.filter((item) => item.method !== "session/prompt")) {
+      expect(row.idle).toBe(false);
+      expect(row.timeoutMs).toBeGreaterThan(0);
+    }
   });
 
   it("does not start a session when the protocol version is not 1", async () => {

@@ -387,6 +387,11 @@ export async function spawnChild(
     ...(devinAskEdits ? { devinAskEdits } : {}),
     ...(customRoute ? { customRoute } : {}),
   });
+  adoptSpawnedPid(sessionId, pid);
+}
+
+/** The pid a spawn returned is the live child. An exit that beat the pid is delivered now. */
+function adoptSpawnedPid(sessionId: string, pid: unknown): void {
   if (typeof pid !== "number" || pid <= 0) return;
   livePid.set(sessionId, pid);
   const exits = pendingExit.get(sessionId);
@@ -395,6 +400,39 @@ export async function spawnChild(
   if (!exited) return;
   livePid.delete(sessionId);
   exitHandlers.get(sessionId)?.(exited.code);
+}
+
+/**
+ * WP-134b: start a More agents child. The same pid and exit bookkeeping as `spawnChild`,
+ * but the process comes from `registry_agent_spawn`, which never resolves one of the eleven CLIs.
+ */
+export async function spawnRegistryChild(
+  sessionId: string,
+  input: {
+    command: string;
+    args: string[];
+    cwd: string;
+    env: { name: string; value: string }[];
+  },
+): Promise<void> {
+  livePid.delete(sessionId);
+  pendingExit.delete(sessionId);
+  ownedChildren.add(sessionId);
+  let pid: unknown;
+  try {
+    pid = await invoke<number>("registry_agent_spawn", {
+      sessionId,
+      command: input.command,
+      args: input.args,
+      cwd: input.cwd,
+      env: input.env,
+    });
+  } catch (error) {
+    ownedChildren.delete(sessionId);
+    lineBuffer.delete(sessionId);
+    throw error;
+  }
+  adoptSpawnedPid(sessionId, pid);
 }
 
 export function writeChild(sessionId: string, line: string): Promise<void> {

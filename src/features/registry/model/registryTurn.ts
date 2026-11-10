@@ -1,6 +1,6 @@
 // WP-134b. Runs one More agents turn on the desktop path.
 // A failure is a sentence and a return, never a thrown success.
-// The child is started by registry_agent_spawn. This file does not spawn a CLI.
+// The child is started by registry_agent_spawn (src-tauri/src/harness/registry_agent.rs). This file does not spawn a CLI.
 
 import type { HarnessEvent } from "../../../integrations/harness/core/types";
 import { AGENT_NOT_FOUND, NOT_ANSWERING, STOP_SENT, WAITS } from "./registryCopy";
@@ -19,6 +19,8 @@ export type RegistrySpawnInput = {
   args: string[];
   cwd: string;
   env: { name: string; value: string }[];
+  /** Called when the process exits. A turn in progress hears it as a failed request instead. */
+  onExit?: () => void;
 };
 
 export type RegistrySpawn = (input: RegistrySpawnInput) => Promise<RegistryDriver>;
@@ -72,9 +74,11 @@ function errorText(error: unknown): string {
 function spawnSentence(error: unknown): { sentence: string; retryable: boolean } {
   const text = errorText(error);
   if (text.includes("registry-builtin")) return { sentence: COMMAND_BUILTIN, retryable: false };
+  // registry-not-found is what registry_agent_spawn says. The others are an OS error passed through. A bare
+  // "not found" is not enough: Tauri says it when the command itself is missing, and that is not the person's command.
   if (
+    text.includes("registry-not-found") ||
     text.includes("ENOENT") ||
-    text.includes("not found") ||
     text.includes("No such file") ||
     text.includes("os error 2")
   ) {
@@ -88,29 +92,39 @@ function isRegistryChat(sessionId: string): boolean {
 }
 
 async function defaultSpawn(input: RegistrySpawnInput): Promise<RegistryDriver> {
-  const { invoke } = await import("@tauri-apps/api/core");
-  await invoke("registry_agent_spawn", {
-    sessionId: input.sessionId,
-    command: input.command,
-    args: input.args,
-    cwd: input.cwd,
-    env: input.env,
-  });
   const { AcpClient } = await import("../../../integrations/harness/core/acp");
-  const { killChild, unwatchChild, watchChild } = await import("../../../integrations/harness/core/child");
+  const { killChild, spawnRegistryChild, unwatchChild, watchChild } = await import(
+    "../../../integrations/harness/core/child"
+  );
   let note: (method: string, params: unknown) => void = () => undefined;
   let req: (id: number, method: string, params: unknown) => void = () => undefined;
   const acp = new AcpClient(input.sessionId, {
     onNotification: (method, params) => note(method, params),
     onRequest: (id, method, params) => req(id, method, params),
   });
+  // Watched before the process starts, so no line and no exit can arrive unheard.
   watchChild(
     input.sessionId,
     (line) => acp.pushLine(line),
-    () => acp.close(new Error("closed")),
+    () => {
+      acp.close(new Error("closed"));
+      input.onExit?.();
+    },
   );
+  try {
+    await spawnRegistryChild(input.sessionId, {
+      command: input.command,
+      args: input.args,
+      cwd: input.cwd,
+      env: input.env,
+    });
+  } catch (error) {
+    acp.close(error instanceof Error ? error : new Error("not started"));
+    unwatchChild(input.sessionId);
+    throw error;
+  }
   return {
-    request: (method, params, timeoutMs) => acp.request(method, params, timeoutMs),
+    request: (method, params, timeoutMs, options) => acp.request(method, params, timeoutMs, options),
     notify: (method, params) => acp.notify(method, params),
     respond: (id, result) => acp.respond(id, result),
     respondError: (id, error) => acp.respondError(id, error),
@@ -144,7 +158,13 @@ async function startProcess(
   };
   lives.set(sessionId, created);
   try {
-    const driver = await spawn(input);
+    const driver = await spawn({
+      ...input,
+      // An exit between turns frees the slot, so the next message starts a new process and loads the old session.
+      onExit: () => {
+        if (lives.get(sessionId) === created && !created.turn) releaseRegistrySession(sessionId);
+      },
+    });
     if (lives.get(sessionId) !== created) {
       try {
         driver.close();

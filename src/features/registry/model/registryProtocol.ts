@@ -1,6 +1,7 @@
 // WP-134b. One generic ACP session. No per-CLI shortcut and no Kind arm.
 // A thrown request or a timeout is "Not answering", which can be retried.
 
+import { TURN_IDLE_TIMEOUT_MS } from "../../../integrations/harness/core/jsonRpc";
 import { extractToolPreview } from "../../../integrations/harness/core/preview";
 import type { HarnessEvent } from "../../../integrations/harness/core/types";
 import {
@@ -16,9 +17,12 @@ import {
 
 const INIT_TIMEOUT_MS = 12_000;
 const SESSION_TIMEOUT_MS = 45_000;
+// A turn is given up on only after an hour without one line from the agent, never a cap on the turn itself.
+const PROMPT_IDLE_MS = TURN_IDLE_TIMEOUT_MS;
 
 export type RegistryDriver = {
-  request(method: string, params: unknown, timeoutMs: number): Promise<unknown>;
+  /** `idle`: the timeout is a window of silence from the agent, not a cap on the request. */
+  request(method: string, params: unknown, timeoutMs: number, options?: { idle?: boolean }): Promise<unknown>;
   notify(method: string, params: unknown): Promise<void>;
   respond(id: number, result: unknown): Promise<void>;
   respondError(id: number, error: { code: number; message: string }): Promise<void>;
@@ -199,7 +203,8 @@ export async function runRegistryExchange(input: {
     await driver.request(
       "session/prompt",
       { sessionId: providerSessionId, prompt: [{ type: "text", text: input.text }] },
-      0,
+      PROMPT_IDLE_MS,
+      { idle: true },
     );
   } catch {
     if (!isCurrent()) return { ok: false, sentence: STOP_SENT, retryable: false };
