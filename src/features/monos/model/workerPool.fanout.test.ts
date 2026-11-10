@@ -237,3 +237,58 @@ describe("the fan-out cap is a queue wait, not a drop (WP-171)", () => {
   });
 });
 
+describe("a held task is told to its owner once (WP-171)", () => {
+  it("tells once when a task becomes held, names it, and tells again only after that hold ends", async () => {
+    await enqueueWorker(needs("board"));
+    const told: { id: string; line: string }[] = [];
+    let wait: DependencyWait | undefined = HELD;
+    const pump = () =>
+      pumpWorkers({
+        openRows: () => [],
+        room,
+        dependency: () => wait,
+        start: async () => {
+          if (wait?.reason === "held") throw new Error("a held task must not start");
+        },
+        held: (_job, note) => void told.push(note),
+      });
+    await pump();
+    expect(told).toEqual([
+      { id: "held-board-1", line: expect.stringContaining("Job board") },
+    ]);
+    expect(told[0]?.line).toContain("Held:");
+    expect(told[0]?.line).toContain("waiting for another task");
+    await pump();
+    expect(told).toHaveLength(1);
+    expect(queuedWorkers().map((queued) => queued.id)).toEqual(["board"]);
+    // The hold ends and the task starts. Held again later, the owner hears it once more, under a new id.
+    wait = undefined;
+    await pump();
+    expect(queuedWorkers()).toEqual([]);
+    await enqueueWorker(needs("board"));
+    wait = HELD;
+    await pump();
+    expect(told).toHaveLength(2);
+    expect(told[1]?.id).toBe("held-board-2");
+  });
+
+  it("stays quiet for a task that is only waiting on a provider, a plain worker, or a chat that is gone", async () => {
+    await enqueueWorker(needs("docs"));
+    await enqueueWorker(job("plain"));
+    await enqueueWorker(needs("gone"));
+    const told: string[] = [];
+    await pumpWorkers({
+      openRows: () => [],
+      room,
+      dependency: ({ fanout }) => ((fanout as { for: string }).for === "plain" ? HELD : WAIT),
+      ownerGone: (queued) => queued.id === "gone",
+      start: async (queued) => {
+        if (queued.id !== "plain") throw new Error("only the plain worker can start");
+      },
+      held: (_job, note) => void told.push(note.line),
+    });
+    expect(told).toEqual([]);
+    expect(queuedWorkers().map((queued) => queued.id)).toEqual(["docs"]);
+  });
+});
+

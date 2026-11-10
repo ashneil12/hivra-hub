@@ -853,6 +853,25 @@ function dependencyWait(job: { id: string; fanout?: unknown }, ctx: AdmitContext
   return job.fanout === undefined ? undefined : ctx.dependency?.({ id: job.id, fanout: job.fanout });
 }
 
+/**
+ * WP-171: the dependency the waiting card reads. The pump gets its own copy on each call. The card does not, so the
+ * window that owns the queue publishes the same function here. Absent, a card cannot tell a held task from a free worker.
+ */
+let queueDependency: AdmitContext["dependency"] | undefined;
+
+/** Publish (or clear) the dependency check the waiting cards read. */
+export function setQueueDependency(next: AdmitContext["dependency"] | undefined): void {
+  queueDependency = next;
+}
+
+/** Why this queued task waits on another task, or undefined when it does not. */
+export function taskWait(job: QueuedWorker): DependencyWait | undefined {
+  return dependencyWait(
+    { id: job.id, fanout: queuedFanout(job) },
+    { rows: [], room: () => ({ room: true }), dependency: queueDependency },
+  );
+}
+
 /** A queued job's fan-out link, kept in its stored delegate input. */
 const queuedFanout = (job: QueuedWorker): unknown => job.input?.fanout;
 
@@ -1014,6 +1033,12 @@ export function droppedTaskLine(job: Pick<QueuedWorker, "title">, error: unknown
   const why = error instanceof Error ? error.message : String(error);
   const name = job.title.trim() || "A waiting task";
   return `"${name}" was dropped before it could start: ${why}`;
+}
+
+/** One line for the owner when a task becomes held. Names the task, then the reason the queue already computed. */
+export function heldTaskLine(job: Pick<QueuedWorker, "title">, line: string): string {
+  const name = job.title.trim() || "A waiting task";
+  return `"${name}" is waiting for another task. ${line}`;
 }
 
 /** The rust cap refusal (firstmate check_fanout). A task that hits it waits; it is not a final failure. */
@@ -1206,6 +1231,9 @@ export function resetWorkerPool(): void {
   healthTimeoutMs = 3_000;
   healthNow = undefined;
   loading = undefined;
+  heldTold.clear();
+  heldEpisode.clear();
+  queueDependency = undefined;
   changed();
 }
 
@@ -1213,6 +1241,11 @@ export function resetWorkerPool(): void {
 
 /** Waiting workers the app is starting right now: their own delegate_task, asked again, always starts. */
 const startingNow = new Set<string>();
+
+/** Tasks whose owner has already been told about the hold they are in now. Cleared when the hold ends or the task leaves. */
+const heldTold = new Set<string>();
+/** How many separate holds this task has been told about. The next one gets a new note id, so a repeat is not swallowed. */
+const heldEpisode = new Map<string, number>();
 
 /**
  * What agentAppTasks.ts's delegate reads (App.tsx builds it): the rows of every chat, E5's room per provider, and the
@@ -1268,6 +1301,39 @@ export function workerPoolHost(deps: {
 }
 
 /**
+ * WP-171: tell the owner the first time a task is held, and again only after that hold has ended. A task this pump did
+ * not look at (its chat is not open here) keeps its mark, so the next look does not tell a second time. A task that
+ * left the queue drops its mark. The episode count stays, so a later hold of the same task gets a new note id.
+ */
+function noteHeldTasks(
+  queue: readonly QueuedWorker[],
+  ctx: AdmitContext,
+  held: ((job: QueuedWorker, note: { id: string; line: string }) => void) | undefined,
+): void {
+  const looked = new Set(queue.map((job) => job.id));
+  const still = new Set<string>();
+  for (const job of queue) {
+    if (isClaimed(job)) continue;
+    const wait = dependencyWait({ id: job.id, fanout: queuedFanout(job) }, ctx);
+    if (wait?.reason !== "held") continue;
+    still.add(job.id);
+    if (!held || heldTold.has(job.id)) continue;
+    const episode = (heldEpisode.get(job.id) ?? 0) + 1;
+    heldEpisode.set(job.id, episode);
+    heldTold.add(job.id);
+    held(job, { id: `held-${job.id}-${episode}`, line: heldTaskLine(job, wait.line) });
+  }
+  for (const id of [...heldTold]) {
+    if (!queuedWorkers().some((job) => job.id === id)) {
+      heldTold.delete(id);
+      continue;
+    }
+    if (!looked.has(id) || still.has(id)) continue;
+    heldTold.delete(id);
+  }
+}
+
+/**
  * Start what can start now (App.tsx calls it whenever a row or a chat changes, and on a timer for provider resets):
  * each through `start`, which asks its own delegate_task again. One that fails to start leaves the queue with the
  * reason, for its chat to hear (`failed`).
@@ -1291,13 +1357,17 @@ export async function pumpWorkers(deps: {
   failed?(job: QueuedWorker, error: unknown): void;
   /** A waiting task was dropped (not a cap refusal, and not a chat that is gone). One line, naming the task. */
   dropped?(job: QueuedWorker, line: string): void;
+  /** A task became held. Once per hold, naming the task. `id` changes when the same task is held again later. */
+  held?(job: QueuedWorker, note: { id: string; line: string }): void;
 }): Promise<QueuedWorker[]> {
   // WP-161: a fresh sample when the last one is old. A timeout keeps the last fresh sample, or none.
   await refreshBuilderHealth();
   for (const job of queuedWorkers()) if (deps.ownerGone?.(job)) await dequeueWorker(job.id);
   const queue = queuedWorkers().filter((job) => deps.canStart?.(job) ?? true);
+  if (queue.length) await deps.settle?.(queue).catch(() => undefined);
+  // WP-171: a hold is a queue wait, but the owner only hears it by being told. Once per hold, not on every look.
+  noteHeldTasks(queue, { rows: deps.openRows(), room: deps.room, queue, dependency: deps.dependency }, deps.held);
   if (!queue.length) return [];
-  await deps.settle?.(queue).catch(() => undefined);
   const ready = nextWorkers({ rows: deps.openRows(), room: deps.room, queue, dependency: deps.dependency }).filter(
     (job) => !startingNow.has(job.id),
   );

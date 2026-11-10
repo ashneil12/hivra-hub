@@ -968,6 +968,7 @@ import {
   nextWake,
   planHeld,
   droppedTaskLine,
+  setQueueDependency,
   pumpWorkers,
   queuedWorkers,
   retryNow,
@@ -13572,6 +13573,9 @@ function Workspace({
     rows: () => [...delegationRows(), ...(delegationsRef.current?.known() ?? [])],
     folder: (session) => sessionsRef.current.find((entry) => entry.id === session)?.cwd,
   });
+  // WP-171: the waiting card reads the same dependency the pump does, so a held task is not labelled as a free worker.
+  setQueueDependency(fanout.dependency);
+  useEffect(() => () => setQueueDependency(undefined), [fanout]);
   const providerRoomNow = (harness: string) =>
     workerRoom(harness, {
       now: Date.now(),
@@ -13610,6 +13614,16 @@ function Workspace({
         const line = droppedTaskLine(job, error);
         void queueMonoSessionCompletionRef.current(job.ownerSession, {
           id: `dropped-${job.id}`,
+          text: `[MonoCode] ${line} (this is the app, not the person.)`,
+          attachments: [],
+          monoNote: { kind: "message", from: "Tasks", line: line.length > 160 ? `${line.slice(0, 157)}...` : line },
+        });
+      },
+      // WP-171: a task that becomes held wakes the chat that asked, once per hold. A later hold uses a new id.
+      held: (_job, note) => {
+        const line = note.line;
+        void queueMonoSessionCompletionRef.current(_job.ownerSession, {
+          id: note.id,
           text: `[MonoCode] ${line} (this is the app, not the person.)`,
           attachments: [],
           monoNote: { kind: "message", from: "Tasks", line: line.length > 160 ? `${line.slice(0, 157)}...` : line },

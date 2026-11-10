@@ -263,6 +263,8 @@ export type LaunchedSessionView = {
   /** Out of its provider's usage and held (H8): when it tries again by itself, and the provider's name. */
   retryAt?: number;
   provider?: string;
+  /** Waiting on another task of this fan-out, not on a free worker (WP-171). The card says so. */
+  forTask?: boolean;
 };
 
 export function launchedSessionState(session: Session): LaunchedSessionState {
