@@ -1,4 +1,5 @@
 import { withoutEmDashes } from "../../../shared/text/noEmDash";
+import { stripHiddenCharacters } from "../../../features/sessions/model/hiddenText";
 import { withoutTurnRepeats } from "./turnRepeats";
 import { isCliNotice } from "./cliNotices";
 import type {
@@ -573,7 +574,8 @@ export function appendUser(
     {
       id: crypto.randomUUID(),
       role: "user",
-      text,
+      // Hidden characters never reach a user turn, whoever built it (hiddenText.ts).
+      text: stripHiddenCharacters(text).text,
       startedAt: Date.now(),
       ...turnModelFields(session),
       ...(attachments.length > 0 ? { attachments } : {}),
@@ -597,7 +599,7 @@ export function appendSteerUser(
       {
         id: crypto.randomUUID(),
         role: "user",
-        text,
+        text: stripHiddenCharacters(text).text,
         sentAt: Date.now(),
         ...turnModelFields(session),
         ...(attachments.length > 0 ? { attachments } : {}),
