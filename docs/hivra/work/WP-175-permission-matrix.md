@@ -1,8 +1,8 @@
-# WP-XX: One permission mode matrix for every CLI, pinned by tests
+# WP-175: One permission mode matrix for every CLI, pinned by tests
 
 | Wave | Size | Depends on | Grok OK |
 | --- | --- | --- | --- |
-| Unassigned (from the 10 Nov source watch) | S | none. Do not edit the approval paths WP-146 owns | yes |
+| Wave K (from the 10 Nov source watch) | S | none. Do not edit the approval paths WP-146 owns | yes |
 
 ## Goal
 
