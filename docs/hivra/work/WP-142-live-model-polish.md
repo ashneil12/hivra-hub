@@ -41,6 +41,13 @@ The 9 Nov 9pm X brief: T3 Code users saw Fable 5.2 in the picker without a resta
 - [ ] Live `list_models` still wins when available; no busy poll.
 - [ ] Browser or unit coverage for badge, note, and fallback id.
 
+## After review (PR 131)
+
+- The first live catalog a harness gives is a baseline: nothing in it is "new". A model a later live catalog adds is new for seven days from that day (`modelFirstSeen.ts`, `BASELINE_DAY`).
+- The version-filtered built-in list used when `list_models` fails fills the picker but is never recorded as live: `setHarnessModels(harness, models, { live: false })`, and the quick panel is not sent it.
+- Opening the picker does not force a catalog read. A harness that already has a catalog is not probed again; Settings and the provider update notice still force one. A model the CLI learns later shows after a restart or a refresh from Settings.
+- Fable 5.1 is in the built-in list and the Claude fallback. Its minimum, 2.1.255, is the CLI's own wording in the recorded `list_models` row ("Update to 2.1.255+ to use Fable 5.1"). Fable 5.2 has no minimum on record, so the 2.1.280 borrowed from Opus 5.5 is gone and the fallback offers 5.2 wherever it offers 5.1.
+
 ## Licence
 
 Behaviour inspired by T3 Code's live model list (https://github.com/pingdotgg/t3code), MIT, Copyright (c) 2026 T3 Tools Inc. Ideas need no credits.json component. Product context: Anthropic Claude Fable 5.2 launch, 9 Nov 2026. Do not copy T3 Connect, Clerk, telemetry, or the T3 name.
