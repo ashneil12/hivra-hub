@@ -377,11 +377,10 @@ import {
 } from "../features/source-control/model/worktrees";
 import {
   attachNewChatWorktree,
-  forgetNewChatFolderChoice,
   gitRepositoryOnThisComputer,
   newChatStaysHere,
-  noteNewChatFolderChoice,
   openNewChatWorktree,
+  withNewChatFolderChoice,
 } from "../features/source-control/model/newChatWorktree";
 import { UsageFooter } from "./shell/UsageFooter";
 import { useProjectBranches } from "../features/source-control/hooks/useProjectBranches";
@@ -6951,6 +6950,7 @@ function Workspace({
       }
       setProjectCwd(normalized);
       setRecents(rememberProject(normalized));
+      const folderChanged = !previous || !sameProjectPath(previous, normalized);
       setSessions((prev) =>
         prev.map((s) => {
           if (s.id !== sessionId) return s;
@@ -6967,14 +6967,13 @@ function Workspace({
             worktreeRemoved: undefined,
             workspaceMode: undefined,
             worktreeBase: undefined,
+            // WP-110: a choice to stay in the old folder does not carry to another one.
+            ...(folderChanged ? { worktreeDeclined: undefined } : {}),
           };
         }),
       );
       // WP-110: a blank chat moved to another folder follows the worktree setting.
-      if (!previous || !sameProjectPath(previous, normalized)) {
-        forgetNewChatFolderChoice(sessionId);
-        attachNewChatWorktree(sessionId, normalized, setSessions);
-      }
+      if (folderChanged) attachNewChatWorktree(sessionId, normalized, setSessions);
       // The session's project just moved in place; a group only holds tabs that
       // share one project, so drop this tab out if it no longer matches.
       setTabs((prev) => {
@@ -7022,8 +7021,6 @@ function Workspace({
 
   const onWorkspaceModeChange = useCallback(
     (sessionId: string, mode: WorkspaceMode, base?: string) => {
-      // WP-110: choosing this folder keeps this chat out of a default worktree.
-      noteNewChatFolderChoice(sessionId, mode);
       setSessions((prev) =>
         prev.map((session) => {
           if (
@@ -7033,19 +7030,22 @@ function Workspace({
           ) {
             return session;
           }
-          return mode === "worktree"
-            ? base || session.worktreeBase
-              ? {
+          const chosen: Session =
+            mode === "worktree"
+              ? base || session.worktreeBase
+                ? {
+                    ...session,
+                    workspaceMode: "worktree",
+                    worktreeBase: base || session.worktreeBase,
+                  }
+                : session
+              : {
                   ...session,
-                  workspaceMode: "worktree",
-                  worktreeBase: base || session.worktreeBase,
-                }
-              : session
-            : {
-                ...session,
-                workspaceMode: undefined,
-                worktreeBase: undefined,
-              };
+                  workspaceMode: undefined,
+                  worktreeBase: undefined,
+                };
+          // WP-110: choosing this folder keeps this chat out of a default worktree, and it is held on the chat.
+          return withNewChatFolderChoice(chosen, mode);
         }),
       );
     },
@@ -9141,7 +9141,7 @@ function Workspace({
               !current.automationId &&
               !current.ephemeral,
             toggleOn: createDraftWorktree,
-            declined: newChatStaysHere(sessionId),
+            declined: newChatStaysHere(current),
             cwd: current.cwd,
             base: current.worktreeBase || "HEAD",
           },

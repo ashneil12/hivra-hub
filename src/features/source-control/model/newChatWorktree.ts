@@ -14,9 +14,6 @@ import { temporaryWorktreeBranchName, type Worktree } from "./worktrees";
 export const NEW_CHAT_WORKTREE_ASK =
   "This new chat will start in its own worktree. Switch to this folder if you want to stay here.";
 
-/** Chats whose person switched back to this folder. In memory, per window. */
-const staysHere = new Set<string>();
-
 export type NewChatWorktreeOpen = {
   setting: NewChatWorktree;
   /** False for a chat that continues one, a worker, an inbox ask, or an automation. */
@@ -53,25 +50,24 @@ function readable(session: Session | undefined): session is Session {
   return !!session && typeof session.cwd === "string" && Array.isArray(session.blocks);
 }
 
-/** Remember a switch between this folder and a new worktree for one chat. */
-export function noteNewChatFolderChoice(sessionId: string, mode: WorkspaceMode) {
-  if (!sessionId) return;
-  if (mode === "current") staysHere.add(sessionId);
-  else staysHere.delete(sessionId);
+/** The person chose this folder for this chat. The choice is held on the chat and saved with the open tabs. */
+export function newChatStaysHere(session: Pick<Session, "worktreeDeclined">): boolean {
+  return session.worktreeDeclined === true;
 }
 
-export function newChatStaysHere(sessionId: string): boolean {
-  return staysHere.has(sessionId);
+/** Hold a switch between this folder and a new worktree on the chat. Choosing a worktree takes it back. */
+export function withNewChatFolderChoice(session: Session, mode: WorkspaceMode): Session {
+  if (mode === "current") {
+    return newChatStaysHere(session) ? session : { ...session, worktreeDeclined: true };
+  }
+  return withoutNewChatFolderChoice(session);
 }
 
 /** The folder changed, so the old choice does not apply. */
-export function forgetNewChatFolderChoice(sessionId: string) {
-  staysHere.delete(sessionId);
-}
-
-/** Test hook. A window starts with no remembered choices. */
-export function resetNewChatFolderChoices() {
-  staysHere.clear();
+export function withoutNewChatFolderChoice(session: Session): Session {
+  if (session.worktreeDeclined === undefined) return session;
+  const { worktreeDeclined: _gone, ...rest } = session;
+  return rest;
 }
 
 function canOffer(session: Session, cwd: string): boolean {
@@ -94,9 +90,9 @@ export function beginNewChatWorktreeOffer(
   setting: NewChatWorktree,
 ): Session[] | null {
   if (setting !== "ask" && setting !== "always") return null;
-  if (!localFolder(cwd) || newChatStaysHere(sessionId)) return null;
+  if (!localFolder(cwd)) return null;
   const session = sessions.find((entry) => entry.id === sessionId);
-  if (!session || !canOffer(session, cwd)) return null;
+  if (!session || newChatStaysHere(session) || !canOffer(session, cwd)) return null;
   return sessions.map((entry) =>
     entry.id === sessionId
       ? {
@@ -123,7 +119,7 @@ export function clearUnconfirmedNewChatWorktree(
   if (session.worktreeBase && session.worktreeBase !== "HEAD") return null;
   if (!readable(session) || !isBlankSession(session)) return null;
   if (!sameProjectPath(session.cwd, cwd)) return null;
-  if (newChatStaysHere(sessionId)) return null;
+  if (newChatStaysHere(session)) return null;
   return sessions.map((entry) =>
     entry.id === sessionId
       ? { ...entry, workspaceMode: undefined, worktreeBase: undefined }

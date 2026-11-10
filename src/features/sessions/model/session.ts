@@ -680,6 +680,11 @@ export type Session = {
   workspaceMode?: WorkspaceMode;
   /** Base ref for a worktree that will be created on first send. */
   worktreeBase?: string;
+  /**
+   * The person chose this folder for this new chat, so the new chat worktree
+   * setting leaves it alone. Saved with the open tabs, so a reload keeps it.
+   */
+  worktreeDeclined?: boolean;
   /** Internal guard while the first turn creates its selected worktree. */
   worktreePreparing?: boolean;
   /** Select a working copy before continuing after the previous one was deleted. */

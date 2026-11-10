@@ -1,19 +1,23 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { Session } from "../../sessions/model/session";
 import { newSession } from "../../sessions/model/session";
 import type { NewChatWorktree } from "../../settings/model/settings";
+import { newTab } from "../../workspace/model/layout";
+import {
+  collectWorkspaceSnapshot,
+  hydrateWorkspaceSnapshot,
+} from "../../workspace/model/workspaceSnapshot";
 import type { Worktree } from "./worktrees";
 import {
   beginNewChatWorktreeOffer,
   clearUnconfirmedNewChatWorktree,
   confirmNewChatWorktreeOffer,
   flippedNewChatWorktree,
-  forgetNewChatFolderChoice,
   newChatStaysHere,
   newChatWorktreeAskLine,
-  noteNewChatFolderChoice,
   openNewChatWorktree,
-  resetNewChatFolderChoices,
+  withNewChatFolderChoice,
+  withoutNewChatFolderChoice,
   NEW_CHAT_WORKTREE_ASK,
   type NewChatWorktreePort,
 } from "./newChatWorktree";
@@ -59,10 +63,6 @@ function deferred<T>() {
   });
   return { promise, resolve, reject };
 }
-
-beforeEach(() => {
-  resetNewChatFolderChoices();
-});
 
 describe("openNewChatWorktree", () => {
   it("does nothing when the setting is off and the toggle is off", async () => {
@@ -309,9 +309,9 @@ describe("the offer on a new chat", () => {
         "always",
       ),
     ).toBeNull();
-    noteNewChatFolderChoice("s", "current");
-    expect(beginNewChatWorktreeOffer([blank], "s", "/work/proj", "always")).toBeNull();
-    expect(newChatStaysHere("s")).toBe(true);
+    const stayed = withNewChatFolderChoice(blank, "current");
+    expect(beginNewChatWorktreeOffer([stayed], "s", "/work/proj", "always")).toBeNull();
+    expect(newChatStaysHere(stayed)).toBe(true);
   });
 
   it("matches a Windows path with a different slash and case", () => {
@@ -320,10 +320,20 @@ describe("the offer on a new chat", () => {
     expect(next?.[0].workspaceMode).toBe("worktree");
   });
 
-  it("does not offer again after the folder choice is forgotten and the mode is still set", () => {
+  it("does not offer again when the chat already has a mode, whatever was chosen before", () => {
     const target = chat({ id: "s", cwd: "/work/proj", workspaceMode: "worktree", worktreeBase: "HEAD" });
-    forgetNewChatFolderChoice("s");
     expect(beginNewChatWorktreeOffer([target], "s", "/work/proj", "ask")).toBeNull();
+    expect(
+      beginNewChatWorktreeOffer([withoutNewChatFolderChoice(target)], "s", "/work/proj", "ask"),
+    ).toBeNull();
+  });
+
+  it("offers again once the folder choice is dropped", () => {
+    const stayed = withNewChatFolderChoice(chat({ id: "s", cwd: "/work/proj" }), "current");
+    expect(beginNewChatWorktreeOffer([stayed], "s", "/work/proj", "ask")).toBeNull();
+    const dropped = withoutNewChatFolderChoice(stayed);
+    expect(newChatStaysHere(dropped)).toBe(false);
+    expect(beginNewChatWorktreeOffer([dropped], "s", "/work/proj", "ask")?.[0].workspaceMode).toBe("worktree");
   });
 
   it("clears an offer that is still the one we made when the folder is not a git repo", async () => {
@@ -414,6 +424,64 @@ describe("the offer on a new chat", () => {
     (broken as { blocks: unknown }).blocks = null;
     expect(clearUnconfirmedNewChatWorktree([broken], "s", "/work/proj")).toBeNull();
     expect(beginNewChatWorktreeOffer([broken], "s", "/work/proj", "ask")).toBeNull();
+  });
+});
+
+describe("choosing this folder", () => {
+  it("is held on the chat, and choosing a worktree takes it back", () => {
+    const blank = chat({ id: "s", cwd: "/work/proj" });
+    const stayed = withNewChatFolderChoice(blank, "current");
+    expect(newChatStaysHere(blank)).toBe(false);
+    expect(newChatStaysHere(stayed)).toBe(true);
+    expect(blank.worktreeDeclined).toBeUndefined();
+    expect(newChatStaysHere(withNewChatFolderChoice(stayed, "worktree"))).toBe(false);
+    expect(withNewChatFolderChoice(stayed, "current")).toBe(stayed);
+    expect(withNewChatFolderChoice(blank, "worktree")).toBe(blank);
+  });
+
+  it("leaves one chat's choice out of another", () => {
+    const one = withNewChatFolderChoice(chat({ id: "one", cwd: "/work/proj" }), "current");
+    const two = chat({ id: "two", cwd: "/work/proj" });
+    const next = beginNewChatWorktreeOffer([one, two], "two", "/work/proj", "always");
+    expect(next?.find((entry) => entry.id === "two")?.workspaceMode).toBe("worktree");
+    expect(beginNewChatWorktreeOffer([one, two], "one", "/work/proj", "always")).toBeNull();
+  });
+
+  it("survives a reload: always still leaves the chat in its folder, and an untouched chat is still moved", async () => {
+    const chosen = withNewChatFolderChoice(chat({ id: "kept", cwd: "/work/proj" }), "current");
+    const untouched = chat({ id: "plain", cwd: "/work/proj" });
+    const tab = newTab("kept");
+    const snapshot = collectWorkspaceSnapshot(
+      [tab, newTab("plain")],
+      [chosen, untouched],
+      tab.id,
+      "/work/proj",
+      new Map(),
+    );
+    // The snapshot goes through the same JSON the app saves, and comes back through the loader.
+    const reloaded = hydrateWorkspaceSnapshot(JSON.parse(JSON.stringify(snapshot)), new Map());
+    const kept = reloaded?.sessions.find((session) => session.id === "kept");
+    const plain = reloaded?.sessions.find((session) => session.id === "plain");
+    expect(kept && newChatStaysHere(kept)).toBe(true);
+    expect(plain && newChatStaysHere(plain)).toBe(false);
+
+    const create = vi.fn(async () => tree("/wt/plain"));
+    const send = (session: Session) =>
+      openNewChatWorktree(
+        {
+          setting: "always",
+          firstTurn: true,
+          toggleOn: false,
+          declined: newChatStaysHere(session),
+          cwd: session.cwd,
+          base: "HEAD",
+        },
+        port({ createWorktree: create }),
+      );
+    expect(await send(kept!)).toBeNull();
+    expect(create).not.toHaveBeenCalled();
+    expect((await send(plain!))?.path).toBe("/wt/plain");
+    expect(create).toHaveBeenCalledTimes(1);
   });
 });
 
