@@ -555,6 +555,15 @@ pub fn answer(
             now,
         )?);
     }
+    // WP-157: one summary of the question and the answer. A second answer never reaches here.
+    crate::work_log::record_decision(
+        &tx,
+        &decision.project,
+        &decision.decision_key,
+        &decision.question,
+        decision.answer.as_deref().unwrap_or(""),
+        decision.answered_at.unwrap_or(now),
+    )?;
     tx.commit().map_err(|e| e.to_string())?;
     move_questions(conn, &released_tasks, QUESTION_FOR_FIRST_MATE, now);
     Ok(AnswerOutcome {

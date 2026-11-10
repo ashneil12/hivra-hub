@@ -1,17 +1,17 @@
-// The delegation hook and the first mate tool call into this module. Until they
-// land, the lib target has no caller outside the tests.
-#![allow(dead_code)]
 //! The work log (docs/hivra/work/WP-157-work-log-and-retro.md).
 //!
-//! One plain line per finished task, decision, correction or note. Rows are
-//! inserted and then left alone: a trigger rejects updates and deletes, and a
-//! second insert with the same source returns the first row instead of
-//! writing over it. Two windows both insert, so neither can overwrite the other.
+//! One plain line per finished task, decision, correction or note. A delegation
+//! that finishes or is sent back, and a decision the person answers, each add
+//! their own summary. Rows are inserted and then left alone: a trigger rejects
+//! updates and deletes, and a second insert with the same source returns the
+//! first row instead of writing over it. Two windows both insert, so neither
+//! can overwrite the other.
 
 use std::time::Duration;
 
 use rusqlite::{params, Connection};
 use serde::Serialize;
+use sha2::{Digest, Sha256};
 use time::{OffsetDateTime, UtcOffset};
 
 use crate::portable::scrubber;
@@ -61,6 +61,7 @@ pub(crate) struct NewLine<'a> {
 }
 
 #[derive(Clone, Debug, Default)]
+#[allow(dead_code)] // The panel and the first mate tool read with this.
 pub(crate) struct ReadQuery {
     /// `None` is every project. An empty string is only lines with no project.
     pub project: Option<String>,
@@ -235,6 +236,7 @@ pub(crate) fn append(conn: &Connection, input: &NewLine<'_>) -> Result<Line, Str
     }
 }
 
+#[allow(dead_code)] // The panel and the first mate tool read with this.
 pub(crate) fn list(conn: &Connection, query: &ReadQuery) -> Result<Vec<Line>, String> {
     if let Some(kind) = &query.kind {
         if !KINDS.contains(&kind.as_str()) {
@@ -276,6 +278,209 @@ pub(crate) fn list(conn: &Connection, query: &ReadQuery) -> Result<Vec<Line>, St
         .map_err(|e| e.to_string())?;
     rows.collect::<Result<Vec<_>, _>>()
         .map_err(|e| e.to_string())
+}
+
+/// How many times this task was sent back. Counted from stored sources, so a
+/// line written by the other window is included and nothing is read and then
+/// overwritten.
+pub(crate) fn sent_back_count(conn: &Connection, task_id: &str) -> Result<i64, String> {
+    // A connection that has delegations but has not been migrated yet (a test store) still gets the table.
+    ensure_tables(conn).map_err(|e| e.to_string())?;
+    let task_id = clean_field(task_id, FIELD_CAP);
+    conn.query_row(
+        "SELECT COUNT(*) FROM work_log
+         WHERE task_id = ?1 AND kind = 'outcome' AND instr(source, ':sent-back') > 0",
+        [task_id],
+        |row| row.get(0),
+    )
+    .map_err(|e| e.to_string())
+}
+
+/// A stable id for one finish of one delegation. A source that would be too
+/// long, or that looks like a secret, is stored as a hash instead.
+pub(crate) fn delegation_source(id: &str, ending: &str, n: i64) -> String {
+    let raw = format!("delegation:{id}:{ending}:{n}");
+    let label = if ending == "sent-back" {
+        "delegation:sent-back"
+    } else {
+        "delegation"
+    };
+    stable_source(label, &raw)
+}
+
+pub(crate) fn decision_source(project: &str, key: &str) -> String {
+    stable_source("decision", &format!("decision:{project}:{key}"))
+}
+
+pub(crate) struct FinishedWork<'a> {
+    pub project: &'a str,
+    pub task_id: &'a str,
+    pub task: &'a str,
+    pub delivered: &'a str,
+    pub problem: &'a str,
+    /// `done`, `failed`, or `sent back`.
+    pub ending: &'a str,
+    pub rework: i64,
+    pub queued_at: i64,
+    pub at_ms: i64,
+    pub source: &'a str,
+}
+
+/// One outcome summary. The same source returns the first row unchanged.
+pub(crate) fn record_outcome(conn: &Connection, work: &FinishedWork<'_>) -> Result<Line, String> {
+    ensure_tables(conn).map_err(|e| e.to_string())?;
+    let line = outcome_text(work)?;
+    append(
+        conn,
+        &NewLine {
+            project: work.project,
+            kind: "outcome",
+            task_id: work.task_id,
+            line: &line,
+            at_ms: work.at_ms,
+            offset_seconds: None,
+            source: work.source,
+        },
+    )
+}
+
+/// One decision summary. The same project and key return the first row.
+pub(crate) fn record_decision(
+    conn: &Connection,
+    project: &str,
+    key: &str,
+    question: &str,
+    answer: &str,
+    at_ms: i64,
+) -> Result<Line, String> {
+    ensure_tables(conn).map_err(|e| e.to_string())?;
+    let question = snippet(question, 800);
+    let answer = snippet(answer, 800);
+    let line = if question.is_empty() && answer.is_empty() {
+        "Decided, with the question and the answer left out.".to_string()
+    } else if question.is_empty() {
+        format!("Decided. Answer: {answer}.")
+    } else if answer.is_empty() {
+        format!("Decided: {question}.")
+    } else {
+        format!("Decided: {question} Answer: {answer}.")
+    };
+    let source = decision_source(project, key);
+    append(
+        conn,
+        &NewLine {
+            project,
+            kind: "decision",
+            task_id: key,
+            line: &line,
+            at_ms,
+            offset_seconds: None,
+            source: &source,
+        },
+    )
+}
+
+fn outcome_text(work: &FinishedWork<'_>) -> Result<String, String> {
+    let lead = match work.ending {
+        "done" => "Done",
+        "failed" => "Failed",
+        "sent back" => "Sent back",
+        _ => return Err("A finished task is done, failed, or sent back.".to_string()),
+    };
+    let task = snippet(work.task, 200);
+    let task = if task.is_empty() {
+        "Untitled task".to_string()
+    } else {
+        task
+    };
+    let delivered = snippet(work.delivered, 400);
+    let problem = snippet(work.problem, 400);
+    let mut line = format!("{lead}: {task}.");
+    if delivered.is_empty() {
+        line.push_str(" Delivered nothing.");
+    } else {
+        line.push_str(&format!(" Delivered: {delivered}."));
+    }
+    if !problem.is_empty() {
+        line.push_str(&format!(" It failed: {problem}."));
+    }
+    line.push(' ');
+    line.push_str(&rework_words(work.rework));
+    line.push(' ');
+    line.push_str(&span_words(elapsed_ms(work.queued_at, work.at_ms)));
+    Ok(line)
+}
+
+fn rework_words(rework: i64) -> String {
+    match rework {
+        i64::MIN..=0 => "No rework.".to_string(),
+        1 => "Reworked once.".to_string(),
+        n => format!("Reworked {n} times."),
+    }
+}
+
+fn elapsed_ms(queued_at: i64, at_ms: i64) -> i64 {
+    match at_ms.checked_sub(queued_at) {
+        Some(ms) if ms > 0 => ms,
+        _ => 0,
+    }
+}
+
+/// How long the work had been queued, in plain words. `ms` is never negative.
+fn span_words(ms: i64) -> String {
+    if ms < 60_000 {
+        return "Under a minute from queued.".to_string();
+    }
+    let minutes = ms / 60_000;
+    let days = minutes / (24 * 60);
+    let hours = (minutes / 60) % 24;
+    let mins = minutes % 60;
+    let mut parts = Vec::new();
+    if days > 0 {
+        parts.push(unit(days, "day", "days"));
+    }
+    if hours > 0 {
+        parts.push(unit(hours, "hour", "hours"));
+    }
+    if mins > 0 {
+        parts.push(unit(mins, "minute", "minutes"));
+    }
+    format!("{} from queued.", parts.join(" "))
+}
+
+fn unit(n: i64, one: &str, many: &str) -> String {
+    if n == 1 {
+        format!("1 {one}")
+    } else {
+        format!("{n} {many}")
+    }
+}
+
+fn snippet(raw: &str, max_chars: usize) -> String {
+    let (redacted, _) = scrubber().redact_text(raw);
+    cap_text(&collapse(&redacted), max_chars)
+}
+
+fn stable_source(label: &str, raw: &str) -> String {
+    let collapsed = collapse(raw);
+    if !collapsed.is_empty()
+        && collapsed.chars().count() <= SOURCE_CAP
+        && !scrubber().has_secret(&collapsed)
+    {
+        return collapsed;
+    }
+    let digest = Sha256::digest(raw.as_bytes());
+    format!("{label}:{}", hex_bytes(digest.as_slice()))
+}
+
+fn hex_bytes(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        out.push(HEX[(byte >> 4) as usize] as char);
+        out.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    out
 }
 
 fn check_day(day: &str) -> Result<(), String> {

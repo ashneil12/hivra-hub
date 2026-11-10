@@ -13721,7 +13721,14 @@ function Workspace({
                   monoNote: briefGates.note,
                   onSettled: (next) => void turnEnded(next, true),
                 });
-                if (!accepted) finish(briefGates.failed(result));
+                if (accepted && row) {
+                  // WP-157: the checks sent this work back. A repeat of the same try keeps the first line.
+                  void invoke("delegations_sent_back", {
+                    id: row.id,
+                    rework: gateFailures,
+                    report: result.result,
+                  }).catch(() => undefined);
+                } else if (!accepted) finish(briefGates.failed(result));
                 return;
               }
               if (briefGates?.action === "fail" || briefGates?.action === "unsure") {
@@ -13741,7 +13748,14 @@ function Workspace({
                     monoNote: gateAskNote(run),
                     onSettled: (next) => void turnEnded(next, true),
                   });
-                  if (!accepted) finish(gateFailedResult(result, run));
+                  if (accepted && row) {
+                    // WP-157: the checks sent this work back. A repeat of the same try keeps the first line.
+                    void invoke("delegations_sent_back", {
+                      id: row.id,
+                      rework: gateFailures,
+                      report: result.result,
+                    }).catch(() => undefined);
+                  } else if (!accepted) finish(gateFailedResult(result, run));
                   return;
                 }
                 if (verdict === "deliver-failed" && run) {

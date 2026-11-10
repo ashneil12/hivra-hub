@@ -682,6 +682,465 @@ fn two_connections_keep_every_new_line_and_one_copy_of_a_repeated_source() {
     }
 }
 
+fn outcomes(conn: &Connection) -> Vec<Line> {
+    list(
+        conn,
+        &ReadQuery {
+            kind: Some("outcome".into()),
+            ..ReadQuery::default()
+        },
+    )
+    .unwrap()
+}
+
+fn decisions(conn: &Connection) -> Vec<Line> {
+    list(
+        conn,
+        &ReadQuery {
+            kind: Some("decision".into()),
+            ..ReadQuery::default()
+        },
+    )
+    .unwrap()
+}
+
+fn activity_rows(conn: &Connection) -> i64 {
+    conn.query_row("SELECT COUNT(*) FROM activity", [], |row| row.get(0))
+        .unwrap()
+}
+
+fn launch(request: &str, child: &str) -> crate::delegations::RecordInput {
+    crate::delegations::RecordInput {
+        owner_session: "lead".into(),
+        request_id: request.into(),
+        child_session: child.into(),
+        project: Some("tally".into()),
+        title: Some("Save the export".into()),
+        brief: Some("Save the export as a file.".into()),
+        ..Default::default()
+    }
+}
+
+fn finish(id: &str, generation: i64, state: &str, result: &str) -> crate::delegations::SettleInput {
+    crate::delegations::SettleInput {
+        id: id.into(),
+        generation,
+        state: state.into(),
+        result: Some(result.into()),
+        ..Default::default()
+    }
+}
+
+#[test]
+fn the_time_from_queued_is_plain_words() {
+    assert_eq!(span_words(0), "Under a minute from queued.");
+    assert_eq!(span_words(59_999), "Under a minute from queued.");
+    assert_eq!(span_words(60_000), "1 minute from queued.");
+    assert_eq!(span_words(12 * 60_000), "12 minutes from queued.");
+    assert_eq!(span_words(60 * 60_000), "1 hour from queued.");
+    assert_eq!(span_words(90 * 60_000), "1 hour 30 minutes from queued.");
+    assert_eq!(span_words(24 * 60 * 60_000), "1 day from queued.");
+    assert_eq!(
+        span_words(((24 + 4) * 60) * 60_000),
+        "1 day 4 hours from queued."
+    );
+    assert_eq!(
+        span_words(((26 * 60) + 1) * 60_000),
+        "1 day 2 hours 1 minute from queued."
+    );
+    assert_eq!(rework_words(0), "No rework.");
+    assert_eq!(rework_words(1), "Reworked once.");
+    assert_eq!(rework_words(2), "Reworked 2 times.");
+    assert_eq!(elapsed_ms(50, 10), 0);
+    assert_eq!(elapsed_ms(i64::MIN, i64::MAX), 0);
+}
+
+#[test]
+fn a_finished_task_writes_one_outcome_line() {
+    let store = memory();
+    let mut conn = store.lock_conn().unwrap();
+    let before = activity_rows(&conn);
+    let queued = unix_ms(2026, 11, 10);
+    let mut input = launch("req-1", "worker-1");
+    input.title = Some("保存 the export".into());
+    let row = crate::delegations::record(&mut conn, input, queued).unwrap();
+    let at = queued + 90 * 60_000;
+    let mut settled = finish(
+        &row.id,
+        1,
+        crate::delegations::COMPLETED,
+        "Wrote the file.\r\nIt loads.",
+    );
+    settled.result = Some(format!("Wrote the file.\r\nShip\0ped. {GITHUB}"));
+    let change = crate::delegations::settle(&mut conn, settled, at).unwrap();
+    assert!(change.applied);
+
+    let rows = outcomes(&conn);
+    assert_eq!(rows.len(), 1);
+    let line = &rows[0];
+    assert_eq!(line.kind, "outcome");
+    assert_eq!(line.project, "tally");
+    assert_eq!(line.task_id, row.id);
+    assert_eq!(line.created_at, at);
+    assert!(line.line.starts_with("Done: 保存 the export."));
+    assert!(line.line.contains("Delivered: Wrote the file. Shipped."));
+    assert!(line.line.contains("No rework."));
+    assert!(line.line.contains("1 hour 30 minutes from queued."));
+    assert!(!line.line.contains('\n') && !line.line.contains('\r'));
+    assert!(line.line.contains("[secret removed]"));
+    assert!(!line.line.contains("ghp_"));
+    assert!(!scrubber().has_secret(&line.line));
+    assert!(!scrubber().has_secret(&line.source));
+    let offset = local_offset_seconds(at.div_euclid(1000));
+    assert_eq!(line.day, civil_day(at, offset).unwrap());
+    assert_eq!(activity_rows(&conn), before);
+
+    let again = crate::delegations::settle(
+        &mut conn,
+        finish(
+            &row.id,
+            1,
+            crate::delegations::COMPLETED,
+            "A different report.",
+        ),
+        at + 60_000,
+    )
+    .unwrap();
+    assert!(!again.applied);
+    assert_eq!(outcomes(&conn).len(), 1);
+    assert_eq!(outcomes(&conn)[0].line, line.line);
+}
+
+#[test]
+fn a_late_settle_a_cancel_and_a_refused_done_write_nothing() {
+    let store = memory();
+    let mut conn = store.lock_conn().unwrap();
+    let queued = unix_ms(2026, 11, 10);
+    let row =
+        crate::delegations::record(&mut conn, launch("req-late", "worker-late"), queued).unwrap();
+    let late = crate::delegations::settle(
+        &mut conn,
+        finish(&row.id, 2, crate::delegations::COMPLETED, "too late"),
+        queued + 1_000,
+    )
+    .unwrap();
+    assert!(!late.applied);
+    let cancelled = crate::delegations::settle(
+        &mut conn,
+        finish(&row.id, 1, crate::delegations::CANCELLED, "stopped"),
+        queued + 2_000,
+    )
+    .unwrap();
+    assert!(cancelled.applied);
+    assert!(outcomes(&conn).is_empty());
+
+    let mut needs_review = launch("req-review", "worker-review");
+    needs_review.review_required = true;
+    let reviewed = crate::delegations::record(&mut conn, needs_review, queued).unwrap();
+    let refused = crate::delegations::settle(
+        &mut conn,
+        finish(
+            &reviewed.id,
+            1,
+            crate::delegations::COMPLETED,
+            "done without a review",
+        ),
+        queued + 3_000,
+    );
+    assert!(refused.is_err());
+    assert!(outcomes(&conn).is_empty());
+}
+
+#[test]
+fn a_failure_and_a_send_back_each_write_one_line_and_count_rework() {
+    let store = memory();
+    let mut conn = store.lock_conn().unwrap();
+    let queued = unix_ms(2026, 11, 10);
+    let row =
+        crate::delegations::record(&mut conn, launch("req-back", "worker-back"), queued).unwrap();
+    let first = crate::delegations::sent_back(
+        &mut conn,
+        &row.id,
+        1,
+        "Wrote a first draft.",
+        queued + 20 * 60_000,
+    )
+    .unwrap()
+    .unwrap();
+    assert!(first.line.starts_with("Sent back: Save the export."));
+    assert!(first.line.contains("Delivered: Wrote a first draft."));
+    assert!(first.line.contains("Reworked once."));
+    assert!(first.line.contains("20 minutes from queued."));
+    let repeat = crate::delegations::sent_back(
+        &mut conn,
+        &row.id,
+        1,
+        "A different draft that must not replace the first.",
+        queued + 21 * 60_000,
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(repeat.seq, first.seq);
+    assert_eq!(repeat.line, first.line);
+    let second = crate::delegations::sent_back(
+        &mut conn,
+        &row.id,
+        2,
+        "Wrote a second draft.",
+        queued + 40 * 60_000,
+    )
+    .unwrap()
+    .unwrap();
+    assert_ne!(second.seq, first.seq);
+    assert!(second.line.contains("Reworked 2 times."));
+
+    let mut failed = finish(
+        &row.id,
+        1,
+        crate::delegations::FAILED,
+        "Wrote a second draft.",
+    );
+    failed.error = Some(format!("the checks still failed {PRIVATE_KEY}"));
+    let change = crate::delegations::settle(&mut conn, failed, queued + 90 * 60_000).unwrap();
+    assert!(change.applied);
+    let failed_line = outcomes(&conn)
+        .into_iter()
+        .find(|line| line.line.starts_with("Failed:"))
+        .unwrap();
+    assert!(failed_line
+        .line
+        .contains("Delivered: Wrote a second draft."));
+    assert!(failed_line
+        .line
+        .contains("It failed: the checks still failed"));
+    assert!(failed_line.line.contains("[secret removed]"));
+    assert!(!failed_line.line.contains("BEGIN OPENSSH"));
+    assert!(!scrubber().has_secret(&failed_line.line));
+    assert!(failed_line.line.contains("Reworked 2 times."));
+    assert!(failed_line.line.contains("1 hour 30 minutes from queued."));
+
+    let resumed =
+        crate::delegations::reattach(&mut conn, "worker-back", true, None, queued + 91 * 60_000)
+            .unwrap()
+            .expect("a failed task can be picked up again");
+    assert_eq!(resumed.generation, 2);
+    let done = crate::delegations::settle(
+        &mut conn,
+        finish(&row.id, 2, crate::delegations::COMPLETED, "Wrote the file."),
+        queued + ((24 + 4) * 60) * 60_000,
+    )
+    .unwrap();
+    assert!(done.applied);
+    let done_line = outcomes(&conn)
+        .into_iter()
+        .find(|line| line.line.starts_with("Done:"))
+        .unwrap();
+    assert!(done_line.line.contains("Delivered: Wrote the file."));
+    assert!(done_line.line.contains("Reworked 3 times."));
+    assert!(done_line.line.contains("1 day 4 hours from queued."));
+    assert_eq!(outcomes(&conn).len(), 4);
+
+    assert!(
+        crate::delegations::sent_back(&mut conn, &row.id, 3, "too late", queued + 1)
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        crate::delegations::sent_back(&mut conn, "missing", 1, "no row", queued)
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(outcomes(&conn).len(), 4);
+    let bad = crate::delegations::sent_back(&mut conn, &row.id, 0, "no", queued).unwrap_err();
+    assert!(bad.contains("1 to 100"), "{bad}");
+    let far = crate::delegations::sent_back(&mut conn, &row.id, 101, "no", queued).unwrap_err();
+    assert!(far.contains("1 to 100"), "{far}");
+    assert!(crate::delegations::sent_back(&mut conn, "  ", 1, "no", queued).is_err());
+}
+
+#[test]
+fn a_source_that_looks_like_a_secret_is_not_stored() {
+    let secret_id = format!("task-{GITHUB}");
+    let done = delegation_source(&secret_id, "done", 1);
+    let sent = delegation_source(&secret_id, "sent-back", 2);
+    assert!(done.starts_with("delegation:"));
+    assert!(sent.starts_with("delegation:sent-back:"));
+    assert!(!done.contains("ghp_") && !sent.contains("ghp_"));
+    assert!(!scrubber().has_secret(&done) && !scrubber().has_secret(&sent));
+    assert_ne!(done, sent);
+}
+
+#[test]
+fn an_answered_decision_writes_one_line() {
+    let store = memory();
+    let mut conn = store.lock_conn().unwrap();
+    let before = activity_rows(&conn);
+    let project = format!("tally {GITHUB}");
+    crate::decisions::ask(
+        &mut conn,
+        crate::decisions::AskInput {
+            asked_by: "lead-chat".into(),
+            asked_by_mono: None,
+            project: Some(project.clone()),
+            key: "export-format".into(),
+            question: "Which export format should we keep?".into(),
+            options: vec!["CSV".into(), "JSON".into()],
+            recommended: None,
+            task_ids: Vec::new(),
+        },
+        unix_ms(2026, 11, 10),
+    )
+    .unwrap();
+    let answered = crate::decisions::answer(
+        &mut conn,
+        &project,
+        "export-format",
+        &format!("Keep CSV. {ASSIGNED}"),
+        None,
+        unix_ms(2026, 11, 10) + 60_000,
+    )
+    .unwrap();
+    assert!(answered.applied);
+    let rows = decisions(&conn);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].kind, "decision");
+    assert!(rows[0].line.contains("Which export format should we keep?"));
+    assert!(rows[0].line.contains("Keep CSV."));
+    assert!(rows[0].line.contains("[secret removed]"));
+    assert!(!rows[0].line.contains("Planted9"));
+    assert!(!rows[0].source.contains("ghp_"));
+    assert!(!scrubber().has_secret(&rows[0].line));
+    assert!(!scrubber().has_secret(&rows[0].source));
+    assert!(!scrubber().has_secret(&rows[0].project));
+    assert_eq!(activity_rows(&conn), before);
+
+    let second = crate::decisions::answer(
+        &mut conn,
+        &project,
+        "export-format",
+        "JSON",
+        None,
+        unix_ms(2026, 11, 10) + 120_000,
+    )
+    .unwrap();
+    assert!(!second.applied);
+    assert_eq!(decisions(&conn).len(), 1);
+    assert!(decisions(&conn)[0].line.contains("Keep CSV."));
+
+    crate::decisions::ask(
+        &mut conn,
+        crate::decisions::AskInput {
+            asked_by: "lead-chat".into(),
+            asked_by_mono: None,
+            project: Some("tally".into()),
+            key: "irreversible/lead/task".into(),
+            question: "Delete the export history?".into(),
+            options: vec!["Keep it".into(), "Delete it".into()],
+            recommended: None,
+            task_ids: Vec::new(),
+        },
+        unix_ms(2026, 11, 10),
+    )
+    .unwrap();
+    let refused = crate::decisions::answer(
+        &mut conn,
+        "tally",
+        "irreversible/lead/task",
+        "Delete it",
+        Some("chat:mate".into()),
+        unix_ms(2026, 11, 10) + 1_000,
+    );
+    assert!(refused.is_err());
+    assert_eq!(decisions(&conn).len(), 1);
+    let still = crate::decisions::get(&conn, "tally", "irreversible/lead/task")
+        .unwrap()
+        .unwrap();
+    assert_eq!(still.state, crate::decisions::OPEN);
+}
+
+#[test]
+fn two_windows_keep_one_line_for_one_decision_and_one_send_back() {
+    let temp = TempDb::new();
+    let task_id = {
+        let store = SessionStore::open(temp.db.clone()).unwrap();
+        let mut conn = store.lock_conn().unwrap();
+        crate::decisions::ask(
+            &mut conn,
+            crate::decisions::AskInput {
+                asked_by: "lead-chat".into(),
+                asked_by_mono: None,
+                project: Some("tally".into()),
+                key: "export-format".into(),
+                question: "Which export format should we keep?".into(),
+                options: vec!["CSV".into(), "JSON".into()],
+                recommended: None,
+                task_ids: Vec::new(),
+            },
+            1_000,
+        )
+        .unwrap();
+        crate::delegations::record(&mut conn, launch("req-race", "worker-race"), 1_000)
+            .unwrap()
+            .id
+    };
+    let answers = ["CSV", "JSON"];
+    std::thread::scope(|scope| {
+        for (index, word) in answers.iter().enumerate() {
+            let path = temp.db.clone();
+            let word = *word;
+            scope.spawn(move || {
+                let mut conn = Connection::open(&path).unwrap();
+                conn.busy_timeout(std::time::Duration::from_secs(5))
+                    .unwrap();
+                let _ = crate::decisions::answer(
+                    &mut conn,
+                    "tally",
+                    "export-format",
+                    word,
+                    None,
+                    2_000 + index as i64,
+                );
+            });
+        }
+        for index in 0..8 {
+            let path = temp.db.clone();
+            let task_id = task_id.clone();
+            scope.spawn(move || {
+                let mut conn = Connection::open(&path).unwrap();
+                conn.busy_timeout(std::time::Duration::from_secs(5))
+                    .unwrap();
+                let _ = crate::delegations::sent_back(
+                    &mut conn,
+                    &task_id,
+                    1,
+                    &format!("Draft {index}."),
+                    3_000 + index,
+                );
+            });
+        }
+    });
+    let conn = Connection::open(&temp.db).unwrap();
+    let decided = decisions(&conn);
+    assert_eq!(decided.len(), 1);
+    let stored = crate::decisions::get(&conn, "tally", "export-format")
+        .unwrap()
+        .unwrap();
+    assert_eq!(stored.state, crate::decisions::ANSWERED);
+    let answer = stored.answer.unwrap();
+    assert!(
+        answer == "CSV" || answer == "JSON",
+        "unexpected answer {answer}"
+    );
+    assert!(decided[0].line.contains(&answer));
+    let sent = outcomes(&conn)
+        .into_iter()
+        .filter(|line| line.line.starts_with("Sent back:"))
+        .collect::<Vec<_>>();
+    assert_eq!(sent.len(), 1);
+    assert!(sent[0].line.contains("Reworked once."));
+    assert!(sent[0].line.starts_with("Sent back: Save the export."));
+}
+
 #[cfg(unix)]
 #[test]
 fn the_machine_zone_matches_localtime_for_the_given_instant() {

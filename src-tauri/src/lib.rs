@@ -597,6 +597,8 @@ pub fn run() {
             reminders::reminder_open,
             delegations::delegations_record,
             delegations::delegations_settle,
+            // WP-157: one work log line when checks send work back.
+            delegations::delegations_sent_back,
             delegations::delegations_reattach,
             delegations::delegations_set_question,
             delegations::delegations_set_stall,
