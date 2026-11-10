@@ -362,8 +362,8 @@ mod platform {
     use tauri::{AppHandle, Manager};
 
     use super::{
-        emit, note_for_reason, sessions, Heard, HelperEvent, Support, DENIED, FINISH_GRACE, NOT_HERE,
-        READY_WAIT, STOPPED, WATCH_EVERY,
+        emit, note_for_reason, sessions, Heard, HelperEvent, Support, DENIED, FINISH_GRACE,
+        NOT_HERE, READY_WAIT, STOPPED, WATCH_EVERY,
     };
     use crate::disclaim;
 
