@@ -68,6 +68,43 @@ function ask(url, { token, body, method = "POST", headers = {}, rawPath = null }
   });
 }
 
+/**
+ * A relay in front of a fake upstream that records every request and answers 200. `upstreamPath` is appended to the
+ * upstream base, the way the real OpenRouter address ends in `/api`.
+ */
+async function withRelay(run, { upstreamPath = "" } = {}) {
+  const up = await upstream((req, res) => {
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end('{"ok":true}');
+  });
+  const relay = await startOpenRouterRelay({ readKey: () => FAKE_KEY, upstream: `${up.url}${upstreamPath}`, model: "relay/one" });
+  try {
+    await run(relay, up);
+  } finally {
+    await relay.close();
+    await up.close();
+  }
+}
+
+/** One authenticated call the relay must not forward. The default body tries both ways of naming a model. `null` sends no body. */
+async function refused(method, rawPath, body = { model: "attacker/choice", models: ["attacker/other"], messages: [{ role: "user", content: "hi" }] }) {
+  let answer;
+  await withRelay(async (relay, up) => {
+    answer = await ask(relay.url, {
+      token: relay.token,
+      method,
+      rawPath,
+      ...(body === null ? {} : { body }),
+    });
+    assert.equal(up.seen.length, 0, `${method} ${rawPath} was forwarded`);
+    assert.equal(answer.text.includes(FAKE_KEY), false, "a refusal echoed the key");
+  });
+  return answer;
+}
+
+const POST_ONLY = "this relay only forwards POST\n";
+const PATHS_ONLY = "this relay only forwards /v1/messages and /v1/messages/count_tokens\n";
+
 /** Try to connect to a loopback port; resolves with the connection's error (never rejects on a refusal). */
 function connect(port) {
   return new Promise((resolve, reject) => {
@@ -163,7 +200,7 @@ test("the right token is swapped for the key, and the model is rewritten", async
     assert.equal(answer.text, '{"ok":true}');
     assert.equal(up.seen.length, 1);
     const got = up.seen[0];
-    // Any path, query and all.
+    // The query on an allowed path is kept.
     assert.equal(got.url, "/v1/messages?beta=true");
     // The key, never the inbound token.
     assert.equal(got.headers.authorization, `Bearer ${FAKE_KEY}`);
@@ -173,19 +210,20 @@ test("the right token is swapped for the key, and the model is rewritten", async
     assert.match(got.body, /"content":"hi"/);
     // The key that this run minted is 24 random bytes, in hex.
     assert.match(relay.token, /^[0-9a-f]{48}$/);
-    // A body that isn't a JSON object with a model is forwarded byte for byte.
+    // A body that isn't a JSON object is forwarded byte for byte.
     const notJson = await ask(`${relay.url}/v1/messages`, { token: relay.token, headers: { "content-type": "text/plain" }, body: undefined });
     assert.equal(up.seen.length, 2);
     assert.equal(up.seen[1].body, "");
-    // A caller writes the request line itself, so it is untrusted. `..` cannot climb out of the upstream's path, and a
-    // path that names another host outright is refused rather than followed: nothing carries the key to a stranger.
+    // A caller writes the request line itself, so it is untrusted. `..` that still names an allowed path cannot climb
+    // out of the upstream's host, and a path that names another host is refused rather than followed.
     const climbed = await ask(relay.url, { token: relay.token, rawPath: "/../../v1/messages", body: { model: "x" } });
     assert.equal(climbed.status, 200);
     assert.equal(up.seen.length, 3);
     assert.equal(up.seen[2].host, up.url.replace("http://", ""));
     assert.equal(up.seen[2].url, "/v1/messages");
     const escaped = await ask(relay.url, { token: relay.token, rawPath: "http://elsewhere.example/v1/messages", body: { model: "x" } });
-    assert.equal(escaped.status, 502);
+    assert.equal(escaped.status, 403);
+    assert.equal(escaped.text, PATHS_ONLY);
     assert.equal(escaped.text.includes("elsewhere.example"), false);
     assert.equal(up.seen.length, 3);
     // The key is read once, at start, and never again: five calls did not touch the Keychain five times.
@@ -194,6 +232,161 @@ test("the right token is swapped for the key, and the model is rewritten", async
     await relay.close();
     await up.close();
   }
+});
+
+for (const method of ["GET", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS", "TRACE"]) {
+  test(`${method} /v1/messages is refused and nothing is forwarded`, async () => {
+    // No body: Node answers 400 itself for some of these methods when a body is attached, and the relay never sees the call.
+    const answer = await refused(method, "/v1/messages", null);
+    assert.equal(answer.status, 405);
+    assert.equal(answer.headers.allow, "POST");
+    // HEAD has no body. Every other refusal says what is allowed, and never the caller's path.
+    if (method !== "HEAD") assert.equal(answer.text, POST_ONLY);
+  });
+}
+
+test("a method Node will not parse is not forwarded", async () => {
+  // FOO never reaches the relay: Node answers 400 first. The refusal is still that nothing is forwarded.
+  const answer = await refused("FOO", "/v1/messages", null);
+  assert.equal(answer.status, 400);
+  assert.equal(answer.text.includes(FAKE_KEY), false);
+});
+
+for (const rawPath of [
+  "/v1/models",
+  "/v1/chat/completions",
+  "/v1/completions",
+  "/api/v1/messages",
+  "/v1/messages/",
+  "/v1/messages/count_tokens/",
+  "/v1/Messages",
+  "/v1/messages/count_Tokens",
+  "/",
+  "/v1/messages/../models",
+  "/v1/messages-evil",
+  "/v1/messages/count_tokens/extra",
+  "/not-a-path",
+  "/../../v1/models",
+  "/v1/%2e%2e/models",
+  "//evil.example/v1/messages",
+  "http://elsewhere.example/v1/messages",
+]) {
+  test(`POST ${rawPath} is refused and nothing is forwarded`, async () => {
+    const answer = await refused("POST", rawPath);
+    assert.equal(answer.status, 403);
+    // The whole answer is the fixed sentence, so the caller's path (a host, `..`, anything) is not echoed.
+    assert.equal(answer.text, PATHS_ONLY);
+  });
+}
+
+test("a wrong token on a bad path is still a 401, and nothing is forwarded", async () => {
+  await withRelay(async (relay, up) => {
+    const answer = await ask(relay.url, { token: "not-this-run", method: "GET", rawPath: "/v1/models", body: { model: "x" } });
+    assert.equal(answer.status, 401);
+    assert.equal(up.seen.length, 0);
+    assert.equal(answer.text.includes("/v1/models"), false);
+  });
+});
+
+test("a refused call does not stop the relay answering a later post", async () => {
+  await withRelay(async (relay, up) => {
+    const method = await ask(relay.url, { token: relay.token, method: "DELETE", rawPath: "/v1/messages" });
+    assert.equal(method.status, 405);
+    const path = await ask(relay.url, { token: relay.token, rawPath: "/v1/models", body: { model: "x" } });
+    assert.equal(path.status, 403);
+    const ok = await ask(`${relay.url}/v1/messages`, { token: relay.token, body: { messages: [{ role: "user", content: "still here" }] } });
+    assert.equal(ok.status, 200);
+    assert.equal(up.seen.length, 1);
+    assert.equal(JSON.parse(up.seen[0].body).model, "relay/one");
+    assert.equal(JSON.parse(up.seen[0].body).messages[0].content, "still here");
+  });
+});
+
+test("a JSON body with no model is forwarded with the pinned model", async () => {
+  await withRelay(async (relay, up) => {
+    const missing = await ask(`${relay.url}/v1/messages`, { token: relay.token, body: { messages: [{ role: "user", content: "hi" }] } });
+    assert.equal(missing.status, 200);
+    const first = JSON.parse(up.seen[0].body);
+    assert.equal(first.model, "relay/one");
+    assert.equal(first.messages[0].content, "hi");
+    // An empty object is still a body with no model.
+    const empty = await ask(`${relay.url}/v1/messages`, { token: relay.token, body: {} });
+    assert.equal(empty.status, 200);
+    assert.deepEqual(JSON.parse(up.seen[1].body), { model: "relay/one" });
+  });
+});
+
+test("a models list is dropped and the pinned model is set", async () => {
+  await withRelay(async (relay, up) => {
+    // `models` on its own is how a caller would pick a model once `model` is pinned.
+    const onlyList = await ask(`${relay.url}/v1/messages`, {
+      token: relay.token,
+      body: { models: ["attacker/one", "attacker/two"], messages: [{ role: "user", content: "hi" }] },
+    });
+    assert.equal(onlyList.status, 200);
+    const first = JSON.parse(up.seen[0].body);
+    assert.equal(first.model, "relay/one");
+    assert.equal("models" in first, false);
+    assert.equal(first.messages[0].content, "hi");
+    // A string is the same field. The caller's model does not survive either.
+    const both = await ask(`${relay.url}/v1/messages`, {
+      token: relay.token,
+      body: { model: "attacker/choice", models: "attacker/other", max_tokens: 16 },
+    });
+    assert.equal(both.status, 200);
+    const second = JSON.parse(up.seen[1].body);
+    assert.equal(second.model, "relay/one");
+    assert.equal("models" in second, false);
+    assert.equal(second.max_tokens, 16);
+  });
+});
+
+test("an encoded climb that still names an allowed path is forwarded as that path", async () => {
+  await withRelay(async (relay, up) => {
+    const answer = await ask(relay.url, { token: relay.token, rawPath: "/%2e%2e/v1/messages?beta=true", body: { model: "attacker/choice" } });
+    assert.equal(answer.status, 200);
+    assert.equal(up.seen.length, 1);
+    assert.equal(up.seen[0].url, "/v1/messages?beta=true");
+    assert.equal(JSON.parse(up.seen[0].body).model, "relay/one");
+  });
+});
+
+test("POST /v1/messages/count_tokens is forwarded with the pinned model and no models list", async () => {
+  await withRelay(async (relay, up) => {
+    const answer = await ask(`${relay.url}/v1/messages/count_tokens?beta=true`, {
+      token: relay.token,
+      body: { models: ["attacker/one"], messages: [{ role: "user", content: "hi" }] },
+    });
+    assert.equal(answer.status, 200);
+    assert.equal(up.seen.length, 1);
+    assert.equal(up.seen[0].method, "POST");
+    assert.equal(up.seen[0].url, "/v1/messages/count_tokens?beta=true");
+    const got = JSON.parse(up.seen[0].body);
+    assert.equal(got.model, "relay/one");
+    assert.equal("models" in got, false);
+    assert.equal(got.messages[0].content, "hi");
+  });
+});
+
+test("the two paths stay under the upstream prefix when a request climbs with ..", async () => {
+  await withRelay(
+    async (relay, up) => {
+      const plain = await ask(`${relay.url}/v1/messages?beta=true`, { token: relay.token, body: { model: "x", messages: [] } });
+      assert.equal(plain.status, 200);
+      assert.equal(up.seen[0].url, "/api/v1/messages?beta=true");
+      assert.equal(JSON.parse(up.seen[0].body).model, "relay/one");
+      // `/../../v1/messages` is still the messages call, but it must not climb out of `/api`.
+      const climbed = await ask(relay.url, { token: relay.token, rawPath: "/../../v1/messages", body: { model: "x" } });
+      assert.equal(climbed.status, 200);
+      assert.equal(up.seen.length, 2);
+      assert.equal(up.seen[1].url, "/api/v1/messages");
+      assert.equal(up.seen[1].host, up.url.replace("http://", ""));
+      const count = await ask(relay.url, { token: relay.token, rawPath: "/../../v1/messages/count_tokens", body: { model: "x" } });
+      assert.equal(count.status, 200);
+      assert.equal(up.seen[2].url, "/api/v1/messages/count_tokens");
+    },
+    { upstreamPath: "/api" },
+  );
 });
 
 test("a streamed answer reaches the caller chunk by chunk, not in one buffered piece", async () => {
