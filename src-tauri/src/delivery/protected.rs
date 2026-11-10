@@ -200,6 +200,7 @@ fn built_in_hit(path: &RepoPath) -> bool {
     }) || delivery_source(path)
         || capabilities_json(path)
         || tauri_build_inputs(path)
+        || rust_roots(path)
 }
 
 /// `src-tauri/capabilities/*.json` and `*.toml`, including a nested app. The directory is the prefix.
@@ -211,6 +212,20 @@ fn capabilities_json(path: &RepoPath) -> bool {
             .any(|pair| pair[0] == "src-tauri" && pair[1] == "capabilities"),
         _ => false,
     }
+}
+
+/// The crate roots and the GitHub reader. A `#[path]` on a crate root can point `mod delivery` at other code, which
+/// would bypass the literal `delivery/` match, and the reader decides what the floor is told about a pull request.
+/// Merged Rust is a full compromise anyway: the floor is not the control for it. Holding these is a speed bump.
+fn rust_roots(path: &RepoPath) -> bool {
+    path.lower.windows(3).any(|window| {
+        window[0] == "src-tauri" && window[1] == "src" && (window[2] == "lib.rs" || window[2] == "main.rs")
+    }) || path.lower.windows(4).any(|window| {
+        window[0] == "src-tauri"
+            && window[1] == "src"
+            && window[2] == "pr_watch"
+            && window[3] == "github.rs"
+    })
 }
 
 /// Tauri's own build and permission inputs: any `*.plist` directly in `src-tauri/`, and anything under
@@ -497,7 +512,7 @@ mod tests {
             ".environment",
             "id_rsa_backup",
             // Beside the floor's own module, which is held. This file is not.
-            "src-tauri/src/lib.rs",
+            "src-tauri/src/pr_watch/mod.rs",
             "not.github/workflows/x.yml",
             "mydockerfile",
             "src-tauri/capabilities/readme.md",
@@ -525,7 +540,7 @@ mod tests {
             assert_eq!(hits(&[path], &[]), vec![path.to_string()], "{path}");
         }
         assert!(
-            hits(&["src-tauri/src/lib.rs"], &[]).is_empty(),
+            hits(&["src-tauri/src/pr_watch/mod.rs"], &[]).is_empty(),
             "an ordinary file beside the floor is not held"
         );
         assert!(hits(&["src/delivery/merge.rs"], &[]).is_empty());
