@@ -110,3 +110,27 @@ test("a settled chat comes back when it needs you or gets a new message", async 
   await expect(row(page, "gamma")).toHaveCount(0);
   await expect(page.locator("body")).not.toContainText(/[—–]/);
 });
+
+test("a chat settled while it already needs you stays settled, and comes back for a newer ask", async ({ page }) => {
+  await page.goto(PAGE);
+  await setting(page, true);
+
+  // Alpha is asking for an approval when the person settles it, knowing that.
+  await page.getByRole("button", { name: "Needs you", exact: true }).click();
+  await expect(row(page, "alpha")).toBeVisible();
+  await pick(page, "alpha", "Settle");
+  await expect(page.locator("[data-inbox-notice]")).toContainText("Settled");
+  await expect(row(page, "alpha")).toHaveCount(0);
+  await expect(page.locator("[data-settled-shelf]")).toContainText("1");
+
+  // Nothing about it is new, so the row does not come back a moment later either.
+  await page.waitForTimeout(500);
+  await expect(row(page, "alpha")).toHaveCount(0);
+  await expect(page.locator("[data-settled-shelf]")).toContainText("1");
+
+  // It asks again after the settle: that is a new need, so it is back.
+  await page.getByRole("button", { name: "Alpha asks again", exact: true }).click();
+  await expect(row(page, "alpha")).toBeVisible();
+  await expect(page.locator("[data-settled-shelf]")).toHaveCount(0);
+  await expect(page.locator("body")).not.toContainText(/[—–]/);
+});

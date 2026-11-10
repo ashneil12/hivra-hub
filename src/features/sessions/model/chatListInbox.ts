@@ -27,6 +27,11 @@ export type ChatAttention = {
   failed: boolean;
   /** Approval, a question, or a failed turn. A person's own message is not this. */
   needsPerson: boolean;
+  /**
+   * Epoch ms the newest of those needs began (the approval was asked, the question was asked, the turn failed), when
+   * known. A need with no time cannot be shown to be newer than a settle, so it does not undo one.
+   */
+  needAt?: number;
   ownMessage: "none" | "undated" | "at";
   lastUserMessageAt: number | null;
   repliedAt?: number;
@@ -46,7 +51,7 @@ export type AttentionBlock = {
   monoNote?: unknown;
   monoCheck?: unknown;
   monoSessionCompletion?: unknown;
-  approval?: { decided?: string };
+  approval?: { decided?: string; at?: number };
   failure?: { at?: number; errorClass?: string; retryable?: boolean; resetsAt?: number };
 };
 
@@ -276,15 +281,51 @@ export function chatAttention(session: {
     }) != null;
   const own = lastOwnMessage(session.blocks);
   const repliedAt = lastReplyAt(session.blocks);
+  const needAt = newestNeedAt([
+    needsApproval ? newestApprovalAt(session.blocks) : undefined,
+    hasQuestion ? askedAt(session.pendingQuestion) : undefined,
+    failed ? failureAt(session) : undefined,
+  ]);
   return {
     needsApproval,
     hasQuestion,
     failed,
     needsPerson: needsApproval || hasQuestion || failed,
+    ...(needAt != null ? { needAt } : {}),
     ownMessage: own.kind,
     lastUserMessageAt: own.kind === "at" ? own.at : null,
     ...(repliedAt != null ? { repliedAt } : {}),
   };
+}
+
+function newestNeedAt(times: readonly (number | undefined)[]): number | undefined {
+  const known = times.filter((at): at is number => at != null && Number.isFinite(at) && at > 0);
+  return known.length > 0 ? Math.max(...known) : undefined;
+}
+
+/** When the newest undecided approval card was asked, from the card itself. */
+function newestApprovalAt(blocks: readonly AttentionBlock[]): number | undefined {
+  return newestNeedAt(blocks.map((block) => (block.approval && !block.approval.decided ? block.approval.at : undefined)));
+}
+
+function askedAt(question: unknown): number | undefined {
+  const at = question && typeof question === "object" ? (question as { askedAt?: unknown }).askedAt : undefined;
+  return typeof at === "number" ? at : undefined;
+}
+
+/** When the last turn failed: the error notice's time. A chat stopped at its usage limit with no notice has none. */
+function failureAt(session: Parameters<typeof chatAttention>[0]): number | undefined {
+  const blocks = session.blocks.map((block, index) => ({
+    ...block,
+    id: block.id ?? `block-${index}`,
+    text: block.text ?? "",
+  })) as Session["blocks"];
+  return lastTurnFailure({
+    blocks,
+    busy: session.busy,
+    usageLimit: session.usageLimit,
+    worktreeRemoved: session.worktreeRemoved,
+  })?.at;
 }
 
 function isOwnMessage(block: AttentionBlock): boolean {
@@ -336,12 +377,21 @@ export function wakesEarly(snoozeAt: number, attention: ChatAttention): boolean 
 }
 
 /**
- * A settled chat comes back, like an archived mail thread, when it needs the person (approval, a question, a failed
- * turn) or gets a new message: the person writes after it was settled, or a turn finishes after it. A message with no
- * time cannot be shown to be newer than the settle, so it does not undo one.
+ * A settled chat comes back, like an archived mail thread, when it needs the person again or gets a new message.
+ *
+ * Needs the person again: an approval, a question or a failed turn that began after it was settled. One that was
+ * already there when the person settled the chat does not undo it (they settled it knowing that), so settling a chat
+ * with a failed turn, a usage limit or an open question keeps it settled, and it does not drop back to the shelf later
+ * only when that need clears.
+ *
+ * A new message: the person writes after the settle, or a turn the person started finishes after it. A turn the app
+ * starts itself, such as one a worker's report begins, does not: `repliedAt` only follows the person's own messages, so
+ * the app's own notes do not unsettle a chat.
+ *
+ * A need or a message with no time cannot be shown to be newer than the settle, so it does not undo one.
  */
 export function settledWakes(settledAt: number, attention: ChatAttention): boolean {
-  if (attention.needsPerson) return true;
+  if (attention.needsPerson && attention.needAt != null && attention.needAt > settledAt) return true;
   const wrote =
     attention.ownMessage === "at" && attention.lastUserMessageAt != null && attention.lastUserMessageAt > settledAt;
   return wrote || (attention.repliedAt != null && attention.repliedAt > settledAt);
@@ -426,6 +476,8 @@ export function attentionWithApprovals(
       hasQuestion: current?.hasQuestion ?? false,
       failed: current?.failed ?? false,
       needsPerson: true,
+      // The need it already had keeps its time; an approval listed from elsewhere has none to add.
+      ...(current?.needAt != null ? { needAt: current.needAt } : {}),
       ownMessage: current?.ownMessage ?? "none",
       lastUserMessageAt: current?.lastUserMessageAt ?? null,
       ...(current?.repliedAt != null ? { repliedAt: current.repliedAt } : {}),

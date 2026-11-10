@@ -33,8 +33,10 @@ const summaries: SessionSummary[] = [
 
 type Blocks = Record<string, AttentionBlock[]>;
 
+// An approval carries the time it was asked, as the app stamps it (apply.ts), so a settled chat comes back only for one
+// asked after it was settled.
 function approval(id: string, decided?: string): AttentionBlock {
-  return { id, role: "approval", text: "", approval: decided ? { decided } : {} };
+  return { id, role: "approval", text: "", approval: decided ? { decided, at: Date.now() } : { at: Date.now() } };
 }
 
 function Fixture() {
@@ -82,6 +84,9 @@ function Fixture() {
         <div style={{ display: "flex", flexDirection: "column", gap: 4, marginTop: 8 }}>
           <button type="button" onClick={() => set("alpha", [approval("p-alpha")])}>
             Needs you
+          </button>
+          <button type="button" onClick={() => set("alpha", [approval("p-alpha-again")])}>
+            Alpha asks again
           </button>
           <button type="button" onClick={() => set("beta", [approval("p-beta")])}>
             Beta asks for approval
