@@ -298,10 +298,33 @@ pub fn read_key_in(service: &str, custom_model_id: &str) -> Result<Option<String
 }
 
 #[tauri::command]
-pub async fn model_key_save(custom_model_id: String, key: String) -> Result<(), String> {
-    tauri::async_runtime::spawn_blocking(move || save_key_in(KEY_SERVICE, &custom_model_id, &key))
-        .await
-        .map_err(|_| "Couldn't reach the Keychain.".to_string())?
+pub async fn model_key_save(
+    custom_model_id: String,
+    key: String,
+    provider: Option<String>,
+    model_id: Option<String>,
+    base_url: Option<String>,
+) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        save_key_in(KEY_SERVICE, &custom_model_id, &key)?;
+        // WP-129: the address stored with the key is the only host short text may send it to.
+        // A bad address does not undo the save. Other models can still keep the key.
+        if let (Some(provider), Some(model_id), Some(base_url)) = (provider, model_id, base_url) {
+            if let Some(dir) = crate::text_generation::store_dir() {
+                let route = CustomRoute {
+                    provider,
+                    base_url,
+                    model_id,
+                    custom_model_id,
+                    reasoning_effort: None,
+                };
+                let _ = crate::text_generation::record_model_binding(&dir, &route);
+            }
+        }
+        Ok(())
+    })
+    .await
+    .map_err(|_| "Couldn't reach the Keychain.".to_string())?
 }
 
 /// What removing a model's key means to the UI: deleted, or there was no key to begin with, are both success (true).
@@ -312,7 +335,14 @@ pub fn delete_outcome(result: Result<bool, String>) -> Result<bool, String> {
 
 pub fn delete_key_in(service: &str, custom_model_id: &str) -> Result<bool, String> {
     check_model_id(custom_model_id)?;
-    delete_outcome(crate::hub_keychain::delete(service, custom_model_id))
+    let deleted = delete_outcome(crate::hub_keychain::delete(service, custom_model_id))?;
+    // WP-129: drop the host stored for this key. No folder is created when there is none.
+    if service == KEY_SERVICE {
+        if let Some(dir) = crate::text_generation::store_dir() {
+            crate::text_generation::remove_model_binding(&dir, custom_model_id);
+        }
+    }
+    Ok(deleted)
 }
 
 #[tauri::command]

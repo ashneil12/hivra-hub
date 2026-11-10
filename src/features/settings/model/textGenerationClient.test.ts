@@ -1,4 +1,7 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+
+const invoke = vi.fn(async (..._args: unknown[]) => ({ ok: true, text: "Hello", kind: "ok", reason: "" }));
+vi.mock("@tauri-apps/api/core", () => ({ invoke: (...args: unknown[]) => invoke(...args) }));
 import { defaultBaseUrl } from "../../sessions/model/customModels";
 import { loadTextGeneration, saveTextGeneration, TEXT_GENERATION_KEY } from "./textGeneration";
 import {
@@ -269,6 +272,42 @@ describe("short text client", () => {
     }
     expect(() => textFromOutcome(null)).toThrowError(expect.objectContaining({ kind: "timeout" }));
     expect(() => textFromOutcome("nope")).toThrowError(expect.objectContaining({ kind: "timeout" }));
+  });
+
+  it("saves the route before it asks, and does not ask when that save is refused", async () => {
+    invoke.mockReset();
+    invoke.mockResolvedValueOnce(undefined);
+    invoke.mockResolvedValueOnce({ ok: true, text: "Hello", kind: "ok", reason: "" });
+    const request = {
+      provider: "xai",
+      model: "grok-3",
+      baseUrl: "https://api.x.ai/v1",
+      customModelId: "text-key",
+      prompt: "Say hi",
+    };
+    await expect(realTextGenerationPort.complete(request)).resolves.toBe("Hello");
+    expect(invoke).toHaveBeenNthCalledWith(1, "plugin:hub|text_generation_remember", {
+      route: {
+        provider: "xai",
+        baseUrl: "https://api.x.ai/v1",
+        modelId: "grok-3",
+        customModelId: "text-key",
+      },
+    });
+    expect(invoke).toHaveBeenNthCalledWith(2, "plugin:hub|text_generation_ask", {
+      route: {
+        provider: "xai",
+        baseUrl: "https://api.x.ai/v1",
+        modelId: "grok-3",
+        customModelId: "text-key",
+      },
+      prompt: "Say hi",
+    });
+
+    invoke.mockReset();
+    invoke.mockRejectedValueOnce(new Error("refused"));
+    await expect(realTextGenerationPort.complete(request)).rejects.toThrow("refused");
+    expect(invoke).toHaveBeenCalledTimes(1);
   });
 
   it("uses a stand-in port in tests and the real one otherwise", () => {

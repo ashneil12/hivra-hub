@@ -203,8 +203,14 @@ export function isClaudeKeyError(e: unknown): boolean {
 }
 
 export interface ModelKeyStore {
-  /** Keep the key for this custom model somewhere safe (the macOS Keychain). Never in settings or a file. */
-  saveModelKey(customModelId: string, key: string): Promise<void>;
+  /** Keep the key for this custom model somewhere safe (the macOS Keychain). Never in settings or a file.
+   * When the provider, model and address are passed, Rust stores that address with the key. Short text
+   * may send the key only to that host. */
+  saveModelKey(
+    customModelId: string,
+    key: string,
+    binding?: { provider: string; modelId: string; baseUrl: string },
+  ): Promise<void>;
   /**
    * One tiny request to the model with this key. For Ollama there is no key: it checks Ollama answers at baseUrl.
    * Resolve with { ok: true } and the model's name when it replied.
@@ -257,7 +263,14 @@ export function replied(model: string): string {
 /** The real store: the hub plugin keeps the key in the macOS Keychain (service `monocode-hub:model-key`) and runs one
  * tiny request to the provider for the test. The key goes in and never comes back to the webview. */
 export const tauriModelKeyStore: ModelKeyStore = {
-  saveModelKey: (customModelId, key) => invoke("plugin:hub|model_key_save", { customModelId, key }),
+  saveModelKey: (customModelId, key, binding) =>
+    invoke("plugin:hub|model_key_save", {
+      customModelId,
+      key,
+      ...(binding
+        ? { provider: binding.provider, modelId: binding.modelId, baseUrl: binding.baseUrl }
+        : {}),
+    }),
   testModelKey: (provider, baseUrl, modelId, key) =>
     invoke<KeyTestResult>("plugin:hub|model_key_test", { provider, baseUrl, modelId, key }),
   deleteModelKey: (customModelId) => invoke<boolean>("plugin:hub|model_key_delete", { customModelId }),
@@ -288,7 +301,13 @@ export async function testCustomModel(form: CustomModelForm): Promise<KeyTestRes
 /** Save after a passing test: the key to the key store, the rest to settings. Returns the new model. */
 export async function addCustomModel(form: CustomModelForm): Promise<CustomModel> {
   const id = `${form.provider}-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
-  if (needsKey(form.provider)) await store.saveModelKey(id, form.key);
+  if (needsKey(form.provider)) {
+    await store.saveModelKey(id, form.key, {
+      provider: form.provider,
+      modelId: form.modelId.trim(),
+      baseUrl: form.baseUrl.trim() || defaultBaseUrl(form.provider),
+    });
+  }
   const model: CustomModel = {
     id,
     name: form.name.trim(),

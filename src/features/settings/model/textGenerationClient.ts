@@ -136,14 +136,18 @@ function raceAbort<T>(pending: Promise<T>, signal?: AbortSignal): Promise<T> {
 export const realTextGenerationPort: TextGenerationPort = {
   async complete(request, signal) {
     signal?.throwIfAborted();
+    const route = {
+      provider: request.provider,
+      baseUrl: request.baseUrl,
+      modelId: request.model,
+      customModelId: request.customModelId,
+    };
+    // WP-129: Rust keeps this route and refuses an ask that does not match it.
+    await raceAbort(invoke("plugin:hub|text_generation_remember", { route }), signal);
+    signal?.throwIfAborted();
     const outcome = await raceAbort(
       invoke<unknown>("plugin:hub|text_generation_ask", {
-        route: {
-          provider: request.provider,
-          baseUrl: request.baseUrl,
-          modelId: request.model,
-          customModelId: request.customModelId,
-        },
+        route,
         prompt: request.prompt,
       }),
       signal,

@@ -11,6 +11,21 @@ describe("the Keychain-backed model key store", () => {
     expect(invoke).toHaveBeenCalledWith("plugin:hub|model_key_save", { customModelId: "xai-abc", key: "fake-key" });
   });
 
+  it("stores the address with the key when one is given", async () => {
+    await tauriModelKeyStore.saveModelKey("custom-1", "fake-key", {
+      provider: "custom",
+      modelId: "m",
+      baseUrl: "https://llm.example/v1",
+    });
+    expect(invoke).toHaveBeenLastCalledWith("plugin:hub|model_key_save", {
+      customModelId: "custom-1",
+      key: "fake-key",
+      provider: "custom",
+      modelId: "m",
+      baseUrl: "https://llm.example/v1",
+    });
+  });
+
   it("tests a key with one request through the plugin and passes the plain answer back", async () => {
     const result = await tauriModelKeyStore.testModelKey("xai", "https://api.x.ai/v1", "grok-4", "fake-key");
     expect(invoke).toHaveBeenLastCalledWith("plugin:hub|model_key_test", {

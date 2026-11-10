@@ -40,7 +40,9 @@ pub fn init<R: Runtime>() -> TauriPlugin<R> {
             crate::memory_cheap::memory_cheap_ask,
             crate::memory_cheap::memory_cheap_test,
             // WP-129: short text. One completion, no tools and no path.
-            crate::text_generation::text_generation_ask
+            crate::text_generation::text_generation_ask,
+            crate::text_generation::text_generation_remember,
+            crate::text_generation::text_generation_forget
         ])
         // The main window is always shown at a usable size, whatever a later startup step does (launch_guard.rs).
         .on_event(|app, event| match event {
