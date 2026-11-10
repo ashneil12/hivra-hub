@@ -310,6 +310,49 @@ describe("codex live turn sequence", () => {
     await next;
   });
 
+  it("gives a Codex lead the monocode server without the connection secret", async () => {
+    const token = "f00dfeedcafe1234";
+    const previous = process.env.MONOCODE_APP_TOKEN;
+    process.env.MONOCODE_APP_TOKEN = token;
+    const { setCodexExtraConfig } = await import("./codexExtraConfig");
+    const { setCodexLeadConfig } = await import("./codexLeadConfig");
+    setCodexExtraConfig(() => ({
+      mcp_servers: {
+        monocode: { command: "plugin-bin" },
+        plugin: { command: "plugin" },
+      },
+    }));
+    setCodexLeadConfig(() => ({
+      mcp_servers: {
+        monocode: {
+          command: "/app/monocode",
+          args: ["mcp"],
+          env_vars: ["MONOCODE_APP_ENDPOINT", "MONOCODE_APP_TOKEN"],
+        },
+      },
+    }));
+    try {
+      const { turn } = await startTurn("codex-live");
+      const params = parse().find((message) => message.method === "thread/start")?.params as {
+        config?: { mcp_servers?: Record<string, { command?: string }> };
+      };
+      expect(params.config?.mcp_servers?.monocode).toMatchObject({
+        command: "/app/monocode",
+        args: ["mcp"],
+        env_vars: ["MONOCODE_APP_ENDPOINT", "MONOCODE_APP_TOKEN"],
+      });
+      expect(params.config?.mcp_servers?.plugin).toEqual({ command: "plugin" });
+      expect(JSON.stringify(params)).not.toContain(token);
+      notify("turn/completed", { turn: { id: "turn_1", status: "completed" } });
+      await turn;
+    } finally {
+      setCodexExtraConfig(undefined);
+      setCodexLeadConfig(undefined);
+      if (previous === undefined) delete process.env.MONOCODE_APP_TOKEN;
+      else process.env.MONOCODE_APP_TOKEN = previous;
+    }
+  });
+
   it("leaves regular Codex chats persistent", async () => {
     const { turn } = await startTurn("codex-live");
     expect(

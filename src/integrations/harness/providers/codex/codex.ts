@@ -36,6 +36,7 @@ import {
   type CodexTurnUsage,
 } from "./codexProtocol";
 import { JsonRpcClient, type JsonRpcId } from "../../core/jsonRpc";
+import { codexLeadConfig, mergeCodexLead } from "./codexLeadConfig";
 import {
   forwardChildAnswer,
   type ChildAnswer,
@@ -583,7 +584,11 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
       : undefined;
   const storeConfig = store?.config;
   // WP-30: installed plugins' MCP servers for this folder (codexExtraConfig.ts).
-  const extraConfig = await codexExtraConfig(input.cwd, input.sessionId);
+  // WP-120: the lead's monocode server sits beside those, and wins a name clash.
+  const extraConfig = mergeCodexLead(
+    await codexExtraConfig(input.cwd, input.sessionId),
+    await codexLeadConfig(input.sessionId),
+  );
   const liveRef: { current: Live | null } = { current: null };
 
   const rpc = new JsonRpcClient(

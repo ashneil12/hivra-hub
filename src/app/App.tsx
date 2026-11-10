@@ -8414,8 +8414,9 @@ function Workspace({
       }
       // The Mono has app access in every turn, without the command.
       const mono = isMonoSession(sessionId);
-      // So does a chat in a hub project's coding team on Claude Code: an orchestrator like the Lead, its delegate tool
-      // calls the app (codingTeam.ts). Noted before the turn, so its Claude Code starts with the tool and its project.
+      // WP-120: so does a chat in a hub project's coding team, on every CLI that can lead (not only Claude Code).
+      // An orchestrator like the Lead, its delegate tool calls the app (codingTeam.ts). Noted before the turn,
+      // so the session starts with the tool and its project.
       const team = mono ? undefined : codingTeamOf(current);
       const teamDelegates = !!team && hasDelegateTool(sessionId, current.harness);
       const queuedMonoMessage =
