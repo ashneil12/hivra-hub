@@ -50,3 +50,23 @@ Source: [AtomicBot-ai/atomic-agent](https://github.com/AtomicBot-ai/atomic-agent
 ## Licence
 
 Atomic Agent, https://github.com/AtomicBot-ai/atomic-agent at commit `1b4e641525c5b1427b48ff6b8d9932dc26bd8256`, MIT, Copyright (c) 2026 Atomic Bot. Vendor or translate with the usual credit files. Ideas need no extra credit. Do not copy analytics.
+
+## As built
+
+- **One new tool, no mode.** First Mate had no multi-delegate call, only one `delegate_task` per task, so a contract
+  had nowhere to live. `delegate_tasks` (`tasks.fanout`) carries a plan: each task names what it owns, provides,
+  requires and checks. Every task is then an ordinary `delegate` (brief, gates, crew route, limits, checkout).
+- **Refused before start:** unknown requires, uncheckable provides, duplicate names, two owners of one path, paths
+  outside the project, bad briefs, more than 8 tasks. A requires cycle warns and runs in one wave in the order given.
+- **Waves are per task.** A task waits for the tasks that provide what it requires, not for its whole wave. It waits in
+  the worker queue and takes no seat. Delivered means: the provider's row is done, its declared checks passed (a check
+  with no passing verdict is not a pass) and what it provided is on disk in the project its work landed in. A failed,
+  stopped, missing or undelivered provider holds what waits on it.
+- **Checks.** A declared check is the id of one of the project's own checks and becomes that task's WP-40 checks gate,
+  so it runs in that worker's copy before the task is done. Wave-level checks that name no task are not taken.
+- **Original request.** Quoted after the intent in every worker, Lead and remote brief, 16,000 characters, a follow-up
+  under 280 characters joined to the message it follows. A task that waits keeps the request it was asked under.
+  Atomic's stopped-request exclusion is not taken: the transcript keeps no mark of a stopped turn.
+- **Not here:** a plan that survives the app quitting mid-fan-out and stopping one worker (WP-172); outcome notes from
+  finished waves in later briefs.
+
