@@ -108,7 +108,8 @@ export function withContradiction(doc: MemoryDoc, item: MemoryItem): { doc: Memo
         if (!ids.has(have.id)) return have;
         if (have.state !== "confirmed" && have.state !== "edited") return have;
         const dispute: MemoryDispute = { otherId: item.id, reason, was: have.state };
-        return { ...have, state: "unreviewed", dispute };
+        // Keep the review state: a confirmed or edited fact stays in recall until the person settles the pair.
+        return { ...have, dispute };
       }),
     },
     item: { ...item, dispute: { otherId: clashes[0].id, reason } },

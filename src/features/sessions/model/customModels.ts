@@ -260,8 +260,8 @@ export function replied(model: string): string {
   return `Connected, ${model} replied`;
 }
 
-/** The real store: the hub plugin keeps the key in the macOS Keychain (service `monocode-hub:model-key`) and runs one
- * tiny request to the provider for the test. The key goes in and never comes back to the webview. */
+/** The real store: the hub plugin keeps the key in the macOS Keychain (service `monocode-hub:model-key`) and asks the
+ * model to call one tool. The key goes in and never comes back to the webview. */
 export const tauriModelKeyStore: ModelKeyStore = {
   saveModelKey: (customModelId, key, binding) =>
     invoke("plugin:hub|model_key_save", {

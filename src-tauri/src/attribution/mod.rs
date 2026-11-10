@@ -251,10 +251,17 @@ fn crew_env(cmd: &Command, key: &str) -> Option<String> {
     }
 }
 
+/// The line written when the hooks could not be installed. It carries the
+/// install's own refusal, which names the check and the OS error and holds no
+/// path, environment value or repository text.
+pub(crate) fn install_failure_note(error: &str) -> String {
+    format!("Attribution: this crew runs without Hivra's commit hooks: {error}")
+}
+
 /// Point this crew's git at this repository's hooks folder. The repository's
 /// own hooks are resolved once here, and each forwarder carries its path, so a
 /// hook-time call never runs git. A bad config count sets nothing. Failure to
-/// install does not stop the crew: the caller ignores the result.
+/// install does not stop the crew, and is written to stderr.
 pub fn apply_crew_env(
     cmd: &mut Command,
     data_dir: &Path,
@@ -262,12 +269,32 @@ pub fn apply_crew_env(
     session_id: &str,
     task_id: Option<&str>,
 ) {
+    apply_crew_env_noting(cmd, data_dir, workdir, session_id, task_id, |line| {
+        eprintln!("{line}");
+    });
+}
+
+/// `note` is where the failure line goes, so a test can read it.
+pub(crate) fn apply_crew_env_noting(
+    cmd: &mut Command,
+    data_dir: &Path,
+    workdir: &Path,
+    session_id: &str,
+    task_id: Option<&str>,
+    mut note: impl FnMut(String),
+) {
     let env: Vec<(String, String)> = CREW_CONFIG_ENV
         .iter()
         .filter_map(|key| crew_env(cmd, key).map(|value| ((*key).to_string(), value)))
         .collect();
-    let Ok(hooks) = hooks::install_for_repo(data_dir, workdir, &env) else {
-        return;
+    let hooks = match hooks::install_for_repo(data_dir, workdir, &env) {
+        Ok(hooks) => hooks,
+        Err(error) => {
+            // The crew still runs, so this is the only place a real failure
+            // (not the one a lost race clears on its own) is ever seen.
+            note(install_failure_note(&error));
+            return;
+        }
     };
     let Some(hooks_path) = hooks.to_str() else {
         return;

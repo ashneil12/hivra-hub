@@ -117,11 +117,14 @@ export function renameProject(id: string, name: string): void {
   });
 }
 
-/** Move one place up (-1) or down (+1) among the projects shown now. */
-export function moveProject(shownIds: string[], id: string, by: -1 | 1): void {
+/**
+ * Two projects trade places in the order shown now; every other project keeps its slot. The strip's Move up / down
+ * trades a project with its neighbour in the same section (stripSectionNeighbour), which need not be next to it here.
+ */
+export function swapProjects(shownIds: string[], id: string, otherId: string): void {
   const i = shownIds.indexOf(id);
-  const j = i + by;
-  if (i < 0 || j < 0 || j >= shownIds.length) return;
+  const j = shownIds.indexOf(otherId);
+  if (i < 0 || j < 0 || i === j) return;
   const next = [...shownIds];
   [next[i], next[j]] = [next[j], next[i]];
   save((p) => {
