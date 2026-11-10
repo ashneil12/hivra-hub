@@ -1,7 +1,7 @@
 // Connectors a restored setup needs. Passwords and keys never travel in the
 // setup file, so each one waits for Ash to sign in. A login is kept in the
 // macOS Keychain (the hub plugin's connector_login_* commands, service
-// `monocode-hub:<id>`); only the account name is remembered here, never the secret.
+// `monocode-hub:login:<id>`); only the account name is remembered here, never the secret.
 import { useSyncExternalStore } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { examplesOn } from "./examples";
@@ -9,7 +9,8 @@ import { catalogEntryNamed, connectorsView, setComposioOn } from "./hubConnector
 
 export type Connector = { id: string; name: string; projectId: string; signedIn: boolean; account?: string };
 
-/** The app's door to the Keychain. Only `monocode-hub…` services; the secret never comes back. */
+/** The app's door to the Keychain. Only `monocode-hub:login:<id>` services (Rust refuses any other, so a connector
+ * can never name a model key); the secret never comes back. */
 export type ConnectorKeychain = {
   store(service: string, account: string, secret: string): Promise<void>;
   exists(service: string, account: string): Promise<boolean>;
@@ -24,11 +25,11 @@ let keychain: ConnectorKeychain = tauriKeychain;
 export function setConnectorKeychain(next: ConnectorKeychain): void {
   keychain = next;
 }
-/** Tests and proofs use `monocode-hub-test` (dev flag `monocode:hub-keychain-test`), never the real services. */
+/** Tests and proofs use `monocode-hub-test:login:<id>` (dev flag `monocode:hub-keychain-test`), never the real services. */
 export function keychainService(id: string): string {
   let test = false;
   try { test = localStorage.getItem("monocode:hub-keychain-test") === "1"; } catch { /* no storage */ }
-  return `${test ? "monocode-hub-test" : "monocode-hub"}:${id}`;
+  return `${test ? "monocode-hub-test" : "monocode-hub"}:login:${id}`;
 }
 
 /** Sign-in state for a row: waiting on the Mac's Keychain prompt, or landed (until Ash leaves the page). */

@@ -2,7 +2,8 @@
 //!
 //! Only items whose service starts with `monocode-hub` are ever written, checked or deleted: the app can never reach
 //! another Keychain item through these commands. A login's secret goes in and never comes back out to the webview:
-//! `connector_login_exists` answers yes or no only.
+//! `connector_login_exists` answers yes or no only. Those three commands reach only `monocode-hub:login:<id>`, never a
+//! model key or any other item the app keeps (see `connector_service_allowed`).
 //!
 //! A dev copy (src/instance.rs) only ever uses `monocode-hub-dev:*`: it can never ask for, overwrite or delete one of
 //! the daily app's logins or keys.
@@ -93,27 +94,106 @@ pub fn delete(service: &str, account: &str) -> Result<bool, String> {
     }
 }
 
+/// The webview's connector-login commands reach only this namespace: `monocode-hub:login:<id>`, or
+/// `monocode-hub-test:login:<id>` for tests and proofs. No internal item is ever named like that (the model keys
+/// are `monocode-hub:model-key`, connector secrets `monocode-hub:connector:<id>`, page tokens
+/// `monocode-hub:page-source:<id>`), so the webview cannot overwrite, probe or delete one through these commands.
+/// A model key is changed only by the model-key commands, which keep the address stored with it. The id is a
+/// plain name: letters, digits, `-`, `_` and `.`, up to 64 characters.
+const LOGIN_PREFIXES: [&str; 2] = ["monocode-hub:login:", "monocode-hub-test:login:"];
+
+pub(crate) fn connector_service_allowed(service: &str) -> bool {
+    LOGIN_PREFIXES.iter().any(|prefix| {
+        service.strip_prefix(prefix).is_some_and(|id| {
+            !id.is_empty()
+                && id.len() <= 64
+                && id
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+        })
+    })
+}
+
+fn check_login_service(service: &str) -> Result<(), String> {
+    if connector_service_allowed(service) {
+        Ok(())
+    } else {
+        Err("A connector login can only use a connector's own Keychain name.".into())
+    }
+}
+
+/// What the connector-login commands do to the Keychain. Tests stand in for it.
+pub(crate) trait LoginBackend {
+    fn store(&self, service: &str, account: &str, secret: &str) -> Result<(), String>;
+    fn exists(&self, service: &str, account: &str) -> Result<bool, String>;
+    fn delete(&self, service: &str, account: &str) -> Result<bool, String>;
+}
+
+struct RealKeychain;
+
+impl LoginBackend for RealKeychain {
+    fn store(&self, service: &str, account: &str, secret: &str) -> Result<(), String> {
+        store(service, account, secret)
+    }
+    fn exists(&self, service: &str, account: &str) -> Result<bool, String> {
+        exists(service, account)
+    }
+    fn delete(&self, service: &str, account: &str) -> Result<bool, String> {
+        delete(service, account)
+    }
+}
+
+pub(crate) fn login_store(
+    backend: &dyn LoginBackend,
+    service: &str,
+    account: &str,
+    secret: &str,
+) -> Result<(), String> {
+    check_login_service(service)?;
+    backend.store(service, account, secret)
+}
+
+pub(crate) fn login_exists(
+    backend: &dyn LoginBackend,
+    service: &str,
+    account: &str,
+) -> Result<bool, String> {
+    check_login_service(service)?;
+    backend.exists(service, account)
+}
+
+pub(crate) fn login_delete(
+    backend: &dyn LoginBackend,
+    service: &str,
+    account: &str,
+) -> Result<bool, String> {
+    check_login_service(service)?;
+    backend.delete(service, account)
+}
+
 #[tauri::command]
 pub async fn connector_login_store(
     service: String,
     account: String,
     secret: String,
 ) -> Result<(), String> {
-    tauri::async_runtime::spawn_blocking(move || store(&service, &account, &secret))
-        .await
-        .map_err(|_| crate::platform::secrets::unreachable().to_string())?
+    tauri::async_runtime::spawn_blocking(move || {
+        login_store(&RealKeychain, &service, &account, &secret)
+    })
+    .await
+    .map_err(|_| crate::platform::secrets::unreachable().to_string())?
 }
 
 #[tauri::command]
 pub async fn connector_login_exists(service: String, account: String) -> Result<bool, String> {
-    tauri::async_runtime::spawn_blocking(move || exists(&service, &account))
+    tauri::async_runtime::spawn_blocking(move || login_exists(&RealKeychain, &service, &account))
         .await
         .map_err(|_| crate::platform::secrets::unreachable().to_string())?
 }
 
 #[tauri::command]
 pub async fn connector_login_delete(service: String, account: String) -> Result<bool, String> {
-    tauri::async_runtime::spawn_blocking(move || delete(&service, &account))
+    tauri::async_runtime::spawn_blocking(move || login_delete(&RealKeychain, &service, &account))
         .await
         .map_err(|_| crate::platform::secrets::unreachable().to_string())?
 }
@@ -140,6 +220,102 @@ mod tests {
         }
         assert!(check_service("monocode-hub:github").is_ok());
         assert!(check_service("monocode-hub-test:proof").is_ok());
+    }
+
+    /// Stands in for the Keychain and remembers what the connector-login commands asked of it.
+    #[derive(Default)]
+    struct Calls(std::cell::RefCell<Vec<String>>);
+
+    impl LoginBackend for Calls {
+        fn store(&self, service: &str, account: &str, _secret: &str) -> Result<(), String> {
+            self.0
+                .borrow_mut()
+                .push(format!("store {service} {account}"));
+            Ok(())
+        }
+        fn exists(&self, service: &str, account: &str) -> Result<bool, String> {
+            self.0
+                .borrow_mut()
+                .push(format!("exists {service} {account}"));
+            Ok(true)
+        }
+        fn delete(&self, service: &str, account: &str) -> Result<bool, String> {
+            self.0
+                .borrow_mut()
+                .push(format!("delete {service} {account}"));
+            Ok(true)
+        }
+    }
+
+    #[test]
+    fn the_webview_cannot_reach_a_model_key_or_any_other_internal_item_through_connector_logins() {
+        let internal = [
+            crate::model_router::KEY_SERVICE.to_string(),
+            "monocode-hub-test:model-key".to_string(),
+            "monocode-hub-dev:model-key".to_string(),
+            "monocode-hub-sandbox:model-key".to_string(),
+            crate::connectors::secrets::service("github"),
+            "monocode-hub:page-source:p1".to_string(),
+            // The bare name an earlier build used, and every way to make a login look like another item.
+            "monocode-hub:github".to_string(),
+            "monocode-hub:model-key:login:x".to_string(),
+            "monocode-hub:login:".to_string(),
+            "monocode-hub:login:model-key:x".to_string(),
+            "monocode-hub:login:../x".to_string(),
+            "monocode-hub:login:x y".to_string(),
+            "monocode-hub:login:x\0y".to_string(),
+            format!("monocode-hub:login:{}", "a".repeat(65)),
+            "monocode-hub-dev:login:x".to_string(),
+            "monocode-hub-sandbox:login:x".to_string(),
+            "MONOCODE-HUB:login:x".to_string(),
+            " monocode-hub:login:x".to_string(),
+            "monocode-hub:login:x ".to_string(),
+        ];
+        for service in &internal {
+            let calls = Calls::default();
+            assert!(
+                login_store(&calls, service, "custom-1", "secret-value").is_err(),
+                "{service}"
+            );
+            assert!(
+                login_exists(&calls, service, "custom-1").is_err(),
+                "{service}"
+            );
+            assert!(
+                login_delete(&calls, service, "custom-1").is_err(),
+                "{service}"
+            );
+            assert!(
+                calls.0.borrow().is_empty(),
+                "{service}: {:?}",
+                calls.0.borrow()
+            );
+        }
+    }
+
+    #[test]
+    fn a_connector_login_service_is_the_login_namespace_and_nothing_else() {
+        for service in [
+            "monocode-hub:login:github",
+            "monocode-hub:login:c-github",
+            "monocode-hub:login:a.b_c-1",
+            "monocode-hub-test:login:github",
+        ] {
+            let calls = Calls::default();
+            login_store(&calls, service, "me@example.invalid", "secret-value").unwrap();
+            assert!(login_exists(&calls, service, "me@example.invalid").unwrap());
+            assert!(login_delete(&calls, service, "me@example.invalid").unwrap());
+            assert_eq!(calls.0.borrow().len(), 3, "{service}");
+        }
+        // No internal service ever sits in that namespace.
+        let id = "github";
+        for internal in [
+            crate::model_router::KEY_SERVICE.to_string(),
+            crate::connectors::secrets::service(id),
+            format!("monocode-hub:page-source:{id}"),
+        ] {
+            assert!(!connector_service_allowed(&internal), "{internal}");
+        }
     }
 
     #[test]

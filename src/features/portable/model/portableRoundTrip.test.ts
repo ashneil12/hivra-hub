@@ -105,7 +105,7 @@ it("no secret is in the setup files: logins, keys and secret-looking settings st
   const doc = a.doc.buildSetupDoc({ monoFiles: {}, workspace: false });
   const text = Object.values(a.doc.setupDocToFiles(doc)).join("\n");
   for (const planted of ["ash@example.com", GITHUB, ANTHROPIC, "sk-proj-PLANTED", "abcdefgh12345678"]) expect(text).not.toContain(planted);
-  expect(doc.connectors[0]).toEqual({ id: "c-github", name: "GitHub", projectId: "hivra", where: "mac", loginLivesIn: "This Mac's Keychain (monocode-hub:c-github)" });
+  expect(doc.connectors[0]).toEqual({ id: "c-github", name: "GitHub", projectId: "hivra", where: "mac", loginLivesIn: "This Mac's Keychain (monocode-hub:login:c-github)" });
   expect(doc.customModels[0]).not.toHaveProperty("apiKey");
   expect(doc.settings["monocode.openaiKey"]).toBeUndefined();
   // A preference with a secret-looking field keeps the rest; a key that isn't a preference doesn't travel at all.
