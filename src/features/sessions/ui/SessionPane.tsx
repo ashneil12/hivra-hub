@@ -1,4 +1,5 @@
 import { TeleportHeaderBand } from "../../connections/ui/TeleportNotice";
+import { AppTeleportPanel } from "../../connections/ui/TeleportMovePanel";
 import { teleportStateOf } from "../../connections/model/teleportState";
 import { syncTeleportLock } from "../../connections/model/teleportLock";
 import { GripVertical, X } from "../../../shared/ui/icons";
@@ -954,6 +955,7 @@ const LocalSessionPane = memo(function LocalSessionPane({
         globalBackgroundEffect === "gradient-blur") ? (
         <GradientBlurBackground />
       ) : null}
+      <AppTeleportPanel session={session} />
       {(() => {
         const moved = teleportStateOf(session);
         // The saved state is the truth after a restart: a moved or frozen chat stays locked, a settled one unlocks.
