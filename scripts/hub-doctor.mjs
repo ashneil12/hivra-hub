@@ -346,6 +346,30 @@ function defaultBranch(repo) {
   return null;
 }
 
+/** Rebuildable build output a worktree may hold, relative to it. `node_modules` only when it is a real folder (a link
+ * from scripts/setup-worktree.mjs points at the main checkout's and is never followed). */
+export const BUILD_OUTPUT = ["target", "src-tauri/target", "test-results", "playwright-report", "node_modules"];
+
+/** The build output folders that exist in `dir` (real folders only, never links). */
+export function buildOutputOf(dir, lstat = fs.lstatSync) {
+  const found = [];
+  for (const name of BUILD_OUTPUT) {
+    try {
+      const stats = lstat(path.join(dir, name));
+      if (stats.isDirectory() && !stats.isSymbolicLink()) found.push(name);
+    } catch {
+      // not there
+    }
+  }
+  return found;
+}
+
+/** Whether `commit` is on some remote branch (so nothing in the worktree exists only here). */
+function pushed(dir, commit) {
+  const result = gitResult(["branch", "-r", "--contains", commit], dir);
+  return result.status === 0 && Boolean((result.stdout ?? "").trim());
+}
+
 /**
  * What `npm run hub:doctor -- --clean` would reap, worked out without changing anything:
  * - a dev slot no copy is running on whose worktree is gone, or which no registry entry knows (its data folder and its
@@ -353,6 +377,7 @@ function defaultBranch(repo) {
  * - a `target/hub-dev/<slot>.conf.json` in a worktree that is no longer that worktree's slot (and not this one's);
  * - a worktree whose main checkout already has its commit, that has no uncommitted changes and no dev copy running;
  *   each worktree that is kept instead says why (uncommitted changes, not merged yet, a copy running);
+ * - the build output (BUILD_OUTPUT) of a worktree that is kept but clean, with its commit pushed and no dev copy running;
  * - git's records of worktrees whose folder is already gone (`git worktree prune`).
  * The current worktree and the main checkout are never reaped.
  */
@@ -389,6 +414,7 @@ export function cleanPlan(report, { current = process.cwd(), same = samePath } =
 
   const worktrees = [];
   const kept = [];
+  const buildOutputs = [];
   for (const tree of report.worktrees) {
     if (!tree.kind.startsWith("worktree") || same(tree.path, current)) continue;
     const repo = mainRepoOf(tree.path);
@@ -401,6 +427,10 @@ export function cleanPlan(report, { current = process.cwd(), same = samePath } =
       kept.push({ path: tree.path, why: "it has uncommitted changes" });
       continue;
     }
+    // Pushed and clean but not merged yet: the worktree stays, its rebuildable build output goes.
+    const output = buildOutputOf(tree.path);
+    if (output.length && tree.commit && pushed(tree.path, tree.commit))
+      buildOutputs.push({ path: tree.path, folders: output, why: "its commit is pushed and it has no uncommitted changes" });
     const base = defaultBranch(repo);
     if (!base || !tree.commit) {
       kept.push({ path: tree.path, why: "its main checkout's default branch could not be worked out" });
@@ -411,6 +441,9 @@ export function cleanPlan(report, { current = process.cwd(), same = samePath } =
       continue;
     }
     worktrees.push({ path: tree.path, branch: tree.branch, repo, base, why: `${base} already has ${tree.branch || tree.commit}` });
+    // The whole worktree goes, so its build output is not listed on its own.
+    const index = buildOutputs.findIndex((row) => same(row.path, tree.path));
+    if (index >= 0) buildOutputs.splice(index, 1);
   }
 
   // Records git keeps for worktrees whose folder is gone (they don't appear in `git worktree list`, so they block the
@@ -421,13 +454,25 @@ export function cleanPlan(report, { current = process.cwd(), same = samePath } =
     if (parseWorktrees(porcelain).some((tree) => !fs.existsSync(tree.path))) prunes.push(repo);
   }
 
-  return { home, slots, configs, worktrees, kept, prunes };
+  return { home, slots, configs, worktrees, kept, prunes, buildOutputs };
 }
 
 /**
  * Does what `cleanPlan` listed. Every dev data folder is checked against the slot's own identifier again, so a mix-up
  * can never reach the daily app or upstream; one failure is reported and the rest carry on.
  */
+/** Working folders of running build and test processes (cargo, rustc, node, tauri), so their output is never pulled
+ * out from under them. Empty when it can't be read (then the per-folder clean check still applies). */
+function busyDirs() {
+  const pids = spawnSync("pgrep", ["-f", "cargo|rustc|node|tauri|playwright|vite"], { encoding: "utf8" }).stdout ?? "";
+  const dirs = [];
+  for (const pid of pids.split(/\s+/).filter(Boolean)) {
+    const out = spawnSync("lsof", ["-a", "-p", pid, "-d", "cwd", "-Fn"], { encoding: "utf8" }).stdout ?? "";
+    for (const line of out.split("\n")) if (line.startsWith("n/")) dirs.push(line.slice(1));
+  }
+  return dirs;
+}
+
 export function applyClean(plan, { home = plan.home } = {}) {
   const removed = { slots: 0, configs: 0, worktrees: 0, bundles: 0, pruned: 0 };
   const problems = [];
@@ -487,6 +532,27 @@ export function applyClean(plan, { home = plan.home } = {}) {
     if (result.status === 0) removed.worktrees += 1;
     else problems.push(`${tree.path}: ${(result.stderr ?? "").trim() || "git refused to remove it"}`);
   }
+  const busy = busyDirs();
+  for (const row of plan.buildOutputs ?? []) {
+    // Checked again now: still clean, nothing building in it, and only the listed folder names.
+    if (busy.some((dir) => dir === row.path || dir.startsWith(`${row.path}${path.sep}`))) {
+      problems.push(`${row.path}: something is running in it, build output kept`);
+      continue;
+    }
+    if ((gitResult(["status", "--porcelain"], row.path).stdout ?? "").trim()) {
+      problems.push(`${row.path}: it has uncommitted changes now, build output kept`);
+      continue;
+    }
+    for (const name of buildOutputOf(row.path)) {
+      if (!row.folders.includes(name)) continue;
+      try {
+        fs.rmSync(path.join(row.path, name), { recursive: true, force: true });
+        removed.buildOutputs = (removed.buildOutputs ?? 0) + 1;
+      } catch (error) {
+        problems.push(`${row.path}/${name}: ${error.message}`);
+      }
+    }
+  }
   for (const repo of plan.prunes) if (gitResult(["worktree", "prune"], repo).status === 0) removed.pruned += 1;
   return { removed, problems };
 }
@@ -495,16 +561,19 @@ export function applyClean(plan, { home = plan.home } = {}) {
 export function renderClean(plan, { removed = null, problems = [] } = {}) {
   const t = tilde(plan.home);
   const lines = [];
-  const total = plan.slots.length + plan.configs.length + (plan.bundles?.length ?? 0) + plan.worktrees.length + plan.prunes.length;
+  const total =
+    plan.slots.length + plan.configs.length + (plan.bundles?.length ?? 0) + plan.worktrees.length + plan.prunes.length + (plan.buildOutputs?.length ?? 0);
   if (removed) {
     const app = removed.bundles ? `, ${removed.bundles} old app${removed.bundles === 1 ? "" : "s"}` : "";
-    lines.push(`Cleaned: ${removed.slots} slot${removed.slots === 1 ? "" : "s"}, ${removed.configs} config${removed.configs === 1 ? "" : "s"}${app}, ${removed.worktrees} worktree${removed.worktrees === 1 ? "" : "s"}, git pruned in ${removed.pruned} checkout${removed.pruned === 1 ? "" : "s"}`);
+    const output = removed.buildOutputs ? `, ${removed.buildOutputs} build output folder${removed.buildOutputs === 1 ? "" : "s"}` : "";
+    lines.push(`Cleaned: ${removed.slots} slot${removed.slots === 1 ? "" : "s"}, ${removed.configs} config${removed.configs === 1 ? "" : "s"}${app}, ${removed.worktrees} worktree${removed.worktrees === 1 ? "" : "s"}${output}, git pruned in ${removed.pruned} checkout${removed.pruned === 1 ? "" : "s"}`);
   } else lines.push(total ? "Clean (nothing is removed without --yes)" : "Clean: nothing to clean");
   for (const slot of plan.slots)
     lines.push(`  slot ${slot.slot}  ${slot.why}${slot.dataFolder ? `; data folder ${t(slot.dataFolder)}` : ""}${slot.registered ? "; its registry entry" : ""}`);
   for (const config of plan.configs) lines.push(`  config ${t(config.path)}  ${config.why}`);
   for (const bundle of plan.bundles ?? []) lines.push(`  old app ${t(bundle.path)}  ${bundle.why}`);
   for (const tree of plan.worktrees) lines.push(`  worktree ${t(tree.path)}  ${tree.why}; no uncommitted changes, no dev copy running`);
+  for (const row of plan.buildOutputs ?? []) lines.push(`  build output ${t(row.path)} (${row.folders.join(", ")})  ${row.why}`);
   for (const repo of plan.prunes) lines.push(`  git records ${t(repo)}  worktrees whose folders are gone (git worktree prune)`);
   for (const keep of plan.kept) lines.push(`  kept ${t(keep.path)}  ${keep.why}`);
   for (const problem of problems) lines.push(`  problem ${problem}`);

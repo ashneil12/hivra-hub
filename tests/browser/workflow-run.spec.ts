@@ -7,11 +7,14 @@ type Proof = {
   held(): boolean;
   resume(): void;
 };
-const proof = (page: Page) =>
-  page.evaluate(() => {
+// The fixture puts `proof` on the window from an effect, which can run after `goto` has returned: wait for it.
+const proof = async (page: Page) => {
+  await page.waitForFunction(() => "proof" in window);
+  return page.evaluate(() => {
     const p = (window as unknown as { proof: Proof }).proof;
     return { sent: p.sent, held: p.held() };
   });
+};
 
 const SHOTS = process.env.WORKFLOW_PROOF_DIR;
 const shot = async (page: Page, name: string) => {
