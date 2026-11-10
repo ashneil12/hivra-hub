@@ -148,19 +148,49 @@ describe("idle compact watch", () => {
       markBusy: (id, busy) => {
         expect(id).toBe("lead");
         if (busy && sessions[0]?.busy) return false;
-        sessions[0] = { ...sessions[0], busy };
+        sessions[0] = { ...sessions[0], busy, idleCompacting: busy };
         marks.push(busy);
         return true;
       },
-      compact: async (_input, proceed) => {
-        expect(sessions[0]?.busy).toBe(true);
+      compact: async (_input, proceed, hold) => {
+        // Not held yet: the checks that can turn the compact away come first.
+        expect(sessions[0]?.busy).toBeUndefined();
         expect(proceed()).toBe(true);
+        expect(hold?.begin()).toBe(true);
+        expect(sessions[0]?.busy).toBe(true);
+        // The hold is ours, so it is not a real turn.
+        expect(proceed()).toBe(true);
+        // A real turn takes over: stop.
+        sessions[0] = { ...sessions[0], idleCompacting: undefined };
+        expect(proceed()).toBe(false);
+        sessions[0] = { ...sessions[0], idleCompacting: true };
+        hold?.end();
         return true;
       },
     });
     expect(ran).toBe(true);
     expect(marks).toEqual([true, false]);
     expect(sessions[0]?.busy).toBe(false);
+  });
+
+  it("never marks a chat busy when the compact is turned away before it runs", async () => {
+    due();
+    const markBusy = vi.fn(() => true);
+    const ran = await compactIdleClaudeChats({
+      sessions: () => [chat()],
+      toInput: (session) => ({
+        sessionId: session.id,
+        cwd: "/repo",
+        model: session.model,
+        runtimeMode: "supervised",
+      }),
+      onEvent: () => {},
+      markBusy,
+      // The binding, the claim or the window said no, so the hold was never asked for.
+      compact: async () => false,
+    });
+    expect(ran).toBe(false);
+    expect(markBusy).not.toHaveBeenCalled();
   });
 
   it("releases the busy flag when the compact fails, so a send is not held forever", async () => {
@@ -181,7 +211,8 @@ describe("idle compact watch", () => {
         marks.push(busy);
         return true;
       },
-      compact: async () => {
+      compact: async (_input, _proceed, hold) => {
+        hold?.begin();
         throw new Error("the CLI went away");
       },
     });
@@ -208,8 +239,10 @@ describe("idle compact watch", () => {
         marks.push([id, busy]);
         return id !== "taken";
       },
-      compact: async (input) => {
+      compact: async (input, _proceed, hold) => {
+        if (!hold?.begin()) return false;
         compacted.push(input.sessionId);
+        hold.end();
         return true;
       },
     });
@@ -305,8 +338,20 @@ describe("idle compact watch", () => {
     gens.set("lead", 2);
     const late = markSessionIdleCompact(taken.sessions, "lead", false, gens, owners);
     expect(late.ok).toBe(false);
+    // The newer turn keeps its busy flag. The hold flag goes, so that turn is not read as a hold.
     expect(late.sessions[0]?.busy).toBe(true);
-    expect(late.sessions).toBe(taken.sessions);
+    expect(late.sessions[0]?.idleCompacting).toBeUndefined();
+  });
+
+  it("holds the chat with a flag that a real turn can tell from its own busy", () => {
+    const gens = new Map<string, number>();
+    const owners = new Map<string, number>();
+    const taken = markSessionIdleCompact([chat()], "lead", true, gens, owners);
+    expect(taken.sessions[0]).toMatchObject({ busy: true, idleCompacting: true });
+    const released = markSessionIdleCompact(taken.sessions, "lead", false, gens, owners);
+    expect(released.ok).toBe(true);
+    expect(released.sessions[0]?.busy).toBe(false);
+    expect(released.sessions[0]?.idleCompacting).toBeUndefined();
   });
 
   it("does not take a chat the store already has busy when the ref is idle", () => {
@@ -355,7 +400,8 @@ describe("idle compact watch", () => {
     expect(late.ok).toBe(false);
     expect(late.store[0]?.busy).toBe(true);
     expect(late.ref[0]?.busy).toBe(true);
-    expect(late.store).toBe(claimed.store);
+    expect(late.store[0]?.idleCompacting).toBeUndefined();
+    expect(late.ref[0]?.idleCompacting).toBeUndefined();
   });
 
   it("does not take a chat that is already busy or whose worktree is gone", () => {

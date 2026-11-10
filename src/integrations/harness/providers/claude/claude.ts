@@ -117,7 +117,9 @@ import {
   claimIdleCompaction,
   confirmIdleCompactionClaim,
   forgetPromptCache,
+  idleCompactGivenUp,
   IDLE_COMPACT_CLAIM_CONFIRM_MS,
+  noteIdleCompactFailure,
   promptCacheTtlFromUsage,
   recallPromptCache,
   releaseIdleCompactionClaim,
@@ -488,6 +490,7 @@ async function runQuietCompact(live: Live, input: HarnessSessionInput): Promise<
       providerSessionId: live.claudeSessionId,
       lastTurnAt: Date.now(),
       contextUsed: 0,
+      compactFailures: 0,
     });
   } finally {
     live.manualCompaction = false;
@@ -571,22 +574,33 @@ export async function compactClaudeContext(
 }
 
 /**
+ * The caller's busy hold for one background compact. `begin` is asked once,
+ * right before the compact runs, after every check that can turn the compact
+ * away (the window, the conversation, the claim). It returns false when the
+ * chat was taken in the meantime. `end` runs when the compact is over, however
+ * it ended.
+ */
+export type IdleCompactHold = { begin: () => boolean; end: () => void };
+
+/**
  * Compact one idle Claude chat inside the two-minute window before its prompt
  * cache expires. A cache that has already expired is left for the next send.
  * Does not send the person's message. A mid-turn chat, a chat that has left
- * the window, and a claim another window holds are left alone. Failure
- * releases the claim so a later look can retry; it is not a session error.
+ * the window, a chat whose last two background compacts failed, and a claim
+ * another window holds are left alone. Failure releases the claim so a later
+ * look can retry; it is not a session error.
  * `proceed` is read again after the wait, because the chat may have gone.
  */
 export async function compactDueIdleClaude(
   input: HarnessSessionInput,
   proceed: () => boolean = () => true,
+  hold?: IdleCompactHold,
 ): Promise<boolean> {
   if (!proceed()) return false;
   const state = recallPromptCache(input.sessionId);
   const due = state ? idleCompactionDue(state, Date.now()) : null;
   // Only inside the lead window. An expired cache waits for the next send.
-  if (!state || !due || due.expired) return false;
+  if (!state || !due || due.expired || idleCompactGivenUp(state)) return false;
   const liveNow = liveByThread.get(input.sessionId);
   if (liveNow?.activeTurn) return false;
   const bound = liveNow?.claudeSessionId ?? resumeByThread.get(input.sessionId)?.sessionId;
@@ -633,6 +647,12 @@ export async function compactDueIdleClaude(
         return;
       }
       if (!confirmIdleCompactionClaim(input.sessionId, claimId, Date.now())) return;
+      // Every check that can turn this compact away has passed. Only now is
+      // the chat held busy, so one that fails them never flickers.
+      if (hold && !hold.begin()) {
+        release();
+        return;
+      }
       live.cancelled = false;
       live.muteUpdates = false;
       try {
@@ -647,6 +667,11 @@ export async function compactDueIdleClaude(
         // Cancelled or the compact did not land. Retry later. No error line:
         // nobody was waiting on this to send.
         release();
+        // A compact that did not land, as opposed to one the person stopped,
+        // counts. Two in a row and this chat is left alone until its next turn.
+        if (!live.cancelled) noteIdleCompactFailure(input.sessionId, state.providerSessionId);
+      } finally {
+        hold?.end();
       }
     });
   await live.turns;
@@ -1712,6 +1737,8 @@ function handleResult(live: Live, rec: Record<string, unknown>): void {
     lastTurnAt: Date.now(),
     cacheTtlMs: promptCacheTtlFromUsage(rec.usage),
     contextUsed: live.contextUsed,
+    // A real turn gives a chat that stopped compacting in the background another chance.
+    compactFailures: live.manualCompaction ? undefined : 0,
   });
   const metrics = turnMetricsFromResult(rec);
   if (metrics?.costUsd != null) {

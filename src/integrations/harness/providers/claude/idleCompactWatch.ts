@@ -1,7 +1,8 @@
 import type { HarnessEvent, HarnessSessionInput } from "../../core/types";
 import { idleCompactionDue } from "../../../../features/sessions/model/contextCeiling";
-import { compactDueIdleClaude } from "./claude";
-import { recallPromptCache } from "./claudePromptCache";
+import { isTurnRunning } from "../../../../features/sessions/model/inFlight";
+import { compactDueIdleClaude, type IdleCompactHold } from "./claude";
+import { idleCompactGivenUp, recallPromptCache } from "./claudePromptCache";
 
 /** How often an open app looks for an idle Claude chat that is due. */
 export const IDLE_COMPACT_LOOK_MS = 30_000;
@@ -10,6 +11,8 @@ export type IdleCompactTarget = {
   id: string;
   harness: string;
   busy?: boolean;
+  /** Set while the app holds the chat busy for this compact. Never a real turn. */
+  idleCompacting?: boolean;
   worktreeRemoved?: boolean;
 };
 
@@ -17,10 +20,16 @@ type WatchOptions<T extends IdleCompactTarget> = {
   sessions: () => readonly T[];
   toInput: (session: T) => Omit<HarnessSessionInput, "onEvent">;
   onEvent: (sessionId: string, event: HarnessEvent) => void;
-  compact?: (input: HarnessSessionInput, proceed: () => boolean) => Promise<boolean>;
+  compact?: (
+    input: HarnessSessionInput,
+    proceed: () => boolean,
+    hold?: IdleCompactHold,
+  ) => Promise<boolean>;
   /**
-   * Mark the chat busy for the compact, then clear it. Return false from the
-   * busy call when the chat was already taken, so this look skips it.
+   * Mark the chat busy for the compact, then clear it. Asked right before the
+   * compact runs (see `IdleCompactHold`), never for a chat that is turned
+   * away first. Return false from the busy call when the chat was already
+   * taken, so the compact does not run.
    */
   markBusy?: (sessionId: string, busy: boolean) => boolean;
 };
@@ -40,15 +49,18 @@ function isCandidate(session: IdleCompactTarget): boolean {
  */
 function inIdleCompactWindow(session: IdleCompactTarget): boolean {
   const state = recallPromptCache(session.id);
-  if (!state) return false;
+  // A chat whose last two background compacts failed waits for its next turn.
+  if (!state || idleCompactGivenUp(state)) return false;
   const due = idleCompactionDue(state, Date.now());
   return due !== null && !due.expired;
 }
 
 /**
  * Hold or release the chat's busy flag for one idle compact.
- * A newer turn (its generation moved) is left alone, so a late clear cannot
- * mark that turn idle. Already busy, or a removed worktree, is not taken.
+ * The hold is busy plus `idleCompacting`, so Quit, the in-flight list and a
+ * restore can tell it from a turn. A newer turn (its generation moved) keeps
+ * its own busy flag, so a late release cannot mark that turn idle; the hold
+ * flag goes either way. Already busy, or a removed worktree, is not taken.
  */
 export function markSessionIdleCompact<T extends IdleCompactTarget>(
   sessions: readonly T[],
@@ -65,17 +77,25 @@ export function markSessionIdleCompact<T extends IdleCompactTarget>(
     owners.set(sessionId, gen);
     return {
       ok: true,
-      sessions: sessions.map((item) => (item.id === sessionId ? { ...item, busy: true } : item)),
+      sessions: sessions.map((item) =>
+        item.id === sessionId ? { ...item, busy: true, idleCompacting: true } : item,
+      ),
     };
   }
   const owned = owners.get(sessionId);
   owners.delete(sessionId);
-  if (owned === undefined || gens.get(sessionId) !== owned) return { sessions, ok: false };
+  const ours = owned !== undefined && gens.get(sessionId) === owned;
   const current = sessions.find((item) => item.id === sessionId);
-  if (!current?.busy) return { sessions, ok: true };
+  if (!current) return { sessions, ok: ours };
+  const clearBusy = ours && !!current.busy;
+  if (!clearBusy && !current.idleCompacting) return { sessions, ok: ours };
   return {
-    ok: true,
-    sessions: sessions.map((item) => (item.id === sessionId ? { ...item, busy: false } : item)),
+    ok: ours,
+    sessions: sessions.map((item) =>
+      item.id === sessionId
+        ? { ...item, ...(clearBusy ? { busy: false } : {}), idleCompacting: undefined }
+        : item,
+    ),
   };
 }
 
@@ -112,26 +132,37 @@ export function commitIdleCompactBusy<T extends IdleCompactTarget>(
       store: claimed.sessions,
       ref: same
         ? claimed.sessions
-        : refSessions.map((item) => (item.id === sessionId ? { ...item, busy: true } : item)),
+        : refSessions.map((item) =>
+            item.id === sessionId ? { ...item, busy: true, idleCompacting: true } : item,
+          ),
     };
   }
   const released = markSessionIdleCompact(storeSessions, sessionId, false, gens, owners);
-  if (!released.ok || released.sessions === storeSessions) {
+  if (released.sessions === storeSessions) {
     return { store: storeSessions, ref: refSessions, ok: released.ok };
   }
   return {
-    ok: true,
+    ok: released.ok,
     store: released.sessions,
     ref: same
       ? released.sessions
-      : refSessions.map((item) => (item.id === sessionId ? { ...item, busy: false } : item)),
+      : refSessions.map((item) => {
+          if (item.id !== sessionId) return item;
+          return {
+            ...item,
+            ...(released.ok && item.busy ? { busy: false } : {}),
+            idleCompacting: undefined,
+          };
+        }),
   };
 }
 
 /**
  * Compact the first idle Claude chat that is due, then stop. A chat that
  * loses the claim, or is gone by the time the compact starts, is skipped
- * and the next one is tried. One compact at a time.
+ * and the next one is tried. One compact at a time. The chat is held busy
+ * only from the moment its compact runs (`hold`), never while it is being
+ * checked and turned away.
  */
 export async function compactIdleClaudeChats<T extends IdleCompactTarget>(
   options: WatchOptions<T>,
@@ -139,8 +170,8 @@ export async function compactIdleClaudeChats<T extends IdleCompactTarget>(
   const compact = options.compact ?? compactDueIdleClaude;
   for (const session of options.sessions()) {
     if (!isCandidate(session) || !inIdleCompactWindow(session)) continue;
-    // Busy is ours from here. A vanished chat, or one that left the window, still stops the compact.
-    if (options.markBusy?.(session.id, true) === false) continue;
+    // The compact itself re-reads the window, so this only asks whether the chat
+    // is still there and has no real turn. The hold is ours, so it is not one.
     const proceed = () => {
       const current = options.sessions().find((item) => item.id === session.id);
       return (
@@ -148,9 +179,24 @@ export async function compactIdleClaudeChats<T extends IdleCompactTarget>(
         current.harness === "claude" &&
         !current.worktreeRemoved &&
         !!current.id &&
-        inIdleCompactWindow(current)
+        !isTurnRunning(current)
       );
     };
+    let held = false;
+    const hold: IdleCompactHold | undefined = options.markBusy
+      ? {
+          begin: () => {
+            if (options.markBusy?.(session.id, true) === false) return false;
+            held = true;
+            return true;
+          },
+          end: () => {
+            if (!held) return;
+            held = false;
+            options.markBusy?.(session.id, false);
+          },
+        }
+      : undefined;
     let ran = false;
     try {
       ran = await compact(
@@ -162,9 +208,11 @@ export async function compactIdleClaudeChats<T extends IdleCompactTarget>(
           },
         },
         proceed,
+        hold,
       ).catch(() => false);
     } finally {
-      options.markBusy?.(session.id, false);
+      // Whatever the compact did, a chat it left held is let go.
+      hold?.end();
     }
     if (ran) return true;
   }

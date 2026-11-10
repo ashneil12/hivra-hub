@@ -14,7 +14,16 @@ export type ClaudePromptCacheState = {
   cacheTtlMs?: number;
   /** Tokens in the context window after the last turn. */
   contextUsed?: number;
+  /**
+   * Background compacts in a row that did not land. A real turn or a compact
+   * that lands sets it back to zero. Two in a row stop the watcher for this
+   * chat (`idleCompactGivenUp`).
+   */
+  compactFailures?: number;
 };
+
+/** The background watcher stops trying a chat after this many failed compacts in a row. */
+export const IDLE_COMPACT_MAX_FAILURES = 2;
 
 const STORE_KEY = "monocode.claudePromptCache";
 /** Newest first; older chats fall off. */
@@ -150,6 +159,27 @@ export function releaseIdleCompactionClaim(threadId: string, claimId: string): v
   if (!entry?.idleClaim || entry.idleClaim.id !== claimId) return;
   delete entry.idleClaim;
   writeStore(store);
+}
+
+/**
+ * True once background compacts for this chat have failed twice in a row.
+ * A failed compact still rewrites `lastTurnAt` (the CLI reported a result), so
+ * without this the chat would be due again after another lifetime, forever.
+ * The next real turn sets the count back, and a send after the cache has
+ * expired still compacts first.
+ */
+export function idleCompactGivenUp(state: Pick<ClaudePromptCacheState, "compactFailures">): boolean {
+  return (state.compactFailures ?? 0) >= IDLE_COMPACT_MAX_FAILURES;
+}
+
+/** Count one background compact that did not land, for this conversation only. */
+export function noteIdleCompactFailure(threadId: string, providerSessionId: string): void {
+  const state = recallPromptCache(threadId);
+  if (!state || state.providerSessionId !== providerSessionId) return;
+  rememberPromptCache(threadId, {
+    providerSessionId,
+    compactFailures: (state.compactFailures ?? 0) + 1,
+  });
 }
 
 export function forgetPromptCache(threadId: string): void {

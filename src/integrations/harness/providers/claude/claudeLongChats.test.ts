@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { HarnessEvent, HarnessSessionInput } from "../../core/types";
 import type { RuntimeMode } from "../../../../features/sessions/model/session";
 import { IDLE_COMPACT_NOTICE } from "../../../../features/sessions/model/contextCeiling";
-import { recallPromptCache } from "./claudePromptCache";
+import { recallPromptCache, rememberPromptCache } from "./claudePromptCache";
 
 /**
  * Long-running chats through the live Claude adapter: the compaction ceiling
@@ -569,6 +569,36 @@ describe("compacting a big chat idle past its prompt cache", () => {
     expect(IDLE_COMPACT_NOTICE).not.toMatch(/[—–]/);
   });
 
+  it("the watcher compacts a chat inside the window, shows the notice and marks it busy only while it runs", async () => {
+    await idleChat(420_000);
+    atIdle(59);
+    const events: HarnessEvent[] = [];
+    const marks: boolean[] = [];
+    const done = compactIdleClaudeChats({
+      sessions: () => [{ id: "lead", harness: "claude" }],
+      toInput: () => ({
+        sessionId: "lead",
+        cwd: "/repo",
+        model: "claude:claude-opus-4-6",
+        modelSettings: {},
+        runtimeMode: "supervised",
+      }),
+      onEvent: (_id, event) => events.push(event),
+      markBusy: (_id, busy) => {
+        marks.push(busy);
+        return true;
+      },
+    });
+    await waitFor(() => userTexts().includes("/compact"), "compaction prompt");
+    // Busy from the moment the compact runs, not before the claim checks.
+    expect(marks).toEqual([true]);
+    emit({ type: "system", subtype: "compact_boundary", session_id: "sess_1" });
+    emit({ type: "result", subtype: "success", session_id: "sess_1", num_turns: 1 });
+    expect(await done).toBe(true);
+    expect(marks).toEqual([true, false]);
+    expect(events).toContainEqual({ type: "notice", text: IDLE_COMPACT_NOTICE });
+  });
+
   it("does not compact a chat the watcher sees idle for 72 hours", async () => {
     await idleChat(420_000);
     const spawnedBefore = spawned.length;
@@ -637,6 +667,90 @@ describe("compacting a big chat idle past its prompt cache", () => {
     emit({ type: "result", subtype: "success", session_id: "sess_1", num_turns: 1 });
     await expect(again).resolves.toBe(true);
     expect(events).toContainEqual({ type: "notice", text: IDLE_COMPACT_NOTICE });
+  });
+
+  it("stops compacting a chat in the background after two failed compacts in a row, until its next real turn", async () => {
+    await idleChat(420_000);
+    const compactPrompts = () => userTexts().filter((text) => text === "/compact").length;
+    const failOnce = async (count: number) => {
+      atIdle(59);
+      const events: HarnessEvent[] = [];
+      const run = background(events);
+      await waitFor(() => compactPrompts() === count, `compact ${count}`);
+      emit({ type: "result", subtype: "success", session_id: "sess_1", num_turns: 1, is_error: true, result: "overloaded" });
+      await expect(run).resolves.toBe(false);
+      expect(events.some((event) => event.type === "session.error")).toBe(false);
+    };
+    await failOnce(1);
+    await failOnce(2);
+    // The third look finds the chat due again by the clock, and leaves it alone.
+    atIdle(59);
+    await expect(background([])).resolves.toBe(false);
+    expect(compactPrompts()).toBe(2);
+    // The same through the watcher, which must not even mark the chat busy.
+    const marks: boolean[] = [];
+    await expect(
+      compactIdleClaudeChats({
+        sessions: () => [{ id: "lead", harness: "claude" }],
+        toInput: () => ({
+          sessionId: "lead",
+          cwd: "/repo",
+          model: "claude:claude-opus-4-6",
+          modelSettings: {},
+          runtimeMode: "supervised",
+        }),
+        onEvent: () => {},
+        markBusy: (_id, busy) => {
+          marks.push(busy);
+          return true;
+        },
+      }),
+    ).resolves.toBe(false);
+    expect(marks).toEqual([]);
+    expect(compactPrompts()).toBe(2);
+    // A real turn gives it another chance.
+    const events: HarnessEvent[] = [];
+    const next = send(events, { text: "back again" });
+    await waitFor(() => userTexts().includes("back again"), "the user's message");
+    emitResult(420_000);
+    await next;
+    atIdle(59);
+    const again = background([]);
+    await waitFor(() => compactPrompts() === 3, "compact after a real turn");
+    emit({ type: "system", subtype: "compact_boundary", session_id: "sess_1" });
+    emit({ type: "result", subtype: "success", session_id: "sess_1", num_turns: 1 });
+    await expect(again).resolves.toBe(true);
+  });
+
+  it("does not mark a chat busy when the compact is turned away before it runs", async () => {
+    await idleChat(420_000);
+    // The cache record belongs to another conversation than the live one.
+    rememberPromptCache("lead", {
+      providerSessionId: "some-other-conversation",
+      lastTurnAt: 0,
+      cacheTtlMs: 60 * 60_000,
+      contextUsed: 420_000,
+    });
+    vi.spyOn(Date, "now").mockReturnValue(59 * 60_000);
+    const marks: boolean[] = [];
+    const ran = await compactIdleClaudeChats({
+      sessions: () => [{ id: "lead", harness: "claude" }],
+      toInput: () => ({
+        sessionId: "lead",
+        cwd: "/repo",
+        model: "claude:claude-opus-4-6",
+        modelSettings: {},
+        runtimeMode: "supervised",
+      }),
+      onEvent: () => {},
+      markBusy: (_id, busy) => {
+        marks.push(busy);
+        return true;
+      },
+    });
+    expect(ran).toBe(false);
+    expect(userTexts()).not.toContain("/compact");
+    expect(marks).toEqual([]);
   });
 
   it("does not compact in the background under 100K", async () => {
