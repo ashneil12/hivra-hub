@@ -244,7 +244,7 @@
       "name": "Claude Code subagents",
       "url": "https://code.claude.com/docs/en/sub-agents",
       "licence": "public docs",
-      "gave": "a project Explore agent pinned to a cheap model, so a crew's search does not run on the lead model (ideas only, WP-143)"
+      "gave": "a cheap Explore agent passed to a crew session as a flag, so its search does not run on the lead model (ideas only, WP-143)"
     },
     {
       "name": "Memorilla",

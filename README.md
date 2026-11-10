@@ -70,7 +70,7 @@ in Settings, under About.
 - [Row-Bot](https://github.com/siddsachar/row-bot): the automatic recall policy: skip gates, a query builder, a weighted score, rejection reasons, a broad-query margin, a cap on lines and a trace (WP-99), the correction rule behind the rules tier (WP-103), and a scan that refuses text which looks like instructions aimed at the model (WP-111).
 - [Mnemos](https://github.com/Riley-Coyote/mnemos-mcp): ideas for the recall rules (four content words, two distinctive shared words, at most three lines, each memory once per conversation; WP-99), and memory that fades over the days it was used rather than the calendar, with a lived-day clock and one question to the person before a fact goes stale (WP-100).
 - [ccdeck](https://github.com/BarganConstantin/ccdeck): ideas only: a live session tree (main agent at the root, subagents as nodes, inspectable tool calls) and a waiting-on-you list ordered questions first and longest wait first.
-- [Claude Code subagents](https://code.claude.com/docs/en/sub-agents): a project Explore agent pinned to a cheap model, so a crew's search does not run on the lead model (ideas only, WP-143).
+- [Claude Code subagents](https://code.claude.com/docs/en/sub-agents): a cheap Explore agent passed to a crew session as a flag, so its search does not run on the lead model (ideas only, WP-143).
 - [Memorilla](https://github.com/snap-stanford/memorilla): an external test set for chat-derived memory, the arm ladder its evaluation reports, and rules for writing a memory question that cannot be guessed (WP-106, ideas and data only).
 
 Also [poteto](https://x.com/poteto)'s writing on skills and verification, including the
