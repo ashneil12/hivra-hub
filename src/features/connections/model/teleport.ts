@@ -90,7 +90,7 @@ export interface MoveEndpoint {
   readonly id: string;
   read(chatId: string): Promise<ChatRecord | null>;
   /** Stop new turns on this chat. False when another move already froze it. */
-  freeze(chatId: string, moveId: string): Promise<boolean>;
+  freeze(chatId: string, moveId: string, peer: string): Promise<boolean>;
   thaw(chatId: string, moveId: string): Promise<void>;
   canResume(provider: Provider, model: string, effort: string): Promise<CanResume>;
   /** Store the copy as incoming (it does not run) and take the lease. */
@@ -117,6 +117,7 @@ export type MoveRefusalReason =
   | "approval-missing"
   | "approval-stale"
   | "invalid-session-id"
+  | "private-key-held"
   | "id-mismatch"
   | "not-found"
   | "not-owner"
@@ -158,7 +159,8 @@ export type MoveResult =
   | { status: "refused"; refusal: MoveRefusal }
   | { status: "failed"; stage: MoveStage; message: string; chatStayedOn: string }
   | { status: "partial"; stage: "release"; chatId: string; to: string; moveId: string; message: string }
-  | { status: "recovered"; chatId: string; chatStayedOn: string };
+  | { status: "recovered"; chatId: string; chatStayedOn: string }
+  | { status: "unknown"; chatId: string; to: string; moveId: string; message: string };
 
 export interface MoveInput {
   chatId: string;
@@ -227,10 +229,40 @@ function redactAny(text: string): { text: string; count: number } {
   return { text: out, count };
 }
 
+// Forms the shared list does not carry: HTTP Basic credentials, a private key from BEGIN to END or to the end of the
+// text (truncated output has no END line), and a base64 encoding of a PEM header.
+const BASIC_AUTH = /\b(Basic)\s+[A-Za-z0-9+/=]{8,}/g;
+const PEM_TO_END = /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z ]*PRIVATE KEY-----|$)/g;
+const BASE64_PEM = /LS0tLS1CRUdJTi[A-Za-z0-9+/=]{16,}/g;
+const PRIVATE_KEY_HEADER = /PRIVATE KEY-----|LS0tLS1CRUdJTi[A-Za-z0-9+/=]*UFJJVkFURS/;
+
+function redactExtra(text: string): { text: string; count: number } {
+  let count = 0;
+  let out = text.replace(BASIC_AUTH, (_m, word: string) => {
+    count += 1;
+    return `${word} [secret removed]`;
+  });
+  out = out.replace(PEM_TO_END, () => {
+    count += 1;
+    return "[secret removed]";
+  });
+  out = out.replace(BASE64_PEM, () => {
+    count += 1;
+    return "[secret removed]";
+  });
+  return { text: out, count };
+}
+
 function redactString(text: string): { text: string; count: number } {
   const shared = redactText(text);
   const strict = redactAny(shared.text);
-  return { text: strict.text, count: shared.count + strict.count };
+  const extra = redactExtra(strict.text);
+  return { text: extra.text, count: shared.count + strict.count + extra.count };
+}
+
+/** The text a move would carry, joined: a private key split across blocks shows up here, not in any one block. */
+function privateKeyPresent(strings: string[]): boolean {
+  return PRIVATE_KEY_HEADER.test(strings.join("\n"));
 }
 
 /** Every string in a parsed value, mapped; keys are kept. Redaction runs on the strings, not on their JSON text. */
@@ -269,6 +301,21 @@ export function redactChat(chat: ChatSnapshot): { chat: ChatSnapshot; redactions
     return out.text;
   });
   return { chat: { ...chat, transcript, title: title.text, queued }, redactions };
+}
+
+function transcriptStrings(transcript: string): string[] {
+  try {
+    return collectStrings(JSON.parse(transcript) as unknown);
+  } catch {
+    return [transcript];
+  }
+}
+
+function collectStrings(value: unknown): string[] {
+  if (typeof value === "string") return [value];
+  if (Array.isArray(value)) return value.flatMap(collectStrings);
+  if (value && typeof value === "object") return Object.values(value as Record<string, unknown>).flatMap(collectStrings);
+  return [];
 }
 
 /** Throws when the manifest or payload names a different chat than the one being moved. */
@@ -346,6 +393,10 @@ export async function planMove(
 ): Promise<{ ok: true; plan: MovePlan } | { ok: false; refusal: MoveRefusal }> {
   const frozen = freezeRefusal(chat);
   if (frozen) return { ok: false, refusal: { reason: frozen.reason, message: frozen.message } };
+  const strings = [chat.title, ...chat.queued, ...transcriptStrings(chat.transcript)];
+  if (privateKeyPresent(strings)) {
+    return { ok: false, refusal: { reason: "private-key-held", message: "A private key is in this chat, so the move is held. Nothing was sent." } };
+  }
   if (chat.providerSessionId && !SESSION_ID.test(chat.providerSessionId)) {
     return { ok: false, refusal: { reason: "invalid-session-id", message: "This chat's session id is not in a form a move accepts." } };
   }
@@ -370,10 +421,14 @@ export async function planMove(
 const grants = new WeakSet<object>();
 
 /** The approval a person's trusted click creates for one plan. Anything else is not an approval. */
-export function approvePlan(plan: MovePlan, gesture: { isTrusted: boolean; type: string }): PersonApproval {
-  if (gesture.isTrusted !== true || gesture.type !== "click") {
-    throw new Error("Only a person's click on the move approves it");
-  }
+export function approvePlan(plan: MovePlan, gesture: unknown): PersonApproval {
+  // Only a real browser MouseEvent the person produced counts: a plain object with the same fields does not.
+  const isRealClick =
+    typeof MouseEvent !== "undefined" &&
+    gesture instanceof MouseEvent &&
+    gesture.isTrusted === true &&
+    gesture.type === "click";
+  if (!isRealClick) throw new Error("Only a person's click on the move approves it");
   const approval = Object.freeze({ planId: plan.planId, grant: Symbol("person-approval") });
   grants.add(approval);
   return approval;
@@ -435,7 +490,7 @@ export async function moveChat(input: MoveInput): Promise<MoveResult> {
 
   let frozen: boolean;
   try {
-    frozen = await from.freeze(chatId, moveId);
+    frozen = await from.freeze(chatId, moveId, to.id);
   } catch (error) {
     await from.thaw(chatId, moveId).catch(noop);
     return failed("freeze", from.id, error);
@@ -493,8 +548,21 @@ export async function moveChat(input: MoveInput): Promise<MoveResult> {
   try {
     await to.activate(chatId, moveId);
   } catch (error) {
-    // Activation may have stored the live copy before it failed to report: then the target holds the chat.
-    if ((await to.holds(chatId, moveId).catch(() => "none" as Holds)) !== "live") {
+    // Activation may have stored the live copy before its reply was lost. Ask the target. If it cannot be asked, the
+    // outcome is unknown: the source keeps its freeze, and recoverMove finishes the move once the target answers.
+    let held: Holds;
+    try {
+      held = await to.holds(chatId, moveId);
+    } catch (holdsError) {
+      return {
+        status: "unknown",
+        chatId,
+        to: to.id,
+        moveId,
+        message: holdsError instanceof Error ? holdsError.message : String(holdsError),
+      };
+    }
+    if (held !== "live") {
       await to.discard(chatId, moveId).catch(noop);
       await undoFreeze();
       return failed("activate", from.id, error);

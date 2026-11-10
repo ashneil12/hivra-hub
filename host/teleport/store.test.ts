@@ -8,6 +8,8 @@ import { HostTeleportStore } from "./store";
 const SELF = "host-a";
 const MAC = "this-mac";
 const CHAT = "chat-1";
+const DEV = "dev-a";
+const OTHER = "dev-b";
 const transcript = '[{"id":"b1","role":"user","text":"hello"}]';
 
 function payloadFor(over: Partial<MovePayload["chat"]> = {}, to = SELF, moveId = "m1"): MovePayload {
@@ -36,8 +38,7 @@ describe("WP-177 host teleport store", () => {
   let leaseRoot: string;
   let now: number;
   let store: HostTeleportStore;
-  const make = () =>
-    new HostTeleportStore({ dir, selfId: SELF, providers: ["claude", "codex"], leaseRoot, now: () => now, leaseMs: 60_000 });
+  const make = () => new HostTeleportStore({ dir, selfId: SELF, providers: ["claude", "codex"], leaseRoot, now: () => now, leaseMs: 60_000 });
 
   beforeEach(() => {
     dir = mkdtempSync(path.join(tmpdir(), "wp177-host-"));
@@ -48,75 +49,82 @@ describe("WP-177 host teleport store", () => {
   afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
   it("stores an incoming copy that does not run, and does not claim ownership until activated", async () => {
-    const reply = await store.receive(CHAT, "m1", payloadFor());
+    const reply = await store.receive(CHAT, "m1", payloadFor(), DEV);
     expect(reply).toEqual({ ok: true, transcriptSha256: await sha256Hex(transcript) });
-    const before = await store.read(CHAT);
+    const before = await store.read(CHAT, DEV);
     expect(before?.live ?? null).toBeNull();
     expect(before?.owner).not.toBe(SELF);
-    expect(await store.holds(CHAT, "m1")).toBe("incoming");
+    expect(await store.holds(CHAT, "m1", DEV)).toBe("incoming");
 
-    await store.activate(CHAT, "m1");
-    const rec = await store.read(CHAT);
+    await store.activate(CHAT, "m1", DEV);
+    const rec = await store.read(CHAT, DEV);
     expect(rec?.owner).toBe(SELF);
     expect(rec?.live).toMatchObject({ chatId: CHAT, model: "test-model-1", effort: "high", queued: ["next"], transcript });
-    expect(await store.holds(CHAT, "m1")).toBe("live");
+    expect(await store.holds(CHAT, "m1", DEV)).toBe("live");
   });
 
   it("activate throws when there is no copy for the move", async () => {
-    await expect(store.activate(CHAT, "m1")).rejects.toThrow(/No copy/);
-    await store.receive(CHAT, "m1", payloadFor());
-    await expect(store.activate(CHAT, "other")).rejects.toThrow(/No copy/);
+    await expect(store.activate(CHAT, "m1", DEV)).rejects.toThrow(/No copy/);
+    await store.receive(CHAT, "m1", payloadFor(), DEV);
+    await expect(store.activate(CHAT, "other", DEV)).rejects.toThrow(/No copy/);
   });
 
   it("activate is idempotent for the same move", async () => {
-    await store.receive(CHAT, "m1", payloadFor());
-    await store.activate(CHAT, "m1");
-    await expect(store.activate(CHAT, "m1")).resolves.toBeUndefined();
-    expect((await store.read(CHAT))?.owner).toBe(SELF);
+    await store.receive(CHAT, "m1", payloadFor(), DEV);
+    await store.activate(CHAT, "m1", DEV);
+    await expect(store.activate(CHAT, "m1", DEV)).resolves.toBeUndefined();
+    expect((await store.read(CHAT, DEV))?.owner).toBe(SELF);
   });
 
   it("refuses a move addressed to another machine", async () => {
-    await expect(store.receive(CHAT, "m1", payloadFor({}, "some-other-host"))).rejects.toThrow(/another machine/);
+    await expect(store.receive(CHAT, "m1", payloadFor({}, "some-other-host"), DEV)).rejects.toThrow(/another machine/);
   });
 
   it("refuses a payload that names another chat than the one being received", async () => {
-    await expect(store.receive("chat-2", "m1", payloadFor())).rejects.toThrow(/another chat/);
+    await expect(store.receive("chat-2", "m1", payloadFor(), DEV)).rejects.toThrow(/another chat/);
   });
 
   it("refuses a receive for a chat that is live here, and one that is frozen here", async () => {
-    await store.receive(CHAT, "m1", payloadFor());
-    await store.activate(CHAT, "m1");
-    expect(await store.receive(CHAT, "m2", payloadFor({}, SELF, "m2"))).toEqual({ ok: false, reason: "held" });
-    expect(await store.freeze(CHAT, "back")).toBe(true);
-    expect(await store.receive(CHAT, "m3", payloadFor({}, SELF, "m3"))).toEqual({ ok: false, reason: "held" });
+    await store.receive(CHAT, "m1", payloadFor(), DEV);
+    await store.activate(CHAT, "m1", DEV);
+    expect(await store.receive(CHAT, "m2", payloadFor({}, SELF, "m2"), DEV)).toEqual({ ok: false, reason: "held" });
+    expect(await store.freeze(CHAT, "back", DEV, MAC)).toBe(true);
+    expect(await store.receive(CHAT, "m3", payloadFor({}, SELF, "m3"), DEV)).toEqual({ ok: false, reason: "held" });
   });
 
   it("refuses a second receive while another move holds the chat, and the same move may repeat", async () => {
-    expect((await store.receive(CHAT, "m1", payloadFor())).ok).toBe(true);
-    expect(await store.receive(CHAT, "m2", payloadFor({}, SELF, "m2"))).toEqual({ ok: false, reason: "held" });
-    expect((await store.receive(CHAT, "m1", payloadFor())).ok).toBe(true);
+    expect((await store.receive(CHAT, "m1", payloadFor(), DEV)).ok).toBe(true);
+    expect(await store.receive(CHAT, "m2", payloadFor({}, SELF, "m2"), DEV)).toEqual({ ok: false, reason: "held" });
+    expect((await store.receive(CHAT, "m1", payloadFor(), DEV)).ok).toBe(true);
   });
 
   it("an expired copy gives way to a new move, and the old move can no longer open it", async () => {
-    await store.receive(CHAT, "m1", payloadFor());
+    await store.receive(CHAT, "m1", payloadFor(), DEV);
     now += 61_000;
-    expect((await store.receive(CHAT, "m2", payloadFor({}, SELF, "m2"))).ok).toBe(true);
-    await expect(store.activate(CHAT, "m1")).rejects.toThrow(/No copy/);
+    expect((await store.receive(CHAT, "m2", payloadFor({}, SELF, "m2"), DEV)).ok).toBe(true);
+    await expect(store.activate(CHAT, "m1", DEV)).rejects.toThrow(/No copy/);
   });
 
   it("the lease lives under the WP-60 lease root, not beside the chats", async () => {
-    await store.receive(CHAT, "m1", payloadFor());
+    await store.receive(CHAT, "m1", payloadFor(), DEV);
     expect(existsSync(path.join(leaseRoot, `${CHAT}.lock`))).toBe(true);
     expect(existsSync(path.join(dir, "locks"))).toBe(false);
   });
 
+  it("the repeat receive reports the hash of the stored copy, not of the new payload", async () => {
+    await store.receive(CHAT, "m1", payloadFor(), DEV);
+    const changed = payloadFor({ transcript: '[{"id":"b9","role":"user","text":"other"}]' });
+    const repeat = await store.receive(CHAT, "m1", changed, DEV);
+    expect(repeat).toEqual({ ok: true, transcriptSha256: await sha256Hex(transcript) });
+  });
+
   it("discard removes only the copy that move stored and lets the lease go", async () => {
-    await store.receive(CHAT, "m1", payloadFor());
-    await store.discard(CHAT, "someone-else");
-    expect(await store.holds(CHAT, "m1")).toBe("incoming");
-    await store.discard(CHAT, "m1");
-    expect(await store.holds(CHAT, "m1")).toBe("none");
-    expect((await store.receive(CHAT, "m2", payloadFor({}, SELF, "m2"))).ok).toBe(true);
+    await store.receive(CHAT, "m1", payloadFor(), DEV);
+    await store.discard(CHAT, "someone-else", DEV);
+    expect(await store.holds(CHAT, "m1", DEV)).toBe("incoming");
+    await store.discard(CHAT, "m1", DEV);
+    expect(await store.holds(CHAT, "m1", DEV)).toBe("none");
+    expect((await store.receive(CHAT, "m2", payloadFor({}, SELF, "m2"), DEV)).ok).toBe(true);
   });
 
   it("refuses a provider this host does not run, with the reason", async () => {
@@ -130,14 +138,14 @@ describe("WP-177 host teleport store", () => {
   });
 
   it("as a source, releases the chat only when the move that froze it asks, and records the new owner", async () => {
-    await store.receive(CHAT, "m1", payloadFor());
-    await store.activate(CHAT, "m1");
-    expect(await store.freeze(CHAT, "back")).toBe(true);
-    expect(await store.freeze(CHAT, "other")).toBe(false);
-    await expect(store.release(CHAT, "other", MAC)).rejects.toThrow();
-    expect((await store.read(CHAT))?.live).not.toBeNull();
-    await store.release(CHAT, "back", MAC);
-    const rec = await store.read(CHAT);
+    await store.receive(CHAT, "m1", payloadFor(), DEV);
+    await store.activate(CHAT, "m1", DEV);
+    expect(await store.freeze(CHAT, "back", DEV, MAC)).toBe(true);
+    expect(await store.freeze(CHAT, "other", DEV, MAC)).toBe(false);
+    await expect(store.release(CHAT, "other", MAC, DEV)).rejects.toThrow();
+    expect((await store.read(CHAT, DEV))?.live).not.toBeNull();
+    await store.release(CHAT, "back", MAC, DEV);
+    const rec = await store.read(CHAT, DEV);
     expect(rec?.live ?? null).toBeNull();
     expect(rec?.owner).toBe(MAC);
   });
@@ -145,8 +153,8 @@ describe("WP-177 host teleport store", () => {
   it("writes nothing that looks like a key or token, and only the allow-listed fields", async () => {
     const polluted = payloadFor() as MovePayload & { chat: Record<string, unknown> };
     polluted.chat.apiKey = "sk-ant-api03-SENTINELSECRETVALUE123456";
-    await store.receive(CHAT, "m1", polluted);
-    await store.activate(CHAT, "m1");
+    await store.receive(CHAT, "m1", polluted, DEV);
+    await store.activate(CHAT, "m1", DEV);
     const files = readdirSync(path.join(dir, "chats"));
     expect(files.length).toBeGreaterThan(0);
     for (const file of files) {
@@ -154,5 +162,48 @@ describe("WP-177 host teleport store", () => {
       expect(text).not.toContain("SENTINELSECRETVALUE");
       expect(text).not.toContain("apiKey");
     }
+  });
+});
+
+describe("WP-177 MEDIUM E: only the device that started a move can drive it", () => {
+  let dir: string;
+  let leaseRoot: string;
+  let store: HostTeleportStore;
+  beforeEach(() => {
+    dir = mkdtempSync(path.join(tmpdir(), "wp177-dev-"));
+    leaseRoot = path.join(dir, "leases");
+    store = new HostTeleportStore({ dir, selfId: SELF, providers: ["claude"], leaseRoot });
+  });
+  afterEach(() => rmSync(dir, { recursive: true, force: true }));
+
+  it("another device cannot activate, discard or read a copy it did not receive", async () => {
+    await store.receive(CHAT, "m1", payloadFor(), DEV);
+    await expect(store.activate(CHAT, "m1", OTHER)).rejects.toThrow(/another device/);
+    await store.discard(CHAT, "m1", OTHER);
+    expect(await store.holds(CHAT, "m1", OTHER)).toBe("none");
+    expect(await store.holds(CHAT, "m1", DEV)).toBe("incoming");
+    await store.activate(CHAT, "m1", DEV);
+    expect(await store.read(CHAT, OTHER)).toBeNull();
+    expect((await store.read(CHAT, DEV))?.live).not.toBeNull();
+  });
+
+  it("another device cannot freeze, thaw or release a chat the owner device froze", async () => {
+    await store.receive(CHAT, "m1", payloadFor(), DEV);
+    await store.activate(CHAT, "m1", DEV);
+    expect(await store.freeze(CHAT, "m2", OTHER, MAC)).toBe(false);
+    expect(await store.freeze(CHAT, "m2", DEV, MAC)).toBe(true);
+    await store.thaw(CHAT, "m2", OTHER);
+    expect(await store.holds(CHAT, "m1", DEV)).toBe("live");
+    await expect(store.release(CHAT, "m2", MAC, OTHER)).rejects.toThrow();
+    expect((await store.read(CHAT, DEV))?.live).not.toBeNull();
+  });
+
+  it("release goes only to the destination the freeze named, even for the owner device", async () => {
+    await store.receive(CHAT, "m1", payloadFor(), DEV);
+    await store.activate(CHAT, "m1", DEV);
+    await store.freeze(CHAT, "m2", DEV, MAC);
+    await expect(store.release(CHAT, "m2", "nowhere", DEV)).rejects.toThrow(/destination/);
+    await store.release(CHAT, "m2", MAC, DEV);
+    expect((await store.read(CHAT, DEV))?.live ?? null).toBeNull();
   });
 });

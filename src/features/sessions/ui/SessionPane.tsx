@@ -1,6 +1,6 @@
 import { TeleportHeaderBand } from "../../connections/ui/TeleportNotice";
 import { teleportStateOf } from "../../connections/model/teleportState";
-import { lockChat } from "../../connections/model/teleportLock";
+import { syncTeleportLock } from "../../connections/model/teleportLock";
 import { GripVertical, X } from "../../../shared/ui/icons";
 import type { LayoutNode, SplitDir } from "../../workspace/model/layout";
 import { PaneSplitButtons, PaneSplitCorner } from "../../workspace/ui/PaneSplitButtons";
@@ -956,8 +956,8 @@ const LocalSessionPane = memo(function LocalSessionPane({
       ) : null}
       {(() => {
         const moved = teleportStateOf(session);
-        // The saved marker is the truth after a restart: a moved chat stays locked even though the lock is in memory.
-        if (moved.moved) lockChat(session.id);
+        // The saved state is the truth after a restart: a moved or frozen chat stays locked, a settled one unlocks.
+        syncTeleportLock(session);
         return moved.moved ? (
           <TeleportHeaderBand
             host={moved.host}

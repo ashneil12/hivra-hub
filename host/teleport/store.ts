@@ -33,14 +33,20 @@ interface Incoming {
   payload: TransferChat;
   from: string;
   expiresAt: number;
+  /** The paired device that sent the copy: the only one that may activate or discard it. */
+  device: string;
 }
 
 interface StoredChat {
   owner: string | null;
+  /** The paired device that owns the live copy: the only one that may read, freeze or release it. */
+  device: string | null;
   live: TransferChat | null;
   incoming: Incoming | null;
   activatedBy: string | null;
   frozenBy: string | null;
+  frozenDevice: string | null;
+  frozenTo: string | null;
 }
 
 export interface HostTeleportOptions {
@@ -117,33 +123,38 @@ export class HostTeleportStore {
     this.leases.delete(chatId);
   }
 
-  async read(chatId: string): Promise<ChatRecord | null> {
+  /** Only the owning device sees the chat. Any other paired device sees nothing (not even that the chat exists). */
+  async read(chatId: string, device: string): Promise<ChatRecord | null> {
     const stored = this.load(chatId);
-    if (!stored) return null;
+    if (!stored || (stored.device !== null && stored.device !== device)) return null;
     const live: ChatSnapshot | null = stored.live
       ? { ...stored.live, queued: [...stored.live.queued], turnRunning: false, approvalPending: false }
       : null;
     return { owner: stored.owner ?? "", live };
   }
 
-  async holds(chatId: string, moveId: string): Promise<Holds> {
+  async holds(chatId: string, moveId: string, device: string): Promise<Holds> {
     const stored = this.load(chatId);
     if (!stored) return "none";
+    if (stored.incoming?.moveId === moveId && stored.incoming.device !== device) return "none";
+    if (stored.live && stored.device !== null && stored.device !== device) return "none";
     if (stored.activatedBy === moveId && stored.owner === this.options.selfId) return "live";
     if (stored.incoming?.moveId === moveId) return "incoming";
     return "none";
   }
 
-  async freeze(chatId: string, moveId: string): Promise<boolean> {
+  async freeze(chatId: string, moveId: string, device: string, peer: string): Promise<boolean> {
     const stored = this.load(chatId);
-    if (!stored?.live || stored.frozenBy) return false;
-    this.save(chatId, { ...stored, frozenBy: moveId });
+    if (!stored?.live || stored.frozenBy || stored.device !== device) return false;
+    this.save(chatId, { ...stored, frozenBy: moveId, frozenDevice: device, frozenTo: peer });
     return true;
   }
 
-  async thaw(chatId: string, moveId: string): Promise<void> {
+  async thaw(chatId: string, moveId: string, device: string): Promise<void> {
     const stored = this.load(chatId);
-    if (stored?.frozenBy === moveId) this.save(chatId, { ...stored, frozenBy: null });
+    if (stored?.frozenBy === moveId && stored.frozenDevice === device) {
+      this.save(chatId, { ...stored, frozenBy: null, frozenDevice: null, frozenTo: null });
+    }
   }
 
   async canResume(provider: Provider, model: string, effort: string): Promise<CanResume> {
@@ -154,7 +165,7 @@ export class HostTeleportStore {
     return { ok: true };
   }
 
-  async receive(chatId: string, moveId: string, payload: MovePayload): Promise<ReceiveReply> {
+  async receive(chatId: string, moveId: string, payload: MovePayload, device: string): Promise<ReceiveReply> {
     this.assertId(chatId);
     if (payload.manifest?.format !== "hivra-teleport-v1") throw new Error("Invalid move payload");
     if (payload.manifest.to !== this.options.selfId) throw new Error("This move is addressed to another machine");
@@ -164,7 +175,8 @@ export class HostTeleportStore {
     const stored = this.load(chatId);
     const chat = pick(payload.chat);
     if (stored?.incoming?.moveId === moveId) {
-      return { ok: true, transcriptSha256: sha256(chat.transcript) };
+      // A repeat reports the stored copy's hash, never the hash of a payload that arrived this time.
+      return { ok: true, transcriptSha256: sha256(stored.incoming.payload.transcript) };
     }
     if (stored?.live || stored?.frozenBy) return { ok: false, reason: "held" };
     let previous = stored?.incoming ?? null;
@@ -177,41 +189,50 @@ export class HostTeleportStore {
     this.leases.set(chatId, lease);
     this.save(chatId, {
       owner: stored?.owner ?? null,
+      device: stored?.device ?? null,
       live: null,
-      incoming: { moveId, payload: chat, from: payload.manifest.from, expiresAt: this.now() + this.leaseMs },
+      incoming: { moveId, payload: chat, from: payload.manifest.from, expiresAt: this.now() + this.leaseMs, device },
       activatedBy: null,
       frozenBy: null,
+      frozenDevice: null,
+      frozenTo: null,
     });
     return { ok: true, transcriptSha256: sha256(chat.transcript) };
   }
 
-  async discard(chatId: string, moveId: string): Promise<void> {
+  async discard(chatId: string, moveId: string, device: string): Promise<void> {
     const stored = this.load(chatId);
-    if (!stored?.incoming || stored.incoming.moveId !== moveId) return;
+    if (!stored?.incoming || stored.incoming.moveId !== moveId || stored.incoming.device !== device) return;
     this.save(chatId, { ...stored, incoming: null });
     this.releaseLease(chatId);
   }
 
-  async activate(chatId: string, moveId: string): Promise<void> {
+  async activate(chatId: string, moveId: string, device: string): Promise<void> {
     const stored = this.load(chatId);
     if (stored?.activatedBy === moveId && stored.owner === this.options.selfId) return;
     if (!stored?.incoming || stored.incoming.moveId !== moveId) {
       throw new Error("No copy of this chat is stored here to open for this move");
     }
+    if (stored.incoming.device !== device) throw new Error("This move was started by another device");
     if (stored.incoming.expiresAt <= this.now()) throw new Error("The copy's lease expired before it was opened");
     this.save(chatId, {
       owner: this.options.selfId,
+      device,
       live: stored.incoming.payload,
       incoming: null,
       activatedBy: moveId,
       frozenBy: null,
+      frozenDevice: null,
+      frozenTo: null,
     });
     this.releaseLease(chatId);
   }
 
-  async release(chatId: string, moveId: string, to: string): Promise<void> {
+  async release(chatId: string, moveId: string, to: string, device: string): Promise<void> {
     const stored = this.load(chatId);
     if (!stored || stored.frozenBy !== moveId) throw new Error("This move did not freeze the chat");
-    this.save(chatId, { ...stored, owner: to, live: null, frozenBy: null, activatedBy: null });
+    if (stored.frozenDevice !== device) throw new Error("This move was started by another device");
+    if (stored.frozenTo !== to) throw new Error("The release names a destination other than the one the move froze for");
+    this.save(chatId, { ...stored, owner: to, device: null, live: null, frozenBy: null, frozenDevice: null, frozenTo: null, activatedBy: null });
   }
 }

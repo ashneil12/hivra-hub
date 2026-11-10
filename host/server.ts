@@ -17,6 +17,9 @@ import { HostEngine } from "./engine";
 import { HostFirstMate } from "./firstmate/service";
 import { HostTeleportStore } from "./teleport/store";
 import { isTeleportMethod, teleportRpc } from "./teleport/rpc";
+import { createHash as teleportHash } from "node:crypto";
+// WP-177: the paired device behind a bearer token, as a hash: the token itself is never stored or compared here.
+const deviceOf = (token: string) => teleportHash("sha256").update(token).digest("hex");
 import { writeAttachmentChunk, readAttachmentChunk } from "./attachments";
 import type { LinkedWorkItem } from "../src/features/sessions/model/session";
 import { parseGithubWorkItemUrl } from "../src/features/sessions/model/sessionWorkItem";
@@ -649,7 +652,7 @@ export function createHostServer(
           case "teleport.holds":
           case "teleport.release":
             if (!isTeleportMethod(input.method)) throw new Error("Unsupported host method");
-            result = await teleportRpc(teleport, input.method, params);
+            result = await teleportRpc(teleport, input.method, params, deviceOf(token));
             break;
           default:
             throw new Error("Unsupported host method");

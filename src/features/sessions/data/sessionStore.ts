@@ -1,4 +1,5 @@
 import { syncTeleportLock } from "../../connections/model/teleportLock";
+import { teleportStateOf } from "../../connections/model/teleportState";
 import { isCliNotice } from "../../../integrations/harness/core/cliNotices";
 import { invoke } from "@tauri-apps/api/core";
 import { boundaryFromDisk } from "../../memory/model/privateChat";
@@ -164,7 +165,9 @@ export function shouldPersistSession(session: Session): boolean {
     !session.inboxAsk &&
     !isRemoteProjectPath(session.cwd) &&
     session.cwd !== "~" &&
-    (session.blocks.some((block) => block.role === "user") ||
+    // WP-177: a chat moved to another machine is saved as its marker alone, so the release survives a reload.
+    (teleportStateOf(session).moved ||
+      session.blocks.some((block) => block.role === "user") ||
       (isMonoSession(session.id) &&
         (session.blocks.length > 0 || !!session.monoTranscript)))
   );
@@ -701,7 +704,6 @@ export function findMonoTranscript(
 
 export async function getSession(sessionId: string): Promise<Session | null> {
   const session = await readSession(sessionId);
-  if (session) syncTeleportLock(session);
   return session ? repairSession(session) : null;
 }
 
@@ -716,6 +718,8 @@ export async function readSession(sessionId: string): Promise<Session | null> {
   if (!record) return null;
   const session = recordToSession(record);
   if (session.monoTranscript) monoSavedBlocks.set(sessionId, session.blocks);
+  // WP-177: every read of a saved chat sets its send lock (moved or frozen), so a restart keeps it.
+  syncTeleportLock(session);
   return session;
 }
 
@@ -1273,7 +1277,11 @@ function sanitizeBlock(
       block.notice === "recovered" ||
       block.notice === "still-running" ||
       block.notice === "account-moved" ||
-      block.notice === "waiting-on-you"
+      block.notice === "waiting-on-you" ||
+block.notice === "teleported" ||
+block.notice === "teleported-back" ||
+block.notice === "teleport-frozen" ||
+block.notice === "teleport-incoming"
     ) {
       next.notice = block.notice;
     }

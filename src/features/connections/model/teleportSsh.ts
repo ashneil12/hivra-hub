@@ -19,7 +19,7 @@ export function sshMoveEndpoint(machineId: string, call: HostCall): MoveEndpoint
   return {
     id: machineId,
     read: (chatId) => call("teleport.read", { chatId }) as Promise<ChatRecord | null>,
-    freeze: async (chatId, moveId) => (await call("teleport.freeze", { chatId, moveId })) === true,
+    freeze: async (chatId, moveId, peer) => (await call("teleport.freeze", { chatId, moveId, peer })) === true,
     thaw: async (chatId, moveId) => {
       await call("teleport.thaw", { chatId, moveId });
     },

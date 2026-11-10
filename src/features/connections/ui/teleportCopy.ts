@@ -19,6 +19,7 @@ const TITLES: Record<MoveRefusalReason, string> = {
   "approval-pending": "Answer the approval, then move",
   "approval-missing": "Approve the move first",
   "approval-stale": "The chat changed. Review the move again",
+  "private-key-held": "This chat holds a private key, so the move is held. Nothing was sent",
   "invalid-session-id": "This chat cannot move: its session id is not in a form a move accepts",
   "id-mismatch": "This chat's record names another chat. Nothing was moved",
   "not-found": "This chat is not here to move",

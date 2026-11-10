@@ -85,3 +85,43 @@ describe("WP-177 ids and the plan", () => {
     expect(planned.plan.queued).toEqual(["ship it after the tests"]);
   });
 });
+
+describe("WP-177 MEDIUM F: the remaining forms", () => {
+  const PEM = "-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZW\n-----END OPENSSH PRIVATE KEY-----";
+  const b64Key = Buffer.from(PEM).toString("base64");
+
+  it("Authorization: Basic is redacted", () => {
+    const out = redactChat(chat({ transcript: JSON.stringify([{ id: "b", role: "user", text: "Authorization: Basic dXNlcjpzdXBlcnNlY3JldHBhc3M=" }]) }));
+    expect(out.chat.transcript).not.toContain("dXNlcjpzdXBlcnNlY3JldHBhc3M=");
+  });
+
+  it("a private key with no END line (truncated output) is redacted to the end of the string", () => {
+    const truncated = "here it is -----BEGIN RSA PRIVATE KEY-----\nMIIEpAIBAAKCAQEAtruncatedkeymaterialhere";
+    const out = redactChat(chat({ transcript: JSON.stringify([{ id: "b", role: "assistant", text: truncated }]) }));
+    expect(out.chat.transcript).not.toContain("truncatedkeymaterialhere");
+  });
+
+  it("a base64-encoded key is redacted", () => {
+    const out = redactChat(chat({ transcript: JSON.stringify([{ id: "b", role: "assistant", text: `key: ${b64Key}` }]) }));
+    expect(out.chat.transcript).not.toContain(b64Key.slice(0, 40));
+  });
+
+  it("a key split across two blocks is refused: the move names the private key and does not travel", async () => {
+    const [first, second] = [PEM.slice(0, 30), PEM.slice(30)];
+    const c = chat({
+      transcript: JSON.stringify([
+        { id: "b1", role: "assistant", text: first },
+        { id: "b2", role: "assistant", text: second },
+      ]),
+    });
+    const planned = await planMove(c, "this-mac", "host-a");
+    expect(planned.ok).toBe(false);
+    if (!planned.ok) expect(planned.refusal.reason).toBe("private-key-held");
+  });
+
+  it("a whole private key in one block is also refused, not only redacted", async () => {
+    const planned = await planMove(chat({ transcript: JSON.stringify([{ id: "b", role: "assistant", text: PEM }]) }), "this-mac", "host-a");
+    expect(planned.ok).toBe(false);
+    if (!planned.ok) expect(planned.refusal.reason).toBe("private-key-held");
+  });
+});

@@ -7,7 +7,8 @@ import { HostTeleportStore } from "./store";
 import { isTeleportMethod, teleportRpc } from "./rpc";
 
 const MAC = "this-mac";
-const transcript = '{"type":"user","text":"hi"}\n';
+const DEVICE = "dev-a";
+const transcript = '[{"id":"b1","role":"user","text":"hi"}]';
 
 describe("WP-177 host teleport RPC", () => {
   let dir: string;
@@ -25,22 +26,26 @@ describe("WP-177 host teleport RPC", () => {
   });
 
   it("refuses a missing or malformed chat id before it reaches the store", async () => {
-    await expect(teleportRpc(store, "teleport.read", {})).rejects.toThrow(/chat/i);
-    await expect(teleportRpc(store, "teleport.read", { chatId: "../etc" })).rejects.toThrow(/chat/i);
+    await expect(teleportRpc(store, "teleport.read", {}, DEVICE)).rejects.toThrow(/chat/i);
+    await expect(teleportRpc(store, "teleport.read", { chatId: "../etc" }, DEVICE)).rejects.toThrow(/chat/i);
+  });
+
+  it("refuses a call that carries no device", async () => {
+    await expect(teleportRpc(store, "teleport.read", { chatId: "chat-9" }, "")).rejects.toThrow(/device/);
   });
 
   it("runs a receive then an activate through the RPC, and reads the owner back", async () => {
     const chat = { chatId: "chat-9", provider: "claude", providerSessionId: "s", model: "m", effort: "high", title: "t", transcript, queued: [] };
     const manifest = buildManifest({ ...chat, turnRunning: false, approvalPending: false }, { moveId: "m1", from: MAC, to: "host-a", at: "2026-11-10T09:00:00.000Z", transcriptSha256: "" });
-    const received = (await teleportRpc(store, "teleport.receive", { chatId: "chat-9", moveId: "m1", payload: { chat, manifest } })) as { ok: boolean; transcriptSha256: string };
+    const received = (await teleportRpc(store, "teleport.receive", { chatId: "chat-9", moveId: "m1", payload: { chat, manifest } }, DEVICE)) as { ok: boolean; transcriptSha256: string };
     expect(received).toEqual({ ok: true, transcriptSha256: await sha256Hex(transcript) });
-    await teleportRpc(store, "teleport.activate", { chatId: "chat-9", moveId: "m1" });
-    const read = (await teleportRpc(store, "teleport.read", { chatId: "chat-9" })) as { owner: string; live: { transcript: string } };
+    await teleportRpc(store, "teleport.activate", { chatId: "chat-9", moveId: "m1" }, DEVICE);
+    const read = (await teleportRpc(store, "teleport.read", { chatId: "chat-9" }, DEVICE)) as { owner: string; live: { transcript: string } };
     expect(read.owner).toBe("host-a");
     expect(read.live.transcript).toBe(transcript);
   });
 
   it("refuses a receive whose payload is not a move payload", async () => {
-    await expect(teleportRpc(store, "teleport.receive", { chatId: "chat-9", moveId: "m1", payload: { nope: true } })).rejects.toThrow(/payload/i);
+    await expect(teleportRpc(store, "teleport.receive", { chatId: "chat-9", moveId: "m1", payload: { nope: true } }, DEVICE)).rejects.toThrow(/payload/i);
   });
 });

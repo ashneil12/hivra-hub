@@ -8,10 +8,10 @@ const MOVED_PREFIX = "Moved to ";
 
 export type TeleportState = { moved: false } | { moved: true; host: string; at: string };
 
-export function movedBlocks(host: string, at: string): Block[] {
+export function movedBlocks(host: string, at: string, peer = ""): Block[] {
   return [
     {
-      id: `teleported-${at}`,
+      id: `teleported@${peer}@${at}`,
       role: "system",
       text: `${MOVED_PREFIX}${host}`,
       notice: "teleported",
@@ -30,6 +30,16 @@ export function returnedBlocks(at: string): Block[] {
       startedAt: Date.parse(at),
     } as unknown as Block,
   ];
+}
+
+/** The machine id a chat was moved to, from the moved notice. Empty when the notice does not name one. */
+export function movedPeer(session: Pick<Session, "blocks">): string {
+  for (let i = session.blocks.length - 1; i >= 0; i--) {
+    const block = session.blocks[i];
+    if (block.notice === "teleported-back") return "";
+    if (block.notice === "teleported") return block.id.split("@")[1] ?? "";
+  }
+  return "";
 }
 
 /** The latest of the two notices decides. */
@@ -62,8 +72,23 @@ export function copyForMoved(host: string, time: string): string {
 }
 
 /** The saved notice a move leaves while it freezes this chat. It lives in the chat, so a restart still sees it. */
-export function frozenBlock(moveId: string): Block {
-  return { id: `teleport-frozen-${moveId}`, role: "system", text: "", notice: "teleport-frozen" } as unknown as Block;
+export function frozenBlock(moveId: string, peer: string): Block {
+  return { id: `teleport-frozen-${moveId}`, role: "system", text: JSON.stringify({ peer }), notice: "teleport-frozen" } as unknown as Block;
+}
+
+/** The freezes saved in a chat, each with the machine it is for. A restart uses them to finish or undo a move. */
+export function savedFreezes(session: Pick<Session, "blocks">): Array<{ moveId: string; peer: string }> {
+  return session.blocks
+    .filter((b) => b.notice === "teleport-frozen")
+    .map((b) => {
+      let peer = "";
+      try {
+        peer = String((JSON.parse(b.text) as { peer?: unknown }).peer ?? "");
+      } catch {
+        peer = "";
+      }
+      return { moveId: b.id.replace(/^teleport-frozen-/, ""), peer };
+    });
 }
 
 /** The saved notice that carries a moved copy until it is activated here. */

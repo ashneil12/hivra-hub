@@ -28,7 +28,16 @@ const THIS_MAC = "this-mac";
 const HOST = "host-a";
 const CHAT = "chat-1";
 const AT = "2026-11-10T09:00:00.000Z";
-const CLICK = { isTrusted: true, type: "click" };
+// Node has no MouseEvent: a stand-in class, so the trusted-click check runs as it does in the browser.
+class TestMouseEvent {
+  readonly type: string;
+  isTrusted = false;
+  constructor(type: string) {
+    this.type = type;
+  }
+}
+(globalThis as unknown as { MouseEvent: unknown }).MouseEvent = TestMouseEvent;
+const CLICK = Object.assign(new TestMouseEvent("click"), { isTrusted: true }) as never;
 
 function chat(overrides: Partial<ChatSnapshot> = {}): ChatSnapshot {
   return {
@@ -540,3 +549,43 @@ describe("WP-177 no credentials in a move", () => {
 });
 
 export type { MovePlan };
+
+describe("WP-177 HIGH B: a lost reply leaves the move unknown, with the freeze kept", () => {
+  it("activate stored the copy, the reply was lost, and holds cannot be asked: the result is unknown and the source stays frozen", async () => {
+    const mac = new StubMachine(THIS_MAC);
+    const host = new StubMachine(HOST);
+    mac.seed(chat());
+    const { approval } = await approve(THIS_MAC, HOST);
+    const realActivate = host.activate.bind(host);
+    host.activate = async (chatId, moveId) => {
+      await realActivate(chatId, moveId);
+      throw new Error("connection dropped");
+    };
+    host.holds = async () => {
+      throw new Error("connection dropped");
+    };
+    const result = await moveChat({ chatId: CHAT, from: mac, to: host, approval, moveId: "m-lost", at: AT });
+    expect(result.status).toBe("unknown");
+    expect(mac.isFrozen(CHAT)).toBe(true);
+    // The host did activate, so it is live there. Once the link is back, recovery finishes the move.
+    host.holds = StubMachine.prototype.holds;
+    const after = await recoverMove({ chatId: CHAT, moveId: "m-lost", from: mac, to: host });
+    expect(after.status).toBe("moved");
+    expect((await mac.read(CHAT))?.live ?? null).toBeNull();
+    expect((await host.read(CHAT))?.live).not.toBeNull();
+  });
+});
+
+describe("WP-177 LOW G: only a real trusted MouseEvent approves", () => {
+  it("a plain object that looks like a trusted click is refused; a real MouseEvent that is trusted is accepted", async () => {
+    const { plan } = await approve(THIS_MAC, HOST);
+    expect(() => approvePlan(plan, { isTrusted: true, type: "click" })).toThrow(/person's click/);
+    const RealLike = globalThis.MouseEvent as unknown as new (type: string) => { isTrusted: boolean; type: string };
+    const trusted = new RealLike("click");
+    Object.defineProperty(trusted, "isTrusted", { value: true });
+    expect(approvePlan(plan, trusted as never).planId).toBe(plan.planId);
+    const untrusted = new RealLike("click");
+    Object.defineProperty(untrusted, "isTrusted", { value: false });
+    expect(() => approvePlan(plan, untrusted as never)).toThrow(/person's click/);
+  });
+});

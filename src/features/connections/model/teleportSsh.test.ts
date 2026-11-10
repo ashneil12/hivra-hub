@@ -14,7 +14,15 @@ import {
   type MoveEndpoint,
   type MovePayload,
 } from "./teleport";
-const CLICK = { isTrusted: true, type: "click" };
+class TestMouseEvent {
+  readonly type: string;
+  isTrusted = false;
+  constructor(type: string) {
+    this.type = type;
+  }
+}
+(globalThis as unknown as { MouseEvent: unknown }).MouseEvent = TestMouseEvent;
+const CLICK = Object.assign(new TestMouseEvent("click"), { isTrusted: true }) as never;
 import { sshMoveEndpoint, type HostCall } from "./teleportSsh";
 
 const MAC = "this-mac";
@@ -86,7 +94,7 @@ function memoryMac(): MoveEndpoint & { seed(snapshot: ChatSnapshot): void; live(
 function overWire(store: HostTeleportStore): HostCall {
   return async (method, params) => {
     const sent = JSON.parse(JSON.stringify(params));
-    const result = await teleportRpc(store, method, sent);
+    const result = await teleportRpc(store, method, sent, "dev-desktop");
     return JSON.parse(JSON.stringify(result ?? null));
   };
 }

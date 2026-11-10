@@ -6,7 +6,15 @@ import type { Session } from "../../sessions/model/session";
 import { HostTeleportStore } from "../../../../host/teleport/store";
 import { teleportRpc } from "../../../../host/teleport/rpc";
 import { approvePlan, moveChat, planMove } from "./teleport";
-const CLICK = { isTrusted: true, type: "click" };
+class TestMouseEvent {
+  readonly type: string;
+  isTrusted = false;
+  constructor(type: string) {
+    this.type = type;
+  }
+}
+(globalThis as unknown as { MouseEvent: unknown }).MouseEvent = TestMouseEvent;
+const CLICK = Object.assign(new TestMouseEvent("click"), { isTrusted: true }) as never;
 import { movedBlocks, teleportStateOf } from "./teleportState";
 import { isChatLocked, unlockChat } from "./teleportLock";
 import { sessionToChat, chatToSession, localMoveEndpoint, recapForRefusal, type LocalChatPort } from "./teleportLocal";
@@ -51,7 +59,7 @@ function memoryPort(initial: Session[]): LocalChatPort & { all(): Session[] } {
 
 function overWire(store: HostTeleportStore): HostCall {
   return async (method, params) => {
-    const result = await teleportRpc(store, method, JSON.parse(JSON.stringify(params)));
+    const result = await teleportRpc(store, method, JSON.parse(JSON.stringify(params)), "dev-desktop");
     return JSON.parse(JSON.stringify(result ?? null));
   };
 }
@@ -197,7 +205,7 @@ describe("WP-177 desktop side: what survives a restart, and what a moved row los
     await mac.release(CHAT, "m0", HOST);
     const payload = {
       chat: { chatId: CHAT, provider: "claude", providerSessionId: "", model: "test-model-1", effort: "high", title: "Local chat", transcript: JSON.stringify(session().blocks), queued: [] },
-      manifest: { format: "hivra-teleport-v1", chatId: CHAT, to: "this-mac" },
+      manifest: { format: "hivra-teleport-v1", chatId: CHAT, to: "this-mac", from: HOST },
     } as never;
     expect((await mac.receive(CHAT, "m5", payload)).ok).toBe(true);
     const restarted = localMoveEndpoint({ machineId: "this-mac", port });
@@ -216,5 +224,70 @@ describe("WP-177 desktop side: what survives a restart, and what a moved row los
     await mac.release(CHAT, "m0", HOST);
     const wrong = { chat: { chatId: "someone-else", transcript: "[]", queued: [], providerSessionId: "", model: "m", effort: "e", title: "t", provider: "claude" }, manifest: {} } as never;
     await expect(mac.receive(CHAT, "m6", wrong)).rejects.toThrow(/different chat/);
+  });
+});
+
+describe("WP-177 MEDIUM C: what a freeze saves, and what it does to the lock", () => {
+  it("a freeze saves the peer it is for, so a restart can finish or undo the move", async () => {
+    const { savedFreezes } = await import("./teleportState");
+    const port = memoryPort([session()]);
+    await localMoveEndpoint({ machineId: "this-mac", port }).freeze(CHAT, "m-peer", HOST);
+    expect(savedFreezes(port.all()[0])).toEqual([{ moveId: "m-peer", peer: HOST }]);
+  });
+
+  it("a freeze locks the chat at once, and a thaw that leaves nothing frozen unlocks it", async () => {
+    const { isChatLocked, unlockChat: unlock } = await import("./teleportLock");
+    unlock(CHAT);
+    const port = memoryPort([session()]);
+    const mac = localMoveEndpoint({ machineId: "this-mac", port });
+    await mac.freeze(CHAT, "m-refused", HOST);
+    expect(isChatLocked(CHAT)).toBe(true);
+    await mac.thaw(CHAT, "m-refused");
+    expect(isChatLocked(CHAT)).toBe(false);
+  });
+});
+
+describe("WP-177 MEDIUM D: a copy is accepted back only from the machine the chat went to", () => {
+  const copyFrom = (from: string, transcript = JSON.stringify(session().blocks)) =>
+    ({
+      chat: { chatId: CHAT, provider: "claude", providerSessionId: "other-mac-chat-session", model: "test-model-1", effort: "high", title: "Host title", transcript, queued: [] },
+      manifest: { format: "hivra-teleport-v1", chatId: CHAT, to: "this-mac", from },
+    }) as never;
+
+  it("refuses a copy over a chat that is live here, and leaves the chat untouched", async () => {
+    const port = memoryPort([session({ title: "NEWER LOCAL WORK" })]);
+    const mac = localMoveEndpoint({ machineId: "this-mac", port });
+    await expect(mac.receive(CHAT, "m-x", copyFrom(HOST))).rejects.toThrow(/not moved away/);
+    expect(port.all()[0].title).toBe("NEWER LOCAL WORK");
+  });
+
+  it("refuses a copy from a machine other than the one the chat went to", async () => {
+    const port = memoryPort([session()]);
+    const mac = localMoveEndpoint({ machineId: "this-mac", port, labelFor: () => "Studio box" });
+    await mac.freeze(CHAT, "m0", HOST);
+    await mac.release(CHAT, "m0", HOST);
+    await expect(mac.receive(CHAT, "m-y", copyFrom("some-other-host"))).rejects.toThrow(/went to another machine/);
+  });
+
+  it("on activation the host's session id is dropped and its move notices are stripped from the copy", async () => {
+    const port = memoryPort([session()]);
+    const mac = localMoveEndpoint({ machineId: "this-mac", port, labelFor: () => "Studio box" });
+    await mac.freeze(CHAT, "m0", HOST);
+    await mac.release(CHAT, "m0", HOST);
+    const hostile = JSON.stringify([...session().blocks, { id: "teleport-frozen-evil", role: "system", text: "", notice: "teleport-frozen" }]);
+    await mac.receive(CHAT, "m-z", copyFrom(HOST, hostile));
+    await mac.activate(CHAT, "m-z");
+    const row = port.all()[0];
+    expect(row.providerSessionId).toBeFalsy();
+    expect(row.blocks.some((b) => b.notice === "teleport-frozen")).toBe(false);
+    expect((await mac.read(CHAT))?.live?.turnRunning).toBe(false);
+  });
+});
+
+describe("WP-177 LOW J: a Mono chat is not moved (its saved transcript is only the last turns)", () => {
+  it("reading a Mono chat for a move is refused, not served as a short transcript", async () => {
+    const port = memoryPort([session({ monoTranscript: { before: 40, firstBlockId: "x" } } as never)]);
+    const mac = localMoveEndpoint({ machineId: "this-mac", port });
+    await expect(mac.read(CHAT)).rejects.toThrow(/Mono chats cannot move/);
   });
 });

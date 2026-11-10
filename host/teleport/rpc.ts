@@ -46,30 +46,32 @@ export async function teleportRpc(
   store: HostTeleportStore,
   method: string,
   params: Record<string, unknown>,
+  device: string,
 ): Promise<ChatRecord | boolean | CanResume | ReceiveReply | Holds | { ok: true } | null> {
   if (!isTeleportMethod(method)) throw new Error("Unsupported teleport operation");
+  if (!device) throw new Error("A teleport call needs the paired device that makes it");
   switch (method) {
     case "teleport.read":
-      return store.read(chatId(params));
+      return store.read(chatId(params), device);
     case "teleport.freeze":
-      return store.freeze(chatId(params), text(params, "moveId", "move id"));
+      return store.freeze(chatId(params), text(params, "moveId", "move id"), device, text(params, "peer", "peer"));
     case "teleport.thaw":
-      await store.thaw(chatId(params), text(params, "moveId", "move id"));
+      await store.thaw(chatId(params), text(params, "moveId", "move id"), device);
       return { ok: true };
     case "teleport.canResume":
       return store.canResume(text(params, "provider", "provider") as Provider, text(params, "model", "model") || "", text(params, "effort", "effort") || "");
     case "teleport.receive":
-      return store.receive(chatId(params), text(params, "moveId", "move id"), payload(params));
+      return store.receive(chatId(params), text(params, "moveId", "move id"), payload(params), device);
     case "teleport.discard":
-      await store.discard(chatId(params), text(params, "moveId", "move id"));
+      await store.discard(chatId(params), text(params, "moveId", "move id"), device);
       return { ok: true };
     case "teleport.activate":
-      await store.activate(chatId(params), text(params, "moveId", "move id"));
+      await store.activate(chatId(params), text(params, "moveId", "move id"), device);
       return { ok: true };
     case "teleport.holds":
-      return store.holds(chatId(params), text(params, "moveId", "move id"));
+      return store.holds(chatId(params), text(params, "moveId", "move id"), device);
     case "teleport.release":
-      await store.release(chatId(params), text(params, "moveId", "move id"), text(params, "to", "destination"));
+      await store.release(chatId(params), text(params, "moveId", "move id"), text(params, "to", "destination"), device);
       return { ok: true };
   }
 }

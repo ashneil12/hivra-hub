@@ -487,6 +487,12 @@ export function canRewindHarnessLastTurn(id: HarnessId): boolean {
 export function rewindHarnessLastTurn(
   input: RewindLastTurnInput & { harness: HarnessId },
 ): Promise<RewindLastTurnResult> {
+  // WP-177: a moved chat's provider thread is not rolled back here; the refusal is the same as for a send.
+  try {
+    assertChatAcceptsTurns(input.sessionId);
+  } catch (error) {
+    return Promise.reject(error);
+  }
   return queueSessionOperation(input.sessionId, async () => {
     requireChatFolder(input.cwd);
     const adapter = requireHarness(input.harness);
@@ -507,6 +513,11 @@ export function rewindHarnessLastTurn(
 export function steerHarnessTurn(
   input: SteerTurnInput & { harness: HarnessId },
 ): Promise<void> {
+  try {
+    assertChatAcceptsTurns(input.sessionId);
+  } catch (error) {
+    return Promise.reject(error);
+  }
   return queueSteerOperation(input.sessionId, async () => {
     const adapter = requireHarness(input.harness);
     if (!adapter.live) {
