@@ -36,9 +36,9 @@ Copied files are not staged. A file git already placed in the new worktree is le
 
 ## Done when
 
-- [ ] `.worktreeinclude` is honoured, with escape-path tests.
-- [ ] Missing file keeps today's behaviour.
-- [ ] File contents are never logged.
+- [x] `.worktreeinclude` is honoured, with escape-path tests.
+- [x] Missing file keeps today's behaviour.
+- [x] File contents are never logged.
 
 ## Licence
 

@@ -14,6 +14,7 @@ import {
   type WorktreeSetup,
 } from "../../projects/model/projectActions";
 import { janitorRemovalHead } from "./worktreeJanitor";
+import { rememberWorktreeInclude } from "./worktreeIncludeNote";
 
 export type Worktree = {
   path: string;
@@ -30,6 +31,10 @@ export type Worktree = {
   setup?: WorktreeSetup;
   /** Said once, when this checkout was a plain git worktree because the pool was off or not installed. */
   poolNotice?: string;
+  /** WP-138: set when files named in .worktreeinclude are in this new worktree. No file contents. */
+  includeNote?: string;
+  /** WP-138: set when a listed file could not be copied. No file contents. */
+  includeWarning?: string;
 };
 export type Worktrees = { worktrees: Worktree[]; defaultRoot: string };
 
@@ -232,11 +237,19 @@ export function detachSessionWorktree<T extends { cwd: string; worktreeCwd?: str
 
 /** Existing working copies stay bound; removed ones can be replaced in place. */
 export function sessionInWorktree(session: Session, tree: Worktree): Session {
+  // WP-138: a create result carries the include note. A later listing does not clear it.
+  const include = rememberWorktreeInclude(session.id, tree);
   if (
     !session.worktreeRemoved &&
     pathKey(sessionWorkCwd(session)) === pathKey(tree.path)
-  )
-    return session;
+  ) {
+    if (!include.note && !include.warning) return session;
+    return {
+      ...session,
+      ...(include.note ? { includeNote: include.note } : {}),
+      ...(include.warning ? { includeWarning: include.warning } : {}),
+    };
+  }
   const target =
     session.worktreeRemoved && !isBlankSession(session)
       ? appendReadyHandoff(
@@ -266,6 +279,8 @@ export function sessionInWorktree(session: Session, tree: Worktree): Session {
     providerSessionId: undefined,
     context: undefined,
     pendingSwitch: undefined,
+    ...(include.note ? { includeNote: include.note } : {}),
+    ...(include.warning ? { includeWarning: include.warning } : {}),
   };
 }
 

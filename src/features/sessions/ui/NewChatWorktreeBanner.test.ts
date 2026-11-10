@@ -74,6 +74,27 @@ it("uses the existing branch label, and a plain line when that label is an app i
   expect(newChatWorktreeHeaderLabel("/work/board", "main")).not.toMatch(/[—–]/);
 });
 
+it("shows the include note and warning under the worktree line", async () => {
+  const secret = "SECRET-VALUE-do-not-leak";
+  await render(
+    chat({
+      cwd: "C:\\work\\repo",
+      worktreeCwd: "C:\\work\\repo\\feature",
+      branch: "main",
+      includeNote:
+        "2 local files named in .worktreeinclude are in this worktree. A CLI that makes its own worktree will not have them.",
+      includeWarning: `Could not copy .env into this worktree.\n${secret}`,
+    }),
+  );
+  expect(host.querySelector("[data-worktree-header]")?.textContent).toBe("feature/main");
+  const note = host.querySelector("[data-worktree-include]");
+  const warning = host.querySelector("[data-worktree-include-warning]");
+  expect(note?.textContent).toContain("A CLI that makes its own worktree will not have them.");
+  expect(warning?.textContent).toBe("Could not copy .env into this worktree.");
+  expect(host.textContent).not.toContain(secret);
+  expect(host.textContent).not.toMatch(/[—–]/);
+});
+
 it("says Worktree when the branch is only an app id", async () => {
   await render(
     chat({

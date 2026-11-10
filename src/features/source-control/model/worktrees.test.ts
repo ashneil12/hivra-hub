@@ -9,6 +9,7 @@ import {
   worktreeSessionIds,
   type Worktree,
 } from "./worktrees";
+import { resetWorktreeIncludeNotes, worktreeIncludeLines } from "./worktreeIncludeNote";
 
 const dirs = vi.hoisted(() => new Set<string>());
 vi.mock("@tauri-apps/api/core", () => ({
@@ -79,6 +80,30 @@ describe("working-copy context", () => {
     expect(main.worktreeCwd).toBeUndefined();
     expect(main.id).toBe(session.id);
     expect(sessionWorkCwd(main)).toBe("/repo");
+  });
+
+  it("keeps the include note on the chat that moved into the new worktree", () => {
+    resetWorktreeIncludeNotes();
+    const session = newSession("codex", "/repo");
+    const secret = "SECRET-VALUE-do-not-leak";
+    const selected = sessionInWorktree(session, {
+      ...tree,
+      includeNote:
+        "1 local file named in .worktreeinclude is in this worktree. A CLI that makes its own worktree will not have it.",
+      includeWarning: `Left hello.txt as it was.\n${secret}`,
+    });
+    expect(selected.includeNote).toContain("will not have it.");
+    expect(selected.includeWarning).toBe("Left hello.txt as it was.");
+    expect(selected.includeWarning).not.toContain(secret);
+    const listed = sessionInWorktree(
+      { ...selected, includeNote: undefined, includeWarning: undefined },
+      tree,
+    );
+    expect(listed.worktreeCwd).toBe(tree.path);
+    expect(
+      worktreeIncludeLines({ id: session.id, worktreeCwd: tree.path }).note,
+    ).toContain("will not have it.");
+    resetWorktreeIncludeNotes();
   });
 
   it("starts a separate session on main without changing the worktree conversation", () => {

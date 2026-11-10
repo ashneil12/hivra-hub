@@ -677,6 +677,12 @@ export type Session = {
   worktreePreparing?: boolean;
   /** Select a working copy before continuing after the previous one was deleted. */
   worktreeRemoved?: boolean;
+  /**
+   * WP-138: one line when files named in .worktreeinclude were copied, and one when
+   * a copy failed. In memory only. Never file contents.
+   */
+  includeNote?: string;
+  includeWarning?: string;
   /** One-shot composer text when opening a session from Inbox. */
   composerSeed?: string;
   /** Inbox issue/PR chip shown above the composer. In-memory, one-shot. */
