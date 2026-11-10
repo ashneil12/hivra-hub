@@ -3,6 +3,9 @@
 // Copyright 2025 Vercel Inc.
 // Translated to Rust for Hivra WP-90, with its tests: the mkdir lock, owner-only removal,
 // stale-owner pruning and the registry file. TLS, tunnel metadata and hosts-file sync are out.
+// WP-139 (portless 0.17.0, packages/portless/src/routes.ts acquireLock): a transient Windows
+// EPERM while creating the lock is retried until the lock timeout. Other errors still fail
+// at once.
 
 //! The name registry: `<data>/proxy/routes.json`, written under a mkdir lock.
 //!
@@ -96,10 +99,32 @@ impl Default for LockPolicy {
     }
 }
 
+#[cfg(test)]
+type LockMkdir = std::sync::Arc<dyn Fn(&Path) -> std::io::Result<()> + Send + Sync>;
+
+/// Test stand-in for `create_dir` on the lock, including a pretend Windows host.
+#[cfg(test)]
+#[derive(Clone)]
+struct LockSim {
+    windows: bool,
+    mkdir: LockMkdir,
+}
+
+#[cfg(test)]
+impl std::fmt::Debug for LockSim {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LockSim")
+            .field("windows", &self.windows)
+            .finish_non_exhaustive()
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct RouteStore {
     dir: PathBuf,
     policy: LockPolicy,
+    #[cfg(test)]
+    lock_sim: Option<LockSim>,
 }
 
 impl RouteStore {
@@ -107,6 +132,8 @@ impl RouteStore {
         Self {
             dir: dir.into(),
             policy: LockPolicy::default(),
+            #[cfg(test)]
+            lock_sim: None,
         }
     }
 
@@ -116,7 +143,22 @@ impl RouteStore {
         Self {
             dir: dir.into(),
             policy,
+            lock_sim: None,
         }
+    }
+
+    /// Tests only: pretend this host is Windows, and replace the lock `create_dir`.
+    #[cfg(test)]
+    fn with_lock_sim(
+        mut self,
+        windows: bool,
+        mkdir: impl Fn(&Path) -> std::io::Result<()> + Send + Sync + 'static,
+    ) -> Self {
+        self.lock_sim = Some(LockSim {
+            windows,
+            mkdir: std::sync::Arc::new(mkdir),
+        });
+        self
     }
 
     pub fn routes_path(&self) -> PathBuf {
@@ -152,7 +194,7 @@ impl RouteStore {
         let started = std::time::Instant::now();
         let mut delay = self.policy.retry_base;
         loop {
-            match std::fs::create_dir(&path) {
+            match self.try_make_lock(&path) {
                 Ok(()) => return Ok(LockGuard { path }),
                 Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
                     if lock_is_stale(&path, self.policy.stale) {
@@ -160,6 +202,9 @@ impl RouteStore {
                         continue;
                     }
                 }
+                // A Windows indexer can return EPERM for a moment. Wait, as for a live lock.
+                // The same error on Unix is a real refusal and fails just below.
+                Err(error) if self.retry_windows_lock_error(&error) => {}
                 Err(error) => {
                     return Err(format!(
                         "The name list is busy, so nothing changed: {error}"
@@ -174,6 +219,28 @@ impl RouteStore {
                 .min(self.policy.retry_cap)
                 .max(self.policy.retry_base);
         }
+    }
+
+    fn try_make_lock(&self, path: &Path) -> std::io::Result<()> {
+        #[cfg(test)]
+        if let Some(sim) = &self.lock_sim {
+            return (sim.mkdir)(path);
+        }
+        std::fs::create_dir(path)
+    }
+
+    fn host_reports_windows(&self) -> bool {
+        #[cfg(test)]
+        if let Some(sim) = &self.lock_sim {
+            return sim.windows;
+        }
+        cfg!(windows)
+    }
+
+    /// Portless retries `EPERM` on Windows only. Rust surfaces that as `PermissionDenied`,
+    /// and sometimes as raw os error 1.
+    fn retry_windows_lock_error(&self, error: &std::io::Error) -> bool {
+        self.host_reports_windows() && is_windows_lock_eperm(error)
     }
 
     fn save(&self, routes: &[Route]) -> Result<(), String> {
@@ -366,6 +433,10 @@ fn route_from_value(value: &serde_json::Value) -> Option<Route> {
     })
 }
 
+fn is_windows_lock_eperm(error: &std::io::Error) -> bool {
+    error.kind() == std::io::ErrorKind::PermissionDenied || error.raw_os_error() == Some(1)
+}
+
 fn lock_is_stale(path: &Path, stale: Duration) -> bool {
     std::fs::metadata(path)
         .and_then(|meta| meta.modified())
@@ -444,6 +515,8 @@ pub fn process_alive(pid: u32) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::AtomicUsize;
+    use std::sync::Arc;
 
     fn temp_dir(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(
@@ -602,6 +675,93 @@ mod tests {
         }
         std::fs::write(store.routes_path(), b"{not json").unwrap();
         assert!(store.load_routes_raw().unwrap().is_empty());
+        assert!(store.route_for_host("shop-a.localhost").is_none());
+    }
+
+    fn short_lock() -> LockPolicy {
+        LockPolicy {
+            stale: Duration::from_secs(10),
+            timeout: Duration::from_secs(2),
+            retry_base: Duration::from_millis(20),
+            retry_cap: Duration::from_millis(40),
+        }
+    }
+
+    #[test]
+    fn a_windows_eperm_on_the_lock_is_retried_and_then_the_name_is_saved() {
+        let sample = std::io::Error::from_raw_os_error(1);
+        assert!(
+            sample.kind() == std::io::ErrorKind::PermissionDenied
+                || sample.raw_os_error() == Some(1),
+            "raw os error 1 is not a Windows EPERM stand-in here: {sample:?}"
+        );
+        let dir = temp_dir("win-eperm");
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let seen = Arc::clone(&attempts);
+        let store = RouteStore::with_policy(&dir, short_lock()).with_lock_sim(true, move |path| {
+            let n = seen.fetch_add(1, Ordering::SeqCst);
+            if n == 0 {
+                Err(std::io::Error::from_raw_os_error(1))
+            } else {
+                std::fs::create_dir(path)
+            }
+        });
+        let started = std::time::Instant::now();
+        store
+            .add_route("shop-a.localhost", 4001, std::process::id(), false)
+            .unwrap();
+        assert!(
+            started.elapsed() >= Duration::from_millis(15),
+            "EPERM did not wait out the lock backoff"
+        );
+        assert_eq!(
+            attempts.load(Ordering::SeqCst),
+            2,
+            "EPERM was not retried once"
+        );
+        assert_eq!(store.route_for_host("shop-a.localhost").unwrap().port, 4001);
+        assert!(!store.lock_path().exists());
+    }
+
+    #[test]
+    fn a_unix_eperm_on_the_lock_fails_without_a_retry() {
+        let dir = temp_dir("unix-eperm");
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let seen = Arc::clone(&attempts);
+        let store =
+            RouteStore::with_policy(&dir, short_lock()).with_lock_sim(false, move |_path| {
+                seen.fetch_add(1, Ordering::SeqCst);
+                Err(std::io::Error::from_raw_os_error(1))
+            });
+        let error = store
+            .add_route("shop-a.localhost", 4001, std::process::id(), false)
+            .unwrap_err();
+        assert_eq!(attempts.load(Ordering::SeqCst), 1, "unix EPERM was retried");
+        assert!(error.to_string().contains("nothing changed"), "{error}");
+        assert!(store.route_for_host("shop-a.localhost").is_none());
+    }
+
+    #[test]
+    fn a_windows_lock_error_that_is_not_eperm_fails_at_once() {
+        let dir = temp_dir("win-other");
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let seen = Arc::clone(&attempts);
+        let store = RouteStore::with_policy(&dir, short_lock()).with_lock_sim(true, move |_path| {
+            seen.fetch_add(1, Ordering::SeqCst);
+            Err(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "missing parent",
+            ))
+        });
+        let error = store
+            .add_route("shop-a.localhost", 4001, std::process::id(), false)
+            .unwrap_err();
+        assert_eq!(
+            attempts.load(Ordering::SeqCst),
+            1,
+            "a non-EPERM error was retried"
+        );
+        assert!(error.to_string().contains("nothing changed"), "{error}");
         assert!(store.route_for_host("shop-a.localhost").is_none());
     }
 }
