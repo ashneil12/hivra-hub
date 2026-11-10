@@ -361,7 +361,9 @@ mod tests {
             SEQ.fetch_add(1, Ordering::Relaxed)
         ));
         std::fs::create_dir_all(&dir).unwrap();
-        Tmp(std::fs::canonicalize(dir).unwrap())
+        // The folder as the app's records name one: `C:\...` on Windows, not the `\\?\C:\...` form that
+        // `std::fs::canonicalize` gives there, which `local_path_text` refuses as text from a chat.
+        Tmp(dunce::canonicalize(dir).unwrap())
     }
 
     fn text(path: &Path) -> String {

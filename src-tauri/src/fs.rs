@@ -8331,15 +8331,41 @@ mod tests {
 
     #[test]
     fn local_path_text_takes_only_absolute_paths_on_this_computer() {
-        assert_eq!(
-            local_path_text("/work/repo/./a/../shot.png"),
-            Some(PathBuf::from("/work/repo/shot.png"))
-        );
-        // There is nothing above the root to climb to.
-        assert_eq!(
-            local_path_text("/../../etc/x.png"),
-            Some(PathBuf::from("/etc/x.png"))
-        );
+        // An absolute path is `/...` on a Mac or Linux and `C:\...` on Windows, where `/work` is not one (it is
+        // relative to whichever drive is current) and is refused below like any other relative path.
+        #[cfg(unix)]
+        {
+            assert_eq!(
+                local_path_text("/work/repo/./a/../shot.png"),
+                Some(PathBuf::from("/work/repo/shot.png"))
+            );
+            // There is nothing above the root to climb to.
+            assert_eq!(
+                local_path_text("/../../etc/x.png"),
+                Some(PathBuf::from("/etc/x.png"))
+            );
+            // Only the folder at the top is the automounter's.
+            assert!(local_path_text("/work/net/x.png").is_some());
+            assert!(local_path_text("/network-notes/x.png").is_some());
+        }
+        #[cfg(windows)]
+        {
+            assert_eq!(
+                local_path_text(r"C:\work\repo\.\a\..\shot.png"),
+                Some(PathBuf::from(r"C:\work\repo\shot.png"))
+            );
+            assert_eq!(
+                local_path_text("C:/work/repo/shot.png"),
+                Some(PathBuf::from(r"C:\work\repo\shot.png"))
+            );
+            assert_eq!(
+                local_path_text(r"C:\..\..\x.png"),
+                Some(PathBuf::from(r"C:\x.png"))
+            );
+            for refused in ["/work/repo/shot.png", r"\work\x.png", "C:x.png"] {
+                assert_eq!(local_path_text(refused), None, "{refused:?}");
+            }
+        }
         for refused in [
             "",
             "x.png",
@@ -8361,9 +8387,6 @@ mod tests {
         ] {
             assert_eq!(local_path_text(refused), None, "{refused:?}");
         }
-        // Only the folder at the top is the automounter's.
-        assert!(local_path_text("/work/net/x.png").is_some());
-        assert!(local_path_text("/network-notes/x.png").is_some());
     }
 
     #[test]
