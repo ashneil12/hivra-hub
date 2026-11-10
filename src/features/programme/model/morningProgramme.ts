@@ -18,8 +18,7 @@ const ORDER = ["parked", "failed", "flight", "queued"] as const;
 function label(row: ProgrammePackage): string {
   if (row.status === "parked" || row.securityPark) return "Parked";
   if (row.status === "failed") return "Failed";
-  if (row.status === "building") return "Building";
-  if (row.status === "pr_open") return "In review";
+  if (row.status === "building" || row.status === "pr_open") return "In flight";
   return "Queued";
 }
 
@@ -90,7 +89,8 @@ export async function morningProgrammeNote(options: MorningProgrammeOptions): Pr
       if (!Array.isArray(list)) throw new Error("The programme did not answer with a list.");
       return list;
     });
-    if ("unavailable" in loaded) throw new Error("The programme could not be read.");
+    // A board that did not answer is not an empty board: say nothing rather than a list with a gap in it.
+    if ("unavailable" in loaded || loaded.failed.length > 0) throw new Error("The programme could not be read.");
     return programmeNote(loaded.rows);
   } catch (error) {
     warn("The programme could not be read for the morning run, so it says nothing about it.", error);

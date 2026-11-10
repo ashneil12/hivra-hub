@@ -3,7 +3,10 @@
 use rusqlite::{params, Connection, ErrorCode, OptionalExtension, Row, TransactionBehavior};
 use serde::Serialize;
 
+/// Open rows (queued, building, in review, parked) a programme may hold. Merged and failed rows do not count.
 pub(crate) const ROW_MAX: usize = 400;
+/// Rows one list call returns at most.
+pub(crate) const LIST_MAX: usize = 400;
 pub(crate) const NOTE_MAX: usize = 2_000;
 const PATH_MAX: usize = 500;
 const TITLE_MAX: usize = 300;
@@ -92,15 +95,32 @@ pub struct Package {
     pub finished_at: Option<i64>,
 }
 
+/// The board without merged rows, at most `LIST_MAX`.
 pub fn list(conn: &Connection, actor: &Actor) -> Result<Vec<Package>, String> {
+    list_with(conn, actor, false, LIST_MAX)
+}
+
+/// The board, in priority order. Merged rows come back only when asked; at most `limit` rows.
+pub(crate) fn list_with(
+    conn: &Connection,
+    actor: &Actor,
+    include_merged: bool,
+    limit: usize,
+) -> Result<Vec<Package>, String> {
     allow(actor)?;
+    let merged = if include_merged {
+        ""
+    } else {
+        " AND status != 'merged'"
+    };
     let mut stmt = conn
         .prepare(&format!(
-            "SELECT {COLUMNS} FROM programme_packages WHERE project_id = ?1 ORDER BY priority DESC, created_at ASC, id ASC"
+            "SELECT {COLUMNS} FROM programme_packages WHERE project_id = ?1{merged}
+             ORDER BY priority DESC, created_at ASC, id ASC LIMIT ?2"
         ))
         .map_err(db_err)?;
     let rows = stmt
-        .query_map(params![actor.project.as_str()], from_row)
+        .query_map(params![actor.project.as_str(), limit as i64], from_row)
         .map_err(db_err)?;
     rows.collect::<Result<Vec<_>, _>>().map_err(db_err)
 }
@@ -141,9 +161,12 @@ pub(crate) fn enqueue_limited(
         drop(tx);
         return Ok(existing);
     }
+    if open_same_work(&tx, &actor.project, &branch, &brief_path)? {
+        return Err("That branch or brief is already on the programme.".into());
+    }
     let count: i64 = tx
         .query_row(
-            "SELECT COUNT(*) FROM programme_packages WHERE project_id = ?1",
+            &format!("SELECT COUNT(*) FROM programme_packages WHERE project_id = ?1 AND {OPEN}"),
             params![actor.project.as_str()],
             |row| row.get(0),
         )
@@ -195,9 +218,7 @@ pub fn finish(
     now: i64,
 ) -> Result<Package, String> {
     if !matches!(status, "pr_open" | "merged" | "failed") {
-        return Err(
-            "Finish moves a building package to pull request open, merged or failed.".into(),
-        );
+        return Err("Finish moves a building package to pr_open, merged or failed.".into());
     }
     set_status(conn, actor, id, version, status, now)
 }
@@ -218,7 +239,7 @@ pub fn set_status(
         status,
         "queued" | "building" | "pr_open" | "merged" | "failed"
     ) {
-        return Err("Status must be queued, building, pull request open, merged or failed.".into());
+        return Err("Status must be queued, building, pr_open, merged or failed.".into());
     }
     let tx = write_tx(conn)?;
     let row = locked(&tx, &actor.project, id, version)?;
@@ -381,11 +402,12 @@ fn check_transition(row: &Package, to: &str) -> Result<(), String> {
     ))
 }
 
+/// The status names an agent sends (`pr_open`, not a phrase), so an error says the same word the tool takes.
 fn word(status: &str) -> &str {
     match status {
         "queued" => "queued",
         "building" => "building",
-        "pr_open" => "pull request open",
+        "pr_open" => "pr_open",
         "merged" => "merged",
         "parked" => "parked",
         "failed" => "failed",
@@ -434,17 +456,40 @@ fn load(conn: &Connection, project: &str, id: &str) -> Result<Option<Package>, S
     .map_err(db_err)
 }
 
+/// The statuses that still need the programme. Merged rows are done; failed rows can be queued again.
+const OPEN: &str = "status IN ('queued', 'building', 'pr_open', 'parked')";
+
+/// The open row for this package. The id is compared without case, so `wp-9` cannot sidestep a parked `WP-9`.
 fn open_wp(conn: &Connection, project: &str, wp: &str) -> Result<Option<Package>, String> {
     conn.query_row(
         &format!(
             "SELECT {COLUMNS} FROM programme_packages
-             WHERE project_id = ?1 AND wp = ?2 AND status IN ('queued', 'building', 'pr_open', 'parked')
+             WHERE project_id = ?1 AND wp = ?2 COLLATE NOCASE AND {OPEN}
              ORDER BY created_at ASC, id ASC LIMIT 1"
         ),
         params![project, wp],
         from_row,
     )
     .optional()
+    .map_err(db_err)
+}
+
+/// An open or parked row already has this branch or this brief.
+fn open_same_work(
+    conn: &Connection,
+    project: &str,
+    branch: &str,
+    brief_path: &str,
+) -> Result<bool, String> {
+    conn.query_row(
+        &format!(
+            "SELECT EXISTS(SELECT 1 FROM programme_packages
+             WHERE project_id = ?1 AND (branch = ?2 COLLATE NOCASE OR brief_path = ?3 COLLATE NOCASE) AND {OPEN})"
+        ),
+        params![project, branch, brief_path],
+        |row| row.get::<_, i64>(0),
+    )
+    .map(|found| found != 0)
     .map_err(db_err)
 }
 

@@ -416,3 +416,104 @@ fn an_unknown_caller_is_not_the_first_mate() {
     assert!(err.contains("Only the first mate"));
     assert!(!err.contains("worker"));
 }
+
+fn merge(conn: &mut Connection, who: &Actor, id: &str, now: i64) {
+    let row = get(conn, who, id).unwrap();
+    let claimed = claim(conn, who, id, row.version, now).unwrap();
+    finish(conn, who, id, claimed.version, "merged", now + 1).unwrap();
+}
+
+#[test]
+fn a_merged_row_does_not_use_up_the_cap() {
+    let mut conn = memory();
+    let who = mate();
+    let done = enqueue_limited(&mut conn, &who, &input("WP-M1", "Done"), 1, 2).unwrap();
+    merge(&mut conn, &who, &done.id, 2);
+    enqueue_limited(&mut conn, &who, &input("WP-M2", "Open one"), 5, 2).unwrap();
+    enqueue_limited(&mut conn, &who, &input("WP-M3", "Open two"), 6, 2).unwrap();
+    let full = enqueue_limited(&mut conn, &who, &input("WP-M4", "Open three"), 7, 2).unwrap_err();
+    assert!(full.contains("full"));
+    assert_eq!(list_with(&conn, &who, true, LIST_MAX).unwrap().len(), 3);
+}
+
+#[test]
+fn the_list_leaves_merged_rows_out_unless_asked_and_is_capped() {
+    let mut conn = memory();
+    let who = mate();
+    let done = enqueue(&mut conn, &who, &input("WP-L1", "Done"), 1).unwrap();
+    merge(&mut conn, &who, &done.id, 2);
+    enqueue(&mut conn, &who, &input("WP-L2", "Open"), 5).unwrap();
+    enqueue(&mut conn, &who, &input("WP-L3", "Open too"), 6).unwrap();
+    let open = list(&conn, &who).unwrap();
+    assert_eq!(open.len(), 2);
+    assert!(open.iter().all(|row| row.status != "merged"));
+    assert_eq!(list_with(&conn, &who, true, LIST_MAX).unwrap().len(), 3);
+    assert_eq!(list_with(&conn, &who, false, 1).unwrap().len(), 1);
+    assert_eq!(list_with(&conn, &who, true, 2).unwrap().len(), 2);
+}
+
+#[test]
+fn a_parked_row_cannot_be_sidestepped_by_case() {
+    let mut conn = memory();
+    let who = mate();
+    let row = enqueue(&mut conn, &who, &input("WP-9", "Parked one"), 1).unwrap();
+    park(
+        &mut conn,
+        &who,
+        &row.id,
+        row.version,
+        "Needs a look",
+        false,
+        2,
+    )
+    .unwrap();
+    let again = enqueue(&mut conn, &who, &input("wp-9", "Same work"), 3).unwrap();
+    assert_eq!(again.id, row.id);
+    assert_eq!(again.status, "parked");
+    assert_eq!(list(&conn, &who).unwrap().len(), 1);
+}
+
+#[test]
+fn an_open_branch_or_brief_cannot_be_queued_twice() {
+    let mut conn = memory();
+    let who = mate();
+    enqueue(&mut conn, &who, &input("WP-20", "First"), 1).unwrap();
+
+    let mut same_branch = input("WP-21", "Second");
+    same_branch.branch = "wp/WP-20".into();
+    assert!(enqueue(&mut conn, &who, &same_branch, 2).is_err());
+
+    let mut same_brief = input("WP-22", "Third");
+    same_brief.brief_path = "docs/briefs/WP-20.md".into();
+    assert!(enqueue(&mut conn, &who, &same_brief, 3).is_err());
+
+    let mut same_brief_case = input("WP-23", "Fourth");
+    same_brief_case.brief_path = "Docs/Briefs/wp-20.md".into();
+    assert!(enqueue(&mut conn, &who, &same_brief_case, 4).is_err());
+
+    let done = list(&conn, &who).unwrap()[0].clone();
+    merge(&mut conn, &who, &done.id, 5);
+    let after_merge = enqueue(&mut conn, &who, &same_branch, 8).unwrap();
+    assert_eq!(after_merge.wp, "WP-21");
+}
+
+#[test]
+fn errors_name_pr_open_as_the_status_an_agent_sends() {
+    let mut conn = memory();
+    let who = mate();
+    let row = enqueue(&mut conn, &who, &input("WP-30", "Early"), 1).unwrap();
+    let early = finish(&mut conn, &who, &row.id, row.version, "pr_open", 2).unwrap_err();
+    assert!(early.contains("pr_open"), "{early}");
+    assert!(!early.contains("pull request"), "{early}");
+    let bad = set_status(
+        &mut conn,
+        &who,
+        &row.id,
+        row.version,
+        "pull request open",
+        3,
+    )
+    .unwrap_err();
+    assert!(bad.contains("pr_open"), "{bad}");
+    assert!(!bad.contains("pull request"), "{bad}");
+}

@@ -67,8 +67,8 @@ describe("the programme section of the morning run", () => {
       "- Parked: Wait for a look (WP-4). Needs Ash's word",
       "- Parked: Check the diff (WP-5). Security check.",
       "- Failed: Fix the build (WP-6).",
-      "- Building: Build the panel (WP-2).",
-      "- In review: Open the review (WP-3).",
+      "- In flight: Build the panel (WP-2).",
+      "- In flight: Open the review (WP-3).",
       "- Queued: Write the notes (WP-1).",
     ]);
     expect(text).not.toContain("Already merged");

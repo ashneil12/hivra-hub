@@ -165,6 +165,7 @@ import type {
 } from "../../features/sessions/model/session";
 import type { LiveAgent } from "../../features/sessions/model/liveAgents";
 import type { SessionSummary } from "../../features/sessions/data/sessionStore";
+import { NeedsFolderSection } from "./NeedsFolderSection";
 import {
   keybindingShortcutLabel,
   subscribeKeybindings,
@@ -364,6 +365,8 @@ type Props = {
   /** First listing for this project has not arrived yet. */
   pending: boolean;
   onSelectSession: (sessionId: string) => void;
+  /** A chat that had no folder was given one outside the window's own picker (Relink all): the open copy takes it too. */
+  onSetSessionFolder?: (sessionId: string, cwd: string) => void;
   onSelectRemoteSession?: (project: string, sessionId: string) => void;
   onRemoteSessionDeleted?: (sessionId: string) => void;
   onSessionNavigationOrder?: (ids: readonly string[]) => void;
@@ -543,6 +546,7 @@ function SidebarComponent({
   status,
   pending,
   onSelectSession: onSelectLocalSession,
+  onSetSessionFolder,
   onSelectRemoteSession,
   onRemoteSessionDeleted,
   onSessionNavigationOrder,
@@ -3011,6 +3015,15 @@ function SidebarComponent({
           {/* Hub mode: the project's items, which the classic rail lists in
               place of Projects. */}
           {inset ? hubItems : null}
+          {/* Chats that came in from an export with no folder here: listed together until each gets one. */}
+          {!remoteProject ? (
+            <NeedsFolderSection
+              onSelect={onSelectSession}
+              activeSessionId={activeSessionId}
+              openSessions={openSessions}
+              onRelinked={onSetSessionFolder}
+            />
+          ) : null}
           {!cwd || cwd === "~" ? (
             <div className="px-3 py-2 text-[12px] text-content/50">
               <p>No project folder</p>

@@ -235,7 +235,8 @@ fn seed(env: &Env) {
         fs::write(dir.join("MEMORY.md"), format!("# {name}\n- {extra}\n")).unwrap();
         fs::write(dir.join("decisions.md"), "- Keep it simple\n").unwrap();
         fs::write(dir.join("topics/deploy.md"), "Deploy notes\n").unwrap();
-        // A hidden file in the history is an ordinary file: it comes back with it.
+        // A hidden file in the history doesn't come back with it: an import restores notes, never anything a CLI reads
+        // from a hidden file.
         fs::write(dir.join(".gitignore"), ".DS_Store\n").unwrap();
         git(&dir, &["init", "-q", "-b", "main"]);
         git(&dir, &["add", "-A"]);
@@ -439,6 +440,9 @@ fn a_round_trip_into_an_empty_data_folder_brings_everything_back_minus_secrets()
                     automations: vec!["auto-1".into()],
                     reminders: true,
                     delegations: true,
+                    known_folders: Vec::new(),
+                    known_monos: Vec::new(),
+                    folder_map: Vec::new(),
                 }),
             },
         )
@@ -477,7 +481,12 @@ fn a_round_trip_into_an_empty_data_folder_brings_everything_back_minus_secrets()
                 )
                 .unwrap()
             };
-            assert_eq!(row(&conn), scrubbed(&row(&source_conn)), "{id}");
+            // The source's folder isn't a project in this empty copy, so the chat comes in with none (folders.rs).
+            let mut expected = scrubbed(&row(&source_conn));
+            expected[1] = json!("");
+            // A file never chooses how freely a chat runs.
+            expected[5] = json!("supervised");
+            assert_eq!(row(&conn), expected, "{id}");
         }
         // Provider transcripts aren't on this Mac, so the ids that would resume them are not kept.
         let kept: Option<String> = conn
@@ -516,7 +525,8 @@ fn a_round_trip_into_an_empty_data_folder_brings_everything_back_minus_secrets()
         assert_eq!(
             without_enabled(&definition),
             without_enabled(
-                &json!({"id": "auto-1", "name": "Morning digest", "prompt": "Summarise", "harness": "claude", "model": "m", "cwd": "/x"})
+                // Its folder isn't a project in this empty copy, so it comes back with none (folders.rs).
+                &json!({"id": "auto-1", "name": "Morning digest", "prompt": "Summarise", "harness": "claude", "model": "m", "cwd": "", "runtimeMode": "supervised"})
             )
         );
 
@@ -582,7 +592,21 @@ fn a_round_trip_into_an_empty_data_folder_brings_everything_back_minus_secrets()
                 1,
                 "{name}'s history came back"
             );
-            assert!(target.memory_root.join(name).join(".gitignore").is_file());
+            assert!(!target.memory_root.join(name).join(".gitignore").exists());
+            let status = Command::new("git")
+                .arg("-C")
+                .arg(target.memory_root.join(name))
+                .args(["status", "--porcelain"])
+                .output()
+                .unwrap();
+            // Nothing tracked is deleted or changed (files the import wrote itself are only untracked).
+            assert!(
+                String::from_utf8_lossy(&status.stdout)
+                    .lines()
+                    .all(|line| line.starts_with("??")),
+                "{name}: the restored history is intact: {}",
+                String::from_utf8_lossy(&status.stdout)
+            );
             let remotes = Command::new("git")
                 .arg("-C")
                 .arg(target.memory_root.join(name))
@@ -862,8 +886,16 @@ fn a_dev_copy_never_writes_the_real_memory_or_keeps_provider_ids() {
     let out = TestDir::new("out");
     let source = env_for(&source_dir.0);
     seed(&source);
-    // The provider transcript exists here, so the daily app would keep the id.
-    let projects = source.claude_home.clone().unwrap().join("projects/-x");
+    // The provider transcript exists here, in the Claude project folder of this Mac's own project for the chat, so
+    // the daily app would keep the id.
+    let here_project = env_for(&target_dir.0).home.unwrap().join("Projects/hivra");
+    fs::create_dir_all(&here_project).unwrap();
+    let projects = source
+        .claude_home
+        .clone()
+        .unwrap()
+        .join("projects")
+        .join(claude_project_dir_name(&here_project.to_string_lossy()));
     fs::create_dir_all(&projects).unwrap();
     fs::write(projects.join("provider-chat-1.jsonl"), "{}\n").unwrap();
     let dest = out.0.join("export");
@@ -887,6 +919,12 @@ fn a_dev_copy_never_writes_the_real_memory_or_keeps_provider_ids() {
 
     let workspace = WorkspaceImport {
         sessions: vec!["chat-1".into()],
+        known_folders: vec![here_project.to_string_lossy().into_owned()],
+        folder_map: vec![FolderMapping {
+            project_id: "hivra".into(),
+            from: "/Users/someone/Projects/hivra".into(),
+            to: here_project.to_string_lossy().into_owned(),
+        }],
         ..Default::default()
     };
     // The daily app, with the transcript on this Mac, keeps the id so the chat resumes.
@@ -1923,7 +1961,15 @@ fn a_private_chat_stays_private_across_export_and_an_old_file_stays_readable() {
         "blocks": [block("u", "user", "hi")],
         "engine": {"harness": "claude", "model": "m", "runtimeMode": "auto"}
     });
-    insert_session(&target, &conn, "old", "Old", &old).unwrap();
+    insert_session(
+        &target,
+        &conn,
+        "old",
+        "Old",
+        &old,
+        &FolderRules::load(&target, &[], &[], &[], &[]),
+    )
+    .unwrap();
     let old_row = session_store::get_session(&conn, "old").unwrap().unwrap();
     assert!(!old_row.private_chat);
     assert_eq!(old_row.private_boundary_id, None);
@@ -1937,12 +1983,642 @@ fn a_private_chat_stays_private_across_export_and_an_old_file_stays_readable() {
         "blocks": [block("u", "user", "hi")],
         "engine": {"harness": "claude", "model": "m", "runtimeMode": "auto"}
     });
-    insert_session(&target, &conn, "bad", "Bad", &bad).unwrap();
+    insert_session(
+        &target,
+        &conn,
+        "bad",
+        "Bad",
+        &bad,
+        &FolderRules::load(&target, &[], &[], &[], &[]),
+    )
+    .unwrap();
     let bad_row = session_store::get_session(&conn, "bad").unwrap().unwrap();
     assert_eq!(
         bad_row.private_boundary_id.as_deref(),
         Some("private-boundary-unreadable")
     );
+}
+
+// ---- the folder an imported chat may keep ---------------------------------------------------------------------------
+// A crafted or foreign export names any folder it likes. The agent, git, checkpoints and terminals then run there, so a
+// chat keeps a folder only when it is a real folder here inside a project this copy already has.
+
+/// A target copy with one project (`root/projects/app`, in the app's own project record) and the places a crafted
+/// export would aim at: a folder beside the project that shares its prefix, one far outside, a link in the project that
+/// points out.
+struct Layout {
+    root: TestDir,
+    target: Env,
+    project: PathBuf,
+    outside: PathBuf,
+}
+
+fn layout() -> Layout {
+    let root = TestDir::new("folders");
+    let mut target = env_for(&root.0.join("target"));
+    // As on the daily app: the memory root, with the Monos home in it, is inside the home folder.
+    let home = target.home.clone().unwrap();
+    target.memory_root = home.join("agent-memory");
+    target.monos_root = target.memory_root.join("monos");
+    // Built part by part so its text uses this platform's separator, as the app's own (checked) folders do.
+    let project = home.join("Projects").join("app");
+    fs::create_dir_all(project.join("src/deep")).unwrap();
+    // A repository's own marker: only a repository can be adopted as a project's folder.
+    fs::create_dir_all(project.join(".git")).unwrap();
+    fs::create_dir_all(home.join("Projects/app-evil")).unwrap();
+    let outside = root.0.join("outside");
+    fs::create_dir_all(&outside).unwrap();
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(&outside, project.join("escape")).unwrap();
+    let store = open_store(&target);
+    let conn = store.lock_conn().unwrap();
+    crate::local_hub::write(
+        &conn,
+        "projects",
+        &json!({"projects": [{"id": "app", "name": "App", "folder": project.to_string_lossy()}]}),
+    )
+    .unwrap();
+    drop(conn);
+    drop(store);
+    Layout {
+        root,
+        target,
+        project,
+        outside,
+    }
+}
+
+/// Chats `(id, cwd, worktreeCwd)` as another copy exported them, imported into the layout's copy. The stored folders
+/// come back by id, with the report.
+fn import_folders(
+    layout: &Layout,
+    chats: &[(&str, String, Option<String>)],
+    known: &[String],
+) -> (BTreeMap<String, (String, Option<String>)>, Value) {
+    import_folders_with(layout, chats, known, &[], &[])
+}
+
+/// As `import_folders`, with the Monos seated here and the file-folder to this-Mac-folder pairs the window passes.
+fn import_folders_with(
+    layout: &Layout,
+    chats: &[(&str, String, Option<String>)],
+    known: &[String],
+    monos: &[&str],
+    map: &[(&str, &str, String)],
+) -> (BTreeMap<String, (String, Option<String>)>, Value) {
+    let source = env_for(&layout.root.0.join("source"));
+    let store = open_store(&source);
+    let conn = store.lock_conn().unwrap();
+    for (n, (id, cwd, worktree)) in chats.iter().enumerate() {
+        add_session(
+            &conn,
+            id,
+            id,
+            "claude",
+            json!([block("u", "user", "hi")]),
+            1_000 + n as i64,
+        );
+        conn.execute(
+            "UPDATE sessions SET cwd = ?2, worktree_cwd = ?3 WHERE id = ?1",
+            params![id, cwd, worktree],
+        )
+        .unwrap();
+    }
+    drop(conn);
+    drop(store);
+    let dest = layout.root.0.join("export");
+    let mut request = export_request(&dest, Form::Folder);
+    request.memory = None;
+    request.files.clear();
+    export(&source, &request).unwrap();
+
+    let store = open_store(&layout.target);
+    let conn = store.lock_conn().unwrap();
+    let workspace: WorkspaceImport = serde_json::from_value(json!({
+        "sessions": chats.iter().map(|(id, _, _)| *id).collect::<Vec<_>>(),
+        "knownFolders": known,
+        "knownMonos": monos,
+        "folderMap": map.iter().map(|(id, from, to)| json!({"projectId": id, "from": from, "to": to})).collect::<Vec<_>>(),
+    }))
+    .unwrap();
+    let report = import_held(
+        &layout.target,
+        &conn,
+        &ImportRequest {
+            path: dest.to_string_lossy().into_owned(),
+            memory: None,
+            workspace: Some(workspace),
+        },
+    )
+    .unwrap();
+    assert_eq!(report.sessions_added, chats.len(), "{report:?}");
+    let stored = chats
+        .iter()
+        .map(|(id, _, _)| {
+            let row = session_store::get_session(&conn, id).unwrap().unwrap();
+            (id.to_string(), (row.cwd, row.worktree_cwd))
+        })
+        .collect();
+    (stored, serde_json::to_value(&report).unwrap())
+}
+
+/// `base` and a `/`-separated tail, written with this platform's separator (`..` is kept as written).
+fn path(base: &Path, tail: &str) -> String {
+    tail.split('/')
+        .fold(base.to_path_buf(), |dir, part| dir.join(part))
+        .to_string_lossy()
+        .into_owned()
+}
+
+#[test]
+fn an_imported_chat_keeps_its_folder_only_inside_a_project_this_copy_has() {
+    let layout = layout();
+    let p = &layout.project;
+    let keep = [
+        ("fine", path(p, "src/deep")),
+        ("root", p.to_string_lossy().into_owned()),
+    ];
+    let clear = [
+        // The crafted file's own folder, wherever it lives on this Mac.
+        ("elsewhere", "/tmp/elsewhere".to_string()),
+        ("outside", layout.outside.to_string_lossy().into_owned()),
+        // Shares the project's prefix; is not inside it.
+        (
+            "sibling",
+            path(layout.project.parent().unwrap(), "app-evil"),
+        ),
+        // Climbs out of the project.
+        ("dotdot", path(p, "src/../../app-evil")),
+        ("missing", path(p, "nope")),
+        // Resolved against whatever folder the app happens to run in.
+        ("relative", "src".to_string()),
+        ("home", "~".to_string()),
+        ("empty", String::new()),
+    ];
+    #[cfg(unix)]
+    let clear = [clear.to_vec(), vec![("link", path(p, "escape"))]].concat();
+    #[cfg(not(unix))]
+    let clear = clear.to_vec();
+    let chats: Vec<(&str, String, Option<String>)> = keep
+        .iter()
+        .chain(clear.iter())
+        .map(|(id, cwd)| (*id, cwd.clone(), None))
+        .collect();
+    let (stored, report) = import_folders(&layout, &chats, &[]);
+    for (id, cwd) in &keep {
+        assert_eq!(&stored[*id].0, cwd, "{id} stays");
+    }
+    for (id, _) in &clear {
+        assert_eq!(stored[*id].0, "", "{id} is cleared, not sent anywhere");
+    }
+    // "empty" named no folder, so it isn't one this import cleared.
+    assert_eq!(report["foldersCleared"], clear.len() - 1, "{report}");
+}
+
+#[test]
+fn a_chat_with_no_folder_in_the_file_has_none_here_not_the_home_folder() {
+    let layout = layout();
+    let source = env_for(&layout.root.0.join("source"));
+    let store = open_store(&source);
+    let conn = store.lock_conn().unwrap();
+    add_session(
+        &conn,
+        "bare",
+        "Bare",
+        "claude",
+        json!([block("u", "user", "hi")]),
+        1_000,
+    );
+    drop(conn);
+    drop(store);
+    let dest = layout.root.0.join("export");
+    let mut request = export_request(&dest, Form::Folder);
+    request.memory = None;
+    request.files.clear();
+    export(&source, &request).unwrap();
+    // A file from a build that never wrote the folder keys.
+    let mut file: Value = serde_json::from_str(
+        &fs::read_to_string(dest.join("workspace/sessions/bare.json")).unwrap(),
+    )
+    .unwrap();
+    file.as_object_mut().unwrap().remove("cwd");
+    file.as_object_mut().unwrap().remove("worktreeCwd");
+    put_in_export(
+        &dest,
+        "workspace/sessions/bare.json",
+        file.to_string().as_bytes(),
+    );
+
+    let store = open_store(&layout.target);
+    let conn = store.lock_conn().unwrap();
+    let report = import_held(
+        &layout.target,
+        &conn,
+        &ImportRequest {
+            path: dest.to_string_lossy().into_owned(),
+            memory: None,
+            workspace: Some(WorkspaceImport {
+                sessions: vec!["bare".into()],
+                ..Default::default()
+            }),
+        },
+    )
+    .unwrap();
+    assert_eq!(report.sessions_added, 1, "{report:?}");
+    let row = session_store::get_session(&conn, "bare").unwrap().unwrap();
+    assert_eq!((row.cwd.as_str(), row.worktree_cwd), ("", None));
+    // It named no folder, so there was nothing for this import to clear.
+    assert_eq!(serde_json::to_value(&report).unwrap()["foldersCleared"], 0);
+}
+
+#[test]
+fn a_worktree_stays_only_when_git_lists_it_for_a_known_project() {
+    let layout = layout();
+    let p = &layout.project;
+    git(p, &["init", "-q"]);
+    fs::write(p.join("a.txt"), "a").unwrap();
+    git(p, &["add", "."]);
+    git(p, &["commit", "-q", "-m", "first"]);
+    let tree = layout
+        .target
+        .home
+        .clone()
+        .unwrap()
+        .join("Worktrees")
+        .join("feature");
+    git(
+        p,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "feature",
+            &tree.to_string_lossy(),
+        ],
+    );
+    let chats = [
+        // A real worktree of the project, beside it rather than inside it.
+        (
+            "listed",
+            p.to_string_lossy().into_owned(),
+            Some(tree.to_string_lossy().into_owned()),
+        ),
+        // A folder git never listed.
+        (
+            "unlisted",
+            p.to_string_lossy().into_owned(),
+            Some(layout.outside.to_string_lossy().into_owned()),
+        ),
+        // The project's folder is gone, so the working copy it names isn't vouched for either.
+        (
+            "orphan",
+            "/tmp/elsewhere".to_string(),
+            Some(tree.to_string_lossy().into_owned()),
+        ),
+    ];
+    let (stored, report) = import_folders(&layout, &chats, &[]);
+    assert_eq!(
+        stored["listed"],
+        (
+            p.to_string_lossy().into_owned(),
+            Some(tree.to_string_lossy().into_owned())
+        )
+    );
+    assert_eq!(stored["unlisted"], (p.to_string_lossy().into_owned(), None));
+    assert_eq!(stored["orphan"], (String::new(), None));
+    assert_eq!(report["foldersCleared"], 2, "{report}");
+}
+
+#[test]
+fn folders_the_window_lists_count_but_the_home_folder_and_the_root_never_vouch_for_what_is_in_them()
+{
+    let layout = layout();
+    let rail = layout.target.home.clone().unwrap().join("rail");
+    fs::create_dir_all(rail.join("site")).unwrap();
+    let home = layout.target.home.clone().unwrap();
+    fs::create_dir_all(home.join("Documents")).unwrap();
+    let known = vec![
+        rail.to_string_lossy().into_owned(),
+        home.to_string_lossy().into_owned(),
+        "/".to_string(),
+    ];
+    let chats = [
+        ("rail", path(&rail, "site"), None),
+        ("documents", path(&home, "Documents"), None),
+        (
+            "anywhere",
+            layout.outside.to_string_lossy().into_owned(),
+            None,
+        ),
+    ];
+    let (stored, report) = import_folders(&layout, &chats, &known);
+    assert_eq!(stored["rail"].0, path(&rail, "site"));
+    assert_eq!(stored["documents"].0, "");
+    assert_eq!(stored["anywhere"].0, "");
+    assert_eq!(report["foldersCleared"], 2, "{report}");
+}
+
+#[test]
+fn a_monos_own_folders_here_are_kept() {
+    let layout = layout();
+    let lead = layout.target.monos_root.join("hivra-lead");
+    let team = layout.target.data_dir.join("mono-teams").join("hivra-lead");
+    fs::create_dir_all(&lead).unwrap();
+    fs::create_dir_all(&team).unwrap();
+    let chats = [
+        ("lead", lead.to_string_lossy().into_owned(), None),
+        ("team", team.to_string_lossy().into_owned(), None),
+        (
+            "memory",
+            layout.target.memory_root.to_string_lossy().into_owned(),
+            None,
+        ),
+    ];
+    fs::create_dir_all(&layout.target.memory_root).unwrap();
+    let (stored, report) = import_folders_with(&layout, &chats, &[], &["hivra-lead"], &[]);
+    assert_eq!(stored["lead"].0, lead.to_string_lossy());
+    assert_eq!(stored["team"].0, team.to_string_lossy());
+    // The memory folder itself isn't a Mono's own folder.
+    assert_eq!(stored["memory"].0, "");
+    assert_eq!(report["foldersCleared"], 1, "{report}");
+}
+
+#[test]
+fn an_imported_automation_loses_a_folder_that_is_not_in_a_project_here() {
+    let layout = layout();
+    let source = env_for(&layout.root.0.join("source"));
+    let store = open_store(&source);
+    let conn = store.lock_conn().unwrap();
+    let definition = |id: &str, cwd: &str, worktree: &str| {
+        json!({"id": id, "name": id, "prompt": "p", "harness": "claude", "model": "m", "cwd": cwd,
+               "workspaceMode": "existing", "worktreeCwd": worktree, "enabled": true, "nextRunAt": 99_000, "updatedAt": 50})
+    };
+    let inside = path(&layout.project, "src");
+    for automation in [
+        definition("away", "/tmp/elsewhere", &path(&layout.outside, "x")),
+        definition("home", &inside, ""),
+    ] {
+        conn.execute(
+            "INSERT INTO automations (id, definition_json, enabled, next_run_at, updated_at) VALUES (?1, ?2, 1, 99000, 50)",
+            params![automation["id"].as_str().unwrap(), automation.to_string()],
+        )
+        .unwrap();
+    }
+    drop(conn);
+    drop(store);
+    let dest = layout.root.0.join("export");
+    let mut request = export_request(&dest, Form::Folder);
+    request.memory = None;
+    request.files.clear();
+    export(&source, &request).unwrap();
+
+    let target_store = open_store(&layout.target);
+    let conn = target_store.lock_conn().unwrap();
+    let report = import_held(
+        &layout.target,
+        &conn,
+        &ImportRequest {
+            path: dest.to_string_lossy().into_owned(),
+            memory: None,
+            workspace: Some(WorkspaceImport {
+                automations: vec!["away".into(), "home".into()],
+                ..Default::default()
+            }),
+        },
+    )
+    .unwrap();
+    assert_eq!(report.automations_added, 2, "{report:?}");
+    let stored = |id: &str| -> Value {
+        let raw: String = conn
+            .query_row(
+                "SELECT definition_json FROM automations WHERE id = ?1",
+                [id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        serde_json::from_str(&raw).unwrap()
+    };
+    let away = stored("away");
+    assert_eq!(
+        (away["cwd"].as_str(), away["worktreeCwd"].as_str()),
+        (Some(""), Some(""))
+    );
+    assert_eq!(away["enabled"], false);
+    assert_eq!(stored("home")["cwd"], inside);
+    let json = serde_json::to_value(&report).unwrap();
+    assert_eq!(json["automationFoldersCleared"], 1, "{json}");
+}
+
+// ---- paths in an imported chat's tool rows ---------------------------------------------------------------------------
+// A tool row's `paths` and `preview.path` feed `sessionEditPaths`, which the window hands to the checkpoint calls
+// (`session_checkpoint_begin_turn`, `session_checkpoint_status`). A file's paths are nobody's choice here either.
+
+fn edit_row(id: &str, paths: &[String], preview: Option<String>) -> Value {
+    let mut tool = json!({"status": "completed", "kind": "edit", "title": "Edit", "paths": paths});
+    if let Some(path) = preview {
+        tool["preview"] = json!({"kind": "diff", "path": path, "steps": []});
+    }
+    json!({"id": id, "role": "tool", "tool": tool})
+}
+
+/// One chat, exported with these blocks and folder, imported into the layout's copy; its stored blocks and the report.
+fn import_blocks(layout: &Layout, cwd: &str, blocks: Vec<Value>) -> (Vec<Value>, Value) {
+    let source = env_for(&layout.root.0.join("source"));
+    let store = open_store(&source);
+    let conn = store.lock_conn().unwrap();
+    let mut all = vec![block("u", "user", "edit please")];
+    all.extend(blocks);
+    add_session(&conn, "tools", "Tools", "claude", json!(all), 1_000);
+    conn.execute(
+        "UPDATE sessions SET cwd = ?2 WHERE id = ?1",
+        params!["tools", cwd],
+    )
+    .unwrap();
+    drop(conn);
+    drop(store);
+    let dest = layout.root.0.join("export-tools");
+    let mut request = export_request(&dest, Form::Folder);
+    request.memory = None;
+    request.files.clear();
+    export(&source, &request).unwrap();
+    let store = open_store(&layout.target);
+    let conn = store.lock_conn().unwrap();
+    let report = import_held(
+        &layout.target,
+        &conn,
+        &ImportRequest {
+            path: dest.to_string_lossy().into_owned(),
+            memory: None,
+            workspace: Some(WorkspaceImport {
+                sessions: vec!["tools".into()],
+                ..Default::default()
+            }),
+        },
+    )
+    .unwrap();
+    let row = session_store::get_session(&conn, "tools").unwrap().unwrap();
+    (
+        row.blocks.as_array().unwrap().clone(),
+        serde_json::to_value(&report).unwrap(),
+    )
+}
+
+#[test]
+fn an_imported_tool_row_keeps_only_paths_inside_the_chats_folder() {
+    let layout = layout();
+    let p = &layout.project;
+    fs::write(layout.outside.join("secret.txt"), "x").unwrap();
+    let inside_abs = path(p, "src/b.rs");
+    let paths: Vec<String> = [
+        "src/a.rs".to_string(),
+        inside_abs.clone(),
+        // A file that no longer exists is still the chat's own.
+        "gone/deleted.rs".to_string(),
+        "../outside.txt".to_string(),
+        "src/../../app-evil/x".to_string(),
+        path(&layout.outside, "secret.txt"),
+        "/etc/hosts".to_string(),
+        "~/.ssh/id_rsa".to_string(),
+        String::new(),
+    ]
+    .into_iter()
+    .chain(cfg!(unix).then(|| path(p, "escape/secret.txt")))
+    .collect();
+    let blocks = vec![
+        edit_row("t1", &paths, Some(path(&layout.outside, "secret.txt"))),
+        edit_row("t2", &[], Some("src/a.rs".to_string())),
+    ];
+    let (stored, report) = import_blocks(&layout, &p.to_string_lossy(), blocks);
+    assert_eq!(
+        stored[1]["tool"]["paths"],
+        json!(["src/a.rs", inside_abs, "gone/deleted.rs"])
+    );
+    assert!(stored[1]["tool"]["preview"].get("path").is_none());
+    // Inside paths, and the rest of the row, are as they were.
+    assert_eq!(stored[2]["tool"]["preview"]["path"], "src/a.rs");
+    assert_eq!(stored[1]["tool"]["status"], "completed");
+    let dropped = paths.len() - 3 + 1;
+    assert_eq!(report["toolPathsDropped"], dropped, "{report}");
+}
+
+#[test]
+fn a_chat_whose_folder_was_cleared_keeps_no_tool_paths_at_all() {
+    let layout = layout();
+    let blocks = vec![edit_row(
+        "t1",
+        &["src/a.rs".to_string(), path(&layout.project, "src/b.rs")],
+        Some("src/a.rs".to_string()),
+    )];
+    let (stored, report) = import_blocks(&layout, "/tmp/elsewhere", blocks);
+    assert_eq!(stored[1]["tool"]["paths"], json!([]));
+    assert!(stored[1]["tool"]["preview"].get("path").is_none());
+    assert_eq!(report["foldersCleared"], 1, "{report}");
+    assert_eq!(report["toolPathsDropped"], 3, "{report}");
+}
+
+// ---- project folders an export wants to register ---------------------------------------------------------------------
+// The preview starts every such folder unticked; whatever is ticked, these are refused in Rust too, and the projects
+// this copy has (before the import adds any) are what a chat's folder is judged against.
+
+#[test]
+fn a_project_folder_that_holds_everything_is_refused_whatever_is_ticked() {
+    let layout = layout();
+    let env = &layout.target;
+    let home = env.home.clone().unwrap();
+    fs::create_dir_all(&home).unwrap();
+    fs::create_dir_all(env.data_dir.join("monos")).unwrap();
+    let refused = |dir: &Path| refused_project_folder(env, &dir.to_string_lossy());
+    for dir in [
+        home.clone(),
+        // A folder that holds the home folder, and the one that holds that.
+        home.parent().unwrap().to_path_buf(),
+        layout.root.0.clone(),
+        PathBuf::from("/"),
+        PathBuf::from("/Volumes"),
+        env.data_dir.clone(),
+        env.data_dir.join("monos"),
+        // The folder that holds the app's data.
+        env.data_dir.parent().unwrap().to_path_buf(),
+    ] {
+        assert!(refused(&dir).is_some(), "{} must be refused", dir.display());
+    }
+    // `~` is the home folder, a relative path and a missing folder aren't projects.
+    for raw in ["~", "src", "../..", ""] {
+        assert!(refused_project_folder(env, raw).is_some(), "{raw:?}");
+    }
+    assert!(refused(&layout.root.0.join("missing")).is_some());
+    // A folder of its own is fine, and so is one inside it.
+    assert_eq!(refused(&layout.project), None);
+    // Only the top of a repository is a project's folder.
+    assert!(refused(&layout.project.join("src"))
+        .unwrap()
+        .contains("git repository"));
+    let checks = project_folder_checks(
+        env,
+        &[
+            home.to_string_lossy().into_owned(),
+            layout.project.to_string_lossy().into_owned(),
+        ],
+    );
+    assert_eq!(checks.len(), 1, "{checks:?}");
+}
+
+#[test]
+fn a_record_that_lists_a_broad_folder_does_not_vouch_for_what_is_inside_it() {
+    let layout = layout();
+    let env = &layout.target;
+    let home = env.home.clone().unwrap();
+    fs::create_dir_all(home.join("Documents")).unwrap();
+    fs::create_dir_all(env.data_dir.join("scratch")).unwrap();
+    let store = open_store(env);
+    let conn = store.lock_conn().unwrap();
+    let folders: Vec<String> = [
+        home.clone(),
+        home.parent().unwrap().to_path_buf(),
+        env.data_dir.clone(),
+        PathBuf::from("/"),
+        PathBuf::from("/Volumes"),
+    ]
+    .iter()
+    .map(|dir| dir.to_string_lossy().into_owned())
+    .collect();
+    crate::local_hub::write(
+        &conn,
+        "projects",
+        &json!({"projects": folders.iter().enumerate().map(|(n, folder)| json!({"id": format!("p{n}"), "name": format!("P{n}"), "folder": folder})).collect::<Vec<_>>()}),
+    )
+    .unwrap();
+    drop(conn);
+    drop(store);
+    let chats = [
+        ("docs", path(&home, "Documents"), None),
+        ("scratch", path(&env.data_dir, "scratch"), None),
+        ("tmp", layout.outside.to_string_lossy().into_owned(), None),
+    ];
+    let (stored, report) = import_folders(&layout, &chats, &[]);
+    assert!(stored.values().all(|(cwd, _)| cwd.is_empty()), "{stored:?}");
+    assert_eq!(report["foldersCleared"], 3, "{report}");
+}
+
+#[test]
+fn a_project_registered_without_its_folder_leaves_its_chats_without_one() {
+    let layout = layout();
+    let store = open_store(&layout.target);
+    let conn = store.lock_conn().unwrap();
+    // Registered, but its folder was left unticked in the preview.
+    crate::local_hub::write(
+        &conn,
+        "projects",
+        &json!({"projects": [{"id": "app", "name": "App", "folder": null}]}),
+    )
+    .unwrap();
+    drop(conn);
+    drop(store);
+    let chats = [("inside", path(&layout.project, "src"), None)];
+    let (stored, report) = import_folders(&layout, &chats, &[]);
+    assert_eq!(stored["inside"].0, "");
+    assert_eq!(report["foldersCleared"], 1, "{report}");
 }
 
 // ---- a folder export's note pictures (symlinks, the manifest, the hash) --------------------------------------------
@@ -3550,11 +4226,10 @@ fn an_imported_chat_keeps_no_file_path_from_the_file() {
     assert_eq!(side[0]["image"]["name"], "side");
     assert_eq!(side[1]["attachments"][0].get("path"), None);
     assert_eq!(side[1]["attachments"][0]["name"], "passwd");
-    // Nothing else about the chat is touched: a tool row's own path is not a file this import reads.
-    assert_eq!(
-        blocks[2]["tool"]["preview"]["path"],
-        "/Users/someone/notes.md"
-    );
+    // A tool row's path outside the chat's kept folder goes too (folders.rs): this chat's `/tmp` is no project here,
+    // so it keeps no folder and no tool path. The row itself stays.
+    assert_eq!(blocks[2]["tool"]["preview"].get("path"), None);
+    assert_eq!(blocks[2]["tool"]["title"], "Read");
     assert_eq!(blocks[3]["text"], "done");
     // The chat that named no file comes back as it was, and the import says what it left out.
     let plain = session_store::get_session(&conn, "plain").unwrap().unwrap();
@@ -3603,7 +4278,15 @@ fn an_imported_mono_transcript_index_holds_no_file_path_either() {
     let conn = store.lock_conn().unwrap();
     let mut file = crafted_chat();
     file["monoTranscript"] = json!(true);
-    insert_session(&target, &conn, "mono-chat", "Mono", &file).unwrap();
+    insert_session(
+        &target,
+        &conn,
+        "mono-chat",
+        "Mono",
+        &file,
+        &FolderRules::load(&target, &[], &[], &[], &[]),
+    )
+    .unwrap();
     crate::mono_transcript::migrate_transcript(&conn, "mono-chat").unwrap();
 
     let indexed: Vec<String> = conn
@@ -3644,7 +4327,15 @@ fn odd_shapes_in_an_imported_chat_are_dropped_not_kept_and_do_not_fail_the_impor
             ]}]}
         ]
     });
-    insert_session(&target, &conn, "odd", "Odd", &file).unwrap();
+    insert_session(
+        &target,
+        &conn,
+        "odd",
+        "Odd",
+        &file,
+        &FolderRules::load(&target, &[], &[], &[], &[]),
+    )
+    .unwrap();
     let stored = session_store::get_session(&conn, "odd").unwrap().unwrap();
     let text = stored.blocks.to_string();
     for foreign in ["../../.ssh/id_rsa", "/etc/shadow"] {
@@ -3658,6 +4349,1374 @@ fn odd_shapes_in_an_imported_chat_are_dropped_not_kept_and_do_not_fail_the_impor
         blocks[5]["btwThreads"][0]["pendingBlocks"][0]["attachments"][0].get("path"),
         None
     );
+}
+
+// ---- round 3: an allow-list, rules loaded before anything is written, nothing a file chooses about how a chat runs ------
+
+/// A target copy's own folders for the places a Mac keeps besides projects.
+fn hidden_places(layout: &Layout) -> Vec<(&'static str, String)> {
+    let home = layout.target.home.clone().unwrap();
+    for dir in [".claude", ".ssh", "Library/LaunchAgents", "agent-memory"] {
+        fs::create_dir_all(home.join(dir)).unwrap();
+    }
+    fs::create_dir_all(layout.project.join(".hidden")).unwrap();
+    vec![
+        ("claude", path(&home, ".claude")),
+        ("ssh", path(&home, ".ssh")),
+        ("launch", path(&home, "Library/LaunchAgents")),
+        ("memory", path(&home, "agent-memory")),
+        ("hidden", path(&layout.project, ".hidden")),
+        ("dotgit", path(&layout.project, ".git")),
+        ("data", "/System/Volumes/Data".to_string()),
+        ("private", "/private".to_string()),
+        ("privatetmp", "/private/tmp".to_string()),
+        ("shared", "/Users/Shared".to_string()),
+        ("apps", "/Applications".to_string()),
+        ("library", "/Library".to_string()),
+        ("backup", "/Volumes/Backup".to_string()),
+    ]
+}
+
+#[test]
+fn a_chat_is_kept_only_inside_the_home_folder_whatever_a_record_or_the_rail_says() {
+    let layout = layout();
+    let places = hidden_places(&layout);
+    let home = layout.target.home.clone().unwrap();
+    // The record and the rail both vouch for these places; none of them may.
+    let store = open_store(&layout.target);
+    let conn = store.lock_conn().unwrap();
+    let mut listed: Vec<Value> =
+        vec![json!({"id": "app", "name": "App", "folder": layout.project.to_string_lossy()})];
+    listed.extend(
+        places
+            .iter()
+            .map(|(id, folder)| json!({"id": id, "name": id, "folder": folder})),
+    );
+    crate::local_hub::write(&conn, "projects", &json!({"projects": listed})).unwrap();
+    drop(conn);
+    drop(store);
+    let rail: Vec<String> = places.iter().map(|(_, folder)| folder.clone()).collect();
+    let chats: Vec<(&str, String, Option<String>)> = places
+        .iter()
+        .map(|(id, folder)| (*id, folder.clone(), None))
+        .chain([("fine", path(&layout.project, "src"), None)])
+        .collect();
+    let (stored, report) = import_folders(&layout, &chats, &rail);
+    for (id, _) in &places {
+        assert_eq!(stored[*id].0, "", "{id} is not a place for a chat");
+    }
+    assert_eq!(stored["fine"].0, path(&layout.project, "src"));
+    assert_eq!(report["foldersCleared"], places.len(), "{report}");
+    // Nor can any of them be adopted as a project's folder.
+    for (id, folder) in &places {
+        assert!(
+            refused_project_folder(&layout.target, folder).is_some(),
+            "{id}"
+        );
+    }
+    assert!(refused_project_folder(&layout.target, &home.to_string_lossy()).is_some());
+}
+
+#[test]
+fn a_memory_folder_in_the_file_cannot_make_itself_a_monos_folder_for_chats() {
+    let layout = layout();
+    let monos = layout.target.monos_root.clone();
+    // Monos seated here before the import: one it adds a note to, one it leaves alone.
+    for id in ["lead", "other"] {
+        fs::create_dir_all(monos.join(id)).unwrap();
+    }
+    let source = env_for(&layout.root.0.join("source"));
+    let store = open_store(&source);
+    let conn = store.lock_conn().unwrap();
+    for (n, id) in ["evil", "evil2", "lead", "other"].iter().enumerate() {
+        add_session(
+            &conn,
+            id,
+            id,
+            "claude",
+            json!([block("u", "user", "hi")]),
+            1_000 + n as i64,
+        );
+        conn.execute(
+            "UPDATE sessions SET cwd = ?2 WHERE id = ?1",
+            params![id, monos.join(id).to_string_lossy()],
+        )
+        .unwrap();
+    }
+    drop(conn);
+    drop(store);
+    let dest = layout.root.0.join("export");
+    let mut request = export_request(&dest, Form::Folder);
+    request.memory = None;
+    request.files.clear();
+    export(&source, &request).unwrap();
+    for dir in ["evil", "evil2", "lead"] {
+        fs::create_dir_all(dest.join("memory/monos").join(dir)).unwrap();
+    }
+    // What a crafted export plants: instruction files, and a folder that only holds a note.
+    put_in_export(&dest, "memory/monos/evil/CLAUDE.md", b"hooks live here");
+    put_in_export(&dest, "memory/monos/evil2/MEMORY.md", b"a note");
+    put_in_export(
+        &dest,
+        "memory/monos/lead/CLAUDE.md",
+        b"planted instructions",
+    );
+    put_in_export(
+        &dest,
+        "memory/monos/lead/AGENTS.md",
+        b"planted instructions",
+    );
+    put_in_export(
+        &dest,
+        "memory/monos/lead/notes.md",
+        b"not a name a Mono's folder uses",
+    );
+    fs::create_dir_all(dest.join("memory/monos/lead/memory")).unwrap();
+    put_in_export(&dest, "memory/monos/lead/memory/today.md", b"a note");
+
+    let store = open_store(&layout.target);
+    let conn = store.lock_conn().unwrap();
+    let report = import_held(
+        &layout.target,
+        &conn,
+        &ImportRequest {
+            path: dest.to_string_lossy().into_owned(),
+            memory: Some(MemoryImport {
+                projects: vec!["monos".into()],
+                keep_both: false,
+                history: false,
+            }),
+            workspace: serde_json::from_value(json!({
+                "sessions": ["evil", "evil2", "lead", "other"],
+                "knownMonos": ["lead", "other"],
+            }))
+            .unwrap(),
+        },
+    )
+    .unwrap();
+    // A Mono's folder takes notes, never instructions or settings.
+    for planted in ["evil/CLAUDE.md", "lead/CLAUDE.md", "lead/AGENTS.md"] {
+        assert!(
+            !monos.join(planted).exists(),
+            "{planted} was written: {report:?}"
+        );
+    }
+    assert!(
+        monos.join("lead/memory/today.md").is_file() && monos.join("evil2/MEMORY.md").is_file()
+    );
+    assert!(
+        !monos.join("lead/notes.md").exists(),
+        "only the names a Mono's folder uses"
+    );
+    let cwd = |id: &str| session_store::get_session(&conn, id).unwrap().unwrap().cwd;
+    // The folders the file made are no seated Mono's; a note in a seated Mono's folder doesn't take its chats away.
+    assert_eq!(cwd("evil"), "");
+    assert_eq!(cwd("evil2"), "");
+    assert_eq!(cwd("lead"), monos.join("lead").to_string_lossy());
+    assert_eq!(cwd("other"), monos.join("other").to_string_lossy());
+    assert_eq!(serde_json::to_value(&report).unwrap()["foldersCleared"], 2);
+    drop(conn);
+    drop(store);
+    // And nothing is offered back for them: neither is a seated Mono's, so neither passes.
+    assert_eq!(
+        relink_candidates(&layout.target, None, &[], &["lead".into(), "other".into()]),
+        Vec::<Relink>::new()
+    );
+}
+
+#[test]
+fn a_chat_is_not_kept_where_the_import_wrote_instructions_and_is_never_offered_back() {
+    let layout = layout();
+    let monos = layout.target.monos_root.clone();
+    let lead = monos.join("lead");
+    fs::create_dir_all(lead.join("notes")).unwrap();
+    let mut rules = FolderRules::load(&layout.target, &[], &[], &["lead".into()], &[]);
+    let wrote = |path: PathBuf, rules: &mut FolderRules| rules.note_written(&[path]);
+    // A note beside or below it, or a folder that merely holds a written file further down, takes nothing away.
+    wrote(lead.join("notes/today.md"), &mut rules);
+    wrote(monos.join("MEMORY.md"), &mut rules);
+    let kept = rules.vet(Some(&lead.to_string_lossy()), None);
+    assert_eq!(kept.cwd, lead.to_string_lossy());
+    assert!(!kept.named_blocked);
+    // An instruction file a CLI would read from that folder or above it does.
+    for planted in [
+        lead.join("CLAUDE.md"),
+        monos.join("AGENTS.md"),
+        lead.join(".claude/settings.json"),
+    ] {
+        let mut rules = FolderRules::load(&layout.target, &[], &[], &["lead".into()], &[]);
+        rules.note_written(std::slice::from_ref(&planted));
+        let cleared = rules.vet(Some(&lead.to_string_lossy()), None);
+        assert_eq!(cleared.cwd, "", "{} must clear the chat", planted.display());
+        assert!(
+            cleared.cleared && cleared.named_blocked,
+            "{}",
+            planted.display()
+        );
+    }
+}
+
+#[test]
+fn a_chat_from_another_mac_finds_its_monos_folders_here_by_id() {
+    let layout = layout();
+    let team = layout.target.data_dir.join("mono-teams").join("lead");
+    let home = layout.target.monos_root.join("lead");
+    fs::create_dir_all(&team).unwrap();
+    fs::create_dir_all(&home).unwrap();
+    let chats = [
+        (
+            "team",
+            "/Users/someone/Library/Application Support/com.ash.monocode-hub/mono-teams/lead"
+                .to_string(),
+            None,
+        ),
+        (
+            "home",
+            "/Users/someone/agent-memory/monos/lead".to_string(),
+            None,
+        ),
+        (
+            "stranger",
+            "/Users/someone/agent-memory/monos/evil".to_string(),
+            None,
+        ),
+        ("dots", "/Users/someone/mono-teams/..".to_string(), None),
+    ];
+    let (stored, report) = import_folders_with(&layout, &chats, &[], &["lead"], &[]);
+    assert_eq!(stored["team"].0, team.to_string_lossy());
+    assert_eq!(stored["home"].0, home.to_string_lossy());
+    assert_eq!(stored["stranger"].0, "");
+    assert_eq!(stored["dots"].0, "");
+    assert_eq!(report["foldersCleared"], 2, "{report}");
+}
+
+#[test]
+fn a_worktree_listed_by_a_parent_repository_is_not_vouched_for() {
+    let layout = layout();
+    let home = layout.target.home.clone().unwrap();
+    // The project is a plain folder inside a bigger repository (a dotfiles repo, say).
+    let parent = home.join("Projects");
+    fs::remove_dir_all(layout.project.join(".git")).unwrap();
+    git(&parent, &["init", "-q"]);
+    fs::write(parent.join("a.txt"), "a").unwrap();
+    git(&parent, &["add", "."]);
+    git(&parent, &["commit", "-q", "-m", "first"]);
+    let linked = home.join("Worktrees").join("linked");
+    git(
+        &parent,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "linked",
+            &linked.to_string_lossy(),
+        ],
+    );
+    fs::create_dir_all(parent.join("other")).unwrap();
+    let project = layout.project.to_string_lossy().into_owned();
+    let chats = [
+        // Inside the parent repository, not inside the project: its main worktree line must not vouch for it.
+        ("main", project.clone(), Some(path(&parent, "other"))),
+        // A linked working copy of the parent repository, not of the project.
+        (
+            "linked",
+            project.clone(),
+            Some(linked.to_string_lossy().into_owned()),
+        ),
+        ("plain", project.clone(), None),
+    ];
+    let (stored, report) = import_folders(&layout, &chats, &[]);
+    assert_eq!(stored["main"], (project.clone(), None));
+    assert_eq!(stored["linked"], (project.clone(), None));
+    assert_eq!(stored["plain"], (project, None));
+    assert_eq!(report["foldersCleared"], 2, "{report}");
+}
+
+#[test]
+fn a_worktree_belongs_to_the_chats_own_project() {
+    let layout = layout();
+    let p = &layout.project;
+    git(p, &["init", "-q"]);
+    fs::write(p.join("a.txt"), "a").unwrap();
+    git(p, &["add", "."]);
+    git(p, &["commit", "-q", "-m", "first"]);
+    let home = layout.target.home.clone().unwrap();
+    let tree = home.join("Worktrees").join("app-feature");
+    git(
+        p,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "feature",
+            &tree.to_string_lossy(),
+        ],
+    );
+    // A second known project: the worktree is the first one's, not this one's.
+    let other = home.join("Projects").join("other");
+    fs::create_dir_all(other.join(".git")).unwrap();
+    let store = open_store(&layout.target);
+    let conn = store.lock_conn().unwrap();
+    crate::local_hub::write(
+        &conn,
+        "projects",
+        &json!({"projects": [
+            {"id": "app", "name": "App", "folder": p.to_string_lossy()},
+            {"id": "other", "name": "Other", "folder": other.to_string_lossy()}
+        ]}),
+    )
+    .unwrap();
+    drop(conn);
+    drop(store);
+    let tree = tree.to_string_lossy().into_owned();
+    let chats = [
+        ("own", p.to_string_lossy().into_owned(), Some(tree.clone())),
+        (
+            "foreign",
+            other.to_string_lossy().into_owned(),
+            Some(tree.clone()),
+        ),
+    ];
+    let (stored, report) = import_folders(&layout, &chats, &[]);
+    assert_eq!(stored["own"].1.as_deref(), Some(tree.as_str()));
+    assert_eq!(
+        stored["foreign"],
+        (other.to_string_lossy().into_owned(), None)
+    );
+    assert_eq!(report["foldersCleared"], 1, "{report}");
+}
+
+#[test]
+fn an_imported_chat_and_automation_come_in_supervised_whatever_the_file_says() {
+    let layout = layout();
+    let source = env_for(&layout.root.0.join("source"));
+    let store = open_store(&source);
+    let conn = store.lock_conn().unwrap();
+    add_session(
+        &conn,
+        "free",
+        "Free",
+        "claude",
+        json!([block("u", "user", "hi")]),
+        1_000,
+    );
+    conn.execute(
+        "UPDATE sessions SET runtime_mode = 'full-access' WHERE id = 'free'",
+        [],
+    )
+    .unwrap();
+    let definition = json!({"id": "bypass", "name": "b", "prompt": "p", "harness": "claude", "model": "m", "cwd": path(&layout.project, "src"),
+        "runtimeMode": "full-access", "enabled": true, "nextRunAt": 99_000, "updatedAt": 50});
+    conn.execute(
+        "INSERT INTO automations (id, definition_json, enabled, next_run_at, updated_at) VALUES ('bypass', ?1, 1, 99000, 50)",
+        params![definition.to_string()],
+    )
+    .unwrap();
+    drop(conn);
+    drop(store);
+    let dest = layout.root.0.join("export");
+    let mut request = export_request(&dest, Form::Folder);
+    request.memory = None;
+    request.files.clear();
+    export(&source, &request).unwrap();
+    let store = open_store(&layout.target);
+    let conn = store.lock_conn().unwrap();
+    import_held(
+        &layout.target,
+        &conn,
+        &ImportRequest {
+            path: dest.to_string_lossy().into_owned(),
+            memory: None,
+            workspace: Some(WorkspaceImport {
+                sessions: vec!["free".into()],
+                automations: vec!["bypass".into()],
+                ..Default::default()
+            }),
+        },
+    )
+    .unwrap();
+    let chat = session_store::get_session(&conn, "free").unwrap().unwrap();
+    assert_eq!(chat.runtime_mode, "supervised");
+    let raw: String = conn
+        .query_row(
+            "SELECT definition_json FROM automations WHERE id = 'bypass'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let stored: Value = serde_json::from_str(&raw).unwrap();
+    assert_eq!(stored["runtimeMode"], "supervised");
+    assert_eq!(stored["enabled"], false);
+}
+
+#[test]
+fn a_delegation_stays_only_when_both_its_chats_came_in_and_is_always_history() {
+    let layout = layout();
+    let source = env_for(&layout.root.0.join("source"));
+    let store = open_store(&source);
+    let conn = store.lock_conn().unwrap();
+    for (n, id) in ["one", "two", "here"].iter().enumerate() {
+        add_session(
+            &conn,
+            id,
+            id,
+            "claude",
+            json!([block("u", "user", "hi")]),
+            1_000 + n as i64,
+        );
+    }
+    for (id, owner, child, state) in [
+        ("d-in", "one", "two", "running"),
+        ("d-odd", "one", "two", "who-knows"),
+        // Names a chat this import doesn't bring: it is not the file's to attach history to.
+        ("d-out", "one", "here", "completed"),
+    ] {
+        conn.execute(
+            "INSERT INTO delegations (id, owner_session, owner_mono, root_id, child_session, request_id, title, brief, state, delivery, created_at, updated_at, version, mirrored_version)
+             VALUES (?1, ?2, NULL, ?1, ?3, ?1, 'T', 'b', ?4, 'pending', 100, 200, 3, 3)",
+            params![id, owner, child, state],
+        )
+        .unwrap();
+    }
+    drop(conn);
+    drop(store);
+    let dest = layout.root.0.join("export");
+    let mut request = export_request(&dest, Form::Folder);
+    request.memory = None;
+    request.files.clear();
+    export(&source, &request).unwrap();
+    let store = open_store(&layout.target);
+    let conn = store.lock_conn().unwrap();
+    let report = import_held(
+        &layout.target,
+        &conn,
+        &ImportRequest {
+            path: dest.to_string_lossy().into_owned(),
+            memory: None,
+            workspace: Some(WorkspaceImport {
+                sessions: vec!["one".into(), "two".into()],
+                delegations: true,
+                ..Default::default()
+            }),
+        },
+    )
+    .unwrap();
+    assert_eq!(report.delegations_added, 2, "{report:?}");
+    let state = |id: &str| {
+        table_rows_where(&conn, "delegations", id)
+            .unwrap()
+            .map(|row| row["state"].clone())
+    };
+    assert_eq!(state("d-in"), Some(json!("cancelled")));
+    assert_eq!(state("d-odd"), Some(json!("cancelled")));
+    assert_eq!(state("d-out"), None);
+}
+
+#[test]
+fn a_cleared_folder_is_kept_as_an_inert_note_and_offered_back_only_when_it_passes() {
+    let layout = layout();
+    let later = path(&layout.project, "later");
+    let chats = [
+        ("away", "/tmp/elsewhere".to_string(), None),
+        ("later", later.clone(), None),
+        ("kept", path(&layout.project, "src"), None),
+    ];
+    let (stored, _) = import_folders(&layout, &chats, &[]);
+    // The project's `later` folder doesn't exist yet, so the chat came in without a folder.
+    assert_eq!(stored["later"].0, "");
+    let note = |id: &str| -> Option<String> {
+        let store = open_store(&layout.target);
+        let conn = store.lock_conn().unwrap();
+        conn.query_row(
+            "SELECT cwd FROM imported_chat_folders WHERE session_id = ?1",
+            [id],
+            |r| r.get(0),
+        )
+        .optional()
+        .unwrap()
+    };
+    assert_eq!(note("away").as_deref(), Some("/tmp/elsewhere"));
+    assert_eq!(note("later"), Some(later.clone()));
+    assert_eq!(note("kept"), None);
+    // Nothing runs from the note: the chat's own folder is still blank.
+    let offer = |id: &str| relink_candidate(&layout.target, id, &[], &[]);
+    assert_eq!(offer("later"), None);
+    fs::create_dir_all(&later).unwrap();
+    assert_eq!(offer("later"), Some(later));
+    // A folder outside every project is never offered; neither is one for a chat that has a folder.
+    assert_eq!(offer("away"), None);
+    assert_eq!(offer("kept"), None);
+}
+
+#[test]
+fn paths_in_side_threads_and_agent_steps_are_confined_and_a_paths_that_is_not_a_list_is_dropped() {
+    let layout = layout();
+    let outside = path(&layout.outside, "secret.txt");
+    let step = json!({"paths": [outside.clone(), "src/a.rs"], "preview": {"kind": "diff", "path": outside.clone(), "steps": [
+        {"preview": {"path": outside.clone()}, "paths": outside.clone()}]}});
+    let blocks = vec![
+        json!({"id": "t", "role": "tool", "tool": {"paths": outside.clone(), "preview": {"kind": "diff", "steps": [step]}}}),
+        json!({"id": "b", "role": "assistant", "btwThreads": [{"messages": [
+            {"role": "tool", "tool": {"paths": [outside.clone(), "src/ok.rs"], "preview": {"path": outside.clone()}}}]}]}),
+    ];
+    let (stored, report) = import_blocks(&layout, &layout.project.to_string_lossy(), blocks);
+    let text = serde_json::to_string(&stored).unwrap();
+    assert!(!text.contains(&outside), "an outside path survived: {text}");
+    assert!(text.contains("src/a.rs") && text.contains("src/ok.rs"));
+    assert!(
+        stored[1]["tool"].get("paths").is_none(),
+        "a paths that isn't a list is dropped"
+    );
+    assert!(
+        report["toolPathsDropped"].as_u64().unwrap() >= 6,
+        "{report}"
+    );
+}
+
+// ---- round 4: restores of your own export, relinking, and what a Mono's folder may be given ----------------------------
+
+#[test]
+fn a_chat_from_another_user_or_home_is_mapped_to_the_project_here_by_id() {
+    let layout = layout();
+    let old = "/Users/old/Projects/app";
+    let map = [("app", old, layout.project.to_string_lossy().into_owned())];
+    let chats = [
+        ("deep", format!("{old}/src/deep"), None),
+        ("root", old.to_string(), None),
+        // A sibling of the mapped folder is not inside it.
+        ("sibling", "/Users/old/Projects/app-evil".to_string(), None),
+        // A project the window has no pair for stays unknown.
+        ("stranger", "/Users/old/Projects/other".to_string(), None),
+    ];
+    let (stored, report) = import_folders_with(&layout, &chats, &[], &[], &map);
+    assert_eq!(stored["deep"].0, path(&layout.project, "src/deep"));
+    assert_eq!(stored["root"].0, layout.project.to_string_lossy());
+    assert_eq!(stored["sibling"].0, "");
+    assert_eq!(stored["stranger"].0, "");
+    assert_eq!(report["foldersCleared"], 2, "{report}");
+    // The same allow-list judges the mapped folder: a pair that leads outside the home folder keeps nothing.
+    let escape = [(
+        "x",
+        "/Users/old/x",
+        layout.outside.to_string_lossy().into_owned(),
+    )];
+    let (stored, _) = import_folders_with(
+        &layout_again(&layout),
+        &[("away", "/Users/old/x/y".to_string(), None)],
+        &[],
+        &[],
+        &escape,
+    );
+    assert_eq!(stored["away"].0, "");
+}
+
+/// A fresh layout beside the first one (a second import into the same root would collide with the first export).
+fn layout_again(first: &Layout) -> Layout {
+    let _ = first;
+    layout()
+}
+
+#[test]
+fn a_mapped_folder_that_isnt_cloned_yet_is_offered_back_once_it_is_and_all_at_once() {
+    let layout = layout();
+    let old = "/Users/old/Projects/app";
+    let later = layout.project.parent().unwrap().join("later");
+    let map = [(
+        "later",
+        "/Users/old/Projects/later",
+        later.to_string_lossy().into_owned(),
+    )];
+    let store = open_store(&layout.target);
+    let conn = store.lock_conn().unwrap();
+    // The project record has the folder (a project registered before the repository is cloned).
+    crate::local_hub::write(
+        &conn,
+        "projects",
+        &json!({"projects": [
+            {"id": "app", "name": "App", "folder": layout.project.to_string_lossy()},
+            {"id": "later", "name": "Later", "folder": later.to_string_lossy()}
+        ]}),
+    )
+    .unwrap();
+    drop(conn);
+    drop(store);
+    let chats = [
+        ("a", "/Users/old/Projects/later/src".to_string(), None),
+        ("b", "/Users/old/Projects/later".to_string(), None),
+        ("c", format!("{old}/src"), None),
+    ];
+    let map = [
+        map[0].clone(),
+        ("app", old, layout.project.to_string_lossy().into_owned()),
+    ];
+    let (stored, _) = import_folders_with(&layout, &chats, &[], &[], &map);
+    // `later` isn't there yet, so its chats came in with none; `app` is.
+    assert_eq!(stored["a"].0, "");
+    assert_eq!(stored["b"].0, "");
+    assert_eq!(stored["c"].0, path(&layout.project, "src"));
+    let offers = |env: &Env| relink_candidates(env, None, &[], &[]);
+    assert!(offers(&layout.target).is_empty());
+    fs::create_dir_all(later.join("src")).unwrap();
+    let mut found = offers(&layout.target);
+    found.sort_by(|x, y| x.session_id.cmp(&y.session_id));
+    assert_eq!(
+        found
+            .iter()
+            .map(|r| r.session_id.as_str())
+            .collect::<Vec<_>>(),
+        ["a", "b"]
+    );
+    // One group for the project, so one "Relink all".
+    assert!(
+        found.iter().all(|r| r.group == later.to_string_lossy()),
+        "{found:?}"
+    );
+    // Relinking gives the folders back and forgets the notes; a chat that has a folder is left alone.
+    let store = open_store(&layout.target);
+    let conn = store.lock_conn().unwrap();
+    let applied = apply_relinks(&conn, &found).unwrap();
+    assert_eq!(applied.len(), 2);
+    let cwd = |id: &str| session_store::get_session(&conn, id).unwrap().unwrap().cwd;
+    assert_eq!(cwd("a"), path(&later, "src"));
+    assert_eq!(cwd("b"), later.to_string_lossy());
+    let notes: i64 = conn
+        .query_row("SELECT COUNT(*) FROM imported_chat_folders", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_eq!(notes, 0);
+    assert!(apply_relinks(&conn, &found).unwrap().is_empty());
+    // A folder the import itself wrote instructions into is never offered, however well it qualifies.
+    conn.execute("UPDATE sessions SET cwd = '' WHERE id = 'c'", [])
+        .unwrap();
+    conn.execute(
+        "INSERT INTO imported_chat_folders (session_id, cwd, worktree_cwd, blocked) VALUES ('c', ?1, NULL, 1)",
+        [path(&layout.project, "src")],
+    )
+    .unwrap();
+    drop(conn);
+    drop(store);
+    assert!(offers(&layout.target).is_empty());
+}
+
+#[test]
+fn a_seated_monos_folder_the_restore_made_keeps_its_chats_but_only_for_a_seated_mono() {
+    let layout = layout();
+    let monos = layout.target.monos_root.clone();
+    let source = env_for(&layout.root.0.join("source"));
+    let store = open_store(&source);
+    let conn = store.lock_conn().unwrap();
+    for (n, id) in ["lead", "guest"].iter().enumerate() {
+        add_session(
+            &conn,
+            id,
+            id,
+            "claude",
+            json!([block("u", "user", "hi")]),
+            1_000 + n as i64,
+        );
+        conn.execute(
+            "UPDATE sessions SET cwd = ?2 WHERE id = ?1",
+            params![id, format!("/Users/old/agent-memory/monos/{id}")],
+        )
+        .unwrap();
+    }
+    drop(conn);
+    drop(store);
+    let dest = layout.root.0.join("export");
+    let mut request = export_request(&dest, Form::Folder);
+    request.memory = None;
+    request.files.clear();
+    export(&source, &request).unwrap();
+    for id in ["lead", "guest"] {
+        fs::create_dir_all(dest.join("memory/monos").join(id)).unwrap();
+        put_in_export(&dest, &format!("memory/monos/{id}/MEMORY.md"), b"- notes\n");
+    }
+    // A Mono's folder isn't here until the restore makes it: the rules look after the memory is written.
+    assert!(!monos.join("lead").exists());
+    let store = open_store(&layout.target);
+    let conn = store.lock_conn().unwrap();
+    import_held(
+        &layout.target,
+        &conn,
+        &ImportRequest {
+            path: dest.to_string_lossy().into_owned(),
+            memory: Some(MemoryImport {
+                projects: vec!["monos".into()],
+                keep_both: false,
+                history: false,
+            }),
+            workspace: serde_json::from_value(json!({
+                "sessions": ["lead", "guest"],
+                "knownMonos": ["lead"],
+            }))
+            .unwrap(),
+        },
+    )
+    .unwrap();
+    let cwd = |id: &str| session_store::get_session(&conn, id).unwrap().unwrap().cwd;
+    assert_eq!(cwd("lead"), monos.join("lead").to_string_lossy());
+    assert_eq!(cwd("guest"), "");
+}
+
+#[test]
+fn a_restored_monos_history_keeps_only_its_notes() {
+    let source_dir = TestDir::new("source");
+    let target_dir = TestDir::new("target");
+    let out = TestDir::new("out");
+    let source = env_for(&source_dir.0);
+    let mut target = env_for(&target_dir.0);
+    target.monos_root = target.memory_root.join("monos");
+    let monos = source.memory_root.join("monos");
+    fs::create_dir_all(monos.join("evil")).unwrap();
+    fs::create_dir_all(monos.join(".claude")).unwrap();
+    fs::write(monos.join("MEMORY.md"), "# monos\n").unwrap();
+    fs::write(monos.join("evil/notes.md"), "a note\n").unwrap();
+    fs::write(monos.join("evil/CLAUDE.md"), "planted\n").unwrap();
+    fs::write(monos.join(".claude/settings.json"), "{\"hooks\":{}}\n").unwrap();
+    git(&monos, &["init", "-q", "-b", "main"]);
+    git(&monos, &["add", "-A"]);
+    git(&monos, &["commit", "-q", "-m", "monos"]);
+    let dest = out.0.join("export");
+    let mut request = export_request(&dest, Form::Folder);
+    request.workspace = false;
+    request.memory = Some(MemoryChoice {
+        projects: vec!["monos".into()],
+        history: true,
+    });
+    export(&source, &request).unwrap();
+    let store = open_store(&target);
+    let conn = store.lock_conn().unwrap();
+    let report = import_held(
+        &target,
+        &conn,
+        &ImportRequest {
+            path: dest.to_string_lossy().into_owned(),
+            memory: Some(MemoryImport {
+                projects: vec!["monos".into()],
+                keep_both: false,
+                history: true,
+            }),
+            workspace: None,
+        },
+    )
+    .unwrap();
+    let root = target.memory_root.join("monos");
+    assert!(root.join("evil/notes.md").is_file(), "{report:?}");
+    assert!(!root.join("evil/CLAUDE.md").exists());
+    assert!(!root.join(".claude/settings.json").exists());
+}
+
+#[test]
+fn a_provider_conversation_is_kept_only_for_the_chat_it_belongs_to() {
+    let layout = layout();
+    let mut env = layout.target.clone();
+    env.dev = false;
+    let home = env.home.clone().unwrap();
+    env.claude_home = Some(home.join(".claude"));
+    let transcripts = |folder: &Path| {
+        let dir = env
+            .claude_home
+            .clone()
+            .unwrap()
+            .join("projects")
+            .join(claude_project_dir_name(&folder.to_string_lossy()));
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("conv-1.jsonl"), "{}\n").unwrap();
+    };
+    transcripts(&layout.project);
+    let store = open_store(&env);
+    let conn = store.lock_conn().unwrap();
+    let rules = FolderRules::load(
+        &env,
+        &[layout.project.to_string_lossy().into_owned()],
+        &[],
+        &[],
+        &[],
+    );
+    let file = |private: bool, cwd: &Path| {
+        json!({"title": "T", "cwd": cwd.to_string_lossy(), "private": private,
+               "blocks": [block("u", "user", "hi")],
+               "engine": {"harness": "claude", "model": "m", "runtimeMode": "auto"},
+               "providerTranscript": {"providerSessionId": "conv-1"}})
+    };
+    let kept = |id: &str, conn: &Connection| -> Option<String> {
+        conn.query_row(
+            "SELECT provider_session_id FROM sessions WHERE id = ?1",
+            [id],
+            |r| r.get(0),
+        )
+        .unwrap()
+    };
+    insert_session(
+        &env,
+        &conn,
+        "own",
+        "T",
+        &file(false, &layout.project),
+        &rules,
+    )
+    .unwrap();
+    assert_eq!(kept("own", &conn).as_deref(), Some("conv-1"));
+    // Another chat here already resumes it.
+    insert_session(
+        &env,
+        &conn,
+        "second",
+        "T",
+        &file(false, &layout.project),
+        &rules,
+    )
+    .unwrap();
+    assert_eq!(kept("second", &conn), None);
+    // A private chat never resumes one from a file.
+    conn.execute("DELETE FROM sessions WHERE id = 'own'", [])
+        .unwrap();
+    insert_session(
+        &env,
+        &conn,
+        "secret",
+        "T",
+        &file(true, &layout.project),
+        &rules,
+    )
+    .unwrap();
+    assert_eq!(kept("secret", &conn), None);
+    // A transcript in another project's folder isn't this chat's.
+    conn.execute("DELETE FROM sessions WHERE id IN ('second','secret')", [])
+        .unwrap();
+    let elsewhere = layout.project.join("src");
+    insert_session(&env, &conn, "moved", "T", &file(false, &elsewhere), &rules).unwrap();
+    assert_eq!(kept("moved", &conn), None);
+}
+
+// ---- round 5: another spelling of the Monos home, notes only everywhere, relinks through the project record ----------
+
+/// An export whose memory folder `name` holds these files, imported into the layout's copy with its Monos home.
+fn import_memory_files(layout: &Layout, name: &str, files: &[(&str, &str)]) -> ImportReport {
+    let source = env_for(&layout.root.0.join("source"));
+    let store = open_store(&source);
+    drop(store);
+    let dest = layout.root.0.join("export");
+    let mut request = export_request(&dest, Form::Folder);
+    request.memory = None;
+    request.workspace = false;
+    request.files.clear();
+    export(&source, &request).unwrap();
+    for (relative, text) in files {
+        let place = dest.join("memory").join(name).join(relative);
+        fs::create_dir_all(place.parent().unwrap()).unwrap();
+        put_in_export(&dest, &format!("memory/{name}/{relative}"), text.as_bytes());
+    }
+    let store = open_store(&layout.target);
+    let conn = store.lock_conn().unwrap();
+    import_held(
+        &layout.target,
+        &conn,
+        &ImportRequest {
+            path: dest.to_string_lossy().into_owned(),
+            memory: Some(MemoryImport {
+                projects: vec![name.to_string()],
+                keep_both: false,
+                history: false,
+            }),
+            workspace: None,
+        },
+    )
+    .unwrap()
+}
+
+#[test]
+fn a_memory_folder_that_reaches_the_monos_home_under_another_name_writes_nothing_there() {
+    let layout = layout();
+    let monos = layout.target.monos_root.clone();
+    fs::create_dir_all(monos.join("lead")).unwrap();
+    // A link stands in for a case alias (`Monos` on a case-insensitive disk is the same folder as `monos`).
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(&monos, layout.target.memory_root.join("MonosAlias")).unwrap();
+        let report = import_memory_files(
+            &layout,
+            "MonosAlias",
+            &[
+                ("CLAUDE.md", "planted"),
+                ("lead/CLAUDE.md", "planted"),
+                ("lead/AGENTS.override.md", "planted"),
+                ("lead/opencode.json", "{\"mcp\":{}}"),
+                ("lead/MEMORY.md", "a note"),
+            ],
+        );
+        for planted in [
+            "CLAUDE.md",
+            "lead/CLAUDE.md",
+            "lead/AGENTS.override.md",
+            "lead/opencode.json",
+            "lead/MEMORY.md",
+        ] {
+            assert!(
+                !monos.join(planted).exists(),
+                "{planted} reached the Monos home: {report:?}"
+            );
+        }
+        assert!(
+            report
+                .notes
+                .iter()
+                .any(|n| n.contains("MonosAlias") && n.contains("Monos home")),
+            "{:?}",
+            report.notes
+        );
+    }
+}
+
+#[test]
+fn another_spelling_of_the_monos_home_is_refused_by_name() {
+    let env = layout().target;
+    let target = |name: &str| env.memory_root.join(name);
+    // The Monos home itself, spelled as it is, is not an alias.
+    assert_eq!(aliases_monos_home(&env, "monos", &target("monos")), None);
+    // A case alias, and Windows' trailing dot or space, all spell it another way.
+    for alias in ["Monos", "MONOS", "monos.", "monos ", "monos. .", "MonoS "] {
+        assert!(
+            aliases_monos_home(&env, alias, &target(alias)).is_some(),
+            "{alias:?}"
+        );
+    }
+    assert_eq!(aliases_monos_home(&env, "ash", &target("ash")), None);
+    // A name that ends in a dot or a space is never taken as a memory folder at all.
+    for name in ["monos.", "monos ", "ash.", "ash "] {
+        assert!(!plain_name(name), "{name:?}");
+    }
+    assert!(plain_name("ash") && plain_name("my notes"));
+}
+
+#[test]
+fn a_memory_import_writes_only_notes_in_any_folder() {
+    let layout = layout();
+    let report = import_memory_files(
+        &layout,
+        "ash",
+        &[
+            ("MEMORY.md", "# ash\n"),
+            ("topics/deploy.md", "note"),
+            ("CLAUDE.md", "planted"),
+            ("AGENTS.md", "planted"),
+            ("AGENTS.override.md", "planted"),
+            ("GEMINI.md", "planted"),
+            ("topics/CLAUDE.local.md", "planted"),
+            ("opencode.json", "{}"),
+            ("topics/settings.json", "{}"),
+            ("data.txt", "not a note"),
+        ],
+    );
+    let root = layout.target.memory_root.join("ash");
+    for note in ["MEMORY.md", "topics/deploy.md"] {
+        assert!(root.join(note).is_file(), "{note}: {report:?}");
+    }
+    for planted in [
+        "CLAUDE.md",
+        "AGENTS.md",
+        "AGENTS.override.md",
+        "GEMINI.md",
+        "topics/CLAUDE.local.md",
+        "opencode.json",
+        "topics/settings.json",
+        "data.txt",
+    ] {
+        assert!(!root.join(planted).exists(), "{planted} was written");
+    }
+}
+
+#[test]
+fn what_counts_as_a_note_and_as_an_instruction_file() {
+    for note in ["a.md", "topics/deploy.md", "My Notes.MD"] {
+        assert!(folders::memory_note_file(Path::new(note)), "{note}");
+    }
+    for not_note in [
+        "CLAUDE.md",
+        "claude.md",
+        "AGENTS.md",
+        "AGENTS.override.md",
+        "agents.override.md",
+        "CLAUDE.local.md",
+        "GEMINI.md",
+        "opencode.json",
+        ".cursorrules",
+        ".mcp.json",
+        "settings.json",
+        "topics/.hidden.md",
+        ".claude/x.md",
+        "data.txt",
+        "a.md.exe",
+        "../a.md",
+    ] {
+        assert!(
+            !folders::memory_note_file(Path::new(not_note)),
+            "{not_note}"
+        );
+    }
+    for instruction in [
+        "AGENTS.override.md",
+        "CLAUDE.local.md",
+        "GEMINI.md",
+        ".cursorrules",
+        "opencode.json",
+        ".mcp.json",
+        "mcp.json",
+        ".windsurfrules",
+        "copilot-instructions.md",
+    ] {
+        assert!(folders::instruction_file(instruction), "{instruction}");
+    }
+    assert!(!folders::instruction_file("today.md"));
+}
+
+#[test]
+fn a_monos_folder_takes_only_the_names_mono_rs_uses() {
+    let allowed = [
+        "lead/SOUL.md",
+        "lead/MEMORY.md",
+        "lead/soul-template.md",
+        "lead/memory/today.md",
+        "lead/skills/review.md",
+    ];
+    let refused = [
+        "lead/AGENTS.override.md",
+        "lead/CLAUDE.local.md",
+        "lead/GEMINI.md",
+        "lead/notes.md",
+        "lead/habits.md",
+        "lead/memory/CLAUDE.md",
+        "lead/memory/.hidden.md",
+        "lead/memory/deep/x.md",
+        "lead/.claude/settings.json",
+        "MEMORY.md",
+        "lead",
+        "../lead/SOUL.md",
+    ];
+    for path in allowed {
+        assert!(folders::mono_folder_file(Path::new(path)), "{path}");
+    }
+    for path in refused {
+        assert!(!folders::mono_folder_file(Path::new(path)), "{path}");
+    }
+}
+
+#[test]
+fn a_restored_history_loses_instruction_and_hidden_files_but_keeps_everything_else_and_stays_intact(
+) {
+    let source_dir = TestDir::new("source");
+    let target_dir = TestDir::new("target");
+    let out = TestDir::new("out");
+    let source = env_for(&source_dir.0);
+    let target = env_for(&target_dir.0);
+    let docs = source.memory_root.join("docs");
+    fs::create_dir_all(docs.join(".claude")).unwrap();
+    fs::create_dir_all(docs.join("topics")).unwrap();
+    fs::write(docs.join("MEMORY.md"), "# docs\n").unwrap();
+    fs::write(docs.join("topics/a.md"), "a\n").unwrap();
+    fs::write(docs.join("themes.json"), "{}\n").unwrap();
+    fs::write(docs.join("AGENTS.override.md"), "planted\n").unwrap();
+    fs::write(docs.join(".claude/settings.json"), "{\"hooks\":{}}\n").unwrap();
+    git(&docs, &["init", "-q", "-b", "main"]);
+    git(&docs, &["add", "-A"]);
+    git(&docs, &["commit", "-q", "-m", "docs"]);
+    let dest = out.0.join("export");
+    let mut request = export_request(&dest, Form::Folder);
+    request.workspace = false;
+    request.memory = Some(MemoryChoice {
+        projects: vec!["docs".into()],
+        history: true,
+    });
+    export(&source, &request).unwrap();
+    let store = open_store(&target);
+    let conn = store.lock_conn().unwrap();
+    import_held(
+        &target,
+        &conn,
+        &ImportRequest {
+            path: dest.to_string_lossy().into_owned(),
+            memory: Some(MemoryImport {
+                projects: vec!["docs".into()],
+                keep_both: false,
+                history: true,
+            }),
+            workspace: None,
+        },
+    )
+    .unwrap();
+    let root = target.memory_root.join("docs");
+    assert!(
+        root.join("themes.json").is_file(),
+        "only instruction and hidden files go"
+    );
+    assert!(root.join("topics/a.md").is_file());
+    assert!(!root.join("AGENTS.override.md").exists());
+    assert!(!root.join(".claude/settings.json").exists());
+    let git_out = |args: &[&str]| {
+        let out = Command::new("git")
+            .arg("-C")
+            .arg(&root)
+            .args(args)
+            .output()
+            .unwrap();
+        String::from_utf8_lossy(&out.stdout).into_owned()
+    };
+    assert!(
+        git_out(&["status", "--porcelain"]).trim().is_empty(),
+        "the restored folder is clean"
+    );
+    assert_eq!(
+        git_out(&["log", "--oneline"]).lines().count(),
+        1,
+        "the history keeps its length"
+    );
+}
+
+#[test]
+fn a_project_chat_from_another_user_is_relinked_through_the_project_record_once_it_has_a_folder() {
+    let layout = layout();
+    let old = "/Users/old/Projects/app";
+    // On a fresh Mac the project has no folder here at import time: the pair carries only the id and the file's folder.
+    let map = [("app", old, String::new())];
+    let chats = [
+        ("one", format!("{old}/src/deep"), None),
+        ("two", old.to_string(), None),
+    ];
+    // The record has no folder for it yet.
+    let store = open_store(&layout.target);
+    let conn = store.lock_conn().unwrap();
+    crate::local_hub::write(
+        &conn,
+        "projects",
+        &json!({"projects": [{"id": "app", "name": "App", "folder": null}]}),
+    )
+    .unwrap();
+    drop(conn);
+    drop(store);
+    let (stored, report) = import_folders_with(&layout, &chats, &[], &[], &map);
+    assert_eq!(stored["one"].0, "");
+    assert_eq!(stored["two"].0, "");
+    assert_eq!(report["foldersCleared"], 2, "{report}");
+    assert!(relink_candidates(&layout.target, None, &[], &[]).is_empty());
+    // Ash picks the project's folder here (a different user name, a different path).
+    let store = open_store(&layout.target);
+    let conn = store.lock_conn().unwrap();
+    crate::local_hub::write(
+        &conn,
+        "projects",
+        &json!({"projects": [{"id": "app", "name": "App", "folder": layout.project.to_string_lossy()}]}),
+    )
+    .unwrap();
+    drop(conn);
+    drop(store);
+    let mut offers = relink_candidates(&layout.target, None, &[], &[]);
+    offers.sort_by(|a, b| a.session_id.cmp(&b.session_id));
+    assert_eq!(
+        offers
+            .iter()
+            .map(|o| (o.session_id.as_str(), o.folder.as_str()))
+            .collect::<Vec<_>>(),
+        [
+            ("one", path(&layout.project, "src/deep").as_str()),
+            ("two", layout.project.to_string_lossy().as_ref())
+        ]
+    );
+    assert!(offers
+        .iter()
+        .all(|o| o.group == layout.project.to_string_lossy()));
+}
+
+#[test]
+fn a_file_cannot_map_everything_onto_a_project_with_a_broad_from() {
+    let layout = layout();
+    let to = layout.project.to_string_lossy().into_owned();
+    let home = layout
+        .target
+        .home
+        .clone()
+        .unwrap()
+        .to_string_lossy()
+        .into_owned();
+    let map = [
+        ("all", "/", to.clone()),
+        ("users", "/Users", to.clone()),
+        ("user", "/Users/old", to.clone()),
+        ("mine", home.as_str(), to.clone()),
+    ];
+    let chats = [
+        ("a", "/anything/at/all".to_string(), None),
+        ("b", "/Users/old/Documents".to_string(), None),
+        ("c", format!("{home}/Documents"), None),
+    ];
+    let (stored, _) = import_folders_with(&layout, &chats, &[], &[], &map);
+    assert!(stored.values().all(|(cwd, _)| cwd.is_empty()), "{stored:?}");
+    // Only the deepest project the chat is in maps it: the other pair is not applied to it.
+    let map = [
+        ("app", "/Users/old/Projects/app", to.clone()),
+        (
+            "other",
+            "/Users/old/Projects/other",
+            path(layout.project.parent().unwrap(), "app-evil"),
+        ),
+    ];
+    let chats = [("x", "/Users/old/Projects/other/src".to_string(), None)];
+    let (stored, _) = import_folders_with(&layout_again(&layout), &chats, &[], &[], &map);
+    assert_eq!(
+        stored["x"].0, "",
+        "the mapped folder app-evil is no project here"
+    );
+}
+
+#[test]
+fn a_relink_checks_the_folder_and_the_ones_above_it_on_disk_again() {
+    let layout = layout();
+    let lead = layout.target.monos_root.join("lead");
+    fs::create_dir_all(lead.join("memory")).unwrap();
+    let source = env_for(&layout.root.0.join("source"));
+    let store = open_store(&source);
+    let conn = store.lock_conn().unwrap();
+    add_session(
+        &conn,
+        "chat",
+        "chat",
+        "claude",
+        json!([block("u", "user", "hi")]),
+        1_000,
+    );
+    conn.execute(
+        "UPDATE sessions SET cwd = ?1 WHERE id = 'chat'",
+        [path(&lead, "memory")],
+    )
+    .unwrap();
+    drop(conn);
+    drop(store);
+    let dest = layout.root.0.join("export");
+    let mut request = export_request(&dest, Form::Folder);
+    request.memory = None;
+    request.files.clear();
+    export(&source, &request).unwrap();
+    let store = open_store(&layout.target);
+    let conn = store.lock_conn().unwrap();
+    // Imported while `lead` isn't a Mono seated here, so the chat comes in folderless; it is seated afterwards.
+    import_held(
+        &layout.target,
+        &conn,
+        &ImportRequest {
+            path: dest.to_string_lossy().into_owned(),
+            memory: None,
+            workspace: serde_json::from_value(json!({"sessions": ["chat"]})).unwrap(),
+        },
+    )
+    .unwrap();
+    drop(conn);
+    drop(store);
+    let monos = ["lead".to_string()];
+    assert_eq!(
+        relink_candidates(&layout.target, None, &[], &monos).len(),
+        1
+    );
+    // Something a CLI reads has appeared above the folder since the import: a file in its Mono's folder, or a hidden
+    // folder there, however deep the chat's own folder is.
+    fs::write(lead.join("AGENTS.override.md"), "planted").unwrap();
+    assert!(relink_candidates(&layout.target, None, &[], &monos).is_empty());
+    fs::remove_file(lead.join("AGENTS.override.md")).unwrap();
+    fs::create_dir_all(lead.join(".claude")).unwrap();
+    assert!(relink_candidates(&layout.target, None, &[], &monos).is_empty());
+    fs::remove_dir_all(lead.join(".claude")).unwrap();
+    assert_eq!(
+        relink_candidates(&layout.target, None, &[], &monos).len(),
+        1
+    );
+}
+
+#[test]
+fn a_hidden_folder_below_the_memory_root_makes_its_holder_and_what_is_below_it_read_instructions() {
+    let layout = layout();
+    let lead = layout.target.monos_root.join("lead");
+    fs::create_dir_all(lead.join("memory")).unwrap();
+    // (what the import wrote, the chat folder that now reads it)
+    for (planted, chat) in [
+        (lead.join(".claude/hooks/run.json"), lead.clone()),
+        (lead.join(".claude/hooks/run.json"), lead.join("memory")),
+        (lead.join("memory/.cursor/rules/x.md"), lead.join("memory")),
+        (lead.join("AGENTS.override.md"), lead.clone()),
+    ] {
+        let mut rules = FolderRules::load(&layout.target, &[], &[], &["lead".into()], &[]);
+        rules.note_written(std::slice::from_ref(&planted));
+        let cleared = rules.vet(Some(&chat.to_string_lossy()), None);
+        assert_eq!(
+            cleared.cwd,
+            "",
+            "{} in {}",
+            planted.display(),
+            chat.display()
+        );
+        assert!(cleared.named_blocked, "{}", planted.display());
+    }
+    // A folder a CLI isn't started in doesn't read what is only below it.
+    let mut rules = FolderRules::load(&layout.target, &[], &[], &["lead".into()], &[]);
+    rules.note_written(&[lead.join("memory/.cursor/rules/x.md")]);
+    assert_eq!(
+        rules.vet(Some(&lead.to_string_lossy()), None).cwd,
+        lead.to_string_lossy()
+    );
+}
+
+#[test]
+fn the_imported_folder_table_made_by_an_earlier_build_gets_every_column() {
+    let layout = layout();
+    let store = open_store(&layout.target);
+    {
+        let conn = store.lock_conn().unwrap();
+        // The round-3 build made the table on the fly with three columns, and a round-4 database has four.
+        conn.execute_batch(
+            "DROP TABLE imported_chat_folders;
+             CREATE TABLE imported_chat_folders (session_id TEXT PRIMARY KEY, cwd TEXT NOT NULL, worktree_cwd TEXT);
+             INSERT INTO imported_chat_folders VALUES ('old', '/Users/old/app', NULL);",
+        )
+        .unwrap();
+    }
+    drop(store);
+    // Opened again, the table is whole, the old row is kept, and an import writes to it.
+    let store = open_store(&layout.target);
+    let conn = store.lock_conn().unwrap();
+    let columns: Vec<String> = conn
+        .prepare("SELECT name FROM pragma_table_info('imported_chat_folders') ORDER BY cid")
+        .unwrap()
+        .query_map([], |row| row.get(0))
+        .unwrap()
+        .flatten()
+        .collect();
+    assert_eq!(
+        columns,
+        [
+            "session_id",
+            "cwd",
+            "worktree_cwd",
+            "blocked",
+            "project_id",
+            "rest"
+        ]
+    );
+    let kept: String = conn
+        .query_row(
+            "SELECT cwd FROM imported_chat_folders WHERE session_id = 'old'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(kept, "/Users/old/app");
+    drop(conn);
+    drop(store);
+    let (_, report) = import_folders(
+        &layout,
+        &[("away", "/tmp/elsewhere".to_string(), None)],
+        &[],
+    );
+    assert_eq!(report["foldersCleared"], 1, "{report}");
 }
 
 /// Sets an environment variable for the process and puts it back (tests share one process).

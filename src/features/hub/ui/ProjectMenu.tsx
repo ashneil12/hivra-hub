@@ -8,8 +8,8 @@ import {
 import { hubData, liveHubStore } from "../model/hubData";
 import { archiveCheck, archiveProject, renameProjectEverywhere, setProjectShape, type ArchiveCheck } from "../model/projectActions";
 import {
-  isImageFileName, moveProject, pendingUndo, projectFileActions, projectIcon, projectLead, removeFromHub, setProjectIcon,
-  useProjectPrefsVersion, type ProjectIconChoice,
+  isImageFileName, pendingUndo, projectFileActions, projectIcon, projectLead, removeFromHub, setProjectIcon,
+  swapProjects, useProjectPrefsVersion, type ProjectIconChoice,
 } from "../model/projectPrefs";
 import { projectMonogram, projectMonogramClasses } from "../model/projectMonogram";
 import { PROJECT_SHAPES, SHAPE_LABEL } from "../model/projectShapes";
@@ -22,6 +22,8 @@ import {
 import { WorkerDefaultControl } from "../../crew/ui/WorkerDefaultControl";
 import { BuilderScaleControls } from "../../monos/ui/BuilderScaleControls";
 import { plainErrorText } from "../../../shared/text/plainErrorText";
+import { ProjectGroupChooser } from "./StripGroups";
+import { readStripGroups, stripLayout, stripSectionNeighbour } from "../model/stripGroups";
 
 /**
  * Icons a project could wear on this Mac before Ash OS kept its shape: still drawn for a choice stored back then.
@@ -86,7 +88,7 @@ export function ProjectMonogramTile({ name, size }: { name: string; size: number
   );
 }
 
-type Mode = { kind: "menu" } | { kind: "icon" } | { kind: "rename" } | { kind: "workers" } | { kind: "remove" };
+type Mode = { kind: "menu" } | { kind: "icon" } | { kind: "rename" } | { kind: "workers" } | { kind: "remove" } | { kind: "group" };
 
 /**
  * Right-click (or the hover "⋯") on a project: Change icon or image, Rename, Show folder in Finder, Move up / down,
@@ -94,12 +96,20 @@ type Mode = { kind: "menu" } | { kind: "icon" } | { kind: "rename" } | { kind: "
  */
 export function ProjectMenu({ project, anchor, onClose }: { project: HubProject; anchor: PopoverAnchor; onClose: () => void }) {
   const [mode, setMode] = useState<Mode>({ kind: "menu" });
-  const ids = hubData().listProjects().map((p) => p.id);
-  const at = ids.indexOf(project.id);
+  const projects = hubData().listProjects();
+  const ids = projects.map((p) => p.id);
+  // WP-137: the strip draws projects in no group first, then each group, so a move trades places with the neighbour in
+  // the project's own section (as this window draws it), and is offered only when that neighbour is there.
+  const strip = readStripGroups();
+  const layout = stripLayout(projects, strip.groups, strip.assignments, strip.filterId);
+  const above = stripSectionNeighbour(layout, project.id, -1);
+  const below = stripSectionNeighbour(layout, project.id, 1);
   if (mode.kind === "icon") return <IconChooser project={project} anchor={anchor} onClose={onClose} />;
   if (mode.kind === "rename") return <RenameProject project={project} anchor={anchor} onClose={onClose} />;
   if (mode.kind === "workers") return <ProjectWorkers project={project} anchor={anchor} onClose={onClose} />;
   if (mode.kind === "remove") return <RemoveFromHub project={project} anchor={anchor} onClose={onClose} />;
+  // WP-137: which group the project sits under on the strip.
+  if (mode.kind === "group") return <ProjectGroupChooser project={project} anchor={anchor} onClose={onClose} />;
   const item = (label: string, run: () => void, opts: { disabled?: boolean; danger?: boolean } = {}) => (
     <button
       type="button"
@@ -119,13 +129,14 @@ export function ProjectMenu({ project, anchor, onClose }: { project: HubProject;
       onDismiss={onClose} onContextMenu={(e) => e.preventDefault()} className="p-1" data-project-menu>
       {item("Change icon", () => setMode({ kind: "icon" }))}
       {item("Rename", () => setMode({ kind: "rename" }))}
+      {item("Group", () => setMode({ kind: "group" }))}
       {item("Workers at once", () => setMode({ kind: "workers" }))}
       {item("Show folder in Finder", () => {
         if (project.folder) void projectFileActions().then((a) => a.showFolder(project.folder!));
         onClose();
       }, { disabled: !project.folder })}
-      {item("Move up", () => { moveProject(ids, project.id, -1); onClose(); }, { disabled: at <= 0 })}
-      {item("Move down", () => { moveProject(ids, project.id, 1); onClose(); }, { disabled: at < 0 || at >= ids.length - 1 })}
+      {above ? item("Move up", () => { swapProjects(ids, project.id, above.id); onClose(); }) : null}
+      {below ? item("Move down", () => { swapProjects(ids, project.id, below.id); onClose(); }) : null}
       <div role="separator" className="my-1 h-px bg-content/10" />
       {item("Remove from hub", () => setMode({ kind: "remove" }), { danger: true })}
     </Popover>
