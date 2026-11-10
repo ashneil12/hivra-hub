@@ -7,6 +7,7 @@
 
 mod budget;
 mod failure;
+mod pick;
 mod policy;
 mod reroute;
 mod resolve;

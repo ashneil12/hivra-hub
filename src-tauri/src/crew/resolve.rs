@@ -119,7 +119,7 @@ fn usable(value: Option<&String>) -> Option<String> {
     }
 }
 
-fn cli_label(cli: &str) -> &str {
+pub(crate) fn cli_label(cli: &str) -> &str {
     match cli {
         "claude" => "Claude Code",
         "codex" => "Codex",
