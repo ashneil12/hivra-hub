@@ -2,7 +2,8 @@
 //
 // Structure translated from Row-Bot's src/row_bot/memory_policy.py (the gates, the query builder,
 // the weighted score, the rejection reasons, the broad-query margin and the trace). Row-Bot is
-// Apache-2.0, Copyright 2026 Row-Bot Contributors; see NOTICE and docs/hivra/credits.json.
+// Apache-2.0, Copyright 2026 Row-Bot Contributors. Its licence text is LICENSE.row-bot beside this file;
+// see also NOTICE and docs/hivra/credits.json.
 //
 // What changed in the translation: Row-Bot's semantic term and its graph term are folded into the
 // lexical term, because Hivra has no embeddings and no graph (its memory is one line per fact), so
