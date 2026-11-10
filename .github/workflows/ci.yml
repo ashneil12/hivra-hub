@@ -8,6 +8,12 @@ on:
     # tier runs 20 jobs (5 on macOS) at once, so drafts kept the PRs that are ready waiting in the
     # queue. Marking a PR ready for review runs everything.
     types: [opened, synchronize, reopened, ready_for_review]
+  schedule:
+    # Hivra: nightly, on main, 03:47 UTC. The RPM jobs only; every other job skips a scheduled run. A pull request
+    # that touches no packaging file builds one RPM image, so this run is what builds the second image and the
+    # clean install for everything else (a new Rust release, a moved Fedora or EPEL package). Native Preview has
+    # its own nightly run in native.yml.
+    - cron: '47 3 * * *'
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
@@ -16,7 +22,7 @@ concurrency:
 jobs:
   # GitHub's default job limit is 360 minutes. That is too long for a hang, so the long jobs set their own limit.
   release-channel:
-    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
+    if: github.event_name != 'schedule' && (github.event_name != 'pull_request' || !github.event.pull_request.draft)
     name: Release channel isolation
     runs-on: ubuntu-latest
     permissions:
@@ -34,7 +40,7 @@ jobs:
       - run: node --test scripts/hub-dev-loop.test.cjs
 
   mobile:
-    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
+    if: github.event_name != 'schedule' && (github.event_name != 'pull_request' || !github.event.pull_request.draft)
     name: Mobile checks
     runs-on: ubuntu-latest
     permissions:
@@ -60,7 +66,7 @@ jobs:
       - run: npx vitest run --config mobile/vitest.config.ts
 
   browser:
-    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
+    if: github.event_name != 'schedule' && (github.event_name != 'pull_request' || !github.event.pull_request.draft)
     # Hivra: the suite runs one test at a time (workers: 1) and took about 22 minutes as one job, the longest wait
     # on every PR. Four shards (whole spec files each) run side by side on separate runners, so nothing is shared.
     # The install step is capped at 8 minutes and retried once, so the job limit is 25 minutes: one full attempt
@@ -137,7 +143,7 @@ jobs:
           if-no-files-found: ignore
 
   host:
-    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
+    if: github.event_name != 'schedule' && (github.event_name != 'pull_request' || !github.event.pull_request.draft)
     timeout-minutes: 10
     strategy:
       fail-fast: false
@@ -161,7 +167,7 @@ jobs:
       - run: npm run host:package
 
   check:
-    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
+    if: github.event_name != 'schedule' && (github.event_name != 'pull_request' || !github.event.pull_request.draft)
     # Hivra: the web tests and the Rust checks ran one after the other in one job (about 24 minutes on Windows).
     # On Linux and Windows they now run as separate jobs, and Windows splits the web tests in two (vitest --shard).
     # macOS stays one runner. The web half and the Rust half run at the same time in that job, because a second
@@ -220,7 +226,7 @@ jobs:
         run: node scripts/ci-check-parallel.mjs
 
   ship:
-    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
+    if: github.event_name != 'schedule' && (github.event_name != 'pull_request' || !github.event.pull_request.draft)
     name: Ship drill
     timeout-minutes: 10
     strategy:
@@ -244,7 +250,7 @@ jobs:
         run: node --disable-warning=ExperimentalWarning --test scripts/hub-ship.test.mjs scripts/ship-platform.test.mjs
 
   appimage:
-    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
+    if: github.event_name != 'schedule' && (github.event_name != 'pull_request' || !github.event.pull_request.draft)
     name: AppImage host libraries
     runs-on: ubuntu-22.04
     permissions:
@@ -470,8 +476,9 @@ jobs:
   # WP-105: one required check that adds up the rest, so branch protection names one job instead of
   # every job. A new job stays out of this needs list until it has been green for a week. `if: always()`
   # means a failed or cancelled dependency still runs this job, so the failure is reported here too.
-  # Skipped counts as fine: a draft PR runs no jobs, and the AppImage check and the RPM full set skip when
-  # packaging files did not change. scripts/ci-ok.mjs prints one line naming every job and its result.
+  # Skipped counts as fine: a draft PR runs no jobs, the AppImage check and the RPM full set skip when packaging
+  # files did not change, and a nightly run starts only the RPM jobs. scripts/ci-ok.mjs prints one line naming
+  # every job and its result.
   ci-ok:
     name: ci-ok
     if: always()
