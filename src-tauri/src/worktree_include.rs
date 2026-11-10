@@ -9,7 +9,6 @@
 //! today's behaviour. Copied files are never staged, and their contents are
 //! never put in a note.
 
-use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 /// How many bytes of the manifest we will read. A pattern list fits easily. Anything
@@ -110,43 +109,37 @@ fn nothing_chosen(readable: bool) -> Chosen {
 /// The files git ignores that the manifest selects. Git owns the pattern language,
 /// so negation, `**`, escapes and directory patterns all behave as they do in
 /// `.gitignore`. A pattern that matches nothing is not an error.
-fn choose(source: &Path, manifest: &str) -> Chosen {
+fn choose(source: &Path, manifest: &str, list_bytes: usize) -> Chosen {
     let Some(staged) = stage_manifest(manifest) else {
         return nothing_chosen(false);
     };
     let exclude = format!("--exclude-from={}", staged.0.to_string_lossy());
-    // Files the manifest's patterns ignore, on their own. This list includes a file
-    // that the repository's own rules would let through (an untracked file the person
-    // has not ignored), so it is filtered below.
+    // The untracked files the manifest's patterns match. This includes a file the
+    // checkout's own rules let through (untracked and not ignored), so it is
+    // filtered below.
     let Some((selected, selected_cut)) = git_paths(
         source,
         &["ls-files", "-z", "--others", "--ignored", &exclude],
+        list_bytes,
     ) else {
         return nothing_chosen(false);
     };
     if selected.is_empty() {
         return nothing_chosen(true);
     }
-    // Files the checkout's own rules ignore: `.gitignore`, `.git/info/exclude`, and
-    // the person's global ignore file.
-    let Some((ignored, ignored_cut)) = git_paths(
-        source,
-        &[
-            "ls-files",
-            "-z",
-            "--others",
-            "--ignored",
-            "--exclude-standard",
-        ],
-    ) else {
+    // Which of those the checkout's own rules ignore (`.gitignore`, `.git/info/exclude`
+    // and the person's global ignore file). Git is asked about these names only. Listing
+    // every ignored file instead would fill the cap with a tree like `node_modules` and
+    // drop a later `.env`.
+    let names: Vec<&str> = selected.iter().map(String::as_str).collect();
+    let Some(ignored) = crate::fs::git_ignored_names(source, &names) else {
         return nothing_chosen(false);
     };
-    let ignored: HashSet<String> = ignored.into_iter().collect();
     let mut paths: Vec<String> = selected
         .into_iter()
         .filter(|path| ignored.contains(path))
         .collect();
-    let mut stop = if selected_cut || ignored_cut {
+    let mut stop = if selected_cut {
         Stop::Listing
     } else {
         Stop::None
@@ -163,8 +156,8 @@ fn choose(source: &Path, manifest: &str) -> Chosen {
 }
 
 /// `git`'s NUL-separated path list, and whether the list was cut short.
-fn git_paths(root: &Path, args: &[&str]) -> Option<(Vec<String>, bool)> {
-    let (bytes, capped) = crate::fs::git_output_capped(root, args, LIST_BYTES, None)?;
+fn git_paths(root: &Path, args: &[&str], list_bytes: usize) -> Option<(Vec<String>, bool)> {
+    let (bytes, capped) = crate::fs::git_output_capped(root, args, list_bytes, None)?;
     let complete = bytes.is_empty() || bytes.ends_with(&[0]);
     let mut parts: Vec<&[u8]> = bytes.split(|byte| *byte == 0).collect();
     if !complete {
@@ -190,6 +183,11 @@ pub(crate) struct IncludeOutcome {
 /// Copy the selected gitignored files from `source` into `dest`. Does not stage them
 /// and does not remove the worktree when a copy fails.
 pub(crate) fn apply(source: &Path, dest: &Path) -> IncludeOutcome {
+    apply_with_list_cap(source, dest, LIST_BYTES)
+}
+
+/// [`apply`] with the listing cap passed in, so a test can use a small one.
+fn apply_with_list_cap(source: &Path, dest: &Path, list_bytes: usize) -> IncludeOutcome {
     if !dest.is_dir() {
         return IncludeOutcome {
             note: None,
@@ -211,7 +209,7 @@ pub(crate) fn apply(source: &Path, dest: &Path) -> IncludeOutcome {
         }
         Manifest::Text(text) => manifest_text(&text),
     };
-    let chosen = choose(source, &text);
+    let chosen = choose(source, &text, list_bytes);
     if !chosen.readable {
         return IncludeOutcome {
             note: None,
@@ -928,6 +926,68 @@ mod tests {
         no_secret(&note);
         no_secret(&warning);
         assert!(warning.contains("Stopped after 100 files"));
+    }
+
+    #[test]
+    fn a_large_ignored_tree_does_not_hide_a_file_listed_after_it() {
+        // `node_modules` is ignored and sorts before `server`. Asking git for every
+        // ignored file would fill the listing cap with it and drop `server/.env`.
+        let tmp = repo_with_ignore("big-ignored", "node_modules/\n.env\n");
+        let root = tmp.0.join("repo");
+        let modules = root.join("node_modules");
+        std::fs::create_dir_all(&modules).unwrap();
+        for index in 0..400 {
+            std::fs::write(modules.join(format!("package-number-{index:04}.js")), "x\n").unwrap();
+        }
+        std::fs::create_dir(root.join("server")).unwrap();
+        std::fs::write(root.join("server").join(".env"), SECRET).unwrap();
+        std::fs::write(root.join(".env"), SECRET).unwrap();
+        std::fs::write(root.join(".worktreeinclude"), ".env\n").unwrap();
+        let dest = tmp.0.join("dest");
+        std::fs::create_dir(&dest).unwrap();
+        // The whole ignored tree is about 14 KB of paths. The two files asked for are far under 4 KB.
+        let outcome = apply_with_list_cap(&root, &dest, 4096);
+        assert_eq!(std::fs::read_to_string(dest.join(".env")).unwrap(), SECRET);
+        assert_eq!(
+            std::fs::read_to_string(dest.join("server").join(".env")).unwrap(),
+            SECRET
+        );
+        assert!(!dest.join("node_modules").exists());
+        assert_eq!(outcome.warning, None);
+        assert_eq!(
+            outcome.note.as_deref(),
+            Some("2 files named in .worktreeinclude are in this worktree.")
+        );
+    }
+
+    #[test]
+    fn a_pattern_list_too_long_to_read_whole_copies_what_it_read_and_says_so() {
+        let tmp = repo_with_ignore("cut-list", "many/\n");
+        let root = tmp.0.join("repo");
+        let many = root.join("many");
+        std::fs::create_dir_all(&many).unwrap();
+        for index in 0..200 {
+            std::fs::write(many.join(format!("file-number-{index:04}.txt")), SECRET).unwrap();
+        }
+        std::fs::write(root.join(".worktreeinclude"), "many/\n").unwrap();
+        let dest = tmp.0.join("dest");
+        std::fs::create_dir(&dest).unwrap();
+        let outcome = apply_with_list_cap(&root, &dest, 1024);
+        let copied = std::fs::read_dir(dest.join("many")).unwrap().count();
+        assert!(copied > 0 && copied < 200, "{copied}");
+        // A path cut in half names nothing, so every file that was copied is a whole file.
+        for entry in std::fs::read_dir(dest.join("many")).unwrap() {
+            let name = entry.unwrap().file_name().to_string_lossy().into_owned();
+            assert!(
+                name.starts_with("file-number-") && name.ends_with(".txt"),
+                "{name}"
+            );
+            assert_eq!(name.len(), "file-number-0000.txt".len(), "{name}");
+        }
+        let warning = outcome.warning.expect("warning");
+        no_secret(&warning);
+        assert!(warning.contains("Could not list every file"), "{warning}");
+        assert!(outcome.note.is_some());
     }
 
     #[test]

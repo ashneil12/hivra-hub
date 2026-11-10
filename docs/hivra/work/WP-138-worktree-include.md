@@ -24,6 +24,8 @@ T3 still does not have this. [Discussion #6905](https://github.com/pingdotgg/t3c
 
 Only files git ignores are copied. A tracked file is already in the new worktree, and an untracked file that is not ignored is the person's work in progress, so both stay where they are. A pattern that names nothing is not an error.
 
+Git is first asked which untracked files the patterns select, and then which of those the checkout's own ignore rules cover, by name. It is never asked to list every ignored file, so a large ignored tree such as `node_modules` cannot fill the listing and hide a later `server/.env`.
+
 Hivra reads the file on disk, including when it is untracked or newer than the last commit. A missing file, or a file that is only comments, changes nothing.
 
 No pattern can reach outside the checkout: an absolute path, a drive letter or a `..` part names nothing git lists under the root. The copy step itself also refuses a link and any path that resolves outside the worktree. At most 100 files are copied; the rest are reported, not copied.
