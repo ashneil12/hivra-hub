@@ -59,6 +59,7 @@ import {
   type ComposerTurnOptions,
 } from "../model/session";
 import { sessionHasBtwThreads, supportsBtwHarness } from "../model/btw";
+import { FanOutCompare, type FanOutCompareModel } from "./FanOutCompare";
 import { BtwSheet, useBtwConversation } from "./BtwSheet";
 import { AgentTranscript } from "./AgentTranscript";
 import { lineageForThread } from "../model/subagentLineage";
@@ -206,6 +207,14 @@ export type SessionPaneProps = {
     attachments: Attachment[],
     options?: ComposerTurnOptions,
   ) => boolean | void;
+  /** WP-135: start the same prompt on several models. A string is the reason nothing started. */
+  onCompareModels?: (
+    sessionId: string,
+    prompt: string,
+    targets: readonly { provider: HarnessId; model: string }[],
+  ) => boolean | string | Promise<boolean | string | void> | void;
+  /** WP-135: the compare started from this chat, when there is one. */
+  fanOutForSession?: (sessionId: string) => FanOutCompareModel | null;
   onSaveDraft: (
     sessionId: string,
     text: string,
@@ -365,6 +374,8 @@ const LocalSessionPane = memo(function LocalSessionPane({
   onSaveDraft,
   onRemoveDraft,
   onSubmit,
+  onCompareModels,
+  fanOutForSession,
   onStop,
   onStopTurn,
   onCompactContext,
@@ -724,6 +735,8 @@ const LocalSessionPane = memo(function LocalSessionPane({
     return () => observer.disconnect();
   }, [glassDock, composerDockMotion.dockedRef]);
   const draftRef = useRef<string | undefined>(getComposerDraft(session.id));
+  const fanOutView = fanOutForSession?.(session.id) ?? null;
+  const fanOutCompare = fanOutView ? <FanOutCompare view={fanOutView} /> : null;
   // WP-115: hide a redirect this agent cannot do, and say what to do instead.
   const cannotRedirect = harnessCannotSteer(session.harness);
   // The app compacting this idle chat in the background says so, and a queued
@@ -840,6 +853,11 @@ const LocalSessionPane = memo(function LocalSessionPane({
         if (!dockComposer) composerDockMotion.captureLaunch();
         return onSubmit(session.id, text, attachments, options);
       }}
+      onCompareModels={
+        onCompareModels
+          ? (prompt, targets) => onCompareModels(session.id, prompt, targets)
+          : undefined
+      }
       onBtwCommand={btw.openWith}
       // A coding team's chat: Stop is its own turn; "Stop all" on the delegation line stops what it handed out.
       onStop={() => (teamChat ? (onStopTurn ?? onStop) : onStop)(session.id)}
@@ -1086,6 +1104,7 @@ const LocalSessionPane = memo(function LocalSessionPane({
                         ref={composerDockMotion.centeredRef}
                         data-session-composer
                       >
+                        {fanOutCompare}
                         {composer}
                       </div>
                     )
@@ -1487,6 +1506,7 @@ const LocalSessionPane = memo(function LocalSessionPane({
                       </button>
                     </div>
                   ) : null}
+                  {fanOutCompare}
                   {composer}
                 </>
               )}

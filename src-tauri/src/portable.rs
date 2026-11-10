@@ -1902,10 +1902,14 @@ pub struct Inspection {
     pub memory_target: String,
 }
 
+/// Two chats are the same when their words and blocks match. File paths are left out of the comparison: an import
+/// never keeps them (`drop_imported_file_paths`), so a chat that came in from this file must still read as here.
 fn blocks_digest(title: &str, blocks: &[Value]) -> String {
+    let mut blocks = Value::Array(blocks.to_vec());
+    drop_imported_file_paths(&mut blocks);
     let mut text = String::from(title);
     text.push('\n');
-    text.push_str(&serde_json::to_string(blocks).unwrap_or_default());
+    text.push_str(&serde_json::to_string(&blocks).unwrap_or_default());
     sha256_hex(text.as_bytes())
 }
 
@@ -2547,6 +2551,7 @@ fn workspace_rows(
     }
     import_doc_history(conn, opened, &inserted, &report.renamed)?;
 
+    let mut paths_left_out = 0;
     let session_ids: BTreeSet<&String> = wanted.sessions.iter().collect();
     let session_copies: BTreeSet<&String> = wanted.session_copies.iter().collect();
     for id in session_ids {
@@ -2578,7 +2583,7 @@ fn workspace_rows(
                 file["title"].as_str().unwrap_or("Chat").to_string(),
             )
         };
-        insert_session(env, conn, &target, &title, &file)?;
+        paths_left_out += insert_session(env, conn, &target, &title, &file)?;
         if file["monoTranscript"].as_bool() == Some(true) {
             after.transcripts.push(target.clone());
         }
@@ -2587,6 +2592,12 @@ fn workspace_rows(
         } else {
             report.sessions_added += 1;
         }
+    }
+
+    if paths_left_out > 0 {
+        report.notes.push(format!(
+            "{paths_left_out} file paths in the imported chats were left out. They name files on the Mac that made the export, so those pictures and attachments show as not here."
+        ));
     }
 
     if !wanted.automations.is_empty() {
@@ -2893,13 +2904,49 @@ fn left_out_note(from: &str, reasons: &[&str]) -> String {
     format!("{count} of {note} {verb} not copied ({}).", why.join("; "))
 }
 
+/// Paths in an import come from the Mac that made the export, or from a file written by hand: never from this Mac.
+/// A chat that kept them would read whatever they name the first time it shows the picture, copies the message or
+/// sends it again. So the path of every generated image and of every attachment in the chat's blocks, side threads
+/// included, is left out. The block stays: an image keeps its name, caption and size with an empty path (the chat
+/// shows that its file is not here), and an attachment keeps its name and kind. Returns how many paths were left out.
+fn drop_imported_file_paths(value: &mut Value) -> usize {
+    match value {
+        Value::Array(items) => items.iter_mut().map(drop_imported_file_paths).sum(),
+        Value::Object(map) => {
+            let mut dropped = 0;
+            if let Some(Value::Object(image)) = map.get_mut("image") {
+                if image
+                    .get("path")
+                    .is_some_and(|path| path.as_str() != Some(""))
+                {
+                    image.insert("path".into(), json!(""));
+                    dropped += 1;
+                }
+            }
+            if let Some(Value::Array(files)) = map.get_mut("attachments") {
+                for file in files.iter_mut().filter_map(Value::as_object_mut) {
+                    dropped += usize::from(file.remove("path").is_some());
+                    file.remove("copyFromPath");
+                }
+            }
+            dropped
+                + map
+                    .values_mut()
+                    .map(drop_imported_file_paths)
+                    .sum::<usize>()
+        }
+        _ => 0,
+    }
+}
+
+/// Adds the chat to the store. Returns how many file paths in its blocks were left out (`drop_imported_file_paths`).
 fn insert_session(
     env: &Env,
     conn: &Connection,
     id: &str,
     title: &str,
     file: &Value,
-) -> rusqlite::Result<()> {
+) -> rusqlite::Result<usize> {
     let engine = &file["engine"];
     let harness = engine["harness"].as_str().unwrap_or("claude").to_string();
     // A provider session id is kept only where it can resume: the daily app, a Claude chat, its transcript here.
@@ -2908,6 +2955,8 @@ fn insert_session(
         .filter(|psid| !env.dev && harness == "claude" && claude_transcript(env, psid).is_some())
         .map(str::to_string);
     let text = |key: &str| file[key].as_str().map(str::to_string);
+    let mut blocks = file.get("blocks").cloned().unwrap_or(json!([]));
+    let paths_left_out = drop_imported_file_paths(&mut blocks);
     let session = SessionUpsert {
         sidebar_hidden: file["sidebarHidden"].as_bool().unwrap_or(false),
         id: id.to_string(),
@@ -2919,7 +2968,7 @@ fn insert_session(
         title: title.to_string(),
         provider_session_id: provider,
         provider_account_id: None,
-        blocks: file.get("blocks").cloned().unwrap_or(json!([])),
+        blocks,
         queued_messages: Vec::new(),
         queue_status: None,
         context_used: file["contextUsed"].as_i64(),
@@ -2952,7 +3001,7 @@ fn insert_session(
             text("branch"),
         ],
     )?;
-    Ok(())
+    Ok(paths_left_out)
 }
 
 fn import_memory(

@@ -5909,21 +5909,34 @@ fn save_generated_image_sync(
         .collect();
     let bytes = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, encoded)
         .map_err(|_| "Generated image data is not valid base64.".to_string())?;
+    store_generated_png(&generated_image_dir(app)?, &bytes, name)
+}
+
+/// The one folder the app keeps generated images in. Every generated image's path names a file inside it.
+fn generated_image_dir(app: &AppHandle) -> Result<PathBuf, String> {
+    Ok(app
+        .path()
+        .app_data_dir()
+        .map_err(|e| e.to_string())?
+        .join(GENERATED_IMAGE_DIR))
+}
+
+/// Check that `bytes` are a PNG of a sane size and write them to a new file of their own in `dir`.
+fn store_generated_png(
+    dir: &Path,
+    bytes: &[u8],
+    name: &str,
+) -> Result<GeneratedImageAsset, String> {
     if bytes.is_empty() || bytes.len() as u64 > MAX_GENERATED_IMAGE_BYTES {
         return Err(format!(
             "Generated image is too large (maximum {} MB).",
             MAX_GENERATED_IMAGE_BYTES / 1024 / 1024
         ));
     }
-    if !is_png(&bytes) {
+    if !is_png(bytes) {
         return Err("Generated image data is not a PNG image.".into());
     }
-    let dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| e.to_string())?
-        .join(GENERATED_IMAGE_DIR);
-    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     let safe_name = safe_attachment_name(name);
     let destination = dir.join(format!("{}-{}.png", Uuid::new_v4(), safe_name));
     let mut file = std::fs::OpenOptions::new()
@@ -5931,7 +5944,7 @@ fn save_generated_image_sync(
         .create_new(true)
         .open(&destination)
         .map_err(|e| format!("{}: {e}", destination.display()))?;
-    if let Err(error) = file.write_all(&bytes) {
+    if let Err(error) = file.write_all(bytes) {
         let _ = std::fs::remove_file(&destination);
         return Err(format!("{}: {error}", destination.display()));
     }
@@ -5942,8 +5955,120 @@ fn save_generated_image_sync(
     })
 }
 
+/// What one generated-image delete did. `skipped` counts the paths it refused (outside the
+/// generated-images folder, or not a file); the files they name are never touched.
+#[derive(Serialize, Debug, Default, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct GeneratedImageDeletion {
+    pub removed: usize,
+    pub skipped: usize,
+}
+
+/// Give a chat its own copy of one of the app's generated images, for a fork.
+///
+/// `path` comes from a chat's saved blocks, and an imported chat or a hand-edited store can put anything there, so
+/// the file is read only when it resolves inside the generated-images folder with symlinks followed. A file that is
+/// gone, or that is not inside, gives `None` and the caller carries on without the picture; any other failure is an
+/// error.
 #[tauri::command]
-pub async fn delete_generated_images(app: AppHandle, paths: Vec<String>) -> Result<(), String> {
+pub async fn copy_generated_image(
+    app: AppHandle,
+    path: String,
+    name: String,
+) -> Result<Option<GeneratedImageAsset>, String> {
+    let dir = generated_image_dir(&app)?;
+    tauri::async_runtime::spawn_blocking(move || copy_generated_image_in(&dir, &path, &name))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+fn copy_generated_image_in(
+    dir: &Path,
+    path: &str,
+    name: &str,
+) -> Result<Option<GeneratedImageAsset>, String> {
+    let Some(bytes) = read_generated_image_in(dir, path)? else {
+        return Ok(None);
+    };
+    store_generated_png(dir, &bytes, name).map(Some)
+}
+
+/// The bytes of one of the app's generated images, for showing it in a chat.
+///
+/// `path` comes from a chat's saved blocks, so it is read only under the rule of `copy_generated_image`: inside the
+/// generated-images folder, symlinks followed. An empty reply means the chat's file is not here: it is gone, or it is
+/// not one of the app's own images. The caller shows that as a missing picture.
+#[tauri::command]
+pub async fn read_generated_image(
+    app: AppHandle,
+    path: String,
+) -> Result<tauri::ipc::Response, String> {
+    let dir = generated_image_dir(&app)?;
+    let bytes = tauri::async_runtime::spawn_blocking(move || read_generated_image_in(&dir, &path))
+        .await
+        .map_err(|e| e.to_string())??;
+    Ok(tauri::ipc::Response::new(bytes.unwrap_or_default()))
+}
+
+/// The file a saved generated-image path names, when it is a file of the app's own folder. `None` when it is gone or
+/// not inside; any other failure is an error.
+fn read_generated_image_in(dir: &Path, path: &str) -> Result<Option<Vec<u8>>, String> {
+    // Resolve both sides before comparing, so `..` and a symlink in the folder that points out cannot pass. A path
+    // that cannot be resolved (gone, or not reachable) is not a file this can read.
+    let Ok(root) = std::fs::canonicalize(dir) else {
+        return Ok(None);
+    };
+    let requested = Path::new(path);
+    if !requested.is_absolute() {
+        return Ok(None);
+    }
+    let Ok(source) = std::fs::canonicalize(requested) else {
+        return Ok(None);
+    };
+    if source == root || !source.starts_with(&root) {
+        return Ok(None);
+    }
+    // A folder is not an image. Asked before opening: Windows refuses to open a folder as a file ("Access is
+    // denied"), which would read as a real error rather than a picture that is not there.
+    if !source.is_file() {
+        return Ok(None);
+    }
+    let mut handle = match std::fs::File::open(&source) {
+        Ok(handle) => handle,
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(format!("{}: {error}", source.display())),
+    };
+    let meta = handle
+        .metadata()
+        .map_err(|e| format!("{}: {e}", source.display()))?;
+    if !meta.is_file() {
+        return Ok(None);
+    }
+    let too_large = || {
+        format!(
+            "Generated image is too large (maximum {} MB).",
+            MAX_GENERATED_IMAGE_BYTES / 1024 / 1024
+        )
+    };
+    if meta.len() > MAX_GENERATED_IMAGE_BYTES {
+        return Err(too_large());
+    }
+    let mut bytes = Vec::with_capacity(meta.len() as usize);
+    (&mut handle)
+        .take(MAX_GENERATED_IMAGE_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|e| format!("{}: {e}", source.display()))?;
+    if bytes.len() as u64 > MAX_GENERATED_IMAGE_BYTES {
+        return Err(too_large());
+    }
+    Ok(Some(bytes))
+}
+
+#[tauri::command]
+pub async fn delete_generated_images(
+    app: AppHandle,
+    paths: Vec<String>,
+) -> Result<GeneratedImageDeletion, String> {
     tauri::async_runtime::spawn_blocking(move || delete_generated_images_sync(&app, &paths))
         .await
         .map_err(|e| e.to_string())?
@@ -5952,26 +6077,62 @@ pub async fn delete_generated_images(app: AppHandle, paths: Vec<String>) -> Resu
 pub(crate) fn delete_generated_images_sync(
     app: &AppHandle,
     paths: &[String],
-) -> Result<(), String> {
-    let root = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| e.to_string())?
-        .join(GENERATED_IMAGE_DIR)
+) -> Result<GeneratedImageDeletion, String> {
+    delete_generated_images_in(&generated_image_dir(app)?, paths)
+}
+
+/// Remove each named image that sits inside `dir`, one by one. A path outside it, or one that is
+/// not a file, is refused and counted in `skipped` (logged once, without the path); it never stops
+/// the rest. A file that is already gone is not counted. A real I/O failure on an inside file is
+/// collected the same way, so later images are still removed, and comes back as the `Err` once every
+/// path has been tried.
+pub(crate) fn delete_generated_images_in(
+    dir: &Path,
+    paths: &[String],
+) -> Result<GeneratedImageDeletion, String> {
+    let root = dir
         .canonicalize()
         .map_err(|error| format!("Generated image directory is unavailable: {error}"))?;
+    let mut done = GeneratedImageDeletion::default();
+    let mut failures: Vec<String> = Vec::new();
     for path in paths {
+        // A chat that came in from another Mac names no file for its pictures (an empty path): nothing to remove.
+        if path.is_empty() {
+            continue;
+        }
         let candidate = match PathBuf::from(path).canonicalize() {
             Ok(candidate) => candidate,
             Err(error) if error.kind() == ErrorKind::NotFound => continue,
-            Err(error) => return Err(error.to_string()),
+            Err(error) => {
+                failures.push(error.to_string());
+                continue;
+            }
         };
         if !candidate.starts_with(&root) || !candidate.is_file() {
-            return Err("Invalid generated image path".into());
+            done.skipped += 1;
+            continue;
         }
-        std::fs::remove_file(candidate).map_err(|error| error.to_string())?;
+        match std::fs::remove_file(candidate) {
+            Ok(()) => done.removed += 1,
+            Err(error) => failures.push(error.to_string()),
+        }
     }
-    Ok(())
+    if done.skipped > 0 {
+        eprintln!(
+            "Generated image delete skipped {} path(s) outside the generated images folder",
+            done.skipped
+        );
+    }
+    match failures.first() {
+        None => Ok(done),
+        Some(first) => Err(format!(
+            "{} of {} generated images could not be removed ({} removed, {} skipped): {first}",
+            failures.len(),
+            paths.len(),
+            done.removed,
+            done.skipped
+        )),
+    }
 }
 
 fn is_png(bytes: &[u8]) -> bool {
@@ -6596,6 +6757,122 @@ mod tests {
         assert!(!is_png(&[]));
     }
 
+    /// A data folder holding a generated-images folder and, beside it, a file the delete must never touch.
+    fn images_with_outsider(label: &str) -> (Tmp, PathBuf, PathBuf) {
+        let data = tmp(label);
+        let images = data.0.join(GENERATED_IMAGE_DIR);
+        std::fs::create_dir_all(&images).unwrap();
+        let outsider = data.0.join("outsider.png");
+        std::fs::write(&outsider, "keep me").unwrap();
+        (data, images, outsider)
+    }
+
+    #[test]
+    fn a_delete_with_one_outside_path_still_removes_the_inside_images() {
+        let (_data, images, outsider) = images_with_outsider("delete-outside");
+        let first = images.join("one.png");
+        let second = images.join("two.png");
+        std::fs::write(&first, "1").unwrap();
+        std::fs::write(&second, "2").unwrap();
+        // The refused path comes first: it must not stop the two real images after it.
+        let paths = [
+            outsider.to_string_lossy().into_owned(),
+            first.to_string_lossy().into_owned(),
+            second.to_string_lossy().into_owned(),
+        ];
+        let done = delete_generated_images_in(&images, &paths).unwrap();
+        assert_eq!(
+            done,
+            GeneratedImageDeletion {
+                removed: 2,
+                skipped: 1
+            }
+        );
+        assert!(!first.exists());
+        assert!(!second.exists());
+        assert_eq!(std::fs::read_to_string(&outsider).unwrap(), "keep me");
+    }
+
+    #[test]
+    fn a_delete_skips_a_folder_and_leaves_a_missing_path_uncounted() {
+        let (_data, images, _outsider) = images_with_outsider("delete-folder");
+        let folder = images.join("not-a-file");
+        std::fs::create_dir_all(&folder).unwrap();
+        let real = images.join("real.png");
+        std::fs::write(&real, "x").unwrap();
+        let gone = images.join("already-gone.png");
+        let paths = [
+            folder.to_string_lossy().into_owned(),
+            gone.to_string_lossy().into_owned(),
+            real.to_string_lossy().into_owned(),
+        ];
+        let done = delete_generated_images_in(&images, &paths).unwrap();
+        assert_eq!(
+            done,
+            GeneratedImageDeletion {
+                removed: 1,
+                skipped: 1
+            }
+        );
+        assert!(folder.is_dir());
+        assert!(!real.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_link_inside_the_folder_to_an_outside_file_is_skipped_and_the_file_survives() {
+        let (_data, images, outsider) = images_with_outsider("delete-link");
+        let link = images.join("link.png");
+        std::os::unix::fs::symlink(&outsider, &link).unwrap();
+        let real = images.join("real.png");
+        std::fs::write(&real, "x").unwrap();
+        let paths = [
+            link.to_string_lossy().into_owned(),
+            real.to_string_lossy().into_owned(),
+        ];
+        let done = delete_generated_images_in(&images, &paths).unwrap();
+        assert_eq!(
+            done,
+            GeneratedImageDeletion {
+                removed: 1,
+                skipped: 1
+            }
+        );
+        assert_eq!(std::fs::read_to_string(&outsider).unwrap(), "keep me");
+        assert!(!real.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_real_failure_on_an_inside_file_is_reported_after_the_rest_are_removed() {
+        use std::os::unix::fs::PermissionsExt;
+        let (_data, images, _outsider) = images_with_outsider("delete-io");
+        let locked_dir = images.join("locked");
+        std::fs::create_dir_all(&locked_dir).unwrap();
+        let stuck = locked_dir.join("stuck.png");
+        std::fs::write(&stuck, "s").unwrap();
+        let later = images.join("later.png");
+        std::fs::write(&later, "l").unwrap();
+        std::fs::set_permissions(&locked_dir, std::fs::Permissions::from_mode(0o555)).unwrap();
+        let unlock =
+            || std::fs::set_permissions(&locked_dir, std::fs::Permissions::from_mode(0o755));
+        // A user who may write anyway (root) cannot make this delete fail, so there is nothing to prove.
+        if std::fs::File::create(locked_dir.join("probe")).is_ok() {
+            unlock().unwrap();
+            return;
+        }
+        let paths = [
+            stuck.to_string_lossy().into_owned(),
+            later.to_string_lossy().into_owned(),
+        ];
+        let result = delete_generated_images_in(&images, &paths);
+        unlock().unwrap();
+        let error = result.unwrap_err();
+        assert!(error.starts_with("1 of 2 generated images"), "{error}");
+        assert!(stuck.exists());
+        assert!(!later.exists(), "one failing file stopped the rest");
+    }
+
     #[test]
     fn github_star_status_distinguishes_a_missing_star_from_an_unavailable_check() {
         assert_eq!(
@@ -6922,6 +7199,236 @@ mod tests {
         assert_eq!(encoded, "aGVsbG8=");
         assert_eq!(safe_attachment_name("../../secret.png"), "secret.png");
         assert_eq!(safe_attachment_name(""), "attachment");
+    }
+
+    const PNG_HEADER: [u8; 8] = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
+
+    /// A generated-images folder with one real image in it, and a PNG outside it standing in for a private file.
+    fn generated_image_fixture(label: &str) -> (Tmp, PathBuf, PathBuf, PathBuf) {
+        let dir = tmp(label);
+        let root = dir.0.join("generated-images");
+        std::fs::create_dir_all(&root).unwrap();
+        let real = root.join("one.png");
+        std::fs::write(&real, [&PNG_HEADER[..], b"real pixels"].concat()).unwrap();
+        let outside = dir.0.join("id_rsa.png");
+        std::fs::write(&outside, [&PNG_HEADER[..], b"private bytes"].concat()).unwrap();
+        (dir, root, real, outside)
+    }
+
+    fn files_in(dir: &Path) -> usize {
+        std::fs::read_dir(dir).unwrap().count()
+    }
+
+    fn copy_image(root: &Path, path: &Path) -> Result<Option<GeneratedImageAsset>, String> {
+        copy_generated_image_in(root, &path.to_string_lossy(), "cat")
+    }
+
+    #[test]
+    fn generated_image_copy_makes_a_file_of_its_own_from_a_real_image() {
+        let (_dir, root, real, _outside) = generated_image_fixture("gen-copy-real");
+        let copy = copy_image(&root, &real).unwrap().expect("a copy");
+        let copy_path = PathBuf::from(&copy.path);
+        assert_eq!(copy_path.parent().unwrap(), root);
+        assert_ne!(copy_path, real);
+        assert!(copy.path.ends_with("-cat.png"), "{}", copy.path);
+        assert_eq!(copy.mime_type, "image/png");
+        assert_eq!(
+            std::fs::read(&copy_path).unwrap(),
+            std::fs::read(&real).unwrap()
+        );
+        assert_eq!(copy.size, std::fs::read(&real).unwrap().len() as u64);
+        assert!(real.is_file(), "the original stays");
+    }
+
+    #[test]
+    fn generated_image_copy_does_not_read_or_copy_a_file_outside_the_folder() {
+        let (_dir, root, _real, outside) = generated_image_fixture("gen-copy-outside");
+        let before = files_in(&root);
+        assert_eq!(copy_image(&root, &outside), Ok(None));
+        assert_eq!(files_in(&root), before, "nothing was copied in");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn generated_image_copy_never_opens_a_file_outside_the_folder() {
+        use std::os::unix::fs::PermissionsExt;
+        let (_dir, root, _real, outside) = generated_image_fixture("gen-copy-unopened");
+        // A file that cannot be opened: an attempt to read it would be an error, not a refusal.
+        std::fs::set_permissions(&outside, std::fs::Permissions::from_mode(0o000)).unwrap();
+        assert_eq!(copy_image(&root, &outside), Ok(None));
+    }
+
+    #[test]
+    fn generated_image_copy_refuses_paths_that_climb_out_or_sit_beside_the_folder() {
+        let (dir, root, real, outside) = generated_image_fixture("gen-copy-climb");
+        let before = files_in(&root);
+        let climbing = root.join("..").join("id_rsa.png");
+        assert_eq!(copy_image(&root, &climbing), Ok(None));
+        let via_real = real.join("..").join("..").join("id_rsa.png");
+        assert_eq!(copy_image(&root, &via_real), Ok(None));
+        let beside = dir.0.join("generated-images-evil");
+        std::fs::create_dir_all(&beside).unwrap();
+        std::fs::copy(&outside, beside.join("x.png")).unwrap();
+        assert_eq!(copy_image(&root, &beside.join("x.png")), Ok(None));
+        assert_eq!(files_in(&root), before);
+    }
+
+    #[test]
+    fn generated_image_copy_refuses_a_relative_path_and_the_folder_itself() {
+        let (_dir, root, _real, _outside) = generated_image_fixture("gen-copy-relative");
+        assert_eq!(
+            copy_generated_image_in(&root, "generated-images/one.png", "cat"),
+            Ok(None)
+        );
+        assert_eq!(copy_generated_image_in(&root, "", "cat"), Ok(None));
+        assert_eq!(copy_image(&root, &root), Ok(None));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn generated_image_copy_refuses_a_symlink_inside_the_folder_that_points_out() {
+        let (dir, root, real, outside) = generated_image_fixture("gen-copy-link");
+        std::os::unix::fs::symlink(&outside, root.join("leak.png")).unwrap();
+        let elsewhere = dir.0.join("elsewhere");
+        std::fs::create_dir_all(&elsewhere).unwrap();
+        std::fs::copy(&outside, elsewhere.join("deep.png")).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, root.join("folder-link")).unwrap();
+        std::os::unix::fs::symlink(&real, root.join("alias.png")).unwrap();
+        let before = files_in(&root);
+
+        assert_eq!(copy_image(&root, &root.join("leak.png")), Ok(None));
+        assert_eq!(
+            copy_image(&root, &root.join("folder-link").join("deep.png")),
+            Ok(None)
+        );
+        assert_eq!(files_in(&root), before, "nothing was copied in");
+        // A link that stays inside the folder is still one of the app's own images.
+        assert!(copy_image(&root, &root.join("alias.png"))
+            .unwrap()
+            .is_some());
+    }
+
+    #[test]
+    fn generated_image_copy_gives_none_for_a_file_that_is_gone() {
+        let (_dir, root, _real, _outside) = generated_image_fixture("gen-copy-gone");
+        assert_eq!(copy_image(&root, &root.join("missing.png")), Ok(None));
+        let absent = root.join("not-made-yet");
+        assert_eq!(copy_image(&absent, &absent.join("one.png")), Ok(None));
+        assert!(!absent.exists(), "a missing folder is not created");
+    }
+
+    #[test]
+    fn generated_image_copy_still_checks_what_the_file_holds() {
+        let (_dir, root, _real, _outside) = generated_image_fixture("gen-copy-bytes");
+        std::fs::write(root.join("page.png"), b"<html>").unwrap();
+        std::fs::write(root.join("empty.png"), b"").unwrap();
+        std::fs::create_dir_all(root.join("nested.png")).unwrap();
+        assert!(copy_image(&root, &root.join("page.png"))
+            .unwrap_err()
+            .contains("not a PNG"));
+        assert!(copy_image(&root, &root.join("empty.png")).is_err());
+        assert_eq!(copy_image(&root, &root.join("nested.png")), Ok(None));
+    }
+
+    fn read_image(root: &Path, path: &Path) -> Result<Option<Vec<u8>>, String> {
+        read_generated_image_in(root, &path.to_string_lossy())
+    }
+
+    #[test]
+    fn generated_image_read_gives_a_real_image_and_nothing_outside_the_folder() {
+        let (dir, root, real, outside) = generated_image_fixture("gen-read");
+        assert_eq!(
+            read_image(&root, &real).unwrap(),
+            Some(std::fs::read(&real).unwrap())
+        );
+        assert_eq!(read_image(&root, &outside), Ok(None));
+        assert_eq!(
+            read_image(&root, &root.join("..").join("id_rsa.png")),
+            Ok(None)
+        );
+        let beside = dir.0.join("generated-images-evil");
+        std::fs::create_dir_all(&beside).unwrap();
+        std::fs::copy(&outside, beside.join("x.png")).unwrap();
+        assert_eq!(read_image(&root, &beside.join("x.png")), Ok(None));
+        assert_eq!(read_image(&root, &root.join("missing.png")), Ok(None));
+        assert_eq!(read_image(&root, &root), Ok(None));
+        assert_eq!(read_generated_image_in(&root, ""), Ok(None));
+        assert_eq!(
+            read_generated_image_in(&root, "generated-images/one.png"),
+            Ok(None)
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn generated_image_read_refuses_symlinks_that_point_out_and_never_opens_outside_files() {
+        use std::os::unix::fs::PermissionsExt;
+        let (dir, root, real, outside) = generated_image_fixture("gen-read-link");
+        std::os::unix::fs::symlink(&outside, root.join("leak.png")).unwrap();
+        let elsewhere = dir.0.join("elsewhere");
+        std::fs::create_dir_all(&elsewhere).unwrap();
+        std::fs::copy(&outside, elsewhere.join("deep.png")).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, root.join("folder-link")).unwrap();
+        std::os::unix::fs::symlink(&real, root.join("alias.png")).unwrap();
+        assert_eq!(read_image(&root, &root.join("leak.png")), Ok(None));
+        assert_eq!(
+            read_image(&root, &root.join("folder-link").join("deep.png")),
+            Ok(None)
+        );
+        assert!(read_image(&root, &root.join("alias.png"))
+            .unwrap()
+            .is_some());
+        // A file that cannot be opened: an attempt to read it would be an error, not a refusal.
+        std::fs::set_permissions(&outside, std::fs::Permissions::from_mode(0o000)).unwrap();
+        assert_eq!(read_image(&root, &outside), Ok(None));
+    }
+
+    #[test]
+    fn generated_image_read_refuses_a_folder_and_an_oversized_file() {
+        let (_dir, root, _real, _outside) = generated_image_fixture("gen-read-limits");
+        std::fs::create_dir_all(root.join("nested.png")).unwrap();
+        assert_eq!(read_image(&root, &root.join("nested.png")), Ok(None));
+        let huge = std::fs::File::create(root.join("huge.png")).unwrap();
+        huge.set_len(MAX_GENERATED_IMAGE_BYTES + 1).unwrap();
+        assert!(read_image(&root, &root.join("huge.png"))
+            .unwrap_err()
+            .contains("too large"));
+    }
+
+    #[test]
+    fn generated_image_delete_skips_an_empty_path_and_one_outside_the_folder() {
+        let (_dir, root, real, outside) = generated_image_fixture("gen-delete");
+        let paths = |items: &[&Path]| -> Vec<String> {
+            items
+                .iter()
+                .map(|path| path.to_string_lossy().into_owned())
+                .collect()
+        };
+        // An empty path (a picture that came in from another Mac) is nothing to remove, and is not counted.
+        assert_eq!(
+            delete_generated_images_in(&root, &["".to_string()]),
+            Ok(GeneratedImageDeletion::default())
+        );
+        assert!(real.is_file());
+        assert_eq!(
+            delete_generated_images_in(&root, &paths(&[&outside])),
+            Ok(GeneratedImageDeletion {
+                removed: 0,
+                skipped: 1
+            })
+        );
+        assert!(
+            outside.is_file(),
+            "a file outside the folder is never removed"
+        );
+        assert_eq!(
+            delete_generated_images_in(&root, &paths(&[&real, &root.join("gone.png")])),
+            Ok(GeneratedImageDeletion {
+                removed: 1,
+                skipped: 0
+            })
+        );
+        assert!(!real.exists());
     }
 
     struct Tmp(PathBuf);
