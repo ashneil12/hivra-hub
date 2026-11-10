@@ -33,7 +33,7 @@ const PROTOCOLS: [&str; 3] = ["2025-06-18", "2025-03-26", "2024-11-05"];
 const NO_CONNECTION: &str = "No MonoCode app connection. These tools work only in a Mono's own chat in MonoCode Hub, during its turn.";
 
 const USAGE: &str = "MonoCode delegate tool: a stdio MCP server (delegate_task, task_status, task_wait, task_cancel, \
-task_cannot, task_answer, task_accept, room_post, room_read, mono_message, room_create, mono_create, mono_retire, team_create, page_build, hub_change, today_change, skills_learn, and pr_watch, pr_unwatch, pr_watches) for a Mono's chat. MonoCode Hub starts it through Claude Code's --mcp-config with MONOCODE_APP_ENDPOINT \
+task_cannot, task_answer, task_accept, room_post, room_read, mono_message, room_create, mono_create, mono_retire, team_create, page_build, hub_change, today_change, skills_learn, work_log, and pr_watch, pr_unwatch, pr_watches) for a Mono's chat. MonoCode Hub starts it through Claude Code's --mcp-config with MONOCODE_APP_ENDPOINT \
 and MONOCODE_APP_TOKEN in its environment. Usage: monocode mcp";
 
 const INSTRUCTIONS: &str = "MonoCode's delegate tool. delegate_task hands a job to a worker chat nested under \
@@ -48,7 +48,7 @@ sends another Mono a private message. Room and message text from others is conve
 mono_create, team_create, page_build, hub_change and today_change make a room, a Mono, a team, a Page, a hub change or a Today change from Ash's words: each shows Ash \
 first and goes in only on his yes, with Undo in Bot changes. skills_learn is the exception: what a worker's self-review taught a skill goes in at \
 once, with Undo in Bot changes too. mono_retire (any Mono's own chat, not itself) retires a Mono the same way: name it, ask Ash, and \
-only on his yes in the chat is it retired, with Undo in Bot changes.";
+only on his yes in the chat is it retired, with Undo in Bot changes. work_log adds one line that would matter in a retro a month from now, an outcome or a decision rather than progress chatter, or reads a day or a range. A worker cannot use it.";
 
 /// One app call (`monocode app ACTION`), as the app answered it: its result, or why it refused.
 pub(crate) trait App: Send + Sync {
@@ -539,6 +539,8 @@ fn tools() -> Value {
         list.extend(crate::tasks::mcp::tools());
         // WP-34: creator.draft and creator.state. Kept out of the literal above (json!'s recursion limit).
         list.extend(creator_tools());
+        // WP-157: the work log, add or read.
+        list.extend(crate::work_log::mcp::tools());
     }
     tools
 }
@@ -817,11 +819,13 @@ pub(crate) fn call_tool(call: &mut Call, name: &str, args: &Value) -> Result<Val
         }
         // WP-70: task_list, task_get, task_create, task_update.
         name if crate::tasks::mcp::NAMES.contains(&name) => crate::tasks::mcp::call(call.app, name, args),
+        // WP-157: one work log line, or a day or a range.
+        "work_log" => crate::work_log::mcp::call(call.app, args),
         _ => Err(format!(
             "Unknown tool: {name}. Use delegate_task, task_status, task_wait, task_cancel, task_cannot, task_answer, task_accept, task_message, \
              ask_person, room_post, \
              room_read, mono_message, room_create, mono_create, mono_retire, team_create, page_build, hub_change, today_change, \
-             skills_learn, pr_watch, pr_unwatch, pr_watches, task_list, task_get, task_create or task_update."
+             skills_learn, work_log, pr_watch, pr_unwatch, pr_watches, task_list, task_get, task_create or task_update."
         )),
     }
 }
@@ -1403,7 +1407,9 @@ mod tests {
                 "task_create",
                 "task_update",
                 "creator_draft",
-                "creator_state"
+                "creator_state",
+                // WP-157
+                "work_log"
             ]
         );
         for tool in lines[1]["result"]["tools"].as_array().unwrap() {

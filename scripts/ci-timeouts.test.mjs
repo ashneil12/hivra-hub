@@ -53,7 +53,8 @@ test("hung CI jobs stop well under the six hour default", () => {
   assert.equal(jobs.check, 30);
   assert.equal(jobs.ship, 10);
   assert.equal(jobs.rpm, 25);
-  assert.equal(stepTimeout(workflow, "npx playwright install --with-deps chromium webkit"), 8);
+  // WP-154: the install now runs through the cached installer script; both attempts keep the 8 minute cap.
+  assert.equal(stepTimeout(workflow, "node scripts/ci-playwright-install.mjs --cache-hit"), 8);
   assert.equal(stepTimeout(workflow, "hub:ship -- --drill-rollback under a temporary HOME"), 10);
   for (const minutes of Object.values(jobs)) assert.ok(minutes < 360);
 });
