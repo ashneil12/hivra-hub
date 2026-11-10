@@ -66,7 +66,8 @@ import {
 } from "../features/monos/model/delegations";
 import { delegationTasksHost } from "../features/monos/model/delegationTasks";
 import { withCrewAdvice } from "../features/crew/model/advice";
-import { crewPickFor, crewPolicyInForce, crewRouteFor, pickMonosFrom, recordCrewFailure, recordCrewPause } from "../features/crew/model/host";
+import { crewLaunchCheck, crewPickFor, crewPolicyInForce, crewRouteFor, pickMonosFrom, recordCrewFailure, recordCrewPause } from "../features/crew/model/host";
+import { refuseNeverUseLead } from "../features/crew/model/lead";
 import {
   briefCancelled,
   briefSentAt,
@@ -14886,18 +14887,18 @@ function Workspace({
                   }),
               }),
               // The Lead a brief names must exist: asked before a fresh-eyes review, so an unknown one is never reviewed.
-              checkLead: async (owner, mono, lead) => {
+              checkLead: async (_owner, mono, lead) => {
                 const target = findLeadTarget(mono.id, hubData().listProjects(), lead);
                 if (!target)
                   throw new Error(
                     `No Lead "${lead}" among the ones you can brief (a Lead of a project you and it are both members of).`,
                   );
-                // WP-141: a Lead on Never use is not briefed, whatever the brief says.
-                const policy = await crewPolicyInForce(mono.id, owner.cwd);
-                if (policy.neverUse.includes(target.leadId))
-                  throw new Error(`${target.leadName} is on Never use, so it can't be briefed.`);
+                // WP-141 LOW 7: a Lead on Never use is not briefed, read from the Lead's own project, whatever the brief says.
+                await refuseNeverUseLead(target, mono.id, crewPolicyInForce);
               },
               crewPolicy: (monoId, folder) => crewPolicyInForce(monoId, folder),
+              // WP-141: the one gate every worker and session launch passes before its process starts.
+              crewGate: (input) => crewLaunchCheck(input),
               briefLead: async (owner, mono, input) => {
                 const projects = hubData().listProjects();
                 const target = findLeadTarget(mono.id, projects, input.lead);

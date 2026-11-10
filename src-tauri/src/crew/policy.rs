@@ -12,11 +12,24 @@ fn is_cli(value: &str) -> bool {
     CREW_CLIS.contains(&value)
 }
 
+/// The CLI id a typed name stands for: its id or its label, in any letter case ("Codex", "Claude Code").
+/// None when it names no CLI. A typed name that is not mapped would be stored and never match a route.
+pub(crate) fn cli_id_of(text: &str) -> Option<&'static str> {
+    let key = text.trim().to_ascii_lowercase();
+    CREW_CLIS
+        .iter()
+        .copied()
+        .find(|cli| key == *cli || key == crate::crew::resolve::cli_label(cli).to_ascii_lowercase())
+}
+
 fn clean_id(value: &str, cli_only: bool) -> Option<String> {
     if value.chars().any(|ch| ch == '\n' || ch == '\r') {
         return None;
     }
     let text = value.trim();
+    if let Some(cli) = cli_id_of(text) {
+        return Some(cli.to_string());
+    }
     if text.is_empty()
         || text.chars().count() > MAX_ID
         || text.contains("..")

@@ -1889,7 +1889,8 @@ fn a_mono_with_no_saved_policy_uses_the_system_policy() {
         &[],
     )
     .unwrap();
-    assert_eq!(project.cli.as_deref(), Some("claude"));
+    // WP-141 MEDIUM 6: the system's Never use (claude) still holds in the project, so the default walks to grok.
+    assert_eq!(project.cli.as_deref(), Some("grok"));
     assert_eq!(project.cli_from, "default");
     assert!(project
         .skipped
@@ -1919,7 +1920,9 @@ fn a_mono_with_no_saved_policy_uses_the_system_policy() {
         1_200,
     )
     .unwrap();
-    assert_eq!(used.to.as_deref(), Some("codex"));
+    // WP-141 MEDIUM 6: the project's lock is on for this Mono too, and codex is on the project's Never use. The failure
+    // pauses for the first mate; nothing moves to another CLI silently.
+    assert_eq!(used.to, None);
 }
 
 /// A Mono with no saved policy takes the project's list. Its own list replaces that.
@@ -2350,4 +2353,171 @@ fn a_system_role_rule_reaches_a_mono_launch_and_the_lock_keeps_it() {
     assert_eq!(nearer.cli.as_deref(), Some("grok"));
     assert_eq!(nearer.cli_from, "rule");
     assert_eq!(nearer.rule_label.as_deref(), Some("builder"));
+}
+
+/// WP-141: a typed CLI name ("Codex", "Claude Code") is stored as its id, so a Never use list matches it.
+#[test]
+fn a_typed_cli_name_is_stored_as_its_id() {
+    let store = memory();
+    let mut conn = store.lock_conn().unwrap();
+    let saved = store::set_policy(
+        &mut conn,
+        "system",
+        "system",
+        &json!({ "lockDefault": false, "neverUse": ["Codex", "Claude Code"], "fallback": ["Grok", "nope"] }),
+        0,
+    )
+    .unwrap();
+    assert_eq!(saved.policy["neverUse"], json!(["codex", "claude"]));
+    assert_eq!(saved.policy["fallback"], json!(["grok"]));
+    let who = &[
+        ("claude", true, true),
+        ("codex", true, true),
+        ("grok", true, true),
+    ];
+    let routed = store::route(&conn, &query("", "", "", "ada", None, None, who), &[]).unwrap();
+    assert_eq!(routed.cli.as_deref(), Some("grok"));
+    assert_eq!(routed.never, vec!["codex", "claude"]);
+}
+
+/// WP-141 MEDIUM 6: a project's policy does not replace the system's. Never use is the union, and the lock is on when
+/// any scope sets it.
+#[test]
+fn never_use_is_the_union_of_mono_project_and_system_and_the_lock_is_any_scope() {
+    let store = memory();
+    let mut conn = store.lock_conn().unwrap();
+    store::set_policy(
+        &mut conn,
+        "system",
+        "system",
+        &json!({ "lockDefault": true, "neverUse": ["claude"], "fallback": [] }),
+        0,
+    )
+    .unwrap();
+    store::set_policy(
+        &mut conn,
+        "project",
+        PROJECT,
+        &json!({ "lockDefault": false, "neverUse": ["codex"], "fallback": [] }),
+        0,
+    )
+    .unwrap();
+    let who = &[
+        ("claude", true, true),
+        ("codex", true, true),
+        ("grok", true, true),
+    ];
+    let routed = store::route(&conn, &query("", "", PROJECT, "", None, None, who), &[]).unwrap();
+    assert!(routed.lock, "the system lock reaches the project");
+    assert!(routed.never.contains(&"claude".to_string()));
+    assert!(routed.never.contains(&"codex".to_string()));
+    assert_eq!(routed.cli.as_deref(), Some("grok"));
+    // The Mono's own policy adds to the same union, and the gate sees the same list.
+    store::set_policy(
+        &mut conn,
+        "mono",
+        "ada",
+        &json!({ "lockDefault": false, "neverUse": ["grok"], "fallback": [] }),
+        0,
+    )
+    .unwrap();
+    let monoed = store::route(&conn, &query("", "", PROJECT, "ada", None, None, who), &[]).unwrap();
+    assert_eq!(monoed.never, vec!["grok", "codex", "claude"]);
+    assert_eq!(monoed.cli, None);
+    let check = |cli: &str, locked: Option<&str>| {
+        super::gate::check_launch(
+            &conn,
+            &super::gate::LaunchCheck {
+                cli: cli.into(),
+                mono: Some("ada".into()),
+                project: Some(PROJECT.into()),
+                locked_default: locked.map(str::to_string),
+            },
+        )
+    };
+    assert_eq!(
+        check("grok", Some("grok")).unwrap_err(),
+        "Grok is on Never use, so it was not started."
+    );
+    assert_eq!(
+        check("claude", Some("claude")).unwrap_err(),
+        "Claude Code is on Never use, so it was not started."
+    );
+}
+
+/// WP-141: the launch gate. A CLI on Never use is refused whatever routed it. Under the lock a launch must run on
+/// the locked default. A policy that can't be read refuses, with a line that says so.
+#[test]
+fn the_launch_gate_refuses_a_banned_cli_an_off_default_launch_and_an_unreadable_policy() {
+    use super::gate::{check_launch, LaunchCheck};
+    let store = memory();
+    let mut conn = store.lock_conn().unwrap();
+    let check = |conn: &Connection, cli: &str, locked: Option<&str>| {
+        check_launch(
+            conn,
+            &LaunchCheck {
+                cli: cli.into(),
+                mono: None,
+                project: None,
+                locked_default: locked.map(str::to_string),
+            },
+        )
+    };
+    // No policy: everything starts, as before.
+    assert!(check(&conn, "codex", None).is_ok());
+    store::set_policy(
+        &mut conn,
+        "system",
+        "system",
+        &json!({ "lockDefault": false, "neverUse": ["codex"], "fallback": [] }),
+        0,
+    )
+    .unwrap();
+    assert_eq!(
+        check(&conn, "codex", Some("claude")).unwrap_err(),
+        "Codex is on Never use, so it was not started."
+    );
+    assert!(check(&conn, "claude", Some("claude")).is_ok());
+    store::set_policy(
+        &mut conn,
+        "system",
+        "system",
+        &json!({ "lockDefault": true, "neverUse": ["codex"], "fallback": [] }),
+        1,
+    )
+    .unwrap();
+    assert_eq!(
+        check(&conn, "grok", Some("claude")).unwrap_err(),
+        "Always use my default is on, and the default is Claude Code, so Grok was not started."
+    );
+    assert!(check(&conn, "claude", Some("claude")).is_ok());
+    assert!(check(&conn, "claude", None)
+        .unwrap_err()
+        .starts_with("Always use my default is on and no default CLI"));
+    conn.execute_batch("DROP TABLE crew_rule_meta;").unwrap();
+    let unreadable = check(&conn, "claude", Some("claude")).unwrap_err();
+    assert!(
+        unreadable.starts_with("The crew policy could not be read, so nothing was started"),
+        "{unreadable}"
+    );
+}
+
+/// WP-141: a route carries the Never use list and the lock, so the caller can check the launch against them.
+#[test]
+fn a_route_says_which_never_use_and_lock_it_was_chosen_under() {
+    let store = memory();
+    let mut conn = store.lock_conn().unwrap();
+    store::set_policy(
+        &mut conn,
+        "system",
+        "system",
+        &json!({ "lockDefault": true, "neverUse": ["grok"], "fallback": [] }),
+        0,
+    )
+    .unwrap();
+    let who = &[("claude", true, true), ("grok", true, true)];
+    let routed = store::route(&conn, &query("", "", "", "", None, None, who), &[]).unwrap();
+    assert!(routed.lock);
+    assert_eq!(routed.never, vec!["grok"]);
+    assert_eq!(routed.cli.as_deref(), Some("claude"));
 }

@@ -53,7 +53,14 @@ import { cliFallbackLine } from "../../crew/model/cliFallback";
 import { launchCatalog } from "../../crew/model/launchCatalog";
 import { lineRulesFor } from "../../crew/model/lineRules";
 import type { Catalog, RouteDefaults } from "../../crew/model/resolve";
-import { applyCrewLaunch, callerOverride, crewLabels, crewPaths, crewRefusal } from "../../crew/model/taskRoute";
+import {
+  applyCrewLaunch,
+  callerOverride,
+  crewLabels,
+  crewPaths,
+  crewRefusal,
+  type CrewRouteAnswer,
+} from "../../crew/model/taskRoute";
 import { routeReason } from "../../crew/model/pick";
 import { CLI_ORDER, cliLabel, isCli } from "../../crew/model/clis";
 import { routeDefaults } from "../../crew/model/workerDefault";
@@ -336,7 +343,15 @@ export type AgentAppTasksHost = {
     /** WP-141: the matched rule's first label, and what was skipped (Never use, the lock), for the reason. */
     ruleLabel?: string | null;
     skipped?: { field?: string | null; from?: string | null; value?: string | null; reason?: string | null }[] | null;
+    /** WP-141: the Never use list and the lock the route was chosen under. */
+    never?: string[] | null;
+    lock?: boolean | null;
   } | null | undefined>;
+  /**
+   * WP-141: the one gate a worker or session launch passes before its process starts (crew_launch_check). It rejects
+   * with the reason when the CLI is on Never use, is not the locked default under the lock, or the policy can't be read.
+   */
+  crewGate?(input: { cli: string; folder?: string; mono?: string; lockedDefault?: string }): Promise<void>;
   /**
    * WP-141: the crew's pick across signed-in CLIs and the Monos this chat may brief, from the person's rules, defaults,
    * Always use my default, Never use and fallback order (`crew_pick`). Reads only.
@@ -640,6 +655,70 @@ function carriedMonoRules(rules: unknown): CrewRule[] {
 }
 
 /** Only a Mono's own chat or a coding-team chat has tasks; the checker only reads. */
+/** WP-141: the folder whose crew policy a launch or a pick reads: the chat's team, else the project it names, else its own. */
+function crewScopeFolder(owner: TaskOwner, source: Session, named: string | undefined, tasks: AgentAppTasksHost): string {
+  return owner.team?.folder ?? (named !== undefined ? (tasks.hubProjectFolder?.(named) ?? named) : source.cwd);
+}
+
+/** WP-141: a reason a fallback CLI may not take the work: the lock is on, or the chat's own CLI is on Never use. */
+function fallbackRefusal(answer: CrewRouteAnswer | null | undefined, baseline: string, routed: string): string | undefined {
+  const absent = `${cliLabel(routed)} isn't installed here`;
+  if (answer?.lock === true) return `${absent}, and Always use my default is on, so no other CLI was used.`;
+  if ((answer?.never ?? []).includes(baseline))
+    return `${absent}, and ${cliLabel(baseline)} is on Never use, so no other CLI was used.`;
+  return undefined;
+}
+
+function errorText(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+/**
+ * WP-141: the one gate a launch passes before its process starts. Without a gate (a build with none) the route alone
+ * decides; the app always wires one. The locked default is the route's CLI when the route is known.
+ */
+export async function gateCrewStart(
+  tasks: Pick<AgentAppTasksHost, "crewGate"> | undefined,
+  input: { cli: string; folder?: string; mono?: string; route?: CrewRouteAnswer | null },
+): Promise<void> {
+  if (!tasks?.crewGate) return;
+  await tasks.crewGate({
+    cli: input.cli,
+    ...(input.folder ? { folder: input.folder } : {}),
+    ...(input.mono ? { mono: input.mono } : {}),
+    ...(input.route?.cli ? { lockedDefault: input.route.cli } : {}),
+  });
+}
+
+/**
+ * WP-141 MEDIUM 5: sessions.start is gated like a worker. It has no task route, so the locked default is the route's
+ * pick for the Mono and folder with no task: a route that can't be read refuses the start.
+ */
+export async function gateSessionStart(host: AgentAppHost, source: Session, cli: string, folder: string): Promise<void> {
+  const tasks = host.tasks;
+  if (!tasks?.crewGate) return;
+  const mono = host.isMono(source.id) ? host.monoOf?.(source.id) : undefined;
+  let route: CrewRouteAnswer | null | undefined;
+  if (tasks.crewRoute) {
+    try {
+      route = await tasks.crewRoute({
+        labels: [],
+        paths: [],
+        project: folder,
+        ...(mono?.id ? { mono: mono.id } : {}),
+        defaults: routeDefaults({
+          mono: mono?.workerDefault,
+          project: tasks.pool?.projectDefault?.(tasks.hubProjectId?.(folder) ?? folder),
+          system: tasks.pool?.systemDefault?.(),
+        }),
+      });
+    } catch (error) {
+      throw new Error(`The crew policy could not be read, so nothing was started (${errorText(error)}).`);
+    }
+  }
+  await gateCrewStart(tasks, { cli, folder, mono: mono?.id, route });
+}
+
 function taskOwner(source: Session, host: AgentAppHost): { owner: TaskOwner; tasks: AgentAppTasksHost } {
   const mono = host.isMono(source.id) ? host.monoOf?.(source.id) : undefined;
   const team = mono ? undefined : host.codingTeamOf?.(source.id);
@@ -990,6 +1069,8 @@ async function delegate(
   const files = [...new Set([...fileList(input.files), ...filesNamed(brief), ...areasNamed(title, brief)])];
   const named =
     input.project === undefined ? undefined : text(input.project, "project", 4096);
+  // WP-141 LOW 7: the folder whose crew policy this launch reads. The pick and the launch share the same function.
+  const policyFolder = crewScopeFolder(owner, source, named, tasks);
   // A coding-team chat works on its own project only: naming it is fine, naming another is not.
   if (owner.team && named !== undefined && named !== owner.team.project && (tasks.hubProjectFolder?.(named) ?? named) !== owner.team.folder)
     throw new Error(`A coding-team chat delegates on its own project (${owner.team.project}). Leave out project.`);
@@ -1036,29 +1117,6 @@ async function delegate(
     throw new Error(
       "A task that waits for another can't be held on a remote project yet. Send the tasks that need nothing from each other, and the rest once they report.",
     );
-  // WP-60: a remote project keeps the brief on its host. A local folder is unchanged.
-  const remoteBrief = await briefOnRemoteHost({
-    paths: [folder, source.cwd],
-    launchKey: `app-${source.id}-${requestId}`,
-    ownerSession: source.id,
-    title,
-    harness: source.harness,
-    model: source.model,
-    runtimeMode: WORKER_RUNTIME_MODE,
-    startedBy: firstMate ? "first-mate" : "person",
-    promptFor: (hostCwd) =>
-      briefPrompt(
-        owner.name,
-        renderBrief(
-          { intent, spec: brief },
-          { kind: "shared", folder: hostCwd },
-          classifyBriefTask(`${intent}\n${brief}`),
-          extras,
-        ),
-        goal,
-      ),
-  });
-  if (remoteBrief) return remoteBrief;
   const projectKey = tasks.hubProjectId?.(folder) ?? folder;
   const difficulty = judgeTask({ heavy, retry: Boolean(redoes), scope: scope.length, hard });
   // On the DeepSeek launcher a Claude name is only a label: a worker it names runs on DeepSeek.
@@ -1092,11 +1150,14 @@ async function delegate(
   let crewWhy: string | undefined;
   // WP-141: the route forced a CLI and named none (every CLI on Never use, or the lock with none installed).
   let crewRefused: string | undefined;
+  // WP-141: the route this launch was judged by. The gate checks the CLI it starts on against its lock.
+  let crewAnswer: CrewRouteAnswer | null | undefined;
   if (tasks.crewRoute) {
     const baseline = model?.harness ?? source.harness;
     const baselineModel = model?.model ?? source.model;
     const roleLabel =
       input.role === undefined ? undefined : text(input.role, "role", 40).toLowerCase();
+    // WP-141 MEDIUM 4: a route that can't be read refuses the start. It never starts on the Lead's or the chat's CLI.
     try {
       const override = callerOverride(namedModel, input.effort);
       const monoRules = carriedMonoRules(owner.mono?.crewRules);
@@ -1106,18 +1167,23 @@ async function delegate(
         system: tasks.pool?.systemDefault?.(),
       });
       const catalog = launchCatalog();
-      const answer = await tasks.crewRoute({
+      crewAnswer = await tasks.crewRoute({
         labels: [
           ...new Set([...(roleLabel ? [roleLabel] : []), ...crewLabels(areasNamed(title, brief))]),
         ],
         paths: crewPaths(fileList(input.files), filesNamed(brief)),
         ...(override ? { override } : {}),
-        ...(folder ? { project: folder } : {}),
+        project: policyFolder,
         ...(owner.mono?.id ? { mono: owner.mono.id } : {}),
         ...(monoRules.length ? { monoRules } : {}),
         ...(defaults ? { defaults } : {}),
         ...(Object.keys(catalog).length ? { catalog } : {}),
       });
+    } catch (error) {
+      throw new Error(`The crew policy could not be read, so no worker was started (${errorText(error)}).`);
+    }
+    try {
+      const answer = crewAnswer;
       const named = { harness: baseline, model: baselineModel, effort };
       crewRefused = crewRefusal(answer, named);
       const next = applyCrewLaunch(answer, named);
@@ -1134,7 +1200,10 @@ async function delegate(
         }
       } else if (next.harness && next.harness !== baseline) {
         const refused = benchCliRefusal(next.harness);
+        // WP-141 HIGH 1: a fallback never starts a CLI on Never use, and never gets past the lock.
+        const stuck = fallbackRefusal(answer, baseline, next.harness);
         if (refused) benchRefusal = refused;
+        else if (stuck) crewRefused = stuck;
         else cliFallback = cliFallbackLine(next.harness, baseline);
       }
     } catch {
@@ -1143,6 +1212,32 @@ async function delegate(
   }
   if (benchRefusal) throw new Error(benchRefusal);
   if (crewRefused) throw new Error(crewRefused);
+  // WP-60: a remote project keeps the brief on its host. A local folder is unchanged. WP-141: the gate judges the chat's
+  // CLI the host will run (remote briefs take the chat's harness), before anything reaches the host.
+  if ([folder, source.cwd].some((path) => remoteProjectFor(path)))
+    await gateCrewStart(tasks, { cli: source.harness, folder: policyFolder, mono: owner.mono?.id, route: crewAnswer });
+  const remoteBrief = await briefOnRemoteHost({
+    paths: [folder, source.cwd],
+    launchKey: `app-${source.id}-${requestId}`,
+    ownerSession: source.id,
+    title,
+    harness: source.harness,
+    model: source.model,
+    runtimeMode: WORKER_RUNTIME_MODE,
+    startedBy: firstMate ? "first-mate" : "person",
+    promptFor: (hostCwd) =>
+      briefPrompt(
+        owner.name,
+        renderBrief(
+          { intent, spec: brief },
+          { kind: "shared", folder: hostCwd },
+          classifyBriefTask(`${intent}\n${brief}`),
+          extras,
+        ),
+        goal,
+      ),
+  });
+  if (remoteBrief) return remoteBrief;
   // The worker works on this chat's project (hub/model/hubMcp.ts), so its brief carries that project's memory.
   const memory = await (tasks.memoryBrief ?? workerMemoryBlock)(
     source.id,
@@ -1297,13 +1392,17 @@ async function delegate(
     ...(sharedTask ? { taskId: sharedTask } : {}),
     ...(crewWhy ? { pickReason: crewWhy } : {}),
   };
-  // Always monitored: a task reports back to the chat that delegated it.
+  // Always monitored: a task reports back to the chat that delegated it. WP-141: the gate runs before each start.
+  const gated = () =>
+    gateCrewStart(tasks, { cli: launch.harness, folder: policyFolder, mono: owner.mono?.id, route: crewAnswer });
   try {
+    await gated();
     await host.start(launch, id, undefined, source.id, meta);
   } catch (error) {
     // A checkout of its own couldn't be made (a folder that isn't a git repository): the shared one, as asked for.
     if (!auto && !(redo && !redo.path)) throw error;
     launch = launchWith("current");
+    await gated();
     await host.start(launch, id, undefined, source.id, meta);
   }
   tasks.pool?.started({ id, heavy, files });
@@ -1817,6 +1916,7 @@ async function workers(source: Session, input: Record<string, unknown>, host: Ag
   if (!tasks.pool) throw new Error("This build starts every worker at once; it has no per-project limit.");
   const named = input.project === undefined ? undefined : text(input.project, "project", 4096);
   const folder = owner.team?.folder ?? (named !== undefined ? (tasks.hubProjectFolder?.(named) ?? named) : source.cwd);
+  const policyFolder = crewScopeFolder(owner, source, named, tasks);
   const project = owner.team?.project ?? (named !== undefined && tasks.hubProjectFolder?.(named) ? named : (tasks.hubProjectId?.(folder) ?? folder));
   const count = (value: unknown, field: string) => {
     if (value === undefined) return undefined;
@@ -1834,9 +1934,13 @@ async function workers(source: Session, input: Record<string, unknown>, host: Ag
   const planned = choosing ? planWorkerChoice(input, current, launchCatalog()) : undefined;
   if (planned?.scope === "project" && setter && !worksOn(setter.projects, folder, project))
     throw new Error("This Mono doesn't work on that project.");
-  // WP-141: under Always use my default, the default for every worker is Ash's and is not changed from a chat.
-  if (planned?.scope === "system" && (await tasks.crewPolicy?.(owner.mono?.id, folder))?.lock)
-    throw new Error("Always use my default is on, so the default for every worker can't be changed from here.");
+  // WP-141 HIGH 2: under Always use my default, no default (the Mono's, the project's or everyone's) is changed from a chat.
+  if (planned && (await tasks.crewPolicy?.(owner.mono?.id, policyFolder))?.lock)
+    throw new Error(
+      planned.scope === "system"
+        ? "Always use my default is on, so the default for every worker can't be changed from here."
+        : "Always use my default is on, so a Mono's or project's default can't be changed from here.",
+    );
   const next = { workers: count(input.workers, "workers"), heavy: count(input.heavy, "heavy") };
   const limits =
     next.workers === undefined && next.heavy === undefined
@@ -1870,10 +1974,13 @@ async function workers(source: Session, input: Record<string, unknown>, host: Ag
   const changed = [planned && !planned.pick ? scopeClearLine(planned.scope) : "", planned?.dropped ?? ""]
     .filter(Boolean)
     .join(" ");
+  // WP-141 L9: the sentence names the lock and Never use, so the person sees what a chat can and cannot change.
+  const policy = await tasks.crewPolicy?.(owner.mono?.id, policyFolder);
   const force = describeInForce({
     defaults: routeDefaults({ mono: monoPick, project: projectPick, system: systemPick }),
     catalog,
     rules,
+    ...(policy ? { policy } : {}),
   });
   const rulesLine = crewRuleSentence(rules, catalog);
   const line = [limitsLine(projectName(folder), limits), changed, force.sentence, rulesLine].filter(Boolean).join(" ");
@@ -2004,7 +2111,8 @@ async function pickWorker(source: Session, input: Record<string, unknown>, host:
   } catch (error) {
     return { ok: false, reason: error instanceof Error ? error.message : String(error) };
   }
-  const folder = owner.team?.folder ?? source.cwd;
+  // WP-141 LOW 7: the pick reads the same folder's policy the launch that follows reads.
+  const folder = crewScopeFolder(owner, source, undefined, tasks);
   const projectKey = tasks.hubProjectId?.(folder) ?? folder;
   // A CLI with no room left at its provider is not free for this job; the project's own cap is the same for every CLI.
   const atCap = CLI_ORDER.filter((cli) => {

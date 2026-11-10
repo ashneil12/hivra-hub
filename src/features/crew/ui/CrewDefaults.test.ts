@@ -102,7 +102,7 @@ it("loads the lock, the role and the lists, and a save keeps the other rules", a
   expect(container.querySelector("[data-crew-defaults-line]")?.textContent).toContain("`builder` work to Grok");
   await act(async () => {
     clickLabel("Always use my default");
-    setValue("Never use", "pi");
+    setSelect("Never use", "pi");
   });
   await act(async () => {
     click("Add");
@@ -265,16 +265,11 @@ it("says so when Never use rejects what was typed", async () => {
       }),
     );
   });
+  // WP-141 HIGH 3: the Never use control is a picker of CLIs, so a typed name cannot be saved as one.
+  const options = [...(container.querySelectorAll<HTMLOptionElement>('[aria-label="Never use"] option'))].map((option) => option.value);
+  expect(options).toEqual(["", "claude", "codex", "cursor", "opencode", "pi", "omp", "fx", "grok", "hermes", "devin", "antigravity"]);
   await act(async () => {
-    setValue("Never use", "not a cli");
-  });
-  await act(async () => {
-    click("Add");
-  });
-  expect(container.querySelectorAll("[data-never-use]")).toHaveLength(1);
-  expect(container.textContent).toContain("That isn't a CLI or a Mono, so it wasn't added.");
-  await act(async () => {
-    setValue("Never use", "pi");
+    setSelect("Never use", "pi");
   });
   await act(async () => {
     click("Add");

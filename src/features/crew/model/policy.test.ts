@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   casPolicy,
+  roleSlotsWithExtraRules,
   isRoleSlotRule,
   loadBook,
   placeRoleSlots,
@@ -110,5 +111,27 @@ describe("role slots", () => {
     expect(placed.map((rule) => rule.cli)).toEqual(["claude", "cursor", "codex"]);
     const woven = weaveRoleSlots([first, path, second], [path]);
     expect(woven.map((rule) => rule.cli)).toEqual(["grok", "cursor", "codex"]);
+  });
+});
+
+// WP-141 HIGH 3: a CLI typed by its label or in another case is stored as its id, so the resolver matches it.
+describe("a typed CLI name is stored as its id", () => {
+  it("maps a label and a case-changed id to the real id, and drops a repeat", () => {
+    expect(sanitizePolicy({ neverUse: ["Codex", "Claude Code", "codex", "GROK"] }).neverUse).toEqual([
+      "codex",
+      "claude",
+      "grok",
+    ]);
+    expect(sanitizePolicy({ fallback: ["Grok", "Claude Code"] }).fallback).toEqual(["grok", "claude"]);
+  });
+});
+
+// WP-141 LOW 9 (L10): a second rule for the same role still applies, so the screen names the role instead of hiding it.
+describe("a second rule for a role is named", () => {
+  it("lists only the roles with more than one rule, in role order", () => {
+    const rule = (label: string, cli: string): CrewRule => ({ labels: [label], paths: [], cli, source: "person" });
+    const rules = [rule("reviewer", "codex"), rule("builder", "claude"), rule("builder", "grok"), rule("ui", "codex")];
+    expect(roleSlotsWithExtraRules(rules)).toEqual(["builder"]);
+    expect(roleSlotsWithExtraRules([rule("builder", "claude"), rule("reviewer", "codex")])).toEqual([]);
   });
 });

@@ -683,6 +683,7 @@ pub fn run() {
             // WP-141: the person's lock, never-use list and fallback order.
             crew::crew_policy_set,
             crew::crew_route,
+            crew::crew_launch_check,
             crew::crew_pick,
             crew::crew_on_failure,
             crew::crew_note_pause,

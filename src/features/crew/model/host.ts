@@ -89,7 +89,16 @@ export function recordCrewPause(
   }).then(() => undefined);
 }
 
-/** The lock and Never use list in force for a Mono in a folder: its own policy, else the project's, else everything's. */
+/** A usable name for an error thrown by the command, the webview's bridge or a test. */
+function reasonOf(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+/**
+ * The lock and the Never use list in force for a Mono in a folder: the union of the Mono's, the project's and the
+ * system's saved policies (WP-141 MEDIUM 6). A policy that can't be read is an error, never an empty policy
+ * (MEDIUM 4): the caller refuses the launch or the change.
+ */
 export async function crewPolicyInForce(
   monoId: string | undefined,
   folder: string | undefined,
@@ -98,17 +107,49 @@ export async function crewPolicyInForce(
   if (monoId) scopes.push(["mono", monoId]);
   if (folder) scopes.push(["project", folder]);
   scopes.push(["system", "system"]);
+  const neverUse: string[] = [];
+  let lock = false;
   for (const [scope, scopeId] of scopes) {
-    const got = await invoke<{ policy?: unknown; policyOwn?: boolean } | undefined>("crew_rules_get", {
-      scope,
-      scopeId,
-      project: folder ?? null,
-    }).catch(() => undefined);
-    if (!got || typeof got !== "object") continue;
-    if (got.policyOwn === true || scope === "system") {
-      const policy = sanitizePolicy(got.policy);
-      return { neverUse: policy.neverUse, lock: policy.lockDefault };
+    let got: { policy?: unknown; policyOwn?: boolean } | undefined;
+    try {
+      got = await invoke<{ policy?: unknown; policyOwn?: boolean } | undefined>("crew_rules_get", {
+        scope,
+        scopeId,
+        project: folder ?? null,
+      });
+    } catch (error) {
+      throw new Error(`The crew policy could not be read, so nothing was started (${reasonOf(error)}).`);
     }
+    if (!got || typeof got !== "object") {
+      throw new Error("The crew policy could not be read, so nothing was started (no answer).");
+    }
+    // A scope with no policy of its own adds nothing. The system's is always read.
+    if (got.policyOwn !== true && scope !== "system") continue;
+    const policy = sanitizePolicy(got.policy);
+    lock = lock || policy.lockDefault;
+    for (const id of policy.neverUse) if (!neverUse.includes(id)) neverUse.push(id);
   }
-  return { neverUse: [], lock: false };
+  return { neverUse, lock };
+}
+
+/**
+ * WP-141: the one gate a worker or session launch passes before its process starts (Rust: crew/gate.rs). It refuses a
+ * CLI on Never use, a CLI other than the locked default under the lock, and a policy that can't be read. It rejects
+ * with the reason, which is the line the person and the Lead see.
+ */
+export function crewLaunchCheck(input: {
+  cli: string;
+  mono?: string;
+  folder?: string;
+  /** The CLI the route picked, which the lock pins this launch to. */
+  lockedDefault?: string;
+}): Promise<void> {
+  return invoke<void>("crew_launch_check", {
+    input: {
+      cli: input.cli,
+      ...(input.mono ? { mono: input.mono } : {}),
+      ...(input.folder ? { project: input.folder } : {}),
+      ...(input.lockedDefault ? { lockedDefault: input.lockedDefault } : {}),
+    },
+  });
 }

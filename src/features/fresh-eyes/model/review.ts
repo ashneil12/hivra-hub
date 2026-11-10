@@ -109,6 +109,8 @@ export function reviewerChoice(
     effortFrom: "default",
     ruleIndex: null,
     skipped: [],
+    never: [],
+    lock: false,
   };
   return roleModel("plan", base);
 }

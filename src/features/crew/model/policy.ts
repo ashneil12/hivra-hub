@@ -1,7 +1,7 @@
 // WP-141: the person's locks and fallback order, kept with the crew settings.
 // A value from disk or another window is untrusted: a broken field is dropped.
 
-import { CLI_ORDER, isCli, isEffort } from "./clis";
+import { CLI_ORDER, cliLabel, isCli, isEffort, type CliName } from "./clis";
 import type { CrewRule } from "./rules";
 
 export const ROLE_SLOTS = ["builder", "reviewer", "researcher"] as const;
@@ -56,9 +56,20 @@ function oneLine(value: string): string {
   return value.replace(/\r\n/g, "\n").replace(/[\r\n]/g, "").trim();
 }
 
+/**
+ * The CLI id a typed name stands for: its id or its label, in any letter case ("Codex", "Claude Code"). Undefined when
+ * it names no CLI. Stored as the id, so the resolver's exact match sees it (Rust: policy.rs cli_id_of).
+ */
+export function cliIdOf(value: string): CliName | undefined {
+  const key = value.trim().toLowerCase();
+  return CLI_ORDER.find((cli) => key === cli || key === cliLabel(cli).toLowerCase());
+}
+
 /** A Mono id or a CLI id. A newline is not joined into a different id. Paths, blanks and duplicates are dropped. */
 function cleanId(value: string): string | undefined {
   if (/[\r\n]/.test(value)) return undefined;
+  const mapped = cliIdOf(value);
+  if (mapped) return mapped;
   const text = value.trim();
   if (!text || text.length > MAX_ID || text.includes("..") || text.includes("/") || text.includes("\\")) return undefined;
   if (isCli(text)) return text;
@@ -265,6 +276,22 @@ export function weaveRoleSlots<T extends { labels: readonly string[]; paths: rea
   }
   out.push(...shown);
   return out;
+}
+
+/**
+ * The roles that have more than one person rule. The Crew Defaults row shows the first; the second still applies, so
+ * the screen names it rather than hiding it.
+ */
+export function roleSlotsWithExtraRules(rules: readonly CrewRule[]): RoleSlot[] {
+  const seen = new Set<RoleSlot>();
+  const extra = new Set<RoleSlot>();
+  for (const rule of rules) {
+    const role = roleSlotOf(rule);
+    if (!role) continue;
+    if (seen.has(role)) extra.add(role);
+    seen.add(role);
+  }
+  return ROLE_SLOTS.filter((role) => extra.has(role));
 }
 
 /** Replace that role's rule in place. Other rules, including plugin rules, stay. */

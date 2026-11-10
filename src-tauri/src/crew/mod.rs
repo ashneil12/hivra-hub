@@ -7,6 +7,7 @@
 
 mod budget;
 mod failure;
+mod gate;
 mod pick;
 mod policy;
 mod reroute;
@@ -240,6 +241,15 @@ pub fn crew_pick(
     fill_present(&mut request.route.present, live_presence(&app));
     let plugins = plugin_rules(&app, request.route.project.as_deref());
     store::pick_at(&*store.lock_conn()?, &request, &plugins, now_millis())
+}
+
+/// WP-141: the gate every worker or session launch passes before its process starts. Refuses with one plain line.
+#[tauri::command(async)]
+pub fn crew_launch_check(
+    store: State<'_, SessionStore>,
+    input: gate::LaunchCheck,
+) -> Result<(), String> {
+    gate::check_launch(&*store.lock_conn()?, &input)
 }
 
 #[tauri::command(async)]

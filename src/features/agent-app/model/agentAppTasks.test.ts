@@ -63,6 +63,19 @@ import { parseCliArgs } from "../../../../scripts/fake-claude.mjs";
 // `onlyClaude` is a bench plan (src-tauri/src/verify_live.rs): no CLI but the run's own Claude wrapper resolves.
 // `codexOff` is a Mac without the Codex CLI: the setting is in force, the binary simply isn't installed.
 const probe = vi.hoisted(() => ({ probed: true, runs: 0, onlyClaude: false, codexOff: false }));
+// MEDIUM 5: which folders are remote projects, and how many briefs reached a remote host.
+const remote = vi.hoisted(() => ({ folders: new Set<string>(), briefs: 0 }));
+vi.mock("../../connections/model/remoteProjects", async (actual) => ({
+  ...(await actual<Record<string, unknown>>()),
+  remoteProjectFor: (path: string) =>
+    remote.folders.has(path) ? { environmentId: "env", projectId: "project", cwd: path } : undefined,
+}));
+vi.mock("../../firstmate/host/remoteDelegate", () => ({
+  briefOnRemoteHost: vi.fn(async () => {
+    remote.briefs += 1;
+    return null;
+  }),
+}));
 // The DeepSeek launcher can be on or off for a case. The Grok CLI stays available either way.
 const bridge = vi.hoisted(() => ({ on: false }));
 vi.mock("../../../integrations/harness/providers/claude/claudeDeepseekBridge", async (actual) => {
@@ -932,14 +945,17 @@ describe("tasks.delegate", () => {
     });
   });
 
-  it("keeps the model already chosen when the crew route fails or names no usable CLI", async () => {
+  it("refuses the start when the crew route fails, and keeps the model when it names no usable CLI", async () => {
+    // WP-141 MEDIUM 4: a route that can't be read is refused, never started on the chat's or the Lead's CLI.
     const down = fixture();
     down.api.crewRoute = vi.fn(async () => {
       throw new Error("crew route timed out");
     });
-    await handleAgentApp(down.source, "r-down", "tasks.delegate", { brief: "Tidy the title." }, down.host);
+    await expect(
+      handleAgentApp(down.source, "r-down", "tasks.delegate", { brief: "Tidy the title." }, down.host),
+    ).rejects.toThrow("The crew policy could not be read, so no worker was started (crew route timed out).");
     expect(down.api.crewRoute).toHaveBeenCalled();
-    expect(down.started[0][0]).toMatchObject({ harness: "claude", model: "claude:sonnet-5" });
+    expect(down.started).toEqual([]);
 
     const odd = fixture();
     odd.api.crewRoute = vi.fn(async () => ({ cli: "not-a-cli", model: "nope", cliFrom: "rule", modelFrom: "rule" }));
@@ -2828,6 +2844,110 @@ describe("parallel workers per project, with throttling (H8)", () => {
       expect(started).toHaveLength(1);
       expect(started[0][0]).toMatchObject({ harness: "claude" });
       expect(started[0][0]).not.toMatchObject({ model: "codex:gpt-5" });
+    });
+
+    // WP-141 HIGH 1 probes. The route's own CLI wins when the launch's CLI is on Never use, whatever the chat ran on.
+    it("a Codex chat with Codex on Never use starts its worker on the route's CLI", async () => {
+      const { source, host, started, api } = lead();
+      source.harness = "codex";
+      api.crewRoute = policyRoute({ neverUse: ["codex"] });
+      await handleAgentApp(source, "codex-chat", "tasks.delegate", { brief: "Build the title." }, host);
+      expect(started).toHaveLength(1);
+      expect(started[0][0]).toMatchObject({ harness: "claude" });
+    });
+
+    it("a Grok chat with Grok on Never use starts its worker on the route's CLI", async () => {
+      const { source, host, started, api } = lead();
+      source.harness = "grok";
+      api.crewRoute = policyRoute({ neverUse: ["grok"] });
+      await handleAgentApp(source, "grok-chat", "tasks.delegate", { brief: "Build the title." }, host);
+      expect(started).toHaveLength(1);
+      expect(started[0][0]).toMatchObject({ harness: "claude" });
+    });
+
+    // The unavailable fallback never starts a banned CLI, and never gets past the lock.
+    it("refuses rather than starting a banned chat CLI when the routed CLI isn't installed here", async () => {
+      const { source, host, started, api } = lead();
+      api.crewRoute = policyRoute({ neverUse: ["claude"] }, ["claude", "codex"]);
+      probe.codexOff = true;
+      try {
+        await expect(
+          handleAgentApp(source, "unavail-banned", "tasks.delegate", { brief: "Build the title." }, host),
+        ).rejects.toThrow("Claude Code is on Never use, so no other CLI was used.");
+        expect(started).toEqual([]);
+      } finally {
+        probe.codexOff = false;
+      }
+    });
+
+    it("refuses rather than falling back past the lock when the default CLI isn't installed here", async () => {
+      updateMono("vg-game-lead", (mono) => ({ ...mono, workerDefault: { cli: "codex" } }));
+      const { source, host, started, api } = lead();
+      api.crewRoute = policyRoute({ lockDefault: true }, ["claude", "codex"]);
+      probe.codexOff = true;
+      try {
+        await expect(
+          handleAgentApp(source, "unavail-lock", "tasks.delegate", { brief: "Build the title." }, host),
+        ).rejects.toThrow("Codex isn't installed here, and Always use my default is on, so no other CLI was used.");
+        expect(started).toEqual([]);
+      } finally {
+        probe.codexOff = false;
+      }
+    });
+
+    it("a route that cannot be read refuses the start, it never starts on the Lead's or the chat's CLI", async () => {
+      const { source, host, started, api } = lead();
+      api.crewRoute = vi.fn(async () => {
+        throw new Error("policy row is broken");
+      });
+      await expect(
+        handleAgentApp(source, "route-broken", "tasks.delegate", { brief: "Build the title." }, host),
+      ).rejects.toThrow("The crew policy could not be read, so no worker was started (policy row is broken).");
+      expect(started).toEqual([]);
+    });
+
+    // The launch gate passes the route's CLI and the lock; a launch that is not the locked default is refused.
+    it("the launch gate refuses a start whose CLI is not the locked default", async () => {
+      const { source, host, started, api } = lead();
+      api.crewRoute = policyRoute({ lockDefault: true });
+      api.crewGate = vi.fn(async (input: { cli: string; lockedDefault?: string }) => {
+        if (input.lockedDefault !== input.cli) throw new Error("gate: not the locked default");
+      });
+      await handleAgentApp(source, "gate-ok", "tasks.delegate", { brief: "Build the title." }, host);
+      expect(api.crewGate).toHaveBeenCalledWith(expect.objectContaining({ cli: "claude", lockedDefault: "claude" }));
+      expect(started).toHaveLength(1);
+    });
+
+    // HIGH 2: a chat cannot change any default while the lock is on, the Mono's or the project's included.
+    it("refuses a Mono or project default change from a chat while the lock is on", async () => {
+      const { source, host, api } = lead();
+      api.crewPolicy = vi.fn(async () => ({ neverUse: [], lock: true }));
+      await expect(
+        handleAgentApp(source, "lock-mono", "tasks.workers", { scope: "mono", cli: "codex" }, host),
+      ).rejects.toThrow("Always use my default is on, so a Mono's or project's default can't be changed from here.");
+      await expect(
+        handleAgentApp(source, "lock-project", "tasks.workers", { scope: "project", model: "opus", effort: "high" }, host),
+      ).rejects.toThrow("Always use my default is on, so a Mono's or project's default can't be changed from here.");
+      expect(findMono("vg-game-lead")?.workerDefault).toBeUndefined();
+    });
+
+    // MEDIUM 5: a remote project's brief is gated on the chat's CLI before it reaches the remote host.
+    it("a remote project's brief is gated on the chat's CLI before it reaches the host", async () => {
+      const { source, host, api } = lead();
+      api.crewRoute = policyRoute({ neverUse: ["claude"] });
+      api.crewGate = vi.fn(async (input: { cli: string }) => {
+        if (input.cli === "claude") throw new Error("Claude Code is on Never use, so it was not started.");
+      });
+      remote.folders.add(source.cwd);
+      const briefsBefore = remote.briefs;
+      try {
+        await expect(
+          handleAgentApp(source, "remote-gate", "tasks.delegate", { brief: "Build the title." }, host),
+        ).rejects.toThrow("Claude Code is on Never use, so it was not started.");
+        expect(remote.briefs).toBe(briefsBefore);
+      } finally {
+        remote.folders.delete(source.cwd);
+      }
     });
   });
 

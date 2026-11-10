@@ -64,6 +64,9 @@ export type Route = {
   ruleLabel?: string;
   /** Models and efforts a source set that were skipped, in the order they were tried. */
   skipped: SkippedField[];
+  /** WP-141: the Never use list and the lock this route was chosen under (crew_route answers the same). */
+  never: string[];
+  lock: boolean;
 };
 
 export type Role = "plan" | "verdict" | "work";
@@ -269,6 +272,8 @@ export function resolveRoute(
     ruleIndex,
     ...(rule?.labels[0] ? { ruleLabel: rule.labels[0] } : {}),
     skipped,
+    never: neverUse,
+    lock: policy?.lockDefault === true,
   };
 }
 

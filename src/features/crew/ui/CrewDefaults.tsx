@@ -9,8 +9,10 @@ import {
   CREW_SAVED_EVENT,
   EMPTY_POLICY,
   ROLE_SLOTS,
+  cliIdOf,
   placeRoleSlots,
   roleSlotName,
+  roleSlotsWithExtraRules,
   roleSlotsFrom,
   sanitizePolicy,
   type CrewPolicy,
@@ -171,9 +173,10 @@ export function CrewDefaults({ cwd, projectId, initial }: Props) {
     const raw = neverDraft;
     setNeverDraft("");
     if (!raw.trim()) return;
-    const accepted = sanitizePolicy({ lockDefault: false, neverUse: [raw], fallback: [] }).neverUse[0];
+    // Only a CLI from the list is added. A typed name is mapped to its id ("Codex" is "codex"), so it matches a route.
+    const accepted = cliIdOf(raw);
     if (!accepted) {
-      setNotice("That isn't a CLI or a Mono, so it wasn't added.");
+      setNotice("That isn't a CLI on the list, so it wasn't added. Pick one.");
       return;
     }
     if (policy.neverUse.includes(accepted)) {
@@ -270,7 +273,10 @@ export function CrewDefaults({ cwd, projectId, initial }: Props) {
 
   const catalog = launchCatalog();
   const shown = placeRoleSlots(rules, slots);
-  const line = [inForceSentence({ defaults: { system: systemWorkerDefault(), ...(projectId ? { project: projectWorkerDefault(projectId) } : {}) }, catalog, rules: shown }), crewRuleSentence(shown, catalog)]
+  // WP-141 L10: a second rule for a role still applies. The row shows the first, so the screen names the others.
+  const extraRoles = roleSlotsWithExtraRules(rules);
+  // WP-141 L9: the sentence names the lock and Never use, so a person sees what is in force beside the roles.
+  const line = [inForceSentence({ defaults: { system: systemWorkerDefault(), ...(projectId ? { project: projectWorkerDefault(projectId) } : {}) }, catalog, rules: shown, policy }), crewRuleSentence(shown, catalog)]
     .filter(Boolean)
     .join(" ");
   const installed = signedIn.filter((row) => row.installed).map((row) => row.cli);
@@ -325,6 +331,11 @@ export function CrewDefaults({ cwd, projectId, initial }: Props) {
           );
         })}
       </div>
+      {extraRoles.length ? (
+        <p className="text-[12px] text-content/70" data-role-extra={extraRoles.join(",")}>
+          {extraRoles.map((role) => roleSlotName(role)).join(" and ")} {extraRoles.length === 1 ? "has" : "have"} a second rule on the rules page. It still applies, so it is named here rather than hidden.
+        </p>
+      ) : null}
       {place.scope === "project" && !policyOwn ? (
         <p className="text-[12px] text-content/70" data-policy-inherited>
           From everything. The lock and lists below are the system's until this project changes them.
@@ -345,7 +356,12 @@ export function CrewDefaults({ cwd, projectId, initial }: Props) {
         <h3 className="text-[13px] font-medium text-content">Never use</h3>
         <p className="text-[13px] text-content/70">A CLI or a Mono that is never chosen.</p>
         <div className="flex flex-wrap items-end gap-2">
-          <Field label="Never use" value={neverDraft} onChange={setNeverDraft} />
+          <Select
+            label="Never use"
+            value={neverDraft}
+            options={CLI_ORDER.map((cli) => [cli, cliLabel(cli)])}
+            onChange={setNeverDraft}
+          />
           <button type="button" className="rounded-md bg-content/8 px-2 py-1 text-xs" onClick={addNever}>
             Add
           </button>

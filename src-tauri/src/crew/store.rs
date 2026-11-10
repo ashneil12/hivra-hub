@@ -4,7 +4,7 @@
 
 use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{json, Value};
 
 use super::budget::normalize_failure_policy;
 use super::failure::is_account_class;
@@ -592,23 +592,58 @@ fn saved_policy(conn: &Connection, scope: &str, raw: &str) -> Result<Option<Valu
     Ok(text.map(|text| policy_value(Some(text))))
 }
 
-/// A Mono uses its own saved policy. With no Mono column, a project uses its own, then the system.
-fn policy_for(
+/// The policy in force for a launch: the union of the Mono's, the project's and the system's saved policies.
+/// Never use is every scope's list together, so a "For everything" ban reaches every project. The lock is on when any
+/// scope sets it. The fallback order is the most specific one saved (Mono, then project, then system).
+pub(crate) fn policy_for(
     conn: &Connection,
     mono: Option<&str>,
     project: Option<&str>,
 ) -> Result<Value, String> {
+    let mut scopes = Vec::new();
     if let Some(id) = mono.map(str::trim).filter(|id| !id.is_empty()) {
-        if let Some(policy) = saved_policy(conn, "mono", id)? {
-            return Ok(policy);
-        }
+        scopes.extend(saved_policy(conn, "mono", id)?);
     }
     if let Some(id) = project.map(str::trim).filter(|id| !id.is_empty()) {
-        if let Some(policy) = saved_policy(conn, "project", id)? {
-            return Ok(policy);
+        scopes.extend(saved_policy(conn, "project", id)?);
+    }
+    scopes.push(
+        saved_policy(conn, "system", "system")?.unwrap_or_else(|| sanitize_policy(&Value::Null)),
+    );
+    Ok(union_policy(&scopes))
+}
+
+/// One policy from several scopes: Never use is the union, the lock is on when any scope sets it, and the fallback
+/// order is the first non-empty one (the scopes come most specific first).
+fn union_policy(scopes: &[Value]) -> Value {
+    let lock = scopes
+        .iter()
+        .any(|policy| policy.get("lockDefault").and_then(Value::as_bool) == Some(true));
+    let mut never: Vec<String> = Vec::new();
+    for policy in scopes {
+        for id in listed_never_use(policy) {
+            if !never.contains(&id) {
+                never.push(id);
+            }
         }
     }
-    Ok(saved_policy(conn, "system", "system")?.unwrap_or_else(|| sanitize_policy(&Value::Null)))
+    let fallback = scopes
+        .iter()
+        .map(|policy| {
+            policy
+                .get("fallback")
+                .and_then(Value::as_array)
+                .map(|rows| {
+                    rows.iter()
+                        .filter_map(Value::as_str)
+                        .map(str::to_string)
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default()
+        })
+        .find(|list| !list.is_empty())
+        .unwrap_or_default();
+    json!({ "lockDefault": lock, "neverUse": never, "fallback": fallback })
 }
 
 fn policy_in_force(conn: &Connection, query: &RouteQuery) -> Result<Value, String> {
@@ -668,6 +703,8 @@ pub fn route_at(
         &query.catalog,
         Some(&policy),
     );
+    route.never = never.clone();
+    route.lock = lock;
     let cooled = cooled_clis(conn, now)?;
     if route.cli_from != "override" {
         if let Some(cli) = route.cli.clone() {

@@ -10,7 +10,7 @@ import {
   resolveModel,
 } from "../../sessions/model/models";
 import { HARNESSES, type HarnessId } from "../../sessions/model/session";
-import { isCli, isEffort } from "./clis";
+import { cliLabel, isCli, isEffort } from "./clis";
 import type { Catalog, RouteDefaults } from "./resolve";
 import type { CrewRule } from "./rules";
 
@@ -51,6 +51,9 @@ export type CrewRouteAnswer = {
   modelFrom?: string | null;
   effortFrom?: string | null;
   skipped?: CrewRouteSkip[] | null;
+  /** WP-141: the Never use list and the lock the route was chosen under. */
+  never?: string[] | null;
+  lock?: boolean | null;
 };
 
 export type CrewLaunch = {
@@ -130,13 +133,29 @@ function launchCliSkipped(route: CrewRouteAnswer, harness: string | undefined): 
   return Boolean(harness) && (route.skipped ?? []).some((skip) => skip?.field === "cli" && skip.value === harness);
 }
 
+/** The launch's own CLI is on Never use. Whatever routed it, it does not run. */
+function launchBanned(route: CrewRouteAnswer, harness: string | undefined): boolean {
+  return Boolean(harness) && (route.never ?? []).includes(harness as string);
+}
+
+/** The lock is on and the route chose another CLI: the launch runs on the locked default, not on its own CLI. */
+function launchOffDefault(route: CrewRouteAnswer, harness: string | undefined): boolean {
+  return Boolean(harness) && route.lock === true && Boolean(route.cli) && route.cli !== harness;
+}
+
 /**
- * A route that must replace the CLI whatever its source: the lock dropped the Lead's pick, or the
- * launch's own CLI is on Never use. The route's CLI then wins, even when it came from the signed-in default.
+ * A route that must replace the CLI whatever its source: the lock dropped the Lead's pick, the launch's own CLI is on
+ * Never use (a chat's own CLI included), or the lock is on and the launch is not the route's CLI. The route's CLI then
+ * wins, even when it came from the signed-in default.
  */
 export function crewForcesCli(route: CrewRouteAnswer | null | undefined, current: CrewLaunch): boolean {
   if (!route) return false;
-  return lockDroppedPick(route) || launchCliSkipped(route, current.harness);
+  return (
+    lockDroppedPick(route) ||
+    launchCliSkipped(route, current.harness) ||
+    launchBanned(route, current.harness) ||
+    launchOffDefault(route, current.harness)
+  );
 }
 
 /**
@@ -146,6 +165,10 @@ export function crewForcesCli(route: CrewRouteAnswer | null | undefined, current
 export function crewRefusal(route: CrewRouteAnswer | null | undefined, current: CrewLaunch): string | undefined {
   if (!route || route.cli || !crewForcesCli(route, current)) return undefined;
   const reasons = (route.skipped ?? []).map((skip) => skip?.reason?.trim()).filter((text): text is string => Boolean(text));
+  const named = current.harness;
+  if (named && launchBanned(route, named) && !reasons.some((text) => text.startsWith(`${cliLabel(named)} is on Never use`))) {
+    reasons.push(`${cliLabel(named)} is on Never use, so it was not used.`);
+  }
   return reasons.length
     ? `No CLI can take this work. ${reasons.join(" ")}`
     : "No CLI can take this work: none is installed and signed in.";

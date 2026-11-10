@@ -21,11 +21,9 @@ test("crew defaults shows the lock, the roles, the lists and what is in force", 
   await page.getByRole("switch", { name: "Always use my default" }).check();
   await expect(page.getByRole("switch", { name: "Always use my default" })).toBeChecked();
 
-  await page.getByLabel("Never use", { exact: true }).fill("not a cli");
-  await page.getByRole("button", { name: "Add", exact: true }).click();
-  await expect(page.locator("[data-never-use]")).toHaveCount(0);
-  await expect(page.getByText("That isn't a CLI or a Mono, so it wasn't added.")).toBeVisible();
-  await page.getByLabel("Never use", { exact: true }).fill("pi");
+  // WP-141 HIGH 3: Never use is a picker of CLIs, so a typed name cannot be saved as one.
+  await expect(page.getByLabel("Never use", { exact: true }).locator("option")).toHaveCount(12);
+  await page.getByLabel("Never use", { exact: true }).selectOption("pi");
   await page.getByRole("button", { name: "Add", exact: true }).click();
   await expect(page.locator("[data-never-use='pi']")).toBeVisible();
 

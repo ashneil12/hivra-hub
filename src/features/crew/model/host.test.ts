@@ -1,6 +1,6 @@
 import { beforeEach, expect, it, vi } from "vitest";
 import { invoke } from "@tauri-apps/api/core";
-import { crewPickFor, crewPolicyInForce, pickMonosFrom, recordCrewFailure, recordCrewPause } from "./host";
+import { crewLaunchCheck, crewPickFor, crewPolicyInForce, pickMonosFrom, recordCrewFailure, recordCrewPause } from "./host";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 
@@ -108,18 +108,35 @@ it("WP-141: asks crew_pick with the request, and names each Lead with its role a
 });
 
 // MEDIUM 5: a Lead brief checks the Never use list in force. A Mono's own policy wins, then the project's, then everything's.
-it("reads the Never use list a Mono's brief is judged by: its own, else the project's, else everything's", async () => {
+it("WP-141 MEDIUM 6: the Never use list in force is the union of the Mono's, the project's and everything's", async () => {
   invokeMock.mockImplementation((_cmd, args) => {
     const scope = (args as { scope: string }).scope;
     if (scope === "mono") return Promise.resolve({ policy: { neverUse: ["lead-x"] }, policyOwn: false });
     if (scope === "project") return Promise.resolve({ policy: { neverUse: ["lead-p"] }, policyOwn: true });
     return Promise.resolve({ policy: { neverUse: ["lead-s"] }, policyOwn: true });
   });
-  expect(await crewPolicyInForce("vg-lead", "/tmp/proj")).toEqual({ neverUse: ["lead-p"], lock: false });
+  expect(await crewPolicyInForce("vg-lead", "/tmp/proj")).toEqual({ neverUse: ["lead-p", "lead-s"], lock: false });
   invokeMock.mockImplementation((_cmd, args) => {
     const scope = (args as { scope: string }).scope;
     if (scope === "mono") return Promise.resolve({ policy: { neverUse: ["lead-m"], lockDefault: true }, policyOwn: true });
     return Promise.resolve({ policy: { neverUse: ["lead-s"] }, policyOwn: false });
   });
-  expect(await crewPolicyInForce("vg-lead", "/tmp/proj")).toEqual({ neverUse: ["lead-m"], lock: true });
+  expect(await crewPolicyInForce("vg-lead", "/tmp/proj")).toEqual({ neverUse: ["lead-m", "lead-s"], lock: true });
+});
+
+it("WP-141 MEDIUM 4: a policy that can't be read is an error, never an empty policy", async () => {
+  invokeMock.mockRejectedValue(new Error("db locked"));
+  await expect(crewPolicyInForce("vg-lead", "/tmp/proj")).rejects.toThrow(
+    "The crew policy could not be read, so nothing was started (db locked).",
+  );
+});
+
+it("WP-141 gate: crew_launch_check is sent the CLI, the Mono, the folder and the locked default, and its refusal is the reason", async () => {
+  invokeMock.mockRejectedValueOnce("Codex is on Never use, so it was not started.");
+  await expect(
+    crewLaunchCheck({ cli: "codex", mono: "vg-lead", folder: "/tmp/proj", lockedDefault: "claude" }),
+  ).rejects.toThrow("Codex is on Never use, so it was not started.");
+  expect(invokeMock).toHaveBeenCalledWith("crew_launch_check", {
+    input: { cli: "codex", mono: "vg-lead", project: "/tmp/proj", lockedDefault: "claude" },
+  });
 });

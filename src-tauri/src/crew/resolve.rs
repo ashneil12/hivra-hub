@@ -84,6 +84,11 @@ pub struct Route {
     /// Models and efforts a source set that were skipped, in the order they were tried.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub skipped: Vec<Skipped>,
+    /// WP-141: the Never use list and the lock in force for this route. The launch gate checks the CLI against them.
+    #[serde(default)]
+    pub never: Vec<String>,
+    #[serde(default)]
+    pub lock: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -464,6 +469,8 @@ pub fn resolve_route(
         verdict_model: None,
         verdict_effort: None,
         skipped,
+        never: never.clone(),
+        lock: lock_on(policy),
     };
     let (plan_model, plan_effort) = role_model("plan", &route);
     let (verdict_model, verdict_effort) = role_model("verdict", &route);
