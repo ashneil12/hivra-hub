@@ -177,7 +177,8 @@ struct Entry {
     proxy_port: Option<u16>,
     #[serde(default)]
     reaches_real: bool,
-    /// One sentence about a stand-in that could not start. Cleared on a good start.
+    /// One sentence about something the stack could not do: a stand-in that did not start, or a
+    /// name left unpublished. Cleared on a good start.
     #[serde(default)]
     note: Option<String>,
 }
@@ -645,6 +646,11 @@ pub fn local_url(url: &str) -> Option<String> {
 /// WP-90: a stack that was still running when the app last quit keeps its names. The proxy is
 /// in-process, so the previous owner pid is gone and the new proxy has pruned every name;
 /// this puts them back under this process, before anything lists a stack.
+///
+/// The app stopped every fake when it quit, so a running stack's fakes are started again first,
+/// and only then are their names published: a name never points at a port whose owner this app
+/// did not start. A name whose port is not up yet (Docker still starting) is not published and
+/// is not forgotten either; it stays with its stack for the next start.
 pub fn resume_names(env: &StackEnv) -> Result<(), String> {
     let dir = registry_dir(&env.data_dir);
     let store = load(&dir)?;
@@ -652,39 +658,144 @@ pub fn resume_names(env: &StackEnv) -> Result<(), String> {
         return Ok(());
     }
     let own = std::process::id();
-    // A port that is not accepting is not republished: the stand-in has gone, or something
-    // else would be reached by the old name.
-    let mut open: Vec<(String, String)> = Vec::new();
-    if let Some(names) = &env.names {
-        for entry in store.stacks.iter().filter(|entry| entry.running) {
-            for name in &entry.names {
-                if !port_accepts(name.port) {
-                    continue;
-                }
-                // A name another live process holds is not this stack's to take.
-                let _ = names.add(&name.hostname, name.port, own, &entry.id);
-                open.push((entry.id.clone(), name.hostname.clone()));
-            }
-        }
-    }
+    let resumed: Vec<Resumed> = store
+        .stacks
+        .iter()
+        .filter(|entry| entry.running)
+        .map(|entry| resume_entry(env, entry, own))
+        .collect();
     update(&dir, |store| {
-        for entry in store.stacks.iter_mut().filter(|entry| entry.running) {
-            if env.names.is_some() {
-                entry.names.retain(|name| {
-                    open.iter()
-                        .any(|(id, host)| id == &entry.id && host == &name.hostname)
-                });
-            }
+        for done in &resumed {
+            let Some(entry) = store
+                .stacks
+                .iter_mut()
+                .find(|entry| entry.running && entry.id == done.id)
+            else {
+                continue;
+            };
+            // A name another stack holds is not this stack's. The others stay on it.
+            entry
+                .names
+                .retain(|name| !done.refused.contains(&name.hostname));
             entry.owner_pid = own;
+            entry.note = done.note.clone();
             if let Some(proxy_port) = env.proxy_port {
-                entry.proxy_port = Some(proxy_port);
-                if let Some(app) = entry.names.iter().find(|name| name.service.is_none()) {
-                    entry.url = Some(format!("http://{}:{proxy_port}", app.hostname));
-                }
+                follow_proxy(entry, proxy_port);
             }
         }
         Ok(())
     })
+}
+
+/// What one running stack came back with.
+struct Resumed {
+    id: String,
+    /// Names the registry would not take: another stack holds them.
+    refused: Vec<String>,
+    /// One sentence for the card, or none when everything came back.
+    note: Option<String>,
+}
+
+fn resume_entry(env: &StackEnv, entry: &Entry, own: u32) -> Resumed {
+    let mut entry = entry.clone();
+    if let Some(proxy_port) = env.proxy_port {
+        // The fakes advertise this address, so it is right before they start.
+        follow_proxy(&mut entry, proxy_port);
+    }
+    let mut fakes_up = false;
+    let mut stand_in_note = None;
+    if !entry.emulated.is_empty() {
+        let (up, note) = restart_fakes(env, &entry);
+        fakes_up = up;
+        stand_in_note = note;
+    }
+    let mut refused = Vec::new();
+    let mut waiting = Vec::new();
+    if let Some(names) = &env.names {
+        for name in &entry.names {
+            let is_fake = name
+                .service
+                .as_ref()
+                .is_some_and(|service| entry.emulated.iter().any(|fake| &fake.service == service));
+            // A fake is ours to name once this app started it. Anything else is named only
+            // while something accepts on its port, so an old name never reaches a stranger.
+            let ready = if is_fake {
+                fakes_up
+            } else {
+                port_accepts(name.port)
+            };
+            if !ready {
+                waiting.push(name.hostname.clone());
+                continue;
+            }
+            if names
+                .add(&name.hostname, name.port, own, &entry.id)
+                .is_err()
+            {
+                refused.push(name.hostname.clone());
+            }
+        }
+    }
+    let note = stand_in_note
+        .or_else(|| {
+            (!refused.is_empty()).then(|| {
+                "A name is used by another stack, so it was not put back. Stop that stack to use it."
+                    .to_string()
+            })
+        })
+        .or_else(|| {
+            let app_waiting = entry.names.iter().any(|name| {
+                name.service.is_none() && waiting.contains(&name.hostname)
+            });
+            app_waiting.then(|| {
+                "The app wasn't answering when this app started, so its address was left unpublished. Start the stack again to publish it."
+                    .to_string()
+            })
+        });
+    Resumed {
+        id: entry.id.clone(),
+        refused,
+        note,
+    }
+}
+
+/// Start a stack's fakes again, unless something else already holds one of their ports. The
+/// answer is whether the fakes are up, and one sentence when they are not.
+fn restart_fakes(env: &StackEnv, entry: &Entry) -> (bool, Option<String>) {
+    // The app stopped its own fakes at the start of this launch, so a port that accepts now
+    // belongs to something else. The one stand-in is one process for every fake of the stack,
+    // so it is not started where one of its ports is taken.
+    if entry.emulated.iter().any(|fake| port_accepts(fake.port)) {
+        return (
+            false,
+            Some(
+                "Something else is using a port a fake service needs, so it was not started again. Close it and start the stack again."
+                    .into(),
+            ),
+        );
+    }
+    match restart_stand_in(env, entry) {
+        Ok(outcome) => (outcome.pid.is_some(), outcome.note),
+        Err(error) => (false, Some(error)),
+    }
+}
+
+/// The proxy listens on a new port after a restart: the app's address, the fakes' advertised
+/// addresses and the stack's recorded port all follow it.
+fn follow_proxy(entry: &mut Entry, proxy_port: u16) {
+    entry.proxy_port = Some(proxy_port);
+    if let Some(app) = entry.names.iter().find(|name| name.service.is_none()) {
+        entry.url = Some(format!("http://{}:{proxy_port}", app.hostname));
+    }
+    for fake in &mut entry.emulated {
+        if let Some(name) = entry
+            .names
+            .iter()
+            .find(|name| name.service.as_deref() == Some(fake.service.as_str()))
+        {
+            fake.base_url = format!("http://{}:{proxy_port}", name.hostname);
+        }
+    }
 }
 
 /// Whether something on this machine accepts TCP on the loopback port a name points at.
@@ -837,17 +948,29 @@ fn publish_names(env: &StackEnv, entry: &Entry) -> Result<(), String> {
 /// Start this stack's stand-in. A missing or old Node is a note, not a failed stack: the named
 /// base URLs then fail closed (connection refused) rather than reaching the real service.
 fn start_stand_in(env: &StackEnv, entry: &Entry) -> Result<Option<String>, String> {
+    Ok(restart_stand_in(env, entry)?.note)
+}
+
+/// Stop this stack's stand-in and start it again. An old one that cannot be proved this app's
+/// to stop (it may still hold the ports) is a note, not a stack that can never start: the old
+/// one is left alone and nothing new is started beside it.
+fn restart_stand_in(env: &StackEnv, entry: &Entry) -> Result<StandInOutcome, String> {
     let Some(stand_in) = &env.stand_in else {
-        return Ok(None);
+        return Ok(StandInOutcome::default());
     };
     let dir = stack_dir(&env.data_dir, &entry.id);
     // Stop-then-start is one step: a second reset waits for this one rather than interleaving
     // and leaving the first stand-in running.
     let lock = stand_in_lock(&dir);
     let _one_at_a_time = lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-    stand_in.stop(&dir)?;
+    if let Err(note) = stand_in.stop(&dir) {
+        return Ok(StandInOutcome {
+            pid: None,
+            note: Some(note),
+        });
+    }
     if entry.emulated.is_empty() {
-        return Ok(None);
+        return Ok(StandInOutcome::default());
     }
     let services = entry
         .emulated
@@ -858,12 +981,11 @@ fn start_stand_in(env: &StackEnv, entry: &Entry) -> Result<Option<String>, Strin
             base_url: service.base_url.clone(),
         })
         .collect();
-    let outcome = stand_in.start(&StandInRequest {
+    stand_in.start(&StandInRequest {
         stack_dir: dir,
         services,
         path_env: env.path_env.clone(),
-    })?;
-    Ok(outcome.note)
+    })
 }
 
 struct EmulateStandIn {
@@ -4756,39 +4878,83 @@ mod tests {
         assert_eq!(store.stacks[0].mode(), "Reaches the real internet");
     }
 
-    #[test]
-    fn a_running_stack_gets_its_names_back_after_a_restart() {
-        let fix = Fix::new();
-        let base = fix.env();
-        let routes =
-            crate::proxy::routes::RouteStore::new(crate::proxy::server::proxy_dir(&base.data_dir));
-        // The previous app process published every name and is now gone.
-        // Two ports are still accepting; one name's port is closed and must not come back.
-        let app_listener = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap();
-        let fake_listener =
-            std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap();
-        let app_port = app_listener.local_addr().unwrap().port();
-        let fake_port = fake_listener.local_addr().unwrap().port();
-        let closed = {
-            let listener = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap();
-            let port = listener.local_addr().unwrap().port();
-            drop(listener);
-            port
-        };
-        let dead = u32::MAX;
-        routes
-            .add_route("main-a.localhost", app_port, dead, false)
-            .unwrap();
-        routes
-            .add_route("github-a.localhost", fake_port, dead, false)
-            .unwrap();
-        routes
-            .add_route("stripe-a.localhost", closed, dead, false)
-            .unwrap();
-        routes
-            .add_route("main-b.localhost", closed, dead, false)
-            .unwrap();
-        let entry = |id: &str, tree: &Path, running: bool, names: Vec<Published>| Entry {
+    /// A stand-in that notes which names were already published when it was started, so a test
+    /// can say that the fakes came up before their names did.
+    struct WatchingStandIn {
+        routes: crate::proxy::routes::RouteStore,
+        routed_at_start: Mutex<Vec<Vec<String>>>,
+        started: Mutex<Vec<(String, Vec<ServicePort>)>>,
+        outcome: Mutex<StandInOutcome>,
+    }
+
+    impl WatchingStandIn {
+        fn new(routes: &crate::proxy::routes::RouteStore) -> Arc<Self> {
+            Arc::new(Self {
+                routes: routes.clone(),
+                routed_at_start: Mutex::new(Vec::new()),
+                started: Mutex::new(Vec::new()),
+                outcome: Mutex::new(StandInOutcome {
+                    pid: Some(42),
+                    note: None,
+                }),
+            })
+        }
+    }
+
+    impl StandIn for WatchingStandIn {
+        fn start(&self, request: &StandInRequest) -> Result<StandInOutcome, String> {
+            let hosts = self
+                .routes
+                .load_routes_raw()
+                .unwrap()
+                .into_iter()
+                .map(|route| route.hostname)
+                .collect();
+            self.routed_at_start.lock().unwrap().push(hosts);
+            self.started.lock().unwrap().push((
+                crate::fs::path_to_js(&request.stack_dir),
+                request.services.clone(),
+            ));
+            Ok(self.outcome.lock().unwrap().clone())
+        }
+
+        fn stop(&self, _stack_dir: &Path) -> Result<(), String> {
+            Ok(())
+        }
+    }
+
+    /// A port nothing is listening on.
+    fn closed_port() -> u16 {
+        let listener = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+        port
+    }
+
+    fn published(hostname: &str, port: u16, service: Option<&str>) -> Published {
+        Published {
+            hostname: hostname.into(),
+            port,
+            service: service.map(str::to_string),
+        }
+    }
+
+    /// What the registry holds for a stack that was running when the app quit: its app on
+    /// `app_port` and two fake services on `fake_ports`, every name recorded under a proxy that
+    /// listened on 7400.
+    fn running_entry(
+        fix: &Fix,
+        id: &str,
+        tree: &Path,
+        app_port: u16,
+        fake_ports: [u16; 2],
+    ) -> Entry {
+        let names = vec![
+            published("main-a.localhost", app_port, None),
+            published("github.main-a.localhost", fake_ports[0], Some("github")),
+            published("stripe.main-a.localhost", fake_ports[1], Some("stripe")),
+        ];
+        Entry {
             id: id.into(),
             key: path_key(tree),
             worktree: crate::fs::path_to_js(tree),
@@ -4799,73 +4965,153 @@ mod tests {
             block: 22010,
             ports: Vec::new(),
             env: BTreeMap::new(),
-            url: names
-                .first()
-                .map(|name| format!("http://{}:7400", name.hostname)),
-            running,
+            url: Some("http://main-a.localhost:7400".into()),
+            running: true,
             label: "a".into(),
             names,
-            emulated: Vec::new(),
-            owner_pid: dead,
+            emulated: vec![
+                Emulated {
+                    service: "github".into(),
+                    env: "GITHUB_BASE_URL".into(),
+                    port: fake_ports[0],
+                    base_url: "http://github.main-a.localhost:7400".into(),
+                },
+                Emulated {
+                    service: "stripe".into(),
+                    env: "STRIPE_BASE_URL".into(),
+                    port: fake_ports[1],
+                    base_url: "http://stripe.main-a.localhost:7400".into(),
+                },
+            ],
+            owner_pid: u32::MAX,
             proxy_port: Some(7400),
             reaches_real: false,
             note: None,
-        };
-        update(&registry_dir(&base.data_dir), |store| {
-            store.stacks.push(entry(
-                "s0001",
-                &fix.first,
-                true,
-                vec![
-                    Published {
-                        hostname: "main-a.localhost".into(),
-                        port: app_port,
-                        service: None,
-                    },
-                    Published {
-                        hostname: "github-a.localhost".into(),
-                        port: fake_port,
-                        service: Some("github".into()),
-                    },
-                    Published {
-                        hostname: "stripe-a.localhost".into(),
-                        port: closed,
-                        service: Some("stripe".into()),
-                    },
-                ],
-            ));
-            store.stacks.push(entry(
-                "s0002",
-                &fix.second,
+        }
+    }
+
+    /// The registry as the previous app process left it, and the name list after the new proxy
+    /// pruned that process's names. A second stack was stopped before the restart.
+    fn after_a_restart(
+        fix: &Fix,
+        running: Entry,
+    ) -> (crate::proxy::routes::RouteStore, Vec<Published>) {
+        let routes =
+            crate::proxy::routes::RouteStore::new(crate::proxy::server::proxy_dir(&fix.data));
+        let dead = u32::MAX;
+        for name in &running.names {
+            routes
+                .add_route(&name.hostname, name.port, dead, false)
+                .unwrap();
+        }
+        let stopped_names = vec![published("main-b.localhost", closed_port(), None)];
+        routes
+            .add_route(
+                &stopped_names[0].hostname,
+                stopped_names[0].port,
+                dead,
                 false,
-                vec![Published {
-                    hostname: "main-b.localhost".into(),
-                    port: closed,
-                    service: None,
-                }],
-            ));
+            )
+            .unwrap();
+        let mut stopped = Entry {
+            running: false,
+            names: stopped_names.clone(),
+            emulated: Vec::new(),
+            id: "s0000a002".into(),
+            key: path_key(&fix.second),
+            worktree: crate::fs::path_to_js(&fix.second),
+            compose_project: "hivra-s0000a002".into(),
+            url: Some("http://main-b.localhost:7400".into()),
+            ..running.clone()
+        };
+        stopped.note = None;
+        update(&registry_dir(&fix.data), |store| {
+            store.stacks.push(running.clone());
+            store.stacks.push(stopped.clone());
             Ok(())
         })
         .unwrap();
         // The start of the new proxy removes the dead owner's names first.
         assert_eq!(routes.prune_stale_routes().unwrap().len(), 4);
+        (routes, stopped_names)
+    }
 
-        let env = StackEnv {
+    fn resumed_env(
+        fix: &Fix,
+        routes: &crate::proxy::routes::RouteStore,
+        stand_in: Option<Arc<dyn StandIn>>,
+    ) -> StackEnv {
+        StackEnv {
             names: Some(Arc::new(RouteNames {
                 store: routes.clone(),
             })),
             proxy_port: Some(7500),
+            stand_in,
             ..fix.env()
-        };
+        }
+    }
+
+    fn running_stack(fix: &Fix) -> Entry {
+        let store = load(&registry_dir(&fix.data)).unwrap();
+        store
+            .stacks
+            .into_iter()
+            .find(|entry| entry.running)
+            .unwrap()
+    }
+
+    /// The app quit, which stopped every fake (`stop_stand_ins`), and nothing started them
+    /// again, so the stack stayed `running` with names that led nowhere. The fakes are started
+    /// again first, with the new proxy's port in the address they advertise, and only then do
+    /// their names come back.
+    #[test]
+    fn a_running_stack_gets_its_fakes_and_then_its_names_back_after_a_restart() {
+        let fix = Fix::new();
+        let app = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let app_port = app.local_addr().unwrap().port();
+        let fakes = [closed_port(), closed_port()];
+        let (routes, _) = after_a_restart(
+            &fix,
+            running_entry(&fix, "s0000a001", &fix.first, app_port, fakes),
+        );
+        let stand_in = WatchingStandIn::new(&routes);
+        let env = resumed_env(&fix, &routes, Some(stand_in.clone()));
         resume_names(&env).unwrap();
 
-        let _hold = (app_listener, fake_listener);
-        let live = routes.load_routes_raw().unwrap();
-        assert_eq!(live.len(), 2, "{live:?}");
+        // One stand-in, for the running stack only, with both of its services.
+        let started = stand_in.started.lock().unwrap();
+        assert_eq!(started.len(), 1, "{started:?}");
+        assert!(started[0].0.ends_with("s0000a001"), "{started:?}");
+        let services: Vec<(&str, u16, &str)> = started[0]
+            .1
+            .iter()
+            .map(|service| {
+                (
+                    service.service.as_str(),
+                    service.port,
+                    service.base_url.as_str(),
+                )
+            })
+            .collect();
+        // The address a fake advertises follows the new proxy's port.
+        assert_eq!(
+            services,
+            vec![
+                ("github", fakes[0], "http://github.main-a.localhost:7500"),
+                ("stripe", fakes[1], "http://stripe.main-a.localhost:7500"),
+            ]
+        );
+        // Nothing was published yet when the fakes started.
+        assert_eq!(
+            *stand_in.routed_at_start.lock().unwrap(),
+            vec![Vec::<String>::new()]
+        );
+
         let own = std::process::id();
         for (name, port) in [
             ("main-a.localhost", app_port),
-            ("github-a.localhost", fake_port),
+            ("github.main-a.localhost", fakes[0]),
+            ("stripe.main-a.localhost", fakes[1]),
         ] {
             let route = routes
                 .route_for_host(name)
@@ -4873,20 +5119,177 @@ mod tests {
             assert_eq!(route.pid, own, "{name}");
             assert_eq!(route.port, port, "{name}");
         }
-        // A stack that was stopped before the restart is not brought back, and a name whose
-        // port is closed is not put back either.
+        // A stack that was stopped before the restart is not brought back.
         assert!(routes.route_for_host("main-b.localhost").is_none());
-        assert!(routes.route_for_host("stripe-a.localhost").is_none());
-        let store = load(&registry_dir(&base.data_dir)).unwrap();
-        let running = store.stacks.iter().find(|entry| entry.running).unwrap();
+        let running = running_stack(&fix);
         assert_eq!(running.owner_pid, own);
         assert_eq!(running.proxy_port, Some(7500));
-        // The app URL follows the proxy's new port too.
         assert_eq!(running.url.as_deref(), Some("http://main-a.localhost:7500"));
+        assert_eq!(running.names.len(), 3);
+        assert_eq!(running.note, None);
+        assert_eq!(
+            running.emulated[0].base_url,
+            "http://github.main-a.localhost:7500"
+        );
+        drop(app);
+    }
+
+    /// A fake's name used to come back whenever something accepted on its port, and the check
+    /// ran just after the fakes were killed, so a plain listener on that port got the name. It
+    /// is now started again by the app, and a fake whose port something else holds is left
+    /// unpublished, with a sentence saying why.
+    #[test]
+    fn a_fake_name_is_not_pointed_at_something_else_after_a_restart() {
+        let fix = Fix::new();
+        let app = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let app_port = app.local_addr().unwrap().port();
+        let stranger = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let fakes = [stranger.local_addr().unwrap().port(), closed_port()];
+        let (routes, _) = after_a_restart(
+            &fix,
+            running_entry(&fix, "s0000a001", &fix.first, app_port, fakes),
+        );
+        let stand_in = WatchingStandIn::new(&routes);
+        let env = resumed_env(&fix, &routes, Some(stand_in.clone()));
+        resume_names(&env).unwrap();
+
+        // The stand-in is one process for every fake of the stack: it is not started where one
+        // of its ports is taken.
+        assert!(stand_in.started.lock().unwrap().is_empty());
+        assert!(routes.route_for_host("github.main-a.localhost").is_none());
+        assert!(routes.route_for_host("stripe.main-a.localhost").is_none());
+        // The app's own name is its own port's business.
+        assert!(routes.route_for_host("main-a.localhost").is_some());
+        let running = running_stack(&fix);
+        // Kept, so the next start of the stack puts them back.
+        assert_eq!(running.names.len(), 3);
+        let note = running
+            .note
+            .expect("a note says the fake did not come back");
+        assert!(note.contains("fake"), "{note}");
+        drop((app, stranger));
+    }
+
+    /// An app whose port is not up yet when the app launches (Docker still starting) is not
+    /// published, and it is not forgotten: its name stays on the stack and its address follows
+    /// the new proxy's port.
+    #[test]
+    fn a_name_whose_port_is_not_up_yet_stays_with_its_stack() {
+        let fix = Fix::new();
+        let fakes = [closed_port(), closed_port()];
+        let (routes, _) = after_a_restart(
+            &fix,
+            running_entry(&fix, "s0000a001", &fix.first, closed_port(), fakes),
+        );
+        let stand_in = WatchingStandIn::new(&routes);
+        let env = resumed_env(&fix, &routes, Some(stand_in.clone()));
+        resume_names(&env).unwrap();
+
+        assert!(routes.route_for_host("main-a.localhost").is_none());
+        let running = running_stack(&fix);
+        assert!(
+            running
+                .names
+                .iter()
+                .any(|name| name.hostname == "main-a.localhost"),
+            "the app's name was dropped: {:?}",
+            running.names
+        );
+        assert_eq!(running.names.len(), 3);
+        assert_eq!(running.url.as_deref(), Some("http://main-a.localhost:7500"));
+        assert_eq!(running.proxy_port, Some(7500));
+        let note = running.note.expect("a note says the app was not answering");
+        assert!(note.contains("answering"), "{note}");
+        // Its fakes were started, and their names are up.
+        assert!(routes.route_for_host("github.main-a.localhost").is_some());
+        // The name is still on the status card.
+        let status = status_for(&env, &fix.first).unwrap();
+        assert!(status.stacks[0]
+            .names
+            .iter()
+            .any(|name| name.hostname == "main-a.localhost"));
+    }
+
+    /// Another stack holds the app's name: the name was not published, so the stack does not
+    /// claim it, and the other stack keeps it.
+    #[test]
+    fn a_name_that_could_not_be_published_is_not_recorded_as_published() {
+        let fix = Fix::new();
+        let app = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let app_port = app.local_addr().unwrap().port();
+        let fakes = [closed_port(), closed_port()];
+        let (routes, _) = after_a_restart(
+            &fix,
+            running_entry(&fix, "s0000a001", &fix.first, app_port, fakes),
+        );
+        // A live stack of this same process took the name while the old one was gone.
+        routes
+            .add_route_owned(
+                "main-a.localhost",
+                closed_port(),
+                std::process::id(),
+                true,
+                Some("sabcdef012"),
+            )
+            .unwrap();
+        let stand_in = WatchingStandIn::new(&routes);
+        let env = resumed_env(&fix, &routes, Some(stand_in.clone()));
+        resume_names(&env).unwrap();
+
+        let held = routes.route_for_host("main-a.localhost").unwrap();
+        assert_eq!(held.stack_id.as_deref(), Some("sabcdef012"));
+        let running = running_stack(&fix);
+        assert!(
+            running
+                .names
+                .iter()
+                .all(|name| name.hostname != "main-a.localhost"),
+            "the stack still claims a name it could not publish: {:?}",
+            running.names
+        );
+        // The name that did publish is kept.
         assert!(running
             .names
             .iter()
-            .all(|name| name.hostname != "stripe-a.localhost"));
+            .any(|name| name.hostname == "github.main-a.localhost"));
+        let note = running.note.expect("a note says a name was not put back");
+        assert!(note.contains("another stack"), "{note}");
+        drop(app);
+    }
+
+    /// Node is gone, or too old: the fakes do not come back, so their names are left alone and
+    /// the card says what happened. The stack itself stays running.
+    #[test]
+    fn a_fake_that_cannot_start_again_keeps_its_names_unpublished_with_its_note() {
+        let fix = Fix::new();
+        let app = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let app_port = app.local_addr().unwrap().port();
+        let fakes = [closed_port(), closed_port()];
+        let (routes, _) = after_a_restart(
+            &fix,
+            running_entry(&fix, "s0000a001", &fix.first, app_port, fakes),
+        );
+        let stand_in = WatchingStandIn::new(&routes);
+        *stand_in.outcome.lock().unwrap() = StandInOutcome {
+            pid: None,
+            note: Some(
+                "Node isn't installed, so the stand-in didn't start. The stack still runs.".into(),
+            ),
+        };
+        let env = resumed_env(&fix, &routes, Some(stand_in.clone()));
+        resume_names(&env).unwrap();
+
+        assert!(routes.route_for_host("github.main-a.localhost").is_none());
+        assert!(routes.route_for_host("stripe.main-a.localhost").is_none());
+        assert!(routes.route_for_host("main-a.localhost").is_some());
+        let running = running_stack(&fix);
+        assert!(running.running);
+        assert_eq!(running.names.len(), 3);
+        assert_eq!(
+            running.note.as_deref(),
+            Some("Node isn't installed, so the stand-in didn't start. The stack still runs.")
+        );
+        drop(app);
     }
 
     /// A stack list that can't be read must not leave a stand-in running: the stacks folder is

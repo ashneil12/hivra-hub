@@ -144,8 +144,10 @@ the stack says so plainly instead of pretending, and that stack is not run unatt
    stand-in back to its seed between runs. A pool slot keeps its state (WP-82); `stack down` stops the stand-in, the
    app's processes and removes its names, and a stack whose worktree is gone appears in Clean up, removed only with a
    tap. A name or stand-in left by a crash is pruned on the next start, never silently re-pointed at a port now owned
-   by something else: the app stops every stand-in it started when it quits and again at the next start, and puts a
-   name back only when its port still accepts a connection.
+   by something else: the app stops every stand-in it started when it quits and again at the next start. For a stack
+   that was still running, it then starts that stack's fakes again and puts their names back; any other name comes back
+   only while its port accepts a connection. A name that was not put back (Docker still starting, a port something else
+   holds) stays with its stack and the card says why, and a name another stack holds is dropped from this one.
 9. **On screen and by chat.** The stack's card shows each name, whether it is emulated, and one line saying which
    mode it is in ("tests use fake GitHub and Stripe" or "reaches the real internet"). The task card links the named
    app URL. `app stacks` reads the same; a crew is told the app's named URL in its brief.
