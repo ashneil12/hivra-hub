@@ -24,7 +24,8 @@ const READY: PaletteContext = {
   terminal: true,
   chat: true,
   busy: false,
-  control: false,
+  terminalFocus: false,
+  pickerFocus: false,
   editor: false,
 };
 
@@ -33,7 +34,8 @@ const NOTHING: PaletteContext = {
   terminal: false,
   chat: false,
   busy: false,
-  control: false,
+  terminalFocus: false,
+  pickerFocus: false,
   editor: false,
 };
 
