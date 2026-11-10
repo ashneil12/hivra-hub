@@ -245,6 +245,12 @@
       "url": "https://github.com/snap-stanford/memorilla",
       "licence": "Apache-2.0; its PersonalizationV4 data is CC BY 4.0",
       "gave": "an external test set for chat-derived memory, the arm ladder its evaluation reports, and rules for writing a memory question that cannot be guessed (WP-106, ideas and data only)"
+    },
+    {
+      "name": "Atomic Agent",
+      "url": "https://github.com/AtomicBot-ai/atomic-agent",
+      "licence": "MIT",
+      "gave": "contracts for a multi-part fan-out (what each part owns, provides and requires, and the checks it must pass), dependency waves, the person's own request quoted in every worker brief, and a few prompt lines (WP-171)"
     }
   ],
   "components": [
