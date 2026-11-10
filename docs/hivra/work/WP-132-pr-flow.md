@@ -137,3 +137,7 @@ Orca, Paseo, Cursor, Claude, and Codex come up in the parity study. This package
 ## Licence
 
 Behaviour in this package is inspired by T3 Code (https://github.com/pingdotgg/t3code at commit `e85e0094dd4617a1eada1ad7961f2132a79e67b2`), MIT. The copyright line read from that project's LICENSE is `Copyright (c) 2026 T3 Tools Inc.` Ideas need no credits.json component. No T3 source file is translated here.
+
+## Built in WP-132b
+
+The first slice is the review guide, behind a setting that is off by default. See WP-132b-review-guide.md. Saved review threads, viewed marks, stacks, other forges, and the split diff stay out.
