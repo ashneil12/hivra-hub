@@ -299,14 +299,20 @@ pub enum ReadFiles {
 /// GitHub's compare endpoint lists at most this many files, and still exits 0. A list of this many may be short.
 const FILE_LIST_CEILING: usize = 300;
 
-/// The list is the whole diff only when the number of current filenames equals `reported`
-/// (`changedFiles` on the pull request) and is under the API ceiling. An empty list is the
-/// whole diff only when `reported` is 0. Anything else is unread, including a missing count.
+/// The list is the whole diff only when it is not empty, the number of current filenames equals `reported`
+/// (`changedFiles` on the pull request) and it is under the API ceiling. Anything else is unread, including
+/// an empty list and a missing count.
 pub fn judge(read: ReadFiles, reported: Option<u64>) -> ChangedFiles {
     let list = match read {
         ReadFiles::Unread { reason } => return ChangedFiles::Unread { reason },
         ReadFiles::Parsed(list) => list,
     };
+    if list.filenames == 0 {
+        // An empty list is not a reading of the diff: it could be an empty page or a read that found nothing.
+        return ChangedFiles::Unread {
+            reason: "GitHub's file list was empty, so it doesn't show what changed.".into(),
+        };
+    }
     if list.filenames >= FILE_LIST_CEILING {
         return ChangedFiles::Unread {
             reason: format!(
@@ -779,14 +785,14 @@ mod tests {
             ChangedFiles::Unread { reason } if reason.contains("didn't say")
         ));
 
-        // An empty list allows only when GitHub says nothing changed.
+        // An empty list is never the whole diff, even when GitHub's count is 0.
         let empty = parse_file_list("").unwrap();
         assert!(matches!(
             judge(ReadFiles::Parsed(empty.clone()), Some(0)),
-            ChangedFiles::Listed(paths) if paths.is_empty()
+            ChangedFiles::Unread { .. }
         ));
         match judge(ReadFiles::Parsed(empty), Some(5)) {
-            ChangedFiles::Unread { reason } => assert!(reason.contains('5'), "{reason}"),
+            ChangedFiles::Unread { reason } => assert!(reason.contains("empty"), "{reason}"),
             ChangedFiles::Listed(_) => panic!("an empty list is not five files"),
         }
 

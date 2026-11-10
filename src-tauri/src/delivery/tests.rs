@@ -1819,25 +1819,24 @@ fn a_short_file_list_asks_even_when_the_page_is_clean() {
 }
 
 #[test]
-fn an_empty_file_list_merges_only_when_nothing_changed() {
+fn an_empty_file_list_asks_and_only_a_listed_change_can_merge() {
     let project = floor_project("empty");
     let s = store();
     set_mode(&s, &project, Some(Mode::Pr), true);
     turn_floor_on(&s, &project);
     remember_delivery(&s, &project, None, 7);
 
+    // An empty list is unread even when GitHub's count is 0: it asks, and merges nothing.
     let none = files_of(Ok(""));
-    let merged = merge::merge(&s, &none, agent_merge("acme/web"), 20).unwrap();
-    assert!(
-        matches!(merged, MergeOutcome::Merged { .. }),
-        "changedFiles 0 is an empty diff: {merged:?}"
-    );
+    let question = asked(&merge::merge(&s, &none, agent_merge("acme/web"), 20).unwrap());
+    assert!(question.contains("empty"), "{question}");
+    assert!(none.ran("pr", "merge").is_empty());
 
     let short = files_of(Ok(""));
     reported(&short, Some(5));
     let question = asked(&merge::merge(&s, &short, agent_merge("acme/web"), 30).unwrap());
     assert!(question.contains("couldn't be read"), "{question}");
-    assert!(question.contains('5'), "{question}");
+    assert!(question.contains("empty"), "{question}");
     assert!(short.ran("pr", "merge").is_empty());
 
     let missing = files_of(Ok("readme.md\n"));
