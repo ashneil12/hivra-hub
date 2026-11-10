@@ -6,6 +6,7 @@ import { CLI_ORDER, EFFORTS, cliLabel } from "../model/clis";
 import { draftRule, moveRule, type RuleDraft } from "../model/rules";
 import { defaultLine, type Presence } from "../model/resolve";
 import { WorkerDefaultControl } from "./WorkerDefaultControl";
+import { BuilderScaleControls } from "../../monos/ui/BuilderScaleControls";
 
 export type ShownRule = {
   labels: string[];
@@ -194,6 +195,8 @@ export function CrewRulesPage({ cwd, initial }: Props) {
       <p className="text-[13px] text-content/80">{defaultLine(signedIn)}</p>
       {/* WP-89: the default for every worker, above the rules list. */}
       <WorkerDefaultControl scope="system" title="Default for every worker" projectFolder={cwd} />
+      {/* WP-161: the shared ceiling and the pauses. Running builders are not stopped. */}
+      <BuilderScaleControls showSharedMax />
       <div className="flex gap-2" role="group" aria-label="Where these rules apply">
         <button
           type="button"

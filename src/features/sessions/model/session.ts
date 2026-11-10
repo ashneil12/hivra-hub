@@ -135,6 +135,8 @@ export type HandoffMeta = {
   status: HandoffStatus;
   /** Inject this brief into prompts to `to` until that harness accepts a turn. */
   pending?: boolean;
+  /** WP-121: a timeline marker for a model or provider change. Not a recap. */
+  switchTo?: { harness: HarnessId; model: string; label: string };
 };
 
 /** One persisted question/answer in a completed turn's side conversation. */
@@ -672,6 +674,23 @@ export type Session = {
    * Handoff runs on the next send, not on picker change.
    */
   pendingSwitch?: PendingHarnessSwitch;
+  /**
+   * WP-121: the next send continues this same thread from a portable transcript.
+   * Absent when the switch is a recap, or when the provider session itself continues.
+   */
+  portableResume?: {
+    from: HarnessId;
+    fromModel: string;
+    fromSettings: Record<string, string>;
+    fromProviderSessionId?: string;
+    fromProviderAccountId?: string;
+    transcript: string;
+    /** Messages the person picked for the hand-over; absent means the whole thread, read at send. */
+    messageIds?: string[];
+    markerId: string;
+  };
+  /** WP-121: the line shown until the next send. The marker in the transcript stays. */
+  midThread?: { kind: "resume" | "recap"; line: string };
   /** Last known branch in the session's working copy. */
   branch?: string;
   /** Selected working copy; cwd remains the project identity. */
@@ -680,6 +699,11 @@ export type Session = {
   workspaceMode?: WorkspaceMode;
   /** Base ref for a worktree that will be created on first send. */
   worktreeBase?: string;
+  /**
+   * The person chose this folder for this new chat, so the new chat worktree
+   * setting leaves it alone. Saved with the open tabs, so a reload keeps it.
+   */
+  worktreeDeclined?: boolean;
   /** Internal guard while the first turn creates its selected worktree. */
   worktreePreparing?: boolean;
   /** Select a working copy before continuing after the previous one was deleted. */
