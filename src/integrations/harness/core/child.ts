@@ -1,5 +1,6 @@
 import { invoke as tauriInvoke } from "@tauri-apps/api/core";
 import { listen as tauriListen, type UnlistenFn } from "@tauri-apps/api/event";
+import { requireChatFolder } from "./chatFolder";
 import {
   runtimeProviderBinaryPath,
   type ConfigurableBinaryProvider,
@@ -369,6 +370,8 @@ export async function spawnChild(
   /** The provider's default CLI, not a configured override. */
   defaultBinary?: boolean,
 ): Promise<void> {
+  // Every provider process starts here: none for a chat with no folder (the home folder is not a stand-in).
+  requireChatFolder(cwd);
   livePid.delete(sessionId);
   pendingExit.delete(sessionId);
   ownedChildren.add(sessionId);

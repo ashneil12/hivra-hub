@@ -5,6 +5,7 @@ import type {
   TaskListMeta,
   TurnIntent,
 } from "../../../features/sessions/model/session";
+import { requireChatFolder } from "./chatFolder";
 import { credentialBlock } from "./credentialGuard";
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { transferProviderSession } from "./child";
@@ -352,6 +353,8 @@ export function setTurnTextDecorator(fn: ((sessionId: string, text: string) => s
 export function sendHarnessTurn(input: SendTurnInput & { harness: HarnessId }) {
   input = { ...input, text: decorateTurnText(input.sessionId, input.text) };
   return queueSessionOperation(input.sessionId, async () => {
+    // Before the control port or any provider hears of the turn: a chat with no folder starts nothing.
+    requireChatFolder(input.cwd);
     const adapter = requireAdapterFor(input.harness, input.sessionId);
     if (!adapter.live) {
       throw new Error(`${input.harness} is not connected yet`);
@@ -430,6 +433,7 @@ export function compactHarnessContext(
   input: CompactContextInput & { harness: HarnessId },
 ): Promise<void> {
   return queueSessionOperation(input.sessionId, async () => {
+    requireChatFolder(input.cwd);
     const adapter = requireAdapterFor(input.harness, input.sessionId);
     if (!adapter.live) {
       throw new Error(`${input.harness} is not connected yet`);
@@ -468,6 +472,7 @@ export function rewindHarnessLastTurn(
   input: RewindLastTurnInput & { harness: HarnessId },
 ): Promise<RewindLastTurnResult> {
   return queueSessionOperation(input.sessionId, async () => {
+    requireChatFolder(input.cwd);
     const adapter = requireAdapterFor(input.harness, input.sessionId);
     if (!adapter.rewindLastTurn) {
       throw new Error(
