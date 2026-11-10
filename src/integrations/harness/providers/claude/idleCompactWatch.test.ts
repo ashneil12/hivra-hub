@@ -163,6 +163,66 @@ describe("idle compact watch", () => {
     expect(sessions[0]?.busy).toBe(false);
   });
 
+  it("releases the busy flag when the compact fails, so a send is not held forever", async () => {
+    due();
+    const sessions = [chat()];
+    const marks: boolean[] = [];
+    const ran = await compactIdleClaudeChats({
+      sessions: () => sessions,
+      toInput: (session) => ({
+        sessionId: session.id,
+        cwd: "/repo",
+        model: session.model,
+        runtimeMode: "supervised",
+      }),
+      onEvent: () => {},
+      markBusy: (_id, busy) => {
+        sessions[0] = { ...sessions[0], busy };
+        marks.push(busy);
+        return true;
+      },
+      compact: async () => {
+        throw new Error("the CLI went away");
+      },
+    });
+    expect(ran).toBe(false);
+    expect(marks).toEqual([true, false]);
+    expect(sessions[0]?.busy).toBe(false);
+  });
+
+  it("leaves a chat alone when something else already holds it, and compacts the next one", async () => {
+    due("taken");
+    due("free");
+    const compacted: string[] = [];
+    const marks: Array<[string, boolean]> = [];
+    const ran = await compactIdleClaudeChats({
+      sessions: () => [chat({ id: "taken" }), chat({ id: "free" })],
+      toInput: (session) => ({
+        sessionId: session.id,
+        cwd: "/repo",
+        model: session.model,
+        runtimeMode: "supervised",
+      }),
+      onEvent: () => {},
+      markBusy: (id, busy) => {
+        marks.push([id, busy]);
+        return id !== "taken";
+      },
+      compact: async (input) => {
+        compacted.push(input.sessionId);
+        return true;
+      },
+    });
+    expect(ran).toBe(true);
+    expect(compacted).toEqual(["free"]);
+    // A refused claim is not released: it was never taken.
+    expect(marks).toEqual([
+      ["taken", true],
+      ["free", true],
+      ["free", false],
+    ]);
+  });
+
   it("is not due two minutes before a one hour cache, under the floor, or switched off", async () => {
     const compact = vi.fn(async () => true);
     const run = (idleMs: number) =>
