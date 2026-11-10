@@ -19,12 +19,12 @@
 //! the file's version comes in beside it only when asked. Automations come back paused, delegations as history only,
 //! and a dev copy never keeps a provider session id or writes into the real memory folder.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs;
-use std::io::{Read, Write};
+use std::io::Write;
 use std::path::{Component, Path, PathBuf};
 use std::process::Command;
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
 
 use regex::Regex;
 use rusqlite::types::ValueRef;
@@ -34,6 +34,7 @@ use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
 use tauri::{AppHandle, Manager, State};
 
+use crate::plain_file::{self, Refusal};
 use crate::session_store::{self, now_millis, SessionStore, SessionUpsert};
 
 mod folders;
@@ -47,6 +48,18 @@ const MANIFEST: &str = "manifest.json";
 /// Unpacked size and entry caps for an archive: a damaged or hostile file can't fill the disk.
 const MAX_UNPACKED: u64 = 8 * 1024 * 1024 * 1024;
 const MAX_ENTRIES: usize = 500_000;
+/// The most a manifest.json may hold: about 350,000 listed files. Inspect hands it to the window whole.
+const MAX_MANIFEST: u64 = 64 * 1024 * 1024;
+/// The most one text or JSON file of an export may be (a chat, a table of notes or note versions, a setup file, a memory
+/// file). Large is normal: a chat keeps every tool output, and Claude's own transcript of a long one can pass 150 MB.
+/// The file is read whole into memory, so the cap is what one hostile file can cost, whatever size the manifest says.
+/// A file over it is left out with a line in the report, never a reason to refuse the whole export or the whole open.
+const MAX_TEXT_FILE: u64 = 512 * 1024 * 1024;
+/// A memory folder's history as a git bundle. It is copied to disk, never held in memory.
+const MAX_BUNDLE: u64 = 1024 * 1024 * 1024;
+/// The most of the webview's own files (`setup/`, `workspace/hub/`) Inspect holds at once, to send to the window; the
+/// file that would take them past it is left out.
+const MAX_INSPECT_BYTES: u64 = 256 * 1024 * 1024;
 /// The folders the webview writes and reads back; everything else is this module's.
 const WEBVIEW_PREFIXES: [&str; 2] = ["setup/", "workspace/hub/"];
 
@@ -369,12 +382,57 @@ fn safe_relative(path: &str) -> Option<PathBuf> {
                 if name.starts_with('.') && name != ".gitkeep" {
                     return None;
                 }
+                if cfg!(windows) && windows_unsafe_name(name) {
+                    return None;
+                }
                 out.push(name);
             }
             _ => return None,
         }
     }
     (!out.as_os_str().is_empty()).then_some(out)
+}
+
+/// A name Windows doesn't take for a file of that name: a device (`CON`, `NUL`, `CONIN$`, `COM1`, `LPT¹`, with or
+/// without an extension), an alternate data stream (`name:stream`), or one that ends in a dot or a space.
+fn windows_unsafe_name(name: &str) -> bool {
+    if name.contains(':') || name.ends_with('.') || name.ends_with(' ') {
+        return true;
+    }
+    let stem = name
+        .split('.')
+        .next()
+        .unwrap_or(name)
+        .trim_end()
+        .to_ascii_uppercase();
+    // COM and LPT with one digit, 0 to 9, or one of the superscripts Windows also takes for one.
+    let numbered = |prefix: &str| {
+        stem.strip_prefix(prefix).is_some_and(|n| {
+            let mut chars = n.chars();
+            matches!(
+                (chars.next(), chars.next()),
+                (Some('0'..='9' | '\u{b9}' | '\u{b2}' | '\u{b3}'), None)
+            )
+        })
+    };
+    matches!(
+        stem.as_str(),
+        "CON" | "PRN" | "AUX" | "NUL" | "CONIN$" | "CONOUT$"
+    ) || numbered("COM")
+        || numbered("LPT")
+}
+
+/// A relative path as the manifest spells it: plain names joined by `/`, whatever the platform.
+fn canonical_relative(path: &Path) -> String {
+    path.components()
+        .filter_map(|c| c.as_os_str().to_str())
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+/// What two spellings of one file have in common (a case-insensitive disk keeps one file under both).
+fn fold(canonical: &str) -> String {
+    canonical.to_lowercase()
 }
 
 /// A memory folder or id that is one plain name.
@@ -390,10 +448,11 @@ fn plain_name(name: &str) -> bool {
 }
 
 fn sha256_hex(bytes: &[u8]) -> String {
-    Sha256::digest(bytes)
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect()
+    hex_of(&Sha256::digest(bytes))
+}
+
+fn hex_of(digest: &[u8]) -> String {
+    digest.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
 /// Owner-only files: an export holds Ash's chats and memory.
@@ -452,6 +511,25 @@ impl Scratch {
             uuid::Uuid::new_v4().simple()
         ));
         fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+        Ok(Self(dir))
+    }
+
+    /// A new folder only this user can open (0700), under a name nobody can guess, that must not exist already.
+    fn private(label: &str) -> Result<Self, String> {
+        let dir = std::env::temp_dir().join(format!(
+            "monocode-{label}-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        #[cfg_attr(not(unix), allow(unused_mut))]
+        let mut builder = fs::DirBuilder::new();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::DirBuilderExt;
+            builder.mode(0o700);
+        }
+        builder
+            .create(&dir)
+            .map_err(|e| format!("{}: {e}", dir.display()))?;
         Ok(Self(dir))
     }
 
@@ -613,9 +691,26 @@ struct Writer {
     root: PathBuf,
     secrets: usize,
     files: Vec<(String, u64, String)>,
+    /// Plain lines about files that were left out of the export and why.
+    left_out: Vec<String>,
+    /// The names written so far, folded (`fold`): an import refuses an export that lists one twice.
+    seen: BTreeSet<String>,
+    /// How much of the webview's files the export may hold (`MAX_INSPECT_BYTES`).
+    webview_budget: u64,
 }
 
 impl Writer {
+    fn new(root: PathBuf) -> Self {
+        Self {
+            root,
+            secrets: 0,
+            files: Vec::new(),
+            left_out: Vec::new(),
+            seen: BTreeSet::new(),
+            webview_budget: MAX_INSPECT_BYTES,
+        }
+    }
+
     fn text(&mut self, relative: &str, text: &str) -> Result<(), String> {
         let path = safe_relative(relative)
             .ok_or_else(|| format!("Not a path inside an export: {relative}"))?;
@@ -654,15 +749,67 @@ impl Writer {
         self.raw(relative, &path, text.as_bytes())
     }
 
-    /// A binary file (an image, a git bundle) copied as it is.
-    fn binary(&mut self, relative: &str, source: &Path) -> Result<(), String> {
+    /// A binary file (a git bundle) copied as it is: a plain file that is not a link. One past `cap` bytes is left out of
+    /// the export, with a line, rather than failing it.
+    fn binary(&mut self, relative: &str, source: &Path, cap: u64) -> Result<(), String> {
+        match plain_file::read(source, cap) {
+            Ok(bytes) => self.bytes(relative, &bytes),
+            Err(Refusal::TooBig) => {
+                self.left_out.push(format!(
+                    "The history in {relative} is larger than an export may hold of one file, so it was left out of the export."
+                ));
+                Ok(())
+            }
+            Err(why) => Err(format!(
+                "{} {}.",
+                source.display(),
+                match why {
+                    Refusal::Link => "is a link",
+                    Refusal::NotAFile => "isn't a plain file",
+                    _ => "couldn't be read",
+                }
+            )),
+        }
+    }
+
+    /// A binary file whose bytes are already in hand (an image), written as they are.
+    fn bytes(&mut self, relative: &str, bytes: &[u8]) -> Result<(), String> {
         let path = safe_relative(relative)
             .ok_or_else(|| format!("Not a path inside an export: {relative}"))?;
-        let bytes = fs::read(source).map_err(|e| format!("{}: {e}", source.display()))?;
-        self.raw(relative, &path, &bytes)
+        self.raw(relative, &path, bytes)
     }
 
     fn raw(&mut self, relative: &str, path: &Path, bytes: &[u8]) -> Result<(), String> {
+        let canonical = canonical_relative(path);
+        // The limits an import holds a file to (`left_out_reason`): a file past them is left out with a line, so the
+        // export never holds a file the import would turn away.
+        let webview_used: u64 = if is_webview(&canonical) {
+            self.files
+                .iter()
+                .filter(|(name, _, _)| is_webview(name))
+                .map(|(_, size, _)| size)
+                .sum()
+        } else {
+            0
+        };
+        if let Some(why) = left_out_reason(
+            &canonical,
+            bytes.len() as u64,
+            webview_used,
+            self.webview_budget,
+        ) {
+            self.left_out.push(format!(
+                "{relative} {why}, so it was left out of the export."
+            ));
+            return Ok(());
+        }
+        // An import refuses an export that names one file twice (a name that differs only in capitals included).
+        if !self.seen.insert(fold(&canonical)) {
+            self.left_out.push(format!(
+                "{relative} has the same name as a file already in the export, apart from capitals, so it was left out of the export."
+            ));
+            return Ok(());
+        }
         write_private(&self.root.join(path), bytes)?;
         self.files
             .push((relative.to_string(), bytes.len() as u64, sha256_hex(bytes)));
@@ -722,11 +869,7 @@ pub fn export(env: &Env, request: &ExportRequest) -> Result<ExportReport, String
     }
 
     let staging = Scratch::beside(&destination, "export")?;
-    let mut writer = Writer {
-        root: staging.0.clone(),
-        secrets: 0,
-        files: Vec::new(),
-    };
+    let mut writer = Writer::new(staging.0.clone());
     let mut counts = request.counts.clone();
     let mut notes = Vec::new();
 
@@ -740,9 +883,16 @@ pub fn export(env: &Env, request: &ExportRequest) -> Result<ExportReport, String
         if let Some(conn) = env.read_db()? {
             export_workspace(env, &conn, &mut writer, &mut counts).map_err(|e| e.to_string())?;
         }
-        export_note_assets(env, &mut writer, &counts)?;
+        export_note_assets(env, &mut writer, &counts, &mut notes)?;
         counts.remove("noteIds");
     }
+
+    notes.append(&mut writer.left_out);
+    // Everything an import holds an export to as a whole: the same limits, so no export is written that one refuses.
+    check_export_limits(
+        writer.files.len(),
+        writer.files.iter().map(|(_, size, _)| size).sum(),
+    )?;
 
     // The last net: nothing written may still look like a secret.
     for (relative, _, _) in &writer.files {
@@ -774,12 +924,15 @@ pub fn export(env: &Env, request: &ExportRequest) -> Result<ExportReport, String
         "notes": notes,
         "files": writer.files.iter().map(|(path, bytes, sha)| json!({"path": path, "bytes": bytes, "sha256": sha})).collect::<Vec<_>>(),
     });
-    write_private(
-        &staging.0.join(MANIFEST),
-        serde_json::to_string_pretty(&manifest)
-            .map_err(|e| e.to_string())?
-            .as_bytes(),
-    )?;
+    let manifest_text = serde_json::to_string_pretty(&manifest).map_err(|e| e.to_string())?;
+    if manifest_text.len() as u64 > MAX_MANIFEST {
+        return Err(format!(
+            "This export's list of files would be {} MB; an import reads at most {} MB of one. Leave something out and try again.",
+            manifest_text.len() / 1024 / 1024,
+            MAX_MANIFEST / 1024 / 1024
+        ));
+    }
+    write_private(&staging.0.join(MANIFEST), manifest_text.as_bytes())?;
     let bytes: u64 = writer.files.iter().map(|(_, size, _)| size).sum();
     let file_count = writer.files.len() + 1;
 
@@ -933,7 +1086,7 @@ fn export_memory(
         if choice.history && dir.join(".git").exists() {
             match history_bundle(&dir) {
                 Ok(bundle) => {
-                    writer.binary(&format!("memory/{name}.git.bundle"), &bundle.1)?;
+                    writer.binary(&format!("memory/{name}.git.bundle"), &bundle.1, MAX_BUNDLE)?;
                 }
                 Err(why) => notes.push(format!("The history of {name} was left out: {why}")),
             }
@@ -1260,33 +1413,71 @@ fn export_workspace(
 
 const NOTE_ASSET_DIR: &str = "note-assets";
 
-/// Each exported note's pictures, as they are.
+/// Each exported note's pictures, as they are: plain files of a size a note takes, in a folder that is not a link
+/// (one that is would carry out whatever it points at). What is left out is said in `notes`.
 fn export_note_assets(
     env: &Env,
     writer: &mut Writer,
     counts: &Map<String, Value>,
+    notes: &mut Vec<String>,
 ) -> Result<(), String> {
     let Some(ids) = counts.get("noteIds").and_then(Value::as_array) else {
         return Ok(());
     };
+    let all = env.data_dir.join(NOTE_ASSET_DIR);
+    match folder_state(&all) {
+        Folder::Absent => return Ok(()),
+        Folder::Real => {}
+        Folder::Refused => {
+            notes.push(format!(
+                "{NOTE_ASSET_DIR} is a link, so no note pictures were exported."
+            ));
+            return Ok(());
+        }
+    }
     for id in ids
         .iter()
         .filter_map(Value::as_str)
         .filter(|id| session_file_id(id))
     {
-        let dir = env.data_dir.join(NOTE_ASSET_DIR).join(id);
+        let dir = all.join(id);
+        match folder_state(&dir) {
+            Folder::Absent => continue,
+            Folder::Real => {}
+            Folder::Refused => {
+                notes.push(format!(
+                    "The pictures of note {id} were not exported: {NOTE_ASSET_DIR}/{id} is a link."
+                ));
+                continue;
+            }
+        }
         let Ok(entries) = fs::read_dir(&dir) else {
             continue;
         };
-        for entry in entries.flatten() {
-            let name = entry.file_name().to_string_lossy().into_owned();
-            if entry.file_type().map(|t| t.is_file()).unwrap_or(false)
-                && safe_relative(&name).is_some()
-            {
-                writer.binary(
-                    &format!("workspace/{NOTE_ASSET_DIR}/{id}/{name}"),
-                    &entry.path(),
-                )?;
+        let mut names: Vec<String> = entries
+            .flatten()
+            .filter(|entry| {
+                entry
+                    .file_type()
+                    .is_ok_and(|t| t.is_file() || t.is_symlink())
+            })
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .filter(|name| safe_relative(name).is_some())
+            .collect();
+        names.sort();
+        for name in names {
+            let relative = format!("workspace/{NOTE_ASSET_DIR}/{id}/{name}");
+            match plain_file::read(&dir.join(&name), crate::notes::IMAGE_MAX_BYTES) {
+                Ok(bytes) => writer.bytes(&relative, &bytes)?,
+                Err(why) => notes.push(format!(
+                    "{NOTE_ASSET_DIR}/{id}/{name} was not exported: {}.",
+                    match why {
+                        Refusal::Link => "it is a link",
+                        Refusal::NotAFile => "it isn't a plain file",
+                        Refusal::Unreadable => "it couldn't be read",
+                        Refusal::TooBig => "it is too large for a note picture",
+                    }
+                )),
             }
         }
     }
@@ -1295,14 +1486,255 @@ fn export_note_assets(
 
 // ---- reading an export ---------------------------------------------------------------------------------------------
 
+/// One file the manifest lists: where it is in the export (spelled the one way, `a/b`), the bytes it says it holds,
+/// and its SHA-256.
+struct Listed {
+    path: String,
+    declared: u64,
+    sha256: String,
+}
+
+/// Why a file the manifest lists couldn't be used as listed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Unusable {
+    Link,
+    NotAFile,
+    Unreadable,
+    /// Longer than the manifest says, or it doesn't hash as listed.
+    Changed,
+}
+
+impl From<Refusal> for Unusable {
+    fn from(why: Refusal) -> Self {
+        match why {
+            Refusal::Link => Unusable::Link,
+            Refusal::NotAFile => Unusable::NotAFile,
+            Refusal::Unreadable => Unusable::Unreadable,
+            Refusal::TooBig => Unusable::Changed,
+        }
+    }
+}
+
+impl Unusable {
+    /// For the report: what happened to a file that was fine when the export was checked.
+    fn since_the_check(self) -> &'static str {
+        match self {
+            Unusable::Link => "is now a link",
+            Unusable::NotAFile => "is no longer a plain file",
+            Unusable::Unreadable => "couldn't be read",
+            Unusable::Changed => "changed after the export was checked",
+        }
+    }
+}
+
+/// The most one listed file may hold, by what it is: a note's picture is no bigger than a note takes, a memory
+/// folder's history is a bundle, and everything else is text or JSON that is read whole into memory.
+fn kind_cap(canonical: &str) -> u64 {
+    let history = canonical
+        .strip_prefix("memory/")
+        .is_some_and(|name| name.ends_with(".git.bundle") && !name.contains('/'));
+    if canonical.starts_with("workspace/note-assets/") {
+        crate::notes::IMAGE_MAX_BYTES
+    } else if history {
+        MAX_BUNDLE
+    } else {
+        MAX_TEXT_FILE
+    }
+}
+
+/// Whether a path is one of the webview's own files, which Inspect holds whole.
+fn is_webview(canonical: &str) -> bool {
+    WEBVIEW_PREFIXES
+        .iter()
+        .any(|prefix| canonical.starts_with(prefix))
+}
+
+/// Why a file of `size` bytes can't be part of an export, or None if it can: the one rule export and import share, so
+/// what one writes the other takes. `webview_used` is how much of the webview's files are in already.
+fn left_out_reason(
+    canonical: &str,
+    size: u64,
+    webview_used: u64,
+    webview_budget: u64,
+) -> Option<String> {
+    let cap = kind_cap(canonical);
+    if size > cap {
+        return Some(format!(
+            "is {} MB, more than a file of that kind may be ({} MB)",
+            size / 1024 / 1024,
+            cap / 1024 / 1024
+        ));
+    }
+    if is_webview(canonical) && size > webview_budget.saturating_sub(webview_used) {
+        return Some(format!(
+            "would take the setup files past the {} MB the preview holds",
+            (webview_budget / 1024 / 1024).max(1)
+        ));
+    }
+    None
+}
+
+/// What an import holds a whole export to, checked by the export before it writes the manifest: no more files than an
+/// archive has entries, no more bytes than it may unpack to.
+fn check_export_limits(entries: usize, total: u64) -> Result<(), String> {
+    if entries > MAX_ENTRIES {
+        return Err(format!(
+            "This export would hold {entries} files; an import takes at most {MAX_ENTRIES}. Leave something out and try again."
+        ));
+    }
+    if total > MAX_UNPACKED {
+        return Err(format!(
+            "This export would be {} GB; an import takes at most {} GB. Leave something out and try again.",
+            total / 1024 / 1024 / 1024,
+            MAX_UNPACKED / 1024 / 1024 / 1024
+        ));
+    }
+    Ok(())
+}
+
+/// No more than the manifest says a file holds (and a manifest can't say more than its kind allows): a file swapped
+/// for something huge can't fill the memory.
+fn listed_cap(listed: &Listed) -> u64 {
+    listed.declared.min(kind_cap(&listed.path))
+}
+
+/// Whether the file at `path` is a plain file, not a link, that hashes as `listed` says. Streamed: it is never held in
+/// memory whole, and no more than the listed size is read.
+fn check_listed(path: &Path, listed: &Listed) -> Result<(), Unusable> {
+    let mut hash = Sha256::new();
+    plain_file::stream(path, listed_cap(listed), |piece| hash.update(piece))?;
+    if hex_of(&hash.finalize()) == listed.sha256 {
+        Ok(())
+    } else {
+        Err(Unusable::Changed)
+    }
+}
+
+/// The bytes of the plain file at `path`, if they hash as `listed` says. The hash is of the very bytes returned: the
+/// caller uses what was checked, never a second read of the file.
+fn read_as_listed(path: &Path, listed: &Listed) -> Result<Vec<u8>, Unusable> {
+    let bytes = plain_file::read(path, listed_cap(listed))?;
+    if sha256_hex(&bytes) == listed.sha256 {
+        Ok(bytes)
+    } else {
+        Err(Unusable::Changed)
+    }
+}
+
+/// Whether `folder`, links resolved, is inside `real_root` (itself resolved). A folder that isn't there is, for now: the
+/// file in it is missing, which is said next. A folder that can't be resolved for any other reason is not.
+fn folder_is_inside(real_root: &Path, folder: &Path) -> bool {
+    match fs::canonicalize(folder) {
+        Ok(real) => real.starts_with(real_root),
+        Err(error) => error.kind() == std::io::ErrorKind::NotFound,
+    }
+}
+
+/// What a manifest lists, checked against what an export may be before anything is read from the disk.
+struct Listing {
+    /// The files that can be used, in the manifest's order.
+    files: Vec<Listed>,
+    /// Where each of them is in `files` (folded: see `fold`).
+    index: HashMap<String, usize>,
+    /// Lines for the report about files left out (see `left_out_reason`), and the paths they are.
+    left_out: Vec<String>,
+    left_out_paths: HashSet<String>,
+}
+
+/// Every file a manifest lists, checked against what an export may be before anything is read from the disk: no more
+/// than an archive has entries, each with a path that is inside the export and a size, all of them together no bigger
+/// than an archive may unpack to, and none listed twice (however it is spelled: `a/./b`, `a//b`, `A/B` are one file;
+/// two names that differ only in capitals are refused too, which a disk that tells them apart could keep apart). A file
+/// bigger than its kind allows, or past what Inspect holds of the webview's files, is not a reason to refuse the lot:
+/// it is left out, and never hashed or read.
+fn list_files(manifest: &Value, webview_budget: u64) -> Result<Listing, String> {
+    let entries = manifest["files"]
+        .as_array()
+        .map(Vec::as_slice)
+        .unwrap_or(&[]);
+    if entries.len() > MAX_ENTRIES {
+        return Err("That export lists too many files to be an export.".into());
+    }
+    let mut listing = Listing {
+        files: Vec::with_capacity(entries.len()),
+        index: HashMap::with_capacity(entries.len()),
+        left_out: Vec::new(),
+        left_out_paths: HashSet::new(),
+    };
+    let mut seen: HashSet<String> = HashSet::with_capacity(entries.len());
+    let mut total = 0u64;
+    let mut webview = 0u64;
+    for file in entries {
+        let relative = file["path"].as_str().unwrap_or("");
+        let safe = safe_relative(relative)
+            .ok_or_else(|| format!("The export lists a bad path: {relative}"))?;
+        let canonical = canonical_relative(&safe);
+        let declared = file["bytes"]
+            .as_u64()
+            .ok_or_else(|| format!("The export doesn't say how big {relative} is."))?;
+        total = total.saturating_add(declared);
+        if total > MAX_UNPACKED {
+            return Err(
+                "That export lists more than an archive may hold; it is too large to be an export."
+                    .into(),
+            );
+        }
+        let key = fold(&canonical);
+        if !seen.insert(key.clone()) {
+            return Err(format!("The export lists {relative} more than once."));
+        }
+        if let Some(why) = left_out_reason(&canonical, declared, webview, webview_budget) {
+            // A note's pictures are said per note, when the note comes in (`copy_note_assets`).
+            if !canonical.starts_with("workspace/note-assets/") {
+                listing
+                    .left_out
+                    .push(format!("{relative} {why}, so it was left out."));
+            }
+            listing.left_out_paths.insert(canonical);
+            continue;
+        }
+        if is_webview(&canonical) {
+            webview += declared;
+        }
+        listing.index.insert(key, listing.files.len());
+        listing.files.push(Listed {
+            path: canonical,
+            declared,
+            sha256: file["sha256"].as_str().unwrap_or("").to_string(),
+        });
+    }
+    Ok(listing)
+}
+
 /// An export opened for reading. An archive is unpacked into a scratch folder that goes when this does.
+// One of these exists per import, so the size of the bigger variant costs nothing.
+#[allow(clippy::large_enum_variant)]
 enum Opened {
     V1(String),
     V2 {
         root: PathBuf,
         manifest: Value,
+        /// Every file the manifest lists, in its order. `open_export` found each one there and hashing as listed.
+        files: Vec<Listed>,
+        /// Where each listed path is in `files` (folded: see `fold`).
+        index: HashMap<String, usize>,
+        /// Lines about listed files that were left out (`left_out_reason`), and which paths they are.
+        left_out: Vec<String>,
+        left_out_paths: HashSet<String>,
+        /// Listed files that were fine when the export was checked and weren't when they were read, for the report.
+        problems: Mutex<Vec<String>>,
         _scratch: Option<Scratch>,
     },
+}
+
+/// Why a file of the export couldn't be read as text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReadFailure {
+    /// The manifest doesn't list it.
+    Unlisted,
+    Unusable(Unusable),
+    /// It hashes as listed, and isn't UTF-8.
+    NotText,
 }
 
 impl Opened {
@@ -1313,50 +1745,89 @@ impl Opened {
         }
     }
 
+    /// The manifest's entry for a file, by any spelling of its path.
+    fn listed_file(&self, relative: &str) -> Option<&Listed> {
+        let Opened::V2 { files, index, .. } = self else {
+            return None;
+        };
+        let key = fold(&canonical_relative(&safe_relative(relative)?));
+        Some(&files[*index.get(&key)?])
+    }
+
+    /// The text of a file the manifest lists, as the bytes that hash as listed: nothing the manifest doesn't list is
+    /// read, whatever its name, and a listed file that is a link, or changed since `open_export` checked it, isn't
+    /// either.
+    fn read_text(&self, relative: &str) -> Result<String, ReadFailure> {
+        let (Some(root), Some(listed)) = (self.root(), self.listed_file(relative)) else {
+            return Err(ReadFailure::Unlisted);
+        };
+        let path = root.join(safe_relative(&listed.path).ok_or(ReadFailure::Unlisted)?);
+        let bytes = read_as_listed(&path, listed).map_err(ReadFailure::Unusable)?;
+        String::from_utf8(bytes).map_err(|_| ReadFailure::NotText)
+    }
+
+    /// `read_text`, and a listed file that can't be used any more is kept for the report (`take_problems`).
     fn read(&self, relative: &str) -> Option<String> {
-        let root = self.root()?;
-        fs::read_to_string(root.join(safe_relative(relative)?)).ok()
+        match self.read_text(relative) {
+            Ok(text) => Some(text),
+            Err(ReadFailure::Unusable(why)) => {
+                if let Opened::V2 { problems, .. } = self {
+                    let line = format!(
+                        "{relative} {}, so nothing was used from it.",
+                        why.since_the_check()
+                    );
+                    if let Ok(mut problems) = problems.lock() {
+                        if !problems.contains(&line) {
+                            problems.push(line);
+                        }
+                    }
+                }
+                None
+            }
+            Err(_) => None,
+        }
     }
 
     fn json(&self, relative: &str) -> Option<Value> {
         serde_json::from_str(&self.read(relative)?).ok()
     }
 
-    fn listed(&self) -> Vec<String> {
+    /// Whether the manifest lists this path and it was left out for its size.
+    fn is_left_out(&self, canonical: &str) -> bool {
+        matches!(self, Opened::V2 { left_out_paths, .. } if left_out_paths.contains(canonical))
+    }
+
+    /// The lines for the report about listed files that were left out.
+    fn left_out_notes(&self) -> &[String] {
         match self {
-            Opened::V2 { manifest, .. } => manifest["files"]
-                .as_array()
-                .map(|files| {
-                    files
-                        .iter()
-                        .filter_map(|f| f["path"].as_str().map(str::to_string))
-                        .collect()
-                })
+            Opened::V2 { left_out, .. } => left_out,
+            Opened::V1(_) => &[],
+        }
+    }
+
+    /// The lines for the report about listed files that couldn't be used since the export was checked.
+    fn take_problems(&self) -> Vec<String> {
+        match self {
+            Opened::V2 { problems, .. } => problems
+                .lock()
+                .map(|mut lines| std::mem::take(&mut *lines))
                 .unwrap_or_default(),
             Opened::V1(_) => Vec::new(),
         }
     }
 
-    /// Each file the manifest lists, as (path, the bytes it says it holds, its sha256). `open_export` has already
-    /// found every one of them there and hashing as listed.
-    fn listed_files(&self) -> Vec<(String, Option<u64>, String)> {
+    fn listed(&self) -> Vec<String> {
+        self.listed_files()
+            .iter()
+            .map(|listed| listed.path.clone())
+            .collect()
+    }
+
+    /// Each file the manifest lists.
+    fn listed_files(&self) -> &[Listed] {
         match self {
-            Opened::V2 { manifest, .. } => manifest["files"]
-                .as_array()
-                .map(|files| {
-                    files
-                        .iter()
-                        .filter_map(|f| {
-                            Some((
-                                f["path"].as_str()?.to_string(),
-                                f["bytes"].as_u64(),
-                                f["sha256"].as_str()?.to_string(),
-                            ))
-                        })
-                        .collect()
-                })
-                .unwrap_or_default(),
-            Opened::V1(_) => Vec::new(),
+            Opened::V2 { files, .. } => files,
+            Opened::V1(_) => &[],
         }
     }
 }
@@ -1368,7 +1839,11 @@ fn manifest_root(dir: &Path) -> Option<PathBuf> {
     let mut inner = fs::read_dir(dir)
         .ok()?
         .flatten()
-        .filter(|e| e.path().is_dir() && !e.file_name().to_string_lossy().starts_with('.'));
+        // A folder, not a link to one: an export isn't taken from somewhere else through a link inside the picked folder.
+        .filter(|e| {
+            e.file_type().is_ok_and(|t| t.is_dir())
+                && !e.file_name().to_string_lossy().starts_with('.')
+        });
     let only = inner.next()?;
     if inner.next().is_some() {
         return None;
@@ -1377,7 +1852,13 @@ fn manifest_root(dir: &Path) -> Option<PathBuf> {
 }
 
 fn unpack(archive: &Path) -> Result<Scratch, String> {
-    let scratch = Scratch::temp("import")?;
+    unpack_within(archive, MAX_UNPACKED)
+}
+
+/// `unpack` with the most bytes the archive may unpack to.
+fn unpack_within(archive: &Path, budget: u64) -> Result<Scratch, String> {
+    // A folder only this user can open: an export holds Ash's chats and memory.
+    let scratch = Scratch::private("import")?;
     let file = fs::File::open(archive).map_err(|e| format!("{}: {e}", archive.display()))?;
     let mut tar = tar::Archive::new(flate2::read::GzDecoder::new(file));
     let mut total = 0u64;
@@ -1413,15 +1894,25 @@ fn unpack(archive: &Path) -> Result<Scratch, String> {
         if kind.is_dir() {
             fs::create_dir_all(&target).map_err(|e| e.to_string())?;
         } else if kind.is_file() {
-            total += entry.header().size().unwrap_or(0);
-            if total > MAX_UNPACKED {
+            // `size()` is what the tar crate copies: a PAX size record overrides the header's own.
+            let remaining = budget - total;
+            if entry.size() > remaining {
                 return Err("That archive is too large to be an export.".into());
             }
             if let Some(parent) = target.parent() {
                 fs::create_dir_all(parent).map_err(|e| e.to_string())?;
             }
             let mut out = fs::File::create(&target).map_err(|e| e.to_string())?;
-            std::io::copy(&mut entry, &mut out).map_err(|e| e.to_string())?;
+            // And what is really written is checked against what is left, not taken from the entry's word.
+            let written = std::io::copy(
+                &mut std::io::Read::take(&mut entry, remaining + 1),
+                &mut out,
+            )
+            .map_err(|e| e.to_string())?;
+            total += written;
+            if total > budget {
+                return Err("That archive is too large to be an export.".into());
+            }
         } else {
             return Err("That archive holds links or devices; it was not opened.".into());
         }
@@ -1430,6 +1921,11 @@ fn unpack(archive: &Path) -> Result<Scratch, String> {
 }
 
 fn open_export(path: &str) -> Result<Opened, String> {
+    open_export_within(path, MAX_INSPECT_BYTES)
+}
+
+/// `open_export` with how much of the webview's files Inspect may hold.
+fn open_export_within(path: &str, webview_budget: u64) -> Result<Opened, String> {
     let path = crate::fs::expand_home(path.trim());
     let (root, scratch) = if path.is_dir() {
         (
@@ -1451,8 +1947,11 @@ fn open_export(path: &str) -> Result<Opened, String> {
                 .ok_or("That archive isn't a MonoCode Hub export (no manifest.json).")?;
             (root, Some(scratch))
         } else {
-            let text = fs::read_to_string(&path)
-                .map_err(|_| "That file isn't a MonoCode Hub export.".to_string())?;
+            // Read like the manifest: a plain file that is not a link, of a size a manifest can be.
+            let text = plain_file::read(&path, MAX_MANIFEST)
+                .ok()
+                .and_then(|bytes| String::from_utf8(bytes).ok())
+                .ok_or_else(|| "That file isn't a MonoCode Hub export.".to_string())?;
             let value: Value = serde_json::from_str(&text)
                 .map_err(|_| "That file isn't a MonoCode Hub export.".to_string())?;
             match value["format"].as_str() {
@@ -1467,8 +1966,9 @@ fn open_export(path: &str) -> Result<Opened, String> {
     } else {
         return Err(format!("{} isn't there.", path.display()));
     };
-    let manifest: Value = serde_json::from_str(
-        &fs::read_to_string(root.join(MANIFEST))
+    // The manifest is read like every file it lists: a plain file that is not a link, of a size a manifest can be.
+    let manifest: Value = serde_json::from_slice(
+        &plain_file::read(&root.join(MANIFEST), MAX_MANIFEST)
             .map_err(|_| "The export has no readable manifest.json.".to_string())?,
     )
     .map_err(|_| "The export's manifest.json is damaged.".to_string())?;
@@ -1484,22 +1984,55 @@ fn open_export(path: &str) -> Result<Opened, String> {
     if version < 2 {
         return Err("That export's format is unknown.".into());
     }
-    // Every listed file must be there, unchanged.
-    for file in manifest["files"].as_array().into_iter().flatten() {
-        let relative = file["path"].as_str().unwrap_or("");
-        let safe = safe_relative(relative)
-            .ok_or_else(|| format!("The export lists a bad path: {relative}"))?;
-        let bytes =
-            fs::read(root.join(&safe)).map_err(|_| format!("The export is missing {relative}."))?;
-        if file["sha256"].as_str() != Some(sha256_hex(&bytes).as_str()) {
-            return Err(format!(
-                "The export is damaged or was changed after it was made: {relative}."
-            ));
+    // What the manifest lists is checked against what an export may be before anything is read from the disk.
+    let Listing {
+        files,
+        index,
+        left_out,
+        left_out_paths,
+    } = list_files(&manifest, webview_budget)?;
+    // Every listed file must be there, in a folder of the export itself, a plain file (not a link, a pipe or a
+    // device), unchanged.
+    let real_root =
+        fs::canonicalize(&root).map_err(|_| "The export's folder couldn't be read.".to_string())?;
+    let mut folders: HashMap<PathBuf, bool> = HashMap::new();
+    for listed in &files {
+        let relative = &listed.path;
+        let path = root.join(
+            safe_relative(relative)
+                .ok_or_else(|| format!("The export lists a bad path: {relative}"))?,
+        );
+        if let Some(folder) = path.parent() {
+            // A folder that is a link (or has one above it) leads out of the export; a folder that isn't there leaves
+            // the file missing, said below.
+            let inside = *folders
+                .entry(folder.to_path_buf())
+                .or_insert_with(|| folder_is_inside(&real_root, folder));
+            if !inside {
+                return Err(format!(
+                    "The export lists {relative}, which is in a folder that leads outside the export."
+                ));
+            }
         }
+        check_listed(&path, listed).map_err(|why| match why {
+            Unusable::Link => {
+                format!("The export lists {relative}, which is a link. Links aren't followed.")
+            }
+            Unusable::NotAFile => format!("The export lists {relative}, which isn't a plain file."),
+            Unusable::Unreadable => format!("The export is missing {relative}."),
+            Unusable::Changed => {
+                format!("The export is damaged or was changed after it was made: {relative}.")
+            }
+        })?;
     }
     Ok(Opened::V2 {
         root,
         manifest,
+        files,
+        index,
+        left_out,
+        left_out_paths,
+        problems: Mutex::new(Vec::new()),
         _scratch: scratch,
     })
 }
@@ -1687,7 +2220,12 @@ fn scrubbed(value: &Value) -> Value {
 }
 
 pub fn inspect(env: &Env, path: &str) -> Result<Inspection, String> {
-    let opened = open_export(path)?;
+    inspect_within(env, path, MAX_INSPECT_BYTES)
+}
+
+/// `inspect` with how much of the webview's files it may hold.
+fn inspect_within(env: &Env, path: &str, webview_budget: u64) -> Result<Inspection, String> {
+    let opened = open_export_within(path, webview_budget)?;
     let manifest = match &opened {
         Opened::V1(text) => {
             return Ok(Inspection {
@@ -2018,6 +2556,16 @@ pub fn import<G: std::ops::Deref<Target = Connection>>(
     lock: impl FnOnce() -> Result<G, String>,
 ) -> Result<ImportReport, String> {
     let opened = open_export(&request.path)?;
+    import_opened(env, &opened, request, lock)
+}
+
+/// `import` of an export that is already open and checked.
+fn import_opened<G: std::ops::Deref<Target = Connection>>(
+    env: &Env,
+    opened: &Opened,
+    request: &ImportRequest,
+    lock: impl FnOnce() -> Result<G, String>,
+) -> Result<ImportReport, String> {
     let mut report = ImportReport::default();
     if opened.root().is_none() {
         return Ok(report);
@@ -2026,7 +2574,7 @@ pub fn import<G: std::ops::Deref<Target = Connection>>(
     // where one that a CLI reads as instructions now sits.
     let mut written = Vec::new();
     if let Some(memory) = &request.memory {
-        import_memory(env, &opened, memory, &mut report, &mut written)?;
+        import_memory(env, opened, memory, &mut report, &mut written)?;
     }
     // The folder rules load after it: a Mono's folder is one of a Mono seated here (never whatever is on disk), so a
     // memory folder in the file (`monos/evil`) is nobody's, and a fresh Mac's restored Monos are theirs once seated. The
@@ -2054,7 +2602,7 @@ pub fn import<G: std::ops::Deref<Target = Connection>>(
     rules.note_written(&written);
     if let Some(workspace) = &request.workspace {
         let conn = lock()?;
-        import_workspace(env, &conn, &opened, workspace, &mut report, &rules)
+        import_workspace(env, &conn, opened, workspace, &mut report, &rules)
             .map_err(|e| e.to_string())?;
         // Said in the report, so nobody finds out by surprise.
         if report.sessions_added + report.sessions_copied + report.automations_added > 0 {
@@ -2070,6 +2618,10 @@ pub fn import<G: std::ops::Deref<Target = Connection>>(
             );
         }
     }
+    // Files left out for their size, and a listed file that was fine when the export was checked and wasn't when it
+    // was read: not used, and said.
+    report.notes.extend(opened.left_out_notes().iter().cloned());
+    report.notes.extend(opened.take_problems());
     Ok(report)
 }
 
@@ -2699,6 +3251,8 @@ const LEFT_OUT_FOLDER_LINK: &str = "its folder is a link";
 const LEFT_OUT_LINK: &str = "it is a link";
 const LEFT_OUT_NOT_A_FILE: &str = "it isn't a plain file";
 const LEFT_OUT_UNLISTED: &str = "the export doesn't list it";
+const LEFT_OUT_NAME: &str = "its name isn't one plain file name";
+const LEFT_OUT_TOO_LARGE: &str = "it is too large for a note picture";
 const LEFT_OUT_UNREADABLE: &str = "it couldn't be read";
 const LEFT_OUT_CHANGED: &str = "it changed after the export was checked";
 const LEFT_OUT_UNWRITABLE: &str = "it couldn't be written here";
@@ -2721,50 +3275,22 @@ fn folder_state(path: &Path) -> Folder {
     }
 }
 
-/// A file opened for reading, never through a link at its last name (O_NOFOLLOW where the platform has it).
-fn open_without_following(path: &Path) -> std::io::Result<fs::File> {
-    let mut options = fs::OpenOptions::new();
-    options.read(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        // O_NONBLOCK: a pipe swapped in for the file opens at once and is refused as "not a plain file", where
-        // a plain open would wait for a writer that never comes.
-        options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
-    }
-    options.open(path)
+/// The bytes of one picture the manifest lists: a plain file that is not a link, read ONCE (see `read_as_listed`),
+/// and only if they hash as the manifest says. The caller writes these same bytes, so a file swapped between the
+/// export's check and now can't bring anything in that the manifest didn't hash.
+fn read_listed_picture(path: &Path, listed: &Listed) -> Result<Vec<u8>, &'static str> {
+    read_as_listed(path, listed).map_err(|why| match why {
+        Unusable::Link => LEFT_OUT_LINK,
+        Unusable::NotAFile => LEFT_OUT_NOT_A_FILE,
+        Unusable::Unreadable => LEFT_OUT_UNREADABLE,
+        Unusable::Changed => LEFT_OUT_CHANGED,
+    })
 }
 
-/// The bytes of one picture the manifest lists: a plain file that is not a link, read ONCE, and only if they hash as
-/// the manifest says. The caller writes these same bytes, so a file swapped between the export's check and now
-/// can't bring anything in that the manifest didn't hash.
-fn read_listed_picture(
-    path: &Path,
-    declared: Option<u64>,
-    sha256: &str,
-) -> Result<Vec<u8>, &'static str> {
-    let meta = fs::symlink_metadata(path).map_err(|_| LEFT_OUT_UNREADABLE)?;
-    if meta.file_type().is_symlink() {
-        return Err(LEFT_OUT_LINK);
-    }
-    if !meta.file_type().is_file() {
-        return Err(LEFT_OUT_NOT_A_FILE);
-    }
-    let file = open_without_following(path).map_err(|_| LEFT_OUT_UNREADABLE)?;
-    // The handle, not the name: what was opened is a plain file.
-    if !file.metadata().is_ok_and(|m| m.is_file()) {
-        return Err(LEFT_OUT_NOT_A_FILE);
-    }
-    // No more than the manifest says the file holds, so one swapped for something huge can't fill memory.
-    let cap = declared.unwrap_or(MAX_UNPACKED).min(MAX_UNPACKED);
-    let mut bytes = Vec::new();
-    file.take(cap + 1)
-        .read_to_end(&mut bytes)
-        .map_err(|_| LEFT_OUT_UNREADABLE)?;
-    if bytes.len() as u64 > cap || sha256_hex(&bytes) != sha256 {
-        return Err(LEFT_OUT_CHANGED);
-    }
-    Ok(bytes)
+/// A name that is exactly one plain path component: a picture sits directly in its note's folder.
+fn one_plain_name(name: &str) -> bool {
+    safe_relative(name)
+        .is_some_and(|path| path.as_os_str() == name && path.components().count() == 1)
 }
 
 /// The folder this Mac keeps a note's pictures in, made when the first one is about to be written. Never a link:
@@ -2821,17 +3347,24 @@ fn copy_note_assets(env: &Env, opened: &Opened, from: &str, to: &str) -> Vec<&'s
         return left_out;
     }
     let prefix = format!("workspace/{NOTE_ASSET_DIR}/{from}/");
-    let mut listed: BTreeMap<String, (Option<u64>, String)> = BTreeMap::new();
-    for (path, declared, sha256) in opened.listed_files() {
-        let Some(name) = path.strip_prefix(&prefix) else {
+    let mut listed: BTreeMap<String, &Listed> = BTreeMap::new();
+    // What the export lists under this note that is not one of its pictures, by the folder it names.
+    let mut elsewhere: BTreeSet<String> = BTreeSet::new();
+    let mut not_pictures = 0;
+    for file in opened.listed_files() {
+        let Some(name) = file.path.strip_prefix(&prefix) else {
             continue;
         };
-        // The export keeps every picture directly in its note's folder; a name with a path in it isn't one of ours.
-        let single = safe_relative(name).filter(|p| p.as_os_str() == name);
-        if single.is_some() {
-            listed.insert(name.to_string(), (declared, sha256));
+        // The export keeps every picture directly in its note's folder: a name with a path in it isn't one of ours,
+        // and is neither read (the folder it names could be a link) nor written.
+        if one_plain_name(name) {
+            listed.insert(name.to_string(), file);
+        } else {
+            not_pictures += 1;
+            elsewhere.insert(name.split('/').next().unwrap_or(name).to_string());
         }
     }
+    left_out.resize(not_pictures, LEFT_OUT_NAME);
 
     let workspace = root.join("workspace");
     let all = workspace.join(NOTE_ASSET_DIR);
@@ -2843,15 +3376,16 @@ fn copy_note_assets(env: &Env, opened: &Opened, from: &str, to: &str) -> Vec<&'s
             Folder::Absent => return left_out,
             Folder::Refused => {
                 // Not looked into: what it lists is what is left out (at least the link itself).
-                left_out.resize(listed.len().max(1), LEFT_OUT_FOLDER_LINK);
+                left_out.clear();
+                left_out.resize((listed.len() + not_pictures).max(1), LEFT_OUT_FOLDER_LINK);
                 return left_out;
             }
         }
     }
 
     let mut folder: Option<Option<PathBuf>> = None;
-    for (name, (declared, sha256)) in &listed {
-        let bytes = match read_listed_picture(&source.join(name), *declared, sha256) {
+    for (name, file) in &listed {
+        let bytes = match read_listed_picture(&source.join(name), file) {
             Ok(bytes) => bytes,
             Err(why) => {
                 left_out.push(why);
@@ -2877,7 +3411,9 @@ fn copy_note_assets(env: &Env, opened: &Opened, from: &str, to: &str) -> Vec<&'s
             if name.is_some_and(|n| n.starts_with('.')) {
                 continue;
             }
-            if !name.is_some_and(|n| listed.contains_key(n)) {
+            if name.is_some_and(|n| opened.is_left_out(&format!("{prefix}{n}"))) {
+                left_out.push(LEFT_OUT_TOO_LARGE);
+            } else if !name.is_some_and(|n| listed.contains_key(n) || elsewhere.contains(n)) {
                 left_out.push(LEFT_OUT_UNLISTED);
             }
         }
@@ -3099,17 +3635,21 @@ fn import_memory(
         }
         env.check_writable(&target)?;
         let bundle = root.join("memory").join(format!("{name}.git.bundle"));
-        let has_bundle = listed
-            .iter()
-            .any(|p| p == &format!("memory/{name}.git.bundle"));
+        let history = opened.listed_file(&format!("memory/{name}.git.bundle"));
         // A folder made here from the history is this import's own: its files may take the export's newest text.
         let mut fresh = false;
-        if wanted.history && has_bundle && !target.exists() {
+        if let (true, Some(history), false) = (wanted.history, history, target.exists()) {
             fs::create_dir_all(&env.memory_root).map_err(|e| e.to_string())?;
-            match restore_history(&bundle, &target) {
-                Ok(()) => {
+            match restore_history(&bundle, history, &target) {
+                Ok(dropped) => {
                     report.memory_history.push(name.clone());
                     fresh = true;
+                    if !dropped.is_empty() {
+                        report.notes.push(format!(
+                            "The history of {name} held {} (files that tell git what to run or fetch); they were not restored.",
+                            dropped.join(", ")
+                        ));
+                    }
                     // Whatever a history's newest tree holds that a CLI would read (instruction and settings files,
                     // anything hidden) is removed again, in every folder it restores.
                     prune_unsafe(&target);
@@ -3123,6 +3663,12 @@ fn import_memory(
                         ),
                         HistoryRefusal::Failed => format!(
                             "The history of {name} couldn't be restored; its files came in without it."
+                        ),
+                        HistoryRefusal::NotAsListed => format!(
+                            "The history of {name} changed after the export was checked, so it wasn't restored; its files came in without it."
+                        ),
+                        HistoryRefusal::NotABundle => format!(
+                            "The history of {name} isn't a git bundle, so it wasn't restored; its files came in without it."
                         ),
                     });
                 }
@@ -3161,11 +3707,21 @@ fn import_memory(
                 }
             }
             // Memory is text: a file that isn't UTF-8 is skipped, never written as nothing over what is here.
-            let Some(text) = opened.read(path) else {
-                report.notes.push(format!(
-                    "{path} isn't plain text (UTF-8), so it was skipped; nothing here changed for it."
-                ));
-                continue;
+            let text = match opened.read_text(path) {
+                Ok(text) => text,
+                Err(ReadFailure::Unusable(why)) => {
+                    report.notes.push(format!(
+                        "{path} {}, so it was skipped; nothing here changed for it.",
+                        why.since_the_check()
+                    ));
+                    continue;
+                }
+                Err(_) => {
+                    report.notes.push(format!(
+                        "{path} isn't plain text (UTF-8), so it was skipped; nothing here changed for it."
+                    ));
+                    continue;
+                }
             };
             // Whether `dest` now holds the export's text because of this restore (a fresh folder's history counts).
             let wrote = match fs::read_to_string(&dest) {
@@ -3346,29 +3902,101 @@ fn aliases_monos_home(env: &Env, name: &str, target: &Path) -> Option<&'static s
     None
 }
 
+#[derive(Debug)]
 enum HistoryRefusal {
     /// The newest tree holds a link (or anything else that isn't a plain file) at this path.
     Link(String),
     Failed,
+    /// The bundle isn't the file the manifest hashed any more (a link, another size, other bytes).
+    NotAsListed,
+    /// It hashes as listed and isn't a git bundle.
+    NotABundle,
+}
+
+/// The first line of a git bundle, either format.
+const BUNDLE_HEADERS: [&[u8]; 2] = [b"# v2 git bundle\n", b"# v3 git bundle\n"];
+
+/// `source`, an export's listed bundle, copied to `copy` through the plain reader as it is hashed: the copy is the
+/// very bytes that hash as listed, begins like a git bundle, and is a file nothing else can touch.
+fn copy_listed_bundle(source: &Path, listed: &Listed, copy: &Path) -> Result<(), HistoryRefusal> {
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut out = options.open(copy).map_err(|_| HistoryRefusal::Failed)?;
+    let mut hash = Sha256::new();
+    let mut head: Vec<u8> = Vec::new();
+    let mut write_failed = false;
+    let streamed = plain_file::stream(source, listed_cap(listed), |piece| {
+        if head.len() < BUNDLE_HEADERS[0].len() {
+            let room = BUNDLE_HEADERS[0].len() - head.len();
+            head.extend_from_slice(&piece[..room.min(piece.len())]);
+        }
+        hash.update(piece);
+        write_failed = write_failed || out.write_all(piece).is_err();
+    });
+    drop(out);
+    streamed.map_err(|_| HistoryRefusal::NotAsListed)?;
+    if write_failed {
+        return Err(HistoryRefusal::Failed);
+    }
+    if hex_of(&hash.finalize()) != listed.sha256 {
+        return Err(HistoryRefusal::NotAsListed);
+    }
+    if !BUNDLE_HEADERS.contains(&head.as_slice()) {
+        return Err(HistoryRefusal::NotABundle);
+    }
+    Ok(())
 }
 
 /// A memory folder's history from an export's bundle, into `target` (not there yet): no hooks, no templates, and
 /// nothing but plain files. A tree with a link is refused before anything is checked out, so no write that follows
 /// can go through it.
-fn restore_history(bundle: &Path, target: &Path) -> Result<(), HistoryRefusal> {
+///
+/// git is not handed the bundle's path in the export: `git clone` decides for itself what a path means (a gitfile
+/// there clones the repository it names, and `<path>.git` beside it is cloned in its place), so the hash of the file
+/// would limit nothing. The listed bytes are copied, hashed as they go, into a private folder as its only file, and
+/// git clones that; the folder goes when this returns, however it returns.
+fn restore_history(
+    bundle: &Path,
+    listed: &Listed,
+    target: &Path,
+) -> Result<Vec<String>, HistoryRefusal> {
+    let scratch = Scratch::private("history").map_err(|_| HistoryRefusal::Failed)?;
+    let copy = scratch.0.join("history.bundle");
+    copy_listed_bundle(bundle, listed, &copy)?;
+    let bundle = &copy;
+    // What git is told it has for configuration, hooks and attributes: nothing. A filter defined in the machine's own
+    // git config (git-lfs, on a Mac that has it) would otherwise run at checkout on paths the history chose.
+    let nothing = Scratch::private("history-git").map_err(|_| HistoryRefusal::Failed)?;
+    let (config, attributes, hooks) = (
+        nothing.0.join("config"),
+        nothing.0.join("attributes"),
+        nothing.0.join("hooks"),
+    );
+    fs::write(&config, b"").map_err(|_| HistoryRefusal::Failed)?;
+    fs::write(&attributes, b"").map_err(|_| HistoryRefusal::Failed)?;
+    fs::create_dir(&hooks).map_err(|_| HistoryRefusal::Failed)?;
     let git = || {
         let mut command = Command::new("git");
-        command.args([
-            "-c",
-            "core.symlinks=false",
-            "-c",
-            "core.hooksPath=/dev/null",
+        command
+            .env("GIT_CONFIG_GLOBAL", &config)
+            .env("GIT_CONFIG_SYSTEM", &config)
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_ATTR_NOSYSTEM", "1")
+            // An LFS pointer stays a pointer: nothing is fetched from a server the history names.
+            .env("GIT_LFS_SKIP_SMUDGE", "1")
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .args(["-c", "core.symlinks=false"])
+            .arg("-c")
+            .arg(format!("core.hooksPath={}", hooks.display()))
+            .arg("-c")
+            .arg(format!("core.attributesFile={}", attributes.display()))
             // The files come back byte for byte, whatever the machine's `core.autocrlf` (true on most Windows setups).
-            "-c",
-            "core.autocrlf=false",
-            "-c",
-            "core.eol=lf",
-        ]);
+            .args(["-c", "core.autocrlf=false", "-c", "core.eol=lf"]);
         command
     };
     let ok = |command: &mut Command| command.output().is_ok_and(|out| out.status.success());
@@ -3390,7 +4018,10 @@ fn restore_history(bundle: &Path, target: &Path) -> Result<(), HistoryRefusal> {
     if !listing.status.success() {
         return Err(HistoryRefusal::Failed);
     }
-    // Plain files only (a hidden one like .gitignore is still a plain file; git itself refuses `..` and `.git`).
+    // Plain files only (a hidden one like .gitignore is still a plain file; git itself refuses `..` and `.git`), and
+    // not the files that tell git what to run or fetch: a bundle doesn't get to bring those in.
+    let mut dropped: Vec<String> = Vec::new();
+    let mut dropped_paths: Vec<String> = Vec::new();
     for entry in listing.stdout.split(|b| *b == 0).filter(|e| !e.is_empty()) {
         let entry = String::from_utf8_lossy(entry);
         let (meta, path) = entry.split_once('\t').unwrap_or((&entry, ""));
@@ -3398,11 +4029,35 @@ fn restore_history(bundle: &Path, target: &Path) -> Result<(), HistoryRefusal> {
         if !matches!(mode, "100644" | "100755") {
             return Err(HistoryRefusal::Link(path.to_string()));
         }
+        let name = path.rsplit('/').next().unwrap_or(path);
+        if let Some(known) = GIT_CONTROL_FILES
+            .iter()
+            .find(|known| name.eq_ignore_ascii_case(known))
+        {
+            dropped_paths.push(path.to_string());
+            if !dropped.iter().any(|d| d == known) {
+                dropped.push((*known).to_string());
+            }
+        }
+    }
+    // The index without them, then the files out of the index: they are never in the folder when git checks the rest
+    // out, so they can't act on it.
+    if !ok(git().arg("-C").arg(target).args(["read-tree", "HEAD"])) {
+        return Err(HistoryRefusal::Failed);
+    }
+    if !dropped_paths.is_empty()
+        && !ok(git()
+            .arg("-C")
+            .arg(target)
+            .args(["rm", "--cached", "--quiet", "--"])
+            .args(dropped_paths.iter().map(|path| format!(":(literal){path}"))))
+    {
+        return Err(HistoryRefusal::Failed);
     }
     if !ok(git()
         .arg("-C")
         .arg(target)
-        .args(["checkout", "--quiet", "--force", "HEAD"]))
+        .args(["checkout-index", "--all", "--force"]))
     {
         return Err(HistoryRefusal::Failed);
     }
@@ -3412,8 +4067,11 @@ fn restore_history(bundle: &Path, target: &Path) -> Result<(), HistoryRefusal> {
         .arg(target)
         .args(["remote", "remove", "origin"])
         .output();
-    Ok(())
+    Ok(dropped)
 }
+
+/// Files in a history that tell git what to run or fetch (filters, an LFS server, submodules): never restored.
+const GIT_CONTROL_FILES: [&str; 3] = [".gitattributes", ".lfsconfig", ".gitmodules"];
 
 /// Whether `dest`'s folder, links resolved, is `inside` (itself resolved).
 fn within(inside: &Path, dest: &Path) -> bool {

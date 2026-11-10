@@ -116,6 +116,8 @@ pub mod plugins;
 pub mod browser;
 // WP-33: plugin panels, the catalog and the My panels migration.
 mod panels;
+// Reads of files this app didn't make: never through a link, a pipe, or past the size expected.
+mod plain_file;
 mod portable;
 pub(crate) mod pr_watch;
 mod project_actions;
