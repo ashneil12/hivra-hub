@@ -858,7 +858,9 @@ const LocalSessionPane = memo(function LocalSessionPane({
       }
       onSubmit={(text, attachments, options) => {
         if (!dockComposer) composerDockMotion.captureLaunch();
-        return onSubmit(session.id, text, attachments, options);
+        return options
+          ? onSubmit(session.id, text, attachments, options)
+          : onSubmit(session.id, text, attachments);
       }}
       onBtwCommand={btw.openWith}
       // A coding team's chat: Stop is its own turn; "Stop all" on the delegation line stops what it handed out.
@@ -1409,7 +1411,9 @@ const LocalSessionPane = memo(function LocalSessionPane({
                     }
                     onFocus={() => onFocus(session.id)}
                     onSubmit={(text, attachments, options) =>
-                      onSubmit(session.id, text, attachments, options)
+                      options
+                        ? onSubmit(session.id, text, attachments, options)
+                        : onSubmit(session.id, text, attachments)
                     }
                     model={session.model}
                     harness={session.harness}

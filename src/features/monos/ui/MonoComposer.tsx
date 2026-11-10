@@ -467,7 +467,11 @@ export function MonoComposer({
       setLargePasteUndo(null);
       setDropError(null);
     };
-    const result = onSubmit(message, files, turnOptions);
+    // No earlier-prompt edit means no turn options. Callers that take two
+    // arguments must not see a trailing undefined.
+    const result = turnOptions
+      ? onSubmit(message, files, turnOptions)
+      : onSubmit(message, files);
     if (result instanceof Promise) {
       submittingRef.current = true;
       setSubmitting(true);
