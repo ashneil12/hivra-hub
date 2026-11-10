@@ -1171,3 +1171,205 @@ fn the_machine_zone_is_a_real_offset_for_the_given_instant() {
         assert!(civil_day(secs * 1000, offset).is_ok());
     }
 }
+
+#[test]
+fn a_repeated_judgment_keeps_the_first_line_and_a_secret_is_not_stored() {
+    let store = memory();
+    let conn = store.lock_conn().unwrap();
+    let at = unix_ms(2026, 11, 10);
+    let first = add_hand(
+        &conn,
+        "chat-lead",
+        "tally",
+        "feedback",
+        "Ash said keep the CSV.",
+        at,
+    )
+    .unwrap();
+    let again = add_hand(
+        &conn,
+        "chat-lead",
+        " tally ",
+        "feedback",
+        "Ash said\r\nkeep the CSV.",
+        at + 5_000,
+    )
+    .unwrap();
+    assert_eq!(again.seq, first.seq);
+    assert_eq!(again.line, "Ash said keep the CSV.");
+    assert!(!again.source.is_empty());
+    let other_kind = add_hand(
+        &conn,
+        "chat-lead",
+        "tally",
+        "context",
+        "Ash said keep the CSV.",
+        at,
+    )
+    .unwrap();
+    assert_ne!(other_kind.seq, first.seq);
+    let later = add_hand(
+        &conn,
+        "chat-lead",
+        "tally",
+        "feedback",
+        "Ash said keep the CSV.",
+        unix_ms(2026, 11, 12),
+    )
+    .unwrap();
+    assert_ne!(later.day, first.day);
+    let saved = add_hand(
+        &conn,
+        "chat-lead",
+        "tally",
+        "feedback",
+        "保存 the export",
+        at,
+    )
+    .unwrap();
+    assert_eq!(saved.line, "保存 the export");
+    let secret = add_hand(
+        &conn,
+        "chat-lead",
+        "tally",
+        "feedback",
+        &format!("The token is {GITHUB}"),
+        at,
+    )
+    .unwrap();
+    assert!(secret.line.contains("[secret removed]"));
+    assert!(!secret.line.contains("ghp_"));
+    assert!(!secret.source.contains("ghp_"));
+    assert!(!scrubber().has_secret(&secret.source));
+    assert!(!scrubber().has_secret(&secret.line));
+    let page = "a".repeat(HAND_INPUT_CAP + 1);
+    assert_eq!(
+        add_hand(&conn, "chat-lead", "tally", "context", &page, at).unwrap_err(),
+        "A work log line is one line, not a page."
+    );
+    let long = "b".repeat(2_500);
+    let capped = add_hand(&conn, "chat-lead", "tally", "context", &long, at).unwrap();
+    assert_eq!(capped.line.chars().count(), LINE_CAP);
+    assert_eq!(
+        add_hand(&conn, " ", "tally", "feedback", "A line.", at).unwrap_err(),
+        "There's no chat for this line."
+    );
+    assert_eq!(
+        add_hand(&conn, "chat-lead", "tally", "note", "A line.", at).unwrap_err(),
+        "Work log lines are an outcome, a decision, feedback or context."
+    );
+}
+
+#[test]
+fn a_read_is_one_day_or_a_range_and_can_name_a_project() {
+    let store = memory();
+    let conn = store.lock_conn().unwrap();
+    let at = unix_ms(2026, 7, 15);
+    let tally = add_hand(
+        &conn,
+        "chat-lead",
+        "tally",
+        "outcome",
+        "Shipped the export.",
+        at,
+    )
+    .unwrap();
+    add_hand(
+        &conn,
+        "chat-lead",
+        "other",
+        "outcome",
+        "Shipped the other one.",
+        at,
+    )
+    .unwrap();
+    let day = tally.day.as_str();
+    let one = read_span(&conn, Some("tally"), Some(day), None, None).unwrap();
+    assert_eq!(one.len(), 1);
+    assert_eq!(one[0].line, "Shipped the export.");
+    assert!(one[0].task_id.is_empty());
+    let all = read_span(&conn, None, Some(day), None, None).unwrap();
+    assert_eq!(all.len(), 2);
+    assert_eq!(
+        read_span(&conn, Some("  "), Some(day), None, None).unwrap_err(),
+        "Name a project, or leave it out to read every project."
+    );
+    assert_eq!(
+        read_span(&conn, Some(GITHUB), Some(day), None, None).unwrap_err(),
+        "That project name could not be used."
+    );
+    let long_name = "p".repeat(FIELD_CAP + 1);
+    assert_eq!(
+        read_span(&conn, Some(&long_name), Some(day), None, None).unwrap_err(),
+        "That project name could not be used."
+    );
+    assert_eq!(
+        read_span(&conn, None, None, None, None).unwrap_err(),
+        "Say which day to read, or from and to."
+    );
+    assert_eq!(
+        read_span(&conn, None, Some(day), Some(day), None).unwrap_err(),
+        "Give a day, or from and to, not both."
+    );
+    assert_eq!(
+        read_span(&conn, None, None, Some("2026-11-10"), Some("2026-11-01")).unwrap_err(),
+        "The end day is before the start day."
+    );
+    assert_eq!(
+        read_span(&conn, None, Some("2026-02-31"), None, None).unwrap_err(),
+        "The day should look like 2026-11-10."
+    );
+    assert_eq!(
+        read_span(&conn, None, Some("tomorrow"), None, None).unwrap_err(),
+        "The day should look like 2026-11-10."
+    );
+    assert!(
+        read_span(&conn, None, None, Some("2020-03-01"), Some("2020-06-01"))
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(
+        read_span(&conn, None, None, Some("2026-01-01"), Some("2027-01-03")).unwrap_err(),
+        "Read one day, or a range of at most a year."
+    );
+    let missing = read_span(&conn, None, Some("2020-01-01"), None, None).unwrap();
+    assert!(missing.is_empty());
+}
+
+#[test]
+fn two_windows_keep_one_hand_line() {
+    let temp = TempDb::new();
+    {
+        let store = SessionStore::open(temp.db.clone()).unwrap();
+        drop(store.lock_conn().unwrap());
+    }
+    let at = unix_ms(2026, 11, 10);
+    let lines: Vec<Line> = std::thread::scope(|scope| {
+        let mut joins = Vec::new();
+        for _ in 0..8 {
+            let path = temp.db.clone();
+            joins.push(scope.spawn(move || {
+                let conn = Connection::open(&path).unwrap();
+                conn.busy_timeout(std::time::Duration::from_secs(5))
+                    .unwrap();
+                add_hand(
+                    &conn,
+                    "chat-lead",
+                    "tally",
+                    "feedback",
+                    "Ash said keep the CSV.",
+                    at,
+                )
+                .unwrap()
+            }));
+        }
+        joins.into_iter().map(|join| join.join().unwrap()).collect()
+    });
+    let seq = lines[0].seq;
+    assert!(lines
+        .iter()
+        .all(|line| line.seq == seq && line.line == "Ash said keep the CSV."));
+    let conn = Connection::open(&temp.db).unwrap();
+    let rows = read_span(&conn, Some("tally"), Some(&lines[0].day), None, None).unwrap();
+    assert_eq!(rows.len(), 1);
+}

@@ -12,6 +12,7 @@ use std::time::Duration;
 use rusqlite::{params, Connection};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
+use tauri::State;
 use time::{OffsetDateTime, UtcOffset};
 
 use crate::portable::scrubber;
@@ -27,6 +28,10 @@ const SOURCE_CAP: usize = 500;
 const MAX_OFFSET_SECONDS: i64 = 18 * 60 * 60;
 
 const KINDS: [&str; 4] = ["outcome", "decision", "feedback", "context"];
+/// A hand line longer than this is refused before it is scrubbed. The stored line is still `LINE_CAP`.
+const HAND_INPUT_CAP: usize = 8_000;
+/// `from` and `to` may sit this many days apart. A longer read is refused, not cut short.
+const READ_SPAN_DAYS: i64 = 366;
 
 const FALLBACK_LINE: &str = "Line left out because it still looked like a secret.";
 /// What `scrubber` writes in place of a secret (`secretPatterns.json`). A cut
@@ -61,7 +66,6 @@ pub(crate) struct NewLine<'a> {
 }
 
 #[derive(Clone, Debug, Default)]
-#[allow(dead_code)] // The panel and the first mate tool read with this.
 pub(crate) struct ReadQuery {
     /// `None` is every project. An empty string is only lines with no project.
     pub project: Option<String>,
@@ -236,7 +240,6 @@ pub(crate) fn append(conn: &Connection, input: &NewLine<'_>) -> Result<Line, Str
     }
 }
 
-#[allow(dead_code)] // The panel and the first mate tool read with this.
 pub(crate) fn list(conn: &Connection, query: &ReadQuery) -> Result<Vec<Line>, String> {
     if let Some(kind) = &query.kind {
         if !KINDS.contains(&kind.as_str()) {
@@ -380,6 +383,171 @@ pub(crate) fn record_decision(
     )
 }
 
+/// One line a first mate wrote. The same chat, project, day, kind and line return the first row.
+/// The source is derived here, so a caller cannot choose an id that collides with a finished task.
+pub(crate) fn add_hand(
+    conn: &Connection,
+    session: &str,
+    project: &str,
+    kind: &str,
+    line: &str,
+    at_ms: i64,
+) -> Result<Line, String> {
+    let session = session.trim();
+    if session.is_empty()
+        || session.chars().count() > 256
+        || session
+            .chars()
+            .any(|ch| ch.is_whitespace() || ch.is_control())
+    {
+        return Err("There's no chat for this line.".into());
+    }
+    if line.chars().count() > HAND_INPUT_CAP {
+        return Err("A work log line is one line, not a page.".into());
+    }
+    if !KINDS.contains(&kind) {
+        return Err("Work log lines are an outcome, a decision, feedback or context.".into());
+    }
+    ensure_tables(conn).map_err(|e| e.to_string())?;
+    let project = clean_field(project, FIELD_CAP);
+    let cleaned = clean_line(line)?;
+    let offset = local_offset_seconds(at_ms.div_euclid(1000));
+    let day = civil_day(at_ms, offset)?;
+    let source = stable_source(
+        "mate",
+        &format!("mate:{session}:{project}:{day}:{kind}:{cleaned}"),
+    );
+    append(
+        conn,
+        &NewLine {
+            project: &project,
+            kind,
+            task_id: "",
+            line: &cleaned,
+            at_ms,
+            offset_seconds: Some(offset),
+            source: &source,
+        },
+    )
+}
+
+/// What a first mate asked to read: one day, or `from` and `to` at most a year apart.
+pub(crate) fn read_span(
+    conn: &Connection,
+    project: Option<&str>,
+    day: Option<&str>,
+    from: Option<&str>,
+    to: Option<&str>,
+) -> Result<Vec<Line>, String> {
+    ensure_tables(conn).map_err(|e| e.to_string())?;
+    let project = if let Some(raw) = project {
+        if raw.trim().is_empty() {
+            return Err("Name a project, or leave it out to read every project.".into());
+        }
+        // A name a secret was removed from, or one past the field cap, is not a filter.
+        // Matching the leftover marker would read the wrong rows.
+        let cleaned = clean_field(raw, FIELD_CAP);
+        if cleaned.is_empty() || cleaned != collapse(raw) {
+            return Err("That project name could not be used.".into());
+        }
+        Some(cleaned)
+    } else {
+        None
+    };
+    let (from_day, to_day) = match (day, from, to) {
+        (Some(day), None, None) => {
+            parse_day(day)?;
+            (Some(day.to_string()), Some(day.to_string()))
+        }
+        (None, Some(from), Some(to)) => {
+            let start = parse_day(from)?;
+            let end = parse_day(to)?;
+            if start > end {
+                return Err("The end day is before the start day.".into());
+            }
+            if (end - start).whole_days() > READ_SPAN_DAYS {
+                return Err("Read one day, or a range of at most a year.".into());
+            }
+            (Some(from.to_string()), Some(to.to_string()))
+        }
+        (Some(_), Some(_), _) | (Some(_), _, Some(_)) => {
+            return Err("Give a day, or from and to, not both.".into());
+        }
+        _ => return Err("Say which day to read, or from and to.".into()),
+    };
+    list(
+        conn,
+        &ReadQuery {
+            project,
+            kind: None,
+            from_day,
+            to_day,
+        },
+    )
+}
+
+/// The fields a first mate is shown. The source stays in the table.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ShownLine {
+    pub project: String,
+    pub day: String,
+    pub kind: String,
+    pub task_id: String,
+    pub line: String,
+}
+
+fn shown(row: &Line) -> ShownLine {
+    ShownLine {
+        project: row.project.clone(),
+        day: row.day.clone(),
+        kind: row.kind.clone(),
+        task_id: row.task_id.clone(),
+        line: row.line.clone(),
+    }
+}
+
+/// WP-157: a first mate adds one judgment line. The app action checks who is calling.
+#[tauri::command(async)]
+pub fn work_log_add(
+    store: State<'_, crate::session_store::SessionStore>,
+    session: String,
+    project: String,
+    kind: String,
+    line: String,
+) -> Result<ShownLine, String> {
+    let conn = store.lock_conn()?;
+    let row = add_hand(
+        &conn,
+        &session,
+        &project,
+        &kind,
+        &line,
+        crate::session_store::now_millis(),
+    )?;
+    Ok(shown(&row))
+}
+
+/// WP-157: a first mate reads one day, or a from and to range.
+#[tauri::command(async)]
+pub fn work_log_read(
+    store: State<'_, crate::session_store::SessionStore>,
+    project: Option<String>,
+    day: Option<String>,
+    from: Option<String>,
+    to: Option<String>,
+) -> Result<Vec<ShownLine>, String> {
+    let conn = store.lock_conn()?;
+    let rows = read_span(
+        &conn,
+        project.as_deref(),
+        day.as_deref(),
+        from.as_deref(),
+        to.as_deref(),
+    )?;
+    Ok(rows.iter().map(shown).collect())
+}
+
 fn outcome_text(work: &FinishedWork<'_>) -> Result<String, String> {
     let lead = match work.ending {
         "done" => "Done",
@@ -484,6 +652,10 @@ fn hex_bytes(bytes: &[u8]) -> String {
 }
 
 fn check_day(day: &str) -> Result<(), String> {
+    parse_day(day).map(|_| ())
+}
+
+fn parse_day(day: &str) -> Result<time::Date, String> {
     let err = "The day should look like 2026-11-10.";
     let bytes = day.as_bytes();
     if bytes.len() != 10 || bytes[4] != b'-' || bytes[7] != b'-' {
@@ -500,8 +672,7 @@ fn check_day(day: &str) -> Result<(), String> {
     let month: u8 = day[5..7].parse().map_err(|_| err.to_string())?;
     let day_of_month: u8 = day[8..10].parse().map_err(|_| err.to_string())?;
     let month = time::Month::try_from(month).map_err(|_| err.to_string())?;
-    time::Date::from_calendar_date(year, month, day_of_month).map_err(|_| err.to_string())?;
-    Ok(())
+    time::Date::from_calendar_date(year, month, day_of_month).map_err(|_| err.to_string())
 }
 
 fn clean_line(raw: &str) -> Result<String, String> {
@@ -617,6 +788,8 @@ fn from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Line> {
         source: row.get(7)?,
     })
 }
+
+pub(crate) mod mcp;
 
 #[cfg(test)]
 mod tests;
