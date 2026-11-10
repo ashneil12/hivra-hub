@@ -223,6 +223,50 @@ export function roleSlotRule(role: string, pick: SlotPick | undefined): CrewRule
   return { labels: [label], paths: [], cli, model, effort, source: "person" };
 }
 
+/**
+ * Put each role's current pick back where its first rule was. A later rule for the same role stays.
+ * A role with no rule yet is added at the end, in the role order.
+ */
+export function placeRoleSlots(rules: readonly CrewRule[], slots: Partial<Record<RoleSlot, SlotPick>>): CrewRule[] {
+  const seen = new Set<RoleSlot>();
+  const out: CrewRule[] = [];
+  for (const rule of rules) {
+    const role = roleSlotOf(rule);
+    if (!role || seen.has(role)) {
+      out.push(rule);
+      continue;
+    }
+    seen.add(role);
+    const next = roleSlotRule(role, slots[role]);
+    if (next) out.push(next);
+  }
+  for (const role of ROLE_SLOTS) {
+    if (seen.has(role)) continue;
+    const next = roleSlotRule(role, slots[role]);
+    if (next) out.push(next);
+  }
+  return out;
+}
+
+/** Role rules stay where they were. Edited rows fill the other places, in order, and extras go at the end. */
+export function weaveRoleSlots<T extends { labels: readonly string[]; paths: readonly string[]; source?: string }>(
+  original: readonly T[],
+  editedShown: readonly T[],
+): T[] {
+  const shown = [...editedShown];
+  const out: T[] = [];
+  for (const rule of original) {
+    if (isRoleSlotRule(rule)) {
+      out.push(rule);
+      continue;
+    }
+    const next = shown.shift();
+    if (next) out.push(next);
+  }
+  out.push(...shown);
+  return out;
+}
+
 /** Replace that role's rule in place. Other rules, including plugin rules, stay. */
 export function upsertRoleSlot(rules: readonly CrewRule[], role: RoleSlot, pick: SlotPick | undefined): CrewRule[] {
   const next = roleSlotRule(role, pick);

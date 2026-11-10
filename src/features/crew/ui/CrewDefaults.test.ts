@@ -46,6 +46,13 @@ function setValue(label: string, value: string) {
   input.dispatchEvent(new Event("input", { bubbles: true }));
 }
 
+function setSelect(label: string, value: string) {
+  const select = container.querySelector<HTMLSelectElement>(`[aria-label="${label}"]`);
+  if (!select) throw new Error(`no ${label}`);
+  Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")!.set!.call(select, value);
+  select.dispatchEvent(new Event("change", { bubbles: true }));
+}
+
 function clickLabel(label: string) {
   const input = container.querySelector<HTMLInputElement>(`[aria-label="${label}"]`);
   if (!input) throw new Error(`no ${label}`);
@@ -162,6 +169,73 @@ it("saves for this project or for everything, and says which", async () => {
   expect(container.querySelector<HTMLInputElement>('[aria-label="For this project"]')?.disabled).toBe(true);
   expect(container.querySelector<HTMLInputElement>('[aria-label="For everything"]')?.checked).toBe(true);
   expect(calls("crew_rules_get").at(-1)).toMatchObject({ scope: "system", scopeId: "system" });
+});
+
+it("a save keeps a role rule where it was, and keeps a second rule for that role", async () => {
+  const first: CrewRule = { labels: ["builder"], paths: [], cli: "grok", source: "person" };
+  const second: CrewRule = { labels: ["builder"], paths: [], cli: "codex", source: "person" };
+  invokeMock.mockImplementation((cmd: string) => {
+    if (cmd === "crew_rules_get") {
+      return Promise.resolve({
+        rules: [first, pathRule, second],
+        revision: 4,
+        policy: { lockDefault: false, neverUse: [], fallback: [] },
+        signedIn: [],
+      });
+    }
+    if (cmd === "crew_rules_set") return Promise.resolve({ revision: 5, rules: [first, pathRule, second] });
+    if (cmd === "crew_policy_set") {
+      return Promise.resolve({
+        revision: 6,
+        rules: [first, pathRule, second],
+        policy: { lockDefault: false, neverUse: [], fallback: [] },
+      });
+    }
+    return Promise.resolve(undefined);
+  });
+  show();
+  await act(async () => undefined);
+  await act(async () => {
+    setSelect("Builder CLI", "claude");
+  });
+  await act(async () => {
+    click("Save");
+  });
+  const sent = (calls("crew_rules_set").at(-1)?.rules ?? []) as { labels: string[]; cli: string | null }[];
+  expect(sent.map((rule) => rule.labels[0])).toEqual(["builder", "ui", "builder"]);
+  expect(sent[0]?.cli).toBe("claude");
+  expect(sent[2]?.cli).toBe("codex");
+});
+
+it("says so when Never use rejects what was typed", async () => {
+  act(() => {
+    root.render(
+      createElement(CrewDefaults, {
+        initial: {
+          policy: { lockDefault: false, neverUse: ["pi"], fallback: [] },
+          rules: [],
+          revision: 1,
+          signedIn: [],
+        },
+      }),
+    );
+  });
+  await act(async () => {
+    setValue("Never use", "not a cli");
+  });
+  await act(async () => {
+    click("Add");
+  });
+  expect(container.querySelectorAll("[data-never-use]")).toHaveLength(1);
+  expect(container.textContent).toContain("That isn't a CLI or a Mono, so it wasn't added.");
+  await act(async () => {
+    setValue("Never use", "pi");
+  });
+  await act(async () => {
+    click("Add");
+  });
+  expect(container.querySelectorAll("[data-never-use]")).toHaveLength(1);
+  expect(container.textContent).toContain("That is already on the list.");
 });
 
 it("a late load does not turn the lock back off", async () => {

@@ -36,7 +36,7 @@ describe("reroute", () => {
       ledger: [rerouted("claude", "codex")],
     });
     expect(second.action).toBe("first-mate");
-    expect(second.reason).toBe("no other worker can take it");
+    expect(second.reason).toBe("No other worker can take it");
   });
 
   it("never reroutes a task failure, and does not spend the budget on it", () => {
@@ -61,7 +61,7 @@ describe("reroute", () => {
       ledger: [rerouted("claude", "codex"), { ...rerouted("codex", "hermes"), at: 2 }],
     });
     expect(twice.action).toBe("first-mate");
-    expect(twice.reason).toBe("the retry budget is spent");
+    expect(twice.reason).toBe("The retry budget is spent");
     expect(failure({ budget: 0 }).action).toBe("first-mate");
     expect(failure({ budget: true }).action).toBe("reroute");
     expect(failure({ budget: "abort" }).action).toBe("first-mate");
@@ -116,7 +116,7 @@ describe("pause then resume", () => {
   it("sends a usage limit with no reset and no other CLI to the first mate", () => {
     const stuck = failure({ errorClass: "usage_limit", present: alone });
     expect(stuck.action).toBe("first-mate");
-    expect(stuck.reason).toBe("no other worker can take it");
+    expect(stuck.reason).toBe("No other worker can take it");
   });
 
   it("a pause does not use up a reroute", () => {
@@ -174,7 +174,7 @@ describe("fallback order and the lock", () => {
       policy: { fallback: ["grok"] },
     });
     expect(stuck.action).toBe("first-mate");
-    expect(stuck.reason).toBe("Grok isn't installed here, so it was skipped. no other worker can take it");
+    expect(stuck.reason).toBe("Grok isn't installed here, so it was skipped. No other worker can take it");
   });
 
   it("a ban on the presence walk is not silent", () => {
@@ -225,7 +225,7 @@ describe("fallback order and the lock", () => {
       policy: { lockDefault: true },
     });
     expect(alone.action).toBe("pause");
-    expect(alone.reason).toBe("waiting for a usage limit to reset");
+    expect(alone.reason).toBe("Waiting for a usage limit to reset");
     const due = failure({
       errorClass: "usage_limit",
       resetsAt: 1_000,
@@ -234,7 +234,7 @@ describe("fallback order and the lock", () => {
       policy: { lockDefault: true },
     });
     expect(due.action).toBe("resume");
-    expect(due.reason).toBe("the usage limit has reset");
+    expect(due.reason).toBe("The usage limit has reset");
   });
 
   it("a timeout still retries the same CLI while the lock is on", () => {

@@ -1018,7 +1018,7 @@ pub fn note_pause(
         action: "pause".into(),
         to: None,
         until: input.resets_at,
-        reason: "waiting for a usage limit to reset".into(),
+        reason: "Waiting for a usage limit to reset".into(),
         applied: true,
     })
 }

@@ -1009,7 +1009,31 @@ describe("tasks.delegate", () => {
     );
   });
 
-  it("WP-141: tasks.pick says plainly when nothing can take the work", async () => {
+  it("WP-141: tasks.pick at the fan-out cap does not say the task was not started", async () => {
+  const { source, host, api } = fixture();
+  api.checkDepth = vi.fn(async (_owner: string, opts?: { fanout?: boolean }) => {
+    if (opts?.fanout !== false) {
+      throw new Error(
+        "Not started: you already have 8 tasks running, the most one first mate runs at once (8). End your turn and let one report.",
+      );
+    }
+    return 1;
+  });
+  api.crewPick = vi.fn(async () => ({
+    ok: true,
+    cli: "codex",
+    monoId: null,
+    model: null,
+    effort: null,
+    reason: "Your default is Codex.",
+  }));
+  const result = (await handleRaw(source, "p-cap", "tasks.pick", { role: "builder" }, host)) as Record<string, unknown>;
+  expect(result.ok).toBe(true);
+  expect(String(result.reason ?? "")).not.toContain("Not started");
+  expect(api.checkDepth).toHaveBeenCalledWith(source.id, { fanout: false });
+});
+
+it("WP-141: tasks.pick says plainly when nothing can take the work", async () => {
     const { source, host, api } = fixture();
     api.checkDepth = vi.fn(async () => 1);
     api.crewPick = vi.fn(async () => ({

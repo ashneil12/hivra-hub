@@ -9,11 +9,10 @@ import {
   CREW_SAVED_EVENT,
   EMPTY_POLICY,
   ROLE_SLOTS,
-  isRoleSlotRule,
+  placeRoleSlots,
   roleSlotName,
   roleSlotsFrom,
   sanitizePolicy,
-  upsertRoleSlot,
   type CrewPolicy,
   type RoleSlot,
   type SlotPick,
@@ -66,17 +65,13 @@ function asRules(value: unknown): CrewRule[] {
   return out;
 }
 
-function withSlots(others: readonly CrewRule[], slots: Partial<Record<RoleSlot, SlotPick>>): CrewRule[] {
-  return ROLE_SLOTS.reduce((rules, role) => upsertRoleSlot(rules, role, slots[role]), [...others]);
-}
-
 export function CrewDefaults({ cwd, projectId, initial }: Props) {
   const folder = cwd?.trim() ?? "";
   const [scopeChoice, setScopeChoice] = useState<"project" | "system">(folder ? "project" : "system");
   const place = placeFor(scopeChoice, folder);
   const [policy, setPolicy] = useState<CrewPolicy>(() => sanitizePolicy(initial?.policy ?? EMPTY_POLICY));
   const [slots, setSlots] = useState(() => roleSlotsFrom(initial?.rules ?? []));
-  const [others, setOthers] = useState<CrewRule[]>(() => (initial?.rules ?? []).filter((rule) => !isRoleSlotRule(rule)));
+  const [rules, setRules] = useState<CrewRule[]>(() => asRules(initial?.rules ?? []));
   const [signedIn, setSignedIn] = useState<Presence[]>(initial?.signedIn ?? []);
   const [revision, setRevision] = useState(initial?.revision ?? 0);
   const [notice, setNotice] = useState<string | null>(null);
@@ -90,9 +85,9 @@ export function CrewDefaults({ cwd, projectId, initial }: Props) {
   placeNow.current = place;
 
   function apply(got: Loaded) {
-    const rules = asRules(got.rules);
-    setOthers(rules.filter((rule) => !isRoleSlotRule(rule)));
-    setSlots(roleSlotsFrom(rules));
+    const loaded = asRules(got.rules);
+    setRules(loaded);
+    setSlots(roleSlotsFrom(loaded));
     setPolicy(sanitizePolicy(got.policy));
     if (Array.isArray(got.signedIn)) setSignedIn(got.signedIn);
     setRevision(typeof got.revision === "number" ? got.revision : 0);
@@ -165,7 +160,17 @@ export function CrewDefaults({ cwd, projectId, initial }: Props) {
   function addNever() {
     const raw = neverDraft;
     setNeverDraft("");
-    editPolicy({ ...policy, neverUse: [...policy.neverUse, raw] });
+    if (!raw.trim()) return;
+    const accepted = sanitizePolicy({ lockDefault: false, neverUse: [raw], fallback: [] }).neverUse[0];
+    if (!accepted) {
+      setNotice("That isn't a CLI or a Mono, so it wasn't added.");
+      return;
+    }
+    if (policy.neverUse.includes(accepted)) {
+      setNotice("That is already on the list.");
+      return;
+    }
+    editPolicy({ ...policy, neverUse: [...policy.neverUse, accepted] });
   }
 
   function addFallback() {
@@ -193,7 +198,7 @@ export function CrewDefaults({ cwd, projectId, initial }: Props) {
       return;
     }
     const asked = place;
-    const rules = withSlots(others, slots).map((rule) => ({
+    const sent = placeRoleSlots(rules, slots).map((rule) => ({
       labels: rule.labels,
       paths: rule.paths,
       cli: rule.cli ?? null,
@@ -207,7 +212,7 @@ export function CrewDefaults({ cwd, projectId, initial }: Props) {
         scope: asked.scope,
         scopeId: asked.scopeId,
         project: cwd ?? null,
-        rules,
+        rules: sent,
         revision: expected,
         budget: null,
       });
@@ -246,8 +251,8 @@ export function CrewDefaults({ cwd, projectId, initial }: Props) {
   }
 
   const catalog = launchCatalog();
-  const rules = withSlots(others, slots);
-  const line = [inForceSentence({ defaults: { system: systemWorkerDefault(), ...(projectId ? { project: projectWorkerDefault(projectId) } : {}) }, catalog, rules }), crewRuleSentence(rules, catalog)]
+  const shown = placeRoleSlots(rules, slots);
+  const line = [inForceSentence({ defaults: { system: systemWorkerDefault(), ...(projectId ? { project: projectWorkerDefault(projectId) } : {}) }, catalog, rules: shown }), crewRuleSentence(shown, catalog)]
     .filter(Boolean)
     .join(" ");
   const installed = signedIn.filter((row) => row.installed).map((row) => row.cli);

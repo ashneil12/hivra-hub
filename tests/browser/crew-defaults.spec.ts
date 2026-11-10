@@ -24,6 +24,7 @@ test("crew defaults shows the lock, the roles, the lists and what is in force", 
   await page.getByLabel("Never use", { exact: true }).fill("not a cli");
   await page.getByRole("button", { name: "Add", exact: true }).click();
   await expect(page.locator("[data-never-use]")).toHaveCount(0);
+  await expect(page.getByText("That isn't a CLI or a Mono, so it wasn't added.")).toBeVisible();
   await page.getByLabel("Never use", { exact: true }).fill("pi");
   await page.getByRole("button", { name: "Add", exact: true }).click();
   await expect(page.locator("[data-never-use='pi']")).toBeVisible();

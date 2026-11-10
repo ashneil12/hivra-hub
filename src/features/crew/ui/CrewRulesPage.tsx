@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { CLI_ORDER, EFFORTS, cliLabel } from "../model/clis";
-import { CREW_SAVED_EVENT, isRoleSlotRule } from "../model/policy";
+import { CREW_SAVED_EVENT, isRoleSlotRule, weaveRoleSlots } from "../model/policy";
 import { draftRule, moveRule, type RuleDraft } from "../model/rules";
 import { defaultLine, type Presence } from "../model/resolve";
 import { WorkerDefaultControl } from "./WorkerDefaultControl";
@@ -67,7 +67,7 @@ export function CrewRulesPage({ cwd, initial, hideWorkerDefault }: Props) {
   const [scope, setScope] = useState<"project" | "mono">("project");
   const [monoId, setMonoId] = useState("");
   const [rows, setRows] = useState<Row[]>(() => splitShown(initial?.rules ?? []).shown.map(toRow));
-  const heldSlots = useRef<ShownRule[]>(splitShown(initial?.rules ?? []).slots);
+  const heldRules = useRef<ShownRule[]>(initial?.rules ?? []);
   const [plugins, setPlugins] = useState<ShownRule[]>(initial?.plugins ?? []);
   const [signedIn, setSignedIn] = useState<Presence[]>(initial?.signedIn ?? []);
   const [draft, setDraft] = useState<Row>(EMPTY);
@@ -98,8 +98,9 @@ export function CrewRulesPage({ cwd, initial, hideWorkerDefault }: Props) {
     if (Array.isArray(got.plugins)) setPlugins(got.plugins);
     if (Array.isArray(got.signedIn)) setSignedIn(got.signedIn);
     if (dirty.current || saving.current === key) return;
-    const split = splitShown(Array.isArray(got.rules) ? got.rules : []);
-    heldSlots.current = split.slots;
+    const loaded = Array.isArray(got.rules) ? got.rules : [];
+    const split = splitShown(loaded);
+    heldRules.current = loaded;
     setRows(split.shown.map(toRow));
     setRevision(typeof got.revision === "number" ? got.revision : 0);
   }
@@ -164,24 +165,22 @@ export function CrewRulesPage({ cwd, initial, hideWorkerDefault }: Props) {
       setNotice(scope === "project" ? "Open a project first." : "Name the Mono first.");
       return;
     }
-    const rules = [];
+    const shown: ShownRule[] = [];
     for (const row of rows) {
       const made = draftRule(row);
       if (typeof made === "string") {
         setNotice(made);
         return;
       }
-      rules.push({ labels: made.labels, paths: made.paths, cli: made.cli ?? null, model: made.model ?? null, effort: made.effort ?? null });
+      shown.push({ labels: made.labels, paths: made.paths, cli: made.cli, model: made.model, effort: made.effort });
     }
-    for (const slot of heldSlots.current) {
-      rules.push({
-        labels: [...slot.labels],
-        paths: [...slot.paths],
-        cli: slot.cli ?? null,
-        model: slot.model ?? null,
-        effort: slot.effort ?? null,
-      });
-    }
+    const rules = weaveRoleSlots(heldRules.current, shown).map((rule) => ({
+      labels: [...rule.labels],
+      paths: [...rule.paths],
+      cli: rule.cli ?? null,
+      model: rule.model ?? null,
+      effort: rule.effort ?? null,
+    }));
     const expected = revision;
     const key = `${savingScope}\0${savingId}`;
     saving.current = key;
@@ -217,8 +216,7 @@ export function CrewRulesPage({ cwd, initial, hideWorkerDefault }: Props) {
       }
       setRevision(again.revision);
       if (Array.isArray(again.signedIn)) setSignedIn(again.signedIn);
-      const split = splitShown(Array.isArray(again.rules) ? again.rules : heldSlots.current);
-      heldSlots.current = split.slots;
+      heldRules.current = Array.isArray(again.rules) ? again.rules : heldRules.current;
       window.dispatchEvent(new CustomEvent(CREW_SAVED_EVENT, { detail: { scope: savingScope, scopeId: savingId } }));
       setNotice("Saved.");
     } catch (error) {

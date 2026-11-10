@@ -230,7 +230,7 @@ export type DelegationsBackend = {
   /** Its owner retried or split it: `task` is the new task taking it on (delegate_task `redoes`), kept in its log. */
   noteRedo?(ownerSession: string, id: string, task: string): Promise<Change>;
   /** Hivra WP-10: the depth a delegation from this chat would sit at; rejects past the cap, with the reason. */
-  checkDepth?(ownerSession: string): Promise<number>;
+  checkDepth?(ownerSession: string, opts?: { fanout?: boolean }): Promise<number>;
   /** Hivra WP-10: the first mate passes its worker's open question on to the person, or takes it back. */
   setQuestionOwner?(id: string, generation: number, owner: "person" | "first-mate", by?: string): Promise<Change>;
 };
@@ -255,7 +255,11 @@ export const tauriDelegations: DelegationsBackend = {
   followedInto: (childSession, requestIds) => invoke("delegations_followed_into", { childSession, requestIds }),
   setStall: (input) => invoke("delegations_set_stall", { input }),
   noteRedo: (ownerSession, id, task) => invoke("delegations_note_redo", { ownerSession, id, task }),
-  checkDepth: (ownerSession) => invoke("firstmate_check_depth", { ownerSession }),
+  checkDepth: (ownerSession, opts) =>
+    invoke("firstmate_check_depth", {
+      ownerSession,
+      ...(opts?.fanout === false ? { fanout: false } : {}),
+    }),
   setQuestionOwner: (id, generation, owner, by) =>
     invoke("firstmate_set_question_owner", { id, generation, owner, by }),
 };

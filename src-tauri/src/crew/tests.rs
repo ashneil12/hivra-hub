@@ -1226,7 +1226,7 @@ fn another_signed_in_cli_is_used_instead_of_waiting_and_the_budget_is_kept() {
     )
     .unwrap();
     assert_eq!(stopped.action, "first-mate");
-    assert_eq!(stopped.reason, "the retry budget is spent");
+    assert_eq!(stopped.reason, "The retry budget is spent");
     assert_eq!(hold_count(&conn, &capped.id), 0);
 
     let open = fail_row(&mut conn, "worker-open", Some("usage_limit"), Some(9_000));
@@ -1987,7 +1987,7 @@ fn a_lock_pauses_on_a_reset_and_wakes_the_first_mate() {
         Some(&json!({ "lockDefault": true })),
     ));
     assert_eq!(still.action, "pause");
-    assert_eq!(still.reason, "waiting for a usage limit to reset");
+    assert_eq!(still.reason, "Waiting for a usage limit to reset");
     let due = decide(&input(
         &current,
         &present(who),
@@ -1996,7 +1996,7 @@ fn a_lock_pauses_on_a_reset_and_wakes_the_first_mate() {
         Some(&json!({ "lockDefault": true })),
     ));
     assert_eq!(due.action, "resume");
-    assert_eq!(due.reason, "the usage limit has reset");
+    assert_eq!(due.reason, "The usage limit has reset");
     let off = decide(&input(
         &current,
         &present(who),
@@ -2007,7 +2007,7 @@ fn a_lock_pauses_on_a_reset_and_wakes_the_first_mate() {
     assert_eq!(off.action, "first-mate");
     assert_eq!(
         off.reason,
-        "Grok isn't installed here, so it was skipped. no other worker can take it"
+        "Grok isn't installed here, so it was skipped. No other worker can take it"
     );
     let banned = decide(&input(
         &current,

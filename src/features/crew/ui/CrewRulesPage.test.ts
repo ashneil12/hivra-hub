@@ -182,6 +182,34 @@ it("a role row is kept on save and is not an editable rule", async () => {
   expect(rules.map((rule) => rule.labels[0]).sort()).toEqual(["builder", "ui"]);
 });
 
+it("a save leaves role rules where they were, including a second rule for the same role", async () => {
+  invokeMock.mockImplementation((cmd: string) => {
+    if (cmd === "crew_rules_get") {
+      return Promise.resolve({
+        rules: [
+          { labels: ["builder"], paths: [], cli: "grok" },
+          { labels: ["ui"], paths: ["src"], cli: "cursor" },
+          { labels: ["builder"], paths: [], cli: "codex" },
+        ],
+        plugins: [],
+        revision: 2,
+        signedIn: [],
+      });
+    }
+    if (cmd === "crew_rules_set") return Promise.resolve({ rules: [], plugins: [], revision: 3, signedIn: [] });
+    return Promise.resolve(undefined);
+  });
+  show();
+  await act(async () => undefined);
+  await act(async () => {
+    click("Save");
+  });
+  const rules = (sets().at(-1)?.rules ?? []) as { labels: string[]; cli: string | null; paths: string[] }[];
+  expect(rules.map((rule) => rule.labels[0])).toEqual(["builder", "ui", "builder"]);
+  expect(rules.map((rule) => rule.cli)).toEqual(["grok", "cursor", "codex"]);
+  expect(rules[1]?.paths).toEqual(["src"]);
+});
+
 it("says on Crew defaults that the builder pauses apply to all projects", async () => {
   invokeMock.mockImplementation((cmd: string) =>
     cmd === "crew_rules_get"

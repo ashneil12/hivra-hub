@@ -258,7 +258,7 @@ export type AgentAppTasksHost = {
    * Hivra WP-10: how deep a delegation from this chat would sit; rejects past the cap (first mate, first mate, workers)
    * with the reason (src-tauri/src/firstmate/mod.rs check_depth).
    */
-  checkDepth?(ownerSession: string): Promise<number>;
+  checkDepth?(ownerSession: string, opts?: { fanout?: boolean }): Promise<number>;
   /** Hivra WP-14: steering messages and decisions (firstmate/model/steering.ts). */
   firstMate?: FirstMateTasksHost;
   /**
@@ -1830,10 +1830,10 @@ async function pickWorker(source: Session, input: Record<string, unknown>, host:
     if (!hit) throw new Error(`No Lead "${named}" among the ones you can brief.`);
     monoOverride = hit.id;
   }
-  // How deep this chat sits: the depth a task from it would have, less one. A refusal (too deep, too many open) is the answer.
+  // How deep this chat sits: the depth a task from it would have, less one. A pick starts nothing, so the open-task cap is not asked.
   let depth = 0;
   try {
-    depth = Math.max(0, ((await tasks.checkDepth?.(source.id)) ?? 1) - 1);
+    depth = Math.max(0, ((await tasks.checkDepth?.(source.id, { fanout: false })) ?? 1) - 1);
   } catch (error) {
     return { ok: false, reason: error instanceof Error ? error.message : String(error) };
   }

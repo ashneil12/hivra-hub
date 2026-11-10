@@ -3,11 +3,13 @@ import {
   casPolicy,
   isRoleSlotRule,
   loadBook,
+  placeRoleSlots,
   policyInForce,
   roleSlotRule,
   sanitizePolicy,
   saveBook,
   upsertRoleSlot,
+  weaveRoleSlots,
   writePolicy,
   type CrewPolicy,
 } from "./policy";
@@ -97,5 +99,16 @@ describe("role slots", () => {
     expect(replaced[0].cli).toBe("codex");
     expect(roleSlotRule("researcher", { model: "a\nb" })).toBeNull();
     expect(roleSlotRule("nope", { cli: "codex" })).toBeNull();
+  });
+
+  it("keeps a role rule where it was, and keeps a second rule for that role", () => {
+    const first: CrewRule = { labels: ["builder"], paths: [], cli: "grok", source: "person" };
+    const path: CrewRule = { labels: ["ui"], paths: ["src"], cli: "cursor", source: "person" };
+    const second: CrewRule = { labels: ["builder"], paths: [], cli: "codex", source: "person" };
+    const placed = placeRoleSlots([first, path, second], { builder: { cli: "claude" } });
+    expect(placed.map((rule) => rule.labels[0])).toEqual(["builder", "ui", "builder"]);
+    expect(placed.map((rule) => rule.cli)).toEqual(["claude", "cursor", "codex"]);
+    const woven = weaveRoleSlots([first, path, second], [path]);
+    expect(woven.map((rule) => rule.cli)).toEqual(["grok", "cursor", "codex"]);
   });
 });

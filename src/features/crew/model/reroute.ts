@@ -66,9 +66,15 @@ function skipAttempt(input: FailureInput, cli: string, reason: string): Attempt 
   return { at: input.now, cli, model: null, effort: null, errorClass: reason, outcome: "skipped", to: null };
 }
 
+function sentence(reason: string): string {
+  if (!reason) return reason;
+  return reason.charAt(0).toUpperCase() + reason.slice(1);
+}
+
 function note(skipped: readonly Attempt[], reason: string): string {
-  if (skipped.length === 0) return reason;
-  return `${skipped.map((row) => row.errorClass).join(" ")} ${reason}`;
+  const line = sentence(reason);
+  if (skipped.length === 0) return line;
+  return `${skipped.map((row) => row.errorClass).join(" ")} ${line}`;
 }
 
 function switchReason(from: string | null | undefined, to: string): string {
@@ -142,7 +148,7 @@ export function decide(input: FailureInput): Decision {
 
   if (locked) {
     if (kind === "usage" && input.resetsAt != null && input.resetsAt <= input.now) {
-      return { action: "resume", reason: "the usage limit has reset", attempt: attempt(input, "resumed"), skipped: [] };
+      return { action: "resume", reason: note([], "the usage limit has reset"), attempt: attempt(input, "resumed"), skipped: [] };
     }
     const reason = note(choice.skipped, LOCK_REASON);
     if (input.resetsAt != null && input.resetsAt > input.now) {

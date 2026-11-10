@@ -94,9 +94,18 @@ fn skip_attempt(input: &FailureInput<'_>, cli: &str, reason: String) -> Attempt 
     }
 }
 
+fn sentence(reason: &str) -> String {
+    let mut chars = reason.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+        None => String::new(),
+    }
+}
+
 fn note(skipped: &[Attempt], reason: &str) -> String {
+    let reason = sentence(reason);
     if skipped.is_empty() {
-        return reason.to_string();
+        return reason;
     }
     let lines: Vec<&str> = skipped.iter().map(|row| row.error_class.as_str()).collect();
     format!("{} {reason}", lines.join(" "))
@@ -265,7 +274,7 @@ pub fn decide(input: &FailureInput<'_>) -> Decision {
                 "resume",
                 None,
                 None,
-                "the usage limit has reset".into(),
+                note(&[], "the usage limit has reset"),
                 attempt(input, "resumed", None),
                 Vec::new(),
             );

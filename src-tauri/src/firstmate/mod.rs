@@ -64,15 +64,23 @@ pub fn check_fanout(conn: &Connection, owner: &str) -> Result<usize, String> {
     Ok(open)
 }
 
+/// Depth, and the fan-out cap when a task would actually start. A pick starts nothing, so it skips the cap.
+pub fn depth_and_fanout(conn: &Connection, owner: &str, fanout: bool) -> Result<usize, String> {
+    let depth = check_depth(conn, owner)?;
+    if fanout {
+        check_fanout(conn, owner)?;
+    }
+    Ok(depth)
+}
+
 #[tauri::command(async)]
 pub fn firstmate_check_depth(
     store: State<'_, SessionStore>,
     owner_session: String,
+    fanout: Option<bool>,
 ) -> Result<usize, String> {
     let conn = store.lock_conn()?;
-    let depth = check_depth(&conn, &owner_session)?;
-    check_fanout(&conn, &owner_session)?;
-    Ok(depth)
+    depth_and_fanout(&conn, &owner_session, fanout.unwrap_or(true))
 }
 
 #[tauri::command(async)]
