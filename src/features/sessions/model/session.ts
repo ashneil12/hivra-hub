@@ -460,6 +460,8 @@ export type Block = {
   };
   approval?: {
     requestId: number;
+    /** Epoch ms the app was asked. A settled chat comes back for a request newer than its settle (chatListInbox.ts). */
+    at?: number;
     decided?: "allow" | "deny" | "cancelled";
     /** Exactly what it would run, when the provider says (autopilot judges approvals on it). */
     call?: ApprovalCall;

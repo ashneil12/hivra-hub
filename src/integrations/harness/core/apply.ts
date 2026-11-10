@@ -132,6 +132,10 @@ export function applyHarnessEvent(
         pendingQuestion: {
           requestId: event.requestId,
           questions: event.questions,
+          // The same question sent again is not a new ask: it keeps the time it was first made.
+          askedAt:
+            (session.pendingQuestion?.requestId === event.requestId ? session.pendingQuestion.askedAt : undefined) ??
+            Date.now(),
           ...(event.title ? { title: event.title } : {}),
           ...(event.autoResolveAt != null
             ? { autoResolveAt: event.autoResolveAt }
@@ -984,7 +988,12 @@ function attachApproval(
               ...(preview ? { preview } : {}),
             }
           : prev.tool,
-      approval: { requestId: event.requestId, ...(event.call ? { call: event.call } : {}) },
+      approval: {
+        requestId: event.requestId,
+        // The same request sent again is not a new ask: it keeps the time it was first made.
+        at: (prev.approval?.requestId === event.requestId ? prev.approval.at : undefined) ?? Date.now(),
+        ...(event.call ? { call: event.call } : {}),
+      },
     };
     return { ...session, blocks };
   }
@@ -1002,7 +1011,7 @@ function attachApproval(
       kind: event.kind,
       ...(preview ? { preview } : {}),
     },
-    approval: { requestId: event.requestId, ...(event.call ? { call: event.call } : {}) },
+    approval: { requestId: event.requestId, at: Date.now(), ...(event.call ? { call: event.call } : {}) },
   });
 }
 

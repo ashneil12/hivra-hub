@@ -10247,7 +10247,7 @@ function Workspace({
         role: "approval",
         text: block.text,
         ...(block.tool ? { tool: block.tool } : {}),
-        approval: { requestId },
+        approval: { requestId, at: Date.now() },
         monoHabit: { id: habit.id, name: habit.name, at: Date.now() },
       });
     },
