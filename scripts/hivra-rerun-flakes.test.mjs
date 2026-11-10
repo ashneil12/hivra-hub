@@ -3,7 +3,8 @@
 
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { spawn } from "node:child_process";
+import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
@@ -13,6 +14,8 @@ import {
   DEFAULT_FLAKES_PATH,
   USAGE,
   allowGhEnv,
+  autoEnabled,
+  claimAutoAttempt,
   classifyFailures,
   extractTestIdentities,
   loadFlakeList,
@@ -892,3 +895,398 @@ process.exit(1);
     }
   },
 );
+
+const AUTO_ON = { HIVRA_RERUN_FLAKES_AUTO: "1" };
+
+function stateDir(name) {
+  return mkdtempSync(path.join(tmpdir(), name));
+}
+
+test("automatic re-run stays off unless the setting is exactly 1", async () => {
+  assert.equal(autoEnabled({}), false);
+  assert.equal(autoEnabled({ HIVRA_RERUN_FLAKES_AUTO: "1" }), true);
+  for (const value of ["", "0", "true", "on", "yes", " 1", "1\n", "11"]) {
+    const gh = fakeGh(() => ({ ok: true, stdout: "" }));
+    const lines = [];
+    const result = await rerunFlakes({
+      pr: "123",
+      repo: REPO,
+      auto: true,
+      stateDir: path.join(tmpdir(), "hivra-rerun-should-not-exist"),
+      env: { HIVRA_RERUN_FLAKES_AUTO: value },
+      gh: gh.gh,
+      stdout: (line) => lines.push(line),
+      stderr: quiet,
+    });
+    assert.equal(result.code, 0, value || "(empty)");
+    assert.equal(result.reran, false);
+    assert.deepEqual(lines, ["automatic re-run is off"]);
+    assert.equal(gh.calls.length, 0);
+  }
+
+  const help = [];
+  assert.equal(
+    await main(["node", "script", "--auto"], { env: {}, stdout: (line) => help.push(line), stderr: quiet }),
+    0,
+  );
+  assert.deepEqual(help, ["automatic re-run is off"]);
+});
+
+test("automatic re-run needs a real state directory and does not clobber a file", async () => {
+  const missing = fakeGh(() => ({ ok: true, stdout: "" }));
+  const missingErr = [];
+  const missingResult = await rerunFlakes({
+    pr: "123",
+    repo: REPO,
+    auto: true,
+    env: AUTO_ON,
+    gh: missing.gh,
+    stdout: quiet,
+    stderr: (line) => missingErr.push(line),
+  });
+  assert.equal(missingResult.code, 1);
+  assert.match(missingErr.join("\n"), /needs a state directory/);
+  assert.equal(missing.calls.length, 0);
+
+  const file = path.join(stateDir("hivra-rerun-state-file-"), "not-a-dir");
+  writeFileSync(file, "keep");
+  const blocked = fakeGh(() => ({ ok: true, stdout: "" }));
+  const blockedErr = [];
+  const blockedResult = await rerunFlakes({
+    pr: "123",
+    repo: REPO,
+    auto: true,
+    stateDir: file,
+    env: AUTO_ON,
+    gh: blocked.gh,
+    stdout: quiet,
+    stderr: (line) => blockedErr.push(line),
+  });
+  assert.equal(blockedResult.code, 1);
+  assert.match(blockedErr.join("\n"), /not a directory/);
+  assert.equal(readFileSync(file, "utf8"), "keep");
+  assert.equal(blocked.calls.length, 0);
+  rmSync(path.dirname(file), { recursive: true, force: true });
+});
+
+test("automatic re-run claims a head sha once, and a different sha can run", async () => {
+  const dir = path.join(stateDir("hivra-rerun-auto-"), "é state");
+  mkdirSync(dir);
+  try {
+    const first = repoScene();
+    const lines = [];
+    const ran = await rerunFlakes({
+      pr: "123",
+      repo: REPO,
+      auto: true,
+      stateDir: dir,
+      env: AUTO_ON,
+      gh: first.gh,
+      stdout: (line) => lines.push(line),
+      stderr: quiet,
+    });
+    assert.equal(ran.code, 0, lines.join("\n"));
+    assert.equal(ran.reran, true);
+    assert.deepEqual(reruns(first.calls), [["run", "rerun", RUN, "--repo", REPO, "--failed"]]);
+    assert.equal(readdirSync(dir).join("\n"), SHA_A);
+    const claim = path.join(dir, SHA_A);
+    assert.equal(statSync(claim).isFile(), true);
+    assert.equal(path.dirname(claim), dir);
+
+    const second = repoScene();
+    const errs = [];
+    const again = await rerunFlakes({
+      pr: "123",
+      repo: REPO,
+      auto: true,
+      stateDir: dir,
+      env: AUTO_ON,
+      gh: second.gh,
+      stdout: quiet,
+      stderr: (line) => errs.push(line),
+    });
+    assert.equal(again.code, 1);
+    assert.equal(again.reran, false);
+    assert.match(errs.join("\n"), /already re-ran this head sha/);
+    assert.equal(reruns(second.calls).length, 0);
+    assert.equal(readdirSync(dir).join("\n"), SHA_A);
+
+    const other = repoScene({
+      pr: prJson({ headRefOid: SHA_B }),
+      runs: [runJson({ headSha: SHA_B })],
+      view: viewJson(
+        [
+          { databaseId: 10, name: "browser (1/4)", status: "completed", conclusion: "failure" },
+          { databaseId: 11, name: "ci-ok", status: "completed", conclusion: "failure" },
+        ],
+        { headSha: SHA_B },
+      ),
+    });
+    const otherLines = [];
+    const moved = await rerunFlakes({
+      pr: "123",
+      repo: REPO,
+      auto: true,
+      stateDir: dir,
+      env: AUTO_ON,
+      gh: other.gh,
+      stdout: (line) => otherLines.push(line),
+      stderr: quiet,
+    });
+    assert.equal(moved.code, 0, otherLines.join("\n"));
+    assert.equal(moved.reran, true);
+    assert.deepEqual(readdirSync(dir).sort(), [SHA_A, SHA_B].sort());
+  } finally {
+    rmSync(path.dirname(dir), { recursive: true, force: true });
+  }
+});
+
+test("a refusal, a green run and a run that is not finished do not use up the attempt", async () => {
+  const dir = stateDir("hivra-rerun-no-claim-");
+  try {
+    const cases = [
+      repoScene({
+        log: `${ghLine("browser (1/4)", "1) [webkit] › tests/browser/agents-page.spec.ts:20:3 › the rows wrap onto two lines and stay there")}\n`,
+      }),
+      repoScene({ runs: [runJson({ conclusion: "success" })] }),
+      repoScene({ runs: [runJson({ status: "in_progress", conclusion: "" })] }),
+      repoScene({ runs: [runJson({ conclusion: "cancelled" })] }),
+    ];
+    for (const scene of cases) {
+      const result = await rerunFlakes({
+        pr: "123",
+        repo: REPO,
+        auto: true,
+        stateDir: dir,
+        env: AUTO_ON,
+        gh: scene.gh,
+        stdout: quiet,
+        stderr: quiet,
+      });
+      assert.equal(result.reran, false);
+      assert.equal(reruns(scene.calls).length, 0);
+    }
+    assert.deepEqual(readdirSync(dir), []);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a hand apply ignores the automatic claim", async () => {
+  const dir = stateDir("hivra-rerun-manual-");
+  try {
+    writeFileSync(path.join(dir, SHA_A), "keep");
+    const scene = repoScene();
+    const lines = [];
+    const ran = await rerunFlakes({
+      pr: "123",
+      repo: REPO,
+      apply: true,
+      stateDir: dir,
+      env: AUTO_ON,
+      gh: scene.gh,
+      stdout: (line) => lines.push(line),
+      stderr: quiet,
+    });
+    assert.equal(ran.code, 0, lines.join("\n"));
+    assert.equal(ran.reran, true);
+    assert.equal(readFileSync(path.join(dir, SHA_A), "utf8"), "keep");
+    assert.deepEqual(readdirSync(dir), [SHA_A]);
+
+    const fresh = stateDir("hivra-rerun-manual-fresh-");
+    const again = repoScene();
+    const second = await rerunFlakes({
+      pr: "123",
+      repo: REPO,
+      apply: true,
+      stateDir: fresh,
+      env: AUTO_ON,
+      gh: again.gh,
+      stdout: quiet,
+      stderr: quiet,
+    });
+    assert.equal(second.reran, true);
+    assert.deepEqual(readdirSync(fresh), []);
+    rmSync(fresh, { recursive: true, force: true });
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a moved head and a failed re-run do not start a second automatic attempt", async () => {
+  const dir = stateDir("hivra-rerun-auto-stop-");
+  try {
+    const moved = repoScene();
+    let views = 0;
+    const moving = fakeGh((args) => {
+      if (args[0] === "pr" && args[1] === "view") {
+        views += 1;
+        const sha = views > 1 ? SHA_B : SHA_A;
+        return { ok: true, stdout: JSON.stringify(prJson({ headRefOid: sha })) };
+      }
+      return moved.gh(args);
+    });
+    const errs = [];
+    const stopped = await rerunFlakes({
+      pr: "123",
+      repo: REPO,
+      auto: true,
+      stateDir: dir,
+      env: AUTO_ON,
+      gh: moving.gh,
+      stdout: quiet,
+      stderr: (line) => errs.push(line),
+    });
+    assert.equal(stopped.code, 1);
+    assert.equal(stopped.reran, false);
+    assert.match(errs.join("\n"), /head sha changed/);
+    assert.equal(reruns(moving.calls).length, 0);
+    assert.deepEqual(readdirSync(dir), []);
+
+    const failed = repoScene({ rerunOk: false, rerunStderr: "denied" });
+    const failedLines = [];
+    const first = await rerunFlakes({
+      pr: "123",
+      repo: REPO,
+      auto: true,
+      stateDir: dir,
+      env: AUTO_ON,
+      gh: failed.gh,
+      stdout: (line) => failedLines.push(line),
+      stderr: quiet,
+    });
+    assert.equal(first.code, 1);
+    assert.equal(first.reran, false);
+    assert.equal(readdirSync(dir).join("\n"), SHA_A);
+    const second = repoScene();
+    const again = await rerunFlakes({
+      pr: "123",
+      repo: REPO,
+      auto: true,
+      stateDir: dir,
+      env: AUTO_ON,
+      gh: second.gh,
+      stdout: quiet,
+      stderr: quiet,
+    });
+    assert.equal(again.reran, false);
+    assert.equal(reruns(second.calls).length, 0);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a sha that is not 40 hex is not a claim file, and two claims cannot both win", async () => {
+  const parent = stateDir("hivra-rerun-claim-");
+  const dir = path.join(parent, "state");
+  mkdirSync(dir);
+  try {
+    const bad = claimAutoAttempt(dir, "..");
+    assert.equal(bad.ok, false);
+    assert.deepEqual(readdirSync(dir), []);
+    assert.equal(readdirSync(parent).includes(".."), false);
+    assert.equal(claimAutoAttempt(dir, `${SHA_A.slice(0, 38)}/x`).ok, false);
+    assert.deepEqual(readdirSync(dir), []);
+
+    const worker = path.join(parent, "claim.mjs");
+    writeFileSync(
+      worker,
+      `import { claimAutoAttempt } from ${JSON.stringify(scriptPath)};\nprocess.stdout.write(JSON.stringify(claimAutoAttempt(process.argv[2], process.argv[3])));\n`,
+    );
+    const run = () =>
+      new Promise((resolve, reject) => {
+        const child = spawn(process.execPath, [worker, dir, SHA_A], { stdio: ["ignore", "pipe", "pipe"] });
+        let out = "";
+        let err = "";
+        child.stdout.on("data", (chunk) => {
+          out += chunk;
+        });
+        child.stderr.on("data", (chunk) => {
+          err += chunk;
+        });
+        child.on("error", reject);
+        child.on("close", (code) => resolve({ code, out, err }));
+      });
+    const [left, right] = await Promise.all([run(), run()]);
+    assert.equal(left.code, 0, left.err);
+    assert.equal(right.code, 0, right.err);
+    const results = [JSON.parse(left.out), JSON.parse(right.out)];
+    assert.equal(results.filter((result) => result.ok).length, 1);
+    assert.equal(results.filter((result) => result.already).length, 1);
+    assert.deepEqual(readdirSync(dir), [SHA_A]);
+  } finally {
+    rmSync(parent, { recursive: true, force: true });
+  }
+});
+
+test("automatic re-run of a run id claims that sha, and a moved sha is not claimed", async () => {
+  const dir = stateDir("hivra-rerun-auto-run-");
+  try {
+    const scene = repoScene();
+    let views = 0;
+    const moving = fakeGh((args) => {
+      if (args[0] === "run" && args[1] === "view" && !args.includes("--log-failed")) {
+        views += 1;
+        if (views > 1) return { ok: true, stdout: JSON.stringify({ databaseId: Number(RUN), headSha: SHA_B }) };
+      }
+      return scene.gh(args);
+    });
+    const errs = [];
+    const moved = await rerunFlakes({
+      runId: RUN,
+      repo: REPO,
+      auto: true,
+      stateDir: dir,
+      env: AUTO_ON,
+      gh: moving.gh,
+      stdout: quiet,
+      stderr: (line) => errs.push(line),
+    });
+    assert.equal(moved.code, 1);
+    assert.equal(moved.reran, false);
+    assert.match(errs.join("\n"), /head sha changed/);
+    assert.equal(reruns(moving.calls).length, 0);
+    assert.deepEqual(readdirSync(dir), []);
+
+    const held = repoScene();
+    const lines = [];
+    const ran = await rerunFlakes({
+      runId: RUN,
+      repo: REPO,
+      auto: true,
+      stateDir: dir,
+      env: AUTO_ON,
+      gh: held.gh,
+      stdout: (line) => lines.push(line),
+      stderr: quiet,
+    });
+    assert.equal(ran.code, 0, lines.join("\n"));
+    assert.equal(ran.reran, true);
+    assert.deepEqual(reruns(held.calls), [["run", "rerun", RUN, "--repo", REPO, "--failed"]]);
+    assert.equal(held.calls.filter((args) => args[0] === "run" && args[1] === "view" && !args.includes("--log-failed")).length, 2);
+    const second = repoScene();
+    const again = await rerunFlakes({
+      runId: RUN,
+      repo: REPO,
+      auto: true,
+      stateDir: dir,
+      env: AUTO_ON,
+      gh: second.gh,
+      stdout: quiet,
+      stderr: quiet,
+    });
+    assert.equal(again.reran, false);
+    assert.equal(reruns(second.calls).length, 0);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("the note says automatic re-run is off unless a tick turns it on", () => {
+  const doc = readFileSync(docPath, "utf8");
+  assert.match(doc, /HIVRA_RERUN_FLAKES_AUTO=1/);
+  assert.match(doc, /--auto --state DIR/);
+  assert.match(doc, /Automatic re-run is off/);
+  assert.match(USAGE, /--auto/);
+  assert.match(USAGE, /HIVRA_RERUN_FLAKES_AUTO=1/);
+});

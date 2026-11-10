@@ -3,6 +3,7 @@
 // Dry-run by default. --apply merges with a merge commit pinned to the head sha.
 // Uses the gh login already on the machine. Does not read, print or store tokens.
 // Not a GitHub Actions workflow, and it does not change workflow permissions.
+// WP-163: a tick may run scripts/hivra-rerun-flakes.mjs --auto. This file does not call it.
 
 import { spawnSync } from "node:child_process";
 import { appendFileSync, realpathSync } from "node:fs";

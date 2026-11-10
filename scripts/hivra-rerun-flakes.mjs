@@ -5,7 +5,8 @@
 // Uses the gh login already on the machine. Does not read, print or store tokens.
 // Does not change workflow permissions.
 
-import { readFileSync, realpathSync } from "node:fs";
+import { closeSync, openSync, readFileSync, realpathSync, statSync } from "node:fs";
+import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { allowGhEnv, normalizeRuns, parseGhJson, pickLatestRun, runGh } from "./hivra-ship-green.mjs";
@@ -36,6 +37,8 @@ ci-ok is the rollup job. It is not a separate failure when some other job failed
 
 A run that is still going, a cancelled run, a missing list, or gh not answering is not a flake result.
 The script uses the gh login already on the machine. It does not take a new token and it does not change workflow permissions.
+
+--auto is for a tick. It does nothing unless HIVRA_RERUN_FLAKES_AUTO=1, and then it needs --state DIR. It re-runs once per head sha. A second time for the same sha does not re-run.
 `;
 
 export { allowGhEnv };
@@ -88,6 +91,73 @@ export function redactSecrets(text, env = {}) {
     if (typeof value === "string" && value.length >= 4) out = out.split(value).join("[redacted]");
   }
   return out;
+}
+
+/**
+ * Automatic re-run is off unless the tick sets this to the single value 1.
+ * @param {NodeJS.ProcessEnv} [env]
+ * @returns {boolean}
+ */
+export function autoEnabled(env = {}) {
+  return env.HIVRA_RERUN_FLAKES_AUTO === "1";
+}
+
+/**
+ * @param {unknown} stateDir
+ * @returns {{ ok: true } | { ok: false, message: string }}
+ */
+function inspectStateDir(stateDir) {
+  if (typeof stateDir !== "string" || stateDir.trim() === "" || /[\0\r\n]/.test(stateDir)) {
+    return { ok: false, message: "automatic re-run needs a state directory" };
+  }
+  let info;
+  try {
+    info = statSync(stateDir);
+  } catch {
+    return { ok: false, message: "automatic re-run needs a state directory" };
+  }
+  if (!info.isDirectory()) return { ok: false, message: "state path is not a directory" };
+  return { ok: true };
+}
+
+/**
+ * Record one automatic attempt for a head sha. Create-only, so two ticks cannot both win.
+ * The name is the sha itself. Nothing is deleted and nothing secret is written.
+ * @param {string} stateDir
+ * @param {string} sha
+ * @returns {{ ok: true } | { ok: false, already?: boolean, message: string }}
+ */
+export function claimAutoAttempt(stateDir, sha) {
+  if (!SHA40.test(sha)) return { ok: false, message: "head sha is not usable" };
+  const ready = inspectStateDir(stateDir);
+  if (!ready.ok) return ready;
+  let root;
+  try {
+    root = realpathSync(stateDir);
+  } catch {
+    return { ok: false, message: "automatic re-run needs a state directory" };
+  }
+  const file = path.join(root, sha);
+  if (path.relative(root, file) !== sha) return { ok: false, message: "head sha is not usable" };
+  let fd;
+  try {
+    fd = openSync(file, "wx", 0o600);
+  } catch (error) {
+    const code = error && typeof error === "object" && "code" in error ? error.code : "";
+    if (code === "EEXIST") return { ok: false, already: true, message: "already re-ran this head sha" };
+    return { ok: false, message: "could not record the re-run attempt" };
+  }
+  closeSync(fd);
+  let created;
+  try {
+    created = realpathSync(file);
+  } catch {
+    return { ok: false, message: "could not record the re-run attempt" };
+  }
+  if (path.relative(root, created) !== sha) {
+    return { ok: false, message: "could not record the re-run attempt" };
+  }
+  return { ok: true };
 }
 
 /**
@@ -555,10 +625,12 @@ export function formatCommand(args) {
 export function parseArgs(argv) {
   const opts = {
     apply: false,
+    auto: false,
     help: false,
     repo: "",
     runId: "",
     flakesPath: "",
+    stateDir: "",
     pr: "",
   };
   const args = argv.slice(2);
@@ -577,6 +649,10 @@ export function parseArgs(argv) {
     }
     if (arg === "--apply") {
       opts.apply = true;
+      continue;
+    }
+    if (arg === "--auto") {
+      opts.auto = true;
       continue;
     }
     if (arg === "--help" || arg === "-h") {
@@ -598,12 +674,18 @@ export function parseArgs(argv) {
       i += 1;
       continue;
     }
+    if (arg === "--state") {
+      opts.stateDir = take(arg, i);
+      i += 1;
+      continue;
+    }
     if (arg.startsWith("--")) throw new Error(`unknown option ${arg}`);
     positionals.push(arg);
   }
   if (opts.repo && !REPO_NAME.test(opts.repo)) throw new Error("--repo must look like OWNER/NAME");
   if (opts.runId && !POSITIVE_INT.test(opts.runId)) throw new Error("--run must be a run id");
   if (opts.flakesPath && /[\0\r\n]/.test(opts.flakesPath)) throw new Error("--flakes path is not usable");
+  if (opts.stateDir && /[\0\r\n]/.test(opts.stateDir)) throw new Error("--state path is not usable");
   const numbers = [];
   const seen = new Set();
   for (const raw of positionals) {
@@ -725,7 +807,7 @@ export function callGh(args, options = {}) {
 }
 
 /**
- * @param {{ pr?: string, runId?: string, apply?: boolean, repo?: string, flakesPath?: string, env?: NodeJS.ProcessEnv, command?: string, gh?: (args: string[]) => Promise<{ ok?: boolean, unreachable?: boolean, message?: string, stdout?: string, stderr?: string }>, stdout?: (line: string) => void, stderr?: (line: string) => void }} [options]
+ * @param {{ pr?: string, runId?: string, apply?: boolean, auto?: boolean, stateDir?: string, repo?: string, flakesPath?: string, env?: NodeJS.ProcessEnv, command?: string, gh?: (args: string[]) => Promise<{ ok?: boolean, unreachable?: boolean, message?: string, stdout?: string, stderr?: string }>, stdout?: (line: string) => void, stderr?: (line: string) => void }} [options]
  * @returns {Promise<{ code: number, reran: boolean }>}
  */
 export async function rerunFlakes(options = {}) {
@@ -733,6 +815,17 @@ export async function rerunFlakes(options = {}) {
   const err = options.stderr ?? ((line) => console.error(line));
   const env = options.env ?? process.env;
   const gh = options.gh ?? ((args) => Promise.resolve(callGh(args, { env, command: options.command })));
+  if (options.auto && !autoEnabled(env)) {
+    out("automatic re-run is off");
+    return { code: 0, reran: false };
+  }
+  if (options.auto) {
+    const ready = inspectStateDir(options.stateDir);
+    if (!ready.ok) {
+      err(ready.message);
+      return { code: 1, reran: false };
+    }
+  }
   const pr = options.pr ? normalizePrNumber(options.pr) : "";
   const runId = options.runId ? String(options.runId).trim() : "";
   if (options.pr && !pr) {
@@ -988,7 +1081,7 @@ export async function rerunFlakes(options = {}) {
   const rerunArgs = ["run", "rerun", run.id, "--repo", repo, "--failed"];
   const commandLine = formatCommand(rerunArgs);
 
-  if (!options.apply) {
+  if (!options.apply && !options.auto) {
     out(`dry-run: ${commandLine}`);
     return { code: 0, reran: false };
   }
@@ -997,6 +1090,37 @@ export async function rerunFlakes(options = {}) {
     const again = await readPull(headSha, pr);
     if (!again.ok) {
       err(again.message);
+      return { code: 1, reran: false };
+    }
+  } else if (options.auto) {
+    const again = await call(gh, ["run", "view", run.id, "--repo", repo, "--json", "databaseId,headSha"], "read the CI run");
+    if (!again.ok) {
+      err(again.message || ghFailure(again.gh, "read the CI run", env));
+      return { code: 1, reran: false };
+    }
+    let againJson;
+    try {
+      againJson = parseGhJson(again.stdout);
+    } catch {
+      err("could not read the CI run");
+      return { code: 1, reran: false };
+    }
+    const againSha =
+      againJson && typeof againJson === "object" && !Array.isArray(againJson) && typeof againJson.headSha === "string"
+        ? againJson.headSha.toLowerCase()
+        : "";
+    if (!SHA40.test(againSha) || againSha !== headSha) {
+      err("head sha changed before re-run");
+      return { code: 1, reran: false };
+    }
+  }
+
+  // The claim is taken only when this tick is about to re-run, and before that call.
+  // A refusal, a green run, or a run that is not finished returns above and leaves no claim.
+  if (options.auto) {
+    const claim = claimAutoAttempt(options.stateDir ?? "", headSha);
+    if (!claim.ok) {
+      err(claim.message);
       return { code: 1, reran: false };
     }
   }
@@ -1031,6 +1155,10 @@ export async function main(argv = process.argv, hooks = {}) {
     out(USAGE);
     return 0;
   }
+  if (opts.auto && !autoEnabled(hooks.env ?? process.env)) {
+    out("automatic re-run is off");
+    return 0;
+  }
   if (!opts.pr && !opts.runId) {
     (hooks.stderr ?? ((line) => console.error(line)))(USAGE);
     return 2;
@@ -1039,6 +1167,8 @@ export async function main(argv = process.argv, hooks = {}) {
     pr: opts.pr,
     runId: opts.runId,
     apply: opts.apply,
+    auto: opts.auto,
+    stateDir: opts.stateDir,
     repo: opts.repo,
     flakesPath: opts.flakesPath || DEFAULT_FLAKES_PATH,
     env: hooks.env,

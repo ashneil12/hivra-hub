@@ -65,10 +65,18 @@ A job named on the list (the Windows ship drill) is re-run only when its log sho
 
 A missing list, a run that is still going, a cancelled run, or `gh` not answering is not treated as a flake failure. The script uses the `gh` login already on the machine. It does not take a new token and it does not change workflow permissions.
 
+Automatic re-run is off. A tick turns it on with `HIVRA_RERUN_FLAKES_AUTO=1` and:
+
+```sh
+node scripts/hivra-rerun-flakes.mjs --auto --state DIR 123
+```
+
+That makes one attempt for that head sha and records it in `DIR`. A later tick for the same sha does not re-run. A different sha can. A green run, a real failure, or a run that is not finished does not use up the attempt. `--apply` by hand is not limited and does not write that record.
+
 ## Done when
 
 - [x] Only known-flake-only failures are re-run; mixed or real failures refuse.
-- [ ] At most one auto re-run per head sha.
+- [x] At most one auto re-run per head sha.
 - [x] Dry-run default; tests with fixtures pass.
 
 ## Licence
