@@ -84,7 +84,19 @@ How it connects. Pairing is a one-time code, QUIC with mutual TLS, and the deskt
 
 The phone cannot reach the SSH host. Closing the laptop ends the peer the phone knows. A later package that wants the phone while the laptop is shut has to teach the host to speak the phone's protocol, or teach the phone to be a client of the host. That is the large piece. It is not started here. SPEC section 11 still says the mobile app is kept, so that later package is a small hook, not a rewrite.
 
-3. The web client is a page served by the desktop or the host, on an address the person can already reach. It is not a signed-in website Hivra operates. No Clerk, and no other third-party account kit.
+### Web
+
+There is no separate web client in this repo. The desktop UI is the Tauri webview. `docs/remote-access.md` already allows a person to put their own HTTPS reverse proxy in front of the loopback host, and it accepts plain HTTP only for a loopback address. The credential stays in the native app. It is not put in browser storage.
+
+Recommend a local client, not a signed-in hosted site.
+
+A local client means a page the desktop or the host serves, on loopback, or on a LAN or tailnet address the person has already chosen to open. No account. The same device credential the host already issues is enough. It defaults to off, or to loopback only, until that person turns a wider address on. This matches the host that already exists, and it does not need a domain or a certificate from a public authority. A tailnet HTTPS name, if the person uses one, is their network's certificate, not Hivra's.
+
+A signed-in hosted site, the shape of `https://app.t3.codes`, is the wrong first client. T3's own docs say that page needs HTTPS, connects to the server directly, and does not make an unreachable machine reachable. Browsers block plain HTTP from an HTTPS page, which is why their hosted app stays on T3 Connect. Running the same shape means Hivra operates a website, a domain, a certificate and an account directory. That is a public service. SPEC section 12 still defers it. This package does not start it.
+
+If Ash later wants a hosted page, it is still only a view of a host he can already reach. It uses the device credential the host already has. It does not grow a user database, and it does not use Clerk or any other third-party account kit. Their user docs do not name Clerk. The refusal is so a later package does not add one to fill the gap.
+
+No implementation of either client is in this package.
 
 4. The laptop can close only when some other machine is the host. Keep-awake does not do that. No vendor price is quoted, because those pages were not opened.
 
