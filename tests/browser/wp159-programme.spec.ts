@@ -21,8 +21,11 @@ test("groups queued, in flight, parked and failed, and hides a merged row", asyn
   await expect(failed).toContainText("Fix the build.");
   await expect(board.getByText("Already merged.")).toHaveCount(0);
   await expect(board.locator("[data-programme-notice]")).toHaveText("That package changed. Read it again and retry.");
+  await expect(queued).toContainText("Write the notes.");
 
-  await parked.getByRole("button", { name: "Clear park for Wait for a look" }).click();
+  const clear = parked.getByRole("button", { name: "Clear park for Wait for a look" });
+  await expect(clear).toHaveText("Clear park");
+  await clear.click();
   await expect(page.locator("#cleared")).toHaveText("k:4");
   await expect(parked.getByRole("button", { name: "Clear park for Check the diff" })).toBeVisible();
   await expect(queued.getByRole("button")).toHaveCount(0);

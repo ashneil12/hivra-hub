@@ -23,7 +23,16 @@ import { HOME_DOC_KEY, changeHome, type HomeDoc } from "../model/store";
 import { HomeScreen } from "./HomeScreen";
 import { keepListening } from "./listenRetry";
 import { ProgrammePanel } from "../../programme/ui/ProgrammePanel";
-import { applyProgrammeLoad, collectProgramme, PROGRAMME_CHANGED, type ProgrammePackage } from "../../programme/model/programme";
+import {
+  applyProgrammeLoad,
+  collectProgramme,
+  PROGRAMME_CHANGED,
+  READ_NOTICE,
+  READ_NOTICE_AFTER,
+  programmeShows,
+  retryDelayMs,
+  type ProgrammePackage,
+} from "../../programme/model/programme";
 
 const TASKS_CHANGED = "tasks://changed";
 const RETRY_MS = 2000;
@@ -45,6 +54,10 @@ export function HomeView() {
   const [programme, setProgramme] = useState<ProgrammePackage[]>([]);
   const [programmeNotice, setProgrammeNotice] = useState<string | undefined>(undefined);
   const programmeToken = useRef(0);
+  // The rows on screen (kept when a board fails), the read a notice was set by, and the failed reads in a row.
+  const programmeRows = useRef<ProgrammePackage[]>([]);
+  const programmeNoticeAt = useRef(-1);
+  const programmeFails = useRef(0);
   const reloadProgramme = useRef<() => void>(() => undefined);
   useHubDataVersion();
   // WP-161: the queue, the saved pauses and the machine's last reading, so a hold on new builders shows and clears here.
@@ -132,13 +145,22 @@ export function HomeView() {
         invoke("programme_list", { actor: { id: "person", project, kind: "person" } }),
       ).then((loaded) => {
         if (stopped) return;
-        const applied = applyProgrammeLoad(mine, programmeToken.current, loaded);
+        const applied = applyProgrammeLoad(mine, programmeToken.current, loaded, programmeRows.current, programmeNoticeAt.current);
         if ("drop" in applied) return;
-        if ("retry" in applied) {
-          timer = window.setTimeout(load, RETRY_MS);
+        programmeRows.current = applied.rows;
+        setProgramme(applied.rows);
+        if (applied.clearNotice) setProgrammeNotice(undefined);
+        if (!applied.retry) {
+          programmeFails.current = 0;
           return;
         }
-        setProgramme(applied.rows);
+        // A board that did not answer keeps its rows. Retry with a longer wait each time, and say so after a few.
+        programmeFails.current += 1;
+        if (programmeFails.current >= READ_NOTICE_AFTER) {
+          programmeNoticeAt.current = mine;
+          setProgrammeNotice(READ_NOTICE);
+        }
+        timer = window.setTimeout(load, retryDelayMs(programmeFails.current));
       });
     };
     reloadProgramme.current = load;
@@ -225,10 +247,13 @@ export function HomeView() {
         input: { id: row.id, version: row.version },
       });
       setProgrammeNotice(undefined);
+      reloadProgramme.current();
     } catch (error) {
+      // The notice stays until a complete read that starts after it (the reload below is the one that shows the board as it is now).
+      reloadProgramme.current();
+      programmeNoticeAt.current = programmeToken.current;
       setProgrammeNotice(programmeSaid(error));
     }
-    reloadProgramme.current();
   }
 
   async function onAsk(text: string) {
@@ -269,7 +294,7 @@ export function HomeView() {
       onUnpin={(key) => void update((doc) => ({ ...doc, arrangement: unpin(doc.arrangement, key) }))}
       onAsk={(text) => void onAsk(text)}
       renderPanel={(panel) => <PanelFrame plugin={panel.plugin} panelId={panel.panelId} spec={panel.spec} />}
-      programme={programme.length > 0 || programmeNotice ? (
+      programme={programmeShows(programme, programmeNotice) ? (
         <ProgrammePanel rows={programme} notice={programmeNotice} onClear={(row) => void clearPark(row)} />
       ) : undefined}
     />

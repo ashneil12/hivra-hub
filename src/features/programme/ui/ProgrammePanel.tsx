@@ -1,7 +1,10 @@
 // The programme on Home. Empty renders nothing, so a quiet home stays quiet.
 
 import type { ProgrammeGroup, ProgrammePackage } from "../model/programme";
-import { programmeGroup } from "../model/programme";
+import { clipText, programmeGroup } from "../model/programme";
+
+/** Display only: a long title or reason is clipped here, the row keeps all of it. */
+const SHOW_MAX = 200;
 
 const GROUPS: { id: ProgrammeGroup; title: string }[] = [
   { id: "queued", title: "Queued" },
@@ -12,7 +15,8 @@ const GROUPS: { id: ProgrammeGroup; title: string }[] = [
 
 function line(row: ProgrammePackage): string {
   const extra = [row.securityPark ? "Security check." : "", row.parkReason ?? ""].filter((part) => part !== "").join(" ");
-  return extra ? `${row.title}. ${extra}` : `${row.title}.`;
+  const title = clipText(row.title, SHOW_MAX);
+  return extra ? `${title}. ${clipText(extra, SHOW_MAX)}` : `${title}.`;
 }
 
 export function ProgrammePanel({
@@ -42,9 +46,10 @@ export function ProgrammePanel({
                 <button
                   type="button"
                   className="text-[12px] text-content/70 underline-offset-2 hover:underline"
+                  aria-label={`Clear park for ${row.title}`}
                   onClick={() => onClear(row)}
                 >
-                  {`Clear park for ${row.title}`}
+                  Clear park
                 </button>
               ) : null}
             </div>
