@@ -269,6 +269,9 @@ export function BespokeFrame({ pageId, spec, live, title }: { pageId: string; sp
     };
     frame?.addEventListener("load", onLoad);
     window.addEventListener("message", onMessage);
+    // The document's first hello (and even its load) can come before this effect listens. Ask once now; no timer, so
+    // a frame still loading isn't counted as lost, and its own load asks again.
+    ref.current?.contentWindow?.postMessage({ type: "hub:ping" }, "*");
     return () => {
       frame?.removeEventListener("load", onLoad);
       window.removeEventListener("message", onMessage);
