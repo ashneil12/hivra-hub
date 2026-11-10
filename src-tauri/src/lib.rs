@@ -631,11 +631,13 @@ pub fn run() {
             delivery::delivery_merges,
             delivery::delivery_events_open,
             delivery::delivery_events_consume,
-            // WP-162: update a package branch from main.
+            // WP-162: update a package branch from main, and the lead lease.
             programme::programme_update_settings_get,
             programme::programme_update_settings_set,
             programme::programme_bind_checkout,
             programme::programme_update_from_main,
+            programme::programme_lead_acquire,
+            programme::programme_lead_heartbeat,
             // Hivra WP-81: the check before work goes to GitHub.
             delivery_gate::gate_setting_get,
             delivery_gate::gate_setting_set,

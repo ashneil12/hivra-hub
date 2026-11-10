@@ -7,6 +7,7 @@
 
 mod checkout;
 mod gitrun;
+mod lock;
 mod names;
 mod settings;
 mod update;
@@ -38,6 +39,12 @@ pub(crate) fn ensure_tables(conn: &Connection) -> rusqlite::Result<()> {
            base_branch TEXT NOT NULL,
            remote_name TEXT NOT NULL,
            updated_at INTEGER NOT NULL
+         );
+         CREATE TABLE IF NOT EXISTS programme_lead_lock (
+           project TEXT PRIMARY KEY,
+           holder TEXT NOT NULL,
+           expires_at INTEGER NOT NULL,
+           acquired_at INTEGER NOT NULL
          );",
     )
 }
@@ -121,6 +128,38 @@ pub async fn programme_update_from_main(
     tauri::async_runtime::spawn_blocking(move || update::execute(&plan))
         .await
         .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub fn programme_lead_acquire(
+    store: State<'_, SessionStore>,
+    project: String,
+    holder: String,
+    lease_ms: Option<i64>,
+) -> Result<lock::Acquire, String> {
+    lock::acquire(
+        &*store.lock_conn()?,
+        &project,
+        &holder,
+        now_millis(),
+        lease_ms.unwrap_or_else(lock::default_lease_ms),
+    )
+}
+
+#[tauri::command]
+pub fn programme_lead_heartbeat(
+    store: State<'_, SessionStore>,
+    project: String,
+    holder: String,
+    lease_ms: Option<i64>,
+) -> Result<bool, String> {
+    lock::heartbeat(
+        &*store.lock_conn()?,
+        &project,
+        &holder,
+        now_millis(),
+        lease_ms.unwrap_or_else(lock::default_lease_ms),
+    )
 }
 
 #[cfg(test)]
