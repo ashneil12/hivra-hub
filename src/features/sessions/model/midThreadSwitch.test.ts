@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { buildDeterministicHandoff } from "./handoff";
+import { buildDeterministicHandoff, sessionChildHarnesses } from "./handoff";
 import {
   applyMidThreadSwitch,
+  buildPortableTranscript,
+  PORTABLE_TRANSCRIPT_LIMIT,
   commitMidThreadSwitch,
   continueThisChatLine,
   harnessCanResumePortable,
@@ -392,5 +394,46 @@ describe("switch copy", () => {
       /[—–]/,
     );
     expect(recapNewChatLine("devin")).not.toMatch(/[—–]/);
+  });
+});
+
+describe("portable switch of a busy chat (WP-121 review)", () => {
+  it("keeps the old CLI in the child set so Stop, close and detach reach it", () => {
+    const base = sessionWith([user("u1", "hi"), assistant("a1", "working")], { busy: true });
+    const out = applyMidThreadSwitch(
+      base,
+      { harness: "codex", model: "codex:gpt-5", modelSettings: {} },
+      undefined,
+    );
+    expect(out.session.harness).toBe("codex");
+    expect(out.session.portableResume?.from).toBe("claude");
+    expect(sessionChildHarnesses(out.session).sort()).toEqual(["claude", "codex"]);
+  });
+
+  it("builds the hand-over at send time, so output streamed after the switch is in it", () => {
+    const blocks = [user("u1", "hi"), assistant("a1", "early")];
+    const out = applyMidThreadSwitch(
+      sessionWith(blocks, { busy: true }),
+      { harness: "codex", model: "codex:gpt-5", modelSettings: {} },
+      undefined,
+    );
+    const resume = out.session.portableResume!;
+    expect(resume.transcript).not.toContain("late streamed");
+    const later = [...blocks, assistant("a2", "late streamed")];
+    expect(buildPortableTranscript(later, resume.messageIds)).toContain("late streamed");
+  });
+
+  it("caps a long hand-over, keeps the newest messages and says how many were left out", () => {
+    const blocks: Block[] = [];
+    for (let i = 0; i < 200; i += 1) {
+      blocks.push(user(`u${i}`, `question ${i}`), assistant(`a${i}`, `answer ${i} ${"x".repeat(500)}`));
+    }
+    const text = buildPortableTranscript(blocks);
+    expect(text.length).toBeLessThanOrEqual(PORTABLE_TRANSCRIPT_LIMIT + 100);
+    expect(text).toContain("answer 199");
+    expect(text).not.toContain("answer 0 ");
+    expect(text).toMatch(/^\[\d+ earlier messages left out to fit\]/);
+    const one = buildPortableTranscript([assistant("a", "y".repeat(100_000))]);
+    expect(one.length).toBeLessThanOrEqual(PORTABLE_TRANSCRIPT_LIMIT + 50);
   });
 });

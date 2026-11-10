@@ -1,5 +1,6 @@
 import { dropContextWindow } from "./contextUsage";
 import { buildDeterministicHandoff, planComposerSwitch } from "./handoff";
+import { limitSection } from "../../../shared/lib/jsonText";
 import { resolveModel } from "./models";
 import {
   formatSessionTitle,
@@ -125,6 +126,42 @@ function selectedMessages(
     messages.push({ id: block.id, role: block.role, text: block.text });
   }
   return messages;
+}
+
+/** The hand-over is capped so a long chat cannot overflow the target's context. */
+export const PORTABLE_TRANSCRIPT_LIMIT = 24_000;
+
+/**
+ * Build the hand-over at send time from the thread as it is then. Keeps the newest
+ * messages that fit and says how many older ones were left out.
+ */
+export function buildPortableTranscript(
+  blocks: readonly Block[],
+  messageIds?: readonly string[] | null,
+  maxChars: number = PORTABLE_TRANSCRIPT_LIMIT,
+): string {
+  const messages = selectedMessages(blocks, messageIds);
+  const rendered = messages.map((message) => renderTranscript([message]));
+  const kept: string[] = [];
+  let size = 0;
+  for (let index = rendered.length - 1; index >= 0; index -= 1) {
+    const separator = kept.length > 0 ? 2 : 0;
+    const entry = rendered[index]!;
+    if (size + separator + entry.length > maxChars) {
+      if (kept.length === 0) {
+        kept.unshift(limitSection(entry, maxChars));
+        size = maxChars;
+        index -= 1;
+      }
+      break;
+    }
+    kept.unshift(entry);
+    size += separator + entry.length;
+  }
+  const left = rendered.length - kept.length;
+  const body = kept.join("\n\n");
+  if (left <= 0) return body;
+  return `[${left} earlier message${left === 1 ? "" : "s"} left out to fit]\n\n${body}`;
 }
 
 function renderTranscript(messages: readonly PortableMessage[]): string {
@@ -474,6 +511,7 @@ export function applyMidThreadSwitch(
       portableResume: {
         ...origin,
         transcript: seeded.kind === "resume" ? seeded.transcript : "",
+        ...(options?.messageIds ? { messageIds: [...options.messageIds] } : {}),
         markerId,
       },
       midThread: {

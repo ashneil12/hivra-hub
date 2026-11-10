@@ -592,6 +592,7 @@ import {
 import {
   applyMidThreadSwitch,
   commitMidThreadSwitch,
+  buildPortableTranscript,
   restoreUnsentPortableResume,
   wrapPortableResume,
 } from "../features/sessions/model/midThreadSwitch";
@@ -8530,7 +8531,7 @@ function Workspace({
         });
       }
 
-      if (current.busy && !pendingSwitch) {
+      if (current.busy && !pendingSwitch && !portableResume) {
         // Ash wrote to a chat held on his OK: it can't read him until he decides, so say so now (S14).
         const heldLine =
           !options?.appRequestId && !options?.monoNote && !options?.queuedMessageId && !options?.monoSessionCompletion
@@ -8830,8 +8831,11 @@ function Workspace({
       const queuedHandoff =
         live && !pendingSwitch ? pendingHandoff(current) : null;
 
-      if (pendingSwitch && current.busy) {
-        void cancelHarnessTurn(pendingSwitch.from, sessionId);
+      if (current.busy && (pendingSwitch || portableResume)) {
+        void cancelHarnessTurn(
+          (pendingSwitch ?? portableResume)!.from,
+          sessionId,
+        );
       }
 
       dismissNoticesForContinuedSession(sessionId);
@@ -9252,7 +9256,11 @@ function Workspace({
           wrap = {
             from: portableResume.from,
             to: current.harness,
-            text: portableResume.transcript,
+            // Built now, not when the picker changed: output since the switch is in it.
+            text: buildPortableTranscript(
+              current.blocks,
+              portableResume.messageIds,
+            ),
             portable: true,
           };
         }

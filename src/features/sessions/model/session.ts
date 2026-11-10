@@ -685,6 +685,8 @@ export type Session = {
     fromProviderSessionId?: string;
     fromProviderAccountId?: string;
     transcript: string;
+    /** Messages the person picked for the hand-over; absent means the whole thread, read at send. */
+    messageIds?: string[];
     markerId: string;
   };
   /** WP-121: the line shown until the next send. The marker in the transcript stays. */
