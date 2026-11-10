@@ -1,20 +1,19 @@
 import { expect, test } from "@playwright/test";
+import { CLIS_NOT_OFFERED, LEAD_STRIP_REASON } from "./leadCliStrip";
 
-const REASON =
-  "OpenCode cannot lead yet. The app has no way to give it the tools a lead uses to hand out jobs. Switch this chat to one that can. Its history stays.";
 
 test("the strip offers only a chosen CLI that can lead, and goes once this CLI can lead", async ({ page }) => {
   await page.goto("/tests/browser/lead-cli.html");
   const notice = page.locator("[data-lead-cli-notice]");
   await expect(notice).toBeVisible();
-  await expect(page.locator("[data-lead-cli-reason]")).toHaveText(REASON);
+  await expect(page.locator("[data-lead-cli-reason]")).toHaveText(LEAD_STRIP_REASON);
   await expect(notice).not.toContainText(/[–—]/);
 
   const picker = page.locator("[data-lead-cli-picker]");
   // Claude Code was ticked at first launch and can lead. Codex can lead too, but Ash never ticked it.
   await expect(picker.locator("[data-lead-cli=claude]")).toHaveText("Claude Code");
   await expect(picker.locator("[data-lead-cli]")).toHaveCount(1);
-  for (const cli of ["codex", "cursor", "grok", "opencode", "pi"]) {
+  for (const cli of CLIS_NOT_OFFERED) {
     await expect(picker.locator(`[data-lead-cli=${cli}]`)).toHaveCount(0);
   }
 

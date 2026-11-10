@@ -1,7 +1,6 @@
 import { expect, test } from "@playwright/test";
+import { CLIS_NOT_OFFERED, LEAD_STRIP_REASON } from "./leadCliStrip";
 
-const REASON =
-  "OpenCode cannot lead yet. The app has no way to give it the tools a lead uses to hand out jobs. Switch this chat to one that can. Its history stays.";
 
 type PaneWindow = Window & { __lastModelChange?: { sessionId: string; harness: string; model: string } };
 
@@ -12,12 +11,12 @@ test("the real pane shows the lead strip only on a CLI that cannot lead, and its
   await page.goto("/tests/browser/first-mate-pane.html");
   const notice = page.locator("[data-lead-cli-notice]");
   await expect(notice).toBeVisible();
-  await expect(page.locator("[data-lead-cli-reason]")).toHaveText(REASON);
+  await expect(page.locator("[data-lead-cli-reason]")).toHaveText(LEAD_STRIP_REASON);
 
   const picker = page.locator("[data-lead-cli-picker]");
   await expect(picker.locator("[data-lead-cli=claude]")).toHaveText("Claude Code");
   await expect(picker.locator("[data-lead-cli]")).toHaveCount(1);
-  for (const cli of ["codex", "cursor", "grok", "opencode", "pi"]) {
+  for (const cli of CLIS_NOT_OFFERED) {
     await expect(picker.locator(`[data-lead-cli=${cli}]`)).toHaveCount(0);
   }
 
