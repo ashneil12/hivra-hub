@@ -1539,6 +1539,34 @@ pub fn list_open(conn: &Connection) -> Result<Vec<Delegation>, String> {
     )
 }
 
+/// Every row's chat and whether the row shows as done (`firstmate::status::is_done`), oldest first, without loading the
+/// rows' text: the worktree clean-up reads the newest row per chat to see whether a worker's task was accepted.
+pub(crate) fn acceptance(conn: &Connection) -> Result<Vec<(String, bool)>, String> {
+    let mut statement = conn
+        .prepare(
+            "SELECT child_session, state, gate_verdict FROM delegations ORDER BY created_at, rowid",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = statement
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, Option<String>>(2)?,
+            ))
+        })
+        .map_err(|e| e.to_string())?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(|e| e.to_string())?;
+    Ok(rows
+        .into_iter()
+        .map(|(child, state, gate)| {
+            let done = crate::firstmate::status::is_done(&state, gate.as_deref());
+            (child, done)
+        })
+        .collect())
+}
+
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OwnedQuery {
