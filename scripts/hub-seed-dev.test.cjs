@@ -86,6 +86,8 @@ function dailyFixture(root, { schema = 19 } = {}) {
     INSERT INTO pr_watches VALUES ('w1', 's1', 'ashneil12/hivra', 42, 'watching');
     CREATE TABLE pr_watch_wakes (id TEXT PRIMARY KEY, watch_id TEXT NOT NULL, owner_session TEXT NOT NULL, delivery TEXT NOT NULL);
     INSERT INTO pr_watch_wakes VALUES ('pr-watch-w1-1', 'w1', 's1', 'pending'), ('pr-watch-w1-2', 'w1', 's1', 'delivered');
+    CREATE TABLE hub_local_docs (key TEXT PRIMARY KEY, json TEXT NOT NULL, updated_at INTEGER NOT NULL, rev INTEGER NOT NULL DEFAULT 0);
+    INSERT INTO hub_local_docs VALUES ('fresh-eyes', '{"settings":{},"reviews":[{"requestId":"r1"}]}', 1, 3), ('home', '{"recent":[]}', 1, 2);
     CREATE TABLE notes (id TEXT PRIMARY KEY, body TEXT);
     INSERT INTO notes VALUES ('n1', 'kept');
   `);
@@ -144,6 +146,7 @@ test("a seed copies every chat, clears what would act on Ash's behalf, and never
     autopilotResumes: 1,
     prWatchWakes: 2,
     prWatches: 1,
+    freshEyesReviews: 1,
     queuedMessages: 1,
     goals: 1,
     providerSessionIds: 2,
@@ -158,6 +161,11 @@ test("a seed copies every chat, clears what would act on Ash's behalf, and never
   ]);
   for (const table of ["in_flight_sessions", "workspace_snapshot", "worktree_removals", "automations", "automation_runs", "automation_event_claims", "session_reminders", "orchestration_runs", "orchestration_sidebar", "orchestration_workers", "delegations", "delegation_chat_binds", "steer_messages", "decisions", "autopilot_switches", "autopilot_resumes", "pr_watches", "pr_watch_wakes"])
     assert.deepEqual(rows(copy, `SELECT count(*) AS n FROM ${table}`), [{ n: 0 }], table);
+  assert.deepEqual(
+    rows(copy, "SELECT key FROM hub_local_docs ORDER BY key"),
+    [{ key: "home" }],
+    "a held brief and its review name Ash's real chats and stay behind; the other hub documents come along",
+  );
   assert.deepEqual(rows(copy, "SELECT count(*) AS n FROM autopilot_log"), [{ n: 1 }], "the autopilot log is history and stays");
   assert.deepEqual(rows(copy, "SELECT body FROM notes"), [{ body: "kept" }], "everything else is kept");
 

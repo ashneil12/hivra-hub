@@ -130,6 +130,10 @@ import {
   setLeadDelegator,
 } from "../features/hub/model/leadershipDelegation";
 import { bindCouncilApp } from "../features/council/model/seatSessions";
+import { bindFreshEyesApp } from "../features/fresh-eyes/model/bind";
+import { backendFrom, releaseHeld, resumeReviews, syncHeldDecisions } from "../features/fresh-eyes/model/gate";
+import { bindFreshEyesBackend, bindHeldStarter } from "../features/fresh-eyes/model/held";
+import { subscribeFreshEyes } from "../features/fresh-eyes/model/store";
 import { postLeadReport } from "../features/hub/model/roomReports";
 import { useDelegationTree } from "../features/monos/hooks/useDelegationTree";
 import { usePrWatches } from "../features/pr-watch/hooks/usePrWatches";
@@ -373,6 +377,7 @@ import {
   createWorktree,
   detachSessionWorktree,
   checkWorktreeRemoval,
+  listedWorktreeFor,
   listWorktrees,
   namedWorktreeBranch,
   orchestrationWorktreeBranchName,
@@ -394,6 +399,7 @@ import {
   withNewChatFolderChoice,
   withoutNewChatFolderChoice,
 } from "../features/source-control/model/newChatWorktree";
+import { rememberWorktreeInclude } from "../features/source-control/model/worktreeIncludeNote";
 import { UsageFooter } from "./shell/UsageFooter";
 import { useProjectBranches } from "../features/source-control/hooks/useProjectBranches";
 import { useInboxActivity } from "../features/inbox/hooks/useInboxUnseen";
@@ -7138,10 +7144,9 @@ function Workspace({
       try {
         const listed = await listWorktrees(current.cwd);
         if (!isCurrent()) return;
-        const target = listed.worktrees.find(
-          (entry) =>
-            pathKey(entry.path) === pathKey(tree.path) && !entry.missing,
-        );
+        // WP-138: a listing has no .worktreeinclude note, so the one on the tree the picker
+        // just created is carried over and a failed copy is still seen in the chat header.
+        const target = listedWorktreeFor(listed.worktrees, tree);
         if (!target) {
           throw new Error(
             "This worktree is no longer available. Refresh the picker.",
@@ -9225,6 +9230,8 @@ function Workspace({
             proposalDraft = { ...proposalDraft, checkoutCwd: tree.path };
           // The project's setup holds the first turn (and the queue) until it ends.
           const setupHolds = !!(tree.setup?.hold && tree.setup.run);
+          // WP-138: the include note stays with this chat. The session row does not store it.
+          const include = rememberWorktreeInclude(sessionId, tree);
           setSessions((prev) =>
             prev.map((session) =>
               session.id === sessionId
@@ -9235,6 +9242,8 @@ function Workspace({
                     workspaceMode: undefined,
                     worktreeBase: undefined,
                     worktreePreparing: setupHolds ? true : undefined,
+                    ...(include.note ? { includeNote: include.note } : {}),
+                    ...(include.warning ? { includeWarning: include.warning } : {}),
                   }
                 : session,
             ),
@@ -10998,6 +11007,29 @@ function Workspace({
           if (session) void submitSessionRef.current(session.id, text, [], { followsUp: true });
         });
       },
+    });
+  }, []);
+  useEffect(() => {
+    // WP-144: fresh-eyes reviewers are cheap sessions with an empty history. Off until a project turns the review on.
+    let folder = "~";
+    void homeDir().then((dir) => {
+      if (dir.trim()) folder = dir;
+    });
+    return bindFreshEyesApp({
+      sessions: () => sessionsRef.current,
+      add: (session) => {
+        sessionsRef.current = [...sessionsRef.current, session];
+        setSessions(sessionsRef.current);
+      },
+      submit: (sessionId, text, _history, options) => submitSessionRef.current(sessionId, text, [], options),
+      stop: (sessionId) => {
+        void onStopRef.current(sessionId, true);
+      },
+      remove: (sessionId) => {
+        sessionsRef.current = sessionsRef.current.filter((session) => session.id !== sessionId);
+        setSessions(sessionsRef.current);
+      },
+      cwd: () => folder,
     });
   }, []);
   const roomsHost = useRoomRunner({
@@ -13150,13 +13182,15 @@ function Workspace({
                   orchestrationWorktreeBranchName(task.id),
                   // WP-82: the crew id is the lease holder.
                   task.id,
-                ).then((tree) =>
-                  workspaceIdentity(
+                ).then((tree) => {
+                  // WP-138: the worker's header can say the include files were copied.
+                  rememberWorktreeInclude(task.sessionId, tree);
+                  return workspaceIdentity(
                     projectCwd,
                     tree.path,
                     tree.branch ?? undefined,
-                  ),
-                );
+                  );
+                });
         const checkoutCwd = workspace.checkoutCwd;
         const scratchDir = await invoke<string>("control_attach_worker", {
           leadId: run.leadId,
@@ -13603,6 +13637,59 @@ function Workspace({
       window.clearTimeout(timer);
     };
   }, [pumpWorkersNow]);
+  // WP-144: a brief held for a fresh-eyes review starts when the person approves or skips it. It is the same
+  // tasks.delegate call asked again under the same request ID, with the call that was reviewed, the way a waiting
+  // worker starts, so the checks, the worker limits and the waiting line all apply. The brief is kept with the review
+  // (in the app's database), so a restart does not lose it.
+  const steeringRef = useRef(steering);
+  steeringRef.current = steering;
+  useEffect(() => {
+    const unbind = bindHeldStarter({
+      canStart: (owner) =>
+        !!controlRequestRef.current && sessionsRef.current.some((session) => session.id === owner),
+      start: (owner, requestId, input) => {
+        // Its first ask answered "waiting" and that answer is remembered; this one starts it.
+        appReceipts.current.delete(`${owner}:${requestId}`);
+        return controlRequestRef.current!({
+          namespace: "app",
+          sessionId: owner,
+          requestId,
+          action: "tasks.delegate",
+          input,
+        });
+      },
+    });
+    // The Inbox and the chat that asked, for the review: the question, its close, the person's answer, a note to the chat.
+    const unbindBackend = bindFreshEyesBackend(backendFrom(steeringRef.current.backend));
+    const release = () => void releaseHeld();
+    const off = subscribeFreshEyes(release);
+    // What was left half done by the last run: reviewers that died with the window run again (or the person is asked),
+    // and an approved brief starts. Again every half minute, for a start that failed and for a lease that ran out.
+    const resume = () => {
+      void resumeReviews();
+      release();
+    };
+    resume();
+    const timer = window.setInterval(resume, 30_000);
+    // An answer given in the Inbox or Home reaches the review the same way a click on the crew card does. Only the
+    // person's own answer counts (gate.ts isPersonAnswer): a chat answering ask_person for them does not.
+    const offDecisions = watchDecisions(
+      (event, handler) => listen(event, () => handler()),
+      () => void syncHeldDecisions(),
+    );
+    return () => {
+      window.clearInterval(timer);
+      offDecisions();
+      off();
+      unbindBackend();
+      unbind();
+    };
+  }, []);
+  // A chat opened after a restart can take the brief it asked for.
+  const openChatIds = useMemo(() => sessions.map((session) => session.id).join("\n"), [sessions]);
+  useEffect(() => {
+    void releaseHeld();
+  }, [openChatIds]);
   // A worker the provider refused for its limit keeps its task (H8): with no other account to move to (E5), it
   // carries on by itself, once per refusal. A refusal that named no reset gets E5's (heldRetryAt): the latest usage
   // reading's, else five hours on; a fresh reading that shows room brings the retry forward.
@@ -14715,6 +14802,13 @@ function Workspace({
                     ...(launch.cliFallback ? { cliFallback: launch.cliFallback } : {}),
                   }),
               }),
+              // The Lead a brief names must exist: asked before a fresh-eyes review, so an unknown one is never reviewed.
+              checkLead: (_owner, mono, lead) => {
+                if (!findLeadTarget(mono.id, hubData().listProjects(), lead))
+                  throw new Error(
+                    `No Lead "${lead}" among the ones you can brief (a Lead of a project you and it are both members of).`,
+                  );
+              },
               briefLead: async (owner, mono, input) => {
                 const projects = hubData().listProjects();
                 const target = findLeadTarget(mono.id, projects, input.lead);
