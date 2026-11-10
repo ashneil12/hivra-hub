@@ -48,6 +48,7 @@ const {
   stopClaudeSession,
   __claudeTestReset,
 } = await import("./claude");
+const { compactIdleClaudeChats } = await import("./idleCompactWatch");
 
 function parse() {
   return sent.map((line) => JSON.parse(line) as Record<string, unknown>);
@@ -566,6 +567,29 @@ describe("compacting a big chat idle past its prompt cache", () => {
     expect(events).toContainEqual({ type: "notice", text: IDLE_COMPACT_NOTICE });
     expect(events.some((event) => event.type === "session.error")).toBe(false);
     expect(IDLE_COMPACT_NOTICE).not.toMatch(/[—–]/);
+  });
+
+  it("does not compact a chat the watcher sees idle for 72 hours", async () => {
+    await idleChat(420_000);
+    const spawnedBefore = spawned.length;
+    const state = recallPromptCache("lead");
+    vi.spyOn(Date, "now").mockReturnValue((state?.lastTurnAt ?? 0) + 72 * 60 * 60_000);
+    const events: HarnessEvent[] = [];
+    const ran = await compactIdleClaudeChats({
+      sessions: () => [{ id: "lead", harness: "claude" }],
+      toInput: () => ({
+        sessionId: "lead",
+        cwd: "/repo",
+        model: "claude:claude-opus-4-6",
+        modelSettings: {},
+        runtimeMode: "supervised",
+      }),
+      onEvent: (_id, event) => events.push(event),
+    });
+    expect(ran).toBe(false);
+    expect(userTexts()).not.toContain("/compact");
+    expect(spawned).toHaveLength(spawnedBefore);
+    expect(events).toEqual([]);
   });
 
   it("does not compact in the background two minutes before a one hour cache", async () => {

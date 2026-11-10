@@ -6,7 +6,13 @@ vi.mock("./claude", () => ({
 
 import { IDLE_COMPACT_NOTICE } from "../../../../features/sessions/model/contextCeiling";
 import { rememberPromptCache } from "./claudePromptCache";
-import { compactIdleClaudeChats, watchIdleClaudeCompaction, type IdleCompactTarget } from "./idleCompactWatch";
+import {
+  commitIdleCompactBusy,
+  compactIdleClaudeChats,
+  markSessionIdleCompact,
+  watchIdleClaudeCompaction,
+  type IdleCompactTarget,
+} from "./idleCompactWatch";
 
 const storage = new Map<string, string>();
 vi.stubGlobal("localStorage", {
@@ -83,6 +89,80 @@ describe("idle compact watch", () => {
     expect(seen).toEqual(["due"]);
   });
 
+  it("does not compact a chat idle for 72 hours, or one whose cache just expired", async () => {
+    const now = 72 * hour;
+    vi.spyOn(Date, "now").mockReturnValue(now);
+    const remember = (id: string, idleMs: number) =>
+      rememberPromptCache(id, {
+        providerSessionId: "sess_1",
+        lastTurnAt: now - idleMs,
+        cacheTtlMs: hour,
+        contextUsed: 300_000,
+      });
+    remember("stale", 72 * hour);
+    remember("justExpired", hour + 1);
+    remember("onTheDot", hour);
+    remember("early", hour - 2 * 60_000);
+    const seen: string[] = [];
+    const markBusy = vi.fn(() => true);
+    const ran = await compactIdleClaudeChats({
+      sessions: () => [
+        chat({ id: "stale" }),
+        chat({ id: "justExpired" }),
+        chat({ id: "onTheDot" }),
+        chat({ id: "early" }),
+      ],
+      toInput: (session) => ({
+        sessionId: session.id,
+        cwd: "/repo",
+        model: session.model,
+        runtimeMode: "supervised",
+      }),
+      onEvent: () => {},
+      markBusy,
+      compact: async (input) => {
+        seen.push(input.sessionId);
+        return true;
+      },
+    });
+    expect(ran).toBe(true);
+    expect(seen).toEqual(["onTheDot"]);
+    expect(markBusy).not.toHaveBeenCalledWith("stale", true);
+    expect(markBusy).not.toHaveBeenCalledWith("justExpired", true);
+    expect(markBusy).not.toHaveBeenCalledWith("early", true);
+  });
+
+  it("marks the chat busy while compacting, and still compacts it", async () => {
+    due();
+    const sessions = [chat()];
+    const marks: boolean[] = [];
+    const ran = await compactIdleClaudeChats({
+      sessions: () => sessions,
+      toInput: (session) => ({
+        sessionId: session.id,
+        cwd: "/repo",
+        model: session.model,
+        runtimeMode: "supervised",
+      }),
+      onEvent: () => {},
+      markBusy: (id, busy) => {
+        expect(id).toBe("lead");
+        if (busy && sessions[0]?.busy) return false;
+        sessions[0] = { ...sessions[0], busy };
+        marks.push(busy);
+        return true;
+      },
+      compact: async (_input, proceed) => {
+        expect(sessions[0]?.busy).toBe(true);
+        expect(proceed()).toBe(true);
+        return true;
+      },
+    });
+    expect(ran).toBe(true);
+    expect(marks).toEqual([true, false]);
+    expect(sessions[0]?.busy).toBe(false);
+  });
+
   it("is not due two minutes before a one hour cache, under the floor, or switched off", async () => {
     const compact = vi.fn(async () => true);
     const run = (idleMs: number) =>
@@ -153,6 +233,87 @@ describe("idle compact watch", () => {
     });
     expect(ran).toBe(true);
     expect(seen).toEqual(["first", "second"]);
+  });
+
+  it("does not clear a newer turn when the compact finishes late", () => {
+    const gens = new Map<string, number>();
+    const owners = new Map<string, number>();
+    const taken = markSessionIdleCompact([chat()], "lead", true, gens, owners);
+    expect(taken.ok).toBe(true);
+    expect(taken.sessions[0]?.busy).toBe(true);
+    expect(gens.get("lead")).toBe(1);
+    gens.set("lead", 2);
+    const late = markSessionIdleCompact(taken.sessions, "lead", false, gens, owners);
+    expect(late.ok).toBe(false);
+    expect(late.sessions[0]?.busy).toBe(true);
+    expect(late.sessions).toBe(taken.sessions);
+  });
+
+  it("does not take a chat the store already has busy when the ref is idle", () => {
+    const gens = new Map<string, number>();
+    const owners = new Map<string, number>();
+    gens.set("lead", 4);
+    const store = [chat({ busy: true, model: "store" })];
+    const ref = [chat({ model: "ref" })];
+    const claimed = commitIdleCompactBusy(store, ref, "lead", true, gens, owners);
+    expect(claimed.ok).toBe(false);
+    expect(claimed.store).toBe(store);
+    expect(claimed.ref).toBe(ref);
+    expect(gens.get("lead")).toBe(4);
+    expect(owners.size).toBe(0);
+  });
+
+  it("claims once when the store and the ref have diverged", () => {
+    const gens = new Map<string, number>();
+    const owners = new Map<string, number>();
+    const store = [chat({ model: "store" })];
+    const ref = [chat({ model: "ref" })];
+    const claimed = commitIdleCompactBusy(store, ref, "lead", true, gens, owners);
+    expect(claimed.ok).toBe(true);
+    expect(claimed.store[0]).toMatchObject({ busy: true, model: "store" });
+    expect(claimed.ref[0]).toMatchObject({ busy: true, model: "ref" });
+    expect(gens.get("lead")).toBe(1);
+    const again = commitIdleCompactBusy(
+      claimed.store,
+      claimed.ref,
+      "lead",
+      true,
+      gens,
+      owners,
+    );
+    expect(again.ok).toBe(false);
+    expect(gens.get("lead")).toBe(1);
+    gens.set("lead", 2);
+    const late = commitIdleCompactBusy(
+      claimed.store,
+      claimed.ref,
+      "lead",
+      false,
+      gens,
+      owners,
+    );
+    expect(late.ok).toBe(false);
+    expect(late.store[0]?.busy).toBe(true);
+    expect(late.ref[0]?.busy).toBe(true);
+    expect(late.store).toBe(claimed.store);
+  });
+
+  it("does not take a chat that is already busy or whose worktree is gone", () => {
+    const gens = new Map<string, number>();
+    const owners = new Map<string, number>();
+    const busy = markSessionIdleCompact([chat({ busy: true })], "lead", true, gens, owners);
+    expect(busy.ok).toBe(false);
+    expect(busy.sessions[0]?.busy).toBe(true);
+    expect(gens.size).toBe(0);
+    const gone = markSessionIdleCompact(
+      [chat({ worktreeRemoved: true })],
+      "lead",
+      true,
+      gens,
+      owners,
+    );
+    expect(gone.ok).toBe(false);
+    expect(gens.size).toBe(0);
   });
 
   it("looks once on start and not again while that look is still running", async () => {

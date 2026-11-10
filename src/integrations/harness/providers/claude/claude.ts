@@ -569,9 +569,10 @@ export async function compactClaudeContext(
 }
 
 /**
- * Compact one idle Claude chat shortly before its prompt cache expires.
- * Does not send the person's message. A mid-turn chat, a chat that is no
- * longer due, and a claim another window holds are left alone. Failure
+ * Compact one idle Claude chat inside the two-minute window before its prompt
+ * cache expires. A cache that has already expired is left for the next send.
+ * Does not send the person's message. A mid-turn chat, a chat that has left
+ * the window, and a claim another window holds are left alone. Failure
  * releases the claim so a later look can retry; it is not a session error.
  * `proceed` is read again after the wait, because the chat may have gone.
  */
@@ -581,7 +582,9 @@ export async function compactDueIdleClaude(
 ): Promise<boolean> {
   if (!proceed()) return false;
   const state = recallPromptCache(input.sessionId);
-  if (!state || !idleCompactionDue(state, Date.now())) return false;
+  const due = state ? idleCompactionDue(state, Date.now()) : null;
+  // Only inside the lead window. An expired cache waits for the next send.
+  if (!state || !due || due.expired) return false;
   const liveNow = liveByThread.get(input.sessionId);
   if (liveNow?.activeTurn) return false;
   const bound = liveNow?.claudeSessionId ?? resumeByThread.get(input.sessionId)?.sessionId;
@@ -595,11 +598,9 @@ export async function compactDueIdleClaude(
   const release = () => releaseIdleCompactionClaim(input.sessionId, claimId);
   const stillDue = () => {
     const fresh = recallPromptCache(input.sessionId);
-    return (
-      !!fresh &&
-      fresh.providerSessionId === state.providerSessionId &&
-      idleCompactionDue(fresh, Date.now()) !== null
-    );
+    if (!fresh || fresh.providerSessionId !== state.providerSessionId) return false;
+    const freshDue = idleCompactionDue(fresh, Date.now());
+    return freshDue !== null && !freshDue.expired;
   };
   if (!proceed() || liveByThread.get(input.sessionId)?.activeTurn || !stillDue()) {
     release();
