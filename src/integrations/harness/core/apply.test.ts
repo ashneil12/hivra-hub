@@ -1289,11 +1289,12 @@ describe("applyHarnessEvent turn metrics", () => {
     });
   });
 
-  // WP-108: a reported price is stored on the turn, and repeated reports for one turn add up.
-  it("keeps a reported cost, and adds one reported again for the same turn", () => {
+  // WP-108: a reported price is stored on the turn. Changed from the first version, which added a second report to
+  // the first: each report is the turn's running total, so the latest one replaces the earlier one.
+  it("keeps a reported cost, and replaces it when the same turn reports again", () => {
     let session = appendUser(newSession("claude", "/repo"), "Explain this");
     session = applyHarnessEvent(session, { type: "turn.metrics", costUsd: 0.02 });
-    session = applyHarnessEvent(session, { type: "turn.metrics", costUsd: 0.03 });
+    session = applyHarnessEvent(session, { type: "turn.metrics", costUsd: 0.05 });
     expect(session.blocks[0]?.turnMetrics).toEqual({ costUsd: 0.05 });
   });
 

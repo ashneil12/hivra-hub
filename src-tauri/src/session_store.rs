@@ -568,9 +568,15 @@ fn usage_rows(conn: &Connection, since: i64) -> Result<Vec<UsageSessionRow>, Str
         let Ok((id, cwd, harness, model, blocks_json)) = row else {
             continue;
         };
-        let Ok(blocks) = serde_json::from_str::<Value>(&blocks_json) else {
+        let Ok(mut blocks) = serde_json::from_str::<Value>(&blocks_json) else {
             continue;
         };
+        // A first mate's transcript lives in mono_blocks and its blocks_json is `[]`.
+        if crate::mono_transcript::is_indexed(conn, &id).unwrap_or(false) {
+            if let Ok(user_blocks) = crate::mono_transcript::user_blocks(conn, &id) {
+                blocks = Value::Array(user_blocks);
+            }
+        }
         let turns = usage_turns(&blocks);
         if turns.is_empty() {
             continue;
@@ -2866,6 +2872,42 @@ mod tests {
         assert_eq!(blocks[1]["turnMetrics"]["outputTokens"], 4);
         // A user block with no metrics is dropped entirely, and the reply role never appears.
         assert!(blocks.iter().all(|block| block["role"] == "user"));
+    }
+
+    #[test]
+    fn usage_rows_include_a_first_mate_whose_transcript_is_in_mono_blocks() {
+        let store = SessionStore::open_in_memory().unwrap();
+        let conn = store.lock_conn().unwrap();
+        let mut mono = sample("mono", "/tmp/a", "Mono");
+        mono.blocks = json!([
+            {
+                "id": "m1",
+                "role": "user",
+                "text": "mono prompt that must not travel",
+                "turnMetrics": { "inputTokens": 7, "outputTokens": 2, "costUsd": 0.01 }
+            },
+            { "id": "m2", "role": "assistant", "text": "reply" }
+        ]);
+        upsert_session(&conn, &mono).unwrap();
+        crate::mono_transcript::migrate_transcript(&conn, "mono").unwrap();
+        let stored: String = conn
+            .query_row(
+                "SELECT blocks_json FROM sessions WHERE id = 'mono'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(stored, "[]");
+
+        let rows = usage_rows(&conn, 0).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].id, "mono");
+        let blocks = rows[0].blocks.as_array().unwrap();
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(blocks[0]["turnMetrics"]["inputTokens"], 7);
+        assert!(!serde_json::to_string(&rows[0].blocks)
+            .unwrap()
+            .contains("must not travel"));
     }
 
     #[test]
