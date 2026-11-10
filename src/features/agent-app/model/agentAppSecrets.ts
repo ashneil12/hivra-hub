@@ -178,9 +178,13 @@ async function run(source: Session, input: Record<string, unknown>, host: AgentA
       };
     case "denied":
       return { ...outcome, note: forUser`They said no. Carry on without the key, or ask again later with the reason you need it.` };
-    default:
-      // Granted: the MCP server spends the grant in `monocode secret-run` and returns the scrubbed output.
-      return outcome;
+    default: {
+      // The app ran the command and answers with the scrubbed result. No grant is passed on: one that somehow arrived is
+      // dropped here, never sent back to the agent over the control port.
+      const result: Record<string, unknown> = { ...outcome };
+      delete result.grant;
+      return result;
+    }
   }
 }
 

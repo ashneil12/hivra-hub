@@ -14,3 +14,18 @@ describe("Hivra WP-92: the secret launcher is denied to every agent", () => {
     }
   });
 });
+
+// Hivra WP-92 (fix round 2, C1): an agent's own shell line never invokes the secret launcher, with or without the grant.
+import { credentialBlock, SECRET_ACTION_BLOCK_MESSAGE } from "./credentialGuard";
+
+describe("Hivra WP-92: the launcher's invocation is blocked in any shell line", () => {
+  it("blocks a direct monocode secret-run and a grant argument", () => {
+    expect(credentialBlock({ command: "/Applications/MonoCode Hub.app/Contents/MacOS/monocode secret-run --grant-stdin" })).toBe(SECRET_ACTION_BLOCK_MESSAGE);
+    expect(credentialBlock({ command: "$APP secret-run --grant-stdin" })).toBe(SECRET_ACTION_BLOCK_MESSAGE);
+    expect(credentialBlock({ command: "printf %s \"$G\" | ./monocode secret-run --grant-stdin" })).toBe(SECRET_ACTION_BLOCK_MESSAGE);
+  });
+
+  it("leaves ordinary words alone", () => {
+    expect(credentialBlock({ command: "git commit -m 'document the secret-run limit'" })).toBeUndefined();
+  });
+});

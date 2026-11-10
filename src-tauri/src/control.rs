@@ -158,6 +158,12 @@ struct Event {
     input: Value,
 }
 
+/// Whether an agent's `app` token may name this action: the CLI's list and the delegate tool's own.
+pub(crate) fn app_action_allowed(action: &str) -> bool {
+    crate::control_cli::APP_ACTIONS.contains(&action)
+        || crate::mcp_server::MCP_APP_ACTIONS.contains(&action)
+}
+
 fn request_grant(host: &Inner, namespace: &str, token: &str) -> Result<Grant, String> {
     let grant = match namespace {
         "control" => host.grants.values().find(|grant| grant.token == token),
@@ -233,6 +239,10 @@ fn serve(mut stream: TcpStream, app: &AppHandle, inner: &Arc<Mutex<Inner>>) {
             || request.request_id.len() > 128
         {
             return Err("Invalid input or request ID".into());
+        }
+        // The agent's own token names only the app actions it is given; anything else is refused here, not by the client.
+        if request.namespace == "app" && !app_action_allowed(&request.action) {
+            return Err(format!("Unknown app action: {}", request.action));
         }
         let id = uuid::Uuid::new_v4().to_string();
         let (tx, rx) = mpsc::channel();
@@ -468,7 +478,9 @@ pub fn configure_child(app: &AppHandle, session_id: &str, cmd: &mut Command) {
     cmd.env_remove("MONOCODE_CONTROL_ENDPOINT")
         .env_remove("MONOCODE_CONTROL_TOKEN")
         .env_remove("MONOCODE_APP_ENDPOINT")
-        .env_remove("MONOCODE_APP_TOKEN");
+        .env_remove("MONOCODE_APP_TOKEN")
+        // A dev copy's test vault seed (secrets::store::SEED_ENV) is for the app's own tests, never for a child.
+        .env_remove(crate::secrets::store::SEED_ENV);
     let Some(host) = app.try_state::<ControlHost>() else {
         return;
     };
@@ -844,5 +856,19 @@ mod tests {
         assert!(paths_overlap("/repo", "/repo/src"));
         assert!(paths_overlap("/repo/src", "/repo"));
         assert!(!paths_overlap("/repo", "/repo2"));
+    }
+
+    // fix round 2 (C1): an agent's app token names only the actions the agent is given, checked here on the server.
+    #[test]
+    fn an_agents_app_call_must_be_a_listed_action() {
+        assert!(app_action_allowed("secrets.run"));
+        assert!(app_action_allowed("tasks.fanout"));
+        assert!(app_action_allowed("sessions.list"));
+        for action in crate::mcp_server::MCP_APP_ACTIONS {
+            assert!(app_action_allowed(action), "{action}");
+        }
+        assert!(!app_action_allowed("secrets.reveal"));
+        assert!(!app_action_allowed("settings.write"));
+        assert!(!app_action_allowed(""));
     }
 }

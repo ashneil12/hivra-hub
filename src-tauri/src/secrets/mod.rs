@@ -247,6 +247,22 @@ pub fn valid_env_name(name: &str) -> bool {
 // ---- the tables ----------------------------------------------------------------------------------------------------
 
 pub(crate) fn ensure_tables(conn: &Connection) -> rusqlite::Result<()> {
+    ensure_tables_batch(conn)?;
+    // A grant now names the program's file identity. A table from before that has no such column, and every grant in it
+    // names a bare program name that is never pinned now, so the table is emptied: those runs ask again, once.
+    if conn
+        .prepare("SELECT identity FROM secret_grants LIMIT 0")
+        .is_err()
+    {
+        conn.execute_batch(
+            "ALTER TABLE secret_grants ADD COLUMN identity TEXT NOT NULL DEFAULT '';
+             DELETE FROM secret_grants;",
+        )?;
+    }
+    Ok(())
+}
+
+fn ensure_tables_batch(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS secrets (
            scope TEXT NOT NULL,
@@ -267,6 +283,7 @@ pub(crate) fn ensure_tables(conn: &Connection) -> rusqlite::Result<()> {
            executable TEXT NOT NULL,
            mode TEXT NOT NULL,
            created_at INTEGER NOT NULL,
+           identity TEXT NOT NULL DEFAULT '',
            PRIMARY KEY (scope, name, subject_kind, subject_id, executable)
          );
          CREATE TABLE IF NOT EXISTS secret_requests (
@@ -294,6 +311,12 @@ pub(crate) fn ensure_tables(conn: &Connection) -> rusqlite::Result<()> {
          CREATE TABLE IF NOT EXISTS secret_settings (
            key TEXT PRIMARY KEY,
            value TEXT NOT NULL
+         );
+         CREATE TABLE IF NOT EXISTS secret_card_bindings (
+           project TEXT NOT NULL,
+           decision_key TEXT NOT NULL,
+           fingerprint TEXT NOT NULL,
+           PRIMARY KEY (project, decision_key)
          );",
     )
 }
@@ -355,6 +378,8 @@ pub struct GrantRow {
     pub executable: String,
     pub mode: String,
     pub created_at: i64,
+    /// The program's file identity the grant was given for (empty for a worker's grant, which names no file).
+    pub identity: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -757,24 +782,26 @@ pub fn known_names(conn: &Connection, scope: Option<&str>) -> Vec<(String, Strin
 
 /// Every needle of the named values, longest first. A value that can't be read is skipped: text can't hold it. This is a
 /// round trip to the Keychain (and may show the system prompt) per name, so it never runs inside the store's lock.
-pub fn needles_for(vault: &dyn Vault, names: &[(String, String)]) -> Vec<String> {
+pub fn needles_for(vault: &dyn Vault, names: &[(String, String)]) -> Result<Vec<String>, String> {
     let mut needles = Vec::new();
     for (scope, name) in names {
-        let Ok(service) = service(scope, name) else {
-            continue;
-        };
-        let Ok(Some(value)) = vault.read(&service, ACCOUNT) else {
-            continue;
-        };
-        needles.extend(scrub::needles(&Zeroizing::new(value)));
+        let service = service(scope, name)?;
+        // No item means there is no value to hide. A read that fails is not "no value": the caller must not go on.
+        if let Some(value) = vault.read(&service, ACCOUNT)? {
+            needles.extend(scrub::needles(&Zeroizing::new(value)));
+        }
     }
     needles.sort_by_key(|needle| std::cmp::Reverse(needle.len()));
     needles.dedup();
-    needles
+    Ok(needles)
 }
 
 /// [`known_names`] then [`needles_for`], for a caller that holds nothing a Keychain prompt could stall.
-pub fn known_needles(vault: &dyn Vault, conn: &Connection, scope: Option<&str>) -> Vec<String> {
+pub fn known_needles(
+    vault: &dyn Vault,
+    conn: &Connection,
+    scope: Option<&str>,
+) -> Result<Vec<String>, String> {
     needles_for(vault, &known_names(conn, scope))
 }
 
@@ -785,9 +812,11 @@ pub fn holds_known_value(
     scope: Option<&str>,
     text: &str,
 ) -> bool {
-    known_needles(vault, conn, scope)
-        .iter()
-        .any(|needle| scrub::holds(text, needle))
+    match known_needles(vault, conn, scope) {
+        Ok(needles) => needles.iter().any(|needle| scrub::holds(text, needle)),
+        // Unknown is treated as held: the save or the export refuses rather than writing a value it could not check.
+        Err(_) => true,
+    }
 }
 
 /// Every listed value in `text` replaced with the marker, then the shared pattern list. The export's exact-value pass.
@@ -797,7 +826,11 @@ pub fn redact_known_values(
     scope: Option<&str>,
     text: &str,
 ) -> String {
-    scrub::mask(text, &known_needles(vault, conn, scope))
+    match known_needles(vault, conn, scope) {
+        Ok(needles) => scrub::mask(text, &needles),
+        // The whole text is withheld when the values cannot be read to hide them.
+        Err(_) => scrub::MARKER.to_string(),
+    }
 }
 
 // ---- requests -------------------------------------------------------------------------------------------------------
@@ -1096,7 +1129,7 @@ pub fn reopen_stale(conn: &Connection, now: i64) -> Result<usize, String> {
 pub fn grants_for(conn: &Connection, scope: &str, name: &str) -> Result<Vec<GrantRow>, String> {
     let mut stmt = conn
         .prepare(
-            "SELECT scope, name, subject_kind, subject_id, executable, mode, created_at
+            "SELECT scope, name, subject_kind, subject_id, executable, mode, created_at, identity
              FROM secret_grants WHERE scope = ?1 AND name = ?2 ORDER BY created_at, rowid",
         )
         .map_err(|e| e.to_string())?;
@@ -1110,6 +1143,7 @@ pub fn grants_for(conn: &Connection, scope: &str, name: &str) -> Result<Vec<Gran
                 executable: row.get(4)?,
                 mode: row.get(5)?,
                 created_at: row.get(6)?,
+                identity: row.get(7)?,
             })
         })
         .map_err(|e| e.to_string())?
@@ -1118,7 +1152,8 @@ pub fn grants_for(conn: &Connection, scope: &str, name: &str) -> Result<Vec<Gran
     Ok(rows)
 }
 
-/// Which grant covers this run: the Mono's own first, then its project's.
+/// Which grant covers this run: the Mono's own first, then its project's. The program must be the same file (its
+/// identity), not only the same name.
 pub fn find_grant(
     conn: &Connection,
     scope: &str,
@@ -1126,18 +1161,22 @@ pub fn find_grant(
     mono: Option<&str>,
     project: Option<&str>,
     executable: &str,
+    identity: &str,
 ) -> Result<Option<GrantRow>, String> {
+    let same = |g: &GrantRow| g.executable == executable && g.identity == identity;
     if let Some(mono) = mono {
-        if let Some(grant) = grants_for(conn, scope, name)?.into_iter().find(|g| {
-            g.subject_kind == "mono" && g.subject_id == mono && g.executable == executable
-        }) {
+        if let Some(grant) = grants_for(conn, scope, name)?
+            .into_iter()
+            .find(|g| g.subject_kind == "mono" && g.subject_id == mono && same(g))
+        {
             return Ok(Some(grant));
         }
     }
     if let Some(project) = project {
-        if let Some(grant) = grants_for(conn, scope, name)?.into_iter().find(|g| {
-            g.subject_kind == "project" && g.subject_id == project && g.executable == executable
-        }) {
+        if let Some(grant) = grants_for(conn, scope, name)?
+            .into_iter()
+            .find(|g| g.subject_kind == "project" && g.subject_id == project && same(g))
+        {
             return Ok(Some(grant));
         }
     }
@@ -1153,6 +1192,7 @@ pub fn put_grant(
     subject_kind: &str,
     subject_id: &str,
     executable: &str,
+    identity: &str,
     mode: &str,
     now: i64,
 ) -> Result<(), String> {
@@ -1162,11 +1202,11 @@ pub fn put_grant(
         return Err(ALWAYS_REFUSED.into());
     }
     conn.execute(
-        "INSERT INTO secret_grants (scope, name, subject_kind, subject_id, executable, mode, created_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+        "INSERT INTO secret_grants (scope, name, subject_kind, subject_id, executable, mode, created_at, identity)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
          ON CONFLICT (scope, name, subject_kind, subject_id, executable)
-         DO UPDATE SET mode = excluded.mode, created_at = excluded.created_at",
-        params![scope, name, subject_kind, subject_id, executable, mode, now],
+         DO UPDATE SET mode = excluded.mode, created_at = excluded.created_at, identity = excluded.identity",
+        params![scope, name, subject_kind, subject_id, executable, mode, now, identity],
     )
     .map_err(|e| e.to_string())?;
     Ok(())
@@ -1179,12 +1219,13 @@ pub fn spend_once(
     name: &str,
     mono: &str,
     executable: &str,
+    identity: &str,
 ) -> Result<bool, String> {
     let changed = conn
         .execute(
             "DELETE FROM secret_grants WHERE scope = ?1 AND name = ?2 AND subject_kind = 'mono'
-             AND subject_id = ?3 AND executable = ?4 AND mode = 'once'",
-            params![scope, name, mono, executable],
+             AND subject_id = ?3 AND executable = ?4 AND identity = ?5 AND mode = 'once'",
+            params![scope, name, mono, executable, identity],
         )
         .map_err(|e| e.to_string())?;
     Ok(changed == 1)
@@ -1432,6 +1473,36 @@ pub fn executable_of(command: &[String]) -> Result<String, String> {
     Ok(first.to_string())
 }
 
+/// Pin the program a run will start: its canonical absolute path and its file identity. A bare name is looked up once, on
+/// the fixed search path (never a caller's PATH); a relative path is refused, since it means whatever the run's folder
+/// holds; a program in the project, the run's folder, a temporary folder or a worktree is refused, since the agent can
+/// write there.
+pub fn pin_program(
+    word: &str,
+    project: Option<&str>,
+    cwd: Option<&str>,
+) -> Result<(String, String), String> {
+    // The word is written out before it is echoed: a name with a line break must not reach a message as a line.
+    let not_installed = || format!("{} isn't installed on this Mac.", escape_program(word));
+    let found = if std::path::Path::new(word).is_absolute() {
+        std::path::PathBuf::from(word)
+    } else if word.contains('/') || word.contains('\\') {
+        return Err(
+            "Give the program's full path, or just its name. A relative path could be anything in the folder it runs in."
+                .into(),
+        );
+    } else {
+        run::resolve_program(word, &run::search_path()).ok_or_else(not_installed)?
+    };
+    let canonical = std::fs::canonicalize(&found).map_err(|_| not_installed())?;
+    if let Some(why) = run::program_location_refusal(&canonical, project, cwd) {
+        return Err(why);
+    }
+    let identity = run::program_identity(&canonical)
+        .ok_or_else(|| format!("{} isn't a program file.", escape_program(word)))?;
+    Ok((canonical.to_string_lossy().into_owned(), identity))
+}
+
 #[derive(Clone, Debug, Serialize)]
 #[serde(tag = "state")]
 pub enum RunOutcome {
@@ -1456,6 +1527,8 @@ pub enum RunOutcome {
     /// The run may start.
     #[serde(rename = "granted")]
     Granted {
+        /// Never serialised: the grant is spent by `secrets_grant` in Rust and does not reach the webview.
+        #[serde(skip_serializing)]
         grant: String,
         scope: String,
         name: String,
@@ -1466,18 +1539,35 @@ pub enum RunOutcome {
     },
 }
 
-fn decision_key(name: &str, executable: &str) -> String {
-    let safe: String = format!("secret/{name}/{executable}")
-        .chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | ':' | '/') {
-                c
-            } else {
-                '-'
-            }
-        })
+/// The card's key: the name and a digest of the exact thing approved (the pinned program, its identity, its arguments,
+/// environment, folder and timeout, or a worker's CLI). A different file, argument or environment is a different card.
+pub fn decision_key(name: &str, fingerprint: &str) -> String {
+    let digest: String = Sha256::digest(fingerprint.as_bytes())
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
         .collect();
-    safe.chars().take(120).collect()
+    format!("secret/{name}/{digest}")
+}
+
+/// The fingerprint of one command run, for [`decision_key`]: everything the person approved on the card.
+pub fn run_fingerprint(
+    executable: &str,
+    identity: &str,
+    env: &str,
+    cwd: Option<&str>,
+    command: &[String],
+    timeout_seconds: u64,
+) -> String {
+    json!([
+        "run",
+        executable,
+        identity,
+        env,
+        cwd,
+        command,
+        timeout_seconds
+    ])
+    .to_string()
 }
 
 /// The approval options. "Always for this project" only exists when the chat has a project, and the two "Always"
@@ -1504,7 +1594,7 @@ pub fn always_allowed_for(conn: &Connection, executable: &str) -> bool {
 
 /// Programs that run whatever code they are handed (WP-92 step 10): approving one with the key in its environment is
 /// approving arbitrary code. Matched by basename, `.exe` ignored.
-pub const RUN_ANYTHING: [&str; 26] = [
+pub const RUN_ANYTHING: &[&str] = &[
     "python",
     "python3",
     "node",
@@ -1531,6 +1621,80 @@ pub const RUN_ANYTHING: [&str; 26] = [
     "lua",
     "rscript",
     "swift",
+    "git",
+    "gh",
+    "ssh",
+    "scp",
+    "rsync",
+    "docker",
+    "podman",
+    "kubectl",
+    "tar",
+    "busybox",
+    "mksh",
+    "nu",
+    "xonsh",
+    "env",
+    "command",
+    "exec",
+    "nohup",
+    "timeout",
+    "gtimeout",
+    "nice",
+    "time",
+    "stdbuf",
+    "setsid",
+    "sudo",
+    "doas",
+    "xcrun",
+    "arch",
+    "caffeinate",
+    "pip",
+    "pip3",
+    "brew",
+    "gem",
+    "composer",
+    "poetry",
+    "pipx",
+    "conda",
+    "bundle",
+    "rake",
+    "cmake",
+    "ninja",
+    "gradle",
+    "mvn",
+    "bazel",
+    "xcodebuild",
+    "dotnet",
+    "tsx",
+    "ts-node",
+    "bunx",
+    "pnpx",
+    "vim",
+    "vi",
+    "nvim",
+    "nano",
+    "emacs",
+    "code",
+    "less",
+    "more",
+    "man",
+    "claude",
+    "codex",
+    "devin",
+    "hermes",
+    "cursor",
+    "grok",
+    "pi",
+    "omp",
+    "fx",
+    "antigravity",
+    "opencode",
+    "aider",
+    "goose",
+    "gemini",
+    "copilot",
+    "amp",
 ];
 
 /// The line the card carries for such a program while "Always" is not allowed.
@@ -1628,7 +1792,23 @@ pub fn set_always_for_any_code(conn: &Connection, on: bool) -> Result<usize, Str
 /// The most the card shows of a command line. A command that cannot be shown whole is not asked about.
 pub const COMMAND_LINE_MAX: usize = 1_400;
 
-/// A name shown on a card with every control character written out, so nothing in it can start a line of its own.
+/// Characters that show nothing or change the order of what follows (bidi overrides and isolates, zero-width spaces and
+/// joiners, the byte order mark, soft hyphens), so a card written with them can read as a different command.
+fn is_invisible(c: char) -> bool {
+    matches!(
+        c as u32,
+        0x00AD
+            | 0x061C
+            | 0x200B..=0x200F
+            | 0x2028..=0x202E
+            | 0x2060..=0x206F
+            | 0xFEFF
+            | 0xFFF9..=0xFFFB
+    )
+}
+
+/// A name shown on a card with every control and invisible character written out, so nothing in it can start a line or
+/// hide or reorder the text around it.
 fn escape_controls(text: &str) -> String {
     let mut shown = String::with_capacity(text.len());
     for c in text.chars() {
@@ -1636,8 +1816,24 @@ fn escape_controls(text: &str) -> String {
             '\n' => shown.push_str("\\n"),
             '\r' => shown.push_str("\\r"),
             '\t' => shown.push_str("\\t"),
-            c if c.is_control() => shown.push_str(&format!("\\x{:02x}", c as u32)),
+            c if c.is_control() || is_invisible(c) => {
+                shown.push_str(&format!("\\u{{{:x}}}", c as u32))
+            }
             c => shown.push(c),
+        }
+    }
+    shown
+}
+
+/// A program or a command word on a card: ASCII only. A letter from another alphabet that looks like one of ours is
+/// written out (`\u{430}`), so a look-alike program name cannot pass for the one it imitates.
+fn escape_program(text: &str) -> String {
+    let mut shown = String::with_capacity(text.len());
+    for c in escape_controls(text).chars() {
+        if c.is_ascii() {
+            shown.push(c);
+        } else {
+            shown.push_str(&format!("\\u{{{:x}}}", c as u32));
         }
     }
     shown
@@ -1646,7 +1842,7 @@ fn escape_controls(text: &str) -> String {
 /// One word of a command as the card shows it: control characters written out, and a word with a space, a quote or a
 /// shell character in single quotes, so the words stay apart and no argument can start a line of its own.
 fn display_word(word: &str) -> String {
-    let shown = escape_controls(word);
+    let shown = escape_program(word);
     let plain = !shown.is_empty()
         && !shown.chars().any(|c| {
             c.is_whitespace()
@@ -1702,8 +1898,9 @@ pub fn run_question(
 ) -> Result<String, String> {
     let executable = command.first().map(String::as_str).unwrap_or("");
     // Every name that goes on a line of the card is written out first: a program, a label or a Mono's name with a line
-    // break in it must not be able to forge a line (a warning, or a different command).
-    let program = escape_controls(program_base(executable));
+    // break in it must not be able to forge a line (a warning, or a different command). The program is shown as its full
+    // path, the file the person is approving.
+    let program = escape_program(executable);
     let (mono, label, whose) = (
         escape_controls(mono),
         escape_controls(label),
@@ -1738,6 +1935,12 @@ pub struct Approval {
     pub scope: String,
     pub name: String,
     pub executable: String,
+    /// The pinned program's file identity (empty for a worker's grant, which names no file).
+    pub identity: String,
+    /// What the card's key is made of: the program file (and its identity), so one card per program as before.
+    pub key_source: String,
+    /// The exact command the card shows. An answer approves only this fingerprint; another command asks again.
+    pub fingerprint: String,
     pub question: String,
     pub options: Vec<String>,
     pub recommended: String,
@@ -1770,14 +1973,18 @@ pub fn ensure_grant(
         input.mono.as_deref(),
         input.project.as_deref(),
         &input.executable,
+        &input.identity,
     )?
     .is_some()
     {
         return Ok(ApprovalOutcome::Granted);
     }
     let project = input.project.as_deref().unwrap_or("");
-    let key = decision_key(&input.name, &input.executable);
+    let key = decision_key(&input.name, &input.key_source);
     let decision = crate::decisions::get(conn, project, &key)?;
+    // The command the card was last written for. An answer approves that command only (the M1 check before any grant).
+    let bound = binding_of(conn, project, &key)?;
+    let same_command = bound.as_deref() == Some(input.fingerprint.as_str());
     // The card is put up for one Mono's run (or one worker's), and only that Mono may spend its answer.
     let asked_for = input
         .mono
@@ -1791,7 +1998,14 @@ pub fn ensure_grant(
                 None => true,
             }
     });
-    match decision.filter(|_| answered_by_person_for_this_mono) {
+    let answered = decision
+        .as_ref()
+        .is_some_and(|_| answered_by_person_for_this_mono);
+    // "No" holds for the program, whatever command it was for.
+    if answered && decision.as_ref().and_then(|d| d.answer.as_deref()) == Some("No") {
+        return Ok(ApprovalOutcome::Denied { decision_key: key });
+    }
+    match decision.filter(|_| answered_by_person_for_this_mono && same_command) {
         Some(decision) => {
             let answer = decision.answer.clone().unwrap_or_default();
             if answer == "No" {
@@ -1808,6 +2022,7 @@ pub fn ensure_grant(
                             "project",
                             project,
                             &input.executable,
+                            &input.identity,
                             "always",
                             now,
                         )?;
@@ -1820,6 +2035,7 @@ pub fn ensure_grant(
                         "mono",
                         mono,
                         &input.executable,
+                        &input.identity,
                         "always",
                         now,
                     )?;
@@ -1832,10 +2048,18 @@ pub fn ensure_grant(
                         "mono",
                         mono,
                         &input.executable,
+                        &input.identity,
                         "once",
                         now,
                     )?;
-                    if !spend_once(conn, &input.scope, &input.name, mono, &input.executable)? {
+                    if !spend_once(
+                        conn,
+                        &input.scope,
+                        &input.name,
+                        mono,
+                        &input.executable,
+                        &input.identity,
+                    )? {
                         return Ok(false);
                     }
                 }
@@ -1862,9 +2086,22 @@ pub fn ensure_grant(
                 "DELETE FROM decisions WHERE project = ?1 AND decision_key = ?2",
                 params![project, key],
             );
+            let _ = conn.execute(
+                "DELETE FROM secret_card_bindings WHERE project = ?1 AND decision_key = ?2",
+                params![project, key],
+            );
             Ok(ApprovalOutcome::Granted)
         }
         _ => {
+            if answered {
+                // Answered for another command of this program: that answer is not this command's. It is cleared, and this
+                // command asks on a fresh card.
+                conn.execute(
+                    "DELETE FROM decisions WHERE project = ?1 AND decision_key = ?2",
+                    params![project, key],
+                )
+                .map_err(|e| e.to_string())?;
+            }
             // The person is asked through the same decision store the Inbox already shows.
             let outcome = crate::decisions::ask(
                 conn,
@@ -1893,9 +2130,31 @@ pub fn ensure_grant(
                     now,
                 )?;
             }
+            bind_card(conn, project, &key, &input.fingerprint)?;
             Ok(ApprovalOutcome::Waiting { decision_key: key })
         }
     }
+}
+
+/// The command a card was last written for.
+fn binding_of(conn: &Connection, project: &str, key: &str) -> Result<Option<String>, String> {
+    conn.query_row(
+        "SELECT fingerprint FROM secret_card_bindings WHERE project = ?1 AND decision_key = ?2",
+        params![project, key],
+        |row| row.get(0),
+    )
+    .optional()
+    .map_err(|e| e.to_string())
+}
+
+fn bind_card(conn: &Connection, project: &str, key: &str, fingerprint: &str) -> Result<(), String> {
+    conn.execute(
+        "INSERT INTO secret_card_bindings (project, decision_key, fingerprint) VALUES (?1, ?2, ?3)
+         ON CONFLICT (project, decision_key) DO UPDATE SET fingerprint = excluded.fingerprint",
+        params![project, key, fingerprint],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 /// Check everything, then either ask the person, refuse, or sign one grant.
@@ -1976,8 +2235,22 @@ pub fn prepare_run(
         None | Some(0) => TIMEOUT_DEFAULT,
         Some(seconds) => seconds.min(TIMEOUT_MAX),
     };
+    // The program is pinned before anyone is asked: its absolute path and its file identity. What the person approves is
+    // this file and this exact command, and the grant row and the signed payload carry the same pair, so a program
+    // swapped on the same name (or found on a caller's PATH) is not the one that was approved.
+    let (program, identity) = pin_program(&executable, project.as_deref(), cwd.as_deref())?;
+    let mut command = request.command.clone();
+    command[0] = program.clone();
+    let fingerprint = run_fingerprint(
+        &program,
+        &identity,
+        &request.env,
+        cwd.as_deref(),
+        &command,
+        timeout_seconds,
+    );
     // 3. a live grant for this Mono (then its project), or ask the person first, on a card that shows the whole command.
-    let always_allowed = always_allowed_for(conn, &executable);
+    let always_allowed = always_allowed_for(conn, &program);
     // Which copy this run uses, in plain words: where the key lives, and that a project's copy beats the global one.
     let whose = if has_global_twin(conn, &row) {
         format!("{}. {PROJECT_COPY_USED}", scope_words(&row.scope))
@@ -1988,9 +2261,9 @@ pub fn prepare_run(
         request.mono.as_deref().unwrap_or("this Mono"),
         &row.label,
         &whose,
-        &request.command,
+        &command,
         always_allowed,
-        runs_any_code(&executable),
+        runs_any_code(&program),
     )?;
     match ensure_grant(
         conn,
@@ -2000,7 +2273,10 @@ pub fn prepare_run(
             project: project.clone(),
             scope: row.scope.clone(),
             name: row.name.clone(),
-            executable: executable.clone(),
+            executable: program.clone(),
+            identity: identity.clone(),
+            key_source: format!("{program}\u{0}{identity}"),
+            fingerprint,
             question,
             options: approval_options(project.is_some(), always_allowed),
             recommended: "Once".into(),
@@ -2029,11 +2305,12 @@ pub fn prepare_run(
         version: row.version,
         subject: request.mono.unwrap_or_else(|| chat.to_string()),
         env: request.env.clone(),
-        command: request.command.clone(),
+        command,
         cwd,
         nonce: uuid::Uuid::new_v4().simple().to_string(),
         expires_at: now + GRANT_TTL_MS,
         timeout_seconds,
+        program_identity: identity,
     };
     let grant = grant::sign_payload(vault, &payload)?;
     Ok(RunOutcome::Granted {

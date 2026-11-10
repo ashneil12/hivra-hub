@@ -840,6 +840,7 @@ fn delete_takes_the_grants_and_the_row_before_the_keychain_item() {
         "mono",
         "mono-1",
         "stripe",
+        "",
         "always",
         bench.now,
     )
@@ -864,7 +865,8 @@ fn delete_takes_the_grants_and_the_row_before_the_keychain_item() {
             "stripe-api-key",
             Some("mono-1"),
             None,
-            "stripe"
+            "stripe",
+            ""
         )
         .unwrap(),
         None
@@ -965,6 +967,7 @@ fn delete_removes_every_grant_and_names_what_stops_working() {
         "mono",
         "mono-1",
         "stripe",
+        "",
         "always",
         bench.now,
     )
@@ -976,6 +979,7 @@ fn delete_removes_every_grant_and_names_what_stops_working() {
         "project",
         "/p",
         "stripe",
+        "",
         "always",
         bench.now,
     )
@@ -1005,6 +1009,7 @@ fn renaming_changes_the_label_and_keeps_the_slug_and_grants() {
         "mono",
         "mono-1",
         "stripe",
+        "",
         "always",
         bench.now,
     )
@@ -1052,6 +1057,7 @@ fn a_mono_grant_works_for_that_mono_and_not_another() {
         "mono",
         "mono-1",
         "stripe",
+        "",
         "always",
         bench.now,
     )
@@ -1062,7 +1068,8 @@ fn a_mono_grant_works_for_that_mono_and_not_another() {
         "stripe-api-key",
         Some("mono-1"),
         None,
-        "stripe"
+        "stripe",
+        ""
     )
     .unwrap()
     .is_some());
@@ -1072,7 +1079,8 @@ fn a_mono_grant_works_for_that_mono_and_not_another() {
         "stripe-api-key",
         Some("mono-2"),
         None,
-        "stripe"
+        "stripe",
+        ""
     )
     .unwrap()
     .is_none());
@@ -1083,7 +1091,8 @@ fn a_mono_grant_works_for_that_mono_and_not_another() {
         "stripe-api-key",
         Some("mono-1"),
         None,
-        "curl"
+        "curl",
+        ""
     )
     .unwrap()
     .is_none());
@@ -1101,6 +1110,7 @@ fn a_project_grant_works_for_every_mono_in_the_project_and_not_outside_it() {
         "project",
         "/p",
         "stripe",
+        "",
         "always",
         bench.now,
     )
@@ -1112,7 +1122,8 @@ fn a_project_grant_works_for_every_mono_in_the_project_and_not_outside_it() {
             "stripe-api-key",
             Some(mono),
             Some("/p"),
-            "stripe"
+            "stripe",
+            ""
         )
         .unwrap()
         .is_some());
@@ -1123,7 +1134,8 @@ fn a_project_grant_works_for_every_mono_in_the_project_and_not_outside_it() {
         "stripe-api-key",
         Some("mono-1"),
         Some("/other"),
-        "stripe"
+        "stripe",
+        ""
     )
     .unwrap()
     .is_none());
@@ -1133,7 +1145,8 @@ fn a_project_grant_works_for_every_mono_in_the_project_and_not_outside_it() {
         "stripe-api-key",
         Some("mono-1"),
         None,
-        "stripe"
+        "stripe",
+        ""
     )
     .unwrap()
     .is_none());
@@ -1151,19 +1164,37 @@ fn a_once_grant_is_spent_once_even_when_two_runs_race_for_it() {
         "mono",
         "mono-1",
         "stripe",
+        "",
         "once",
         bench.now,
     )
     .unwrap();
-    assert!(spend_once(&conn, SCOPE_GLOBAL, "stripe-api-key", "mono-1", "stripe").unwrap());
-    assert!(!spend_once(&conn, SCOPE_GLOBAL, "stripe-api-key", "mono-1", "stripe").unwrap());
+    assert!(spend_once(
+        &conn,
+        SCOPE_GLOBAL,
+        "stripe-api-key",
+        "mono-1",
+        "stripe",
+        ""
+    )
+    .unwrap());
+    assert!(!spend_once(
+        &conn,
+        SCOPE_GLOBAL,
+        "stripe-api-key",
+        "mono-1",
+        "stripe",
+        ""
+    )
+    .unwrap());
     assert!(find_grant(
         &conn,
         SCOPE_GLOBAL,
         "stripe-api-key",
         Some("mono-1"),
         None,
-        "stripe"
+        "stripe",
+        ""
     )
     .unwrap()
     .is_none());
@@ -1183,6 +1214,7 @@ fn a_once_grant_is_spent_once_even_when_two_runs_race_for_it() {
         "mono",
         "mono-1",
         "stripe",
+        "",
         "once",
         bench.now,
     )
@@ -1197,7 +1229,15 @@ fn a_once_grant_is_spent_once_even_when_two_runs_race_for_it() {
                 conn.busy_timeout(std::time::Duration::from_secs(5))
                     .unwrap();
                 start.wait();
-                spend_once(&conn, SCOPE_GLOBAL, "stripe-api-key", "mono-1", "stripe").unwrap()
+                spend_once(
+                    &conn,
+                    SCOPE_GLOBAL,
+                    "stripe-api-key",
+                    "mono-1",
+                    "stripe",
+                    "",
+                )
+                .unwrap()
             })
         })
         .collect();
@@ -1544,6 +1584,7 @@ fn a_signed_grant_round_trips_and_the_wrong_store_refuses_it() {
         nonce: "0011223344556677".into(),
         expires_at: grant::now_millis() + 60_000,
         timeout_seconds: 120,
+        program_identity: String::new(),
     };
     let daily = Memory::new();
     let dev = Memory::new();

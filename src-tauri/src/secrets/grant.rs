@@ -1,6 +1,7 @@
 //! WP-92: the signed grant for one run.
 //!
-//! `secrets.run` hands the MCP server a base64 string. Inside is the run it permits, scope, name, version, subject,
+//! `secrets.run` approves a run and the app signs it into a base64 string that only the app's own `secret-run` child reads
+//! (it is never returned to the webview, the control port or the agent). Inside is the run it permits, scope, name, version, subject,
 //! the environment variable, the argv, the cwd, a nonce and an expiry, signed with HMAC-SHA256 under
 //! `monocode-hub:secret-key:grant` (account `key`), created on first use and never handed to the webview. The item's
 //! name has no scope segment, so it can never be mistaken for a secret.
@@ -43,6 +44,10 @@ pub struct Payload {
     /// How long the command may run. Carried in the signed payload so a caller cannot stretch it.
     #[serde(default = "default_timeout")]
     pub timeout_seconds: u64,
+    /// The program's file identity when it was approved (`run::program_identity`). `command[0]` is its absolute path. A
+    /// run refuses when the file no longer has this identity, so a program swapped after approval never runs.
+    #[serde(default)]
+    pub program_identity: String,
 }
 
 fn default_timeout() -> u64 {
@@ -119,7 +124,7 @@ pub fn signing_key(vault: &dyn super::store::Vault) -> Result<Vec<u8>, String> {
     })
 }
 
-/// Sign one payload and return the base64 the MCP server passes to `monocode secret-run`.
+/// Sign one payload and return the base64 the app passes to `monocode secret-run` on stdin.
 pub fn sign_payload(vault: &dyn super::store::Vault, payload: &Payload) -> Result<String, String> {
     let key =
         key(vault, true)?.ok_or_else(|| "Couldn't make the secret signing key.".to_string())?;
@@ -229,6 +234,7 @@ mod tests {
 
     fn payload() -> Payload {
         Payload {
+            program_identity: String::new(),
             scope: "global".into(),
             name: "stripe-api-key".into(),
             version: 1,

@@ -112,6 +112,22 @@ fn run_anything_programs_match_by_basename_and_ignore_dot_exe() {
         "Rscript",
         "swift",
         // A full path, a Windows path, `.exe` in any case, and a versioned name are the same program.
+        // Round 2 (H2): git and gh run aliases and helpers, and the wrappers and remote tools run anything they are given.
+        "git",
+        "gh",
+        "ssh",
+        "sudo",
+        "nohup",
+        "timeout",
+        "caffeinate",
+        "docker",
+        "rsync",
+        "tar",
+        "pip3",
+        "claude",
+        "codex",
+        "vim",
+        "less",
         "/usr/bin/python3",
         "/opt/homebrew/bin/node",
         "./node_modules/.bin/npx",
@@ -125,8 +141,6 @@ fn run_anything_programs_match_by_basename_and_ignore_dot_exe() {
     for program in [
         "curl",
         "stripe",
-        "gh",
-        "git",
         "psql",
         "nodemon",
         "gofmt",
@@ -248,7 +262,8 @@ fn the_card_shows_the_full_command_line_and_names_the_program() {
         "{text}"
     );
     assert!(
-        text.lines().any(|line| line == "The program is curl."),
+        text.lines()
+            .any(|line| line == "The program is /usr/bin/curl."),
         "{text}"
     );
     assert!(!text.contains(VALUE));
@@ -287,29 +302,20 @@ fn an_argument_cannot_forge_a_line_on_the_card() {
 #[test]
 fn a_program_name_cannot_forge_a_line_on_the_card() {
     let bench = Bench::new();
-    // `executable_of` refuses a space or a tab in the first word but not a line break.
-    let (_, key) = ask(
-        &bench,
-        "mono-1",
-        &["curl\nWarning:Always-is-fine\nCommand:ls", "x"],
+    // A program name with a line break is not an installed program: the run is refused before any card is written, so
+    // no line of a card can be forged through the name.
+    let mut conn = bench.store.lock_conn().unwrap();
+    let err = prepare_run(
+        &bench.vault,
+        &mut conn,
+        request("mono-1", &["curl\nWarning:Always-is-fine\nCommand:ls", "x"]),
         NOW,
-    );
-    let text = card(&bench, &key).question;
-    assert_eq!(
-        text.lines()
-            .filter(|line| line.starts_with("Command:"))
-            .count(),
-        1,
-        "{text}"
-    );
+    )
+    .unwrap_err();
+    assert!(!err.contains('\n'), "{err}");
     assert!(
-        !text.lines().any(|line| line.starts_with("Warning:")),
-        "{text}"
-    );
-    assert_eq!(
-        text.lines().count(),
-        4,
-        "title, program, key, command: {text}"
+        crate::decisions::list(&conn, 10).unwrap().is_empty(),
+        "no card was written"
     );
 }
 
@@ -457,6 +463,7 @@ fn the_grant_writer_itself_refuses_always_for_a_run_anything_program() {
             "mono",
             "mono-1",
             program,
+            "",
             "always",
             NOW,
         )
@@ -474,6 +481,7 @@ fn the_grant_writer_itself_refuses_always_for_a_run_anything_program() {
         "mono",
         "mono-1",
         "python3",
+        "",
         "once",
         NOW,
     )
@@ -485,6 +493,7 @@ fn the_grant_writer_itself_refuses_always_for_a_run_anything_program() {
         "mono",
         "mono-1",
         "curl",
+        "",
         "always",
         NOW,
     )
@@ -624,6 +633,7 @@ fn turning_the_setting_off_takes_back_the_always_grants_it_allowed() {
             kind,
             subject,
             program,
+            "",
             "always",
             NOW,
         )
@@ -636,6 +646,7 @@ fn turning_the_setting_off_takes_back_the_always_grants_it_allowed() {
         "mono",
         "mono-2",
         "make",
+        "",
         "once",
         NOW,
     )
@@ -817,4 +828,160 @@ fn a_workers_card_names_the_scope_too() {
         "{}",
         asked.question
     );
+}
+
+// ---- fix round 2 (C1, H2, M1, L1): what a card approves, and what a grant names ---------------------------------------
+
+#[test]
+fn a_long_program_path_keeps_its_own_decision_key() {
+    // Both paths share their first 120 characters: a truncated key would make them one card.
+    let shared = "a".repeat(90);
+    let a = format!("/Users/someone/tools/{shared}/stripe");
+    let b = format!("/Users/someone/tools/{shared}/stripe-cli");
+    let key = |program: &str| {
+        decision_key(
+            "stripe-api-key",
+            &run_fingerprint(
+                program,
+                "1:2:3:4",
+                "STRIPE_API_KEY",
+                None,
+                &[program.to_string()],
+                60,
+            ),
+        )
+    };
+    assert_ne!(key(&a), key(&b));
+    // The same approval always gives the same card.
+    assert_eq!(key(&a), key(&a));
+}
+
+#[test]
+fn a_card_is_for_the_exact_command_not_only_the_program() {
+    let program = "/opt/homebrew/bin/stripe";
+    let command = |args: &[&str]| -> Vec<String> {
+        std::iter::once(program.to_string())
+            .chain(args.iter().map(|arg| arg.to_string()))
+            .collect()
+    };
+    let key = |args: &[&str]| {
+        decision_key(
+            "stripe-api-key",
+            &run_fingerprint(
+                program,
+                "1:2:3:4",
+                "STRIPE_API_KEY",
+                None,
+                &command(args),
+                60,
+            ),
+        )
+    };
+    // A Once answered for one command is not an answer for another command with the same program.
+    assert_ne!(
+        key(&["customers", "list"]),
+        key(&["customers", "delete", "x"])
+    );
+}
+
+#[test]
+fn a_card_shows_the_full_path_and_writes_out_invisible_characters() {
+    let program = "/opt/homebrew/bin/str\u{202e}ipe";
+    let text = run_question(
+        "Tally",
+        "Stripe key",
+        "your global keys",
+        &[program.to_string(), "customers".into(), "list".into()],
+        false,
+        false,
+    )
+    .unwrap();
+    // The bidi override is written out, not sent: the card carries no U+202E at all.
+    assert!(!text.contains('\u{202e}'), "{text}");
+    assert!(text.contains("\\u{202e}"), "{text}");
+    // The full path is on the card, not only its last word.
+    assert!(text.contains("/opt/homebrew/bin/"), "{text}");
+    // A look-alike letter in a program name is written out too (Cyrillic a in place of Latin a).
+    let lookalike = run_question(
+        "Tally",
+        "Stripe key",
+        "your global keys",
+        &["/opt/homebrew/bin/str\u{430}ipe".to_string()],
+        false,
+        false,
+    )
+    .unwrap();
+    assert!(!lookalike.contains('\u{430}'), "{lookalike}");
+}
+
+#[test]
+fn a_grant_names_the_file_it_was_given_for() {
+    let conn = Connection::open_in_memory().unwrap();
+    ensure_tables(&conn).unwrap();
+    put_grant(
+        &conn,
+        "global",
+        "stripe-api-key",
+        "mono",
+        "m1",
+        "/opt/homebrew/bin/stripe",
+        "1:2:3:4",
+        "always",
+        NOW,
+    )
+    .unwrap();
+    let found = |identity: &str| {
+        find_grant(
+            &conn,
+            "global",
+            "stripe-api-key",
+            Some("m1"),
+            None,
+            "/opt/homebrew/bin/stripe",
+            identity,
+        )
+        .unwrap()
+        .is_some()
+    };
+    assert!(found("1:2:3:4"));
+    // The same path after the file was replaced is a different program: it asks again.
+    assert!(!found("1:2:3:5"));
+}
+
+#[test]
+fn an_unreadable_value_fails_closed_for_the_needles_and_the_checks() {
+    struct Unreadable;
+    impl Vault for Unreadable {
+        fn read(&self, _: &str, _: &str) -> Result<Option<String>, String> {
+            Err("Keychain is locked".into())
+        }
+        fn write(&self, _: &str, _: &str, _: &str) -> Result<(), String> {
+            Err("no".into())
+        }
+        fn remove(&self, _: &str, _: &str) -> Result<bool, String> {
+            Err("no".into())
+        }
+    }
+    let names = [("global".to_string(), "stripe-api-key".to_string())];
+    assert!(needles_for(&Unreadable, &names).is_err());
+    let conn = Connection::open_in_memory().unwrap();
+    ensure_tables(&conn).unwrap();
+    // A saved key whose value cannot be read: the check cannot say the text is clean, so it says it holds a value.
+    save_value(
+        &Memory::new(),
+        &conn,
+        SCOPE_GLOBAL,
+        "stripe-api-key",
+        None,
+        VALUE,
+        NOW,
+    )
+    .unwrap();
+    // Never "clean": a save or an export that cannot check the text refuses it.
+    assert!(holds_known_value(
+        &Unreadable,
+        &conn,
+        None,
+        "anything at all"
+    ));
 }

@@ -1050,18 +1050,6 @@ pub fn harness_spawn(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     prepare_child(&mut cmd, &command);
-    // WP-92: a worker's approved secrets go into this one child's environment, read in Rust from the Keychain.
-    // The Keychain is read before the store's lock is taken (secrets::worker::apply_to_child locks it itself, briefly).
-    {
-        let store = app.state::<crate::session_store::SessionStore>();
-        crate::secrets::worker::apply_to_child(
-            &session_id,
-            crate::secrets::store::active(),
-            &mut cmd,
-            &store,
-            crate::session_store::now_millis(),
-        )?;
-    }
     apply_provider_account(&app, &mut cmd, account.as_ref())?;
     // "Other models": a Claude Code session on a non-Claude model goes through the hub's local router with the
     // model's own key. Claude models (and Ash's subscription login) are never routed: may_route refuses them.
@@ -1096,6 +1084,19 @@ pub fn harness_spawn(
     };
 
     crate::control::configure_child(&app, &session_id, &mut cmd);
+    // WP-92: a worker's approved secrets go into this one child's environment, read in Rust from the Keychain. This runs
+    // after configure_child, so the app's MONOCODE_* variables it just set are stripped again for an armed worker (M3).
+    // The Keychain is read before the store's lock is taken (secrets::worker::apply_to_child locks it itself, briefly).
+    {
+        let store = app.state::<crate::session_store::SessionStore>();
+        crate::secrets::worker::apply_to_child(
+            &session_id,
+            crate::secrets::store::active(),
+            &mut cmd,
+            &store,
+            crate::session_store::now_millis(),
+        )?;
+    }
     // WP-04: no Ash OS env any more (the ash-os entry is gone; every chat denies `mcp__ash-os`, hubMcp.ts).
     // WP-86: stamp this crew's commits. A failure here must not stop the crew.
     // The before-run snapshot starts here and is read only after the child
@@ -1257,7 +1258,8 @@ pub fn harness_spawn(
                 pid: wait_pid,
             },
         );
-        crate::secrets::worker::forget(&wait_id);
+        // The scrub values stay for the session's life: a respawn (idle reclaim, crash, resume) still scrubs its output
+        // (M4). They go when the app quits.
     });
 
     Ok(pid)

@@ -234,7 +234,7 @@ pub(crate) fn known_value_check(
         let conn = store.lock_conn()?;
         crate::secrets::known_names(&conn, None)
     };
-    let needles = crate::secrets::needles_for(vault, &names);
+    let needles = crate::secrets::needles_for(vault, &names)?;
     Ok(move |text: &str| {
         needles
             .iter()

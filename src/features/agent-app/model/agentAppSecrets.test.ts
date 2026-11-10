@@ -128,15 +128,17 @@ describe("secrets.request", () => {
 });
 
 describe("secrets.run", () => {
-  it("passes the argv and environment through, and hands back the one grant", async () => {
+  it("passes the argv and environment through, and hands back the run's result, never a grant", async () => {
     api.grantFor.mockResolvedValue({
-      state: "granted",
-      grant: "Z3JhbnQ=",
-      scope: "project./code/tally",
+      state: "ran",
       name: "stripe-api-key",
-      version: 3,
       env: "STRIPE_API_KEY",
-      timeoutSeconds: 120,
+      exitCode: 0,
+      stdout: "3 customers",
+      stderr: "",
+      timedOut: false,
+      truncated: false,
+      outputUnread: false,
     });
     const out = await handleAgentApp(
       projectChat(),
@@ -153,7 +155,8 @@ describe("secrets.run", () => {
       command: ["stripe", "customers", "list"],
       timeoutSeconds: 30,
     });
-    expect(out).toMatchObject({ state: "granted", grant: "Z3JhbnQ=" });
+    expect(out).toMatchObject({ state: "ran", stdout: "3 customers", exitCode: 0 });
+    expect(out).not.toHaveProperty("grant");
   });
 
   it("says waiting for the person and missing means ask, each with plain words", async () => {
@@ -218,5 +221,50 @@ describe("secrets.list", () => {
     api.listSecrets.mockResolvedValue([]);
     const out = (await handleAgentApp(projectChat(), "r1", "secrets.list", {}, hostFor("project"))) as { note: string };
     expect(out.note).toMatch(/secrets_request/);
+  });
+});
+
+describe("secrets.run answers with the result, never a grant (fix round 2, C1)", () => {
+  it("drops a grant even if one reached the handler, and carries no value", async () => {
+    api.grantFor.mockResolvedValueOnce({
+      state: "granted",
+      grant: "eyJwYXlsb2FkIjoieCJ9.c2ln",
+      scope: "global",
+      name: "stripe-api-key",
+      version: 1,
+      env: "STRIPE_API_KEY",
+      timeoutSeconds: 30,
+    });
+    const out = (await handleAgentApp(
+      projectChat(),
+      "r1",
+      "secrets.run",
+      { name: "stripe-api-key", env: "STRIPE_API_KEY", command: ["stripe", "customers", "list"] },
+      hostFor("project"),
+    )) as Record<string, unknown>;
+    expect(out.grant).toBeUndefined();
+    expect(JSON.stringify(out)).not.toContain("eyJ");
+  });
+
+  it("passes the scrubbed answer of a run through unchanged", async () => {
+    api.grantFor.mockResolvedValueOnce({
+      state: "ran",
+      name: "stripe-api-key",
+      env: "STRIPE_API_KEY",
+      exitCode: 0,
+      stdout: "2 customers",
+      stderr: "",
+      timedOut: false,
+      truncated: false,
+      outputUnread: false,
+    });
+    const out = (await handleAgentApp(
+      projectChat(),
+      "r2",
+      "secrets.run",
+      { name: "stripe-api-key", env: "STRIPE_API_KEY", command: ["stripe", "customers", "list"] },
+      hostFor("project"),
+    )) as Record<string, unknown>;
+    expect(out).toMatchObject({ state: "ran", stdout: "2 customers", exitCode: 0 });
   });
 });

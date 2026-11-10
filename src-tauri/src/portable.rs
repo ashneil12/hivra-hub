@@ -900,7 +900,7 @@ pub fn export_with_vault(
     if let Some(conn) = vault_db.as_ref() {
         writer.json("secrets/index.json", &crate::secrets::index_json(conn)?)?;
         // Read once, not once per file: each value is a round trip to the Keychain.
-        let needles = crate::secrets::known_needles(vault, conn, None);
+        let needles = crate::secrets::known_needles(vault, conn, None)?;
         for index in 0..writer.files.len() {
             let relative = writer.files[index].0.clone();
             if is_binary(&relative) || relative == "secrets/index.json" {

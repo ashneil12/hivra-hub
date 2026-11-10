@@ -81,19 +81,23 @@ export type RunInput = {
   timeoutSeconds?: number;
 };
 
-/** `secrets.run`'s answer: missing, waiting for the person, refused, or the one signed grant. */
+/** `secrets.run`'s answer: missing, waiting for the person, refused, or the run's own scrubbed result. The grant is
+ * spent inside Rust and never reaches the webview, so there is no grant field. */
 export type RunOutcome =
   | { state: "missing"; name: string; scope: string }
   | { state: "waiting"; decisionKey: string; name: string; scope: string }
   | { state: "denied"; decisionKey: string; name: string }
   | {
-      state: "granted";
-      grant: string;
-      scope: string;
+      state: "ran";
       name: string;
-      version: number;
       env: string;
-      timeoutSeconds: number;
+      exitCode: number | null;
+      stdout: string;
+      stderr: string;
+      timedOut: boolean;
+      truncated: boolean;
+      outputUnread: boolean;
+      note?: string;
     };
 
 const COMMAND = "plugin:hub|";

@@ -51,3 +51,16 @@ describe("a secret's approval card in the Inbox", () => {
     expect(item.note ?? null).toBeNull();
   });
 });
+
+describe("a secret's approval card keeps the exact command (fix round 2, M2)", () => {
+  it("does not rewrite the command the person approves", () => {
+    // Two spaces inside a quoted word and an en dash the card wrote out as \u{2013} must reach the person as they are.
+    const question = [
+      "Let Tally run `/opt/homebrew/bin/stripe` with Stripe API key?",
+      "The program is /opt/homebrew/bin/stripe.",
+      "Command: /opt/homebrew/bin/stripe find 'a  b' \\u{2013}limit",
+    ].join("\n");
+    const [item] = inboxItems({ project: PROJECT, decisions: [card(question, ["Once", "No"], "secret/stripe-api-key/x")] });
+    expect(item.body).toContain("Command: /opt/homebrew/bin/stripe find 'a  b' \\u{2013}limit");
+  });
+});

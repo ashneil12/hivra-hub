@@ -355,19 +355,40 @@ pub fn secrets_worker_arm(
     Ok(outcome)
 }
 
-/// The tool `app secrets.run`: the checks, the approval card, then one signed grant.
+/// The tool `app secrets.run`: the checks, the approval card, then the approved command run here, in the app's own child.
+/// The grant is spent inside Rust and never returned, so the answer is the scrubbed result (`ran`), a missing, waiting or
+/// denied state, or a refusal. Nothing that reaches the webview or the control port can be spent again.
 #[tauri::command(async)]
 pub fn secrets_grant<R: tauri::Runtime>(
     app: AppHandle<R>,
     store: State<'_, SessionStore>,
     request: RunRequest,
-) -> Result<RunOutcome, String> {
-    let mut conn = store.lock_conn()?;
-    let outcome = prepare_run(vault(), &mut conn, request, now_millis())?;
-    if !matches!(outcome, RunOutcome::Granted { .. }) {
-        let _ = app.emit(crate::decisions::CHANGED, json!({ "keys": [] }));
+) -> Result<serde_json::Value, String> {
+    let outcome = {
+        let mut conn = store.lock_conn()?;
+        prepare_run(vault(), &mut conn, request, now_millis())?
+    };
+    match outcome {
+        RunOutcome::Granted {
+            grant, name, env, ..
+        } => {
+            let exe = std::env::current_exe()
+                .map_err(|_| "Couldn't find the MonoCode program to run it.".to_string())?;
+            let answer = super::run::spawn_run(&exe, &grant)?;
+            let mut out = match answer {
+                serde_json::Value::Object(map) => map,
+                _ => serde_json::Map::new(),
+            };
+            out.insert("state".into(), json!("ran"));
+            out.insert("name".into(), json!(name));
+            out.insert("env".into(), json!(env));
+            Ok(serde_json::Value::Object(out))
+        }
+        other => {
+            let _ = app.emit(crate::decisions::CHANGED, json!({ "keys": [] }));
+            serde_json::to_value(other).map_err(|e| e.to_string())
+        }
     }
-    Ok(outcome)
 }
 
 /// The person's tap: write one secret into one worktree's `.env`. The value is read in Rust and never crosses the

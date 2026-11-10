@@ -28,6 +28,8 @@ fn main() {
             "connector_login_store",
             "connector_login_exists",
             "connector_login_delete",
+            // WP-92: the saved login moves into the vault (registered in hub_plugin.rs).
+            "connector_move_login_to_vault",
             // WP-92: the secret vault.
             "secrets_list",
             "secrets_pending",

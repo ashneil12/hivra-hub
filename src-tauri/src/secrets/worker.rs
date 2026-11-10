@@ -166,6 +166,9 @@ pub fn prepare(
             row.label,
             scope_words(&row.scope)
         );
+        // A worker's grant is its own: keyed by the worker entry, never the CLI's name, so a `secrets.run` grant for the
+        // same CLI does not spend it. A worker CLI can run any code, so the card offers no "Always".
+        let worker_key = format!("worker:{executable}");
         match ensure_grant(
             conn,
             Approval {
@@ -174,9 +177,12 @@ pub fn prepare(
                 project: project.clone(),
                 scope: row.scope.clone(),
                 name: row.name.clone(),
-                executable: executable.to_string(),
+                executable: worker_key.clone(),
+                identity: String::new(),
+                key_source: worker_key.clone(),
+                fingerprint: worker_key,
                 question,
-                options: approval_options(project.is_some(), always_allowed_for(conn, executable)),
+                options: approval_options(project.is_some(), false),
                 recommended: "Once".into(),
             },
             now,
@@ -337,6 +343,15 @@ pub fn apply_to_child(
     }
     // The worker keeps its tool's own environment (HOME, PATH, login), but never the app's `MONOCODE_*` variables: those
     // carry the control and app tokens, and an inherited copy would reach the tool that holds the key.
+    // Stripped from the command as it now stands (configure_child may have set them) and from this process's environment.
+    let set: Vec<std::ffi::OsString> = cmd
+        .get_envs()
+        .filter(|(key, _)| key.to_string_lossy().starts_with("MONOCODE_"))
+        .map(|(key, _)| key.to_os_string())
+        .collect();
+    for key in set {
+        cmd.env_remove(key);
+    }
     for (key, _) in std::env::vars_os() {
         if key.to_string_lossy().starts_with("MONOCODE_") {
             cmd.env_remove(key);
@@ -415,5 +430,89 @@ pub(crate) fn clear_for_tests() {
     }
     if let Ok(mut map) = session_values().lock() {
         map.clear();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::secrets::store::Memory;
+    use crate::session_store::SessionStore;
+
+    const VALUE: &str = "sk_live_51NxAbCdEfGhIjKl";
+    const NOW: i64 = 1_700_000_000_000;
+
+    /// One saved key, armed for one worker session, with the store and the vault it reads from.
+    fn armed_worker(session: &str) -> (SessionStore, Memory) {
+        clear_for_tests();
+        let store = SessionStore::open_in_memory().unwrap();
+        let vault = Memory::new();
+        let version = {
+            let conn = store.lock_conn().unwrap();
+            save_value(
+                &vault,
+                &conn,
+                SCOPE_GLOBAL,
+                "stripe-api-key",
+                None,
+                VALUE,
+                NOW,
+            )
+            .unwrap();
+            get_secret(&conn, SCOPE_GLOBAL, "stripe-api-key")
+                .unwrap()
+                .unwrap()
+                .version
+        };
+        arm(
+            session,
+            vec![ArmedSecret {
+                scope: SCOPE_GLOBAL.into(),
+                name: "stripe-api-key".into(),
+                env: "STRIPE_API_KEY".into(),
+                version,
+                mono: "m1".into(),
+                executable: "claude".into(),
+            }],
+        );
+        (store, vault)
+    }
+
+    // fix round 2 (M3): an armed worker's final environment holds no MONOCODE_* variable, even one configure_child set.
+    #[test]
+    fn an_armed_worker_keeps_no_app_token_in_its_final_environment() {
+        let (store, vault) = armed_worker("worker-1");
+        let mut cmd = Command::new("/usr/bin/true");
+        cmd.env("MONOCODE_APP_TOKEN", "app-token-value")
+            .env("MONOCODE_APP_ENDPOINT", "127.0.0.1:1")
+            .env("MONOCODE_CONTROL_TOKEN", "control-token-value");
+        apply_to_child("worker-1", &vault, &mut cmd, &store, NOW).unwrap();
+        let envs: Vec<(String, bool)> = cmd
+            .get_envs()
+            .map(|(key, value)| (key.to_string_lossy().into_owned(), value.is_some()))
+            .collect();
+        // A removal is recorded as a key with no value: no MONOCODE_ variable may be set.
+        assert!(
+            envs.iter()
+                .all(|(key, set)| !key.starts_with("MONOCODE_") || !set),
+            "{envs:?}"
+        );
+        assert!(envs
+            .iter()
+            .any(|(key, set)| key == "STRIPE_API_KEY" && *set));
+    }
+
+    // fix round 2 (M4): the scrub values outlive the child, so a respawn of the same session still masks the value.
+    #[test]
+    fn the_scrub_outlives_the_child_so_a_respawn_still_masks_the_value() {
+        let (store, vault) = armed_worker("worker-2");
+        let mut first = Command::new("/usr/bin/true");
+        apply_to_child("worker-2", &vault, &mut first, &store, NOW).unwrap();
+        // The child exits. The harness no longer forgets the session's values at that point.
+        // A respawn arms nothing and gets no variable, yet its output is still scrubbed.
+        let mut respawn = Command::new("/usr/bin/true");
+        apply_to_child("worker-2", &vault, &mut respawn, &store, NOW).unwrap();
+        let line = scrub_line("worker-2", format!("key is {VALUE}"));
+        assert!(!line.contains(VALUE), "{line}");
     }
 }

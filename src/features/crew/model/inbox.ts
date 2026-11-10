@@ -238,8 +238,10 @@ export function inboxItems(input: {
     items.push({
       id: `decision:${project}:${key}`,
       kind: "decision",
-      title: (secret ? shown(secret.title) : shown(firstLine(decision.question, 160))) || "A decision is waiting",
-      body: secret ? shown(secret.body) : "",
+      // A secret's card is the exact command the person approves: it is not run through `shown`, which would rewrite
+      // dashes and collapse spaces. The Rust side already wrote out every character that could mislead.
+      title: (secret ? secret.title : shown(firstLine(decision.question, 160))) || "A decision is waiting",
+      body: secret ? secret.body : "",
       note: secret ? secret.note : null,
       statusWord: "needs you",
       chatId: firstLine(decision.askedBy, 200) || null,

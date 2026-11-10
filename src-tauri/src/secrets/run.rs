@@ -1,11 +1,12 @@
 //! WP-92: `monocode secret-run --grant-stdin`, one secret into one child's environment, once. The signed grant comes
 //! on stdin, so it is never in the process list.
 //!
-//! The MCP server runs this after `secrets.run` returns a signed grant. It verifies the signature, refuses an expired
-//! grant (60 seconds) and a nonce it has already seen, re-reads the secret (refusing if the version changed or the item
-//! is gone), checks that no argv element holds the value, then spawns the command with `env_clear()` and an allow-list
-//! plus the one secret, its own process group, and stdout and stderr captured. It prints one JSON object and nothing
-//! else on stdout; the value never appears in it.
+//! The app runs this (`spawn_run`, from `secrets_grant`) after the person approves a run; the grant never leaves Rust.
+//! It verifies the signature, refuses an expired grant (60 seconds) and a nonce it has already seen, re-reads the secret
+//! (refusing if the version changed or the item is gone), checks that the pinned program still has its approved file
+//! identity, checks that no argv element holds the value, then spawns the pinned program with `env_clear()`, a fixed PATH,
+//! the account's HOME, the allow-list and the one secret, in its own process group, with stdout and stderr captured. It
+//! prints one JSON object and nothing else on stdout; the value never appears in it.
 //!
 //! A timeout is `timedOut: true` with the output so far, not a failure. A keychain that won't give the key is "not now,
 //! try again", not "wrong secret".
@@ -58,16 +59,17 @@ pub fn is_allowlisted_env(name: &str) -> bool {
     })
 }
 
-/// The child's environment: the allow-list from this process, plus the one secret. Never `MONOCODE_*`, never the app
-/// token, never a model key, never another secret.
+/// The child's environment. `PATH` is the fixed search path and `HOME` is the account's own home from the user database;
+/// neither comes from the caller, and `SHELL` is never passed on (a login shell would read the caller's files). What is
+/// left of the allow-list (locale, temporary folder, terminal) is copied from this process. Never `MONOCODE_*`, never the
+/// app token, never a model key, never another secret.
 pub fn allow_env(secret_env: &str, secret_value: &str) -> Vec<(String, String)> {
-    let mut out = Vec::new();
-    let path = crate::harness::login_shell_path()
-        .filter(|path| !path.trim().is_empty())
-        .unwrap_or_else(crate::harness::cached_gui_search_path);
-    out.push(("PATH".to_string(), path));
+    let mut out = vec![("PATH".to_string(), search_path())];
+    if let Some(home) = crate::instance::real_home() {
+        out.push(("HOME".to_string(), home.to_string_lossy().into_owned()));
+    }
     for key in ALLOWED {
-        if *key == "PATH" {
+        if matches!(*key, "PATH" | "HOME" | "SHELL") {
             continue;
         }
         if let Some(value) = std::env::var_os(key) {
@@ -78,7 +80,87 @@ pub fn allow_env(secret_env: &str, secret_value: &str) -> Vec<(String, String)> 
     out
 }
 
-/// The program, found on the allow-list PATH ourselves so a caller's PATH can never choose a different binary.
+/// The search path a command is looked up on and runs with: fixed, never read from the caller or from `$SHELL`.
+pub fn search_path() -> String {
+    crate::connectors::launch::safe_path()
+}
+
+/// The program's identity: device, inode, size and modification time (Unix), or size and modification time elsewhere. A
+/// program replaced in place, even under the same name, changes it. `None` when the path is not a file.
+pub fn program_identity(path: &Path) -> Option<String> {
+    let meta = std::fs::metadata(path).ok()?;
+    if !meta.is_file() {
+        return None;
+    }
+    let modified = meta
+        .modified()
+        .ok()?
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?
+        .as_nanos();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        Some(format!(
+            "{}:{}:{}:{}",
+            meta.dev(),
+            meta.ino(),
+            meta.len(),
+            modified
+        ))
+    }
+    #[cfg(not(unix))]
+    {
+        Some(format!("{}:{}", meta.len(), modified))
+    }
+}
+
+/// Where a program may never come from: the project, the run's own folder, a temporary folder, a worktree. The agent can
+/// write into every one of them, so a program found there is one it could have planted. `Some(why)` refuses the run.
+pub fn program_location_refusal(
+    program: &Path,
+    project: Option<&str>,
+    cwd: Option<&str>,
+) -> Option<String> {
+    let mut roots: Vec<PathBuf> = Vec::new();
+    roots.extend(project.map(PathBuf::from));
+    roots.extend(cwd.map(PathBuf::from));
+    roots.push(std::env::temp_dir());
+    for fixed in [
+        "/tmp",
+        "/private/tmp",
+        "/var/folders",
+        "/private/var/folders",
+    ] {
+        roots.push(PathBuf::from(fixed));
+    }
+    if let Some(home) = crate::instance::real_home() {
+        roots.push(home.join("Worktrees"));
+        roots.push(home.join("Projects"));
+    }
+    // A program that does not exist yet still has a folder: that folder is resolved, so a temporary folder's real path matches.
+    let program = std::fs::canonicalize(program).unwrap_or_else(|_| {
+        match (
+            program
+                .parent()
+                .and_then(|dir| std::fs::canonicalize(dir).ok()),
+            program.file_name(),
+        ) {
+            (Some(dir), Some(name)) => dir.join(name),
+            _ => program.to_path_buf(),
+        }
+    });
+    let inside = roots.iter().any(|root| {
+        let root = std::fs::canonicalize(root).unwrap_or_else(|_| root.clone());
+        program.starts_with(&root)
+    });
+    inside.then(|| {
+        "That program sits in a project, a worktree or a temporary folder, so it wasn't run. Install it somewhere else."
+            .to_string()
+    })
+}
+
+/// The program, found on the fixed search path ourselves so a caller's PATH can never choose a different binary.
 pub fn resolve_program(program: &str, path: &str) -> Option<PathBuf> {
     if program.contains('/') || (cfg!(windows) && program.contains('\\')) {
         let path = PathBuf::from(program);
@@ -303,16 +385,21 @@ pub fn execute_with_grace(
     if !super::valid_env_name(&payload.env) || is_allowlisted_env(&payload.env) {
         return Err("That run asked for a name the command already has.".to_string());
     }
-    let env = allow_env(&payload.env, value);
-    let path = env
-        .iter()
-        .find(|(key, _)| key == "PATH")
-        .map(|(_, value)| value.clone())
-        .unwrap_or_default();
+    // The program was pinned when it was approved: an absolute path and its file identity, both inside the signed payload.
+    // Anything else (a bare name, a relative path, a file replaced since) is refused before a spawn.
     let executable = payload.command.first().cloned().unwrap_or_default();
-    let Some(program) = resolve_program(&executable, &path) else {
-        return Err(format!("{executable} isn't installed on this Mac."));
-    };
+    let program = Path::new(&executable);
+    if !program.is_absolute() || payload.program_identity.is_empty() {
+        return Err(
+            "The program wasn't pinned when it was approved, so it wasn't run. Ask again.".into(),
+        );
+    }
+    if program_identity(program).as_deref() != Some(payload.program_identity.as_str()) {
+        return Err(
+            "The program changed since it was approved, so it wasn't run. Ask again.".into(),
+        );
+    }
+    let env = allow_env(&payload.env, value);
     let needles = scrub::needles(value);
     let mut command = Command::new(program);
     command
@@ -376,6 +463,44 @@ pub fn execute_with_grace(
         timed_out,
         unread,
     })
+}
+
+/// The app's own spend of one signed grant: `secret-run --grant-stdin` from this same program, with a cleared environment
+/// that holds only the fixed PATH and the account's home. The grant goes on stdin, never in an argument or the environment.
+/// The one JSON answer comes back; a refusal is its words. The grant never leaves Rust.
+pub fn spawn_run(exe: &Path, grant: &str) -> Result<serde_json::Value, String> {
+    use std::io::Write;
+    let mut command = Command::new(exe);
+    command
+        .arg(SUBCOMMAND)
+        .arg("--grant-stdin")
+        .env_clear()
+        .env("PATH", search_path())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    if let Some(home) = crate::instance::real_home() {
+        command.env("HOME", home);
+    }
+    let mut child = command
+        .spawn()
+        .map_err(|_| "Couldn't start the approved command.".to_string())?;
+    if let Some(mut stdin) = child.stdin.take() {
+        // Dropped at the end of the block: the child sees the end of its input.
+        stdin
+            .write_all(grant.as_bytes())
+            .map_err(|_| "Couldn't start the approved command.".to_string())?;
+    }
+    let output = child
+        .wait_with_output()
+        .map_err(|_| "Couldn't start the approved command.".to_string())?;
+    let text = String::from_utf8_lossy(&output.stdout);
+    let value: serde_json::Value = serde_json::from_str(text.trim())
+        .map_err(|_| "The approved command didn't answer.".to_string())?;
+    if let Some(error) = value.get("error").and_then(serde_json::Value::as_str) {
+        return Err(error.to_string());
+    }
+    Ok(value)
 }
 
 pub fn run_main(args: &[String]) -> i32 {
@@ -521,6 +646,7 @@ mod tests {
 
     #[cfg(unix)]
     fn run_payload(command: Vec<String>) -> super::super::grant::Payload {
+        let identity = program_identity(Path::new(&command[0])).unwrap_or_default();
         super::super::grant::Payload {
             scope: "global".into(),
             name: "stripe-api-key".into(),
@@ -532,6 +658,7 @@ mod tests {
             nonce: "0011223344556677".into(),
             expires_at: super::super::grant::now_millis() + 60_000,
             timeout_seconds: 5,
+            program_identity: identity,
         }
     }
 
@@ -665,6 +792,7 @@ mod tests {
 
     fn payload_for(command: &[&str]) -> super::super::grant::Payload {
         super::super::grant::Payload {
+            program_identity: program_identity(Path::new(command[0])).unwrap_or_default(),
             scope: "global".into(),
             name: "stripe-api-key".into(),
             version: 1,
@@ -683,7 +811,7 @@ mod tests {
     fn a_stream_that_stays_open_after_the_command_exits_is_reported_as_unread() {
         let data = std::env::temp_dir();
         // `sh` exits at once, but the `sleep` it started keeps the output pipe open past the reader's grace.
-        let payload = payload_for(&["sh", "-c", "sleep 4 & echo started"]);
+        let payload = payload_for(&["/bin/sh", "-c", "sleep 4 & echo started"]);
         let outcome = execute_with_grace(
             &payload,
             "sk_live_abcdefgh",
@@ -702,7 +830,7 @@ mod tests {
         assert_eq!(printed["note"], "The output could not be read in time.");
         // A silent run is a different thing: no output, and nothing unread.
         let silent = execute_with_grace(
-            &payload_for(&["sh", "-c", "exit 0"]),
+            &payload_for(&["/bin/sh", "-c", "exit 0"]),
             "sk_live_abcdefgh",
             &data,
             Duration::from_secs(5),
@@ -714,5 +842,122 @@ mod tests {
         assert_eq!(printed["outputUnread"], false);
         assert!(printed.get("note").is_none());
         assert_eq!(printed["stdout"], "");
+    }
+
+    // ---- fix round 2 (C1, H1): the child's environment and the program are pinned, and the grant is spent in Rust --------
+
+    #[test]
+    fn the_child_env_takes_no_path_or_shell_from_the_caller() {
+        // The caller's PATH and SHELL are whatever this test process has; the child must get the fixed search path.
+        let env = allow_env("STRIPE_API_KEY", "sk_live_abcdefgh");
+        let get = |key: &str| {
+            env.iter()
+                .find(|(name, _)| name == key)
+                .map(|(_, value)| value.clone())
+        };
+        assert_eq!(get("PATH").as_deref(), Some(search_path().as_str()));
+        assert!(get("SHELL").is_none(), "SHELL is never passed on");
+        assert_eq!(
+            get("HOME"),
+            crate::instance::real_home().map(|home| home.to_string_lossy().into_owned())
+        );
+    }
+
+    #[test]
+    fn a_program_in_the_project_a_worktree_or_a_temp_folder_is_refused() {
+        let project = "/Users/example/Projects/app";
+        assert!(program_location_refusal(
+            Path::new("/Users/example/Projects/app/node_modules/.bin/gh"),
+            Some(project),
+            None
+        )
+        .is_some());
+        let worktree = crate::instance::real_home()
+            .unwrap_or_else(|| PathBuf::from("/Users/example"))
+            .join("Worktrees/hivra-x/bin/stripe");
+        assert!(program_location_refusal(&worktree, None, None).is_some());
+        assert!(
+            program_location_refusal(&std::env::temp_dir().join("planted-stripe"), None, None)
+                .is_some()
+        );
+        assert!(program_location_refusal(
+            Path::new("/opt/homebrew/bin/stripe"),
+            Some(project),
+            None
+        )
+        .is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_program_replaced_after_approval_is_refused_before_it_runs() {
+        let tmp = std::env::temp_dir().join(format!("mc-swap-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        let script = tmp.join("tool");
+        std::fs::write(&script, "#!/bin/sh\necho first\n").unwrap();
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let payload = run_payload(vec![crate::fs::path_to_js(&script)]);
+        // The same name, a different file: the approved identity no longer matches.
+        std::fs::write(&script, "#!/bin/sh\necho second-and-longer\n").unwrap();
+        let err = execute(&payload, "sk_live_abcdefgh", &tmp).unwrap_err();
+        assert!(err.contains("changed since it was approved"), "{err}");
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_bare_or_relative_program_is_refused_because_nothing_was_pinned() {
+        let tmp = std::env::temp_dir();
+        for command in [vec!["stripe".to_string()], vec!["./stripe".to_string()]] {
+            let payload = run_payload(command);
+            let mut unpinned = payload.clone();
+            unpinned.program_identity = String::new();
+            let err = execute(&unpinned, "sk_live_abcdefgh", &tmp).unwrap_err();
+            assert!(err.contains("wasn't pinned"), "{err}");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn spawning_the_grant_reads_the_runners_answer_and_its_refusal() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("mc-spawn-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let script = |name: &str, body: &str| {
+            let path = dir.join(name);
+            std::fs::write(&path, body).unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+            path
+        };
+        // The fixture reads its whole stdin first, as `secret-run` does, so the grant write never races its exit.
+        let ok = script(
+            "ok",
+            "#!/bin/sh\ncat >/dev/null\nprintf '{\"exitCode\":0,\"stdout\":\"fine\"}'\n",
+        );
+        let answer = spawn_run(&ok, "grant").unwrap();
+        assert_eq!(answer["stdout"], "fine");
+        let refused = script(
+            "no",
+            "#!/bin/sh\ncat >/dev/null\nprintf '{\"error\":\"That grant is damaged.\"}'\n",
+        );
+        assert_eq!(
+            spawn_run(&refused, "grant").unwrap_err(),
+            "That grant is damaged."
+        );
+        let silent = script("silent", "#!/bin/sh\ncat >/dev/null\nprintf 'not json'\n");
+        assert!(spawn_run(&silent, "grant").is_err());
+        // The child's PATH is the fixed one, whatever this process has.
+        let path_probe = script(
+            "path",
+            "#!/bin/sh\ncat >/dev/null\nprintf '{\"stdout\":\"%s\"}' \"$PATH\"\n",
+        );
+        assert_eq!(
+            spawn_run(&path_probe, "grant").unwrap()["stdout"],
+            search_path()
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

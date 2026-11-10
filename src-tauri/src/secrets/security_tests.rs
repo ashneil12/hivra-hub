@@ -105,6 +105,7 @@ fn a_saved_value_is_in_no_database_row_whatever_window_wrote_it() {
         "mono",
         "Tally",
         "stripe",
+        "",
         "always",
         bench.now,
     )
@@ -191,6 +192,7 @@ fn dev_and_daily_names_never_cross_and_a_daily_grant_does_not_verify_in_a_dev_co
         .write(grant::KEY_SERVICE, grant::KEY_ACCOUNT, &"ab".repeat(32))
         .unwrap();
     let payload = grant::Payload {
+        program_identity: String::new(),
         scope: SCOPE_GLOBAL.into(),
         name: NAME.into(),
         version: 1,
@@ -317,7 +319,8 @@ fn a_worker_gets_the_one_variable_and_its_output_is_scrubbed() {
         NAME,
         "mono",
         "Tally",
-        "claude",
+        "worker:claude",
+        "",
         "always",
         bench.now,
     )
@@ -380,7 +383,8 @@ fn the_worker_environment_holds_no_inherited_monocode_value() {
         NAME,
         "mono",
         "Tally",
-        "claude",
+        "worker:claude",
+        "",
         "always",
         bench.now,
     )
@@ -436,7 +440,8 @@ fn a_worker_whose_output_cannot_be_scrubbed_is_refused_the_value() {
         NAME,
         "mono",
         "Tally",
-        "opencode",
+        "worker:opencode",
+        "",
         "always",
         bench.now,
     )
@@ -456,7 +461,8 @@ fn a_worker_whose_output_cannot_be_scrubbed_is_refused_the_value() {
         NAME,
         "mono",
         "Tally",
-        "claude",
+        "worker:claude",
+        "",
         "always",
         bench.now,
     )
@@ -872,7 +878,8 @@ fn armed_for(bench: &Bench, vault: &dyn Vault, session: &str) {
         NAME,
         "mono",
         "Tally",
-        "claude",
+        "worker:claude",
+        "",
         "always",
         bench.now,
     )

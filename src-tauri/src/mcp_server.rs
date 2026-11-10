@@ -118,6 +118,27 @@ impl App for LiveApp {
     }
 }
 
+/// The app actions the delegate tool sends (`App::call`). They are not in the CLI's list (`control_cli::APP_ACTIONS`), but
+/// the agent is allowed exactly these and that list. `control::serve` refuses any other action on an agent's token.
+pub(crate) const MCP_APP_ACTIONS: [&str; 16] = [
+    "monos.message",
+    "rooms.post",
+    "rooms.read",
+    "secrets.list",
+    "secrets.request",
+    "secrets.run",
+    "tasks.accept",
+    "tasks.answer",
+    "tasks.ask",
+    "tasks.cancel",
+    "tasks.cannot",
+    "tasks.delegate",
+    "tasks.fanout",
+    "tasks.message",
+    "tasks.status",
+    "tasks.wait",
+];
+
 pub(crate) fn new_request_id() -> String {
     uuid::Uuid::new_v4().simple().to_string()
 }
@@ -933,8 +954,9 @@ pub(crate) fn call_tool(call: &mut Call, name: &str, args: &Value) -> Result<Val
     }
 }
 
-/// WP-92: `secrets.run` over the app; a signed grant is then spent by this same binary as `secret-run`, so the value
-/// exists only inside that child. Missing, waiting and denied states go back to the model untouched.
+/// WP-92: `secrets.run` over the app. The app checks, asks the person, and runs the approved command itself
+/// (`secrets::commands::secrets_grant`), so the answer is the scrubbed result, a missing, waiting or denied state, or a
+/// refusal. A signed grant is never sent here: one that arrived anyway is refused, not spent.
 fn secret_run(call: &mut Call, args: &Value) -> Result<Value, String> {
     let fields = ["name", "env", "command", "cwd", "timeoutSeconds"];
     let object = arguments(args, &fields)?;
@@ -962,49 +984,10 @@ fn secret_run(call: &mut Call, args: &Value) -> Result<Value, String> {
     let outcome = call
         .app
         .call("secrets.run", &pick(object, &fields), &new_request_id())?;
-    let Some(grant) = outcome.get("grant").and_then(Value::as_str) else {
-        return Ok(outcome);
-    };
-    let exe = std::env::current_exe()
-        .map_err(|_| "Couldn't find the MonoCode program to run it.".to_string())?;
-    spend_grant(&exe, grant)
-}
-
-/// `monocode secret-run --grant-stdin`, ready to start: the grant is written to its stdin, never put in its arguments
-/// or its environment, so `ps` and Activity Monitor never show it. Its stdout is the answer; its stderr is dropped.
-fn secret_run_command(exe: &std::path::Path) -> std::process::Command {
-    let mut command = std::process::Command::new(exe);
-    command
-        .arg(crate::secrets::run::SUBCOMMAND)
-        .arg("--grant-stdin")
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped());
-    command
-}
-
-/// One `monocode secret-run --grant-stdin`: its JSON answer, or its refusal word for word.
-fn spend_grant(exe: &std::path::Path, grant: &str) -> Result<Value, String> {
-    use std::io::Write;
-    let mut child = secret_run_command(exe)
-        .spawn()
-        .map_err(|_| "Couldn't start the approved command.".to_string())?;
-    if let Some(mut stdin) = child.stdin.take() {
-        // Dropped at the end of the block: the child sees the end of its input.
-        stdin
-            .write_all(grant.as_bytes())
-            .map_err(|_| "Couldn't start the approved command.".to_string())?;
+    if outcome.get("grant").is_some() {
+        return Err("MonoCode didn't run that command, so nothing was spent.".into());
     }
-    let output = child
-        .wait_with_output()
-        .map_err(|_| "Couldn't start the approved command.".to_string())?;
-    let text = String::from_utf8_lossy(&output.stdout);
-    let value: Value = serde_json::from_str(text.trim())
-        .map_err(|_| "The approved command didn't answer.".to_string())?;
-    if let Some(error) = value.get("error").and_then(Value::as_str) {
-        return Err(error.to_string());
-    }
-    Ok(value)
+    Ok(outcome)
 }
 
 fn delegate(call: &mut Call, args: &Value) -> Result<Value, String> {
@@ -1654,44 +1637,34 @@ mod tests {
     }
 
     #[test]
-    fn the_grant_is_not_in_the_approved_commands_arguments_or_environment() {
-        let command = secret_run_command(std::path::Path::new("/x/monocode"));
-        let args: Vec<String> = command
-            .get_args()
-            .map(|arg| arg.to_string_lossy().into_owned())
-            .collect();
-        assert_eq!(args, vec!["secret-run", "--grant-stdin"]);
-        assert_eq!(
-            command.get_envs().count(),
-            0,
-            "no variable carries it either"
+    fn a_secret_run_answer_that_carries_a_grant_is_refused_not_spent() {
+        let clock = Arc::new(FakeClock::default());
+        let app = FakeApp::new(clock, |_, _, _| {
+            Ok(json!({ "state": "granted", "grant": "eyJwYXlsb2FkIjoieCJ9.c2ln" }))
+        });
+        let (outcome, _) = run_tool(
+            &app,
+            "secrets_run",
+            json!({ "name": "stripe-api-key", "env": "STRIPE_API_KEY", "command": ["stripe"] }),
         );
+        let error = outcome.unwrap_err();
+        assert!(!error.contains("eyJ"), "{error}");
     }
 
-    #[cfg(unix)]
     #[test]
-    fn the_grant_reaches_the_approved_command_on_stdin_and_nowhere_else() {
-        use std::os::unix::fs::PermissionsExt;
-        let grant = "eyJwYXlsb2FkIjoiR1JBTlQtTUFSS0VSIn0=.c2ln";
-        let dir = std::env::temp_dir().join(format!("mc-spend-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let exe = dir.join("fake-monocode");
-        // A stand-in for `monocode`: it reports what it was given as arguments, in its environment and on stdin.
-        std::fs::write(
-            &exe,
-            "#!/bin/sh\ngrant=$(cat)\nenv_has=no\ncase \"$(env)\" in *GRANT-MARKER*|*eyJwYXlsb2Fk*) env_has=yes;; esac\nprintf '{\"argv\":\"%s\",\"stdin\":\"%s\",\"env_has\":\"%s\"}' \"$*\" \"$grant\" \"$env_has\"\n",
-        )
-        .unwrap();
-        std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
-        let answer = spend_grant(&exe, grant).unwrap();
-        assert_eq!(answer["argv"], "secret-run --grant-stdin");
-        assert!(
-            !answer["argv"].as_str().unwrap().contains("eyJ"),
-            "the grant is not in the argument list"
+    fn a_secret_run_result_passes_through_without_a_grant() {
+        let clock = Arc::new(FakeClock::default());
+        let app = FakeApp::new(clock, |_, _, _| {
+            Ok(json!({ "state": "ran", "exitCode": 0, "stdout": "fine", "timedOut": false }))
+        });
+        let (outcome, _) = run_tool(
+            &app,
+            "secrets_run",
+            json!({ "name": "stripe-api-key", "env": "STRIPE_API_KEY", "command": ["stripe"] }),
         );
-        assert_eq!(answer["stdin"], grant, "it came on stdin");
-        assert_eq!(answer["env_has"], "no", "and not in the environment");
-        let _ = std::fs::remove_dir_all(&dir);
+        let outcome = outcome.unwrap();
+        assert_eq!(outcome["stdout"], "fine");
+        assert!(outcome.get("grant").is_none());
     }
 
     #[test]
@@ -1741,37 +1714,6 @@ mod tests {
         let secrets = &delegate["inputSchema"]["properties"]["secrets"];
         assert_eq!(secrets["maxItems"], 3);
         assert_eq!(secrets["items"]["required"], json!(["name", "env"]));
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn spending_a_grant_reads_the_runners_answer_and_its_refusal() {
-        use std::os::unix::fs::PermissionsExt;
-        let dir = std::env::temp_dir().join(format!("mc-grant-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let script = |name: &str, body: &str| {
-            let path = dir.join(name);
-            std::fs::write(&path, body).unwrap();
-            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
-            path
-        };
-        let ok = script(
-            "ok",
-            "#!/bin/sh\nprintf '{\"exitCode\":0,\"stdout\":\"fine\"}'\n",
-        );
-        let answer = spend_grant(&ok, "grant").unwrap();
-        assert_eq!(answer["stdout"], "fine");
-        let refused = script(
-            "no",
-            "#!/bin/sh\nprintf '{\"error\":\"That grant is damaged.\"}'\n",
-        );
-        assert_eq!(
-            spend_grant(&refused, "grant").unwrap_err(),
-            "That grant is damaged."
-        );
-        let silent = script("silent", "#!/bin/sh\nprintf 'not json'\n");
-        assert!(spend_grant(&silent, "grant").is_err());
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
