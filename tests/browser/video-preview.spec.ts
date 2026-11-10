@@ -1,22 +1,47 @@
 import { expect, test } from "@playwright/test";
 
-// One play, then one more if the first call was aborted or did not start. A media error is not retried.
-async function playOnce(element: HTMLVideoElement): Promise<void> {
+// WebKit does not buffer until play() is called, so that first promise can reject
+// with AbortError before a frame exists. Wait until the element has data, then
+// play once if it is still paused. A media error fails. There is no timer and
+// no second attempt after that.
+async function playWhenReady(element: HTMLVideoElement): Promise<void> {
   element.muted = true;
+  if (element.error) throw new Error(element.error.message);
+  const dataReady = () =>
+    element.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA || element.currentTime > 0;
   const first = element.play();
-  let timer = 0;
-  const timed = new Promise<never>((_, reject) => {
-    timer = window.setTimeout(() => reject(new DOMException("The play call did not start", "AbortError")), 3_000);
-  });
-  try {
-    await Promise.race([first, timed]);
-    window.clearTimeout(timer);
-  } catch (error) {
-    window.clearTimeout(timer);
-    void first.catch(() => undefined);
-    if (element.error) throw error;
-    await element.play();
+  if (!dataReady()) {
+    await new Promise<void>((resolve, reject) => {
+      const stop = () => {
+        element.removeEventListener("loadeddata", done);
+        element.removeEventListener("playing", done);
+        element.removeEventListener("timeupdate", done);
+        element.removeEventListener("error", fail);
+      };
+      const done = () => {
+        stop();
+        resolve();
+      };
+      const fail = () => {
+        stop();
+        reject(new Error(element.error?.message || "The video could not be decoded"));
+      };
+      element.addEventListener("loadeddata", done);
+      element.addEventListener("playing", done);
+      element.addEventListener("timeupdate", done);
+      element.addEventListener("error", fail);
+      if (dataReady()) done();
+    });
   }
+  try {
+    await first;
+  } catch (error) {
+    if (element.error) throw error;
+    const name = error instanceof DOMException ? error.name : "";
+    if (name !== "AbortError") throw error;
+  }
+  if (element.error) throw new Error(element.error.message);
+  if (element.paused) await element.play();
 }
 
 test("file preview decodes, plays and seeks a video, then pauses on tab change", async ({
@@ -45,11 +70,10 @@ test("file preview decodes, plays and seeks a video, then pauses on tab change",
   await expect(page.locator("footer").first()).toContainText("160 × 90");
   await expect(page.locator("footer").first()).toContainText("0:03");
 
-  // Metadata is not enough on a cold WebKit pipeline: the first play() can be
-  // aborted before a frame is buffered, and waiting for canplay first never
-  // arrives because WebKit does not buffer until play() is called. Try play(),
-  // and if that call does not start, try once more. A real media error still fails.
-  await video.evaluate(playOnce);
+  // Metadata is not enough on a cold WebKit pipeline: it does not buffer until
+  // play() is called, and that promise can reject before a frame exists. Wait
+  // until the element has data, then play once if it is still paused.
+  await video.evaluate(playWhenReady);
   await expect
     .poll(() =>
       video.evaluate((element: HTMLVideoElement) => element.currentTime),
@@ -79,7 +103,7 @@ test("file preview decodes, plays and seeks a video, then pauses on tab change",
   expect(bounds!.width).toBeLessThanOrEqual(850);
   expect(bounds!.height).toBeLessThanOrEqual(600);
 
-  await video.evaluate(playOnce);
+  await video.evaluate(playWhenReady);
   await page.getByRole("button", { name: "Hide workspace" }).click();
   await expect(video).toBeHidden();
   await expect
