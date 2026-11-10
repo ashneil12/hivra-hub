@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, useSyncExternalStore, type RefObject } from "react";
-import { createWorktree } from "../../source-control/model/worktrees";
+import { createWorktree, removeWorktree } from "../../source-control/model/worktrees";
 import { loadNewChatWorktree } from "../../settings/model/settings";
 import type { Session } from "../model/session";
 import {
@@ -22,7 +22,7 @@ import { ThreadForkDialog } from "./ThreadForkDialog";
 type Props = {
   sessionsRef: RefObject<Session[]>;
   onOpen: (session: Session) => void;
-  /** Worktree creation and image copies. Tests pass a stub. The real calls are the app's own. */
+  /** Worktree creation and removal, and image copies. Tests pass a stub. The real calls are the app's own. */
   port?: ForkPort;
   /** Read once when the dialog opens. Defaults to the new-chat worktree setting. */
   setting?: () => unknown;
@@ -31,7 +31,8 @@ type Props = {
 /**
  * WP-123: confirms a fork and opens the copy. The original session is only
  * read. A second click while one fork is in flight does nothing, and a cancel
- * drops a worktree result that arrives late.
+ * stops it: whatever it had made (a worktree, image copies) is removed. If the
+ * fork opened but something did not come along, the confirm stays to say so.
  */
 export function ThreadForkHost({
   sessionsRef,
@@ -45,6 +46,8 @@ export function ThreadForkHost({
     threadForkAskSnapshot,
   );
   const [error, setError] = useState<string | null>(null);
+  /** Set when the fork is open and the confirm stays only to say what did not come along. */
+  const [notice, setNotice] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [useWorktree, setUseWorktree] = useState(false);
   const busyRef = useRef(false);
@@ -52,10 +55,16 @@ export function ThreadForkHost({
   const finished = useRef<number | null>(null);
   const gate = useRef<ForkAttemptGate | null>(null);
   if (!gate.current) gate.current = forkAttemptGate();
-  const worktreePort: ForkPort = port ?? { createWorktree, ...forkImagePort };
+  const worktreePort: ForkPort = port ?? {
+    createWorktree,
+    // Taking back a worktree that was just made for a fork nobody kept: it has no chats, so nothing is detached.
+    removeWorktree: (cwd, path, force) => removeWorktree(cwd, path, force, true),
+    ...forkImagePort,
+  };
 
   useEffect(() => {
     setError(null);
+    setNotice(null);
     busyRef.current = false;
     setBusy(false);
     if (!ask) return;
@@ -89,6 +98,7 @@ export function ThreadForkHost({
     const wanted = useWorktree;
     void (async () => {
       try {
+        const said: { line: string | null } = { line: null };
         const fork = await forkChat(
           session,
           request.blockId,
@@ -96,6 +106,11 @@ export function ThreadForkHost({
             useNewWorktree: wanted,
             readSource: () =>
               sessionsRef.current?.find((item) => item.id === request.sessionId),
+            // A cancel or a newer attempt: forkChat stops and takes back what it made.
+            cancelled: () => !gate.current!.current(ticket),
+            onNotice: (line) => {
+              said.line = line;
+            },
           },
           worktreePort,
         );
@@ -106,7 +121,8 @@ export function ThreadForkHost({
         }
         finished.current = request.token;
         onOpen(fork);
-        clearThreadForkAsk();
+        if (said.line) setNotice(said.line);
+        else clearThreadForkAsk();
       } catch (err) {
         if (!gate.current!.current(ticket)) return;
         setError(forkWorktreeError(err));
@@ -122,10 +138,12 @@ export function ThreadForkHost({
   return (
     <ThreadForkDialog
       error={error}
+      notice={notice}
       busy={busy}
       worktree={{ checked: useWorktree, onChange: setUseWorktree }}
       onFork={confirm}
       onCancel={() => {
+        // Once the fork is open this only closes the note; there is nothing in flight to stop.
         gate.current?.cancel();
         busyRef.current = false;
         setBusy(false);

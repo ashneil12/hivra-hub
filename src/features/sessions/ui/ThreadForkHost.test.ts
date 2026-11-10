@@ -533,7 +533,7 @@ it("shows why an image could not be copied, opens no chat and makes no worktree"
       return worktree();
     },
     copyImage: async () => {
-      throw new Error("No such file");
+      throw new Error("/data/generated-images/one.png: Permission denied (os error 13)");
     },
     removeImages: async () => {},
   };
@@ -544,9 +544,192 @@ it("shows why an image could not be copied, opens no chat and makes no worktree"
     document.querySelector<HTMLButtonElement>("[data-thread-fork-confirm]")?.click();
   });
   expect(document.querySelector("[role=alert]")?.textContent).toBe(
-    "An image in this chat could not be copied: No such file",
+    "An image in this chat could not be copied. Try again.",
   );
   expect(document.querySelector("[role=alert]")?.textContent).not.toMatch(/[—–]/);
   expect(opened).toHaveLength(0);
   expect(worktrees).toBe(0);
+});
+
+it("opens the fork without a picture whose original is gone", async () => {
+  const source = pictureChat();
+  const port: ForkPort = {
+    createWorktree: async () => worktree(),
+    copyImage: async () => null,
+    removeImages: async () => {},
+  };
+  const opened: Session[] = [];
+  await renderHost(source, opened, { port, setting: () => "off" });
+  act(() => askThreadFork(source.id, "a1"));
+  await act(async () => {
+    document.querySelector<HTMLButtonElement>("[data-thread-fork-confirm]")?.click();
+  });
+  expect(document.querySelector("[role=alert]")).toBeNull();
+  expect(opened).toHaveLength(1);
+  expect(opened[0].blocks.map((entry) => entry.text)).toEqual(["Draw a cat", "", "Here it is"]);
+  expect(opened[0].blocks[1].image).toBeUndefined();
+  expect(source.blocks[1].image?.path).toBe("/data/generated-images/one.png");
+});
+
+const NOTICE = "Uncommitted changes in this chat's worktree weren't copied.";
+
+function noticePort(over: Partial<ForkPort> = {}) {
+  const removed: string[] = [];
+  const port: ForkPort = {
+    createWorktree: async () => ({ ...worktree("/work/proj-fork"), changesNotice: NOTICE }),
+    removeWorktree: async (_cwd, path) => {
+      removed.push(path);
+    },
+    ...over,
+  };
+  return { port, removed };
+}
+
+it("opens the fork and says on the confirm that the uncommitted changes were not copied", async () => {
+  const source = chat();
+  const { port, removed } = noticePort();
+  const opened: Session[] = [];
+  await renderHost(source, opened, { port, setting: () => "always" });
+  act(() => askThreadFork(source.id, "a1"));
+  await act(async () => {
+    document.querySelector<HTMLButtonElement>("[data-thread-fork-confirm]")?.click();
+  });
+  expect(opened).toHaveLength(1);
+  expect(opened[0].worktreeCwd).toBe("/work/proj-fork");
+  const dialog = document.querySelector("[data-thread-fork-dialog]");
+  expect(dialog).not.toBeNull();
+  expect(document.querySelector("[data-thread-fork-notice]")?.textContent).toBe(NOTICE);
+  expect(document.querySelector("[role=alert]")).toBeNull();
+  expect(dialog?.textContent).not.toMatch(/[—–]/);
+  // It is a note about a chat that already exists: no second fork, no worktree choice, no cancel.
+  expect(document.querySelector("[data-thread-fork-confirm]")).toBeNull();
+  expect(document.querySelector("[data-thread-fork-worktree]")).toBeNull();
+  expect(document.querySelector("[data-thread-fork-cancel]")).toBeNull();
+  await act(async () => {
+    document.querySelector<HTMLButtonElement>("[data-thread-fork-done]")?.click();
+  });
+  expect(document.querySelector("[data-thread-fork-dialog]")).toBeNull();
+  expect(opened).toHaveLength(1);
+  expect(removed).toEqual([]);
+});
+
+it("keeps the fork and its worktree when the note is dismissed with Escape", async () => {
+  const source = chat();
+  const { port, removed } = noticePort();
+  const opened: Session[] = [];
+  await renderHost(source, opened, { port, setting: () => "always" });
+  act(() => askThreadFork(source.id, "a1"));
+  await act(async () => {
+    document.querySelector<HTMLButtonElement>("[data-thread-fork-confirm]")?.click();
+  });
+  await act(async () => {
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
+  });
+  expect(document.querySelector("[data-thread-fork-dialog]")).toBeNull();
+  expect(opened).toHaveLength(1);
+  expect(removed).toEqual([]);
+});
+
+it("shows no note when the changes were copied", async () => {
+  const source = chat();
+  const opened: Session[] = [];
+  const port: ForkPort = { createWorktree: async () => worktree("/work/proj-fork") };
+  await renderHost(source, opened, { port, setting: () => "always" });
+  act(() => askThreadFork(source.id, "a1"));
+  await act(async () => {
+    document.querySelector<HTMLButtonElement>("[data-thread-fork-confirm]")?.click();
+  });
+  expect(opened).toHaveLength(1);
+  expect(document.querySelector("[data-thread-fork-dialog]")).toBeNull();
+});
+
+it("removes the worktree and the image copies when cancelled while the worktree is created", async () => {
+  const source = { ...pictureChat(), worktreeCwd: "/work/proj-wt-a" };
+  const pending = deferred<Worktree>();
+  const removedTrees: unknown[][] = [];
+  const removedImages: string[][] = [];
+  const port: ForkPort = {
+    createWorktree: () => pending.promise,
+    removeWorktree: async (...args) => {
+      removedTrees.push(args);
+    },
+    copyImage: async () => ({ path: "/data/generated-images/copy.png", mimeType: "image/png", size: 10 }),
+    removeImages: async (paths) => {
+      removedImages.push(paths);
+    },
+  };
+  const opened: Session[] = [];
+  await renderHost(source, opened, { port, setting: () => "always" });
+  act(() => askThreadFork(source.id, "a1"));
+  await act(async () => {
+    document.querySelector<HTMLButtonElement>("[data-thread-fork-confirm]")?.click();
+  });
+  await act(async () => {
+    document.querySelector<HTMLButtonElement>("[data-thread-fork-cancel]")?.click();
+  });
+  expect(removedTrees).toEqual([]);
+  await act(async () => {
+    pending.resolve(worktree("/work/proj-fork"));
+  });
+  expect(opened).toHaveLength(0);
+  expect(removedTrees).toEqual([["/work/proj-wt-a", "/work/proj-fork", true]]);
+  expect(removedImages).toEqual([["/data/generated-images/copy.png"]]);
+  expect(document.querySelector("[data-thread-fork-dialog]")).toBeNull();
+});
+
+it("removes the image copies when cancelled while they are copied, and makes no worktree", async () => {
+  const source = pictureChat();
+  const copying = deferred<{ path: string; mimeType: string; size: number }>();
+  let worktrees = 0;
+  const removedImages: string[][] = [];
+  const port: ForkPort = {
+    createWorktree: async () => {
+      worktrees += 1;
+      return worktree();
+    },
+    copyImage: () => copying.promise,
+    removeImages: async (paths) => {
+      removedImages.push(paths);
+    },
+  };
+  const opened: Session[] = [];
+  await renderHost(source, opened, { port, setting: () => "always" });
+  act(() => askThreadFork(source.id, "a1"));
+  await act(async () => {
+    document.querySelector<HTMLButtonElement>("[data-thread-fork-confirm]")?.click();
+  });
+  await act(async () => {
+    document.querySelector<HTMLButtonElement>("[data-thread-fork-cancel]")?.click();
+  });
+  await act(async () => {
+    copying.resolve({ path: "/data/generated-images/copy.png", mimeType: "image/png", size: 10 });
+  });
+  expect(opened).toHaveLength(0);
+  expect(worktrees).toBe(0);
+  expect(removedImages).toEqual([["/data/generated-images/copy.png"]]);
+});
+
+it("keeps the copies and the worktree of a fork that was not cancelled", async () => {
+  const source = pictureChat();
+  const removedTrees: unknown[][] = [];
+  const removedImages: string[][] = [];
+  const port: ForkPort = {
+    createWorktree: async () => worktree("/work/proj-fork"),
+    removeWorktree: async (...args) => {
+      removedTrees.push(args);
+    },
+    copyImage: async () => ({ path: "/data/generated-images/copy.png", mimeType: "image/png", size: 10 }),
+    removeImages: async (paths) => {
+      removedImages.push(paths);
+    },
+  };
+  const opened: Session[] = [];
+  await renderHost(source, opened, { port, setting: () => "always" });
+  act(() => askThreadFork(source.id, "a1"));
+  await act(async () => {
+    document.querySelector<HTMLButtonElement>("[data-thread-fork-confirm]")?.click();
+  });
+  expect(opened).toHaveLength(1);
+  expect(removedTrees).toEqual([]);
+  expect(removedImages).toEqual([]);
 });

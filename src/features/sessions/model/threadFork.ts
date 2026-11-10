@@ -37,7 +37,8 @@ export type ForkImageAsset = {
  * therefore gets a file of its own instead of sharing the path.
  */
 export type ForkImagePort = {
-  copyImage: (path: string, name: string) => Promise<ForkImageAsset>;
+  /** A copy of the file, or null when the original is no longer on disk. Any other failure throws. */
+  copyImage: (path: string, name: string) => Promise<ForkImageAsset | null>;
   removeImages: (paths: string[]) => Promise<void>;
 };
 
@@ -152,13 +153,14 @@ function copyThreads(
 
 /**
  * `images` is set for the chat's own messages: each generated image in them must have a copy of its file, or
- * nothing is returned. A side thread's messages pass null and keep what they point at.
+ * nothing is returned. A null copy means the original's file is gone: that block is kept without its picture. A side
+ * thread's messages pass null and keep what they point at.
  */
 function copyBlocks(
   blocks: readonly Block[],
   end: number,
   ids: ForkIds,
-  images: ReadonlyMap<string, ForkImageAsset> | null,
+  images: ReadonlyMap<string, ForkImageAsset | null> | null,
 ): { blocks: Block[]; blockIds: Map<string, string> } | null {
   if (end < 0 || end >= blocks.length) return null;
   let cloned: Block[];
@@ -182,13 +184,17 @@ function copyBlocks(
     if (block.approval && !block.approval.decided) delete block.approval;
     if (images && block.role === "image" && typeof block.image?.path === "string") {
       const file = images.get(block.image.path);
-      if (!file) return null;
-      block.image = {
-        ...block.image,
-        path: file.path,
-        mimeType: file.mimeType,
-        size: file.size,
-      };
+      if (file === undefined) return null;
+      if (file === null) {
+        delete block.image;
+      } else {
+        block.image = {
+          ...block.image,
+          path: file.path,
+          mimeType: file.mimeType,
+          size: file.size,
+        };
+      }
     }
     if (block.attachments) {
       const files: Attachment[] = [];
@@ -232,14 +238,15 @@ function forkBoundary(
  * A new chat whose blocks are a copy of `source` through `blockId`, inclusive.
  * Returns null when that message is not a user or assistant message, or when a
  * generated image in the copy has no file of its own in `images` (by the
- * original's path; `forkChat` makes those copies). Does not mutate `source`.
+ * original's path; `forkChat` makes those copies, or null for a file that is
+ * gone, which leaves the block without its picture). Does not mutate `source`.
  */
 export function forkSessionAtMessage(
   source: Session,
   blockId: string,
   ids: ForkIds = defaultIds(),
   sessionId?: string,
-  images: ReadonlyMap<string, ForkImageAsset> = new Map(),
+  images: ReadonlyMap<string, ForkImageAsset | null> = new Map(),
 ): Session | null {
   if (
     !source ||
@@ -302,6 +309,8 @@ export function forkSessionAtMessage(
 export type ForkBrief = {
   from: HarnessId;
   to: HarnessId;
+  /** Tells the send to word the recap as a fork's (`wrapForkPrompt`), not as a handoff's. */
+  fork: true;
   text: string;
   /** Messages typed in the fork after the copy and before a turn was taken (a first send that failed). */
   earlier: string[];
@@ -331,7 +340,7 @@ export function pendingForkBrief(session: Session): ForkBrief | null {
     .filter((block) => block.role === "user")
     .map((block) => (block.ciContext || block.text).trim())
     .filter(Boolean);
-  return { from: session.harness, to: session.harness, text, earlier };
+  return { from: session.harness, to: session.harness, fork: true, text, earlier };
 }
 
 /** A turn was taken: the fork no longer owes its recap. Blocks are replaced, not edited, so the save sees it. */
@@ -423,13 +432,20 @@ export type ForkWorktreePort = {
     branch: string,
     base: string,
     existing: boolean,
+    options?: { carryChanges?: boolean },
   ) => Promise<Worktree>;
+  /** Takes back a worktree this fork made and did not keep: after a cancel, or when no fork came of it. */
+  removeWorktree?: (cwd: string, path: string, force: boolean) => Promise<unknown>;
 };
 
 export type ForkChatOptions = {
   useNewWorktree: boolean;
   /** Read the chat again after the worktree exists, so a late edit is kept. */
   readSource?: () => Session | undefined;
+  /** True once the person cancelled. The fork stops, and what it made so far is removed. */
+  cancelled?: () => boolean;
+  /** A line for the confirm: the fork was made, but something the person should know did not come along. */
+  onNotice?: (line: string) => void;
 };
 
 export type ForkPort = ForkWorktreePort & Partial<ForkImagePort>;
@@ -481,34 +497,38 @@ function imagesThrough(session: Session, blockId: string): { path: string; name:
   return [...found].map(([path, name]) => ({ path, name }));
 }
 
-function imageFailure(reason: unknown): Error {
-  const text = reason instanceof Error ? reason.message : typeof reason === "string" ? reason : "";
-  return new Error(`An image in this chat could not be copied: ${text || "try again."}`);
-}
+/** The refusal for an image that could not be copied. The underlying error names a file, so it is not shown. */
+const IMAGE_FAILED = "An image in this chat could not be copied. Try again.";
 
 /** The image files made for one fork, kept until the fork is built so a failure can remove them again. */
-function imageCopies(port: Partial<ForkImagePort>) {
-  const copies = new Map<string, ForkImageAsset>();
+function imageCopies(port: Partial<ForkImagePort>, cancelled: () => boolean) {
+  const copies = new Map<string, ForkImageAsset | null>();
+  const removed = new Set<string>();
   return {
     copies,
-    /** Copy each generated image up to the message that has no copy yet. A failure stops the fork. */
+    /**
+     * Copy each generated image up to the message that has no copy yet. An original that is gone is recorded as
+     * null; any other failure stops the fork. A cancel stops copying.
+     */
     async copyThrough(session: Session, blockId: string): Promise<void> {
       for (const { path, name } of imagesThrough(session, blockId)) {
         if (copies.has(path)) continue;
-        if (!port.copyImage) throw imageFailure("this window cannot copy images.");
+        if (cancelled()) return;
+        if (!port.copyImage) throw new Error(IMAGE_FAILED);
         try {
           copies.set(path, await port.copyImage(path, name));
-        } catch (error) {
-          throw imageFailure(error);
+        } catch {
+          throw new Error(IMAGE_FAILED);
         }
       }
     },
     /** Remove the copies that the finished chat does not use. Best effort: the fork's own result stands. */
     async discard(used: ReadonlySet<string>): Promise<void> {
       const unused = [...copies.values()]
-        .map((file) => file.path)
-        .filter((path) => !used.has(path));
+        .flatMap((file) => (file ? [file.path] : []))
+        .filter((path) => !used.has(path) && !removed.has(path));
       if (unused.length === 0 || !port.removeImages) return;
+      for (const path of unused) removed.add(path);
       try {
         await port.removeImages(unused);
       } catch {
@@ -527,10 +547,11 @@ function imagePaths(session: Session | null): Set<string> {
 }
 
 /**
- * Copy the chat. When a new worktree is requested, creation goes through the
- * port and a refusal is left to the caller. This never removes a worktree.
- * Generated images are copied first, so an image that cannot be copied stops
- * the fork before a worktree exists, and a refused fork leaves no files behind.
+ * Copy the chat. When a new worktree is requested, creation goes through the port and a refusal is left to the
+ * caller. The worktree starts from the chat's own checkout and carries its uncommitted changes; if they could not be
+ * copied the fork is still made and `onNotice` hears it. Generated images are copied first, so an image that cannot
+ * be copied stops the fork before a worktree exists. Whatever this made (image copies, the worktree) is removed again
+ * when no fork comes of it: a refusal, a message that is gone, or a cancel (`cancelled`).
  */
 export async function forkChat(
   source: Session,
@@ -540,30 +561,62 @@ export async function forkChat(
   ids: ForkIds = defaultIds(),
 ): Promise<Session | null> {
   if (!forkStillValid(source, blockId)) return null;
-  const images = imageCopies(port);
-  let result: Session | null = null;
-  try {
+  const cancelled = () => options.cancelled?.() === true;
+  const images = imageCopies(port, cancelled);
+  const root = worktreeOrigin(source);
+  // Held in an object: the build below assigns it, which control-flow analysis does not follow for a `let`.
+  const made: { tree: Worktree | null } = { tree: null };
+
+  const undo = async () => {
+    await images.discard(new Set());
+    const path = made.tree?.path;
+    if (typeof path !== "string" || !path || !port.removeWorktree) return;
+    try {
+      await port.removeWorktree(root, path, true);
+    } catch {
+      // The worktree stays; Settings > Worktrees lists it for clean-up.
+    }
+  };
+
+  const build = async (): Promise<Session | null> => {
     await images.copyThrough(source, blockId);
+    if (cancelled()) return null;
     if (!options.useNewWorktree) {
-      result = forkSessionAtMessage(source, blockId, ids, undefined, images.copies);
-      return result;
+      return forkSessionAtMessage(source, blockId, ids, undefined, images.copies);
     }
     const sessionId = takeId(ids);
     if (!sessionId) return null;
     const tree = await port.createWorktree(
-      worktreeOrigin(source),
+      root,
       temporaryWorktreeBranchName(sessionId),
       "HEAD",
       false,
+      { carryChanges: true },
     );
+    made.tree = tree;
+    if (cancelled()) return null;
     const live = options.readSource ? options.readSource() : source;
     if (!forkStillValid(live, blockId)) return null;
     await images.copyThrough(live!, blockId);
+    if (cancelled()) return null;
     const fork = forkSessionAtMessage(live!, blockId, ids, sessionId, images.copies);
-    if (!fork) return null;
-    result = withForkWorktree(fork, tree);
-    return result;
-  } finally {
-    await images.discard(imagePaths(result));
+    return fork ? withForkWorktree(fork, tree) : null;
+  };
+
+  let fork: Session | null;
+  try {
+    fork = await build();
+  } catch (error) {
+    await undo();
+    throw error;
   }
+  // Copies a late edit left unused go first; everything else is checked after, so the last look at a cancel comes
+  // right before the result is handed back.
+  if (fork) await images.discard(imagePaths(fork));
+  if (!fork || cancelled()) {
+    await undo();
+    return null;
+  }
+  if (made.tree?.changesNotice) options.onNotice?.(made.tree.changesNotice);
+  return fork;
 }

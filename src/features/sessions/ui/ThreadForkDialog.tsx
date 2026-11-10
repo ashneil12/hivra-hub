@@ -5,6 +5,11 @@ import { NativePopupHost } from "../../../shared/ui/NativePopupHost";
 
 type Props = {
   error: string | null;
+  /**
+   * Set once the fork is made and open, when something did not come along (the chat's uncommitted changes). The
+   * confirm then only says so: there is nothing left to choose or cancel.
+   */
+  notice?: string | null;
   busy?: boolean;
   worktree?: {
     checked: boolean;
@@ -12,22 +17,26 @@ type Props = {
   };
   onFork: () => void;
   onCancel: () => void;
+  /** Closes the note. The fork stays. */
+  onDone?: () => void;
 };
 
 /** Confirm before a chat is copied from one message. */
 export function ThreadForkDialog({
   error,
+  notice = null,
   busy = false,
   worktree,
   onFork,
   onCancel,
+  onDone,
 }: Props) {
   const host = useContext(NativePopupHost);
   const confirmRef = useRef<HTMLButtonElement>(null);
 
   useEffect(() => {
     confirmRef.current?.focus();
-  }, []);
+  }, [notice]);
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
@@ -64,13 +73,23 @@ export function ThreadForkDialog({
             id="thread-fork-title"
             className="text-[13px] font-medium leading-tight text-content"
           >
-            Fork this chat?
+            {notice ? "The new chat is open." : "Fork this chat?"}
           </h2>
-          <p className="text-[12px] leading-snug text-content/55">
-            A new chat keeps the messages up to here. This chat stays as it is.
-          </p>
+          {notice ? (
+            <p
+              role="status"
+              data-thread-fork-notice
+              className="text-[12px] leading-snug text-content/70"
+            >
+              {notice}
+            </p>
+          ) : (
+            <p className="text-[12px] leading-snug text-content/55">
+              A new chat keeps the messages up to here. This chat stays as it is.
+            </p>
+          )}
         </div>
-        {worktree ? (
+        {worktree && !notice ? (
           <label className="flex items-center gap-2 text-[12px] text-content/80">
             <input
               type="checkbox"
@@ -88,24 +107,38 @@ export function ThreadForkDialog({
           </p>
         ) : null}
         <div className="flex flex-wrap justify-end gap-2">
-          <button
-            type="button"
-            data-thread-fork-cancel
-            onClick={onCancel}
-            className="rounded-md px-3 py-1.5 text-[12px] text-content/70 hover:bg-content/8 hover:text-content disabled:opacity-40"
-          >
-            Cancel
-          </button>
-          <button
-            ref={confirmRef}
-            type="button"
-            data-thread-fork-confirm
-            disabled={busy}
-            onClick={onFork}
-            className="inline-flex items-center gap-1.5 rounded-md bg-content px-3 py-1.5 text-[12px] font-medium text-background-base hover:bg-content/80 disabled:opacity-40"
-          >
-            Fork
-          </button>
+          {notice ? (
+            <button
+              ref={confirmRef}
+              type="button"
+              data-thread-fork-done
+              onClick={onDone ?? onCancel}
+              className="inline-flex items-center gap-1.5 rounded-md bg-content px-3 py-1.5 text-[12px] font-medium text-background-base hover:bg-content/80"
+            >
+              OK
+            </button>
+          ) : (
+            <>
+              <button
+                type="button"
+                data-thread-fork-cancel
+                onClick={onCancel}
+                className="rounded-md px-3 py-1.5 text-[12px] text-content/70 hover:bg-content/8 hover:text-content disabled:opacity-40"
+              >
+                Cancel
+              </button>
+              <button
+                ref={confirmRef}
+                type="button"
+                data-thread-fork-confirm
+                disabled={busy}
+                onClick={onFork}
+                className="inline-flex items-center gap-1.5 rounded-md bg-content px-3 py-1.5 text-[12px] font-medium text-background-base hover:bg-content/80 disabled:opacity-40"
+              >
+                Fork
+              </button>
+            </>
+          )}
         </div>
       </div>
     </div>,

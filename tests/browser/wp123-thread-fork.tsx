@@ -24,6 +24,8 @@ import "../../src/styles/index.css";
 const DIRTY =
   "error: Your local changes to the following files would be overwritten by checkout:\n\tfile.txt\nPlease commit your changes or stash them before you switch branches.";
 
+const NOT_COPIED = "Uncommitted changes in this chat's worktree weren't copied.";
+
 const PROJECT = "C:\\work\\my notes";
 
 function message(id: string, role: Block["role"], text: string): Block {
@@ -93,6 +95,10 @@ function Page() {
   const [sessions, setSessions] = useState<Session[]>([original]);
   const [refuse, setRefuse] = useState(false);
   const [created, setCreated] = useState<string[]>([]);
+  const [removed, setRemoved] = useState<string[]>([]);
+  const [notCopied, setNotCopied] = useState(false);
+  const [hold, setHold] = useState(false);
+  const release = useRef<(() => void) | null>(null);
   const sessionsRef = useRef(sessions);
   sessionsRef.current = sessions;
   const setting = useSyncExternalStore(
@@ -107,7 +113,8 @@ function Page() {
     terminal: true,
     chat: false,
     busy: false,
-    control: false,
+    terminalFocus: false,
+    pickerFocus: false,
     editor: false,
   }).find((row) => row.id === "session.fork-from-here");
   const command = resolvePaletteRows({
@@ -115,7 +122,8 @@ function Page() {
     terminal: true,
     chat: true,
     busy: false,
-    control: false,
+    terminalFocus: false,
+    pickerFocus: false,
     editor: false,
   }).find((row) => row.id === "session.fork-from-here");
 
@@ -123,10 +131,9 @@ function Page() {
     if (!command) return;
     const side: PaletteSideEffects = {
       run: (_name, fn) => fn(),
-      archiveChat: () => source.id,
       stopChat: () => null,
-      archive: noop,
       stop: noop,
+      archiveFocused: noop,
       showHome: noop,
       showChanges: noop,
       openModelPicker: noop,
@@ -177,7 +184,29 @@ function Page() {
         />
         Refuse the new worktree
       </label>
+      <label>
+        <input
+          type="checkbox"
+          data-not-copied
+          checked={notCopied}
+          onChange={(event) => setNotCopied(event.target.checked)}
+        />
+        The chat's uncommitted changes cannot be copied
+      </label>
+      <label>
+        <input
+          type="checkbox"
+          data-hold-worktree
+          checked={hold}
+          onChange={(event) => setHold(event.target.checked)}
+        />
+        Hold the new worktree
+      </label>
+      <button type="button" data-release-worktree onClick={() => release.current?.()}>
+        Release the worktree
+      </button>
       <p data-created-paths>{created.join("\n")}</p>
+      <p data-removed-paths>{removed.join("\n")}</p>
       <section data-forks>
         {forks.map((fork) => (
           <article key={fork.id} data-fork-chat>
@@ -197,7 +226,15 @@ function Page() {
           createWorktree: async (cwd) => {
             if (refuse) throw new Error(DIRTY);
             setCreated((paths) => [...paths, cwd]);
-            return tree(`${cwd}\\wt`);
+            if (hold) {
+              await new Promise<void>((resolve) => {
+                release.current = resolve;
+              });
+            }
+            return { ...tree(`${cwd}\\wt`), ...(notCopied ? { changesNotice: NOT_COPIED } : {}) };
+          },
+          removeWorktree: async (_cwd, path) => {
+            setRemoved((paths) => [...paths, path]);
           },
         }}
         onOpen={(session) => {

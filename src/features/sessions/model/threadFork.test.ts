@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { memoryReadableBlocks, UNREADABLE_BOUNDARY } from "../../memory/model/privateChat";
 import { temporaryWorktreeBranchName, type Worktree } from "../../source-control/model/worktrees";
 import { sanitizeSessionForPersist } from "../data/sessionStore";
-import { pendingHandoff, wrapHandoffPrompt } from "./handoff";
+import { pendingHandoff, wrapForkPrompt, wrapHandoffPrompt } from "./handoff";
 import { newSession, type Attachment, type Block, type Session } from "./session";
 import { clearThreadForkAsk, threadForkAskSnapshot } from "./threadForkAsk";
 import {
@@ -442,6 +442,7 @@ describe("forkChat", () => {
       temporaryWorktreeBranchName("fork-1"),
       "HEAD",
       false,
+      { carryChanges: true },
     ]);
     expect(fork!.id).toBe("fork-1");
     expect(fork!.worktreeCwd).toBe("C:\\work\\my notes\\wt");
@@ -625,7 +626,7 @@ describe("the first send from a fork", () => {
   /** The calls App.tsx makes when a chat's next message goes out: a fork's recap, else a handoff's. */
   function firstPrompt(session: Session, typed: string): string | null {
     const owed = pendingForkBrief(session);
-    if (owed) return wrapHandoffPrompt(owed.text, owed.from, typed, owed.earlier);
+    if (owed) return wrapForkPrompt(owed.text, typed, owed.earlier);
     const handoff = pendingHandoff(session);
     return handoff ? wrapHandoffPrompt(handoff.text, handoff.from, typed) : null;
   }
@@ -731,6 +732,12 @@ describe("the first send from a fork, as the app sends it", () => {
     );
   });
 
+  it("words a fork's recap as a fork's, and a handoff's as a handoff's", () => {
+    expect(app).toMatch(
+      /wrap\.fork\s*\? wrapForkPrompt\(\s*wrap\.text,\s*turnPrompt\.trim\(\) \|\| CONTINUE_PROMPT,\s*earlier,\s*\)\s*: wrapHandoffPrompt\(/,
+    );
+  });
+
   it("clears the saved fork point once a turn is taken, and leaves it for a slash command", () => {
     expect(app).toMatch(/rawCommand\s*\? ready\s*: consumeForkPoint\(consumeHandoff\(ready\)\)/);
   });
@@ -759,6 +766,7 @@ describe("the worktree a fork starts in", () => {
       temporaryWorktreeBranchName("fork-1"),
       "HEAD",
       false,
+      { carryChanges: true },
     ]);
   });
 
@@ -878,7 +886,7 @@ describe("forking a chat with generated images", () => {
     };
     await expect(
       forkChat(source, "a1", { useNewWorktree: true }, port, ids(["fork-1", "b1", "b2", "b3", "b4"])),
-    ).rejects.toThrow("An image in this chat could not be copied: File is too large to attach inline.");
+    ).rejects.toThrow(/^An image in this chat could not be copied\. Try again\.$/);
     expect(worktrees).toBe(0);
     expect(removed).toEqual([["/data/generated-images/one-copy.png"]]);
   });
@@ -924,5 +932,344 @@ describe("forking a chat with generated images", () => {
 
   it("returns nothing from the plain copy when an image has no copy of its own", () => {
     expect(forkSessionAtMessage(conversation(), "a1", ids(["fork-1", "b1", "b2", "b3"]))).toBeNull();
+  });
+});
+
+describe("a fork's worktree and the chat's uncommitted changes", () => {
+  const NOTICE = "Uncommitted changes in this chat's worktree weren't copied.";
+  const blocks = [block({ id: "u1", role: "user", text: "Hi" })];
+
+  it("asks for the changes to come along", async () => {
+    let options: unknown;
+    const port: ForkWorktreePort = {
+      createWorktree: async (_cwd, _branch, _base, _existing, given) => {
+        options = given;
+        return tree("/work/proj-fork");
+      },
+    };
+    await forkChat(chat(blocks), "u1", { useNewWorktree: true }, port, ids(["fork-1", "b1"]));
+    expect(options).toEqual({ carryChanges: true });
+  });
+
+  it("says so, and still makes the fork, when they could not be copied", async () => {
+    const lines: string[] = [];
+    const port: ForkWorktreePort = {
+      createWorktree: async () => ({ ...tree("/work/proj-fork"), changesNotice: NOTICE }),
+    };
+    const fork = await forkChat(
+      chat(blocks),
+      "u1",
+      { useNewWorktree: true, onNotice: (line) => lines.push(line) },
+      port,
+      ids(["fork-1", "b1"]),
+    );
+    expect(fork!.worktreeCwd).toBe("/work/proj-fork");
+    expect(lines).toEqual([NOTICE]);
+  });
+
+  it("says nothing when they were copied, or when no worktree was asked for", async () => {
+    const lines: string[] = [];
+    const port: ForkWorktreePort = { createWorktree: async () => tree("/work/proj-fork") };
+    await forkChat(
+      chat(blocks),
+      "u1",
+      { useNewWorktree: true, onNotice: (line) => lines.push(line) },
+      port,
+      ids(["fork-1", "b1"]),
+    );
+    await forkChat(
+      chat(blocks),
+      "u1",
+      { useNewWorktree: false, onNotice: (line) => lines.push(line) },
+      port,
+      ids(["fork-2", "b2"]),
+    );
+    expect(lines).toEqual([]);
+  });
+});
+
+describe("a generated image whose original is gone", () => {
+  const ONE = "/data/generated-images/one.png";
+  const TWO = "/data/generated-images/two.png";
+
+  function picture(id: string, path: string): Block {
+    return {
+      id,
+      role: "image",
+      text: "",
+      image: { path, name: "cat.png", mimeType: "image/png", size: 10, alt: "a cat" },
+    };
+  }
+
+  const conversation = () =>
+    chat([
+      block({ id: "u1", role: "user", text: "Draw two cats" }),
+      picture("i1", ONE),
+      picture("i2", TWO),
+      block({ id: "a1", role: "assistant", text: "Both" }),
+    ]);
+
+  function port(over: Partial<ForkImagePort> = {}) {
+    const removed: string[][] = [];
+    const given: ForkWorktreePort & ForkImagePort = {
+      createWorktree: async () => tree("/work/proj-fork"),
+      copyImage: async (path) =>
+        path === ONE
+          ? null
+          : { path: path.replace(".png", "-copy.png"), mimeType: "image/png", size: 11 },
+      removeImages: async (paths) => {
+        removed.push(paths);
+      },
+      ...over,
+    };
+    return { given, removed };
+  }
+
+  it("is left out of the fork, which carries on with the other pictures", async () => {
+    const source = conversation();
+    const before = structuredClone(source);
+    const { given, removed } = port();
+    const fork = await forkChat(
+      source,
+      "a1",
+      { useNewWorktree: false },
+      given,
+      ids(["fork-1", "b1", "b2", "b3", "b4"]),
+    );
+    expect(fork!.blocks.map((entry) => entry.text)).toEqual(["Draw two cats", "", "", "Both"]);
+    expect(fork!.blocks[1].image).toBeUndefined();
+    expect(fork!.blocks[2].image!.path).toBe("/data/generated-images/two-copy.png");
+    expect(removed).toEqual([]);
+    expect(source).toEqual(before);
+  });
+
+  it("still lets a fork with a worktree through", async () => {
+    const { given } = port();
+    const fork = await forkChat(
+      conversation(),
+      "a1",
+      { useNewWorktree: true },
+      given,
+      ids(["fork-1", "b1", "b2", "b3", "b4"]),
+    );
+    expect(fork!.worktreeCwd).toBe("/work/proj-fork");
+    expect(fork!.blocks[1].image).toBeUndefined();
+  });
+
+  it("is not the same as a copy that failed: that refuses with a sentence and no path", async () => {
+    const { given, removed } = port({
+      copyImage: async (path) => {
+        if (path === TWO) throw new Error(`${TWO}: Permission denied (os error 13)`);
+        return { path: path.replace(".png", "-copy.png"), mimeType: "image/png", size: 11 };
+      },
+    });
+    const refusal = await forkChat(
+      conversation(),
+      "a1",
+      { useNewWorktree: false },
+      given,
+      ids(["fork-1", "b1", "b2", "b3", "b4"]),
+    ).catch((error: unknown) => error as Error);
+    expect(refusal).toBeInstanceOf(Error);
+    expect((refusal as Error).message).toBe("An image in this chat could not be copied. Try again.");
+    expect((refusal as Error).message).not.toContain("/data");
+    expect((refusal as Error).message).not.toContain("os error");
+    expect(removed).toEqual([["/data/generated-images/one-copy.png"]]);
+  });
+
+  it("names a window that cannot copy images without a path", async () => {
+    const refusal = await forkChat(
+      conversation(),
+      "a1",
+      { useNewWorktree: false },
+      { createWorktree: async () => tree("/work/proj-fork") },
+      ids(["fork-1", "b1", "b2", "b3", "b4"]),
+    ).catch((error: unknown) => error as Error);
+    expect((refusal as Error).message).toBe("An image in this chat could not be copied. Try again.");
+  });
+});
+
+describe("cancelling a fork", () => {
+  const IMG = "/data/generated-images/one.png";
+  const conversation = () =>
+    chat(
+      [
+        block({ id: "u1", role: "user", text: "Draw a cat" }),
+        {
+          id: "i1",
+          role: "image",
+          text: "",
+          image: { path: IMG, name: "cat.png", mimeType: "image/png", size: 10 },
+        },
+        block({ id: "a1", role: "assistant", text: "Here it is" }),
+      ],
+      { worktreeCwd: "/work/proj-wt-a" },
+    );
+
+  function ledger() {
+    const events: string[] = [];
+    const port = {
+      createWorktree: async () => {
+        events.push("worktree made");
+        return tree("/work/proj-fork");
+      },
+      removeWorktree: async (cwd: string, path: string, force: boolean) => {
+        events.push(`worktree removed ${cwd} ${path} ${force}`);
+      },
+      copyImage: async (path: string) => {
+        events.push("image copied");
+        return { path: path.replace(".png", "-copy.png"), mimeType: "image/png", size: 11 };
+      },
+      removeImages: async (paths: string[]) => {
+        events.push(`images removed ${paths.join(",")}`);
+      },
+    } satisfies ForkWorktreePort & ForkImagePort;
+    return { events, port };
+  }
+  const COPY = "/data/generated-images/one-copy.png";
+  const fresh = ["fork-1", "b1", "b2", "b3"];
+
+  it("removes the worktree it made and the image copies when cancelled while the worktree is created", async () => {
+    const { events, port } = ledger();
+    let cancelled = false;
+    const slow = {
+      ...port,
+      createWorktree: async () => {
+        cancelled = true;
+        return port.createWorktree();
+      },
+    };
+    const fork = await forkChat(
+      conversation(),
+      "a1",
+      { useNewWorktree: true, cancelled: () => cancelled },
+      slow,
+      ids(fresh),
+    );
+    expect(fork).toBeNull();
+    expect(events).toEqual([
+      "image copied",
+      "worktree made",
+      `images removed ${COPY}`,
+      "worktree removed /work/proj-wt-a /work/proj-fork true",
+    ]);
+  });
+
+  it("removes the image copies when cancelled while they are copied, and makes no worktree", async () => {
+    const { events, port } = ledger();
+    let cancelled = false;
+    const fork = await forkChat(
+      conversation(),
+      "a1",
+      { useNewWorktree: true, cancelled: () => cancelled },
+      {
+        ...port,
+        copyImage: async (path, name) => {
+          cancelled = true;
+          return port.copyImage(path, name);
+        },
+      },
+      ids(fresh),
+    );
+    expect(fork).toBeNull();
+    expect(events).toEqual(["image copied", `images removed ${COPY}`]);
+  });
+
+  it("still removes everything when the cancel lands while a copy the fork did not use is removed", async () => {
+    const { events, port } = ledger();
+    let cancelled = false;
+    // The picture was deleted from the chat while the worktree was being made, so its copy goes unused.
+    const edited = chat(
+      [block({ id: "u1", role: "user", text: "Draw a cat" }), block({ id: "a1", role: "assistant", text: "Here it is" })],
+      { worktreeCwd: "/work/proj-wt-a" },
+    );
+    const fork = await forkChat(
+      conversation(),
+      "a1",
+      { useNewWorktree: true, readSource: () => edited, cancelled: () => cancelled },
+      {
+        ...port,
+        removeImages: async (paths) => {
+          cancelled = true;
+          return port.removeImages(paths);
+        },
+      },
+      ids(fresh),
+    );
+    expect(fork).toBeNull();
+    // The unused copy is removed once, then the worktree; nothing is removed twice.
+    expect(events).toEqual([
+      "image copied",
+      "worktree made",
+      `images removed ${COPY}`,
+      "worktree removed /work/proj-wt-a /work/proj-fork true",
+    ]);
+  });
+
+  it("keeps everything when it is not cancelled", async () => {
+    const { events, port } = ledger();
+    const fork = await forkChat(
+      conversation(),
+      "a1",
+      { useNewWorktree: true, cancelled: () => false },
+      port,
+      ids(fresh),
+    );
+    expect(fork!.blocks[1].image!.path).toBe(COPY);
+    expect(fork!.worktreeCwd).toBe("/work/proj-fork");
+    expect(events).toEqual(["image copied", "worktree made"]);
+  });
+
+  it("removes the worktree too when the message is gone by the time the worktree exists", async () => {
+    const { events, port } = ledger();
+    const fork = await forkChat(
+      conversation(),
+      "a1",
+      { useNewWorktree: true, readSource: () => chat([]) },
+      port,
+      ids(fresh),
+    );
+    expect(fork).toBeNull();
+    expect(events).toEqual([
+      "image copied",
+      "worktree made",
+      `images removed ${COPY}`,
+      "worktree removed /work/proj-wt-a /work/proj-fork true",
+    ]);
+  });
+
+  it("removes the worktree and the copies when the fork cannot be finished", async () => {
+    const { events, port } = ledger();
+    await expect(
+      forkChat(
+        conversation(),
+        "a1",
+        { useNewWorktree: true },
+        { ...port, createWorktree: async () => ({ ...tree("/work/proj-fork"), path: "" }) },
+        ids(fresh),
+      ),
+    ).rejects.toThrow("The new worktree could not be created.");
+    // The tree has no path, so there is nothing to remove; the copies still go.
+    expect(events).toEqual(["image copied", `images removed ${COPY}`]);
+  });
+
+  it("does not fail the fork's own refusal when the clean-up fails", async () => {
+    const { port } = ledger();
+    const fork = await forkChat(
+      conversation(),
+      "a1",
+      { useNewWorktree: true, readSource: () => chat([]) },
+      {
+        ...port,
+        removeWorktree: async () => {
+          throw new Error("busy");
+        },
+        removeImages: async () => {
+          throw new Error("busy");
+        },
+      },
+      ids(fresh),
+    );
+    expect(fork).toBeNull();
   });
 });
