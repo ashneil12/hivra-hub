@@ -64,7 +64,30 @@ Orca's remote machine per worktree, and Paseo's encrypted relay, are not vendor 
 
 Discussion 18019 (on-demand sandboxes) is not this package either. Renting a machine and copying a local Claude, Codex or Cursor login onto it is refused. That copies secrets off the machine, and it is not a public vendor API.
 
-2. A UX sketch: a cloud job looks like a chat with a "running elsewhere" badge, not a second inbox. Handoff back to a local worktree if the vendor supports it.
+### How a cloud job looks
+
+A cloud job is a chat. It sits in the same chat list, on the same project, with the same title. It is not a new inbox, a new column, or a badge that jumps the list on its own.
+
+The only extra label is "Running elsewhere", on that chat. When the vendor reports it has finished, the label becomes "Finished elsewhere" until the person opens it or brings it back. When Hivra cannot reach the vendor, the label stays "Running elsewhere" and a line says "Could not reach them". A timeout is not a failure and it does not mark the chat done. When the person stops it, the label goes away and the chat reads as stopped, the same as a local stop.
+
+The person starts one from the composer with a choice that is off unless they pick it: "Run elsewhere". Codex and Claude do not show it, because those slices stop above. Cursor shows it only after a later package has confirmed the public API and the setting is on. The setting defaults to off, including on a dev copy.
+
+Follow-ups go into that same chat. They do not open a second thread. A question from the job uses the same question card a local chat uses.
+
+Two windows can watch the same job. The status keeps a revision. A write lands only if the revision is the one that window last read. A late poll that lost the race is dropped. It is not written over a newer stop.
+
+### Bring it back
+
+Only if the vendor's public result includes a branch or a pull request.
+
+The person presses "Bring back". Hivra fetches that branch into a new worktree of the project the chat already belongs to, using the worktree commands that exist today, and points the chat at that worktree. From then on the chat is local. The label comes off. The cloud job is not deleted on the vendor side unless the public API documents a delete and the person asks for it.
+
+If the vendor returns no branch and no pull request, there is no "Bring back". The chat can still show text the vendor returned. Hivra does not build a patch from an undocumented payload.
+
+If the fetch fails, or git times out, the chat stays "Finished elsewhere" and says the branch could not be fetched. It does not pretend the work is in the worktree.
+
+Codex and Claude have no handoff, because their slices stop before a job exists.
+
 3. Legal and billing: list what would need Ash and counsel (stored tokens, spend caps, data leaving the machine). Do not add credentials.
 4. No implementation.
 
