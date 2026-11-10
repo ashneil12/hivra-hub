@@ -948,3 +948,70 @@ fn the_closer_standing_answer_wins_and_a_tie_keeps_the_newer() {
     assert_eq!(out.decision.decision_key, "second");
     assert_eq!(out.decision.answer.as_deref(), Some("Archive"));
 }
+
+#[test]
+fn standing_rows_count_who_relied_and_stay_empty_while_off() {
+    let store = store();
+    let conn = store.lock_conn().unwrap();
+    for n in 1..=21 {
+        insert_answered(
+            &conn,
+            "hivra",
+            &format!("k{n}"),
+            &format!("Row {n} only"),
+            "Keep",
+            n,
+        );
+    }
+    insert_answered(&conn, "hivra", "off", "Reuse this one?", "No", 30);
+    conn.execute(
+        "UPDATE decisions SET standing = 0 WHERE decision_key = 'off'",
+        [],
+    )
+    .unwrap();
+    insert_answered(&conn, "hivra", "gone", "The retired one?", "Old", 31);
+    conn.execute(
+        "UPDATE decisions SET retired_at = 3 WHERE decision_key = 'gone'",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO decisions (project, decision_key, question, options, asked_by, waiting, state, created_at, updated_at, version, standing)
+         VALUES ('hivra', 'open-one', 'Still open?', '[\"Yes\",\"No\"]', 'fm', '[]', 'open', 1, 1, 1, 1)",
+        [],
+    )
+    .unwrap();
+    insert_answered(
+        &conn,
+        "other",
+        "elsewhere",
+        "Another project?",
+        "Elsewhere",
+        40,
+    );
+    conn.execute(
+        "INSERT INTO decision_citations (project, decision_key, task_id, cited_at) VALUES
+         ('hivra', 'k21', 'task-a', 1),
+         ('hivra', 'k21', 'task-b', 2)",
+        [],
+    )
+    .unwrap();
+
+    assert!(standing_rows(&conn, "hivra").unwrap().is_empty());
+    assert!(standing_rows(&conn, "  ").unwrap().is_empty());
+    set_standing_enabled(&conn, true).unwrap();
+    assert!(standing_rows(&conn, "").unwrap().is_empty());
+    assert!(standing_rows(&conn, "   ").unwrap().is_empty());
+
+    let rows = standing_rows(&conn, "hivra").unwrap();
+    assert_eq!(rows.len(), 20);
+    assert_eq!(rows[0].decision_key, "k21");
+    assert_eq!(rows[0].uses, 2);
+    assert_eq!(rows[0].answer, "Keep");
+    assert!(rows[0].standing_id.starts_with("S-"));
+    assert!(rows.iter().all(|row| row.decision_key != "k1"));
+    assert!(rows.iter().all(|row| row.decision_key != "off"));
+    assert!(rows.iter().all(|row| row.decision_key != "gone"));
+    assert!(rows.iter().all(|row| row.decision_key != "open-one"));
+    assert!(standing_rows(&conn, "other").unwrap().len() == 1);
+}

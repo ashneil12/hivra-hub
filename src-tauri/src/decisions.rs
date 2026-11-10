@@ -1095,6 +1095,53 @@ pub fn set_standing(
     Ok(Some(decision))
 }
 
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct StandingRow {
+    pub project: String,
+    pub decision_key: String,
+    pub question: String,
+    pub answer: String,
+    pub standing_id: String,
+    pub uses: i64,
+}
+
+/// Active standing answers for one project, newest first, with how many tasks relied on each.
+/// Empty when standing answers are off, the project is blank, or nothing active is stored.
+pub fn standing_rows(conn: &Connection, project: &str) -> Result<Vec<StandingRow>, String> {
+    let project = project.trim();
+    if project.is_empty() || !standing_enabled(conn)? {
+        return Ok(Vec::new());
+    }
+    let mut stmt = conn
+        .prepare(
+            "SELECT decision_key, question, answer, rowid,
+                    (SELECT COUNT(*) FROM decision_citations c
+                     WHERE c.project = decisions.project AND c.decision_key = decisions.decision_key)
+             FROM decisions
+             WHERE project = ?1 AND state = ?2 AND standing != 0 AND retired_at IS NULL
+               AND answer IS NOT NULL
+             ORDER BY answered_at DESC, rowid DESC
+             LIMIT 20",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map(params![project, ANSWERED], |row| {
+            Ok(StandingRow {
+                project: project.to_string(),
+                decision_key: row.get(0)?,
+                question: row.get(1)?,
+                answer: row.get(2)?,
+                standing_id: format!("S-{}", row.get::<_, i64>(3)?),
+                uses: row.get(4)?,
+            })
+        })
+        .map_err(|e| e.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
+    Ok(rows)
+}
+
 /// Newest active answers for one project, for a first mate's brief. Empty when standing answers are off, the project
 /// is blank, or nothing active is stored. Guidance, not permission.
 const STANDING_ROWS: usize = 20;
@@ -1232,12 +1279,24 @@ pub fn decisions_standing_brief(
 
 #[tauri::command(async)]
 pub fn decisions_set_standing_enabled(
+    app: AppHandle,
     store: State<'_, SessionStore>,
     enabled: bool,
 ) -> Result<bool, String> {
     let conn = store.lock_conn()?;
     set_standing_enabled(&conn, enabled)?;
-    standing_enabled(&conn)
+    let on = standing_enabled(&conn)?;
+    drop(conn);
+    let _ = app.emit(CHANGED, json!({ "keys": [] }));
+    Ok(on)
+}
+
+#[tauri::command(async)]
+pub fn decisions_standing_list(
+    store: State<'_, SessionStore>,
+    project: Option<String>,
+) -> Result<Vec<StandingRow>, String> {
+    standing_rows(&*store.lock_conn()?, project.as_deref().unwrap_or(""))
 }
 
 #[tauri::command(async)]

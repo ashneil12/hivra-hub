@@ -28,6 +28,8 @@ import { TerminalSessionsSetting } from "../../terminalMirror/ui/TerminalSession
 import { PhaseSettings } from "../../phases/ui/PhaseSettings";
 // WP-88: the morning note under the chat on Home.
 import { DailySummarySetting } from "../../chief/ui/DailySummarySetting";
+// WP-156: standing answers stay off until this setting is on.
+import { StandingAnswersSetting } from "./StandingAnswersSetting";
 import { GithubIssuesSetting } from "../../github-issues/ui/GithubIssuesSetting";
 import { appIdentity, buildLine } from "../../../app/model/appIdentity";
 
@@ -1061,6 +1063,8 @@ function GeneralPage({
           <DailySummarySetting />
         </Row>
       </Group>
+      {/* WP-156: standing answers stay off until this is on. */}
+      <StandingAnswersSetting />
       <Group
         title="Alerts"
         description="How MonoCode reaches you while you are looking somewhere else."
