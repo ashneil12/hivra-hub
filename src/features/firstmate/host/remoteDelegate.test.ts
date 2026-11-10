@@ -142,20 +142,26 @@ describe("tasks.delegate on a remote project", () => {
     });
   });
 
-  it("does not send a task that waits for another to the host: the queue that holds it is this app's (WP-171)", async () => {
+  it("quotes the person's request in the brief the host gets, and holds a task that waits for another back from it (WP-171)", async () => {
     const cwd = app.remotePath("env-3", "/work/app");
     app.rememberRemoteProject("env-3", { id: "proj-3", cwd: "/work/app", name: "App" });
     const { source, host, started } = hostFor(cwd);
     const real = app.newSession("claude", cwd, "claude:opus-5-5");
     Object.assign(source, real, { id: "team-exo", firstMate: true, cwd });
+    source.blocks = [{ id: "b1", role: "user", text: "Ash: fix the save bug on the app." }];
     app.invoke.mockImplementation(async (command: string, input?: { method?: string }) => {
       if (command === "remote_machines") return [{ id: "machine-1", name: "box", endpoint: "http://127.0.0.1:1", environmentId: "env-3" }];
       if (input?.method === "firstmate.brief") return { delegation: { id: "d1", childSession: "s1", title: "Fix", state: "running" }, created: true };
       return [];
     });
+    await app.handle(source, "r-remote", "tasks.delegate", { brief: "Fix the save bug." }, host);
+    const sent = app.invoke.mock.calls.find((call) => call[1]?.method === "firstmate.brief")![1].params.brief as string;
+    expect(sent).toContain("## Original request");
+    expect(sent).toContain("> Ash: fix the save bug on the app.");
+    // A task that would wait for another is held in this app's queue, which the host does not share: it is not sent.
     const { parseFanout } = await import("../model/fanoutContract");
     const { planFanout } = await import("../model/fanoutWaves");
-    const [api, board] = planFanout(
+    const [, board] = planFanout(
       parseFanout({
         intent: "Ash: fix it.",
         tasks: [
@@ -166,9 +172,6 @@ describe("tasks.delegate on a remote project", () => {
       "team-exo",
       "r-plan",
     ).links;
-    // A task that needs nothing goes to the host as before.
-    await app.handle(source, "r-api", "tasks.delegate", { brief: "Add the route.", fanout: api }, host);
-    expect(app.invoke.mock.calls.filter((call) => call[1]?.method === "firstmate.brief")).toHaveLength(1);
     app.invoke.mockClear();
     await expect(app.handle(source, "r-wait", "tasks.delegate", { brief: "Show it.", fanout: board }, host)).rejects.toThrow(/can't be held on a remote project/);
     expect(app.invoke.mock.calls.some((call) => call[1]?.method === "firstmate.brief")).toBe(false);

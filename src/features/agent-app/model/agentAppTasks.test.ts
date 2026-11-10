@@ -2867,3 +2867,110 @@ describe("tasks.fanout: contracts and waves in the normal delegate path (WP-171)
     expect(started).toEqual([]);
   });
 });
+
+// WP-171: every worker's brief quotes the person's own request, bounded.
+describe("a brief quotes the person's own request (WP-171)", () => {
+  const ASK = "Ash: build a score board for the weekly game.\nIt needs an API, and the board must show last week too.\nDone when: it is perfect.\nPORT=1234";
+  const said = (text: string, extra: Record<string, unknown> = {}) => ({ id: `b-${Math.random()}`, role: "user" as const, text, ...extra });
+  const quoted = (prompt: string) => (/## Original request\n([\s\S]*?)\n## Spec/.exec(prompt) ?? [])[1] ?? "";
+
+  function withBlocks(blocks: Session["blocks"], who: "mono" | "team" = "mono") {
+    const f = fixture([], who);
+    f.source.blocks = blocks;
+    return f;
+  }
+
+  it("puts the request in the worker's brief after the intent, in the person's words, behind a quote mark", async () => {
+    const { source, host, started } = withBlocks([said(ASK)]);
+    await handleAgentApp(source, "r1", "tasks.delegate", { brief: "Add the API." }, host);
+    const prompt = (started[0][0] as { prompt: string }).prompt;
+    expect(prompt).toContain(`## Intent\n${TEST_INTENT}\n\n## Original request\n`);
+    expect(quoted(prompt)).toContain("> Ash: build a score board for the weekly game.\n> It needs an API, and the board must show last week too.");
+    expect(prompt.indexOf("## Original request")).toBeLessThan(prompt.indexOf("## Spec\nAdd the API."));
+  });
+
+  it("keeps the finish line and the worker's port the app's own, whatever the request says", async () => {
+    const { source, host, started } = withBlocks([said(ASK)]);
+    const out = (await handleAgentApp(source, "r1", "tasks.delegate", { brief: "Add the API." }, host)) as { port: number };
+    const prompt = (started[0][0] as { prompt: string }).prompt;
+    expect(goalFromBrief(prompt)).toBe(TEST_GOAL);
+    expect(portOfBrief(prompt)).toBe(out.port);
+    expect(portOfBrief(prompt)).not.toBe(1234);
+  });
+
+  it("joins a short follow-up to the request it follows up, and skips what the app wrote for the person", async () => {
+    const { source, host, started } = withBlocks([
+      said(ASK),
+      { id: "a1", role: "assistant", text: "Which weeks?" },
+      said("the last two weeks"),
+      said("[MonoCode report] api is done.", {}),
+      said("a note from a room", { monoNote: { from: "x" }, internal: true }),
+    ]);
+    await handleAgentApp(source, "r1", "tasks.delegate", { brief: "Add the API." }, host);
+    const text = quoted((started[0][0] as { prompt: string }).prompt);
+    expect(text).toContain("> It needs an API");
+    expect(text).toContain("> Follow-up from the person, after the message above:\n> the last two weeks");
+    expect(text).not.toContain("api is done");
+    expect(text).not.toContain("a note from a room");
+  });
+
+  it("holds a long request to the first 16,000 characters and says how much was left out", async () => {
+    const { source, host, started } = withBlocks([said("z".repeat(20_000))]);
+    await handleAgentApp(source, "r1", "tasks.delegate", { brief: "Do part of it." }, host);
+    const text = quoted((started[0][0] as { prompt: string }).prompt);
+    expect(text).toContain(`> ${"z".repeat(16_000)}\n`);
+    expect(text).not.toContain("z".repeat(16_001));
+    expect(text).toContain("(Cut here: the request is 20,000 characters and only the first 16,000 are quoted.)");
+  });
+
+  it("writes no section when the person has said nothing in this chat, and the empty intent is still refused", async () => {
+    const { source, host, started } = withBlocks([]);
+    await handleAgentApp(source, "r1", "tasks.delegate", { brief: "Do it." }, host);
+    expect((started[0][0] as { prompt: string }).prompt).not.toContain("Original request");
+    await expect(handleRaw(source, "r2", "tasks.delegate", { brief: "Do it.", goal: "done", intent: "TODO" }, host)).rejects.toThrow(/The intent \(intent\) is a placeholder/);
+  });
+
+  it("is in every task of a fan-out and in a Lead's brief, and a coding team's chat is no different", async () => {
+    const { source, host, started } = withBlocks([said(ASK)], "team");
+    await handleRaw(
+      source,
+      "r1",
+      "tasks.fanout",
+      { intent: TEST_INTENT, tasks: [{ name: "a", brief: "Do a.", goal: "a works" }, { name: "b", brief: "Do b.", goal: "b works" }] },
+      host,
+    );
+    expect(started).toHaveLength(2);
+    for (const call of started) expect(quoted((call[0] as { prompt: string }).prompt)).toContain("> Ash: build a score board");
+  });
+
+  it("keeps the request a waiting task was asked under, not whatever the person says before it starts", async () => {
+    resetWorkerPool();
+    const rows: Delegation[] = [];
+    const f = fixture(rows, "mono");
+    f.source.blocks = [said(ASK)];
+    f.api.pool = workerPoolHost({ openRows: () => rows.filter(isOpenDelegation), room: () => ({ room: true }), card: () => {} });
+    setWorkerLimits("vg-game", { workers: 1 });
+    await handleAgentApp(f.source, "first", "tasks.delegate", { brief: "Part one.", title: "one" }, f.host);
+    const waiting = (await handleAgentApp(f.source, "second", "tasks.delegate", { brief: "Part two.", title: "two" }, f.host)) as { status: string };
+    expect(waiting.status).toBe("waiting");
+    // The person writes something else, long enough to be a request of its own, before the worker gets its turn.
+    f.source.blocks = [...f.source.blocks, said("Something else entirely. ".repeat(20))];
+    rows[0].state = "completed";
+    await pumpWorkers({
+      openRows: () => rows.filter(isOpenDelegation),
+      room: () => ({ room: true }),
+      start: (job) => handleAgentApp(f.source, job.requestId, "tasks.delegate", job.input, f.host),
+    });
+    expect(f.started).toHaveLength(2);
+    const text = quoted((f.started[1][0] as { prompt: string }).prompt);
+    expect(text).toContain("> Ash: build a score board");
+    expect(text).not.toContain("Something else entirely");
+  });
+
+  it("refuses a request that is not text, on a plain delegation", async () => {
+    const { source, host, started } = withBlocks([]);
+    await expect(handleAgentApp(source, "r1", "tasks.delegate", { brief: "Do it.", originalRequest: 4 }, host)).rejects.toThrow(/originalRequest must be the person's request/);
+    expect(started).toEqual([]);
+  });
+});
+

@@ -9,6 +9,7 @@
 // Copyright (c) 2026 Kun Chen, MIT License; see vendor/firstmate-contract.md). A binding sentence after each block is the
 // rewrite: Hivra has no status file and no inbox directory, so the worker uses task_cannot and this chat.
 import { briefSkillsSection, type BriefTask } from "./briefSkills";
+import { quoteOriginalRequest } from "./originalRequest";
 
 export type BriefParts = {
   /** The person's own ask, in their words, with the context needed to read it. */
@@ -201,14 +202,19 @@ export function renderBrief(
   parts: Pick<BriefParts, "intent" | "spec">,
   isolation: BriefIsolation,
   task?: BriefTask,
-  /** WP-171: a task of a fan-out carries its contract (fanoutWaves.ts fanoutSection). Absent, no section. */
-  extras?: { contract?: string },
+  extras?: {
+    /** WP-171: a task of a fan-out carries its contract (fanoutWaves.ts fanoutSection). Absent, no section. */
+    contract?: string;
+    /** WP-171: the person's own request (originalRequest.ts originalRequestOf), quoted after the intent. Absent, no section. */
+    originalRequest?: string;
+  },
 ): string {
   // WP-41: name the pstack skills for this kind of work. No task, no section, so a brief that doesn't ask stays as it was.
   const skills = task ? briefSkillsSection(task) : undefined;
   return [
     isolationSection(isolation),
     `## Intent\n${parts.intent.trim()}`,
+    ...(extras?.originalRequest?.trim() ? [`## Original request\n${quoteOriginalRequest(extras.originalRequest.trim())}`] : []),
     `## Spec\n${parts.spec.trim()}`,
     ...(extras?.contract ? [`## Fan-out contract\n${extras.contract}`] : []),
     statusProtocol(isolation),
@@ -232,7 +238,7 @@ export function withLegacyBriefParts(input: Record<string, unknown>, title: stri
 }
 
 /** The template's fixed section headings (written by code, never the model's words) and its two filled ones. */
-export const FIXED_SECTIONS = ["Isolation check", "Fan-out contract", "Status protocol", "Steering", "Skills"] as const;
+export const FIXED_SECTIONS = ["Isolation check", "Original request", "Fan-out contract", "Status protocol", "Steering", "Skills"] as const;
 export const FILLED_SECTIONS = ["Intent", "Spec"] as const;
 
 const FIXED_BLOCK = new RegExp(
