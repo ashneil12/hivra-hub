@@ -31,7 +31,7 @@ Hivra takes ideas, and in a few places code, from these projects. What it takes 
 in Settings, under About.
 
 - [MonoCode](https://github.com/hardbeat920/monocode): the app Hivra is built on (projects, sessions on many CLIs, worktrees, Monos and the Inbox).
-- [firstmate](https://github.com/kunchenguid/firstmate): the first mate role, briefs with a definition of done, the status protocol and crew dispatch.
+- [firstmate](https://github.com/kunchenguid/firstmate): the first mate role, briefs with a definition of done, the status protocol and crew dispatch. The Pi watcher arm is not part of Hivra.
 - [pstack](https://github.com/cursor/plugins/tree/main/pstack): Lauren Tan's (poteto) skills for rigour and verification, shipped as the default plugin.
 - [DeepSeek super-agent prototype](https://github.com/deepseek-ai/dsh-superagent-prototype): a router that never does the work itself, workers that follow threads, a watchdog.
 - [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness): safe plugin installs, a static plugin index, Discover and Creator mode (ideas only).
@@ -71,6 +71,7 @@ in Settings, under About.
 - [Row-Bot](https://github.com/siddsachar/row-bot): the automatic recall policy: skip gates, a query builder, a weighted score, rejection reasons, a broad-query margin, a cap on lines and a trace (WP-99), the correction rule behind the rules tier (WP-103), and a scan that refuses text which looks like instructions aimed at the model (WP-111).
 - [Mnemos](https://github.com/Riley-Coyote/mnemos-mcp): ideas for the recall rules (four content words, two distinctive shared words, at most three lines, each memory once per conversation; WP-99), and memory that fades over the days it was used rather than the calendar, with a lived-day clock and one question to the person before a fact goes stale (WP-100).
 - [ccdeck](https://github.com/BarganConstantin/ccdeck): ideas only: a live session tree (main agent at the root, subagents as nodes, inspectable tool calls) and a waiting-on-you list ordered questions first and longest wait first.
+- [Memorilla](https://github.com/snap-stanford/memorilla): an external test set for chat-derived memory, the arm ladder its evaluation reports, and rules for writing a memory question that cannot be guessed (WP-106, ideas and data only).
 
 Also [poteto](https://x.com/poteto)'s writing on skills and verification, including the
 [verification skill example](https://github.com/poteto/verification-skill-example).
