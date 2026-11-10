@@ -7,11 +7,14 @@ type Proof = {
   held(): boolean;
   resume(): void;
 };
-const proof = (page: Page) =>
-  page.evaluate(() => {
+// The fixture puts `proof` on the window from an effect, which can run after `goto` has returned: wait for it.
+const proof = async (page: Page) => {
+  await page.waitForFunction(() => "proof" in window);
+  return page.evaluate(() => {
     const p = (window as unknown as { proof: Proof }).proof;
     return { sent: p.sent, held: p.held() };
   });
+};
 
 const SHOTS = process.env.WORKFLOW_PROOF_DIR;
 const shot = async (page: Page, name: string) => {
@@ -75,12 +78,27 @@ test("Stop reaches a run known only from its progress frames", async ({ page }) 
 test("a Stop that fails comes back with the reason instead of Stopping… for good", async ({ page }) => {
   await page.goto("/tests/browser/workflow-run.html?scenario=stop-fails");
   await expect.poll(async () => (await proof(page)).held).toBe(true);
-  await page.locator("[data-workflow-stop]").click();
-  await expect(page.locator("[data-workflow-stop-failed]")).toHaveText(
-    "Couldn't stop it: the pipe to Claude Code broke",
-  );
+  // One click, not Playwright's retried click: the button unmounts as soon as Stop
+  // starts, and a retry can press the button that comes back and leave "Stopping…" up.
   await expect(page.locator("[data-workflow-stop]")).toBeVisible();
-  await expect(page.locator("[data-workflow-run]").first()).not.toContainText("Stopping…");
+  await page.locator("[data-workflow-stop]").dispatchEvent("click");
+  await expect
+    .poll(async () =>
+      page.evaluate(() => {
+        const root = document.querySelector("[data-workflow-run]");
+        const failed = document.querySelector("[data-workflow-stop-failed]");
+        return {
+          reason: (failed?.textContent ?? "").trim(),
+          stopBack: document.querySelector("[data-workflow-stop]") != null,
+          stopping: (root?.textContent ?? "").includes("Stopping…"),
+        };
+      }),
+    )
+    .toEqual({
+      reason: "Couldn't stop it: the pipe to Claude Code broke",
+      stopBack: true,
+      stopping: false,
+    });
   await shot(page, "workflow-7-stop-failed");
 });
 

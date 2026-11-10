@@ -7,6 +7,7 @@ import {
   childChatsByMono,
   delegationOf,
   launchState,
+  ownsWork,
   startedByMono,
   waitingLabel,
   waitingOn,
@@ -89,6 +90,14 @@ describe("a Lead's work", () => {
     expect(waitingOn("lead-chat", rows)).toBe(2);
     expect(waitingLabel(2)).toBe("Waiting on 2");
     expect(waitingLabel(0)).toBeUndefined();
+  });
+
+  it("has a crew once it handed any work out, finished or not, and not before", () => {
+    expect(ownsWork("lead-chat", rows)).toBe(true);
+    expect(ownsWork("lead-chat", [row({ id: "t-3", childSession: "w3", state: "completed" })])).toBe(true);
+    // A row another chat owns is that chat's crew.
+    expect(ownsWork("lead-chat", [row({ id: "t-4", childSession: "x1", ownerSession: "other" })])).toBe(false);
+    expect(ownsWork("lead-chat", [])).toBe(false);
   });
 
   it("finds the newest row a chat works for", () => {

@@ -714,6 +714,7 @@ describe("settings navigation", () => {
       "changes",
       "decisions",
       "activity",
+      "work-log",
       "usage",
       "connected",
       "dashboards",
@@ -783,6 +784,19 @@ describe("settings search", () => {
     ]);
   });
 
+  it("finds settle and snooze from the chat list words", () => {
+    expect(searchSettings("snooze")[0]).toMatchObject({
+      section: "chat",
+      sectionLabel: "Chat",
+      settingId: "chat-list-inbox",
+      label: "Settle and snooze",
+    });
+    expect(searchSettings("finished chats")[0]).toMatchObject({
+      section: "chat",
+      settingId: "chat-list-inbox",
+    });
+  });
+
   it("finds a setting by a word that is not in its label", () => {
     expect(searchSettings("steer")[0]).toMatchObject({
       section: "chat",
@@ -803,6 +817,14 @@ describe("settings search", () => {
       section: "worktrees",
       settingId: "new-chat-worktree",
       label: "New chats and worktrees",
+    });
+  });
+
+  it("finds the switch for clearing finished worktrees' build output", () => {
+    expect(searchSettings("build output")[0]).toMatchObject({
+      section: "worktrees",
+      settingId: "worktree-autoclear",
+      label: "Clear build output of finished worktrees",
     });
   });
 

@@ -177,5 +177,8 @@ export function canEditLastTurn(session: Session): boolean {
   if (session.harness === "codex" && !block.providerTurnId) return false;
   if (block.secondOpinion || block.noteCard || block.ciContext) return false;
   if (session.blocks.some((entry) => entry.role === "handoff")) return false;
+  // WP-123: a fork still owes its provider the copied chat. An edit cuts the chat back to the last user turn, which
+  // takes the block that carries that recap, so the message sent after it would arrive without the earlier chat.
+  if (session.blocks.some((entry) => entry.forkPoint)) return false;
   return true;
 }

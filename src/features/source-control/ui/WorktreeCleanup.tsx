@@ -2,6 +2,8 @@ import { useState } from "react";
 import { Loader, RefreshCw, Trash2, Wrench } from "../../../shared/ui/icons";
 import { prettyCwd, projectName } from "../../../shared/lib/paths";
 import {
+  buildOutputBytes,
+  buildOutputFolders,
   formatAge,
   formatBytes,
   janitorClean,
@@ -24,6 +26,8 @@ const GROUPS: { outcome: JanitorOutcome; title: string }[] = [
 ];
 
 function EntryRow({ entry, now }: { entry: JanitorEntry; now: number }) {
+  const output = buildOutputBytes(entry);
+  const folders = buildOutputFolders(entry);
   return (
     <div className="flex flex-col gap-0.5 p-2.5">
       <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5 text-[12px]">
@@ -39,6 +43,11 @@ function EntryRow({ entry, now }: { entry: JanitorEntry; now: number }) {
         {entry.chats ? `${entry.chats} chat${entry.chats === 1 ? "" : "s"} · ` : ""}
         {entry.verdict.reason}
       </p>
+      {folders && (
+        <p data-build-output="" className="text-[11px] text-content/55">
+          Build output {formatBytes(output)} ({folders})
+        </p>
+      )}
       <p className="break-all text-[10px] text-content/35">{prettyCwd(entry.path)}</p>
     </div>
   );
@@ -143,9 +152,10 @@ export function WorktreeCleanup({
         </button>
       </div>
       <p className="text-[12px] text-content/50">
-        One report of every worktree in ~/Worktrees and this project: its size, last activity,
-        whether it is merged, unchanged or has local work, and why it is safe to clean or kept.
-        Nothing is removed until you tap. Branches and chats stay.
+        One report of every worktree in ~/Worktrees and this project: its size and how much of it
+        is build output, last activity, whether it is merged, unchanged or has local work, and why
+        it is safe to clean or kept. Nothing here is removed until you tap (finished worktrees give
+        back their build output by themselves; see the switch above). Branches and chats stay.
       </p>
       <StaleStacks />
       {error && (
@@ -163,7 +173,9 @@ export function WorktreeCleanup({
       {report && (
         <>
           <p className="text-[12px]">
-            {report.entries.length} folders, {formatBytes(report.totalBytes)}. Up to{" "}
+            {report.entries.length} folders, {formatBytes(report.totalBytes)}. Build output:{" "}
+            {formatBytes(report.buildOutputBytes)} in {report.buildOutputCount}{" "}
+            {report.buildOutputCount === 1 ? "worktree" : "worktrees"}. Up to{" "}
             {formatBytes(report.removeBytes + report.freeBytes)} can be reclaimed.
           </p>
           <div className="flex flex-wrap gap-1.5">

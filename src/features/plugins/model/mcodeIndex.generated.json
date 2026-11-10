@@ -1,0 +1,32 @@
+[
+  {
+    "name": "context-tax-audit",
+    "for": "Inventory everything an agent injects into each request besides the user's message, such as system prompt, environment info, skill list, tool definitions, per-turn context blocks and reminders, and check necessity, frequency, precision, position and prompt-cache impact.",
+    "when": "Use when reviewing an agent's prompt assembly, chasing low cache hit rates, or trimming per-turn overhead.",
+    "rel": "skills/context-tax-audit/SKILL.md"
+  },
+  {
+    "name": "independent-review",
+    "for": "Review a code change from a clean context, the way an outside reviewer would.",
+    "when": "Use after the agent finishes an implementation, before merging, or when asked for an independent or second-opinion review of a diff.",
+    "rel": "skills/independent-review/SKILL.md"
+  },
+  {
+    "name": "long-session-check",
+    "for": "Check how an agent or a working session handles long conversations, covering tool-result clearing, compaction, what gets written to files, when to start a new session, and how memory is scoped.",
+    "when": "Use when a long session starts forgetting constraints, after several compactions, or when reviewing an agent's compaction and memory design.",
+    "rel": "skills/long-session-check/SKILL.md"
+  },
+  {
+    "name": "subagent-split-check",
+    "for": "Decide whether a piece of work should go to a subagent or stay in the main agent loop.",
+    "when": "Use before spawning subagents, when designing a multi-agent architecture, or when auditing an existing set of subagents for merging back.",
+    "rel": "skills/subagent-split-check/SKILL.md"
+  },
+  {
+    "name": "taste-to-checks",
+    "for": "Turn a review correction we keep making on agent output into something that runs on its own, a test, lint rule, hook, CI step or project rule, so the miss does not come back next session.",
+    "when": "Use when we keep correcting agents on the same mistake (import order, naming, a forbidden API, a missing test), when the same review comment shows up on a second PR, or after a review finds a miss that a check could have caught.",
+    "rel": "skills/taste-to-checks/SKILL.md"
+  }
+]

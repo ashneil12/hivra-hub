@@ -249,6 +249,23 @@ fn monos_root(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(resolved_root(&data))
 }
 
+/// The folders that are a Mono's own, for what it makes there to show in its chat (`chat_media.rs`): its folder in the
+/// Monos' home (`root`, from `resolved_root`), and its team's folder under `data`. Only a valid Mono id names them, so
+/// neither can point anywhere else.
+pub(crate) fn mono_places(root: &Path, data: &Path, mono: &str) -> Vec<PathBuf> {
+    if !valid_id(mono) {
+        return Vec::new();
+    }
+    vec![root.join(mono), data.join(TEAMS_DIR).join(mono)]
+}
+
+/// The Monos' roster as the app last saved it (`MONOS.json`), for readers that need to know which projects a Mono
+/// works on and which chat is its own (`chat_media.rs`). `None` when there is no file or it cannot be read.
+pub(crate) fn roster_value(app: &AppHandle) -> Option<serde_json::Value> {
+    let text = roster_load(&monos_root(app).ok()?).ok()?.text?;
+    serde_json::from_str(&text).ok()
+}
+
 pub fn content_hash(text: &str) -> String {
     Sha256::digest(text.as_bytes())
         .iter()
@@ -1266,6 +1283,24 @@ mod tests {
         assert!(roster_save(&root, r#"{"monos":[{"id":"../x"}]}"#, Some(&hash)).is_err());
         assert_eq!(roster_load(&root).unwrap().hash, hash);
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_monos_own_places_are_named_by_its_id_alone() {
+        let (root, data) = (
+            Path::new("/home/me/agent-memory/monos"),
+            Path::new("/data/app"),
+        );
+        assert_eq!(
+            mono_places(root, data, "ada"),
+            vec![
+                PathBuf::from("/home/me/agent-memory/monos/ada"),
+                PathBuf::from("/data/app/mono-teams/ada")
+            ]
+        );
+        for bad in ["", "..", "../x", "a/b", "a b", "/etc"] {
+            assert!(mono_places(root, data, bad).is_empty(), "{bad:?}");
+        }
     }
 
     #[test]

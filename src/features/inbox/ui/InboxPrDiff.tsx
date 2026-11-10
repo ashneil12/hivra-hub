@@ -2,7 +2,8 @@ import { useMemo } from "react";
 import type { GithubPrDiff } from "../model/githubTasks";
 import { mergePrDiff, parsePrPatch, type PrDiffFile } from "../../source-control/model/prDiff";
 import { blocksFromLines, type UnifiedLine } from "../../source-control/model/unifiedDiff";
-import { UnifiedDiffView, type UnifiedDiffFileModel } from "../../source-control/ui/UnifiedDiffView";
+import { type UnifiedDiffFileModel } from "../../source-control/ui/UnifiedDiffView";
+import { ReviewDiff } from "../../source-control/ui/ReviewDiff";
 
 type Props = {
   diff: GithubPrDiff;
@@ -20,7 +21,7 @@ export function InboxPrDiff({ diff, fullFile = false, focusPath }: Props) {
   }, [diff, fullFile]);
 
   return (
-    <UnifiedDiffView
+    <ReviewDiff
       files={files}
       truncated={diff.truncated}
       totals={{ additions: diff.additions, deletions: diff.deletions }}

@@ -23,6 +23,26 @@ const PROPOSALS = [
   },
 ];
 
+// WP-157: what a work log retro left waiting, shown above the proposals from chats.
+const WAITING = [
+  {
+    id: "retro:one",
+    title: "Correction: Keep the work log line short.",
+    diff: "+ ## Correction: Keep the work log line short.\n+ Keep the work log line short.",
+    quotes: [{ sessionId: "work log 2026-11-10", quote: "Keep the work log line short." }],
+    note: "Agents will see this once a second log line backs it.",
+  },
+  {
+    id: "retro:two",
+    title: "Work sent back",
+    diff: "+ Work was sent back 2 times this week. Check the brief before the next try.",
+    quotes: [
+      { sessionId: "work log 2026-11-09", quote: "Sent back: The brief was wrong." },
+      { sessionId: "work log 2026-11-10", quote: "Sent back: The brief was thin." },
+    ],
+  },
+];
+
 function Harness() {
   const [costFails, setCostFails] = useState(true);
   const profiles = useRef<LearnProfiles>({
@@ -40,6 +60,7 @@ function Harness() {
         }
         return 1200;
       },
+      staged: async () => WAITING,
       run: async () => PROPOSALS,
       accept: async (id) => {
         const holder = window as unknown as { __accepted: string[] };

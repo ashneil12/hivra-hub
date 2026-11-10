@@ -34,7 +34,8 @@ export type PageBridgeOptions = {
   approved(): readonly Capability[];
   /** Ash has just tapped inside the page. */
   tapped(): boolean;
-  post(message: unknown): void;
+  /** Return false when the frame did not take the message. Anything else counts as sent. */
+  post(message: unknown): unknown;
   sources: PageSources;
   act?(call: string, args: Record<string, unknown>, ctx: ActionContext): Promise<unknown>;
   /** What answers a write or a hub read (pageCapabilities.ts). Without it an approved call says it isn't connected. */
@@ -42,15 +43,55 @@ export type PageBridgeOptions = {
   /** The longest a change waits before it reaches the page (a burst of changes is one push). */
   throttleMs?: number;
   onSize?(height: number): void;
+  /**
+   * This frame's nonce, built into its document (sandbox.ts). With it the host answers only a document that has said
+   * hello with it, and wants a fresh hello after every `load` (loaded()). A frame keeps one contentWindow across
+   * navigations, so a window can't tell the page from whatever it navigated to; the nonce can.
+   */
+  nonce?: string;
+  /** How long after a `load` the document has to hello before the frame counts as navigated away (default 1500 ms). */
+  helloMs?: number;
+  /** The frame left its page: the owner puts a fresh frame and a fresh bridge in its place. */
+  onLost?(): void;
 };
 
-type Watch = { call: LiveRead; args: Record<string, unknown>; off: () => void; timer?: ReturnType<typeof setTimeout>; last?: string; lastError?: string };
+type Watch = { call: LiveRead; args: Record<string, unknown>; off: () => void; timer?: ReturnType<typeof setTimeout>; last?: string; lastError?: string; misses?: number };
+/** A frame that is mid-reload drops a push. Try that snapshot again, then stop so a gone frame does not spin. */
+const MAX_MISSED_PUSHES = 8;
 const obj = (v: unknown): Record<string, unknown> => (v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : {});
 
 export class PageBridgeHost {
   private watches = new Map<string, Watch>();
   private closed = false;
-  constructor(private readonly o: PageBridgeOptions) {}
+  private trusted: boolean;
+  private lostFrame = false;
+  private helloTimer: ReturnType<typeof setTimeout> | undefined;
+  /** What the document sent before its hello (or between a load and the next hello): answered only if the hello comes. */
+  private held: unknown[] = [];
+  constructor(private readonly o: PageBridgeOptions) {
+    this.trusted = o.nonce === undefined;
+  }
+
+  /**
+   * The frame fired `load`: a duplicate for the same document (WebKit does this for srcdoc) or a navigation. Nothing
+   * is trusted until the document there says hello with the nonce; the ping makes the same document do it again.
+   */
+  loaded(): void {
+    if (this.closed || this.o.nonce === undefined || this.lostFrame) return;
+    this.trusted = false;
+    clearTimeout(this.helloTimer);
+    this.helloTimer = setTimeout(() => this.lost(), this.o.helloMs ?? 1500);
+    this.o.post({ type: "hub:ping" });
+  }
+
+  private lost(): void {
+    if (this.lostFrame || this.closed) return;
+    this.lostFrame = true;
+    this.trusted = false;
+    this.held = [];
+    clearTimeout(this.helloTimer);
+    this.o.onLost?.();
+  }
 
   /** What this page may use now: what Ash approved, or (a preview) the data it asked to read. */
   private allowed(): readonly Capability[] {
@@ -69,8 +110,23 @@ export class PageBridgeHost {
   }
 
   receive(raw: unknown): void {
-    if (this.closed) return;
+    if (this.closed || this.lostFrame) return;
     const m = obj(raw);
+    if (this.o.nonce !== undefined) {
+      if (m.type === "hub:hello") {
+        if (m.nonce !== this.o.nonce) return this.lost();
+        clearTimeout(this.helloTimer);
+        this.trusted = true;
+        const held = this.held;
+        this.held = [];
+        for (const h of held) this.receive(h);
+        return;
+      }
+      if (!this.trusted) {
+        if (this.held.length < 50) this.held.push(raw);
+        return;
+      }
+    }
     const id = typeof m.id === "string" ? m.id : "";
     const call = typeof m.call === "string" ? m.call : "";
     const args = obj(m.args);
@@ -140,6 +196,23 @@ export class PageBridgeHost {
 
   private schedule(id: string): void {
     const w = this.watches.get(id);
+    if (!w || this.closed) return;
+    w.misses = 0;
+    if (w.timer) return;
+    this.arm(id);
+  }
+
+  /** The frame missed a push. Same wait as a change, but a bounded number of tries and not a new change. */
+  private retry(id: string): void {
+    const w = this.watches.get(id);
+    if (!w || this.closed || w.timer) return;
+    w.misses = (w.misses ?? 0) + 1;
+    if (w.misses > MAX_MISSED_PUSHES) return;
+    this.arm(id);
+  }
+
+  private arm(id: string): void {
+    const w = this.watches.get(id);
     if (!w || w.timer) return;
     w.timer = setTimeout(() => {
       w.timer = undefined;
@@ -171,8 +244,12 @@ export class PageBridgeHost {
     w.lastError = undefined;
     const text = JSON.stringify(data);
     if (text === w.last) return;
+    if (this.o.post({ type: "hub:data", watch: id, call: w.call, data }) === false) {
+      this.retry(id);
+      return;
+    }
+    w.misses = 0;
     w.last = text;
-    this.o.post({ type: "hub:data", watch: id, call: w.call, data });
   }
 
   private unwatch(id: string): void {
@@ -186,6 +263,7 @@ export class PageBridgeHost {
   /** The page closed or was swapped: let go of everything it watched. */
   dispose(): void {
     for (const id of [...this.watches.keys()]) this.unwatch(id);
+    clearTimeout(this.helloTimer);
     this.closed = true;
   }
 }
