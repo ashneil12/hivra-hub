@@ -29,7 +29,7 @@ Adding a source or vendoring a component? Add it to [credits.json](credits.json)
 | Source | Licence | What Hivra takes | How | Packages |
 | --- | --- | --- | --- | --- |
 | [MonoCode](https://github.com/hardbeat920/monocode) | MIT | The app: projects, sessions on many CLIs, worktrees, Monos, Inbox, remote host, Focused layout | Fork, merge upstream | all |
-| [firstmate](https://github.com/kunchenguid/firstmate) | MIT | First mate role rules, brief scaffold with enforced isolation and definition of done, status protocol, zero-token watcher, durable wake queue, delivery modes and merge authority, escalation rules, crew dispatch rules, "a restart is a non-event" | Port to TypeScript and Rust (no bash); vendor contract text with credit | 10, 11, 12, 13, 14 |
+| [firstmate](https://github.com/kunchenguid/firstmate) | MIT | First mate role rules, brief scaffold with enforced isolation and definition of done, status protocol, zero-token watcher, durable wake queue, delivery modes and merge authority, escalation rules, crew dispatch rules, "a restart is a non-event", a programme package queue (ideas from that durable queue: a row waits, is claimed, then settles; the board shape is Hivra's and names no private paths) | Port to TypeScript and Rust (no bash); vendor contract text with credit. The programme queue is ideas only, no new copied code | 10, 11, 12, 13, 14, 159 |
 | [pstack](https://github.com/cursor/plugins/tree/main/pstack) (Lauren Tan) | MIT | 58 skills for rigor and verification, `create-verification-skill` | Ship as the default plugin, unchanged | 41, 40, 42 |
 | [DeepSeek super-agent prototype](https://github.com/deepseek-ai/dsh-superagent-prototype) | MIT | The router never executes, workers subscribe to threads, cheap code filters before the model, a watchdog | Port the design | 10, 11 |
 | [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) | MIT (name is a trademark) | Plugin manager safety (pinned installs, compat check, script approval, atomic restore), reversible contributions with disposers, static plugin index and generator, Discover tab, Creator mode | Port the ideas; read its index format; vendor the index validator if useful | 30, 31, 32, 34 |
@@ -94,3 +94,4 @@ Every item of Ash's vision maps to packages, so nothing is dropped.
 | Agents learn from past chats with evidence; the person's opinions and voice | 83 |
 | Research and plan before building, terminal sessions in Hivra, who made each commit, a stack per worktree (HumanLayer, 4 Nov) | 84, 85, 86, 87 |
 | Each worktree has its own web address, and its tests meet fake outside services (portless, emulate, 5 Nov) | 82, 87, 90 |
+| A programme of packages the first mate keeps, in an order that survives a restart | 159 |
