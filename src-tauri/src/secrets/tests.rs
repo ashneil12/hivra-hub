@@ -1599,6 +1599,82 @@ fn an_import_lands_needing_its_value_with_no_grants() {
 }
 
 #[test]
+fn an_import_bounds_a_label_and_a_last_four_it_cannot_trust() {
+    let bench = Bench::new();
+    let conn = bench.conn();
+    let huge = "L".repeat(1_000_000);
+    let index = serde_json::json!({
+        "secrets": [
+            {"name": "huge-label", "scope": "global", "label": huge, "last4": "wxyz"},
+            {"name": "long-last4", "scope": "global", "label": "Fine", "last4": "abcdefghijkl"},
+            {"name": "short-last4", "scope": "global", "label": "Fine", "last4": "ab"},
+            {"name": "control-last4", "scope": "global", "label": "Fine", "last4": "ab\ncd"},
+            {"name": "control-label", "scope": "global", "label": "Two\nlines\u{0}here", "last4": 1234},
+            {"name": "blank-label", "scope": "global", "label": "   ", "last4": null},
+            {"name": "unicode-label", "scope": "global", "label": "Clé secrète", "last4": "éèàù"}
+        ]
+    });
+    assert_eq!(import_index(&conn, &index, bench.now).unwrap(), 7);
+    let row = |name: &str| get_secret(&conn, SCOPE_GLOBAL, name).unwrap().unwrap();
+    // An oversized label is cut to the same bound a save has, and the row is still a "needs its value" one.
+    let huge_row = row("huge-label");
+    assert_eq!(huge_row.label.chars().count(), LABEL_MAX);
+    assert_eq!(huge_row.version, 0);
+    assert_eq!(huge_row.last4.as_deref(), Some("wxyz"));
+    // A last four is exactly four characters or nothing.
+    assert_eq!(row("long-last4").last4, None);
+    assert_eq!(row("short-last4").last4, None);
+    assert_eq!(row("control-last4").last4, None);
+    assert_eq!(row("control-label").last4, None);
+    assert_eq!(row("unicode-label").last4.as_deref(), Some("éèàù"));
+    // No control character gets into a label; a blank one falls back to the name.
+    assert_eq!(row("control-label").label, "Twolineshere");
+    assert_eq!(row("blank-label").label, "blank-label");
+    assert_eq!(row("unicode-label").label, "Clé secrète");
+}
+
+#[test]
+fn an_import_never_widens_a_scope_it_cannot_read_to_global() {
+    let bench = Bench::new();
+    let conn = bench.conn();
+    let index = serde_json::json!({
+        "secrets": [
+            {"name": "kept-project", "scope": "project./work/proj", "label": "A"},
+            {"name": "no-scope", "label": "B"},
+            {"name": "bad-scope", "scope": "everyone", "label": "C"},
+            {"name": "empty-project", "scope": "project.", "label": "D"},
+            {"name": "huge-project", "scope": format!("project.{}", "p".repeat(5_000)), "label": "E"},
+            {"name": "number-scope", "scope": 7, "label": "F"}
+        ]
+    });
+    assert_eq!(import_index(&conn, &index, bench.now).unwrap(), 2);
+    assert!(get_secret(&conn, "project./work/proj", "kept-project")
+        .unwrap()
+        .is_some());
+    assert!(get_secret(&conn, SCOPE_GLOBAL, "no-scope")
+        .unwrap()
+        .is_some());
+    for skipped in ["bad-scope", "empty-project", "huge-project", "number-scope"] {
+        assert!(
+            get_secret(&conn, SCOPE_GLOBAL, skipped).unwrap().is_none(),
+            "{skipped} must not land in global"
+        );
+    }
+}
+
+#[test]
+fn an_import_takes_at_most_a_thousand_rows() {
+    let bench = Bench::new();
+    let conn = bench.conn();
+    let rows: Vec<serde_json::Value> = (0..1_200)
+        .map(|n| serde_json::json!({"name": format!("key-{n}"), "scope": "global", "label": "k"}))
+        .collect();
+    let added = import_index(&conn, &serde_json::json!({ "secrets": rows }), bench.now).unwrap();
+    assert_eq!(added, IMPORT_MAX);
+    assert_eq!(list_secrets(&conn).unwrap().len(), IMPORT_MAX);
+}
+
+#[test]
 fn a_secret_is_never_in_any_error_or_debug_line() {
     let bench = Bench::new();
     let row = bench.save(SCOPE_GLOBAL, "stripe-api-key", VALUE);

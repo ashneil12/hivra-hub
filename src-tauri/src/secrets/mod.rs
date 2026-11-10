@@ -1239,37 +1239,63 @@ pub fn index_json(conn: &Connection) -> Result<Value, String> {
     }))
 }
 
-/// Import creates rows in a "needs its value" state with no grants and no `.env` records.
+/// The most rows one import takes: an export is untrusted input, and a page that lists a million keys is not a vault.
+pub const IMPORT_MAX: usize = 1_000;
+/// The longest scope an import takes (`project.` and a folder path).
+const IMPORT_SCOPE_MAX: usize = 1_000;
+
+/// An imported label: control characters taken out, cut to the bound a save has, the name when nothing is left.
+fn imported_label(raw: Option<&str>, name: &str) -> String {
+    let cleaned: String = raw
+        .unwrap_or("")
+        .chars()
+        .filter(|c| !c.is_control())
+        .take(LABEL_MAX)
+        .collect();
+    let cleaned = cleaned.trim();
+    if cleaned.is_empty() {
+        name.to_string()
+    } else {
+        cleaned.to_string()
+    }
+}
+
+/// An imported last four: exactly four characters (a value shorter than twelve has none), no control character.
+fn imported_last4(raw: Option<&str>) -> Option<String> {
+    raw.filter(|text| text.chars().count() == 4 && !text.chars().any(char::is_control))
+        .map(str::to_string)
+}
+
+/// Import creates rows in a "needs its value" state with no grants and no `.env` records. Every field is untrusted: at
+/// most [`IMPORT_MAX`] rows, a name that normalizes, a label no longer than a saved one, a last four of four characters.
 pub fn import_index(conn: &Connection, index: &Value, now: i64) -> Result<usize, String> {
     let Some(list) = index.get("secrets").and_then(Value::as_array) else {
         return Ok(0);
     };
     let mut added = 0;
     for item in list {
+        if added >= IMPORT_MAX {
+            break;
+        }
         let Some(name) = item.get("name").and_then(Value::as_str) else {
             continue;
         };
         let Ok(name) = normalize_name(name) else {
             continue;
         };
-        let scope = item
-            .get("scope")
-            .and_then(Value::as_str)
-            .filter(|scope| valid_scope(scope))
-            .unwrap_or(SCOPE_GLOBAL)
-            .to_string();
+        // A scope that is there but is not one is skipped, never widened to `global`; no scope at all is global.
+        let scope = match item.get("scope") {
+            None | Some(Value::Null) => SCOPE_GLOBAL.to_string(),
+            Some(Value::String(scope)) if valid_scope(scope) && scope.len() <= IMPORT_SCOPE_MAX => {
+                scope.clone()
+            }
+            Some(_) => continue,
+        };
         if get_secret(conn, &scope, &name)?.is_some() {
             continue;
         }
-        let label = item
-            .get("label")
-            .and_then(Value::as_str)
-            .unwrap_or(&name)
-            .to_string();
-        let last4 = item
-            .get("last4")
-            .and_then(Value::as_str)
-            .map(str::to_string);
+        let label = imported_label(item.get("label").and_then(Value::as_str), &name);
+        let last4 = imported_last4(item.get("last4").and_then(Value::as_str));
         conn.execute(
             "INSERT INTO secrets (scope, name, label, last4, created_at, updated_at, last_used_at, version)
              VALUES (?1, ?2, ?3, ?4, ?5, ?5, NULL, 0)
