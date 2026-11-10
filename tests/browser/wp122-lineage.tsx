@@ -1,78 +1,51 @@
-// Browser proof for the native subagent list (WP-122). The list is the real one.
-import { useState } from "react";
+// Browser proof for the native subagent list (WP-122). The list is the real one, read off the agent rows the
+// harness builds from the events a Claude subagent raises.
 import { createRoot } from "react-dom/client";
-import { foldLineage } from "../../src/features/sessions/model/subagentLineage";
+import { applyHarnessEvent } from "../../src/integrations/harness/core/apply";
+import type { HarnessEvent } from "../../src/integrations/harness/core/types";
+import { newSession } from "../../src/features/sessions/model/session";
+import { lineageForThread } from "../../src/features/sessions/model/subagentLineage";
 import { ChildApprovalNote } from "../../src/features/sessions/ui/ChildApprovalNote";
 import { LineageList } from "../../src/features/sessions/ui/LineageList";
 import "../../src/styles/index.css";
 
-const claude = [
+const events: HarnessEvent[] = [
+  { type: "tool.started", callId: "toolu_agent", title: "Subagent", kind: "agent", status: "in_progress" },
+  { type: "tool.updated", callId: "toolu_agent", title: "Explore the auth module", kind: "agent", status: "in_progress" },
+  { type: "tool.updated", callId: "toolu_agent", kind: "agent", agentModel: "claude-haiku-5" },
   {
-    type: "assistant",
-    session_id: "sess_1",
-    message: {
-      content: [
-        {
-          type: "tool_use",
-          id: "toolu_agent",
-          name: "Task",
-          input: {
-            description: "Explore the auth module",
-            subagent_type: "explore",
-            model: "claude-haiku-5",
-          },
-        },
-      ],
-    },
+    type: "agent.step",
+    callId: "toolu_agent",
+    stepId: "step_1",
+    kind: "message",
+    text: "Looking.",
+    agentType: "explore",
   },
   {
-    type: "assistant",
-    session_id: "sub_1",
-    parent_tool_use_id: "toolu_agent",
-    message: { model: "claude-haiku-5", content: [{ type: "text", text: "Looking." }] },
+    type: "tool.updated",
+    callId: "toolu_agent",
+    title: "Explore the auth module",
+    kind: "agent",
+    status: "completed",
+    detail: "Auth lives in src/auth.",
   },
+  { type: "tool.started", callId: "toolu_fail", title: "Check the migration", kind: "agent", status: "in_progress" },
   {
-    type: "user",
-    session_id: "sess_1",
-    message: {
-      content: [{ type: "tool_result", tool_use_id: "toolu_agent", content: "Auth lives in src/auth." }],
-    },
-  },
-  {
-    type: "system",
-    subtype: "task_started",
-    task_id: "t2",
-    tool_use_id: "toolu_fail",
-    description: "Check the migration",
-    task_type: "local_agent",
-  },
-  {
-    type: "system",
-    subtype: "task_notification",
-    task_id: "t2",
-    tool_use_id: "toolu_fail",
+    type: "tool.updated",
+    callId: "toolu_fail",
+    title: "Check the migration",
+    kind: "agent",
     status: "failed",
-    summary: "The model name was unknown.",
+    detail: "The model name was unknown.",
   },
 ];
 
-function List() {
-  const [opened, setOpened] = useState("");
-  const lineage = foldLineage("claude", claude, [{ id: "hivra-9", providerSessionId: "sub_1" }]);
-  return (
-    <>
-      <LineageList lineage={lineage} onOpenTranscript={setOpened} />
-      <p data-opened>{opened}</p>
-    </>
-  );
-}
+const blocks = events.reduce(applyHarnessEvent, newSession("claude", "/repo")).blocks;
 
-createRoot(document.getElementById("list")!).render(<List />);
-createRoot(document.getElementById("unreported")!).render(
-  <LineageList lineage={foldLineage("hermes", claude)} />,
-);
+createRoot(document.getElementById("list")!).render(<LineageList lineage={lineageForThread("claude", blocks)!} />);
+createRoot(document.getElementById("unreported")!).render(<LineageList lineage={lineageForThread("hermes", blocks)!} />);
 createRoot(document.getElementById("empty")!).render(
-  <LineageList lineage={foldLineage("claude", [])} />,
+  <LineageList lineage={{ reported: true, children: [] }} />,
 );
 createRoot(document.getElementById("approval")!).render(
   <ChildApprovalNote name="Explore the auth module" detail="Read the config file" />,

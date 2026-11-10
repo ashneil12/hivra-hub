@@ -23,6 +23,7 @@ T3's V2 lineage view is one of the feel items people mention ([v0.1.0](https://g
 
 1. Parse and store child-agent events from the CLIs that already emit them (start with Claude and Codex; others can be 'not reported by this CLI'). Tests on fixture transcripts.
 2. A lineage list on the parent thread: each child has a name or role, model, status, and a result or error. Clicking opens the child's transcript if Hivra already stored it. This is a distinct list from the first-mate crew. Tests for the model; browser spec for the list.
+   Review outcome: the list has no link. A native Claude child's frames carry the parent's own session id and a Codex child is a thread inside the same server, so neither is ever a transcript Hivra stored; a link could only open the parent again. The child's own steps are already in its row in the transcript. The list is read off those agent rows (`lineageForThread`), not folded from raw frames a second time.
 3. When a child raises an approval, it appears on the parent with enough context to answer, and the answer is forwarded to the child. Tests that approve and deny each reach the child session port.
 
 ## Done when
