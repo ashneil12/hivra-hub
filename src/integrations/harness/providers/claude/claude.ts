@@ -22,6 +22,7 @@ import type {
 } from "../../../../features/sessions/model/session";
 import { loadClaudeHooks } from "../../../../features/settings/model/settings";
 import {
+  execChild,
   killChild,
   resolveClaudeBinary,
   spawnChild,
@@ -95,6 +96,7 @@ import { claudeRetryFromMessage } from "./claudeFailure";
 import { withDevCopiesOff } from "./devCopies";
 import { withWorkerNotificationsOff } from "./quietWorkers";
 import { workerCheckoutsArgs } from "./workerCheckouts";
+import { addDirsOf, cheapExploreLaunch } from "./explorePin";
 import { appIdentity, isDevCopy } from "../../../../app/model/appIdentity";
 import {
   GOAL_CHECK_CAP,
@@ -115,14 +117,21 @@ import {
   type ClaudeLiveRequest,
 } from "./claudeLaunch";
 import {
+  claimIdleCompaction,
+  confirmIdleCompactionClaim,
   forgetPromptCache,
+  idleCompactGivenUp,
+  IDLE_COMPACT_CLAIM_CONFIRM_MS,
+  noteIdleCompactFailure,
   promptCacheTtlFromUsage,
   recallPromptCache,
+  releaseIdleCompactionClaim,
   rememberPromptCache,
 } from "./claudePromptCache";
 import {
   contextCeilingFor,
   formatDuration,
+  IDLE_COMPACT_NOTICE,
   idleCompactionDue,
 } from "../../../../features/sessions/model/contextCeiling";
 import { formatTokens } from "../../../../features/sessions/model/contextUsage";
@@ -159,7 +168,7 @@ import type {
   SendTurnInput,
   SteerTurnInput,
 } from "../../core/types";
-import { claudeBridgeKind } from "./claudeDeepseekBridge";
+import { claudeBridgeKind, claudeRunsOnSubscriptionBridge } from "./claudeDeepseekBridge";
 import { bridgeLaunchModel } from "../../../../features/sessions/model/deepseekBridge";
 
 /**
@@ -462,22 +471,11 @@ async function sendClaudeTurnOnce(input: SendTurnInput): Promise<void> {
 }
 
 /**
- * A big chat idle past its prompt cache would have its whole context written
- * to the cache again, at full price, by this message and then kept that size.
- * Compacting first costs one read and leaves every later turn small. The
- * CLI's own resume prompt does the same above 100K tokens; this runs it by
- * policy, before the user's message, through the normal compaction path.
+ * Quiet `/compact` through the same path a person uses. Failure is a result
+ * for the caller, not a session error. A finished compact drops the claim a
+ * background look took, because remembering the record strips it.
  */
-async function compactIfIdle(live: Live, input: SendTurnInput): Promise<void> {
-  if (input.text.trim().startsWith("/")) return;
-  const state = recallPromptCache(input.sessionId);
-  if (!state || state.providerSessionId !== live.claudeSessionId) return;
-  const due = idleCompactionDue(state, Date.now());
-  if (!due) return;
-  live.onEvent({
-    type: "status",
-    text: `Idle ${formatDuration(due.idleMs)}, past the ${formatDuration(due.ttlMs)} prompt cache: compacting ${formatTokens(due.used)} tokens before sending, so the cache is not rebuilt at full size`,
-  });
+async function runQuietCompact(live: Live, input: HarnessSessionInput): Promise<void> {
   live.manualCompaction = true;
   live.quietCompaction = true;
   live.compactionConfirmed = false;
@@ -501,7 +499,33 @@ async function compactIfIdle(live: Live, input: SendTurnInput): Promise<void> {
       providerSessionId: live.claudeSessionId,
       lastTurnAt: Date.now(),
       contextUsed: 0,
+      compactFailures: 0,
     });
+  } finally {
+    live.manualCompaction = false;
+    live.quietCompaction = false;
+  }
+}
+
+/**
+ * A big chat idle past its prompt cache would have its whole context written
+ * to the cache again, at full price, by this message and then kept that size.
+ * Compacting first costs one read and leaves every later turn small. Only
+ * once the cache has already expired: inside the early window the idle
+ * watcher compacts, and a send must not.
+ */
+async function compactIfIdle(live: Live, input: SendTurnInput): Promise<void> {
+  if (input.text.trim().startsWith("/")) return;
+  const state = recallPromptCache(input.sessionId);
+  if (!state || state.providerSessionId !== live.claudeSessionId) return;
+  const due = idleCompactionDue(state, Date.now());
+  if (!due?.expired) return;
+  live.onEvent({
+    type: "status",
+    text: `Idle ${formatDuration(due.idleMs)}, past the ${formatDuration(due.ttlMs)} prompt cache: compacting ${formatTokens(due.used)} tokens before sending, so the cache is not rebuilt at full size`,
+  });
+  try {
+    await runQuietCompact(live, input);
   } catch (error) {
     if (live.cancelled) return;
     // A conversation that is gone is not a compaction failure: the dead
@@ -512,9 +536,6 @@ async function compactIfIdle(live: Live, input: SendTurnInput): Promise<void> {
       level: "warning",
       text: `Could not compact first (${error instanceof Error ? error.message : String(error)}); sending as is.`,
     });
-  } finally {
-    live.manualCompaction = false;
-    live.quietCompaction = false;
   }
 }
 
@@ -559,6 +580,111 @@ export async function compactClaudeContext(
       }
     });
   await live.turns;
+}
+
+/**
+ * The caller's busy hold for one background compact. `begin` is asked once,
+ * right before the compact runs, after every check that can turn the compact
+ * away (the window, the conversation, the claim). It returns false when the
+ * chat was taken in the meantime. `end` runs when the compact is over, however
+ * it ended.
+ */
+export type IdleCompactHold = { begin: () => boolean; end: () => void };
+
+/**
+ * Compact one idle Claude chat inside the two-minute window before its prompt
+ * cache expires. A cache that has already expired is left for the next send.
+ * Does not send the person's message. A mid-turn chat, a chat that has left
+ * the window, a chat whose last two background compacts failed, and a claim
+ * another window holds are left alone. Failure releases the claim so a later
+ * look can retry; it is not a session error.
+ * `proceed` is read again after the wait, because the chat may have gone.
+ */
+export async function compactDueIdleClaude(
+  input: HarnessSessionInput,
+  proceed: () => boolean = () => true,
+  hold?: IdleCompactHold,
+): Promise<boolean> {
+  if (!proceed()) return false;
+  const state = recallPromptCache(input.sessionId);
+  const due = state ? idleCompactionDue(state, Date.now()) : null;
+  // Only inside the lead window. An expired cache waits for the next send.
+  if (!state || !due || due.expired || idleCompactGivenUp(state)) return false;
+  const liveNow = liveByThread.get(input.sessionId);
+  if (liveNow?.activeTurn) return false;
+  const bound = liveNow?.claudeSessionId ?? resumeByThread.get(input.sessionId)?.sessionId;
+  if (!bound || bound !== state.providerSessionId) return false;
+
+  const claimId = crypto.randomUUID();
+  if (!claimIdleCompaction(input.sessionId, claimId, Date.now())) return false;
+  await new Promise((resolve) => setTimeout(resolve, IDLE_COMPACT_CLAIM_CONFIRM_MS));
+  if (!confirmIdleCompactionClaim(input.sessionId, claimId, Date.now())) return false;
+
+  const release = () => releaseIdleCompactionClaim(input.sessionId, claimId);
+  const stillDue = () => {
+    const fresh = recallPromptCache(input.sessionId);
+    if (!fresh || fresh.providerSessionId !== state.providerSessionId) return false;
+    const freshDue = idleCompactionDue(fresh, Date.now());
+    return freshDue !== null && !freshDue.expired;
+  };
+  if (!proceed() || liveByThread.get(input.sessionId)?.activeTurn || !stillDue()) {
+    release();
+    return false;
+  }
+
+  let live: Live;
+  try {
+    live = await ensureLive(input);
+  } catch (error) {
+    release();
+    if (error instanceof DeadConversationError) forgetDeadConversation(input, error);
+    return false;
+  }
+  if (cancelledThreads.delete(input.sessionId) || live.claudeSessionId !== state.providerSessionId) {
+    release();
+    return false;
+  }
+
+  let done = false;
+  live.onEvent = input.onEvent;
+  live.runtimeMode = input.runtimeMode;
+  live.turns = live.turns
+    .catch(() => undefined)
+    .then(async () => {
+      if (live.cancelled || live.activeTurn || !proceed() || !stillDue()) {
+        release();
+        return;
+      }
+      if (!confirmIdleCompactionClaim(input.sessionId, claimId, Date.now())) return;
+      // Every check that can turn this compact away has passed. Only now is
+      // the chat held busy, so one that fails them never flickers.
+      if (hold && !hold.begin()) {
+        release();
+        return;
+      }
+      live.cancelled = false;
+      live.muteUpdates = false;
+      try {
+        await runQuietCompact(live, input);
+        if (proceed()) live.onEvent({ type: "notice", text: IDLE_COMPACT_NOTICE });
+        done = true;
+      } catch (error) {
+        if (error instanceof DeadConversationError) {
+          forgetDeadConversation(input, error);
+          return;
+        }
+        // Cancelled or the compact did not land. Retry later. No error line:
+        // nobody was waiting on this to send.
+        release();
+        // A compact that did not land, as opposed to one the person stopped,
+        // counts. Two in a row and this chat is left alone until its next turn.
+        if (!live.cancelled) noteIdleCompactFailure(input.sessionId, state.providerSessionId);
+      } finally {
+        hold?.end();
+      }
+    });
+  await live.turns;
+  return done;
 }
 
 export async function steerClaudeTurn(input: SteerTurnInput): Promise<void> {
@@ -1035,19 +1161,33 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
     },
   );
 
+  const launchArgs = [
+    // Only a chat in Full access starts able to skip permissions; Full
+    // access chosen later on any other process restarts it (claudeLaunchDelta).
+    ...buildClaudeSpawnArgs({ ...launch, settings: withWorkerNotificationsOff(withDevCopiesOff(launch.settings, input.cwd)), allowBypass: launchNext.allowBypass }),
+    ...workerCheckoutsArgs(input.cwd),
+    // WP-30: the same snapshot as the append text, not a second read of the plugin wiring (claudeExtraArgs.ts).
+    ...(await claudeExtraArgs(input.sessionId, undefined, plugins.additions)),
+    // WP-41: the same text the launch key was compared against, not a second read.
+    ...claudeAppendArgs(append),
+  ];
+
+  // WP-143: a crew or Mono session on Anthropic starts with a cheap Explore agent as a flag, when this CLI knows the flag
+  // and the person has no Explore of their own (also not in a folder the session adds). Nothing is written to the
+  // folder, and a failure here only means the session starts without it.
+  const cheapExplore = await cheapExploreLaunch({
+    crew: input.crew === true,
+    anthropic: !claudeRunsOnSubscriptionBridge() && !launch.routedModel,
+    cwd: input.cwd,
+    providerAccountId: input.providerAccountId,
+    addDirs: addDirsOf(launchArgs),
+    cli: { key: path, version: () => execChild(path, ["--version"], input.cwd, "claude") },
+  });
+
   await spawnChild(
     input.sessionId,
     path,
-    [
-      // Only a chat in Full access starts able to skip permissions; Full
-      // access chosen later on any other process restarts it (claudeLaunchDelta).
-      ...buildClaudeSpawnArgs({ ...launch, settings: withWorkerNotificationsOff(withDevCopiesOff(launch.settings, input.cwd)), allowBypass: launchNext.allowBypass }),
-      ...workerCheckoutsArgs(input.cwd),
-      // WP-30: the same snapshot as the append text, not a second read of the plugin wiring (claudeExtraArgs.ts).
-      ...(await claudeExtraArgs(input.sessionId, undefined, plugins.additions)),
-      // WP-41: the same text the launch key was compared against, not a second read.
-      ...claudeAppendArgs(append),
-    ],
+    [...launchArgs, ...cheapExplore.args],
     input.cwd,
     { provider: "claude", id: input.providerAccountId ?? "default" },
     "claude",
@@ -1056,6 +1196,10 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
     // Only a custom ("Other models") id has a route; Claude models never do, so they keep the normal login.
     customModelRoute({ model: input.model, modelSettings: input.modelSettings ?? {} }),
   );
+  // Said only once the process is up: a launch that failed to start never claims the flag went in.
+  if (cheapExplore.sentence) {
+    input.onEvent({ type: "status", key: "explore-pin", text: cheapExplore.sentence });
+  }
 
   liveByThread.set(input.sessionId, live);
   resumeByThread.set(input.sessionId, {
@@ -1628,6 +1772,8 @@ function handleResult(live: Live, rec: Record<string, unknown>): void {
     lastTurnAt: Date.now(),
     cacheTtlMs: promptCacheTtlFromUsage(rec.usage),
     contextUsed: live.contextUsed,
+    // A real turn gives a chat that stopped compacting in the background another chance.
+    compactFailures: live.manualCompaction ? undefined : 0,
   });
   const metrics = turnMetricsFromResult(rec);
   if (metrics?.costUsd != null) {

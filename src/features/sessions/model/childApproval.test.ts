@@ -221,6 +221,7 @@ describe("approval on the parent", () => {
     });
 
     expect(session.blocks.find((block) => block.tool?.callId === "toolu_1")?.approval).toEqual({
+      at: expect.any(Number),
       requestId: 3,
       decided: "allow",
       child: {
@@ -249,6 +250,7 @@ describe("approval on the parent", () => {
     });
 
     expect(session.blocks.find((block) => block.tool?.callId === "toolu_1")?.approval).toEqual({
+      at: expect.any(Number),
       requestId: 4,
     });
   });
@@ -271,6 +273,7 @@ describe("approval on the parent", () => {
     });
 
     expect(session.blocks.find((block) => block.tool?.callId === "call_1")?.approval).toEqual({
+      at: expect.any(Number),
       requestId: 5,
     });
 
@@ -288,6 +291,7 @@ describe("approval on the parent", () => {
     });
 
     expect(session.blocks.find((block) => block.tool?.callId === "call_1")?.approval).toEqual({
+      at: expect.any(Number),
       requestId: 6,
       child: {
         name: "Vérifier l'auth",

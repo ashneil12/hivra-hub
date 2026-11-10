@@ -1,4 +1,5 @@
-// Hivra WP-119: the chats the crew tree draws. Text updates wake only those chats.
+// Hivra WP-119: the chats the crew tree draws. Text updates wake only those chats, and they redraw nothing: the view
+// holds only what the tree reads, so the words of a reply arriving leave the same array in place.
 
 import { useCallback, useContext, useRef, useSyncExternalStore } from "react";
 import { sameProjectPath } from "../../projects/model/recents";
@@ -26,6 +27,13 @@ function wantedIds(sessions: readonly Session[], project: string, extra: readonl
   return [...ids].sort();
 }
 
+/**
+ * The blocks crewTree reads: the prompts (a node's brief), and the tool calls and subagent runs (its latest tool and
+ * its children). The words of a reply (assistant and reasoning text) are not read, and they are the only blocks a
+ * text-only stream update changes.
+ */
+const DRAWN_ROLES: ReadonlySet<string> = new Set(["user", "tool", "approval"]);
+
 function toTreeSession(session: Session): CrewTreeSession {
   return {
     id: session.id,
@@ -33,11 +41,23 @@ function toTreeSession(session: Session): CrewTreeSession {
     cwd: session.cwd,
     firstMate: session.firstMate === true,
     busy: session.busy === true,
-    blocks: Array.isArray(session.blocks) ? session.blocks : [],
+    blocks: Array.isArray(session.blocks) ? session.blocks.filter((block) => DRAWN_ROLES.has(block?.role)) : [],
   };
 }
 
-/** Live sessions for one project. The same array comes back until one of those chats changes. */
+function sameDrawn(a: CrewTreeSession, b: CrewTreeSession): boolean {
+  if (a.id !== b.id || a.title !== b.title || a.cwd !== b.cwd) return false;
+  if (a.firstMate !== b.firstMate || a.busy !== b.busy) return false;
+  const left = a.blocks ?? [];
+  const right = b.blocks ?? [];
+  return left.length === right.length && left.every((block, index) => block === right[index]);
+}
+
+/**
+ * Live sessions for one project. The same array comes back until something the tree draws changes in one of those
+ * chats. A text-only stream update wakes this hook but not the panel, since React keeps the panel as it is when the
+ * snapshot is the same array.
+ */
 export function useCrewSessions(project: string, extraIds: readonly string[]): CrewTreeSession[] {
   const store = useContext(SessionStateContext);
   const extraKey = extraIds.join("\0");
@@ -89,6 +109,11 @@ export function useCrewSessions(project: string, extraIds: readonly string[]): C
       return prev.view;
     }
     const view = refs.map(toTreeSession);
+    // A chat changed, but not in anything the tree reads (the words of a reply): keep the view the panel already has.
+    if (prev && prev.key === key && prev.view.length === view.length && prev.view.every((entry, index) => sameDrawn(entry, view[index]))) {
+      cache.current = { key, refs, view: prev.view };
+      return prev.view;
+    }
     cache.current = { key, refs, view };
     return view;
   }, [store, project, extraKey]);

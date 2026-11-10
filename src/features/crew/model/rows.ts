@@ -18,6 +18,9 @@ export type CrewWorkerInput = {
   ownerSession?: string | null;
   errorClass?: string | null;
   error?: string | null;
+  /** A running row's stall (`blocked` means its first mate or the worker said it cannot finish) and since when. */
+  stallKind?: string | null;
+  stalledAt?: number | null;
   follow?: string | null;
   brief?: string | null;
   goal?: string | null;

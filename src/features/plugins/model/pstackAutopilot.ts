@@ -1,29 +1,41 @@
 // WP-41: the always-on pstack instruction. The catalog is generated (pstackIndex.generated.json) so it cannot drift;
 // a session fills in the absolute path of the installed copy. Claude gets this on --append-system-prompt and Codex as
 // developerInstructions, the text those sessions already take.
+// WP-117: the MiniMax skills in hivra-mcode are listed the same way (mcodeIndex.generated.json). Each carries
+// disable-model-invocation, so Claude Code does not offer it to the model itself; this index is how a session knows it.
 import { joinPath, slash } from "../../../shared/lib/paths";
 import { PLAIN_ENGLISH_RULE } from "../../firstmate/model/plainEnglish";
+import mcodeIndex from "./mcodeIndex.generated.json";
 import index from "./pstackIndex.generated.json";
 
 export const PSTACK_AUTOPILOT =
   "When the work matches a skill below, read its SKILL.md and follow it yourself, without waiting for a slash command. Say in one plain sentence which one you used. Suggest one when it would clearly help.";
 
-const SHIM = "/claude/pstack";
-
 /**
- * The installed plugin folder for a Claude shim path (`…/plugins/claude/pstack` → `…/plugins/installed/pstack`).
- * The first usable directory wins. A `..` segment is refused.
+ * The installed folder of the plugin called `plugin`, from its Claude shim (`…/plugins/claude/<plugin>` becomes
+ * `…/plugins/installed/<plugin>`). The first usable directory wins. A `..` segment is refused.
  */
-export function pstackInstallRoot(dirs: readonly unknown[]): string | undefined {
+function installRoot(dirs: readonly unknown[], plugin: string): string | undefined {
+  const shim = `/claude/${plugin}`;
   for (const dir of dirs) {
     if (typeof dir !== "string") continue;
     const path = slash(dir).replace(/\/+$/, "");
-    if (!path.endsWith(SHIM) || path.split("/").includes("..")) continue;
-    const parent = path.slice(0, -SHIM.length);
+    if (!path.endsWith(shim) || path.split("/").includes("..")) continue;
+    const parent = path.slice(0, -shim.length);
     if (!parent || parent === "/" || parent.split("/").includes("..")) continue;
-    return joinPath(parent, "installed/pstack");
+    return joinPath(parent, `installed/${plugin}`);
   }
   return undefined;
+}
+
+/** pstack's installed folder, or none when pstack is off. */
+export function pstackInstallRoot(dirs: readonly unknown[]): string | undefined {
+  return installRoot(dirs, "pstack");
+}
+
+/** hivra-mcode's installed folder (the MiniMax skills), or none when that plugin is off. */
+export function mcodeInstallRoot(dirs: readonly unknown[]): string | undefined {
+  return installRoot(dirs, "hivra-mcode");
 }
 
 function field(value: string): string {
@@ -101,13 +113,23 @@ export function pstackIndexText(root: string): string | undefined {
   return lines ? `${root}\n${lines}` : undefined;
 }
 
-/** The text a session is given. Pstack only when it is on; the plain-English ending only when that switch is on. */
-export function sessionInstruction(input: { pstackRoot?: string; plainEnglish: boolean }): string {
+/** The same for the MiniMax skills, under their own folder. */
+export function mcodeIndexText(root: string): string | undefined {
+  const lines = indexLines(mcodeIndex, root);
+  return lines ? `${root}\n${lines}` : undefined;
+}
+
+/**
+ * The text a session is given. Each plugin's skills are listed only while that plugin is on, under one sentence that
+ * says to read a skill that fits; the plain-English ending only when that switch is on.
+ */
+export function sessionInstruction(input: { pstackRoot?: string; mcodeRoot?: string; plainEnglish: boolean }): string {
   const parts: string[] = [];
-  if (input.pstackRoot) {
-    const lines = pstackIndexText(input.pstackRoot);
-    if (lines) parts.push(`${PSTACK_AUTOPILOT}\n${lines}`);
-  }
+  const listed = [
+    input.pstackRoot ? pstackIndexText(input.pstackRoot) : undefined,
+    input.mcodeRoot ? mcodeIndexText(input.mcodeRoot) : undefined,
+  ].filter((text): text is string => Boolean(text));
+  if (listed.length) parts.push(`${PSTACK_AUTOPILOT}\n${listed.join("\n")}`);
   if (input.plainEnglish) parts.push(PLAIN_ENGLISH_RULE);
   return parts.join("\n\n");
 }

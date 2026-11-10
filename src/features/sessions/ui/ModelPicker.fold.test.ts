@@ -114,6 +114,17 @@ describe("Older versions fold", () => {
     expect(older).toHaveLength(6);
   });
 
+  it("keeps the newest Fable in the main list", () => {
+    const models = [
+      m("fable-5", "Claude Fable 5"),
+      m("fable-5-2", "Claude Fable 5.2"),
+      m("fable-5-1", "Claude Fable 5.1"),
+    ];
+    const { latest, older } = splitOlderVersions(models);
+    expect(latest.map((x) => x.name)).toEqual(["Claude Fable 5.2"]);
+    expect(older.map((x) => x.name)).toEqual(["Claude Fable 5", "Claude Fable 5.1"]);
+  });
+
   it("is off by default: the list is exactly as before, with no Older versions row", () => {
     openPicker();
     expect(names()).toEqual(CATALOG.map((x) => x.name));

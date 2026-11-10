@@ -133,6 +133,10 @@ export function applyHarnessEvent(
         pendingQuestion: {
           requestId: event.requestId,
           questions: event.questions,
+          // The same question sent again is not a new ask: it keeps the time it was first made.
+          askedAt:
+            (session.pendingQuestion?.requestId === event.requestId ? session.pendingQuestion.askedAt : undefined) ??
+            Date.now(),
           ...(event.title ? { title: event.title } : {}),
           ...(event.autoResolveAt != null
             ? { autoResolveAt: event.autoResolveAt }
@@ -568,7 +572,8 @@ export function appendUser(
 ): Session {
   session = settlePendingApprovals(session);
   return appendBlock(
-    { ...session, busy: true, turnReady: false },
+    // A real turn starts: any background compact hold is over (WP-115).
+    { ...session, busy: true, turnReady: false, idleCompacting: undefined },
     {
       id: crypto.randomUUID(),
       role: "user",
@@ -614,6 +619,7 @@ export function stopStreaming(session: Session, endedAt = Date.now()): Session {
     ...settled,
     busy: false,
     turnReady: false,
+    idleCompacting: undefined,
     pendingQuestion: undefined,
     blocks: stampTurnDuration(
       withoutTurnRepeats(
@@ -989,7 +995,11 @@ function attachApproval(
               ...(preview ? { preview } : {}),
             }
           : prev.tool,
-      approval,
+      approval: {
+        ...approval,
+        // The same request sent again is not a new ask: it keeps the time it was first made.
+        at: (prev.approval?.requestId === event.requestId ? prev.approval.at : undefined) ?? Date.now(),
+      },
     };
     return { ...session, blocks };
   }
@@ -1007,7 +1017,7 @@ function attachApproval(
       kind: event.kind,
       ...(preview ? { preview } : {}),
     },
-    approval,
+    approval: { ...approval, at: Date.now() },
   });
 }
 

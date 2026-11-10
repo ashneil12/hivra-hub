@@ -243,6 +243,23 @@ describe("collectWorkspaceSnapshot", () => {
     expect(snapshot.projectTerminals).toEqual([]);
   });
 
+  it("keeps the choice to stay in this folder on a blank chat, and only then", () => {
+    const stayed = newSession("cursor", "/tmp/a");
+    stayed.id = "stayed";
+    stayed.worktreeDeclined = true;
+    const plain = newSession("cursor", "/tmp/a");
+    plain.id = "plain";
+    const snapshot = collectWorkspaceSnapshot(
+      [{ ...newTab("stayed"), id: "t1" }, { ...newTab("plain"), id: "t2" }],
+      [stayed, plain],
+      "t1",
+      "/tmp/a",
+      new Map(),
+    );
+    expect(snapshot.sessions.find((stub) => stub.id === "stayed")?.worktreeDeclined).toBe(true);
+    expect("worktreeDeclined" in snapshot.sessions.find((stub) => stub.id === "plain")!).toBe(false);
+  });
+
   it("drops agent tabs, and the pane holding only them", () => {
     const file = newFileTab("/tmp/a/README.md", "/tmp/a");
     const agent = newAgentTab("Audit the UI", "/tmp/a", {
@@ -542,6 +559,48 @@ describe("parseWorkspaceSnapshot", () => {
     expect(
       workspace?.sessions.some((session) => session.id === invalidPaneId),
     ).toBe(false);
+  });
+});
+
+describe("the choice to stay in this folder on reload", () => {
+  const saved = (stub: Record<string, unknown>) => ({
+    tabs: [{ ...newTab("s1"), id: "t1" }],
+    sessions: [
+      {
+        id: "s1",
+        cwd: "/tmp/a",
+        harness: "cursor",
+        model: "",
+        modelSettings: {},
+        runtimeMode: "supervised",
+        title: "",
+        ...stub,
+      },
+    ],
+    activeTabId: "t1",
+    projectCwd: "/tmp/a",
+    projectTerminals: [],
+  });
+
+  it("comes back on the reopened blank chat", () => {
+    const workspace = hydrateWorkspaceSnapshot(saved({ worktreeDeclined: true }) as never, new Map());
+    expect(workspace?.sessions.find((session) => session.id === "s1")?.worktreeDeclined).toBe(true);
+  });
+
+  it("reads anything but true as not chosen, and an older snapshot as not chosen", () => {
+    for (const stub of [{}, { worktreeDeclined: false }, { worktreeDeclined: "yes" }, { worktreeDeclined: 1 }]) {
+      const workspace = hydrateWorkspaceSnapshot(saved(stub) as never, new Map());
+      expect(workspace?.sessions.find((session) => session.id === "s1")?.worktreeDeclined).toBeUndefined();
+    }
+  });
+
+  it("is not carried onto a stored chat, which has its own transcript", () => {
+    const stored = chat("s1", "/tmp/a");
+    const workspace = hydrateWorkspaceSnapshot(
+      saved({ worktreeDeclined: true }) as never,
+      new Map([["s1", stored]]),
+    );
+    expect(workspace?.sessions.find((session) => session.id === "s1")?.worktreeDeclined).toBeUndefined();
   });
 });
 
