@@ -330,11 +330,8 @@ function mergeTurnMetrics(
     ...(event.cacheHitPercent != null
       ? { cacheHitPercent: event.cacheHitPercent }
       : {}),
-    // WP-108: a price the CLI reported. Messages from one turn merge into the same row, so the
-    // latest reported price adds to what the turn already has.
-    ...(event.costUsd != null
-      ? { costUsd: (current.turnMetrics?.costUsd ?? 0) + event.costUsd }
-      : {}),
+    // WP-108: a price the CLI reported. Each report is the turn's cost so far, so a later one replaces it.
+    ...(event.costUsd != null ? { costUsd: event.costUsd } : {}),
   };
   const blocks = session.blocks.slice();
   blocks[userIndex] = { ...current, turnMetrics: metrics };
