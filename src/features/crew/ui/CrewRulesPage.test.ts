@@ -4,6 +4,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { invoke } from "@tauri-apps/api/core";
 import { builderScale, resetWorkerPool } from "../../monos/model/workerPool";
+import { ceilingForProject, resetSpendGate, saveTaskCeiling, spendSnapshot } from "../../usage/model/spendGate";
 import { CrewRulesPage } from "./CrewRulesPage";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
@@ -199,4 +200,42 @@ it("shows the free disk pause on at 30 GB from the start, and lets the person tu
   setValue("Free disk limit in GB", "50");
   expect(builderScale().pauseFreeDiskGb).toBe(50);
   expect(line()).toContain("free disk is below 50 GB");
+});
+
+it("a project rule can set a task ceiling, and loading a higher one does not raise it", async () => {
+  resetSpendGate();
+  saveTaskCeiling("/work/app", { hardUsd: 4, dailyUsd: 2, softAt: 0.5 }, spendSnapshot().book.revision);
+  let reads = 0;
+  invokeMock.mockImplementation((cmd: string) => {
+    if (cmd === "crew_rules_get") {
+      reads += 1;
+      return Promise.resolve({
+        rules: [{ labels: ["ui"], paths: [], cli: "cursor", taskCeilingUsd: reads === 1 ? 10 : 3 }],
+        plugins: [{ labels: ["ui"], paths: [], cli: "pi", taskCeilingUsd: 1 }],
+        revision: reads === 1 ? 1 : 2,
+        signedIn: [],
+      });
+    }
+    if (cmd === "crew_rules_set") return Promise.resolve({ rules: [], plugins: [], revision: 2, signedIn: [] });
+    return Promise.resolve(undefined);
+  });
+  show();
+  await act(async () => undefined);
+  const ceiling = container.querySelector<HTMLInputElement>('[aria-label="Task ceiling for rule 1"]');
+  expect(ceiling?.value).toBe("10");
+  expect(container.textContent).toContain("It never raises a ceiling already set.");
+  expect(container.textContent).not.toMatch(/your bill/i);
+  expect(ceilingForProject("/work/app")).toEqual({ hardUsd: 4, dailyUsd: 2, softAt: 0.5 });
+
+  await act(async () => {
+    setValue("Task ceiling for rule 1", "3");
+  });
+  await act(async () => {
+    click("Save");
+  });
+  const sent = sets().at(-1);
+  const rules = sent?.rules as { taskCeilingUsd: number | null }[];
+  expect(rules[0]?.taskCeilingUsd).toBe(3);
+  expect(ceilingForProject("/work/app")).toEqual({ hardUsd: 3, dailyUsd: 2, softAt: 0.5 });
+  resetSpendGate();
 });

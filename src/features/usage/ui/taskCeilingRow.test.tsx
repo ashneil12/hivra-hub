@@ -5,6 +5,8 @@ import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { TaskDetail } from "../../tasks/ui/TaskDetail";
 import {
+  applyProjectRuleCeiling,
+  ceilingForProject,
   resetSpendGate,
   reviewReportedTurn,
   saveTaskCeiling,
@@ -89,5 +91,32 @@ describe("task ceiling on the row", () => {
     expect(quiet.text).toContain("Task ceiling $10.");
     expect(quiet.text).not.toContain("Needs you");
     quiet.unmount();
+  });
+
+  it("a project's rules can tighten its ceiling, and cannot raise or clear one already set", () => {
+    expect(ceilingForProject("/work/crew")).toBeNull();
+    applyProjectRuleCeiling("/work/crew", null);
+    expect(ceilingForProject("/work/crew")).toBeNull();
+
+    applyProjectRuleCeiling("/work/crew", 10);
+    expect(ceilingForProject("/work/crew")).toEqual({ hardUsd: 10, softAt: 0.8 });
+
+    saveTaskCeiling("/work/crew", { hardUsd: 10, dailyUsd: 4, softAt: 0.5 }, spendSnapshot().book.revision);
+    applyProjectRuleCeiling("/work/crew", 25);
+    expect(ceilingForProject("/work/crew")).toEqual({ hardUsd: 10, dailyUsd: 4, softAt: 0.5 });
+
+    applyProjectRuleCeiling("/work/crew", 6);
+    expect(ceilingForProject("/work/crew")).toEqual({ hardUsd: 6, dailyUsd: 4, softAt: 0.5 });
+
+    applyProjectRuleCeiling("/work/crew", null);
+    applyProjectRuleCeiling("/work/crew", 0);
+    expect(ceilingForProject("/work/crew")).toEqual({ hardUsd: 6, dailyUsd: 4, softAt: 0.5 });
+
+    applyProjectRuleCeiling("/work/other", 3);
+    expect(ceilingForProject("/work/crew")?.hardUsd).toBe(6);
+    expect(ceilingForProject("/work/other")).toEqual({ hardUsd: 3, softAt: 0.8 });
+    applyProjectRuleCeiling("", 2);
+    applyProjectRuleCeiling("/", 2);
+    expect(spendSnapshot().ceilings["/"]).toBeUndefined();
   });
 });

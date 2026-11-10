@@ -426,6 +426,26 @@ export function ceilingForProject(project: string): TaskCeiling | null {
   return null;
 }
 
+/**
+ * The lowest ceiling on a project's crew rules. Null does nothing, so a rule
+ * with no ceiling cannot clear one the person set. A higher number cannot raise it.
+ */
+export function applyProjectRuleCeiling(project: string, usd: number | null): void {
+  boot();
+  if (usd == null) return;
+  const incoming = sanitizeTaskCeiling({ hardUsd: usd });
+  if (!incoming?.hardUsd) return;
+  const have = ceilingForProject(project);
+  if (have?.hardUsd != null && have.hardUsd <= incoming.hardUsd) return;
+  const next = sanitizeTaskCeiling({
+    hardUsd: incoming.hardUsd,
+    ...(have?.softAt != null ? { softAt: have.softAt } : {}),
+    ...(have?.dailyUsd != null ? { dailyUsd: have.dailyUsd } : {}),
+  });
+  if (!next) return;
+  saveTaskCeiling(project, next, book.revision);
+}
+
 export function ceilingHold(sessionId: string): string | undefined {
   return holds.get(sessionId);
 }
