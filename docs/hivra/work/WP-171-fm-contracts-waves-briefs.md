@@ -67,6 +67,11 @@ Atomic Agent, https://github.com/AtomicBot-ai/atomic-agent at commit `1b4e641525
 - **Original request.** Quoted after the intent in every worker, Lead and remote brief, 16,000 characters, a follow-up
   under 280 characters joined to the message it follows. A task that waits keeps the request it was asked under.
   Atomic's stopped-request exclusion is not taken: the transcript keeps no mark of a stopped turn.
+- **Reuses what main has.** With a project's fresh-eyes review on (WP-144), each task goes through it like any
+  `delegate_task`, and a provider held for its review counts as not started, so what needs it waits rather than being
+  held as lost. A fan-out started from a room comes back to that room. In the chat the call reads like
+  `delegate_task` (its row, each worker's card, the live line) and the start-workers and mismatch nudges count it as
+  handing work out. The fan-out host is a hook (`useFanoutHost`), so App.tsx only calls it.
 - **Not here:** a plan that survives the app quitting mid-fan-out and stopping one worker (WP-172); outcome notes from
   finished waves in later briefs.
 

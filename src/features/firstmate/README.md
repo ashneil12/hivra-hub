@@ -71,6 +71,8 @@ other, still use `delegate_task`.
 | A provider that failed, was stopped, cannot be found or did not deliver holds what waits on it; the line says what landed and what did not start. Nothing that did not run passes | `dependencyVerdict` |
 | Every brief carries the contract of its plan, and a bounded quote of the person's own request (16,000 characters, a short follow-up joined to the message it follows up) | `renderBrief` in `model/brief.ts`, `model/originalRequest.ts` |
 | Short rules for the first mate and every worker: keep the design and judgement, a worker has no memory of the chat, never ask the person, hand back a blocked path exactly | `contract.md` ("Delegating well"), `workerRules` in `agentAppTasks.ts` |
+| With a project's fresh-eyes review on (WP-144), each task is reviewed like any `delegate_task`; a provider held for its review reads as not started yet, so what needs it waits | `heldForReview` in `fresh-eyes/model/gate.ts`, `hooks/useFanoutHost.ts` |
+| In the chat the call reads like `delegate_task`: "Handed out 3 tasks", each worker's card anchored on it, the live line "Handing out a job", and no start-workers or mismatch nudge after it. A fan-out from a room comes back to the room | `sessions/model/monocodeToolCall.ts`, `monos/model/monoSpawnedSessions.ts`, `agent-app/model/agentApp.ts` |
 
 Not here: a plan that survives the app quitting mid-fan-out and stopping one worker of a fan-out (WP-172), and a quote that
 leaves out a request the person stopped (the transcript keeps no mark of a stopped turn).
