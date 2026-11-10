@@ -54,14 +54,15 @@ describe("the lead strip", () => {
   });
 
   it("offers only the capable CLIs Ash ticked, never the ones he did not", () => {
+    // Codex is installed and can lead, but Ash never ticked it. Cursor and Pi were ticked but cannot lead.
     installedHere(["claude", "codex", "cursor", "grok", "opencode", "pi"]);
-    saveChosenClis(["claude", "codex", "cursor", "pi"]);
+    saveChosenClis(["claude", "cursor", "pi"]);
     show("opencode");
     expect(container.querySelector("[data-lead-cli-reason]")?.textContent).toContain(
       "OpenCode cannot lead yet",
     );
     expect(container.textContent).toContain("Switch the lead. This crew and its memory stay.");
-    expect(offered()).toEqual(["claude", "codex"]);
+    expect(offered()).toEqual(["claude"]);
   });
 
   it("offers nothing when Ash chose no CLI that can lead, and still says why", () => {
