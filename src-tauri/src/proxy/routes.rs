@@ -468,10 +468,26 @@ impl RouteStore {
             .find(|route| route.hostname == host)
     }
 
+    /// A reader (another copy looking for the daily proxy's port) never sees the file empty:
+    /// the new text is written beside it and moved over it. Nothing is written when the
+    /// file already says this.
     pub fn write_port(&self, port: u16) -> Result<(), String> {
-        self.ensure_dir()?;
-        std::fs::write(self.port_path(), format!("{port}\n"))
+        if self.read_port() == Some(port) {
+            return Ok(());
+        }
+        self.write_small(&self.port_path(), &format!("{port}\n"))
             .map_err(|error| format!("The proxy port can't be written: {error}"))
+    }
+
+    /// Write a short file so a reader sees the old text or the new text, never an empty file.
+    fn write_small(&self, path: &Path, text: &str) -> Result<(), String> {
+        self.ensure_dir()?;
+        let tmp = tmp_name(&self.dir);
+        std::fs::write(&tmp, text).map_err(|error| error.to_string())?;
+        std::fs::rename(&tmp, path).map_err(|error| {
+            let _ = std::fs::remove_file(&tmp);
+            error.to_string()
+        })
     }
 
     pub fn read_port(&self) -> Option<u16> {
@@ -479,30 +495,8 @@ impl RouteStore {
         text.trim().parse::<u16>().ok().filter(|port| *port != 0)
     }
 
-    fn data_id_path(&self) -> PathBuf {
-        self.dir.join("data.id")
-    }
-
-    /// The data folder this proxy belongs to. A copy reuses a port only when the health
-    /// reply carries this id.
-    pub fn write_data_id(&self, id: &str) -> Result<(), String> {
-        if !valid_data_id(id) {
-            return Err("The proxy's data id is not one this app makes.".into());
-        }
-        self.ensure_dir()?;
-        std::fs::write(self.data_id_path(), format!("{id}\n"))
-            .map_err(|error| format!("The proxy's data id can't be written: {error}"))
-    }
-
-    pub fn read_data_id(&self) -> Option<String> {
-        let text = std::fs::read_to_string(self.data_id_path()).ok()?;
-        let id = text.trim();
-        valid_data_id(id).then(|| id.to_string())
-    }
-
     pub fn write_pid(&self) -> Result<(), String> {
-        self.ensure_dir()?;
-        std::fs::write(self.pid_path(), format!("{}\n", std::process::id()))
+        self.write_small(&self.pid_path(), &format!("{}\n", std::process::id()))
             .map_err(|error| format!("The proxy pid can't be written: {error}"))
     }
 }
@@ -527,14 +521,6 @@ fn route_from_value(value: &serde_json::Value) -> Option<Route> {
         stack_id,
         registered_at: value.get("registeredAt").and_then(|at| at.as_u64()),
     })
-}
-
-/// Lowercase hex, short enough for one header and not a path.
-fn valid_data_id(id: &str) -> bool {
-    (16..=64).contains(&id.len())
-        && id
-            .bytes()
-            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
 }
 
 /// A stack id this app made: `s` plus lowercase hex. Anything else read from disk is ignored.
