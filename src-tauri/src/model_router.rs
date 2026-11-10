@@ -307,19 +307,21 @@ pub async fn model_key_save(
 ) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || {
         save_key_in(KEY_SERVICE, &custom_model_id, &key)?;
-        // WP-129: the address stored with the key is the only host short text may send it to.
-        // A bad address does not undo the save. Other models can still keep the key.
-        if let (Some(provider), Some(model_id), Some(base_url)) = (provider, model_id, base_url) {
-            if let Some(dir) = crate::text_generation::store_dir() {
-                let route = CustomRoute {
+        // WP-129: the address stored with the key is the only host short text may send it to. A new key
+        // never keeps the old key's host. A missing or bad address does not undo the save: Other models
+        // still use the key, and short text will not.
+        if let Some(dir) = crate::text_generation::store_dir() {
+            let route = match (provider, model_id, base_url) {
+                (Some(provider), Some(model_id), Some(base_url)) => Some(CustomRoute {
                     provider,
                     base_url,
                     model_id,
-                    custom_model_id,
+                    custom_model_id: custom_model_id.clone(),
                     reasoning_effort: None,
-                };
-                let _ = crate::text_generation::record_model_binding(&dir, &route);
-            }
+                }),
+                _ => None,
+            };
+            crate::text_generation::rebind_model_key(&dir, &custom_model_id, route.as_ref());
         }
         Ok(())
     })

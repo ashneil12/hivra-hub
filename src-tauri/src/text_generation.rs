@@ -82,14 +82,20 @@ fn chat_reply(body: &str) -> PostResult {
     }
 }
 
+/// The key goes to the one URL it was bound to. A redirect is not followed, whatever the code is: the
+/// answer is the status, and the key is not offered to the address the provider named.
 fn post_chat(url: &str, token: &str, body: &str, deadline: Duration) -> PostResult {
-    let agent = ureq::AgentBuilder::new().timeout(deadline).build();
+    let agent = ureq::AgentBuilder::new()
+        .timeout(deadline)
+        .redirects(0)
+        .build();
     match agent
         .post(url)
         .set("Authorization", &format!("Bearer {token}"))
         .set("Content-Type", "application/json")
         .send_string(body)
     {
+        Ok(response) if response.status() >= 300 => PostResult::Status(response.status()),
         Ok(response) => chat_reply(&response.into_string().unwrap_or_default()),
         Err(ureq::Error::Status(code, _)) => PostResult::Status(code),
         Err(ureq::Error::Transport(_)) => PostResult::Unreachable,
@@ -184,11 +190,14 @@ fn completions_from(provider: &str, url: &NormalUrl) -> String {
     )
 }
 
-/// Named providers go only to the one host `import_destination_allowed` already names. Custom is
-/// https, and plain http is only Ollama on this Mac.
-fn scheme_allowed(provider: &str, url: &NormalUrl) -> bool {
+/// Named providers go only to the one host `import_destination_allowed` already names, on the default
+/// port. Ollama is http on this Mac. Custom is https.
+fn host_allowed(provider: &str, url: &NormalUrl) -> bool {
     match provider {
         "xai" | "openrouter" | "deepseek" | "ollama" => {
+            if provider != "ollama" && url.port.is_some() {
+                return false;
+            }
             let route = CustomRoute {
                 provider: provider.to_string(),
                 base_url: base_string(url),
@@ -207,8 +216,12 @@ fn same_model(left: &str, right: &str) -> bool {
     left.trim() == right.trim()
 }
 
-/// The completions URL for this ask, or nothing when the caller's route is not the saved one or
-/// the host is not the one that key is for.
+/// The completions URL for this ask, or nothing.
+///
+/// The caller's route must be the saved short-text route. The address must be one this provider may use
+/// (a named provider's one host, or https for custom). A key (every provider but Ollama) must also have
+/// the provider, model and address that were stored when it was saved, and the caller's must equal them.
+/// A key with nothing stored is not sent anywhere: nothing says which host it belongs to.
 pub fn bound_completions_url(
     given: &CustomRoute,
     saved: &CustomRoute,
@@ -220,40 +233,26 @@ pub fn bound_completions_url(
     if !same_model(&given.model_id, &saved.model_id) {
         return None;
     }
-    if given.provider != "ollama" && !safe_account(&given.custom_model_id) {
-        return None;
-    }
-    if given.provider == "ollama"
-        && !given.custom_model_id.is_empty()
-        && !safe_account(&given.custom_model_id)
-    {
-        return None;
-    }
     let given_url = normalize_base(&given.base_url)?;
-    let saved_url = normalize_base(&saved.base_url)?;
-    if given_url != saved_url || !scheme_allowed(&given.provider, &given_url) {
+    if given_url != normalize_base(&saved.base_url)? || !host_allowed(&given.provider, &given_url) {
         return None;
     }
-    if given.provider == "custom" {
-        let model = models
+    if given.provider == "ollama" {
+        // No key is read for Ollama. A named account, when there is one, must still be a plain name.
+        if !given.custom_model_id.is_empty() && !safe_account(&given.custom_model_id) {
+            return None;
+        }
+    } else {
+        if !safe_account(&given.custom_model_id) {
+            return None;
+        }
+        let bound = models
             .iter()
             .find(|model| model.custom_model_id == given.custom_model_id)?;
-        if model.provider != "custom" || !same_model(&model.model_id, &given.model_id) {
-            return None;
-        }
-        let bound = normalize_base(&model.base_url)?;
-        if bound != given_url {
-            return None;
-        }
-    } else if let Some(model) = models
-        .iter()
-        .find(|model| model.custom_model_id == given.custom_model_id)
-    {
-        if model.provider != given.provider || !same_model(&model.model_id, &given.model_id) {
-            return None;
-        }
-        let bound = normalize_base(&model.base_url)?;
-        if bound != given_url {
+        if bound.provider != given.provider
+            || !same_model(&bound.model_id, &given.model_id)
+            || normalize_base(&bound.base_url)? != given_url
+        {
             return None;
         }
     }
@@ -422,7 +421,7 @@ fn model_file(dir: &Path, account: &str) -> Option<PathBuf> {
 /// Remember the address that belongs to this key. Called only when the key itself is saved.
 pub fn record_model_binding(dir: &Path, route: &CustomRoute) -> Result<(), ()> {
     let url = normalize_base(&route.base_url).ok_or(())?;
-    if !scheme_allowed(&route.provider, &url) || route.model_id.trim().is_empty() {
+    if !host_allowed(&route.provider, &url) || route.model_id.trim().is_empty() {
         return Err(());
     }
     let clean = cleaned(route, &url);
@@ -430,6 +429,18 @@ pub fn record_model_binding(dir: &Path, route: &CustomRoute) -> Result<(), ()> {
     let root = path.parent().ok_or(())?;
     let bytes = serde_json::to_vec(&stored_from(&clean)).map_err(|_| ())?;
     write_atomic(root, &path, &bytes)
+}
+
+/// A key was just saved for `account`. Store the address it was saved with, or drop what was stored for
+/// the account before: a new key must not inherit the old key's host. With no usable address nothing is
+/// stored, and short text will not send that key anywhere.
+pub fn rebind_model_key(dir: &Path, account: &str, route: Option<&CustomRoute>) {
+    if let Some(route) = route {
+        if route.custom_model_id == account && record_model_binding(dir, route).is_ok() {
+            return;
+        }
+    }
+    remove_model_binding(dir, account);
 }
 
 /// Remember which saved model short text uses. A custom address must already be the one stored
@@ -555,41 +566,47 @@ fn key_for(route: &CustomRoute) -> Result<Option<String>, String> {
     read_key_in(KEY_SERVICE, &route.custom_model_id)
 }
 
+/// The whole ask against one store folder. The key is read only after the route matches the saved
+/// short-text route and the host stored with that key, so a different account is never loaded.
+/// `read_key` and `post` are the Keychain and the network; tests stand in for both.
+pub fn ask_in(
+    dir: &Path,
+    route: &CustomRoute,
+    prompt: &str,
+    read_key: impl FnOnce(&CustomRoute) -> Result<Option<String>, String>,
+    post: impl FnOnce(&str, &str, &str) -> PostResult,
+) -> AskOutcome {
+    let not_this = || refused("That model can't be used for this.");
+    if !may_route(route) {
+        return not_this();
+    }
+    let Some(saved) = read_route(dir) else {
+        return not_this();
+    };
+    let models = read_models(dir);
+    if bound_completions_url(route, &saved, &models).is_none() {
+        return not_this();
+    }
+    let key = match read_key(route) {
+        Ok(key) => key,
+        Err(_) => return refused("Couldn't reach the Keychain."),
+    };
+    if key.is_none() && route.provider != "ollama" {
+        return refused("No key is saved for that model. Add it under Other models.");
+    }
+    text_complete(route, &saved, &models, prompt, key.as_deref(), post)
+}
+
 /// One short reply. The arguments are the route and the prompt: there is no path to write.
-/// The key is read only after the route matches the saved one, so a different account is never loaded.
 #[tauri::command]
 pub async fn text_generation_ask(route: CustomRoute, prompt: String) -> Result<AskOutcome, String> {
-    if !may_route(&route) {
-        return Ok(refused("That model can't be used for this."));
-    }
     let Some(dir) = store_dir() else {
         return Ok(refused("That model can't be used for this."));
     };
-    let Some(saved) = read_route(&dir) else {
-        return Ok(refused("That model can't be used for this."));
-    };
-    let models = read_models(&dir);
-    if bound_completions_url(&route, &saved, &models).is_none() {
-        return Ok(refused("That model can't be used for this."));
-    }
-    let key = match key_for(&route) {
-        Ok(key) => key,
-        Err(_) => return Ok(refused("Couldn't reach the Keychain.")),
-    };
-    if key.is_none() && route.provider != "ollama" {
-        return Ok(refused(
-            "No key is saved for that model. Add it under Other models.",
-        ));
-    }
     tauri::async_runtime::spawn_blocking(move || {
-        text_complete(
-            &route,
-            &saved,
-            &models,
-            &prompt,
-            key.as_deref(),
-            |url, token, body| post_chat(url, token, body, DEADLINE),
-        )
+        ask_in(&dir, &route, &prompt, key_for, |url, token, body| {
+            post_chat(url, token, body, DEADLINE)
+        })
     })
     .await
     .map_err(|_| "The model call didn't finish.".to_string())
@@ -1040,6 +1057,332 @@ mod tests {
         // The route file agreeing with the caller is not enough. The address stored with the key wins.
         quiet(&port, &port, &models);
         quiet(&extra, &extra, &models);
+    }
+
+    #[test]
+    fn a_key_with_no_stored_host_is_not_sent() {
+        // A key saved before its host was stored has no binding. Nothing says which host it is for.
+        let routes = [
+            xai(),
+            route("openrouter", "https://openrouter.ai/api/v1", "m"),
+            route("deepseek", "https://api.deepseek.com/v1", "m"),
+        ];
+        for given in &routes {
+            quiet(given, given, &[]);
+            // Another account's binding is not this account's.
+            let other = with_account(given.clone(), "other-key");
+            quiet(given, given, std::slice::from_ref(&other));
+        }
+    }
+
+    #[test]
+    fn a_key_stays_with_the_provider_it_was_saved_for() {
+        let custom = with_account(route("custom", "https://llm.example/v1", "m"), "acct-1");
+        let openrouter = with_account(
+            route("openrouter", "https://openrouter.ai/api/v1", "m"),
+            "acct-2",
+        );
+        let models = [custom, openrouter];
+        // The account is a custom model's. It is asked for as xAI, whose host is a real one.
+        let as_xai = with_account(route("xai", "https://api.x.ai/v1", "m"), "acct-1");
+        quiet(&as_xai, &as_xai, &models);
+        // An OpenRouter key is not sent to xAI or DeepSeek either.
+        let or_as_xai = with_account(route("xai", "https://api.x.ai/v1", "m"), "acct-2");
+        quiet(&or_as_xai, &or_as_xai, &models);
+        let or_as_deepseek = with_account(
+            route("deepseek", "https://api.deepseek.com/v1", "m"),
+            "acct-2",
+        );
+        quiet(&or_as_deepseek, &or_as_deepseek, &models);
+        // A key saved for OpenRouter is not a custom model's, whatever address the caller gives it.
+        let as_custom = with_account(route("custom", "https://api.x.ai/v1", "m"), "acct-2");
+        quiet(&as_custom, &as_custom, &models);
+        // Another model id for the same account is not the saved model either.
+        let other_model = with_account(route("custom", "https://llm.example/v1", "m2"), "acct-1");
+        quiet(&other_model, &other_model, &models);
+    }
+
+    #[test]
+    fn a_named_provider_on_another_port_is_not_called() {
+        for (provider, base) in [
+            ("xai", "https://api.x.ai:8443/v1"),
+            ("openrouter", "https://openrouter.ai:8443/api/v1"),
+            ("deepseek", "https://api.deepseek.com:444/v1"),
+        ] {
+            let given = route(provider, base, "m");
+            quiet_same(&given);
+        }
+    }
+
+    #[test]
+    fn a_look_alike_host_is_not_called() {
+        let saved = xai();
+        let models = std::slice::from_ref(&saved);
+        for base in [
+            "https://api.x.ai.evil.example/v1",
+            "https://api.x.ai.evil.example./v1",
+            "https://api-x.ai/v1",
+            "https://xapi.x.ai/v1",
+            "https://x.ai/v1",
+            // Cyrillic a, and a full-width i. Neither is the ASCII host once parsed.
+            "https://\u{0430}pi.x.ai/v1",
+            "https://api.x.a\u{FF49}.evil.example/v1",
+            "https://evil.example\\@api.x.ai/v1",
+            "https://evil.example/https://api.x.ai/v1",
+            "https://evil.example#@api.x.ai/v1",
+            "https://evil.example?@api.x.ai/v1",
+            "https://api.x.ai@evil.example/v1",
+            "https://api.x.ai:443@evil.example/v1",
+            "https://api.x.ai%2eevil.example/v1",
+            "https://[::1]/v1",
+            "https://203.0.113.7/v1",
+        ] {
+            let given = route("xai", base, "grok-3");
+            quiet(&given, &saved, models);
+            quiet(&given, &given, std::slice::from_ref(&given));
+        }
+    }
+
+    #[test]
+    fn a_custom_address_that_is_not_the_saved_one_is_not_called() {
+        let saved = with_account(route("custom", "https://llm.example/v1", "m"), "custom-1");
+        let models = [saved.clone()];
+        for base in [
+            "https://llm.example.evil.example/v1",
+            "https://llm.example@evil.example/v1",
+            "https://llm.example:pw@evil.example/v1",
+            // Userinfo is refused even when the host after it is the saved one.
+            "https://user@llm.example/v1",
+            "https://user:pw@llm.example/v1",
+            "https://evil.example\\@llm.example/v1",
+            "http://llm.example/v1",
+            "https://llm.example/v1?x=1",
+            "https://llm.example/v1#x",
+            "https://llm.example/v1/../v2",
+            "https://llm.example/v1/%2e%2e/v2",
+            "https://llm.example/v10",
+            "https://llm.example/V1",
+            "https://llm.example/",
+            "https://llm.example",
+            "https://sub.llm.example/v1",
+            "https://llm.example:444/v1",
+            "https://evil.example/v1",
+        ] {
+            let given = with_account(route("custom", base, "m"), "custom-1");
+            quiet(&given, &saved, &models);
+            // The saved route agreeing with the caller is not enough: the address stored with the key wins.
+            quiet(&given, &given, &models);
+        }
+    }
+
+    #[test]
+    fn a_redirect_is_not_followed() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+        let key = "provider-key-12345678";
+        for code in [301_u16, 302, 303, 307, 308] {
+            let elsewhere = TcpListener::bind("127.0.0.1:0").unwrap();
+            elsewhere.set_nonblocking(true).unwrap();
+            let other = elsewhere.local_addr().unwrap().port();
+            let upstream = TcpListener::bind("127.0.0.1:0").unwrap();
+            let port = upstream.local_addr().unwrap().port();
+            let server = std::thread::spawn(move || {
+                let (mut stream, _) = upstream.accept().unwrap();
+                // Read the whole request, body included, so closing the socket is not a reset.
+                let mut seen = Vec::new();
+                let mut buf = [0u8; 2048];
+                loop {
+                    let text = String::from_utf8_lossy(&seen).to_ascii_lowercase();
+                    if let Some(end) = text.find("\r\n\r\n") {
+                        let length = text
+                            .lines()
+                            .find_map(|line| line.strip_prefix("content-length:"))
+                            .and_then(|value| value.trim().parse::<usize>().ok())
+                            .unwrap_or(0);
+                        if seen.len() >= end + 4 + length {
+                            break;
+                        }
+                    }
+                    let n = stream.read(&mut buf).unwrap();
+                    if n == 0 {
+                        break;
+                    }
+                    seen.extend_from_slice(&buf[..n]);
+                }
+                let reply = format!(
+                    "HTTP/1.1 {code} Moved\r\nLocation: http://127.0.0.1:{other}/stolen\r\n\
+                     Content-Length: 0\r\nConnection: close\r\n\r\n"
+                );
+                let _ = stream.write_all(reply.as_bytes());
+                String::from_utf8_lossy(&seen).to_ascii_lowercase()
+            });
+            let out = post_chat(
+                &format!("http://127.0.0.1:{port}/v1/chat/completions"),
+                key,
+                "{}",
+                Duration::from_secs(5),
+            );
+            let seen = server.join().unwrap();
+            assert!(
+                seen.contains(&format!("authorization: bearer {key}")),
+                "{seen}"
+            );
+            assert_eq!(out, PostResult::Status(code), "{code}");
+            std::thread::sleep(Duration::from_millis(150));
+            let followed = elsewhere.accept();
+            assert!(
+                matches!(&followed, Err(e) if e.kind() == std::io::ErrorKind::WouldBlock),
+                "{code}: the redirect was followed"
+            );
+        }
+    }
+
+    fn temp_store(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("wp129-{name}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn saving_a_key_again_replaces_or_drops_the_host_stored_with_it() {
+        let dir = temp_store("rebind");
+        let first = with_account(route("custom", "https://llm.example/v1", "m"), "custom-1");
+        let bound = |dir: &Path| completions_for(dir, &first);
+        rebind_model_key(&dir, "custom-1", Some(&first));
+        remember_route(&dir, &first).unwrap();
+        assert!(bound(&dir).is_some());
+
+        // The same account saved again with an address that cannot be used. The old host is not kept.
+        let bad = with_account(route("custom", "http://llm.example/v1", "m"), "custom-1");
+        rebind_model_key(&dir, "custom-1", Some(&bad));
+        assert!(!dir.join("models").join("custom-1").exists());
+        assert!(bound(&dir).is_none());
+
+        // Saved with no address at all: nothing is bound.
+        rebind_model_key(&dir, "custom-1", Some(&first));
+        assert!(bound(&dir).is_some());
+        rebind_model_key(&dir, "custom-1", None);
+        assert!(bound(&dir).is_none());
+
+        // Saved for a new address: the key follows the new address, and the old one is gone.
+        let moved = with_account(route("custom", "https://other.example/v1", "m"), "custom-1");
+        rebind_model_key(&dir, "custom-1", Some(&first));
+        rebind_model_key(&dir, "custom-1", Some(&moved));
+        assert!(bound(&dir).is_none());
+        remember_route(&dir, &moved).unwrap();
+        assert_eq!(
+            completions_for(&dir, &moved).as_deref(),
+            Some("https://other.example/v1/chat/completions")
+        );
+
+        // An address for another account is not this account's.
+        let other = with_account(route("custom", "https://llm.example/v1", "m"), "custom-2");
+        rebind_model_key(&dir, "custom-1", Some(&other));
+        assert!(!dir.join("models").join("custom-1").exists());
+        assert!(!dir.join("models").join("custom-2").exists());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// Runs the whole command path on a temporary store, with the Keychain and the network stood in.
+    /// Returns the outcome, how many times the key was read and the URL that was posted, if any.
+    fn run_ask(dir: &Path, given: &CustomRoute) -> (AskOutcome, usize, Option<String>) {
+        let reads = std::cell::Cell::new(0);
+        let mut posted = None;
+        let outcome = ask_in(
+            dir,
+            given,
+            "Say hi",
+            |_| {
+                reads.set(reads.get() + 1);
+                Ok(Some("test-key1234".to_string()))
+            },
+            |url, _, _| {
+                posted = Some(url.to_string());
+                PostResult::Answer("A title".into())
+            },
+        );
+        (outcome, reads.get(), posted)
+    }
+
+    #[test]
+    fn the_key_is_read_only_for_the_saved_route_on_its_own_host() {
+        let dir = temp_store("ask");
+        let saved = with_account(xai(), "text-key");
+        // Nothing saved yet: nothing is read and nothing is sent.
+        let (outcome, reads, posted) = run_ask(&dir, &saved);
+        assert_eq!((outcome.kind.as_str(), reads, posted), ("refused", 0, None));
+
+        record_model_binding(&dir, &saved).unwrap();
+        // A key is bound, but no short-text route is saved yet.
+        let (outcome, reads, posted) = run_ask(&dir, &saved);
+        assert_eq!((outcome.kind.as_str(), reads, posted), ("refused", 0, None));
+
+        remember_route(&dir, &saved).unwrap();
+        let (outcome, reads, posted) = run_ask(&dir, &saved);
+        assert!(outcome.ok, "{outcome:?}");
+        assert_eq!(reads, 1);
+        assert_eq!(
+            posted.as_deref(),
+            Some("https://api.x.ai/v1/chat/completions")
+        );
+
+        for base in [
+            "https://evil.example/v1",
+            "https://api.x.ai@evil.example/v1",
+            "https://api.x.ai:8443/v1",
+            "http://api.x.ai/v1",
+        ] {
+            let mut given = saved.clone();
+            given.base_url = base.into();
+            let (outcome, reads, posted) = run_ask(&dir, &given);
+            assert_eq!(
+                (outcome.kind.as_str(), reads, posted),
+                ("refused", 0, None),
+                "{base}"
+            );
+        }
+        // Another saved model's account name, a different model and a different provider.
+        let other_account = with_account(xai(), "other-key");
+        let mut other_model = saved.clone();
+        other_model.model_id = "grok-4".into();
+        let mut other_provider = saved.clone();
+        other_provider.provider = "openrouter".into();
+        other_provider.base_url = "https://openrouter.ai/api/v1".into();
+        for given in [other_account, other_model, other_provider] {
+            let (outcome, reads, posted) = run_ask(&dir, &given);
+            assert_eq!(
+                (outcome.kind.as_str(), reads, posted),
+                ("refused", 0, None),
+                "{given:?}"
+            );
+        }
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_failing_keychain_or_a_missing_key_sends_nothing() {
+        let dir = temp_store("keyless");
+        let saved = with_account(xai(), "text-key");
+        record_model_binding(&dir, &saved).unwrap();
+        remember_route(&dir, &saved).unwrap();
+        for key in [Err("denied".to_string()), Ok(None)] {
+            let mut called = false;
+            let outcome = ask_in(
+                &dir,
+                &saved,
+                "Say hi",
+                |_| key.clone(),
+                |_, _, _| {
+                    called = true;
+                    PostResult::Unreachable
+                },
+            );
+            assert!(!called);
+            assert_eq!(outcome.kind, "refused");
+            assert!(!outcome.reason.contains("denied"));
+        }
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
