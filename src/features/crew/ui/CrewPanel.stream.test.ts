@@ -163,6 +163,29 @@ describe("the crew panel while a chat streams", () => {
     expect(container.innerHTML).toBe(rendered);
   });
 
+  it("does not rebuild the tree for a render that changes nothing it draws, such as its parent drawing again", async () => {
+    await mount();
+    const builds = vi.mocked(crewTree).mock.calls.length;
+    expect(builds).toBeGreaterThan(0);
+
+    // The app hands the panel a new list of chat summaries and a new callback whenever any chat moves. The workers, the
+    // chats the tree reads and the clock are the same, so the tree is too.
+    for (let round = 0; round < 5; round += 1) {
+      await act(async () => {
+        root.render(
+          createElement(
+            SessionStateContext.Provider,
+            { value: store },
+            createElement(CrewPanel, { project: PROJECT, sessions: [], onOpenSession: () => {} }),
+          ),
+        );
+      });
+    }
+
+    expect(vi.mocked(crewTree).mock.calls.length).toBe(builds);
+    expect(container.querySelector("[data-crew-node='w1']")).toBeTruthy();
+  });
+
   it("still redraws when a tool call starts on a chat the crew draws", async () => {
     await mount();
     expect(container.querySelector("[data-crew-node='w1'] [data-latest-tool]")?.textContent).toBe("Read notes");
