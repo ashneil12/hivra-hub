@@ -16,13 +16,12 @@ vi.mock("../../../integrations/harness/core/availability", () => ({
 import { LOCAL_MODEL_SOURCE } from "./modelSource";
 
 describe("model picker refresh", () => {
-  it("reads the live catalog once per open and does not poll", () => {
+  it("asks for a catalog read without forcing one, so a loaded catalog is not probed again", () => {
     refreshHarnessCatalogs.mockClear();
+    probeHarnessAvailability.mockClear();
     LOCAL_MODEL_SOURCE.refresh(["claude"]);
     expect(refreshHarnessCatalogs).toHaveBeenCalledTimes(1);
-    expect(refreshHarnessCatalogs).toHaveBeenCalledWith(["claude"], {
-      force: true,
-    });
+    expect(refreshHarnessCatalogs.mock.calls[0]).toEqual([["claude"]]);
     expect(probeHarnessAvailability).toHaveBeenCalledTimes(1);
   });
 });
