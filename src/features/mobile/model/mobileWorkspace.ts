@@ -1,4 +1,5 @@
 import { mobileUsageLimit } from "../../sessions/model/usageLimit";
+import { publishedApprovals } from "./mobilePairing";
 import { invoke } from "@tauri-apps/api/core";
 import {
   gitCommit,
@@ -212,10 +213,19 @@ export async function mobileCatalog(
       };
     }),
   );
+  // WP-150: the calls a paired phone may approve. A Mono's own chat is not a session card.
+  // The poll itself does not return these.
+  const approvals = publishedApprovals(
+    live,
+    new Set(sessions.keys()),
+    new Set(monos.flatMap((mono) => (mono.sessionId ? [mono.sessionId] : []))),
+  );
   return {
     projects,
     monos,
     sessions: [...sessions.values()].sort((a, b) => b.updatedAt - a.updatedAt),
+    approvals: approvals.rows,
+    ...(approvals.truncated ? { approvalsTruncated: true as const } : {}),
   };
 }
 /** The worktree a session works in, so the phone shows its changes and files

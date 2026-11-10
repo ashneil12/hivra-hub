@@ -24,6 +24,7 @@ import { hubDefaultsOn } from "../features/hub/model/hubDefaults";
 import { hubMonoRank } from "../features/hub/model/hubData";
 import { liveMonosNote } from "../features/hub/model/liveMonos";
 import { recoverMobileUsage } from "../features/mobile/model/mobileUsageLimit";
+import { runMobilePairing } from "../features/mobile/model/mobilePairing";
 import { sessionConversationPage } from "../features/agent-app/model/sessionConversation";
 import { useMobileWorkspace } from "../features/mobile/hooks/useMobileWorkspace";
 import { hasMobileAttachments, mobileAttachments } from "../features/mobile/model/mobileAttachments";
@@ -10648,6 +10649,10 @@ function Workspace({
   saveDraftRef.current = onSaveDraft;
   const ensureOpenSessionRef = useRef(ensureOpenSession);
   ensureOpenSessionRef.current = ensureOpenSession;
+  // WP-150: inbox, crew status, and one tool call. Refused in Rust when phone access is off.
+  const mobileApprovalRef = useRef<
+    (sessionId: string, requestId: number, decision: ApprovalDecision) => void
+  >(() => undefined);
   // Hivra WP-14: a first mate's messages to its running workers, stored first and delivered from the store.
   const steering = useSteering(sessions, {
     chat: async (id) => (await ensureOpenSessionRef.current(id)) ?? undefined,
@@ -10660,6 +10665,22 @@ function Workspace({
     sessions,
     defaultRuntimeMode: sessionDefaults?.runtimeMode,
     command: async (method, params, commandId) => {
+      // WP-150: inbox, crew status, and one tool call. Refused in Rust when phone access is off.
+      if (
+        method === "inbox.list" ||
+        method === "crew.status" ||
+        method === "session.approve" ||
+        method === "session.deny"
+      ) {
+        return runMobilePairing(method, params, {
+          sessions: sessionsRef.current,
+          now: Date.now(),
+          approve: (sessionId, requestId, decision) =>
+            mobileApprovalRef.current(sessionId, requestId, decision),
+          remoteBlocked: (session) =>
+            !!remoteProjectFor(session.cwd) && !remoteSessionActions(session.id),
+        });
+      }
       const text = typeof params.text === "string" ? params.text.trim() : "";
       if (
         (method === "session.start" || method === "conversation.send") &&
@@ -12699,6 +12720,7 @@ function Workspace({
     },
     [],
   );
+  mobileApprovalRef.current = onApproval;
 
   const onQuestionReply = useCallback(
     (sessionId: string, requestId: number, reply: UserQuestionReply) => {
