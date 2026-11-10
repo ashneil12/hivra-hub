@@ -13,6 +13,7 @@ export const THREAD_LINK_MESSAGE = {
   noFolder: "This project has no folder to open a chat in.",
   unavailable: "This link could not be checked yet. Try it again.",
   notInProject: "This chat is not in a saved project.",
+  cannotCopy: "This prompt cannot be copied as a link.",
   copyFailed: "Could not copy the link.",
 } as const;
 
