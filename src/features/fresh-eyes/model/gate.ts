@@ -815,6 +815,17 @@ export async function heldWaiting(owner: string, deps: Pick<FreshEyesDeps, "stor
     }));
 }
 
+/**
+ * WP-171: whether the worker chat a brief will be is held for its review right now, from what this window has read
+ * (no read here: the worker queue asks synchronously). A task of a fan-out that needs it reads it as not started yet,
+ * not as lost. Once it started, or was taken back, it is not held.
+ */
+export function heldForReview(childSessionId: string, storage: EyesStorage = freshEyesStorage()): boolean {
+  return storage
+    .snapshot()
+    .reviews.some((row) => !!row.owner && !!row.held && !row.launched && heldChatId(row.owner, row.requestId) === childSessionId);
+}
+
 /** task_cancel on a held brief: the review is forgotten, its Inbox questions close, and the brief never starts. */
 export async function cancelHeld(
   owner: string,

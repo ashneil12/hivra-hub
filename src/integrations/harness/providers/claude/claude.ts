@@ -77,6 +77,7 @@ import {
   stringField,
   summarizeToolRequest,
   approvalCall,
+  approvalCallComplete,
   toClaudePermissionResult,
   toolKindFromName,
   toolResultsFromUserMessage,
@@ -845,15 +846,17 @@ function holdForOwedPrompt(live: Live): void {
   }, RESUME_GRACE_MS);
 }
 
+/** True when a live call was waiting and took the decision. False: nothing to answer here, so nothing ran. */
 export function respondClaudeApproval(
   sessionId: string,
   requestId: number,
   decision: ApprovalDecision,
-): void {
+): boolean {
   const live = liveByThread.get(sessionId);
   const pending = live?.approvals.get(requestId);
-  if (!pending) return;
+  if (!pending) return false;
   pending.resolve(decision);
+  return true;
 }
 
 export function respondClaudeQuestion(
@@ -903,6 +906,23 @@ export async function cancelClaudeTurn(sessionId: string): Promise<void> {
     { type: "message.completed" },
     { type: "reasoning.completed" },
   ]);
+}
+
+/**
+ * Whether Claude still runs work for this chat that the app must not stop: a subagent or workflow run that has not
+ * reported back (agentTasks, cleared when the task completes), a backgrounded shell or monitor, or a follow-up turn on
+ * its way. The idle park asks this before it
+ * stops the process, so a dev server the agent started keeps running. A chat with no live process has none.
+ */
+export function claudeHasBackgroundWork(sessionId: string): boolean {
+  const live = liveByThread.get(sessionId);
+  if (!live) return false;
+  return (
+    live.backgroundTasks.size > 0 ||
+    live.workflows.size > 0 ||
+    live.awaitingResume !== null ||
+    live.agentTasks.size > 0
+  );
 }
 
 export async function stopClaudeSession(sessionId: string): Promise<void> {
@@ -1958,6 +1978,7 @@ async function handleControlRequest(
     callId: control.toolUseId,
     preview: previewFromTool(toolName, input),
     call: approvalCall(toolName, input),
+    callComplete: approvalCallComplete(toolName, input),
   });
   const decision = await pending;
   live.onEvent({ type: "approval.resolved", requestId: uiId, decision });
@@ -2086,6 +2107,7 @@ async function answerChildClaudeApproval(
     callId: toolUseId,
     preview: previewFromTool(toolName, input),
     call: approvalCall(toolName, input),
+    callComplete: approvalCallComplete(toolName, input),
     child: { name: child.name, sessionPort: child.sessionPort, detail: title },
   });
   try {
