@@ -290,33 +290,6 @@ fn valid_kind(kind: &str) -> bool {
         })
 }
 
-/// Extra tries after the connection's own busy timeout. A loaded runner can
-/// still hand back "database is locked" once that wait has just ended.
-const BUSY_TRIES: u32 = 8;
-
-fn with_busy_retry<T>(mut op: impl FnMut() -> Result<T, rusqlite::Error>) -> Result<T, String> {
-    let mut busy = 0;
-    loop {
-        match op() {
-            Ok(value) => return Ok(value),
-            Err(err) if is_busy(&err) && busy < BUSY_TRIES => {
-                busy += 1;
-                std::thread::sleep(Duration::from_millis(20 * u64::from(busy)));
-            }
-            Err(err) => return Err(err.to_string()),
-        }
-    }
-}
-
-fn is_busy(err: &rusqlite::Error) -> bool {
-    matches!(
-        err,
-        rusqlite::Error::SqliteFailure(code, _)
-            if code.code == rusqlite::ErrorCode::DatabaseBusy
-                || code.code == rusqlite::ErrorCode::DatabaseLocked
-    )
-}
-
 fn is_constraint(err: &rusqlite::Error) -> bool {
     matches!(
         err,
@@ -339,10 +312,9 @@ fn prune_clock(conn: &Connection, at: i64) -> i64 {
 
 pub fn prune(conn: &Connection, now: i64) -> Result<(), String> {
     let cutoff = now.saturating_sub(RETENTION_MS);
-    with_busy_retry(|| {
-        conn.execute("DELETE FROM activity WHERE at < ?1", [cutoff])
-            .map(|_| ())
-    })
+    conn.execute("DELETE FROM activity WHERE at < ?1", [cutoff])
+        .map(|_| ())
+        .map_err(|err| err.to_string())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -412,48 +384,40 @@ fn insert(
         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)";
     for _ in 0..2 {
         let id = uuid::Uuid::new_v4().simple().to_string();
-        let mut busy: u32 = 0;
-        loop {
-            match conn.execute(
-                sql,
-                params![
-                    id,
-                    kind,
-                    actor_role,
-                    actor_id,
-                    actor_name,
-                    initiator_role,
-                    initiator_id,
-                    initiator_name,
-                    project,
-                    target,
-                    summary,
-                    link,
-                    at
-                ],
-            ) {
-                Ok(_) => return Ok(conn.last_insert_rowid()),
-                Err(err) if is_busy(&err) && busy < BUSY_TRIES => {
-                    busy += 1;
-                    std::thread::sleep(Duration::from_millis(20 * u64::from(busy)));
-                }
-                Err(err) if is_constraint(&err) => break,
-                Err(err) => return Err(err.to_string()),
-            }
+        match conn.execute(
+            sql,
+            params![
+                id,
+                kind,
+                actor_role,
+                actor_id,
+                actor_name,
+                initiator_role,
+                initiator_id,
+                initiator_name,
+                project,
+                target,
+                summary,
+                link,
+                at
+            ],
+        ) {
+            Ok(_) => return Ok(conn.last_insert_rowid()),
+            Err(err) if is_constraint(&err) => {}
+            Err(err) => return Err(err.to_string()),
         }
     }
     Err("The activity row could not be written.".into())
 }
 
 fn read_seq(conn: &Connection, seq: i64) -> Result<Entry, String> {
-    with_busy_retry(|| {
-        conn.query_row(
-            "SELECT seq, id, kind, actor_role, actor_id, actor_name, initiator_role, initiator_id, initiator_name, project, target, summary, link, at
-             FROM activity WHERE seq = ?1",
-            [seq],
-            from_row,
-        )
-    })
+    conn.query_row(
+        "SELECT seq, id, kind, actor_role, actor_id, actor_name, initiator_role, initiator_id, initiator_name, project, target, summary, link, at
+         FROM activity WHERE seq = ?1",
+        [seq],
+        from_row,
+    )
+    .map_err(|err| err.to_string())
 }
 
 fn who_from(role: String, id: String, name: String) -> Who {
