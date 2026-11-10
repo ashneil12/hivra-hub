@@ -206,3 +206,19 @@ it("holds routine categories inside quiet hours, lets approvals through, and let
   expect(projectNotificationVerdict(subject("issues"), night)).toBe("muted");
   expect(projectNotificationVerdict(subject("agentFinished"), night)).toBe("quiet");
 });
+
+it("never holds a failure inside quiet hours, whatever its category, and still lets a mute win", () => {
+  const night = new Date(2026, 10, 10, 23, 30).getTime();
+  saveQuietHours({ enabled: true, start: "22:00", end: "08:00" });
+  const failure = (category: "agentFinished" | "pullRequests") => ({ projectId: "work", category, failure: true });
+
+  for (const category of ["agentFinished", "pullRequests"] as const) {
+    expect(projectNotificationVerdict({ projectId: "work", category }, night)).toBe("quiet");
+    expect(projectNotificationVerdict(failure(category), night)).toBe("allow");
+    expect(allowsProjectNotification(failure(category), night)).toBe(true);
+  }
+
+  updateNotificationPreferences(["work"], { disabled: ["pullRequests"] });
+  expect(projectNotificationVerdict(failure("pullRequests"), night)).toBe("muted");
+  expect(projectNotificationVerdict(failure("agentFinished"), night)).toBe("allow");
+});

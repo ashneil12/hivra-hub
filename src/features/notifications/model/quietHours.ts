@@ -6,6 +6,14 @@ import type { NotificationCategory } from "./notificationPreferences";
 
 export const QUIET_HOURS_KEY = "monocode.quietHours.v1";
 
+/**
+ * What the window does, in the words Settings shows. It says exactly what waits (only a finished-agent banner is kept
+ * for the end of the window) and what comes through (a failed turn or check, an approval or question: never held; a
+ * mute of that kind for the project still wins). Reminders come from Rust and are not held.
+ */
+export const QUIET_HOURS_DESCRIPTION =
+  "Finished-agent banners wait until the window ends, then arrive as one notice. The inbox and linked pull request or issue sounds stay silent. Failed turns, failed checks, approvals and questions come through, unless you muted them for that project. Reminders you set still fire.";
+
 const DEFAULT_START = "22:00";
 const DEFAULT_END = "08:00";
 
