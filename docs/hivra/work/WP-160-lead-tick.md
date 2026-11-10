@@ -46,30 +46,37 @@ line in `src/features/crew/ui/CrewPanel.tsx`.
   app's database: Lead tick off, every 15 minutes (5 to 240), Ship on green off. The same document keeps each
   project's last tick, its line, and what was already said once.
 - **When it runs** (`model/schedule.ts`, `hooks/useLeadTick.ts`). The main window looks once a minute while the app
-  is open. A project ticks when its Lead tick is on and its interval has passed. Nothing ticks during quiet hours
-  (WP-164), while the project's Lead chat is working, asking, holding queued messages, paused on a usage limit or
-  stopped resuming (the WP-11 rule), or where the app's policy turns automations off (a dev copy). One tick per
-  project at a time. No LaunchAgent: the Crew card says the tick runs only while Hivra is open, and when no tick ran
+  is open. A project ticks when its Lead tick is on and its interval has passed. The tick runs through quiet hours
+  (WP-164): quiet hours hold the pings, not the work. It does not run while the project's Lead chat is working,
+  asking, holding queued messages, paused on a usage limit or stopped resuming (the WP-11 rule), or where the app's
+  policy turns automations off (a dev copy). One tick per project at a time. A run that cannot be recorded backs off
+  for five minutes. No LaunchAgent: the Crew card says the tick runs only while Hivra is open, and when no tick ran
   for more than two intervals it says for how long and that missed ticks are not made up.
 - **One tick** (`model/tick.ts`, `model/ports.ts`), acting as the project's Lead (`teamLeadOf`):
   1. reads the programme as the first mate (`programme_list`);
-  2. reads the PR watches (`pr_watch_list`) for the programme's `building` and `pr_open` rows by branch: an open pull
-     request moves a row to `pr_open`, a merged one to `merged` with one work log outcome line;
+  2. reads the PR watches (`pr_watch_list`) for the programme's `building` and `pr_open` rows by branch, in the row's
+     own project only, and ignores a watch that ended before the row was claimed: an open pull request moves a row to
+     `pr_open`, a merged one to `merged` with one work log outcome line. A `building` row with no pull request six
+     hours after it was claimed is settled to `failed`, so its builder slot is free. A red CI is said in the line
+     only, since the PR watch already sends the `ci-red` notice;
   3. for a green pull request (open, not a draft, checks passed, none pending, not conflicting): with Ship on green
      off it says once per head that it waits for the person; with it on it calls delivery's one merge path
      (`delivery_merge`) as the Lead, never as the person. That path reads the pull request again, refuses red,
      pending, draft and conflicting ones and open decisions, pins the head, and merges without asking only when the
      project's Merge without asking is on; otherwise it answers that the person's word is needed, and the tick says
-     so once. A `security_park` row, a parked row, or a package on the WP-155 helper's never-merge list (WP-92,
-     WP-150, WP-158, a security-park label or title) is never sent to it. The rule matches
-     `scripts/hivra-ship-green.mjs` (a test runs both on the same cases). The helper itself is not run: it only
-     prints a command, and a tick does not shell out;
+     so once. Just before the merge the row is read again, so a park that landed during the read holds it. A
+     `security_park` row, a parked row, or a pull request on the never-merge list (WP-92, WP-150, WP-158, or a
+     security-park label or title) is never sent to it. The list lives in `model/neverMerge.json`, read by the tick
+     and by `scripts/hivra-ship-green.mjs`, so there is one copy. The helper itself is not run: it only prints a
+     command, and a tick does not shell out;
   4. starts at most one queued, non-parked package when a builder slot is free: the project's worker limit (open
      workers, waiting workers, and packages already building all count) and the builder health pause (WP-161). It
      claims the row (`building`), then asks the Lead's own `delegate_task` with the brief path, branch and a definition
      of done, so the fresh-eyes hold (WP-144) and the worker queue apply. A brief held for review counts as started.
      A failed start marks the row `failed`;
   5. writes one activity line (`lead.tick`) when it did something; a quiet tick writes none. What needs the person
-     goes to the batched notable pings as `lead-tick` (WP-164), which quiet hours hold like the rest.
+     goes to the batched notable pings: as `lead-tick` (WP-164), or as a held notice inside quiet hours, which
+     leaves when the window ends. Each said-once key is short (a long reason or row id becomes a hash) and the store
+     keeps the newest 200 per project.
 - **Not in this package:** health scaling beyond the WP-161 gate (WP-161), rebase and stale locks (WP-162), quiet-hours
   changes (WP-164), overnight scout (WP-165).
