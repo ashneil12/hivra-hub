@@ -644,6 +644,64 @@ describe("local orchestration", () => {
     expect(f.tasks()[0].workspace).toBeUndefined();
     expect(f.manager.run("lead")?.dispatches?.[0].stage).toBe("cleaned");
   });
+  it("closes a finished run with the usage its children recorded", async () => {
+    const f = setup();
+    await f.start();
+    await f.delegate(["src/a"]);
+    await vi.waitFor(() => expect(f.host.submit).toHaveBeenCalledOnce());
+    const task = f.tasks()[0];
+    const child = f.sessions.find((session) => session.id === task.sessionId)!;
+    child.blocks = [
+      {
+        id: "turn-1",
+        role: "user",
+        text: "do it",
+        turnMetrics: { inputTokens: 12, outputTokens: 340, costUsd: 0.02 },
+      },
+      {
+        id: "turn-1",
+        role: "user",
+        text: "do it",
+        turnMetrics: { inputTokens: 12, outputTokens: 340, costUsd: 0.02 },
+      },
+    ];
+    f.completions.get(task.sessionId)!({ status: "completed", text: "Done" });
+    await vi.waitFor(() => expect(f.tasks()[0].status).toBe("completed"));
+    await f.call("review", { taskId: task.id });
+
+    const result = await f.call("finish");
+
+    expect(result).toEqual({
+      finished: true,
+      usage: { inputTokens: 12, outputTokens: 340, costUsd: 0.02 },
+    });
+    expect(f.manager.run("lead")?.status).toBe("finished");
+    expect(f.manager.run("lead")?.closingUsage).toEqual({
+      inputTokens: 12,
+      outputTokens: 340,
+      costUsd: 0.02,
+    });
+  });
+
+  it("finishes when a child's usage cannot be read", async () => {
+    const f = setup();
+    await f.start();
+    await f.delegate(["src/a"]);
+    await vi.waitFor(() => expect(f.tasks()[0].sessionId).toBeTruthy());
+    const task = f.tasks()[0];
+    await f.call("cancel", { taskId: task.id });
+    const read = f.host.session;
+    f.host.session = (id) => {
+      if (id === task.sessionId) throw new Error("session store is down");
+      return read(id);
+    };
+
+    const result = await f.call("finish");
+
+    expect(result).toEqual({ finished: true });
+    expect(f.manager.run("lead")?.closingUsage).toBeUndefined();
+  });
+
   it("reports a cancelled dirty worktree instead of silently orphaning it", async () => {
     const f = setup();
     await f.start();
@@ -661,6 +719,7 @@ describe("local orchestration", () => {
       finished: true,
       cleanupPending: [`/worktrees/${task.id}`],
     });
+    expect(f.manager.run("lead")?.closingUsage).toBeUndefined();
     expect(f.tasks()[0].workspace?.checkoutCwd).toBe(`/worktrees/${task.id}`);
     expect(f.host.cleanupWorker).toHaveBeenCalledWith(
       expect.anything(),

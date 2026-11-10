@@ -208,7 +208,7 @@
       "name": "oh-my-hermes",
       "url": "https://github.com/rlaope/oh-my-hermes",
       "licence": "MIT",
-      "gave": "the dag-ulw goal graph: a finish line first, write scopes, repair cycles, a verify node and a run verdict, planned for Wave J"
+      "gave": "the dag-ulw goal graph: a finish line first, write scopes, repair cycles, a verify node and a run verdict, and a finished run's close that counts the usage its children recorded (WP-91, WP-148)"
     },
     {
       "name": "T3 Code",
@@ -519,8 +519,8 @@
       "url": "https://github.com/rlaope/oh-my-hermes",
       "licence": "MIT",
       "copyright": "Copyright (c) 2026 oh-my-hermes contributors",
-      "where": "src-tauri/src/goal_graph/",
-      "how": "dag_core.py translated line by line to Rust (topology.rs) with test_dag_core.py's cases ported, and dag_run.py's record rules — the hard rejects over a graph, the repair caps and the re-plan cycle, the handoff refusal, the goal verdict and the lint findings — translated into record.rs and plan.rs, at commit 2676c33 (WP-91). The Hermes-only tool, scope hook and TUI are not copied. One rule differs: Hivra refuses only a pair that can really run at the same time, where dag-ulw treats two nodes as ordered only when one names the other directly."
+      "where": "src-tauri/src/goal_graph/, src/features/orchestration/model/closingUsage.ts, src/features/memory/model/recall.ts",
+      "how": "dag_core.py translated line by line to Rust (topology.rs) with test_dag_core.py's cases ported, and dag_run.py's record rules — the hard rejects over a graph, the repair caps and the re-plan cycle, the handoff refusal, the goal verdict and the lint findings — translated into record.rs and plan.rs, at commit 2676c33 (WP-91). The Hermes-only tool, scope hook and TUI are not copied. One rule differs: Hivra refuses only a pair that can really run at the same time, where dag-ulw treats two nodes as ordered only when one names the other directly. WP-148: a finished run's close includes the usage its children recorded, and leaves the figure off when none did (never a zero). An unmatched memory is not named in a turn it does not touch; the fence already emitted only the memories that turn picked. The local checkout was 2676c33. Commits 3d3c438 and b400b4e were not in it and could not be fetched, so this follows the package's stated behaviour rather than an unread diff. 7210d3a was left out because that same-file check could not be made."
     },
     {
       "name": "OpenMausBot's turn watchdog sleep rule",
