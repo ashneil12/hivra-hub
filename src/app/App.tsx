@@ -756,6 +756,15 @@ import {
   type UsageLimit,
   type WorkspaceMode,
 } from "../features/sessions/model/session";
+// WP-134b: a More agents chat never goes through the eleven CLIs.
+import { AGENT_GONE, WAITS } from "../features/registry/model/registryCopy";
+import {
+  START_REGISTRY_CHAT_EVENT,
+  linkRegistryChat,
+  loadRegistryDocument,
+} from "../features/registry/model/registryList";
+import { registrySendPlan, registrySessionFields } from "../features/registry/model/registryPlan";
+import { runRegistryTurn } from "../features/registry/model/registryTurn";
 
 import {
   canDispatchQueuedHead,
@@ -1089,6 +1098,7 @@ import {
   subscribeMonosEnabled,
   loadDiffViewer,
   loadFollowUpBehavior,
+  loadMoreAgentsEnabled,
   loadNewChatWorktree,
   loadIdleAgentLimit,
   loadKeybindingOverrides,
@@ -2647,6 +2657,7 @@ function Workspace({
   const usageSource =
     insetLayout && monoViewSession ? monoViewSession : active;
   const usageProviders = useMemo(() => {
+    if (usageSource?.registryAgentId) return [];
     if (
       usageSource?.harness === "claude" ||
       usageSource?.harness === "codex" ||
@@ -2656,12 +2667,13 @@ function Workspace({
       return [usageSource.harness];
     }
     return [];
-  }, [usageSource?.harness]);
+  }, [usageSource?.harness, usageSource?.registryAgentId]);
   const usageSession = useMemo(() => {
     if (!usageSource) return undefined;
     return {
       id: usageSource.id,
       harness: usageSource.harness,
+      ...(usageSource.registryAgentId ? { registryAgentId: usageSource.registryAgentId } : {}),
       model: usageSource.model,
       authRequired: latestTurnNeedsHarnessLogin(usageSource.blocks),
       providerAccountId:
@@ -2673,6 +2685,7 @@ function Workspace({
   }, [
     usageSource?.id,
     usageSource?.harness,
+    usageSource?.registryAgentId,
     usageSource?.model,
     usageSource?.blocks,
     usageSource?.providerAccountId,
@@ -3397,6 +3410,38 @@ function Workspace({
     },
     [insertBesideActive],
   );
+
+  // WP-134b: Start a chat opens a More agents session. The harness stays one of the eleven.
+  useEffect(() => {
+    const onStart = (event: Event) => {
+      const detail = (event as CustomEvent<{ agentId?: unknown; cwd?: unknown }>).detail;
+      const agentId = typeof detail?.agentId === "string" ? detail.agentId : "";
+      const plan = registrySendPlan({
+        registryAgentId: agentId,
+        enabled: loadMoreAgentsEnabled(),
+        agents: loadRegistryDocument().agents,
+        busy: false,
+      });
+      if (plan.action !== "prompt") return;
+      const rawCwd = detail?.cwd;
+      const cwd =
+        typeof rawCwd === "string" && rawCwd.length > 0 && rawCwd.length <= 4096 && !/[\0\r\n]/.test(rawCwd)
+          ? rawCwd
+          : "~";
+      const session = {
+        ...newSession("claude", cwd),
+        ...registrySessionFields(plan.agent, "claude"),
+      };
+      if (!linkRegistryChat(session.id, plan.agent.id).ok) return;
+      const tab = newTab(session.id);
+      setSessions((prev) => [...prev, session]);
+      appendTab(tab, cwd);
+      setActiveTabId(tab.id);
+      setComposerFocused(true);
+    };
+    window.addEventListener(START_REGISTRY_CHAT_EVENT, onStart);
+    return () => window.removeEventListener(START_REGISTRY_CHAT_EVENT, onStart);
+  }, [appendTab]);
 
   const usageLimitAccountChangeRef = useRef<
     ((sessionId: string, accountId: string) => Promise<void>) | null
@@ -8475,6 +8520,7 @@ function Workspace({
           !message ||
           !canSteerQueuedHead(current) ||
           !canSteerHarness(current.harness) ||
+          current.registryAgentId ||
           operatorCommand.matched
         )
           return false;
@@ -8579,9 +8625,13 @@ function Workspace({
           flushHarnessEvents();
           return false;
         }
+        // WP-134b: a More agents chat cannot be steered. The message waits.
+        const registryChat = Boolean(current.registryAgentId);
         const steerable =
+          !registryChat &&
           isLiveHarness(current.harness) && canSteerHarness(current.harness);
         const followUpBehavior =
+          registryChat ||
           current.worktreePreparing ||
           intent === "plan" ||
           intent === "orchestrate" ||
@@ -8601,6 +8651,10 @@ function Workspace({
                   : "queue"
                 : (options?.followUpBehavior ?? loadFollowUpBehavior());
         if (followUpBehavior === "queue") {
+          if (registryChat) {
+            enqueueHarnessEvent(sessionId, { type: "status", text: WAITS });
+            flushHarnessEvents();
+          }
           setSessions((prev) =>
             prev.map((s) =>
               s.id === sessionId
@@ -9457,8 +9511,37 @@ function Workspace({
               return;
             }
           }
-          const sendTurn = (text: string, turnAttachments = prepared) =>
-            sendHarnessTurn({
+          const sendTurn = (text: string, turnAttachments = prepared) => {
+            // WP-134b: a More agents turn stays off the placeholder CLI. A refusal is not a success.
+            if (current.registryAgentId) {
+              const registryPlan = registrySendPlan({
+                registryAgentId: current.registryAgentId,
+                enabled: loadMoreAgentsEnabled(),
+                agents: loadRegistryDocument().agents,
+                busy: false,
+              });
+              if (registryPlan.action === "refuse") {
+                routeTurnEvent({
+                  type: "session.error",
+                  message: registryPlan.sentence,
+                  retryable: registryPlan.retryable,
+                });
+                return Promise.resolve();
+              }
+              if (registryPlan.action === "prompt") {
+                return runRegistryTurn({
+                  agent: registryPlan.agent,
+                  sessionId,
+                  cwd: workCwd,
+                  text,
+                  providerSessionId: current.providerSessionId,
+                  onEvent: routeTurnEvent,
+                });
+              }
+              routeTurnEvent({ type: "session.error", message: AGENT_GONE, retryable: false });
+              return Promise.resolve();
+            }
+            return sendHarnessTurn({
               harness: current.harness,
               sessionId,
               cwd: workCwd,
@@ -9491,6 +9574,7 @@ function Workspace({
                 ),
               onEvent: routeTurnEvent,
             });
+          };
           let sendText = orchestrator.prompt(
             sessionId,
             inboxAskPrompt(
@@ -10481,7 +10565,7 @@ function Workspace({
         const delivery = deliveryFor(
           current,
           input.mode ?? "queue",
-          isLiveHarness(current.harness) && canSteerHarness(current.harness),
+          isLiveHarness(current.harness) && canSteerHarness(current.harness) && !current.registryAgentId,
         );
         const accepted = await submitSessionRef.current(lead.id, text, [], {
           appRequestId: requestId,
@@ -10639,7 +10723,7 @@ function Workspace({
   // Hivra WP-14: a first mate's messages to its running workers, stored first and delivered from the store.
   const steering = useSteering(sessions, {
     chat: async (id) => (await ensureOpenSessionRef.current(id)) ?? undefined,
-    canSteer: (chat) => isLiveHarness(chat.harness) && canSteerHarness(chat.harness),
+    canSteer: (chat) => !chat.registryAgentId && isLiveHarness(chat.harness) && canSteerHarness(chat.harness),
     submit: async (id, text, { appRequestId, steer }) =>
       await submitSessionRef.current(id, text, [], steer ? { appRequestId, followsUp: true, followUpBehavior: "steer" } : { appRequestId }),
   });
@@ -11032,6 +11116,7 @@ function Workspace({
           (monoForSession(session.id) &&
             canSteerQueuedHead(session) &&
             canSteerHarness(session.harness) &&
+            !session.registryAgentId &&
             !consumeOperatorCommand(queued[0].text).matched)
         ) ||
         queueDispatchingRef.current.has(session.id)
@@ -11059,6 +11144,7 @@ function Workspace({
               (monoForSession(latest.id) &&
                 canSteerQueuedHead(latest) &&
                 canSteerHarness(latest.harness) &&
+                !latest.registryAgentId &&
                 !consumeOperatorCommand(head.text).matched)
             )
           ) {
@@ -13207,7 +13293,8 @@ function Workspace({
           );
         if (
           !isLiveHarness(session.harness) ||
-          !canSteerHarness(session.harness)
+          !canSteerHarness(session.harness) ||
+          session.registryAgentId
         )
           throw new Error(
             `${session.harness} cannot take guidance mid-turn. Wait for the turn to finish, then use message.`,
@@ -13994,7 +14081,8 @@ function Workspace({
                 target,
                 mode,
                 isLiveHarness(target.harness) &&
-                  canSteerHarness(target.harness),
+                  canSteerHarness(target.harness) &&
+                  !target.registryAgentId,
               );
               if (delivery !== "started") {
                 const follow = delivery === "steered" ? "steer" : "queue";

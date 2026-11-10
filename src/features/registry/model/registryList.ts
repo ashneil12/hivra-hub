@@ -30,7 +30,7 @@ const COMMAND_SPLIT = "The command is not a single executable. Arguments go in t
 
 const COMMAND_DOTDOT = "The command cannot contain ..";
 
-const COMMAND_BUILTIN = "That command is one of the built-in CLIs.";
+export const COMMAND_BUILTIN = "That command is one of the built-in CLIs.";
 
 const COMMAND_SHELL = "That command is a shell, not an agent.";
 
@@ -473,7 +473,7 @@ export function registryAgentIdForSession(sessionId: string, store?: RegistrySto
 
 export function requestRegistryChat(
   agentId: string,
-  options?: { enabled?: boolean; target?: Pick<Window, "dispatchEvent"> | null },
+  options?: { enabled?: boolean; cwd?: string; target?: Pick<Window, "dispatchEvent"> | null },
 ): void {
   const enabled = options?.enabled ?? loadMoreAgentsEnabled();
   if (!enabled) return;
@@ -484,5 +484,9 @@ export function requestRegistryChat(
       ? null
       : window;
   if (!target) return;
-  target.dispatchEvent(new CustomEvent(START_REGISTRY_CHAT_EVENT, { detail: { agentId } }));
+  const cwd = options?.cwd;
+  const detail = typeof cwd === "string" && cwd.length > 0 && cwd.length <= 4096 && !/[\0\r\n]/.test(cwd)
+    ? { agentId, cwd }
+    : { agentId };
+  target.dispatchEvent(new CustomEvent(START_REGISTRY_CHAT_EVENT, { detail }));
 }

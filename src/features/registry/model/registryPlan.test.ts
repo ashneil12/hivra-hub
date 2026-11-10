@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { loadMoreAgentsEnabled } from "../../settings/model/settings";
 import { AGENT_GONE, MORE_AGENTS_OFF, WAITS } from "./registryCopy";
-import { registrySendPlan, type RegistryAgentRef } from "./registryPlan";
+import { registrySendPlan, registrySessionFields, type RegistryAgentRef } from "./registryPlan";
 
 const agent: RegistryAgentRef = {
   id: "my-copilot",
@@ -9,6 +9,7 @@ const agent: RegistryAgentRef = {
   command: "copilot",
   args: ["acp"],
   protocol: "acp-v1",
+  env: [],
 };
 
 function throwingFallbacks() {
@@ -21,6 +22,18 @@ function throwingFallbacks() {
     }),
   };
 }
+
+describe("registrySessionFields", () => {
+  it("keeps the chat on one of the eleven and puts the agent id beside it", () => {
+    const fields = registrySessionFields({ id: "my-copilot", name: "My Copilot" }, "claude");
+    expect(fields).toEqual({
+      harness: "claude",
+      registryAgentId: "my-copilot",
+      title: "My Copilot",
+    });
+    expect(() => registrySessionFields({ id: "claude", name: "Claude" }, "claude")).toThrow();
+  });
+});
 
 describe("registrySendPlan", () => {
   it("sends a normal chat down the CLI path when More agents is off", () => {

@@ -4168,7 +4168,7 @@ function ProvidersPage({
       </Group>
 
       {/* WP-134b: More agents, off until the person switches it on. */}
-      <MoreAgentsSettings />
+      <MoreAgentsSettings cwd={cwd} />
 
       <Group title="Advanced">
         <Row

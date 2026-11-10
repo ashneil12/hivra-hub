@@ -17,7 +17,7 @@ import {
   type LoadedRegistry,
 } from "../model/registryList";
 
-export function MoreAgentsSettings() {
+export function MoreAgentsSettings({ cwd }: { cwd?: string }) {
   const on = useSyncExternalStore(
     subscribeMoreAgentsEnabled,
     loadMoreAgentsEnabled,
@@ -171,7 +171,7 @@ export function MoreAgentsSettings() {
                 <button
                   type="button"
                   aria-label={`Start a chat with ${agent.name}`}
-                  onClick={() => requestRegistryChat(agent.id)}
+                  onClick={() => requestRegistryChat(agent.id, cwd ? { cwd } : undefined)}
                   className="rounded-md border border-content/10 px-2 py-1"
                 >
                   Start a chat

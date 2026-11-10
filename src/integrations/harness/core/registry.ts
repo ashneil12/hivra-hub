@@ -13,6 +13,13 @@ import type { PrContent } from "../../../features/source-control/model/gitText";
 import { hasLiveCatalog } from "../../../features/sessions/model/models";
 import type { UserQuestionReply } from "../../../features/sessions/model/userQuestion";
 import type { NativeCommandProvider } from "./nativeCommands";
+import { registryAgentIdForSession, unlinkRegistryChat } from "../../../features/registry/model/registryList";
+import {
+  cancelRegistryTurn,
+  releaseRegistrySession,
+  respondRegistryApproval,
+  stopRegistrySession,
+} from "../../../features/registry/model/registryTurn";
 import {
   clearWorkflowRuns,
   noteWorkflowRun,
@@ -442,6 +449,8 @@ export async function cancelHarnessTurn(
   harness: HarnessId,
   sessionId: string,
 ): Promise<void> {
+  // WP-134b: a More agents chat is not the placeholder CLI.
+  if (cancelRegistryTurn(sessionId)) return;
   const adapter = getHarness(harness);
   if (!adapter?.live) return;
   cancelIdlePark(sessionId);
@@ -455,6 +464,8 @@ export function respondHarnessApproval(
   requestId: number,
   decision: ApprovalDecision,
 ): void {
+  // WP-134b: a More agents ask is answered on its own process, never on the placeholder CLI.
+  if (respondRegistryApproval(sessionId, requestId, decision)) return;
   getHarness(harness)?.respondApproval(sessionId, requestId, decision);
 }
 
@@ -479,6 +490,8 @@ export async function stopHarnessSession(
   harness: HarnessId,
   sessionId: string,
 ): Promise<void> {
+  // WP-134b: stop the More agents process and leave the placeholder CLI alone.
+  if (stopRegistrySession(sessionId)) return;
   cancelIdlePark(sessionId);
   const adapter = getHarness(harness);
   if (!adapter?.live) return;
@@ -489,6 +502,8 @@ export async function forgetHarnessSession(
   harness: HarnessId,
   sessionId: string,
 ): Promise<void> {
+  // WP-134b: forget the More agents process and leave the placeholder CLI alone.
+  if (stopRegistrySession(sessionId)) return;
   cancelIdlePark(sessionId);
   const adapter = getHarness(harness);
   if (!adapter) return;
@@ -497,6 +512,9 @@ export async function forgetHarnessSession(
 
 /** A deleted chat: every adapter drops what it still keeps for it. */
 export function dropHarnessSession(sessionId: string): void {
+  // WP-134b: drop the More agents process and its chat link. The list entry stays.
+  releaseRegistrySession(sessionId);
+  if (registryAgentIdForSession(sessionId)) unlinkRegistryChat(sessionId);
   for (const adapter of adapters.values()) adapter.dropSession?.(sessionId);
 }
 

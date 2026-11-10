@@ -1,20 +1,16 @@
 // WP-134b. Decides whether a turn uses one of the eleven CLIs or a More agents chat.
 // A registry id is never handed to asHarness or Kind::from_id.
 
+import { HARNESSES, type HarnessId } from "../../sessions/model/session";
 import {
   AGENT_GONE,
   MORE_AGENTS_OFF,
   UNSUPPORTED_PROTOCOL,
   WAITS,
 } from "./registryCopy";
+import type { RegistryAgent } from "./registryList";
 
-export type RegistryAgentRef = {
-  id: string;
-  name: string;
-  command: string;
-  args: string[];
-  protocol: string;
-};
+export type RegistryAgentRef = RegistryAgent;
 
 export type RegistrySendPlan =
   | { action: "cli" }
@@ -26,6 +22,20 @@ export type RegistrySendPlan =
  * `fallbacks` exist so a test can pass functions that throw. This function
  * must not call them: a registry id is not a CLI id.
  */
+/** A new More agents chat. `harness` stays one of the eleven. The agent id does not. */
+export function registrySessionFields(
+  agent: { id: string; name: string },
+  placeholder: HarnessId,
+): { harness: HarnessId; registryAgentId: string; title: string } {
+  if (!(HARNESSES as string[]).includes(placeholder)) {
+    throw new Error("The placeholder must be one of the eleven CLIs.");
+  }
+  if ((HARNESSES as string[]).includes(agent.id)) {
+    throw new Error("A registry id cannot be a CLI id.");
+  }
+  return { harness: placeholder, registryAgentId: agent.id, title: agent.name };
+}
+
 export function registrySendPlan(input: {
   registryAgentId?: string;
   enabled: boolean;

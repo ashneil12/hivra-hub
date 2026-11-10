@@ -268,5 +268,11 @@ describe("requestRegistryChat", () => {
     const event = heard.mock.calls[0]?.[0] as CustomEvent<{ agentId: string }>;
     expect(event.type).toBe(START_REGISTRY_CHAT_EVENT);
     expect(event.detail).toEqual({ agentId: "my-copilot" });
+    requestRegistryChat("my-copilot", { enabled: true, cwd: "/work/My Project", target });
+    const withCwd = heard.mock.calls[1]?.[0] as CustomEvent<{ agentId: string; cwd?: string }>;
+    expect(withCwd.detail).toEqual({ agentId: "my-copilot", cwd: "/work/My Project" });
+    requestRegistryChat("my-copilot", { enabled: true, cwd: "/work/bad\npath", target });
+    const dropped = heard.mock.calls[2]?.[0] as CustomEvent<{ agentId: string; cwd?: string }>;
+    expect(dropped.detail).toEqual({ agentId: "my-copilot" });
   });
 });
