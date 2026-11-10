@@ -14,6 +14,8 @@ pub(crate) const CLAUDE_MODELS: &[(&str, &str)] = &[
     ("claude-sonnet-5", "Claude Sonnet 5"),
     ("claude-opus-5", "Claude Opus 5"),
     ("claude-opus-5-5", "Claude Opus 5.5"),
+    ("claude-fable-5-2", "Claude Fable 5.2"),
+    ("claude-fable-5-1", "Claude Fable 5.1"),
     ("claude-fable-5", "Claude Fable 5"),
     ("claude-opus-4-6", "Opus 4.6"),
     ("claude-sonnet-4-6", "Sonnet 4.6"),
@@ -171,6 +173,14 @@ mod model_label_tests {
         assert_eq!(
             model_name(Kind::Codex, Some("custom-model")).as_ref(),
             "custom-model"
+        );
+        assert_eq!(
+            model_name(Kind::Claude, Some("claude-fable-5-2")).as_ref(),
+            "Claude Fable 5.2"
+        );
+        assert_eq!(
+            model_name(Kind::Claude, Some("claude-fable-5-1")).as_ref(),
+            "Claude Fable 5.1"
         );
     }
 

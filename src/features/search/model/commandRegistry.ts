@@ -44,7 +44,8 @@ export type PaletteAppAction =
   | "changes"
   | "archive-chat"
   | "stop-chat"
-  | "next-chat-worktree";
+  | "next-chat-worktree"
+  | "fork-from-here";
 
 export type PaletteRun =
   | { kind: "tab"; command: TabCommand }
@@ -240,6 +241,15 @@ const EXTRAS: PaletteCommand[] = [
     binding: null,
     run: { kind: "app", action: "next-chat-worktree" },
     needs: "none",
+  },
+  {
+    id: "session.fork-from-here",
+    label: "Fork from here",
+    group: "Session",
+    keys: "",
+    binding: null,
+    run: { kind: "app", action: "fork-from-here" },
+    needs: "chat",
   },
 ];
 

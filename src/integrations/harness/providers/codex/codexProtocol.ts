@@ -872,12 +872,15 @@ function mapToolItem(
         preview,
       };
     }
+    // WP-120: the app's own tools answer in a small JSON result, and the worker link reads its child chat from it.
+    const detail = server === "monocode" ? monocodeCallDetail(item) : undefined;
     return {
       type: "tool.updated",
       callId,
       title,
       kind: "other",
       status,
+      ...(detail ? { detail } : {}),
       preview,
     };
   }
@@ -1370,6 +1373,17 @@ function buildDiffPreview(
       ? { kind: "write", path, fileName: path.split(/[/\\]/).pop() }
       : undefined)
   );
+}
+
+/** What a finished monocode MCP call came back with: its error's words, or its result as JSON text. */
+function monocodeCallDetail(item: Record<string, unknown>): string | undefined {
+  const failure = stringField(asRecord(item.error), "message");
+  if (failure) return failure;
+  const result = asRecord(item.result);
+  if (!result) return undefined;
+  const structured = asRecord(result.structuredContent);
+  if (structured) return JSON.stringify(structured);
+  return Array.isArray(result.content) ? JSON.stringify({ content: result.content }) : undefined;
 }
 
 function mapItemStatus(status: string | undefined, completed: boolean): string {

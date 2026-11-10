@@ -26,6 +26,9 @@ pub struct Worktree {
     /// WP-82: said once, when this checkout was a plain git worktree because the pool was off or not installed.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pool_notice: Option<String>,
+    /// WP-123: said when a fork's checkout could not be given the chat's uncommitted changes.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub changes_notice: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -252,6 +255,41 @@ pub(crate) fn create(
         })
 }
 
+/// WP-123: what a fork's checkout says when the chat's uncommitted changes could not come along.
+pub(crate) const CHANGES_NOT_COPIED: &str =
+    "Uncommitted changes in this chat's worktree weren't copied.";
+
+/// WP-123: a new checkout that starts from the chat's own checkout, uncommitted changes included, the way a pool
+/// slot is seeded. A chat's recap names the files it edited, and `git worktree add` alone brings only the commit. If
+/// the copy fails the checkout is still made, put back at the commit it began from (it had no changes of its own, so
+/// nothing is left half-copied) and the tree carries `CHANGES_NOT_COPIED` for the caller to say.
+fn create_carrying_changes(root: &Path, branch: &str, base: &str) -> Result<Worktree, String> {
+    let mut tree = create(root, branch, base, false)?;
+    let path = PathBuf::from(&tree.path);
+    if copy_checkout_state(root, &path).is_err() {
+        let _ = git(&path, &["reset", "--hard", "--quiet"]);
+        let _ = git(&path, &["clean", "-fdq"]);
+        tree.changes_notice = Some(CHANGES_NOT_COPIED.into());
+    }
+    Ok(tree)
+}
+
+/// The plain checkout of `git_worktree_create`, with the chat's uncommitted changes when `carry` asks for them. An
+/// existing branch has its own contents, so nothing is carried onto it.
+fn new_checkout(
+    root: &Path,
+    branch: &str,
+    base: &str,
+    existing: bool,
+    carry: bool,
+) -> Result<Worktree, String> {
+    if carry && !existing {
+        create_carrying_changes(root, branch, base)
+    } else {
+        create(root, branch, base, existing)
+    }
+}
+
 /// Start the project's setup in a worktree that was just added. It runs before the agent's first turn: the chat
 /// holds its turn on `setup.hold` and shows the log (src/app/App.tsx). `run_setup: false` skips it.
 pub(crate) fn with_setup(app: &AppHandle, mut tree: Worktree, run_setup: Option<bool>) -> Worktree {
@@ -319,9 +357,12 @@ pub async fn git_worktree_create(
     base: String,
     existing: bool,
     run_setup: Option<bool>,
+    carry_changes: Option<bool>,
 ) -> Result<Worktree, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let root = expand_home(&cwd);
+        // WP-123: a fork asks for the chat's uncommitted changes. A fresh pool slot is already seeded that way.
+        let carry = carry_changes == Some(true);
         // WP-82: "New worktree" uses the pool only when that switch is on. It stays off.
         let use_pool = !existing
             && crate::worktree_pool::settings_for(&crate::worktree_pool::env_from_app(&app), &root)
@@ -331,14 +372,14 @@ pub async fn git_worktree_create(
                 Ok(Pooled::Ready(tree)) => return Ok(*tree),
                 Ok(Pooled::Full(note)) => return Err(note),
                 Ok(Pooled::Plain(notice)) => {
-                    let mut tree = create(&root, &branch, &base, existing)?;
+                    let mut tree = new_checkout(&root, &branch, &base, existing, carry)?;
                     tree.pool_notice = notice;
                     return Ok(with_setup(&app, tree, run_setup));
                 }
                 Err(error) => return Err(pooled_error(error, false)),
             }
         }
-        let tree = create(&root, &branch, &base, existing)?;
+        let tree = new_checkout(&root, &branch, &base, existing, carry)?;
         Ok(with_setup(&app, tree, run_setup))
     })
     .await
@@ -1085,6 +1126,101 @@ mod tests {
             "lead dirty\n"
         );
         remove(&root, worker, true).unwrap();
+    }
+
+    fn commit_all(root: &Path, message: &str) {
+        git_checked(root, &["add", "."]).unwrap();
+        git_checked(
+            root,
+            &[
+                "-c",
+                "user.name=Test",
+                "-c",
+                "user.email=test@example.com",
+                "commit",
+                "-m",
+                message,
+            ],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn a_fork_worktree_carries_the_chats_uncommitted_changes() {
+        let repo = repo();
+        let root = repo.0.join("repo");
+        std::fs::write(root.join("tracked.txt"), "head\n").unwrap();
+        std::fs::write(root.join("deleted.txt"), "delete me\n").unwrap();
+        commit_all(&root, "files");
+        std::fs::write(root.join("tracked.txt"), "chat edit\n").unwrap();
+        std::fs::write(root.join("untracked.txt"), "chat new\n").unwrap();
+        std::fs::remove_file(root.join("deleted.txt")).unwrap();
+
+        let tree = create_carrying_changes(&root, "mc/fork-carry", "HEAD").unwrap();
+        let fork = Path::new(&tree.path);
+        assert!(tree.changes_notice.is_none());
+        assert_eq!(
+            std::fs::read_to_string(fork.join("tracked.txt")).unwrap(),
+            "chat edit\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(fork.join("untracked.txt")).unwrap(),
+            "chat new\n"
+        );
+        assert!(!fork.join("deleted.txt").exists());
+        // The chat's own checkout is only read.
+        assert_eq!(
+            std::fs::read_to_string(root.join("tracked.txt")).unwrap(),
+            "chat edit\n"
+        );
+        remove(&root, fork, true).unwrap();
+    }
+
+    #[test]
+    fn a_fork_worktree_of_a_clean_checkout_has_nothing_to_say() {
+        let repo = repo();
+        let root = repo.0.join("repo");
+        let tree = create_carrying_changes(&root, "mc/fork-clean", "HEAD").unwrap();
+        assert!(tree.changes_notice.is_none());
+        assert!(git(
+            Path::new(&tree.path),
+            &["status", "--porcelain", "--untracked-files=normal"]
+        )
+        .unwrap()
+        .is_empty());
+        remove(&root, Path::new(&tree.path), true).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_fork_worktree_says_so_and_starts_clean_when_the_changes_cannot_be_copied() {
+        let repo = repo();
+        let root = repo.0.join("repo");
+        std::fs::write(root.join("a.txt"), "head\n").unwrap();
+        commit_all(&root, "files");
+        // One change that copies and one that cannot (a symbolic link is refused).
+        std::fs::write(root.join("a.txt"), "chat edit\n").unwrap();
+        std::os::unix::fs::symlink("a.txt", root.join("z-link")).unwrap();
+
+        let tree = create_carrying_changes(&root, "mc/fork-refused", "HEAD").unwrap();
+        let fork = Path::new(&tree.path);
+        assert_eq!(tree.changes_notice.as_deref(), Some(CHANGES_NOT_COPIED));
+        // Nothing half-copied: the checkout is the commit it started from, so the notice is true.
+        assert_eq!(
+            std::fs::read_to_string(fork.join("a.txt")).unwrap(),
+            "head\n"
+        );
+        assert!(!fork.join("z-link").exists());
+        assert!(
+            git(fork, &["status", "--porcelain", "--untracked-files=normal"])
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(
+            std::fs::read_to_string(root.join("a.txt")).unwrap(),
+            "chat edit\n"
+        );
+        remove(&root, fork, true).unwrap();
     }
 
     #[test]
