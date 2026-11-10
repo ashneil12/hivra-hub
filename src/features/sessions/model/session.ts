@@ -481,6 +481,8 @@ export type Block = {
     decided?: "allow" | "deny" | "cancelled";
     /** Exactly what it would run, when the provider says (autopilot judges approvals on it). */
     call?: ApprovalCall;
+    /** WP-150: `call` carries every argument the tool runs with. Only such a call reaches the phone. */
+    callComplete?: boolean;
     /** WP-122: the child that asked, so the answer is sent to its port. */
     child?: { name: string; sessionPort: string; detail?: string };
   };
