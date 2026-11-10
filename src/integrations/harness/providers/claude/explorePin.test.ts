@@ -1,233 +1,109 @@
-import { mkdtemp, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
-  EXPLORE_PIN_FILE,
-  EXPLORE_PIN_OTHER_SENTENCE,
+  EXPLORE_LOOKUP_MS,
   EXPLORE_PIN_SENTENCE,
-  PLAN_PIN_FILE,
-  type ExplorePinFile,
-  type ExplorePinIo,
-  ensureCheapExplorePin,
-  exploreAgentFile,
-  explorePinAllowed,
-  explorePinModel,
+  cheapExploreLaunch,
+  exploreAgentsArg,
+  exploreAgentsArgs,
+  type ExploreLookup,
 } from "./explorePin";
 
-const temps: string[] = [];
+const free: ExploreLookup = async () => false;
 
-afterEach(async () => {
-  await Promise.all(temps.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
+afterEach(() => {
+  vi.useRealTimers();
 });
 
-async function scratch(name: string): Promise<string> {
-  const dir = await mkdtemp(path.join(tmpdir(), `explore-pin-${name}-`));
-  temps.push(dir);
-  return dir;
-}
-
-/** A folder writer that creates a missing file once and never replaces one. */
-function diskIo(): ExplorePinIo {
-  return {
-    async read(absolutePath) {
-      try {
-        return await readFile(absolutePath, "utf8");
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
-        throw error;
-      }
-    },
-    async create(cwd, files) {
-      const root = path.resolve(cwd);
-      const created: string[] = [];
-      for (const file of files) {
-        const absolute = path.resolve(cwd, file.relative);
-        if (absolute !== path.join(root, file.relative)) {
-          throw new Error("refused");
-        }
-        await mkdir(path.dirname(absolute), { recursive: true });
-        try {
-          await writeFile(absolute, file.content, { encoding: "utf8", flag: "wx" });
-          created.push(file.relative);
-        } catch (error) {
-          if ((error as NodeJS.ErrnoException).code === "EEXIST") continue;
-          throw error;
-        }
-      }
-      return created;
-    },
-  };
-}
-
-describe("the Explore agent file names a cheap model", () => {
-  it("always has a plain model field, and Haiku when the session is on Anthropic", () => {
-    expect(explorePinModel(undefined)).toBe("haiku");
-    expect(explorePinModel("  ")).toBe("haiku");
-    const text = exploreAgentFile("Explore", "haiku");
-    expect(text).toContain("name: Explore");
-    expect(text).toContain("model: haiku");
-    expect(text).not.toMatch(/\r/);
-    expect(text.split("\n").filter((line) => line.startsWith("model:")).length).toBe(1);
-  });
-
-  it("uses the worker's own model off Anthropic, and refuses an id that would break the file", () => {
-    expect(explorePinModel("deepseek-v4.1-flash")).toBe("deepseek-v4.1-flash");
-    expect(exploreAgentFile("Plan", "deepseek-v4.1-flash")).toContain("model: deepseek-v4.1-flash");
-    expect(exploreAgentFile("Plan", "deepseek-v4.1-flash")).toContain("name: Plan");
-    expect(explorePinModel("haiku\nmodel: opus")).toBeUndefined();
-    expect(explorePinModel("foo:bar")).toBeUndefined();
-    expect(explorePinModel("../haiku")).toBeUndefined();
-    expect(explorePinModel("model haiku")).toBeUndefined();
+describe("the cheap Explore agent is passed as a flag, not written as a file", () => {
+  it("is one Explore agent on Haiku, with no Plan agent", () => {
+    const parsed = JSON.parse(exploreAgentsArg()) as Record<string, Record<string, unknown>>;
+    expect(Object.keys(parsed)).toEqual(["Explore"]);
+    expect(parsed.Explore.model).toBe("haiku");
+    expect(typeof parsed.Explore.description).toBe("string");
+    expect(String(parsed.Explore.prompt)).toMatch(/do not edit/i);
+    expect(parsed.Explore.tools).toEqual(["Read", "Grep", "Glob", "Bash"]);
+    expect(exploreAgentsArgs()).toEqual(["--agents", exploreAgentsArg()]);
   });
 });
 
-describe("a fresh crew folder gets the pin, and an existing file is left alone", () => {
-  it("creates Explore and Plan with Haiku, and says so", async () => {
-    const cwd = await scratch("fresh");
-    const result = await ensureCheapExplorePin({ cwd, io: diskIo() });
-    const explore = await readFile(path.join(cwd, EXPLORE_PIN_FILE), "utf8");
-    const plan = await readFile(path.join(cwd, PLAN_PIN_FILE), "utf8");
-    expect(explore).toContain("model: haiku");
-    expect(explore).toContain("name: Explore");
-    expect(plan).toContain("model: haiku");
-    expect(plan).toContain("name: Plan");
-    expect(explore).not.toMatch(/\r/);
-    expect(result.created).toEqual([EXPLORE_PIN_FILE, PLAN_PIN_FILE]);
-    expect(result.sentence).toBe(EXPLORE_PIN_SENTENCE);
+describe("cheapExploreLaunch decides per launch", () => {
+  const base = { crew: true, anthropic: true, cwd: "/work/My Project" };
+
+  it("gives a crew session on Anthropic the flag, and says so", async () => {
+    const lookup = vi.fn(free);
+    const out = await cheapExploreLaunch({ ...base, lookup });
+    expect(out.args).toEqual(["--agents", exploreAgentsArg()]);
+    expect(out.sentence).toBe(EXPLORE_PIN_SENTENCE);
+    expect(lookup).toHaveBeenCalledWith({ cwd: "/work/My Project", providerAccountId: undefined });
   });
 
-  it("pins the worker model, not Haiku, when the session is off Anthropic", async () => {
-    const cwd = path.join(await scratch("routed"), "my project", "café");
-    await mkdir(cwd, { recursive: true });
-    const result = await ensureCheapExplorePin({
-      cwd,
-      offAnthropicModel: "deepseek-v4.1-flash",
-      io: diskIo(),
-    });
-    const explore = await readFile(path.join(cwd, EXPLORE_PIN_FILE), "utf8");
-    expect(explore).toContain("model: deepseek-v4.1-flash");
-    expect(explore).not.toMatch(/haiku/i);
-    expect(result.sentence).toBe(EXPLORE_PIN_OTHER_SENTENCE);
+  it("passes the provider account to the lookup, so that account's own agents are read", async () => {
+    const lookup = vi.fn(free);
+    await cheapExploreLaunch({ ...base, providerAccountId: "work", lookup });
+    expect(lookup).toHaveBeenCalledWith({ cwd: "/work/My Project", providerAccountId: "work" });
   });
 
-  it("does not replace a custom Explore, with or without a model line", async () => {
-    const cwd = await scratch("custom");
-    const agents = path.join(cwd, ".claude", "agents");
-    await mkdir(agents, { recursive: true });
-    const custom = "---\nname: Explore\nmodel: opus\n---\n\nAsh's own search.\n";
-    const bare = "---\nname: Explore\n---\n\nNo model yet.\n";
-    await writeFile(path.join(agents, "Explore.md"), custom);
-    const withModel = await ensureCheapExplorePin({ cwd, io: diskIo() });
-    expect(await readFile(path.join(agents, "Explore.md"), "utf8")).toBe(custom);
-    expect(withModel.created).toEqual([PLAN_PIN_FILE]);
-    expect(withModel.sentence).toBeUndefined();
-
-    const other = await scratch("bare");
-    const bareDir = path.join(other, ".claude", "agents");
-    await mkdir(bareDir, { recursive: true });
-    await writeFile(path.join(bareDir, "Explore.md"), bare);
-    await writeFile(path.join(bareDir, "Plan.md"), "");
-    const left = await ensureCheapExplorePin({ cwd: other, io: diskIo() });
-    expect(await readFile(path.join(bareDir, "Explore.md"), "utf8")).toBe(bare);
-    expect(await readFile(path.join(bareDir, "Plan.md"), "utf8")).toBe("");
-    expect(left.created).toEqual([]);
-    expect(left.sentence).toBeUndefined();
+  it("gives an ordinary chat nothing, and does not even look", async () => {
+    const lookup = vi.fn(free);
+    expect(await cheapExploreLaunch({ ...base, crew: false, lookup })).toEqual({ args: [] });
+    expect(lookup).not.toHaveBeenCalled();
   });
 
-  it("a second launch, and two launches at once, do not write the file twice", async () => {
-    const cwd = await scratch("twice");
-    const io = diskIo();
-    const [first, second] = await Promise.all([
-      ensureCheapExplorePin({ cwd, io }),
-      ensureCheapExplorePin({ cwd, io }),
-    ]);
-    const explore = await readFile(path.join(cwd, EXPLORE_PIN_FILE), "utf8");
-    expect(explore).toBe(exploreAgentFile("Explore", "haiku"));
-    expect(explore.split("name: Explore").length).toBe(2);
-    const again = await ensureCheapExplorePin({ cwd, io });
-    expect(again.created).toEqual([]);
-    expect(again.sentence).toBeUndefined();
-    expect(await readFile(path.join(cwd, EXPLORE_PIN_FILE), "utf8")).toBe(explore);
-    expect(first.created.length + second.created.length).toBeGreaterThan(0);
-    const info = await stat(path.join(cwd, EXPLORE_PIN_FILE));
-    expect(info.isFile()).toBe(true);
+  it("gives a session off Anthropic nothing", async () => {
+    const lookup = vi.fn(free);
+    expect(await cheapExploreLaunch({ ...base, anthropic: false, lookup })).toEqual({ args: [] });
+    expect(lookup).not.toHaveBeenCalled();
   });
 
-  it("does not create a file when the read fails", async () => {
-    const created: ExplorePinFile[] = [];
-    const io: ExplorePinIo = {
-      read: async () => {
-        throw new Error("unreadable");
-      },
-      create: async (_cwd, files) => {
-        created.push(...files);
-        return files.map((file) => file.relative);
-      },
+  it("never shadows an Explore the person already defined", async () => {
+    expect(await cheapExploreLaunch({ ...base, lookup: async () => true })).toEqual({ args: [] });
+  });
+
+  it("a lookup that cannot answer is not proof that nothing is defined", async () => {
+    const broken: ExploreLookup = async () => {
+      throw new Error("denied");
     };
-    const result = await ensureCheapExplorePin({ cwd: "/work/proj", io });
-    expect(created).toEqual([]);
-    expect(result.created).toEqual([]);
-    expect(result.sentence).toBeUndefined();
+    expect(await cheapExploreLaunch({ ...base, lookup: broken })).toEqual({ args: [] });
+    // Outside the app there is no lookup at all.
+    expect(await cheapExploreLaunch(base)).toEqual({ args: [] });
   });
 
-  it("does not claim a pin when the write reports nothing created", async () => {
-    const io: ExplorePinIo = {
-      read: async () => null,
-      create: async () => [],
-    };
-    const result = await ensureCheapExplorePin({ cwd: "/work/proj", io });
-    expect(result.sentence).toBeUndefined();
-  });
-});
-
-describe("the pin never targets the user's Claude directory", () => {
-  it("refuses a relative path, a parent segment, a remote folder, and anything under .claude", () => {
-    expect(explorePinAllowed("proj")).toBe(false);
-    expect(explorePinAllowed("")).toBe(false);
-    expect(explorePinAllowed("/work/proj/../secret")).toBe(false);
-    expect(explorePinAllowed("remote://box/work/proj")).toBe(false);
-    expect(explorePinAllowed("/home/me/.claude")).toBe(false);
-    expect(explorePinAllowed("/home/me/.claude/projects/app")).toBe(false);
-    expect(explorePinAllowed("C:/Users/me/.claude/work")).toBe(false);
-    expect(explorePinAllowed("/work/my project")).toBe(true);
-    expect(explorePinAllowed("/work/proj", "/home/me")).toBe(true);
-    expect(explorePinAllowed("/home/me", "/home/me")).toBe(false);
-  });
-
-  it("does not ask to write when the folder is the user's .claude directory", async () => {
-    let writes = 0;
-    const io: ExplorePinIo = {
-      read: async () => null,
-      create: async () => {
-        writes += 1;
-        return [EXPLORE_PIN_FILE];
-      },
-    };
-    const home = "/home/me";
-    for (const cwd of ["/home/me", "/home/me/.claude", "/home/me/.claude/projects/app", "/Home/Me/.claude"]) {
-      const result = await ensureCheapExplorePin({ cwd, home, io });
-      expect(result.created).toEqual([]);
+  it("a lookup that never answers does not hold the launch: it starts without the flag", async () => {
+    vi.useFakeTimers();
+    try {
+      const hung: ExploreLookup = () => new Promise<boolean>(() => undefined);
+      const pending = cheapExploreLaunch({ ...base, lookup: hung });
+      await vi.advanceTimersByTimeAsync(EXPLORE_LOOKUP_MS + 1);
+      expect(await pending).toEqual({ args: [] });
+    } finally {
+      vi.useRealTimers();
     }
-    expect(writes).toBe(0);
   });
 
-  it("does not write a broken model id into the folder", async () => {
-    let writes = 0;
-    const io: ExplorePinIo = {
-      read: async () => null,
-      create: async () => {
-        writes += 1;
-        return [EXPLORE_PIN_FILE];
-      },
-    };
-    const result = await ensureCheapExplorePin({
-      cwd: "/work/proj",
-      offAnthropicModel: "haiku\nmodel: opus",
-      io,
-    });
-    expect(result.created).toEqual([]);
-    expect(writes).toBe(0);
+  it("a lookup that answers in time is used, and its timer does not linger", async () => {
+    vi.useFakeTimers();
+    try {
+      const out = await cheapExploreLaunch({ ...base, lookup: free });
+      expect(out.args).toEqual(["--agents", exploreAgentsArg()]);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("a remote, relative, empty or parent-segment folder is skipped without a lookup", async () => {
+    const lookup = vi.fn(free);
+    for (const cwd of ["remote://host/work", "work/proj", "", "  ", "/work/../etc"]) {
+      expect(await cheapExploreLaunch({ ...base, cwd, lookup })).toEqual({ args: [] });
+    }
+    expect(lookup).not.toHaveBeenCalled();
+  });
+
+  it("accepts a Windows folder and a folder with spaces and unicode", async () => {
+    const lookup = vi.fn(free);
+    expect((await cheapExploreLaunch({ ...base, cwd: "C:\\Users\\Ash\\Projects\\proj", lookup })).args).toHaveLength(2);
+    expect((await cheapExploreLaunch({ ...base, cwd: "/work/Ünï cødé proj", lookup })).args).toHaveLength(2);
+    expect(lookup).toHaveBeenCalledTimes(2);
   });
 });

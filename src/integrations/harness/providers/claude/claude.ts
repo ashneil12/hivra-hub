@@ -94,7 +94,7 @@ import { claudeRetryFromMessage } from "./claudeFailure";
 import { withDevCopiesOff } from "./devCopies";
 import { withWorkerNotificationsOff } from "./quietWorkers";
 import { workerCheckoutsArgs } from "./workerCheckouts";
-import { ensureCheapExplorePin } from "./explorePin";
+import { cheapExploreLaunch } from "./explorePin";
 import { appIdentity, isDevCopy } from "../../../../app/model/appIdentity";
 import {
   GOAL_CHECK_CAP,
@@ -159,7 +159,7 @@ import type {
   SendTurnInput,
   SteerTurnInput,
 } from "../../core/types";
-import { claudeBridgeKind } from "./claudeDeepseekBridge";
+import { claudeBridgeKind, claudeRunsOnSubscriptionBridge } from "./claudeDeepseekBridge";
 import { bridgeLaunchModel } from "../../../../features/sessions/model/deepseekBridge";
 
 /**
@@ -1022,13 +1022,16 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
     },
   );
 
-  // WP-143: pin Explore to a cheap model in this session's folder. A failure here does not stop the launch.
-  const pinned = await ensureCheapExplorePin({
+  // WP-143: a crew or Mono session on Anthropic starts with a cheap Explore agent as a flag. Nothing is written to the
+  // folder, and a failure here only means the session starts without it.
+  const cheapExplore = await cheapExploreLaunch({
+    crew: input.crew === true,
+    anthropic: !claudeRunsOnSubscriptionBridge() && !launch.routedModel,
     cwd: input.cwd,
-    offAnthropicModel: claudeBridgeKind() ? launch.model : launch.routedModel,
+    providerAccountId: input.providerAccountId,
   });
-  if (pinned.sentence) {
-    input.onEvent({ type: "status", key: "explore-pin", text: pinned.sentence });
+  if (cheapExplore.sentence) {
+    input.onEvent({ type: "status", key: "explore-pin", text: cheapExplore.sentence });
   }
 
   await spawnChild(
@@ -1043,6 +1046,7 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
       ...(await claudeExtraArgs(input.sessionId, undefined, plugins.additions)),
       // WP-41: the same text the launch key was compared against, not a second read.
       ...claudeAppendArgs(append),
+      ...cheapExplore.args,
     ],
     input.cwd,
     { provider: "claude", id: input.providerAccountId ?? "default" },
