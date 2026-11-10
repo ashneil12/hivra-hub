@@ -161,25 +161,28 @@ test("every button stays on one line, and rows still fit, from a wide page to a 
   await expect(frame.locator('[data-list="attention"] [data-item="a:hivra-lead"]')).toBeVisible();
   const inner = () => page.frames().find((f) => f !== page.mainFrame())!;
   // The page's own width is what its layout answers to (it sits in a column up to 768px wide with 32px at each side).
-  // A fixed sleep races WebKit: the iframe's layout is not flushed yet, so the measure sees a wrap or an overlap that
-  // is gone a frame later. Wait until two frames have passed and the measure is clean. A real wrap stays and fails.
+  // A measure taken before the iframe flushes layout sees a wrap that is gone a frame later. Read again after two
+  // frames until two reads match. A wrap that stays is that match, and it fails. This does not wait on a clock.
+  const settled = async () => {
+    const frame = inner();
+    let previous: string | null = null;
+    for (let read = 0; read < 4; read += 1) {
+      await frame.evaluate(
+        () =>
+          new Promise<void>((resolve) => {
+            requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+          }),
+      );
+      const problems = await frame.evaluate(PROBLEMS);
+      const text = JSON.stringify(problems);
+      if (previous === text) return problems;
+      previous = text;
+    }
+    return JSON.parse(previous ?? "[]") as string[];
+  };
   for (const width of [1100, 760, 700, 560, 420]) {
     await page.locator("#root").evaluate((root, w) => void (root.style.width = `${w}px`), width);
-    await expect.soft
-      .poll(
-        async () => {
-          const frame = inner();
-          await frame.evaluate(
-            () =>
-              new Promise<void>((resolve) => {
-                requestAnimationFrame(() => requestAnimationFrame(() => resolve(undefined)));
-              }),
-          );
-          return frame.evaluate(PROBLEMS);
-        },
-        { timeout: 2_000, message: `at ${width}px` },
-      )
-      .toEqual([]);
+    expect.soft(await settled(), `at ${width}px`).toEqual([]);
     await shot(page, `agents-width-${width}`);
   }
 });
