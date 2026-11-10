@@ -1,352 +1,198 @@
 import { describe, expect, it } from "vitest";
 import {
-  foldLineage,
-  lineageFromBlocks,
-  mergeLineage,
+  lineageForThread,
   NOT_REPORTED_BY_CLI,
+  type Lineage,
   type LineageChild,
 } from "./subagentLineage";
 
-const claudeExplore = [
-  {
-    type: "assistant",
-    session_id: "sess_1",
-    message: {
-      content: [
-        {
-          type: "tool_use",
-          id: "toolu_agent",
-          name: "Task",
-          input: {
-            description: "Explore the auth module",
-            subagent_type: "explore",
-            model: "claude-haiku-5",
-          },
-        },
-      ],
+/**
+ * The list on a parent thread is read off the agent rows the session holds. The frames that make those rows are
+ * checked where they enter the app: claudeFixtureReplay.test.ts and claudeLive.test.ts for Claude, codexLive.test.ts
+ * for Codex. This file checks what the list makes of a row.
+ */
+
+function agentBlock(overrides: Record<string, unknown> = {}) {
+  return {
+    id: "b1",
+    role: "tool",
+    text: "Explore the auth module",
+    tool: {
+      callId: "toolu_agent",
+      kind: "agent",
+      title: "Explore the auth module",
+      status: "completed",
+      detail: "Auth lives in src/auth.",
     },
-  },
-  {
-    type: "system",
-    subtype: "task_started",
-    task_id: "t1",
-    tool_use_id: "toolu_agent",
-    description: "Explore the auth module",
-    task_type: "local_agent",
-  },
-  {
-    type: "assistant",
-    session_id: "sub_1",
-    parent_tool_use_id: "toolu_agent",
-    message: {
+    agentRun: {
+      name: "Explore the auth module",
+      agentType: "explore",
       model: "claude-haiku-5",
-      content: [{ type: "text", text: "Looking." }],
+      steps: [],
     },
-  },
-  {
-    type: "user",
-    session_id: "sess_1",
-    message: {
-      content: [
-        {
-          type: "tool_result",
-          tool_use_id: "toolu_agent",
-          content: "Auth lives in src/auth.",
-        },
-      ],
-    },
-  },
-];
-
-const codexReview = [
-  {
-    method: "thread/started",
-    params: { thread: { id: "thr_child", model: "gpt-5.6-sol" } },
-  },
-  {
-    method: "item/started",
-    params: {
-      threadId: "thr_child",
-      item: {
-        id: "child_cmd",
-        type: "commandExecution",
-        command: "git diff",
-        status: "inProgress",
-      },
-    },
-  },
-  {
-    method: "item/started",
-    params: {
-      threadId: "thr_1",
-      item: {
-        id: "collab_1",
-        type: "collabAgentToolCall",
-        tool: "spawnAgent",
-        status: "inProgress",
-        prompt: "Correctness review\n\nLook for regressions.",
-        agentsStates: { thr_child: { status: "running" } },
-      },
-    },
-  },
-];
-
-function child(lineage: ReturnType<typeof foldLineage>, id: string): LineageChild {
-  expect(lineage.reported).toBe(true);
-  if (!lineage.reported) throw new Error("unreported");
-  const found = lineage.children.find((row) => row.id === id);
-  expect(found, id).toBeDefined();
-  return found!;
+    ...overrides,
+  };
 }
 
-describe("Claude fixture transcripts", () => {
-  it("produces one child with name, role, model, and result", () => {
-    const row = child(foldLineage("claude", claudeExplore), "toolu_agent");
-    expect(row).toMatchObject({
+function children(lineage: Lineage | null): LineageChild[] {
+  if (!lineage?.reported) throw new Error("expected a reported lineage");
+  return lineage.children;
+}
+
+function only(lineage: Lineage | null): LineageChild {
+  const rows = children(lineage);
+  expect(rows).toHaveLength(1);
+  return rows[0]!;
+}
+
+describe("a child read off its agent row", () => {
+  it("has a name, role, model and the report it handed back", () => {
+    expect(only(lineageForThread("claude", [agentBlock()]))).toEqual({
+      id: "toolu_agent",
       name: "Explore the auth module",
       role: "explore",
       model: "claude-haiku-5",
       status: "done",
       result: "Auth lives in src/auth.",
       error: null,
-      sessionPort: "sub_1",
     });
   });
 
-  it("keeps a failed child failed when a late result arrives", () => {
-    const frames = [
-      ...claudeExplore.slice(0, 2),
-      {
-        type: "system",
-        subtype: "task_notification",
-        task_id: "t1",
-        tool_use_id: "toolu_agent",
-        status: "failed",
-        summary: "The model name was unknown.",
-      },
-      claudeExplore[3],
-    ];
-    const row = child(foldLineage("claude", frames), "toolu_agent");
-    expect(row.status).toBe("failed");
-    expect(row.error).toBe("The model name was unknown.");
-    expect(row.result).toBeNull();
-  });
-
-  it("folds a duplicate start onto the same child", () => {
-    const frames = [
-      claudeExplore[0],
-      claudeExplore[1],
-      { ...claudeExplore[1], description: "" },
-    ];
-    const lineage = foldLineage("claude", frames);
-    expect(lineage.reported && lineage.children).toHaveLength(1);
-    expect(child(lineage, "toolu_agent").name).toBe("Explore the auth module");
-  });
-
-  it("does not reopen a stopped child when more progress arrives", () => {
-    const frames = [
-      claudeExplore[1],
-      {
-        type: "system",
-        subtype: "task_notification",
-        task_id: "t1",
-        tool_use_id: "toolu_agent",
-        status: "stopped",
-        summary: "Stopped.",
-      },
-      {
-        type: "system",
-        subtype: "task_progress",
-        task_id: "t1",
-        tool_use_id: "toolu_agent",
-        description: "Explore the auth module",
-        last_tool_name: "Read",
-      },
-    ];
-    expect(child(foldLineage("claude", frames), "toolu_agent").status).toBe("cancelled");
-  });
-
-  it("names a child that arrived with no description", () => {
-    const row = child(
-      foldLineage("claude", [
-        {
-          type: "system",
-          subtype: "task_started",
-          task_id: "t9",
-          task_type: "local_agent",
-        },
+  it("is working while the call is open, with no result yet", () => {
+    const row = only(
+      lineageForThread("codex", [
+        agentBlock({
+          tool: { callId: "c1", kind: "agent", title: "Review", status: "in_progress", detail: "partial" },
+        }),
       ]),
-      "t9",
     );
-    expect(row.name).toBe("Subagent");
-    expect(row.role).toBeNull();
+    expect(row).toMatchObject({ status: "running", result: null, error: null });
+  });
+
+  it("keeps a failure as an error, not a result", () => {
+    const row = only(
+      lineageForThread("claude", [
+        agentBlock({
+          tool: { callId: "toolu_agent", kind: "agent", title: "Review", status: "failed", detail: "API error." },
+        }),
+      ]),
+    );
+    expect(row).toMatchObject({ status: "failed", error: "API error.", result: null });
+  });
+
+  it.each(["killed", "stopped", "cancelled"])("reads %s as stopped", (status) => {
+    const row = only(
+      lineageForThread("claude", [
+        agentBlock({ tool: { callId: "toolu_agent", kind: "agent", title: "Review", status, detail: "x" } }),
+      ]),
+    );
+    expect(row).toMatchObject({ status: "cancelled", result: null, error: null });
+  });
+
+  it("falls back to the call's own title, then to Subagent", () => {
+    expect(
+      only(
+        lineageForThread("claude", [
+          agentBlock({
+            agentRun: undefined,
+            tool: { callId: "t", kind: "task", title: "Check the migration", status: "completed" },
+          }),
+        ]),
+      ).name,
+    ).toBe("Check the migration");
+    expect(
+      only(
+        lineageForThread("claude", [
+          { id: "b9", role: "tool", text: "", tool: { kind: "subagent", status: "completed" } },
+        ]),
+      ),
+    ).toMatchObject({ id: "b9", name: "Subagent", role: null, model: null });
+  });
+
+  it("hides an automatic model and keeps a unicode name on one line with no em dash", () => {
+    const row = only(
+      lineageForThread("claude", [
+        agentBlock({
+          agentRun: { name: "Prüfe die Anmeldung — schnell\nsecond line", model: "inherit", steps: [] },
+        }),
+      ]),
+    );
+    expect(row.name).toBe("Prüfe die Anmeldung, schnell");
     expect(row.model).toBeNull();
-    expect(row.status).toBe("running");
   });
 
-  it("ignores a background shell and an ambient watcher", () => {
-    const lineage = foldLineage("claude", [
-      {
-        type: "system",
-        subtype: "task_started",
-        task_id: "bash_1",
-        task_type: "local_bash",
-        description: "sleep 10",
-      },
-      {
-        type: "system",
-        subtype: "task_started",
-        task_id: "watch",
-        task_type: "local_agent",
-        description: "watcher",
-        ambient: true,
-      },
+  it("clips a very long report", () => {
+    const row = only(
+      lineageForThread("claude", [
+        agentBlock({ tool: { callId: "t", kind: "agent", title: "x", status: "completed", detail: "a".repeat(5000) } }),
+      ]),
+    );
+    expect(row.result!.length).toBeLessThanOrEqual(2000);
+  });
+});
+
+describe("which rows are children", () => {
+  it("does not turn a workflow or a plain tool into one, and skips junk", () => {
+    expect(
+      lineageForThread("claude", [
+        {
+          id: "w",
+          role: "tool",
+          text: "Fan out",
+          tool: { kind: "workflow", title: "Fan out", status: "completed" },
+          workflowRun: { agents: [] },
+        },
+        { id: "r", role: "tool", text: "Read notes", tool: { kind: "read", title: "Read notes", status: "completed" } },
+        { id: "m", role: "assistant", text: "Hello" },
+        null,
+        { id: "bad", role: "tool" },
+      ]),
+    ).toBeNull();
+  });
+
+  it("is null for a thread that started no agent", () => {
+    expect(lineageForThread("claude", [])).toBeNull();
+    expect(lineageForThread("hermes", [])).toBeNull();
+  });
+
+  it("lists several children in the order they started", () => {
+    const rows = children(
+      lineageForThread("claude", [
+        agentBlock({
+          id: "b1",
+          tool: { callId: "a", kind: "agent", title: "First", status: "completed" },
+          agentRun: { name: "First", steps: [] },
+        }),
+        { id: "r", role: "tool", text: "Read", tool: { kind: "read", status: "completed" } },
+        agentBlock({
+          id: "b2",
+          tool: { callId: "b", kind: "agent", title: "Second", status: "in_progress" },
+          agentRun: { name: "Second", steps: [] },
+        }),
+      ]),
+    );
+    expect(rows.map((row) => [row.id, row.name, row.status])).toEqual([
+      ["a", "First", "done"],
+      ["b", "Second", "running"],
     ]);
-    expect(lineage).toEqual({ reported: true, children: [] });
   });
 
-  it("skips junk frames and still reports an empty transcript", () => {
-    expect(foldLineage("claude", [])).toEqual({ reported: true, children: [] });
-    expect(foldLineage("claude", [null, "nope", 4, [], { type: "assistant" }])).toEqual({
-      reported: true,
-      children: [],
-    });
+  it("folds two rows of the same call onto one child", () => {
+    expect(children(lineageForThread("codex", [agentBlock(), agentBlock({ id: "b2" })]))).toHaveLength(1);
   });
 
-  it("trims odd whitespace and keeps a unicode name", () => {
-    const row = child(
-      foldLineage("claude", [
-        {
-          type: "system",
-          subtype: "task_started",
-          task_id: "t1",
-          tool_use_id: "toolu_cafe",
-          description: "  Café review\r\n\r\nmore",
-          task_type: "local_agent",
-        },
+  it("keeps the finished copy when a later row of the same call is still running", () => {
+    const row = only(
+      lineageForThread("claude", [
+        agentBlock(),
+        agentBlock({
+          id: "b2",
+          agentRun: undefined,
+          tool: { callId: "toolu_agent", kind: "agent", title: "Subagent", status: "in_progress" },
+        }),
       ]),
-      "toolu_cafe",
     );
-    expect(row.name).toBe("Café review");
-  });
-
-  it("links a stored transcript when the child session id is already known", () => {
-    const row = child(
-      foldLineage("claude", claudeExplore, [{ id: "hivra-9", providerSessionId: "sub_1" }]),
-      "toolu_agent",
-    );
-    expect(row.transcriptSessionId).toBe("hivra-9");
-  });
-
-  it("does not invent a transcript link", () => {
-    expect(child(foldLineage("claude", claudeExplore), "toolu_agent").transcriptSessionId).toBeNull();
-  });
-});
-
-describe("Codex fixture transcripts", () => {
-  it("banks the child's early work and keeps one row", () => {
-    const row = child(foldLineage("codex", codexReview), "collab_1");
     expect(row).toMatchObject({
-      name: "Correctness review",
-      model: "gpt-5.6-sol",
-      status: "running",
-      sessionPort: "thr_child",
-      result: null,
-      error: null,
-    });
-    expect(foldLineage("codex", codexReview).reported && foldLineage("codex", codexReview).children).toHaveLength(1);
-  });
-
-  it("records the result when the child finishes", () => {
-    const frames = [
-      ...codexReview,
-      {
-        method: "item/completed",
-        params: {
-          threadId: "thr_1",
-          item: {
-            id: "collab_2",
-            type: "collabAgentToolCall",
-            tool: "wait",
-            status: "completed",
-            receiverThreadIds: ["thr_child"],
-            agentsStates: { thr_child: { status: "completed", message: "No regressions." } },
-          },
-        },
-      },
-    ];
-    const row = child(foldLineage("codex", frames), "collab_1");
-    expect(row.status).toBe("done");
-    expect(row.result).toBe("No regressions.");
-  });
-
-  it("gives a failed duplicate its own row", () => {
-    const frames = [
-      codexReview[2],
-      {
-        method: "item/completed",
-        params: {
-          threadId: "thr_1",
-          item: {
-            id: "sa_1",
-            type: "subAgentActivity",
-            kind: "interrupted",
-            agentThreadId: "thr_child",
-          },
-        },
-      },
-    ];
-    const lineage = foldLineage("codex", frames);
-    expect(lineage.reported && lineage.children.map((row) => row.id)).toEqual(["collab_1", "sa_1"]);
-    expect(child(lineage, "sa_1").status).toBe("failed");
-  });
-
-  it("names a subagent from its path when that is all Codex sent", () => {
-    const row = child(
-      foldLineage("codex", [
-        {
-          method: "item/completed",
-          params: {
-            threadId: "thr_1",
-            item: {
-              id: "sa_1",
-              type: "subAgentActivity",
-              kind: "started",
-              agentPath: "/root/explore-auth",
-              agentThreadId: "thr_child",
-            },
-          },
-        },
-      ]),
-      "sa_1",
-    );
-    expect(row.name).toBe("Explore Auth subagent");
-    expect(row.sessionPort).toBe("thr_child");
-  });
-
-  it("reports an empty Codex transcript as no children", () => {
-    expect(foldLineage("codex", [])).toEqual({ reported: true, children: [] });
-  });
-});
-
-describe("a CLI that does not report children", () => {
-  it("labels the provider and does not invent children from lookalike frames", () => {
-    for (const provider of ["hermes", "cursor", "pi", "devin", "opencode", ""]) {
-      expect(foldLineage(provider, claudeExplore)).toEqual({
-        reported: false,
-        label: NOT_REPORTED_BY_CLI,
-        children: [],
-      });
-    }
-  });
-});
-
-describe("two windows folding the same child", () => {
-  it("keeps the finished copy when the other window is still running", () => {
-    const running = foldLineage("claude", claudeExplore.slice(0, 2));
-    const done = foldLineage("claude", claudeExplore);
-    const merged = mergeLineage(done, running);
-    expect(child(merged, "toolu_agent")).toMatchObject({
       status: "done",
       result: "Auth lives in src/auth.",
       name: "Explore the auth module",
@@ -354,90 +200,35 @@ describe("two windows folding the same child", () => {
   });
 
   it("takes a newer failure without wiping the name", () => {
-    const named = foldLineage("claude", claudeExplore.slice(0, 2));
-    const failed = foldLineage("claude", [
-      {
-        type: "system",
-        subtype: "task_notification",
-        task_id: "t1",
-        tool_use_id: "toolu_agent",
-        status: "failed",
-        summary: "Timed out.",
-      },
-    ]);
-    expect(child(mergeLineage(named, failed), "toolu_agent")).toMatchObject({
-      name: "Explore the auth module",
-      status: "failed",
-      error: "Timed out.",
-    });
+    const row = only(
+      lineageForThread("claude", [
+        agentBlock({
+          tool: { callId: "toolu_agent", kind: "agent", title: "Explore the auth module", status: "in_progress" },
+        }),
+        agentBlock({
+          id: "b2",
+          agentRun: undefined,
+          tool: { callId: "toolu_agent", kind: "agent", title: "Subagent", status: "failed", detail: "Timed out." },
+        }),
+      ]),
+    );
+    expect(row).toMatchObject({ name: "Explore the auth module", status: "failed", error: "Timed out." });
   });
 });
 
-describe("children already stored on the session", () => {
-  const storedChild = {
-    id: "b1",
-    role: "tool",
-    text: "Explore the auth module",
-    tool: { callId: "toolu_agent", kind: "agent", title: "Explore the auth module", status: "completed", detail: "Auth lives in src/auth." },
-    agentRun: {
-      name: "Explore the auth module",
-      agentType: "explore",
-      model: "claude-haiku-5",
-      sessionPort: "sub_1",
-      steps: [],
-    },
-  };
-
-  it("reads name, role, model, and result off the stored block", () => {
-    const row = child(
-      lineageFromBlocks("claude", [storedChild], [{ id: "hivra-9", providerSessionId: "sub_1" }]),
-      "toolu_agent",
-    );
-    expect(row).toMatchObject({
-      name: "Explore the auth module",
-      role: "explore",
-      model: "claude-haiku-5",
-      status: "done",
-      result: "Auth lives in src/auth.",
-      transcriptSessionId: "hivra-9",
-    });
+describe("a CLI that does not report children", () => {
+  it("labels the provider and does not turn a lookalike row into a list", () => {
+    for (const provider of ["hermes", "cursor", "pi", "devin", "opencode", ""]) {
+      expect(lineageForThread(provider, [agentBlock()])).toEqual({
+        reported: false,
+        label: NOT_REPORTED_BY_CLI,
+        children: [],
+      });
+    }
   });
 
-  it("keeps a failure as an error", () => {
-    const row = child(
-      lineageFromBlocks("claude", [
-        {
-          ...storedChild,
-          tool: { ...storedChild.tool, status: "failed", detail: "API error." },
-        },
-      ]),
-      "toolu_agent",
-    );
-    expect(row.status).toBe("failed");
-    expect(row.error).toBe("API error.");
-    expect(row.result).toBeNull();
-  });
-
-  it("does not turn a workflow or a plain tool into a child", () => {
-    const lineage = lineageFromBlocks("claude", [
-      { id: "w", role: "tool", text: "Fan out", tool: { kind: "workflow", title: "Fan out", status: "completed" }, workflowRun: { agents: [] } },
-      { id: "r", role: "tool", text: "Read notes", tool: { kind: "read", title: "Read notes", status: "completed" } },
-      null,
-      { id: "bad", role: "tool" },
-    ]);
-    expect(lineage).toEqual({ reported: true, children: [] });
-  });
-
-  it("labels a provider that does not report children, even if a block looks like one", () => {
-    expect(lineageFromBlocks("hermes", [storedChild])).toEqual({
-      reported: false,
-      label: NOT_REPORTED_BY_CLI,
-      children: [],
-    });
-  });
-
-  it("folds two blocks with the same call onto one child", () => {
-    const lineage = lineageFromBlocks("codex", [storedChild, { ...storedChild, id: "b2" }]);
-    expect(lineage.reported && lineage.children).toHaveLength(1);
+  it("reads the provider name without regard to case or spaces", () => {
+    expect(lineageForThread(" Claude ", [agentBlock()])?.reported).toBe(true);
+    expect(lineageForThread("CODEX", [agentBlock()])?.reported).toBe(true);
   });
 });

@@ -67,6 +67,7 @@ import {
   type TurnIntent,
 } from "../../../../features/sessions/model/session";
 import { applyHarnessEvent } from "../../core/apply";
+import { lineageForThread } from "../../../../features/sessions/model/subagentLineage";
 
 function parse() {
   return sent.map((line) => JSON.parse(line) as Record<string, unknown>);
@@ -2837,6 +2838,76 @@ describe("codex subagent approvals on the parent thread", () => {
     expect(answerTo("req_b")[0]!.result).toEqual({ decision: "decline" });
     notify("turn/completed", { turn: { id: "turn_1", status: "completed" } });
     await turn;
+  });
+
+  it("lists a spawned agent on the parent thread, working and then done with what it reported", async () => {
+    const { events, turn } = await startTurn("s1");
+    spawnReviewer();
+    const thread = () =>
+      lineageForThread("codex", events.reduce(applyHarnessEvent, newSession("codex", "/repo")).blocks);
+    expect(thread()).toEqual({
+      reported: true,
+      children: [
+        expect.objectContaining({ id: "collab_1", name: "Correctness review", status: "running", result: null }),
+      ],
+    });
+    notify("item/completed", {
+      threadId: "thr_1",
+      item: {
+        id: "collab_1",
+        type: "collabAgentToolCall",
+        tool: "spawnAgent",
+        status: "completed",
+        model: "gpt-5.4-mini",
+        prompt: "Correctness review\n\nLook for regressions in the diff.",
+        agentsStates: { thr_child: { status: "completed", message: "No regressions found." } },
+      },
+    });
+    notify("turn/completed", { turn: { id: "turn_1", status: "completed" } });
+    await turn;
+    expect(thread()).toEqual({
+      reported: true,
+      children: [
+        expect.objectContaining({
+          id: "collab_1",
+          name: "Correctness review",
+          model: "gpt-5.4-mini",
+          status: "done",
+          result: "No regressions found.",
+          error: null,
+        }),
+      ],
+    });
+  });
+
+  it("lists a spawned agent that failed with its reason", async () => {
+    const { events, turn } = await startTurn("s1");
+    spawnReviewer();
+    notify("item/completed", {
+      threadId: "thr_1",
+      item: {
+        id: "collab_1",
+        type: "collabAgentToolCall",
+        tool: "spawnAgent",
+        status: "completed",
+        prompt: "Correctness review\n\nLook for regressions in the diff.",
+        agentsStates: { thr_child: { status: "errored", message: "The model name was unknown." } },
+      },
+    });
+    notify("turn/completed", { turn: { id: "turn_1", status: "completed" } });
+    await turn;
+    const lineage = lineageForThread("codex", events.reduce(applyHarnessEvent, newSession("codex", "/repo")).blocks);
+    expect(lineage).toEqual({
+      reported: true,
+      children: [
+        expect.objectContaining({
+          name: "Correctness review",
+          status: "failed",
+          error: "The model name was unknown.",
+          result: null,
+        }),
+      ],
+    });
   });
 
   it("leaves the parent thread's own asks, and an unspawned thread's, without a child", async () => {

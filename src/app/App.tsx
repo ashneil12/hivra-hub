@@ -16479,14 +16479,6 @@ function Workspace({
     onArchiveSession: onArchiveHistorySession,
     onDeleteSession: onDeleteHistorySession,
     onApproval,
-    // WP-122: open a child's stored transcript from the parent thread.
-    childTranscripts: sessions.map((entry) => ({
-      id: entry.id,
-      providerSessionId: entry.providerSessionId ?? null,
-    })),
-    onOpenChildTranscript: (sessionId: string) => {
-      if (!focusOpenSession(sessionId)) void onSelectHistorySession(sessionId);
-    },
     onQuestionReply,
     onQuestionInteraction,
     onOpenFile,

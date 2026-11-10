@@ -14,15 +14,9 @@ function sentence(label: string): string {
 
 /**
  * Native CLI children on the parent thread. This is not the first-mate crew.
- * A child opens only when Hivra already stored its transcript.
+ * Each child's own steps are already in its row in the transcript, so the list does not link anywhere.
  */
-export function LineageList({
-  lineage,
-  onOpenTranscript,
-}: {
-  lineage: Lineage;
-  onOpenTranscript?: (sessionId: string) => void;
-}) {
+export function LineageList({ lineage }: { lineage: Lineage }) {
   if (lineage.reported && lineage.children.length === 0) return null;
   if (!lineage.reported) {
     return (
@@ -37,21 +31,14 @@ export function LineageList({
       <h2 className="text-[12px] text-content/40">Subagents</h2>
       <ul className="flex min-w-0 flex-col">
         {lineage.children.map((child) => (
-          <LineageRow key={child.id} child={child} onOpenTranscript={onOpenTranscript} />
+          <LineageRow key={child.id} child={child} />
         ))}
       </ul>
     </section>
   );
 }
 
-function LineageRow({
-  child,
-  onOpenTranscript,
-}: {
-  child: LineageChild;
-  onOpenTranscript?: (sessionId: string) => void;
-}) {
-  const transcript = child.transcriptSessionId;
+function LineageRow({ child }: { child: LineageChild }) {
   const outcome = child.error ?? child.result;
   return (
     <li data-lineage-child={child.id} className="flex min-w-0 flex-col gap-1 py-1.5">
@@ -72,15 +59,6 @@ function LineageRow({
         >
           {outcome}
         </p>
-      ) : null}
-      {transcript && onOpenTranscript ? (
-        <button
-          type="button"
-          className="self-start text-[12px] text-content/70 underline-offset-2 hover:underline"
-          onClick={() => onOpenTranscript(transcript)}
-        >
-          Open the transcript
-        </button>
       ) : null}
     </li>
   );
