@@ -73,29 +73,47 @@ The archive is the same tree under one top folder. Nothing in it is a secret:
      Mac". The import preview compares chats without paths, so a chat that came in from a file still reads as "already
      here". The report says how many paths were left out.
    - **Folders.** An export is a file anyone can write, and a chat's folder is where its agent, git, checkpoints and
-     terminals run, so none is taken on trust (`src-tauri/src/portable/folders.rs`). A chat's folder (and worktree)
-     stays only when it is a real folder on this Mac, written as a full path, that sits inside a project this copy
-     already has, both sides resolved first with links followed (a link in a project that points out is refused, and a
-     folder that only shares a project's prefix is not inside it). The projects are the ones in the app's own record
-     (`hub_local_docs`, key `projects`), the folders the project rail lists (the window passes them in
-     `workspace.knownFolders`; the rail lives in the webview's storage, the record in the database Rust holds), and the
-     Monos' own folders (inside `<monos home>` or `<app data>/mono-teams`). The home folder and `/` never count as a
-     project, whatever a record says. A worktree also stays when `git worktree list` names it for one of those
-     projects. Otherwise the folder is cleared and so is the chat's worktree: the chat opens with no folder, shows
-     "Choose a project folder for this chat first." with a folder picker, and starts nothing until one is chosen. The
-     report counts those chats (`foldersCleared`) and the automations that lost a folder the same way
-     (`automationFoldersCleared`, they also come back paused). A chat with no folder is listed in the sidebar's
-     "Needs a folder" group (`session_list_folderless`) until it gets one.
+     terminals run, so none is taken on trust (`src-tauri/src/portable/folders.rs`). It is an allow-list:
+     a chat's (or automation's) folder and worktree stay only when the folder is a real folder on this Mac, written as
+     a full path, **strictly inside the home folder** (both sides resolved, links followed, so `/System/Volumes/Data`,
+     `/private`, `/Users/Shared`, another user's home and every other alias fail), with **no hidden part** (`.ssh`,
+     `.claude`, `.git`), not in `~/Library`, not the memory root or the app's data folder or a folder holding either,
+     and inside a project this copy has: the app's own record (`hub_local_docs`, key `projects`), the folders the
+     project rail lists (the window passes them in `workspace.knownFolders`), each passing the same test, or the
+     folder of a Mono that was already here before the import wrote anything (`<monos home>/<id>`,
+     `<app data>/mono-teams/<id>`; a file's `…/mono-teams/<id>` or `…/monos/<id>` from another Mac is mapped to this
+     Mac's folder for that id when it was here). The rules are loaded before the memory is written, so a memory folder
+     named `monos` can't make `monos/evil` a Mono's folder, and a chat can't keep a folder this import wrote into.
+     The folder is stored as this Mac resolves it. A worktree stays only when it is inside the chat's own project, or is
+     a linked working copy `git worktree list` names for that project (never the main entry, and only when git says the
+     project is the top of its own repository, so a parent repository can't vouch for a plain project inside it).
+     Otherwise the folder is cleared and so is the chat's worktree: the chat opens with no folder, shows "Choose a
+     project folder for this chat first." with a folder picker, and starts nothing until one is chosen. What the file
+     named is kept as an inert note (`imported_chat_folders`, nothing runs from it); the banner offers it back
+     (`portable_relink_candidate`) once it exists here and passes the same checks. The report counts those chats
+     (`foldersCleared`) and the automations that lost a folder the same way (`automationFoldersCleared`, they also come
+     back paused). A chat with no folder is listed in the sidebar's "Needs a folder" group
+     (`session_list_folderless`, with or without a message) until it gets one.
    - **Project folders.** The preview lists every project folder the file wants to register, each unticked (the file
-     names them, so only a tick adopts one). Whatever is ticked, Rust refuses a folder that is `/`, `/Volumes`, the
-     home folder or any folder holding it, the app's own data folder, a folder holding it or one inside it, a relative
-     path, or one that isn't a folder here (`refused_project_folder`, asked through `portable_project_folder_checks`
-     in the preview and again as the import registers; if it can't be asked, nothing is adopted). The same list keeps
-     such a folder from vouching for chats even if a project record has it. Because the ticked projects are
-     registered first, a restore on a fresh Mac keeps its chats' folders; an unticked project's chats come in with none.
-   - **Paths in tool rows.** A tool row's `paths` and `preview.path`, and an approval's `call.paths`, feed the checkpoint
-     calls, so only paths inside the chat's kept folder (or worktree) stay, `..` and links resolved; the rest are
-     dropped (`toolPathsDropped`). A chat with no kept folder keeps none.
+     names them, so only a tick adopts one). Whatever is ticked, Rust refuses a folder that fails the allow-list above,
+     a relative path, one that isn't a folder here, or one that isn't a git repository (the top of a repository is what
+     says where a project begins; it is refused rather than warned about)
+     (`refused_project_folder`, asked through `portable_project_folder_checks` in the preview and again as the import
+     registers; with no checker, or if it can't be asked, nothing is adopted). The same allow-list keeps a refused
+     folder from vouching for chats even if a project record has it, so a project outside the home folder shows as
+     refused with the reason. Because the ticked projects are registered first, a restore on a fresh Mac keeps its
+     chats' folders; an unticked project's chats come in with none.
+   - **Monos' folders.** A Mono's project folders are this Mac's own project folders only (matched by project id), never
+     a folder the file merely names. A Mono already seated here keeps its own project list unless its tick in the
+     preview ("Add the projects the file lists") is set, and then it gains only those local folders. A Mono's team
+     folder is made before the chats come in.
+   - **How it runs.** An imported chat or automation comes in at `supervised` whatever its file says (`full-access`
+     maps to a provider's bypass-permissions mode). A delegation row stays only when both its chats came in with this
+     import, and it is always history.
+   - **Paths in tool rows.** Every `paths` list and `preview.path` in a chat's blocks (tool rows, approvals, side
+     threads, agent steps, at any depth) feeds the checkpoint calls, so only paths inside the chat's kept folder (or
+     worktree) stay, `..` and links resolved; the rest are dropped (`toolPathsDropped`), and a `paths` that isn't a list
+     is dropped. A chat with no kept folder keeps none.
    - **Older imports.** A chat imported before 0.16.13 keeps its old attachment paths, and its old folder: Copy and Edit
      or resend still read the attachment paths, and nothing here rewrites a chat already in the database.
 

@@ -172,13 +172,14 @@ export function engineLabel(engine: PortableMono["engine"]): string {
 
 /**
  * A Mono's project folders on this Mac: this Mac's folder for each of its projects (matched by project id, so a
- * different home folder is fine), else its own folder when that exists here. The rest are reported as missing.
+ * different home folder is fine). Never a folder the file merely names: a Mono with a project folder can start sessions,
+ * worktrees and actions there, so only a folder that is already a project's here counts. The rest are reported as
+ * missing.
  */
 export function foldersHere(
   mono: PortableMono,
   exported: PortableProject[],
   here: Pick<Here, "projects">,
-  exists: Record<string, boolean>,
 ): { folders: string[]; missing: string[] } {
   const folders: string[] = [];
   const add = (folder: string) => {
@@ -193,7 +194,6 @@ export function foldersHere(
     const source = exported.find((p) => p.folder && projectKey(p.folder) === projectKey(folder));
     const local = source ? here.projects.find((p) => p.id === source.id && p.folder) : undefined;
     if (local?.folder) add(local.folder);
-    else if (exists[folder]) add(folder);
     else missing.push(folder);
   }
   return { folders, missing };
@@ -217,9 +217,7 @@ export function planImport(p: PendingImport, here: Here = hereNow()): Plan {
     const seated = here.monos.some((m) => m.id === mono.id);
     const waiting = here.waiting.some((s) => s.monoId === mono.id);
     const clash = here.monos.find((m) => m.id !== mono.id && lower(m.name ?? "") === lower(mono.name));
-    // A folder Rust refuses (the home folder, `/` ...) is not "here" for a Mono either.
-    const usable = Object.fromEntries(Object.entries(p.folders).map(([folder, there]) => [folder, there && !p.folderChecks?.[folder]]));
-    const { folders, missing } = foldersHere(mono, doc.projects, here, usable);
+    const { folders, missing } = foldersHere(mono, doc.projects, here);
     return {
       mono,
       state: seated ? "here" : waiting ? "waiting" : "new",
@@ -276,6 +274,8 @@ export type Choices = {
    * file names the folder, so only a tick adopts it, and Rust refuses the broad ones whatever is ticked.
    */
   projectFolders: Set<string>;
+  /** Monos already seated here that also gain the projects the file lists for them (this Mac's own project folders). Never by default. */
+  monoProjects: Set<string>;
   monos: Set<string>;
   /** Seated Monos whose soul and habits should be the file's (ticked on purpose); otherwise only missing files come in. */
   replaceSouls: Set<string>;
@@ -315,6 +315,7 @@ export function defaultChoices(plan: Plan): Choices {
   return {
     projects: ids(plan.projects, (x) => x.state === "new", (x) => x.project.id),
     projectFolders: new Set(),
+    monoProjects: new Set(),
     // A Mono Ash deleted here isn't ticked when an older export still has it (A10: deleted Monos stay deleted).
     monos: ids(plan.monos, (x) => x.state !== "waiting" && !(x.state === "new" && monoDeletedByUser(x.mono)), (x) => x.mono.id),
     replaceSouls: new Set(),
@@ -588,7 +589,9 @@ export async function applyImport(p: PendingImport, plan: Plan, choices: Choices
   let refusedNow: Record<string, string> = {};
   if (wanted.length) {
     try {
-      refusedNow = (await deps.checkFolders?.(wanted.map((x) => x.project.folder as string))) ?? {};
+      // Without Rust's check nothing is adopted: a missing checker refuses everything, it never allows it.
+      if (!deps.checkFolders) throw new Error("no checker");
+      refusedNow = await deps.checkFolders(wanted.map((x) => x.project.folder as string));
     } catch {
       // Rust couldn't be asked: nothing is adopted.
       refusedNow = Object.fromEntries(wanted.map((x) => [x.project.folder as string, "it couldn't be checked"]));
@@ -629,6 +632,17 @@ export async function applyImport(p: PendingImport, plan: Plan, choices: Choices
   const withoutFolder = newProjects.filter((x) => x.project.folder && !adopted.includes(x.project.folder)).length;
   if (withoutFolder) lines.push(`${plural(withoutFolder, "project")} came in without a code folder, so ${withoutFolder === 1 ? "its" : "their"} chats ask you to choose one.`);
 
+  // A Mono's own team folder is made before Rust, so the team's chats find it by its id (the file's path is another Mac's).
+  const knownMonos = new Set([...here.monos.map((m) => m.id), ...choices.monos, ...here.waiting.map((s) => s.monoId)]);
+  let teamsSet = 0;
+  if (choices.settings !== "none") {
+    const keys = choices.settings === "all" ? [...plan.settings.add, ...plan.settings.differ] : plan.settings.add;
+    const value = doc.settings[MONO_TEAMS_KEY];
+    if (typeof value === "string" && isPortableSetting(MONO_TEAMS_KEY) && !settingLooksSecret(MONO_TEAMS_KEY, value)) {
+      teamsSet = await applyOwnedSetting(MONO_TEAMS_KEY, value, choices.settings === "all" && keys.includes(MONO_TEAMS_KEY), knownMonos, deps);
+    }
+  }
+
   // Then Rust: chats, notes, automations and memory files. Nothing below depends on it, but a failure stops here.
   let rust: RustImportReport | null = null;
   const wantMemory = choices.memory.on && choices.memory.projects.size > 0;
@@ -665,10 +679,12 @@ export async function applyImport(p: PendingImport, plan: Plan, choices: Choices
       if (!inFile.has(m.id) && !m.sessionId && deleted.has(teamIdOf(m) ?? m.id.toLowerCase())) removeMono(m.id);
   }
 
-  // Monos: never seated by a file. New ones wait for Ash's OK; ones already here gain only what they lack.
+  // Monos: never seated by a file. New ones wait for Ash's OK; ones already here gain only what they lack. A Mono's
+  // folders are this Mac's own project folders, read now that the ticked projects are registered.
+  const monoFoldersNow = (mono: PortableMono) => foldersHere(mono, doc.projects, hereNow()).folders;
   const withMemory = choices.memory.on && choices.memory.monoMemory;
   const waitingNow = importSouls(
-    plan.monos.filter((m) => m.state === "new" && choices.monos.has(m.mono.id)).map((m) => soulFor(m.mono, m.folders, withMemory)),
+    plan.monos.filter((m) => m.state === "new" && choices.monos.has(m.mono.id)).map((m) => soulFor(m.mono, monoFoldersNow(m.mono), withMemory)),
   );
   if (waitingNow) lines.push(`${plural(waitingNow, "Mono")} waiting for your OK in the Monos list.`);
   let merged = 0;
@@ -677,8 +693,10 @@ export async function applyImport(p: PendingImport, plan: Plan, choices: Choices
     try {
       // A soul that is still only the one the app seeded here is no one's edit: the file's own soul takes its place
       // (a fresh install taking its team in from an export). Anything edited here stays unless ticked to replace.
-      const r = await mergeIntoSeated(soulFor(m.mono, m.folders, withMemory), {
+      const r = await mergeIntoSeated(soulFor(m.mono, monoFoldersNow(m.mono), withMemory), {
         replace: choices.replaceSouls.has(m.mono.id),
+        // Its own project list never grows from a file unless that was ticked.
+        projects: choices.monoProjects.has(m.mono.id),
         stale: async (path, current) => path === "SOUL.md" && (await isKnownSeededSoul(current)),
         ...deps.agentFiles,
       });
@@ -703,7 +721,6 @@ export async function applyImport(p: PendingImport, plan: Plan, choices: Choices
   }
 
   // Teams, and with the workspace their conversations.
-  const knownMonos = new Set([...here.monos.map((m) => m.id), ...choices.monos, ...here.waiting.map((s) => s.monoId)]);
   const teams = plan.teams.filter((t) => choices.teams.has(t.team.id));
   const groupChats = ws.on && ws.groupChats;
   const result = importChats(
@@ -736,9 +753,11 @@ export async function applyImport(p: PendingImport, plan: Plan, choices: Choices
 
   if (choices.settings !== "none") {
     const keys = choices.settings === "all" ? [...plan.settings.add, ...plan.settings.differ] : plan.settings.add;
-    const owned = [WORKER_LIMITS_KEY, MONO_TEAMS_KEY, WORKER_DEFAULT_KEY];
-    let set = 0;
+    // The Monos' teams were set before Rust (above).
+    const owned = [WORKER_LIMITS_KEY, WORKER_DEFAULT_KEY];
+    let set = teamsSet;
     for (const key of keys) {
+      if (key === MONO_TEAMS_KEY) continue;
       // Checked again where it is written: only a real preference, and never one that looks like a secret.
       const value = doc.settings[key];
       if (typeof value !== "string" || !isPortableSetting(key) || settingLooksSecret(key, value)) continue;

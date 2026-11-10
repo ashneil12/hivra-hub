@@ -1972,14 +1972,98 @@ pub fn import<G: std::ops::Deref<Target = Connection>>(
     if opened.root().is_none() {
         return Ok(report);
     }
+    // The folder rules are loaded before anything is written: the Monos' folders are a snapshot of what was here, so a
+    // memory folder in the file (`monos/evil`) can't make itself a Mono's folder, and the project record is read without
+    // holding the chat store's lock.
+    let mut rules = FolderRules::load(
+        env,
+        &project_record_folders(env),
+        request
+            .workspace
+            .as_ref()
+            .map_or(&[][..], |ws| ws.known_folders.as_slice()),
+    );
     if let Some(memory) = &request.memory {
-        import_memory(env, &opened, memory, &mut report)?;
+        let mut written = Vec::new();
+        import_memory(env, &opened, memory, &mut report, &mut written)?;
+        // A chat can't keep a folder this import wrote into.
+        rules.note_written(&written);
     }
     if let Some(workspace) = &request.workspace {
         let conn = lock()?;
-        import_workspace(env, &conn, &opened, workspace, &mut report).map_err(|e| e.to_string())?;
+        import_workspace(env, &conn, &opened, workspace, &mut report, &rules)
+            .map_err(|e| e.to_string())?;
     }
     Ok(report)
+}
+
+/// The folder the file named for a chat that came in without one, when it can be offered back now: it exists here,
+/// passes the same allow-list and sits inside a project this copy has (`folders.rs`). None for a chat that has a
+/// folder, one with no note, or one whose folder still doesn't qualify. Nothing runs from the note itself.
+pub(crate) fn relink_candidate(env: &Env, session_id: &str, known: &[String]) -> Option<String> {
+    let conn = env.read_db().ok()??;
+    let blank: bool = conn
+        .query_row(
+            "SELECT cwd = '' FROM sessions WHERE id = ?1",
+            [session_id],
+            |row| row.get(0),
+        )
+        .ok()?;
+    if !blank {
+        return None;
+    }
+    let named: String = conn
+        .query_row(
+            "SELECT cwd FROM imported_chat_folders WHERE session_id = ?1",
+            [session_id],
+            |row| row.get(0),
+        )
+        .ok()?;
+    drop(conn);
+    let rules = FolderRules::load(env, &project_record_folders(env), known);
+    let kept = rules.vet(Some(&named), None);
+    (!kept.cwd.is_empty()).then_some(kept.cwd)
+}
+
+#[tauri::command]
+pub async fn portable_relink_candidate(
+    app: AppHandle,
+    session_id: String,
+    known_folders: Vec<String>,
+) -> Result<Option<String>, String> {
+    let env = Env::for_app(&app)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        relink_candidate(&env, &session_id, &known_folders)
+    })
+    .await
+    .map_err(|e| e.to_string())
+}
+
+/// The folders of the projects in the app's own record (`hub_local_docs`, key `projects`), read through a read-only
+/// connection so the chat store's lock isn't taken before the chats go in. Nothing found reads as no projects.
+fn project_record_folders(env: &Env) -> Vec<String> {
+    let Ok(Some(conn)) = env.read_db() else {
+        return Vec::new();
+    };
+    let raw: Option<String> = conn
+        .query_row(
+            "SELECT json FROM hub_local_docs WHERE key = 'projects'",
+            [],
+            |row| row.get(0),
+        )
+        .ok();
+    let Some(doc) = raw.and_then(|raw| serde_json::from_str::<Value>(&raw).ok()) else {
+        return Vec::new();
+    };
+    doc.get("projects")
+        .and_then(Value::as_array)
+        .map(|list| {
+            list.iter()
+                .filter_map(|project| project.get("folder").and_then(Value::as_str))
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 fn new_id() -> String {
@@ -2001,10 +2085,11 @@ fn import_workspace(
     opened: &Opened,
     wanted: &WorkspaceImport,
     report: &mut ImportReport,
+    rules: &FolderRules,
 ) -> rusqlite::Result<()> {
     let tx = conn.unchecked_transaction()?;
     let mut after = AfterRows::default();
-    workspace_rows(env, &tx, opened, wanted, report, &mut after)?;
+    workspace_rows(env, &tx, opened, wanted, report, &mut after, rules)?;
     tx.commit()?;
     for (from, to) in &after.note_assets {
         let left_out = copy_note_assets(env, opened, from, to);
@@ -2116,9 +2201,8 @@ fn workspace_rows(
     wanted: &WorkspaceImport,
     report: &mut ImportReport,
     after: &mut AfterRows,
+    rules: &FolderRules,
 ) -> rusqlite::Result<()> {
-    // The projects this copy has before the import adds any: what a chat's or automation's folder is checked against.
-    let rules = FolderRules::load(env, conn, &wanted.known_folders);
     // Notes first: chats' artifact cards point at them.
     let note_ids: BTreeSet<&String> = wanted.notes.iter().collect();
     let copies: BTreeSet<&String> = wanted.note_copies.iter().collect();
@@ -2211,6 +2295,8 @@ fn workspace_rows(
     let mut paths_left_out = 0;
     let session_ids: BTreeSet<&String> = wanted.sessions.iter().collect();
     let session_copies: BTreeSet<&String> = wanted.session_copies.iter().collect();
+    // Chats that came in with this import under their own id: the only ones a delegation row may name.
+    let mut came_in: BTreeSet<String> = BTreeSet::new();
     for id in session_ids {
         if !session_file_id(id) {
             continue;
@@ -2240,7 +2326,7 @@ fn workspace_rows(
                 file["title"].as_str().unwrap_or("Chat").to_string(),
             )
         };
-        let kept = insert_session(env, conn, &target, &title, &file, &rules)?;
+        let kept = insert_session(env, conn, &target, &title, &file, rules)?;
         report.folders_cleared += usize::from(kept.cleared);
         report.tool_paths_dropped += kept.paths_dropped;
         paths_left_out += kept.files_left_out;
@@ -2251,6 +2337,7 @@ fn workspace_rows(
             report.sessions_copied += 1;
         } else {
             report.sessions_added += 1;
+            came_in.insert(id.clone());
         }
     }
 
@@ -2276,6 +2363,8 @@ fn workspace_rows(
             // Comes back paused: nothing starts running on this Mac until Ash turns it on. A folder that isn't a
             // project here is cleared, so turning it on asks for one.
             automation["enabled"] = json!(false);
+            // A file doesn't choose how freely it runs: supervised, as imported chats are.
+            automation["runtimeMode"] = json!(IMPORTED_RUNTIME_MODE);
             let cleared = rules.vet_automation(&mut automation);
             let next = automation["nextRunAt"].as_i64().unwrap_or(0);
             let updated = automation["updatedAt"].as_i64().unwrap_or_else(now_millis);
@@ -2331,10 +2420,25 @@ fn workspace_rows(
             let Some(mut row) = delegation.as_object().cloned() else {
                 continue;
             };
-            // History only: nothing here runs it, reports it or copies it to Ash OS again.
-            let open = matches!(
+            // Only a row whose chats both came in with this import: one naming a chat that was here already would
+            // attach history (and a report to deliver) to something the file doesn't own.
+            let both_came_in = ["owner_session", "child_session"].iter().all(|key| {
+                row.get(*key)
+                    .and_then(Value::as_str)
+                    .is_some_and(|id| came_in.contains(id))
+            });
+            if !both_came_in {
+                continue;
+            }
+            // History only: nothing here runs it, reports it or copies it to Ash OS again. Any state that isn't a
+            // finished one settles as cancelled.
+            let open = !matches!(
                 row.get("state").and_then(Value::as_str),
-                Some(crate::delegations::RUNNING | crate::delegations::QUESTION)
+                Some(
+                    crate::delegations::COMPLETED
+                        | crate::delegations::FAILED
+                        | crate::delegations::CANCELLED
+                )
             );
             if open {
                 row.insert("state".into(), json!(crate::delegations::CANCELLED));
@@ -2586,6 +2690,10 @@ fn left_out_note(from: &str, reasons: &[&str]) -> String {
     format!("{count} of {note} {verb} not copied ({}).", why.join("; "))
 }
 
+/// How an imported chat or automation runs: a file never chooses it. `full-access` maps to a provider's bypass-permissions
+/// mode, so every mode a file names comes in as supervised, and the person raises it for that chat.
+const IMPORTED_RUNTIME_MODE: &str = "supervised";
+
 /// What an imported chat lost on the way in.
 struct Kept {
     /// Its file named a folder that isn't inside a project here.
@@ -2661,7 +2769,7 @@ fn insert_session(
         harness,
         model: engine["model"].as_str().unwrap_or("").to_string(),
         model_settings: engine.get("modelSettings").cloned().unwrap_or(json!({})),
-        runtime_mode: engine["runtimeMode"].as_str().unwrap_or("auto").to_string(),
+        runtime_mode: IMPORTED_RUNTIME_MODE.to_string(),
         title: title.to_string(),
         provider_session_id: provider,
         provider_account_id: None,
@@ -2686,6 +2794,7 @@ fn insert_session(
         },
     };
     session_store::upsert_session(conn, &session)?;
+    note_named_folder(conn, id, &folders)?;
     // Keep the chat's own dates, place and flags rather than "made just now".
     conn.execute(
         "UPDATE sessions SET created_at = ?2, updated_at = ?3, archived = ?4, pinned = ?5, branch = ?6 WHERE id = ?1",
@@ -2705,11 +2814,44 @@ fn insert_session(
     })
 }
 
+/// What the file named for a chat whose folder was cleared, kept as an inert note nothing runs from: the window offers
+/// it back (`portable_relink_candidate`) once it exists here and passes the same checks. A chat that kept its folder
+/// has no note.
+fn note_named_folder(
+    conn: &Connection,
+    id: &str,
+    folders: &folders::Folders,
+) -> rusqlite::Result<()> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS imported_chat_folders (
+           session_id TEXT PRIMARY KEY,
+           cwd TEXT NOT NULL,
+           worktree_cwd TEXT
+         );",
+    )?;
+    match (&folders.named_cwd, folders.cwd.is_empty()) {
+        (Some(named), true) => {
+            conn.execute(
+                "INSERT OR REPLACE INTO imported_chat_folders (session_id, cwd, worktree_cwd) VALUES (?1, ?2, ?3)",
+                params![id, named, folders.named_worktree],
+            )?;
+        }
+        _ => {
+            conn.execute(
+                "DELETE FROM imported_chat_folders WHERE session_id = ?1",
+                [id],
+            )?;
+        }
+    }
+    Ok(())
+}
+
 fn import_memory(
     env: &Env,
     opened: &Opened,
     wanted: &MemoryImport,
     report: &mut ImportReport,
+    written: &mut Vec<PathBuf>,
 ) -> Result<(), String> {
     let Some(root) = opened.root() else {
         return Ok(());
@@ -2736,6 +2878,7 @@ fn import_memory(
                 Ok(()) => {
                     report.memory_history.push(name.clone());
                     fresh = true;
+                    written.push(target.clone());
                 }
                 Err(why) => {
                     let _ = fs::remove_dir_all(&target);
@@ -2777,11 +2920,13 @@ fn import_memory(
                 Ok(local) if local == text => fresh,
                 Ok(_) if fresh => {
                     write_within(&inside, &dest, &text)?;
+                    written.extend(dest.parent().map(Path::to_path_buf));
                     true
                 }
                 Ok(_) => {
                     if wanted.keep_both {
                         write_within(&inside, &beside_name(&dest), &text)?;
+                        written.extend(dest.parent().map(Path::to_path_buf));
                         report.memory_files_beside += 1;
                     } else {
                         report.kept += 1;
@@ -2790,6 +2935,7 @@ fn import_memory(
                 }
                 Err(_) => {
                     write_within(&inside, &dest, &text)?;
+                    written.extend(dest.parent().map(Path::to_path_buf));
                     report.memory_files_added += 1;
                     true
                 }

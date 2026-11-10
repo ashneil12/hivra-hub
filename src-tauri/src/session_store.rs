@@ -490,7 +490,7 @@ pub fn session_list_folderless(
     store: State<'_, SessionStore>,
 ) -> Result<Vec<SessionSummary>, String> {
     let conn = store.conn.lock().map_err(|_| "Session store is locked")?;
-    list_by_project(&conn, "").map_err(|e| e.to_string())
+    list_folderless(&conn).map_err(|e| e.to_string())
 }
 
 #[tauri::command(async)]
@@ -2326,8 +2326,22 @@ fn ceil_char_boundary(text: &str, mut index: usize) -> usize {
 }
 
 fn list_by_project(conn: &Connection, cwd: &str) -> rusqlite::Result<Vec<SessionSummary>> {
+    list_chats_in(conn, cwd, "AND has_user_message = 1")
+}
+
+/// Every chat that has no folder, with or without a message of its own: an imported chat that was only a draft or a
+/// brief still has to be findable in "Needs a folder".
+fn list_folderless(conn: &Connection) -> rusqlite::Result<Vec<SessionSummary>> {
+    list_chats_in(conn, "", "")
+}
+
+fn list_chats_in(
+    conn: &Connection,
+    cwd: &str,
+    message_filter: &str,
+) -> rusqlite::Result<Vec<SessionSummary>> {
     let git = crate::fs::git_info_for(&crate::fs::expand_home(cwd));
-    let mut statement = conn.prepare(
+    let mut statement = conn.prepare(&format!(
         "SELECT id, cwd, harness, model, runtime_mode, title, provider_session_id,
                 created_at, updated_at, branch, archived, pinned,
                 linked_work_item_json,
@@ -2335,12 +2349,12 @@ fn list_by_project(conn: &Connection, cwd: &str) -> rusqlite::Result<Vec<Session
                 worktree_removed, is_draft, automation_id, sidebar_hidden, private_chat
          FROM sessions
          WHERE cwd = ?1
-           AND has_user_message = 1
+           {message_filter}
            AND id NOT IN (SELECT id FROM sessions WHERE inbox_ask IS NOT NULL)
            AND id NOT IN (SELECT session_id FROM orchestration_workers)
            AND id NOT IN (SELECT item_id FROM trash_items WHERE kind = 'chat')
-         ORDER BY updated_at DESC, id ASC",
-    )?;
+         ORDER BY updated_at DESC, id ASC"
+    ))?;
     let rows = statement.query_map(params![cwd], |row| {
         let stored_branch: Option<String> = row.get(9)?;
         let archived: i64 = row.get(10)?;
@@ -4177,13 +4191,21 @@ mod tests {
             session.blocks = said.clone();
             upsert_session(&conn, &session).unwrap();
         }
-        let ids: Vec<_> = list_by_project(&conn, "")
+        // An imported chat that never had a message of its own is listed too: it has to be findable.
+        let mut quiet = sample("d", "", "d");
+        quiet.blocks = json!([]);
+        upsert_session(&conn, &quiet).unwrap();
+        let ids: Vec<_> = list_folderless(&conn)
             .unwrap()
             .into_iter()
             .map(|summary| summary.id)
             .collect();
-        assert_eq!(ids.len(), 2);
-        assert!(ids.contains(&"a".to_string()) && ids.contains(&"b".to_string()));
+        assert_eq!(ids.len(), 3, "{ids:?}");
+        for id in ["a", "b", "d"] {
+            assert!(ids.contains(&id.to_string()), "{id}");
+        }
+        // A chat with a folder still lists only by project, and only once it has a message.
+        assert_eq!(list_by_project(&conn, "").unwrap().len(), 2);
     }
 
     #[test]

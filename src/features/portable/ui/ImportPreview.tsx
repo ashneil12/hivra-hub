@@ -194,6 +194,12 @@ export function ImportPreview({ pending, onBack, onRestore, inline }: {
                   Use the file's soul and habits instead of its own (otherwise it only gains what it lacks)
                 </div>
               ) : null}
+              {m.state === "here" && choices.monos.has(m.mono.id) && m.folders.length ? (
+                <div className="flex items-center gap-2 py-0.5 pl-9 text-[12px] text-content/60" data-portable-mono-projects={m.mono.id}>
+                  <Tick on={choices.monoProjects.has(m.mono.id)} onClick={() => set((c) => ({ ...c, monoProjects: toggle(c.monoProjects, m.mono.id) }))} label={`Add the projects the file lists for ${m.mono.name}`} />
+                  Also add its projects ({m.folders.map(folderName).join(", ")}). Unticked, it keeps its own list.
+                </div>
+              ) : null}
             </div>
           ))}
           <p className="px-2 pt-1 text-[12px] text-content/60">No Mono is added from a file. Each new one waits for your OK in the Monos list.</p>

@@ -1114,6 +1114,7 @@ pub fn run() {
             portable::portable_find_skills,
             portable::portable_paths_exist,
             portable::portable_project_folder_checks,
+            portable::portable_relink_candidate,
             portable::portable_session_engines,
             portable::portable_export,
             portable::portable_inspect,
