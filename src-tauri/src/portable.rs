@@ -3750,20 +3750,23 @@ fn import_memory(
         if let (true, Some(history), false) = (wanted.history, history, target.exists()) {
             fs::create_dir_all(&env.memory_root).map_err(|e| e.to_string())?;
             match restore_history(&bundle, history, &target) {
-                Ok(dropped) => {
+                Ok(restored) => {
                     report.memory_history.push(name.clone());
                     fresh = true;
-                    if !dropped.is_empty() {
+                    if !restored.control.is_empty() {
                         report.notes.push(format!(
                             "The history of {name} held {} (files that tell git what to run or fetch); they were not restored.",
-                            dropped.join(", ")
+                            restored.control.join(", ")
                         ));
                     }
-                    // Inside the Monos home, whatever a history's newest tree holds that a CLI would read (instruction and
-                    // settings files, anything hidden) is removed again, as a commit of its own. Elsewhere the folder is
-                    // Ash's own, and it comes back as it was exported.
-                    if inside_monos_home(env, &target).is_some() {
-                        prune_unsafe(&target);
+                    // Whatever the history's newest tree held that a CLI would read as instructions or settings, or that is
+                    // hidden, was removed in a commit of its own, in every folder (`restore_history`). The export's tip stays
+                    // under refs/hivra/imported-tip.
+                    if !restored.pruned.is_empty() {
+                        report.notes.push(format!(
+                            "The history of {name} held {} (instruction, settings or hidden files); they were removed in a commit of its own, and the export's tip is kept as refs/hivra/imported-tip.",
+                            restored.pruned.join(", ")
+                        ));
                     }
                     written.extend(files_under(&target));
                 }
@@ -3801,18 +3804,35 @@ fn import_memory(
                 ));
                 continue;
             }
-            // Outside the Monos home a memory folder is Ash's own: its files come back as they were exported. Inside the
-            // Monos home (however it is spelled or linked to) only the names a Mono's folder uses are written; an
-            // instruction file there is kept beside its original, for Ash to review, and anything else is left out.
+            // A memory import writes notes only, in every folder: `.md` files, nothing hidden (round 6 restored this for
+            // folders outside the Monos home too). An instruction file (CLAUDE.md, AGENTS.md, settings, rules ...) never
+            // comes in under its own name, in any folder: it is held beside its original, for Ash to review. Inside the
+            // Monos home only the names a Mono's folder uses are written, and an instruction file is held for review only
+            // where a Mono keeps one (`folders::instruction_file_for_review`). Trust is never decided by a folder's name.
             let monos_relative = inside_monos_home(env, &dest);
-            if let Some(relative) = &monos_relative {
-                if !folders::mono_folder_file(relative)
-                    && !folders::instruction_file_for_review(relative)
-                {
-                    report.notes.push(format!(
-                        "{path} wasn't written: a Mono's folder only takes SOUL.md, MEMORY.md, soul-template.md and its memory and skills notes."
-                    ));
-                    continue;
+            let instruction = match &monos_relative {
+                Some(relative) => folders::instruction_file_for_review(relative),
+                None => folders::instruction_file_at(&safe),
+            };
+            match &monos_relative {
+                Some(relative) => {
+                    if !folders::mono_folder_file(relative) && !instruction {
+                        report.notes.push(format!(
+                            "{path} wasn't written: a Mono's folder only takes SOUL.md, MEMORY.md, soul-template.md and its memory and skills notes."
+                        ));
+                        continue;
+                    }
+                }
+                None => {
+                    if !folders::memory_note_file(&safe) && !instruction {
+                        // A file a restored history brought in is already here: nothing is reported for it.
+                        if !(fresh && dest.exists()) {
+                            report.notes.push(format!(
+                                "{path} wasn't written: a memory import only writes notes (.md files), never instructions, rules or settings."
+                            ));
+                        }
+                        continue;
+                    }
                 }
             }
             // Memory is text: a file that isn't UTF-8 is skipped, never written as nothing over what is here.
@@ -3832,21 +3852,12 @@ fn import_memory(
                     continue;
                 }
             };
-            if monos_relative
-                .as_ref()
-                .is_some_and(|relative| !folders::mono_folder_file(relative))
-            {
-                // A history restored here took its instruction files out in a commit of its own: they don't come back.
-                if fresh {
-                    report.notes.push(format!(
-                        "{path} wasn't written: the history of {name} takes its instruction files out, in a commit of its own."
-                    ));
-                    continue;
-                }
+            if instruction {
+                // Never under its own name, here or in a restored history: beside its original, for Ash to review.
                 let review = beside_name(&dest);
                 write_within(&inside, &review, &text)?;
                 report.notes.push(format!(
-                    "{path} came in as {} for you to review: a Mono's folder doesn't take an instruction file under its own name, so nothing was written under that name.",
+                    "{path} came in as {} for you to review: an instruction file is never written under its own name here, so nothing was written under that name.",
                     review.file_name().and_then(|n| n.to_str()).unwrap_or_default()
                 ));
                 written.push(review);
@@ -3912,58 +3923,18 @@ fn files_under(dir: &Path) -> Vec<PathBuf> {
     out
 }
 
-/// The message of the commit that takes instruction and hidden files out of a restored Monos home.
+/// The message of the commit that takes instruction and hidden files out of a restored history (in every folder).
 const INSTRUCTIONS_REMOVED: &str = "Removed instruction and hidden files from an imported history";
 
-/// A restored Monos home's newest tree can hold files a CLI reads as instructions or settings, and anything hidden: they
-/// are removed again, and the removal is a commit of its own on top of the history (never an amend of its tip), made
-/// with the same fixed identity and no hooks as the removal of git control files.
-fn prune_unsafe(root: &Path) {
-    let mut removed = false;
-    for file in files_under(root) {
-        let Ok(relative) = file.strip_prefix(root) else {
-            continue;
-        };
-        let hidden = relative.components().any(|part| {
-            matches!(part, Component::Normal(name) if name.to_string_lossy().starts_with('.'))
-        });
-        let instruction = file
-            .file_name()
-            .is_some_and(|name| folders::instruction_file(&name.to_string_lossy()));
-        if (hidden || instruction) && fs::remove_file(&file).is_ok() {
-            removed = true;
-        }
-    }
-    if removed && root.join(".git").exists() {
-        let git = |args: &[&str]| {
-            let mut command = Command::new("git");
-            crate::hide_window_console(&mut command);
-            command
-                .arg("-C")
-                .arg(root)
-                .args([
-                    "-c",
-                    "user.name=Hivra import",
-                    "-c",
-                    "user.email=import@hivra.invalid",
-                    "-c",
-                    "commit.gpgsign=false",
-                    "-c",
-                    "core.hooksPath=/dev/null",
-                ])
-                .args(args)
-                .output()
-        };
-        let _ = git(&["add", "-A"]);
-        let _ = git(&[
-            "commit",
-            "--quiet",
-            "--no-verify",
-            "--no-gpg-sign",
-            "-m",
-            INSTRUCTIONS_REMOVED,
-        ]);
-    }
+/// Whether a file of a restored history is one a CLI reads as instructions or settings, or anything hidden: those are
+/// removed in the restore's own commit, in every folder. `relative` is inside the folder.
+fn prunable_path(relative: &str) -> bool {
+    let parts: Vec<&str> = relative.split('/').collect();
+    let hidden = parts.iter().any(|part| part.starts_with('.'));
+    let instruction = parts
+        .last()
+        .is_some_and(|name| folders::instruction_file(name));
+    hidden || instruction
 }
 
 /// How a path component is compared when two spellings may be one folder: case-folded (a case-insensitive disk), with
@@ -4099,11 +4070,16 @@ fn copy_listed_bundle(source: &Path, listed: &Listed, copy: &Path) -> Result<(),
 /// there clones the repository it names, and `<path>.git` beside it is cloned in its place), so the hash of the file
 /// would limit nothing. The listed bytes are copied, hashed as they go, into a private folder as its only file, and
 /// git clones that; the folder goes when this returns, however it returns.
+///
+/// Whatever the newest tree holds that a CLI would read as instructions or settings, or that is hidden, is removed in a
+/// commit of its own on top of the export's tip, in every folder (`prunable_path`). The tip itself is kept under
+/// `refs/hivra/imported-tip` first, so nothing of the export is lost. Every commit here runs under the isolated git of
+/// this function, so a failed commit refuses the restore (the caller removes the folder).
 fn restore_history(
     bundle: &Path,
     listed: &Listed,
     target: &Path,
-) -> Result<Vec<String>, HistoryRefusal> {
+) -> Result<Restored, HistoryRefusal> {
     let scratch = Scratch::private("history").map_err(|_| HistoryRefusal::Failed)?;
     let copy = scratch.0.join("history.bundle");
     copy_listed_bundle(bundle, listed, &copy)?;
@@ -4154,6 +4130,14 @@ fn restore_history(
     {
         return Err(HistoryRefusal::Failed);
     }
+    // The export's tip, as it came, under a ref of its own: the removal below is a commit on top of it, never an amend.
+    if !ok(git()
+        .arg("-C")
+        .arg(target)
+        .args(["update-ref", IMPORTED_TIP, "HEAD"]))
+    {
+        return Err(HistoryRefusal::Failed);
+    }
     let listing = git()
         .arg("-C")
         .arg(target)
@@ -4164,9 +4148,11 @@ fn restore_history(
         return Err(HistoryRefusal::Failed);
     }
     // Plain files only (a hidden one like .gitignore is still a plain file; git itself refuses `..` and `.git`), and
-    // not the files that tell git what to run or fetch: a bundle doesn't get to bring those in.
+    // not the files that tell git what to run or fetch, nor the instruction and hidden files a CLI would read: a bundle
+    // doesn't get to bring those in, in any folder.
     let mut dropped: Vec<String> = Vec::new();
     let mut dropped_paths: Vec<String> = Vec::new();
+    let mut pruned_paths: Vec<String> = Vec::new();
     for entry in listing.stdout.split(|b| *b == 0).filter(|e| !e.is_empty()) {
         let entry = String::from_utf8_lossy(entry);
         let (meta, path) = entry.split_once('\t').unwrap_or((&entry, ""));
@@ -4183,6 +4169,8 @@ fn restore_history(
             if !dropped.iter().any(|d| d == known) {
                 dropped.push((*known).to_string());
             }
+        } else if prunable_path(path) {
+            pruned_paths.push(path.to_string());
         }
     }
     // The index without them, then the files out of the index: they are never in the folder when git checks the rest
@@ -4206,18 +4194,33 @@ fn restore_history(
     {
         return Err(HistoryRefusal::Failed);
     }
-    // Left in HEAD, they would be one `git reset --hard` (under the machine's own config, filters and all) from
-    // coming back and acting on the folder. Their removal is a commit of its own, made while nothing is configured.
-    if !dropped_paths.is_empty()
-        && !ok(git()
+    // Their removal is a commit of its own, made while nothing is configured (this same isolated git). A commit that
+    // fails refuses the restore, so no deletion is left uncommitted for a later checkout to undo.
+    let commit = |message: &str| {
+        ok(git()
             .arg("-C")
             .arg(target)
             .args(["-c", "user.name=Hivra import"])
             .args(["-c", "user.email=import@hivra.invalid"])
             .args(["-c", "commit.gpgsign=false"])
             .args(["commit", "--quiet", "--no-verify", "--no-gpg-sign", "-m"])
-            .arg(CONTROL_FILES_REMOVED))
-    {
+            .arg(message))
+    };
+    // Left in HEAD, the control files would be one `git reset --hard` (under the machine's own config, filters and all)
+    // from coming back and acting on the folder.
+    if !dropped_paths.is_empty() && !commit(CONTROL_FILES_REMOVED) {
+        return Err(HistoryRefusal::Failed);
+    }
+    // The instruction and hidden files are taken out of the folder and of HEAD in a commit of their own, in every folder.
+    let pruned_and_committed = || {
+        ok(git()
+            .arg("-C")
+            .arg(target)
+            .args(["rm", "--quiet", "--"])
+            .args(pruned_paths.iter().map(|path| format!(":(literal){path}"))))
+            && commit(INSTRUCTIONS_REMOVED)
+    };
+    if !pruned_paths.is_empty() && !pruned_and_committed() {
         return Err(HistoryRefusal::Failed);
     }
     // And should one come back by another way, git-lfs in this folder fetches nothing and runs no filter.
@@ -4242,8 +4245,23 @@ fn restore_history(
         .arg(target)
         .args(["remote", "remove", "origin"])
         .output();
-    Ok(dropped)
+    Ok(Restored {
+        control: dropped,
+        pruned: pruned_paths,
+    })
 }
+
+/// What a restored history left out: the files that tell git what to run or fetch (`control`), and the instruction,
+/// settings and hidden files a CLI would read (`pruned`), both removed in the restore's own commits.
+#[derive(Debug)]
+struct Restored {
+    control: Vec<String>,
+    pruned: Vec<String>,
+}
+
+/// Where an export's history tip is kept, once restored: a ref of its own, so nothing of the export is lost when the
+/// removal commit goes on top of it.
+const IMPORTED_TIP: &str = "refs/hivra/imported-tip";
 
 #[cfg(test)]
 thread_local! {

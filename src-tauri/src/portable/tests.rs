@@ -598,16 +598,16 @@ fn a_round_trip_into_an_empty_data_folder_brings_everything_back_minus_secrets()
                 .args(["log", "--oneline"])
                 .output()
                 .unwrap();
+            // The export's history, plus the commit that takes instruction and hidden files out (round 6, in every folder).
             assert_eq!(
                 String::from_utf8_lossy(&log.stdout).lines().count(),
-                1,
+                2,
                 "{name}'s history came back"
             );
-            // A restored history keeps its own files, .gitignore included, exactly as the source folder has them.
-            assert_eq!(
-                target.memory_root.join(name).join(".gitignore").exists(),
-                source.memory_root.join(name).join(".gitignore").exists(),
-                "{name}/.gitignore"
+            // Hidden files, .gitignore included, are taken out of a restored history; the export's tip keeps them.
+            assert!(
+                !target.memory_root.join(name).join(".gitignore").exists(),
+                "{name}/.gitignore was restored"
             );
             let status = Command::new("git")
                 .arg("-C")
@@ -3440,7 +3440,14 @@ fn a_bare_repo_beside_the_history_bundle_is_not_what_gets_cloned() {
         "git cloned the bare repository beside the bundle"
     );
     assert_eq!(report.memory_history, vec!["ash".to_string()], "{report:?}");
-    assert_eq!(history_subjects(&target, "ash"), vec!["memory".to_string()]);
+    // Round 6: the seeded memory folder holds an instruction file, so its history gets the removal commit on top.
+    assert_eq!(
+        history_subjects(&target, "ash"),
+        vec![
+            "Removed instruction and hidden files from an imported history".to_string(),
+            "memory".to_string()
+        ]
+    );
 }
 
 /// The normal case: a real bundle restores the folder's history, and it is a plain file in a private folder when
@@ -3458,7 +3465,14 @@ fn a_real_history_bundle_still_restores() {
     let conn = store.lock_conn().unwrap();
     let report = import_held(&target, &conn, &history_import(&dest)).unwrap();
     assert_eq!(report.memory_history, vec!["ash".to_string()], "{report:?}");
-    assert_eq!(history_subjects(&target, "ash"), vec!["memory".to_string()]);
+    // Round 6: the seeded memory folder holds an instruction file, so its history gets the removal commit on top.
+    assert_eq!(
+        history_subjects(&target, "ash"),
+        vec![
+            "Removed instruction and hidden files from an imported history".to_string(),
+            "memory".to_string()
+        ]
+    );
     assert!(target.memory_root.join("ash/MEMORY.md").is_file());
 }
 
@@ -5289,11 +5303,18 @@ fn a_restored_monos_history_keeps_only_its_notes() {
         git_stdout(&root, &["log", "-1", "--format=%an <%ae>|%s"]),
         "Hivra import <import@hivra.invalid>|Removed instruction and hidden files from an imported history"
     );
+    // Round 6: an instruction file that the export brought comes in beside its original as a note, untracked; nothing
+    // else in the folder changed.
+    let status = git_stdout(&root, &["status", "--porcelain"]);
     assert!(
-        git_stdout(&root, &["status", "--porcelain"])
-            .trim()
-            .is_empty(),
-        "the restored Monos home is clean"
+        status
+            .lines()
+            .all(|line| line.starts_with("?? ") && line.contains(".imported")),
+        "the restored Monos home has more than the imported notes: {status}"
+    );
+    assert!(
+        root.join("evil/CLAUDE.imported.md").is_file(),
+        "the instruction file did not come in beside its original: {status}"
     );
 }
 
@@ -5481,7 +5502,10 @@ fn another_spelling_of_the_monos_home_is_refused_by_name() {
 }
 
 #[test]
-fn a_memory_import_outside_the_monos_home_restores_its_files_as_they_are() {
+fn a_memory_import_outside_the_monos_home_never_writes_an_instruction_file_under_its_name() {
+    // Round 6 (HIGH-1): a memory folder outside the Monos home is no safer for an export's instruction files. Each one
+    // comes in beside its original as NAME.imported.md, with a report line; notes come in as before, and anything
+    // else that is not a note is left out with a line saying so.
     let layout = layout();
     let report = import_memory_files(
         &layout,
@@ -5489,36 +5513,117 @@ fn a_memory_import_outside_the_monos_home_restores_its_files_as_they_are() {
         &[
             ("MEMORY.md", "# ash\n"),
             ("topics/deploy.md", "note"),
-            ("CLAUDE.md", "my rules"),
-            ("AGENTS.md", "my agents"),
-            ("AGENTS.override.md", "my override"),
-            ("GEMINI.md", "my gemini"),
-            ("topics/CLAUDE.local.md", "local rules"),
+            ("CLAUDE.md", "planted rules"),
+            ("AGENTS.md", "planted agents"),
+            ("AGENTS.override.md", "planted override"),
+            ("GEMINI.md", "planted gemini"),
+            ("topics/CLAUDE.local.md", "planted local"),
             ("opencode.json", "{}"),
             ("data.txt", "plain text"),
         ],
     );
     let root = layout.target.memory_root.join("ash");
-    for kept in [
-        "MEMORY.md",
-        "topics/deploy.md",
+    for kept in ["MEMORY.md", "topics/deploy.md"] {
+        assert!(
+            root.join(kept).is_file(),
+            "{kept} was not restored: {report:?}"
+        );
+    }
+    for planted in [
         "CLAUDE.md",
         "AGENTS.md",
         "AGENTS.override.md",
         "GEMINI.md",
         "topics/CLAUDE.local.md",
         "opencode.json",
+        ".mcp.json",
         "data.txt",
     ] {
         assert!(
-            root.join(kept).is_file(),
-            "{kept} was not restored: {report:?}"
+            !root.join(planted).exists(),
+            "{planted} was written under its own name: {report:?}"
         );
     }
     assert_eq!(
-        fs::read_to_string(root.join("CLAUDE.md")).unwrap(),
-        "my rules"
+        fs::read_to_string(root.join("CLAUDE.imported.md")).unwrap(),
+        "planted rules"
     );
+    assert_eq!(
+        fs::read_to_string(root.join("AGENTS.override.imported.md")).unwrap(),
+        "planted override"
+    );
+    assert_eq!(
+        fs::read_to_string(root.join("topics/CLAUDE.local.imported.md")).unwrap(),
+        "planted local"
+    );
+    assert!(
+        report
+            .notes
+            .iter()
+            .any(|n| n.contains("CLAUDE.imported.md") && n.contains("review")),
+        "{:?}",
+        report.notes
+    );
+    assert!(
+        report
+            .notes
+            .iter()
+            .any(|n| n.contains("data.txt") && n.contains("only writes notes")),
+        "{:?}",
+        report.notes
+    );
+}
+
+#[test]
+fn an_instruction_file_is_held_for_review_only_in_a_mono_folders_id_folder_or_its_memory_or_skills()
+{
+    // Round 6 (LOW-3): a file at any depth under any id is not a Mono's instruction file for review. Only the id folder,
+    // and the memory and skills notes under it, can hold one beside its original.
+    let layout = layout();
+    let report = import_memory_files(
+        &layout,
+        "monos",
+        &[
+            ("lead/a/b/CLAUDE.md", "planted deep"),
+            ("lead/memory/x/CLAUDE.md", "planted in memory"),
+            ("CLAUDE.md", "planted at the Monos home"),
+        ],
+    );
+    let root = layout.target.monos_root.clone();
+    assert!(
+        !root.join("lead/a/b/CLAUDE.imported.md").exists(),
+        "a deep instruction file was written: {report:?}"
+    );
+    assert!(
+        !root.join("CLAUDE.imported.md").exists(),
+        "a file at the Monos home was written: {report:?}"
+    );
+    assert_eq!(
+        fs::read_to_string(root.join("lead/memory/x/CLAUDE.imported.md")).unwrap(),
+        "planted in memory"
+    );
+    assert!(
+        report
+            .notes
+            .iter()
+            .any(|n| n.contains("lead/a/b/CLAUDE.md")),
+        "{:?}",
+        report.notes
+    );
+    for (path, expected) in [
+        ("lead/CLAUDE.md", true),
+        ("lead/skills/review/AGENTS.md", true),
+        ("lead/memory/CLAUDE.md", true),
+        ("lead/a/b/CLAUDE.md", false),
+        ("CLAUDE.md", false),
+        ("lead/.claude/CLAUDE.md", false),
+    ] {
+        assert_eq!(
+            folders::instruction_file_for_review(Path::new(path)),
+            expected,
+            "{path}"
+        );
+    }
 }
 
 #[test]
@@ -5669,6 +5774,64 @@ fn a_folder_with_env_or_venv_is_still_offered_but_one_with_instructions_is_not()
 }
 
 #[test]
+fn a_folder_with_another_tools_hidden_folder_or_a_link_is_held_back() {
+    // Round 6 (MEDIUM-1): the names a folder may hold are an allow-list, compared lowercased. Any other hidden entry,
+    // whatever tool it belongs to and whatever its case, and any link, holds the folder back.
+    let layout = layout();
+    for (index, held) in [
+        ".agents/",
+        ".grok/",
+        ".pi/",
+        ".omp/",
+        ".hermes/",
+        ".devin/",
+        ".windsurf/",
+        ".kiro/",
+        ".vscode/",
+        ".Claude/",
+        ".CODEX/",
+        ".Mcp.JSON",
+        ".something-new/",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let name = format!("held-{index}");
+        assert!(
+            instructions_seen_in(&layout, &name, &[held]),
+            "{held} was offered"
+        );
+    }
+    for (index, plain) in [
+        ".git/",
+        ".gitignore",
+        ".DS_Store",
+        ".env",
+        ".ENV",
+        ".env.local",
+        ".venv/",
+        "README.md",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let name = format!("plain-{index}");
+        assert!(
+            !instructions_seen_in(&layout, &name, &[plain]),
+            "{plain} was refused"
+        );
+    }
+    #[cfg(unix)]
+    {
+        let dir = layout.root.0.join("linked");
+        fs::create_dir_all(&dir).unwrap();
+        std::os::unix::fs::symlink(&layout.outside, dir.join("notes")).unwrap();
+        let rules = FolderRules::load(&layout.target, &[], &[], &[], &[]);
+        assert!(rules.instructions_on_disk(&dir, &dir), "a link was offered");
+    }
+}
+
+#[test]
 fn an_imported_chats_media_roots_are_only_the_folders_folder_rules_keeps() {
     let layout = layout();
     let env = layout.target.clone();
@@ -5690,6 +5853,7 @@ fn an_imported_chats_media_roots_are_only_the_folders_folder_rules_keeps() {
         ("home", home.clone()),
         ("monos-home", env.monos_root.clone()),
         ("mono", mono_folder.clone()),
+        ("project-top", project.clone()),
     ];
     for (id, cwd) in cases {
         let file = json!({"title": "T", "cwd": cwd.to_string_lossy(), "private": false,
@@ -5709,6 +5873,60 @@ fn an_imported_chats_media_roots_are_only_the_folders_folder_rules_keeps() {
             );
         }
     }
+}
+
+#[test]
+fn an_imported_chats_own_delegation_grants_no_worker_worktree_as_a_media_root() {
+    // Round 6 (LOW-1): a delegation an export wrote names the imported chat as its owner. A worker's worktree that
+    // git records for the project must not become a media root for that chat (chat_media only lets a Mono's own chats
+    // lend their workers' worktrees).
+    let layout = layout();
+    let env = layout.target.clone();
+    let project = layout.project.clone();
+    let home = env.home.clone().unwrap();
+    let admin = project.join(".git/worktrees/app-a");
+    let tree = home.join("Worktrees").join("app-a");
+    fs::create_dir_all(&admin).unwrap();
+    fs::create_dir_all(&tree).unwrap();
+    fs::write(tree.join(".git"), format!("gitdir: {}\n", admin.display())).unwrap();
+    fs::write(
+        admin.join("gitdir"),
+        format!("{}\n", tree.join(".git").display()),
+    )
+    .unwrap();
+    let rules = FolderRules::load(
+        &env,
+        &[project.to_string_lossy().into_owned()],
+        &[],
+        &[],
+        &[],
+    );
+    let store = open_store(&env);
+    let conn = store.lock_conn().unwrap();
+    let cwd = project.join("src/deep");
+    let file = json!({"title": "T", "cwd": cwd.to_string_lossy(), "private": false,
+           "blocks": [block("u", "user", "hi")],
+           "engine": {"harness": "claude", "model": "m", "runtimeMode": "auto"}});
+    insert_session(&env, &conn, "imported", "T", &file, &rules).unwrap();
+    conn.execute(
+        &format!(
+            "INSERT INTO sessions (id, cwd, harness, model, runtime_mode, title, blocks_json, created_at, updated_at, worktree_cwd, worktree_removed) VALUES ('worker', '{}', 'codex', 'test', 'supervised', 'W', '[]', 0, 0, '{}', 0)",
+            project.to_string_lossy(),
+            tree.to_string_lossy()
+        ),
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO delegations (id, owner_session, owner_mono, root_id, child_session, request_id, state, delivery, created_at, updated_at) VALUES ('d1', 'imported', NULL, 'd1', 'worker', 'd1', 'done', 'delivered', 0, 0)",
+        [],
+    )
+    .unwrap();
+    let found = crate::chat_media::folders(&conn, None, "imported").folders;
+    assert!(
+        !found.contains(&tree.to_string_lossy().into_owned()),
+        "the worker's worktree is a media root of an imported chat: {found:?}"
+    );
 }
 
 #[test]
@@ -5745,13 +5963,9 @@ fn a_monos_folder_takes_only_the_names_mono_rs_uses() {
     }
 }
 
-#[test]
-fn a_restored_global_history_keeps_its_instruction_and_hidden_files_and_its_tip_commit() {
-    let source_dir = TestDir::new("source");
-    let target_dir = TestDir::new("target");
-    let out = TestDir::new("out");
-    let source = env_for(&source_dir.0);
-    let target = env_for(&target_dir.0);
+/// A memory folder `docs` with instruction and hidden files, its history exported, and the export's folder. Shared by the
+/// history tests below (round 6: the prune reaches every folder, not only the Monos home).
+fn docs_history_export(out: &TestDir, source: &Env) -> PathBuf {
     let docs = source.memory_root.join("docs");
     fs::create_dir_all(docs.join(".claude")).unwrap();
     fs::create_dir_all(docs.join(".obsidian")).unwrap();
@@ -5767,7 +5981,6 @@ fn a_restored_global_history_keeps_its_instruction_and_hidden_files_and_its_tip_
     git(&docs, &["init", "-q", "-b", "main"]);
     git(&docs, &["add", "-A"]);
     git(&docs, &["commit", "-q", "-m", "docs"]);
-    let source_tip = git_stdout(&docs, &["rev-parse", "HEAD"]);
     let dest = out.0.join("export");
     let mut request = export_request(&dest, Form::Folder);
     request.workspace = false;
@@ -5775,7 +5988,22 @@ fn a_restored_global_history_keeps_its_instruction_and_hidden_files_and_its_tip_
         projects: vec!["docs".into()],
         history: true,
     });
-    export(&source, &request).unwrap();
+    export(source, &request).unwrap();
+    dest
+}
+
+#[test]
+fn a_restored_history_drops_its_instruction_and_hidden_files_in_a_commit_of_its_own_and_keeps_its_tip(
+) {
+    // Round 6 (HIGH-1, LOW-2): the folder is Ash's own kind of folder, not the Monos home, and its history still loses
+    // its instruction and hidden files, as a commit of its own. The export's tip stays under refs/hivra/imported-tip.
+    let source_dir = TestDir::new("source");
+    let target_dir = TestDir::new("target");
+    let out = TestDir::new("out");
+    let source = env_for(&source_dir.0);
+    let target = env_for(&target_dir.0);
+    let dest = docs_history_export(&out, &source);
+    let source_tip = git_stdout(&source.memory_root.join("docs"), &["rev-parse", "HEAD"]);
     let store = open_store(&target);
     let conn = store.lock_conn().unwrap();
     import_held(
@@ -5793,32 +6021,105 @@ fn a_restored_global_history_keeps_its_instruction_and_hidden_files_and_its_tip_
     )
     .unwrap();
     let root = target.memory_root.join("docs");
-    for kept in [
-        "themes.json",
-        "topics/a.md",
+    for kept in ["themes.json", "topics/a.md", "MEMORY.md"] {
+        assert!(root.join(kept).is_file(), "{kept} was dropped");
+    }
+    for planted in [
         "CLAUDE.md",
         "AGENTS.override.md",
         ".gitignore",
         ".obsidian/app.json",
         ".claude/settings.json",
     ] {
-        assert!(root.join(kept).is_file(), "{kept} was dropped");
+        assert!(!root.join(planted).exists(), "{planted} was restored");
+        assert!(
+            git_stdout(&root, &["ls-files", "--", planted])
+                .trim()
+                .is_empty(),
+            "{planted} is still tracked"
+        );
     }
+    // The instruction files come in beside their originals, for Ash to review.
     assert_eq!(
+        fs::read_to_string(root.join("CLAUDE.imported.md")).unwrap(),
+        "my own rules\n"
+    );
+    assert_eq!(
+        fs::read_to_string(root.join("AGENTS.override.imported.md")).unwrap(),
+        "my own override\n"
+    );
+    assert_eq!(
+        git_stdout(&root, &["rev-parse", "refs/hivra/imported-tip"]),
+        source_tip,
+        "the export's tip was not kept"
+    );
+    assert_ne!(
         git_stdout(&root, &["rev-parse", "HEAD"]),
         source_tip,
-        "the tip commit moved"
-    );
-    assert!(
-        git_stdout(&root, &["status", "--porcelain"])
-            .trim()
-            .is_empty(),
-        "the restored folder is clean"
+        "the removal is not a commit of its own"
     );
     assert_eq!(
         git_stdout(&root, &["log", "--oneline"]).lines().count(),
-        1,
-        "the history keeps its length"
+        2,
+        "the history is not the export's plus one removal commit"
+    );
+    let status = git_stdout(&root, &["status", "--porcelain"]);
+    assert!(
+        status
+            .lines()
+            .all(|line| line.starts_with("?? ") && line.contains(".imported.md")),
+        "the restored folder has more than the imported notes: {status}"
+    );
+}
+
+#[test]
+fn a_history_whose_removal_commit_fails_is_refused_and_leaves_no_history_behind() {
+    // Round 6 (LOW-2): a failed commit is a refused restore. The removal runs under the same isolated git as the clone,
+    // so a machine's own git configuration can't be the thing that fails it; here the commit's date is made invalid
+    // for the restore's own commands only (the test's stand-in for an inherited environment), and the history must not
+    // be left in the folder with its instruction files in it.
+    let source_dir = TestDir::new("source");
+    let target_dir = TestDir::new("target");
+    let out = TestDir::new("out");
+    let source = env_for(&source_dir.0);
+    let target = env_for(&target_dir.0);
+    let dest = docs_history_export(&out, &source);
+    let store = open_store(&target);
+    let conn = store.lock_conn().unwrap();
+    super::INHERITED_GIT_ENV.with(|vars| {
+        vars.borrow_mut().push((
+            std::ffi::OsString::from("GIT_COMMITTER_DATE"),
+            std::ffi::OsString::from("not a date"),
+        ))
+    });
+    let report = import_held(
+        &target,
+        &conn,
+        &ImportRequest {
+            path: dest.to_string_lossy().into_owned(),
+            memory: Some(MemoryImport {
+                projects: vec!["docs".into()],
+                keep_both: false,
+                history: true,
+            }),
+            workspace: None,
+        },
+    );
+    super::INHERITED_GIT_ENV.with(|vars| vars.borrow_mut().clear());
+    let report = report.unwrap();
+    let root = target.memory_root.join("docs");
+    assert!(
+        !root.join(".git").exists(),
+        "a folder whose removal commit failed kept its history: {report:?}"
+    );
+    assert!(!root.join("CLAUDE.md").exists(), "{report:?}");
+    assert!(
+        report
+            .notes
+            .iter()
+            .any(|n| n.contains("docs") && n.contains("couldn't be restored")),
+        "{:?}",
+        report.notes
     );
 }
 
