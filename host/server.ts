@@ -4,6 +4,7 @@ import {
   type ServerResponse,
 } from "node:http";
 import { hostname, homedir } from "node:os";
+import { dirname, join } from "node:path";
 import { execFile } from "node:child_process";
 import { realpath, stat } from "node:fs/promises";
 import { promisify } from "node:util";
@@ -14,6 +15,8 @@ import {
 } from "../src/features/connections/model/protocol";
 import { HostEngine } from "./engine";
 import { HostFirstMate } from "./firstmate/service";
+import { HostTeleportStore } from "./teleport/store";
+import { isTeleportMethod, teleportRpc } from "./teleport/rpc";
 import { writeAttachmentChunk, readAttachmentChunk } from "./attachments";
 import type { LinkedWorkItem } from "../src/features/sessions/model/session";
 import { parseGithubWorkItemUrl } from "../src/features/sessions/model/sessionWorkItem";
@@ -144,6 +147,12 @@ export function createHostServer(
   const transfers = new SyncTransfers();
   // WP-60: a remote project's first mate keeps its records on this host.
   const firstMate = new HostFirstMate(engine);
+  // WP-177: a chat moved to this host is kept in its own store, next to the attachments, never in session rows.
+  const teleport = new HostTeleportStore({
+    dir: join(dirname(engine.store.attachmentDir), "teleport"),
+    selfId: engine.store.environmentId,
+    providers,
+  });
   const workspace = new WorkspaceCommands(
     engine.store,
     (projectId, action) => engine.withIdleProject(projectId, action),
@@ -627,6 +636,17 @@ export function createHostServer(
             break;
           case "firstmate.wakes":
             result = firstMate.wakes(params.projectId);
+            break;
+          case "teleport.read":
+          case "teleport.freeze":
+          case "teleport.thaw":
+          case "teleport.canResume":
+          case "teleport.receive":
+          case "teleport.discard":
+          case "teleport.activate":
+          case "teleport.release":
+            if (!isTeleportMethod(input.method)) throw new Error("Unsupported host method");
+            result = await teleportRpc(teleport, input.method, params);
             break;
           default:
             throw new Error("Unsupported host method");
