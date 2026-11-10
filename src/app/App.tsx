@@ -2151,6 +2151,8 @@ function Workspace({
     canForward: false,
   });
   const turnGen = useRef(new Map<string, number>());
+  // Chats the idle compact watcher holds busy, and the turn generation it took. WP-115.
+  const idleCompactOwners = useRef(new Map<string, number>());
   const editedResends = useRef(createEditedResendCoordinator()).current;
   const lastPersisted = useRef(new Map<string, string>());
   const lastBoundProvider = useRef(new Map<string, string>());
@@ -8576,29 +8578,30 @@ function Workspace({
           flushHarnessEvents();
           return false;
         }
+        // The app is compacting this idle chat in the background (WP-115). Its
+        // busy flag is ours, there is no reply to steer into, and a message
+        // written now would land inside the compact.
+        const compacting = idleCompactOwners.current.has(sessionId);
         const steerable =
-          isLiveHarness(current.harness) && canSteerHarness(current.harness);
-        const followUpBehavior = followUpWhenBusy(
-          harnessCannotSteer(current.harness),
-          current.worktreePreparing ||
+          isLiveHarness(current.harness) &&
+          canSteerHarness(current.harness) &&
+          !compacting;
+        const followUpBehavior = followUpWhenBusy({
+          setting: options?.followUpBehavior ?? loadFollowUpBehavior(),
+          mustWait: !!(
+            current.worktreePreparing ||
             intent === "plan" ||
             intent === "orchestrate" ||
             operatorCommand.matched ||
             options?.waitForIdle
-            ? "queue"
-            : // The agent has yielded and only background work is left, which
-              // may never end (a dev server). Queuing would park the message
-              // behind it, so hand it to the agent now.
-              current.backgroundTasks?.length
-              ? "steer"
-              : // Messaging a Mono mid-reply is like texting a friend twice:
-                // it reads the new message now, or right after if it can't.
-                mono
-                ? steerable
-                  ? "steer"
-                  : "queue"
-                : (options?.followUpBehavior ?? loadFollowUpBehavior()),
-        );
+          ),
+          onlyBackgroundWork: !!current.backgroundTasks?.length,
+          mono: !!mono,
+          steerable,
+          cannotRedirect: harnessCannotSteer(current.harness),
+          compacting,
+          alreadyQueued: !!options?.queuedMessageId,
+        });
         if (followUpBehavior === "queue") {
           setSessions((prev) =>
             prev.map((s) =>
@@ -11016,7 +11019,6 @@ function Workspace({
   // WP-115: compact an idle Claude chat shortly before its prompt cache expires.
   const idleCompactEvent = useRef(enqueueHarnessEvent);
   idleCompactEvent.current = enqueueHarnessEvent;
-  const idleCompactOwners = useRef(new Map<string, number>());
   useEffect(() => {
     return watchIdleClaudeCompaction({
       sessions: () => sessionsRef.current,

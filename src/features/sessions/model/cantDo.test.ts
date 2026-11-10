@@ -1,13 +1,28 @@
 import { describe, expect, it } from "vitest";
 import {
-  blocksBusySend,
   cantRedirectTurn,
   cantTakeFollowUp,
   followUpWhenBusy,
   redirectNotePlace,
+  type BusyFollowUpInput,
 } from "./cantDo";
 
 const DASH = /[—–]/;
+
+/** A plain chat on an agent that can redirect, with the setting on steer. */
+function busy(patch: Partial<BusyFollowUpInput> = {}) {
+  return followUpWhenBusy({
+    setting: "steer",
+    mustWait: false,
+    onlyBackgroundWork: false,
+    mono: false,
+    steerable: true,
+    cannotRedirect: false,
+    compacting: false,
+    alreadyQueued: false,
+    ...patch,
+  });
+}
 
 describe("can't redirect a running turn", () => {
   it("names the agent and says to stop, with no dash", () => {
@@ -36,14 +51,33 @@ describe("can't redirect a running turn", () => {
   });
 
   it("queues a typed message instead of turning Send into Stop when the agent cannot redirect", () => {
-    expect(followUpWhenBusy(true, "steer")).toBe("queue");
-    expect(followUpWhenBusy(true, "queue")).toBe("queue");
-    expect(followUpWhenBusy(false, "steer")).toBe("steer");
-    expect(followUpWhenBusy(false, "queue")).toBe("queue");
-    expect(blocksBusySend(true, "steer")).toBe(false);
-    expect(blocksBusySend(true, "queue")).toBe(false);
-    expect(blocksBusySend(false, "steer")).toBe(false);
-    expect(blocksBusySend(false, "queue")).toBe(false);
+    // The setting asks for steer. A CLI that cannot redirect queues instead.
+    expect(busy({ cannotRedirect: true })).toBe("queue");
+    expect(busy({ cannotRedirect: true, setting: "queue" })).toBe("queue");
+    // The same turn on an agent that can redirect still steers.
+    expect(busy({ cannotRedirect: false })).toBe("steer");
+    expect(busy({ cannotRedirect: false, setting: "queue" })).toBe("queue");
+    // Even when only background work is left, which would otherwise hand it over now.
+    expect(busy({ cannotRedirect: true, onlyBackgroundWork: true })).toBe("queue");
+  });
+
+  it("queues a message sent while the app compacts the chat, so it never lands inside the compact", () => {
+    expect(busy({ compacting: true, steerable: false })).toBe("queue");
+    expect(busy({ compacting: true, steerable: false, mono: true })).toBe("queue");
+    expect(busy({ compacting: false })).toBe("steer");
+  });
+
+  it("keeps the rules that existed before: waits, background work, a Mono", () => {
+    expect(busy({ mustWait: true })).toBe("queue");
+    expect(busy({ onlyBackgroundWork: true, setting: "queue" })).toBe("steer");
+    expect(busy({ mono: true, steerable: true, setting: "queue" })).toBe("steer");
+    expect(busy({ mono: true, steerable: false })).toBe("queue");
+  });
+
+  it("never queues a queued message a second time", () => {
+    // Its own Steer button. The caller refuses the steer and the message stays where it is.
+    expect(busy({ alreadyQueued: true, cannotRedirect: true })).toBe("steer");
+    expect(busy({ alreadyQueued: true, compacting: true, steerable: false })).toBe("steer");
   });
 
   it("shows the sentence once, on the queue when a message is waiting and beside the box only when send would steer", () => {

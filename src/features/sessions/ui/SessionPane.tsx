@@ -112,11 +112,10 @@ import {
 } from "../model/quoteDraft";
 import { createNote, noteTitle } from "../../notes";
 import {
-  loadFollowUpBehavior,
   loadNotesEnabled,
   subscribeNotesEnabled,
 } from "../../settings/model/settings";
-import { blocksBusySend, cantRedirectTurn } from "../model/cantDo";
+import { cantRedirectTurn } from "../model/cantDo";
 import { getComposerDraft, setComposerDraft } from "../model/draftCache";
 import { MONO_PREFILL_EVENT, type MonoPrefill } from "../../monos/model/monoPrefill";
 import { resolveModel } from "../model/models";
@@ -874,7 +873,6 @@ const LocalSessionPane = memo(function LocalSessionPane({
       }
       onOpenFile={onOpenFile}
       busy={!!session.busy}
-      allowBusySubmit={!blocksBusySend(cannotRedirect, loadFollowUpBehavior())}
       steerNote={steerNote}
       editLastTurnSupported={editLastTurnSupported}
       lastTurnRecall={turnRecall}
