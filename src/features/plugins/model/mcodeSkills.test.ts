@@ -37,7 +37,19 @@ const BODY: Record<(typeof NAMES)[number], string> = {
   "context-tax-audit": "current time, and why stuffing `date` into the system prompt breaks the",
 };
 
+const SRC = fileURLToPath(new URL("../../../", import.meta.url));
+
 const read = (name: string) => readFileSync(resolve(SKILLS, name, "SKILL.md"), "utf8");
+
+/** Every file under `dir` that the app can bundle: no tests, no fixtures. A folder that is not there has none. */
+function shippedFiles(dir: string): string[] {
+  if (!existsSync(dir)) return [];
+  return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
+    const path = resolve(dir, entry.name);
+    if (entry.isDirectory()) return entry.name === "__fixtures__" ? [] : shippedFiles(path);
+    return /\.(?:ts|tsx|js|mjs)$/.test(entry.name) && !/\.(?:test|spec)\./.test(entry.name) ? [path] : [];
+  });
+}
 
 /** The frontmatter block, without its fences. */
 const frontmatter = (text: string) => text.slice(4, text.indexOf("\n---\n", 4));
@@ -73,6 +85,16 @@ describe("the MiniMax Code skills", () => {
   it("keeps them out of Claude Code's own skill list, so Hivra's index is how a first mate reaches them", () => {
     // A skill with this flag is not offered to the model by the CLI. Without an index entry nothing would name it.
     for (const name of NAMES) expect(frontmatter(read(name)), name).toContain("disable-model-invocation: true");
+  });
+
+  it("reads the skill files only in tests: no node: import in a file the app bundles, and no src/features/mcode", () => {
+    // The skill text and the review brief were once modules in src that read files with node:fs. Nothing in the app used
+    // them, and a file under src is bundled for the webview, where node:fs does not exist.
+    expect(shippedFiles(resolve(SRC, "features/mcode"))).toEqual([]);
+    const nodeImport = /(?:from\s*|import\s*\(\s*|require\s*\(\s*|import\s+)["'](?:node:[^"']+|fs|path|child_process|os)["']/;
+    const files = shippedFiles(resolve(SRC, "features/plugins"));
+    expect(files.length).toBeGreaterThan(0);
+    for (const file of files) expect(readFileSync(file, "utf8"), file).not.toMatch(nodeImport);
   });
 
   it("lists every one in Hivra's skill index, generated from the plugin so it cannot drift", () => {
