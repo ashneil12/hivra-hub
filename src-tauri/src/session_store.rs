@@ -1634,6 +1634,8 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
     crate::ship::ensure_acceptance_table(conn)?;
     // WP-78: the activity log. In place, so an older build still opens this file.
     crate::activity::ensure_tables(conn)?;
+    // WP-157: the work log. In place, so an older build still opens this file.
+    crate::work_log::ensure_tables(conn)?;
     // WP-86: commit attribution. In place, so an older build still opens this file.
     crate::attribution::ensure_tables(conn)?;
     // WP-76: the trash ledger. Not a numbered migration: an older build simply never reads it.

@@ -3,6 +3,8 @@ use tauri::Manager;
 mod account_identity;
 // WP-78: the activity log.
 mod activity;
+// WP-157: the work log. Not a numbered migration.
+mod work_log;
 // WP-86: commit attribution. Not a numbered migration.
 mod artifacts;
 mod attribution;
