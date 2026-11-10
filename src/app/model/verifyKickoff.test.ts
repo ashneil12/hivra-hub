@@ -4,6 +4,7 @@ import {
   claimVerifyKickoff,
   claimVerifyMessage,
   pendingVerifyKickoff,
+  traceVerifyKickoff,
   unsentVerifyMessages,
   verifyKickoffMono,
   verifyRun,
@@ -214,5 +215,33 @@ describe("Ash's messages the bench sends mid-run", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("keeps each kickoff step for the bench, only in a dev copy with a driver", async () => {
+    const steps: { id: string; step: Record<string, unknown> }[] = [];
+    const sink = async (id: string, step: Record<string, unknown>) => void steps.push({ id, step });
+    const identity = (driver: boolean) =>
+      readAppIdentity({
+        ...base,
+        kind: "dev",
+        identifier: "com.ash.monocode-hub.dev.verify",
+        slot: "verify",
+        verify: { runId: "run-16-durable", kickoff, ...(driver ? { driver: true } : {}) },
+      });
+    traceVerifyKickoff("claimed", { monoId: "cos" }, sink, identity(true));
+    traceVerifyKickoff("mono state?", { found: false }, sink, identity(true));
+    // No driver, or the daily app: nothing is written anywhere.
+    traceVerifyKickoff("claimed", {}, sink, identity(false));
+    traceVerifyKickoff("claimed", {}, sink, readAppIdentity({ ...base, kind: "daily", identifier: "com.ash.monocode-hub" }));
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(steps.map((entry) => entry.id)).toEqual([
+      expect.stringMatching(/^kickoff-\d{3}-claimed$/),
+      expect.stringMatching(/^kickoff-\d{3}-mono-state-$/),
+    ]);
+    expect(steps[0].step).toMatchObject({ step: "claimed", runId: "run-16-durable", monoId: "cos" });
+    expect(steps[1].step).toMatchObject({ found: false });
+    // A sink that fails doesn't reach the caller.
+    expect(() => traceVerifyKickoff("x", {}, async () => Promise.reject(new Error("no driver")), identity(true))).not.toThrow();
   });
 });
