@@ -755,7 +755,7 @@ import {
 import { firstTurnAccount, providerName, reactToLimit, workerRoom } from "../features/providers/model/accountWaterfall";
 import { claudeRunsOnSubscriptionBridge } from "../integrations/harness/providers/claude/claudeDeepseekBridge";
 import { getCachedRateLimits } from "../features/providers/model/rateLimitsCache";
-import { waitsOnlyOnItsLead } from "../features/monos/model/workerStuck";
+import { approvalSessionIdsOf } from "../features/sessions/model/approvalSessionIds";
 import {
   HARNESSES,
   HARNESS_LABEL,
@@ -763,7 +763,6 @@ import {
   canReplaceSessionTitle,
   formatSessionTitle,
   sessionNeedsInput,
-  hasPendingApproval,
   newDefaultSession,
   newSession,
   retargetSessionToProject,
@@ -2735,32 +2734,20 @@ function Workspace({
   }, [activeTab, currentProjectDock, runningTerminals]);
 
   const approvalDelegationRows = useDelegationRows();
-  const nextApprovalSessionIds = useMemo(() => {
-    const ids = new Set<string>();
-    for (const session of sessions) {
-      // A worker only waiting on its Lead's answer is not Ash's input (D5): no "Need approval" on it or its Lead.
-      if (
-        sessionNeedsInput(session) &&
-        !waitsOnlyOnItsLead(
-          {
-            id: session.id,
-            pendingQuestion: session.pendingQuestion,
-            approvalPending: hasPendingApproval(session.blocks),
-          },
-          approvalDelegationRows,
-        )
-      ) {
-        ids.add(session.id);
-        if (session.orchestrationLeadId) ids.add(session.orchestrationLeadId);
-      }
-    }
-    return ids;
-  }, [sessions, approvalDelegationRows]);
-  const approvalSessionIdsRef = useRef(nextApprovalSessionIds);
-  if (!setsEqual(approvalSessionIdsRef.current, nextApprovalSessionIds)) {
-    approvalSessionIdsRef.current = nextApprovalSessionIds;
+  const nextApproval = useMemo(
+    () => approvalSessionIdsOf(sessions, approvalDelegationRows),
+    [sessions, approvalDelegationRows],
+  );
+  const approvalSessionIdsRef = useRef(nextApproval.ids);
+  if (!setsEqual(approvalSessionIdsRef.current, nextApproval.ids)) {
+    approvalSessionIdsRef.current = nextApproval.ids;
   }
   const approvalSessionIds = approvalSessionIdsRef.current;
+  const approvalElsewhereSessionIdsRef = useRef(nextApproval.elsewhere);
+  if (!setsEqual(approvalElsewhereSessionIdsRef.current, nextApproval.elsewhere)) {
+    approvalElsewhereSessionIdsRef.current = nextApproval.elsewhere;
+  }
+  const approvalElsewhereSessionIds = approvalElsewhereSessionIdsRef.current;
 
   // WP-113: attention for settle, snooze and re-sort. Off passes nothing, so today's list is untouched.
   const chatListInboxOn = useChatListInbox();
@@ -17535,6 +17522,7 @@ function Workspace({
       sessions={sidebarHistory}
       busySessionIds={liveBusySessionIds}
       approvalSessionIds={approvalSessionIds}
+      approvalElsewhereSessionIds={approvalElsewhereSessionIds}
       chatAttention={chatListAttention}
       // The coding team's Lead in view is its pinned row's; no other chat reads as the current one meanwhile.
       activeSessionId={codingTeamList?.lead?.active ? undefined : activeSessionId}
