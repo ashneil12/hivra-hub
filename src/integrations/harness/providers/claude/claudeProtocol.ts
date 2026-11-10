@@ -1255,6 +1255,20 @@ export function approvalCall(
   };
 }
 
+/** The Bash input keys the phone shows: the command it runs, its description and its timeout. */
+const PHONE_SHOWN_BASH_KEYS = new Set(["command", "description", "timeout"]);
+
+/**
+ * WP-150: whether everything the call runs with is in the view `approvalCall` gives the phone, so an allow from
+ * the phone runs exactly what it showed. Only a Bash call whose input has no key beyond the three above
+ * qualifies. An MCP call, WebFetch, Write, Edit, Task, a Bash sandbox override or any other key does not:
+ * the desktop still decides it, and the phone never sees it.
+ */
+export function approvalCallComplete(toolName: string, input: Record<string, unknown>): boolean {
+  if (toolName !== "Bash" || typeof input.command !== "string") return false;
+  return Object.keys(input).every((key) => PHONE_SHOWN_BASH_KEYS.has(key));
+}
+
 export function summarizeToolRequest(
   toolName: string,
   input: Record<string, unknown>,
