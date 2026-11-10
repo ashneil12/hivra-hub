@@ -1,4 +1,4 @@
-# WP-XX: Agents run inside an OS sandbox, with protected config paths (design first)
+# WP-178: Agents run inside an OS sandbox, with protected config paths (design first)
 
 | Wave | Size | Depends on | Grok OK |
 | --- | --- | --- | --- |
