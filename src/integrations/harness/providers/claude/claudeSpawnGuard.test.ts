@@ -71,16 +71,18 @@ describe("the guard on every Claude process", () => {
     expect(hasFence(call.args)).toBe(true);
   });
 
-  it("a helper call that streams into a chat keeps its read tools and carries the fence", async () => {
+  it("a helper call that streams into a chat is limited to its read tools and carries the fence", async () => {
     await expect(
       runClaudeTextPrompt({ cwd: "/p", prompt: "by the way?", onEvent: () => undefined }),
     ).rejects.toThrow();
     expect(noTools(spawned[0].args)).toBe(false);
     expect(hasFence(spawned[0].args)).toBe(true);
     expect(textCallToolArgs(false)).toEqual(["--tools", "", ...FENCE()]);
-    // The five a side question may not use (see the side question block below) ride in the fence's own list.
-    expect(textCallToolArgs(true)[0]).toBe("--disallowedTools");
-    expect(textCallToolArgs(true)[1]).toBe([...chatDeniedTools(), "Edit", "Write", "MultiEdit", "NotebookEdit", "Bash"].join(","));
+    // The allowlist first, then the five a side question may not use (see the side question block below) in the
+    // fence's own list, behind it.
+    expect(textCallToolArgs(true).slice(0, 2)).toEqual(["--tools", "Read,Grep,Glob"]);
+    expect(textCallToolArgs(true)[2]).toBe("--disallowedTools");
+    expect(textCallToolArgs(true)[3]).toBe([...chatDeniedTools(), "Edit", "Write", "MultiEdit", "NotebookEdit", "Bash"].join(","));
   });
 
   describe("a side question (the app's by-the-way call: streams into a chat, plan intent)", () => {
@@ -97,6 +99,29 @@ describe("the guard on every Claude process", () => {
     const denied = (args: string[]) =>
       args.flatMap((arg, i) => (args[i - 1] === "--disallowedTools" ? arg.split(",") : []));
     const lastList = (args: string[]) => args[args.lastIndexOf("--disallowedTools") + 1]?.split(",") ?? [];
+    /** The tools the CLI is allowed to offer: the value after `--tools`. */
+    const allowed = (args: string[]) => (args.includes("--tools") ? args[args.indexOf("--tools") + 1] : undefined);
+
+    // A deny list only names what is known today: EnterWorktree creates a worktree and a branch in the project under
+    // these flags (plan mode didn't stop it), and a tool added later would slip through the same way. Only what the CLI
+    // is told it may use can't grow.
+    it("is started with --tools Read,Grep,Glob, so every other tool is off its list", async () => {
+      await expect(ask()).rejects.toThrow();
+      expect(spawned).toHaveLength(1);
+      expect(spawned[0].args.filter((arg) => arg === "--tools")).toHaveLength(1);
+      expect(allowed(spawned[0].args)).toBe("Read,Grep,Glob");
+      // The allowlist comes with the deny list behind it, not instead of it.
+      expect(spawned[0].args.indexOf("--tools")).toBeLessThan(spawned[0].args.lastIndexOf("--disallowedTools"));
+    });
+
+    it("has no tool outside that list, whichever tool the CLI adds later", async () => {
+      await expect(ask()).rejects.toThrow();
+      const list = (allowed(spawned[0].args) ?? "").split(",");
+      expect(list.sort()).toEqual(["Glob", "Grep", "Read"]);
+      for (const tool of ["EnterWorktree", "Agent", "Task", "WebFetch", "Skill"]) {
+        expect(list, tool).not.toContain(tool);
+      }
+    });
 
     it("is started with Edit, Write, MultiEdit, NotebookEdit and Bash denied", async () => {
       await expect(ask()).rejects.toThrow();
@@ -114,9 +139,10 @@ describe("the guard on every Claude process", () => {
       }
     });
 
-    it("still reads: it keeps its tools, minus those five, and the fence", async () => {
+    it("still reads: Read, Grep and Glob stay on, none of them denied, and the fence", async () => {
       await expect(ask()).rejects.toThrow();
       expect(noTools(spawned[0].args)).toBe(false);
+      expect(allowed(spawned[0].args)).toBe("Read,Grep,Glob");
       expect(denied(spawned[0].args)).not.toContain("Read");
       expect(denied(spawned[0].args)).not.toContain("Grep");
       expect(hasFence(spawned[0].args)).toBe(true);

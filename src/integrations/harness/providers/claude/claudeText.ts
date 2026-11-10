@@ -20,6 +20,7 @@ import {
   previewFromTool,
   resolveClaudeApiModelId,
   SIDE_QUESTION_DENY_TOOLS,
+  SIDE_QUESTION_TOOLS,
   streamDeltaFromEvent,
   stringField,
   summarizeToolRequest,
@@ -134,13 +135,16 @@ function withDeniedTools(args: readonly string[], tools: readonly string[]): str
 
 /**
  * A call that only wants text back (a title, commit or PR text, a branch name, the room's gate: everything it needs is
- * in the prompt) starts with no tools at all. One whose answer streams into a chat ("by the way") keeps its read
- * tools but not the ones that change things (SIDE_QUESTION_DENY_TOOLS). Both carry the hub's fence round the Monos'
- * home, as every Claude process the app starts does.
+ * in the prompt) starts with no tools at all. One whose answer streams into a chat ("by the way") is limited to the
+ * read tools (`--tools`, SIDE_QUESTION_TOOLS) with the ones that change things denied behind that
+ * (SIDE_QUESTION_DENY_TOOLS), the way the checker's tool list is built (hubMcp.ts checkerToolArgs). Both carry the
+ * hub's fence round the Monos' home, as every Claude process the app starts does.
  */
 export function textCallToolArgs(streams: boolean): string[] {
   const guard = claudeGuardArgs();
-  return streams ? withDeniedTools(guard, SIDE_QUESTION_DENY_TOOLS) : ["--tools", "", ...guard];
+  return streams
+    ? ["--tools", SIDE_QUESTION_TOOLS.join(","), ...withDeniedTools(guard, SIDE_QUESTION_DENY_TOOLS)]
+    : ["--tools", "", ...guard];
 }
 
 /** Stop every call still running (the app is closing, or the helpers are being reset). */
