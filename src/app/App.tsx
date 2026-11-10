@@ -76,7 +76,7 @@ import {
   queueBriefForIdle,
   withoutQueuedBrief,
 } from "../features/monos/model/followedBriefs";
-import type { DelegationMeta } from "../features/agent-app/model/agentAppTasks";
+import { markAppDelegate, type DelegationMeta } from "../features/agent-app/model/agentAppTasks";
 import { deliverPhaseResult, isPhaseSession, phaseFinish } from "../features/phases/model/phaseBridge";
 import { chatMonoOwner, hasDelegateTool } from "../features/hub/model/hubMcp";
 import { appendsHubNote, hubNoteFor, setHubNote } from "../features/hub/model/hubNote";
@@ -746,6 +746,7 @@ import {
   followUpWhenBusy,
 } from "../features/sessions/model/cantDo";
 import { withLegacyBriefParts } from "../features/firstmate/model/brief";
+import { useFanoutHost } from "../features/firstmate/hooks/useFanoutHost";
 import { viewAfterRemoval, type RemovalOrigin } from "../features/sessions/model/sessionWorkspaceLifecycle";
 import { focusClosesMono, paneFocus } from "./model/paneFocus";
 import { useLiveTurns } from "../features/sessions/hooks/useLiveTurns";
@@ -967,6 +968,8 @@ import {
   nextHealthCheck,
   nextWake,
   planHeld,
+  droppedTaskLine,
+  setQueueDependency,
   pumpWorkers,
   queuedWorkers,
   retryNow,
@@ -13584,6 +13587,14 @@ function Workspace({
     }
     return [...byId.values()].filter(isOpenDelegation);
   };
+  // WP-171: what a waiting task of a fan-out waits for (the tasks that provide what it requires, delivered and checked).
+  const fanout = useFanoutHost({
+    rows: () => [...delegationRows(), ...(delegationsRef.current?.known() ?? [])],
+    folder: (session) => sessionsRef.current.find((entry) => entry.id === session)?.cwd,
+  });
+  // WP-171: the waiting card reads the same dependency the pump does, so a held task is not labelled as a free worker.
+  setQueueDependency(fanout.dependency);
+  useEffect(() => () => setQueueDependency(undefined), [fanout]);
   const providerRoomNow = (harness: string) =>
     workerRoom(harness, {
       now: Date.now(),
@@ -13600,6 +13611,8 @@ function Workspace({
     void pumpWorkers({
       openRows: openDelegationRows,
       room: providerRoomNow,
+      dependency: fanout.dependency,
+      settle: fanout.settle,
       // A Lead's chat that isn't open in this window keeps its workers waiting until it is.
       canStart: (job) => sessionsRef.current.some((session) => session.id === job.ownerSession),
       start: (job: QueuedWorker) => {
@@ -13611,11 +13624,31 @@ function Workspace({
           requestId: job.requestId,
           action: "tasks.delegate",
           // Hivra WP-10: a worker queued before briefs carried an intent and a goal still starts.
-          input: withLegacyBriefParts(job.input, job.title),
+          // WP-171: the link and the quoted request are the app's, not an agent's. Mark after the spread, which drops it.
+          input: markAppDelegate(withLegacyBriefParts(job.input, job.title)),
         });
       },
-      failed: (job, error) =>
-        console.warn(`A waiting worker (${job.title}) could not start`, error),
+      failed: (job, error) => {
+        console.warn(`A waiting worker (${job.title}) could not start`, error);
+        // WP-171: a waiting task that is dropped is told to the chat that asked, once. A cap refusal never gets here.
+        const line = droppedTaskLine(job, error);
+        void queueMonoSessionCompletionRef.current(job.ownerSession, {
+          id: `dropped-${job.id}`,
+          text: `[MonoCode] ${line} (this is the app, not the person.)`,
+          attachments: [],
+          monoNote: { kind: "message", from: "Tasks", line: line.length > 160 ? `${line.slice(0, 157)}...` : line },
+        });
+      },
+      // WP-171: a task that becomes held wakes the chat that asked, once per hold. A later hold uses a new id.
+      held: (_job, note) => {
+        const line = note.line;
+        void queueMonoSessionCompletionRef.current(_job.ownerSession, {
+          id: note.id,
+          text: `[MonoCode] ${line} (this is the app, not the person.)`,
+          attachments: [],
+          monoNote: { kind: "message", from: "Tasks", line: line.length > 160 ? `${line.slice(0, 157)}...` : line },
+        });
+      },
     })
       .catch(console.error)
       .finally(() => {
@@ -13675,7 +13708,8 @@ function Workspace({
           sessionId: owner,
           requestId,
           action: "tasks.delegate",
-          input,
+          // WP-171: a held brief starts as the app's own call, so a fan-out task can keep its link.
+          input: markAppDelegate({ ...input }),
         });
       },
     });
@@ -13808,7 +13842,8 @@ function Workspace({
         sessionId: ownerSession,
         requestId,
         action: "tasks.delegate",
-        input,
+        // WP-171: a retry is the app asking again, so it may carry the link and the request.
+        input: markAppDelegate({ ...input }),
       }),
     );
     // WP-15: Stop uses tasks.cancel as the row's owner, so a busy child stops and a queued worker never starts.
@@ -14696,6 +14731,8 @@ function Workspace({
             },
             // WP-70: the shared task list. The handler sets who is asking.
             taskStore: (command, args) => invoke(command, args),
+            // WP-159: the programme board. The handler sets who is asking.
+            programmeStore: (command, args) => invoke(command, args),
             // WP-88: projects on this copy, the activity log, and reviewed memory.
             knownProjects: () => hubData().listProjects().map((project) => ({
               id: project.id,
@@ -14809,6 +14846,7 @@ function Workspace({
               pool: workerPoolHost({
                 openRows: openDelegationRows,
                 room: providerRoomNow,
+                dependency: fanout.dependency,
                 card: (job, launch) =>
                   rememberSession({
                     sessionId: job.id,

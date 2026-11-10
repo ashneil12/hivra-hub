@@ -123,7 +123,14 @@ export function LaunchedSessionCard({
     view?.title ?? launch.title,
     launch.harness,
   );
-  const status = stalled ? STALLED : view ? STATUS[view.state] : undefined;
+  // WP-171: a task held for another task is not waiting on a free worker. The label and the accessible name agree.
+  const status = stalled
+    ? STALLED
+    : view?.state === "waiting"
+      ? { ...STATUS.waiting, label: view.forTask ? "Waiting for another task" : STATUS.waiting.label }
+      : view
+        ? STATUS[view.state]
+        : undefined;
   const ran = modelLabel(launch.harness, launch.model);
   const ranLine = `Runs on ${ran}${launch.effort ? `, ${launch.effort} effort` : ""}`;
   // WP-89: the card names the CLI, the model, the effort and where they came from. No source, no extra line.
@@ -169,7 +176,7 @@ export function LaunchedSessionCard({
           data-launched-waiting
           className="shrink-0 text-[12px] text-content/55"
         >
-          Waiting for a free worker
+          {status?.label}
         </span>
       ) : null}
       {/* r95 (PM, worker card a): no engine chip on the card. The title has the room, and which model ran (E7) is in

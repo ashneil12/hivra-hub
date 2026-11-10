@@ -63,7 +63,8 @@ refusal shows an alert and exits:
 - a database written by a newer build is refused (exit 65).
 
 A dev copy can't reach Ash's real things: it keeps its hub data (projects, Monos per project, Pages) in its own
-database, its one-time Ash OS import reads only a stand-in a test names, never the live service or its key, and
+database, its one-time Ash OS import reads only a stand-in a test names, never the live service, its key or its record
+on disk, and
 Keychain names are `monocode-hub-dev:*`. How it runs Claude is in [CLAUDE.md](CLAUDE.md) ("The dev copy's
 Claude"). The PR watch (`src-tauri/src/pr_watch`) reads GitHub through
 the user's `gh`, reads only; under a temporary HOME there is no gh login, and `MONOCODE_PR_WATCH_GH` (read by dev copies
@@ -342,7 +343,11 @@ and checks are empty until WP-14's decision store (`localHub/decisions.ts` is th
 the app asks Ash OS, read-only (`src-tauri/src/ash_os_import.rs`), and offers once to import its projects, memberships
 and kept Pages. Only a sure answer is kept: no Ash OS on the Mac (no key file, or a dev copy with no stand-in) starts
 clean for good; Ash OS not answering this time decides nothing and the next start tries again. Settings → Export and
-import → "Bring over from Ash OS" runs it again at any time (it only adds). Every hub chat denies `mcp__ash-os`, so
+import → "Bring over from Ash OS" runs it again at any time (it only adds). When the service gives nothing (it no longer
+runs), the import reads Ash OS's record on disk instead (`ash_os_import/disk.rs`: the database and its log copied
+into a private folder and only the copy opened, plus each strip project's `project.json`) and answers in the live
+reads' shape; Ash OS's files are never written and nothing is made beside them. A dev copy reads only a stand-in
+record named by `MONOCODE_ASHOS_DB` (and `MONOCODE_ASHOS_PROJECTS`), never the real one (the daily app ignores both). Every hub chat denies `mcp__ash-os`, so
 Ash's own user-scope Ash OS server never loads in one. The local store's documents carry a revision: a window writes
 only on top of the latest one and every window hears `local-hub://changed`.
 

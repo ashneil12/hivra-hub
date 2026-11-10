@@ -356,6 +356,12 @@ Third-party components Hivra adds:
   Copyright 2026 Row-Bot Contributors
   Used in: src/features/memory/backpass/proposalGuard.ts, src/features/memory/backpass/LICENSE.row-bot
   evolution.py's injection_problems translated to TypeScript with its E9 cases ported (WP-101). It checks what an edit adds rather than a whole draft, names each kind with a plain reason, and uses Hivra's own secret check.
+- Atomic Agent's fan-out contract
+  Source: https://github.com/AtomicBot-ai/atomic-agent
+  License: MIT
+  Copyright (c) 2026 Atomic Bot
+  Used in: src/features/firstmate/model/fanoutContract.ts, src/features/firstmate/model/fanoutWaves.ts, src/features/firstmate/model/fanoutChecks.ts, src/features/firstmate/model/originalRequest.ts
+  The contract's kinds of provide, its description and search-path rules, the contract block and per-task lines, and the requires-cycle walk (contract.ts); the wave planner and its cycle fallback (contract-waves.ts); the presence check of a provide in a file (contract-checks.ts); and the bounded quote of the person's request with its follow-up rule (worker-prompt.ts), translated to TypeScript at commit 1b4e641525c5b1427b48ff6b8d9932dc26bd8256 (WP-171). Hivra reads the contract from each task of one delegate_tasks call, refuses a requirement nothing provides and a provide nobody could check before anything starts, holds a task whose provider failed or did not deliver instead of running it anyway, fails a check that could not run, runs a declared check as the task's WP-40 checks gate, reads the request from the first mate's chat (the person's own messages only), and quotes it behind a mark on every line.
 
 MonoCode
 ========

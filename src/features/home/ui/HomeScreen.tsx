@@ -186,6 +186,7 @@ export function HomeScreen({
   onUnpin,
   onAsk,
   renderPanel,
+  programme,
 }: {
   needsYou: readonly HomeLine[];
   /** One line per project (the overview). */
@@ -210,6 +211,8 @@ export function HomeScreen({
   onUnpin: (key: string) => void;
   onAsk: (text: string) => void;
   renderPanel?: (panel: CatalogPanel) => ReactNode;
+  /** WP-159: the programme card. Absent when the board is empty, so a quiet home stays quiet. */
+  programme?: ReactNode;
 }) {
   const lines: Record<string, readonly HomeLine[]> = {
     "needs-you": needsYou,
@@ -227,7 +230,8 @@ export function HomeScreen({
   const offered = catalog.filter((panel) => !pinned.has(sectionKey({ kind: "panel", plugin: panel.plugin, panelId: panel.panelId })));
   const summaryNotes = summary ?? [];
   // Quiet is about activity: the projects overview alone is not something happening.
-  const quiet = known && !noProjects && needsYou.length + moving.length + recent.length === 0 && summaryNotes.length === 0;
+  const quiet =
+    known && !programme && !noProjects && needsYou.length + moving.length + recent.length === 0 && summaryNotes.length === 0;
   return (
     <div
       data-home
@@ -237,6 +241,7 @@ export function HomeScreen({
       <div className="mx-auto flex flex-col gap-6 px-6 pt-12 pb-8" style={{ maxWidth: HOME_MAX_WIDTH }}>
         {known ? <HomeChatBox reply={reply} onAsk={onAsk} onOpen={onOpen} /> : null}
         {known && noProjects ? <NoProjectsNote state={noProjects} onBringOver={onBringOver} onNewProject={onNewProject} /> : null}
+        {programme ?? null}
         {known && summaryNotes.length > 0 ? (
           <div data-home-summary className="rounded-lg border border-stroke px-3 py-2">
             <Notes notes={summaryNotes} onOpen={onOpen} />
