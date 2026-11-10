@@ -251,7 +251,8 @@ pub fn set_protect_paths(
 }
 
 /// Adds paths to the project's extra list. A path already there stays, and nothing already stored is removed.
-/// A pattern with `*`, `?` or `[` is kept and matches nothing. An empty or over-long pattern is skipped.
+/// A pattern that can match no file (`*`, `?`, `[`, `..`, a leading slash, a drive letter) is refused, and so is the
+/// whole write. A blank, over-long or control-character entry is skipped.
 pub fn add_protected_paths(
     conn: &Connection,
     project: &str,
@@ -266,6 +267,10 @@ pub fn add_protected_paths(
     let existing = get(conn, &project)?;
     if existing.updated_at != expected_updated_at {
         return Err(changed_elsewhere());
+    }
+    // A pattern that can never match is refused with its reason, and nothing is written.
+    for path in paths {
+        super::protected::check_extra(path)?;
     }
     let mut extra = existing.protected_extra.clone();
     let mut fresh = Vec::new();

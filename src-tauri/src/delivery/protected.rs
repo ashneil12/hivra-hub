@@ -431,6 +431,56 @@ fn marked_path(line: &str) -> (String, bool) {
     }
 }
 
+/// Refuses an extra path that can never match a file: a glob (`*`, `?`, `[`), `..`, a leading slash or a drive
+/// letter. A blank is not refused here (the caller skips it). Used when an extra is written, so the list shows the
+/// person a path that does nothing, instead of keeping it silently.
+pub fn check_extra(raw: &str) -> Result<(), String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() || extra_rule(trimmed).is_some() {
+        return Ok(());
+    }
+    Err(format!(
+        "\"{}\" matches nothing. Give a path from the project root, with no `*`, `?` or `[`, no `..`, and no leading slash or drive letter.",
+        show(trimmed)
+    ))
+}
+
+/// Text for a person to read: hidden format characters (bidi overrides, zero-width marks) are written as
+/// `\u{...}` so they can't disguise a name. Other text is unchanged.
+pub fn show(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for c in text.chars() {
+        if is_format_char(c) {
+            out.push_str(&format!("\\u{{{:x}}}", c as u32));
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
+/// Unicode format characters (general category Cf) that a name can hide behind: soft hyphen, the bidi controls,
+/// zero-width marks and joiners, word joiners, the BOM and the tag characters.
+fn is_format_char(c: char) -> bool {
+    matches!(
+        c as u32,
+        0x00AD
+            | 0x0600..=0x0605
+            | 0x061C
+            | 0x06DD
+            | 0x070F
+            | 0x180E
+            | 0x200B..=0x200F
+            | 0x202A..=0x202E
+            | 0x2060..=0x2064
+            | 0x2066..=0x206F
+            | 0xFEFF
+            | 0xFFF9..=0xFFFB
+            | 0xE0001
+            | 0xE0020..=0xE007F
+    )
+}
+
 /// Paths from `paths` that the floor holds. Built-ins always count. `extras` only add.
 /// Each path is returned once, in input order, with `\` turned into `/` and `.` segments
 /// dropped. A `..` segment is not folded out: the path is untrusted, so it counts as a hit.

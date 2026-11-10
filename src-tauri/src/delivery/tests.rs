@@ -1717,7 +1717,20 @@ fn an_extra_path_asks_and_a_glob_matches_nothing() {
     let s = store();
     set_mode(&s, &project, Some(Mode::Pr), true);
     turn_floor_on(&s, &project);
-    protect_also(&s, &project, &["*"]);
+    // A bare `*` is refused on write, so nothing is added and the built-in floor still decides.
+    {
+        let conn = s.lock_conn().unwrap();
+        let current = settings::get(&conn, project.to_str().unwrap()).unwrap();
+        let refused = settings::add_protected_paths(
+            &conn,
+            project.to_str().unwrap(),
+            &["*".to_string()],
+            current.updated_at,
+            current.updated_at.unwrap_or(0) + 1,
+        )
+        .unwrap_err();
+        assert!(refused.contains("matches nothing"), "{refused}");
+    }
     remember_delivery(&s, &project, None, 7);
     let mut request = agent_merge("acme/web");
     request.project = Some("/not/the/delivery/project".into());
@@ -1981,7 +1994,6 @@ fn extra_protected_paths_only_add_and_a_stale_write_is_refused() {
             "docs/a.md".into(),
             "docs/b.md".into(),
             "docs/donnée.md".into(),
-            "*".into(),
             "  ".into(),
             "docs/bad\nname.md".into(),
             "p".repeat(201),
@@ -2001,7 +2013,6 @@ fn extra_protected_paths_only_add_and_a_stale_write_is_refused() {
             "docs/a.md".to_string(),
             "docs/b.md".to_string(),
             "docs/donnée.md".to_string(),
-            "*".to_string(),
         ]
     );
     // The same path again changes nothing, so the row's time stays put.
@@ -2034,7 +2045,6 @@ fn extra_protected_paths_only_add_and_a_stale_write_is_refused() {
             "docs/a.md".to_string(),
             "docs/b.md".to_string(),
             "docs/donnée.md".to_string(),
-            "*".to_string(),
             "docs/c.md".to_string(),
         ]
     );
@@ -2044,7 +2054,7 @@ fn extra_protected_paths_only_add_and_a_stale_write_is_refused() {
     let on = settings::set_protect_paths(&conn, project, true, off.updated_at, 16).unwrap();
     assert!(on.protect_paths);
     assert_eq!(on.protected_extra, more.protected_extra);
-    // A stored `*` does not shrink the built-in list.
+    // The built-in list is not shrunk by what is stored.
     assert_eq!(
         super::protected::protected_hits(
             &[".github/workflows/x.yml", "readme.md"],
