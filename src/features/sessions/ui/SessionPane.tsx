@@ -977,7 +977,7 @@ const LocalSessionPane = memo(function LocalSessionPane({
       ) : null}
       {/* WP-110: which worktree this chat runs in, and the ask line before the first send. */}
       <NewChatWorktreeBanner session={session} />
-      {/* WP-120: the lead picker, and a switch when this CLI cannot lead yet. */}
+      {/* WP-120: when this CLI cannot lead, the strip says why and offers a switch. */}
       {session.firstMate ? (
         <LeadCliNotice
           harness={session.harness}

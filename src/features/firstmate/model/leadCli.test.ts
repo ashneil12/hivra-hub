@@ -12,11 +12,13 @@ import {
   LEAD_CAPABILITY,
   applyLeadSwitch,
   canLead,
+  chosenLeadPresence,
   codexLeadServer,
   leadBlockReason,
   leadPickerChoices,
   leadSwitchOffer,
 } from "./leadCli";
+import { resetCodingTeamHomes, saveChosenClis } from "../../hub/model/codingTeamHome";
 
 const CLI = "/app/MonoCode Hub.app/Contents/MacOS/monocode";
 const TEAM = "9a7e1c2b-4d3f-4e5a-8b6c-0d1e2f3a4b5c";
@@ -137,20 +139,43 @@ describe("lead capability", () => {
     expect(offer?.choices.map((choice) => choice.cli)).toEqual(["claude", "codex"]);
     expect(leadSwitchOffer("pi", []).choices).toEqual([]);
     expect(leadSwitchOffer("pi", []).reason).toContain("cannot lead yet");
+    // A stale or unwritable pick cannot become the lead: the offer only ever names capable CLIs.
+    for (const choice of offer?.choices ?? []) expect(canLead(choice.cli)).toBe(true);
+    expect(applyLeadSwitch("opencode", "codex")).toBe("codex");
+    expect(applyLeadSwitch("codex", "codex")).toBeNull();
+    expect(applyLeadSwitch("opencode", "opencode")).toBeNull();
+    expect(applyLeadSwitch("opencode", "cursor")).toBeNull();
+    expect(applyLeadSwitch("opencode", "")).toBeNull();
+    expect(applyLeadSwitch("opencode", "not-a-cli")).toBeNull();
+  });
 
-    const crew = { rules: ["keep"] };
-    const memory = { lines: ["one"] };
-    const session = { id: "chat-1", harness: "opencode" as const, blocks: [1] };
-    const switched = applyLeadSwitch(session, "codex", { crew, memory });
-    expect(switched?.session).toMatchObject({ id: "chat-1", harness: "codex", blocks: [1] });
-    expect(switched?.session).not.toBe(session);
-    expect(switched?.crew).toBe(crew);
-    expect(switched?.memory).toBe(memory);
-    const same = applyLeadSwitch(switched!.session, "codex", { crew, memory });
-    expect(same?.session).toBe(switched?.session);
-    expect(applyLeadSwitch(session, "opencode", { crew, memory })).toBeNull();
-    expect(applyLeadSwitch(session, "cursor", { crew, memory })).toBeNull();
-    expect(session.harness).toBe("opencode");
+  it("offers only the CLIs Ash chose, and claims no sign-in it did not see", () => {
+    saveChosenClis(["claude", "codex", "cursor", "pi", "not-a-cli"]);
+    try {
+      const installed = new Set(["claude", "codex", "cursor", "grok"]);
+      const present = chosenLeadPresence((cli) => installed.has(cli));
+      expect(present).toEqual([
+        { cli: "claude", installed: true },
+        { cli: "codex", installed: true },
+        { cli: "cursor", installed: true },
+        { cli: "pi", installed: false },
+      ]);
+      for (const row of present) expect(row).not.toHaveProperty("signedIn");
+      expect(leadPickerChoices(present)).toEqual([
+        { cli: "claude", label: "Claude Code" },
+        { cli: "codex", label: "Codex" },
+      ]);
+      // Installed but never ticked: not offered.
+      expect(leadPickerChoices(chosenLeadPresence(() => true))).not.toContainEqual({
+        cli: "grok",
+        label: "Grok",
+      });
+    } finally {
+      resetCodingTeamHomes();
+    }
+    saveChosenClis([]);
+    expect(chosenLeadPresence(() => true)).toEqual([]);
+    resetCodingTeamHomes();
   });
 
   it("keeps plugin servers and lets the lead win the monocode name", () => {

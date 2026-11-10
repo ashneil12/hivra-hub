@@ -8,6 +8,7 @@
 import type { HarnessId } from "../../sessions/model/session";
 import { HARNESS_TITLE, HARNESSES } from "../../sessions/model/session";
 import { CLI_ORDER, cliLabel, isCli } from "../../crew/model/clis";
+import { chosenClis } from "../../hub/model/codingTeamHome";
 
 export type LeadAttach = "claude-args" | "codex-config" | "none";
 
@@ -80,6 +81,16 @@ export function leadPickerChoices(present: readonly LeadCliPresence[]): LeadChoi
 }
 
 /**
+ * The CLIs Ash ticked at first launch, each with whether it is installed here.
+ * Nothing claims a sign-in the app did not see, so `signedIn` stays absent.
+ */
+export function chosenLeadPresence(
+  isInstalled: (cli: HarnessId) => boolean,
+): LeadCliPresence[] {
+  return chosenClis().map((cli) => ({ cli, installed: isInstalled(cli) }));
+}
+
+/**
  * A switch when the current CLI cannot lead. The choices are the capable CLIs
  * that are here. Null when this CLI can already lead.
  */
@@ -93,20 +104,14 @@ export function leadSwitchOffer(
 }
 
 /**
- * Point the same chat at a capable CLI. Crew and memory stay the same objects.
- * Null when the CLI cannot lead, so a bad value changes nothing.
+ * The CLI this same chat should lead on after a pick. Only the chat's harness
+ * changes, so its id, blocks, crew and memory stay with it. Null when the pick
+ * changes nothing or names a CLI that cannot lead, so a stale pick (a tick
+ * removed in another window, or an unknown name) changes nothing.
  */
-export function applyLeadSwitch<T extends { harness: string }, C, M>(
-  session: T,
-  cli: string,
-  kept: { crew: C; memory: M },
-): { session: T; crew: C; memory: M } | null {
-  if (!isCli(cli) || !canLead(cli)) return null;
-  return {
-    session: session.harness === cli ? session : { ...session, harness: cli },
-    crew: kept.crew,
-    memory: kept.memory,
-  };
+export function applyLeadSwitch(harness: string, cli: string): HarnessId | null {
+  if (!isCli(cli) || !canLead(cli) || cli === harness) return null;
+  return cli;
 }
 
 /** The monocode server Codex stores under mcp_servers.monocode. */
