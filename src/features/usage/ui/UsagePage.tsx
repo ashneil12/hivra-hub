@@ -118,6 +118,12 @@ function UsageBody({
         </p>
         <SecondaryButton onClick={onCopy}>{copyLabel}</SecondaryButton>
       </div>
+      {empty ? null : (
+        <p className="text-xs text-content/60">
+          Estimated cost is what the same use would cost at API prices. If you use a Claude subscription you pay a flat fee, so
+          this is not your bill.
+        </p>
+      )}
       <div className="grid gap-3 sm:grid-cols-3">
         <Summary title="Today" totals={history.today} />
         <Summary title="Last 7 days" totals={history.last7} />
@@ -222,7 +228,7 @@ function TotalsTable({ caption, rows }: { caption: string; rows: UsageGroup[] })
           {showCache ? (
             <th scope="col" className="py-1 pr-3 text-right font-medium">Cache write</th>
           ) : null}
-          <th scope="col" className="py-1 text-right font-medium">Cost</th>
+          <th scope="col" className="py-1 text-right font-medium">Estimated cost</th>
         </tr>
       </thead>
       <tbody>

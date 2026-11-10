@@ -5,7 +5,10 @@ import { beforeEach, expect, it, vi } from "vitest";
 vi.mock("@tauri-apps/api/window", () => ({ getCurrentWindow: () => ({ label: "main" }) }));
 vi.mock("@tauri-apps/api/core", () => ({ invoke: () => Promise.reject(new Error("no app")) }));
 
-import { backgroundAskFits, curatorAsk, curatorFeeds, firstDeferral, lastExchange } from "./useMemoryCurator";
+import { backgroundAskFits, budgetedAsk, curatorAsk, mayTryAgain, curatorFeeds, firstDeferral, lastExchange } from "./useMemoryCurator";
+import { cheapAsk } from "../../features/memory/model/cheapAsk";
+import { collectAnswer, curateTurn } from "../../features/memory/model/curator";
+import { emptyDoc } from "../../features/memory/model/doc";
 import { BUDGET_KEY, PAUSE_KEY, loadBudget, pausedNow } from "../../features/memory/model/memoryBudget";
 
 const NOW = Date.parse("2026-06-01T12:00:00Z");
@@ -87,9 +90,10 @@ it("the background budget counts a call when it is taken", () => {
   expect(loadBudget(NOW)).toEqual([]);
   expect(backgroundAskFits("crew", undefined, NOW)).toBe(true);
   expect(loadBudget(NOW)).toEqual([NOW]);
-  // A shipped budget that cannot be written still lets the turn through: it is a limit, not a lock.
+  // A ledger that cannot be read means no budget: nothing is called, and the screen says why.
   localStorage.setItem(BUDGET_KEY, "not json");
-  expect(backgroundAskFits("crew", undefined, NOW + 1)).toBe(true);
+  expect(backgroundAskFits("crew", undefined, NOW + 1)).toBe(false);
+  expect(pausedNow(NOW + 1)).toMatchObject({ problem: "storage" });
 });
 
 it("counts a deferred turn the first time it is left for later, and not on every retry", () => {
@@ -111,4 +115,42 @@ it("a pause is gone from the screen once its moment has passed", () => {
   expect(backgroundAskFits("crew", undefined, NOW)).toBe(false);
   expect(localStorage.getItem(PAUSE_KEY)).not.toBeNull();
   expect(pausedNow(NOW + HOUR)).toBeUndefined();
+});
+
+it("an already-done turn charges nothing, because the budget is taken inside the ask", async () => {
+  const doc = { ...emptyDoc(), doneTurns: ["notes-lead:turn-1"] };
+  const inner = vi.fn(async () => ({ ok: true as const, text: '{"kind":"none"}' }));
+  const ask = budgetedAsk("crew", undefined, inner, () => {}, () => NOW);
+  const ctx = { mateId: "notes-lead", turnId: "turn-1", user: "Remember that it rains.", assistant: "", now: NOW };
+  expect((await collectAnswer(doc, ctx, ask)).kind).toBe("already");
+  expect((await collectAnswer(emptyDoc(), { ...ctx, user: "" }, ask)).kind).toBe("empty");
+  expect(inner).not.toHaveBeenCalled();
+  expect(loadBudget(NOW)).toEqual([]);
+  // A real call is charged once, at the call.
+  expect((await collectAnswer(emptyDoc(), { ...ctx, turnId: "turn-2" }, ask)).kind).toBe("reply");
+  expect(loadBudget(NOW)).toEqual([NOW]);
+});
+
+it("a refused cheap-model outcome is final: not deferred, and a second change makes no call", async () => {
+  localStorage.setItem(
+    "monocode:custom-models",
+    JSON.stringify([{ id: "deepseek-def456", name: "DeepSeek chat", provider: "deepseek", baseUrl: "https://api.deepseek.com/v1", modelId: "deepseek-chat" }]),
+  );
+  const call = vi.fn(async () => ({ ok: false, text: "", kind: "refused", reason: "That model turned this down." }));
+  const ask = budgetedAsk("cheap", "deepseek-def456", cheapAsk("deepseek-def456", call), () => {}, () => NOW);
+  const ctx = { mateId: "notes-lead", turnId: "turn-1", user: "Remember that it rains.", assistant: "", now: NOW };
+  const first = await curateTurn(emptyDoc(), ctx, ask);
+  expect(first.answer.kind).toBe("refused");
+  expect(first.outcome.status).not.toBe("deferred");
+  // The next chat-list change finds the turn done and asks nothing.
+  await curateTurn(first.doc, ctx, ask);
+  expect(call).toHaveBeenCalledTimes(1);
+  expect(loadBudget(NOW)).toEqual([NOW]);
+});
+
+it("a turn that keeps failing for a passing reason is tried twice, then left alone", () => {
+  const tries = new Map<string, number>();
+  expect(mayTryAgain(tries, "notes-lead:turn-1")).toBe(true);
+  expect(mayTryAgain(tries, "notes-lead:turn-1")).toBe(false);
+  expect(mayTryAgain(tries, "notes-lead:turn-2")).toBe(true);
 });

@@ -24,7 +24,8 @@ const open: PaletteContext = {
   terminal: true,
   chat: true,
   busy: true,
-  control: false,
+  terminalFocus: false,
+  pickerFocus: false,
   editor: true,
 };
 
@@ -33,6 +34,7 @@ let root: Root;
 
 beforeEach(() => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+  vi.useFakeTimers();
   localStorage.clear();
   container = document.createElement("div");
   document.body.append(container);
@@ -43,8 +45,16 @@ beforeEach(() => {
 afterEach(() => {
   act(() => root.unmount());
   container.remove();
+  vi.useRealTimers();
   vi.unstubAllGlobals();
 });
+
+/** A command runs once the palette has closed, a tick after the pick. */
+function afterClose() {
+  act(() => {
+    vi.runOnlyPendingTimers();
+  });
+}
 
 function renderPalette(options: {
   query?: string;
@@ -138,6 +148,7 @@ describe("the command palette", () => {
     type("> new chat");
     const newChat = option("New chat");
     act(() => newChat.click());
+    afterClose();
     expect(onRunCommand).toHaveBeenCalledTimes(1);
     expect(onRunCommand.mock.calls[0]?.[0]).toMatchObject({
       id: "app.new-chat",
@@ -150,6 +161,7 @@ describe("the command palette", () => {
     const { onRunCommand } = renderPalette();
     type("> setting");
     press("Enter");
+    afterClose();
     expect(onRunCommand).toHaveBeenCalledTimes(1);
     expect(loadPaletteState().picks[0]).toMatchObject({
       query: "setting",
@@ -198,6 +210,7 @@ describe("the command palette", () => {
     type("> reload");
     expect(option("Reload").getAttribute("aria-disabled")).toBeNull();
     act(() => option("Reload").click());
+    afterClose();
     expect(onRunCommand).toHaveBeenCalledTimes(1);
     expect(onRunCommand.mock.calls[0]?.[0]).toMatchObject({
       id: "View: Reload",
@@ -250,6 +263,8 @@ describe("the command palette", () => {
       ),
     );
     press("Enter");
+    expect(order).toEqual(["close"]);
+    afterClose();
     expect(order).toEqual(["close", "run"]);
     expect(loadPaletteState().uses[0]?.id).toBe("View: Reload");
   });
