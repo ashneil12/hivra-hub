@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { HarnessEvent, HarnessSessionInput } from "../../core/types";
 import type { RuntimeMode } from "../../../../features/sessions/model/session";
+import bundled from "../../../../features/sessions/model/modelsDev.json";
 import { IDLE_COMPACT_NOTICE } from "../../../../features/sessions/model/contextCeiling";
 import { recallPromptCache, rememberPromptCache } from "./claudePromptCache";
 
@@ -210,6 +211,36 @@ describe("compaction ceiling", () => {
       settings: { autoCompactWindow: null },
     });
     await waitFor(() => userTexts().length === 2, "second prompt");
+    expect(spawned).toHaveLength(1);
+    emitResult(50_000);
+    await next;
+  });
+});
+
+describe("a custom route's ceiling", () => {
+  it("launches with its provider's own window, and the next turn finds nothing to change", async () => {
+    storage.set(
+      "monocode:custom-models",
+      JSON.stringify([
+        { id: "ds", name: "DeepSeek", provider: "deepseek", baseUrl: "https://api.deepseek.com/v1", modelId: "deepseek-chat" },
+      ]),
+    );
+    // The catalogue has not been read yet: the first launch waits for it, so the window it starts with is the one
+    // every later turn computes (a different one would be a live settings change on turn two).
+    const table = bundled as Record<string, { context: number }>;
+    const own = Math.min(1_000_000, table["deepseek/deepseek-chat"].context);
+    expect(own).not.toBe(400_000);
+    const { turn } = await firstTurn({ model: "custom:ds" });
+    expect(settingsArg(spawned[0]).autoCompactWindow).toBe(own);
+    emitResult(50_000);
+    await turn;
+
+    const next = send([], { model: "custom:ds" });
+    await waitFor(() => userTexts().length === 2, "second prompt");
+    const changes = parse().filter(
+      (m) => m.type === "control_request" && (m.request as { subtype?: string }).subtype === "apply_flag_settings",
+    );
+    expect(changes).toEqual([]);
     expect(spawned).toHaveLength(1);
     emitResult(50_000);
     await next;

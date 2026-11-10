@@ -38,7 +38,7 @@ in Settings, under About.
 - [Agent Plugins standard](https://agent-plugins.org/): the plugin format.
 - [council-of-high-intelligence](https://github.com/0xnyk/council-of-high-intelligence): the council protocol (blind round, cross-exam, dissent quota and a chairman).
 - [OpenMausBot](https://github.com/milind-soni/OpenMausBot): rooms with responder modes, goal mode, teams and playbooks as one file.
-- [OpenBot](https://github.com/CopilotKit/openbot): approval gates, an audit trail, typed handoffs and quiet digests.
+- [OpenBot](https://github.com/CopilotKit/openbot): approval gates that stop at an unapproved action, an audit trail, typed handoffs and quiet digests.
 - [Rerun](https://github.com/rerun-build/rerun): remote engine pairing, a memory curator and approval cards (ideas only).
 - [Puppetmaster](https://github.com/professorpalmer/Puppetmaster): completion gates, typed artifacts with evidence, failure reroutes, session leases and idempotent launch keys.
 - [Raven](https://github.com/EverMind-AI/Raven): "finished" is not "succeeded", status from the registry, provenance-required memory.
@@ -65,7 +65,7 @@ in Settings, under About.
 - [portless](https://github.com/vercel-labs/portless): a stable name per worktree for its app and services, a local proxy that routes by name, and a route registry only its owner can remove (WP-90). The 0.17 parallel loopback dial and Windows route-lock retry are included (WP-139).
 - [emulate](https://github.com/vercel-labs/emulate): 14 stateful stand-ins for outside services, so a crew's tests use fake accounts instead of real ones (WP-90).
 - [oh-my-hermes](https://github.com/rlaope/oh-my-hermes): the dag-ulw goal graph: a finish line first, write scopes, repair cycles, a verify node and a run verdict, and a finished run's close that counts the usage its children recorded (WP-91, WP-148).
-- [T3 Code](https://github.com/pingdotgg/t3code): the PR watch rules, honest Claude results, delegation delivery and stop rules, limit auto-resume guards, worktree cleanup cases, 18 recorded Claude transcripts for the test bench, a portable mid-thread handoff that says when a harness cannot resume, and forking a chat from a message (WP-123).
+- [T3 Code](https://github.com/pingdotgg/t3code): the PR watch rules, honest Claude results, delegation delivery and stop rules, limit auto-resume guards, worktree cleanup cases, 18 recorded Claude transcripts for the test bench, a lead that can start work on any funded CLI (WP-120), a portable mid-thread handoff that says when a harness cannot resume, and forking a chat from a message (WP-123).
 - [Aether](https://runaether.dev): ideas only: a machine per task, the person's own subscription, phone control and a reviewer that runs the changed code.
 - [Row-Bot](https://github.com/siddsachar/row-bot): the automatic recall policy: skip gates, a query builder, a weighted score, rejection reasons, a broad-query margin, a cap on lines and a trace (WP-99), the correction rule behind the rules tier (WP-103), and a scan that refuses text which looks like instructions aimed at the model (WP-111).
 - [Mnemos](https://github.com/Riley-Coyote/mnemos-mcp): ideas for the recall rules (four content words, two distinctive shared words, at most three lines, each memory once per conversation; WP-99), and memory that fades over the days it was used rather than the calendar, with a lived-day clock and one question to the person before a fact goes stale (WP-100).
@@ -73,6 +73,7 @@ in Settings, under About.
 - [mcode-stack](https://github.com/MiniMax-AI/mcode-stack): team skills a first mate calls by name: whether work should go to a subagent, a review that sees only the diff, the requirement and the test results, and turning a repeated correction into a check (WP-117).
 - [Pierre](https://github.com/pierrecomputer/pierre): an optional split (side-by-side) diff, pinned as an npm package, with unified staying the default (WP-116).
 - [Claude Code subagents](https://code.claude.com/docs/en/sub-agents): a cheap Explore agent passed to a crew session as a flag, so its search does not run on the lead model (ideas only, WP-143).
+- [models.dev](https://github.com/anomalyco/models.dev): a catalogue of each model's context window and whether it can call tools, bundled so a custom route can read it offline (WP-104).
 - [Memorilla](https://github.com/snap-stanford/memorilla): an external test set for chat-derived memory, the arm ladder its evaluation reports, and rules for writing a memory question that cannot be guessed (WP-106, ideas and data only).
 - [numbrone](https://github.com/stevenmichaelthomas/numbrone): ideas only: a typed daily work log and retros that propose instruction edits only after the person agrees.
 

@@ -315,6 +315,13 @@ Third-party components Hivra adds:
   Used in: src-tauri/plugins/hivra-mcode/skills/subagent-split-check, src-tauri/plugins/hivra-mcode/skills/independent-review, src-tauri/plugins/hivra-mcode/skills/taste-to-checks, src-tauri/plugins/hivra-mcode/skills/long-session-check, src-tauri/plugins/hivra-mcode/skills/context-tax-audit
   Copied from stacks/ronny/skills at 88f84be7075106d8ce283e5d3a8138cdb8f9a205. The three named skills, plus the short long-session-check and context-tax-audit. Each file adds disable-model-invocation, so Claude Code does not offer it to the model itself; Hivra's skill index lists each one and where it is, and a first mate reads it when the work fits (WP-117). context-tax-audit turns two em dashes into a comma and a full stop. The skill text is otherwise unchanged.
 
+- models.dev's model catalogue
+  Source: https://github.com/anomalyco/models.dev
+  License: MIT
+  Copyright (c) 2025 models.dev
+  Used in: src/features/sessions/model/modelsDev.json, src/features/sessions/model/LICENSE.models-dev
+  The models.dev catalogue trimmed to each model's context window and tool flag, at commit b4b8ca36 (WP-104). The generator and the provider files are not copied. The app reads the file offline. Licence text in src/features/sessions/model/LICENSE.models-dev.
+
 - Pierre Diffs
   Source: https://github.com/pierrecomputer/pierre/tree/main/packages/diffs
   License: Apache-2.0
