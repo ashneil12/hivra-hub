@@ -21,6 +21,8 @@ import {
   PROVIDE_KINDS,
   dependenciesOf,
   describeCycleWarning,
+  renderContractBlock,
+  renderContractForTask,
   requiresCycle,
   type Contract,
   type ParsedFanout,
@@ -99,6 +101,17 @@ export function planFanout(parsed: ParsedFanout, owner: string, requestId: strin
     warnings,
   }));
   return { links, waves: plan.waves, warnings };
+}
+
+/** The brief's contract section for one task: who it is in the plan, the shared block, and its own three lines. */
+export function fanoutSection(link: FanoutLink): string {
+  const count = Object.keys(link.tasks).length;
+  return [
+    `You are task "${link.name}" of a fan-out of ${count} ${count === 1 ? "task" : "tasks"}, in wave ${link.wave}.${link.after.length ? ` What you waited for has been delivered and checked: ${link.after.join(", ")}.` : ""}`,
+    renderContractBlock(link.contract, link.warnings),
+    `For task ${link.name}:`,
+    renderContractForTask(link.contract, link.name),
+  ].join("\n");
 }
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>

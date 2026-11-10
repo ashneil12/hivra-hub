@@ -1526,7 +1526,7 @@ export async function handleAgentApp(
   if (action.startsWith("tasks.")) {
     // A delegated worker starts like sessions.start, so it waits for the first probe the same way (found by the bench:
     // a Mono briefed right after a launch was told "claude is not available").
-    if (action === "tasks.delegate" && input.lead === undefined) await harnessesProbed();
+    if ((action === "tasks.delegate" && input.lead === undefined) || action === "tasks.fanout") await harnessesProbed();
     const result = await handleTasks(source, requestId, action, input, host, { startLaunch, fileStarted });
     if (action === "tasks.delegate" && input.lead === undefined) host.rooms?.delegated?.(source, result);
     return result;

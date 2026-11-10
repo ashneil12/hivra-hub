@@ -81,10 +81,13 @@ import { bindPhaseLauncher, unbindPhaseLauncher } from "../../phases/model/phase
 import { bindCrew, commentId } from "../../phases/model/store";
 import { claudeRunsOnSubscriptionBridge } from "../../../integrations/harness/providers/claude/claudeDeepseekBridge";
 import { checkBrief, renderBrief, type BriefIsolation } from "../../firstmate/model/brief";
+import { parseFanout } from "../../firstmate/model/fanoutContract";
+import { fanoutSection, parseFanoutLink, planFanout, taskRequestId } from "../../firstmate/model/fanoutWaves";
 import { classifyBriefTask } from "../../firstmate/model/briefSkills";
 import { gateRequest, type GateRequest } from "../../firstmate/model/completionGates";
 import { isFirstMate } from "../../firstmate/model/checkoutGuard";
 import { briefOnRemoteHost } from "../../firstmate/host/remoteDelegate";
+import { remoteProjectFor } from "../../connections/model/remoteProjects";
 import { WORKER_REPORT_SHAPE } from "../../firstmate/model/report";
 import { askPerson, taskMessage, type FirstMateTasksHost } from "../../firstmate/model/steering";
 import { taskProjectOf } from "../../tasks/model/agentTasks";
@@ -149,8 +152,12 @@ export const TASK_FIELDS: ReadonlyArray<readonly [string, readonly string[]]> = 
       "code",
       // WP-70: the shared task this work moves. Not a worker's task id.
       "taskId",
+      // WP-171: the task's link to its fan-out. delegate_tasks writes it; delegate_task has no such field.
+      "fanout",
     ],
   ],
+  // WP-171: one call for a multi-part ask whose tasks name what they own, provide, require and check.
+  ["tasks.fanout", ["intent", "tasks"]],
   ["tasks.accept", ["taskId", "accept", "reason"]],
   ["tasks.workers", ["project", "workers", "heavy", "scope", "cli", "model", "effort", "clear"]],
   ["tasks.status", ["taskIds"]],
@@ -747,6 +754,11 @@ async function delegate(
   // left as a placeholder is refused before anything starts (firstmate/model/brief.ts).
   const unfit = checkBrief({ intent: input.intent, spec: input.brief, done: input.goal });
   if (unfit) throw new Error(unfit);
+  // WP-171: a task of a fan-out carries its link: the contract its brief shows, and what it waits for.
+  const link = input.fanout === undefined ? undefined : parseFanoutLink(input.fanout);
+  if (link && input.lead !== undefined) throw new Error("A fan-out's tasks are workers: leave out lead.");
+  const contract = link ? fanoutSection(link) : undefined;
+  const extras = { contract };
   const intent = text(input.intent, "intent", BRIEF_MAX);
   const brief = text(input.brief, "brief", BRIEF_MAX);
   const title =
@@ -794,6 +806,7 @@ async function delegate(
       { intent, spec: brief },
       { kind: "first-mate" },
       classifyBriefTask(`${intent}\n${brief}`),
+      extras,
     );
     return briefLead(source, owner.mono, tasks, {
       requestId,
@@ -860,6 +873,11 @@ async function delegate(
   const folder =
     ownTeam?.folder ??
     (named !== undefined && !owner.team ? tasks.hubProjectFolder?.(named) ?? named : source.cwd);
+  // WP-171: a task that waits for another is held in this app's queue, which a remote project's host does not share.
+  if (link?.after.length && [folder, source.cwd].some((path) => remoteProjectFor(path)))
+    throw new Error(
+      "A task that waits for another can't be held on a remote project yet. Send the tasks that need nothing from each other, and the rest once they report.",
+    );
   // WP-60: a remote project keeps the brief on its host. A local folder is unchanged.
   const remoteBrief = await briefOnRemoteHost({
     paths: [folder, source.cwd],
@@ -877,6 +895,7 @@ async function delegate(
           { intent, spec: brief },
           { kind: "shared", folder: hostCwd },
           classifyBriefTask(`${intent}\n${brief}`),
+          extras,
         ),
         goal,
       ),
@@ -1009,6 +1028,7 @@ async function delegate(
             isolationOf(workspaceMode, worktreeCwd),
             // WP-41: the brief names the pstack skills for this kind of work.
             classifyBriefTask(`${intent}\n${brief}`),
+            extras,
           ),
           goal,
           memory,
@@ -1061,7 +1081,7 @@ async function delegate(
       harness: launch.harness,
       ...(files.length ? { files } : {}),
     };
-    const admission = tasks.pool.admit(job);
+    const admission = tasks.pool.admit({ ...job, ...(link ? { fanout: link } : {}) });
     if (!admission.start) {
       tasks.pool.enqueue(
         {
@@ -1156,6 +1176,91 @@ async function delegate(
     note: row
       ? forUser`${cliFallback ? `${cliFallback} ` : ""}Running${ownTeam ? ` in ${ownTeam.name}, where its chat shows under yours` : ""}. Its report comes back to you as its own turn soon after it finishes. Start any other independent work now, tell Ash in one line what is running (in plain words: never its task id or a folder path; never the raw model id; r91: its model goes on a line of its own under that line, exactly as modelName says, never mid-sentence) and end your turn; whenever he writes meanwhile, answer him at once.`
       : `${cliFallback ? `${cliFallback} ` : ""}It started, but its task record could not be stored; its report still comes back to you.`,
+  };
+}
+
+/**
+ * WP-171, delegate_tasks: one call for a multi-part ask whose tasks name what each owns, provides, requires and checks.
+ * The whole contract is checked before anything starts. Then every task goes through the same `delegate` a single
+ * delegate_task does (its brief, gates, crew route, worker limits, checkout): the tasks that need nothing start, and a
+ * task that requires a name waits in the worker queue until the task that provides it is delivered and checked
+ * (fanoutWaves.ts, fanoutChecks.ts), starting by itself then. A task that cannot start holds the tasks that need it.
+ */
+async function fanout(
+  source: Session,
+  requestId: string,
+  input: Record<string, unknown>,
+  host: AgentAppHost,
+  helpers: TaskHelpers,
+) {
+  const { tasks } = taskOwner(source, host);
+  if (!/^[A-Za-z0-9_-]{1,100}$/.test(requestId))
+    throw new Error("request ID must use letters, digits, underscores or hyphens (up to 100)");
+  const parsed = parseFanout(input);
+  const planned = planFanout(parsed, source.id, requestId);
+  if (planned.links.some((link) => link.after.length) && !tasks.pool?.waitsOnProviders)
+    throw new Error(
+      "This build starts every task at once, so a task can't wait for one it needs. Send the tasks that need nothing now with delegate_task, and the rest after they report.",
+    );
+  const linkOf = new Map(planned.links.map((link) => [link.name, link]));
+  const taskOf = new Map(parsed.tasks.map((task) => [task.name, task]));
+  /** Tasks that did not start (refused, or needing one that did not), by name, with why. */
+  const notStarted = new Map<string, string>();
+  const results: Record<string, unknown>[] = [];
+  // The tasks that need nothing first, then each wave after, so the queue holds the rest in order.
+  for (const name of planned.waves.flat()) {
+    const link = linkOf.get(name)!;
+    const task = taskOf.get(name)!;
+    const blocker = link.after.find((dep) => notStarted.has(dep));
+    if (blocker) {
+      notStarted.set(name, `${blocker} did not start`);
+      results.push({ name, wave: link.wave, status: "not started", error: `It needs ${blocker}, which did not start (${notStarted.get(blocker)}).` });
+      continue;
+    }
+    try {
+      const out = (await delegate(
+        source,
+        taskRequestId(requestId, name),
+        {
+          intent: task.intent,
+          brief: task.brief,
+          goal: task.goal,
+          ...(task.title ? { title: task.title } : {}),
+          ...(task.files.length ? { files: task.files } : {}),
+          ...(task.gates ?? {}),
+          ...task.passthrough,
+          fanout: link,
+        },
+        host,
+        helpers,
+      )) as Record<string, unknown>;
+      results.push({
+        name,
+        wave: link.wave,
+        ...Object.fromEntries(
+          ["taskId", "childSessionId", "status", "title", "waiting", "modelName", "effort", "alreadyStarted"]
+            .filter((key) => out[key] !== undefined)
+            .map((key) => [key, out[key]]),
+        ),
+      });
+    } catch (error) {
+      const why = error instanceof Error ? error.message : String(error);
+      notStarted.set(name, why);
+      results.push({ name, wave: link.wave, status: "refused", error: why });
+    }
+  }
+  if (notStarted.size === results.length)
+    throw new Error(`Nothing started. ${results.map((entry) => `${String(entry.name)}: ${String(entry.error)}`).join(" ")}`);
+  // Said in the order the tasks were given, not the order they started.
+  const byName = new Map(results.map((entry) => [entry.name, entry]));
+  const ordered = parsed.tasks.map((task) => byName.get(task.name)!);
+  const waiting = ordered.filter((entry) => entry.status === "waiting").length;
+  const problems = ordered.filter((entry) => entry.status === "refused" || entry.status === "not started").length;
+  return {
+    waves: planned.waves,
+    tasks: ordered,
+    ...(planned.warnings.length ? { warnings: planned.warnings } : {}),
+    note: forUser`${ordered.length - waiting - problems} started now${waiting ? `; ${waiting} wait${waiting === 1 ? "s" : ""} for what ${waiting === 1 ? "it needs" : "they need"} to be delivered and checked, and start${waiting === 1 ? "s" : ""} by itself then` : ""}${problems ? `; ${problems} did not start (see each task's error)` : ""}. A task whose provider fails is held, not run anyway, and you hear what landed and what did not. Reports come back to you as their own turns. Tell Ash in one line what is running and what waits (in plain words: never a task id, a task name or a folder path), then end your turn.`,
   };
 }
 
@@ -1665,6 +1770,8 @@ export function handleTasks(
   switch (action) {
     case "tasks.delegate":
       return delegate(source, requestId, input, host, helpers);
+    case "tasks.fanout":
+      return fanout(source, requestId, input, host, helpers);
     case "tasks.status":
       return status(source, input, host);
     case "tasks.wait":

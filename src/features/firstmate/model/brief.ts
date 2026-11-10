@@ -201,6 +201,8 @@ export function renderBrief(
   parts: Pick<BriefParts, "intent" | "spec">,
   isolation: BriefIsolation,
   task?: BriefTask,
+  /** WP-171: a task of a fan-out carries its contract (fanoutWaves.ts fanoutSection). Absent, no section. */
+  extras?: { contract?: string },
 ): string {
   // WP-41: name the pstack skills for this kind of work. No task, no section, so a brief that doesn't ask stays as it was.
   const skills = task ? briefSkillsSection(task) : undefined;
@@ -208,6 +210,7 @@ export function renderBrief(
     isolationSection(isolation),
     `## Intent\n${parts.intent.trim()}`,
     `## Spec\n${parts.spec.trim()}`,
+    ...(extras?.contract ? [`## Fan-out contract\n${extras.contract}`] : []),
     statusProtocol(isolation),
     STEERING,
     ...(skills ? [skills] : []),
@@ -229,7 +232,7 @@ export function withLegacyBriefParts(input: Record<string, unknown>, title: stri
 }
 
 /** The template's fixed section headings (written by code, never the model's words) and its two filled ones. */
-export const FIXED_SECTIONS = ["Isolation check", "Status protocol", "Steering", "Skills"] as const;
+export const FIXED_SECTIONS = ["Isolation check", "Fan-out contract", "Status protocol", "Steering", "Skills"] as const;
 export const FILLED_SECTIONS = ["Intent", "Spec"] as const;
 
 const FIXED_BLOCK = new RegExp(

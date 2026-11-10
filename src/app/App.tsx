@@ -705,6 +705,7 @@ import { useFirstMateCheckoutGuard } from "../features/firstmate/hooks/useFirstM
 import { useSteering } from "../features/firstmate/hooks/useSteering";
 import { firstMateLaunch } from "../features/firstmate/model/checkoutGuard";
 import { withLegacyBriefParts } from "../features/firstmate/model/brief";
+import { fanoutHost } from "../features/firstmate/host/fanoutHost";
 import { viewAfterRemoval, type RemovalOrigin } from "../features/sessions/model/sessionWorkspaceLifecycle";
 import { focusClosesMono, paneFocus } from "./model/paneFocus";
 import { useLiveTurns } from "../features/sessions/hooks/useLiveTurns";
@@ -13299,6 +13300,17 @@ function Workspace({
     }
     return [...byId.values()].filter(isOpenDelegation);
   };
+  // WP-171: what a waiting task of a fan-out waits for (the tasks that provide what it requires, delivered and checked).
+  // A provider's row this window lacks (after a restart) is read from the store before the queue decides.
+  const fanout = useMemo(
+    () =>
+      fanoutHost({
+        rows: () => [...delegationRows(), ...(delegationsRef.current?.known() ?? [])],
+        fetch: async (owner, session) => (await tauriDelegations.owned({ ownerSession: owner, requestIds: [session] }))[0],
+        folder: (session) => sessionsRef.current.find((entry) => entry.id === session)?.cwd,
+      }),
+    [],
+  );
   const providerRoomNow = (harness: string) =>
     workerRoom(harness, {
       now: Date.now(),
@@ -13315,6 +13327,8 @@ function Workspace({
     void pumpWorkers({
       openRows: openDelegationRows,
       room: providerRoomNow,
+      dependency: fanout.dependency,
+      settle: fanout.settle,
       // A Lead's chat that isn't open in this window keeps its workers waiting until it is.
       canStart: (job) => sessionsRef.current.some((session) => session.id === job.ownerSession),
       start: (job: QueuedWorker) => {
@@ -14447,6 +14461,7 @@ function Workspace({
               pool: workerPoolHost({
                 openRows: openDelegationRows,
                 room: providerRoomNow,
+                dependency: fanout.dependency,
                 card: (job, launch) =>
                   rememberSession({
                     sessionId: job.id,

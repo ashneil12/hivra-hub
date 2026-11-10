@@ -5,6 +5,7 @@ import {
   fanoutDependency,
   forgetVerifications,
   inspectProvides,
+  RECHECK_MS,
   settleFanout,
   verificationOf,
   type FileIo,
@@ -197,6 +198,27 @@ describe("settling a fan-out before the queue decides (WP-171)", () => {
     expect(io.reads).toEqual([API_FILE, API_FILE]);
   });
 
+  it("looks at a miss again after a while, in case the files landed since, but not before", async () => {
+    const files: Record<string, string> = {};
+    const io = disk(files);
+    let now = 1_000;
+    const run = () => settleFanout([queued(board)], { row: () => done, folder: () => PROJECT, io, now: () => now });
+    await run();
+    expect(verificationOf(provider, done)).toMatchObject({ ok: false });
+    files[API_FILE] = good;
+    now += RECHECK_MS - 1;
+    await run();
+    expect(verificationOf(provider, done)).toMatchObject({ ok: false });
+    now += 1;
+    await run();
+    expect(verificationOf(provider, done)).toEqual({ ok: true, problems: [] });
+    // A pass stands for that row.
+    const reads = io.reads.length;
+    now += 10 * RECHECK_MS;
+    await run();
+    expect(io.reads.length).toBe(reads);
+  });
+
   it("leaves a provider that is still working, failed, or whose declared check did not pass alone", async () => {
     for (const row of [
       { state: "running", status: "working" },
@@ -223,7 +245,7 @@ describe("settling a fan-out before the queue decides (WP-171)", () => {
     expect(kept).toEqual([[provider, done]]);
     forgetVerifications();
     await run();
-    expect(fetchRow).toHaveBeenCalledWith(provider);
+    expect(fetchRow).toHaveBeenCalledWith(provider, "mono-exo");
     expect(verificationOf(provider, done)).toEqual({ ok: true, problems: [] });
   });
 

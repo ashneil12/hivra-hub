@@ -44,6 +44,8 @@ import {
   type ProviderRoom,
 } from "../../monos/model/workerPool";
 import { isOpenDelegation } from "../../monos/model/delegations";
+import { fanoutDependency, forgetVerifications, settleFanout, verificationOf } from "../../firstmate/model/fanoutChecks";
+import type { DependencyLookup } from "../../firstmate/model/fanoutWaves";
 import { addMono, findMono, updateMono } from "../../monos/model/mono";
 import { setLineRulesSource } from "../../crew/model/lineRules";
 import { customModelRoute, importCustomModels } from "../../sessions/model/customModels";
@@ -2619,5 +2621,249 @@ describe("Hivra WP-14: tasks.message and tasks.ask", () => {
     await expect(
       handleAgentApp(worker.source, "r-w", "tasks.ask", { key: "k", question: "q", options: ["a", "b"], recommended: "a" }, worker.host),
     ).rejects.toThrow("A worker reports to the chat that delegated it");
+  });
+});
+
+// WP-171: a contract, waves and the tasks that wait for what they need, through the same delegate every task uses.
+describe("tasks.fanout: contracts and waves in the normal delegate path (WP-171)", () => {
+  const INTENT = "Ash: a score board with an API behind it.";
+  const api = {
+    name: "api",
+    brief: "Add GET /api/score in src/api/score.ts.",
+    goal: "the route answers with a number",
+    owns: ["src/api/score.ts"],
+    provides: [
+      { kind: "endpoint", name: "/api/score" },
+      { kind: "file", name: "src/api/score.ts" },
+    ],
+    checks: ["api-tests"],
+  };
+  const board = {
+    name: "board",
+    brief: "Show the score in src/ui/Board.tsx.",
+    goal: "the board shows the number",
+    owns: ["src/ui/Board.tsx"],
+    requires: ["/api/score"],
+  };
+  const docs = { name: "docs", brief: "Document the score in README.md.", goal: "the README explains it" };
+  const FILE = `${PROJECT}/src/api/score.ts`;
+
+  /** The delegate path as App.tsx wires it: the pool with dependencies, and the pump that settles them first. */
+  function fanned(who: "mono" | "worker" | "checker" = "mono", rows: Delegation[] = []) {
+    resetWorkerPool();
+    forgetVerifications();
+    const f = fixture(rows, who);
+    const files: Record<string, string> = {};
+    const time = { now: 1_000 };
+    const io = { exists: async (path: string) => path in files, read: async (path: string) => files[path] ?? null };
+    const lookup: DependencyLookup = {
+      row: (session) => rows.find((entry) => entry.childSession === session),
+      queued: (session) => queuedWorkers().some((entry) => entry.id === session),
+      verified: (session, current) => verificationOf(session, current),
+    };
+    const dependency = fanoutDependency(lookup);
+    const open = () => rows.filter(isOpenDelegation);
+    f.api.pool = workerPoolHost({ openRows: open, room: () => ({ room: true }), dependency, card: () => {} });
+    const pump = () =>
+      pumpWorkers({
+        openRows: open,
+        room: () => ({ room: true }),
+        dependency,
+        settle: (queue) => settleFanout(queue, { row: lookup.row, folder: () => PROJECT, io, now: () => time.now }),
+        start: (job) => handleAgentApp(f.source, job.requestId, "tasks.delegate", job.input, f.host),
+      });
+    const fan = (requestId: string, tasks: unknown[]) =>
+      handleRaw(f.source, requestId, "tasks.fanout", { intent: INTENT, tasks }, f.host) as Promise<{
+        waves: string[][];
+        tasks: { name: string; wave: number; status: string; waiting?: string; error?: string; childSessionId?: string }[];
+        warnings?: string[];
+        note: string;
+      }>;
+    const finish = (index: number, patch: Partial<Delegation> = {}) =>
+      Object.assign(rows[index], { state: "completed", status: "done", gateVerdict: "passed", version: 2, ...patch });
+    return { ...f, rows, files, time, pump, fan, finish };
+  }
+  const startedIds = (started: unknown[][]) => started.map((call) => call[1]);
+  const promptOf = (started: unknown[][], index: number) => (started[index][0] as { prompt: string }).prompt;
+
+  it("starts the tasks that need nothing and holds the one that needs a provider, each as an ordinary task", async () => {
+    const { fan, started, rows } = fanned();
+    const out = await fan("r1", [api, board, docs]);
+    expect(out.waves).toEqual([["api", "docs"], ["board"]]);
+    expect(out.tasks.map((task) => [task.name, task.wave, task.status])).toEqual([
+      ["api", 1, "running"],
+      ["board", 2, "waiting"],
+      ["docs", 1, "running"],
+    ]);
+    expect(out.tasks[1].waiting).toMatch(/^Waiting for api to finish and be checked/);
+    expect(startedIds(started)).toEqual(["app-mono-exo-r1-api", "app-mono-exo-r1-docs"]);
+    expect(rows.map((entry) => entry.childSession)).toEqual(["app-mono-exo-r1-api", "app-mono-exo-r1-docs"]);
+    expect(queuedWorkers().map((entry) => entry.id)).toEqual(["app-mono-exo-r1-board"]);
+    expect(out.note).toContain("2 started now; 1 waits for what it needs");
+    expect(out.note).not.toMatch(/[—–]/);
+  });
+
+  it("starts all of them at once when none needs another, up to the first mate's eight", async () => {
+    const { fan, started } = fanned();
+    const many = Array.from({ length: 8 }, (_, i) => ({ name: `t${i}`, brief: `Do part ${i}.`, goal: `part ${i} works` }));
+    const out = await fan("r8", many);
+    expect(out.waves).toHaveLength(1);
+    expect(started).toHaveLength(6); // the project's own limit of six still holds: the last two wait their turn
+    expect(out.tasks.filter((task) => task.status === "waiting")).toHaveLength(2);
+    await expect(fan("r9", [...many, { name: "t8", brief: "Do part 8.", goal: "part 8 works" }])).rejects.toThrow(/1 to 8 tasks/);
+  });
+
+  it("writes the contract into every brief: who it is, what it owns and provides, what it may rely on", async () => {
+    const { fan, started, pump, rows, files, finish } = fanned();
+    await fan("r1", [api, board]);
+    const first = promptOf(started, 0);
+    expect(first).toContain('## Fan-out contract\nYou are task "api" of a fan-out of 2 tasks, in wave 1.');
+    expect(first).toContain("You provide: endpoint /api/score; file src/api/score.ts");
+    expect(first).toContain("- [api] api-tests");
+    // The intent the first mate sent is the Intent section of each brief.
+    expect(first).toContain(`## Intent\n${INTENT}`);
+    files[FILE] = 'app.get("/api/score", handler)';
+    finish(0);
+    await pump();
+    const second = promptOf(started, 1);
+    expect(second).toContain('You are task "board" of a fan-out of 2 tasks, in wave 2. What you waited for has been delivered and checked: api.');
+    expect(second).toContain("You may rely on: /api/score (endpoint from api)");
+    expect(rows).toHaveLength(2);
+  });
+
+  it("the dependent starts by itself once its provider is done, its checks passed and what it made is on disk", async () => {
+    const { fan, started, pump, files, finish, time } = fanned();
+    await fan("r1", [api, board]);
+    await pump();
+    expect(started).toHaveLength(1); // the provider is still working
+    finish(0);
+    await pump();
+    expect(started).toHaveLength(1); // done, but the file is not there: not delivered
+    files[FILE] = "export const x = 1;";
+    time.now += 30_000;
+    await pump();
+    expect(started).toHaveLength(1); // the file is there but the route is not
+    files[FILE] = 'app.get("/api/score", handler)';
+    time.now += 30_000;
+    await pump();
+    expect(startedIds(started)).toEqual(["app-mono-exo-r1-api", "app-mono-exo-r1-board"]);
+    expect(queuedWorkers()).toEqual([]);
+  });
+
+  it("never lets an unrun declared check pass: a done provider with no passing verdict holds its dependent", async () => {
+    const { fan, started, pump, files, finish, source, host } = fanned();
+    await fan("r1", [api, board]);
+    files[FILE] = 'app.get("/api/score", handler)';
+    finish(0, { gateVerdict: null });
+    await pump();
+    expect(started).toHaveLength(1);
+    const status = (await handleAgentApp(source, "s1", "tasks.status", {}, host)) as { waiting: { waiting: string }[] };
+    expect(status.waiting[0].waiting).toMatch(/^Held: api finished, but its declared check \(api-tests\) did not run or have not passed/);
+  });
+
+  it("holds the dependent when its provider fails, and the first mate reads what landed and what did not start", async () => {
+    const { fan, started, pump, rows, source, host } = fanned();
+    await fan("r1", [api, board, docs]);
+    Object.assign(rows[0], { state: "failed", status: "failed", error: "the build broke in src/api/score.ts" });
+    await pump();
+    expect(startedIds(started)).toEqual(["app-mono-exo-r1-api", "app-mono-exo-r1-docs"]);
+    const status = (await handleAgentApp(source, "s1", "tasks.status", {}, host)) as {
+      waiting: { childSessionId: string; waiting: string }[];
+    };
+    expect(status.waiting).toHaveLength(1);
+    expect(status.waiting[0].childSessionId).toBe("app-mono-exo-r1-board");
+    expect(status.waiting[0].waiting).toContain("Held: api failed: the build broke in src/api/score.ts.");
+    expect(status.waiting[0].waiting).toContain("Not started: board.");
+    // The first mate can take it back, as any waiting task.
+    await handleAgentApp(source, "c1", "tasks.cancel", { taskId: "app-mono-exo-r1-board" }, host);
+    expect(queuedWorkers()).toEqual([]);
+  });
+
+  it("refuses a requirement nothing provides before anything starts", async () => {
+    const { fan, started } = fanned();
+    await expect(fan("r1", [api, { ...board, requires: ["/api/scores"] }])).rejects.toThrow(/Task board requires "\/api\/scores", but no task provides it/);
+    expect(started).toEqual([]);
+    expect(queuedWorkers()).toEqual([]);
+  });
+
+  it("says which tasks did not start, and does not run the ones that need them", async () => {
+    const { fan, started, api: tasks, rows } = fanned();
+    let calls = 0;
+    tasks.checkDepth = vi.fn(async () => {
+      calls += 1;
+      if (calls === 1) throw new Error("Not started: you already have 8 tasks running, the most one first mate runs at once (8).");
+      return 1;
+    });
+    const out = await fan("r1", [api, board, docs]);
+    expect(out.tasks.map((task) => [task.name, task.status])).toEqual([
+      ["api", "refused"],
+      ["board", "not started"],
+      ["docs", "running"],
+    ]);
+    expect(out.tasks[0].error).toContain("already have 8 tasks running");
+    expect(out.tasks[1].error).toContain("It needs api, which did not start");
+    expect(startedIds(started)).toEqual(["app-mono-exo-r1-docs"]);
+    expect(queuedWorkers()).toEqual([]);
+    expect(rows).toHaveLength(1);
+    expect(out.note).toContain("2 did not start");
+  });
+
+  it("fails loudly when nothing at all could start", async () => {
+    const { fan, api: tasks } = fanned();
+    tasks.checkDepth = vi.fn(async () => {
+      throw new Error("This task would sit 3 levels deep.");
+    });
+    await expect(fan("r1", [api, docs])).rejects.toThrow(/Nothing started\. api: This task would sit 3 levels deep\. docs: /);
+  });
+
+  it("sends the same call again without starting anything twice", async () => {
+    const { fan, started } = fanned();
+    await fan("r1", [api, board, docs]);
+    const again = await fan("r1", [api, board, docs]);
+    expect(started).toHaveLength(2);
+    expect(again.tasks.find((task) => task.name === "api")).toMatchObject({ alreadyStarted: true });
+    expect(queuedWorkers().map((entry) => entry.id)).toEqual(["app-mono-exo-r1-board"]);
+  });
+
+  it("keeps each task's declared checks as its WP-40 checks gate", async () => {
+    const { fan, api: tasks, rows } = fanned();
+    const saved: unknown[][] = [];
+    tasks.saveGates = vi.fn(async (...args: unknown[]) => void saved.push(args));
+    await fan("r1", [api, docs]);
+    expect(saved).toEqual([[rows[0].id, { gates: ["checks"], checks: ["api-tests"] }, PROJECT]]);
+  });
+
+  it("runs a cyclic plan in one wave and says so, instead of blocking the work", async () => {
+    const a = { name: "a", brief: "Build a in src/a.ts.", goal: "a works", provides: [{ kind: "file", name: "src/a.ts" }], requires: ["src/b.ts"] };
+    const b = { name: "b", brief: "Build b in src/b.ts.", goal: "b works", provides: [{ kind: "file", name: "src/b.ts" }], requires: ["src/a.ts"] };
+    const { fan, started } = fanned();
+    const out = await fan("r1", [a, b]);
+    expect(out.waves).toEqual([["a", "b"]]);
+    expect(out.warnings).toEqual(["requires form a cycle (a → b → a), so the tasks run in one wave in the order given"]);
+    expect(started).toHaveLength(2);
+    expect(promptOf(started, 0)).toContain("contract: requires form a cycle (a → b → a)");
+  });
+
+  it("can't make a task wait on a host that has no queue, but still starts tasks that need nothing", async () => {
+    const { fan, api: tasks, started } = fanned();
+    tasks.pool = undefined;
+    await expect(fan("r1", [api, board])).rejects.toThrow(/starts every task at once, so a task can't wait/);
+    expect(started).toEqual([]);
+    const out = await fan("r2", [api, docs]);
+    expect(out.tasks.map((task) => task.status)).toEqual(["running", "running"]);
+  });
+
+  it("is for a first mate's own chat: a worker and the checker are refused", async () => {
+    const worker = fanned("worker");
+    await expect(worker.fan("r1", [api])).rejects.toThrow(/Only a Mono's own chat or a chat in a project's coding team/);
+    const checker = fanned("checker");
+    await expect(checker.fan("r1", [api])).rejects.toThrow(/only reads/);
+    expect([...worker.started, ...checker.started]).toEqual([]);
+  });
+
+  it("refuses a damaged fan-out link on a plain delegation, and a lead brief that carries one", async () => {
+    const { source, host, started } = fanned();
+    await expect(handleAgentApp(source, "r1", "tasks.delegate", { brief: "Do it.", fanout: { name: "nobody" } }, host)).rejects.toThrow(/fan-out link is not valid/);
+    expect(started).toEqual([]);
   });
 });

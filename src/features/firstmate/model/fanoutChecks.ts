@@ -99,8 +99,12 @@ export async function inspectProvides(task: string, contract: Contract, folder: 
   return { ok: problems.length === 0, problems };
 }
 
-/** The answer for each provider, with the row version it was given for: a changed row is asked again. */
-const verifications = new Map<string, { at: string; result: Verification }>();
+/**
+ * The answer for each provider, with the row version it was given for: a changed row is asked again, and so is a miss
+ * once RECHECK_MS has passed (the files may have landed since).
+ */
+const verifications = new Map<string, { at: string; result: Verification; checkedAt: number }>();
+export const RECHECK_MS = 20_000;
 const versionOf = (row: RowView | undefined) => `${row?.version ?? ""}:${row?.updatedAt ?? ""}`;
 
 /** What the check of a finished provider found, once it ran for this version of its row. */
@@ -118,13 +122,15 @@ export function forgetVerifications(): void {
 export type SettleDeps = {
   /** The rows this window has (open ones and recent ones). */
   row(session: string): RowView | undefined;
-  /** A row from the store, for a provider this window does not have (after a restart). */
-  fetchRow?(session: string): Promise<RowView | undefined>;
+  /** A row from the store, for a provider this window does not have (after a restart). `owner` is the chat that asked for it. */
+  fetchRow?(session: string, owner: string): Promise<RowView | undefined>;
   /** Hands a fetched row to whatever `row` reads, so the queue sees it. */
   keep?(session: string, row: RowView): void;
   /** The project folder the provider's work landed in, when its chat is known. */
   folder(session: string): string | undefined;
   io: FileIo;
+  /** The clock a miss is timed on; tests pin it. */
+  now?(): number;
 };
 
 /**
@@ -146,15 +152,18 @@ export async function settleFanout(queue: readonly QueuedWorker[], deps: SettleD
       const session = link.tasks[name].session;
       let row = deps.row(session);
       if (!row && deps.fetchRow) {
-        row = await deps.fetchRow(session).catch(() => undefined);
+        row = await deps.fetchRow(session, job.ownerSession).catch(() => undefined);
         if (row) deps.keep?.(session, row);
       }
-      if (!row || !awaitsVerification(link, name, row) || verificationOf(session, row)) continue;
+      if (!row || !awaitsVerification(link, name, row)) continue;
+      const known = verifications.get(session);
+      const now = (deps.now ?? Date.now)();
+      if (known && known.at === versionOf(row) && (known.result.ok || now - known.checkedAt < RECHECK_MS)) continue;
       const folder = deps.folder(session);
       const result = folder
         ? await inspectProvides(name, link.contract, folder, deps.io)
         : { ok: false, problems: [`can't tell where ${name} worked, so what it provided can't be checked`] };
-      verifications.set(session, { at: versionOf(row), result });
+      verifications.set(session, { at: versionOf(row), result, checkedAt: now });
     }
   }
 }

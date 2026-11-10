@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
-import { checkBrief, renderBrief, sectionProblem, withLegacyBriefParts, LEGACY_GOAL } from "./brief";
+import { checkBrief, renderBrief, sectionProblem, specOf, withLegacyBriefParts, LEGACY_GOAL } from "./brief";
 import { briefView } from "../../sessions/model/briefView";
 import { FIRST_MATE_CONTRACT } from "./contract";
 import { goalFromBrief } from "../../../integrations/harness/providers/claude/claudeGoal";
@@ -116,5 +116,42 @@ describe("the brief scaffold (Hivra WP-10)", () => {
     expect(view.body).toContain("Then run the tests.");
     for (const fixed of ["Isolation check", "Status protocol", "Steering", "## Intent", "## Spec", "git rev-parse"])
       expect(view.body).not.toContain(fixed);
+  });
+
+  it("puts a fan-out task's contract after its spec, and leaves a brief without one as it was (WP-171)", () => {
+    const plain = renderBrief({ intent: "Ash: fix it", spec: "Change a.ts" }, { kind: "own-checkout", mainCheckout: "/p" });
+    expect(renderBrief({ intent: "Ash: fix it", spec: "Change a.ts" }, { kind: "own-checkout", mainCheckout: "/p" }, undefined, {})).toBe(plain);
+    const withContract = renderBrief(
+      { intent: "Ash: fix it", spec: "Change a.ts" },
+      { kind: "own-checkout", mainCheckout: "/p" },
+      undefined,
+      { contract: 'You are task "api" of a fan-out of 2 tasks, in wave 1.\nPROVIDES:\n- [api] file src/a.ts' },
+    );
+    expect(withContract.split("\n\n").map((part) => part.split("\n")[0])).toEqual([
+      "## Isolation check",
+      "## Intent",
+      "## Spec",
+      "## Fan-out contract",
+      "## Status protocol",
+      "## Steering",
+    ]);
+    expect(withContract).toContain("## Fan-out contract\nYou are task \"api\"");
+  });
+
+  it("shows a chat the intent and spec of a fan-out task's brief, never its contract (WP-171)", () => {
+    const prompt = briefPrompt(
+      "EXO lead",
+      renderBrief(
+        { intent: "Ash: \"the save bug\"", spec: "Fix the save bug in mission two." },
+        { kind: "own-checkout", mainCheckout: "/p" },
+        undefined,
+        { contract: 'You are task "api" of a fan-out of 2 tasks, in wave 1.\nOWNERS (path, then the task):\n- src/a.ts to api' },
+      ),
+      "It saves",
+    );
+    const view = briefView(prompt)!;
+    expect(view.job).toBe("Fix the save bug in mission two.");
+    expect(view.body).toContain("the save bug");
+    for (const hidden of ["Fan-out contract", "OWNERS", "You are task"]) expect(view.body).not.toContain(hidden);
   });
 });
