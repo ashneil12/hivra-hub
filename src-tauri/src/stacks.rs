@@ -703,9 +703,17 @@ fn port_accepts(port: u16) -> bool {
 pub fn stop_stand_ins(data_dir: &Path) -> Result<(), String> {
     let stand_in = EmulateStandIn::new(data_dir.to_path_buf());
     let mut failure = None;
-    let store = load(&registry_dir(data_dir))?;
-    for entry in &store.stacks {
-        if let Err(error) = stand_in.stop(&stack_dir(data_dir, &entry.id)) {
+    // An unreadable list is reported, but the stacks folder below is what was started, so it
+    // is still walked.
+    match load(&registry_dir(data_dir)) {
+        Ok(store) => {
+            for entry in &store.stacks {
+                if let Err(error) = stand_in.stop(&stack_dir(data_dir, &entry.id)) {
+                    failure.get_or_insert(error);
+                }
+            }
+        }
+        Err(error) => {
             failure.get_or_insert(error);
         }
     }
@@ -4620,6 +4628,42 @@ mod tests {
             .names
             .iter()
             .all(|name| name.hostname != "stripe-a.localhost"));
+    }
+
+    /// A stack list that can't be read must not leave a stand-in running: the stacks folder is
+    /// the record of what was started, not the list.
+    #[cfg(unix)]
+    #[test]
+    fn a_fake_is_stopped_even_when_the_stack_list_cannot_be_read() {
+        use std::os::unix::process::CommandExt;
+        let fix = Fix::new();
+        let inside = registry_dir(&fix.data).join("stacks").join("s01234567");
+        std::fs::create_dir_all(&inside).unwrap();
+        let inside = crate::fs::canonical(&inside).unwrap();
+        let mut command = Command::new("sh");
+        command
+            .arg("-c")
+            .arg(format!("sleep 30; : emulate {}", inside.display()))
+            .process_group(0);
+        let mut child = command.spawn().unwrap();
+        std::thread::sleep(Duration::from_millis(50));
+        std::fs::write(inside.join("emulate.pid"), format!("{}\n", child.id())).unwrap();
+        std::fs::write(registry_path(&registry_dir(&fix.data)), b"{ not json").unwrap();
+        // The unreadable list is reported, and the stand-in is stopped anyway.
+        assert!(stop_stand_ins(&fix.data).is_err());
+        let gone = child.try_wait().ok().flatten().is_some()
+            || Command::new("ps")
+                .args(["-p", &child.id().to_string()])
+                .output()
+                .map(|output| !output.status.success())
+                .unwrap_or(true);
+        let _ = child.kill();
+        let _ = child.wait();
+        assert!(
+            gone,
+            "the stand-in was left running behind an unreadable list"
+        );
+        assert!(!inside.join("emulate.pid").exists());
     }
 
     /// A stand-in left behind by a quit or a crash is stopped, and a pid file that is not inside
