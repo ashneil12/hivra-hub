@@ -18,6 +18,7 @@ import {
   playwrightInstallArgs,
   runInstall,
   shouldRetryInstall,
+  waitForAptIdle,
 } from "./ci-playwright-install.mjs";
 
 const repo = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -116,6 +117,27 @@ test("runInstall returns the child status and does not hide a spawn error", () =
 
   const unset = runInstall(false, () => ({}));
   assert.equal(unset.status, 1);
+});
+
+// 10 Nov: a timed-out first attempt left its apt-get running, so the retry failed in two seconds on the dpkg lock
+// ("Could not get lock /var/lib/dpkg/lock-frontend. It is held by process 2892 (apt-get)").
+test("an install waits for an apt-get the timed-out attempt left running, and gives up at its limit", () => {
+  let checks = 0;
+  const slept = [];
+  const busyThenFree = () => {
+    checks += 1;
+    return checks <= 3;
+  };
+  assert.equal(waitForAptIdle(busyThenFree, (ms) => slept.push(ms), 60_000, 5_000), true);
+  assert.deepEqual(slept, [5_000, 5_000, 5_000]);
+
+  const stillBusy = [];
+  assert.equal(waitForAptIdle(() => true, (ms) => stillBusy.push(ms), 20_000, 5_000), false);
+  assert.equal(stillBusy.length, 4);
+
+  const none = [];
+  assert.equal(waitForAptIdle(() => false, (ms) => none.push(ms)), true);
+  assert.equal(none.length, 0);
 });
 
 test("the CLI rejects a bad cache-hit flag without downloading browsers", () => {

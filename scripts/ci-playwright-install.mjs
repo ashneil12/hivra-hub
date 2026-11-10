@@ -90,6 +90,35 @@ export function runInstall(cacheHit, spawn) {
   return { status: result.status };
 }
 
+/**
+ * Waits while `isBusy()` says an apt-get or dpkg is running, up to `limitMs`. A step that times out stops the step's
+ * process, not the apt-get it started, so the retry would fail at once on the dpkg lock. True once apt is idle; false
+ * at the limit (the install then runs and reports the lock itself).
+ * @param {() => boolean} isBusy
+ * @param {(ms: number) => void} sleep
+ * @param {number} [limitMs]
+ * @param {number} [stepMs]
+ * @returns {boolean}
+ */
+export function waitForAptIdle(isBusy, sleep, limitMs = 360_000, stepMs = 5_000) {
+  let waited = 0;
+  while (isBusy()) {
+    if (waited >= limitMs) return false;
+    sleep(stepMs);
+    waited += stepMs;
+  }
+  return true;
+}
+
+/** An apt-get or dpkg process is running on this machine (Linux only; `pgrep` exits 0 on a match). */
+function aptBusy() {
+  return ["apt-get", "dpkg"].some((name) => spawnSync("pgrep", ["-x", name], { stdio: "ignore" }).status === 0);
+}
+
+function sleepSync(ms) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
 function main(argv) {
   if (argv.includes("--print-cache-path")) {
     process.stdout.write(`path=${browserCachePath(homedir())}\n`);
@@ -110,6 +139,9 @@ function main(argv) {
   } catch (error) {
     process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
     return 1;
+  }
+  if (process.platform === "linux" && !waitForAptIdle(aptBusy, sleepSync)) {
+    process.stderr.write("apt-get is still running after 6 minutes; trying the install anyway\n");
   }
   const { status } = runInstall(cacheHit, (command, args) => spawnSync(command, args, { stdio: "inherit" }));
   return status;
