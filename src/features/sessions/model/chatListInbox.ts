@@ -485,15 +485,32 @@ export function compareInboxOrder(
   return back(b) - back(a) || a.id.localeCompare(b.id);
 }
 
+const NO_IDS: ReadonlySet<string> = new Set();
+
+/**
+ * The attention map with the Sidebar's approval ids added: chats the list is told need the person from elsewhere.
+ *
+ * An id is listed for a need of the chat's own (its approval card, its open question) or for a worker's approval it
+ * leads. `elsewhereIds` names the second kind (a subset of `approvalIds`), so the two are told apart:
+ * - listed for a worker's approval: the approval has no time and is never hidden, whatever the chat has of its own (an
+ *   open question, an approval card with a time, a failed turn), so it brings a settled chat back and Settle is off;
+ * - listed for its own question: that question has a time and a settle holds for it, so it is not an approval from
+ *   elsewhere;
+ * - listed with no reason known (a remote project's chat): taken as an approval with no time, unless the chat has its
+ *   own question or approval to explain the listing.
+ */
 export function attentionWithApprovals(
   attention: ReadonlyMap<string, ChatAttention> | undefined,
   approvalIds: ReadonlySet<string>,
+  elsewhereIds: ReadonlySet<string> = NO_IDS,
 ): ReadonlyMap<string, ChatAttention> {
   if (approvalIds.size === 0) return attention ?? new Map();
   const next = new Map(attention ?? []);
   for (const id of approvalIds) {
     const current = next.get(id);
-    if (current?.needsApproval) continue;
+    const workers = elsewhereIds.has(id);
+    // Its own transcript already holds an approval, and nothing from elsewhere is added to it.
+    if (current?.needsApproval && !(workers && !current.approvalUndated)) continue;
     next.set(id, {
       needsApproval: true,
       hasQuestion: current?.hasQuestion ?? false,
@@ -501,9 +518,9 @@ export function attentionWithApprovals(
       needsPerson: true,
       // The need it already had keeps its time. An approval listed from elsewhere has none to add, so it is undated and
       // never hidden. A chat whose only need is its own open question is listed too (the ids mean "needs input"), and
-      // that question has a time of its own, so it is not an approval from elsewhere.
+      // that question has a time of its own, so it is not an approval from elsewhere unless a worker's is listed too.
       ...(current?.needAt != null ? { needAt: current.needAt } : {}),
-      ...(current?.hasQuestion ? {} : { approvalUndated: true }),
+      ...(workers || !current?.hasQuestion ? { approvalUndated: true } : {}),
       ownMessage: current?.ownMessage ?? "none",
       lastUserMessageAt: current?.lastUserMessageAt ?? null,
       ...(current?.repliedAt != null ? { repliedAt: current.repliedAt } : {}),

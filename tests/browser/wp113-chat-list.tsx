@@ -32,6 +32,7 @@ const summaries: SessionSummary[] = [
 }));
 
 type Blocks = Record<string, AttentionBlock[]>;
+type Questions = Record<string, { requestId: number; askedAt: number } | undefined>;
 
 // An approval carries the time it was asked, as the app stamps it (apply.ts), so a settled chat comes back only for one
 // asked after it was settled.
@@ -43,13 +44,31 @@ function Fixture() {
   const enabled = useChatListInbox();
   const [tab, setTab] = useState<SidebarTabId>("sessions");
   const [blocks, setBlocks] = useState<Blocks>({});
-  // Approvals the list is told about from elsewhere (a Lead whose worker asks, a remote project's chat): ids only, no
-  // card in the chat's own blocks and no time. App passes the same kind of set as approvalSessionIds.
+  // A chat's own open question, as the app keeps it on the session (askedAt is when it was asked).
+  const [questions, setQuestions] = useState<Questions>({});
+  // Approvals the list is told about from elsewhere (a Lead whose worker asks): ids only, no card in the chat's own
+  // blocks and no time. App lists such a Lead in approvalSessionIds and names it in approvalElsewhereSessionIds.
   const [listed, setListed] = useState<ReadonlySet<string>>(new Set());
   const live = useMemo(
-    () => summaries.map((row) => ({ id: row.id, busy: true, blocks: blocks[row.id] ?? [] })),
-    [blocks],
+    () =>
+      summaries.map((row) => ({
+        id: row.id,
+        busy: true,
+        blocks: blocks[row.id] ?? [],
+        pendingQuestion: questions[row.id],
+      })),
+    [blocks, questions],
   );
+  // App lists a chat in approvalSessionIds for its own approval or question (sessionNeedsInput) and for a worker's.
+  const approvalIds = useMemo(() => {
+    const ids = new Set(listed);
+    for (const session of live) {
+      if (session.pendingQuestion != null || session.blocks.some((block) => block.approval && !block.approval.decided)) {
+        ids.add(session.id);
+      }
+    }
+    return ids;
+  }, [listed, live]);
   // App passes nothing while the setting is off, so today's list is untouched.
   const attention = useChatListAttention(enabled ? live : EMPTY_CHAT_LIST_SESSIONS);
   const set = (id: string, next: AttentionBlock[]) => setBlocks((current) => ({ ...current, [id]: next }));
@@ -60,7 +79,8 @@ function Fixture() {
         open
         sessions={summaries}
         busySessionIds={new Set()}
-        approvalSessionIds={new Set(listed)}
+        approvalSessionIds={approvalIds}
+        approvalElsewhereSessionIds={new Set(listed)}
         chatAttention={attention}
         activeSessionId="none"
         status="idle"
@@ -93,6 +113,21 @@ function Fixture() {
           </button>
           <button type="button" onClick={() => setListed(new Set())}>
             Beta listed approval answered
+          </button>
+          <button
+            type="button"
+            onClick={() => setQuestions((current) => ({ ...current, beta: { requestId: 1, askedAt: Date.now() } }))}
+          >
+            Beta asks a question
+          </button>
+          <button type="button" onClick={() => setQuestions((current) => ({ ...current, beta: undefined }))}>
+            Beta question answered
+          </button>
+          <button
+            type="button"
+            onClick={() => setQuestions((current) => ({ ...current, alpha: { requestId: 2, askedAt: Date.now() } }))}
+          >
+            Alpha asks a question
           </button>
           <button type="button" onClick={() => set("alpha", [approval("p-alpha-again")])}>
             Alpha asks again
