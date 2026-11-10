@@ -65,7 +65,7 @@ gh pr merge 123 --repo OWNER/NAME --merge --match-head-commit <head sha>
 
 It does not pass `--auto`. `gh pr merge --auto --merge` is a separate manual option for when GitHub should merge the moment its own checks pass. This script merges only after it has already seen a success, and only for a pull request that is not security-park. It re-reads the head sha immediately before the merge and pins that sha, so a push that lands in between is not merged.
 
-Several numbers are one batch. If any one is refused, none of them are merged.
+Several numbers are one batch. If any one fails the checks, none of them are merged. If a merge call fails after an earlier one in the batch has already merged, that earlier one stays merged. Run the script again for the rest.
 
 Timings are off unless you pass a log path. The script appends one line per pull request that passed the checks. `ci_minutes` is the CI run's updated time minus its created time. `merge_wait_minutes` is now minus the run's updated time. `builder_start` and `builder_end` are written only when you pass them. A time the script did not read is left out. It does not fill one in. `merged=yes` after `--apply` succeeds, and `merged=no` on a dry-run.
 
