@@ -35,7 +35,7 @@ Hivra's list is not that flat. Projects already sit in groups on the rail, and c
 
 Four decisions. The sections under this one are the reasoning.
 
-1. A space is an opt-in view over the project groups and chat folders that already exist. It is not a new parent of projects, boards, or chats. The full list stays on screen.
+1. A space is not a new object. It is an explicit, per-window filter on a project group that already exists. Chats and folders stay as they are. Other projects leave the rail only when the person turns that filter on.
 2. A split reuses the workspace split tree. Two chats, a chat and a diff, and a chat and a terminal can already sit together. Do not build a second splitter.
 3. Extra windows already exist and are worth keeping. A macOS tray is later polish, not part of the first build.
 4. Opening a space, splitting, or focusing a window must not reorder the chat list, the project rail, or Being built.
@@ -112,11 +112,47 @@ A tray that listed chats would be a third inbox, next to the chat list and Being
 
 So: keep the extra window, on macOS and everywhere else it already exists. Do not add a macOS status item in the first build that follows this note.
 
+### No silent re-sort
+
+The chat list already has an order. This design does not change it. It only forbids chrome from becoming a new reason to shuffle that order.
+
+Today, `compareSessionSummaries` puts pinned chats first, then the most recently updated, then breaks ties by id. The sidebar sorts with that comparator whenever it draws. The project rail does not. `projectRailSections` follows the saved rail order, pins first. Being built does neither: the last-active label changes in place, and the row stays put (`HANDOFF.md`, Unit 7).
+
+WP-113 may later let a chat that needs the person move up, and only when its own setting is on. That setting stays off here. This design does not call it, and a space, a split, or a focused window is not "needs you".
+
+These actions must leave every visible row where it was, relative to the rows that are still visible:
+
+- Selecting a group, turning "Show only this group" on, turning it off, or switching groups.
+- Splitting, closing a pane, focusing a pane, or dragging a sash.
+- Opening New Window, focusing a window, clicking the Dock, or clicking the Windows tray.
+
+Rows the group filter removes come back in the same rail position when the filter goes off. They are not appended, and they are not moved to the top. Chats do not move at all for these actions, including chats inside a folder. Folder member order uses the same comparator, so a bump to a chat's updated time would reshuffle the folder too. Do not bump it.
+
+What may still move a row, because it already does, or because the person did it on purpose:
+
+- A new message or other real update that already changes `updatedAt`.
+- Pin, unpin, or a drag that reorders the rail or a folder. That writes the saved order. It is not a side effect of opening a space.
+- Archive, and settle or snooze if WP-113's setting is on. Those are that package's actions, not these.
+
+The trap to test for: `summaryFromSession` stamps `updatedAt` with the current time on every build. `sameSessionSummaries` only treats a restamp inside 30 seconds as the same row for an equality check. It does not freeze the sort. A focus, a split, or a new window must not rebuild a summary and merge it. If it does, the chat jumps to the top even though the person only looked at it.
+
+Being built stays put even if a group filter is on. Do not float the jobs for that group to the top. Leave each row where it is, or do not show Being built in the filtered rail. Do not sort it.
+
+Two windows share one order. Focusing the second must not reshuffle the first. The group filter is per window and must not be written back as a new rail order. A write to the shared group list that is not based on the list the window last read is dropped. It is not retried as a reorder. Closing a window drops that window's filter and writes nothing.
+
+A stored filter that names a missing group is ignored. Ignoring it shows the full rail in the saved order. It does not sort. An empty group shows an empty section. It does not pull in other projects to fill the gap.
+
+A later build can prove this with a fixed list. Three chats with update times 1, 2, and 3 stay in that order after the filter, a split, and a window focus. A pinned chat stays above a newer unpinned one, and two pins do not swap. Projects hidden by the filter return to their saved rail slots. None of those steps calls `summaryFromSession`.
+
+### No implementation
+
+This package stops at the design. No setting, no migration, no component, and no change under `src/` or `src-tauri/`.
+
 ## Done when
 
-- [ ] The design covers spaces, split, windows, and the re-sort rule.
-- [ ] It reuses the existing pane split, and explains why there is no WP-109 to reuse.
-- [ ] No product UI was added.
+- [x] The design covers spaces, split, windows, and the re-sort rule.
+- [x] It reuses the existing pane split, and explains why there is no WP-109 to reuse.
+- [x] No product UI was added.
 
 ## Licence
 
