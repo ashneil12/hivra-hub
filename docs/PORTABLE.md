@@ -62,6 +62,12 @@ The archive is the same tree under one top folder. Nothing in it is a secret:
      (**history only**: open ones settle as cancelled, delivery disposed, nothing mirrored to Ash OS again). A chat or
      note already here and different is kept; ticked, the file's comes in as a copy with a new id.
    - A provider session id is kept only where it can resume: the daily app, a Claude chat, its transcript on this Mac.
+   - **No file path from the file is kept.** Paths in an export name files on the Mac that made it, or were written by
+     hand: never files of this one. In every imported chat (side threads and Mono transcripts included) a generated
+     image keeps its name, caption and size with an empty path, an attachment keeps its name and kind and loses its
+     path, and a room message's attachments are replaced by a line naming them. The chat shows them as "not on this
+     Mac". The import preview compares chats without paths, so a chat that came in from a file still reads as "already
+     here". The report says how many paths were left out.
    - **Folders.** An export is a file anyone can write, and a chat's folder is where its agent, git, checkpoints and
      terminals run, so none is taken on trust (`src-tauri/src/portable/folders.rs`). A chat's folder (and worktree)
      stays only when it is a real folder on this Mac, written as a full path, that sits inside a project this copy

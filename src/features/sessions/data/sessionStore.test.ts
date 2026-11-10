@@ -14,11 +14,11 @@ import {
 import {
   backfillClaudeShellCommands,
   backfillCodexShellCommands,
-  isPersistableId,
   persistFingerprint,
   sanitizeSessionForPersist,
   shouldPersistSession,
 } from "./sessionStore";
+import { isPersistableId } from "../model/persistableId";
 
 // A chat that came in from an export with no folder (docs/PORTABLE.md) is saved with none. Tidying the path used to turn
 // it into `/`, which a launcher would then have started in.
@@ -525,6 +525,41 @@ describe("sanitizeSessionForPersist", () => {
       },
     ];
 
+    expect(sanitizeSessionForPersist(session).blocks).toEqual([
+      { id: "u", role: "user", text: "Draw this" },
+    ]);
+  });
+
+  it("keeps a generated image whose file is not on this Mac, with an empty path", () => {
+    const session = newSession("codex", "/repo");
+    session.blocks = [
+      { id: "u", role: "user", text: "Draw this" },
+      {
+        id: "image",
+        role: "image",
+        text: "",
+        image: { path: "", name: "generated-image", mimeType: "image/png", size: 8, alt: "A cat" },
+      },
+    ];
+    expect(sanitizeSessionForPersist(session).blocks[1]).toEqual({
+      id: "image",
+      role: "image",
+      text: "",
+      image: { path: "", name: "generated-image", mimeType: "image/png", size: 8, alt: "A cat" },
+    });
+  });
+
+  it("drops generated image metadata whose path is not text", () => {
+    const session = newSession("codex", "/repo");
+    session.blocks = [
+      { id: "u", role: "user", text: "Draw this" },
+      {
+        id: "image",
+        role: "image",
+        text: "",
+        image: { path: 7, name: "generated-image", mimeType: "image/png", size: 8 } as never,
+      },
+    ];
     expect(sanitizeSessionForPersist(session).blocks).toEqual([
       { id: "u", role: "user", text: "Draw this" },
     ]);

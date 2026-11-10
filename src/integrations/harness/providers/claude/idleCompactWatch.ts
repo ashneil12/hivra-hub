@@ -5,7 +5,7 @@ import { compactDueIdleClaude, type IdleCompactHold } from "./claude";
 import { idleCompactGivenUp, recallPromptCache } from "./claudePromptCache";
 
 /** How often an open app looks for an idle Claude chat that is due. */
-export const IDLE_COMPACT_LOOK_MS = 30_000;
+const IDLE_COMPACT_LOOK_MS = 30_000;
 
 export type IdleCompactTarget = {
   id: string;

@@ -6,7 +6,7 @@ import {
   noteNotable,
   type NotableDeps,
 } from "./notableDelivery";
-import { NOTABLE_FLUSH_MS, morningHabitExtra, notableMemory, type NotablePing } from "./notableEvents";
+import { NOTABLE_FLUSH_MS, morningHabitNotes, notableMemory, type NotablePing } from "./notableEvents";
 import { MORNING_HABIT_ID } from "../../chief/model/habit";
 import type { PingResult } from "./notifications";
 
@@ -98,8 +98,8 @@ describe("sending the notable ping", () => {
     await noteNotable(red("a"), run.deps);
     expect(run.sent).toEqual([]);
     expect(run.store.read().pending.map((item) => item.id)).toEqual(["held:s1:1", "a"]);
-    expect(morningHabitExtra(MORNING_HABIT_ID, run.store.read)).toContain("CI failed: PR #42: checks failed");
-    expect(morningHabitExtra(MORNING_HABIT_ID, run.store.read)).toContain("Fix login: Claude finished");
+    expect(morningHabitNotes(MORNING_HABIT_ID, run.store.read).text).toContain("CI failed: PR #42: checks failed");
+    expect(morningHabitNotes(MORNING_HABIT_ID, run.store.read).text).toContain("Fix login: Claude finished");
 
     run.at(new Date(2026, 10, 11, 9, 0, 30).getTime());
     expect(await flushNotableDue(run.deps)).toBe("off");
