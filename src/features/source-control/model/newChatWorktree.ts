@@ -166,13 +166,37 @@ export async function confirmNewChatWorktreeOffer(
   });
 }
 
+/** How long a new chat waits for git before it skips the worktree default. */
+export const NEW_CHAT_GIT_WAIT_MS = 5000;
+
+/** Rejects when `work` has not settled in `waitMs`, so a git that never answers cannot hold a send. */
+function answeredWithin<T>(work: Promise<T>, waitMs: number): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error("git did not answer in time")), waitMs);
+    work.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (error: unknown) => {
+        clearTimeout(timer);
+        reject(error);
+      },
+    );
+  });
+}
+
 /**
  * True when `git_branches` can see a repository. An empty answer means this
- * folder is not one. A throw is left to the caller, so a timeout is not "not a repo".
+ * folder is not one. A throw, or no answer within `NEW_CHAT_GIT_WAIT_MS`, is
+ * left to the caller, so a timeout is not "not a repo".
  */
-export async function gitRepositoryOnThisComputer(cwd: string): Promise<boolean> {
+export async function gitRepositoryOnThisComputer(
+  cwd: string,
+  waitMs: number = NEW_CHAT_GIT_WAIT_MS,
+): Promise<boolean> {
   if (!localFolder(cwd)) return false;
-  const listed = await gitBranches(cwd);
+  const listed = await answeredWithin(gitBranches(cwd), waitMs);
   return listed.detached || listed.current !== null || listed.branches.length > 0;
 }
 

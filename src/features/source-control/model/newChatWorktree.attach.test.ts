@@ -11,7 +11,15 @@ vi.mock("../../../platform/tauri/fs", async (importOriginal) => ({
 import { gitBranches } from "../../../platform/tauri/fs";
 import { newSession, type Session } from "../../sessions/model/session";
 import { saveNewChatWorktree, type NewChatWorktree } from "../../settings/model/settings";
-import { attachNewChatWorktree, newChatStaysHere, withNewChatFolderChoice } from "./newChatWorktree";
+import {
+  attachNewChatWorktree,
+  gitRepositoryOnThisComputer,
+  NEW_CHAT_GIT_WAIT_MS,
+  newChatStaysHere,
+  newChatWorktreeOpenFor,
+  openNewChatWorktree,
+  withNewChatFolderChoice,
+} from "./newChatWorktree";
 
 const REPO = {
   current: "main",
@@ -111,5 +119,59 @@ describe("a new chat and the stored setting", () => {
     await settle();
     expect(state.sessions[0].workspaceMode).toBeUndefined();
     expect(newChatStaysHere(state.sessions[0])).toBe(true);
+  });
+});
+
+// A git that never answers does not reject, so only a time limit can end the wait.
+describe("a git that never answers", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.mocked(gitBranches).mockReturnValue(new Promise<never>(() => {}));
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it.each(["ask", "always"] as const)(
+    "skips a new chat once the wait is over for %s",
+    async (value) => {
+      setting(value);
+      const { state, setSessions } = windowWith(chat("s"));
+      attachNewChatWorktree("s", "/work/proj", setSessions);
+      expect(state.sessions[0].workspaceMode).toBe("worktree");
+      await vi.advanceTimersByTimeAsync(NEW_CHAT_GIT_WAIT_MS - 1);
+      expect(state.sessions[0].workspaceMode).toBe("worktree");
+      await vi.advanceTimersByTimeAsync(1);
+      expect(state.sessions[0].workspaceMode).toBeUndefined();
+      expect(state.sessions[0].worktreeBase).toBeUndefined();
+      expect(newChatStaysHere(state.sessions[0])).toBe(false);
+    },
+  );
+
+  it("lets the first send go ahead in this folder, with no worktree made", async () => {
+    const created = vi.fn();
+    let outcome: "pending" | "skipped" | "made" = "pending";
+    const sent = openNewChatWorktree(
+      newChatWorktreeOpenFor(chat("s"), { setting: "always", isFirstTurn: true, toggleOn: false }),
+      { gitOnThisComputer: gitRepositoryOnThisComputer, createWorktree: created },
+    ).then((worktree) => {
+      outcome = worktree ? "made" : "skipped";
+    });
+    await vi.advanceTimersByTimeAsync(NEW_CHAT_GIT_WAIT_MS - 1);
+    expect(outcome).toBe("pending");
+    await vi.advanceTimersByTimeAsync(1);
+    await sent;
+    expect(outcome).toBe("skipped");
+    expect(created).not.toHaveBeenCalled();
+  });
+
+  it("still takes an answer that comes before the wait is over, and leaves no timer behind", async () => {
+    let answer: (value: typeof REPO) => void = () => {};
+    vi.mocked(gitBranches).mockReturnValue(new Promise((resolve) => (answer = resolve)));
+    const asked = gitRepositoryOnThisComputer("/work/proj");
+    await vi.advanceTimersByTimeAsync(NEW_CHAT_GIT_WAIT_MS - 1);
+    answer(REPO);
+    await expect(asked).resolves.toBe(true);
+    expect(vi.getTimerCount()).toBe(0);
   });
 });
