@@ -10,6 +10,13 @@ import {
   visualThemeCss,
   type VisualTheme,
 } from "../model/visualReply";
+import {
+  saveVisualReply,
+  visualFrameInApp,
+  visualFrameKey,
+  visualFrameUrl,
+  type VisualFrameDeps,
+} from "../model/visualFrame";
 
 /**
  * Colors and fonts from the open page. A visual reply cannot see the app's
@@ -60,26 +67,30 @@ function useVisualTheme(): VisualTheme {
 /**
  * One visual reply. The guest policy and the shell live in `visualDocument`.
  * A theme change rebuilds the frame with the new colors, and the same colors
- * are posted in so a frame that is still loading picks them up.
+ * are posted in so a frame that is still loading picks them up. In the app the
+ * shell is served from the app's frame scheme with its own policy (a srcdoc
+ * there would inherit the app's policy and the reply's script would not run).
+ * `frames` is for the browser proofs, which stand in for the app.
  */
-const VISUAL_REPLY_FILE = "visual-reply.html";
-
-/** Saves the original reply. A blob is only the download, never a page the app opens. */
-function saveVisualSource(source: string) {
-  const blob = new Blob([source], { type: "text/html" });
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement("a");
-  link.href = url;
-  link.download = VISUAL_REPLY_FILE;
-  link.rel = "noopener";
-  document.body.appendChild(link);
-  link.click();
-  link.remove();
-  setTimeout(() => URL.revokeObjectURL(url), 0);
+function frameId(): string {
+  const bytes = new Uint8Array(6);
+  globalThis.crypto?.getRandomValues?.(bytes);
+  return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
 }
 
-export function VisualReplyFrame({ source }: { source: string }) {
+export function VisualReplyFrame({
+  source,
+  frames,
+}: {
+  source: string;
+  frames?: VisualFrameDeps;
+}) {
   const theme = useVisualTheme();
+  const inApp = visualFrameInApp(frames);
+  const id = useRef<string | null>(null);
+  const version = useRef(0);
+  const [served, setServed] = useState<{ doc: string; url?: string } | null>(null);
+  const [saveNote, setSaveNote] = useState<string | null>(null);
   const frameRef = useRef<HTMLIFrameElement>(null);
   const [height, setHeight] = useState(VISUAL_FRAME_PLACEHOLDER_HEIGHT);
   const [showSource, setShowSource] = useState(false);
@@ -88,6 +99,20 @@ export function VisualReplyFrame({ source }: { source: string }) {
     () => visualDocument(source, theme, network),
     [source, theme, network],
   );
+
+  useEffect(() => {
+    if (!doc || !inApp) return;
+    let live = true;
+    if (id.current === null) id.current = frameId();
+    const key = visualFrameKey(id.current, version.current++);
+    void visualFrameUrl(key, doc, network, frames).then((url) => {
+      if (live) setServed({ doc, url });
+    });
+    return () => {
+      live = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- `frames` is fixed for a frame
+  }, [doc, network, inApp]);
 
   useLayoutEffect(() => {
     const receive = (event: MessageEvent) => {
@@ -121,7 +146,12 @@ export function VisualReplyFrame({ source }: { source: string }) {
       <button
         type="button"
         className="rounded-md px-2 py-1 text-xs"
-        onClick={() => saveVisualSource(source)}
+        onClick={() => {
+          setSaveNote(null);
+          void saveVisualReply(source).then((result) => {
+            if (result === "failed") setSaveNote("Could not save the file.");
+          });
+        }}
       >
         Save as file
       </button>
@@ -135,6 +165,7 @@ export function VisualReplyFrame({ source }: { source: string }) {
           Allow network
         </button>
       ) : null}
+      {saveNote ? <span className="px-2 py-1 text-xs">{saveNote}</span> : null}
     </div>
   );
 
@@ -153,7 +184,7 @@ export function VisualReplyFrame({ source }: { source: string }) {
       {controls}
       {showSource ? (
         <pre>{source}</pre>
-      ) : (
+      ) : !inApp ? (
         <iframe
           ref={frameRef}
           title="Visual reply"
@@ -162,6 +193,24 @@ export function VisualReplyFrame({ source }: { source: string }) {
           srcDoc={doc}
           style={{ width: "100%", height, border: 0 }}
         />
+      ) : served?.doc !== doc ? (
+        <div data-visual-reply-loading style={{ width: "100%", height }} />
+      ) : served.url ? (
+        <iframe
+          key={served.url}
+          ref={frameRef}
+          title="Visual reply"
+          sandbox={VISUAL_SANDBOX}
+          referrerPolicy="no-referrer"
+          src={served.url}
+          data-visual-reply-src
+          style={{ width: "100%", height, border: 0 }}
+        />
+      ) : (
+        <>
+          <p>This reply could not be shown here.</p>
+          <pre>{source}</pre>
+        </>
       )}
     </div>
   );

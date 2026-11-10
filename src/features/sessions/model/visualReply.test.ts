@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   FALLBACK_THEME,
@@ -6,6 +8,7 @@ import {
   VISUAL_REPLY_MAX_BYTES,
   VISUAL_SANDBOX,
   visualCsp,
+  visualFrameCsp,
   visualDocument,
   visualFenceMark,
   visualHeightFromMessage,
@@ -44,10 +47,10 @@ describe("visual reply sandbox", () => {
 
   it("keeps remote scripts, frames, forms and navigation blocked when network is allowed", () => {
     const csp = visualCsp(true);
-    expect(csp).toContain("connect-src https: http: wss: ws:");
-    expect(csp).toContain("img-src data: blob: https: http:");
-    expect(csp).toContain("font-src data: https: http:");
-    expect(csp).toContain("media-src data: blob: https: http:");
+    expect(csp).toContain("connect-src https: wss:");
+    expect(csp).toContain("img-src data: blob: https:");
+    expect(csp).toContain("font-src data: https:");
+    expect(csp).toContain("media-src data: blob: https:");
     expect(csp).toContain("script-src 'unsafe-inline'");
     expect(csp).not.toMatch(/script-src[^;]*https:/);
     expect(csp).not.toMatch(/style-src[^;]*https:/);
@@ -138,7 +141,7 @@ describe("visual reply sandbox", () => {
     const locked = visualDocument("<p>chart</p>", FALLBACK_THEME, false);
     const open = visualDocument("<p>chart</p>", FALLBACK_THEME, true);
     expect(locked).toContain("connect-src 'none'");
-    expect(open).toContain("connect-src https: http: wss: ws:");
+    expect(open).toContain("connect-src https: wss:");
     expect(open).toContain("script-src 'unsafe-inline'");
     expect(open).not.toMatch(/script-src[^;]*https:/);
     const guestAt = open!.indexOf('id="hivra-visual-guest"');
@@ -203,5 +206,48 @@ describe("visual reply detection", () => {
     expect(visualFenceMark("", "visual")).toBe(false);
     expect(visualFenceMark("svg", "")).toBe(false);
     expect(visualFenceMark("html", "visual\nvisual")).toBe(false);
+  });
+});
+
+// Hardening after review: a reply the person lets onto the network must still not reach the machine it runs on, and
+// in the app the shell is served by the app with its own policy, because a srcdoc frame inherits the app's policy.
+describe("visual reply network and served policy", () => {
+  it("never lets a reply reach plain http or ws, so localhost, the LAN and the app's own http schemes stay shut", () => {
+    for (const network of [false, true]) {
+      const csp = visualCsp(network);
+      expect(csp).not.toMatch(/(^|\s)http:/);
+      expect(csp).not.toMatch(/(^|\s)ws:/);
+      expect(csp).not.toMatch(/localhost|127\.0\.0\.1|asset:|ipc:|tauri:|file:/);
+    }
+  });
+
+  it("the shell carries the same policy as its guest, so opting in is the only thing that opens the network", () => {
+    for (const network of [false, true]) {
+      const doc = visualDocument("<p>chart</p>", FALLBACK_THEME, network)!;
+      const shell = doc.slice(0, doc.indexOf('id="hivra-visual-guest"'));
+      expect(shell).toContain(`content="${visualCsp(network)}"`);
+    }
+  });
+
+  it("the served policy is the sandbox plus the guest policy, and the app serves exactly that", () => {
+    const rust = readFileSync(resolve(process.cwd(), "src-tauri/src/page_frames.rs"), "utf8").replace(/\\\n\s*/g, "");
+    for (const network of [false, true]) {
+      expect(visualFrameCsp(network)).toBe(`sandbox allow-scripts; ${visualCsp(network)}`);
+      expect(rust).toContain(`"${visualFrameCsp(network)}"`);
+    }
+  });
+
+  it("the shell passes on only a height from its guest", () => {
+    const doc = visualDocument("<p>chart</p>", FALLBACK_THEME, false)!;
+    const shell = doc.slice(0, doc.indexOf('id="hivra-visual-guest"'));
+    expect(shell).toMatch(/event\.data\.type !== "hivra:visual-height"/);
+  });
+
+  it("turns off DNS prefetch before the reply", () => {
+    const doc = visualDocument("<p>chart</p>", FALLBACK_THEME, false)!;
+    const guest = doc.slice(doc.indexOf('id="hivra-visual-guest"'));
+    const off = guest.indexOf("x-dns-prefetch-control");
+    expect(off).toBeGreaterThan(-1);
+    expect(off).toBeLessThan(guest.indexOf("&lt;p&gt;chart") > -1 ? guest.indexOf("&lt;p&gt;chart") : guest.indexOf("<p>chart"));
   });
 });

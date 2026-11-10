@@ -1071,6 +1071,7 @@ pub fn run() {
             artifacts::artifacts_upsert,
             artifacts::artifacts_delete,
             page_frames::page_frame_put,
+            page_frames::visual_frame_put,
             page_http::page_http_fetch,
             page_http::page_source_token_set,
             page_http::page_source_token_exists,
