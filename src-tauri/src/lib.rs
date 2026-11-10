@@ -41,6 +41,8 @@ mod pinned_tool;
 mod crew;
 mod devin_config;
 mod devin_usage;
+// WP-131: desktop dictation into the composer draft (macOS only; never sends).
+mod dictation;
 pub mod disclaim;
 mod external_editor;
 mod firstmate;
@@ -536,6 +538,10 @@ pub fn run() {
             menu::dispatch(app, event.id().as_ref());
         })
         .invoke_handler(tauri::generate_handler![
+            // WP-131: desktop dictation.
+            dictation::dictation_support,
+            dictation::dictation_start,
+            dictation::dictation_stop,
             mobile_access::mobile_status,
             mobile_access::mobile_configure,
             mobile_access::mobile_invite,
