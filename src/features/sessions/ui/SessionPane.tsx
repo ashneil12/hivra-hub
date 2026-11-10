@@ -750,8 +750,7 @@ const LocalSessionPane = memo(function LocalSessionPane({
       inboxCard={session.inboxCard}
       noteCard={session.noteCard}
       handoffCard={session.handoffCard}
-      {/* WP-126: mid-thread switch, so the composer can say what will not travel. */}
-      switchFrom={session.pendingSwitch?.from}
+      switchFrom={session.pendingSwitch?.from /* WP-126: mid-thread switch */}
       switchTo={
         session.pendingSwitch && session.pendingSwitch.from !== session.harness
           ? session.harness
