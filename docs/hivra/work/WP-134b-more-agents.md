@@ -18,6 +18,8 @@ Each entry has an id (a stable slug, not empty, not one of the eleven), a name, 
 
 A chat is one or the other. `harness` stays one of the eleven. The registry agent id lives in its own field. `asHarness` and `Kind::from_id` never see that id. An unknown registry id does not become Cursor or Codex.
 
+The process itself is started by one new app command, `registry_agent_spawn` (`src-tauri/src/harness/registry_agent.rs`). It registers the child with the same host as the eleven, so writing to it and stopping it use the existing calls. It never resolves one of the eleven, opens no port, and does not hand the child the app's control token or a key. A command is found as an absolute path or as a bare name on the search path. A relative path is not found. The eleven names, a shell and a command line are refused. `Kind` and `acp.rs` are not touched.
+
 Usable means the command starts, `initialize` succeeds at protocol version 1, and a turn can be sent with `session/new` (or `session/load` when continuing) and `session/prompt`. `canSteer` stays false. A follow-up waits until the turn finishes. Approvals show `session/request_permission` and do not copy a per-CLI shortcut. A tool with no locations and no preview still shows its title plus "No preview from this agent." Cancel sends `session/cancel` and says stop was sent, not that the agent confirmed it.
 
 Anything that cannot run shows one of the sentences in the WP-134 table and does nothing. A missing command stays in the list. A timeout or a process that does not answer is "Not answering", with Retry. It is not a deleted entry and not a success.

@@ -976,6 +976,8 @@ pub fn run() {
             harness::harness_resolve_antigravity,
             harness::harness_free_port,
             harness::harness_spawn,
+            // WP-134b: start a More agents process (a command the person named). Never one of the eleven CLIs.
+            harness::registry_agent::registry_agent_spawn,
             codex_mono_store::codex_mono_store_prepare,
             codex_mono_store::codex_mono_store_copy,
             codex_mono_store::codex_mono_store_restore_agent_state,

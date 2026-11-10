@@ -15,6 +15,9 @@ use crate::dirs_home;
 use crate::fs::expand_home;
 use crate::passwd_identity;
 
+// WP-134b: the More agents start. A child module so it shares this host's private pieces without widening them.
+pub(crate) mod registry_agent;
+
 const STDOUT_EVENT: &str = "harness-stdout";
 const STDERR_EVENT: &str = "harness-stderr";
 const EXIT_EVENT: &str = "harness-exit";
