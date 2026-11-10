@@ -46,10 +46,4 @@ must not end the task.
       and pause-then-resume on a usage limit.
 - [ ] The rules UI has a browser spec; `npm run check` passes.
 
-## Addendum (10 Nov 2026): a spend ceiling for runs on billed models
-
-Source: Omnigent (Apache-2.0, Copyright (2026) Databricks, Inc. per its NOTICE). Ideas only, no code copied. This overlaps `WP-XX-spend-limits.md` (Paperclip); Ash should choose one home for the money limit.
-
-A run on a model billed by its own provider (any custom model, see `customModels.ts`) carries a spend ceiling per task, and a daily ceiling for unattended runs. At a soft threshold the person is asked whether to continue. At the hard cap the run stops, the task is held for the person, and the reason is recorded on the task row. A reroute from a subscription limit never moves a task onto a billed model without the person's OK. Subscription CLIs keep the rate-limit rules above, since their use is not billed per token.
-
-Tests: the soft ask fires once, the hard cap stops the run and records why, the daily total resets at local midnight, and a reroute never moves a task to a billed model on its own. Done when the ceilings show on the task row and in Settings, and crew rules can set one per project.
+Spend limits, including a per-task ceiling for billed models and the rule that a reroute never moves a task onto a billed model without the person's OK, live in `WP-XX-spend-limits.md` (Paperclip and Omnigent), not here.
