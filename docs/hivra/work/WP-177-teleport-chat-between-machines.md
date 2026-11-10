@@ -1,4 +1,4 @@
-# WP-XX: Teleport a chat between this Mac and a host
+# WP-177: Teleport a chat between this Mac and a host
 
 | Wave | Size | Depends on | Grok OK |
 | --- | --- | --- | --- |
