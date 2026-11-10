@@ -335,6 +335,12 @@ export type RustImportReport = {
   delegationsAdded: number;
   /** Activity rows added (WP-78). Older builds leave it out. */
   activityAdded?: number;
+  /** Chats whose folder wasn't inside a project on this Mac, so they came in with none (docs/PORTABLE.md). */
+  foldersCleared?: number;
+  /** Automations that lost a folder the same way. */
+  automationFoldersCleared?: number;
+  /** Paths in tool rows that lay outside the chat's folder, dropped. */
+  toolPathsDropped?: number;
   memoryFilesAdded: number;
   memoryFilesBeside: number;
   memoryHistory: string[];
@@ -356,12 +362,16 @@ export type RustImportRequest = {
     automations: string[];
     reminders: boolean;
     delegations: boolean;
+    /** Folders the project rail lists: a chat or automation keeps its folder only inside one of these or a project the app has. */
+    knownFolders: string[];
   };
 };
 
 export type ImportDeps = {
   /** Rust's part (memory and workspace). */
   rustImport?: (request: RustImportRequest) => Promise<RustImportReport>;
+  /** The folders this window knows as projects (the rail's), for the folder check Rust makes on chats and automations. */
+  knownFolders?: () => string[];
   /** Registers a new project with Ash OS; resolves false when Ash OS didn't take it (it then stays on this Mac's list). */
   registerProject?: (project: PortableProject, folderHere: boolean) => Promise<boolean>;
   here?: Here;
@@ -563,6 +573,7 @@ export async function applyImport(p: PendingImport, plan: Plan, choices: Choices
               automations: [...ws.automations],
               reminders: ws.reminders,
               delegations: ws.delegations,
+              knownFolders: deps.knownFolders?.() ?? [],
             },
           }
         : {}),
@@ -710,8 +721,10 @@ export async function applyImport(p: PendingImport, plan: Plan, choices: Choices
   if (rust) {
     const r = rust;
     if (r.sessionsAdded || r.sessionsCopied) lines.push(`${plural(r.sessionsAdded + r.sessionsCopied, "chat")} added${r.sessionsCopied ? ` (${r.sessionsCopied} as copies beside yours)` : ""}.`);
+    if (r.foldersCleared) lines.push(`${plural(r.foldersCleared, "chat")} came in without a folder, because ${r.foldersCleared === 1 ? "its" : "their"} folder isn't inside a project on this Mac. Each asks you to choose a project before it runs.`);
     if (r.notesAdded || r.notesCopied) lines.push(`${plural(r.notesAdded + r.notesCopied, "note")} added.`);
     if (r.automationsAdded) lines.push(`${plural(r.automationsAdded, "automation")} added, paused until you turn each on.`);
+    if (r.automationFoldersCleared) lines.push(`${plural(r.automationFoldersCleared, "automation")} lost a folder that isn't inside a project on this Mac. Choose a project for ${r.automationFoldersCleared === 1 ? "it" : "each"} before turning ${r.automationFoldersCleared === 1 ? "it" : "them"} on.`);
     if (r.remindersAdded) lines.push(`${plural(r.remindersAdded, "reminder")} added.`);
     if (r.delegationsAdded) lines.push(`${plural(r.delegationsAdded, "delegation")} added to the history.`);
     if (r.activityAdded) lines.push(`${r.activityAdded === 1 ? "1 activity line" : `${r.activityAdded} activity lines`} added.`);

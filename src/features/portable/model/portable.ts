@@ -3,6 +3,7 @@
 // the folder or archive, and on import reads one back for the preview and restores what Ash ticked.
 import { recordRestoredSouls } from "../../hub/model/soulTamper";
 import { invoke, isTauri } from "@tauri-apps/api/core";
+import { isLocalProject, loadPinnedProjects, loadProjectRailOrder, loadRecents } from "../../projects/model/recents";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { useSyncExternalStore } from "react";
 import { appIdentity } from "../../../app/model/appIdentity";
@@ -164,11 +165,25 @@ async function registerProject(project: PortableProject, folderHere: boolean): P
   return true;
 }
 
+/**
+ * The folders this window lists as projects (the rail: recents, pins, order). Rust keeps an imported chat's or
+ * automation's folder only inside one of these or a project in the app's own record; the webview holds the rail, Rust
+ * holds the record, so each supplies its own.
+ */
+export function railFolders(): string[] {
+  try {
+    return [...new Set([...loadRecents().map((p) => p.path), ...loadProjectRailOrder(), ...loadPinnedProjects()])].filter(isLocalProject);
+  } catch {
+    return [];
+  }
+}
+
 /** The restore: Rust's part (memory, workspace), then the setup. */
 export function restore(p: PendingImport, plan: Plan, choices: Choices): Promise<ImportSummary> {
   return applyImport(p, plan, choices, {
     rustImport: (request: RustImportRequest) => invoke<RustImportReport>("portable_import", { request }),
     registerProject,
+    knownFolders: railFolders,
     recordSouls: (ids) => recordRestoredSouls(ids),
   });
 }

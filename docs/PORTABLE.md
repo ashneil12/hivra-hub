@@ -59,6 +59,26 @@ The archive is the same tree under one top folder. Nothing in it is a secret:
      (**history only**: open ones settle as cancelled, delivery disposed, nothing mirrored to Ash OS again). A chat or
      note already here and different is kept; ticked, the file's comes in as a copy with a new id.
    - A provider session id is kept only where it can resume: the daily app, a Claude chat, its transcript on this Mac.
+   - **Folders.** An export is a file anyone can write, and a chat's folder is where its agent, git, checkpoints and
+     terminals run, so none is taken on trust (`src-tauri/src/portable/folders.rs`). A chat's folder (and worktree)
+     stays only when it is a real folder on this Mac, written as a full path, that sits inside a project this copy
+     already has, both sides resolved first with links followed (a link in a project that points out is refused, and a
+     folder that only shares a project's prefix is not inside it). The projects are the ones in the app's own record
+     (`hub_local_docs`, key `projects`), the folders the project rail lists (the window passes them in
+     `workspace.knownFolders`; the rail lives in the webview's storage, the record in the database Rust holds), and the
+     Monos' own folders (inside `<monos home>` or `<app data>/mono-teams`). The home folder and `/` never count as a
+     project, whatever a record says. A worktree also stays when `git worktree list` names it for one of those
+     projects. Otherwise the folder is cleared and so is the chat's worktree: the chat opens with no folder, shows
+     "Choose a project folder for this chat first." with a folder picker, and starts nothing until one is chosen. The
+     report counts those chats (`foldersCleared`) and the automations that lost a folder the same way
+     (`automationFoldersCleared`, they also come back paused). The projects are read before the import adds any, so a
+     file can't vouch for its own folders; on a fresh copy that means restoring the projects first, then importing the
+     chats again, or choosing a folder for each chat.
+   - **Paths in tool rows.** A tool row's `paths` and `preview.path`, and an approval's `call.paths`, feed the checkpoint
+     calls, so only paths inside the chat's kept folder (or worktree) stay, `..` and links resolved; the rest are
+     dropped (`toolPathsDropped`). A chat with no kept folder keeps none.
+   - **Older imports.** A chat imported before 0.16.13 keeps its old attachment paths, and its old folder: Copy and Edit
+     or resend still read the attachment paths, and nothing here rewrites a chat already in the database.
 
 **Engine-agnostic.** Every Mono and every chat names its engine. A Mono with an engine starts new conversations on it
 (`monoWorkspace.ts`); an engine this build doesn't know falls back to the default.
@@ -89,10 +109,17 @@ Still not carried:
 - Keys and logins (by design): Claude/Grok sign-ins, custom-model keys (DeepSeek, xAI), connector logins.
 - Which chats are a project's coding team (`monocode:coding-team-chats`): not exported, but re-noted on a chat's next
   turn in the project's folder, so it heals itself.
-- Machine paths (provider binaries, project folders: mapped by project id on import).
+- Machine paths (provider binaries, project folders: mapped by project id on import). A new project's folder is the
+  exception: the project step adopts the folder the file names when it exists on this Mac, so a file can still choose a
+  project's folder there (the preview shows it); chats keep a folder only inside a project that was here before the
+  import began.
 
 ## Tests
 
+- Rust folder tests (`src-tauri/src/portable/tests.rs`, "the folder an imported chat may keep"): a crafted export
+  naming `/tmp/elsewhere`, a link inside a project that points out, a same-prefix sibling, a missing folder, `..`, a
+  relative path, `~` and an empty one are all cleared; a project subfolder and the project itself are kept; worktrees,
+  the rail's folders, the home folder and the Monos' folders; automations; tool-row paths.
 - Rust (`src-tauri/src/portable/tests.rs`): round trip into an empty data folder for both forms (same chats incl. a
   Mono's indexed transcript, notes and pictures, automations, reminders, delegations, memory files and history, minus
   secrets), planted-secret scan of every file, conflicts previewed and never overwritten, ticks respected, dev-copy

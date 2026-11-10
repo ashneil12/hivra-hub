@@ -319,9 +319,30 @@ it("the ticks decide: no memory leaves the Monos' memory out, no workspace leave
   expect(rustImport).toHaveBeenCalledWith({
     path: "/tmp/export",
     memory: { projects: ["hivra"], keepBoth: false, history: true },
-    workspace: { sessions: ["s1"], sessionCopies: [], notes: [], noteCopies: [], automations: [], reminders: false, delegations: false },
+    workspace: { sessions: ["s1"], sessionCopies: [], notes: [], noteCopies: [], automations: [], reminders: false, delegations: false, knownFolders: [] },
   });
   expect(c.souls.waitingSouls().find((s) => s.monoId === "ada")!.memory).toBe("- private");
+});
+
+it("sends Rust the folders the window lists as projects, and says what it cleared in plain words", async () => {
+  const a = await app();
+  await seed(a);
+  const files = a.doc.setupDocToFiles(a.doc.buildSetupDoc({ monoFiles: { "ada": { "SOUL.md": SOUL } }, workspace: true }));
+  localStorage.clear();
+  const b = await app();
+  const inspection = {
+    format: "v2" as const, v1: null, manifest: null, files, memoryTarget: "/m", memory: [],
+    workspace: { sessions: [{ id: "s1", title: "t", cwd: "/x", harness: "codex", model: "m", blocks: 2, updatedAt: 1, archived: false, monoTranscript: false, status: "new" as const }], notes: [], automations: [], reminders: 0, delegations: [] },
+  };
+  const pending = { name: "x", path: "/tmp/export", doc: b.doc.setupDocFromFiles(files), inspection, fromV1: false, folders: {}, skillsHere: {} };
+  const plan = b.plan.planImport(pending);
+  const report = { sessionsAdded: 3, sessionsCopied: 0, notesAdded: 0, notesCopied: 0, automationsAdded: 2, remindersAdded: 0, delegationsAdded: 0, memoryFilesAdded: 0, memoryFilesBeside: 0, memoryHistory: [], kept: 0, renamed: {}, notes: [], foldersCleared: 2, automationFoldersCleared: 1 };
+  const rustImport = vi.fn(async () => report);
+  const out = await b.plan.applyImport(pending, plan, b.plan.defaultChoices(plan), { rustImport, knownFolders: () => ["/Users/me/code/app"] });
+  expect(rustImport.mock.calls[0][0]).toMatchObject({ workspace: { knownFolders: ["/Users/me/code/app"] } });
+  expect(out.lines).toContain("2 chats came in without a folder, because their folder isn't inside a project on this Mac. Each asks you to choose a project before it runs.");
+  expect(out.lines).toContain("1 automation lost a folder that isn't inside a project on this Mac. Choose a project for it before turning it on.");
+  expect(out.lines.join(" ")).not.toMatch(/[\u2013\u2014]/);
 });
 
 it("the souls a restore wrote (Rust's included) are handed over to be recorded as the app's own saves", async () => {

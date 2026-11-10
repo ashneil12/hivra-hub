@@ -350,6 +350,9 @@ only on top of the latest one and every window hears `local-hub://changed`.
 
 Settings → Export and import writes the whole setup (and, if ticked, the Ash OS memory and the workspace) to one
 `.tar.gz` or a folder, and reads one back through a preview. Import only adds: imported Monos wait for Ash's OK,
-connectors and model keys are entered again, automations come back paused, delegations come back as history. Secrets
+connectors and model keys are entered again, automations come back paused, delegations come back as history. A chat
+keeps the folder its file names only when it is inside a project this copy already has (links followed); otherwise it
+has none, asks for one and starts nothing until then (`src-tauri/src/chat_folder.rs` refuses every launch without a
+folder, never falling back to the home folder, `/` or the folder the app runs in). Secrets
 never go in (one pattern list for the webview and Rust, then a final scan of the export). A dev copy keeps its memory in
 its own data folder (`npm run hub:dev -- --memory <dir>` reads another one for Export) and never writes `~/agent-memory`.

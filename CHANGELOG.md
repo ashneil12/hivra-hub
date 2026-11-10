@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Importing an export no longer trusts the folders it names. A chat (and an automation) keeps its folder only when it is a real folder on this Mac inside a project the app already has, with links followed; otherwise it comes in with no folder, says "Choose a project folder for this chat first." and offers the folder picker. Nothing starts for a chat with no folder: agents, terminals, project actions, the control port and git all refuse it instead of using the home folder or the folder the app runs in. The import report says how many chats lost their folder. Paths in an imported chat's tool rows are kept only inside the chat's folder.
+
 ### Added
 
 - A finished worktree now gives its build output back by itself. When a worktree's pull request merged or closed, or its task was accepted and its branch pushed, and it has no uncommitted changes and nothing running in it, the app deletes its `target/`, `src-tauri/target/`, `test-results/`, `playwright-report/` and real `node_modules/` folders (a linked `node_modules` stays; code, branches and chats are never touched). The switch is Settings > Worktrees > "Clear build output of finished worktrees", on by default. A dev copy never runs it.
