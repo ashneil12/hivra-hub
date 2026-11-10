@@ -2747,35 +2747,39 @@ const TranscriptBlock = memo(function TranscriptBlock({
   if (block.text && (!shown || (block.streaming && isNoReplyPrefix(block.text)))) return null;
 
   return (
-    <div
-      data-selectable-agent-response={block.streaming ? undefined : block.id}
-      data-chat-message={block.id}
-      data-chat-message-role="assistant"
-      className={`min-w-0 pb-1 text-content ${embedded ? "" : "px-4"} ${underLine ? "pt-1" : "pt-3"}`}
-    >
-      <AgentMarkdown
-        text={shown}
-        measurement={streamMeasurement(block)}
-        streaming={block.streaming}
-        revealOnMount={revealOnMount}
-        cwd={cwd}
-        onOpenFile={onOpenFile}
-        localMedia={localMedia}
-      />
-      {/* WP-89: Undo sits under the line. The line is the message, so it is not repeated. */}
-      {block.monoCard?.type === "worker-default" ? <WorkerDefaultUndo card={block.monoCard} /> : null}
-      {/* WP-124: quote this reply into the draft. Visible without hovering. */}
+    <>
+      <div
+        data-selectable-agent-response={block.streaming ? undefined : block.id}
+        data-chat-message={block.id}
+        data-chat-message-role="assistant"
+        className={`min-w-0 pb-1 text-content ${embedded ? "" : "px-4"} ${underLine ? "pt-1" : "pt-3"}`}
+      >
+        <AgentMarkdown
+          text={shown}
+          measurement={streamMeasurement(block)}
+          streaming={block.streaming}
+          revealOnMount={revealOnMount}
+          cwd={cwd}
+          onOpenFile={onOpenFile}
+          localMedia={localMedia}
+        />
+        {/* WP-89: Undo sits under the line. The line is the message, so it is not repeated. */}
+        {block.monoCard?.type === "worker-default" ? <WorkerDefaultUndo card={block.monoCard} /> : null}
+      </div>
+      {/* WP-124: quote this reply into the draft. Outside the message, so the reply text stays the reply. */}
       {!block.streaming && shown && onQuoteMessage ? (
-        <button
-          type="button"
-          aria-label="Quote reply"
-          className="mt-1 font-sans text-xs text-content/50 hover:text-content"
-          onClick={() => onQuoteMessage("assistant", shown)}
-        >
-          Quote reply
-        </button>
+        <div className={embedded ? "" : "px-4"}>
+          <button
+            type="button"
+            aria-label="Quote reply"
+            className="mt-1 font-sans text-xs text-content/50 hover:text-content"
+            onClick={() => onQuoteMessage("assistant", shown)}
+          >
+            Quote reply
+          </button>
+        </div>
       ) : null}
-    </div>
+    </>
   );
 });
 
