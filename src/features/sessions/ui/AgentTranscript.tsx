@@ -5547,7 +5547,12 @@ function HandoffDivider({ block }: { block: Block }) {
   if (!meta) return null;
 
   const preparing = meta.status === "preparing";
-  const label = preparing ? "Preparing a handoff" : HARNESS_TITLE[meta.to];
+  const marker = meta.switchTo;
+  const label = marker
+    ? marker.label
+    : preparing
+      ? "Preparing a handoff"
+      : HARNESS_TITLE[meta.to];
 
   return (
     <div className="px-4 py-5">
@@ -5556,10 +5561,13 @@ function HandoffDivider({ block }: { block: Block }) {
         <div
           role="separator"
           aria-label={
-            preparing
-              ? `Preparing a handoff to ${HARNESS_TITLE[meta.to]}`
-              : `Continued with ${label}`
+            marker
+              ? marker.label
+              : preparing
+                ? `Preparing a handoff to ${HARNESS_TITLE[meta.to]}`
+                : `Continued with ${label}`
           }
+          data-switch-marker={marker ? "" : undefined}
           className="flex max-w-[min(100%,20rem)] items-center gap-1.5 px-1.5 font-sans text-[12px] text-content/55"
         >
           {preparing ? (
@@ -5570,6 +5578,7 @@ function HandoffDivider({ block }: { block: Block }) {
           ) : (
             <>
               <HarnessIcon harness={meta.to} className="size-3.5 shrink-0" />
+              {marker ? <span>{marker.label}</span> : null}
             </>
           )}
         </div>
