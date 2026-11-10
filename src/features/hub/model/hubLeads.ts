@@ -148,6 +148,23 @@ export async function completeLeadAdoption(
 }
 
 type Register = (monoId: string, projectId: string) => Promise<unknown>;
+
+/** Which Mono the app's store records as each project's Lead (memberships with role `lead`, the first one per project). */
+export function leadsByProject(memberships: readonly { monoId?: unknown; projectId?: unknown; role?: unknown }[]): (projectId: string) => string | undefined {
+  const leads = new Map<string, string>();
+  for (const m of memberships) {
+    if (m.role === "lead" && typeof m.monoId === "string" && typeof m.projectId === "string" && !leads.has(m.projectId)) leads.set(m.projectId, m.monoId);
+  }
+  return (projectId) => leads.get(projectId);
+}
+
+export type EnsureOptions = {
+  /**
+   * The Lead the app's store records for a project (an import from Ash OS brings them). When that Mono is on the roster
+   * and the project has no `<project id>-lead`, it is adopted as the Lead: no second one is made.
+   */
+  leadOf?: (projectId: string) => string | undefined;
+};
 /** Which Leads each `register` already recorded, so a list that changes doesn't send them all again. */
 const registered = new WeakMap<Register, Set<string>>();
 
@@ -159,15 +176,20 @@ const registered = new WeakMap<Register, Set<string>>();
  * has the old default one, and its new project's folder goes first so its chats start there. `register` records in the app's own store (localHub.ts)
  * which Mono leads which project (`mono-project-add`, role lead), once per Lead, and `unregister` drops the
  * legacy seat's old project (`mono-project-remove`); their failures are ignored. `ash` (the global memory)
- * never gets one.
+ * never gets one. `options.leadOf` names the Lead the app's store already records for a project (EnsureOptions).
  */
-export function ensureProjectLeads(projects: readonly HubProject[], register?: Register, unregister?: Register): EnsureResult {
+export function ensureProjectLeads(projects: readonly HubProject[], register?: Register, unregister?: Register, options: EnsureOptions = {}): EnsureResult {
   const created: string[] = [];
   const tied: string[] = [];
   const adopted: string[] = [];
   for (const project of projects) {
     if (isGlobalProject(project.id)) continue;
-    const lead = leadSpecFor(project);
+    let lead = leadSpecFor(project);
+    // The Lead the store records (an import from Ash OS) is this project's Lead when it is on the roster and the
+    // project has no Lead of its own id: adopted, never a second one made beside it.
+    const recorded = options.leadOf?.(project.id);
+    if (recorded && recorded !== lead.id && !leadMono(lead) && findMono(recorded) && !isMonoRemovedByUser(recorded))
+      lead = { projectId: lead.projectId, id: recorded, name: lead.name, projectName: lead.projectName };
     if (isMonoRemovedByUser(lead.id)) continue;
     rememberLead(lead);
     const existing = leadMono(lead);
