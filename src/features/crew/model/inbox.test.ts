@@ -265,6 +265,53 @@ describe("inbox items", () => {
       expect(shown.map((item) => item.id)).toEqual(["question:asked", "question:stuck"]);
     });
 
+    it("counts a failed, finished or failed-sign-in row from when it ended, not from when the work began", () => {
+      const shown = inboxItems({
+        project: PROJECT,
+        rows: [
+          // Made three hours ago, ended a minute ago: it has waited a minute, not three hours.
+          worker({ id: "boom", status: "failed", title: "Broke", createdAt: now - 3 * 60 * minute, settledAt: now - minute, updatedAt: now }),
+          worker({ id: "ready", status: "done", title: "Ready work", createdAt: now - 3 * 60 * minute, settledAt: now - 2 * minute, updatedAt: now }),
+          worker({ id: "signin", status: "failed", errorClass: "auth", error: "not signed in", createdAt: now - 3 * 60 * minute, settledAt: now - 5 * minute, updatedAt: now }),
+          // Not ended yet: no settledAt, so it counts from when it was made.
+          worker({ id: "paused", status: "paused", errorClass: "auth", error: "not signed in", createdAt: now - 90 * minute, settledAt: null, updatedAt: now }),
+          worker({ id: "ask", status: "needs-you", title: "Pick", createdAt: now - 3 * 60 * minute, settledAt: null, updatedAt: now }),
+        ],
+      });
+      const since = Object.fromEntries(shown.map((item) => [item.id, item.since]));
+      expect(since["failure:boom"]).toBe(now - minute);
+      expect(since["review:ready"]).toBe(now - 2 * minute);
+      expect(since["credential:signin"]).toBe(now - 5 * minute);
+      expect(since["credential:paused"]).toBe(now - 90 * minute);
+      expect(since["question:ask"]).toBe(now - 3 * 60 * minute);
+      expect(waitingPhrase(since["failure:boom"]!, now)).toBe("waiting 1 minute");
+      expect(waitingPhrase(since["review:ready"]!, now)).toBe("waiting 2 minutes");
+    });
+
+    it("sorts a worker that failed long ago ahead of one made earlier that only just failed", () => {
+      const shown = inboxItems({
+        project: PROJECT,
+        rows: [
+          // Made at 09:00 and failed at 12:00, against made at 11:00 and failed at 11:30.
+          worker({ id: "late", status: "failed", title: "Late", createdAt: now - 180 * minute, settledAt: now - minute, updatedAt: now }),
+          worker({ id: "early", status: "failed", title: "Early", createdAt: now - 60 * minute, settledAt: now - 30 * minute, updatedAt: now }),
+        ],
+      });
+      expect(shown.map((item) => item.id)).toEqual(["failure:early", "failure:late"]);
+    });
+
+    it("falls back to createdAt for an ended row that has no settledAt", () => {
+      const shown = inboxItems({
+        project: PROJECT,
+        rows: [
+          worker({ id: "boom", status: "failed", title: "Broke", createdAt: now - 15 * minute, updatedAt: now }),
+          worker({ id: "nulled", status: "done", title: "Done", createdAt: now - 20 * minute, settledAt: null, updatedAt: now }),
+        ],
+      });
+      expect(shown.find((item) => item.id === "failure:boom")?.since).toBe(now - 15 * minute);
+      expect(shown.find((item) => item.id === "review:nulled")?.since).toBe(now - 20 * minute);
+    });
+
     it("ignores stalledAt unless the row is blocked", () => {
       const shown = inboxItems({
         project: PROJECT,

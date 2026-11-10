@@ -35,7 +35,8 @@ export type FirstMateItem = {
   key: string | null;
   /**
    * When this item started waiting on a person: a decision from when it was asked, a blocked row from when it got
-   * stuck, any other row from when it was created. Zero when that start is not known. It is never the last update:
+   * stuck, a failed or finished row from when it ended, any other row from when it was created. Zero when that start
+   * is not known. It is never the last update:
    * a stream update or a refresh must not reset how long someone has waited.
    */
   since: number;
@@ -98,11 +99,19 @@ function stamp(value: unknown): number {
   return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : 0;
 }
 
-/** When a row began to wait: a blocked row from when it got stuck, any other from when it was created. */
+/**
+ * When a row began to wait: a blocked row from when it got stuck, a failed or finished one from when it ended (a worker
+ * made at 09:00 that fails at 12:00 has waited since 12:00), any other from when it was created.
+ */
 function rowSince(row: CrewWorkerInput): number {
   if (row.stallKind === "blocked") {
     const stalled = stamp(row.stalledAt);
     if (stalled > 0) return stalled;
+  }
+  const status = knownStatus(row.status);
+  if (status === "failed" || status === "done") {
+    const ended = stamp(row.settledAt);
+    if (ended > 0) return ended;
   }
   return stamp(row.createdAt);
 }
