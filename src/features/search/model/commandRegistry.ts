@@ -17,8 +17,10 @@ export type PaletteContext = {
   chat: boolean;
   /** That chat has a turn running. */
   busy: boolean;
-  /** A control has focus, so stop and switch-model act on something else. */
-  control: boolean;
+  /** Focus was in a terminal when the palette opened (Esc and Switch model both leave that to the terminal). */
+  terminalFocus: boolean;
+  /** Focus was in another picker or its control (Switch model leaves that to the picker). */
+  pickerFocus: boolean;
   /** A file is open in the code editor. */
   editor: boolean;
 };
@@ -171,6 +173,11 @@ const SPEC: Record<string, Spec> = {
   "Editor: Replace": { run: { kind: "editor", action: "replace" }, needs: "editor" },
 };
 
+/** True when the palette maps this shortcut row to something it runs. */
+export function hasPaletteSpec(command: string): boolean {
+  return command in SPEC;
+}
+
 /** Rows the palette leaves out, and why. Kept in code so the gap is visible. */
 export const PALETTE_OMITTED: Record<string, string> = {
   "App: Quick Composer":
@@ -264,6 +271,7 @@ export const PALETTE_COMMANDS: PaletteCommand[] = [
   ...KEYBINDINGS.flatMap((row): PaletteCommand[] => {
     const spec = SPEC[row.command];
     // A row this build has not mapped yet still appears, so it can be found.
+    // (A test fails the build when a row is neither mapped nor in PALETTE_OMITTED.)
     return [
       {
         id: row.command,
@@ -283,13 +291,14 @@ const REASONS: Record<Exclude<PaletteNeed, "none">, (context: PaletteContext) =>
   chat: (context) => (context.chat ? null : "Open a chat first"),
   "chat-control": (context) => {
     if (!context.chat) return "Open a chat first";
-    // The key path leaves a focused control to the control itself.
-    return context.control ? "Click the chat first" : null;
+    // Its shortcut only steps aside for a terminal and the other pickers; a
+    // focused composer is exactly where it is meant to work.
+    return context.terminalFocus || context.pickerFocus ? "Click the chat first" : null;
   },
   "busy-chat": (context) =>
     !context.chat
       ? "Open a chat first"
-      : context.control
+      : context.terminalFocus
         ? "Click the chat first"
         : context.busy
           ? null

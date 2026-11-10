@@ -109,6 +109,9 @@ describe("UsagePage", () => {
     expect(container.textContent).toContain("sonnet-5");
     expect(container.textContent).toContain("gpt-5");
     expect(container.textContent).toContain("$0.50");
+    expect(container.textContent).toContain("Estimated cost");
+    expect(container.textContent).toContain("what the same use would cost at API prices");
+    expect(container.textContent).toContain("flat fee");
     expect(container.textContent).toContain("Cost reported for 1 of 2 turns");
     expect(container.textContent).toContain("Cost not reported by this engine");
     expect(container.textContent).not.toContain(secret);

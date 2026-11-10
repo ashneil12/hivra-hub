@@ -214,7 +214,7 @@
       "name": "T3 Code",
       "url": "https://github.com/pingdotgg/t3code",
       "licence": "MIT",
-      "gave": "the PR watch rules, honest Claude results, delegation delivery and stop rules, limit auto-resume guards, worktree cleanup cases, 18 recorded Claude transcripts for the test bench, and forking a chat from a message (WP-123)"
+      "gave": "the PR watch rules, honest Claude results, delegation delivery and stop rules, limit auto-resume guards, worktree cleanup cases, 18 recorded Claude transcripts for the test bench, a portable mid-thread handoff that says when a harness cannot resume, and forking a chat from a message (WP-123)"
     },
     {
       "name": "Aether",
@@ -245,6 +245,12 @@
       "url": "https://github.com/snap-stanford/memorilla",
       "licence": "Apache-2.0; its PersonalizationV4 data is CC BY 4.0",
       "gave": "an external test set for chat-derived memory, the arm ladder its evaluation reports, and rules for writing a memory question that cannot be guessed (WP-106, ideas and data only)"
+    },
+    {
+      "name": "numbrone",
+      "url": "https://github.com/stevenmichaelthomas/numbrone",
+      "licence": "MIT",
+      "gave": "ideas only: a typed daily work log and retros that propose instruction edits only after the person agrees"
     }
   ],
   "components": [
