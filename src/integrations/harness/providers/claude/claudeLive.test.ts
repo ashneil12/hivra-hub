@@ -2293,3 +2293,43 @@ describe("claude manual compaction", () => {
     expect(events.some((event) => event.type === "message.delta")).toBe(false);
   });
 });
+
+describe("claude turn cost", () => {
+  const costs = (events: HarnessEvent[]) =>
+    events.flatMap((e) =>
+      e.type === "turn.metrics" && e.costUsd != null ? [e.costUsd] : [],
+    );
+
+  // total_cost_usd is the CLI process's running total, so a turn's own cost is the step from the last total.
+  it("stores each turn's own cost, not the process's running total, and resets on a restart", async () => {
+    const { events, turn } = await startTurn("s1");
+    emit({ type: "result", subtype: "success", session_id: "sess_1", total_cost_usd: 0.1 });
+    await turn;
+
+    const events2: HarnessEvent[] = [];
+    const second = sendClaudeTurn({
+      sessionId: "s1",
+      cwd: "/repo",
+      model: "claude:claude-sonnet-5",
+      modelSettings: {},
+      runtimeMode: "supervised",
+      text: "again",
+      attachments: [],
+      onEvent: (event) => events2.push(event),
+    });
+    await waitFor(() => parse().filter((m) => m.type === "user").length >= 2, "second prompt");
+    emit({ type: "result", subtype: "success", session_id: "sess_1", total_cost_usd: 0.25 });
+    await second;
+    expect(costs(events)).toEqual([0.1]);
+    expect(costs(events2)).toEqual([expect.closeTo(0.15, 10)]);
+
+    // A restarted process counts from zero again.
+    await stopClaudeSession("s1");
+    sent.length = 0;
+    const restarted = await startTurn("s1");
+    emit({ type: "result", subtype: "success", session_id: "sess_1", total_cost_usd: 0.05 });
+    await restarted.turn;
+    expect(costs(restarted.events)).toEqual([0.05]);
+  });
+});
+
