@@ -81,6 +81,14 @@ function button(name: string): HTMLButtonElement {
   return found as HTMLButtonElement;
 }
 
+// The split view's package loads on demand, so it arrives a moment after Split is chosen.
+async function waitForSplit() {
+  await act(async () => {
+    await import("./pierreDiff");
+    await Promise.resolve();
+  });
+}
+
 it("starts on unified and still stages a hunk", async () => {
   const { onStageHunk } = await render();
   expect(container.querySelector("[aria-label='Unified diff']")).not.toBeNull();
@@ -96,6 +104,7 @@ it("starts on unified and still stages a hunk", async () => {
 it("switches to split, says staging stays on unified, then stages after switching back", async () => {
   const { onStageHunk } = await render();
   await act(async () => button("Split").click());
+  await waitForSplit();
   expect(container.querySelector("[aria-label='Unified diff']")).toBeNull();
   const split = container.querySelector("[aria-label='Split diff']");
   expect(split?.textContent).toContain("old");
@@ -185,4 +194,67 @@ it("shows a message instead of a split for a binary file", async () => {
   await act(async () => button("Split").click());
   expect(container.textContent).toContain("Binary file changed");
   expect(container.querySelector("[data-pierre-split]")).toBeNull();
+});
+
+// A pull request review only has a patch: hunks without the full file. A split
+// view drawn from hunks alone would start every file at line 1 and hide the rest.
+const patchOnly = { ...file, beforeText: undefined, afterText: undefined };
+
+function splitRadio(): Element | undefined {
+  return [...container.querySelectorAll("[role='radio']")].find(
+    (node) => node.textContent === "Split",
+  );
+}
+
+it("offers no Split when the review only has a patch, and stays unified", async () => {
+  localStorage.setItem(DIFF_PRESENTATION_KEY, "split");
+  await render({ files: [patchOnly] });
+  expect(splitRadio()).toBeUndefined();
+  expect(container.querySelector("[role='radiogroup']")).toBeNull();
+  expect(container.querySelector("[aria-label='Unified diff']")).not.toBeNull();
+  expect(container.querySelector("[aria-label='Split diff']")).toBeNull();
+  expect(container.textContent).not.toContain("Split is view only");
+  // The person's choice is for reviews that can split. A patch does not erase it.
+  expect(localStorage.getItem(DIFF_PRESENTATION_KEY)).toBe("split");
+});
+
+it("offers no Split when one file in the review only has a patch", async () => {
+  await render({
+    files: [file, { ...patchOnly, id: "b.ts", path: "src/b.ts", label: "src/b.ts" }],
+  });
+  expect(splitRadio()).toBeUndefined();
+  expect(container.querySelector("[aria-label='Unified diff']")).not.toBeNull();
+});
+
+it("still stages a hunk on a patch-only review", async () => {
+  const { onStageHunk } = await render({ files: [patchOnly] });
+  await act(async () => button("Stage hunk").click());
+  expect(onStageHunk).toHaveBeenCalledTimes(1);
+});
+
+it("offers Split and the saved choice again on the next review that has full text", async () => {
+  localStorage.setItem(DIFF_PRESENTATION_KEY, "split");
+  await render({ files: [patchOnly] });
+  expect(container.querySelector("[aria-label='Split diff']")).toBeNull();
+  await render({ files: [file] });
+  expect(splitRadio()).toBeDefined();
+  await waitForSplit();
+  expect(button("Split").getAttribute("aria-checked")).toBe("true");
+});
+
+it("keeps offering Split while a file is still loading", async () => {
+  await render({
+    files: [
+      {
+        ...file,
+        id: "load.ts",
+        blocks: [],
+        beforeText: undefined,
+        afterText: undefined,
+        emptyMessage: "Loading…",
+      },
+      file,
+    ],
+  });
+  expect(splitRadio()).toBeDefined();
 });

@@ -1,4 +1,3 @@
-import type { UnifiedBlock } from "./unifiedDiff";
 import type { UnifiedDiffFileModel } from "./unifiedDiffDocument";
 
 /** One file the split view can show. The name is a label, not a path to open. */
@@ -13,43 +12,30 @@ function asText(value: unknown): string {
   return typeof value === "string" ? value : "";
 }
 
+function hasFullText(file: UnifiedDiffFileModel): boolean {
+  return typeof file.beforeText === "string" && typeof file.afterText === "string";
+}
+
 /**
- * Rebuilds the before and after text from hunk and fold lines when the review
- * only has a patch (a pull request). Full-file text, when the caller has it,
- * is kept as-is, including carriage returns.
+ * A textual file the review can only draw from its patch hunks, the way a pull
+ * request is. Hunks are not the whole file, so a side-by-side view built from
+ * them would start at line 1 and leave out everything between the hunks.
+ * A file that shows a message instead of text, or is still loading, is not one.
  */
-export function textsFromBlocks(blocks: readonly UnifiedBlock[]): {
-  before: string;
-  after: string;
-} | null {
-  if (blocks.length === 0) return null;
-  const before: string[] = [];
-  const after: string[] = [];
-  let saw = false;
-  for (const block of blocks) {
-    if (!block || !Array.isArray(block.lines)) continue;
-    for (const line of block.lines) {
-      if (!line || (line.kind !== "add" && line.kind !== "del" && line.kind !== "context")) {
-        continue;
-      }
-      saw = true;
-      const text = asText(line.text);
-      if (line.kind === "del" || line.kind === "context") before.push(text);
-      if (line.kind === "add" || line.kind === "context") after.push(text);
-    }
-  }
-  if (!saw) return null;
-  return { before: before.join("\n"), after: after.join("\n") };
+export function isPatchOnly(file: UnifiedDiffFileModel): boolean {
+  if (file.binary || file.tooLarge || file.emptyMessage) return false;
+  return !hasFullText(file) && file.blocks.length > 0;
+}
+
+/** Split is offered only when no file in the review would have to be drawn from a patch. */
+export function canSplit(files: readonly UnifiedDiffFileModel[]): boolean {
+  return !files.some(isPatchOnly);
 }
 
 /** Text for the split view, or null when this file should show its message instead. */
 export function splitFileText(file: UnifiedDiffFileModel): SplitFileText | null {
   if (file.binary || file.tooLarge || file.emptyMessage) return null;
+  if (typeof file.beforeText !== "string" || typeof file.afterText !== "string") return null;
   const name = asText(file.label) || asText(file.path) || file.id;
-  if (typeof file.beforeText === "string" && typeof file.afterText === "string") {
-    return { id: file.id, name, before: file.beforeText, after: file.afterText };
-  }
-  const rebuilt = textsFromBlocks(file.blocks);
-  if (!rebuilt) return null;
-  return { id: file.id, name, ...rebuilt };
+  return { id: file.id, name, before: file.beforeText, after: file.afterText };
 }

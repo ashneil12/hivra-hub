@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { UnifiedBlock, UnifiedLine } from "./unifiedDiff";
 import type { UnifiedDiffFileModel } from "./unifiedDiffDocument";
-import { splitFileText, textsFromBlocks } from "./splitDiff";
+import { canSplit, isPatchOnly, splitFileText } from "./splitDiff";
 
 function line(kind: UnifiedLine["kind"], text: string): UnifiedLine {
   return { kind, text, oldNumber: null, newNumber: null };
@@ -18,51 +18,6 @@ function file(over: Partial<UnifiedDiffFileModel> = {}): UnifiedDiffFileModel {
     ...over,
   };
 }
-
-describe("textsFromBlocks", () => {
-  it("returns null for no lines", () => {
-    expect(textsFromBlocks([])).toBeNull();
-    expect(textsFromBlocks([{ kind: "hunk", lines: [] }])).toBeNull();
-  });
-
-  it("rebuilds before and after, skipping header lines and keeping folds", () => {
-    const blocks: UnifiedBlock[] = [
-      {
-        kind: "hunk",
-        lines: [
-          line("context", "kept"),
-          line("del", "old"),
-          line("add", "new"),
-          { kind: "hunk", text: "@@ header", oldNumber: null, newNumber: null },
-        ],
-      },
-      { kind: "fold", id: "f", lines: [line("context", "middle")] },
-      { kind: "hunk", lines: [line("add", "tail")] },
-    ];
-    expect(textsFromBlocks(blocks)).toEqual({
-      before: "kept\nold\nmiddle",
-      after: "kept\nnew\nmiddle\ntail",
-    });
-  });
-
-  it("keeps an empty line and ignores a line whose text is not a string", () => {
-    const blocks: UnifiedBlock[] = [
-      {
-        kind: "hunk",
-        lines: [
-          line("context", ""),
-          { kind: "add", text: 4 as unknown as string, oldNumber: null, newNumber: null },
-        ],
-      },
-    ];
-    expect(textsFromBlocks(blocks)).toEqual({ before: "", after: "\n" });
-  });
-
-  it("ignores a block that has no lines array", () => {
-    const blocks = [{ kind: "hunk" }] as unknown as UnifiedBlock[];
-    expect(textsFromBlocks(blocks)).toBeNull();
-  });
-});
 
 describe("splitFileText", () => {
   it("prefers the full texts, including carriage returns", () => {
@@ -88,14 +43,14 @@ describe("splitFileText", () => {
     expect(text?.name).toBe("..\\weird name\r\n");
   });
 
-  it("rebuilds from blocks when the full texts are missing", () => {
+  it("returns null for a file that only has a patch, never a rebuilt half of the file", () => {
     expect(
       splitFileText(
         file({
           blocks: [{ kind: "hunk", lines: [line("del", "old"), line("add", "new")] }],
         }),
       ),
-    ).toEqual({ id: "a.ts", name: "src/a.ts", before: "old", after: "new" });
+    ).toBeNull();
   });
 
   it("returns null for a binary, too-large, or message file", () => {
@@ -117,5 +72,56 @@ describe("splitFileText", () => {
     expect(
       splitFileText(file({ label: "", path: "", beforeText: "a", afterText: "b" }))?.name,
     ).toBe("a.ts");
+  });
+});
+
+const patchBlocks: UnifiedBlock[] = [
+  { kind: "hunk", lines: [line("del", "old"), line("add", "new")] },
+];
+
+describe("isPatchOnly", () => {
+  it("is true for a textual file with hunks and no full text", () => {
+    expect(isPatchOnly(file({ blocks: patchBlocks }))).toBe(true);
+    expect(isPatchOnly(file({ blocks: patchBlocks, beforeText: "only before" }))).toBe(true);
+  });
+
+  it("is false once both full texts are there, empty ones included", () => {
+    expect(isPatchOnly(file({ blocks: patchBlocks, beforeText: "a", afterText: "b" }))).toBe(false);
+    expect(isPatchOnly(file({ blocks: patchBlocks, beforeText: "", afterText: "new" }))).toBe(false);
+  });
+
+  it("is false for a file that shows a message instead of text", () => {
+    expect(isPatchOnly(file({ blocks: patchBlocks, binary: true }))).toBe(false);
+    expect(isPatchOnly(file({ blocks: patchBlocks, tooLarge: true }))).toBe(false);
+    expect(isPatchOnly(file({ blocks: [], emptyMessage: "Loading…" }))).toBe(false);
+    expect(isPatchOnly(file({ blocks: [] }))).toBe(false);
+  });
+});
+
+describe("canSplit", () => {
+  const full = file({ id: "full.ts", blocks: patchBlocks, beforeText: "a", afterText: "b" });
+  const patch = file({ id: "patch.ts", blocks: patchBlocks });
+
+  it("is true when every file has its full text", () => {
+    expect(canSplit([full, { ...full, id: "two.ts" }])).toBe(true);
+  });
+
+  it("is false when the review only has a patch", () => {
+    expect(canSplit([patch])).toBe(false);
+  });
+
+  it("is false when one file among full ones only has a patch", () => {
+    expect(canSplit([full, patch])).toBe(false);
+  });
+
+  it("is true while files load and for files that show a message", () => {
+    const loading = file({ id: "load.ts", blocks: [], emptyMessage: "Loading…" });
+    const binary = file({ id: "bin.png", blocks: [], binary: true });
+    expect(canSplit([loading, binary, full])).toBe(true);
+    expect(canSplit([loading])).toBe(true);
+  });
+
+  it("is true for an empty review, which shows its own note", () => {
+    expect(canSplit([])).toBe(true);
   });
 });

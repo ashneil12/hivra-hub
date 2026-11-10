@@ -1,16 +1,21 @@
-import { useEffect, useState, type ComponentProps } from "react";
+import { useEffect, useMemo, useState, type ComponentProps } from "react";
 import {
   DIFF_PRESENTATION_KEY,
   readDiffPresentation,
   writeDiffPresentation,
   type DiffPresentation,
 } from "../model/diffPresentation";
+import { canSplit } from "../model/splitDiff";
 import { SplitDiffView } from "./SplitDiffView";
 import { UnifiedDiffView } from "./UnifiedDiffView";
 
 type Props = ComponentProps<typeof UnifiedDiffView>;
 
-/** Unified review, with an optional split view. Unified stays the default. */
+/**
+ * Unified review, with an optional split view. Unified stays the default.
+ * A review that only has a patch (a pull request) has no Split: hunks are not
+ * whole files. The saved choice is left alone for the reviews that can split.
+ */
 export function ReviewDiff(props: Props) {
   const [mode, setMode] = useState<DiffPresentation>(() => readDiffPresentation());
   useEffect(() => {
@@ -26,6 +31,8 @@ export function ReviewDiff(props: Props) {
     setMode(next);
     writeDiffPresentation(next);
   };
+  const splittable = useMemo(() => canSplit(props.files), [props.files]);
+  const shown: DiffPresentation = splittable ? mode : "unified";
   const canChange = Boolean(
     props.onStageFile || props.onStageHunk || props.onDiscardFile,
   );
@@ -39,12 +46,14 @@ export function ReviewDiff(props: Props) {
           : "min-w-0"
       }
     >
-      <DiffLayoutControl
-        mode={mode}
-        onChange={choose}
-        viewOnly={mode === "split" && canChange}
-      />
-      {mode === "split" ? (
+      {splittable ? (
+        <DiffLayoutControl
+          mode={mode}
+          onChange={choose}
+          viewOnly={mode === "split" && canChange}
+        />
+      ) : null}
+      {shown === "split" ? (
         <SplitDiffView files={props.files} fill={fill} />
       ) : (
         <div className={fill ? "min-h-0 flex-1" : undefined}>
