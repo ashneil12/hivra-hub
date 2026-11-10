@@ -398,6 +398,31 @@ fn probe_node_within(path_env: Option<String>, wait: std::time::Duration) -> Nod
             "Node isn't installed, so the stand-in didn't start. The stack still runs.".into(),
         );
     };
+    // Read on a thread of its own, into a buffer this function can take at any time. A `node`
+    // that is a shim exits, and the real node it started keeps the pipe: reading to the end here
+    // would wait for that one. The thread is never joined, so it can outlive the probe.
+    let text = std::sync::Arc::new(Mutex::new(String::new()));
+    let (done, finished) = std::sync::mpsc::channel::<()>();
+    if let Some(mut pipe) = child.stdout.take() {
+        let text = std::sync::Arc::clone(&text);
+        let _ = std::thread::Builder::new()
+            .name("hivra-node-probe".into())
+            .spawn(move || {
+                let mut chunk = [0u8; 512];
+                while let Ok(read) = pipe.read(&mut chunk) {
+                    if read == 0 {
+                        break;
+                    }
+                    let mut text = text.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+                    if text.len() < 4096 {
+                        text.push_str(&String::from_utf8_lossy(&chunk[..read]));
+                    }
+                }
+                let _ = done.send(());
+            });
+    } else {
+        let _ = done.send(());
+    }
     let started = std::time::Instant::now();
     let status = loop {
         match child.try_wait() {
@@ -421,10 +446,16 @@ fn probe_node_within(path_env: Option<String>, wait: std::time::Duration) -> Nod
             "Node didn't answer, so the stand-in didn't start. The stack still runs.".into(),
         );
     }
-    let mut stdout = String::new();
-    if let Some(mut pipe) = child.stdout.take() {
-        let _ = pipe.read_to_string(&mut stdout);
-    }
+    // The answer is in the pipe already. The end of the pipe is waited for a moment, within the
+    // time that is left, and what was read by then is the answer.
+    let left = wait
+        .saturating_sub(started.elapsed())
+        .min(std::time::Duration::from_millis(500));
+    let _ = finished.recv_timeout(left);
+    let stdout = text
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clone();
     match parse_node_version(&stdout) {
         Some((version, major)) if major >= MIN_NODE_MAJOR => NodeStatus::Ready { version, major },
         Some((version, _)) => NodeStatus::Unavailable(format!(
@@ -739,6 +770,13 @@ pub fn start(request: &StartRequest) -> Result<u32, String> {
     }
     #[cfg(windows)]
     super::process_win::keep_job(&request.stack_dir, job);
+    // Reaped when it ends, so it is not left a zombie that keeps its process group looking
+    // alive after everything in it is gone.
+    let _ = std::thread::Builder::new()
+        .name("hivra-stand-in-reaper".into())
+        .spawn(move || {
+            let _ = child.wait();
+        });
     Ok(pid)
 }
 
@@ -847,6 +885,11 @@ fn pid_file_text(pid: u32, start_token: Option<&str>) -> String {
 fn pid_record(text: &str) -> Option<(u32, Option<String>)> {
     let mut lines = text.lines().map(str::trim).filter(|line| !line.is_empty());
     let pid = lines.next()?.parse::<u32>().ok()?;
+    // 0 is this app's own process group and 1 is the init process. Neither is a stand-in, and a
+    // pid file that says so is not a record of one.
+    if pid <= 1 {
+        return None;
+    }
     let start = lines
         .next()
         .filter(|line| valid_start_token(line))
@@ -879,13 +922,13 @@ fn stop_with(
         Err(error) => return Err(format!("The stand-in's pid couldn't be read: {error}")),
     };
     let Some((pid, _)) = pid_record(&text) else {
-        let _ = std::fs::remove_file(&path);
+        remove_if_unchanged(&path, &text);
         return Ok(());
     };
     match probe(pid) {
         // The pid now names another program, or nothing: a stale entry, not a stand-in.
         Probe::NotOurs | Probe::Gone => {
-            let _ = std::fs::remove_file(&path);
+            remove_if_unchanged(&path, &text);
             Ok(())
         }
         // The process may still hold this stack's ports. Keep the pid file so the next stop
@@ -897,12 +940,20 @@ fn stop_with(
             // has none, so the file goes and the stop is a success.
             match kill(pid) {
                 Kill::Killed | Kill::Gone | Kill::NotOurs => {
-                    let _ = std::fs::remove_file(&path);
+                    remove_if_unchanged(&path, &text);
                     Ok(())
                 }
                 Kill::Failed => Err(STILL_RUNNING_NOTE.to_string()),
             }
         }
+    }
+}
+
+/// Remove the pid file only if it still says what this stop read. A stop can take seconds, and
+/// a start that came in meanwhile has written the record of a stand-in that is running.
+fn remove_if_unchanged(path: &Path, read: &str) {
+    if std::fs::read_to_string(path).is_ok_and(|now| now == read) {
+        let _ = std::fs::remove_file(path);
     }
 }
 
@@ -1080,25 +1131,53 @@ fn ps_column(column: &str, pid: u32) -> Option<String> {
 #[cfg(unix)]
 const TERM_GRACE: std::time::Duration = std::time::Duration::from_millis(400);
 
-/// SIGTERM the stand-in's process group, wait, and only then SIGKILL it, and only if what is
-/// there is still the stand-in. The pid had been checked before SIGTERM; in the wait the
-/// stand-in may have ended and the pid, or the group id, been given to another program, and
-/// a SIGKILL sent blind would take that program's group down.
+/// Whether anything is still in the process group `pid` leads. While any process is in a
+/// group, its id cannot be given to another program, so a group that answers here, having
+/// answered at every look since the stand-in was signalled, is the stand-in's own: its leader
+/// may be gone and a child that ignored SIGTERM may be what is left.
+#[cfg(unix)]
+fn group_alive(pid: u32) -> bool {
+    let Ok(pid) = i32::try_from(pid) else {
+        return false;
+    };
+    // SAFETY: signal 0 only checks for the group; it sends nothing. `pid > 1` keeps the target
+    // a real group: `-1` would be every process the user owns.
+    pid > 1 && unsafe { libc::kill(-pid, 0) } == 0
+}
+
+/// SIGTERM the stand-in's process group; if the group is still there when the wait is over, and
+/// has been at every look, SIGKILL it. The group, not the leader, is what is looked at: a child
+/// that ignores SIGTERM outlives a leader that does not, and it is still the stand-in's.
+/// A group that is not there at a look is never signalled again: its id could be anyone's.
+///
+/// `pid` 0 and 1 are never a group of ours: `kill(0, ..)` is this app's own group and
+/// `kill(-1, ..)` is every process the user owns.
 #[cfg(unix)]
 fn end_group(
     pid: u32,
     grace: std::time::Duration,
-    still_ours: impl Fn() -> bool,
+    group_alive: impl Fn() -> bool,
     send: impl Fn(i32, i32),
 ) {
     let Ok(pid) = i32::try_from(pid) else {
         return;
     };
-    send(-pid, libc::SIGTERM);
-    std::thread::sleep(grace);
-    if still_ours() {
-        send(-pid, libc::SIGKILL);
+    if pid <= 1 {
+        return;
     }
+    send(-pid, libc::SIGTERM);
+    let deadline = std::time::Instant::now() + grace;
+    loop {
+        if !group_alive() {
+            return;
+        }
+        let left = deadline.saturating_duration_since(std::time::Instant::now());
+        if left.is_zero() {
+            break;
+        }
+        std::thread::sleep(left.min(std::time::Duration::from_millis(25)));
+    }
+    send(-pid, libc::SIGKILL);
 }
 
 /// Kill only when the pid is still this stack's stand-in, looked at again now. On Windows the
@@ -1110,10 +1189,10 @@ fn kill_if_still_ours(pid: u32, stack_dir: &Path) -> Kill {
             end_group(
                 pid,
                 TERM_GRACE,
-                || probe_stand_in(pid, stack_dir) == Probe::Ours,
+                || group_alive(pid),
                 |target, signal| {
                     // SAFETY: the pid was proved to be this stack's own stand-in just before
-                    // this, and again before the signal that cannot be taken back.
+                    // this, and the group has been there at every look since.
                     unsafe {
                         libc::kill(target, signal);
                     }
@@ -1361,6 +1440,55 @@ pub(crate) mod tests {
         }
         // The wait the app uses is short.
         assert!(NODE_PROBE_WAIT <= Duration::from_secs(10));
+    }
+
+    /// A `node` that is a shim starts the real node and exits, and the real one keeps the pipe
+    /// that `--version` is read from. Reading to the end after the shim exited waited for it.
+    #[cfg(unix)]
+    #[test]
+    fn a_node_whose_child_keeps_the_pipe_open_does_not_hold_the_probe() {
+        use std::os::unix::fs::PermissionsExt;
+        let temp = Temp::new("node-pipe");
+        let bin = temp.0.join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let node = bin.join("node");
+        std::fs::write(&node, "#!/bin/sh\nsleep 12 &\necho v24.0.0\nexit 0\n").unwrap();
+        std::fs::set_permissions(&node, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let started = std::time::Instant::now();
+        let status = probe_node_within(
+            Some(format!("{}:/usr/bin:/bin", bin.display())),
+            Duration::from_secs(2),
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(8),
+            "the probe waited for a child that holds the pipe: {:?}",
+            started.elapsed()
+        );
+        // What the shim printed before it exited is the answer.
+        assert!(
+            matches!(&status, NodeStatus::Ready { major: 24, .. }),
+            "{status:?}"
+        );
+    }
+
+    /// The pipe that never closes and prints nothing is a node that did not answer in time.
+    #[cfg(unix)]
+    #[test]
+    fn a_node_that_exits_and_leaves_the_pipe_open_with_no_answer_is_noted() {
+        use std::os::unix::fs::PermissionsExt;
+        let temp = Temp::new("node-pipe-silent");
+        let bin = temp.0.join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let node = bin.join("node");
+        std::fs::write(&node, "#!/bin/sh\nsleep 12 &\nexit 0\n").unwrap();
+        std::fs::set_permissions(&node, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let started = std::time::Instant::now();
+        let status = probe_node_within(
+            Some(format!("{}:/usr/bin:/bin", bin.display())),
+            Duration::from_secs(2),
+        );
+        assert!(started.elapsed() < Duration::from_secs(8));
+        assert!(matches!(status, NodeStatus::Unavailable(_)), "{status:?}");
     }
 
     #[test]
@@ -1754,6 +1882,14 @@ pub(crate) mod tests {
             Err(error) => panic!("the stand-in could not be installed: {error}"),
         };
         assert_eq!(installed(&temp.0).as_ref(), Some(&tool));
+        // Nothing in the package may rewrite the process title: the stop finds the stand-in by the
+        // `--seed <stack>/emulate.config.json` argument in its command line.
+        let titled = files_mentioning(&tool_dir(&temp.0), "process.title");
+        println!("files that mention process.title: {titled:?}");
+        assert!(
+            titled.is_empty(),
+            "the package sets its process title: {titled:?}"
+        );
         let port = free_port();
         let stack_dir = temp.0.join("stack");
         let (config, notice) = write_config(
@@ -1770,19 +1906,43 @@ pub(crate) mod tests {
             stack_dir: stack_dir.clone(),
             config,
             tool: tool.clone(),
-            path_env: None,
+            // The app hands the child its login shell's PATH. With none, `node` is looked up in
+            // the system's default path only, which is not where a version manager puts it.
+            path_env: std::env::var("PATH").ok(),
         }) {
             Ok(pid) => pid,
             Err(error) => panic!("the stand-in didn't start: {error}"),
         };
         // Whatever happens next, the process this test started is stopped before it ends.
         let answered = wait_for_status(port, Duration::from_secs(60));
+        // What the system shows for the real stand-in, and what the stop makes of it. If emulate
+        // changed its process title, the command line would no longer carry `--seed`, and a real
+        // stand-in would never be recognised as ours.
+        #[cfg(unix)]
+        let probe = {
+            println!("the stand-in's command: {:?}", command_of(pid));
+            println!("the stand-in's program: {:?}", program_of(pid));
+            println!(
+                "the stand-in's start time: {:?}, recorded: {:?}",
+                unix_start_token(pid),
+                recorded_start(&stack_dir, pid)
+            );
+            let probe = probe_stand_in(pid, &stack_dir);
+            println!("the stand-in is probed as: {probe:?}");
+            probe
+        };
         let stopped = stop(&stack_dir);
         let line = match answered {
             Some(line) => line,
             None => panic!("nothing answered on 127.0.0.1:{port}"),
         };
         println!("the stand-in answered: {line}");
+        #[cfg(unix)]
+        assert_eq!(
+            probe,
+            Probe::Ours,
+            "a real stand-in is not recognised as ours"
+        );
         assert!(stopped.is_ok(), "the stand-in could not be stopped");
         assert!(
             line.starts_with("HTTP/1."),
@@ -1800,6 +1960,30 @@ pub(crate) mod tests {
         );
         #[cfg(not(unix))]
         let _ = pid;
+    }
+
+    /// The JavaScript files under `dir` whose text contains `needle`.
+    fn files_mentioning(dir: &Path, needle: &str) -> Vec<String> {
+        let mut found = Vec::new();
+        let mut pending = vec![dir.to_path_buf()];
+        while let Some(next) = pending.pop() {
+            let Ok(entries) = std::fs::read_dir(&next) else {
+                continue;
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    pending.push(path);
+                } else if path
+                    .extension()
+                    .is_some_and(|ext| ext == "js" || ext == "mjs" || ext == "cjs")
+                    && std::fs::read_to_string(&path).is_ok_and(|text| text.contains(needle))
+                {
+                    found.push(path.display().to_string());
+                }
+            }
+        }
+        found
     }
 
     /// A free port from the OS, released straight away. The stand-in takes it a moment later;
@@ -2117,31 +2301,96 @@ pub(crate) mod tests {
         let _ = node.wait();
     }
 
-    /// The end of a stand-in: its group gets SIGTERM, and only a process that is still the
-    /// stand-in after the wait gets SIGKILL. In the wait the pid, or the group id, may have gone
-    /// to a program a person is using.
+    /// The end of a stand-in: its group gets SIGTERM, and SIGKILL only if the group has been
+    /// there at every look since. While any process is in a group its id cannot be given to
+    /// another program, so a group that is still there is the stand-in's own, whether or not its
+    /// leader has gone; a group that is gone could be anyone's by the next look.
     #[cfg(unix)]
     #[test]
-    fn the_kill_after_the_wait_is_sent_only_to_what_is_still_the_stand_in() {
-        for (still_ours, expected) in [
-            (true, vec![libc::SIGTERM, libc::SIGKILL]),
-            (false, vec![libc::SIGTERM]),
+    fn the_kill_after_the_wait_is_sent_only_while_the_group_is_still_there() {
+        let looks = std::cell::Cell::new(0);
+        for (gone_after, expected) in [
+            // Never gone: it ignored SIGTERM, so it gets SIGKILL.
+            (usize::MAX, vec![libc::SIGTERM, libc::SIGKILL]),
+            // Gone at the first look: nothing more is sent.
+            (0, vec![libc::SIGTERM]),
+            // Gone part way through the wait: nothing more is sent.
+            (3, vec![libc::SIGTERM]),
         ] {
+            looks.set(0);
             let sent = Mutex::new(Vec::new());
             end_group(
                 4242,
-                Duration::from_millis(1),
-                || still_ours,
+                Duration::from_millis(200),
+                || {
+                    looks.set(looks.get() + 1);
+                    looks.get() <= gone_after
+                },
                 |target, signal| sent.lock().unwrap().push((target, signal)),
             );
             let sent = sent.into_inner().unwrap();
             assert_eq!(
                 sent.iter().map(|(_, signal)| *signal).collect::<Vec<_>>(),
-                expected
+                expected,
+                "group gone after {gone_after} looks"
             );
             // Always the whole group, never a bare pid.
             assert!(sent.iter().all(|(target, _)| *target == -4242));
         }
+    }
+
+    /// `kill(0, ...)` is this app's own group and `kill(-1, ...)` is every process the user owns.
+    /// No pid read from a file, however it got there, may make a signal go to either.
+    #[cfg(unix)]
+    #[test]
+    fn a_pid_that_would_mean_every_process_or_our_own_group_is_never_signalled() {
+        for pid in [0u32, 1, u32::MAX, u32::MAX / 2 + 7] {
+            let sent = Mutex::new(Vec::new());
+            end_group(
+                pid,
+                Duration::from_millis(1),
+                || true,
+                |target, signal| sent.lock().unwrap().push((target, signal)),
+            );
+            let sent = sent.into_inner().unwrap();
+            assert!(sent.is_empty(), "pid {pid} was signalled: {sent:?}");
+        }
+        // And a pid file that holds one is not a record of a stand-in at all.
+        assert_eq!(pid_record("0\n100\n"), None);
+        assert_eq!(pid_record("1\n100\n"), None);
+        assert_eq!(pid_record("2\n100\n").map(|(pid, _)| pid), Some(2));
+    }
+
+    /// The stand-in ends on SIGTERM and a child of it, in its group, ignores SIGTERM and holds
+    /// the port. The leader going away must not end the stop: the child is still the stand-in's,
+    /// and nothing could find it again once its pid file was gone.
+    #[cfg(unix)]
+    #[test]
+    fn a_child_that_ignores_sigterm_is_ended_with_the_stand_in() {
+        let temp = Temp::new("stop-stubborn");
+        let port = free_port();
+        let script = "const { spawn } = require('node:child_process');\n\
+            const fs = require('node:fs');\n\
+            const config = JSON.parse(fs.readFileSync(process.argv[process.argv.indexOf('--seed') + 1], 'utf8'));\n\
+            const serve = `process.on('SIGTERM', () => {}); require('node:net').createServer().listen(${config.github.port}, '127.0.0.1'); setTimeout(() => process.exit(0), 20000)`;\n\
+            spawn(process.execPath, ['-e', serve], { stdio: 'ignore' });\n\
+            setTimeout(() => {}, 60000);\n";
+        let Some(stack) = start_scripted(&temp, script, port) else {
+            return;
+        };
+        assert!(
+            wait_until_accepts(port, Duration::from_secs(15)),
+            "the child never started listening on {port}"
+        );
+        let result = stop(&stack);
+        let released = wait_until_gone(port, Duration::from_secs(5));
+        // The child ends itself after twenty seconds, so a failing test leaves nothing behind.
+        assert!(
+            released,
+            "the child that ignores SIGTERM still holds port {port}"
+        );
+        result.unwrap();
+        assert!(!stack.join("emulate.pid").exists());
     }
 
     /// A real stand-in is ended for real: found by its start time and command, signalled, and
@@ -2347,6 +2596,52 @@ pub(crate) mod tests {
         assert_eq!(start_ticks_from_stat(stat).as_deref(), Some("987654"));
         assert_eq!(start_ticks_from_stat("1234 (node) S 1"), None);
         assert_eq!(start_ticks_from_stat("garbage"), None);
+    }
+
+    /// A stop reads the pid file, looks at the process, and may wait seconds for a stand-in to
+    /// end. In that time a start can write a new pid file for a new stand-in. Removing "the pid
+    /// file" afterwards removed the new stand-in's record. Only the file that was read goes.
+    #[test]
+    fn a_pid_file_written_while_a_stop_ran_is_not_removed() {
+        let new_record = "9999\n555\n";
+        for (name, probe, kill) in [
+            ("gone", Probe::Gone, Kill::Killed),
+            ("reused", Probe::NotOurs, Kill::Killed),
+            ("killed", Probe::Ours, Kill::Killed),
+            ("exited before the kill", Probe::Ours, Kill::Gone),
+            ("replaced before the kill", Probe::Ours, Kill::NotOurs),
+        ] {
+            let temp = Temp::new("stop-new-file");
+            let stack = temp.0.join("stack");
+            pid_file(&stack, 4242);
+            let path = stack.join("emulate.pid");
+            let rewrite = || std::fs::write(&path, new_record).unwrap();
+            stop_with(
+                &stack,
+                |_| {
+                    if probe != Probe::Ours {
+                        rewrite();
+                    }
+                    probe
+                },
+                |_| {
+                    rewrite();
+                    kill
+                },
+            )
+            .unwrap();
+            assert_eq!(
+                std::fs::read_to_string(&path).ok().as_deref(),
+                Some(new_record),
+                "the pid file a new start wrote was removed ({name})"
+            );
+        }
+        // An unchanged file is still removed.
+        let temp = Temp::new("stop-same-file");
+        let stack = temp.0.join("stack");
+        pid_file(&stack, 4242);
+        stop_with(&stack, |_| Probe::Gone, |_| Kill::Gone).unwrap();
+        assert!(!stack.join("emulate.pid").exists());
     }
 
     /// The stand-in is found by `--seed <stack>/emulate.config.json` as one whole argument. A
