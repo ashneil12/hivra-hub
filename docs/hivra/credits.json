@@ -239,6 +239,12 @@
       "url": "https://github.com/BarganConstantin/ccdeck",
       "licence": "AGPL-3.0",
       "gave": "ideas only: a live session tree (main agent at the root, subagents as nodes, inspectable tool calls) and a waiting-on-you list ordered questions first and longest wait first"
+    },
+    {
+      "name": "numbrone",
+      "url": "https://github.com/stevenmichaelthomas/numbrone",
+      "licence": "MIT",
+      "gave": "ideas only: a typed daily work log and retros that propose instruction edits only after the person agrees"
     }
   ],
   "components": [
