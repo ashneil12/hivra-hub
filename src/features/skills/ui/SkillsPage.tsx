@@ -30,6 +30,7 @@ import {
   READY_SKILLS,
   readySkillInstalled,
 } from "../model/readySkills";
+import { ProjectCliParity } from "./ProjectCliParity";
 
 /** Inspect and manage file skills without modifying provider-owned catalogs. */
 export function SkillsPage({
@@ -241,6 +242,8 @@ export function SkillsPage({
             className={`mx-auto w-full max-w-5xl py-8 ${previewOpen ? "px-4" : "px-8"}`}
           >
             {header}
+            {/* WP-126: what each CLI will load for this project. */}
+            <ProjectCliParity cwd={cwd} />
             <div className="flex flex-wrap items-center justify-between gap-3 pb-3">
               <div className="flex min-w-0 flex-1 items-center gap-3">
                 <span className="shrink-0 text-[12px] text-content/40 tabular-nums">

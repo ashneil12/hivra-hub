@@ -89,6 +89,11 @@ beforeEach(() => {
   vi.mocked(invoke).mockReset();
   vi.mocked(invoke).mockImplementation(async (command) => {
     if (command === "list_skills") return skills;
+    if (command === "home_dir") return "C:/Users/test";
+    // Skill folders come back empty, so the panel does not scan skill files.
+    // Known MCP and rule paths are still read. Those hit the default markdown
+    // below during the first render, so a later one-shot mock is not stolen.
+    if (command === "list_dir") return [];
     if (command === "read_text_file") return markdown;
     throw new Error(`Unexpected command: ${command}`);
   });
