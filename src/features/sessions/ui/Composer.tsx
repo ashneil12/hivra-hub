@@ -125,6 +125,7 @@ import { FileTypeIcon } from "../../files/ui/FileTypeIcon";
 import { InboxMiniCard } from "../../inbox/ui/InboxMiniCard";
 import { NoteMiniCard } from "../../notes/ui/NoteMiniCard";
 import { HandoffMiniCard } from "./HandoffMiniCard";
+import { MidThreadSwitchNotice } from "./MidThreadSwitchNotice";
 import { ModelControlPills, ModelPicker } from "./ModelPicker";
 import { QuestionForm } from "./QuestionForm";
 import { MessageQueue } from "./MessageQueue";
@@ -254,6 +255,8 @@ type Props = {
   inboxCard?: InboxComposerCard;
   noteCard?: NoteComposerCard;
   handoffCard?: HandoffComposerCard;
+  /** WP-121: the continue or recap line, until the next send. */
+  midThreadLine?: string;
   question?: UserQuestionPrompt;
   busy?: boolean;
   /** Allow typed text to replace Stop with Send while a turn is running. */
@@ -387,6 +390,7 @@ export function Composer({
   inboxCard,
   noteCard,
   handoffCard,
+  midThreadLine,
   question,
   busy = false,
   allowBusySubmit = true,
@@ -2290,6 +2294,8 @@ export function Composer({
               onDismiss={onHandoffCardDismiss}
             />
           ) : null}
+
+          <MidThreadSwitchNotice line={midThreadLine} place="composer" />
 
           <div className="relative">
             <div
