@@ -32,12 +32,12 @@ A visual reply is a shell iframe with the guest iframe inside it. Both sandboxes
 The guest document carries a content security policy, written before the reply so the reply cannot close it:
 
 - With network off (the default): `default-src 'none'`, inline scripts and styles only, images and media from `data:` and `blob:` only, fonts from `data:` only, `connect-src 'none'`.
-- With network on, for that reply only: fetch, images, fonts and media may use `http:`, `https:`, and for fetch also `ws:` and `wss:`. Remote scripts, remote styles, frames, objects, forms and navigation stay off. `script-src` stays `'unsafe-inline'` with no host. The choice is not saved. Closing the reply or leaving the chat turns it off again.
+- With network on, for that reply only: fetch, images, fonts and media may use `https:`, and fetch also `wss:`. Never plain `http:` or `ws:`, so the reply cannot reach this machine (`localhost`, the app's control port, a dev server), the local network, or the app's `http://asset.localhost` and `http://ipc.localhost` schemes. Remote scripts, remote styles, frames, objects, forms and navigation stay off. `script-src` stays `'unsafe-inline'` with no host. The choice is not saved. Closing the reply or leaving the chat turns it off again.
 - Always: `form-action 'none'`, `frame-src 'none'`, `child-src 'none'`, `object-src 'none'`, `base-uri 'none'`.
 
 `navigate-to` is not part of the policy. Chromium and WebKit both report that directive as unrecognized, so it would not block anything.
 
-Each reply is a shell frame with the guest frame inside it. The shell policy sets `frame-src 'none'` and `child-src 'none'`, and it never allows a remote script. A guest that sets `location`, follows a link, or refreshes the page is navigating that inner frame, and both browsers refuse the request. It is not sent. WebKit leaves the guest in place. Chromium may drop the inner page after refusing, so a reply that tries to leave can go blank there. The sandbox also stops the guest navigating its parent or the top page: both throw a security error. Clicks on links that leave the page are cancelled as well. The person saves the file instead. The guest also inherits the shell policy, and the two are combined, so the shell allows the same image, font, media and fetch schemes the guest may opt into. The guest policy is what keeps those off until the person opts in. Opting in does not add a remote script, a frame, a form or a navigation.
+Each reply is a shell frame with the guest frame inside it. The shell carries the same policy as its guest, so the guest, which inherits the shell's policy, can never get more than that. The shell policy sets `frame-src 'none'` and `child-src 'none'`, and it never allows a remote script. A guest that sets `location`, follows a link, or refreshes the page is navigating that inner frame, and both browsers refuse the request. It is not sent. WebKit leaves the guest in place. Chromium may drop the inner page after refusing, so a reply that tries to leave can go blank there. The sandbox also stops the guest navigating its parent or the top page: both throw a security error. Clicks on links that leave the page are cancelled as well. The person saves the file instead. Opting in does not add a remote script, a frame, a form or a navigation. DNS prefetch is turned off in the guest before the reply.
 
 A reply over 512 KiB of UTF-8 is not framed. A null byte in the reply is removed so it cannot cut the page short. Theme values are checked before they are written into CSS. A value with a breakout character, or a `url(`, is replaced with a plain fallback.
 
@@ -47,20 +47,40 @@ The frame starts from the current theme: background, text, the plain font and th
 
 A fence renders as a visual reply only when it is marked. The mark is the language `visual`, `visual-html` or `hivra-visual`. The only hint is an `html` or `htm` fence whose info string is the single word `visual`, with any letter case. A plain html fence, a javascript fence, inline html and an html fence with any other info string stay ordinary Markdown. A fence that is still streaming stays code, so a half-written reply is not framed.
 
-Show source hides the frame and shows the reply as text. Show visual puts the frame back. Save as file downloads the original reply as `visual-reply.html` and does not open it in the app. Allow network turns the network on for that one reply. The choice is not saved. Remote scripts, frames, forms and navigation stay off. A reply that is too big to frame is shown as source, with Save as file and no network switch.
+Show source hides the frame and shows the reply as text. Show visual puts the frame back. Save as file saves the original reply: in the app it asks where to save (suggesting `visual-reply.html`) and writes the file, because the app's web view has no download handler and cancels a download link. Outside the app it downloads the file as `application/octet-stream`, so the bytes are never shown as a page. Allow network turns the network on for that one reply. The choice is not saved. Remote scripts, frames, forms and navigation stay off. A reply that is too big to frame is shown as source, with Save as file and no network switch.
 
 The host ignores messages from the frame except a height number from that frame, and it caps the height. The frame cannot ask the app to open a link, run a tool or read the page.
 
-Two replies do not share an origin. The shell only forwards a message from its own guest, and it only forwards a theme message back in.
+Two replies do not share an origin. The shell passes on only a height from its own guest, rebuilt as a number, and it only forwards a theme message back in.
 
-What the browser spec covers, on Chromium and WebKit: a fixture that fetches, loads an image, a script and a nested frame, reads the parent page, sets `location.href`, clicks a link, refreshes, and submits a form. The parent title stays put, `contentDocument` stays closed, and the harness sees no request for those targets. A browser the spec does not run could still treat frame navigation differently. The sandbox would still stop that page from touching the parent.
+What the first browser spec (`wp130-visual-replies.spec.ts`) covers, on Chromium and WebKit: a fixture that fetches, loads an image, a script and a nested frame, reads the parent page, sets `location.href`, clicks a link, refreshes, and submits a form. The parent title stays put, `contentDocument` stays closed, and the harness sees no request for those targets. A browser the spec does not run could still treat frame navigation differently. The sandbox would still stop that page from touching the parent.
+
+## In the app
+
+A srcdoc frame inherits the policy of the page that holds it. The app's policy has `script-src 'self'`, so a srcdoc reply in the app would show its static HTML but its script, the theme helper and the height helper would never run (the same failure bespoke pages had on 22 Oct). In the app the shell is handed to Rust (`visual_frame_put`) and the frame loads `monoartifact://localhost/page-visual-<id>-<n>`, served by `src-tauri/src/page_frames.rs` with `sandbox allow-scripts` plus the visual policy for the network choice the person made. The policy is picked by the command that stored the document, never by its key. Visual replies keep their own 48 most recent documents, so a long chat does not push out a page. A unit test keeps the Rust policy strings equal to `visualFrameCsp` in `visualReply.ts`. If the app refuses the document, the reply shows its source with a note instead of a frame.
+
+What the frame cannot reach, proven under the app's own policy (`tests/browser/wp130-visual-replies-app.spec.ts`, Chromium and WebKit; the page carries the app's CSP from `tauri.conf.json`, Tauri globals with a secret, a cookie and a theme):
+
+- `__TAURI__`, `__TAURI_INTERNALS__`, `__TAURI_IPC__` and `ipc` are undefined in the reply; `parent` and `top` Tauri globals, documents, titles, storage and the app's cookie are out of reach; `window.open` returns nothing; `top.location` does not move.
+- With network off, fetch and images to the dev server, `127.0.0.1`, `file:`, `asset:`, `http(s)://asset.localhost`, `ipc:`, `http://ipc.localhost`, relative paths and a remote https host all fail. Every target is answered with 200 by the spec, so a failure is the policy, not a dead host, and none of them is reached.
+- With network on, the remote https host loads and every local target above still fails.
+- The frame's background, text color and font are the theme's.
+
+Local images: a reply's local path or `file:` image does not load. A visual reply never goes through the chat's media loader (`read_chat_image`), so it cannot widen what a chat may read.
+
+Tauri: its startup scripts, which carry the IPC key, run in the main frame only (`for_main_frame_only`), and every IPC call must carry that key, so a frame cannot call a command even where the IPC handler is visible. The asset scheme answers with `Access-Control-Allow-Origin` set to the app's own origin, so an opaque-origin reply cannot read it.
+
+Known limits, not closed by a content policy:
+
+- On Windows with the https scheme the asset scheme is `https://asset.localhost`, which an `https:` source cannot name apart. With network on, a reply could show (not read) an image from the asset scope there. The Hub ships for macOS, where the asset scheme is `asset://`.
+- WebRTC is not covered by CSP in Chromium or WebKit. A reply with scripts could try a peer connection to signal that it was opened. The reply has no app data to send.
 
 ## Done when
 
 - [x] A visual reply renders in a themed sandbox.
 - [x] The sandbox policy is documented and tested.
 - [x] Ordinary Markdown is not hijacked.
-- [x] Grok builders did not start this package.
+- [x] In the app the frame is served with its own policy, and saving writes a file.
 
 ## Licence
 
