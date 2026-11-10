@@ -147,19 +147,61 @@ describe("Mono rotation under the ceiling", () => {
 
 describe("idle compaction", () => {
   const hour = 60 * 60_000;
+  const minute = 60_000;
   it("is due for a big chat idle past its cache lifetime", () => {
     expect(idleCompactionDue({ lastTurnAt: 0, cacheTtlMs: hour, contextUsed: 300_000 }, hour + 1, true)).toEqual({
       idleMs: hour + 1,
       ttlMs: hour,
       used: 300_000,
+      expired: true,
     });
   });
 
-  it("is not due inside the lifetime, under 100K, with nothing known, or switched off", () => {
-    expect(idleCompactionDue({ lastTurnAt: 0, cacheTtlMs: hour, contextUsed: 300_000 }, hour, true)).toBeNull();
+  it("is due one minute before a one hour cache expires, including at exactly 100K", () => {
+    expect(idleCompactionDue({ lastTurnAt: 0, cacheTtlMs: hour, contextUsed: 300_000 }, hour - minute, true)).toEqual({
+      idleMs: hour - minute,
+      ttlMs: hour,
+      used: 300_000,
+      expired: false,
+    });
+    expect(idleCompactionDue({ lastTurnAt: 0, cacheTtlMs: hour, contextUsed: 100_000 }, hour - minute, true)?.expired).toBe(false);
+  });
+
+  it("is due at the moment a one hour cache expires, but that is not the on-send fallback", () => {
+    expect(idleCompactionDue({ lastTurnAt: 0, cacheTtlMs: hour, contextUsed: 300_000 }, hour, true)).toEqual({
+      idleMs: hour,
+      ttlMs: hour,
+      used: 300_000,
+      expired: false,
+    });
+  });
+
+  it("is not due two minutes before a one hour cache, under 100K, with nothing known, or switched off", () => {
+    expect(idleCompactionDue({ lastTurnAt: 0, cacheTtlMs: hour, contextUsed: 300_000 }, hour - 2 * minute, true)).toBeNull();
     expect(idleCompactionDue({ lastTurnAt: 0, cacheTtlMs: hour, contextUsed: 99_000 }, 2 * hour, true)).toBeNull();
+    expect(idleCompactionDue({ lastTurnAt: 0, cacheTtlMs: hour, contextUsed: 99_000 }, hour - minute, true)).toBeNull();
     expect(idleCompactionDue({ lastTurnAt: 0, contextUsed: 300_000 }, 2 * hour, true)).toBeNull();
-    expect(idleCompactionDue({ lastTurnAt: 1, cacheTtlMs: hour, contextUsed: 300_000 }, 3 * hour, false)).toBeNull();
+    expect(idleCompactionDue({ lastTurnAt: 1, cacheTtlMs: hour, contextUsed: 300_000 }, hour - minute, false)).toBeNull();
+    expect(idleCompactionDue({ lastTurnAt: Number.NaN, cacheTtlMs: hour, contextUsed: 300_000 }, hour, true)).toBeNull();
+    expect(idleCompactionDue({ lastTurnAt: 0, cacheTtlMs: Number.NaN, contextUsed: 300_000 }, hour, true)).toBeNull();
+  });
+
+  it("uses half the lifetime when the cache itself lasts under two minutes", () => {
+    const ttl = 90_000;
+    expect(idleCompactionDue({ lastTurnAt: 0, cacheTtlMs: ttl, contextUsed: 300_000 }, ttl / 2, true)).toBeNull();
+    expect(idleCompactionDue({ lastTurnAt: 0, cacheTtlMs: ttl, contextUsed: 300_000 }, ttl / 2 + 1, true)).toMatchObject({
+      expired: false,
+    });
+  });
+
+  it("gives a five minute cache the same two minute lead", () => {
+    const ttl = 5 * minute;
+    expect(idleCompactionDue({ lastTurnAt: 0, cacheTtlMs: ttl, contextUsed: 300_000 }, 3 * minute, true)).toBeNull();
+    expect(idleCompactionDue({ lastTurnAt: 0, cacheTtlMs: ttl, contextUsed: 300_000 }, 3 * minute + 1, true)).toMatchObject({
+      ttlMs: ttl,
+      expired: false,
+    });
+    expect(idleCompactionDue({ lastTurnAt: 0, cacheTtlMs: ttl, contextUsed: 300_000 }, ttl + 1, true)?.expired).toBe(true);
   });
 
   it("formats durations for the note", () => {

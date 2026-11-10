@@ -30,6 +30,8 @@ export type Worktree = {
   setup?: WorktreeSetup;
   /** Said once, when this checkout was a plain git worktree because the pool was off or not installed. */
   poolNotice?: string;
+  /** Said when a fork's checkout could not be given the chat's uncommitted changes (`carryChanges`). */
+  changesNotice?: string;
 };
 export type Worktrees = { worktrees: Worktree[]; defaultRoot: string };
 
@@ -45,7 +47,7 @@ export async function createWorktree(
   branch: string,
   base: string,
   existing: boolean,
-  options: { runSetup?: boolean } = {},
+  options: { runSetup?: boolean; carryChanges?: boolean } = {},
 ) {
   const tree = await invoke<Worktree>("git_worktree_create", {
     cwd,
@@ -53,6 +55,8 @@ export async function createWorktree(
     base,
     existing,
     ...(options.runSetup === false ? { runSetup: false } : {}),
+    // A fork starts from a chat that has edited files: the new checkout gets them too, or says it could not.
+    ...(options.carryChanges === true ? { carryChanges: true } : {}),
   });
   notifyGitChanged();
   return tree;

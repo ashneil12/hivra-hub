@@ -156,6 +156,13 @@ import { useIdleSessionDetach } from "./hooks/useIdleSessionDetach";
 import { HarnessEventQueue } from "./model/harnessFlush";
 import { noteStreamApplied } from "../features/sessions/model/streamingPerformance";
 import { updateSessionState } from "./model/sessionState";
+import {
+  consumeForkPoint,
+  forkFocusedChat,
+  insertFork,
+  pendingForkBrief,
+} from "../features/sessions/model/threadFork";
+import { ThreadForkHost } from "../features/sessions/ui/ThreadForkHost";
 import { beginTabSwitch, commitTabSwitch } from "./model/navigationPerformance";
 import {
   SessionStateContext,
@@ -543,6 +550,7 @@ import {
   canCompactHarnessContext,
   canRewindHarnessLastTurn,
   canSteerHarness,
+  harnessCannotSteer,
   compactHarnessContext,
   rewindHarnessLastTurn,
   forgetHarnessSession,
@@ -589,6 +597,7 @@ import {
   shouldAskOutgoingAgent,
   type HandoffComposerCard,
   userMessagesAfterHandoff,
+  wrapForkPrompt,
   wrapHandoffPrompt,
   wrapRecoveredPrompt,
 } from "../features/sessions/model/handoff";
@@ -713,6 +722,20 @@ import { useBusyChatsFeed } from "../features/monos/hooks/useBusyChatsFeed";
 import { useFirstMateCheckoutGuard } from "../features/firstmate/hooks/useFirstMateCheckoutGuard";
 import { useSteering } from "../features/firstmate/hooks/useSteering";
 import { firstMateLaunch } from "../features/firstmate/model/checkoutGuard";
+import { crewLaunch } from "../features/crew/model/crewSession";
+// WP-115: compact an idle Claude chat shortly before its prompt cache expires.
+import {
+  commitIdleCompactBusy,
+  watchIdleClaudeCompaction,
+} from "../integrations/harness/providers/claude/idleCompactWatch";
+// WP-115: plain sentence when this agent cannot redirect a running turn.
+import {
+  COMPACTING_NOTE,
+  QUEUED_MESSAGE_WAITS,
+  cantRedirectTurn,
+  cantTakeFollowUp,
+  followUpWhenBusy,
+} from "../features/sessions/model/cantDo";
 import { withLegacyBriefParts } from "../features/firstmate/model/brief";
 import { viewAfterRemoval, type RemovalOrigin } from "../features/sessions/model/sessionWorkspaceLifecycle";
 import { focusClosesMono, paneFocus } from "./model/paneFocus";
@@ -840,6 +863,7 @@ import {
   setWindowFocused,
 } from "../features/notifications/model/notifications";
 import { useInputNotifications } from "../features/notifications/hooks/useInputNotifications";
+import { useNotablePings } from "../features/notifications/hooks/useNotablePings";
 import { archiveFocusedSession } from "../features/sessions/model/archiveShortcut";
 import {
   adjacentItemId,
@@ -1148,6 +1172,7 @@ import {
   claimAutoContinue,
   resumeBlocked,
   resumePrompt,
+  isTurnRunning,
   shouldWriteInFlightSnapshot,
 } from "../features/sessions/model/inFlight";
 import {
@@ -2144,11 +2169,15 @@ function Workspace({
     canForward: false,
   });
   const turnGen = useRef(new Map<string, number>());
+  // Chats the idle compact watcher holds busy, and the turn generation it took. WP-115.
+  const idleCompactOwners = useRef(new Map<string, number>());
   const editedResends = useRef(createEditedResendCoordinator()).current;
   const lastPersisted = useRef(new Map<string, string>());
   const lastBoundProvider = useRef(new Map<string, string>());
   // Delegation rows (model/delegations.ts), set once useDelegations runs below; submitSession re-attaches through it.
   const delegationsRef = useRef<DelegationTracker | null>(null);
+  // WP-143: what marks a chat as a crew's (crewSession.ts): the rows the UI reads and the ones this window launched since.
+  const crewRows = () => [...delegationRows(), ...(delegationsRef.current?.known() ?? [])];
   // PR watches (features/pr-watch), set once usePrWatches runs below; the queue marks their wakes delivered.
   const prWatchesRef = useRef<PrWatchTracker | null>(null);
   // Hivra WP-11: the first mate's wake queue; the queue marks its drained turns delivered.
@@ -2587,7 +2616,9 @@ function Workspace({
   const nextBusySessionIds = useMemo(() => {
     const ids = new Set<string>();
     for (const session of sessions) {
-      if (session.busy) {
+      // A chat held for a background compact is not working: it must not spin
+      // in the rail, publish a live turn, or read as finished when it ends.
+      if (isTurnRunning(session)) {
         ids.add(session.id);
         if (session.orchestrationLeadId) ids.add(session.orchestrationLeadId);
       }
@@ -2751,6 +2782,8 @@ function Workspace({
     [sessions],
   );
   useInputNotifications(promptableSessions, activeSessionId);
+  // WP-164: held notices leave when quiet hours end; a failure waits no longer than its ping interval.
+  useNotablePings();
   // Model, effort and permission changes reach a running turn's CLI now.
   useLiveHarnessSettings(sessions);
 
@@ -3489,6 +3522,24 @@ function Workspace({
     attachNewChatWorktree(session.id, cwd, setSessions);
     return session.id;
   }, [appendTab, sessionDefaults?.runtimeMode, sidebarCwd]);
+
+  // WP-123: open a forked chat. The original is not written.
+  const openForkedSession = useCallback(
+    (session: Session) => {
+      updateSessionState(sessionsRef, setSessions, (sessions) =>
+        insertFork(sessions, session),
+      );
+      const tab = newTab(session.id);
+      appendTab(tab, session.cwd);
+      setActiveTabId(tab.id);
+      setComposerFocused(true);
+      setSearchViewOpen(false);
+      setInboxViewOpen(false);
+      setNotesViewOpen(false);
+      setAutomationsViewOpen(false);
+    },
+    [appendTab],
+  );
 
   const onSelectRemoteSession = useCallback(
     (project: string, remoteSessionId: string) => {
@@ -8363,8 +8414,9 @@ function Workspace({
       }
       // The Mono has app access in every turn, without the command.
       const mono = isMonoSession(sessionId);
-      // So does a chat in a hub project's coding team on Claude Code: an orchestrator like the Lead, its delegate tool
-      // calls the app (codingTeam.ts). Noted before the turn, so its Claude Code starts with the tool and its project.
+      // WP-120: so does a chat in a hub project's coding team, on every CLI that can lead (not only Claude Code).
+      // An orchestrator like the Lead, its delegate tool calls the app (codingTeam.ts). Noted before the turn,
+      // so the session starts with the tool and its project.
       const team = mono ? undefined : codingTeamOf(current);
       const teamDelegates = !!team && hasDelegateTool(sessionId, current.harness);
       const queuedMonoMessage =
@@ -8570,27 +8622,39 @@ function Workspace({
           flushHarnessEvents();
           return false;
         }
+        // The app is compacting this idle chat in the background (WP-115). Its
+        // busy flag is ours, there is no reply to steer into, and a message
+        // written now would land inside the compact.
+        const compacting = !!current.idleCompacting;
         const steerable =
-          isLiveHarness(current.harness) && canSteerHarness(current.harness);
-        const followUpBehavior =
-          current.worktreePreparing ||
-          intent === "plan" ||
-          intent === "orchestrate" ||
-          operatorCommand.matched ||
-          options?.waitForIdle
-            ? "queue"
-            : // The agent has yielded and only background work is left, which
-              // may never end (a dev server). Queuing would park the message
-              // behind it, so hand it to the agent now.
-              current.backgroundTasks?.length
-              ? "steer"
-              : // Messaging a Mono mid-reply is like texting a friend twice:
-                // it reads the new message now, or right after if it can't.
-                mono
-                ? steerable
-                  ? "steer"
-                  : "queue"
-                : (options?.followUpBehavior ?? loadFollowUpBehavior());
+          isLiveHarness(current.harness) &&
+          canSteerHarness(current.harness) &&
+          !compacting;
+        const followUpBehavior = followUpWhenBusy({
+          setting: options?.followUpBehavior ?? loadFollowUpBehavior(),
+          mustWait: !!(
+            current.worktreePreparing ||
+            intent === "plan" ||
+            intent === "orchestrate" ||
+            operatorCommand.matched ||
+            options?.waitForIdle
+          ),
+          onlyBackgroundWork: !!current.backgroundTasks?.length,
+          mono: !!mono,
+          steerable,
+          cannotRedirect: harnessCannotSteer(current.harness),
+          compacting,
+          alreadyQueued: !!options?.queuedMessageId,
+        });
+        if (followUpBehavior === "stay") {
+          // Already in the queue and not to go in now: it stays where it is.
+          enqueueHarnessEvent(sessionId, {
+            type: "status",
+            text: QUEUED_MESSAGE_WAITS,
+          });
+          flushHarnessEvents();
+          return false;
+        }
         if (followUpBehavior === "queue") {
           setSessions((prev) =>
             prev.map((s) =>
@@ -8626,11 +8690,15 @@ function Workspace({
           return true;
         }
         if (!steerable) {
-          // Harnesses that cannot steer (fx) used to drop the message on the
-          // floor here, so a follow-up sent mid-turn just vanished. Say so.
+          // WP-115: a stale button must not drop the message. A known refusal
+          // names the redirect; anything not live keeps the mid-turn line.
           enqueueHarnessEvent(sessionId, {
             type: "status",
-            text: `${current.harness} cannot take a follow-up mid-turn — wait for this turn to finish, or stop it first.`,
+            text: compacting
+              ? COMPACTING_NOTE
+              : harnessCannotSteer(current.harness)
+                ? cantRedirectTurn(current.harness)
+                : cantTakeFollowUp(current.harness),
           });
           flushHarnessEvents();
           return false;
@@ -8840,8 +8908,12 @@ function Workspace({
         ...(options?.monoCheck ? { monoCheck: options.monoCheck } : {}),
       };
       const live = isLiveHarness(current.harness);
+      // WP-123: a forked chat's first send carries the chat copied into it; its provider has never seen it. That recap
+      // covers the whole copy, so it stands in for an older handoff recap that came along with the messages.
+      const queuedFork =
+        live && !pendingSwitch ? pendingForkBrief(current) : null;
       const queuedHandoff =
-        live && !pendingSwitch ? pendingHandoff(current) : null;
+        live && !pendingSwitch && !queuedFork ? pendingHandoff(current) : null;
 
       if (current.busy && (pendingSwitch || portableResume)) {
         void cancelHarnessTurn(
@@ -9072,7 +9144,9 @@ function Workspace({
       if (editedResend && canRewindHarnessLastTurn(current.harness)) {
         editedResends.start(sessionId);
         const locked = sessionsRef.current.map((session) =>
-          session.id === sessionId ? { ...session, busy: true } : session,
+          session.id === sessionId
+            ? { ...session, busy: true, idleCompacting: undefined }
+            : session,
         );
         sessionsRef.current = locked;
         syncDockBadge(locked);
@@ -9217,13 +9291,15 @@ function Workspace({
           to: HarnessId;
           text: string;
           portable?: boolean;
+          /** WP-123: a fork's recap, worded as a fork's rather than a handoff's. */
+          fork?: boolean;
         } | null = handoffCard
           ? {
               from: handoffCard.from,
               to: current.harness,
               text: handoffCard.brief,
             }
-          : queuedHandoff;
+          : (queuedFork ?? queuedHandoff);
         if (pendingSwitch) {
           let agentText = "";
           if (
@@ -9271,7 +9347,7 @@ function Workspace({
           setSessions((prev) =>
             prev.map((s) => {
               if (s.id !== sessionId || !isPreparingHandoff(s)) return s;
-              return { ...completeHandoff(s, brief), busy: true };
+              return { ...completeHandoff(s, brief), busy: true, idleCompacting: undefined };
             }),
           );
         };
@@ -9411,9 +9487,11 @@ function Workspace({
             : intent === "plan" && !rawCommand
               ? planTurnPrompt(prompt)
               : prompt;
-          const earlier = queuedHandoff
-            ? userMessagesAfterHandoff(current)
-            : [];
+          const earlier = queuedFork
+            ? queuedFork.earlier
+            : queuedHandoff
+              ? userMessagesAfterHandoff(current)
+              : [];
           if (editedResend && canRewindHarnessLastTurn(current.harness)) {
             try {
               await rewindHarnessLastTurn({
@@ -9430,6 +9508,7 @@ function Workspace({
                   operatorAccess ||
                   orchestrator.run(sessionId)?.status === "active",
                 ...firstMateLaunch(current),
+                ...crewLaunch(current, crewRows()), // WP-143
                 ...(editedProviderTurnId
                   ? { providerTurnId: editedProviderTurnId }
                   : {}),
@@ -9489,6 +9568,7 @@ function Workspace({
                 orchestrator.run(sessionId)?.status === "active",
               appAccess: operatorAccess,
               ...firstMateLaunch(current),
+              ...crewLaunch(current, crewRows()), // WP-143
               text,
               attachments: turnAttachments,
               ...(editedResend ? { onAccepted: acceptEditedResend } : {}),
@@ -9516,12 +9596,18 @@ function Workspace({
                       turnPrompt.trim() || CONTINUE_PROMPT,
                       earlier,
                     )
-                  : wrapHandoffPrompt(
-                      wrap.text,
-                      wrap.from,
-                      turnPrompt.trim() || CONTINUE_PROMPT,
-                      earlier,
-                    )
+                  : wrap.fork
+                    ? wrapForkPrompt(
+                        wrap.text,
+                        turnPrompt.trim() || CONTINUE_PROMPT,
+                        earlier,
+                      )
+                    : wrapHandoffPrompt(
+                        wrap.text,
+                        wrap.from,
+                        turnPrompt.trim() || CONTINUE_PROMPT,
+                        earlier,
+                      )
                 : turnPrompt,
             ),
           );
@@ -9774,7 +9860,9 @@ function Workspace({
                 ? completeHandoff(s, wrap.text)
                 : s;
               // A command owns its arguments; deliver the recap with the next chat prompt.
-              return rawCommand ? ready : consumeHandoff(ready);
+              return rawCommand
+                ? ready
+                : consumeForkPoint(consumeHandoff(ready));
             });
             setSessions(sessionsRef.current);
           }
@@ -9891,6 +9979,8 @@ function Workspace({
               })
               .catch(() => undefined);
           }
+          // WP-164: a turn that failed is announced as a failure, which quiet hours never hold.
+          const turnFailed = controlOutcome.status === "failed";
           // Next tick: the flush above has rendered by then, so the banner
           // quotes the reply's final text rather than the previous batch.
           window.setTimeout(() => {
@@ -9900,7 +9990,7 @@ function Workspace({
             const visible = sessionId === activeSessionIdRef.current;
             // A habit's hidden run speaks through its Mono's chat instead; an answer to the checker stays quiet.
             if (finished && !isHabitRun(sessionId) && !inCheckTurn(finished))
-              void announceSessionFinished(finished, visible);
+              void announceSessionFinished(finished, visible, turnFailed);
           }, 0);
           notifyReviewChanged(sessionId);
           notifyGitChanged();
@@ -10210,7 +10300,7 @@ function Workspace({
         role: "approval",
         text: block.text,
         ...(block.tool ? { tool: block.tool } : {}),
-        approval: { requestId },
+        approval: { requestId, at: Date.now() },
         monoHabit: { id: habit.id, name: habit.name, at: Date.now() },
       });
     },
@@ -10992,6 +11082,53 @@ function Workspace({
       document.removeEventListener("visibilitychange", onVisible);
     };
   }, [ensureAutomationRecovery, launchAutomation, shipHold]);
+
+  // WP-115: compact an idle Claude chat shortly before its prompt cache expires.
+  const idleCompactEvent = useRef(enqueueHarnessEvent);
+  idleCompactEvent.current = enqueueHarnessEvent;
+  useEffect(() => {
+    return watchIdleClaudeCompaction({
+      sessions: () => sessionsRef.current,
+      toInput: (session) => ({
+        sessionId: session.id,
+        cwd: sessionWorkCwd(session),
+        model: session.model,
+        modelSettings: session.modelSettings,
+        providerAccountId: supportsProviderAccounts(session.harness)
+          ? (session.providerAccountId ??
+            selectedProviderAccountId(session.harness, session.cwd))
+          : undefined,
+        runtimeMode: session.runtimeMode,
+        ephemeral: session.ephemeral === true,
+        controlsAgents:
+          isMonoSession(session.id) ||
+          operatorEnabledInThread(session.blocks) ||
+          orchestrator.run(session.id)?.status === "active",
+        ...firstMateLaunch(session),
+      }),
+      onEvent: (id, event) => idleCompactEvent.current(id, event),
+      // WP-115: hold the chat busy while compacting, so a send queues and a second look waits.
+      // Claimed once, then published. The store assigns the ref as well, so a
+      // diverged ref is put back afterwards.
+      markBusy: (sessionId, busy) => {
+        const result = commitIdleCompactBusy(
+          sessionState.snapshot(),
+          sessionsRef.current,
+          sessionId,
+          busy,
+          turnGen.current,
+          idleCompactOwners.current,
+        );
+        if (result.store !== sessionState.snapshot()) {
+          setSessions([...result.store]);
+          // Same array means the store publish already pointed the ref at it.
+          if (result.ref === result.store) return result.ok;
+        }
+        if (sessionsRef.current !== result.ref) sessionsRef.current = [...result.ref];
+        return result.ok;
+      },
+    });
+  }, []);
 
   const onInboxAppeared = useCallback(
     (items: Parameters<typeof claimInboxAutomationRuns>[0]) => {
@@ -12499,6 +12636,7 @@ function Workspace({
               operatorEnabledInThread(current.blocks) ||
               orchestrator.run(sessionId)?.status === "active",
             ...firstMateLaunch(current),
+            ...crewLaunch(current, crewRows()), // WP-143
             onEvent: (event) => {
               if (turnGen.current.get(sessionId) !== gen) return;
               enqueueHarnessEvent(sessionId, event);
@@ -15966,6 +16104,12 @@ function Workspace({
   };
   const paletteStopTargetRef = useRef<string | null>(null);
   paletteStopTargetRef.current = paletteStopTarget;
+  // WP-123: the chat Fork from here acts on: the one in view, and none while a file tab is.
+  const paletteForkTargetRef = useRef<string | null>(null);
+  paletteForkTargetRef.current =
+    activeSessionId && !(activeFile && isFilesystemTab(activeFile))
+      ? activeSessionId
+      : null;
   const runPaletteCommandFromFinder = useCallback(
     (row: Parameters<typeof runPaletteRow>[0]) =>
       runPaletteCommand(row, actions.current, {
@@ -15998,6 +16142,12 @@ function Workspace({
         editor: (action) => {
           if (action === "replace") openReplaceInActiveEditor();
           else openFindInActiveEditor();
+        },
+        // WP-123: fork the chat in focus from its latest message.
+        forkChat: () => {
+          const id = paletteForkTargetRef.current;
+          if (!id) return;
+          forkFocusedChat(sessionsRef.current.find((session) => session.id === id));
         },
       }),
     [run, onShowSourceControl, onStopFromUser, onArchiveFocusedSession],
@@ -18219,6 +18369,8 @@ function Workspace({
             onOpenSettings={() => openSettings("general", "notifications")}
             onHeightChange={setReminderNoticesHeight}
           />
+          {/* WP-123: fork a chat from one message. */}
+          <ThreadForkHost sessionsRef={sessionsRef} onOpen={openForkedSession} />
           {whatsNewVersion ? (
             <WhatsNewDialog
               version={whatsNewVersion}
