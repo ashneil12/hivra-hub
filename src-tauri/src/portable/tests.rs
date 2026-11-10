@@ -1944,3 +1944,253 @@ fn a_private_chat_stays_private_across_export_and_an_old_file_stays_readable() {
         Some("private-boundary-unreadable")
     );
 }
+
+// ---- a folder export's note pictures (symlinks, the manifest, the hash) --------------------------------------------
+
+/// What the seeded note's picture holds.
+const PICTURE: [u8; 7] = [0x89, b'P', b'N', b'G', 1, 2, 3];
+
+/// A folder export of the seeded source copy: note-1 with its one listed picture, `1-shot.png`.
+fn note_export(source: &Env, out: &Path) -> PathBuf {
+    seed(source);
+    let dest = out.join("export");
+    export(source, &export_request(&dest, Form::Folder)).unwrap();
+    assert!(dest
+        .join("workspace/note-assets/note-1/1-shot.png")
+        .is_file());
+    dest
+}
+
+/// An import of note-1 only.
+fn note_import(dest: &Path) -> ImportRequest {
+    ImportRequest {
+        path: dest.to_string_lossy().into_owned(),
+        memory: None,
+        workspace: Some(WorkspaceImport {
+            notes: vec!["note-1".into()],
+            ..Default::default()
+        }),
+    }
+}
+
+/// Every file under `dir` (empty when there is no such folder), by name relative to it.
+fn files_under(dir: &Path) -> Vec<String> {
+    fn walk(base: &Path, dir: &Path, out: &mut Vec<String>) {
+        let Ok(entries) = fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                walk(base, &path, out);
+            } else {
+                out.push(
+                    path.strip_prefix(base)
+                        .unwrap()
+                        .to_string_lossy()
+                        .into_owned(),
+                );
+            }
+        }
+    }
+    let mut out = Vec::new();
+    walk(dir, dir, &mut out);
+    out.sort();
+    out
+}
+
+/// No picture folder here holds a byte of `secret`.
+fn assert_not_in_pictures(env: &Env, secret: &str) {
+    let root = env.data_dir.join(NOTE_ASSET_DIR);
+    for name in files_under(&root) {
+        let bytes = fs::read(root.join(&name)).unwrap();
+        assert!(
+            !String::from_utf8_lossy(&bytes).contains(secret),
+            "{name} carries the secret"
+        );
+    }
+}
+
+/// A file in the export that is a link to a private key, and not listed in the manifest: it must not be copied.
+#[cfg(unix)]
+#[test]
+fn an_unlisted_link_in_a_picture_folder_never_copies_what_it_points_at() {
+    let source_dir = TestDir::new("source");
+    let target_dir = TestDir::new("target");
+    let outside = TestDir::new("outside");
+    let out = TestDir::new("out");
+    let source = env_for(&source_dir.0);
+    let target = env_for(&target_dir.0);
+    let dest = note_export(&source, &out.0);
+    fs::write(outside.0.join("id_rsa"), PRIVATE_KEY).unwrap();
+    std::os::unix::fs::symlink(
+        outside.0.join("id_rsa"),
+        dest.join("workspace/note-assets/note-1/x.png"),
+    )
+    .unwrap();
+
+    let store = open_store(&target);
+    let conn = store.lock_conn().unwrap();
+    import_held(&target, &conn, &note_import(&dest)).unwrap();
+    assert!(
+        !target.data_dir.join("note-assets/note-1/x.png").exists(),
+        "the link was followed and its target copied in"
+    );
+    assert_not_in_pictures(&target, "OPENSSH PRIVATE KEY");
+    assert_eq!(
+        fs::read(target.data_dir.join("note-assets/note-1/1-shot.png")).unwrap(),
+        PICTURE,
+        "the listed picture still comes in"
+    );
+}
+
+/// A LISTED picture that is a link to a file with the very bytes the manifest hashes: the hash alone can't catch
+/// it, the link itself must be refused.
+#[cfg(unix)]
+#[test]
+fn a_listed_picture_that_is_a_link_is_refused_even_when_the_hash_matches() {
+    let source_dir = TestDir::new("source");
+    let target_dir = TestDir::new("target");
+    let outside = TestDir::new("outside");
+    let out = TestDir::new("out");
+    let source = env_for(&source_dir.0);
+    let target = env_for(&target_dir.0);
+    let dest = note_export(&source, &out.0);
+    let picture = dest.join("workspace/note-assets/note-1/1-shot.png");
+    fs::write(outside.0.join("same-bytes.png"), PICTURE).unwrap();
+    fs::remove_file(&picture).unwrap();
+    std::os::unix::fs::symlink(outside.0.join("same-bytes.png"), &picture).unwrap();
+
+    let store = open_store(&target);
+    let conn = store.lock_conn().unwrap();
+    import_held(&target, &conn, &note_import(&dest)).unwrap();
+    assert_eq!(
+        files_under(&target.data_dir.join(NOTE_ASSET_DIR)),
+        Vec::<String>::new(),
+        "a link was followed and its target copied in"
+    );
+}
+
+/// The picture folder of the note, the folder of all notes' pictures, or the workspace folder is a link to a
+/// folder that holds the listed picture (so every listed hash still matches) and one more file.
+#[cfg(unix)]
+#[test]
+fn a_linked_picture_folder_is_never_followed() {
+    for linked in [
+        "workspace",
+        "workspace/note-assets",
+        "workspace/note-assets/note-1",
+    ] {
+        let source_dir = TestDir::new("source");
+        let target_dir = TestDir::new("target");
+        let outside = TestDir::new("outside");
+        let out = TestDir::new("out");
+        let source = env_for(&source_dir.0);
+        let target = env_for(&target_dir.0);
+        let dest = note_export(&source, &out.0);
+        let real = dest.join(linked);
+        let elsewhere = outside.0.join("moved");
+        fs::rename(&real, &elsewhere).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, &real).unwrap();
+        // Something the link reaches that the export never listed.
+        let reached = if linked == "workspace/note-assets/note-1" {
+            elsewhere.clone()
+        } else if linked == "workspace/note-assets" {
+            elsewhere.join("note-1")
+        } else {
+            elsewhere.join("note-assets/note-1")
+        };
+        fs::write(reached.join("unlisted.png"), PRIVATE_KEY).unwrap();
+
+        let store = open_store(&target);
+        let conn = store.lock_conn().unwrap();
+        import_held(&target, &conn, &note_import(&dest)).unwrap();
+        assert_eq!(
+            files_under(&target.data_dir.join(NOTE_ASSET_DIR)),
+            Vec::<String>::new(),
+            "{linked} is a link and was followed"
+        );
+        assert_not_in_pictures(&target, "OPENSSH PRIVATE KEY");
+    }
+}
+
+/// A plain file in the picture folder that the manifest doesn't list isn't copied; the listed one is.
+#[test]
+fn an_unlisted_file_in_a_picture_folder_is_not_copied() {
+    let source_dir = TestDir::new("source");
+    let target_dir = TestDir::new("target");
+    let out = TestDir::new("out");
+    let source = env_for(&source_dir.0);
+    let target = env_for(&target_dir.0);
+    let dest = note_export(&source, &out.0);
+    fs::write(
+        dest.join("workspace/note-assets/note-1/extra.png"),
+        PRIVATE_KEY,
+    )
+    .unwrap();
+
+    let store = open_store(&target);
+    let conn = store.lock_conn().unwrap();
+    import_held(&target, &conn, &note_import(&dest)).unwrap();
+    assert_eq!(
+        files_under(&target.data_dir.join(NOTE_ASSET_DIR)),
+        vec!["note-1/1-shot.png".to_string()]
+    );
+}
+
+/// A listed picture that changes after the export was checked (the import opens, checks every hash, and only then
+/// copies) is not copied: what lands is only bytes that hash as the manifest says.
+#[test]
+fn a_picture_that_changed_after_the_check_is_not_copied() {
+    let source_dir = TestDir::new("source");
+    let target_dir = TestDir::new("target");
+    let out = TestDir::new("out");
+    let source = env_for(&source_dir.0);
+    let target = env_for(&target_dir.0);
+    let dest = note_export(&source, &out.0);
+    let opened = open_export(&dest.to_string_lossy()).unwrap();
+    fs::write(
+        dest.join("workspace/note-assets/note-1/1-shot.png"),
+        PRIVATE_KEY,
+    )
+    .unwrap();
+
+    copy_note_assets(&target, &opened, "note-1", "note-1");
+    assert_eq!(
+        files_under(&target.data_dir.join(NOTE_ASSET_DIR)),
+        Vec::<String>::new()
+    );
+    assert_not_in_pictures(&target, "OPENSSH PRIVATE KEY");
+}
+
+/// A note id is one plain name. `..` would read the export's workspace folder as pictures, or write them beside the
+/// data folder's own files.
+#[test]
+fn a_note_id_that_is_not_one_plain_name_copies_nothing() {
+    let source_dir = TestDir::new("source");
+    let target_dir = TestDir::new("target");
+    let out = TestDir::new("out");
+    let source = env_for(&source_dir.0);
+    let target = env_for(&target_dir.0);
+    let dest = note_export(&source, &out.0);
+    let opened = open_export(&dest.to_string_lossy()).unwrap();
+    let before = files_under(&target.data_dir);
+
+    for (from, to) in [
+        ("..", "note-1"),
+        (".", "note-1"),
+        ("note-1/../..", "note-1"),
+        ("", "note-1"),
+        ("note-1", ".."),
+        ("note-1", "../escape"),
+        ("note-1", "a/b"),
+        ("note-1", ""),
+    ] {
+        copy_note_assets(&target, &opened, from, to);
+        assert_eq!(
+            files_under(&target.data_dir),
+            before,
+            "from {from:?} to {to:?} wrote something"
+        );
+    }
+}
