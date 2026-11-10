@@ -1242,16 +1242,12 @@ pub async fn history_import_ask(route: CustomRoute, prompt: String) -> Result<As
     if prompt.chars().count() > PROMPT_LIMIT {
         return Ok(refused("That chat is too long to send."));
     }
-    if !import_destination_allowed(&route) || !may_route(&route) {
-        return Ok(refused("That model can't be used for this."));
-    }
-    let key = if route.provider == "ollama" {
-        None
-    } else {
-        match read_key_in(KEY_SERVICE, &route.custom_model_id) {
-            Ok(key) => key,
-            Err(_) => return Ok(refused("Couldn't reach the Keychain.")),
-        }
+    let hosts = crate::key_binding::store_dir();
+    let (route, key) = match import_route_and_key(hosts.as_deref(), &route, |bound| {
+        read_key_in(KEY_SERVICE, &bound.custom_model_id)
+    }) {
+        Ok(found) => found,
+        Err(refusal) => return Ok(refusal),
     };
     tauri::async_runtime::spawn_blocking(move || {
         ask_with(&route, &prompt, key.as_deref(), post_chat)
@@ -1260,9 +1256,96 @@ pub async fn history_import_ask(route: CustomRoute, prompt: String) -> Result<As
     .map_err(|_| "The model call didn't finish.".to_string())
 }
 
+/// The route an import call may use, and the key for it, or the refusal. The key is read only after the
+/// route passes the import's own host rule.
+pub(crate) fn import_route_and_key(
+    hosts: Option<&Path>,
+    route: &CustomRoute,
+    read_key: impl FnOnce(&CustomRoute) -> Result<Option<String>, String>,
+) -> Result<(CustomRoute, Option<String>), AskOutcome> {
+    // The key belongs to the provider and address stored with it. Any other route gets no key.
+    let Some(bound) = crate::key_binding::bound_route(hosts, route) else {
+        return Err(refused(crate::key_binding::NOT_STORED_FOR_THIS));
+    };
+    if !import_destination_allowed(&bound) || !may_route(&bound) {
+        return Err(refused("That model can't be used for this."));
+    }
+    if bound.provider == "ollama" {
+        return Ok((bound, None));
+    }
+    match read_key(&bound) {
+        Ok(key) => Ok((bound, key)),
+        Err(_) => Err(refused("Couldn't reach the Keychain.")),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// WP-129: a key saved for one provider is never read for a route that names another provider or address.
+    #[test]
+    fn an_import_reads_a_key_only_for_the_provider_and_address_stored_with_it() {
+        let tmp = Tmp::new();
+        let hosts = tmp.path.join("model-key-hosts");
+        let stored = CustomRoute {
+            provider: "openrouter".into(),
+            base_url: "https://openrouter.ai/api/v1".into(),
+            model_id: "some/model".into(),
+            custom_model_id: "acct-openrouter".into(),
+            reasoning_effort: None,
+        };
+        crate::key_binding::record(&hosts, &stored).unwrap();
+        let attempt = |provider: &str, base: &str, account: &str| {
+            let route = CustomRoute {
+                provider: provider.into(),
+                base_url: base.into(),
+                model_id: "some/model".into(),
+                custom_model_id: account.into(),
+                reasoning_effort: None,
+            };
+            let reads = std::cell::Cell::new(0usize);
+            let out = import_route_and_key(Some(&hosts), &route, |_| {
+                reads.set(reads.get() + 1);
+                Ok(Some("sk-or-test-0123456789".to_string()))
+            });
+            (out.is_ok(), reads.get())
+        };
+        // The same account, but another provider's host: xAI's host is allowed for xAI, not for this key.
+        assert_eq!(
+            attempt("xai", "https://api.x.ai/v1", "acct-openrouter"),
+            (false, 0)
+        );
+        // Another address for the same provider, and userinfo, a path prefix and an unsaved account.
+        for (provider, base, account) in [
+            (
+                "openrouter",
+                "https://openrouter.ai/api/v2",
+                "acct-openrouter",
+            ),
+            (
+                "openrouter",
+                "https://evil.example@openrouter.ai/api/v1",
+                "acct-openrouter",
+            ),
+            ("openrouter", "https://openrouter.ai/api/v1", "acct-other"),
+        ] {
+            assert_eq!(
+                attempt(provider, base, account),
+                (false, 0),
+                "{base} {account}"
+            );
+        }
+        // The stored provider and address is the one key that is read.
+        assert_eq!(
+            attempt(
+                "openrouter",
+                "https://openrouter.ai/api/v1",
+                "acct-openrouter"
+            ),
+            (true, 1)
+        );
+    }
     use std::sync::atomic::{AtomicU64, Ordering};
 
     struct Tmp {
