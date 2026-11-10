@@ -20,9 +20,14 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use sha2::{Digest, Sha256};
+
 use super::labels::valid_hostname;
 use super::ports::next_free_from;
 use super::routes::RouteStore;
+
+/// Header that names which data folder this proxy belongs to.
+const DATA_HEADER: &str = "X-Hivra-Data";
 
 /// Answer header that tells a real Hivra proxy from anything else on the port.
 pub const PROXY_HEADER: &str = "X-Hivra-Proxy";
@@ -110,8 +115,13 @@ pub fn ensure_running(
     reserved: &HashSet<u16>,
 ) -> Result<u16, String> {
     let store = Arc::new(RouteStore::new(proxy_dir(data_dir)));
+    let data_id = data_folder_id(data_dir);
+    // Written before the listener starts, so the health reply can name this folder.
+    let _ = store.write_data_id(&data_id);
     if let Some(port) = store.read_port() {
-        if running(port) {
+        // A port is reused only when the proxy answering there belongs to this folder.
+        // Anything else, including the daily app's proxy, is left alone.
+        if running_as(port, &data_id) {
             return Ok(port);
         }
     }
@@ -136,8 +146,8 @@ pub fn ensure_running(
                 store.write_pid()?;
                 return Ok(bound.port);
             }
-            Err(_) if running(port) => {
-                // Another window started it in the moment between the probe and our bind.
+            Err(_) if running_as(port, &data_id) => {
+                // Another window of this same folder started it between the probe and our bind.
                 store.write_port(port)?;
                 return Ok(port);
             }
@@ -154,9 +164,40 @@ pub fn proxy_dir(data_dir: &Path) -> PathBuf {
     data_dir.join("proxy")
 }
 
+/// A stable id for a data folder: hex of its canonical path, never the path itself.
+pub fn data_folder_id(data_dir: &Path) -> String {
+    let path = crate::fs::canonical(data_dir).unwrap_or_else(|_| data_dir.to_path_buf());
+    let digest = Sha256::digest(path.to_string_lossy().as_bytes());
+    let mut out = String::with_capacity(32);
+    for byte in digest.iter().take(16) {
+        out.push_str(&format!("{byte:02x}"));
+    }
+    out
+}
+
 /// Whether a Hivra proxy answers on `port`. Uses the health path, so a dev server that happens
-/// to hold the port is not mistaken for it.
+/// to hold the port is not mistaken for it. A copy decides whether to reuse the port with
+/// [`running_as`], which also checks the data folder.
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn running(port: u16) -> bool {
+    proxy_reply(port).is_some()
+}
+
+/// Whether the proxy on `port` belongs to the data folder `data_id` names.
+pub fn running_as(port: u16, data_id: &str) -> bool {
+    proxy_reply(port).is_some_and(|reply| data_header(&reply) == Some(data_id))
+}
+
+fn data_header(reply: &str) -> Option<&str> {
+    reply.lines().find_map(|line| {
+        let (name, value) = line.split_once(':')?;
+        name.eq_ignore_ascii_case("x-hivra-data")
+            .then(|| value.trim())
+            .filter(|value| !value.is_empty())
+    })
+}
+
+fn proxy_reply(port: u16) -> Option<String> {
     for address in [
         SocketAddr::from((Ipv4Addr::LOCALHOST, port)),
         SocketAddr::from((Ipv6Addr::LOCALHOST, port)),
@@ -181,10 +222,10 @@ pub fn running(port: u16) -> bool {
         if reply.starts_with("HTTP/1.1 204")
             && reply.to_ascii_lowercase().contains("x-hivra-proxy: 1")
         {
-            return true;
+            return Some(reply);
         }
     }
-    false
+    None
 }
 
 /// The daily app's proxy port, read only, so a dev copy can avoid it.
@@ -273,10 +314,16 @@ fn serve(mut client: TcpStream, store: &RouteStore, log_path: &Path, timeouts: T
     let _ = client.set_write_timeout(Some(timeouts.stream));
 
     // A health check is the only request answered without a name. It is loopback-only.
+    // The data-folder id is added only when this copy wrote one, so an older proxy (no id
+    // file) still answers, and a dev copy can tell that answer is not its own.
     if head.target == HEALTH_PATH && head.method == "GET" {
+        let data = store
+            .read_data_id()
+            .map(|id| format!("{DATA_HEADER}: {id}\r\n"))
+            .unwrap_or_default();
         let _ = client.write_all(
             format!(
-                "HTTP/1.1 204 No Content\r\n{PROXY_HEADER}: 1\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n"
+                "HTTP/1.1 204 No Content\r\n{PROXY_HEADER}: 1\r\n{data}Cache-Control: no-store\r\nConnection: close\r\n\r\n"
             )
             .as_bytes(),
         );
@@ -1210,6 +1257,54 @@ mod tests {
             bound.port
         );
         drop(dir);
+    }
+
+    #[test]
+    fn a_dev_copy_does_not_adopt_another_folders_proxy() {
+        let daily = Guard::new("adopt-daily");
+        let dev = Guard::new("adopt-dev");
+        let daily_port = ensure_running(daily.path(), false, &HashSet::new()).unwrap();
+        // The dev copy's saved port is the other folder's proxy, which is what a dev
+        // copy used to adopt.
+        std::fs::create_dir_all(proxy_dir(dev.path())).unwrap();
+        std::fs::write(
+            proxy_dir(dev.path()).join("proxy.port"),
+            format!("{daily_port}\n"),
+        )
+        .unwrap();
+        let dev_port = ensure_running(dev.path(), true, &HashSet::new()).unwrap();
+        assert_ne!(
+            daily_port, dev_port,
+            "the dev copy took the other folder's proxy"
+        );
+        let daily_id = data_folder_id(daily.path());
+        let dev_id = data_folder_id(dev.path());
+        assert_ne!(daily_id, dev_id);
+        let mut saw_daily = false;
+        let mut saw_dev = false;
+        for _ in 0..40 {
+            saw_daily = running_as(daily_port, &daily_id);
+            saw_dev = running_as(dev_port, &dev_id);
+            if saw_daily && saw_dev {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        assert!(saw_daily, "the first folder's proxy did not name itself");
+        assert!(saw_dev, "the dev copy's proxy did not name itself");
+        assert!(!running_as(daily_port, &dev_id));
+        assert!(!running_as(dev_port, &daily_id));
+        // Once each proxy has named its own folder, a later start reuses that port and no other.
+        assert_eq!(
+            ensure_running(daily.path(), false, &HashSet::new()).unwrap(),
+            daily_port
+        );
+        assert_eq!(
+            ensure_running(dev.path(), true, &HashSet::new()).unwrap(),
+            dev_port
+        );
+        assert!(running(daily_port));
+        assert!(running(dev_port));
     }
 
     #[test]
