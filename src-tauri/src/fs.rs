@@ -5722,29 +5722,299 @@ const STREAMABLE_VIDEO_EXTENSIONS: &[&str] = &[
     "mp4", "m4v", "mov", "webm", "ogv", "avi", "mkv", "mpg", "mpeg", "3gp", "3g2",
 ];
 
-/// Let the asset protocol serve one local video, so a chat can stream it with
-/// range requests instead of reading the whole file into memory. Only that
-/// file, and only a video container, joins the scope. Returns the canonical
-/// path the caller should load.
-#[tauri::command]
-pub fn allow_video_stream(app: AppHandle, path: String) -> Result<String, String> {
-    let path = expand_home(&path)
-        .canonicalize()
-        .map_err(|e| e.to_string())?;
-    let video = is_streamable_video(&path);
-    if !video || !path.is_file() {
-        return Err("Not a video file".into());
+/// Image files a chat's Markdown can show; mirrors `IMAGE_EXTENSIONS` in the UI
+/// (no `.svg`, which is text and opens in the editor).
+const CHAT_IMAGE_EXTENSIONS: &[&str] = &["png", "jpg", "jpeg", "gif", "webp", "avif", "bmp", "ico"];
+
+/// The one answer for every refusal: a missing file, one outside the chat's
+/// folders and one that is not media look the same, so a reply cannot use the
+/// answer to find out what is on this computer.
+const CHAT_MEDIA_REFUSED: &str = "That file can't be shown in this chat.";
+
+/// A path given as text, as an absolute path on this computer, or `None` when it
+/// is anything else. It touches no filesystem, so a path that names another
+/// machine is turned away before anything can reach it: a UNC or device path
+/// (`\\host\share\x.png`, `//host/share/x.png`, `\\?\...`), which Windows
+/// answers by opening a network session to the host, and a path under the
+/// automounted network folders (`/net/host/x.png` on a Mac or Linux, `/Network`
+/// on a Mac), which the first look inside mounts. `~` is the home folder, `.`
+/// and `..` are resolved in the text alone (`/..` is `/`), so a `..` cannot
+/// carry a path from a folder it starts in to one it must not reach.
+///
+/// Anything that takes a path out of a saved chat or a reply should ask this
+/// first, check the result against the folder it may use, and only then
+/// canonicalise it and check again.
+pub(crate) fn local_path_text(path: &str) -> Option<PathBuf> {
+    use std::path::Component;
+    if path.is_empty() || path.contains('\0') || path.starts_with("\\\\") || path.starts_with("//")
+    {
+        return None;
     }
-    app.asset_protocol_scope()
-        .allow_file(&path)
-        .map_err(|e| e.to_string())?;
-    Ok(path.to_string_lossy().into_owned())
+    let path = expand_home(path);
+    if !path.is_absolute() {
+        return None;
+    }
+    let mut out = PathBuf::new();
+    for part in path.components() {
+        match part {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if matches!(out.components().next_back(), Some(Component::Normal(_))) {
+                    out.pop();
+                }
+            }
+            Component::Prefix(prefix) => {
+                // A drive letter is this computer; every other prefix is a
+                // network or device path.
+                if !matches!(
+                    prefix.kind(),
+                    std::path::Prefix::Disk(_) | std::path::Prefix::VerbatimDisk(_)
+                ) {
+                    return None;
+                }
+                out.push(part.as_os_str());
+            }
+            other => out.push(other.as_os_str()),
+        }
+    }
+    (!is_network_automount(&out)).then_some(out)
 }
 
-fn is_streamable_video(path: &std::path::Path) -> bool {
+/// Whether an absolute path starts in the folders the system mounts a network
+/// share into when it is first looked at. The names match in any case, since a
+/// Mac's disk does not tell `/NET` from `/net`.
+fn is_network_automount(path: &Path) -> bool {
+    use std::path::Component;
+    let mut parts = path.components();
+    if !matches!(parts.next(), Some(Component::RootDir)) {
+        return false;
+    }
+    matches!(parts.next(), Some(Component::Normal(name))
+        if name.eq_ignore_ascii_case("net") || name.eq_ignore_ascii_case("network"))
+}
+
+/// A folder a chat's Markdown may load local media from: the path as the chat
+/// names it, which a path is first held to as text, and the real path with
+/// symlinks followed, which the file must then lie inside.
+#[derive(Debug)]
+struct MediaRoot {
+    text: PathBuf,
+    real: PathBuf,
+}
+
+/// Resolve a path against the disk; `std::fs::canonicalize`, or a stand-in that
+/// shows a test whether the disk was asked.
+type Canonicalize<'a> = &'a dyn Fn(&Path) -> std::io::Result<PathBuf>;
+
+/// The folders a chat's Markdown may load local media from.
+///
+/// A reply, or a chat imported from elsewhere, is untrusted text, so a path in
+/// it is shown only when it names a file inside the chat's own working folders
+/// (its project, or its worktree) or the app's generated-images folder. A
+/// folder that is missing, or is not on this computer (`local_path_text`), is
+/// left out without the disk being asked about it. So is one too broad to be a
+/// chat's own: the filesystem root, or the home folder itself, which would let
+/// a chat show anything the user keeps there.
+fn chat_media_roots_via(
+    chat_roots: &[String],
+    generated_dir: Option<&Path>,
+    home: Option<&Path>,
+    canonicalize: Canonicalize,
+) -> Vec<MediaRoot> {
+    let home = home.and_then(|home| canonicalize(home).ok());
+    let mut roots = Vec::new();
+    for root in chat_roots {
+        let Some(text) = local_path_text(root) else {
+            continue;
+        };
+        let Ok(real) = canonicalize(&text) else {
+            continue;
+        };
+        if real.parent().is_none()
+            || home.as_deref() == Some(real.as_path())
+            || is_network_automount(&real)
+        {
+            continue;
+        }
+        roots.push(MediaRoot { text, real });
+    }
+    if let Some(text) = generated_dir.and_then(|dir| local_path_text(&dir.to_string_lossy())) {
+        if let Ok(real) = canonicalize(&text) {
+            roots.push(MediaRoot { text, real });
+        }
+    }
+    roots
+}
+
+/// `chat_media_roots_via` for a chat's folders as the webview names them, with
+/// this app's generated-images folder.
+fn chat_media_scope(app: &AppHandle, chat_roots: &[String]) -> Vec<MediaRoot> {
+    let generated = app
+        .path()
+        .app_data_dir()
+        .ok()
+        .map(|dir| dir.join(GENERATED_IMAGE_DIR));
+    let home = crate::dirs_home().map(PathBuf::from);
+    chat_media_roots_via(chat_roots, generated.as_deref(), home.as_deref(), &|path| {
+        std::fs::canonicalize(path)
+    })
+}
+
+/// The canonical file `path` names, if it is a file of the wanted `kind` that
+/// lies inside one of `roots`.
+///
+/// The path is checked twice, and the disk is not asked about it until the
+/// first check passes. As text it must be a local absolute path that starts with
+/// a root's own text, so a path to another machine, or one that climbs out with
+/// `..`, goes no further. Then it is resolved with symlinks followed and must lie
+/// inside a root's real path, so a link inside a folder that points out of it is
+/// refused. Both compare whole path components, so `/work/repo-evil` is not
+/// inside `/work/repo`, and the file read or streamed afterwards is the one
+/// checked, not the name.
+fn chat_media_file_via(
+    path: &str,
+    roots: &[MediaRoot],
+    kind: fn(&Path) -> bool,
+    canonicalize: Canonicalize,
+) -> Result<PathBuf, String> {
+    let refused = || CHAT_MEDIA_REFUSED.to_string();
+    let text = local_path_text(path).ok_or_else(refused)?;
+    if !roots
+        .iter()
+        .any(|root| text.starts_with(&root.text) || text.starts_with(&root.real))
+    {
+        return Err(refused());
+    }
+    let file = canonicalize(&text).map_err(|_| refused())?;
+    if !roots.iter().any(|root| file.starts_with(&root.real)) || !kind(&file) || !file.is_file() {
+        return Err(refused());
+    }
+    crate::instance::guard_lock_file(&file)?;
+    Ok(file)
+}
+
+fn chat_media_file(
+    path: &str,
+    roots: &[MediaRoot],
+    kind: fn(&Path) -> bool,
+) -> Result<PathBuf, String> {
+    chat_media_file_via(path, roots, kind, &|path| std::fs::canonicalize(path))
+}
+
+/// Let the asset protocol serve one local video, so a chat can stream it with
+/// range requests instead of reading the whole file into memory. `roots` are
+/// the chat's own folders: the video must lie inside one of them (or the
+/// generated-images folder) and be a video container, and only then does that
+/// one file join the scope. Anything else is refused before the scope changes,
+/// so a reply cannot widen what the webview may load. Returns the canonical
+/// path the caller should load.
+#[tauri::command]
+pub fn allow_video_stream(
+    app: AppHandle,
+    path: String,
+    roots: Vec<String>,
+) -> Result<String, String> {
+    let roots = chat_media_scope(&app, &roots);
+    allow_video_stream_in(&path, &roots, |file| {
+        app.asset_protocol_scope()
+            .allow_file(file)
+            .map_err(|e| e.to_string())
+    })
+}
+
+/// The command without the app: `allow` widens the asset scope and is called
+/// only for a video the roots allow.
+fn allow_video_stream_in(
+    path: &str,
+    roots: &[MediaRoot],
+    allow: impl FnOnce(&Path) -> Result<(), String>,
+) -> Result<String, String> {
+    let file = chat_media_file(path, roots, is_streamable_video)?;
+    allow(&file)?;
+    Ok(file.to_string_lossy().into_owned())
+}
+
+fn is_streamable_video(path: &Path) -> bool {
+    has_extension_in(path, STREAMABLE_VIDEO_EXTENSIONS)
+}
+
+fn is_chat_image(path: &Path) -> bool {
+    has_extension_in(path, CHAT_IMAGE_EXTENSIONS)
+}
+
+fn has_extension_in(path: &Path, extensions: &[&str]) -> bool {
     path.extension()
         .and_then(|ext| ext.to_str())
-        .is_some_and(|ext| STREAMABLE_VIDEO_EXTENSIONS.contains(&ext.to_ascii_lowercase().as_str()))
+        .is_some_and(|ext| extensions.contains(&ext.to_ascii_lowercase().as_str()))
+}
+
+/// Whether bytes start like an image the chat shows; mirrors `sniffImageMime`
+/// in the UI. A file named `.png` that is not one is never handed over.
+fn looks_like_chat_image(bytes: &[u8]) -> bool {
+    let at = |offset: usize, magic: &[u8]| {
+        bytes
+            .get(offset..offset + magic.len())
+            .is_some_and(|found| found == magic)
+    };
+    at(0, &[0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])
+        || at(0, &[0xff, 0xd8, 0xff])
+        || at(0, b"GIF8")
+        || at(0, b"BM")
+        || at(0, &[0x00, 0x00, 0x01, 0x00])
+        || (at(0, b"RIFF") && at(8, b"WEBP"))
+        || (at(4, b"ftyp") && (at(8, b"avif") || at(8, b"avis")))
+}
+
+/// Read an image that a chat's Markdown shows from this computer.
+///
+/// The reply is untrusted, so the file must lie inside one of the chat's own
+/// folders (`roots`, usually its project or worktree) or the app's
+/// generated-images folder, with symlinks followed, and its bytes must be an
+/// image. The caller sniffs them again for the blob it makes, as for
+/// `read_binary_file`.
+#[tauri::command]
+pub async fn read_chat_image(
+    app: AppHandle,
+    path: String,
+    roots: Vec<String>,
+) -> Result<tauri::ipc::Response, String> {
+    let roots = chat_media_scope(&app, &roots);
+    let bytes = tauri::async_runtime::spawn_blocking(move || read_chat_image_in(&path, &roots))
+        .await
+        .map_err(|e| e.to_string())??;
+    Ok(tauri::ipc::Response::new(bytes))
+}
+
+fn read_chat_image_in(path: &str, roots: &[MediaRoot]) -> Result<Vec<u8>, String> {
+    let file = chat_media_file(path, roots, is_chat_image)?;
+    let handle = std::fs::File::open(&file).map_err(|_| CHAT_MEDIA_REFUSED.to_string())?;
+    let meta = handle
+        .metadata()
+        .map_err(|_| CHAT_MEDIA_REFUSED.to_string())?;
+    let too_large = || {
+        format!(
+            "Image is too large to show (maximum {} MB).",
+            MAX_PREVIEW_BYTES / 1024 / 1024
+        )
+    };
+    if !meta.is_file() {
+        return Err(CHAT_MEDIA_REFUSED.into());
+    }
+    if meta.len() > MAX_PREVIEW_BYTES {
+        return Err(too_large());
+    }
+    let mut bytes = Vec::with_capacity(meta.len() as usize);
+    handle
+        .take(MAX_PREVIEW_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|_| CHAT_MEDIA_REFUSED.to_string())?;
+    if bytes.len() as u64 > MAX_PREVIEW_BYTES {
+        return Err(too_large());
+    }
+    if !looks_like_chat_image(&bytes) {
+        return Err(CHAT_MEDIA_REFUSED.into());
+    }
+    Ok(bytes)
 }
 
 /// Read a file as raw bytes for the image viewer.
@@ -6896,6 +7166,460 @@ mod tests {
         file.set_len(MAX_DOCUMENT_IMAGE_BYTES + 1).unwrap();
         let error = read_project_image_sync(&dir.0, Path::new("huge.png")).unwrap_err();
         assert!(error.contains("too large"), "{error}");
+    }
+
+    const PNG_BYTES: [u8; 8] = [0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a];
+
+    fn media_roots(
+        chat_roots: &[String],
+        generated: Option<&Path>,
+        home: Option<&Path>,
+    ) -> Vec<MediaRoot> {
+        chat_media_roots_via(chat_roots, generated, home, &|path| {
+            std::fs::canonicalize(path)
+        })
+    }
+
+    /// A chat's folder `repo`, beside a folder that shares its name as a
+    /// prefix (`repo-evil`), the app's `data/generated-images` and files the
+    /// chat has no business showing, all under one temporary folder.
+    struct ChatMedia {
+        dir: Tmp,
+        repo: PathBuf,
+        generated: PathBuf,
+    }
+
+    impl ChatMedia {
+        fn new(label: &str) -> Self {
+            let dir = tmp(label);
+            let repo = dir.0.join("repo");
+            let generated = dir.0.join("data/generated-images");
+            for folder in [
+                repo.join("docs"),
+                repo.join("clips"),
+                dir.0.join("repo-evil"),
+                generated.clone(),
+                dir.0.join("elsewhere/generated-images"),
+            ] {
+                std::fs::create_dir_all(folder).unwrap();
+            }
+            for file in [
+                repo.join("docs/shot.png"),
+                generated.join("one.png"),
+                dir.0.join("secret.png"),
+                dir.0.join("repo-evil/leak.png"),
+                dir.0.join("elsewhere/generated-images/lookalike.png"),
+            ] {
+                std::fs::write(file, PNG_BYTES).unwrap();
+            }
+            for file in [
+                repo.join("clips/demo.mp4"),
+                dir.0.join("secret.mp4"),
+                dir.0.join("repo-evil/leak.mp4"),
+            ] {
+                std::fs::write(file, b"video").unwrap();
+            }
+            std::fs::write(repo.join("notes.txt"), b"notes").unwrap();
+            std::fs::write(repo.join("fake.png"), b"<html>not an image</html>").unwrap();
+            Self {
+                dir,
+                repo,
+                generated,
+            }
+        }
+
+        fn at(&self, relative: &str) -> String {
+            self.dir.0.join(relative).to_string_lossy().into_owned()
+        }
+
+        /// The chat's folders as the webview names them, plus the app's.
+        fn roots(&self) -> Vec<MediaRoot> {
+            media_roots(
+                &[self.repo.to_string_lossy().into_owned()],
+                Some(&self.generated),
+                None,
+            )
+        }
+
+        fn read(&self, path: &str) -> Result<Vec<u8>, String> {
+            read_chat_image_in(path, &self.roots())
+        }
+
+        /// Ask for a video; also says whether the asset scope was widened.
+        fn stream(&self, path: &str) -> (Result<String, String>, Vec<PathBuf>) {
+            let widened = std::cell::RefCell::new(Vec::new());
+            let result = allow_video_stream_in(path, &self.roots(), |file| {
+                widened.borrow_mut().push(file.to_path_buf());
+                Ok(())
+            });
+            (result, widened.into_inner())
+        }
+    }
+
+    #[test]
+    fn chat_images_read_inside_the_chat_folder_and_the_generated_images_folder() {
+        let media = ChatMedia::new("chat-image-inside");
+
+        assert_eq!(
+            media.read(&media.at("repo/docs/shot.png")).unwrap(),
+            PNG_BYTES
+        );
+        assert_eq!(
+            media.read(&media.at("repo/docs/../docs/shot.png")).unwrap(),
+            PNG_BYTES
+        );
+        assert_eq!(
+            media
+                .read(&media.at("data/generated-images/one.png"))
+                .unwrap(),
+            PNG_BYTES
+        );
+        // A chat with no folder still shows the app's own generated images.
+        let only_generated = media_roots(&[], Some(&media.generated), None);
+        assert_eq!(
+            read_chat_image_in(&media.at("data/generated-images/one.png"), &only_generated)
+                .unwrap(),
+            PNG_BYTES
+        );
+    }
+
+    #[test]
+    fn chat_images_refuse_files_outside_the_chat_folders() {
+        let media = ChatMedia::new("chat-image-outside");
+
+        for outside in [
+            // Another place on the computer.
+            "secret.png",
+            // A sibling whose name starts with the chat folder's name.
+            "repo-evil/leak.png",
+            // Climbing out of the folder, and out and back into a sibling.
+            "repo/../secret.png",
+            "repo/docs/../../repo-evil/leak.png",
+            // A folder called generated-images that is not the app's.
+            "elsewhere/generated-images/lookalike.png",
+            // Not there at all: the same answer as for a file that exists.
+            "repo/docs/missing.png",
+            // A folder, not a file.
+            "repo/docs",
+        ] {
+            assert_eq!(
+                media.read(&media.at(outside)).unwrap_err(),
+                CHAT_MEDIA_REFUSED,
+                "{outside}"
+            );
+        }
+        // A relative path would resolve against the app's own folder.
+        assert_eq!(media.read("docs/shot.png").unwrap_err(), CHAT_MEDIA_REFUSED);
+        assert_eq!(media.read("").unwrap_err(), CHAT_MEDIA_REFUSED);
+        // No folder and no generated-images folder: nothing is allowed.
+        assert_eq!(
+            read_chat_image_in(&media.at("repo/docs/shot.png"), &[]).unwrap_err(),
+            CHAT_MEDIA_REFUSED
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn chat_images_refuse_symlinks_that_point_out_of_the_chat_folder() {
+        let media = ChatMedia::new("chat-image-links");
+        let repo = &media.repo;
+        std::os::unix::fs::symlink(media.dir.0.join("secret.png"), repo.join("link-out.png"))
+            .unwrap();
+        std::os::unix::fs::symlink(media.dir.0.join("repo-evil"), repo.join("sibling")).unwrap();
+        std::os::unix::fs::symlink(&media.dir.0, repo.join("outside")).unwrap();
+        std::os::unix::fs::symlink(repo.join("docs/shot.png"), repo.join("alias.png")).unwrap();
+        // A link whose own name is an image but whose target is not one.
+        std::os::unix::fs::symlink(repo.join("notes.txt"), repo.join("notes.png")).unwrap();
+
+        for out in [
+            "repo/link-out.png",
+            "repo/sibling/leak.png",
+            "repo/outside/secret.png",
+        ] {
+            assert_eq!(
+                media.read(&media.at(out)).unwrap_err(),
+                CHAT_MEDIA_REFUSED,
+                "{out}"
+            );
+        }
+        assert_eq!(media.read(&media.at("repo/alias.png")).unwrap(), PNG_BYTES);
+        assert_eq!(
+            media.read(&media.at("repo/notes.png")).unwrap_err(),
+            CHAT_MEDIA_REFUSED
+        );
+        // The chat's folder may itself be reached through a link.
+        std::os::unix::fs::symlink(repo, media.dir.0.join("repo-link")).unwrap();
+        let through_link = media_roots(&[media.at("repo-link")], None, None);
+        assert_eq!(
+            read_chat_image_in(&media.at("repo-link/docs/shot.png"), &through_link).unwrap(),
+            PNG_BYTES
+        );
+        // A link out of it, named through the link, is still refused.
+        assert_eq!(
+            read_chat_image_in(&media.at("repo-link/link-out.png"), &through_link).unwrap_err(),
+            CHAT_MEDIA_REFUSED
+        );
+    }
+
+    #[test]
+    fn chat_images_must_be_images() {
+        let media = ChatMedia::new("chat-image-kind");
+
+        // Not an image by name, and an image by name but not by content.
+        for not_image in ["repo/notes.txt", "repo/fake.png", "repo/clips/demo.mp4"] {
+            assert_eq!(
+                media.read(&media.at(not_image)).unwrap_err(),
+                CHAT_MEDIA_REFUSED,
+                "{not_image}"
+            );
+        }
+        let sniffed: [(&[u8], bool); 9] = [
+            (&PNG_BYTES, true),
+            (&[0xff, 0xd8, 0xff, 0xe0], true),
+            (b"GIF89a", true),
+            (b"BM\x00\x00", true),
+            (&[0x00, 0x00, 0x01, 0x00], true),
+            (b"RIFF\x00\x00\x00\x00WEBPVP8 ", true),
+            (b"\x00\x00\x00\x1cftypavif", true),
+            (b"\x00\x00\x00\x1cftypmp42", false),
+            (b"<svg xmlns='http://www.w3.org/2000/svg'/>", false),
+        ];
+        for (bytes, image) in sniffed {
+            assert_eq!(looks_like_chat_image(bytes), image, "{bytes:?}");
+        }
+        assert!(!looks_like_chat_image(&[]));
+    }
+
+    #[test]
+    fn chat_images_ignore_folders_too_broad_to_be_a_chats_own() {
+        let media = ChatMedia::new("chat-image-broad");
+        let secret = media.at("secret.png");
+        let root_of_disk = media
+            .dir
+            .0
+            .ancestors()
+            .last()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        let home = media.dir.0.clone();
+
+        // The filesystem root, the home folder itself and a relative folder
+        // would each make every file a chat's own.
+        for broad in [
+            root_of_disk,
+            home.to_string_lossy().into_owned(),
+            "repo".into(),
+        ] {
+            let roots = media_roots(std::slice::from_ref(&broad), None, Some(&home));
+            assert!(roots.is_empty(), "{broad}: {roots:?}");
+            assert_eq!(
+                read_chat_image_in(&secret, &roots).unwrap_err(),
+                CHAT_MEDIA_REFUSED
+            );
+        }
+        // A folder inside the home folder is a project like any other.
+        let inside = media_roots(&[media.at("repo")], None, Some(&home));
+        assert_eq!(inside.len(), 1);
+        // A folder that is not there is left out rather than failing the rest.
+        let roots = media_roots(
+            &[media.at("gone"), media.at("repo")],
+            Some(&media.dir.0.join("no-generated-images")),
+            None,
+        );
+        assert_eq!(roots.len(), 1);
+    }
+
+    #[test]
+    fn local_path_text_takes_only_absolute_paths_on_this_computer() {
+        assert_eq!(
+            local_path_text("/work/repo/./a/../shot.png"),
+            Some(PathBuf::from("/work/repo/shot.png"))
+        );
+        // There is nothing above the root to climb to.
+        assert_eq!(
+            local_path_text("/../../etc/x.png"),
+            Some(PathBuf::from("/etc/x.png"))
+        );
+        for refused in [
+            "",
+            "x.png",
+            "./x.png",
+            "../x.png",
+            "x\0.png",
+            // Another machine, by UNC and device paths and as the Mac and
+            // Linux automounter names it.
+            r"\\host\share\x.png",
+            r"\\?\UNC\host\share\x.png",
+            r"\\?\C:\x.png",
+            "//host/share/x.png",
+            "/net/host/x.png",
+            "/NET/host/x.png",
+            "/Network/Servers/host/x.png",
+            // The same, reached by climbing out of a local folder first.
+            "/work/../net/host/x.png",
+            "/work/repo/../../../net/host/x.png",
+        ] {
+            assert_eq!(local_path_text(refused), None, "{refused:?}");
+        }
+        // Only the folder at the top is the automounter's.
+        assert!(local_path_text("/work/net/x.png").is_some());
+        assert!(local_path_text("/network-notes/x.png").is_some());
+    }
+
+    #[test]
+    fn chat_media_never_asks_the_disk_about_a_path_to_another_machine() {
+        let media = ChatMedia::new("chat-media-network");
+        let roots = media.roots();
+        let asked = std::cell::RefCell::new(Vec::new());
+        // A disk that says nothing is there, and notes every question.
+        let silent_disk = |path: &Path| {
+            asked.borrow_mut().push(path.to_path_buf());
+            Err(ErrorKind::NotFound.into())
+        };
+
+        let climbing = format!(
+            "{}{}/net/host/x.png",
+            media.repo.display(),
+            "/..".repeat(30)
+        );
+        for network in [
+            "/net/host/x.png",
+            "/NET/host/x.png",
+            "/Network/Servers/host/x.png",
+            "//host/share/x.png",
+            r"\\host\share\x.png",
+            r"\\?\UNC\host\share\x.png",
+            // Starts in the chat's folder and climbs out to one.
+            climbing.as_str(),
+            // Local, but outside every folder the chat may use.
+            &media.at("secret.png"),
+        ] {
+            assert_eq!(
+                chat_media_file_via(network, &roots, is_chat_image, &silent_disk).unwrap_err(),
+                CHAT_MEDIA_REFUSED,
+                "{network}"
+            );
+        }
+        assert!(asked.borrow().is_empty(), "the disk was asked: {:?}", asked);
+
+        // A path inside a folder it may use is what the disk is asked about.
+        let real_disk = |path: &Path| {
+            asked.borrow_mut().push(path.to_path_buf());
+            std::fs::canonicalize(path)
+        };
+        let inside = media.at("repo/docs/shot.png");
+        chat_media_file_via(&inside, &roots, is_chat_image, &real_disk).unwrap();
+        assert_eq!(asked.borrow().len(), 1);
+    }
+
+    #[test]
+    fn chat_media_never_asks_the_disk_about_a_chat_folder_on_another_machine() {
+        let asked = std::cell::RefCell::new(Vec::new());
+        let silent_disk = |path: &Path| {
+            asked.borrow_mut().push(path.to_path_buf());
+            Err(ErrorKind::NotFound.into())
+        };
+        let network: Vec<String> = [
+            "/net/host/proj",
+            r"\\host\share\proj",
+            "//host/share/proj",
+            "/Network/Servers/host/proj",
+            "/work/../net/host/proj",
+        ]
+        .map(String::from)
+        .into();
+
+        let roots = chat_media_roots_via(
+            &network,
+            Some(Path::new("/net/host/app/generated-images")),
+            None,
+            &silent_disk,
+        );
+        assert!(roots.is_empty());
+        assert!(asked.borrow().is_empty(), "the disk was asked: {:?}", asked);
+
+        // A folder that is a link to a network share is dropped once resolved.
+        let linked = chat_media_roots_via(&["/work/proj".to_string()], None, None, &|_| {
+            Ok(PathBuf::from("/net/host/proj"))
+        });
+        assert!(linked.is_empty());
+    }
+
+    #[test]
+    fn chat_images_refuse_oversized_files() {
+        let media = ChatMedia::new("chat-image-size");
+        let huge = media.repo.join("huge.png");
+        let file = std::fs::File::create(&huge).unwrap();
+        file.set_len(MAX_PREVIEW_BYTES + 1).unwrap();
+
+        let error = media.read(&huge.to_string_lossy()).unwrap_err();
+        assert!(error.contains("too large"), "{error}");
+    }
+
+    #[test]
+    fn video_streams_widen_the_asset_scope_only_for_videos_inside_the_chat_folder() {
+        let media = ChatMedia::new("chat-video-inside");
+
+        let (result, widened) = media.stream(&media.at("repo/clips/demo.mp4"));
+        let canonical = std::fs::canonicalize(media.repo.join("clips/demo.mp4")).unwrap();
+        assert_eq!(result.unwrap(), canonical.to_string_lossy());
+        assert_eq!(widened, vec![canonical]);
+
+        // Through a `..`, the file that is streamed is the one that was checked.
+        let (result, widened) = media.stream(&media.at("repo/docs/../clips/demo.mp4"));
+        assert!(result.is_ok());
+        assert_eq!(widened.len(), 1);
+    }
+
+    #[test]
+    fn video_streams_refuse_a_video_outside_the_chat_folder_without_widening_the_scope() {
+        let media = ChatMedia::new("chat-video-outside");
+
+        for outside in [
+            "secret.mp4",
+            "repo-evil/leak.mp4",
+            "repo/../secret.mp4",
+            "repo/clips/missing.mp4",
+            // Inside the chat folder but not a video.
+            "repo/notes.txt",
+            "repo/docs/shot.png",
+        ] {
+            let (result, widened) = media.stream(&media.at(outside));
+            assert_eq!(result.unwrap_err(), CHAT_MEDIA_REFUSED, "{outside}");
+            assert!(widened.is_empty(), "{outside} widened the scope");
+        }
+        let (result, widened) = media.stream("clips/demo.mp4");
+        assert_eq!(result.unwrap_err(), CHAT_MEDIA_REFUSED);
+        assert!(widened.is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn video_streams_refuse_a_link_out_of_the_chat_folder_without_widening_the_scope() {
+        let media = ChatMedia::new("chat-video-links");
+        std::os::unix::fs::symlink(
+            media.dir.0.join("secret.mp4"),
+            media.repo.join("clips/link-out.mp4"),
+        )
+        .unwrap();
+        std::os::unix::fs::symlink(&media.dir.0, media.repo.join("outside")).unwrap();
+
+        for out in ["repo/clips/link-out.mp4", "repo/outside/secret.mp4"] {
+            let (result, widened) = media.stream(&media.at(out));
+            assert_eq!(result.unwrap_err(), CHAT_MEDIA_REFUSED, "{out}");
+            assert!(widened.is_empty(), "{out} widened the scope");
+        }
+    }
+
+    #[test]
+    fn a_video_stream_that_fails_to_widen_the_scope_is_not_reported_as_allowed() {
+        let media = ChatMedia::new("chat-video-scope-error");
+        let result =
+            allow_video_stream_in(&media.at("repo/clips/demo.mp4"), &media.roots(), |_| {
+                Err("scope is closed".into())
+            });
+        assert_eq!(result.unwrap_err(), "scope is closed");
     }
 
     #[test]

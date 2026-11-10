@@ -278,26 +278,21 @@ function highlightLanguageFor(language: string): string {
 
 type MarkdownLinkProps = ComponentProps<"a"> & { node?: unknown };
 
-function MarkdownLink({
+type WorkspaceFile = NonNullable<ReturnType<typeof resolveWorkspaceFileReference>>;
+
+/** A link whose target may be a workspace file, which then opens in the editor. */
+function WorkspaceLink({
   href,
+  file,
   children,
   className,
-  node: _node,
   onClick,
   onContextMenu,
   dir,
   ...props
-}: MarkdownLinkProps) {
-  const allowRemoteMedia = useContext(RemoteMediaContext);
-  const { cwd, onOpenFile, onFileContextMenu } = useContext(FileOpenContext);
-  const file = href ? resolveWorkspaceFileReference(href, cwd) : undefined;
-  const label = textContent(children);
-  const localMedia = useContext(LocalMediaContext);
-  if (allowRemoteMedia && href && isInboxMediaUrl(href)) {
-    return <InboxMedia src={href} alt={label} />;
-  }
-
-  const link = (
+}: ComponentProps<"a"> & { file?: WorkspaceFile }) {
+  const { onOpenFile, onFileContextMenu } = useContext(FileOpenContext);
+  return (
     <a
       href={href}
       className={`text-sky-400/90 hover:text-sky-300 hover:underline ${className ?? ""}`}
@@ -327,10 +322,33 @@ function MarkdownLink({
       {children}
     </a>
   );
+}
+
+function MarkdownLink({
+  href,
+  children,
+  node: _node,
+  ...props
+}: MarkdownLinkProps) {
+  const allowRemoteMedia = useContext(RemoteMediaContext);
+  const { cwd, onOpenFile } = useContext(FileOpenContext);
+  const file = href ? resolveWorkspaceFileReference(href, cwd) : undefined;
+  const label = textContent(children);
+  const localMedia = useContext(LocalMediaContext);
+  if (allowRemoteMedia && href && isInboxMediaUrl(href)) {
+    return <InboxMedia src={href} alt={label} />;
+  }
+
+  const link = (
+    <WorkspaceLink href={href} file={file} {...props}>
+      {children}
+    </WorkspaceLink>
+  );
   if (localMedia && file && isLocalMediaPath(file.path)) {
     return (
       <LocalMedia
         path={file.path}
+        cwd={cwd}
         label={label}
         onOpen={onOpenFile ? () => onOpenFile(file.path) : undefined}
         fallback={link}
@@ -561,12 +579,19 @@ function MarkdownImage({
       ? resolveWorkspaceFileReference(url, cwd)
       : undefined;
   if (file && isLocalMediaPath(file.path)) {
+    // The reply is untrusted: a file outside the chat's folder, or one that
+    // cannot be shown, stays a link that names it, and is never loaded.
     return (
       <LocalMedia
         path={file.path}
+        cwd={cwd}
         label={alt ?? ""}
         onOpen={onOpenFile ? () => onOpenFile(file.path) : undefined}
-        fallback={null}
+        fallback={
+          <WorkspaceLink href={url} file={file}>
+            {displayPath(file.path, cwd)}
+          </WorkspaceLink>
+        }
       />
     );
   }

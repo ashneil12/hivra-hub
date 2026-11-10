@@ -180,9 +180,9 @@ describe("AgentMarkdown local media", () => {
     "[Open the screenshot](/Users/me/shot.png) and [the notes](/Users/me/notes.md)",
   ].join("\n");
 
-  it("shows local images and videos in place of their links when enabled", () => {
+  it("shows local images and videos in the chat's folder in place of their links when enabled", () => {
     const markup = renderToStaticMarkup(
-      createElement(AgentMarkdown, { text, localMedia: true }),
+      createElement(AgentMarkdown, { text, localMedia: true, cwd: "/Users/me" }),
     );
 
     expect(markup).toContain('data-local-media="/Users/me/My Clips/demo.mp4"');
@@ -191,8 +191,35 @@ describe("AgentMarkdown local media", () => {
     expect(markup).toContain(">the notes</a>");
   });
 
+  it("keeps links, and shows an image's path as one, for files outside the chat's folders", () => {
+    for (const cwd of ["/Users/me/project", "/Users/me-evil", undefined]) {
+      const markup = renderToStaticMarkup(
+        createElement(AgentMarkdown, { text, localMedia: true, cwd }),
+      );
+
+      expect(markup).not.toContain("data-local-media");
+      expect(markup).toContain(">Open the screenshot</a>");
+      expect(markup).toContain(">the notes</a>");
+      expect(markup).toContain(">/Users/me/My Clips/demo.mp4</a>");
+    }
+  });
+
+  it("shows an image in the app's generated-images folder wherever the chat works", () => {
+    const markup = renderToStaticMarkup(
+      createElement(AgentMarkdown, {
+        text: "![Art](/app/data/generated-images/one.png)",
+        localMedia: true,
+        cwd: "/work/repo",
+      }),
+    );
+
+    expect(markup).toContain('data-local-media="/app/data/generated-images/one.png"');
+  });
+
   it("keeps links and drops local images elsewhere", () => {
-    const markup = renderToStaticMarkup(createElement(AgentMarkdown, { text }));
+    const markup = renderToStaticMarkup(
+      createElement(AgentMarkdown, { text, cwd: "/Users/me" }),
+    );
 
     expect(markup).not.toContain("data-local-media");
     expect(markup).toContain(">Open the screenshot</a>");
