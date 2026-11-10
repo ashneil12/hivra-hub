@@ -119,7 +119,8 @@ export type InputNotificationEvent = {
   kind: "approval" | "question";
   requestId: number;
 };
-export type NotificationEvent = "finished" | InputNotificationEvent;
+/** `failed` is a turn that ended in an error. It is announced as a failure, and quiet hours never hold it. */
+export type NotificationEvent = "finished" | "failed" | InputNotificationEvent;
 
 type PendingInputNotification = {
   session: Session;
@@ -180,6 +181,9 @@ export function notificationText(
   const title = "MonoCode";
   const subtitle = sessionDisplayTitle(session.title, session.harness);
   const harness = HARNESS_TITLE[session.harness];
+  if (event === "failed") {
+    return { title, subtitle, body: clip(`${harness} stopped with an error`) };
+  }
   if (event !== "finished") {
     if (event.kind === "question") {
       const question =
@@ -243,16 +247,19 @@ export async function notifySession(
   if (!project) return false;
   return notifyProjectSession(session, event, sessionVisible, {
     projectId: project.id,
-    category: event === "finished" ? "agentFinished" : "agentInput",
+    category: typeof event === "object" ? "agentInput" : "agentFinished",
     occurredAt,
+    ...(event === "failed" ? { failure: true } : {}),
   });
 }
 
+/** `failed` is a turn that ended in an error: it reads as a failure and is not held overnight (WP-164). */
 export function announceSessionFinished(
   session: Session,
   sessionVisible: boolean,
+  failed = false,
 ): Promise<void> {
-  return announceSession(session, "finished", sessionVisible);
+  return announceSession(session, failed ? "failed" : "finished", sessionVisible);
 }
 
 export function announceSessionInput(
@@ -273,11 +280,12 @@ async function announceSession(
   const occurredAt = Date.now();
   const project = knownNotificationProject(session.cwd);
   if (!project) return;
-  const finished = event === "finished";
+  const finished = typeof event !== "object";
   const subject: NotificationSubject = {
     projectId: project.id,
     category: finished ? "agentFinished" : "agentInput",
     occurredAt,
+    ...(event === "failed" ? { failure: true } : {}),
   };
   const sent = await notifyProjectSession(
     session,

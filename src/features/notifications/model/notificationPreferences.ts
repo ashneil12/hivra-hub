@@ -15,6 +15,8 @@ export type NotificationSubject = {
   projectId: string;
   category: NotificationCategory;
   occurredAt?: number;
+  /** Something the person was waiting on failed. Quiet hours never hold it; a mute still does. */
+  failure?: boolean;
 };
 export type ProjectNotificationPreference = {
   disabled: NotificationCategory[];
@@ -153,6 +155,7 @@ export function projectNotificationVerdict(
     now > rule.after &&
     (subject.occurredAt === undefined || subject.occurredAt > rule.after);
   if (!allowed) return "muted";
+  if (subject.failure) return "allow";
   return holdsForQuietHours(subject.category, now) ? "quiet" : "allow";
 }
 

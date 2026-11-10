@@ -148,6 +148,32 @@ describe("quiet hours on the notice path", () => {
     expect(readNotableBuffer().pending).toEqual([]);
   });
 
+  it("shows a turn that failed overnight at once, as a failure, and does not hold it like a success", async () => {
+    vi.setSystemTime(at(23, 30));
+    const session = newSession("claude", "/work");
+    await announceSessionFinished(session, false, true);
+    expect(banners()).toHaveLength(1);
+    expect(banners()[0][1]).toMatchObject({ title: "MonoCode", body: "Claude Code stopped with an error" });
+    expect(readNotableBuffer().pending).toEqual([]);
+
+    // With the banner off, the failure still gets its sound; a success would have been silent all night.
+    saveNotificationsEnabled(false);
+    await announceSessionFinished(session, false, true);
+    expect(play).toHaveBeenCalledTimes(1);
+    play.mockClear();
+    await announceSessionFinished(session, false);
+    expect(play).not.toHaveBeenCalled();
+  });
+
+  it("lets a mute win over a failed turn, at any hour", async () => {
+    vi.setSystemTime(at(23, 30));
+    updateNotificationPreferences(["local:/muted"], { disabled: ["agentFinished"] });
+    await announceSessionFinished(newSession("claude", "/muted"), false, true);
+    expect(banners()).toEqual([]);
+    expect(play).not.toHaveBeenCalled();
+    expect(readNotableBuffer().pending).toEqual([]);
+  });
+
   it("shows a finished-agent banner in the daytime", async () => {
     vi.setSystemTime(at(12, 0));
     await announceSessionFinished(newSession("claude", "/work"), false);

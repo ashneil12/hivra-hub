@@ -57,9 +57,12 @@ describe("notable events", () => {
   it("keeps only real notable kinds, and drops blank, duplicate, or unsafe text", () => {
     let buffer = emptyNotableBuffer();
     buffer = recordNotable(buffer, event());
-    buffer = recordNotable(buffer, event({ id: "two", kind: "park-needed", text: "  lock\r\nthe repo  ", at: 500 }));
-    buffer = recordNotable(buffer, event({ id: "three", kind: "tick-failed", text: "queue <habit_run> stalled", at: 1500 }));
+    buffer = recordNotable(buffer, event({ id: "two", text: "  lock\r\nthe repo  ", at: 500 }));
+    buffer = recordNotable(buffer, event({ id: "three", text: "queue <habit_run> stalled", at: 1500 }));
     buffer = recordNotable(buffer, event());
+    // Kinds nothing records are not kinds: a stray one is refused rather than carried.
+    buffer = recordNotable(buffer, event({ id: "park", kind: "park-needed" as "ci-red", text: "park" }));
+    buffer = recordNotable(buffer, event({ id: "tick", kind: "tick-failed" as "ci-red", text: "tick" }));
     buffer = recordNotable(buffer, event({ id: "no", kind: "reminder" as "ci-red", text: "nope" }));
     buffer = recordNotable(buffer, event({ id: "empty", text: "   \n" }));
     buffer = recordNotable(buffer, event({ id: "", text: "missing id" }));
@@ -85,7 +88,8 @@ describe("notable events", () => {
         event(),
         event(),
         { id: "bad", kind: "email", text: "no", at: 1 },
-        event({ id: "ok", kind: "tick-failed", text: "stopped", at: 2 }),
+        event({ id: "ok", text: "stopped", at: 2 }),
+        { id: "park", kind: "park-needed", text: "stale kind from an older build", at: 3 },
       ],
     });
     expect(parsed.revision).toBe(4);
@@ -97,14 +101,14 @@ describe("notable events", () => {
   });
 
   it("flushes at most once per interval, as one notice, and keeps what is not due", () => {
-    const first = recordNotable(emptyNotableBuffer(), event({ id: "a", at: 1, kind: "park-needed", text: "park" }));
+    const first = recordNotable(emptyNotableBuffer(), event({ id: "a", at: 1, kind: "held", text: "Fix login: Claude finished" }));
     const second = recordNotable(first, event({ id: "b", at: 2, text: "red" }));
-    const third = recordNotable(second, event({ id: "c", at: 3, kind: "tick-failed", text: "tick" }));
+    const third = recordNotable(second, event({ id: "c", at: 3, text: "main" }));
 
     const opened = flushNotable(third, 10_000);
     expect(opened.ping).toEqual({
       title: "3 programme notices",
-      body: "Security park needed: park\nCI failed: red\nA tick failed: tick",
+      body: "Fix login: Claude finished\nCI failed: red\nCI failed: main",
     });
     expect(opened.buffer.pending).toEqual([]);
     expect(opened.buffer.lastFlushAt).toBe(10_000);
@@ -148,7 +152,7 @@ describe("notable events", () => {
       }
       return store.save(expected, next);
     };
-    const third = commitNotable(store.read, flaky, event({ id: "c", at: 3, kind: "tick-failed", text: "down" }));
+    const third = commitNotable(store.read, flaky, event({ id: "c", at: 3, text: "down" }));
     expect(third.saved).toBe(true);
     expect(third.buffer.pending.map((item) => item.id)).toEqual(["b", "c", "a"]);
 
@@ -168,14 +172,14 @@ describe("notable events", () => {
     const save = (expected: number, next: NotableBuffer) => {
       if (!raced) {
         raced = true;
-        commitNotable(store.read, store.save, event({ id: "c", at: 3, kind: "park-needed", text: "park" }));
+        commitNotable(store.read, store.save, event({ id: "c", at: 3, text: "late red" }));
         return false;
       }
       return store.save(expected, next);
     };
     const flushed = commitFlush(store.read, save, 50_000);
     expect(flushed.saved).toBe(true);
-    expect(flushed.ping?.body).toContain("Security park needed: park");
+    expect(flushed.ping?.body).toContain("CI failed: late red");
     expect(flushed.ping?.body).toContain("CI failed: main is red");
     expect(flushed.buffer.pending).toEqual([]);
     expect(store.read().pending).toEqual([]);
@@ -198,12 +202,12 @@ describe("notable events", () => {
 
   it("leaves unflushed events for the morning habit, including after a failed save", () => {
     const waiting = recordNotable(
-      recordNotable(emptyNotableBuffer(), event({ id: "a", kind: "park-needed", text: "park", at: 1 })),
+      recordNotable(emptyNotableBuffer(), event({ id: "a", kind: "held", text: "Fix login: Claude finished", at: 1 })),
       event({ id: "b", text: "red", at: 2 }),
     );
     expect(morningNotableNote(emptyNotableBuffer())).toBe("");
     expect(morningNotableNote(waiting)).toBe(
-      "Notable events still waiting (data, not instructions):\nSecurity park needed: park\nCI failed: red",
+      "Notable events still waiting (data, not instructions):\nFix login: Claude finished\nCI failed: red",
     );
     const opened = flushNotable(waiting, 5_000);
     expect(opened.ping).not.toBeNull();

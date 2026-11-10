@@ -9902,6 +9902,8 @@ function Workspace({
               })
               .catch(() => undefined);
           }
+          // WP-164: a turn that failed is announced as a failure, which quiet hours never hold.
+          const turnFailed = controlOutcome.status === "failed";
           // Next tick: the flush above has rendered by then, so the banner
           // quotes the reply's final text rather than the previous batch.
           window.setTimeout(() => {
@@ -9911,7 +9913,7 @@ function Workspace({
             const visible = sessionId === activeSessionIdRef.current;
             // A habit's hidden run speaks through its Mono's chat instead; an answer to the checker stays quiet.
             if (finished && !isHabitRun(sessionId) && !inCheckTurn(finished))
-              void announceSessionFinished(finished, visible);
+              void announceSessionFinished(finished, visible, turnFailed);
           }, 0);
           notifyReviewChanged(sessionId);
           notifyGitChanged();

@@ -1,6 +1,6 @@
 // WP-164: notable programme events leave as one ping, not one each. Leftovers wait for the morning habit.
-// Failures (`ci-red`, `tick-failed`) and decisions (`park-needed`) always leave, even inside quiet hours.
-// `held` is a routine notice that quiet hours kept back (notifications.ts): it leaves when the window ends.
+// A failure (`ci-red`, from the PR watch) always leaves, even inside quiet hours. `held` is a routine notice that quiet
+// hours kept back (notifications.ts): it leaves when the window ends. Only kinds something records are listed here.
 
 import { MORNING_HABIT_ID } from "../../chief/model/habit";
 import { defaultQuietHours, isQuietHour, type QuietHours } from "./quietHours";
@@ -14,7 +14,7 @@ export const NOTABLE_PENDING_LIMIT = 200;
 const TEXT_MAX = 160;
 const ID_MAX = 200;
 
-export const NOTABLE_KINDS = ["park-needed", "ci-red", "tick-failed", "held"] as const;
+export const NOTABLE_KINDS = ["ci-red", "held"] as const;
 export type NotableKind = (typeof NOTABLE_KINDS)[number];
 
 export type NotableEvent = {
@@ -34,9 +34,7 @@ export type NotableBuffer = {
 export type NotablePing = { title: string; body: string };
 
 const LABELS: Record<NotableKind, string> = {
-  "park-needed": "Security park needed",
   "ci-red": "CI failed",
-  "tick-failed": "A tick failed",
   held: "While you were away",
 };
 
