@@ -30,6 +30,21 @@ describe("visual reply frame", () => {
     expect(big).toContain("This reply is too big to show here.");
     expect(big).not.toContain("<iframe");
     expect(big).toContain("a".repeat(32));
+    expect(big).toContain("Save as file");
+    expect(big).not.toContain("Allow network");
+    expect(big).not.toContain("Show source");
+  });
+
+  it("starts on the visual, with the network off, and offers the source and a file", () => {
+    const small = renderToStaticMarkup(
+      createElement(VisualReplyFrame, { source: "<p>chart</p>" }),
+    );
+    expect(small).toContain("Show source");
+    expect(small).not.toContain("Show visual");
+    expect(small).toContain("Save as file");
+    expect(small).toContain("Allow network");
+    expect(small).toContain('aria-pressed="false"');
+    expect(small).toContain("<iframe");
   });
 });
 

@@ -62,11 +62,32 @@ function useVisualTheme(): VisualTheme {
  * A theme change rebuilds the frame with the new colors, and the same colors
  * are posted in so a frame that is still loading picks them up.
  */
+const VISUAL_REPLY_FILE = "visual-reply.html";
+
+/** Saves the original reply. A blob is only the download, never a page the app opens. */
+function saveVisualSource(source: string) {
+  const blob = new Blob([source], { type: "text/html" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = VISUAL_REPLY_FILE;
+  link.rel = "noopener";
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 0);
+}
+
 export function VisualReplyFrame({ source }: { source: string }) {
   const theme = useVisualTheme();
   const frameRef = useRef<HTMLIFrameElement>(null);
   const [height, setHeight] = useState(VISUAL_FRAME_PLACEHOLDER_HEIGHT);
-  const doc = useMemo(() => visualDocument(source, theme, false), [source, theme]);
+  const [showSource, setShowSource] = useState(false);
+  const [network, setNetwork] = useState(false);
+  const doc = useMemo(
+    () => visualDocument(source, theme, network),
+    [source, theme, network],
+  );
 
   useLayoutEffect(() => {
     const receive = (event: MessageEvent) => {
@@ -86,9 +107,41 @@ export function VisualReplyFrame({ source }: { source: string }) {
     );
   }, [theme]);
 
+  const controls = (
+    <div className="mb-2 flex flex-wrap gap-2">
+      {doc ? (
+        <button
+          type="button"
+          className="rounded-md px-2 py-1 text-xs"
+          onClick={() => setShowSource((current) => !current)}
+        >
+          {showSource ? "Show visual" : "Show source"}
+        </button>
+      ) : null}
+      <button
+        type="button"
+        className="rounded-md px-2 py-1 text-xs"
+        onClick={() => saveVisualSource(source)}
+      >
+        Save as file
+      </button>
+      {doc ? (
+        <button
+          type="button"
+          className="rounded-md px-2 py-1 text-xs"
+          aria-pressed={network}
+          onClick={() => setNetwork((current) => !current)}
+        >
+          Allow network
+        </button>
+      ) : null}
+    </div>
+  );
+
   if (!doc) {
     return (
       <div data-visual-reply-frame>
+        {controls}
         <p>This reply is too big to show here.</p>
         <pre>{source}</pre>
       </div>
@@ -97,14 +150,19 @@ export function VisualReplyFrame({ source }: { source: string }) {
 
   return (
     <div data-visual-reply-frame>
-      <iframe
-        ref={frameRef}
-        title="Visual reply"
-        sandbox={VISUAL_SANDBOX}
-        referrerPolicy="no-referrer"
-        srcDoc={doc}
-        style={{ width: "100%", height, border: 0 }}
-      />
+      {controls}
+      {showSource ? (
+        <pre>{source}</pre>
+      ) : (
+        <iframe
+          ref={frameRef}
+          title="Visual reply"
+          sandbox={VISUAL_SANDBOX}
+          referrerPolicy="no-referrer"
+          srcDoc={doc}
+          style={{ width: "100%", height, border: 0 }}
+        />
+      )}
     </div>
   );
 }

@@ -47,6 +47,8 @@ The frame starts from the current theme: background, text, the plain font and th
 
 A fence renders as a visual reply only when it is marked. The mark is the language `visual`, `visual-html` or `hivra-visual`. The only hint is an `html` or `htm` fence whose info string is the single word `visual`, with any letter case. A plain html fence, a javascript fence, inline html and an html fence with any other info string stay ordinary Markdown. A fence that is still streaming stays code, so a half-written reply is not framed.
 
+Show source hides the frame and shows the reply as text. Show visual puts the frame back. Save as file downloads the original reply as `visual-reply.html` and does not open it in the app. Allow network turns the network on for that one reply. The choice is not saved. Remote scripts, frames, forms and navigation stay off. A reply that is too big to frame is shown as source, with Save as file and no network switch.
+
 The host ignores messages from the frame except a height number from that frame, and it caps the height. The frame cannot ask the app to open a link, run a tool or read the page.
 
 Two replies do not share an origin. The shell only forwards a message from its own guest, and it only forwards a theme message back in.
@@ -55,10 +57,10 @@ What the browser spec covers, on Chromium and WebKit: a fixture that fetches, lo
 
 ## Done when
 
-- [ ] A visual reply renders in a themed sandbox.
-- [ ] The sandbox policy is documented and tested.
-- [ ] Ordinary Markdown is not hijacked.
-- [ ] Grok builders did not start this package.
+- [x] A visual reply renders in a themed sandbox.
+- [x] The sandbox policy is documented and tested.
+- [x] Ordinary Markdown is not hijacked.
+- [x] Grok builders did not start this package.
 
 ## Licence
 

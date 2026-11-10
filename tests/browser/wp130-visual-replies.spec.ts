@@ -1,3 +1,4 @@
+import { readFile } from "node:fs/promises";
 import { expect, test } from "@playwright/test";
 
 test("a visual reply cannot reach the parent page or the network", async ({ page }) => {
@@ -109,4 +110,48 @@ test("a visual reply takes the page background, text and fonts", async ({ page }
   expect(tokens).toBeGreaterThan(-1);
   expect(own).toBeGreaterThan(tokens);
   await expect(frame).toHaveAttribute("sandbox", "allow-scripts");
+});
+
+test("a visual reply can be saved, shown as source, or allowed onto the network", async ({ page }) => {
+  await page.goto("/tests/browser/wp130-visual-replies.html");
+  const box = page.locator("[data-themed-reply]");
+  const frame = box.locator("iframe");
+  await expect(frame).toHaveAttribute("srcdoc", /connect-src 'none'/);
+
+  await box.getByRole("button", { name: "Allow network" }).click();
+  await expect(box.getByRole("button", { name: "Allow network" })).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
+  await expect(frame).not.toHaveAttribute("srcdoc", /connect-src 'none'/);
+  const open = (await frame.getAttribute("srcdoc")) ?? "";
+  expect(open).toContain("connect-src https:");
+  expect(open).not.toMatch(/script-src[^;]*https:/);
+  expect(open).toContain("frame-src 'none'");
+
+  await box.getByRole("button", { name: "Allow network" }).click();
+  await expect(box.getByRole("button", { name: "Allow network" })).toHaveAttribute(
+    "aria-pressed",
+    "false",
+  );
+  await expect(frame).toHaveAttribute("srcdoc", /connect-src 'none'/);
+
+  await box.getByRole("button", { name: "Show source" }).click();
+  await expect(box.locator("iframe")).toHaveCount(0);
+  await expect(box.locator("pre")).toHaveText('<p id="themed">chart</p>');
+
+  await box.getByRole("button", { name: "Show visual" }).click();
+  await expect(box.locator("iframe")).toHaveCount(1);
+  await expect(box.locator("iframe")).toHaveAttribute("sandbox", "allow-scripts");
+
+  const [download] = await Promise.all([
+    page.waitForEvent("download"),
+    box.getByRole("button", { name: "Save as file" }).click(),
+  ]);
+  expect(download.suggestedFilename()).toBe("visual-reply.html");
+  const savedPath = await download.path();
+  expect(savedPath).toBeTruthy();
+  expect(await readFile(savedPath!, "utf8")).toBe('<p id="themed">chart</p>');
+  await expect(page).toHaveTitle("Hivra visual");
+  expect(page.url()).not.toContain("blob:");
 });
