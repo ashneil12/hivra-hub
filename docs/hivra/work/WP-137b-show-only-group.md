@@ -40,10 +40,10 @@ The chat list, chat folders, Being built, the split tree, and extra windows are 
 
 ## Done when
 
-- [ ] The setting is off by default, and a bad stored value stays off.
-- [ ] With the setting off, the rail projects and their order match the unfiltered rail.
-- [ ] With the setting on, "Show only this group" hides other projects and "Show every project" restores the same order.
-- [ ] A missing group shows the plain sentence and the full rail. An empty group stays empty.
-- [ ] Two windows can filter different groups, and neither writes the rail order.
-- [ ] A browser spec covers the above on Chromium and WebKit.
-- [ ] No em dashes or en dashes in text a person sees.
+- [x] The setting is off by default, and a bad stored value stays off.
+- [x] With the setting off, the rail projects and their order match the unfiltered rail.
+- [x] With the setting on, "Show only this group" hides other projects and "Show every project" restores the same order.
+- [x] A missing group shows the plain sentence and the full rail. An empty group stays empty.
+- [x] Two windows can filter different groups, and neither writes the rail order.
+- [x] A browser spec covers the above on Chromium and WebKit.
+- [x] No em dashes or en dashes in text a person sees.
