@@ -5,8 +5,10 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 use std::time::Duration;
 
+use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
@@ -106,6 +108,151 @@ fn post_chat(url: &str, token: &str, body: &str, deadline: Duration) -> PostResu
 /// Shorter than that, a substring check hits ordinary words ("model", "max_tokens") and refuses a good ask.
 fn holds_token(token: &str, text: &str) -> bool {
     token.len() >= 8 && text.contains(token)
+}
+
+/// A name that holds a secret: pass, password, pwd, secret, token, api key and the like, in snake,
+/// kebab, dotted, camel or upper case. Whole words only, so `bypass` and `compass` are not names.
+/// `tokens` is left out on purpose: `max_tokens` is a count.
+fn secret_name(name: &str) -> (bool, bool) {
+    let mut words: Vec<String> = Vec::new();
+    let mut current = String::new();
+    let mut after_lower = false;
+    for c in name.chars() {
+        if matches!(c, '_' | '-' | '.') {
+            words.push(std::mem::take(&mut current));
+            after_lower = false;
+            continue;
+        }
+        if c.is_ascii_uppercase() && after_lower {
+            words.push(std::mem::take(&mut current));
+        }
+        current.push(c.to_ascii_lowercase());
+        after_lower = c.is_ascii_lowercase() || c.is_ascii_digit();
+    }
+    words.push(current);
+    let ends = |word: &str, tails: &[&str]| tails.iter().any(|tail| word.ends_with(tail));
+    let password = words.iter().any(|word| {
+        matches!(word.as_str(), "pass" | "pwd" | "passphrase")
+            || ends(word, &["password", "passwd"])
+    });
+    let other = words.iter().any(|word| {
+        ends(
+            word,
+            &[
+                "secret",
+                "secrets",
+                "token",
+                "apikey",
+                "credential",
+                "credentials",
+            ],
+        )
+    }) || words.windows(2).any(|pair| {
+        matches!(
+            (pair[0].as_str(), pair[1].as_str()),
+            (
+                "api" | "access" | "private" | "secret" | "auth" | "signing",
+                "key"
+            ) | ("client", "secret")
+        )
+    });
+    (password || other, password)
+}
+
+/// Words that follow a secret-looking name without being a secret: a type, a flag or an empty value.
+fn plain_word(value: &str) -> bool {
+    matches!(
+        value.to_ascii_lowercase().as_str(),
+        "true"
+            | "false"
+            | "null"
+            | "none"
+            | "nil"
+            | "undefined"
+            | "string"
+            | "str"
+            | "number"
+            | "int"
+            | "integer"
+            | "bool"
+            | "boolean"
+            | "any"
+            | "unknown"
+            | "object"
+            | "void"
+            | "required"
+            | "optional"
+            | "empty"
+            // Passing a variable along, or a placeholder: `token: secret`, `password=password`.
+            | "pass"
+            | "pwd"
+            | "password"
+            | "passwd"
+            | "secret"
+            | "token"
+            | "key"
+            | "apikey"
+    )
+}
+
+/// A value written after a secret-looking name: a letter, digit or anything else, 4 or more
+/// characters, that is not an expression, a reference or a type. This path only. The shared scrubber
+/// wants a digit and 16 characters, and it must not change for the other places that use it.
+fn assigned_secret(line: &str) -> bool {
+    static ASSIGN: OnceLock<Regex> = OnceLock::new();
+    static CHAIN: OnceLock<Regex> = OnceLock::new();
+    let assign = ASSIGN.get_or_init(|| {
+        Regex::new(
+            r#"([A-Za-z_][A-Za-z0-9_.-]*)["']?\s*(?:=>|:=|[:=])\s*(?:"([^"\n]*)"|'([^'\n]*)'|([^\s"'`,;&]+))"#,
+        )
+        .expect("the assignment pattern compiles")
+    });
+    let chain = CHAIN.get_or_init(|| {
+        Regex::new(r"^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)+$")
+            .expect("the reference pattern compiles")
+    });
+    assign.captures_iter(line).any(|caps| {
+        let (named, password) = secret_name(&caps[1]);
+        let Some(value) = caps.get(2).or(caps.get(3)).or(caps.get(4)) else {
+            return false;
+        };
+        let value = value.as_str();
+        // A quoted string can hold more assignments, as in a link's query: `url = "https://x/?token=..."`.
+        if value.len() < line.len() && value.contains(['=', ':']) && assigned_secret(value) {
+            return true;
+        }
+        // A bare value with more code after it is the start of an expression: `token = match f(x) {`.
+        let quoted = caps.get(2).is_some() || caps.get(3).is_some();
+        let rest = caps.get(0).map_or("", |all| line[all.end()..].trim_start());
+        let more_code = !quoted
+            && !rest.is_empty()
+            && !rest.starts_with(['#', '/', ';', ',', '}', ')', ']', '&', '"', '\'', '`']);
+        let expression = more_code
+            || value.contains(['(', ')', '{', '}', '[', ']', '<', '>', '$', '|', '\\'])
+            || value.starts_with('=');
+        named
+            && value.chars().count() >= 4
+            && !expression
+            && !plain_word(value)
+            && !chain.is_match(value)
+            // A number is a secret only after a password name. `token_ttl = 3600` is not one.
+            && (password || value.chars().any(|c| c.is_ascii_alphabetic()))
+    })
+}
+
+/// A secret in the prompt. Commit and pull request asks carry a patch, where a line starts with + or -,
+/// and the shared scrubber does not see a name that follows that character. So each line is checked again
+/// with one leading + or - removed, and a value after a secret-looking name counts without a digit.
+/// One hit refuses the whole ask.
+fn prompt_has_secret(prompt: &str) -> bool {
+    let scrubber = crate::portable::scrubber();
+    if scrubber.has_secret(prompt) {
+        return true;
+    }
+    prompt.lines().any(|line| {
+        let body = line.strip_prefix(['+', '-']).unwrap_or(line);
+        scrubber.has_secret(body) || assigned_secret(body)
+    })
 }
 
 /// A base address after parsing: lowercase host, no trailing dot, no userinfo, no query or fragment,
@@ -504,7 +651,7 @@ pub fn text_complete(
     if prompt.trim().is_empty() {
         return refused("There was nothing to send.");
     }
-    if crate::portable::scrubber().has_secret(prompt) {
+    if prompt_has_secret(prompt) {
         return refused("That text contained a secret, so it was not sent.");
     }
     if prompt.chars().count() > PROMPT_LIMIT {
@@ -794,6 +941,95 @@ mod tests {
         assert!(called);
         assert!(edge.ok);
         assert_eq!(edge.text, "ok");
+    }
+
+    /// A commit or pull request ask carries a patch.
+    fn patch(lines: &[&str]) -> String {
+        let mut out = String::from(
+            "Write a commit message.\n\ndiff --git a/app/config b/app/config\n--- a/app/config\n+++ b/app/config\n@@ -1,3 +1,4 @@\n",
+        );
+        for line in lines {
+            out.push_str(line);
+            out.push('\n');
+        }
+        out
+    }
+
+    fn sent(prompt: &str) -> bool {
+        let mut called = false;
+        let outcome = ask(&xai(), prompt, Some("test-key1234"), |_, _, _| {
+            called = true;
+            PostResult::Answer("A title".into())
+        });
+        if !called {
+            assert_eq!(outcome.kind, "refused", "{prompt}");
+            assert!(outcome.text.is_empty());
+            assert!(outcome.reason.contains("secret"), "{}", outcome.reason);
+        }
+        called
+    }
+
+    #[test]
+    fn a_secret_on_an_added_or_removed_diff_line_refuses_the_whole_ask() {
+        for line in [
+            "+DB_PASSWORD=correcthorsebatterystaple",
+            "+SMTP_PASS=hunter",
+            "-DB_PASSWORD=correcthorsebatterystaple",
+            " DB_PASSWORD=correcthorsebatterystaple",
+            "+export SMTP_PASS=hunter",
+            "+  \"password\": \"hunter\"",
+            "+  dbPassword: 'hunter'",
+            "+smtp.pass = \"hunter\"",
+            "+API_KEY=abcdefghij",
+            "+client_secret: \"correct horse battery\"",
+            "+url = \"https://api.example/v1?token=abcdefgh&x=1\"",
+            "+  'password' => 'hunter',",
+            "+DB_PASSWORD=12345678",
+            "+AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMIK7MDENGbPxRfiCYEXAMPLEKEY",
+        ] {
+            assert!(
+                !sent(&patch(&["+let ok = 1;", line, "+let more = 2;"])),
+                "{line}"
+            );
+        }
+        // The same line outside a patch is refused too.
+        assert!(!sent("SMTP_PASS=hunter"));
+        assert!(!sent("my notes\nDB_PASSWORD=correcthorsebatterystaple"));
+    }
+
+    #[test]
+    fn a_clean_diff_still_sends() {
+        // The shared scrubber already refuses a long value after `password:` or `token:` (for example
+        // `password: Option<String>`), so lines like that are not here. These are the ones this path must not
+        // start refusing: names that only look like secrets, and values that are not literals.
+        let clean = patch(&[
+            "-const limit = 10;",
+            "+const limit = 20;",
+            "+max_tokens: 1024",
+            "+  password: string;",
+            "+let token = next();",
+            "+if token == expected {",
+            "+let bypass = true;",
+            "+    passed: 12,",
+            "+let secret = \"\";",
+            "+login(user, password=None)",
+            "+token_limit = 100",
+            "+password: {{ db_password }}",
+            "+let key = \"abc\";",
+            "+let compass = north;",
+            "+--- a note about a dashed line",
+        ]);
+        assert!(sent(&clean));
+        assert!(sent("Write a title for: add a retry to the upload"));
+    }
+
+    #[test]
+    fn a_secret_in_a_header_or_a_comment_line_is_still_refused() {
+        // A known token shape is found on a diff line, with the leading character removed or not.
+        let token = "ghp_abcdefghijklmnopqrstuvwxyz0123456789";
+        assert!(!sent(&patch(&[&format!("+{token}")])));
+        assert!(!sent(&patch(&[&format!("-{token}")])));
+        assert!(!sent(&patch(&[&format!("+// {token}")])));
     }
 
     #[test]

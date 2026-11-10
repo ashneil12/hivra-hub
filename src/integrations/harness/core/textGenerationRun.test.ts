@@ -309,6 +309,24 @@ it("does not send a patch that contains a secret to the text model", async () =>
   expect(loadTextGeneration()).toEqual(setting);
 });
 
+it("falls back to the coding agent when the command refuses a patch with a plain assigned secret", async () => {
+  // Rust is the one place that scans each diff line (text_generation.rs). Its refusal reaches the
+  // generators as a refused error: the coding agent runs and the saved setting stays.
+  for (const line of ["+DB_PASSWORD=correcthorsebatterystaple", "+SMTP_PASS=hunter"]) {
+    armModel();
+    harnessCommit.mockClear();
+    staged.mockResolvedValueOnce({ branch: "feature", summary: "app.env", patch: `@@ -1 +1,2 @@\n+PORT=3000\n${line}` });
+    const { calls } = portReturning(async () => {
+      throw new TextGenerationError("That text contained a secret, so it was not sent.", "refused");
+    });
+    expect(await generateCommitMessage("/repo", "claude")).toBe("from the coding agent");
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.prompt).toContain(line);
+    expect(harnessCommit).toHaveBeenCalledOnce();
+    expect(loadTextGeneration()).toEqual(setting);
+  }
+});
+
 it("falls back when the title model fails, including a local model with no saved key", async () => {
   saveTextGeneration({ provider: "ollama", model: "llama3.2", baseUrl: defaultBaseUrl("ollama") });
   const { calls } = portReturning(async () => {
