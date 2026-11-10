@@ -26,7 +26,7 @@ const chat = (id: string, title: string): SessionSummary =>
 async function show(list: () => Promise<SessionSummary[]>, extra: Partial<Parameters<typeof NeedsFolderSection>[0]> = {}) {
   const onSelect = vi.fn();
   await act(async () => {
-    root.render(createElement(NeedsFolderSection, { onSelect, list, ...extra }));
+    root.render(createElement(NeedsFolderSection, { onSelect, list, offers: async () => [], ...extra }));
   });
   return onSelect;
 }
@@ -61,4 +61,29 @@ it("drops a chat the window just gave a folder, and reads again after an import"
   });
   expect(list.mock.calls.length).toBeGreaterThan(before);
   expect(host.querySelector("[data-needs-folder-chat=c]")).not.toBeNull();
+});
+
+it("offers one Relink all per project, gives the chats their folders and sets the open ones", async () => {
+  const rows = [chat("a", "Claude · One"), chat("b", "Claude · Two"), chat("c", "Claude · Three")];
+  const offers = vi.fn(async () => [
+    { sessionId: "a", folder: "/Users/me/code/app/src", group: "/Users/me/code/app" },
+    { sessionId: "b", folder: "/Users/me/code/app", group: "/Users/me/code/app" },
+    { sessionId: "c", folder: "/Users/me/monos/lead", group: "/Users/me/monos/lead" },
+  ]);
+  const apply = vi.fn(async (ids: string[]) => offers().then((all) => all.filter((r) => ids.includes(r.sessionId))));
+  const onRelinked = vi.fn();
+  await show(async () => rows, { offers, apply, onRelinked });
+  const buttons = [...host.querySelectorAll("[data-relink-all]")] as HTMLButtonElement[];
+  expect(buttons.map((b) => b.textContent)).toEqual(["Relink all 2 to app", "Relink all 1 to lead"]);
+  await act(async () => {
+    buttons[0].click();
+  });
+  expect(apply).toHaveBeenCalledWith(["a", "b"]);
+  expect(onRelinked.mock.calls).toEqual([["a", "/Users/me/code/app/src"], ["b", "/Users/me/code/app"]]);
+});
+
+it("offers nothing to relink when Rust has no candidates", async () => {
+  await show(async () => [chat("a", "Claude · One")], { offers: async () => [] });
+  expect(host.querySelector("[data-relink-all]")).toBeNull();
+  expect(host.querySelector("[data-needs-folder-chat=a]")).not.toBeNull();
 });

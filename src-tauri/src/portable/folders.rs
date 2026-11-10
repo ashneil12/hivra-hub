@@ -76,13 +76,17 @@ pub(super) struct FolderRules {
     home: Option<PathBuf>,
     /// Project folders, resolved, each passing `Guard::allowed`.
     projects: Vec<PathBuf>,
-    /// The Monos' own folders that existed before the import wrote anything: `<monos home>/<id>` and
-    /// `<app data>/mono-teams/<id>`. A chat in one of these is a Mono's chat.
+    /// The folders of the Monos the app knows (seated here): `<monos home>/<id>` and `<app data>/mono-teams/<id>`, the
+    /// ones that exist. A chat in one of these is that Mono's chat. Never built from what is on disk: a folder a file
+    /// made (`monos/evil`) is no Mono's.
     mono_folders: Vec<PathBuf>,
     monos_home: PathBuf,
     teams_home: PathBuf,
-    /// Folders this import wrote into (the memory it restored): no chat may keep one.
+    /// Files this import wrote (the memory it restored). A chat can't keep a folder where one that a CLI reads as
+    /// instructions (CLAUDE.md, AGENTS.md, a settings file, anything in a hidden folder) now sits, in it or above it.
     written: Vec<PathBuf>,
+    /// This Mac's folder for each project the file names, by project id: `(the file's folder, this Mac's folder)`.
+    folder_map: Vec<(String, String)>,
     /// Per project: the linked working copies git lists for it (never the main one), when git agrees the project is the
     /// top of its own repository. Read when a chat names a worktree.
     worktrees: OnceCell<Vec<(PathBuf, Vec<PathBuf>)>>,
@@ -97,9 +101,45 @@ pub(super) struct Folders {
     pub roots: Vec<PathBuf>,
     /// The file named a folder and it didn't stay.
     pub cleared: bool,
-    /// What the file named, kept only as an inert note for a re-link offer (nothing runs from it).
+    /// What the file named (mapped to this Mac's own folder by project or Mono id when it can be), kept only as an
+    /// inert note for a re-link offer: nothing runs from it.
     pub named_cwd: Option<String>,
     pub named_worktree: Option<String>,
+    /// The named folder has something this import wrote that a CLI would read as instructions: never offered back.
+    pub named_blocked: bool,
+    /// The project (or Mono) folder the kept folder sits in: what "Relink all" groups by.
+    pub group: Option<String>,
+}
+
+/// Files a CLI reads as instructions or settings from the folder it starts in and the folders above it.
+pub(super) fn instruction_file(name: &str) -> bool {
+    matches!(
+        name.to_ascii_lowercase().as_str(),
+        "claude.md"
+            | "claude.local.md"
+            | "agents.md"
+            | "gemini.md"
+            | "settings.json"
+            | "settings.local.json"
+            | "mcp.json"
+            | ".mcp.json"
+    )
+}
+
+/// A file a Mono's folder may be given by an import: a note (`.md`), never an instruction file, never in a hidden
+/// folder.
+pub(super) fn mono_note_file(relative: &Path) -> bool {
+    let notes = relative
+        .extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("md"));
+    let plain_names = relative.components().all(|part| match part {
+        Component::Normal(name) => {
+            let name = name.to_string_lossy();
+            !name.starts_with('.') && !instruction_file(&name)
+        }
+        _ => false,
+    });
+    notes && plain_names
 }
 
 fn plain_id(name: &str) -> bool {
@@ -110,21 +150,16 @@ fn plain_id(name: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
 }
 
-fn child_dirs(root: &Path) -> Vec<PathBuf> {
-    let Ok(entries) = std::fs::read_dir(root) else {
-        return Vec::new();
-    };
-    entries
-        .flatten()
-        .filter(|entry| plain_id(&entry.file_name().to_string_lossy()))
-        .filter_map(|entry| resolve(&entry.path(), None))
-        .collect()
-}
-
 impl FolderRules {
     /// `record` and `extra` are folders that vouch for chats: the app's own project record (read by the caller) and the
     /// folders the window lists as projects (the rail's). Each must pass the same test as a chat's folder.
-    pub(super) fn load(env: &Env, record: &[String], extra: &[String]) -> Self {
+    pub(super) fn load(
+        env: &Env,
+        record: &[String],
+        extra: &[String],
+        known_monos: &[String],
+        folder_map: &[(String, String)],
+    ) -> Self {
         let guard = Guard::new(env);
         let mut projects: Vec<PathBuf> = Vec::new();
         for folder in record.iter().chain(extra) {
@@ -138,9 +173,11 @@ impl FolderRules {
         let monos_home = resolve(&env.monos_root, None).unwrap_or_else(|| env.monos_root.clone());
         let teams_home = reach(&env.data_dir.join("mono-teams"))
             .unwrap_or_else(|| env.data_dir.join("mono-teams"));
-        let mono_folders = child_dirs(&monos_home)
-            .into_iter()
-            .chain(child_dirs(&teams_home))
+        let mono_folders = known_monos
+            .iter()
+            .filter(|id| plain_id(id))
+            .flat_map(|id| [monos_home.join(id), teams_home.join(id)])
+            .filter_map(|dir| resolve(&dir, None))
             .collect();
         Self {
             home: guard.home.clone(),
@@ -150,24 +187,72 @@ impl FolderRules {
             monos_home,
             teams_home,
             written: Vec::new(),
+            folder_map: folder_map.to_vec(),
             worktrees: OnceCell::new(),
         }
     }
 
-    /// Folders the import wrote into so far (memory files, a restored history).
-    pub(super) fn note_written(&mut self, dirs: &[PathBuf]) {
+    /// Files the import wrote so far (memory files, a restored history).
+    pub(super) fn note_written(&mut self, files: &[PathBuf]) {
         self.written
-            .extend(dirs.iter().filter_map(|dir| reach(dir)));
+            .extend(files.iter().filter_map(|file| reach(file)));
     }
 
     fn resolve(&self, raw: &str) -> Option<PathBuf> {
         resolve(Path::new(raw), self.home.as_deref())
     }
 
-    fn written_to(&self, dir: &Path) -> bool {
-        self.written
+    /// An instruction file this import wrote sits in this folder or above it (so a CLI started here would read it).
+    /// Notes written beside it, and folders that merely hold a written file further down, don't count.
+    fn reads_written_instructions(&self, dir: &Path) -> bool {
+        self.written.iter().any(|file| {
+            let Some(parent) = file.parent() else {
+                return false;
+            };
+            let name = file
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            let hidden_parent = parent
+                .file_name()
+                .is_some_and(|name| name.to_string_lossy().starts_with('.'));
+            // `.claude/settings.json` is read from the folder that holds `.claude`.
+            let holder = if hidden_parent {
+                parent.parent()
+            } else if instruction_file(&name) {
+                Some(parent)
+            } else {
+                None
+            };
+            holder.is_some_and(|holder| dir.starts_with(holder))
+        })
+    }
+
+    /// This Mac's folder for the project a file's folder belongs to, by project id (the window passes each pair).
+    fn remap_project(&self, raw: &str) -> Option<String> {
+        let raw = Path::new(raw.trim());
+        self.folder_map
             .iter()
-            .any(|written| dir.starts_with(written) || written.starts_with(dir))
+            .filter(|(from, to)| {
+                !from.trim().is_empty() && Path::new(from).is_absolute() && !to.trim().is_empty()
+            })
+            .filter_map(|(from, to)| {
+                let rest = raw.strip_prefix(Path::new(from)).ok()?;
+                Some((
+                    Path::new(from).components().count(),
+                    PathBuf::from(to).join(rest),
+                ))
+            })
+            .max_by_key(|(depth, _)| *depth)
+            .map(|(_, mapped)| mapped.to_string_lossy().into_owned())
+    }
+
+    /// What this Mac makes of a folder a file named: its Mono's or its project's own folder for that id, else as written.
+    fn mapped(&self, raw: &str) -> String {
+        self.remap_mono(raw)
+            .map(|dir| dir.to_string_lossy().into_owned())
+            .or_else(|| self.remap_project(raw))
+            .unwrap_or_else(|| raw.to_string())
     }
 
     /// The Mono folder this one is: `<monos home>/<id>` or `<app data>/mono-teams/<id>`, one that was already here.
@@ -200,12 +285,13 @@ impl FolderRules {
 
     /// The folder stays when it is a real folder that passes the allow-list and sits inside a known project, or is a
     /// Mono's own folder from before the import. Returns it as this Mac resolves it, and the project that holds it.
-    fn judge(&self, raw: &str) -> Option<(PathBuf, Option<PathBuf>)> {
+    fn judge(&self, raw: &str) -> Option<(PathBuf, Option<PathBuf>, PathBuf)> {
         if let Some(dir) = self.remap_mono(raw) {
-            return (!self.written_to(&dir)).then_some((dir, None));
+            return (!self.reads_written_instructions(&dir)).then(|| (dir.clone(), None, dir));
         }
-        let dir = self.resolve(raw)?;
-        if self.written_to(&dir) {
+        let mapped = self.remap_project(raw);
+        let dir = self.resolve(mapped.as_deref().unwrap_or(raw))?;
+        if self.reads_written_instructions(&dir) {
             return None;
         }
         if let Some(mono) = self.mono_folder_of(&dir) {
@@ -213,7 +299,7 @@ impl FolderRules {
             let hidden = dir.strip_prefix(mono).ok()?.components().any(|part| {
                 matches!(part, Component::Normal(name) if name.to_string_lossy().starts_with('.'))
             });
-            return (!hidden).then_some((dir, None));
+            return (!hidden).then(|| (dir.clone(), None, mono.clone()));
         }
         self.guard.allowed(&dir).ok()?;
         let project = self
@@ -221,7 +307,7 @@ impl FolderRules {
             .iter()
             .filter(|project| dir.starts_with(project))
             .max_by_key(|project| project.components().count())?;
-        Some((dir.clone(), Some(project.clone())))
+        Some((dir.clone(), Some(project.clone()), project.clone()))
     }
 
     /// A linked working copy git lists for this project. The main entry is skipped (it is the project's own folder, or
@@ -266,7 +352,7 @@ impl FolderRules {
     fn keeps_worktree(&self, raw: &str, project: &Path) -> Option<PathBuf> {
         let dir = self.resolve(raw)?;
         self.guard.allowed(&dir).ok()?;
-        if self.written_to(&dir) {
+        if self.reads_written_instructions(&dir) {
             return None;
         }
         let ok = dir.starts_with(project)
@@ -289,10 +375,12 @@ impl FolderRules {
             worktree: None,
             roots: Vec::new(),
             cleared,
-            named_cwd: cwd.map(str::to_string),
+            named_cwd: cwd.map(|raw| self.mapped(raw)),
             named_worktree: worktree.map(str::to_string),
+            named_blocked: cwd.is_some_and(|raw| self.names_written_instructions(raw)),
+            group: None,
         };
-        let Some((kept, project)) = cwd.and_then(|raw| self.judge(raw)) else {
+        let Some((kept, project, group)) = cwd.and_then(|raw| self.judge(raw)) else {
             return none(cwd.is_some() || worktree.is_some());
         };
         let mut roots = vec![kept.clone()];
@@ -312,9 +400,19 @@ impl FolderRules {
             worktree: kept_worktree,
             roots,
             cleared,
-            named_cwd: cleared.then(|| cwd.map(str::to_string)).flatten(),
+            named_cwd: cleared.then(|| cwd.map(|raw| self.mapped(raw))).flatten(),
             named_worktree: cleared.then(|| worktree.map(str::to_string)).flatten(),
+            named_blocked: false,
+            group: Some(group.to_string_lossy().into_owned()),
         }
+    }
+
+    /// The folder a file named is one where this import wrote something a CLI would read as instructions.
+    fn names_written_instructions(&self, raw: &str) -> bool {
+        let target = self.mapped(raw);
+        let expanded = expand(Path::new(&target), self.home.as_deref());
+        expanded.is_absolute()
+            && reach(&expanded).is_some_and(|dir| self.reads_written_instructions(&dir))
     }
 
     /// An automation's folder and worktree, written back into its definition. True when one was cleared.
@@ -341,21 +439,48 @@ impl FolderRules {
         kept.cleared
     }
 
-    /// The paths a chat's tool rows (and approvals, side threads and agent steps) name must stay inside the chat's own
-    /// folders: they feed the checkpoint calls (`sessionEditPaths`), and a path from a file is no one's choice. Every
-    /// `paths` list and every `preview.path` anywhere in the blocks is confined, whatever its depth; a `paths` that
-    /// isn't a list is dropped. Returns how many paths were dropped.
+    /// The paths a chat's tool rows and approvals name must stay inside the chat's own folders: they feed the checkpoint
+    /// calls (`sessionEditPaths`), and a path from a file is no one's choice. Only tool blocks are touched (a block's
+    /// `tool`, and an approval's `call`), wherever the block sits (side threads included); inside them every `paths` list
+    /// and `preview.path` is confined whatever its depth (agent steps), and a `paths` that isn't a list is dropped. Any
+    /// other `paths` key is not ours to touch. Returns how many paths were dropped.
     pub(super) fn confine_tool_paths(&self, blocks: &mut Value, roots: &[PathBuf]) -> usize {
         let mut dropped = 0;
-        self.confine_walk(blocks, roots, &mut dropped);
+        self.confine_blocks(blocks, roots, &mut dropped);
         dropped
     }
 
-    fn confine_walk(&self, value: &mut Value, roots: &[PathBuf], dropped: &mut usize) {
+    fn confine_blocks(&self, value: &mut Value, roots: &[PathBuf], dropped: &mut usize) {
         match value {
             Value::Array(items) => items
                 .iter_mut()
-                .for_each(|item| self.confine_walk(item, roots, dropped)),
+                .for_each(|item| self.confine_blocks(item, roots, dropped)),
+            Value::Object(map) => {
+                if let Some(tool) = map.get_mut("tool") {
+                    self.confine_within(tool, roots, dropped);
+                }
+                if let Some(call) = map
+                    .get_mut("approval")
+                    .and_then(|approval| approval.get_mut("call"))
+                {
+                    self.confine_within(call, roots, dropped);
+                }
+                for (key, item) in map.iter_mut() {
+                    if key != "tool" && key != "approval" {
+                        self.confine_blocks(item, roots, dropped);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Inside a tool or an approval's call: every `paths` and `preview.path`, at any depth.
+    fn confine_within(&self, value: &mut Value, roots: &[PathBuf], dropped: &mut usize) {
+        match value {
+            Value::Array(items) => items
+                .iter_mut()
+                .for_each(|item| self.confine_within(item, roots, dropped)),
             Value::Object(map) => {
                 match map.get_mut("paths") {
                     Some(Value::Array(paths)) => {
@@ -384,7 +509,7 @@ impl FolderRules {
                     }
                 }
                 map.values_mut()
-                    .for_each(|item| self.confine_walk(item, roots, dropped));
+                    .for_each(|item| self.confine_within(item, roots, dropped));
             }
             _ => {}
         }

@@ -54,6 +54,8 @@ function dailyFixture(root, { schema = 19 } = {}) {
     INSERT INTO workspace_snapshot VALUES (1, '{"tabs":["s1"]}', 5);
     CREATE TABLE worktree_removals (path TEXT PRIMARY KEY, sessions_json TEXT NOT NULL);
     INSERT INTO worktree_removals VALUES ('/Users/ash/Worktrees/real', '[]');
+    CREATE TABLE imported_chat_folders (session_id TEXT PRIMARY KEY, cwd TEXT NOT NULL, worktree_cwd TEXT, blocked INTEGER NOT NULL DEFAULT 0);
+    INSERT INTO imported_chat_folders VALUES ('s1', '/Users/old/Projects/app', NULL, 0);
     CREATE TABLE automations (id TEXT PRIMARY KEY, definition_json TEXT NOT NULL, enabled INTEGER NOT NULL, next_run_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);
     INSERT INTO automations VALUES ('auto-1', '{}', 1, 9, 9);
     CREATE TABLE automation_runs (id TEXT PRIMARY KEY, automation_id TEXT NOT NULL REFERENCES automations(id) ON DELETE CASCADE, created_at INTEGER NOT NULL, run_json TEXT NOT NULL);
@@ -131,6 +133,7 @@ test("a seed copies every chat, clears what would act on Ash's behalf, and never
     inFlightTurns: 1,
     workspaceSnapshot: 1,
     worktreeRemovals: 1,
+    importedChatFolders: 1,
     automationRuns: 2,
     automationEventClaims: 1,
     automations: 1,
@@ -160,7 +163,7 @@ test("a seed copies every chat, clears what would act on Ash's behalf, and never
     { id: "s2", title: "Chat two", blocks_json: '[{"role":"user","text":"yo"}]', provider_session_id: null, queued_messages_json: "[]", queue_status: null },
     { id: "s3", title: "Chat three", blocks_json: "[]", provider_session_id: null, queued_messages_json: "[]", queue_status: null },
   ]);
-  for (const table of ["in_flight_sessions", "workspace_snapshot", "worktree_removals", "automations", "automation_runs", "automation_event_claims", "session_reminders", "orchestration_runs", "orchestration_sidebar", "orchestration_workers", "delegations", "delegation_chat_binds", "steer_messages", "decisions", "autopilot_switches", "autopilot_resumes", "pr_watches", "pr_watch_wakes"])
+  for (const table of ["in_flight_sessions", "workspace_snapshot", "worktree_removals", "imported_chat_folders", "automations", "automation_runs", "automation_event_claims", "session_reminders", "orchestration_runs", "orchestration_sidebar", "orchestration_workers", "delegations", "delegation_chat_binds", "steer_messages", "decisions", "autopilot_switches", "autopilot_resumes", "pr_watches", "pr_watch_wakes"])
     assert.deepEqual(rows(copy, `SELECT count(*) AS n FROM ${table}`), [{ n: 0 }], table);
   assert.deepEqual(
     rows(copy, "SELECT key FROM hub_local_docs ORDER BY key"),

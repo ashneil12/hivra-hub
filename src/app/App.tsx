@@ -17742,6 +17742,7 @@ function Workspace({
       status={historyFailed ? "error" : "idle"}
       pending={historyPending}
       onSelectSession={onSelectSessionFromList}
+      onSetSessionFolder={onCwdChange}
       onSelectRemoteSession={onSelectRemoteSession}
       onRemoteSessionDeleted={onRemoteSessionDeleted}
       onPrefetchSession={onPrefetchHistorySession}

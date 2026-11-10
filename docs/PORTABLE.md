@@ -80,17 +80,27 @@ The archive is the same tree under one top folder. Nothing in it is a secret:
      `.claude`, `.git`), not in `~/Library`, not the memory root or the app's data folder or a folder holding either,
      and inside a project this copy has: the app's own record (`hub_local_docs`, key `projects`), the folders the
      project rail lists (the window passes them in `workspace.knownFolders`), each passing the same test, or the
-     folder of a Mono that was already here before the import wrote anything (`<monos home>/<id>`,
-     `<app data>/mono-teams/<id>`; a file's `…/mono-teams/<id>` or `…/monos/<id>` from another Mac is mapped to this
-     Mac's folder for that id when it was here). The rules are loaded before the memory is written, so a memory folder
-     named `monos` can't make `monos/evil` a Mono's folder, and a chat can't keep a folder this import wrote into.
+     folder of a Mono seated here (`<monos home>/<id>`, `<app data>/mono-teams/<id>`, for the ids the window passes in
+     `workspace.knownMonos`; never built from what is on disk, so a memory folder named `monos` can't make
+     `monos/evil` a Mono's). A folder from another Mac is mapped to this Mac's own by id before it is judged: a file's
+     `…/mono-teams/<id>` or `…/monos/<id>` to that Mono's folder, and a project's folder to this Mac's folder for the
+     same project id (`workspace.folderMap`, so another user name or home still finds its projects); the same
+     allow-list judges the result. The rules load after the memory is written, and a chat is not kept where this
+     import wrote a file a CLI reads as instructions (CLAUDE.md, AGENTS.md, a settings file, anything in a hidden
+     folder) in the folder or above it; a note beside it, or a folder that merely holds a written file further down,
+     takes nothing away. A Mono's folder only takes notes (`.md`, never an instruction or settings file, nothing
+     hidden) from an import, and a history restored for the Monos' home is pruned to notes.
      The folder is stored as this Mac resolves it. A worktree stays only when it is inside the chat's own project, or is
      a linked working copy `git worktree list` names for that project (never the main entry, and only when git says the
      project is the top of its own repository, so a parent repository can't vouch for a plain project inside it).
      Otherwise the folder is cleared and so is the chat's worktree: the chat opens with no folder, shows "Choose a
      project folder for this chat first." with a folder picker, and starts nothing until one is chosen. What the file
-     named is kept as an inert note (`imported_chat_folders`, nothing runs from it); the banner offers it back
-     (`portable_relink_candidate`) once it exists here and passes the same checks. The report counts those chats
+     named (mapped to this Mac's own folder where it can be) is kept as an inert note (`imported_chat_folders`, a
+     real migration, removed with the chat and when relinked; nothing runs from it); the banner offers it back
+     (`portable_relink_candidate`) once it exists here and passes the same checks, and the "Needs a folder" group
+     offers one "Relink all N" per project or Mono (`portable_relink_candidates`, `portable_relink_apply`). A note for a
+     folder the import wrote instructions into is marked blocked and never offered. A chat whose folder is in
+     `~/agent-memory`, a hidden folder or outside the home folder can't be relinked, and the report says so. The report counts those chats
      (`foldersCleared`) and the automations that lost a folder the same way (`automationFoldersCleared`, they also come
      back paused). A chat with no folder is listed in the sidebar's "Needs a folder" group
      (`session_list_folderless`, with or without a message) until it gets one.
@@ -106,10 +116,12 @@ The archive is the same tree under one top folder. Nothing in it is a secret:
    - **Monos' folders.** A Mono's project folders are this Mac's own project folders only (matched by project id), never
      a folder the file merely names. A Mono already seated here keeps its own project list unless its tick in the
      preview ("Add the projects the file lists") is set, and then it gains only those local folders. A Mono's team
-     folder is made before the chats come in.
+     folder for a seated Mono is made before the chats come in, and one for a Mono that is only coming in after the Mono step.
    - **How it runs.** An imported chat or automation comes in at `supervised` whatever its file says (`full-access`
-     maps to a provider's bypass-permissions mode). A delegation row stays only when both its chats came in with this
-     import, and it is always history.
+     maps to a provider's bypass-permissions mode), and the report says so. A delegation row stays only when both its
+     chats came in with this import, and it is always history. A provider conversation id is kept only for a Claude
+     chat that isn't private, that no other chat here holds, and whose transcript is in the Claude project folder of the
+     chat's own kept folder.
    - **Paths in tool rows.** Every `paths` list and `preview.path` in a chat's blocks (tool rows, approvals, side
      threads, agent steps, at any depth) feeds the checkpoint calls, so only paths inside the chat's kept folder (or
      worktree) stay, `..` and links resolved; the rest are dropped (`toolPathsDropped`), and a `paths` that isn't a list

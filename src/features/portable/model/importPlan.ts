@@ -389,6 +389,10 @@ export type RustImportRequest = {
     delegations: boolean;
     /** Folders the project rail lists: a chat or automation keeps its folder only inside one of these or a project the app has. */
     knownFolders: string[];
+    /** The Monos seated here: a chat keeps a Mono's own folder only for one of these. */
+    knownMonos: string[];
+    /** This Mac's folder for each project the file names, by project id: a folder from another user or home maps through it. */
+    folderMap: { from: string; to: string }[];
   };
 };
 
@@ -397,6 +401,8 @@ export type ImportDeps = {
   rustImport?: (request: RustImportRequest) => Promise<RustImportReport>;
   /** The folders this window knows as projects (the rail's), for the folder check Rust makes on chats and automations. */
   knownFolders?: () => string[];
+  /** The ids of the Monos seated here (the window's own list). */
+  knownMonos?: () => string[];
   /** Asks Rust which of these project folders can never be adopted (path to why). The app always passes it. */
   checkFolders?: (paths: string[]) => Promise<Record<string, string>>;
   /** Registers a new project with Ash OS; resolves false when Ash OS didn't take it (it then stays on this Mac's list). */
@@ -442,6 +448,16 @@ export function pausedHabits(text: string | undefined): string {
   });
   // Already paused: byte for byte as written.
   return changed ? `${JSON.stringify(paused, null, 2)}\n` : text;
+}
+
+/** This Mac's folder for each exported project that is a project here too (by id), so a chat's folder from another user or home still maps. */
+export function folderMapFor(exported: PortableProject[], here: Pick<Here, "projects">): { from: string; to: string }[] {
+  const pairs = new Map<string, string>();
+  for (const project of exported) {
+    const local = project.folder ? here.projects.find((p) => p.id === project.id && p.folder) : undefined;
+    if (project.folder && local?.folder) pairs.set(project.folder, local.folder);
+  }
+  return [...pairs].map(([from, to]) => ({ from, to }));
 }
 
 function soulFor(mono: PortableMono, folders: string[], withMemory: boolean): SetupSoul {
@@ -632,16 +648,18 @@ export async function applyImport(p: PendingImport, plan: Plan, choices: Choices
   const withoutFolder = newProjects.filter((x) => x.project.folder && !adopted.includes(x.project.folder)).length;
   if (withoutFolder) lines.push(`${plural(withoutFolder, "project")} came in without a code folder, so ${withoutFolder === 1 ? "its" : "their"} chats ask you to choose one.`);
 
-  // A Mono's own team folder is made before Rust, so the team's chats find it by its id (the file's path is another Mac's).
   const knownMonos = new Set([...here.monos.map((m) => m.id), ...choices.monos, ...here.waiting.map((s) => s.monoId)]);
-  let teamsSet = 0;
-  if (choices.settings !== "none") {
+  // A seated Mono's own team folder is made before Rust, so the team's chats find it by its id (the file's path is
+  // another Mac's). One for a Mono that is only coming in is made after the Mono step below, never for anyone else.
+  const seatedMonos = new Set(here.monos.map((m) => m.id));
+  const teamsWanted = (only: Set<string>): Promise<number> => {
+    if (choices.settings === "none") return Promise.resolve(0);
     const keys = choices.settings === "all" ? [...plan.settings.add, ...plan.settings.differ] : plan.settings.add;
     const value = doc.settings[MONO_TEAMS_KEY];
-    if (typeof value === "string" && isPortableSetting(MONO_TEAMS_KEY) && !settingLooksSecret(MONO_TEAMS_KEY, value)) {
-      teamsSet = await applyOwnedSetting(MONO_TEAMS_KEY, value, choices.settings === "all" && keys.includes(MONO_TEAMS_KEY), knownMonos, deps);
-    }
-  }
+    if (typeof value !== "string" || !isPortableSetting(MONO_TEAMS_KEY) || settingLooksSecret(MONO_TEAMS_KEY, value)) return Promise.resolve(0);
+    return applyOwnedSetting(MONO_TEAMS_KEY, value, choices.settings === "all" && keys.includes(MONO_TEAMS_KEY), only, deps);
+  };
+  let teamsSet = await teamsWanted(seatedMonos);
 
   // Then Rust: chats, notes, automations and memory files. Nothing below depends on it, but a failure stops here.
   let rust: RustImportReport | null = null;
@@ -663,6 +681,8 @@ export async function applyImport(p: PendingImport, plan: Plan, choices: Choices
               reminders: ws.reminders,
               delegations: ws.delegations,
               knownFolders: [...new Set([...(deps.knownFolders?.() ?? []), ...adopted])],
+              knownMonos: [...new Set([...(deps.knownMonos?.() ?? []), ...seatedMonos])],
+              folderMap: folderMapFor(doc.projects, deps.here ?? hereNow()),
             },
           }
         : {}),
@@ -693,7 +713,8 @@ export async function applyImport(p: PendingImport, plan: Plan, choices: Choices
     try {
       // A soul that is still only the one the app seeded here is no one's edit: the file's own soul takes its place
       // (a fresh install taking its team in from an export). Anything edited here stays unless ticked to replace.
-      const r = await mergeIntoSeated(soulFor(m.mono, monoFoldersNow(m.mono), withMemory), {
+      // Exactly the list the preview showed for its tick: this Mac's project folders it listed then.
+      const r = await mergeIntoSeated(soulFor(m.mono, m.folders, withMemory), {
         replace: choices.replaceSouls.has(m.mono.id),
         // Its own project list never grows from a file unless that was ticked.
         projects: choices.monoProjects.has(m.mono.id),
@@ -708,6 +729,8 @@ export async function applyImport(p: PendingImport, plan: Plan, choices: Choices
     }
   }
   if (merged) lines.push(`${plural(merged, "Mono")} already here got the files they didn't have.`);
+  // A team folder for a Mono that is only coming in, now that the Mono step is done.
+  teamsSet += await teamsWanted(new Set([...choices.monos].filter((id) => !seatedMonos.has(id))));
   // A fresh install whose team now carries the export's souls is no longer fresh: say so, so nothing reads it as one.
   if (knownTeamPack() === "plain" && [...soulsWritten].some((id) => { const mono = listMonos().find((x) => x.id === id); return !!mono && !!teamSpecOf(mono); })) {
     setTeamPack("imported");

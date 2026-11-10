@@ -365,6 +365,8 @@ type Props = {
   /** First listing for this project has not arrived yet. */
   pending: boolean;
   onSelectSession: (sessionId: string) => void;
+  /** A chat that had no folder was given one outside the window's own picker (Relink all): the open copy takes it too. */
+  onSetSessionFolder?: (sessionId: string, cwd: string) => void;
   onSelectRemoteSession?: (project: string, sessionId: string) => void;
   onRemoteSessionDeleted?: (sessionId: string) => void;
   onSessionNavigationOrder?: (ids: readonly string[]) => void;
@@ -544,6 +546,7 @@ function SidebarComponent({
   status,
   pending,
   onSelectSession: onSelectLocalSession,
+  onSetSessionFolder,
   onSelectRemoteSession,
   onRemoteSessionDeleted,
   onSessionNavigationOrder,
@@ -3018,6 +3021,7 @@ function SidebarComponent({
               onSelect={onSelectSession}
               activeSessionId={activeSessionId}
               openSessions={openSessions}
+              onRelinked={onSetSessionFolder}
             />
           ) : null}
           {!cwd || cwd === "~" ? (

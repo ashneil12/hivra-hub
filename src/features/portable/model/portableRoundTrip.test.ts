@@ -322,7 +322,7 @@ it("the ticks decide: no memory leaves the Monos' memory out, no workspace leave
   expect(rustImport).toHaveBeenCalledWith({
     path: "/tmp/export",
     memory: { projects: ["hivra"], keepBoth: false, history: true },
-    workspace: { sessions: ["s1"], sessionCopies: [], notes: [], noteCopies: [], automations: [], reminders: false, delegations: false, knownFolders: [] },
+    workspace: { sessions: ["s1"], sessionCopies: [], notes: [], noteCopies: [], automations: [], reminders: false, delegations: false, knownFolders: [], knownMonos: expect.any(Array), folderMap: expect.any(Array) },
   });
   expect(c.souls.waitingSouls().find((s) => s.monoId === "ada")!.memory).toBe("- private");
 });
@@ -473,6 +473,40 @@ it("a Mono's team folder is made before Rust brings the chats in", async () => {
     rustImport: async () => { calls.push("rust"); return report; },
   });
   expect(calls).toEqual(["team", "rust"]);
+});
+
+it("sends Rust the seated Monos, and pairs each exported project's folder with this Mac's own by project id", async () => {
+  const { rustRequests, b } = await restoreProjects(() => undefined, { knownMonos: () => ["ada"] });
+  expect(rustRequests[0].workspace).toMatchObject({ knownMonos: expect.arrayContaining(["ada"]) });
+  // Another user or home: the file's folder maps to this Mac's folder for the same project id; a project that isn't
+  // here (or has no folder here) maps nothing.
+  const exported = [{ ...PROJECTS[0], template: "product-saas" as const }, { ...PROJECTS[1], template: "product-saas" as const }];
+  const hereProjects = [{ ...PROJECTS[0], folder: "/Users/new/Projects/hivra" }, { ...PROJECTS[1], folder: null }];
+  expect(b.plan.folderMapFor(exported, { projects: hereProjects })).toEqual([{ from: PROJECTS[0].folder, to: "/Users/new/Projects/hivra" }]);
+});
+
+it("the Mono tick adds exactly the folders the preview listed, and a team folder waits for a Mono that is seated or ticked", async () => {
+  const a = await app();
+  await seed(a);
+  const files = a.doc.setupDocToFiles(a.doc.buildSetupDoc({ monoFiles: { "ada": { "SOUL.md": SOUL } }, workspace: false }));
+  localStorage.clear();
+  const b = await app();
+  b.mono.addMono({ id: "ada", name: "Ada", mascot: "robot", color: "x", projects: [] });
+  const parsed = b.doc.setupDocFromFiles(files);
+  parsed.settings = { ...parsed.settings, "monocode:mono-teams": JSON.stringify({ ada: { folder: "/o/ada", createdAt: 1 }, stranger: { folder: "/o/stranger", createdAt: 1 } }) };
+  const pending = { name: "x", path: null, doc: parsed, inspection: null, fromV1: false, folders: {}, skillsHere: {} };
+  const plan = b.plan.planImport(pending);
+  const shown = plan.monos.find((m) => m.mono.id === "ada")!.folders;
+  const made: string[] = [];
+  const disk = folders();
+  await b.plan.applyImport(pending, plan, { ...b.plan.defaultChoices(plan), monoProjects: new Set(["ada"]) }, {
+    agentFiles: { read: disk.read, write: disk.write },
+    makeTeamFolder: async () => { made.push("made"); return "/data/mono-teams/x"; },
+  });
+  // What the tick shows is what it adds.
+  expect(b.mono.findMono("ada")!.projects).toEqual(shown);
+  // The team folder is made for the seated Mono only; "stranger" is neither seated nor ticked.
+  expect(made).toHaveLength(1);
 });
 
 it("the souls a restore wrote (Rust's included) are handed over to be recorded as the app's own saves", async () => {

@@ -179,6 +179,7 @@ export function restore(p: PendingImport, plan: Plan, choices: Choices): Promise
     rustImport: (request: RustImportRequest) => invoke<RustImportReport>("portable_import", { request }),
     registerProject,
     knownFolders: railFolders,
+    knownMonos: () => listMonos().map((m) => m.id),
     checkFolders: projectFolderChecks,
     recordSouls: (ids) => recordRestoredSouls(ids),
   });

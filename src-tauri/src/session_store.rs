@@ -32,7 +32,7 @@ CREATE INDEX IF NOT EXISTS sessions_cwd_updated_idx
 /// The newest schema this build writes (`schema_migrations`). A database at a higher version was written by a newer
 /// build: it is refused, never opened or migrated, because this build would misread it (docs/PHASE-1B-DEV-SETUP.md).
 /// Raise it with every new numbered migration; `schema_version_matches_the_migrations` checks.
-pub const SCHEMA_VERSION: i64 = 20;
+pub const SCHEMA_VERSION: i64 = 21;
 
 /// A database newer than this build.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1588,6 +1588,22 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
             params![now_millis()],
         )?;
     }
+    if current < 21 {
+        // An imported chat whose folder was cleared keeps what its file named, as an inert note: the window offers it
+        // back once it passes the import's checks (docs/PORTABLE.md). Nothing runs from this table.
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS imported_chat_folders (
+               session_id TEXT PRIMARY KEY,
+               cwd TEXT NOT NULL,
+               worktree_cwd TEXT,
+               blocked INTEGER NOT NULL DEFAULT 0
+             );",
+        )?;
+        conn.execute(
+            "INSERT INTO schema_migrations (version, applied_at) VALUES (21, ?1)",
+            params![now_millis()],
+        )?;
+    }
     // Create even when a version row already exists (another build may have
     // used the same numbers, or a previous run recorded the version without
     // the table). Restore writes into these; missing tables look like a
@@ -2523,6 +2539,11 @@ fn delete_session_in(tx: &Connection, session_id: &str) -> rusqlite::Result<()> 
         "DELETE FROM orchestration_sidebar WHERE lead_id = ?1",
         [session_id],
     )?;
+    // What an import's file named for this chat's folder goes with the chat.
+    tx.execute(
+        "DELETE FROM imported_chat_folders WHERE session_id = ?1",
+        [session_id],
+    )?;
     if let Some(parent) = parent.filter(|id| id != session_id) {
         let raw: Option<String> = tx
             .query_row(
@@ -3317,7 +3338,7 @@ mod tests {
                        ON sessions (cwd, has_user_message, updated_at DESC, id, harness,
                                     model, runtime_mode, title, provider_session_id,
                                     created_at, branch, archived, pinned, linked_work_item_json);
-                     DELETE FROM schema_migrations WHERE version IN (16, 17, 18, 19, 20);",
+                     DELETE FROM schema_migrations WHERE version IN (16, 17, 18, 19, 20, 21);",
                 )
                 .unwrap();
                 migrate(&conn).unwrap();
@@ -4178,6 +4199,41 @@ mod tests {
         assert_eq!(saved.cwd, "");
         // Never the branch of whatever checkout the app itself runs in.
         assert_eq!(saved.branch, None);
+    }
+
+    /// Migration 21: what an import's file named for a cleared folder is kept in a real table, and goes with its chat.
+    #[test]
+    fn the_imported_folder_notes_are_a_migration_and_go_with_their_chat() {
+        let store = SessionStore::open_in_memory().unwrap();
+        let conn = store.conn.lock().unwrap();
+        let columns: Vec<String> = conn
+            .prepare("SELECT name FROM pragma_table_info('imported_chat_folders') ORDER BY cid")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .flatten()
+            .collect();
+        assert_eq!(columns, ["session_id", "cwd", "worktree_cwd", "blocked"]);
+        // An older database (version 20, no table) gets it.
+        conn.execute_batch(
+            "DROP TABLE imported_chat_folders; DELETE FROM schema_migrations WHERE version = 21;",
+        )
+        .unwrap();
+        migrate(&conn).unwrap();
+        assert_eq!(schema_version(&conn).unwrap(), 21);
+        upsert_session(&conn, &sample("s1", "", "Imported")).unwrap();
+        conn.execute(
+            "INSERT INTO imported_chat_folders (session_id, cwd) VALUES ('s1', '/Users/old/app')",
+            [],
+        )
+        .unwrap();
+        delete_session(&conn, "s1").unwrap();
+        let left: i64 = conn
+            .query_row("SELECT COUNT(*) FROM imported_chat_folders", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(left, 0);
     }
 
     /// The "Needs a folder" group: every chat with a conversation and no folder, and no chat that has one.

@@ -1115,6 +1115,8 @@ pub fn run() {
             portable::portable_paths_exist,
             portable::portable_project_folder_checks,
             portable::portable_relink_candidate,
+            portable::portable_relink_candidates,
+            portable::portable_relink_apply,
             portable::portable_session_engines,
             portable::portable_export,
             portable::portable_inspect,

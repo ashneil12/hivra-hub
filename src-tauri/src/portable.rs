@@ -1019,6 +1019,35 @@ fn claude_transcript(env: &Env, provider_session_id: &str) -> Option<PathBuf> {
     })
 }
 
+/// The name Claude Code gives a folder's transcripts: every character that isn't a letter or digit becomes `-`.
+fn claude_project_dir_name(folder: &str) -> String {
+    folder
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect()
+}
+
+/// The transcript is in the Claude project folder of this working folder, not just somewhere on this Mac.
+fn claude_transcript_for(env: &Env, provider_session_id: &str, folder: &str) -> bool {
+    session_file_id(provider_session_id)
+        && env.claude_home.as_ref().is_some_and(|home| {
+            home.join("projects")
+                .join(claude_project_dir_name(folder))
+                .join(format!("{provider_session_id}.jsonl"))
+                .is_file()
+        })
+}
+
+/// Another chat here already resumes this provider conversation.
+fn provider_id_held(conn: &Connection, provider_session_id: &str, own_id: &str) -> bool {
+    conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sessions WHERE provider_session_id = ?1 AND id != ?2)",
+        params![provider_session_id, own_id],
+        |row| row.get(0),
+    )
+    .unwrap_or(true)
+}
+
 struct SessionRow {
     id: String,
     cwd: String,
@@ -1913,6 +1942,19 @@ pub struct WorkspaceImport {
     /// automation keeps its folder only inside one of these or a project in that record; none given means only the record.
     #[serde(default)]
     pub known_folders: Vec<String>,
+    /// The Monos seated here (their ids): a chat keeps a Mono's own folder only for one of these.
+    #[serde(default)]
+    pub known_monos: Vec<String>,
+    /// This Mac's folder for each project the file names, by project id: `{from: the file's folder, to: this Mac's}`.
+    /// A chat's folder from another Mac (another user name, another home) is mapped through it, then judged as usual.
+    #[serde(default)]
+    pub folder_map: Vec<FolderMapping>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+pub struct FolderMapping {
+    pub from: String,
+    pub to: String,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -1972,57 +2014,139 @@ pub fn import<G: std::ops::Deref<Target = Connection>>(
     if opened.root().is_none() {
         return Ok(report);
     }
-    // The folder rules are loaded before anything is written: the Monos' folders are a snapshot of what was here, so a
-    // memory folder in the file (`monos/evil`) can't make itself a Mono's folder, and the project record is read without
-    // holding the chat store's lock.
-    let mut rules = FolderRules::load(
-        env,
-        &project_record_folders(env),
-        request
-            .workspace
-            .as_ref()
-            .map_or(&[][..], |ws| ws.known_folders.as_slice()),
-    );
+    // Memory first (never under the chat store's lock). What it wrote is remembered as files: a chat can't keep a folder
+    // where one that a CLI reads as instructions now sits.
+    let mut written = Vec::new();
     if let Some(memory) = &request.memory {
-        let mut written = Vec::new();
         import_memory(env, &opened, memory, &mut report, &mut written)?;
-        // A chat can't keep a folder this import wrote into.
-        rules.note_written(&written);
     }
+    // The folder rules load after it: a Mono's folder is one of a Mono seated here (never whatever is on disk), so a
+    // memory folder in the file (`monos/evil`) is nobody's, and a fresh Mac's restored Monos are theirs once seated. The
+    // project record is read without holding the chat store's lock.
+    let mut rules = {
+        let none = WorkspaceImport::default();
+        let ws = request.workspace.as_ref().unwrap_or(&none);
+        let map: Vec<(String, String)> = ws
+            .folder_map
+            .iter()
+            .map(|pair| (pair.from.clone(), pair.to.clone()))
+            .collect();
+        FolderRules::load(
+            env,
+            &project_record_folders(env),
+            &ws.known_folders,
+            &ws.known_monos,
+            &map,
+        )
+    };
+    rules.note_written(&written);
     if let Some(workspace) = &request.workspace {
         let conn = lock()?;
         import_workspace(env, &conn, &opened, workspace, &mut report, &rules)
             .map_err(|e| e.to_string())?;
+        // Said in the report, so nobody finds out by surprise.
+        if report.sessions_added + report.sessions_copied + report.automations_added > 0 {
+            report.notes.push(
+                "Every restored chat and automation comes back supervised, whatever its file said; raise it for the ones you want freer."
+                    .to_string(),
+            );
+        }
+        if report.folders_cleared + report.automation_folders_cleared > 0 {
+            report.notes.push(
+                "A chat or automation whose folder is in ~/agent-memory, in a hidden folder or outside your home folder can't be relinked; choose a folder for it."
+                    .to_string(),
+            );
+        }
     }
     Ok(report)
 }
 
-/// The folder the file named for a chat that came in without one, when it can be offered back now: it exists here,
-/// passes the same allow-list and sits inside a project this copy has (`folders.rs`). None for a chat that has a
-/// folder, one with no note, or one whose folder still doesn't qualify. Nothing runs from the note itself.
-pub(crate) fn relink_candidate(env: &Env, session_id: &str, known: &[String]) -> Option<String> {
-    let conn = env.read_db().ok()??;
-    let blank: bool = conn
-        .query_row(
-            "SELECT cwd = '' FROM sessions WHERE id = ?1",
-            [session_id],
-            |row| row.get(0),
-        )
-        .ok()?;
-    if !blank {
-        return None;
-    }
-    let named: String = conn
-        .query_row(
-            "SELECT cwd FROM imported_chat_folders WHERE session_id = ?1",
-            [session_id],
-            |row| row.get(0),
-        )
-        .ok()?;
+/// One chat that came in with no folder and can have one back now.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Relink {
+    pub session_id: String,
+    /// The folder as this Mac resolves it.
+    pub folder: String,
+    /// The project (or Mono) folder it sits in: what "Relink all" groups by.
+    pub group: String,
+}
+
+/// The chats that came in with no folder and can have the folder their file named back: it exists here, passes the
+/// same allow-list, sits inside a project this copy has or in the folder of a Mono seated here, and is not one the
+/// import itself wrote instructions into. A chat that has a folder, one with no note, and one whose folder still
+/// doesn't qualify are left out. Nothing runs from the note itself.
+pub(crate) fn relink_candidates(
+    env: &Env,
+    only: Option<&str>,
+    known: &[String],
+    known_monos: &[String],
+) -> Vec<Relink> {
+    let Ok(Some(conn)) = env.read_db() else {
+        return Vec::new();
+    };
+    let Ok(mut statement) = conn.prepare(
+        "SELECT n.session_id, n.cwd FROM imported_chat_folders n
+         JOIN sessions s ON s.id = n.session_id
+         WHERE s.cwd = '' AND n.blocked = 0 AND (?1 IS NULL OR n.session_id = ?1)
+         ORDER BY n.session_id",
+    ) else {
+        return Vec::new();
+    };
+    let rows: Vec<(String, String)> = statement
+        .query_map([only], |row| Ok((row.get(0)?, row.get(1)?)))
+        .map(|rows| rows.flatten().collect())
+        .unwrap_or_default();
+    drop(statement);
     drop(conn);
-    let rules = FolderRules::load(env, &project_record_folders(env), known);
-    let kept = rules.vet(Some(&named), None);
-    (!kept.cwd.is_empty()).then_some(kept.cwd)
+    if rows.is_empty() {
+        return Vec::new();
+    }
+    let rules = FolderRules::load(env, &project_record_folders(env), known, known_monos, &[]);
+    rows.into_iter()
+        .filter_map(|(session_id, named)| {
+            let kept = rules.vet(Some(&named), None);
+            (!kept.cwd.is_empty()).then(|| Relink {
+                group: kept.group.clone().unwrap_or_else(|| kept.cwd.clone()),
+                folder: kept.cwd,
+                session_id,
+            })
+        })
+        .collect()
+}
+
+pub(crate) fn relink_candidate(
+    env: &Env,
+    session_id: &str,
+    known: &[String],
+    known_monos: &[String],
+) -> Option<String> {
+    relink_candidates(env, Some(session_id), known, known_monos)
+        .into_iter()
+        .next()
+        .map(|relink| relink.folder)
+}
+
+/// Gives these chats their folders back and forgets their notes. Only a chat that still has none is touched.
+pub(crate) fn apply_relinks(
+    conn: &Connection,
+    relinks: &[Relink],
+) -> rusqlite::Result<Vec<Relink>> {
+    let mut applied = Vec::new();
+    for relink in relinks {
+        let changed = conn.execute(
+            "UPDATE sessions SET cwd = ?1, worktree_cwd = NULL WHERE id = ?2 AND cwd = ''",
+            params![relink.folder, relink.session_id],
+        )?;
+        conn.execute(
+            "DELETE FROM imported_chat_folders WHERE session_id = ?1",
+            [&relink.session_id],
+        )?;
+        if changed > 0 {
+            applied.push(relink.clone());
+        }
+    }
+    Ok(applied)
 }
 
 #[tauri::command]
@@ -2030,13 +2154,53 @@ pub async fn portable_relink_candidate(
     app: AppHandle,
     session_id: String,
     known_folders: Vec<String>,
+    known_monos: Vec<String>,
 ) -> Result<Option<String>, String> {
     let env = Env::for_app(&app)?;
     tauri::async_runtime::spawn_blocking(move || {
-        relink_candidate(&env, &session_id, &known_folders)
+        relink_candidate(&env, &session_id, &known_folders, &known_monos)
     })
     .await
     .map_err(|e| e.to_string())
+}
+
+/// Every chat with no folder that can have one back, for the sidebar's "Relink all" (one button per project or Mono).
+#[tauri::command]
+pub async fn portable_relink_candidates(
+    app: AppHandle,
+    known_folders: Vec<String>,
+    known_monos: Vec<String>,
+) -> Result<Vec<Relink>, String> {
+    let env = Env::for_app(&app)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        relink_candidates(&env, None, &known_folders, &known_monos)
+    })
+    .await
+    .map_err(|e| e.to_string())
+}
+
+/// Relinks these chats: each is checked again now, then given its folder in the store. The window updates the ones it
+/// has open to the same folder.
+#[tauri::command]
+pub async fn portable_relink_apply(
+    app: AppHandle,
+    store: State<'_, SessionStore>,
+    session_ids: Vec<String>,
+    known_folders: Vec<String>,
+    known_monos: Vec<String>,
+) -> Result<Vec<Relink>, String> {
+    let env = Env::for_app(&app)?;
+    let wanted: BTreeSet<String> = session_ids.into_iter().collect();
+    let candidates = tauri::async_runtime::spawn_blocking(move || {
+        relink_candidates(&env, None, &known_folders, &known_monos)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .into_iter()
+    .filter(|relink| wanted.contains(&relink.session_id))
+    .collect::<Vec<_>>();
+    let conn = store.lock_conn()?;
+    apply_relinks(&conn, &candidates).map_err(|e| e.to_string())
 }
 
 /// The folders of the projects in the app's own record (`hub_local_docs`, key `projects`), read through a read-only
@@ -2750,15 +2914,26 @@ fn insert_session(
 ) -> rusqlite::Result<Kept> {
     let engine = &file["engine"];
     let harness = engine["harness"].as_str().unwrap_or("claude").to_string();
-    // A provider session id is kept only where it can resume: the daily app, a Claude chat, its transcript here.
-    let provider = file["providerTranscript"]["providerSessionId"]
-        .as_str()
-        .filter(|psid| !env.dev && harness == "claude" && claude_transcript(env, psid).is_some())
-        .map(str::to_string);
     let text = |key: &str| file[key].as_str().map(str::to_string);
     // The file's folder is nobody's choice here: kept only inside a project this copy has (folders.rs). A chat with
     // none asks for one before it runs; it is never given the home folder.
     let folders = rules.vet(file["cwd"].as_str(), file["worktreeCwd"].as_str());
+    // A provider session id is kept only where it can resume and is this chat's own: the daily app, a Claude chat that
+    // isn't private, no other chat here holds it, and its transcript lives in the project folder of the chat's vetted
+    // folder (a chat with none keeps none).
+    let private = file["private"].as_bool().unwrap_or(false);
+    let work_folder = folders.worktree.as_deref().unwrap_or(&folders.cwd);
+    let provider = file["providerTranscript"]["providerSessionId"]
+        .as_str()
+        .filter(|psid| {
+            !env.dev
+                && harness == "claude"
+                && !private
+                && !work_folder.is_empty()
+                && claude_transcript_for(env, psid, work_folder)
+                && !provider_id_held(conn, psid, id)
+        })
+        .map(str::to_string);
     let mut blocks = file.get("blocks").cloned().unwrap_or(json!([]));
     let files_left_out = drop_imported_file_paths(&mut blocks);
     let paths_dropped = rules.confine_tool_paths(&mut blocks, &folders.roots);
@@ -2822,18 +2997,11 @@ fn note_named_folder(
     id: &str,
     folders: &folders::Folders,
 ) -> rusqlite::Result<()> {
-    conn.execute_batch(
-        "CREATE TABLE IF NOT EXISTS imported_chat_folders (
-           session_id TEXT PRIMARY KEY,
-           cwd TEXT NOT NULL,
-           worktree_cwd TEXT
-         );",
-    )?;
     match (&folders.named_cwd, folders.cwd.is_empty()) {
         (Some(named), true) => {
             conn.execute(
-                "INSERT OR REPLACE INTO imported_chat_folders (session_id, cwd, worktree_cwd) VALUES (?1, ?2, ?3)",
-                params![id, named, folders.named_worktree],
+                "INSERT OR REPLACE INTO imported_chat_folders (session_id, cwd, worktree_cwd, blocked) VALUES (?1, ?2, ?3, ?4)",
+                params![id, named, folders.named_worktree, i64::from(folders.named_blocked)],
             )?;
         }
         _ => {
@@ -2878,7 +3046,10 @@ fn import_memory(
                 Ok(()) => {
                     report.memory_history.push(name.clone());
                     fresh = true;
-                    written.push(target.clone());
+                    if resolved(&target) == resolved(&env.monos_root) {
+                        prune_to_notes(&target);
+                    }
+                    written.extend(files_under(&target));
                 }
                 Err(why) => {
                     let _ = fs::remove_dir_all(&target);
@@ -2908,6 +3079,16 @@ fn import_memory(
                 ));
                 continue;
             }
+            // A Mono's folder takes its notes: a file a CLI reads as instructions or settings (CLAUDE.md, AGENTS.md, a
+            // settings file) or anything in a hidden folder never goes into one.
+            if let Ok(relative) = dest.strip_prefix(&env.monos_root) {
+                if !folders::mono_note_file(relative) {
+                    report.notes.push(format!(
+                        "{path} wasn't written: a Mono's folder only takes its notes (.md files), never instructions or settings."
+                    ));
+                    continue;
+                }
+            }
             // Memory is text: a file that isn't UTF-8 is skipped, never written as nothing over what is here.
             let Some(text) = opened.read(path) else {
                 report.notes.push(format!(
@@ -2920,13 +3101,13 @@ fn import_memory(
                 Ok(local) if local == text => fresh,
                 Ok(_) if fresh => {
                     write_within(&inside, &dest, &text)?;
-                    written.extend(dest.parent().map(Path::to_path_buf));
+                    written.push(dest.clone());
                     true
                 }
                 Ok(_) => {
                     if wanted.keep_both {
                         write_within(&inside, &beside_name(&dest), &text)?;
-                        written.extend(dest.parent().map(Path::to_path_buf));
+                        written.push(beside_name(&dest));
                         report.memory_files_beside += 1;
                     } else {
                         report.kept += 1;
@@ -2935,7 +3116,7 @@ fn import_memory(
                 }
                 Err(_) => {
                     write_within(&inside, &dest, &text)?;
-                    written.extend(dest.parent().map(Path::to_path_buf));
+                    written.push(dest.clone());
                     report.memory_files_added += 1;
                     true
                 }
@@ -2950,6 +3131,40 @@ fn import_memory(
         }
     }
     Ok(())
+}
+
+/// Every file under a folder (the repository's own `.git` left out): what a restored history put there.
+fn files_under(dir: &Path) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(next) = stack.pop() {
+        let Ok(entries) = fs::read_dir(&next) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if entry.file_name() == ".git" {
+                continue;
+            }
+            match entry.file_type() {
+                Ok(kind) if kind.is_dir() => stack.push(path),
+                Ok(kind) if kind.is_file() => out.push(path),
+                _ => {}
+            }
+        }
+    }
+    out
+}
+
+/// The Monos' home restored from a history keeps only notes: whatever else the bundle's newest tree had (instruction and
+/// settings files, hidden folders) is removed again.
+fn prune_to_notes(root: &Path) {
+    for file in files_under(root) {
+        let keep = file.strip_prefix(root).is_ok_and(folders::mono_note_file);
+        if !keep {
+            let _ = fs::remove_file(&file);
+        }
+    }
 }
 
 enum HistoryRefusal {
