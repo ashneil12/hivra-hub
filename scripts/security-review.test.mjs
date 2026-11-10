@@ -231,3 +231,74 @@ test("the changed files come from git's diff of the change, not the whole tree",
     rmSync(folder, { recursive: true, force: true });
   }
 });
+
+// Item 4: every candidate goes to a fresh verifier that tries to disprove it. Results go to findings.json for the head.
+const { verifyCandidates, runReview, findingsPathFor } = await import("./security-review/review.mjs");
+
+const HEAD = "0123456789abcdef0123456789abcdef01234567";
+const reviewed = { root: null, head: HEAD, author: "claude", reviewer: "codex", files: ["scripts/security-review/review.mjs"] };
+const fakeRead = (text = "x\n".repeat(20)) => () => text;
+
+test("each candidate goes to a fresh verifier that sees only that candidate", async () => {
+  const seen = [];
+  const verifier = async (candidate) => {
+    seen.push(candidate);
+    return { ...candidate, verdict: "rejected", reason: "The caller applies the check first." };
+  };
+  const candidates = [confirmed(), needsValidation()];
+  const records = await verifyCandidates({ candidates, verifier });
+  assert.equal(seen.length, 2, "one verifier call per candidate");
+  for (const [index, call] of seen.entries()) {
+    assert.deepEqual(call, candidates[index], "the verifier gets its own candidate and nothing else");
+  }
+  assert.equal(records.length, 2);
+});
+
+test("a candidate the verifier rejects is recorded and does not stop the run", async () => {
+  const root = mkdtempSync(join(tmpdir(), "wp203-run-"));
+  try {
+    // The verifier disproves the second candidate; the first stays a medium confirmed record.
+    const verifier = async (candidate) =>
+      candidate.fingerprint === "review-missing-head-check"
+        ? confirmed({ severity: { ...confirmed().severity, overall_severity: "medium" } })
+        : rejected();
+    const run = await runReview({ ...reviewed, root, read: fakeRead(), candidates: [confirmed(), rejected()], verifier });
+    assert.equal(run.ok, true, run.reason);
+    const records = JSON.parse(readFileSync(run.findingsPath, "utf8"));
+    assert.deepEqual(records.map((r) => r.verdict).sort(), ["confirmed", "rejected"]);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a confirmed high is written for the head sha, and the file records that sha", async () => {
+  const root = mkdtempSync(join(tmpdir(), "wp203-sha-"));
+  try {
+    const verifier = async (candidate) => candidate;
+    const run = await runReview({ ...reviewed, root, read: fakeRead(), candidates: [confirmed()], verifier });
+    assert.equal(run.ok, true, run.reason);
+    assert.equal(run.findingsPath, findingsPathFor(root, HEAD));
+    assert.ok(run.findingsPath.includes(HEAD), "the findings file lives under the exact head sha");
+    const meta = JSON.parse(readFileSync(join(root, HEAD, "run.json"), "utf8"));
+    assert.equal(meta.head, HEAD);
+    assert.equal(meta.author, "claude");
+    assert.equal(meta.reviewer, "codex");
+    assert.equal(JSON.parse(readFileSync(run.findingsPath, "utf8"))[0].severity.overall_severity, "high");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a record the validator refuses is never written as findings", async () => {
+  const root = mkdtempSync(join(tmpdir(), "wp203-bad-"));
+  try {
+    const broken = confirmed();
+    delete broken.root_cause;
+    const run = await runReview({ ...reviewed, root, read: fakeRead(), candidates: [broken], verifier: async (c) => c });
+    assert.equal(run.ok, false);
+    assert.match(run.reason, /do not validate/);
+    assert.equal(existsSync(findingsPathFor(root, HEAD)), false, "no findings file for an invalid record");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
