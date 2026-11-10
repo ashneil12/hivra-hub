@@ -16,7 +16,8 @@ Do not mention an id you did not read. If nothing is worth saying, reply with ex
  * names only things this app has: the list that follows the instructions, and no source that is not built.
  */
 const INSTRUCTIONS = `${MORNING_HABIT_STOCK_INSTRUCTIONS}
-If a list of notable events still waiting follows, each one is worth saying: give it a plain line of its own, with no id, that says what happened.`;
+If a list of notable events still waiting follows, each one is worth saying: give it a plain line of its own, with no id, that says what happened.
+A section headed "Finished yesterday" may follow: what finished yesterday, newest first, which the app read for you. Each is worth saying: give it a plain line of its own, with no id, that says what finished. "Nothing finished yesterday." means the app looked and nothing finished. If there is no such section, the app could not look, so say nothing about yesterday.`;
 
 /** The morning habit, first due after `now`. The id stays put so a second add can see it. */
 export function morningHabit(now: number): Habit {
