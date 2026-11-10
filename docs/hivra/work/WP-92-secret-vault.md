@@ -390,3 +390,47 @@ write a second copy of any of them.
       --all-targets -- -D warnings` where the Windows target is installed.
 - [ ] Mac-only checks for Ash: the keychain prompt appears once for the app, "Always Allow" sticks across a
     rebuild with the pinned identity, and the granted run prints `[secret removed]` where the value would be.
+
+## Known limits
+
+These are by design, or cannot be closed inside this package. They are written here so they are a known edge, not an
+assumed one.
+
+- **A connector run reads the vault without a per-run grant.** A connector whose login points at a saved key
+  (`{"secret": "..."}`) gets the value in its own environment for as long as it runs. The person chose that when they
+  pointed the connector at the key. The "one approved run" sentence is literally true of commands and workers, not of
+  connectors.
+- **A value split across two writes can pass the scrubber.** The scrub is per chunk (and per line for a worker), so
+  a command that prints the first half of a key, flushes, and prints the second half is not caught. The first line of
+  defence is that only a program the person approved gets the key at all. A value printed over several lines is only
+  caught when it appears whole on one line (a PEM is caught line by line).
+- **The revealed value is in the page while it is shown.** Reveal puts the key in a field on screen until the row is
+  closed. Anything that can read the page (an extension, a screen recorder, DevTools) can read it while it is there.
+- **The value crosses the app's own bridge once.** When the person types a key, it goes from the page to Rust as one
+  command argument. No log line in the app writes it, but a console that logs the bridge would see it.
+- **Any script running in the app's own webview can call the vault's commands.** It could reveal a key, write a
+  grant or write a `.env`, and it could send `decisions_answer` as the person. The app does not run remote or
+  untrusted script in that webview; if that ever changed, this would be the first thing to close. The Rust side
+  already refuses what an agent can reach (a chat's answer to a secret card, an agent-made secret card, an "Always"
+  for a program that can run any code while the setting is off).
+- **A worker keeps its own tool's environment.** The worker route adds the one approved variable and no `MONOCODE_*`
+  value, but it does not clear the rest of the tool's environment (the tool needs its own HOME, PATH and login). The
+  app's tokens stay out of a worker because the app's grant check refuses workers, not because the spawn removes them.
+- **A dev copy can be seeded with plaintext values through its environment.** `MONOCODE_SECRET_VAULT_SEED` exists for
+  tests under a temporary HOME and is read by dev copies only; a daily copy refuses it. A value placed there is
+  visible to `ps` and to a crash report of that process, so it is for dummy values.
+- **The export's history scan is by pattern only.** The exact-value pass skips binary files, and a memory repository's
+  git history (the `.bundle`) is scanned with the shared pattern list, not with the saved values. A value that is in
+  that history and has no known shape would not be caught. This predates the vault.
+- **Revoke does not cancel a grant that was already issued.** A signed grant lives 60 seconds and is spent once. If the
+  person revokes an approval inside that minute, a run that already holds its grant can still finish.
+- **A `.env` temp file is kept out of the work tree, not out of existence.** While a `.env` is being rewritten the
+  value is in a 0600 temp file (in git's own folder unless the person's ignore rules already cover `.env*`). It is
+  removed on every error path and when the write ends, but a process killed in that moment leaves it behind.
+- **A card is still answered by its program, not by its arguments.** An approval is per program. A person who picks
+  Once or Always for a program approves that program, and the next command with the same program is run on the same
+  approval. The card shows the command it was asked for, and a card that has not been answered is refreshed to the
+  newest command, but an answer that lands after the Mono has asked again applies to the newer command.
+- **Not run here.** The browser spec ran on Chromium only (Playwright's WebKit binary is not installed on this Mac),
+  nothing was compiled or run for Windows, and the macOS keychain prompt was not exercised: every test uses the
+  in-memory store.
