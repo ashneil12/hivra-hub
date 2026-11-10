@@ -343,8 +343,14 @@ describe("one-time schedule", () => {
       "Hivra only runs this while it is open. If Hivra is closed at this time, the run is missed.",
     );
     expect(CLOSED_APP_WARNING).not.toMatch(/[—–]/);
-    const rust = readFileSync("src-tauri/src/one_time_schedule.rs", "utf8");
-    const web = readFileSync("src/features/one-time-schedule/model/oneTimeSchedule.ts", "utf8");
-    expect(`${rust}\n${web}`).not.toMatch(/LaunchAgent|systemd|launchctl|osascript/);
+    const files = [
+      "src-tauri/src/one_time_schedule.rs",
+      "src/features/one-time-schedule/model/oneTimeSchedule.ts",
+      "src/features/one-time-schedule/model/oneTimeScheduleApi.ts",
+      "src/features/one-time-schedule/ui/OneTimeSchedulePanel.tsx",
+      "src/features/one-time-schedule/ui/useOneTimeScheduleRunner.ts",
+    ];
+    const source = files.map((file) => readFileSync(file, "utf8")).join("\n");
+    expect(source).not.toMatch(/LaunchAgent|systemd|launchctl|osascript/);
   });
 });

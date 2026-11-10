@@ -697,12 +697,17 @@ pub fn one_time_schedules_cancel(
 
 #[tauri::command(async)]
 pub fn one_time_schedules_miss_closed(
+    app: AppHandle,
     store: State<'_, SessionStore>,
     clock: State<'_, OneTimeClock>,
 ) -> Result<Vec<OneTimeSchedule>, String> {
     let now = now_millis();
     let conn = store.lock_conn()?;
-    miss_closed(&conn, now, &clock.reconciled)
+    let rows = miss_closed(&conn, now, &clock.reconciled)?;
+    drop(conn);
+    // The list is open in this process, so it can show a run that just became missed.
+    emit_changed(&app);
+    Ok(rows)
 }
 
 #[tauri::command(async)]
