@@ -577,8 +577,9 @@ export async function refreshHarnessCatalogs(
       .filter((adapter) => wanted.has(adapter.id))
       .map(async (adapter) => {
         if (!adapter.refreshCatalog) return;
-        // `force` marks an explicit user action (opening the model dropdown);
-        // routine refreshes keep skipping adapters with a live catalog.
+        // `force` marks an explicit user action (Settings, or the provider
+        // update notice); routine refreshes, and opening the model picker,
+        // keep skipping adapters that already hold a catalog.
         if (!options?.force && hasLiveCatalog(adapter.id)) return;
         await adapter.refreshCatalog().catch((error: unknown) => {
           console.debug(`[monocode] ${adapter.id} catalog`, error);

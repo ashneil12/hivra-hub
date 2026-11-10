@@ -439,6 +439,34 @@ ${body}
 </handoff>`;
 }
 
+/**
+ * WP-123: the first prompt of a forked chat. Its messages up to the fork point were copied in, but its provider
+ * conversation is new, so the recap carries them. It says so as a fork, on the same agent: not a switch or a handoff.
+ * `earlierRequests` are messages typed in the fork before a first send that went through.
+ */
+export function wrapForkPrompt(
+  brief: string,
+  userText: string,
+  earlierRequests: string[] = [],
+): string {
+  const request = userText.trim();
+  const body = stripGoalSections(brief).trim();
+  const earlier = earlierRequests.map((text) => text.trim()).filter(Boolean);
+  const earlierBlock =
+    earlier.length > 0
+      ? `\n\nSince this chat was forked, before this message, the user also sent:\n\n${earlier.join("\n\n")}`
+      : "";
+  const lead = `This chat was forked from an earlier one. Its messages up to the fork point were copied here, but this is a new conversation, so you have not seen them. This is not a new task. Do not say you have no prior context.\n\n${request}${earlierBlock}`;
+  if (!body) return lead;
+  return `${lead}
+
+The chat up to the fork point is the thread you are continuing, not optional background:
+
+<chat_before_fork>
+${body}
+</chat_before_fork>`;
+}
+
 function appendHandoffBlock(
   session: Session,
   input: HandoffMeta & { text: string },
