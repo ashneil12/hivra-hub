@@ -700,7 +700,7 @@ pub fn session_private_keys(store: State<'_, SessionStore>) -> Result<Vec<Privat
 
 fn list_private_keys(conn: &Connection) -> rusqlite::Result<Vec<PrivateChatKey>> {
     let mut statement = conn.prepare(
-        "SELECT id, provider_session_id FROM sessions WHERE private_chat != 0 ORDER BY id ASC",
+        "SELECT id, provider_session_id FROM sessions WHERE private_chat != 0 OR (private_boundary_id IS NOT NULL AND private_boundary_id != '') ORDER BY id ASC",
     )?;
     let rows = statement.query_map([], |row| {
         let provider: Option<String> = row.get(1)?;
@@ -3667,6 +3667,10 @@ mod tests {
             .unwrap()
             .iter()
             .any(|item| item.id == "old" && item.private_chat));
+
+        // A chat switched back off still has a private part, so it stays on the list.
+        set_private(&conn, &row.id, false, Some("turn-3")).unwrap();
+        assert_eq!(list_private_keys(&conn).unwrap().len(), 1);
 
         // A boundary that is not a message id must not unlock the chat.
         conn.execute(

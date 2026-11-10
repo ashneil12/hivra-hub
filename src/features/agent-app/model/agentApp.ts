@@ -36,6 +36,7 @@ import {
   type HarnessId,
   type Session,
 } from "../../sessions/model/session";
+import { givesOrders, ORDER_REFUSAL } from "../../memory/model/orderScan";
 import { isPrivateChat } from "../../memory/model/privateChat";
 import {
   addSessionToFolder,
@@ -1098,6 +1099,10 @@ async function handleMemory(
     (action === "memory.add" || action === "memory.replace" || action === "memory.remove")
   ) {
     throw new Error("This chat is private, so memory was not changed.");
+  }
+  // The order scan the curator and imports run: MEMORY.md goes into every conversation.
+  if ((action === "memory.add" || action === "memory.replace") && givesOrders(String(input.fact ?? ""))) {
+    throw new Error(ORDER_REFUSAL);
   }
   switch (action) {
     case "memory.search": {
