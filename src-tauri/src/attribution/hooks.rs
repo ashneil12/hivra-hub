@@ -101,6 +101,12 @@ const ERROR_ACCESS_DENIED: i32 = 5;
 const ERROR_SHARING_VIOLATION: i32 = 32;
 const ERROR_LOCK_VIOLATION: i32 = 33;
 
+/// Windows says "nothing there" in two codes. Rust maps more than these to
+/// `ErrorKind::NotFound` (53, a bad network path, and 67, a bad network name),
+/// and those are not another crew's folder that has not shown up yet.
+const ERROR_FILE_NOT_FOUND: i32 = 2;
+const ERROR_PATH_NOT_FOUND: i32 = 3;
+
 pub(crate) fn busy_code(code: i32) -> bool {
     matches!(
         code,
@@ -108,20 +114,36 @@ pub(crate) fn busy_code(code: i32) -> bool {
     )
 }
 
+fn missing_code(code: i32) -> bool {
+    matches!(code, ERROR_FILE_NOT_FOUND | ERROR_PATH_NOT_FOUND)
+}
+
+/// "Nothing there". On Windows that is the two codes above, never the wider
+/// `NotFound` kind.
+pub(crate) fn is_missing(err: &io::Error, windows: bool) -> bool {
+    if windows {
+        err.raw_os_error().is_some_and(missing_code)
+    } else {
+        err.kind() == io::ErrorKind::NotFound
+    }
+}
+
 /// Is this failure worth another try? Only ever on Windows: the same numbers
 /// mean something else on Unix (5 is EIO, 32 is EPIPE, 33 is EDOM), where a
 /// failure stays final. `mid_create` says the folder or file was just seen, or
-/// just reported to exist, so "not found" now is another crew's create or
-/// replace that has not finished showing up, not a missing path. Nothing here
-/// is a containment decision: a path that resolves outside the data folder is
-/// not an error from the filesystem, and the caller refuses it at once.
+/// just reported to exist, so "not found" (error 2 or 3 only) now is another
+/// crew's create or replace that has not finished showing up, not a missing
+/// path. Nothing here is a containment decision: a path that resolves outside
+/// the data folder is not an error from the filesystem, and the caller refuses
+/// it at once.
 pub(crate) fn is_transient(err: &io::Error, windows: bool, mid_create: bool) -> bool {
     if !windows {
         return false;
     }
     match err.raw_os_error() {
         Some(code) if busy_code(code) => true,
-        _ => mid_create && err.kind() == io::ErrorKind::NotFound,
+        Some(code) => mid_create && missing_code(code),
+        None => false,
     }
 }
 
@@ -144,12 +166,19 @@ pub(crate) enum Call {
 /// the way Windows answers one under a race. Production never sets it.
 pub(crate) type Fault<'a> = &'a mut dyn FnMut(Call, &Path) -> Option<io::Error>;
 
+/// Test only: what `resolve` answers instead of what the filesystem said, to
+/// play back a path Windows gave that is not the path that was asked about.
+#[cfg(test)]
+pub(crate) type Relabel<'a> = &'a mut dyn FnMut(&Path, PathBuf) -> PathBuf;
+
 /// The install's filesystem calls, with the retry for the errors in
 /// `is_transient` built in. `windows` is a field so a test can play Windows
 /// errors back on any platform.
 pub(crate) struct Fs<'a> {
     windows: bool,
     fault: Option<Fault<'a>>,
+    #[cfg(test)]
+    relabel: Option<Relabel<'a>>,
 }
 
 impl<'a> Fs<'a> {
@@ -157,6 +186,8 @@ impl<'a> Fs<'a> {
         Fs {
             windows: cfg!(windows),
             fault: None,
+            #[cfg(test)]
+            relabel: None,
         }
     }
 
@@ -165,6 +196,16 @@ impl<'a> Fs<'a> {
         Fs {
             windows,
             fault: Some(fault),
+            relabel: None,
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn relabeling(windows: bool, relabel: Relabel<'a>) -> Self {
+        Fs {
+            windows,
+            fault: None,
+            relabel: Some(relabel),
         }
     }
 
@@ -201,8 +242,16 @@ impl<'a> Fs<'a> {
         })
     }
 
-    /// A look at a path that is expected to be there, such as a hook that is
-    /// about to be replaced: a busy answer is waited out.
+    /// A look at a hook just published, or just replaced by another crew: busy,
+    /// and "not found" while the replace finishes, are waited out.
+    fn stat_published(&mut self, path: &Path) -> io::Result<std::fs::Metadata> {
+        self.call(Call::Stat, path, FS_TRIES, true, |path| {
+            std::fs::symlink_metadata(path)
+        })
+    }
+
+    /// A look at a path that might be there, such as a hook about to be
+    /// replaced: a busy answer is waited out.
     fn stat_settled(&mut self, path: &Path) -> io::Result<std::fs::Metadata> {
         self.call(Call::Stat, path, FS_TRIES, false, |path| {
             std::fs::symlink_metadata(path)
@@ -218,9 +267,15 @@ impl<'a> Fs<'a> {
     /// The real path of something that exists, or that another crew is making
     /// or replacing right now.
     fn resolve(&mut self, path: &Path) -> io::Result<PathBuf> {
-        self.call(Call::Resolve, path, FS_TRIES, true, |path| {
+        let found = self.call(Call::Resolve, path, FS_TRIES, true, |path| {
             crate::fs::canonical(path)
-        })
+        })?;
+        #[cfg(test)]
+        let found = match self.relabel.as_mut() {
+            Some(relabel) => relabel(path, found),
+            None => found,
+        };
+        Ok(found)
     }
 
     /// One try at `from` over `to`. The caller waits out a busy answer on the
@@ -241,6 +296,27 @@ impl<'a> Fs<'a> {
     /// Wait before the next round of a loop that makes more than one call.
     fn pause(&self, round: u32) {
         std::thread::sleep(pause_for(round));
+    }
+}
+
+/// What a path that fell outside the data folder looks like, without the path
+/// itself (the refusal reaches a log). It tells a Windows quirk from a real
+/// escape: the name Windows gives a file it has unlinked (a folder under
+/// `$Extend`), the `\\?\` form that was not stripped, or the right place in
+/// another case.
+fn outside_shape(root: &Path, found: &Path) -> &'static str {
+    let text = found.to_string_lossy();
+    if text.contains("$Extend") || text.contains("$Deleted") {
+        "the name of an unlinked file"
+    } else if text.starts_with(r"\\?\") {
+        "a verbatim path"
+    } else if text
+        .to_lowercase()
+        .starts_with(&root.to_string_lossy().to_lowercase())
+    {
+        "the data folder in another case"
+    } else {
+        "elsewhere"
     }
 }
 
@@ -283,7 +359,7 @@ fn make_folder(fs: &mut Fs, next: &Path, what: &str) -> Result<(), String> {
         let other_crew_has_it = create.kind() == io::ErrorKind::AlreadyExists
             || is_transient(&create, fs.windows, false);
         let not_visible_yet =
-            look.kind() == io::ErrorKind::NotFound || is_transient(&look, fs.windows, true);
+            is_missing(&look, fs.windows) || is_transient(&look, fs.windows, true);
         let settling = other_crew_has_it && not_visible_yet;
         if !settling || round >= FS_TRIES {
             return Err(refuse(&format!(
@@ -318,7 +394,10 @@ pub(crate) fn ensure_child_with(
         .resolve(&next)
         .map_err(|err| refuse_io(&format!("{what}: resolve"), &err))?;
     if !contained(root, &canon) {
-        return Err(refuse(&format!("{what}: resolves outside the data folder")));
+        return Err(refuse(&format!(
+            "{what}: resolves outside the data folder ({})",
+            outside_shape(root, &canon)
+        )));
     }
     Ok(canon)
 }
@@ -481,13 +560,8 @@ pub(crate) fn install_one_with(
         if !meta.is_file() {
             return Err(refuse("hook: is not a file"));
         }
-        let installed = fs
-            .resolve(&dest)
-            .map_err(|err| refuse_io("hook: resolve before publish", &err))?;
-        if !contained(root, &installed) {
-            return Err(refuse("hook: resolves outside the data folder"));
-        }
     }
+    hook_folder_inside(fs, root, dir, "before publish")?;
     let same = std::fs::read(&dest)
         .ok()
         .and_then(|bytes| String::from_utf8(bytes).ok())
@@ -496,13 +570,37 @@ pub(crate) fn install_one_with(
         publish_hook_in(fs, root, dir, &dest, script, hook_temp)?;
     }
     mark_executable(&dest).map_err(|err| refuse_io("hook: mark executable", &err))?;
-    let installed = fs
-        .resolve(&dest)
-        .map_err(|err| refuse_io("hook: resolve after publish", &err))?;
-    if !contained(root, &installed) {
-        return Err(refuse(
-            "hook: resolves outside the data folder after publish",
-        ));
+    hook_folder_inside(fs, root, dir, "after publish")?;
+    let meta = fs
+        .stat_published(&dest)
+        .map_err(|err| refuse_io("hook: look after publish", &err))?;
+    if meta.file_type().is_symlink() {
+        return Err(refuse("hook: is a link after publish"));
+    }
+    if !meta.is_file() {
+        return Err(refuse("hook: is not a file after publish"));
+    }
+    Ok(())
+}
+
+/// The containment check for a hook file: the folder it lives in resolves to a
+/// place inside the data folder. It resolves the folder and not the file on
+/// purpose. Asking Windows for the path of a file means opening it, and when
+/// another crew replaces that file at that moment Windows answers with the name
+/// of the unlinked file (a folder under `$Extend`), which is outside the data
+/// folder though nothing escaped. A folder is never replaced, so its answer is
+/// stable, and a link anywhere in its path still resolves outside it and is
+/// refused at once. The file itself is a plain file and not a link, which a
+/// look at it says without opening it.
+fn hook_folder_inside(fs: &mut Fs, root: &Path, dir: &Path, when: &str) -> Result<(), String> {
+    let resolved = fs
+        .resolve(dir)
+        .map_err(|err| refuse_io(&format!("hook folder: resolve {when}"), &err))?;
+    if !contained(root, &resolved) {
+        return Err(refuse(&format!(
+            "hook folder: resolves outside the data folder {when} ({})",
+            outside_shape(root, &resolved)
+        )));
     }
     Ok(())
 }

@@ -1020,9 +1020,13 @@ fn os_error(code: i32) -> std::io::Error {
 }
 
 /// The Win32 numbers by name.
+const ERROR_FILE_NOT_FOUND: i32 = 2;
+const ERROR_PATH_NOT_FOUND: i32 = 3;
 const ERROR_ACCESS_DENIED: i32 = 5;
 const ERROR_SHARING_VIOLATION: i32 = 32;
 const ERROR_LOCK_VIOLATION: i32 = 33;
+const ERROR_BAD_NETPATH: i32 = 53;
+const ERROR_BAD_NET_NAME: i32 = 67;
 const ERROR_INVALID_PARAMETER: i32 = 87;
 const ERROR_ALREADY_EXISTS: i32 = 183;
 
@@ -1046,9 +1050,13 @@ fn only_busy_windows_errors_are_transient() {
             );
         }
     }
+    // Rust maps 53 and 67 to NotFound too, and Windows says "nothing there"
+    // with 2 and 3 only: the others are a share that is gone, not a folder
+    // another crew has not finished making.
     for code in [
         1,
-        53,
+        ERROR_BAD_NETPATH,
+        ERROR_BAD_NET_NAME,
         123,
         267,
         ERROR_INVALID_PARAMETER,
@@ -1063,24 +1071,28 @@ fn only_busy_windows_errors_are_transient() {
             }
         }
     }
-    let missing: std::io::Error = std::io::ErrorKind::NotFound.into();
-    assert!(
-        is_transient(&missing, true, true),
-        "not found while the other crew is mid-create is worth a retry"
-    );
-    assert!(
-        !is_transient(&missing, true, false),
-        "a path that was never seen is not mid-create"
-    );
-    assert!(
-        !is_transient(&missing, false, true),
-        "nothing makes a path appear later on Unix"
-    );
-    let denied: std::io::Error = std::io::ErrorKind::PermissionDenied.into();
-    assert!(
-        !is_transient(&denied, true, true),
-        "a kind with no OS number is not classified by guessing"
-    );
+    for code in [ERROR_FILE_NOT_FOUND, ERROR_PATH_NOT_FOUND] {
+        assert!(
+            is_transient(&os_error(code), true, true),
+            "os error {code} while the other crew is mid-create is worth a retry"
+        );
+        assert!(
+            !is_transient(&os_error(code), true, false),
+            "os error {code} for a path that was never seen is not mid-create"
+        );
+        assert!(
+            !is_transient(&os_error(code), false, true),
+            "nothing makes a path appear later on Unix"
+        );
+    }
+    // A kind with no OS number is not classified by guessing.
+    for kind in [
+        std::io::ErrorKind::NotFound,
+        std::io::ErrorKind::PermissionDenied,
+    ] {
+        let bare: std::io::Error = kind.into();
+        assert!(!is_transient(&bare, true, true), "{kind:?}");
+    }
 }
 
 /// What Windows answers a crew that loses the race to make a folder: the
@@ -1154,31 +1166,38 @@ fn the_same_answers_off_windows_are_not_retried() {
 fn a_folder_that_exists_but_is_not_visible_yet_is_waited_for() {
     use super::hooks::{ensure_child_with, Call, Fs};
     use std::cell::Cell;
-    let scratch = Scratch::new();
-    let root = crate::fs::canonical(scratch.path()).unwrap();
-    let looks = Cell::new(0);
-    let mut fault = |call: Call, path: &Path| match call {
-        Call::Create => {
-            // The other crew's create, which the first try lost to.
-            let _ = fs::create_dir(path);
-            Some(std::io::ErrorKind::AlreadyExists.into())
-        }
-        Call::Stat => {
-            looks.set(looks.get() + 1);
-            // The first look is before the create; the next two come after it
-            // and do not see what the other crew made.
-            (looks.get() == 2 || looks.get() == 3)
-                .then(|| std::io::Error::from(std::io::ErrorKind::NotFound))
-        }
-        _ => None,
-    };
-    let made = ensure_child_with(
-        &mut Fs::playing(true, &mut fault),
-        &root,
-        "attribution",
-        "attribution",
-    );
-    assert!(made.is_ok(), "{made:?}");
+    for windows in [true, false] {
+        let scratch = Scratch::new();
+        let root = crate::fs::canonical(scratch.path()).unwrap();
+        let looks = Cell::new(0);
+        let mut fault = |call: Call, path: &Path| match call {
+            Call::Create => {
+                // The other crew's create, which the first try lost to.
+                let _ = fs::create_dir(path);
+                Some(std::io::ErrorKind::AlreadyExists.into())
+            }
+            Call::Stat => {
+                looks.set(looks.get() + 1);
+                // The first look is before the create; the next two come after
+                // it and do not see what the other crew made.
+                (looks.get() == 2 || looks.get() == 3).then(|| {
+                    if windows {
+                        os_error(ERROR_FILE_NOT_FOUND)
+                    } else {
+                        std::io::ErrorKind::NotFound.into()
+                    }
+                })
+            }
+            _ => None,
+        };
+        let made = ensure_child_with(
+            &mut Fs::playing(windows, &mut fault),
+            &root,
+            "attribution",
+            "attribution",
+        );
+        assert!(made.is_ok(), "windows {windows}: {made:?}");
+    }
 }
 
 /// A link or a file in the way is a containment answer, not a busy one: it is
@@ -1240,6 +1259,9 @@ fn a_create_that_failed_for_another_reason_is_not_retried() {
     let failures: Vec<Box<dyn Fn() -> std::io::Error>> = vec![
         Box::new(|| std::io::ErrorKind::NotFound.into()),
         Box::new(|| std::io::ErrorKind::PermissionDenied.into()),
+        // A missing parent, as Windows says it.
+        Box::new(|| os_error(ERROR_PATH_NOT_FOUND)),
+        Box::new(|| os_error(ERROR_BAD_NETPATH)),
         Box::new(|| os_error(ERROR_INVALID_PARAMETER)),
     ];
     for failure in failures {
@@ -1250,7 +1272,7 @@ fn a_create_that_failed_for_another_reason_is_not_retried() {
                 Some(failure())
             }
             // Nothing is there, and the look says so every time.
-            Call::Stat => Some(std::io::ErrorKind::NotFound.into()),
+            Call::Stat => Some(os_error(ERROR_FILE_NOT_FOUND)),
             _ => None,
         };
         let refused = ensure_child_with(
@@ -1603,6 +1625,133 @@ fn a_failed_install_is_noted_and_the_crew_still_runs() {
     );
     assert!(quiet.is_empty(), "{quiet:?}");
     assert!(cmd.get_envs().any(|(key, _)| key == "GIT_CONFIG_COUNT"));
+}
+
+/// The failure Windows CI showed under eight crews: "hook: resolves outside the
+/// data folder". Asking Windows for the path of a hook file means opening it,
+/// and when another crew replaces the file at that moment the answer is the
+/// name of the unlinked file, a folder under `$Extend`, which is outside the
+/// data folder though nothing escaped. The hook is now checked by its folder,
+/// which is never replaced, so no hook file is opened to learn its path.
+#[test]
+fn a_hook_replaced_while_it_is_checked_is_not_an_escape() {
+    use super::hooks::{install_one_with, Fs};
+    use std::cell::Cell;
+    let scratch = Scratch::new();
+    let (root, dir) = hooks_folder(&scratch);
+    let dest = dir.join("prepare-commit-msg");
+    let stale = "#!/bin/sh\n# old\n";
+    let script = "#!/bin/sh\n# replaced\n";
+    let unlinked = root
+        .parent()
+        .unwrap()
+        .join("$Extend")
+        .join("$Deleted")
+        .join("0000000000000a1f");
+    for existing in [None, Some(stale), Some(script)] {
+        let _ = fs::remove_file(&dest);
+        if let Some(body) = existing {
+            fs::write(&dest, body).unwrap();
+        }
+        let opened_a_file = Cell::new(false);
+        let mut relabel = |asked: &Path, found: PathBuf| {
+            if asked.is_file() {
+                opened_a_file.set(true);
+                unlinked.clone()
+            } else {
+                found
+            }
+        };
+        let done = install_one_with(
+            &mut Fs::relabeling(true, &mut relabel),
+            &root,
+            &dir,
+            "prepare-commit-msg",
+            script,
+        );
+        assert!(done.is_ok(), "hook before: {existing:?}: {done:?}");
+        assert!(!opened_a_file.get(), "it opened a hook file for its path");
+        assert_eq!(fs::read_to_string(&dest).unwrap(), script);
+    }
+}
+
+/// A folder that really resolves outside the data folder is still refused on
+/// the first look, before anything is written, and never retried.
+#[cfg(unix)]
+#[test]
+fn a_hook_folder_that_resolves_outside_is_refused_at_once() {
+    use super::hooks::{install_one_with, Call, Fs};
+    use std::cell::Cell;
+    let scratch = Scratch::new();
+    let (root, _dir) = hooks_folder(&scratch);
+    let elsewhere = scratch.path().join("elsewhere");
+    fs::create_dir(&elsewhere).unwrap();
+    let linked = root.join("linked-folder");
+    std::os::unix::fs::symlink(&elsewhere, &linked).unwrap();
+    let resolves = Cell::new(0);
+    let mut fault = |call: Call, _: &Path| {
+        if call == Call::Resolve {
+            resolves.set(resolves.get() + 1);
+        }
+        None
+    };
+    let refused = install_one_with(
+        &mut Fs::playing(true, &mut fault),
+        &root,
+        &linked,
+        "prepare-commit-msg",
+        "#!/bin/sh\n",
+    )
+    .unwrap_err();
+    assert!(
+        refused.contains("hook folder: resolves outside the data folder before publish"),
+        "{refused}"
+    );
+    assert_eq!(resolves.get(), 1, "an escape was retried");
+    assert_eq!(
+        fs::read_dir(&elsewhere).unwrap().count(),
+        0,
+        "it wrote outside the data folder"
+    );
+}
+
+/// A refusal for a path outside the data folder says what the path looks like
+/// without printing it, so a Windows quirk reads differently from an escape.
+#[test]
+fn an_outside_path_is_described_without_being_printed() {
+    use super::hooks::{ensure_child_with, Fs};
+    let scratch = Scratch::new();
+    let root = crate::fs::canonical(scratch.path()).unwrap();
+    let cases = [
+        (
+            root.parent()
+                .unwrap()
+                .join("$Extend")
+                .join("$Deleted")
+                .join("1f"),
+            "the name of an unlinked file",
+        ),
+        (
+            PathBuf::from(root.to_string_lossy().to_uppercase()).join("attribution"),
+            "the data folder in another case",
+        ),
+        (scratch.path().join("elsewhere"), "elsewhere"),
+    ];
+    for (found, said) in cases {
+        let mut relabel = |_: &Path, _: PathBuf| found.clone();
+        let refused = ensure_child_with(
+            &mut Fs::relabeling(true, &mut relabel),
+            &root,
+            "attribution",
+            "attribution",
+        )
+        .unwrap_err();
+        assert!(refused.contains(&format!("({said})")), "{said}: {refused}");
+        assert!(
+            !refused.contains(found.to_string_lossy().as_ref()),
+            "the path was printed: {refused}"
+        );
+    }
 }
 
 /// Every refusal names its check, and no two checks say the same thing, so a
