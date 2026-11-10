@@ -101,6 +101,16 @@ describe("the install check's section", () => {
     expect(card.scanLine).toBe("");
   });
 
+  // WP-101 review M5 (install card): invisible and direction characters are taken out of what a finding shows.
+  it("strips invisible and direction characters from a finding's text and path", () => {
+    const [card] = pluginInboxCards([
+      withScan({
+        findings: [{ severity: "warn", code: "x", path: "src/\u202Egpj.js\u200B", message: "Reads\u202E the token\u2066 file" }],
+      }),
+    ]);
+    expect(card.findings).toEqual([{ path: "src/gpj.js", message: "Reads the token file" }]);
+  });
+
   it("ignores a scan that isn't shaped as one, rather than showing junk", () => {
     const [card] = pluginInboxCards([withScan({ findings: "nope" })]);
     expect(card.findings).toEqual([]);

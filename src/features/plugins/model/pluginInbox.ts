@@ -12,6 +12,9 @@ export type PluginInboxCard = {
   scanLine: string;
 };
 
+/** Invisible format characters (zero width, direction marks): taken out of a finding before it is shown. */
+const INVISIBLE = /\p{Cf}/gu;
+
 /**
  * The scan as the card shows it: only rows a person should read (warnings). Anything not shaped as a finding is
  * dropped, since it comes from a file on disk and is not to be trusted.
@@ -23,10 +26,11 @@ function readScan(scan: PendingRequest["scan"]): PluginInboxCard["findings"] {
     if (!item || typeof item !== "object") continue;
     const { severity, message } = item as { severity?: unknown; message?: unknown };
     if (severity !== "warn" || typeof message !== "string") continue;
-    const text = message.replace(/\r/g, "").trim();
+    // Invisible and direction characters are taken out of what a person reads, so a name can't hide what it says (M5).
+    const text = message.replace(INVISIBLE, "").replace(/\r/g, "").trim();
     if (!text || text.includes("\0")) continue;
     const raw = (item as { path?: unknown }).path;
-    const path = typeof raw === "string" ? raw.replace(/\r/g, "").trim() : "";
+    const path = typeof raw === "string" ? raw.replace(INVISIBLE, "").replace(/\r/g, "").trim() : "";
     out.push({ path: path && !path.includes("\0") ? path : "", message: text });
   }
   return out;
