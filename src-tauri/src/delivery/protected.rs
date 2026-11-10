@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 //
-// Translated from tasklane (https://github.com/kunci115/tasklane)
+// Based on tasklane (https://github.com/kunci115/tasklane)
 // crates/tasklane-core/src/paths.rs (`protected_hits`), commit 4a7298e.
 // tasklane's LICENSE has no separate copyright line and the repo has no NOTICE file.
 //

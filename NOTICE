@@ -313,7 +313,7 @@ Third-party components Hivra adds:
   License: Apache-2.0
   tasklane's LICENSE has no separate copyright line and the repo has no NOTICE file
   Used in: src-tauri/src/delivery/protected.rs
-  crates/tasklane-core/src/paths.rs (protected_hits) translated to Rust for WP-158. Directory patterns match anywhere, secret extensions match, and a glob matches nothing. Hivra adds .hivra/, the hub tauri config files and the rule files, and compares built-in names without case. Rewritten from the work package because the upstream file was not in this worktree. The keyword floor in floor.rs is not included.
+  crates/tasklane-core/src/paths.rs (protected_hits) rewritten in Rust for WP-158. Directory patterns match anywhere, secret extensions match, and a glob matches nothing. Hivra adds .hivra/, the hub tauri config files and the rule files, and compares built-in names without case. Rewritten from the work package because the upstream file was not in this worktree. The keyword floor in floor.rs is not included.
 
 MonoCode
 ========
