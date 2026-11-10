@@ -163,31 +163,35 @@ pub fn cas(project: &Path, expected: u64, body: &str) -> Result<bool, String> {
         return Ok(false);
     }
     let bytes = prepare(body, expected.saturating_add(1))?;
-    atomic_write(&path, &bytes)?;
+    atomic_write(&path, &bytes, "pin list")?;
     Ok(true)
 }
 
-fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), String> {
+fn save_error(noun: &str, this_time: bool) -> String {
+    if this_time {
+        format!("Could not save the {noun} this time.")
+    } else {
+        format!("Could not save the {noun}.")
+    }
+}
+
+fn atomic_write(path: &Path, bytes: &[u8], noun: &str) -> Result<(), String> {
     let Some(parent) = path.parent() else {
-        return Err("Could not save the pin list.".into());
+        return Err(save_error(noun, false));
     };
     if is_symlink(parent) {
         return Err("The pin folder is a link. It was left alone.".into());
     }
-    fs::create_dir_all(parent).map_err(|_| "Could not save the pin list.".to_string())?;
+    fs::create_dir_all(parent).map_err(|_| save_error(noun, false))?;
     let tmp = path.with_extension("json.tmp");
     if tmp.parent() != Some(parent) || is_symlink(&tmp) {
-        return Err("Could not save the pin list.".into());
+        return Err(save_error(noun, false));
     }
     if let Err(error) = fs::write(&tmp, bytes) {
         let _ = remove_inside(parent, &tmp);
-        return Err(if error.kind() == ErrorKind::TimedOut {
-            "Could not save the pin list this time.".into()
-        } else {
-            "Could not save the pin list.".into()
-        });
+        return Err(save_error(noun, error.kind() == ErrorKind::TimedOut));
     }
-    replace_file(&tmp, path)
+    replace_file(&tmp, path, noun)
 }
 
 fn remove_inside(parent: &Path, path: &Path) -> Result<(), ()> {
@@ -197,24 +201,24 @@ fn remove_inside(parent: &Path, path: &Path) -> Result<(), ()> {
     fs::remove_file(path).map_err(|_| ())
 }
 
-fn replace_file(from: &Path, to: &Path) -> Result<(), String> {
+fn replace_file(from: &Path, to: &Path, noun: &str) -> Result<(), String> {
     let Some(parent) = to.parent() else {
-        return Err("Could not save the pin list.".into());
+        return Err(save_error(noun, false));
     };
     if from.parent() != Some(parent) {
-        return Err("Could not save the pin list.".into());
+        return Err(save_error(noun, false));
     }
     if !to.exists() {
-        return fs::rename(from, to).map_err(|_| "Could not save the pin list.".to_string());
+        return fs::rename(from, to).map_err(|_| save_error(noun, false));
     }
     let backup = to.with_extension("json.bak");
     if backup.parent() != Some(parent) {
-        return Err("Could not save the pin list.".into());
+        return Err(save_error(noun, false));
     }
     if backup.exists() && !is_symlink(&backup) {
         let _ = fs::remove_file(&backup);
     }
-    fs::rename(to, &backup).map_err(|_| "Could not save the pin list.".to_string())?;
+    fs::rename(to, &backup).map_err(|_| save_error(noun, false))?;
     match fs::rename(from, to) {
         Ok(()) => {
             if !is_symlink(&backup) {
@@ -226,7 +230,7 @@ fn replace_file(from: &Path, to: &Path) -> Result<(), String> {
             if !to.exists() && !is_symlink(&backup) {
                 let _ = fs::rename(&backup, to);
             }
-            Err("Could not save the pin list.".into())
+            Err(save_error(noun, false))
         }
     }
 }
@@ -239,6 +243,100 @@ pub fn repo_watch_load(project: String) -> Result<String, String> {
 #[tauri::command(async)]
 pub fn repo_watch_cas(project: String, expected: u64, body: String) -> Result<bool, String> {
     cas(Path::new(&project), expected, &body)
+}
+
+fn drafts_path(project: &Path) -> Result<PathBuf, String> {
+    let root = canonical_dir(project)?;
+    let folder = root.join(".hivra");
+    if is_symlink(&folder) {
+        let target = crate::fs::canonical(&folder)
+            .map_err(|_| "The draft folder is not inside the project.".to_string())?;
+        if !target.starts_with(&root) {
+            return Err("The draft folder is not inside the project.".into());
+        }
+    }
+    let file = folder.join("repo-watch-drafts.json");
+    if is_symlink(&file) {
+        return Err("The draft file is a link. It was left alone.".into());
+    }
+    if !file.starts_with(&root) {
+        return Err("The draft file is not inside the project.".into());
+    }
+    Ok(file)
+}
+
+fn empty_drafts(revision: u64) -> String {
+    format!("{{\"revision\":{revision},\"drafts\":[],\"seen\":[]}}\n")
+}
+
+fn prepare_drafts(body: &str, revision: u64) -> Result<Vec<u8>, String> {
+    if body.len() > MAX_BYTES {
+        return Err("That draft list is too large.".into());
+    }
+    let mut value: Value =
+        serde_json::from_str(body).map_err(|_| "That draft list could not be read.".to_string())?;
+    if !value.is_object() {
+        return Err("That draft list could not be read.".into());
+    }
+    scrubber().redact_value(&mut value);
+    hide_homes(&mut value);
+    let Some(map) = value.as_object_mut() else {
+        return Err("That draft list could not be read.".into());
+    };
+    map.insert("revision".into(), json!(revision));
+    if !map.get("drafts").is_some_and(Value::is_array) {
+        map.insert("drafts".into(), json!([]));
+    }
+    if !map.get("seen").is_some_and(Value::is_array) {
+        map.insert("seen".into(), json!([]));
+    }
+    let mut bytes = serde_json::to_vec_pretty(&value)
+        .map_err(|_| "Could not save the draft list.".to_string())?;
+    bytes.push(b'\n');
+    Ok(bytes)
+}
+
+pub fn load_drafts(project: &Path) -> Result<String, String> {
+    let _hold = gate().lock().unwrap_or_else(|error| error.into_inner());
+    let path = drafts_path(project)?;
+    let text = match fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(empty_drafts(0)),
+        Err(_) => return Err("Could not read the draft list.".into()),
+    };
+    let revision = read_revision(&text);
+    match prepare_drafts(&text, revision) {
+        Ok(bytes) => {
+            String::from_utf8(bytes).map_err(|_| "Could not read the draft list.".to_string())
+        }
+        Err(_) => Ok(empty_drafts(revision)),
+    }
+}
+
+pub fn cas_drafts(project: &Path, expected: u64, body: &str) -> Result<bool, String> {
+    let _hold = gate().lock().unwrap_or_else(|error| error.into_inner());
+    let path = drafts_path(project)?;
+    let current = match fs::read_to_string(&path) {
+        Ok(text) => read_revision(&text),
+        Err(error) if error.kind() == ErrorKind::NotFound => 0,
+        Err(_) => return Err("Could not read the draft list.".into()),
+    };
+    if current != expected {
+        return Ok(false);
+    }
+    let bytes = prepare_drafts(body, expected.saturating_add(1))?;
+    atomic_write(&path, &bytes, "draft list")?;
+    Ok(true)
+}
+
+#[tauri::command(async)]
+pub fn repo_watch_drafts_load(project: String) -> Result<String, String> {
+    load_drafts(Path::new(&project))
+}
+
+#[tauri::command(async)]
+pub fn repo_watch_drafts_cas(project: String, expected: u64, body: String) -> Result<bool, String> {
+    cas_drafts(Path::new(&project), expected, &body)
 }
 
 const FETCH_TIMEOUT: Duration = Duration::from_secs(20);
@@ -601,7 +699,7 @@ pub fn write_summary(project: &Path, markdown: &str) -> Result<(), String> {
     if clean.len() > MAX_BYTES {
         return Err("That summary is too large.".into());
     }
-    atomic_write(&file, clean.as_bytes()).map_err(|error| {
+    atomic_write(&file, clean.as_bytes(), "summary").map_err(|error| {
         if error.contains("this time") {
             "Could not write the summary this time.".into()
         } else if error.contains("link") {
@@ -981,5 +1079,60 @@ mod tests {
         let err = write_summary(&project, "hello").unwrap_err();
         assert!(err.contains("link"));
         assert_eq!(fs::read_to_string(&outside).unwrap(), "keep");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_skips_the_summary_link() {
+        // Creating a symlink here needs extra privileges.
+    }
+
+    #[test]
+    fn a_draft_list_drops_a_token_and_refuses_a_stale_save() {
+        let tmp = Tmp::new();
+        let project = tmp.path.join("proj");
+        fs::create_dir_all(&project).unwrap();
+        let missing = load_drafts(&project).unwrap();
+        assert!(missing.contains("\"revision\":0"));
+        assert!(missing.contains("\"drafts\":[]"));
+        let body = format!(
+            "{{\"revision\":0,\"drafts\":[{{\"title\":\"see {PLANTED} in /Users/example/notes\"}}],\"seen\":[]}}"
+        );
+        assert!(cas_drafts(&project, 0, &body).unwrap());
+        let text =
+            fs::read_to_string(project.join(".hivra").join("repo-watch-drafts.json")).unwrap();
+        assert!(!text.contains(PLANTED));
+        assert!(!text.contains("/Users/example"));
+        assert!(text.contains("[secret removed]"));
+        assert!(text.contains("a local path"));
+        assert!(!cas_drafts(&project, 0, &body).unwrap());
+        let kept =
+            fs::read_to_string(project.join(".hivra").join("repo-watch-drafts.json")).unwrap();
+        assert_eq!(kept, text);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_draft_link_is_left_alone() {
+        use std::os::unix::fs::symlink;
+        let tmp = Tmp::new();
+        let project = tmp.path.join("proj");
+        let outside = tmp.path.join("outside.json");
+        fs::create_dir_all(project.join(".hivra")).unwrap();
+        fs::write(&outside, "keep").unwrap();
+        symlink(
+            &outside,
+            project.join(".hivra").join("repo-watch-drafts.json"),
+        )
+        .unwrap();
+        let err = cas_drafts(&project, 0, r#"{"drafts":[]}"#).unwrap_err();
+        assert!(err.contains("link"));
+        assert_eq!(fs::read_to_string(&outside).unwrap(), "keep");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_skips_the_draft_link() {
+        // Creating a symlink here needs extra privileges.
     }
 }

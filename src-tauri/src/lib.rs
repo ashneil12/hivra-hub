@@ -1185,6 +1185,8 @@ pub fn run() {
             repo_watch::repo_watch_cas,
             repo_watch::repo_watch_fetch,
             repo_watch::repo_watch_write_summary,
+            repo_watch::repo_watch_drafts_load,
+            repo_watch::repo_watch_drafts_cas,
             // WP-86: commits on a task, and the agents behind a pull request.
             attribution::attribution_for_task,
             attribution::attribution_for_commits,

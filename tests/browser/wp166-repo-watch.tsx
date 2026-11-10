@@ -14,6 +14,7 @@ type Control = {
   files: Record<string, string>;
   loadStarted: boolean;
   releaseLoad: () => void;
+  pinsText: () => string | null;
 };
 
 const control: Control = {
@@ -22,6 +23,7 @@ const control: Control = {
   files: {},
   loadStarted: false,
   releaseLoad: () => {},
+  pinsText: () => null,
 };
 
 (window as unknown as { repoWatch: Control }).repoWatch = control;
@@ -45,7 +47,9 @@ function page(root: HTMLElement, io: PinIo, projectRoot: string) {
   );
 }
 
-page(document.getElementById("list")!, memoryPinIo(), "/work/My Project");
+const listIo = memoryPinIo();
+control.pinsText = () => listIo.text();
+page(document.getElementById("list")!, listIo, "/work/My Project");
 
 const lateBase = memoryPinIo();
 let reads = 0;

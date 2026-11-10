@@ -98,6 +98,29 @@ test("a late load does not wipe an import", async ({ page }) => {
   await expect(late.getByText("Added 1 repository.")).toBeVisible();
 });
 
+test("keeps draft upgrades off until the switch is turned on", async ({ page }) => {
+  await page.goto(pageUrl);
+  const list = page.locator("#list");
+  const toggle = list.getByRole("switch", { name: "Queue draft upgrades" });
+  await expect(toggle).toHaveAttribute("aria-checked", "false");
+  await toggle.click();
+  await expect(toggle).toHaveAttribute("aria-checked", "true");
+  await expect.poll(() => page.evaluate(() => window.repoWatch.pinsText())).toContain('"enqueueDrafts": true');
+
+  await page.evaluate((body) => {
+    window.repoWatch.files["pins.json"] = body;
+    window.repoWatch.file = "/tmp/pins.json";
+  }, JSON.stringify({ enqueueDrafts: true, pins: [{ url: "https://github.com/acme/web", licence: "MIT", pinSha: "abc1234" }] }));
+  await list.getByRole("button", { name: "Import a file" }).click();
+  await expect(list.getByRole("link", { name: "acme/web" })).toBeVisible();
+  await expect.poll(() => page.evaluate(() => window.repoWatch.pinsText())).toContain('"enqueueDrafts": true');
+  await toggle.click();
+  await expect(toggle).toHaveAttribute("aria-checked", "false");
+  await expect.poll(() => page.evaluate(() => window.repoWatch.pinsText())).toContain('"enqueueDrafts": false');
+  await list.getByRole("button", { name: "Import a file" }).click();
+  await expect.poll(() => page.evaluate(() => window.repoWatch.pinsText())).toContain('"enqueueDrafts": false');
+});
+
 test("turns the weekly check on without removing it when switched off", async ({ page }) => {
   await page.goto(pageUrl);
   const habit = page.locator("#habit");
@@ -135,6 +158,7 @@ declare global {
       files: Record<string, string>;
       loadStarted: boolean;
       releaseLoad: () => void;
+      pinsText: () => string | null;
     };
     repoWatchHabits: { id: string; enabled: boolean }[];
   }

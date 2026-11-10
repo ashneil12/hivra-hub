@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { SwitchRow } from "../../monos/ui/monoPanelParts";
 import { importPinText, type PinDocument, type RepoPin } from "../model/pins";
 import { emptyPins, loadPins, PinIoError, savePins, textFromFolder, type PinIo } from "../model/pinStore";
 
@@ -47,6 +48,7 @@ export function RepoWatchPage({ projectRoot, io, pickFile, pickFolder, readPicke
   const [doc, setDoc] = useState<PinDocument>(emptyPins());
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState(false);
+  const [ready, setReady] = useState(false);
   const generation = useRef(0);
   const busyRef = useRef(false);
 
@@ -54,10 +56,12 @@ export function RepoWatchPage({ projectRoot, io, pickFile, pickFolder, readPicke
     if (!projectRoot.trim()) return;
     const mine = ++generation.current;
     let cancelled = false;
+    setReady(false);
     void loadPins(io, projectRoot)
       .then((next) => {
         if (cancelled || mine !== generation.current) return;
         setDoc(next);
+        setReady(true);
         setMessage("");
       })
       .catch((error: unknown) => {
@@ -86,6 +90,32 @@ export function RepoWatchPage({ projectRoot, io, pickFile, pickFolder, readPicke
     if (mine !== generation.current) return;
     setDoc(saved);
     setMessage(line);
+  }
+
+  async function onEnqueue(next: boolean) {
+    if (busyRef.current || !projectRoot.trim()) return;
+    busyRef.current = true;
+    setBusy(true);
+    const mine = ++generation.current;
+    setDoc((current) => ({ ...current, enqueueDrafts: next }));
+    try {
+      const saved = await savePins(
+        io,
+        projectRoot,
+        (current) => ({ pins: current.pins, enqueueDrafts: next }),
+        { aborted: false },
+      );
+      if (mine !== generation.current) return;
+      setDoc(saved);
+      setMessage("");
+    } catch (error) {
+      if (mine !== generation.current) return;
+      setDoc((current) => ({ ...current, enqueueDrafts: !next }));
+      setMessage(messageFrom(error, "Could not save the pin list."));
+    } finally {
+      busyRef.current = false;
+      setBusy(false);
+    }
   }
 
   async function onImportFile() {
@@ -135,6 +165,13 @@ export function RepoWatchPage({ projectRoot, io, pickFile, pickFolder, readPicke
       <p className="text-[13px] text-content/70">
         Pinned upstream repositories for this project. The list starts empty and is saved only after you import.
       </p>
+      <SwitchRow
+        label="Queue draft upgrades"
+        description="Off until you turn it on. A clear update with an MIT, Apache-2.0 or MPL-2.0 licence is saved as a draft. Nothing starts."
+        on={doc.enqueueDrafts}
+        disabled={!ready || busy}
+        onChange={(next) => void onEnqueue(next)}
+      />
       <div className="flex gap-2">
         <button
           type="button"

@@ -2,6 +2,7 @@
 // by tests. The app uses gh or git through the Rust commands.
 
 import { QUIET_MARKER } from "../../monos/model/monoHabits";
+import { saveDrafts, type DraftIo } from "./drafts";
 import { githubSlug, parsePinDocument, type PinDocument, type RepoPin } from "./pins";
 import {
   activityLine,
@@ -32,6 +33,9 @@ export type RunInput = {
   fetchPin?: (pin: RepoPin) => Promise<FetchBodies>;
   write?: (markdown: string) => Promise<void>;
   note?: (summary: string, project: string) => Promise<void>;
+  /** Draft file. Used only when enqueueDrafts is on. */
+  drafts?: DraftIo;
+  now?: () => number;
 };
 
 function isTimeout(error: unknown): boolean {
@@ -56,6 +60,23 @@ async function defaultFetch(pin: RepoPin): Promise<FetchBodies> {
 async function defaultWrite(projectRoot: string, markdown: string): Promise<void> {
   const { invoke } = await import("@tauri-apps/api/core");
   await invoke("repo_watch_write_summary", { project: projectRoot, body: markdown });
+}
+
+async function defaultDrafts(projectRoot: string): Promise<DraftIo> {
+  const { invoke } = await import("@tauri-apps/api/core");
+  return {
+    async read() {
+      const text = await invoke<string>("repo_watch_drafts_load", { project: projectRoot });
+      return { text };
+    },
+    async write(_root, text, expectedRevision) {
+      return invoke<boolean>("repo_watch_drafts_cas", {
+        project: projectRoot,
+        expected: expectedRevision,
+        body: text,
+      });
+    },
+  };
 }
 
 async function defaultNote(input: RunInput, summary: string, project: string): Promise<void> {
@@ -116,6 +137,14 @@ export async function runRepoWatchHabit(input: RunInput): Promise<WatchRun> {
       reply: "",
       error: isTimeout(error) ? "Could not write the summary this time." : "Could not write the summary.",
     };
+  }
+  if (doc.enqueueDrafts && !input.signal?.aborted) {
+    try {
+      const drafts = input.drafts ?? (await defaultDrafts(root));
+      await saveDrafts(drafts, root, doc.pins, reports, input.now?.() ?? Date.now(), input.signal);
+    } catch {
+      // The summary is the record. A missed draft is not a failed check.
+    }
   }
   const reply = watchIsQuiet(reports) ? QUIET_MARKER : chatReply(reports);
   const summary = activityLine(markdown);
