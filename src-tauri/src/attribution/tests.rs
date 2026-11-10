@@ -1199,6 +1199,8 @@ fn a_real_containment_failure_is_never_retried() {
     }
     let outside = std::env::temp_dir().join("hivra-elsewhere");
     let outside = outside.to_str().unwrap();
+    // `mut` is only used where the link case below exists.
+    #[cfg_attr(not(unix), allow(unused_mut))]
     let mut cases = vec![
         ("afile", "afile: is not a folder", 1),
         (outside, "afile: path leaves the data folder", 0),
