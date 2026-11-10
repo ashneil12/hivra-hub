@@ -459,22 +459,10 @@ pub fn run() {
             ) {
                 eprintln!("WP-90: the named-app proxy did not start: {error}");
             }
-            // stack-fakes (#88): a fake left from the last run is stopped before its name is put back.
-            if let Err(error) = stacks::stop_stand_ins(&claim.data_dir) {
-                eprintln!("WP-90: a fake service left by the last run was not stopped: {error}");
-            }
-            // WP-90: a stack still marked running from the last launch keeps its names on
-            // this process; the new proxy has just pruned the previous owner's.
-            match stacks::env_from_app(app.handle()) {
-                Ok(env) => {
-                    if let Err(error) = stacks::resume_names(&env) {
-                        eprintln!("WP-90: the running stacks' names were not put back: {error}");
-                    }
-                }
-                Err(error) => {
-                    eprintln!("WP-90: the running stacks' names were not put back: {error}");
-                }
-            }
+            // WP-90 and stack-fakes (#88): the last run's fakes are stopped and a running stack's
+            // fakes and names put back, in the background. Neither the stop nor `node --version`
+            // holds the window, and a stack action that comes in waits for it.
+            stacks::resume_at_launch(app.handle(), claim.data_dir.clone());
             // WP-30: work out where plugins live (and where their skills are linked) before anything lists skills.
             let _ = plugins::host(app.handle());
             // WP-41: install and switch on the default plugins (pstack) once per data folder, in the background.

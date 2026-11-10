@@ -70,9 +70,27 @@ pub struct StackEnv {
     pub path_env: Option<String>,
 }
 
+/// Why a name could not be added. A clash is a fact about the name; anything else (the list is
+/// busy, cannot be written) is a fact about the moment, and says nothing about whose the name is.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum NameError {
+    /// Another stack, or another running process, holds the name.
+    Held(String),
+    /// The name list could not be used. Nobody was found holding the name.
+    Failed(String),
+}
+
+impl std::fmt::Display for NameError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Held(text) | Self::Failed(text) => text.fmt(f),
+        }
+    }
+}
+
 /// The name registry, as the stack code sees it. Tests pass a memory list.
 pub trait NameRegistry: Send + Sync {
-    fn add(&self, hostname: &str, port: u16, pid: u32, stack_id: &str) -> Result<(), String>;
+    fn add(&self, hostname: &str, port: u16, pid: u32, stack_id: &str) -> Result<(), NameError>;
     fn remove(&self, hostname: &str, pid: u32, stack_id: &str) -> Result<(), String>;
 }
 
@@ -82,10 +100,15 @@ pub struct RouteNames {
 }
 
 impl NameRegistry for RouteNames {
-    fn add(&self, hostname: &str, port: u16, pid: u32, stack_id: &str) -> Result<(), String> {
+    fn add(&self, hostname: &str, port: u16, pid: u32, stack_id: &str) -> Result<(), NameError> {
         self.store
             .add_route_owned(hostname, port, pid, true, Some(stack_id))
-            .map_err(|error| error.to_string())
+            .map_err(|error| match error {
+                crate::proxy::routes::RouteError::Conflict(clash) => {
+                    NameError::Held(clash.to_string())
+                }
+                crate::proxy::routes::RouteError::Refused(text) => NameError::Failed(text),
+            })
     }
 
     fn remove(&self, hostname: &str, pid: u32, stack_id: &str) -> Result<(), String> {
@@ -120,6 +143,11 @@ pub trait StandIn: Send + Sync {
 pub trait ComposeRunner: Send + Sync {
     fn up(&self, request: &UpRequest) -> Result<(), ComposeFailure>;
     fn down(&self, project: &str, compose_file: Option<&Path>) -> Result<(), ComposeFailure>;
+    /// The host ports the containers of one Compose project publish right now. A runner that
+    /// cannot say answers `Unreachable`, and nothing is then taken to be the stack's.
+    fn published_ports(&self, _project: &str) -> Result<Vec<u16>, ComposeFailure> {
+        Err(ComposeFailure::Unreachable)
+    }
 }
 
 pub struct UpRequest {
@@ -316,6 +344,7 @@ pub fn maybe_start(
     if !long_running {
         return Ok(Vec::new());
     }
+    wait_for_launch_resume(&env.data_dir);
     crate::stack_decl::validate(stack)?;
     // WP-90: a declared service that names a real outside account needs the project's word,
     // and then only the person starts it. A crew's tests always meet the stand-in.
@@ -418,6 +447,7 @@ fn real_service(stack: &StackDecl) -> Option<String> {
 }
 
 pub fn down(env: &StackEnv, worktree: &Path) -> Result<(), String> {
+    wait_for_launch_resume(&env.data_dir);
     let dir = registry_dir(&env.data_dir);
     let key = path_key(worktree);
     let store = load(&dir)?;
@@ -440,6 +470,7 @@ pub fn down(env: &StackEnv, worktree: &Path) -> Result<(), String> {
 
 /// WP-90: put this stack's stand-in back to its seed between runs. Names and ports stay.
 pub fn reset(env: &StackEnv, worktree: &Path) -> Result<(), String> {
+    wait_for_launch_resume(&env.data_dir);
     let dir = registry_dir(&env.data_dir);
     let key = path_key(worktree);
     let store = load(&dir)?;
@@ -496,6 +527,7 @@ pub fn remove_stale(env: &StackEnv, id: &str) -> Result<(), String> {
     if !valid_stack_id(id) {
         return Err("That stack id is not one this app created, so nothing was removed.".into());
     }
+    wait_for_launch_resume(&env.data_dir);
     let dir = registry_dir(&env.data_dir);
     let store = load(&dir)?;
     let Some(entry) = store.stacks.iter().find(|item| item.id == id).cloned() else {
@@ -646,6 +678,102 @@ pub fn local_url(url: &str) -> Option<String> {
     (!label.is_empty()).then(|| url.to_string())
 }
 
+/// The launch work of each data folder that is still going. A stack action waits for it: a
+/// start that landed while the launch was still stopping the last run's fakes would have its own
+/// fake stopped.
+struct Launch {
+    pending: Mutex<HashSet<PathBuf>>,
+    done: std::sync::Condvar,
+}
+
+static LAUNCH: OnceLock<Launch> = OnceLock::new();
+
+fn launch() -> &'static Launch {
+    LAUNCH.get_or_init(|| Launch {
+        pending: Mutex::new(HashSet::new()),
+        done: std::sync::Condvar::new(),
+    })
+}
+
+/// How long a stack action waits for the launch work before it goes ahead anyway.
+const LAUNCH_WAIT: Duration = Duration::from_secs(60);
+
+fn begin_launch_resume(data_dir: &Path) {
+    let mut pending = launch()
+        .pending
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    pending.insert(data_dir.to_path_buf());
+}
+
+fn finish_launch_resume(data_dir: &Path) {
+    let launch = launch();
+    let mut pending = launch
+        .pending
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    pending.remove(data_dir);
+    launch.done.notify_all();
+}
+
+/// Wait while the launch work of this data folder runs. Nothing to wait for is no wait.
+fn wait_for_launch_resume(data_dir: &Path) {
+    let launch = launch();
+    let pending = launch
+        .pending
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _ = launch
+        .done
+        .wait_timeout_while(pending, LAUNCH_WAIT, |pending| pending.contains(data_dir));
+}
+
+/// What the app does about stacks at launch, off the window's path: stop the fakes the last run
+/// left, then put a running stack's fakes and names back. Stopping a stand-in can take seconds,
+/// and so can `node --version`; the window does not wait for either. A stack action that comes
+/// in meanwhile waits for this to finish.
+pub fn resume_at_launch(app: &AppHandle, data_dir: PathBuf) {
+    let app = app.clone();
+    spawn_launch_resume(data_dir, move || env_from_app(&app));
+}
+
+fn spawn_launch_resume(
+    data_dir: PathBuf,
+    make_env: impl FnOnce() -> Result<StackEnv, String> + Send + 'static,
+) {
+    begin_launch_resume(&data_dir);
+    /// Ends the wait however the work ends, a panic included.
+    struct Finish(PathBuf);
+    impl Drop for Finish {
+        fn drop(&mut self) {
+            finish_launch_resume(&self.0);
+        }
+    }
+    let worker = Finish(data_dir.clone());
+    let spawned = std::thread::Builder::new()
+        .name("hivra-stack-resume".into())
+        .spawn(move || {
+            let worker = worker;
+            run_launch_resume(&worker.0, make_env);
+        });
+    if let Err(error) = spawned {
+        // The closure, and the guard in it, were dropped, so nothing waits on this.
+        eprintln!("WP-90: the running stacks were not put back: {error}");
+    }
+}
+
+fn run_launch_resume(data_dir: &Path, make_env: impl FnOnce() -> Result<StackEnv, String>) {
+    // stack-fakes (#88): a fake left from the last run is stopped before its name is put back.
+    if let Err(error) = stop_stand_ins(data_dir) {
+        eprintln!("WP-90: a fake service left by the last run was not stopped: {error}");
+    }
+    // WP-90: a stack still marked running from the last launch keeps its names on this
+    // process; the new proxy has just pruned the previous owner's.
+    if let Err(error) = make_env().and_then(|env| resume_names(&env)) {
+        eprintln!("WP-90: the running stacks' names were not put back: {error}");
+    }
+}
+
 /// WP-90: a stack that was still running when the app last quit keeps its names. The proxy is
 /// in-process, so the previous owner pid is gone and the new proxy has pruned every name;
 /// this puts them back under this process, before anything lists a stack.
@@ -707,6 +835,32 @@ struct Resumed {
     note: Option<String>,
 }
 
+/// Whose a port is that answers where the stack's app was.
+enum AppPort {
+    /// Docker says this stack's own containers publish it.
+    Ours,
+    /// Something answers there that this stack did not start, as far as can be told.
+    Stranger,
+    /// Docker could not be asked, so nothing is known.
+    Unasked,
+}
+
+/// Is the listener on the app's port the stack's own app? Nothing on this Mac records the pid of
+/// an app that outlived a quit, and a name is a promise that the address opens that app. The
+/// stack's own Compose project is what can be asked: it publishes the port or it does not. A
+/// stack with no Compose file ran its app as a process the quit ended, so whatever answers
+/// now is something else.
+fn app_port_owner(env: &StackEnv, entry: &Entry, port: u16) -> AppPort {
+    if !entry.has_compose {
+        return AppPort::Stranger;
+    }
+    match compose_of(env).published_ports(&entry.compose_project) {
+        Ok(ports) if ports.contains(&port) => AppPort::Ours,
+        Ok(_) => AppPort::Stranger,
+        Err(_) => AppPort::Unasked,
+    }
+}
+
 fn resume_entry(env: &StackEnv, entry: &Entry, own: u32) -> Resumed {
     let mut entry = entry.clone();
     if let Some(proxy_port) = env.proxy_port {
@@ -722,31 +876,55 @@ fn resume_entry(env: &StackEnv, entry: &Entry, own: u32) -> Resumed {
     }
     let mut refused = Vec::new();
     let mut waiting = Vec::new();
+    let mut app_stranger = false;
+    let mut app_unasked = false;
+    let mut list_failed = false;
     if let Some(names) = &env.names {
         for name in &entry.names {
             let is_fake = name
                 .service
                 .as_ref()
                 .is_some_and(|service| entry.emulated.iter().any(|fake| &fake.service == service));
-            // A fake is ours to name once this app started it. Anything else is named only
-            // while something accepts on its port, so an old name never reaches a stranger.
+            // A fake is ours to name once this app started it. The app is named only when its
+            // port is answering and is the stack's own: an answer alone could be anything that
+            // took the port while the app was gone.
             let ready = if is_fake {
                 fakes_up
+            } else if !port_accepts(name.port) {
+                false
             } else {
-                port_accepts(name.port)
+                match app_port_owner(env, &entry, name.port) {
+                    AppPort::Ours => true,
+                    AppPort::Stranger => {
+                        app_stranger = true;
+                        false
+                    }
+                    AppPort::Unasked => {
+                        app_unasked = true;
+                        false
+                    }
+                }
             };
             if !ready {
                 waiting.push(name.hostname.clone());
                 continue;
             }
-            if names
-                .add(&name.hostname, name.port, own, &entry.id)
-                .is_err()
-            {
-                refused.push(name.hostname.clone());
+            match names.add(&name.hostname, name.port, own, &entry.id) {
+                Ok(()) => {}
+                // Only a real clash drops the name: it is another stack's.
+                Err(NameError::Held(_)) => refused.push(name.hostname.clone()),
+                // Anything else says nothing about whose it is. It stays, unpublished.
+                Err(NameError::Failed(_)) => {
+                    list_failed = true;
+                    waiting.push(name.hostname.clone());
+                }
             }
         }
     }
+    let app_waiting = entry
+        .names
+        .iter()
+        .any(|name| name.service.is_none() && waiting.contains(&name.hostname));
     let note = stand_in_note
         .or_else(|| {
             (!refused.is_empty()).then(|| {
@@ -755,9 +933,24 @@ fn resume_entry(env: &StackEnv, entry: &Entry, own: u32) -> Resumed {
             })
         })
         .or_else(|| {
-            let app_waiting = entry.names.iter().any(|name| {
-                name.service.is_none() && waiting.contains(&name.hostname)
-            });
+            list_failed.then(|| {
+                "The list of names could not be used, so a name was not put back. Start the stack again to try again."
+                    .to_string()
+            })
+        })
+        .or_else(|| {
+            app_stranger.then(|| {
+                "Something this app did not start is using the app's port, so its address was left unpublished. Start the stack again to publish it."
+                    .to_string()
+            })
+        })
+        .or_else(|| {
+            app_unasked.then(|| {
+                "Docker did not say which ports this stack uses, so the app's address was left unpublished. Start the stack again to publish it."
+                    .to_string()
+            })
+        })
+        .or_else(|| {
             app_waiting.then(|| {
                 "The app wasn't answering when this app started, so its address was left unpublished. Start the stack again to publish it."
                     .to_string()
@@ -813,14 +1006,7 @@ fn follow_proxy(entry: &mut Entry, proxy_port: u16) {
 
 /// Whether something on this machine accepts TCP on the loopback port a name points at.
 fn port_accepts(port: u16) -> bool {
-    if port == 0 {
-        return false;
-    }
-    std::net::TcpStream::connect_timeout(
-        &std::net::SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, port)),
-        Duration::from_millis(200),
-    )
-    .is_ok()
+    emulate::accepts_on_loopback(port)
 }
 
 /// How long the stop at quit waits for a stack whose stand-in is being restarted. A start may
@@ -989,7 +1175,7 @@ fn publish_names(env: &StackEnv, entry: &Entry) -> Result<(), String> {
             for hostname in added {
                 let _ = names.remove(hostname, pid, &entry.id);
             }
-            return Err(error);
+            return Err(error.to_string());
         }
         added.push(&name.hostname);
     }
@@ -2190,6 +2376,96 @@ impl ComposeRunner for RealDocker {
         }
         remove_by_label(project)
     }
+
+    fn published_ports(&self, project: &str) -> Result<Vec<u16>, ComposeFailure> {
+        if !valid_compose_project(project) {
+            return Err(ComposeFailure::Failed(
+                "The Compose name is not one this app created.".into(),
+            ));
+        }
+        let mut cmd = docker_command();
+        cmd.args([
+            "ps",
+            "--filter",
+            &format!("label=com.docker.compose.project={project}"),
+            "--format",
+            "{{.Ports}}",
+        ]);
+        Ok(published_host_ports(&output_within(&mut cmd, PORTS_WAIT)?))
+    }
+}
+
+/// How long the question "which ports does this stack publish" may take. It is asked while
+/// the app opens, so a Docker that is starting must not hold it.
+const PORTS_WAIT: Duration = Duration::from_secs(5);
+
+/// The host ports in `docker ps --format {{.Ports}}`: `0.0.0.0:22010->3000/tcp, [::]:22010->3000/tcp`,
+/// a range such as `0.0.0.0:22010-22012->3000-3002/tcp`, and ports that are not published at all
+/// (`3000/tcp`, which have no arrow and no host port).
+fn published_host_ports(text: &str) -> Vec<u16> {
+    let mut ports = Vec::new();
+    for segment in text.split([',', '\n']) {
+        let Some((host, _container)) = segment.trim().split_once("->") else {
+            continue;
+        };
+        let Some((_, numbers)) = host.rsplit_once(':') else {
+            continue;
+        };
+        let (first, last) = numbers.split_once('-').unwrap_or((numbers, numbers));
+        let (Ok(first), Ok(last)) = (first.parse::<u16>(), last.parse::<u16>()) else {
+            continue;
+        };
+        // A range is a handful of ports; a wild one is not walked.
+        if first <= last && last - first < 64 {
+            ports.extend(first..=last);
+        }
+    }
+    ports.sort_unstable();
+    ports.dedup();
+    ports
+}
+
+/// Run a command to the end, up to `wait`, and return what it printed. A command that does not
+/// finish is ended.
+fn output_within(cmd: &mut Command, wait: Duration) -> Result<String, ComposeFailure> {
+    let mut child = cmd.spawn().map_err(|_| ComposeFailure::Unreachable)?;
+    let stderr = child.stderr.take();
+    let stdout = child.stdout.take();
+    let err_reader = std::thread::spawn(move || capped(stderr));
+    let out_reader = std::thread::spawn(move || {
+        let mut text = String::new();
+        if let Some(pipe) = stdout {
+            let _ = pipe.take(64 * 1024).read_to_string(&mut text);
+        }
+        text
+    });
+    let started = Instant::now();
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) if started.elapsed() <= wait => std::thread::sleep(Duration::from_millis(30)),
+            Ok(None) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                let _ = err_reader.join();
+                let _ = out_reader.join();
+                return Err(ComposeFailure::TimedOut);
+            }
+            Err(_) => {
+                let _ = child.kill();
+                let _ = err_reader.join();
+                let _ = out_reader.join();
+                return Err(ComposeFailure::Unreachable);
+            }
+        }
+    };
+    let stderr = err_reader.join().unwrap_or_default();
+    let stdout = out_reader.join().unwrap_or_default();
+    if status.success() {
+        Ok(stdout)
+    } else {
+        Err(ComposeFailure::Failed(one_line(&stderr)))
+    }
 }
 
 fn compose_down(project: &str, file: &Path) -> Result<(), ComposeFailure> {
@@ -2682,6 +2958,8 @@ mod tests {
         calls: Mutex<Vec<String>>,
         files: Mutex<Vec<Option<PathBuf>>>,
         script: Mutex<Vec<Script>>,
+        /// What Docker says the project publishes. None is a Docker that cannot be asked.
+        published: Mutex<Option<Vec<u16>>>,
     }
 
     impl ComposeRunner for Mem {
@@ -2700,6 +2978,14 @@ mod tests {
                 .unwrap()
                 .push(compose_file.map(|path| path.to_path_buf()));
             self.next()
+        }
+
+        fn published_ports(&self, project: &str) -> Result<Vec<u16>, ComposeFailure> {
+            self.calls.lock().unwrap().push(format!("ports {project}"));
+            match &*self.published.lock().unwrap() {
+                Some(ports) => Ok(ports.clone()),
+                None => Err(ComposeFailure::Unreachable),
+            }
         }
     }
 
@@ -2812,6 +3098,7 @@ mod tests {
                     calls: Mutex::new(Vec::new()),
                     files: Mutex::new(Vec::new()),
                     script: Mutex::new(Vec::new()),
+                    published: Mutex::new(None),
                 }),
                 tmp,
             }
@@ -2853,22 +3140,28 @@ mod tests {
     }
 
     impl NameRegistry for MemoryNames {
-        fn add(&self, hostname: &str, port: u16, pid: u32, stack_id: &str) -> Result<(), String> {
+        fn add(
+            &self,
+            hostname: &str,
+            port: u16,
+            pid: u32,
+            stack_id: &str,
+        ) -> Result<(), NameError> {
             let mut routes = self.routes.lock().unwrap();
             if let Some((.., held)) = routes.iter().find(|(name, ..)| name == hostname) {
                 if !held.is_empty() && held != stack_id {
-                    return Err(format!(
+                    return Err(NameError::Held(format!(
                         "{hostname} is already a name used by another stack"
-                    ));
+                    )));
                 }
             }
             if routes
                 .iter()
                 .any(|(name, _, owner, _)| name == hostname && *owner != pid)
             {
-                return Err(format!(
+                return Err(NameError::Held(format!(
                     "{hostname} is already a name used by a running process"
-                ));
+                )));
             }
             routes.retain(|(name, ..)| name != hostname);
             routes.push((hostname.to_string(), port, pid, stack_id.to_string()));
@@ -5143,6 +5436,8 @@ mod tests {
             &fix,
             running_entry(&fix, "s0000a001", &fix.first, app_port, fakes),
         );
+        // Docker says the app port is this stack's own.
+        *fix.runner.published.lock().unwrap() = Some(vec![app_port]);
         let stand_in = WatchingStandIn::new(&routes);
         let env = resumed_env(&fix, &routes, Some(stand_in.clone()));
         resume_names(&env).unwrap();
@@ -5220,6 +5515,8 @@ mod tests {
             &fix,
             running_entry(&fix, "s0000a001", &fix.first, app_port, fakes),
         );
+        // Docker says the app port is this stack's own.
+        *fix.runner.published.lock().unwrap() = Some(vec![app_port]);
         let stand_in = WatchingStandIn::new(&routes);
         let env = resumed_env(&fix, &routes, Some(stand_in.clone()));
         resume_names(&env).unwrap();
@@ -5303,6 +5600,8 @@ mod tests {
                 Some("sabcdef012"),
             )
             .unwrap();
+        // Docker says the app port is this stack's own.
+        *fix.runner.published.lock().unwrap() = Some(vec![app_port]);
         let stand_in = WatchingStandIn::new(&routes);
         let env = resumed_env(&fix, &routes, Some(stand_in.clone()));
         resume_names(&env).unwrap();
@@ -5346,6 +5645,8 @@ mod tests {
             &fix,
             running_entry(&fix, "s0000a001", &fix.first, app_port, fakes),
         );
+        // Docker says the app port is this stack's own.
+        *fix.runner.published.lock().unwrap() = Some(vec![app_port]);
         let stand_in = WatchingStandIn::new(&routes);
         *stand_in.outcome.lock().unwrap() = StandInOutcome {
             pid: None,
@@ -5369,27 +5670,226 @@ mod tests {
         drop(app);
     }
 
+    /// The app's port answers, and it is not the stack's: something took it while the app was
+    /// gone. The old check named the app for any listener, so the address opened a stranger.
+    #[test]
+    fn an_app_name_is_not_published_for_a_listener_the_stack_does_not_own() {
+        let fix = Fix::new();
+        let stranger = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let app_port = stranger.local_addr().unwrap().port();
+        let fakes = [closed_port(), closed_port()];
+        let (routes, _) = after_a_restart(
+            &fix,
+            running_entry(&fix, "s0000a001", &fix.first, app_port, fakes),
+        );
+        // Docker says this stack's containers publish other ports, not the one that answers.
+        *fix.runner.published.lock().unwrap() = Some(vec![closed_port()]);
+        let stand_in = WatchingStandIn::new(&routes);
+        let env = resumed_env(&fix, &routes, Some(stand_in));
+        resume_names(&env).unwrap();
+
+        assert!(routes.route_for_host("main-a.localhost").is_none());
+        let running = running_stack(&fix);
+        assert_eq!(running.names.len(), 3, "the name was dropped");
+        let note = running.note.expect("a note says the port is not the app's");
+        assert!(note.contains("did not start"), "{note}");
+        // The fakes were not held up by it.
+        assert!(routes.route_for_host("github.main-a.localhost").is_some());
+        drop(stranger);
+    }
+
+    /// Docker that cannot be asked proves nothing, so the app is not named.
+    #[test]
+    fn an_app_name_waits_for_docker_to_say_whose_the_port_is() {
+        let fix = Fix::new();
+        let app = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let app_port = app.local_addr().unwrap().port();
+        let fakes = [closed_port(), closed_port()];
+        let (routes, _) = after_a_restart(
+            &fix,
+            running_entry(&fix, "s0000a001", &fix.first, app_port, fakes),
+        );
+        // The default: this runner cannot say what the project publishes.
+        let stand_in = WatchingStandIn::new(&routes);
+        let env = resumed_env(&fix, &routes, Some(stand_in));
+        resume_names(&env).unwrap();
+
+        assert!(routes.route_for_host("main-a.localhost").is_none());
+        let running = running_stack(&fix);
+        assert_eq!(running.names.len(), 3);
+        let note = running.note.expect("a note says Docker was not asked");
+        assert!(note.contains("Docker"), "{note}");
+        // Docker was asked about this stack's project, once.
+        assert_eq!(
+            calls(&fix)
+                .iter()
+                .filter(|call| call.starts_with("ports "))
+                .count(),
+            1
+        );
+        drop(app);
+    }
+
+    /// A stack with no Compose file ran its app as a process that the quit ended. Whatever
+    /// answers on that port now is not it.
+    #[test]
+    fn a_stack_with_no_compose_file_does_not_name_whatever_answers_on_its_port() {
+        let fix = Fix::new();
+        let stranger = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let app_port = stranger.local_addr().unwrap().port();
+        let fakes = [closed_port(), closed_port()];
+        let mut entry = running_entry(&fix, "s0000a001", &fix.first, app_port, fakes);
+        entry.has_compose = false;
+        let (routes, _) = after_a_restart(&fix, entry);
+        *fix.runner.published.lock().unwrap() = Some(vec![app_port]);
+        let env = resumed_env(&fix, &routes, Some(WatchingStandIn::new(&routes)));
+        resume_names(&env).unwrap();
+
+        assert!(routes.route_for_host("main-a.localhost").is_none());
+        // Docker was never asked about a stack that has no Compose project.
+        assert!(calls(&fix).iter().all(|call| !call.starts_with("ports ")));
+        assert_eq!(running_stack(&fix).names.len(), 3);
+        drop(stranger);
+    }
+
+    /// A registry that could not be used (busy, not writable) said nothing about who holds the
+    /// name. Only a real clash takes a name off the stack.
+    #[test]
+    fn a_name_the_registry_could_not_take_for_another_reason_stays_with_its_stack() {
+        struct Broken;
+        impl NameRegistry for Broken {
+            fn add(&self, _: &str, _: u16, _: u32, _: &str) -> Result<(), NameError> {
+                Err(NameError::Failed(
+                    "The name list is busy, so nothing changed.".into(),
+                ))
+            }
+            fn remove(&self, _: &str, _: u32, _: &str) -> Result<(), String> {
+                Ok(())
+            }
+        }
+        let fix = Fix::new();
+        let app = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let app_port = app.local_addr().unwrap().port();
+        let fakes = [closed_port(), closed_port()];
+        let (routes, _) = after_a_restart(
+            &fix,
+            running_entry(&fix, "s0000a001", &fix.first, app_port, fakes),
+        );
+        *fix.runner.published.lock().unwrap() = Some(vec![app_port]);
+        let env = StackEnv {
+            names: Some(Arc::new(Broken)),
+            ..resumed_env(&fix, &routes, Some(WatchingStandIn::new(&routes)))
+        };
+        resume_names(&env).unwrap();
+
+        let running = running_stack(&fix);
+        assert_eq!(running.names.len(), 3, "a name was dropped without a clash");
+        let note = running
+            .note
+            .expect("a note says the list could not be used");
+        assert!(note.contains("could not be used"), "{note}");
+        assert!(!note.contains("another stack"), "{note}");
+        // The clash case is still a drop: the other test holds that.
+        drop(app);
+    }
+
+    /// `docker ps --format {{.Ports}}`, as Docker prints it.
+    #[test]
+    fn the_published_ports_are_read_from_what_docker_prints() {
+        assert_eq!(
+            published_host_ports("0.0.0.0:22010->3000/tcp, [::]:22010->3000/tcp\n"),
+            vec![22010]
+        );
+        assert_eq!(
+            published_host_ports(
+                "0.0.0.0:22011->5432/tcp\n127.0.0.1:22012-22014->8000-8002/tcp, 9000/tcp"
+            ),
+            vec![22011, 22012, 22013, 22014]
+        );
+        // Not published, or not a port at all.
+        assert_eq!(published_host_ports("3000/tcp"), Vec::<u16>::new());
+        assert_eq!(published_host_ports(""), Vec::<u16>::new());
+        assert_eq!(
+            published_host_ports("0.0.0.0:abc->1/tcp"),
+            Vec::<u16>::new()
+        );
+        assert_eq!(
+            published_host_ports("0.0.0.0:1-60000->1/tcp"),
+            Vec::<u16>::new()
+        );
+    }
+
+    /// Stopping the last run's fakes and starting a stack's back used to hold the window, and a
+    /// stack action that came in meanwhile could have its own fake stopped by the launch work.
+    /// The work is a background thread; an action waits for it and then goes ahead.
+    #[test]
+    fn the_launch_work_runs_in_the_background_and_a_stack_start_waits_for_it() {
+        let fix = Fix::new();
+        let (release, blocked) = std::sync::mpsc::channel::<()>();
+        let (entered, entered_signal) = std::sync::mpsc::channel::<()>();
+        let env_fix = fix.env();
+        let began = Instant::now();
+        spawn_launch_resume(fix.data.clone(), move || {
+            entered.send(()).unwrap();
+            let _ = blocked.recv();
+            Ok(env_fix)
+        });
+        assert!(
+            began.elapsed() < Duration::from_secs(5),
+            "the launch work held the caller"
+        );
+        entered_signal.recv_timeout(Duration::from_secs(5)).unwrap();
+
+        let env = fix.env();
+        let (main, first) = (fix.main.clone(), fix.first.clone());
+        let start = std::thread::spawn(move || {
+            maybe_start(&env, &main, &first, true, Some(&ports_only()), false, true)
+        });
+        std::thread::sleep(Duration::from_millis(300));
+        assert!(
+            !start.is_finished(),
+            "a stack start went ahead while the launch work was running"
+        );
+        assert!(
+            load(&registry_dir(&fix.data)).unwrap().stacks.is_empty(),
+            "the stack was started under the launch work"
+        );
+        release.send(()).unwrap();
+        start.join().unwrap().unwrap();
+        assert_eq!(load(&registry_dir(&fix.data)).unwrap().stacks.len(), 1);
+    }
+
+    /// The launch work that panics must not leave every stack action waiting.
+    #[test]
+    fn a_launch_work_that_fails_does_not_hold_a_stack_start() {
+        let fix = Fix::new();
+        spawn_launch_resume(fix.data.clone(), || Err("no environment".into()));
+        let env = fix.env();
+        maybe_start(
+            &env,
+            &fix.main,
+            &fix.first,
+            true,
+            Some(&ports_only()),
+            false,
+            true,
+        )
+        .unwrap();
+    }
+
     /// A stack list that can't be read must not leave a stand-in running: the stacks folder is
     /// the record of what was started, not the list.
     #[cfg(unix)]
     #[test]
     fn a_fake_is_stopped_even_when_the_stack_list_cannot_be_read() {
-        use std::os::unix::process::CommandExt;
         let fix = Fix::new();
         let inside = registry_dir(&fix.data).join("stacks").join("s01234567");
         std::fs::create_dir_all(&inside).unwrap();
         let inside = crate::fs::canonical(&inside).unwrap();
-        let mut command = Command::new("sh");
-        command
-            .arg("-c")
-            .arg(format!(
-                "sleep 30; : emulate {}",
-                inside.join("emulate.config.json").display()
-            ))
-            .process_group(0);
-        let mut child = command.spawn().unwrap();
-        std::thread::sleep(Duration::from_millis(50));
-        std::fs::write(inside.join("emulate.pid"), format!("{}\n", child.id())).unwrap();
+        let Some(mut child) = emulate::tests::node_stand_in(&inside) else {
+            println!("skipped: node is not installed");
+            return;
+        };
         std::fs::write(registry_path(&registry_dir(&fix.data)), b"{ not json").unwrap();
         // The unreadable list is reported, and the stand-in is stopped anyway.
         assert!(stop_stand_ins(&fix.data).is_err());
@@ -5414,23 +5914,15 @@ mod tests {
     #[test]
     fn a_stacks_folder_that_is_a_link_is_not_followed() {
         use std::os::unix::fs::symlink;
-        use std::os::unix::process::CommandExt;
         let fix = Fix::new();
         let elsewhere = fix.tmp.root.join("elsewhere");
         let stack = elsewhere.join("s01234567");
         std::fs::create_dir_all(&stack).unwrap();
         let stack = crate::fs::canonical(&stack).unwrap();
-        let mut command = Command::new("sh");
-        command
-            .arg("-c")
-            .arg(format!(
-                "sleep 30; : emulate {}",
-                stack.join("emulate.config.json").display()
-            ))
-            .process_group(0);
-        let mut child = command.spawn().unwrap();
-        std::thread::sleep(Duration::from_millis(50));
-        std::fs::write(stack.join("emulate.pid"), format!("{}\n", child.id())).unwrap();
+        let Some(mut child) = emulate::tests::node_stand_in(&stack) else {
+            println!("skipped: node is not installed");
+            return;
+        };
         std::fs::create_dir_all(registry_dir(&fix.data)).unwrap();
         symlink(&elsewhere, registry_dir(&fix.data).join("stacks")).unwrap();
 
@@ -5531,14 +6023,25 @@ mod tests {
     #[test]
     fn the_app_stops_its_fakes_at_the_next_start_and_when_it_quits() {
         let lib = include_str!("lib.rs");
-        let start = lib
-            .find("stacks::stop_stand_ins(&claim.data_dir)")
+        assert!(
+            lib.contains("stacks::resume_at_launch("),
+            "the start does not put the running stacks back"
+        );
+        // The launch work stops what the last run left before it puts a name back.
+        let source = include_str!("stacks.rs");
+        let work = source
+            .find("fn run_launch_resume(")
+            .expect("there is no launch work");
+        let work = &source[work..];
+        let work = &work[..work.find("\n}\n").expect("the launch work has no end")];
+        let stop = work
+            .find("stop_stand_ins(data_dir)")
             .expect("the start does not stop a fake left by the last run");
-        let resume = lib
-            .find("stacks::resume_names(&env)")
+        let resume = work
+            .find("resume_names(&env)")
             .expect("the start does not put the running stacks' names back");
         assert!(
-            start < resume,
+            stop < resume,
             "a left-over fake must be stopped before its name is put back"
         );
         let exit = lib
@@ -5558,7 +6061,6 @@ mod tests {
     #[test]
     fn a_fake_left_behind_is_stopped_and_one_outside_the_folder_is_not() {
         use std::os::unix::fs::symlink;
-        use std::os::unix::process::CommandExt;
         let fix = Fix::new();
         let inside = registry_dir(&fix.data).join("stacks").join("s01234567");
         let outside = fix.tmp.root.join("outside");
@@ -5567,23 +6069,11 @@ mod tests {
         // The same path stop will prove against: canonicalize follows the temp symlink.
         let inside = crate::fs::canonical(&inside).unwrap();
         let outside = crate::fs::canonical(&outside).unwrap();
-        let spawn = |dir: &Path| {
-            let mut command = Command::new("sh");
-            command
-                .arg("-c")
-                .arg(format!(
-                    "sleep 30; : emulate {}",
-                    dir.join("emulate.config.json").display()
-                ))
-                .process_group(0);
-            let child = command.spawn().unwrap();
-            std::thread::sleep(Duration::from_millis(50));
-            let pid = child.id();
-            std::fs::write(dir.join("emulate.pid"), format!("{pid}\n")).unwrap();
-            child
+        let spawn = |dir: &Path| emulate::tests::node_stand_in(dir);
+        let (Some(mut ours), Some(mut foreign)) = (spawn(&inside), spawn(&outside)) else {
+            println!("skipped: node is not installed");
+            return;
         };
-        let mut ours = spawn(&inside);
-        let mut foreign = spawn(&outside);
         // A link inside the stacks folder that points out of it must not be followed.
         symlink(
             &outside,
