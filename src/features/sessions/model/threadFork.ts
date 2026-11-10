@@ -1,5 +1,6 @@
 // WP-123: a new chat with a copy of the history up to one message. The original
 // is never written. Ids are new, so the two chats do not share a mutable row.
+import { boundaryFromDisk, UNREADABLE_BOUNDARY } from "../../memory/model/privateChat";
 import {
   temporaryWorktreeBranchName,
   type Worktree,
@@ -90,9 +91,9 @@ function copyMessage(message: BtwMessage, ids: ForkIds): BtwMessage | null {
     if (message.blocks.length === 0) {
       copy.blocks = [];
     } else {
-      const blocks = copyBlocks(message.blocks, message.blocks.length - 1, ids);
-      if (!blocks) return null;
-      copy.blocks = blocks;
+      const copied = copyBlocks(message.blocks, message.blocks.length - 1, ids);
+      if (!copied) return null;
+      copy.blocks = copied.blocks;
     }
   }
   return copy;
@@ -131,7 +132,11 @@ function copyThreads(
   return copies;
 }
 
-function copyBlocks(blocks: readonly Block[], end: number, ids: ForkIds): Block[] | null {
+function copyBlocks(
+  blocks: readonly Block[],
+  end: number,
+  ids: ForkIds,
+): { blocks: Block[]; blockIds: Map<string, string> } | null {
   if (end < 0 || end >= blocks.length) return null;
   let cloned: Block[];
   try {
@@ -167,7 +172,26 @@ function copyBlocks(blocks: readonly Block[], end: number, ids: ForkIds): Block[
     if (!threads) return null;
     block.btwThreads = threads;
   }
-  return cloned;
+  return { blocks: cloned, blockIds };
+}
+
+/**
+ * Where the fork's private boundary falls. A chat switched off from private keeps what came before the switch
+ * unread: the same message in the copy, or the copy's last message when the switch came after the fork point. A
+ * boundary that matches nothing keeps the copy unread.
+ */
+function forkBoundary(
+  source: Session,
+  index: number,
+  blockIds: ReadonlyMap<string, string>,
+  lastId: string,
+): string | undefined {
+  const boundary = boundaryFromDisk(source.privateBoundaryId);
+  if (!boundary) return undefined;
+  const at = source.blocks.findIndex((block) => block?.id === boundary);
+  if (at < 0) return UNREADABLE_BOUNDARY;
+  if (at > index) return lastId;
+  return blockIds.get(boundary) ?? UNREADABLE_BOUNDARY;
 }
 
 /**
@@ -198,8 +222,10 @@ export function forkSessionAtMessage(
   if (index < 0) return null;
   const id = sessionId ?? takeId(ids);
   if (!persistableId(id)) return null;
-  const blocks = copyBlocks(source.blocks, index, ids);
-  if (!blocks) return null;
+  const copied = copyBlocks(source.blocks, index, ids);
+  if (!copied) return null;
+  const { blocks, blockIds } = copied;
+  const last = blocks[blocks.length - 1];
   const modelSettings = plainStringRecord(source.modelSettings);
   const fork: Session = {
     id,
@@ -215,6 +241,11 @@ export function forkSessionAtMessage(
   if (typeof source.worktreeCwd === "string" && source.worktreeCwd) {
     fork.worktreeCwd = source.worktreeCwd;
   }
+  if (source.worktreeRemoved) fork.worktreeRemoved = true;
+  // WP-111: a fork of a private chat is private, and what was private before a switch stays unread.
+  if (source.private === true) fork.private = true;
+  const boundary = forkBoundary(source, index, blockIds, last.id);
+  if (boundary) fork.privateBoundaryId = boundary;
   if (source.firstMate) fork.firstMate = true;
   if (typeof source.providerAccountId === "string" && persistableId(source.providerAccountId)) {
     fork.providerAccountId = source.providerAccountId;

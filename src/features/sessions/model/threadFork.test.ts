@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
+import { memoryReadableBlocks, UNREADABLE_BOUNDARY } from "../../memory/model/privateChat";
 import { temporaryWorktreeBranchName, type Worktree } from "../../source-control/model/worktrees";
+import { sanitizeSessionForPersist } from "../data/sessionStore";
 import { newSession, type Attachment, type Block, type Session } from "./session";
 import { clearThreadForkAsk, threadForkAskSnapshot } from "./threadForkAsk";
 import {
@@ -273,6 +275,15 @@ describe("forkSessionAtMessage", () => {
     expect(fork!.blocks[0].attachments![0].name).toBe("notes.txt");
   });
 
+  it("keeps a worktree that was deleted marked as deleted, so the fork does not run in a missing folder", () => {
+    const gone = chat([block({ id: "u1", role: "user", text: "Hi" })], { worktreeRemoved: true });
+    const fork = forkSessionAtMessage(gone, "u1", ids(["fork-1", "b1"]))!;
+    expect(fork.worktreeCwd).toBe("/work/proj-wt");
+    expect(fork.worktreeRemoved).toBe(true);
+    const present = chat([block({ id: "u1", role: "user", text: "Hi" })]);
+    expect(forkSessionAtMessage(present, "u1", ids(["fork-2", "c1"]))!.worktreeRemoved).toBeUndefined();
+  });
+
   it("uses the reserved session id when one is handed in", () => {
     const source = chat([block({ id: "u1", role: "user", text: "Hi" })]);
     const fork = forkSessionAtMessage(source, "u1", ids(["b1"]), "reserved-1");
@@ -511,3 +522,88 @@ describe("forkAttemptGate", () => {
     expect(gate.current(third)).toBe(true);
   });
 });
+
+describe("a forked private chat", () => {
+  function conversation(over: Partial<Session> = {}): Session {
+    return chat(
+      [
+        block({ id: "u1", role: "user", text: "Secret one" }),
+        block({ id: "a1", role: "assistant", text: "Secret answer" }),
+        block({ id: "u2", role: "user", text: "Public question" }),
+        block({ id: "a2", role: "assistant", text: "Public answer" }),
+        block({ id: "u3", role: "user", text: "Later" }),
+      ],
+      over,
+    );
+  }
+  const texts = (blocks: readonly { text: string }[]) => blocks.map((entry) => entry.text);
+  const fresh = ["fork-1", "b1", "b2", "b3", "b4", "b5"];
+
+  it("stays private, so memory reads nothing from it", () => {
+    const source = conversation({ private: true });
+    const fork = forkSessionAtMessage(source, "a2", ids(fresh))!;
+    expect(fork.private).toBe(true);
+    expect(memoryReadableBlocks(fork)).toEqual([]);
+    expect(source.private).toBe(true);
+  });
+
+  it("keeps what was private unread after the chat was switched off", () => {
+    const source = conversation({ privateBoundaryId: "a1" });
+    const fork = forkSessionAtMessage(source, "u3", ids(fresh))!;
+    expect(fork.private).toBeUndefined();
+    expect(fork.privateBoundaryId).toBe("b2");
+    expect(texts(memoryReadableBlocks(fork))).toEqual(["Public question", "Public answer", "Later"]);
+  });
+
+  it("keeps a chat that is private again and still has its old boundary", () => {
+    const source = conversation({ private: true, privateBoundaryId: "a1" });
+    const fork = forkSessionAtMessage(source, "a2", ids(fresh))!;
+    expect(fork.private).toBe(true);
+    expect(fork.privateBoundaryId).toBe("b2");
+  });
+
+  it("is unread throughout when the boundary comes after the fork point", () => {
+    const source = conversation({ privateBoundaryId: "a2" });
+    const fork = forkSessionAtMessage(source, "a1", ids(fresh))!;
+    expect(fork.privateBoundaryId).toBe("b2");
+    expect(memoryReadableBlocks(fork)).toEqual([]);
+    const later = { ...fork, blocks: [...fork.blocks, block({ id: "n1", role: "user", text: "New" })] };
+    expect(texts(memoryReadableBlocks(later))).toEqual(["New"]);
+  });
+
+  it("stays unread when the boundary matches no message", () => {
+    const source = conversation({ privateBoundaryId: "gone" });
+    const fork = forkSessionAtMessage(source, "a1", ids(fresh))!;
+    expect(fork.privateBoundaryId).toBe(UNREADABLE_BOUNDARY);
+    expect(memoryReadableBlocks(fork)).toEqual([]);
+  });
+
+  it("gives a chat that was never private neither flag", () => {
+    const fork = forkSessionAtMessage(conversation(), "a2", ids(fresh))!;
+    expect(fork.private).toBeUndefined();
+    expect(fork.privateBoundaryId).toBeUndefined();
+    expect(memoryReadableBlocks(fork)).toHaveLength(4);
+  });
+
+  it("saves both flags with the new chat", () => {
+    const source = conversation({ private: true, privateBoundaryId: "a1" });
+    const fork = forkSessionAtMessage(source, "a2", ids(fresh))!;
+    const saved = sanitizeSessionForPersist(fork);
+    expect(saved.private).toBe(true);
+    expect(saved.privateBoundaryId).toBe(fork.blocks[1].id);
+  });
+
+  it("is still private when it also gets its own worktree", async () => {
+    const source = conversation({ private: true });
+    const fork = await forkChat(
+      source,
+      "a2",
+      { useNewWorktree: true },
+      { createWorktree: async () => tree("/work/new-wt") },
+      ids(fresh),
+    );
+    expect(fork!.private).toBe(true);
+    expect(fork!.worktreeCwd).toBe("/work/new-wt");
+  });
+});
+

@@ -3,6 +3,7 @@ import { act, createElement, type RefObject } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it } from "vitest";
 import type { Worktree } from "../../source-control/model/worktrees";
+import { memoryReadableBlocks } from "../../memory/model/privateChat";
 import { newSession, type Block, type Session } from "../model/session";
 import type { ForkWorktreePort } from "../model/threadFork";
 import { askThreadFork, clearThreadForkAsk } from "../model/threadForkAsk";
@@ -427,3 +428,20 @@ it("treats a timeout as something to try again, not a finished failure", async (
   expect(opened).toHaveLength(1);
   expect(opened[0].blocks.map((entry) => entry.text)).toEqual(["First"]);
 });
+
+it("opens a fork of a private chat as private, and keeps what was private unread", async () => {
+  const source = { ...chat(), private: true, privateBoundaryId: "u1" };
+  const opened: Session[] = [];
+  await renderHost(source, opened);
+  act(() => askThreadFork(source.id, "a1"));
+  await act(async () => {
+    document.querySelector<HTMLButtonElement>("[data-thread-fork-confirm]")?.click();
+  });
+  expect(opened).toHaveLength(1);
+  expect(opened[0].private).toBe(true);
+  expect(memoryReadableBlocks(opened[0])).toEqual([]);
+  expect(opened[0].privateBoundaryId).toBe(opened[0].blocks[0].id);
+  expect(source.private).toBe(true);
+  expect(source.privateBoundaryId).toBe("u1");
+});
+
