@@ -74,6 +74,26 @@ What this refuses:
 - Putting every new chat into the open space.
 - Using the filter to collapse folders or to settle chats. Settle stays in WP-113, off by default.
 
+### Split view
+
+There is no WP-109 to reuse. The parity note guessed a pane-split package still in flight. This tree has no such document, and the split is already the workspace layout in `src/features/workspace/model/layout.ts`. A tab holds a tree of panes. Same-direction splits share a group. The person drags a sash, drops a pane on an edge, or uses the existing split shortcuts (right, or down). A later build must extend this tree. It must not add a second split implementation beside it.
+
+What may sit beside a chat, all of it already possible:
+
+- Another chat. A second session leaf, to the right or below. Dragging a chat from the list onto an edge opens it there or moves it. It does not clone the chat. One chat is one turn, so two panes cannot submit the same turn twice.
+- A diff. The right-hand panel already has Changes beside the chat (`RightPanelTab` includes `changes`, next to files, the graph, and crew). The same split tree can also hold a changes pane: the working tree, one chat's before-and-after snapshots, or one commit (`changes`, `sessionChanges`, and `commit` on a file pane). Use those. Do not add a new diff viewer. How the diff itself lays out lines (one column, or side by side) is WP-116, a different package. This design does not change that, and it does not make side-by-side lines the default.
+- A terminal. A terminal pane is already part of the same tree. The first terminal in a tab opens below the chat. Further terminals join that pane. Orca is praised for terminal splits beside an agent. Hivra already has the pane, so this design does not add another terminal stack, and it does not take Orca's code. Paseo is not a source here: the parity notes do not describe a split to answer.
+
+What must not be forced into the split:
+
+- A side question (WP-112). That stays a borrowed-context question off the chat list. It is not the way to put two chats side by side, and it must not grow a row on the list because a pane opened.
+- Being built, a board, Home, or Settings. Those are other screens. A board beside a chat can be a later package. It is not this one.
+- A second copy of the same chat.
+
+The right-hand panel and the split tree are two existing places a diff can sit. A later build should not invent a third. If the person wants the diff in the pane, open the changes pane. If they want it tucked beside the chat without splitting the chat, use the Changes tab. Both read the same git state.
+
+Splitting does not change which project group is filtered, which folder a chat is in, or the order of either list. That rule is in the re-sort section.
+
 ## Done when
 
 - [ ] The design covers spaces, split, windows, and the re-sort rule.
