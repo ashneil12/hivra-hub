@@ -20,9 +20,11 @@
 // One decision covers every Mono a turn reads: their memories are scored together, so the three lines
 // are the three best across all of them, not three each. How far a memory has faded (fade.ts) takes
 // a little off its score, so a fact nobody has used in a long while needs a closer match to be shown.
+// The same sentence saved under several Monos is one line: the turn's own Mono's copy is kept and the others are left
+// out before the crowd rule counts them, and they count as shown once the kept line is.
 
 import { confidence, type Belief } from "../vendor/mercuryBelief";
-import { mentionsSecret, type MemoryDoc, type MemoryItem } from "./doc";
+import { mentionsSecret, normalizeFact, type MemoryDoc, type MemoryItem } from "./doc";
 import { fadeReader, livedClockOf } from "./fade";
 
 /** A turn shows at most this many memories. The one place to change it. */
@@ -138,6 +140,7 @@ export type RecallRejectReason =
   | "too_few_shared_words"
   | "below_threshold"
   | "already_shown"
+  | "duplicate"
   | "held_back";
 
 export type RecallScoreParts = {
@@ -177,6 +180,11 @@ export type RecallDecision = {
   broad: boolean;
   /** Ids the policy picked, best first. These are the lines that go into the fence. */
   picked: string[];
+  /**
+   * Memories left out because a copy of the same sentence, under another Mono, is picked or was already shown. They
+   * are not in the fence, but the sentence is: mark them shown with `picked` so they do not come back one per turn.
+   */
+  copiesShown: string[];
   /** Every memory of the Monos it read, with its score and either picked or why it was not. */
   candidates: RecallCandidate[];
 };
@@ -386,6 +394,11 @@ function ratio(hits: number, denominator: number): number {
   return Math.min(1, hits / denominator);
 }
 
+/** A sentence as copies of it are compared: one line, no capitals, no doubled spaces. */
+function sameText(text: string): string {
+  return normalizeFact(text).toLowerCase();
+}
+
 /**
  * Row-Bot's broad-query rule. It counted a query of two words or fewer as broad and returned
  * nothing when the best two scored alike. Hivra's four-word gate already turns short messages
@@ -416,7 +429,7 @@ export function recallDecision(input: RecallDecisionInput): RecallDecision {
   const latest = message.trim();
   const query = buildQuery(message, recent);
   const mateIds = [...new Set([mateId, ...(input.mateIds ?? [])])];
-  const base: RecallDecision = { mateId, mateIds, query, broad: false, picked: [], candidates: [] };
+  const base: RecallDecision = { mateId, mateIds, query, broad: false, picked: [], copiesShown: [], candidates: [] };
   const stop = (reason: RecallStop): RecallDecision => ({ ...base, stop: reason });
 
   if (!latest) return stop("empty_message");
@@ -495,6 +508,8 @@ export function recallDecision(input: RecallDecisionInput): RecallDecision {
   const denominator = Math.min(terms.length, RECALL_LEXICAL_TERMS);
   // The lived-day clock is built once for the whole store, and its reading of `now` once for the whole decision.
   const readFade = fadeReader(livedClockOf(doc), now);
+  // The words of each memory that can still be picked, for finding the same sentence under another Mono.
+  const wordsOf = new Map<RecallCandidate, string>();
   const candidates: RecallCandidate[] = mine.map((item, index) => {
     const factField = FIELD_FACT * ratio(factHits[index], denominator);
     const evidenceField = FIELD_EVIDENCE * ratio(evidenceHits[index], denominator);
@@ -534,6 +549,7 @@ export function recallDecision(input: RecallDecisionInput): RecallDecision {
       // An explicit search has no gates, but it still needs a word in common.
       return { ...candidate, reason: "below_threshold" };
     }
+    wordsOf.set(candidate, sameText(item.text));
     return candidate;
   });
 
@@ -541,23 +557,54 @@ export function recallDecision(input: RecallDecisionInput): RecallDecision {
     .filter((candidate) => !candidate.reason)
     .sort((a, b) => b.score - a.score || a.id.localeCompare(b.id));
   if (!eligible.length) return { ...stop("no_valid_candidates"), candidates };
-  const broad = mode === "automatic" && isCrowded(eligible);
 
-  // A memory already shown in this conversation is not sent again, so the cap counts what is new.
+  // One sentence is one line. Of several copies the turn's own Mono's is kept, else the best scoring one, and the
+  // rest are left out here, before the crowd rule: three copies are not a crowd, and they must not take the lines
+  // that different facts would have had.
+  const copies = new Map<string, RecallCandidate[]>();
+  for (const candidate of eligible) {
+    const words = wordsOf.get(candidate)!;
+    const group = copies.get(words);
+    if (group) group.push(candidate);
+    else copies.set(words, [candidate]);
+  }
+  const keeperOf = new Map<string, RecallCandidate>();
+  for (const [words, group] of copies) keeperOf.set(words, group.find((candidate) => candidate.mateId === mateId) ?? group[0]);
+  const lines = eligible.filter((candidate) => keeperOf.get(wordsOf.get(candidate)!) === candidate);
+  const broad = mode === "automatic" && isCrowded(lines);
+
+  // A memory already shown in this conversation is not sent again, so the cap counts what is new. So is a sentence
+  // already shown under any Mono, even when the copy that carried it is gone or this copy was saved since.
   const shown = input.exclude ?? new Set<string>();
+  const shownWords = new Set<string>();
+  if (shown.size) for (const item of doc.items) if (shown.has(item.id)) shownWords.add(sameText(item.text));
   const room = broad ? RECALL_BROAD_MAX_LINES : RECALL_MAX_LINES;
   const picked: RecallCandidate[] = [];
   const held = new Map<string, RecallRejectReason>();
+  const sent = new Set<RecallCandidate>();
+  for (const candidate of lines) {
+    if (shown.has(candidate.id) || shownWords.has(wordsOf.get(candidate)!)) {
+      held.set(candidate.id, "already_shown");
+      sent.add(candidate);
+    } else if (picked.length >= room) held.set(candidate.id, "held_back");
+    else {
+      picked.push(candidate);
+      sent.add(candidate);
+    }
+  }
+  const copiesShown: string[] = [];
   for (const candidate of eligible) {
-    if (shown.has(candidate.id)) held.set(candidate.id, "already_shown");
-    else if (picked.length >= room) held.set(candidate.id, "held_back");
-    else picked.push(candidate);
+    const keeper = keeperOf.get(wordsOf.get(candidate)!)!;
+    if (keeper === candidate) continue;
+    held.set(candidate.id, "duplicate");
+    if (sent.has(keeper)) copiesShown.push(candidate.id);
   }
   const pickedIds = new Set(picked.map((candidate) => candidate.id));
   return {
     ...base,
     broad,
     picked: picked.map((candidate) => candidate.id),
+    copiesShown,
     candidates: candidates.map((candidate) => {
       if (pickedIds.has(candidate.id)) return { ...candidate, picked: true };
       const reason = held.get(candidate.id);
@@ -576,6 +623,7 @@ export const REJECT_LABEL: Record<RecallRejectReason, string> = {
   too_few_shared_words: "too few shared words",
   below_threshold: "not a strong enough match",
   already_shown: "already shown",
+  duplicate: "a copy of another memory",
   held_back: "over the three for this turn",
 };
 

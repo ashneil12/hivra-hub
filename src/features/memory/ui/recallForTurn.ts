@@ -35,7 +35,8 @@ export async function recalledFence(
     recordRecall(decision, now);
     const fence = recallFence(doc, decision.picked, readingEngine);
     if (!fence) return undefined;
-    if (sessionId) noteShown(sessionId, decision.picked);
+    // A copy of a picked sentence under another Mono is as good as shown: noted too, it does not come back later.
+    if (sessionId) noteShown(sessionId, [...decision.picked, ...decision.copiesShown]);
     return fence;
   } catch {
     return undefined;

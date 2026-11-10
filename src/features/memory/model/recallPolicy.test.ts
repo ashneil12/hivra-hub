@@ -408,7 +408,8 @@ describe("fade lowers the score", () => {
 
   it("ranks the fresher of two facts that fit equally well above the faded one", () => {
     // The id breaks a tie, so the faded one is the one that would have won it.
-    const [first, second] = [item("Write commit messages on a branch"), item("Write commit messages on a branch")].sort((a, b) =>
+    // Two sentences, not one saved twice: the same sentence is one line, however many copies there are.
+    const [first, second] = [item("Write commit messages on a branch"), item("On a branch, write commit messages")].sort((a, b) =>
       a.id.localeCompare(b.id),
     );
     const faded = { ...first, fade: 0.1, lastUsedAt: NOW };
@@ -475,8 +476,8 @@ describe("one decision across Monos", () => {
   });
 
   it("counts a crowd across every Mono, so alike scores from different Monos still show one line", () => {
-    const text = "Note about the atlas schedule timing question";
-    const alike = [MATE, B, C].map((mateId) => item(text, { mateId }));
+    // Three different facts that score alike, one under each Mono: the question did not single one out.
+    const alike = [MATE, B, C].map((mateId, n) => item(`Note ${n} about the atlas schedule timing question`, { mateId }));
     const decision = decide(alike, "atlas schedule timing question", { mateIds: [MATE, B, C] });
     expect(decision.broad).toBe(true);
     expect(decision.picked).toHaveLength(1);
@@ -493,6 +494,139 @@ describe("one decision across Monos", () => {
   it("stops with no memories when none of the Monos has any", () => {
     const decision = decide([], MESSAGE, { mateIds: [MATE, B, C] });
     expect(decision.stop).toBe("no_memories");
+  });
+});
+
+describe("the same fact saved under several Monos", () => {
+  const MESSAGE = "What do you remember about writing small commits on a branch?";
+  const B = "b-lead";
+  const C = "c-lead";
+  const SAME = "Writing small commits on every branch";
+  const MONTH = 30 * 86_400_000;
+
+  // The turn's own copy is a month older, so it scores a little under the other two: keeping it is the rule
+  // at work, not a tie broken by id.
+  const own = item(SAME, { updatedAt: NOW - MONTH });
+  const inB = item(SAME, { mateId: B });
+  const inC = item(SAME, { mateId: C });
+  const other1 = item("Remember to write small commits", { mateId: B });
+  const other2 = item("Small commits keep every branch reviewable", { mateId: C });
+  const store = [own, inB, inC, other1, other2];
+
+  const across = (items: MemoryItem[] = store, extra: Partial<Parameters<typeof recallDecision>[0]> = {}) =>
+    decide(items, MESSAGE, { mateIds: [MATE, B, C], ...extra });
+  const textsOf = (decision: RecallDecision) =>
+    decision.picked.map((id) => store.find((memory) => memory.id === id)!.text);
+
+  it("shows the sentence once and fills the other lines with different facts", () => {
+    const decision = across();
+    const texts = textsOf(decision);
+    expect(decision.broad).toBe(false);
+    expect(texts).toHaveLength(3);
+    expect(new Set(texts).size).toBe(3);
+    expect([...texts].sort()).toEqual([SAME, other1.text, other2.text].sort());
+  });
+
+  it("keeps the copy under the Mono the turn belongs to, even when another copy scores higher", () => {
+    const decision = across();
+    expect(candidateFor(decision, inB.id)!.score).toBeGreaterThan(candidateFor(decision, own.id)!.score);
+    expect(decision.picked).toContain(own.id);
+    expect(decision.picked).not.toContain(inB.id);
+    expect(decision.picked).not.toContain(inC.id);
+  });
+
+  it("keeps the best-scoring copy when the turn's own Mono has none", () => {
+    const older = item(SAME, { mateId: B, updatedAt: NOW - MONTH });
+    const fresh = item(SAME, { mateId: C });
+    const decision = across([older, fresh, other1, other2]);
+    expect(decision.picked).toContain(fresh.id);
+    expect(decision.picked).not.toContain(older.id);
+  });
+
+  it("says in the trace that the other copies were left out as copies", () => {
+    const decision = across();
+    expect(candidateFor(decision, inB.id)).toMatchObject({ picked: false, reason: "duplicate" });
+    expect(candidateFor(decision, inC.id)).toMatchObject({ picked: false, reason: "duplicate" });
+    expect(tallyRejections(decision).get("duplicate")).toBe(2);
+    for (const candidate of decision.candidates) expect(Boolean(candidate.picked) !== Boolean(candidate.reason)).toBe(true);
+  });
+
+  it("reads a copy that differs only in case and spacing as the same sentence", () => {
+    const spaced = item("  writing  SMALL commits on every   branch ", { mateId: B });
+    const decision = across([own, spaced, other1, other2]);
+    expect(decision.picked).toContain(own.id);
+    expect(candidateFor(decision, spaced.id)!.reason).toBe("duplicate");
+  });
+
+  it("does not call two different facts copies of each other", () => {
+    const decision = across([own, other1, other2]);
+    expect(decision.picked).toHaveLength(3);
+    expect(tallyRejections(decision).get("duplicate")).toBeUndefined();
+  });
+
+  it("names the copies it left out, so the caller can mark them shown with the line", () => {
+    const decision = across();
+    expect([...decision.copiesShown].sort()).toEqual([inB.id, inC.id].sort());
+  });
+
+  it("does not list a copy of a line that was not shown this turn", () => {
+    // Three other facts score as high as the sentence, so the turn shows one line and the sentence waits for a later turn.
+    const crowd = [1, 2, 3].map((n) => item(`Writing small commits on every branch of project ${n}`));
+    const decision = across([own, inB, ...crowd, other1]);
+    expect(candidateFor(decision, own.id)!.reason).toBe("held_back");
+    expect(candidateFor(decision, inB.id)!.reason).toBe("duplicate");
+    expect(decision.copiesShown).toEqual([]);
+  });
+
+  it("never brings a copy back on the turns after, once the caller marks what was shown", () => {
+    let shown = new Set<string>();
+    const first = across(store, { exclude: shown });
+    expect(first.picked).toHaveLength(3);
+    shown = new Set([...first.picked, ...first.copiesShown]);
+    for (const turn of [2, 3]) {
+      const next = across(store, { exclude: shown });
+      expect(next.picked, `turn ${turn}`).toEqual([]);
+      for (const id of [own.id, inB.id, inC.id]) expect(next.picked).not.toContain(id);
+      shown = new Set([...shown, ...next.picked, ...next.copiesShown]);
+    }
+  });
+
+  it("does not bring a copy back even when the caller only marked the picked ids as shown", () => {
+    const first = across();
+    const next = across(store, { exclude: new Set(first.picked) });
+    expect(next.picked).toEqual([]);
+    expect(candidateFor(next, own.id)!.reason).toBe("already_shown");
+  });
+
+  it("does not bring a copy back when a copy saved later says what was already shown", () => {
+    const later = item(SAME, { mateId: C });
+    const next = across([...store, later], { exclude: new Set(across().picked) });
+    expect(next.picked).toEqual([]);
+    expect(candidateFor(next, later.id)!.reason).not.toBe("held_back");
+  });
+
+  it("does not bring a copy back when the copy that was shown has since been deleted", () => {
+    const first = across();
+    const shown = new Set([...first.picked, ...first.copiesShown]);
+    const next = across([inB, inC, other1, other2], { exclude: shown });
+    expect(next.picked).not.toContain(inB.id);
+    expect(next.picked).not.toContain(inC.id);
+  });
+
+  it("dedupes before the crowd rule, so three copies and two facts are not one crowded line", () => {
+    const decision = across();
+    expect(decision.broad).toBe(false);
+  });
+
+  it("still shows the one line when three copies are all there is", () => {
+    const decision = across([own, inB, inC]);
+    expect(decision.picked).toEqual([own.id]);
+    expect(decision.broad).toBe(false);
+  });
+
+  it("dedupes an explicit search too", () => {
+    const decision = across(store, { mode: "explicit" });
+    expect(textsOf(decision).filter((text) => text === SAME)).toHaveLength(1);
   });
 });
 
