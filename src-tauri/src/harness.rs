@@ -1039,14 +1039,14 @@ pub fn harness_spawn(
         .stderr(Stdio::piped());
     prepare_child(&mut cmd, &command);
     // WP-92: a worker's approved secrets go into this one child's environment, read in Rust from the Keychain.
+    // The Keychain is read before the store's lock is taken (secrets::worker::apply_to_child locks it itself, briefly).
     {
         let store = app.state::<crate::session_store::SessionStore>();
-        let conn = store.lock_conn()?;
         crate::secrets::worker::apply_to_child(
             &session_id,
             crate::secrets::store::active(),
             &mut cmd,
-            &conn,
+            &store,
             crate::session_store::now_millis(),
         )?;
     }

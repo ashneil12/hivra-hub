@@ -220,10 +220,25 @@ pub fn memory_review_cas(
 ) -> Result<bool, String> {
     let dir = store_dir(&app)?;
     // WP-92: a value of any shape is refused, not only one that looks like a key.
-    let conn = store.lock_conn()?;
-    let vault = crate::secrets::store::active();
-    cas_checked(&dir, revision, doc, &|text| {
-        crate::secrets::holds_known_value(vault, &conn, None, text)
+    let holds = known_value_check(&store, crate::secrets::store::active())?;
+    cas_checked(&dir, revision, doc, &holds)
+}
+
+/// WP-92: the check that refuses a note holding a saved value. The names come from the database under the store's lock,
+/// which is let go before the Keychain is read: a system prompt left open must not stall every writer in the app.
+pub(crate) fn known_value_check(
+    store: &crate::session_store::SessionStore,
+    vault: &dyn crate::secrets::Vault,
+) -> Result<impl Fn(&str) -> bool, String> {
+    let names = {
+        let conn = store.lock_conn()?;
+        crate::secrets::known_names(&conn, None)
+    };
+    let needles = crate::secrets::needles_for(vault, &names);
+    Ok(move |text: &str| {
+        needles
+            .iter()
+            .any(|needle| crate::secrets::scrub::holds(text, needle))
     })
 }
 
@@ -384,5 +399,76 @@ mod tests {
         assert!(fs::read_to_string(&doc)
             .unwrap()
             .contains("\"revision\": 1"));
+    }
+
+    // ---- WP-92 fix round 1, item M: the Keychain is read with the store's lock free ---------------------------------------
+
+    /// A store that, on every read, asks whether the database lock is free (another thread takes it) and records it.
+    struct Probe {
+        inner: crate::secrets::store::Memory,
+        store: std::sync::Arc<crate::session_store::SessionStore>,
+        free: std::sync::Mutex<Vec<bool>>,
+    }
+
+    impl crate::secrets::Vault for Probe {
+        fn read(&self, service: &str, account: &str) -> Result<Option<String>, String> {
+            let store = self.store.clone();
+            let (tx, rx) = std::sync::mpsc::channel();
+            std::thread::spawn(move || {
+                let _guard = store.lock_conn();
+                let _ = tx.send(());
+            });
+            let free = rx
+                .recv_timeout(std::time::Duration::from_millis(1_500))
+                .is_ok();
+            self.free.lock().unwrap().push(free);
+            self.inner.read(service, account)
+        }
+
+        fn write(&self, service: &str, account: &str, value: &str) -> Result<(), String> {
+            self.inner.write(service, account, value)
+        }
+
+        fn remove(&self, service: &str, account: &str) -> Result<bool, String> {
+            self.inner.remove(service, account)
+        }
+    }
+
+    #[test]
+    fn a_note_check_reads_the_keychain_with_the_database_lock_free_and_still_refuses_a_saved_value()
+    {
+        let store =
+            std::sync::Arc::new(crate::session_store::SessionStore::open_in_memory().unwrap());
+        let probe = Probe {
+            inner: crate::secrets::store::Memory::new(),
+            store: store.clone(),
+            free: std::sync::Mutex::new(Vec::new()),
+        };
+        {
+            let conn = store.lock_conn().unwrap();
+            for (name, value) in [
+                ("stripe-api-key", "sk_live_51NxAbCdEfGhIjKl"),
+                ("resend-key", "re_live_abcdef012345"),
+            ] {
+                crate::secrets::save_value(
+                    &probe,
+                    &conn,
+                    crate::secrets::SCOPE_GLOBAL,
+                    name,
+                    None,
+                    value,
+                    1,
+                )
+                .unwrap();
+            }
+        }
+        probe.free.lock().unwrap().clear();
+        let holds = known_value_check(&store, &probe).unwrap();
+        // Two values were read, and the lock was free for both.
+        assert_eq!(*probe.free.lock().unwrap(), vec![true, true]);
+        assert!(holds(
+            "a note that mentions sk_live_51NxAbCdEfGhIjKl in passing"
+        ));
+        assert!(!holds("a note about something else"));
     }
 }

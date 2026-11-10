@@ -751,6 +751,8 @@ pub fn export_with_vault(
     // WP-92: the vault goes as an index of handles, never a value, and one exact-value pass runs before the last net.
     if let Some(conn) = vault_db.as_ref() {
         writer.json("secrets/index.json", &crate::secrets::index_json(conn)?)?;
+        // Read once, not once per file: each value is a round trip to the Keychain.
+        let needles = crate::secrets::known_needles(vault, conn, None);
         for index in 0..writer.files.len() {
             let relative = writer.files[index].0.clone();
             if is_binary(&relative) || relative == "secrets/index.json" {
@@ -760,7 +762,7 @@ pub fn export_with_vault(
             let Ok(text) = fs::read_to_string(&path) else {
                 continue;
             };
-            let clean = crate::secrets::redact_known_values(vault, conn, None, &text);
+            let clean = crate::secrets::scrub::mask(&text, &needles);
             if clean != text {
                 write_private(&path, clean.as_bytes())?;
                 writer.files[index] = (relative, clean.len() as u64, sha256_hex(clean.as_bytes()));

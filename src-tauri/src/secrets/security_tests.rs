@@ -308,7 +308,9 @@ fn a_worker_gets_the_one_variable_and_its_output_is_scrubbed() {
     worker::clear_for_tests();
     worker::arm("worker-1", secrets);
     let mut cmd = Command::new(if cfg!(windows) { "cmd" } else { "true" });
-    worker::apply_to_child("worker-1", &bench.vault, &mut cmd, &conn, bench.now).unwrap();
+    // The spawn takes the store's lock itself, so this test lets go of its own first.
+    drop(conn);
+    worker::apply_to_child("worker-1", &bench.vault, &mut cmd, &bench.store, bench.now).unwrap();
     let envs: Vec<(String, String)> = cmd
         .get_envs()
         .filter_map(|(key, value)| {
@@ -392,8 +394,15 @@ fn a_worker_whose_output_cannot_be_scrubbed_is_refused_the_value() {
     worker::clear_for_tests();
     worker::arm("worker-open", secrets);
     let mut cmd = Command::new(if cfg!(windows) { "cmd" } else { "true" });
-    let refused = worker::apply_to_child("worker-open", &bench.vault, &mut cmd, &conn, bench.now)
-        .unwrap_err();
+    drop(conn);
+    let refused = worker::apply_to_child(
+        "worker-open",
+        &bench.vault,
+        &mut cmd,
+        &bench.store,
+        bench.now,
+    )
+    .unwrap_err();
     assert_eq!(
         refused,
         "this tool can't keep a key out of its own output, so it was not given the key"
@@ -447,7 +456,14 @@ fn a_worker_without_an_approval_is_asked_first_and_gets_nothing() {
     assert!(decision.question.contains("narrower"));
     // Nothing was armed: a spawn now would carry no value.
     let mut cmd = Command::new(if cfg!(windows) { "cmd" } else { "true" });
-    worker::apply_to_child("never-armed", &bench.vault, &mut cmd, &conn, bench.now).unwrap();
+    worker::apply_to_child(
+        "never-armed",
+        &bench.vault,
+        &mut cmd,
+        &bench.store,
+        bench.now,
+    )
+    .unwrap();
     assert_eq!(cmd.get_envs().count(), 0);
     // "Once" is a grant for exactly one worker.
     crate::decisions::answer(
@@ -816,22 +832,41 @@ fn a_keychain_that_will_not_answer_yet_does_not_burn_the_approval() {
     flaky
         .refuse_reads
         .store(1, std::sync::atomic::Ordering::SeqCst);
-    let conn = bench.store.lock_conn().unwrap();
     let mut first = Command::new(if cfg!(windows) { "cmd" } else { "true" });
-    let why =
-        worker::apply_to_child("worker-retry-1", &flaky, &mut first, &conn, bench.now).unwrap_err();
+    let why = worker::apply_to_child(
+        "worker-retry-1",
+        &flaky,
+        &mut first,
+        &bench.store,
+        bench.now,
+    )
+    .unwrap_err();
     assert!(why.contains("Try again"), "{why}");
     assert_eq!(env_of(&first), vec![], "nothing was put in the child");
     // The approval is still there: the same spawn, tried again, gets the key.
     let mut second = Command::new(if cfg!(windows) { "cmd" } else { "true" });
-    worker::apply_to_child("worker-retry-1", &flaky, &mut second, &conn, bench.now).unwrap();
+    worker::apply_to_child(
+        "worker-retry-1",
+        &flaky,
+        &mut second,
+        &bench.store,
+        bench.now,
+    )
+    .unwrap();
     assert_eq!(
         env_of(&second),
         vec![("STRIPE_API_KEY".to_string(), VALUE.to_string())]
     );
     // And now it is spent: a third spawn of the same session gets nothing without a fresh approval.
     let mut third = Command::new(if cfg!(windows) { "cmd" } else { "true" });
-    worker::apply_to_child("worker-retry-1", &flaky, &mut third, &conn, bench.now).unwrap();
+    worker::apply_to_child(
+        "worker-retry-1",
+        &flaky,
+        &mut third,
+        &bench.store,
+        bench.now,
+    )
+    .unwrap();
     assert_eq!(env_of(&third), vec![]);
     worker::forget("worker-retry-1");
 }
@@ -843,18 +878,20 @@ fn a_second_secret_that_cannot_be_read_leaves_the_first_out_of_the_child_too() {
         inner: Memory::new(),
         refuse_reads: std::sync::atomic::AtomicUsize::new(0),
     };
-    let conn = bench.store.lock_conn().unwrap();
-    save_value(&flaky, &conn, SCOPE_GLOBAL, NAME, None, VALUE, bench.now).unwrap();
-    save_value(
-        &flaky,
-        &conn,
-        SCOPE_GLOBAL,
-        "resend-key",
-        None,
-        "re_live_abcdef012345",
-        bench.now,
-    )
-    .unwrap();
+    {
+        let conn = bench.store.lock_conn().unwrap();
+        save_value(&flaky, &conn, SCOPE_GLOBAL, NAME, None, VALUE, bench.now).unwrap();
+        save_value(
+            &flaky,
+            &conn,
+            SCOPE_GLOBAL,
+            "resend-key",
+            None,
+            "re_live_abcdef012345",
+            bench.now,
+        )
+        .unwrap();
+    }
     let armed = |name: &str, env: &str| worker::ArmedSecret {
         scope: SCOPE_GLOBAL.into(),
         name: name.into(),
@@ -888,9 +925,14 @@ fn a_second_secret_that_cannot_be_read_leaves_the_first_out_of_the_child_too() {
         }
     }
     let wrapped = SecondFails(&flaky, std::sync::atomic::AtomicUsize::new(0));
-    assert!(
-        worker::apply_to_child("worker-retry-2", &wrapped, &mut cmd, &conn, bench.now).is_err()
-    );
+    assert!(worker::apply_to_child(
+        "worker-retry-2",
+        &wrapped,
+        &mut cmd,
+        &bench.store,
+        bench.now
+    )
+    .is_err());
     assert_eq!(
         env_of(&cmd),
         vec![],
@@ -898,7 +940,14 @@ fn a_second_secret_that_cannot_be_read_leaves_the_first_out_of_the_child_too() {
     );
     // Retried, both go in.
     let mut again = Command::new(if cfg!(windows) { "cmd" } else { "true" });
-    worker::apply_to_child("worker-retry-2", &wrapped, &mut again, &conn, bench.now).unwrap();
+    worker::apply_to_child(
+        "worker-retry-2",
+        &wrapped,
+        &mut again,
+        &bench.store,
+        bench.now,
+    )
+    .unwrap();
     assert_eq!(env_of(&again).len(), 2);
     worker::forget("worker-retry-2");
 }
@@ -920,22 +969,24 @@ fn a_secret_that_changed_since_the_approval_is_refused_and_the_approval_is_dropp
         .unwrap();
     }
     armed_for(&bench, &bench.vault, "worker-rotated");
-    let conn = bench.store.lock_conn().unwrap();
-    rotate(
-        &bench.vault,
-        &conn,
-        SCOPE_GLOBAL,
-        NAME,
-        "sk_live_a_new_value_0000",
-        bench.now + 1,
-    )
-    .unwrap();
+    {
+        let conn = bench.store.lock_conn().unwrap();
+        rotate(
+            &bench.vault,
+            &conn,
+            SCOPE_GLOBAL,
+            NAME,
+            "sk_live_a_new_value_0000",
+            bench.now + 1,
+        )
+        .unwrap();
+    }
     let mut cmd = Command::new(if cfg!(windows) { "cmd" } else { "true" });
     let why = worker::apply_to_child(
         "worker-rotated",
         &bench.vault,
         &mut cmd,
-        &conn,
+        &bench.store,
         bench.now + 2,
     )
     .unwrap_err();
@@ -947,9 +998,70 @@ fn a_secret_that_changed_since_the_approval_is_refused_and_the_approval_is_dropp
         "worker-rotated",
         &bench.vault,
         &mut later,
-        &conn,
+        &bench.store,
         bench.now + 3,
     )
     .unwrap();
     assert_eq!(env_of(&later), vec![]);
+}
+
+#[test]
+fn a_workers_spawn_reads_the_keychain_with_the_database_lock_free() {
+    // The Keychain may show a system prompt; while it is open, no database writer in the app may be stalled behind it.
+    struct Probe {
+        inner: Memory,
+        store: std::sync::Arc<SessionStore>,
+        free: std::sync::Mutex<Vec<bool>>,
+    }
+    impl Vault for Probe {
+        fn read(&self, service: &str, account: &str) -> Result<Option<String>, String> {
+            let store = self.store.clone();
+            let (tx, rx) = std::sync::mpsc::channel();
+            std::thread::spawn(move || {
+                let _guard = store.lock_conn();
+                let _ = tx.send(());
+            });
+            let free = rx
+                .recv_timeout(std::time::Duration::from_millis(1_500))
+                .is_ok();
+            self.free.lock().unwrap().push(free);
+            self.inner.read(service, account)
+        }
+        fn write(&self, s: &str, a: &str, v: &str) -> Result<(), String> {
+            self.inner.write(s, a, v)
+        }
+        fn remove(&self, s: &str, a: &str) -> Result<bool, String> {
+            self.inner.remove(s, a)
+        }
+    }
+    let store = std::sync::Arc::new(SessionStore::open_in_memory().unwrap());
+    let probe = Probe {
+        inner: Memory::new(),
+        store: store.clone(),
+        free: std::sync::Mutex::new(Vec::new()),
+    };
+    {
+        let conn = store.lock_conn().unwrap();
+        save_value(&probe, &conn, SCOPE_GLOBAL, NAME, None, VALUE, 1).unwrap();
+        worker::arm(
+            "worker-probe",
+            vec![worker::ArmedSecret {
+                scope: SCOPE_GLOBAL.into(),
+                name: NAME.into(),
+                env: "STRIPE_API_KEY".into(),
+                version: 1,
+                mono: "Tally".into(),
+                executable: "claude".into(),
+            }],
+        );
+    }
+    probe.free.lock().unwrap().clear();
+    let mut cmd = Command::new(if cfg!(windows) { "cmd" } else { "true" });
+    worker::apply_to_child("worker-probe", &probe, &mut cmd, &store, 2).unwrap();
+    assert_eq!(*probe.free.lock().unwrap(), vec![true]);
+    assert_eq!(
+        env_of(&cmd),
+        vec![("STRIPE_API_KEY".to_string(), VALUE.to_string())]
+    );
+    worker::forget("worker-probe");
 }

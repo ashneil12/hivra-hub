@@ -278,7 +278,7 @@ pub fn apply_to_child(
     session_id: &str,
     vault: &dyn Vault,
     cmd: &mut Command,
-    conn: &Connection,
+    store: &crate::session_store::SessionStore,
     now: i64,
 ) -> Result<(), String> {
     let secrets = armed()
@@ -301,6 +301,7 @@ pub fn apply_to_child(
         drop_approval();
         return Err(REFUSED_OUTPUT.into());
     }
+    // The Keychain is read with the store's lock free: a system prompt left open must not stall every database writer.
     let mut values: Vec<Zeroizing<String>> = Vec::new();
     let mut needles = Vec::new();
     for secret in &secrets {
@@ -311,22 +312,28 @@ pub fn apply_to_child(
             return Err("That secret was deleted. Ask for it again.".into());
         };
         let value = Zeroizing::new(value);
-        let current = get_secret(conn, &secret.scope, &secret.name)?
-            .is_some_and(|row| row.version == secret.version);
-        if !current {
-            drop_approval();
-            return Err("That secret changed. Ask for it again.".into());
-        }
         needles.extend(scrub::needles(&value));
         values.push(value);
     }
-    // Everything is read and current. The log rows come first, because they can fail; the child's variables, the
-    // scrub values and the spent approval follow, and none of them can.
-    for secret in &secrets {
-        touch_used(conn, &secret.scope, &secret.name, now)?;
-    }
-    if let Some(first) = secrets.first() {
-        record_worker(conn, &first.mono, &first.executable, &secrets, now)?;
+    // Then the lock, briefly: is each value still the version that was approved, and the log rows (which can fail). The
+    // child's variables, the scrub values and the spent approval follow, and none of them can.
+    {
+        let conn = store.lock_conn()?;
+        for secret in &secrets {
+            let current = get_secret(&conn, &secret.scope, &secret.name)?
+                .is_some_and(|row| row.version == secret.version);
+            if !current {
+                drop(conn);
+                drop_approval();
+                return Err("That secret changed. Ask for it again.".into());
+            }
+        }
+        for secret in &secrets {
+            touch_used(&conn, &secret.scope, &secret.name, now)?;
+        }
+        if let Some(first) = secrets.first() {
+            record_worker(&conn, &first.mono, &first.executable, &secrets, now)?;
+        }
     }
     for (secret, value) in secrets.iter().zip(&values) {
         cmd.env(&secret.env, value.as_str());

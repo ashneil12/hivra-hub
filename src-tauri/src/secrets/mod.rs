@@ -744,17 +744,24 @@ pub fn reveal(vault: &dyn Vault, scope: &str, name: &str) -> Result<String, Stri
         .ok_or_else(|| "That key isn't in your keychain any more.".to_string())
 }
 
-/// Every needle of the listed values, longest first. A value that can't be read is skipped: text can't hold it.
-fn known_needles(vault: &dyn Vault, conn: &Connection, scope: Option<&str>) -> Vec<String> {
+/// The secrets a check has to look for, by (scope, name), read from the database. This is the part that needs the store's
+/// lock; reading the values does not, so callers take the names under the lock, let it go, then call [`needles_for`].
+pub fn known_names(conn: &Connection, scope: Option<&str>) -> Vec<(String, String)> {
     let rows = match scope {
         Some(scope) => list_secrets(conn)
             .map(|rows| rows.into_iter().filter(|row| row.scope == scope).collect())
             .unwrap_or_default(),
         None => list_secrets(conn).unwrap_or_default(),
     };
+    rows.into_iter().map(|row| (row.scope, row.name)).collect()
+}
+
+/// Every needle of the named values, longest first. A value that can't be read is skipped: text can't hold it. This is a
+/// round trip to the Keychain (and may show the system prompt) per name, so it never runs inside the store's lock.
+pub fn needles_for(vault: &dyn Vault, names: &[(String, String)]) -> Vec<String> {
     let mut needles = Vec::new();
-    for row in rows {
-        let Ok(service) = service(&row.scope, &row.name) else {
+    for (scope, name) in names {
+        let Ok(service) = service(scope, name) else {
             continue;
         };
         let Ok(Some(value)) = vault.read(&service, ACCOUNT) else {
@@ -765,6 +772,11 @@ fn known_needles(vault: &dyn Vault, conn: &Connection, scope: Option<&str>) -> V
     needles.sort_by_key(|needle| std::cmp::Reverse(needle.len()));
     needles.dedup();
     needles
+}
+
+/// [`known_names`] then [`needles_for`], for a caller that holds nothing a Keychain prompt could stall.
+pub fn known_needles(vault: &dyn Vault, conn: &Connection, scope: Option<&str>) -> Vec<String> {
+    needles_for(vault, &known_names(conn, scope))
 }
 
 /// Whether text holds any listed value, whatever its shape. Used by the memory save and the export.
