@@ -22,6 +22,7 @@ pub mod deliver;
 pub mod events;
 pub mod github;
 pub mod merge;
+pub mod protected;
 pub mod settings;
 pub mod teardown;
 
