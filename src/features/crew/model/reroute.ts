@@ -47,7 +47,8 @@ function spent(ledger: readonly Attempt[]): number {
 }
 
 function tried(ledger: readonly Attempt[], id: string): boolean {
-  return ledger.some((row) => row.cli === id);
+  // A skip is not an attempt (as in crew/reroute.rs): signing in, or taking a ban off, offers that CLI again.
+  return ledger.some((row) => row.outcome !== "skipped" && row.cli === id);
 }
 
 function attempt(input: FailureInput, outcome: AttemptOutcome, to?: string): Attempt {

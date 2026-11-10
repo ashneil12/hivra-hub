@@ -195,7 +195,7 @@ describe("fallback order and the lock", () => {
       policy: { neverUse: ["claude"] },
       ledger: itself.skipped,
     });
-    expect(repeated.skipped).toEqual([]);
+    expect(repeated.skipped.map((row) => row.errorClass)).toEqual(["Claude Code is on Never use, so it was skipped."]);
   });
 
   it("the lock pauses on a known reset, and wakes the first mate when there is none", () => {
