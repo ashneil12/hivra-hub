@@ -66,6 +66,9 @@ function useVisualTheme(): VisualTheme {
       attributes: true,
       attributeFilter: ["class", "style"],
     });
+    // The first read happened while rendering; a theme change between then and this effect has no mutation left
+    // to observe, so read once more now.
+    pull();
     return () => observer.disconnect();
   }, []);
   return theme;

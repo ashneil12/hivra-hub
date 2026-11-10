@@ -2,8 +2,16 @@ import { readFile } from "node:fs/promises";
 import { expect, test } from "@playwright/test";
 
 test("a visual reply cannot reach the parent page or the network", async ({ page }) => {
+  // Chromium raises "request" for a load the policy then blocks (and "requestfailed" with "csp"), so only a load that
+  // finished counts. example.invalid answers 200 here, so a probe reading "blocked" means the policy stopped it, not
+  // that the name doesn't resolve, and a load that got past the policy reaches the route and is caught.
   const finished: string[] = [];
-  page.on("request", (req) => {
+  const reached: string[] = [];
+  await page.route("https://example.invalid/**", (route) => {
+    reached.push(route.request().url());
+    return route.fulfill({ status: 200, contentType: "text/plain", body: "reached" });
+  });
+  page.on("requestfinished", (req) => {
     if (req.url().includes("hivra-visual-nav") || req.url().includes("example.invalid")) {
       finished.push(req.url());
     }
@@ -43,6 +51,7 @@ test("a visual reply cannot reach the parent page or the network", async ({ page
   expect(probe.img).toBe("blocked");
   await expect(page).toHaveTitle("Hivra visual");
   expect(finished).toEqual([]);
+  expect(reached).toEqual([]);
 
   const leaked = notes.filter(
     (note) =>
