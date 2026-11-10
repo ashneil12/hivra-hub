@@ -40,6 +40,40 @@ Four decisions. The sections under this one are the reasoning.
 3. Extra windows already exist and are worth keeping. A macOS tray is later polish, not part of the first build.
 4. Opening a space, splitting, or focusing a window must not reorder the chat list, the project rail, or Being built.
 
+### Spaces
+
+A space is not a new thing that owns projects, chats, or boards. Hivra already has the two groupings this request is reaching for, and they are not the same as each other.
+
+A project group is a heading on the project rail (`projectGroups.ts`, the rail's "New group"). A project is in one group or in none. Projects with no group still show under the rest of the rail. Collapsing a group hides that heading's projects until the person expands it. It does not archive them.
+
+A chat folder is inside one project (`sessionFolders.ts`, the chat list's "New folder"). Dragging a chat into a folder takes it off the loose list and shows it under that folder. That is the person putting the chat away. An empty folder is not shown. Members inside a folder still use the chat list's usual order.
+
+Boards (WP-71) group tasks, not chats. A room (WP-22) is one conversation with several agents. A team workspace (WP-80) is other people, and it has not been built. A Mono can already be given several projects. None of those should be renamed into a space, and a space should not sit above them as a third container.
+
+The T3 request is a way to separate a long flat list by context. Hivra's list is already headed by groups and folders. The missing piece is only this: looking at one group on its own, without losing the others. That is a view, not a hierarchy.
+
+The model:
+
+- Off until the person uses it. With nothing selected, the rail and the chat list are exactly today's lists.
+- The person picks a project group they already have. The view is called a space in this note so it can be compared with the T3 request. The label on screen stays "Show only this group". Do not add the word space to the UI unless a later package says to.
+- "Show only this group" is a second, explicit action. Opening or selecting a group does not turn it on. It is per window. Turning it off shows every project again.
+- While it is on, the rail shows that group's projects and no others. Those other projects are not archived, not deleted, and not moved into the group. They come back in the same rail order when the filter goes off.
+- Chats are untouched. Opening a space does not move a chat into a folder, out of a folder, or off the list. A chat the person did not drag into a folder stays where it was. A new chat started while the filter is on is filed the way a new chat is filed today. It is not auto-added to a folder and not auto-assigned to the group.
+- A space stores no chat ids and no task ids. Boards, docs, and the chat list stay on the project.
+
+Do not make groups overlap as part of this design. A project in two spaces at once would be a second grouping beside groups. If that is needed later, change a group's assignment from one id to a list of ids. Do not add a space table next to the group table. That choice is left for Ash. Until then, one project, one group.
+
+Creating, renaming, or deleting a group stays the rail's existing behaviour. Deleting a group removes the heading only. Turning the filter off is not deleting. A group id read back from disk that no longer exists is dropped. The other groups stay in their saved order. A blank name is refused. Two groups keep distinct ids even if a later edit would make the names look the same. Follow the folder rule and give the second one a distinct name rather than merging them.
+
+Two windows share the group list. A window may have the filter on while the other does not. A write to the group list must be based on the list that window last read, so one window cannot wipe a group the other window just added. The same rule already applies to local hub documents when two windows are open. The filter itself is view state for that window, not a field on the group.
+
+What this refuses:
+
+- A space object that contains projects, which contain boards and chats.
+- Hiding a chat because its project is outside the group on screen. Switch to that project from the full rail, or turn the filter off. Do not invent a second chat list inside the space.
+- Putting every new chat into the open space.
+- Using the filter to collapse folders or to settle chats. Settle stays in WP-113, off by default.
+
 ## Done when
 
 - [ ] The design covers spaces, split, windows, and the re-sort rule.
