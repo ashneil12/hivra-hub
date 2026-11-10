@@ -963,6 +963,7 @@ function attachApproval(
   const approval = {
     requestId: event.requestId,
     ...(event.call ? { call: event.call } : {}),
+    ...(event.call && event.callComplete ? { callComplete: true } : {}),
     ...(child ? { child } : {}),
   };
   const index = findToolForApproval(session, event);

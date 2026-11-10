@@ -2,7 +2,7 @@
 
 | Wave | Size | Depends on | Grok OK |
 | --- | --- | --- | --- |
-| Overnight alpha hunt (9 Nov 23:00 run) | S | WP-12 delivery merge (on main). Not WP-101, not WP-155 | **no: park for Ash** (merge approval path; build + non-author hard review, never merge in this programme) |
+| Overnight alpha hunt (9 Nov 23:00 run) | S | WP-12 delivery merge (on main). Not WP-101, not WP-155 | **Ash approved the merge (10 Nov 23:26)** after non-author hard reviews (merge approval path; off by default) |
 
 ## Goal
 
@@ -34,7 +34,7 @@ kunci115/tasklane (Apache-2.0, created 9 Nov 2026, Rust) has a small, well-teste
 - [ ] Unreadable diff fails closed.
 - [ ] Built-in list cannot be shrunk by settings.
 - [ ] Ported + new tests pass; credits test green.
-- [ ] Parked: second non-author hard review; not merged in this programme.
+- [x] Second non-author hard review (rounds 1-4, zero high left); Ash approved the merge on 10 Nov 23:26.
 
 ## Licence
 
@@ -42,7 +42,7 @@ tasklane is Apache-2.0. `protected.rs` is a translation with header, credits.jso
 
 ## Decision (9 Nov, 23:24 UK)
 
-Build the floor as an optional feature, off by default, behind a per-project setting. With that setting off, a merge decides exactly as it did before this package. The floor stays parked for Ash's review and is not merged in this programme. `floor.rs` (a keyword floor over ticket text) is not built: this package only guards which files a merge touches.
+Build the floor as an optional feature, off by default, behind a per-project setting. With that setting off, a merge decides exactly as it did before this package. The floor was parked for Ash's review; he approved its merge on 10 Nov 23:26, and it stays off until he turns it on. `floor.rs` (a keyword floor over ticket text) is not built: this package only guards which files a merge touches.
 
 ## Review round (PR #198)
 

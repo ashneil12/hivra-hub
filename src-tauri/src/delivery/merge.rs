@@ -116,6 +116,32 @@ pub enum Decision {
     Ask(String),
 }
 
+/// The lead tick's list of park and never-merge labels (src/features/leadTick/model/neverMerge.json). The tick reads the
+/// same file, so the two can't drift apart.
+const NEVER_MERGE_JSON: &str = include_str!("../../../src/features/leadTick/model/neverMerge.json");
+
+#[derive(Deserialize)]
+struct NeverMergeList {
+    labels: Vec<String>,
+}
+
+/// The first park or never-merge label on the pull request, as the tick names it (trimmed, lower case, spaces and
+/// underscores as dashes).
+pub fn park_label(labels: &[String]) -> Option<String> {
+    let list: NeverMergeList =
+        serde_json::from_str(NEVER_MERGE_JSON).expect("neverMerge.json is valid JSON");
+    labels.iter().find_map(|label| {
+        let key: String = label
+            .trim()
+            .to_lowercase()
+            .split(|c: char| c.is_whitespace() || c == '_')
+            .filter(|part| !part.is_empty())
+            .collect::<Vec<_>>()
+            .join("-");
+        list.labels.contains(&key).then(|| label.clone())
+    })
+}
+
 fn names(checks: &[&Check]) -> String {
     let mut list: Vec<&str> = checks.iter().map(|c| c.name.as_str()).take(5).collect();
     if checks.len() > 5 {
@@ -499,6 +525,24 @@ pub fn merge(
         }
     };
     let head = read.detail.head_sha.clone().unwrap_or_default();
+    // The lead tick (an agent) never merges a security park, whatever this head was approved for. Read fresh from GitHub.
+    if matches!(request.caller, Caller::Agent { .. }) {
+        if let Some(label) = park_label(&read.labels) {
+            let reason = format!("{repo}#{number} is labelled {label}: an agent never merges it.");
+            record(
+                &conn,
+                &repo,
+                number,
+                Some(&head),
+                "refused",
+                None,
+                &request.caller,
+                Some(&reason),
+                now,
+            )?;
+            return Ok(MergeOutcome::Refused { reason });
+        }
+    }
     let delivery = super::deliver::by_pr(&conn, &repo, number)?;
     // An agent doesn't get to name these. The delivery row is the only source, and with no row
     // there is no project switch and no delegation: the agent is asked unless this head was approved.
