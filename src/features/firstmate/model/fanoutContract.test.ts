@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   FANOUT_MAX_TASKS,
@@ -190,6 +192,11 @@ describe("a fan-out's contract (WP-171)", () => {
     expect(() => parseFanout({ ...nine, tasks: nine.tasks.slice(0, 8) })).not.toThrow();
   });
 
+  it("holds the same cap as the first mate's own, in Rust", () => {
+    const rust = readFileSync(resolve(process.cwd(), "src-tauri/src/firstmate/mod.rs"), "utf8");
+    expect(Number(/pub const MAX_FANOUT: usize = (\d+);/.exec(rust)?.[1])).toBe(FANOUT_MAX_TASKS);
+  });
+
   it("keeps the shared block every worker carries within its bound", () => {
     const input = plan();
     input.tasks[1] = { ...input.tasks[1], requires: undefined };
@@ -249,7 +256,7 @@ describe("a fan-out's contract (WP-171)", () => {
       expect(block).toContain("- [api] endpoint /api/score in src/api/score.ts: GET, returns { score: number }");
       expect(block).toContain("- [board] /api/score");
       expect(block).toContain("- [api] api-tests");
-      expect(block).not.toMatch(/[—–]/);
+      expect(block).not.toMatch(/[\u2014\u2013]/);
     });
 
     it("says what this task owns, provides and may rely on, with the shape travelling to the consumer", () => {

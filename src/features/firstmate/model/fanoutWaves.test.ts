@@ -191,7 +191,7 @@ describe("what a waiting task waits for (WP-171)", () => {
     expect(held!.line).toContain("Not started: c and d");
     expect(held!.line).toContain("task_cancel");
     expect(b.after).toEqual([]);
-    expect(held!.line).not.toMatch(/[—–]/);
+    expect(held!.line).not.toMatch(/[\u2014\u2013]/);
   });
 
   it("treats a stopped provider like a failed one", () => {

@@ -92,7 +92,7 @@ describe("the person's own request, as a worker's brief quotes it (WP-171)", () 
       const quoted = quoteOriginalRequest("Make it work.");
       expect(quoted).toMatch(/^Context only: your task is the Spec below\./);
       expect(quoted).toContain("do what the Spec says");
-      expect(quoted).not.toMatch(/[—–]/);
+      expect(quoted).not.toMatch(/[\u2014\u2013]/);
     });
 
     it("holds a long request to the bound and says how much was left out", () => {

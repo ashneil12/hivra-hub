@@ -2715,7 +2715,7 @@ describe("tasks.fanout: contracts and waves in the normal delegate path (WP-171)
     expect(rows.map((entry) => entry.childSession)).toEqual(["app-mono-exo-r1-api", "app-mono-exo-r1-docs"]);
     expect(queuedWorkers().map((entry) => entry.id)).toEqual(["app-mono-exo-r1-board"]);
     expect(out.note).toContain("2 started now; 1 waits for what it needs");
-    expect(out.note).not.toMatch(/[—–]/);
+    expect(out.note).not.toMatch(/[\u2014\u2013]/);
   });
 
   it("starts all of them at once when none needs another, up to the first mate's eight", async () => {
