@@ -118,7 +118,6 @@ describe("the MiniMax Code skills", () => {
     expect(line("taste-to-checks")).toContain("we keep correcting agents on the same mistake");
     for (const name of NAMES) expect(line(name), name).toMatch(/ \| skills\/[a-z-]+\/SKILL\.md$/);
     const bytes = new TextEncoder().encode(text).length;
-    console.info(`MiniMax index: ${NAMES.length} lines, ${bytes} bytes, ${Math.ceil(bytes / 4)} tokens at bytes/4`);
     expect(bytes).toBeLessThan(3_000);
   });
 

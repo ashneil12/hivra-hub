@@ -71,6 +71,7 @@ in Settings, under About.
 - [Mnemos](https://github.com/Riley-Coyote/mnemos-mcp): ideas for the recall rules (four content words, two distinctive shared words, at most three lines, each memory once per conversation; WP-99), and memory that fades over the days it was used rather than the calendar, with a lived-day clock and one question to the person before a fact goes stale (WP-100).
 - [ccdeck](https://github.com/BarganConstantin/ccdeck): ideas only: a live session tree (main agent at the root, subagents as nodes, inspectable tool calls) and a waiting-on-you list ordered questions first and longest wait first.
 - [mcode-stack](https://github.com/MiniMax-AI/mcode-stack): team skills a first mate calls by name: whether work should go to a subagent, a review that sees only the diff, the requirement and the test results, and turning a repeated correction into a check (WP-117).
+- [Pierre](https://github.com/pierrecomputer/pierre): an optional split (side-by-side) diff, pinned as an npm package, with unified staying the default (WP-116).
 - [Claude Code subagents](https://code.claude.com/docs/en/sub-agents): a cheap Explore agent passed to a crew session as a flag, so its search does not run on the lead model (ideas only, WP-143).
 - [models.dev](https://github.com/anomalyco/models.dev): a catalogue of each model's context window and whether it can call tools, bundled so a custom route can read it offline (WP-104).
 - [Elephant-Goldfish](https://github.com/google/elephant-goldfish-model): a zero-context review of a plan before a crew starts (WP-144).

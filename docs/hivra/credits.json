@@ -247,6 +247,12 @@
       "gave": "team skills a first mate calls by name: whether work should go to a subagent, a review that sees only the diff, the requirement and the test results, and turning a repeated correction into a check (WP-117)"
     },
     {
+      "name": "Pierre",
+      "url": "https://github.com/pierrecomputer/pierre",
+      "licence": "Apache-2.0",
+      "gave": "an optional split (side-by-side) diff, pinned as an npm package, with unified staying the default (WP-116)"
+    },
+    {
       "name": "Claude Code subagents",
       "url": "https://code.claude.com/docs/en/sub-agents",
       "licence": "public docs",
@@ -767,6 +773,14 @@
       "copyright": "Copyright (c) 2025 models.dev",
       "where": "src/features/sessions/model/modelsDev.json, src/features/sessions/model/LICENSE.models-dev",
       "how": "The models.dev catalogue trimmed to each model's context window and tool flag, at commit b4b8ca36 (WP-104). The generator and the provider files are not copied. The app reads the file offline."
+    },
+    {
+      "name": "Pierre Diffs",
+      "url": "https://github.com/pierrecomputer/pierre/tree/main/packages/diffs",
+      "licence": "Apache-2.0",
+      "copyright": "Copyright 2025 Pierre Computer Company",
+      "where": "package.json, src/features/source-control/ui/pierreDiff.tsx",
+      "how": "Pinned npm package for the optional split diff view (WP-116)."
     }
   ]
 }
