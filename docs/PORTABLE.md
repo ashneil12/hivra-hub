@@ -46,8 +46,11 @@ The archive is the same tree under one top folder. Nothing in it is a secret:
 2. **Preview** (`importPlan.ts`): for every item, New / Already here / Differs, and clashes by id and by name (a project
    or Mono or model called the same). New things are ticked; things already here are left alone; Differs keeps Ash's.
 3. **Restore** only adds:
-   - Projects: a new one is registered with Ash OS (`ash-hub-project-create`, adopting its folder if it is on this Mac,
-     never making one), else kept on this Mac's list. Templates and project names/icons only where Ash has none.
+   - Projects: a new one is registered with Ash OS (`ash-hub-project-create`), else kept on this Mac's list. They are
+     registered before the workspace, so the chats are judged against them. The folder a file names for a project is
+     adopted only when it was ticked in "Project folders" (every one starts unticked; "Tick all" is for a restore of
+     your own), it is on this Mac, and Rust doesn't refuse it (see Folders below), never making one; otherwise the
+     project comes in without a code folder. Templates and project names/icons only where Ash has none.
    - Monos never seat themselves: a new one waits for Ash's OK (Monos list), and OK seats it with its look, projects
      (mapped to this Mac's folders by project id) and engine, writing only files that aren't there. A Mono already here
      gains missing files and projects; its own soul is replaced only if Ash ticks "use the file's".
@@ -71,9 +74,15 @@ The archive is the same tree under one top folder. Nothing in it is a secret:
      projects. Otherwise the folder is cleared and so is the chat's worktree: the chat opens with no folder, shows
      "Choose a project folder for this chat first." with a folder picker, and starts nothing until one is chosen. The
      report counts those chats (`foldersCleared`) and the automations that lost a folder the same way
-     (`automationFoldersCleared`, they also come back paused). The projects are read before the import adds any, so a
-     file can't vouch for its own folders; on a fresh copy that means restoring the projects first, then importing the
-     chats again, or choosing a folder for each chat.
+     (`automationFoldersCleared`, they also come back paused). A chat with no folder is listed in the sidebar's
+     "Needs a folder" group (`session_list_folderless`) until it gets one.
+   - **Project folders.** The preview lists every project folder the file wants to register, each unticked (the file
+     names them, so only a tick adopts one). Whatever is ticked, Rust refuses a folder that is `/`, `/Volumes`, the
+     home folder or any folder holding it, the app's own data folder, a folder holding it or one inside it, a relative
+     path, or one that isn't a folder here (`refused_project_folder`, asked through `portable_project_folder_checks`
+     in the preview and again as the import registers; if it can't be asked, nothing is adopted). The same list keeps
+     such a folder from vouching for chats even if a project record has it. Because the ticked projects are
+     registered first, a restore on a fresh Mac keeps its chats' folders; an unticked project's chats come in with none.
    - **Paths in tool rows.** A tool row's `paths` and `preview.path`, and an approval's `call.paths`, feed the checkpoint
      calls, so only paths inside the chat's kept folder (or worktree) stay, `..` and links resolved; the rest are
      dropped (`toolPathsDropped`). A chat with no kept folder keeps none.
@@ -109,10 +118,9 @@ Still not carried:
 - Keys and logins (by design): Claude/Grok sign-ins, custom-model keys (DeepSeek, xAI), connector logins.
 - Which chats are a project's coding team (`monocode:coding-team-chats`): not exported, but re-noted on a chat's next
   turn in the project's folder, so it heals itself.
-- Machine paths (provider binaries, project folders: mapped by project id on import). A new project's folder is the
-  exception: the project step adopts the folder the file names when it exists on this Mac, so a file can still choose a
-  project's folder there (the preview shows it); chats keep a folder only inside a project that was here before the
-  import began.
+- Machine paths (provider binaries, project folders: mapped by project id on import). A new project's folder is
+  adopted only when ticked in the preview and not refused by Rust (see "Project folders" above); a Mono's own project
+  folder is likewise not taken from a file when Rust refuses it.
 
 ## Tests
 

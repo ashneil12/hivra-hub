@@ -483,6 +483,16 @@ pub fn session_list_by_project(
     list_by_project(&conn, &cwd).map_err(|e| e.to_string())
 }
 
+/// The chats that have no folder (an import cleared it, docs/PORTABLE.md), newest first: the sidebar's "Needs a folder"
+/// group, so none of them is findable only through search.
+#[tauri::command(async)]
+pub fn session_list_folderless(
+    store: State<'_, SessionStore>,
+) -> Result<Vec<SessionSummary>, String> {
+    let conn = store.conn.lock().map_err(|_| "Session store is locked")?;
+    list_by_project(&conn, "").map_err(|e| e.to_string())
+}
+
 #[tauri::command(async)]
 pub fn session_rebase_project(
     store: State<'_, SessionStore>,
@@ -4104,6 +4114,26 @@ mod tests {
         assert_eq!(saved.cwd, "");
         // Never the branch of whatever checkout the app itself runs in.
         assert_eq!(saved.branch, None);
+    }
+
+    /// The "Needs a folder" group: every chat with a conversation and no folder, and no chat that has one.
+    #[test]
+    fn chats_with_no_folder_are_listed_together() {
+        let store = SessionStore::open_in_memory().unwrap();
+        let conn = store.conn.lock().unwrap();
+        let said = json!([{ "id": "u", "role": "user", "text": "hello" }]);
+        for (id, cwd) in [("a", ""), ("b", ""), ("c", "/tmp/a")] {
+            let mut session = sample(id, cwd, id);
+            session.blocks = said.clone();
+            upsert_session(&conn, &session).unwrap();
+        }
+        let ids: Vec<_> = list_by_project(&conn, "")
+            .unwrap()
+            .into_iter()
+            .map(|summary| summary.id)
+            .collect();
+        assert_eq!(ids.len(), 2);
+        assert!(ids.contains(&"a".to_string()) && ids.contains(&"b".to_string()));
     }
 
     #[test]

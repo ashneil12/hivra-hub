@@ -345,6 +345,80 @@ it("sends Rust the folders the window lists as projects, and says what it cleare
   expect(out.lines.join(" ")).not.toMatch(/[\u2013\u2014]/);
 });
 
+// ---- project folders: unticked by default, registered before the chats are judged ----------------------------------------
+
+/** An export of the two PROJECTS, imported into a copy with no projects; the calls the restore makes, in order. */
+async function restoreProjects(
+  tick: (choices: ReturnType<typeof import("./importPlan").defaultChoices>) => void,
+  deps: Record<string, unknown> = {},
+  folderChecks?: Record<string, string>,
+) {
+  const a = await app();
+  await seed(a);
+  const files = a.doc.setupDocToFiles(a.doc.buildSetupDoc({ monoFiles: { "ada": { "SOUL.md": SOUL } }, workspace: true }));
+  localStorage.clear();
+  const b = await app([]);
+  const inspection = {
+    format: "v2" as const, v1: null, manifest: null, files, memoryTarget: "/m", memory: [],
+    workspace: { sessions: [{ id: "s1", title: "t", cwd: PROJECTS[0].folder, harness: "codex", model: "m", blocks: 2, updatedAt: 1, archived: false, monoTranscript: false, status: "new" as const }], notes: [], automations: [], reminders: 0, delegations: [] },
+  };
+  const here = Object.fromEntries(PROJECTS.map((p) => [p.folder, true]));
+  const pending = { name: "x", path: "/tmp/export", doc: b.doc.setupDocFromFiles(files), inspection, fromV1: false, folders: here, skillsHere: {}, ...(folderChecks ? { folderChecks } : {}) };
+  const plan = b.plan.planImport(pending);
+  const choices = b.plan.defaultChoices(plan);
+  tick(choices);
+  const calls: string[] = [];
+  const rustRequests: Array<{ workspace?: { knownFolders: string[] } }> = [];
+  const report = { sessionsAdded: 1, sessionsCopied: 0, notesAdded: 0, notesCopied: 0, automationsAdded: 0, remindersAdded: 0, delegationsAdded: 0, memoryFilesAdded: 0, memoryFilesBeside: 0, memoryHistory: [], kept: 0, renamed: {}, notes: [] };
+  const summary = await b.plan.applyImport(pending, plan, choices, {
+    registerProject: async (project: { id: string }, adopt: boolean) => { calls.push(`register:${project.id}:${adopt}`); return true; },
+    rustImport: async (request: { workspace?: { knownFolders: string[] } }) => { calls.push("rust"); rustRequests.push(request); return report; },
+    ...deps,
+  });
+  return { b, plan, choices, calls, rustRequests, summary };
+}
+
+it("starts every project folder unticked: the preview never ticks one for you", async () => {
+  const { plan, choices } = await restoreProjects(() => undefined);
+  expect(plan.projects.filter((x) => x.state === "new" && x.folderHere).length).toBe(PROJECTS.length);
+  expect(choices.projectFolders.size).toBe(0);
+  // The projects themselves are still ticked: they come in, without a code folder.
+  expect(choices.projects.size).toBe(PROJECTS.length);
+});
+
+it("an unticked project folder is not registered, and its chats go to Rust with no folder vouching for them", async () => {
+  const { calls, rustRequests } = await restoreProjects(() => undefined);
+  expect(calls).toEqual(["register:hivra:false", "register:vg-game:false", "rust"]);
+  expect(rustRequests[0].workspace?.knownFolders).toEqual([]);
+});
+
+it("a ticked project folder is registered first, so its chats keep their folders", async () => {
+  const { calls, rustRequests } = await restoreProjects((choices) => choices.projectFolders.add("hivra"));
+  expect(calls).toEqual(["register:hivra:true", "register:vg-game:false", "rust"]);
+  expect(rustRequests[0].workspace?.knownFolders).toEqual([PROJECTS[0].folder]);
+});
+
+it("a folder Rust refuses is never registered, even ticked, and the restore says so", async () => {
+  const refused = { [PROJECTS[0].folder]: "it is your home folder, or a folder that holds it, so it can't be a project's folder" };
+  // Refused already in the preview (the plan's fact) ...
+  const inPreview = await restoreProjects((choices) => choices.projectFolders.add("hivra"), {}, refused);
+  expect(inPreview.calls).toEqual(["register:hivra:false", "register:vg-game:false", "rust"]);
+  expect(inPreview.rustRequests[0].workspace?.knownFolders).toEqual([]);
+  // ... and asked again at the moment of registering, so a stale preview or a tick can't get past Rust.
+  const asked: string[][] = [];
+  const atRegistration = await restoreProjects((choices) => choices.projectFolders.add("hivra"), {
+    checkFolders: async (paths: string[]) => { asked.push(paths); return refused; },
+  });
+  expect(asked).toEqual([[PROJECTS[0].folder]]);
+  expect(atRegistration.calls).toEqual(["register:hivra:false", "register:vg-game:false", "rust"]);
+  expect(atRegistration.summary.problems.join(" ")).toContain("home folder");
+  // When Rust can't be asked, nothing is adopted.
+  const failed = await restoreProjects((choices) => choices.projectFolders.add("hivra"), {
+    checkFolders: async () => { throw new Error("no"); },
+  });
+  expect(failed.calls).toEqual(["register:hivra:false", "register:vg-game:false", "rust"]);
+});
+
 it("the souls a restore wrote (Rust's included) are handed over to be recorded as the app's own saves", async () => {
   const a = await app();
   await seed(a);

@@ -165,6 +165,7 @@ import type {
 } from "../../features/sessions/model/session";
 import type { LiveAgent } from "../../features/sessions/model/liveAgents";
 import type { SessionSummary } from "../../features/sessions/data/sessionStore";
+import { NeedsFolderSection } from "./NeedsFolderSection";
 import {
   keybindingShortcutLabel,
   subscribeKeybindings,
@@ -2999,6 +3000,14 @@ function SidebarComponent({
           {/* Hub mode: the project's items, which the classic rail lists in
               place of Projects. */}
           {inset ? hubItems : null}
+          {/* Chats that came in from an export with no folder here: listed together until each gets one. */}
+          {!remoteProject ? (
+            <NeedsFolderSection
+              onSelect={onSelectSession}
+              activeSessionId={activeSessionId}
+              openSessions={openSessions}
+            />
+          ) : null}
           {!cwd || cwd === "~" ? (
             <div className="px-3 py-2 text-[12px] text-content/50">
               <p>No project folder</p>

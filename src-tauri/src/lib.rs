@@ -1038,6 +1038,7 @@ pub fn run() {
             pty::pty_kill_all,
             session_store::session_upsert,
             session_store::session_list_by_project,
+            session_store::session_list_folderless,
             session_store::session_rebase_project,
             session_store::session_list_linked,
             // WP-108: counts and names only, for the usage history page.
@@ -1118,6 +1119,7 @@ pub fn run() {
             portable::portable_mono_files,
             portable::portable_find_skills,
             portable::portable_paths_exist,
+            portable::portable_project_folder_checks,
             portable::portable_session_engines,
             portable::portable_export,
             portable::portable_inspect,

@@ -5,6 +5,9 @@
 
 export const CHAT_NEEDS_FOLDER = "Choose a project folder for this chat first.";
 
+/** Sent after an import brought chats in with no folder, so the sidebar's "Needs a folder" group reads its list again. */
+export const FOLDERLESS_CHANGED = "monocode:folderless-chats-changed";
+
 /** True when the chat has a folder to work in. `~` is the home folder chosen on purpose, not a missing folder. */
 export function hasChatFolder(cwd: string | undefined | null): cwd is string {
   return typeof cwd === "string" && cwd.trim() !== "";

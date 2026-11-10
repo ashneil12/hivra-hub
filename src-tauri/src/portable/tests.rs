@@ -2450,3 +2450,104 @@ fn a_chat_whose_folder_was_cleared_keeps_no_tool_paths_at_all() {
     assert_eq!(report["foldersCleared"], 1, "{report}");
     assert_eq!(report["toolPathsDropped"], 3, "{report}");
 }
+
+// ---- project folders an export wants to register ---------------------------------------------------------------------
+// The preview starts every such folder unticked; whatever is ticked, these are refused in Rust too, and the projects
+// this copy has (before the import adds any) are what a chat's folder is judged against.
+
+#[test]
+fn a_project_folder_that_holds_everything_is_refused_whatever_is_ticked() {
+    let layout = layout();
+    let env = &layout.target;
+    let home = env.home.clone().unwrap();
+    fs::create_dir_all(&home).unwrap();
+    fs::create_dir_all(env.data_dir.join("monos")).unwrap();
+    let refused = |dir: &Path| refused_project_folder(env, &dir.to_string_lossy());
+    for dir in [
+        home.clone(),
+        // A folder that holds the home folder, and the one that holds that.
+        home.parent().unwrap().to_path_buf(),
+        layout.root.0.clone(),
+        PathBuf::from("/"),
+        PathBuf::from("/Volumes"),
+        env.data_dir.clone(),
+        env.data_dir.join("monos"),
+        // The folder that holds the app's data.
+        env.data_dir.parent().unwrap().to_path_buf(),
+    ] {
+        assert!(refused(&dir).is_some(), "{} must be refused", dir.display());
+    }
+    // `~` is the home folder, a relative path and a missing folder aren't projects.
+    for raw in ["~", "src", "../..", ""] {
+        assert!(refused_project_folder(env, raw).is_some(), "{raw:?}");
+    }
+    assert!(refused(&layout.root.0.join("missing")).is_some());
+    // A folder of its own is fine, and so is one inside it.
+    assert_eq!(refused(&layout.project), None);
+    assert_eq!(refused(&layout.project.join("src")), None);
+    let checks = project_folder_checks(
+        env,
+        &[
+            home.to_string_lossy().into_owned(),
+            layout.project.to_string_lossy().into_owned(),
+        ],
+    );
+    assert_eq!(checks.len(), 1, "{checks:?}");
+}
+
+#[test]
+fn a_record_that_lists_a_broad_folder_does_not_vouch_for_what_is_inside_it() {
+    let layout = layout();
+    let env = &layout.target;
+    let home = env.home.clone().unwrap();
+    fs::create_dir_all(home.join("Documents")).unwrap();
+    fs::create_dir_all(env.data_dir.join("scratch")).unwrap();
+    let store = open_store(env);
+    let conn = store.lock_conn().unwrap();
+    let folders: Vec<String> = [
+        home.clone(),
+        home.parent().unwrap().to_path_buf(),
+        env.data_dir.clone(),
+        PathBuf::from("/"),
+        PathBuf::from("/Volumes"),
+    ]
+    .iter()
+    .map(|dir| dir.to_string_lossy().into_owned())
+    .collect();
+    crate::local_hub::write(
+        &conn,
+        "projects",
+        &json!({"projects": folders.iter().enumerate().map(|(n, folder)| json!({"id": format!("p{n}"), "name": format!("P{n}"), "folder": folder})).collect::<Vec<_>>()}),
+    )
+    .unwrap();
+    drop(conn);
+    drop(store);
+    let chats = [
+        ("docs", path(&home, "Documents"), None),
+        ("scratch", path(&env.data_dir, "scratch"), None),
+        ("tmp", layout.outside.to_string_lossy().into_owned(), None),
+    ];
+    let (stored, report) = import_folders(&layout, &chats, &[]);
+    assert!(stored.values().all(|(cwd, _)| cwd.is_empty()), "{stored:?}");
+    assert_eq!(report["foldersCleared"], 3, "{report}");
+}
+
+#[test]
+fn a_project_registered_without_its_folder_leaves_its_chats_without_one() {
+    let layout = layout();
+    let store = open_store(&layout.target);
+    let conn = store.lock_conn().unwrap();
+    // Registered, but its folder was left unticked in the preview.
+    crate::local_hub::write(
+        &conn,
+        "projects",
+        &json!({"projects": [{"id": "app", "name": "App", "folder": null}]}),
+    )
+    .unwrap();
+    drop(conn);
+    drop(store);
+    let chats = [("inside", path(&layout.project, "src"), None)];
+    let (stored, report) = import_folders(&layout, &chats, &[]);
+    assert_eq!(stored["inside"].0, "");
+    assert_eq!(report["foldersCleared"], 1, "{report}");
+}

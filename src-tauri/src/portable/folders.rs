@@ -8,8 +8,9 @@
 //! project's prefix is not inside it. Otherwise the folder is cleared: the chat opens with none and asks which project to
 //! use before it runs anything (src/chat_folder.rs refuses every launch without one).
 //!
-//! The projects read here are the ones this copy had before the import began: the import's own projects are registered
-//! after its chats, so a file can't vouch for its own folders.
+//! The projects read here are the app's record as it is when the chats come in. The window registers the projects the
+//! person ticked first (src/features/portable/model/importPlan.ts), and a project's folder is adopted from the file only
+//! when its own tick says so and `refused_project_folder` allows it, so a file can't vouch for its own folders.
 
 use std::cell::OnceCell;
 use std::path::{Component, Path, PathBuf};
@@ -21,7 +22,7 @@ use super::Env;
 
 pub(super) struct FolderRules {
     home: Option<PathBuf>,
-    /// Project folders, resolved. Never `/` or the home folder: those would vouch for everything beneath them.
+    /// Project folders, resolved. Never one that is too broad (`too_broad`): it would vouch for everything beneath it.
     projects: Vec<PathBuf>,
     /// Where the Monos keep their own folders. Something inside, never the folder itself.
     mono_roots: Vec<PathBuf>,
@@ -42,7 +43,6 @@ pub(super) struct Folders {
 impl FolderRules {
     /// `extra` are folders the window knows as projects (the rail's), on top of the app's own project record.
     pub(super) fn load(env: &Env, conn: &Connection, extra: &[String]) -> Self {
-        let home = env.home.as_deref().and_then(|home| resolve(home, None));
         let mut named: Vec<String> = Vec::new();
         if let Some(doc) = crate::local_hub::read_doc(conn, "projects")
             .ok()
@@ -62,8 +62,7 @@ impl FolderRules {
             let Some(dir) = resolve(Path::new(&folder), env.home.as_deref()) else {
                 continue;
             };
-            let broad = dir.parent().is_none() || home.as_deref() == Some(dir.as_path());
-            if !broad && !projects.contains(&dir) {
+            if too_broad(env, &dir).is_none() && !projects.contains(&dir) {
                 projects.push(dir);
             }
         }
@@ -228,6 +227,36 @@ impl FolderRules {
                 .is_some_and(|reached| roots.iter().any(|root| reached.starts_with(root)))
         })
     }
+}
+
+/// Why a real folder can never be a project's folder for an import, whatever is ticked or recorded: it holds, or is, a
+/// place nobody means to hand an agent whole. The filesystem root, `/Volumes`, the home folder and every folder that
+/// holds it, the app's own data folder with every folder that holds it and everything inside it.
+fn too_broad(env: &Env, dir: &Path) -> Option<&'static str> {
+    if dir.parent().is_none() {
+        return Some("it is the top of the disk");
+    }
+    if dir == Path::new("/Volumes") {
+        return Some("it is the folder every disk is mounted in");
+    }
+    let home = env.home.as_deref().and_then(|home| resolve(home, None));
+    if home.is_some_and(|home| home.starts_with(dir)) {
+        return Some("it is your home folder, or a folder that holds it");
+    }
+    if reach(&env.data_dir).is_some_and(|data| data.starts_with(dir) || dir.starts_with(&data)) {
+        return Some("it is the app's own data folder, or holds or sits inside it");
+    }
+    None
+}
+
+/// Why a project folder named by an export can't be adopted as the project's code folder, or None when it can. The
+/// preview shows the reason and the import asks again at the moment it registers (the webview calls this through
+/// `portable_project_folder_checks`), so a tick never overrides it.
+pub(super) fn refused_project_folder(env: &Env, raw: &str) -> Option<String> {
+    let Some(dir) = resolve(Path::new(raw.trim()), env.home.as_deref()) else {
+        return Some("it isn't a folder on this Mac".to_string());
+    };
+    too_broad(env, &dir).map(|why| format!("{why}, so it can't be a project's folder"))
 }
 
 /// `~` and `~/…` are this Mac's home folder.

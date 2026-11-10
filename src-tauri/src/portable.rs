@@ -37,7 +37,7 @@ use tauri::{AppHandle, Manager, State};
 use crate::session_store::{self, now_millis, SessionStore, SessionUpsert};
 
 mod folders;
-use folders::FolderRules;
+use folders::{refused_project_folder, FolderRules};
 
 pub const FORMAT: &str = "monocode-hub-export";
 /// The newest export format this build writes and reads. A newer one is refused, never half-read.
@@ -2838,6 +2838,25 @@ pub async fn portable_session_engines(
     tauri::async_runtime::spawn_blocking(move || session_engines(&env, &ids))
         .await
         .map_err(|e| e.to_string())?
+}
+
+/// The project folders an export names that can never be adopted (the folder isn't on this Mac, or it is the home
+/// folder, a folder that holds it, `/`, `/Volumes` or the app's data folder), each with why. A folder that can be
+/// adopted is left out. The import asks again as it registers, so ticking a folder never overrides this.
+#[tauri::command]
+pub async fn portable_project_folder_checks(
+    app: AppHandle,
+    paths: Vec<String>,
+) -> Result<BTreeMap<String, String>, String> {
+    let env = Env::for_app(&app)?;
+    Ok(project_folder_checks(&env, &paths))
+}
+
+fn project_folder_checks(env: &Env, paths: &[String]) -> BTreeMap<String, String> {
+    paths
+        .iter()
+        .filter_map(|path| refused_project_folder(env, path).map(|why| (path.clone(), why)))
+        .collect()
 }
 
 #[tauri::command]
