@@ -1,8 +1,8 @@
 //! WP-141: the first mate's pick across CLIs and Monos. One helper, no second router.
 //! Presence, the roster and the caps are handed in, so a test does not need this machine.
 //! The sentences match `src/features/crew/model/pick.ts`.
-//! The web helper is the caller. This twin stays for the app, so the lib build has no other use yet.
-#![cfg_attr(not(test), allow(dead_code))]
+//! `store::pick_at` (the `crew_pick` command) is the caller: the first mate's `tasks.pick` asks it, so the pick sees the
+//! stored rules and policy, who is signed in and who is cooling down after an account failure.
 
 use std::collections::BTreeMap;
 
@@ -52,7 +52,8 @@ pub struct PickQuery {
     pub brief: Option<Ask>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct MatePick {
     pub ok: bool,
     pub cli: Option<String>,

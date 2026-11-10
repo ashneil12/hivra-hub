@@ -227,6 +227,18 @@ pub fn crew_route(
     store::route_at(&*store.lock_conn()?, &query, &plugins, now_millis())
 }
 
+/// WP-141: the first mate's pick across CLIs and Monos, with its reason. Reads only.
+#[tauri::command(async)]
+pub fn crew_pick(
+    app: tauri::AppHandle,
+    store: State<'_, SessionStore>,
+    mut request: store::PickRequest,
+) -> Result<pick::MatePick, String> {
+    fill_present(&mut request.route.present, live_presence(&app));
+    let plugins = plugin_rules(&app, request.route.project.as_deref());
+    store::pick_at(&*store.lock_conn()?, &request, &plugins, now_millis())
+}
+
 #[tauri::command(async)]
 pub fn crew_note_pause(
     store: State<'_, SessionStore>,

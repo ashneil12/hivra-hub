@@ -1960,3 +1960,89 @@ fn a_lock_pauses_on_a_reset_and_wakes_the_first_mate() {
     assert_eq!(again.action, "again");
     assert_eq!(again.reason, "the CLI didn't answer");
 }
+
+#[test]
+fn the_first_mates_pick_reads_the_stored_rules_policy_and_roster() {
+    let store = memory();
+    let mut conn = store.lock_conn().unwrap();
+    let who = &[("claude", true, true), ("codex", true, true)];
+    save(
+        &mut conn,
+        "project",
+        PROJECT,
+        vec![draft("builder", "", "codex", "", "")],
+        0,
+        None,
+    )
+    .unwrap();
+    let ask =
+        |labels: &str, monos: Vec<store::PickMono>, mono_ask: Option<&str>| store::PickRequest {
+            route: query(labels, "", PROJECT, "", None, None, who),
+            monos,
+            lead_mono_id: Some("lead".into()),
+            depth: 0,
+            at_cap: Vec::new(),
+            mono_override: mono_ask.map(str::to_string),
+        };
+    let built = store::pick_at(&conn, &ask("builder", vec![], None), &[], i64::MAX).unwrap();
+    assert!(built.ok);
+    assert_eq!(built.cli.as_deref(), Some("codex"));
+    assert_eq!(built.reason, "Builder role prefers Codex.");
+    let ada = store::PickMono {
+        id: "ada".into(),
+        name: Some("Ada".into()),
+        role: Some("reviewer".into()),
+        depth: 0,
+    };
+    let review = store::pick_at(
+        &conn,
+        &ask("reviewer", vec![ada.clone()], None),
+        &[],
+        i64::MAX,
+    )
+    .unwrap();
+    assert_eq!(review.mono_id.as_deref(), Some("ada"));
+    assert_eq!(review.reason, "Ada fits the reviewer role.");
+    let wire = serde_json::to_value(&review).unwrap();
+    assert_eq!(wire["monoId"], json!("ada"));
+    // The person's Never use, stored on the project, keeps that Mono and that CLI out.
+    store::set_policy(
+        &mut conn,
+        "project",
+        PROJECT,
+        &json!({ "lockDefault": false, "neverUse": ["ada", "codex"], "fallback": [] }),
+        1,
+    )
+    .unwrap();
+    let banned = store::pick_at(
+        &conn,
+        &ask("builder", vec![ada.clone()], Some("ada")),
+        &[],
+        i64::MAX,
+    )
+    .unwrap();
+    assert_eq!(banned.cli.as_deref(), Some("claude"));
+    assert_eq!(banned.mono_id, None);
+    assert!(
+        banned.reason.contains("on Never use, so it was skipped."),
+        "{}",
+        banned.reason
+    );
+    // Depth 3 refuses another Mono the first mate asks for.
+    store::set_policy(
+        &mut conn,
+        "project",
+        PROJECT,
+        &json!({ "lockDefault": false, "neverUse": [], "fallback": [] }),
+        2,
+    )
+    .unwrap();
+    let mut deep = ask("reviewer", vec![ada], Some("ada"));
+    deep.depth = 3;
+    let deep = store::pick_at(&conn, &deep, &[], i64::MAX).unwrap();
+    assert!(!deep.ok);
+    assert_eq!(
+        deep.reason,
+        "This chat is already three Monos deep, so another Mono was refused."
+    );
+}

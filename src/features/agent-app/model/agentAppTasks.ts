@@ -19,7 +19,7 @@
 //   dropped.
 import { monoHomeFence } from "../../hub/model/hubMcp";
 import type { QuickLaunch } from "../../quick-composer/model/quickComposer";
-import { modelEffortLabel, modelsFor, resolveModel } from "../../sessions/model/models";
+import { modelEffortLabel, modelsFor, preferredModelId, resolveModel } from "../../sessions/model/models";
 import { isCustomModelId } from "../../sessions/model/customModels";
 import {
   HARNESSES,
@@ -55,6 +55,7 @@ import { lineRulesFor } from "../../crew/model/lineRules";
 import type { Catalog, RouteDefaults } from "../../crew/model/resolve";
 import { applyCrewLaunch, callerOverride, crewLabels, crewPaths } from "../../crew/model/taskRoute";
 import { routeReason } from "../../crew/model/pick";
+import { CLI_ORDER, cliLabel, isCli } from "../../crew/model/clis";
 import { routeDefaults } from "../../crew/model/workerDefault";
 import {
   activityNoteSummary,
@@ -155,6 +156,8 @@ export const TASK_FIELDS: ReadonlyArray<readonly [string, readonly string[]]> = 
       "taskId",
     ],
   ],
+  // WP-141: the crew's pick for a job (a CLI or a Mono) and why. Reads only; delegate_task starts the work.
+  ["tasks.pick", ["role", "title", "brief", "files", "model", "effort", "lead"]],
   ["tasks.accept", ["taskId", "accept", "reason"]],
   ["tasks.workers", ["project", "workers", "heavy", "scope", "cli", "model", "effort", "clear"]],
   ["tasks.status", ["taskIds"]],
@@ -178,6 +181,32 @@ export type DelegationMeta = {
   taskId?: string;
   /** WP-141: why the crew picked this CLI, one plain line kept on the row and shown on the Crew tab. */
   pickReason?: string;
+};
+
+/** WP-141: what tasks.pick asks the crew (the crew_route fields, plus the roster and how deep this chat is). */
+export type CrewPickQuery = {
+  labels: string[];
+  paths: string[];
+  override?: { cli?: string; model?: string; effort?: string };
+  project?: string;
+  mono?: string;
+  monoRules?: CrewRule[];
+  defaults?: RouteDefaults;
+  catalog?: Catalog;
+  monos: { id: string; name?: string; role?: string }[];
+  leadMonoId?: string;
+  depth: number;
+  atCap: string[];
+  monoOverride?: string;
+};
+
+export type CrewPickAnswer = {
+  ok: boolean;
+  cli: string | null;
+  monoId: string | null;
+  model: string | null;
+  effort: string | null;
+  reason: string;
 };
 
 /** A worker chat as this window has it. */
@@ -279,6 +308,13 @@ export type AgentAppTasksHost = {
     ruleLabel?: string | null;
     skipped?: { reason?: string | null }[] | null;
   } | null | undefined>;
+  /**
+   * WP-141: the crew's pick across signed-in CLIs and the Monos this chat may brief, from the person's rules, defaults,
+   * Always use my default, Never use and fallback order (`crew_pick`). Reads only.
+   */
+  crewPick?(query: CrewPickQuery): Promise<CrewPickAnswer>;
+  /** WP-141: the Monos (project Leads) this Mono may brief: `lead` is what delegate_task's `lead` takes. */
+  pickMonos?(monoId: string): { id: string; name?: string; role?: string; lead: string }[];
   /**
    * WP-144: fresh-eyes review before builders start. Absent means today's start.
    * Hold only when `hold` is true.
@@ -1765,6 +1801,96 @@ async function firstMateTool(
   return askPerson(source, input, { mono: owner.mono?.id, project }, rows, tasks.firstMate);
 }
 
+/**
+ * WP-141: tasks.pick. The crew's pick for a job, a signed-in CLI or a Mono this chat may brief, with a short reason.
+ * The first mate's model or Lead is an override: Always use my default drops it, and the reason says so. Nothing starts.
+ */
+async function pickWorker(source: Session, input: Record<string, unknown>, host: AgentAppHost): Promise<unknown> {
+  const { owner, tasks } = taskOwner(source, host);
+  if (!tasks.crewPick) throw new Error("This build can't pick a worker");
+  const role = input.role === undefined ? undefined : text(input.role, "role", 40).toLowerCase();
+  const title = input.title === undefined ? "" : text(input.title, "title", 200);
+  const brief = input.brief === undefined ? "" : text(input.brief, "brief", BRIEF_MAX);
+  const labels = [...new Set([...(role ? [role] : []), ...crewLabels(areasNamed(title, brief))])];
+  const paths = crewPaths(fileList(input.files), filesNamed(brief));
+  const onBridge = source.harness === "claude" && claudeRunsOnSubscriptionBridge();
+  const override = callerOverride(taskModel(input.model, source, onBridge), input.effort);
+  const roster = owner.mono && tasks.pickMonos ? tasks.pickMonos(owner.mono.id) : [];
+  let monoOverride: string | undefined;
+  if (input.lead !== undefined) {
+    const named = text(input.lead, "lead", 200);
+    const want = named.toLowerCase();
+    const hit = roster.find((mono) => [mono.id, mono.name, mono.lead].some((name) => name?.toLowerCase() === want));
+    if (!hit) throw new Error(`No Lead "${named}" among the ones you can brief.`);
+    monoOverride = hit.id;
+  }
+  // How deep this chat sits: the depth a task from it would have, less one. A refusal (too deep, too many open) is the answer.
+  let depth = 0;
+  try {
+    depth = Math.max(0, ((await tasks.checkDepth?.(source.id)) ?? 1) - 1);
+  } catch (error) {
+    return { ok: false, reason: error instanceof Error ? error.message : String(error) };
+  }
+  const folder = owner.team?.folder ?? source.cwd;
+  const projectKey = tasks.hubProjectId?.(folder) ?? folder;
+  // A CLI with no room left at its provider is not free for this job; the project's own cap is the same for every CLI.
+  const atCap = CLI_ORDER.filter((cli) => {
+    const admission = tasks.pool?.admit({ id: `pick-${source.id}-${cli}`, project: projectKey, projectName: projectName(folder), heavy: false, harness: cli });
+    return admission?.start === false && admission.reason === "limit";
+  });
+  const monoRules = carriedMonoRules(owner.mono?.crewRules);
+  const defaults = routeDefaults({
+    mono: owner.mono?.workerDefault,
+    project: tasks.pool?.projectDefault?.(projectKey),
+    system: tasks.pool?.systemDefault?.(),
+  });
+  const catalog = launchCatalog();
+  const pick = await tasks.crewPick({
+    labels,
+    paths,
+    ...(override ? { override } : {}),
+    ...(folder ? { project: folder } : {}),
+    ...(owner.mono?.id ? { mono: owner.mono.id, leadMonoId: owner.mono.id } : {}),
+    ...(monoRules.length ? { monoRules } : {}),
+    ...(defaults ? { defaults } : {}),
+    ...(Object.keys(catalog).length ? { catalog } : {}),
+    monos: roster.map(({ id, name, role: monoRole }) => ({ id, ...(name ? { name } : {}), ...(monoRole ? { role: monoRole } : {}) })),
+    depth,
+    atCap,
+    ...(monoOverride ? { monoOverride } : {}),
+  });
+  const reason = routeReasonLine(pick?.reason);
+  if (!pick?.ok) return { ok: false, reason: reason || "Nothing available can take it." };
+  const mono = pick.monoId ? roster.find((row) => row.id === pick.monoId) : undefined;
+  if (mono) {
+    return {
+      ok: true,
+      monoId: mono.id,
+      leadName: mono.name ?? mono.id,
+      reason,
+      delegateWith: { lead: mono.lead },
+      note: "Brief that Lead with delegate_task and lead as delegateWith says. Tell Ash in one line who it goes to and why.",
+    };
+  }
+  const cli = pick.cli && isCli(pick.cli) ? pick.cli : undefined;
+  if (!cli) return { ok: false, reason: reason || "Nothing available can take it." };
+  const model = pick.model ?? ((HARNESSES as readonly string[]).includes(cli) ? preferredModelId(cli as HarnessId) : undefined);
+  return {
+    ok: true,
+    cli,
+    cliName: cliLabel(cli),
+    ...(pick.model ? { model: pick.model } : {}),
+    ...(pick.effort ? { effort: pick.effort } : {}),
+    reason,
+    delegateWith: { ...(model ? { model } : {}), ...(pick.effort ? { effort: pick.effort } : {}) },
+    note: "Start it with delegate_task, passing delegateWith. Tell Ash in one line which CLI it runs on and why.",
+  };
+}
+
+function routeReasonLine(value: unknown): string {
+  return typeof value === "string" ? value.replace(/\s+/g, " ").trim().slice(0, 240) : "";
+}
+
 /** The `tasks.*` actions (agentApp.ts dispatches them here after checking their fields). */
 export function handleTasks(
   source: Session,
@@ -1791,6 +1917,8 @@ export function handleTasks(
       return accept(source, input, host);
     case "tasks.workers":
       return Promise.resolve().then(() => workers(source, input, host));
+    case "tasks.pick":
+      return pickWorker(source, input, host);
     case "tasks.message":
     case "tasks.ask":
       return firstMateTool(source, requestId, action, input, host);

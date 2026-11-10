@@ -959,6 +959,72 @@ describe("tasks.delegate", () => {
     expect(started[0][4]).toMatchObject({ pickReason: why });
   });
 
+  it("WP-141: tasks.pick asks the crew for a CLI with the role, the files and the roster, and says how to use it", async () => {
+    const { source, host, api } = fixture();
+    api.checkDepth = vi.fn(async () => 1);
+    const asked: unknown[] = [];
+    api.crewPick = vi.fn(async (query: unknown) => {
+      asked.push(query);
+      return { ok: true, cli: "codex", monoId: null, model: "codex:gpt-5", effort: "high", reason: "Builder role prefers Codex." };
+    });
+    api.pickMonos = vi.fn(() => [{ id: "ada", name: "Ada", role: "reviewer", lead: "web" }]);
+    const result = (await handleRaw(
+      source,
+      "p-1",
+      "tasks.pick",
+      { role: "Builder", title: "Fix the save screen", files: ["src/save.ts"] },
+      host,
+    )) as Record<string, unknown>;
+    expect(result).toMatchObject({
+      ok: true,
+      cli: "codex",
+      cliName: "Codex",
+      model: "codex:gpt-5",
+      effort: "high",
+      reason: "Builder role prefers Codex.",
+      delegateWith: { model: "codex:gpt-5", effort: "high" },
+    });
+    expect(asked[0]).toMatchObject({
+      labels: expect.arrayContaining(["builder"]),
+      paths: ["src/save.ts"],
+      project: PROJECT,
+      mono: "vg-game-lead",
+      leadMonoId: "vg-game-lead",
+      depth: 0,
+      monos: [{ id: "ada", name: "Ada", role: "reviewer" }],
+    });
+    expect(api.pickMonos).toHaveBeenCalledWith("vg-game-lead");
+  });
+
+  it("WP-141: tasks.pick can name a Mono, passes an asked-for Lead on, and refuses one it cannot brief", async () => {
+    const { source, host, api } = fixture();
+    api.checkDepth = vi.fn(async () => 1);
+    api.crewPick = vi.fn(async () => ({ ok: true, cli: null, monoId: "ada", model: null, effort: null, reason: "This task asks for Ada." }));
+    api.pickMonos = vi.fn(() => [{ id: "ada", name: "Ada", role: "reviewer", lead: "web" }]);
+    const result = (await handleRaw(source, "p-2", "tasks.pick", { role: "reviewer", lead: "Ada" }, host)) as Record<string, unknown>;
+    expect(result).toMatchObject({ ok: true, monoId: "ada", leadName: "Ada", delegateWith: { lead: "web" } });
+    expect(api.crewPick).toHaveBeenCalledWith(expect.objectContaining({ monoOverride: "ada" }));
+    await expect(handleRaw(source, "p-3", "tasks.pick", { lead: "Nobody" }, host)).rejects.toThrow(
+      'No Lead "Nobody" among the ones you can brief',
+    );
+  });
+
+  it("WP-141: tasks.pick says plainly when nothing can take the work", async () => {
+    const { source, host, api } = fixture();
+    api.checkDepth = vi.fn(async () => 1);
+    api.crewPick = vi.fn(async () => ({
+      ok: false,
+      cli: null,
+      monoId: null,
+      model: null,
+      effort: null,
+      reason: "Codex is at its quota and Always use my default is on, so nothing else was picked.",
+    }));
+    const result = (await handleRaw(source, "p-4", "tasks.pick", {}, host)) as Record<string, unknown>;
+    expect(result).toMatchObject({ ok: false, reason: expect.stringContaining("Always use my default is on") });
+    expect(result).not.toHaveProperty("delegateWith");
+  });
+
   it("WP-141: no reason is kept when the crew chose nothing", async () => {
     const { source, host, started, api } = fixture();
     api.crewRoute = vi.fn(async () => ({ cli: null, cliFrom: "none", modelFrom: "none", effortFrom: "none" }));

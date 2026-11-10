@@ -8,6 +8,7 @@ use serde_json::Value;
 
 use super::budget::normalize_failure_policy;
 use super::failure::is_account_class;
+use super::pick;
 use super::policy::sanitize_policy;
 use super::reroute::{decide, Attempt, Decision, FailureInput};
 use super::resolve::{
@@ -603,12 +604,12 @@ fn policy_in_force(conn: &Connection, query: &RouteQuery) -> Result<Value, Strin
     policy_for(conn, query.mono.as_deref(), query.project.as_deref())
 }
 
-pub fn route_at(
+/// The rules in force for a query: the Mono's (carried, else stored), then the project's, then plugins'.
+fn merged_rules(
     conn: &Connection,
     query: &RouteQuery,
     plugins: &[Rule],
-    now: i64,
-) -> Result<Route, String> {
+) -> Result<Vec<Rule>, String> {
     let stored = match query
         .mono
         .as_deref()
@@ -630,7 +631,16 @@ pub fn route_at(
         Some(id) => load_optional(conn, "project", id)?,
         None => Vec::new(),
     };
-    let merged = rules::merge_rules(&mono, &project, plugins);
+    Ok(rules::merge_rules(&mono, &project, plugins))
+}
+
+pub fn route_at(
+    conn: &Connection,
+    query: &RouteQuery,
+    plugins: &[Rule],
+    now: i64,
+) -> Result<Route, String> {
+    let merged = merged_rules(conn, query, plugins)?;
     let policy = policy_in_force(conn, query)?;
     let lock = policy.get("lockDefault").and_then(Value::as_bool) == Some(true);
     let mut route = resolve_route(
@@ -675,6 +685,93 @@ pub fn route_at(
         }
     }
     Ok(route)
+}
+
+/// WP-141: a Mono the first mate may hand the brief to (a Lead it can brief), as the webview names it.
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PickMono {
+    pub id: String,
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub role: Option<String>,
+    #[serde(default)]
+    pub depth: i64,
+}
+
+/// WP-141: what the first mate's pick asks. The route fields are the same as `crew_route`'s.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PickRequest {
+    #[serde(flatten)]
+    pub route: RouteQuery,
+    #[serde(default)]
+    pub monos: Vec<PickMono>,
+    /// The Mono leading this chat. It is not a candidate for its own brief.
+    #[serde(default)]
+    pub lead_mono_id: Option<String>,
+    /// How deep this chat sits. Depth 2 or more refuses another Mono.
+    #[serde(default)]
+    pub depth: i64,
+    /// CLI or Mono ids already at the project worker cap.
+    #[serde(default)]
+    pub at_cap: Vec<String>,
+    /// A Mono the first mate asks for. Dropped, like a CLI override, when Always use my default is on.
+    #[serde(default)]
+    pub mono_override: Option<String>,
+}
+
+fn ask_of(pick: Option<&Pick>, mono: Option<&String>) -> Option<pick::Ask> {
+    if pick.is_none() && mono.is_none() {
+        return None;
+    }
+    Some(pick::Ask {
+        cli: pick.and_then(|row| row.cli.clone()),
+        model: pick.and_then(|row| row.model.clone()),
+        effort: pick.and_then(|row| row.effort.clone()),
+        mono_id: mono.cloned(),
+    })
+}
+
+/// WP-141: the first mate's pick, from the stored rules and policy, who is signed in and who is cooling down after an
+/// account failure. The same resolver as `route_at`; nothing is written.
+pub fn pick_at(
+    conn: &Connection,
+    request: &PickRequest,
+    plugins: &[Rule],
+    now: i64,
+) -> Result<pick::MatePick, String> {
+    let query = &request.route;
+    let rules = merged_rules(conn, query, plugins)?;
+    let policy = policy_in_force(conn, query)?;
+    let paused_clis = cooled_clis(conn, now)?;
+    let monos = request
+        .monos
+        .iter()
+        .map(|mono| pick::MonoCandidate {
+            id: mono.id.clone(),
+            name: mono.name.clone(),
+            role: mono.role.clone(),
+            depth: mono.depth,
+        })
+        .collect();
+    Ok(pick::pick_mate(&pick::PickQuery {
+        labels: query.labels.clone(),
+        paths: query.paths.clone(),
+        rules,
+        present: query.present.clone(),
+        policy: Some(policy),
+        defaults: query.defaults.clone(),
+        catalog: query.catalog.clone(),
+        monos,
+        lead_mono_id: request.lead_mono_id.clone(),
+        depth: request.depth,
+        paused_clis,
+        at_cap: request.at_cap.clone(),
+        override_pick: ask_of(query.override_pick.as_ref(), request.mono_override.as_ref()),
+        brief: ask_of(query.brief.as_ref(), None),
+    }))
 }
 
 fn read_attempts(conn: &Connection, id: &str) -> Result<Vec<Attempt>, String> {

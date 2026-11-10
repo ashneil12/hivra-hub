@@ -8,9 +8,30 @@ import type { CrewFailureNote } from "./advice";
 import { isCli, isEffort } from "./clis";
 import type { Route } from "./resolve";
 import type { CrewRouteQuery } from "./taskRoute";
+import type { CrewPickAnswer, CrewPickQuery } from "../../agent-app/model/agentAppTasks";
+import type { LeadTarget } from "../../hub/model/leadershipDelegation";
 
 export function crewRouteFor(query: CrewRouteQuery): Promise<Route> {
   return invoke<Route>("crew_route", { query });
+}
+
+/** WP-141: the first mate's pick across signed-in CLIs and the Monos it may brief (crew_pick). Reads only. */
+export function crewPickFor(request: CrewPickQuery): Promise<CrewPickAnswer> {
+  return invoke<CrewPickAnswer>("crew_pick", { request });
+}
+
+/**
+ * WP-141: the pick's Mono roster: the Leads a Mono may brief, each with its own role words. `lead` is what
+ * delegate_task's `lead` takes.
+ */
+export function pickMonosFrom(
+  targets: readonly Pick<LeadTarget, "leadId" | "leadName" | "projectId">[],
+  monos: readonly { id: string; role?: string }[],
+): { id: string; name: string; role?: string; lead: string }[] {
+  return targets.map((target) => {
+    const role = monos.find((mono) => mono.id === target.leadId)?.role?.trim();
+    return { id: target.leadId, name: target.leadName, ...(role ? { role } : {}), lead: target.projectId };
+  });
 }
 
 function currentPick(current: { cli?: string | null; model?: string | null; effort?: string | null }) {

@@ -66,7 +66,7 @@ import {
 } from "../features/monos/model/delegations";
 import { delegationTasksHost } from "../features/monos/model/delegationTasks";
 import { withCrewAdvice } from "../features/crew/model/advice";
-import { crewRouteFor, recordCrewFailure, recordCrewPause } from "../features/crew/model/host";
+import { crewPickFor, crewRouteFor, pickMonosFrom, recordCrewFailure, recordCrewPause } from "../features/crew/model/host";
 import {
   briefCancelled,
   briefSentAt,
@@ -14789,6 +14789,9 @@ function Workspace({
                 : {}),
               // WP-13: the start of a delegated task asks which CLI, model and effort to use.
               crewRoute: (query) => crewRouteFor(query),
+              // WP-141: tasks.pick, the crew's pick across CLIs and the Leads this Mono may brief.
+              crewPick: (query) => crewPickFor(query),
+              pickMonos: (monoId) => pickMonosFrom(leadTargetsFor(monoId, hubData().listProjects()), listMonos()),
               pool: workerPoolHost({
                 openRows: openDelegationRows,
                 room: providerRoomNow,

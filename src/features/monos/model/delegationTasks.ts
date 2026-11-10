@@ -51,6 +51,9 @@ export type DelegationTasksDeps = {
   pool?: AgentAppTasksHost["pool"];
   /** WP-13: which CLI, model and effort a delegated task uses. */
   crewRoute?: AgentAppTasksHost["crewRoute"];
+  /** WP-141: tasks.pick's crew pick and the Leads a Mono may brief. */
+  crewPick?: AgentAppTasksHost["crewPick"];
+  pickMonos?: AgentAppTasksHost["pickMonos"];
   /** Hivra WP-14: steering messages and decisions (firstmate/hooks/useSteering.ts). */
   firstMate?: AgentAppTasksHost["firstMate"];
 };
@@ -167,6 +170,8 @@ export function delegationTasksHost(deps: DelegationTasksDeps): AgentAppTasksHos
     ...(deps.monoWork ? { monoWork: deps.monoWork } : {}),
     ...(deps.pool ? { pool: deps.pool } : {}),
     ...(deps.crewRoute ? { crewRoute: deps.crewRoute } : {}),
+    ...(deps.crewPick ? { crewPick: deps.crewPick } : {}),
+    ...(deps.pickMonos ? { pickMonos: deps.pickMonos } : {}),
     // WP-144: off unless this project turned fresh-eyes review on. Reviewers run after this call returns (control.rs cuts
     // the app call at 35 s). The Inbox and the chat that asked come from the first mate's own backend.
     freshEyes: (input) =>

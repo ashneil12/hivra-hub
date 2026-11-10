@@ -1,6 +1,6 @@
 import { beforeEach, expect, it, vi } from "vitest";
 import { invoke } from "@tauri-apps/api/core";
-import { recordCrewFailure, recordCrewPause } from "./host";
+import { crewPickFor, pickMonosFrom, recordCrewFailure, recordCrewPause } from "./host";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 
@@ -72,4 +72,22 @@ it("notes a usage-limit pause without the failure text or a bad reset time", asy
   expect(JSON.stringify(sent.input)).not.toContain("SECRET");
   expect(sent.input.current).toEqual({ cli: null, model: null, effort: null });
   expect(sent.input.delegationId).toBe("t-4");
+});
+
+it("WP-141: asks crew_pick with the request, and names each Lead with its role and what delegate_task takes", async () => {
+  invokeMock.mockResolvedValue({ ok: true, cli: "codex", monoId: null, model: null, effort: null, reason: "Your default is Codex." });
+  const request = { labels: ["builder"], paths: [], monos: [], depth: 0, atCap: [] };
+  await expect(crewPickFor(request)).resolves.toMatchObject({ cli: "codex" });
+  expect(invokeMock).toHaveBeenCalledWith("crew_pick", { request });
+  const roster = pickMonosFrom(
+    [
+      { leadId: "web-lead", leadName: "Web lead", projectId: "web" },
+      { leadId: "game-lead", leadName: "EXO lead", projectId: "vg-game" },
+    ],
+    [{ id: "web-lead", role: " reviewer " }, { id: "other", role: "builder" }],
+  );
+  expect(roster).toEqual([
+    { id: "web-lead", name: "Web lead", role: "reviewer", lead: "web" },
+    { id: "game-lead", name: "EXO lead", lead: "vg-game" },
+  ]);
 });
