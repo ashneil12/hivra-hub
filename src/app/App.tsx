@@ -756,6 +756,12 @@ import {
   type UsageLimit,
   type WorkspaceMode,
 } from "../features/sessions/model/session";
+// WP-113: attention for the optional chat list inbox. Off passes no sessions.
+import { useChatListInbox } from "../features/settings/model/displayPrefs";
+import {
+  EMPTY_CHAT_LIST_SESSIONS,
+  useChatListAttention,
+} from "../features/sessions/model/chatListInboxStore";
 
 import {
   canDispatchQueuedHead,
@@ -2757,6 +2763,12 @@ function Workspace({
     approvalSessionIdsRef.current = nextApprovalSessionIds;
   }
   const approvalSessionIds = approvalSessionIdsRef.current;
+
+  // WP-113: attention for settle, snooze and re-sort. Off passes nothing, so today's list is untouched.
+  const chatListInboxOn = useChatListInbox();
+  const chatListAttention = useChatListAttention(
+    chatListInboxOn ? sessions : EMPTY_CHAT_LIST_SESSIONS,
+  );
 
   const activeSessionId = inboxViewOpen
     ? inboxAskPortal?.sessionId
@@ -17255,6 +17267,7 @@ function Workspace({
       sessions={sidebarHistory}
       busySessionIds={liveBusySessionIds}
       approvalSessionIds={approvalSessionIds}
+      chatAttention={chatListAttention}
       // The coding team's Lead in view is its pinned row's; no other chat reads as the current one meanwhile.
       activeSessionId={codingTeamList?.lead?.active ? undefined : activeSessionId}
       status={historyFailed ? "error" : "idle"}
