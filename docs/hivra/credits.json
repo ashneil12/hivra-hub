@@ -245,6 +245,12 @@
       "url": "https://github.com/anomalyco/models.dev",
       "licence": "MIT",
       "gave": "a catalogue of each model's context window and whether it can call tools, bundled so a custom route can read it offline (WP-104)"
+    },
+    {
+      "name": "Memorilla",
+      "url": "https://github.com/snap-stanford/memorilla",
+      "licence": "Apache-2.0; its PersonalizationV4 data is CC BY 4.0",
+      "gave": "an external test set for chat-derived memory, the arm ladder its evaluation reports, and rules for writing a memory question that cannot be guessed (WP-106, ideas and data only)"
     }
   ],
   "components": [
