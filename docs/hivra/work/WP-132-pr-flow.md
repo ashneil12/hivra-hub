@@ -1,10 +1,28 @@
-# WP-132: Source-control and review feel: design only
+# WP-132: Source-control and review feel
 
 | Wave | Size | Depends on | Grok OK |
 | --- | --- | --- | --- |
 | T3 parity | L | none | yes |
 
-This package is design only. It adds no product code. A later brief, after Ash picks a slice, would build it.
+This package started as a design. The recommended first slice, a review guide on a GitHub pull request in the inbox, is now built (see "Status" below). The later slices are still design only.
+
+## Status
+
+**Built (first slice, 10 Nov 2026):** the review guide, as the design below recommends.
+
+- Inbox, a GitHub pull request, Code tab: a "Guide" card above the diff (`src/features/inbox/ui/InboxPrGuide.tsx`, wired through `InboxPrCode` in `InboxPrDiff.tsx`). GitLab and Azure DevOps merge requests show no card.
+- Nothing is written until the person taps "Write guide". The guide is written from the diff already on screen (and the host's open review comments, already loaded with the thread) by the model that writes commit text (`pickTextHarness`, `runHarnessTextPrompt`, read only, 90 second limit). The diff and comments go to that model's provider, and the card says so. No new GitHub call, and nothing is ever posted to GitHub. The prompt marks the pull request's own text (title, files, comments, patch) as data, never instructions, and a file that changes security, sign-in, permissions, secrets, payments or deleting data is never mechanical. Titles, notes and the summary are capped (120, 400, 600 characters).
+- Stops in reading order, each with a file, a line range and a note; "Look closely" marks a call only a person can make; "Mechanical files" groups the rest; any changed file the model did not place is listed under "Also changed", so every changed file is on the tour. A stop opens its file in the existing unified diff and brings its first line into view (`focusLine` on `UnifiedDiffView`). No new renderer, no split view.
+- Kept on this Mac in the app's own database (the local hub document store, `src-tauri/src/local_hub.rs`, key `review-guide.<hash of repo and number>`), one guide per pull request, against the head commit it was written from. The head commit now comes back with the diff from the same `gh pr view` call (`headRefOid`, `git_github_pr_diff_for` in `src-tauri/src/fs.rs`).
+- A kept guide for another head shows "This guide was written for another version of this pull request" and hides the stops ("Show that guide" opens them, dimmed) until someone taps "Rewrite guide". The app can't tell which head is newer (a window can hold a stale diff), so it never says "out of date". A diff that doesn't name its head shows the kept guide with "Refresh the pull request to check this guide matches its latest commits."
+- A write only lands on top of the revision read before the model ran. A late answer from a second window never overwrites the guide the first one kept ("Another window wrote a guide first"). An answer for a head that is no longer on screen is dropped. A timeout, no answer, or an answer that is not a guide is a failed write; the guide that was there stays.
+- Model logic: `src/features/inbox/model/reviewGuide.ts`. Tests: `reviewGuide.test.ts`, `InboxPrGuide.test.tsx`, `UnifiedDiffView.lineJump.test.ts`, the Rust `parse_github_pr_diff_meta_keeps_the_head_commit`, and the browser spec `tests/browser/wp132-review-guide.spec.ts` (Chromium and WebKit).
+
+Decisions left to Ash, taken the conservative way: the guide is never written automatically (only on a tap); a guide for another version is hidden behind "Show that guide" rather than shown as the tour; there is no setting for it, because it does nothing until asked.
+
+**Next slice:** the later slices below, in their order, each only if Ash still wants it: viewed marks (GitHub's own), local commits in the diff pane, GitHub stacks, one extra forge. Review threads and the split toggle stay out (WP-116 owns split).
+
+**Not checked:** a guide written by a real model in a running dev copy against a real pull request. The tests use a stand-in for the model and a faked app store.
 
 ## Goal
 
@@ -126,13 +144,14 @@ Orca, Paseo, Cursor, Claude, and Codex come up in the parity study. This package
 - [x] Every forge above is either a Hivra path or "not in Hivra".
 - [x] Cursor Origin is skip unless Ash uses it.
 - [x] Line-by-line review threads stay out unless he asks.
-- [ ] Ash picks this slice, or names a different one from the later list. That pick is the only thing left before an implementation brief.
+- [x] Ash picks this slice, or names a different one from the later list. The build brief (10 Nov 2026) took the recommended slice.
 
 ## Done when
 
 - [x] The WP doc names a recommended first slice and what is out of scope.
 - [x] Every forge is mapped to a Hivra path or to "not in Hivra".
-- [x] No product UI or Rust was added.
+- [x] No product UI or Rust was added by the design itself. The first slice's build added both (see "Status").
+- [x] First slice: a GitHub pull request in the inbox can get a guide on request, kept on this Mac against its head, out of date after a new push, never overwritten by a late answer, and never sent to GitHub.
 
 ## Licence
 
