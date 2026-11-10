@@ -355,12 +355,6 @@ export const SETTINGS_INDEX: SettingsEntry[] = [
       "new chat worktree branch default ask every chat git project checkout",
   },
   {
-    id: "sparse-checkout",
-    section: "worktrees",
-    label: "Use a sparse checkout for new worktrees on this project",
-    keywords: "sparse partial paths large repo new worktree",
-  },
-  {
     id: "project-actions",
     section: "worktrees",
     label: "Project actions",

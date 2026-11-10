@@ -4,6 +4,10 @@
 | --- | --- | --- | --- |
 | M | M | none | yes |
 
+## Status (10 Nov 2026)
+
+Not built. A first attempt (PR #121) was taken back to this note: it called gion commands that the real gion CLI does not have, and turning the switch on broke every new worktree. A rebuild starts from the pinned tree's own README and `--help` output, and its tests run the real pinned binary against a local fixture, not a stand-in that accepts any command.
+
 ## Goal
 
 For a large git project, the person can opt in to a sparse checkout for a new worktree or a short-lived agent workspace, so the agent fetches only the paths it needs instead of a full working copy. It is off by default. Ordinary `git` remains the default path. gion is a pinned tool, not a rewrite of Hivra's git layer.

@@ -1933,25 +1933,6 @@ mod tests {
             .any(|(path, kind)| path.ends_with("notes") && *kind == Kind::NotGit));
     }
 
-    #[test]
-    fn a_sparse_marker_without_git_is_kept() {
-        let temp = temp("monocode-janitor-sparse");
-        let slot = temp.0.join("feature");
-        std::fs::create_dir_all(&slot).unwrap();
-        std::fs::write(
-            slot.join(".gion-workspace.json"),
-            b"{\"repo\":\"/repo\",\"branch\":\"feature\",\"commit\":\"abc\"}\n",
-        )
-        .unwrap();
-        let found = discover(&[], std::slice::from_ref(&slot));
-        assert_eq!(found.len(), 1);
-        assert_eq!(found[0].1, Kind::NotGit);
-        let facts = Facts::new(&slot, Kind::NotGit);
-        let verdict = verdict(&facts, &Policy::default(), NOW);
-        assert_eq!(verdict.outcome, Outcome::Keep);
-        assert_eq!(verdict.reason, "Not a git worktree");
-    }
-
     /// A clean, merged, idle linked worktree: the remove case. Each test changes one thing.
     fn merged() -> Facts {
         let mut facts = Facts::new(Path::new("/w/feature"), Kind::Linked);

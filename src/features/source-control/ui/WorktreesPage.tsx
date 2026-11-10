@@ -5,8 +5,6 @@ import { ProjectActionsPanel } from "./ProjectActionsPanel";
 import { NewChatWorktreeSetting } from "./NewChatWorktreeSetting";
 import { WorktreeAutoClearSetting } from "./WorktreeAutoClearSetting";
 import { WorktreeCleanup } from "./WorktreeCleanup";
-import { SparseSlotNote } from "./SparseCheckout";
-import { SparseCheckoutSection } from "./SparseCheckoutSection";
 import { WorktreePoolSection } from "./WorktreePoolSection";
 import { WorktreeStacks } from "../../stacks/ui/WorktreeStacks";
 import { SearchableProjectPicker } from "../../projects/ui/SearchableProjectPicker";
@@ -184,7 +182,6 @@ export function WorktreesPage({
                         : `Detached at ${tree.head.slice(0, 7)}`}
                     </span>
                   </p>
-                  {tree.sparseNotice && <SparseSlotNote text={tree.sparseNotice} />}
                   <p className="mt-2 flex flex-wrap gap-x-3 text-[11px] text-content/55">
                     <span>
                       {count} session{count === 1 ? "" : "s"} in this worktree
@@ -245,7 +242,6 @@ export function WorktreesPage({
       {project && (
         <ProjectActionsPanel project={project} worktrees={data?.worktrees ?? []} />
       )}
-      {project && <SparseCheckoutSection cwd={project} />}
       {project && <WorktreePoolSection cwd={project} />}
       {project && <WorktreeStacks cwd={project} />}
       <WorktreeAutoClearSetting />

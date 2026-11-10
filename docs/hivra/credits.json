@@ -241,12 +241,6 @@
       "gave": "ideas only: a live session tree (main agent at the root, subagents as nodes, inspectable tool calls) and a waiting-on-you list ordered questions first and longest wait first"
     },
     {
-      "name": "gion",
-      "url": "https://github.com/baz-scm/gion",
-      "licence": "Apache-2.0",
-      "gave": "a sparse checkout that fetches only the paths a new worktree needs, used as a pinned tool (WP-118)"
-    },
-    {
       "name": "Memorilla",
       "url": "https://github.com/snap-stanford/memorilla",
       "licence": "Apache-2.0; its PersonalizationV4 data is CC BY 4.0",
@@ -589,14 +583,6 @@
       "copyright": "Copyright 2026 Row-Bot Contributors",
       "where": "src/features/memory/model/orderScan.ts",
       "how": "external_content.py's injection scan translated to TypeScript, with its cases ported (WP-111). The fence and the warning sentence are not used. A match refuses a proposed memory and is noted on recall. It never deletes one."
-    },
-    {
-      "name": "gion",
-      "url": "https://github.com/baz-scm/gion",
-      "licence": "Apache-2.0",
-      "copyright": "No copyright line was present in the studied tree. Do not invent a holder.",
-      "where": "",
-      "how": "Planned for WP-118, code not copied yet: a pinned gion binary for an opted-in sparse worktree. The Go source is not vendored."
     }
   ]
 }

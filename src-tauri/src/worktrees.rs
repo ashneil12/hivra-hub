@@ -26,9 +26,6 @@ pub struct Worktree {
     /// WP-82: said once, when this checkout was a plain git worktree because the pool was off or not installed.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pool_notice: Option<String>,
-    /// WP-118: git does not list this checkout, so later actions stay on the pinned tool.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub sparse_notice: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -88,7 +85,7 @@ pub(crate) fn list(root: &Path) -> Result<Vec<Worktree>, String> {
     )?))
 }
 
-pub(crate) fn same_path(a: &Path, b: &Path) -> bool {
+fn same_path(a: &Path, b: &Path) -> bool {
     let a = a.canonicalize().unwrap_or_else(|_| a.to_path_buf());
     let b = b.canonicalize().unwrap_or_else(|_| b.to_path_buf());
     if cfg!(windows) {
@@ -141,27 +138,14 @@ fn session_ids(conn: &rusqlite::Connection, path: &Path) -> Result<Vec<String>, 
     Ok(ids)
 }
 
-pub(crate) fn default_root(main: &Path) -> PathBuf {
+fn default_root(main: &Path) -> PathBuf {
     let name = main.file_name().unwrap_or_default().to_string_lossy();
     main.with_file_name(format!("{name}-worktrees"))
 }
 
 #[tauri::command(async)]
 pub fn git_worktrees(cwd: String, store: State<'_, SessionStore>) -> Result<Worktrees, String> {
-    let root = expand_home(&cwd);
-    let mut worktrees = list(&root)?;
-    let slots = worktrees
-        .first()
-        .map(|main| crate::sparse_checkout::unlisted_slots(Path::new(&main.path)))
-        .unwrap_or_default();
-    for slot in slots {
-        let seen = worktrees
-            .iter()
-            .any(|tree| same_path(Path::new(&tree.path), Path::new(&slot.path)));
-        if !seen {
-            worktrees.push(slot);
-        }
-    }
+    let mut worktrees = list(&expand_home(&cwd))?;
     let main = worktrees.first().ok_or("No working copies found")?;
     let default_root = path_to_js(&default_root(Path::new(&main.path)));
     {
@@ -173,10 +157,6 @@ pub fn git_worktrees(cwd: String, store: State<'_, SessionStore>) -> Result<Work
     for tree in &mut worktrees {
         let path = Path::new(&tree.path);
         tree.missing = !path.is_dir();
-        // WP-118: a sparse slot is not a git worktree. Don't ask git whether it is dirty.
-        if tree.sparse_notice.is_some() {
-            continue;
-        }
         if !tree.missing {
             tree.dirty = git(path, &["status", "--porcelain", "--untracked-files=normal"])
                 .ok()
@@ -192,24 +172,12 @@ pub fn git_worktrees(cwd: String, store: State<'_, SessionStore>) -> Result<Work
     })
 }
 
-pub(crate) struct Planned {
-    pub branch: String,
-    pub path: PathBuf,
-    pub parent: PathBuf,
-    pub commit: String,
-    pub main: PathBuf,
-    pub existing: bool,
-}
-
-/// The checks `git worktree add` already makes, before any tool is started.
-/// A sparse checkout uses this so it cannot skip a refusal, and it does not
-/// create the folder.
-pub(crate) fn plan_new(
+pub(crate) fn create(
     root: &Path,
     branch: &str,
     base: &str,
     existing: bool,
-) -> Result<Planned, String> {
+) -> Result<Worktree, String> {
     let branch = branch.trim();
     if branch.starts_with('-') || branch.starts_with('@') || branch.is_empty() {
         return Err("Enter a valid branch name".into());
@@ -223,8 +191,7 @@ pub(crate) fn plan_new(
         return Err("This branch already has a working copy. Select it from the picker.".into());
     }
     let main = trees.first().ok_or("No working copies found")?;
-    let main_path = PathBuf::from(&main.path);
-    let parent = default_root(&main_path);
+    let parent = default_root(Path::new(&main.path));
     let slug: String = branch
         .chars()
         .map(|c| {
@@ -235,15 +202,15 @@ pub(crate) fn plan_new(
             }
         })
         .collect();
-    let path = parent.join(&slug);
+    let path = parent.join(slug);
     if path.exists() {
         return Err(format!(
             "{} already exists. Choose another branch name.",
             path.display()
         ));
     }
-    // Resolve user-supplied refs before passing them on. Never interpret a ref
-    // as an option, and only accept existing local branches.
+    // Resolve user-supplied refs before passing them to worktree add. Never
+    // interpret a ref as an option, and only accept existing local branches.
     let source = if existing {
         format!("refs/heads/{branch}")
     } else {
@@ -258,27 +225,10 @@ pub(crate) fn plan_new(
             &format!("{source}^{{commit}}"),
         ],
     )?;
-    Ok(Planned {
-        branch: branch.to_string(),
-        path,
-        parent,
-        commit: commit.trim().to_string(),
-        main: main_path,
-        existing,
-    })
-}
-
-pub(crate) fn create(
-    root: &Path,
-    branch: &str,
-    base: &str,
-    existing: bool,
-) -> Result<Worktree, String> {
-    let plan = plan_new(root, branch, base, existing)?;
-    std::fs::create_dir_all(&plan.parent).map_err(|e| e.to_string())?;
-    let path_str = path_to_js(&plan.path);
-    if plan.existing {
-        git_checked(root, &["worktree", "add", "--", &path_str, &plan.branch])?;
+    std::fs::create_dir_all(&parent).map_err(|e| e.to_string())?;
+    let path_str = path_to_js(&path);
+    if existing {
+        git_checked(root, &["worktree", "add", "--", &path_str, branch])?;
     } else {
         git_checked(
             root,
@@ -287,45 +237,19 @@ pub(crate) fn create(
                 "add",
                 "--no-track",
                 "-b",
-                &plan.branch,
+                branch,
                 "--",
                 &path_str,
-                &plan.commit,
+                commit.trim(),
             ],
         )?;
     }
     list(root)?
         .into_iter()
-        .find(|tree| same_path(Path::new(&tree.path), &plan.path))
+        .find(|tree| same_path(Path::new(&tree.path), &path))
         .ok_or_else(|| {
             "Worktree created, but could not be found. Refresh the working copies.".into()
         })
-}
-
-/// WP-118: the sparse tool when this project asked, otherwise ordinary git.
-/// An error is not a reason to try git.
-enum Opened {
-    Sparse(Box<Worktree>),
-    UseGit,
-}
-
-fn open_opted_in(
-    app: &AppHandle,
-    root: &Path,
-    branch: &str,
-    base: &str,
-    existing: bool,
-) -> Result<Opened, String> {
-    match crate::sparse_checkout::open_if_enabled(
-        &crate::sparse_checkout::env_from_app(app),
-        root,
-        branch,
-        base,
-        existing,
-    )? {
-        Some(tree) => Ok(Opened::Sparse(Box::new(tree))),
-        None => Ok(Opened::UseGit),
-    }
 }
 
 /// Start the project's setup in a worktree that was just added. It runs before the agent's first turn: the chat
@@ -407,27 +331,15 @@ pub async fn git_worktree_create(
                 Ok(Pooled::Ready(tree)) => return Ok(*tree),
                 Ok(Pooled::Full(note)) => return Err(note),
                 Ok(Pooled::Plain(notice)) => {
-                    // WP-118: a ready or full pool still wins. Only the plain-git fallback can be sparse.
-                    return match open_opted_in(&app, &root, branch.trim(), &base, existing)? {
-                        Opened::Sparse(tree) => Ok(with_setup(&app, *tree, run_setup)),
-                        Opened::UseGit => {
-                            let mut tree = create(&root, &branch, &base, existing)?;
-                            tree.pool_notice = notice;
-                            Ok(with_setup(&app, tree, run_setup))
-                        }
-                    };
+                    let mut tree = create(&root, &branch, &base, existing)?;
+                    tree.pool_notice = notice;
+                    return Ok(with_setup(&app, tree, run_setup));
                 }
                 Err(error) => return Err(pooled_error(error, false)),
             }
         }
-        // WP-118: sparse only when this project asked. Off stays on ordinary git.
-        match open_opted_in(&app, &root, &branch, &base, existing)? {
-            Opened::Sparse(tree) => Ok(with_setup(&app, *tree, run_setup)),
-            Opened::UseGit => {
-                let tree = create(&root, &branch, &base, existing)?;
-                Ok(with_setup(&app, tree, run_setup))
-            }
-        }
+        let tree = create(&root, &branch, &base, existing)?;
+        Ok(with_setup(&app, tree, run_setup))
     })
     .await
     .map_err(|error| error.to_string())?
@@ -602,24 +514,16 @@ pub async fn git_orchestration_worktree_create(
             }
             Ok(Pooled::Plain(notice)) => {
                 let known = list(&root)?
-                    .iter()
+                    .into_iter()
                     .any(|tree| tree.branch.as_deref() == Some(branch));
-                // A branch git already has is recovery. Don't start the sparse tool, and keep the seed.
-                if known {
-                    let mut tree = create_seeded(&root, branch)?;
-                    tree.pool_notice = notice;
-                    return Ok(tree);
-                }
-                // WP-118: a new worker checkout can be sparse. That does not copy the lead's files.
-                // A full pool is still an error above, and a sparse failure does not fall back to git.
-                match open_opted_in(&app, &root, branch, "HEAD", false)? {
-                    Opened::Sparse(tree) => Ok(with_setup(&app, *tree, run_setup)),
-                    Opened::UseGit => {
-                        let mut tree = create_seeded(&root, branch)?;
-                        tree.pool_notice = notice;
-                        Ok(with_setup(&app, tree, run_setup))
-                    }
-                }
+                let mut tree = create_seeded(&root, branch)?;
+                tree.pool_notice = notice;
+                // A recovered worker checkout was set up when it was first made.
+                Ok(if known {
+                    tree
+                } else {
+                    with_setup(&app, tree, run_setup)
+                })
             }
             Err(error) => Err(pooled_error(error, true)),
         }
@@ -669,95 +573,46 @@ pub async fn git_worktree_rename_branch(
 }
 
 fn removal_target(root: &Path, path: &Path) -> Result<Worktree, String> {
-    let trees = list(root)?;
-    if let Some(tree) = trees
+    let tree = list(root)?
         .into_iter()
         .find(|tree| same_path(Path::new(&tree.path), path))
-    {
-        if tree.is_main {
-            return Err("The main working copy cannot be deleted".into());
-        }
-        if tree.locked {
-            return Err("This worktree is locked. Unlock it in Git before deleting it.".into());
-        }
-        if tree.branch.is_none() {
-            // There is no branch retaining detached commits after removal.
-            return Err("Create a branch for this detached worktree before deleting it.".into());
-        }
-        return Ok(tree);
+        .ok_or("This path is not a registered worktree of this repository")?;
+    if tree.is_main {
+        return Err("The main working copy cannot be deleted".into());
     }
-    // WP-118: a sparse slot git does not list. A path git does list stays on the git path above.
-    if let Some(tree) = crate::sparse_checkout::slot_for_removal(root, path) {
-        return Ok(tree);
+    if tree.locked {
+        return Err("This worktree is locked. Unlock it in Git before deleting it.".into());
     }
-    Err("This path is not a registered worktree of this repository".into())
+    if tree.branch.is_none() {
+        // There is no branch retaining detached commits after removal.
+        return Err("Create a branch for this detached worktree before deleting it.".into());
+    }
+    Ok(tree)
 }
 
 #[tauri::command(async)]
 pub fn git_worktree_check_remove(
-    app: AppHandle,
     cwd: String,
     path: String,
     force: bool,
     terminals: State<'_, crate::pty::PtyHost>,
 ) -> Result<(), String> {
     let path = expand_home(&path);
-    // WP-118: ask the pinned tool when this copy has one. No pin means the status is unknown.
-    check_removal_with_tool(
+    check_removal(
         &expand_home(&cwd),
         &path,
         force,
         terminals.has_working_dir(&path),
-        &crate::sparse_checkout::env_from_app(&app),
     )
 }
 
-#[cfg(test)]
-pub(crate) fn check_removal(
-    root: &Path,
-    path: &Path,
-    force: bool,
-    has_terminals: bool,
-) -> Result<(), String> {
-    check_removal_inner(root, path, force, has_terminals, None)
-}
-
-pub(crate) fn check_removal_with_tool(
-    root: &Path,
-    path: &Path,
-    force: bool,
-    has_terminals: bool,
-    env: &crate::sparse_checkout::SparseEnv,
-) -> Result<(), String> {
-    check_removal_inner(root, path, force, has_terminals, Some(env))
-}
-
-fn check_removal_inner(
-    root: &Path,
-    path: &Path,
-    force: bool,
-    has_terminals: bool,
-    env: Option<&crate::sparse_checkout::SparseEnv>,
-) -> Result<(), String> {
+fn check_removal(root: &Path, path: &Path, force: bool, has_terminals: bool) -> Result<(), String> {
     let tree = removal_target(root, path)?;
     if has_terminals {
         return Err("Close the terminals using this worktree first.".into());
     }
     // Sessions and their agents still exist during preflight. The actual
     // removal below checks them again after the session deletion lifecycle.
-    if tree.sparse_notice.is_some() {
-        // WP-118: do not ask git. Unknown is not clean, and it is not a reason to delete.
-        if force {
-            return Ok(());
-        }
-        return match env
-            .and_then(|env| crate::sparse_checkout::slot_dirty(env, Path::new(&tree.path)))
-        {
-            Some(true) => Err("This worktree has uncommitted or untracked changes.".into()),
-            Some(false) => Ok(()),
-            None => Err(crate::sparse_checkout::STATUS_UNKNOWN.to_string()),
-        };
-    }
     if !force
         && !git(
             Path::new(&tree.path),
@@ -772,13 +627,6 @@ fn check_removal_inner(
 
 pub(crate) fn remove(root: &Path, path: &Path, force: bool) -> Result<(), String> {
     let tree = removal_target(root, path)?;
-    if tree.sparse_notice.is_some() {
-        // WP-118: without the tap, do not delete. Never `git worktree remove` a slot git does not list.
-        if !force {
-            return Err(crate::sparse_checkout::STATUS_UNKNOWN.to_string());
-        }
-        return crate::sparse_checkout::delete_slot(root, Path::new(&tree.path));
-    }
     let mut args = vec!["worktree", "remove"];
     if force {
         args.push("--force");
