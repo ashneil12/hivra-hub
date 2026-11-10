@@ -13,8 +13,9 @@ import { appendControlEvent } from "./model/controlText";
 import { installCodingTeamDefault } from "../features/hub/model/codingTeamModel";
 import { noteSessionRuns, RUN_HEARTBEAT_MS, setProcessRunSource } from "../features/monos/model/sessionRuns";
 import { noteToolCalls, setRunToolTextSource } from "../features/hub/model/soulTamper";
+import { parksForApproval } from "../features/sessions/model/approvalCarry";
 import { stripHiddenCharacters } from "../features/sessions/model/hiddenText";
-import { waitingOnYouLine } from "../features/sessions/model/approvalWait";
+import { heldLineForSend } from "../features/sessions/model/approvalWait";
 import { listHarnessRuns } from "../integrations/harness/core/child";
 import { OPEN_CONNECTOR_EVENT } from "../features/hub/model/connectors";
 import { OPEN_HUB_EVENT, OPEN_TEAMS_EVENT } from "../features/hub/model/hubTeams";
@@ -8450,6 +8451,18 @@ function Workspace({
       // A repair is not the person's next message, so it leaves the transcript for that message.
       const portableResume =
         pendingSwitch || options?.ciRepair ? undefined : current.portableResume;
+      // WP-146: tell Ash why his message did not go into a turn that waits on his OK (approvalWait.ts).
+      const sayHeld = () => {
+        const heldLine = heldLineForSend(current, options);
+        if (!heldLine) return;
+        setSessions((prev) =>
+          prev.map((s) =>
+            s.id === sessionId
+              ? { ...s, blocks: [...s.blocks, { id: crypto.randomUUID(), role: "system", text: heldLine, notice: "waiting-on-you" } as Block] }
+              : s,
+          ),
+        );
+      };
 
       // A Mono accepts consecutive messages before its provider is connected.
       // The pending head is delivered once ready; later messages cannot overtake it.
@@ -8519,8 +8532,11 @@ function Workspace({
           !canSteerQueuedHead(current) ||
           !canSteerHarness(current.harness) ||
           operatorCommand.matched
-        )
+        ) {
+          // WP-146: Steer on a message held behind an open approval says why it stayed.
+          if (message) sayHeld();
           return false;
+        }
         const gen = turnGen.current.get(sessionId);
         const change = (update: (session: Session) => Session) => {
           const next = sessionsRef.current.map((session) =>
@@ -8596,20 +8612,10 @@ function Workspace({
       }
 
       if (current.busy && !pendingSwitch && !portableResume) {
-        // Ash wrote to a chat held on his OK: it can't read him until he decides, so say so now (S14).
-        const heldLine =
-          !options?.appRequestId && !options?.monoNote && !options?.queuedMessageId && !options?.monoSessionCompletion
-            ? waitingOnYouLine(current.blocks)
-            : null;
-        if (heldLine) {
-          setSessions((prev) =>
-            prev.map((s) =>
-              s.id === sessionId
-                ? { ...s, blocks: [...s.blocks, { id: crypto.randomUUID(), role: "system", text: heldLine, notice: "waiting-on-you" } as Block] }
-                : s,
-            ),
-          );
-        }
+        // Ash wrote to a chat held on his OK: it can't read him until he decides, so say so now (S14). WP-146: the
+        // same when he presses Steer on a message already waiting (it stays queued), and only when the message
+        // really waits (not for the background-tasks branch, which hands it over now).
+        sayHeld();
         if (
           operatorCommand.matched &&
           options?.queuedMessageId &&
@@ -8622,6 +8628,12 @@ function Workspace({
           flushHarnessEvents();
           return false;
         }
+        // WP-146: a message does not go into a turn that is still waiting on approval. The background-tasks
+        // branch keeps precedence: parksForApproval is false when only background work is left.
+        const parkForApproval = parksForApproval(current);
+        // A message already in the queue (its own Steer button) stays where it is, and the line above says why.
+        // This stays ahead of followUpWhenBusy so it is never added to the queue a second time.
+        if (parkForApproval && options?.queuedMessageId) return false;
         // The app is compacting this idle chat in the background (WP-115). Its
         // busy flag is ours, there is no reply to steer into, and a message
         // written now would land inside the compact.
@@ -8633,6 +8645,7 @@ function Workspace({
         const followUpBehavior = followUpWhenBusy({
           setting: options?.followUpBehavior ?? loadFollowUpBehavior(),
           mustWait: !!(
+            parkForApproval ||
             current.worktreePreparing ||
             intent === "plan" ||
             intent === "orchestrate" ||
