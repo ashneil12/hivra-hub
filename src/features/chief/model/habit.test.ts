@@ -120,8 +120,9 @@ describe("morning habit", () => {
 
   it("names only sources this app has", () => {
     const text = morningHabit(1).instructions;
-    // the lines the first draft of this package added named a queue and a log that were never built
-    expect(text).not.toMatch(/programme queue|work log/i);
+    // The first draft of this package named a programme queue that was never built, and a work log. The work log
+    // exists now (WP-157), but a habit run is refused by it (agentAppWorkLog.test.ts), so the text does not send the run there.
+    expect(text).not.toMatch(/programme queue|work.?log/i);
     const named = [...text.matchAll(/\bapp ([a-z]+\.[a-z]+)/g)].map((match) => match[1]);
     expect(named).toEqual(["tasks.list", "docs.list", "activity.list"]);
     for (const action of named) expect(appActions()).toContain(action);

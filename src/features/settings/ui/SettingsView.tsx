@@ -1108,7 +1108,7 @@ function GeneralPage({
         <Row
           id="quiet-hours"
           label="Quiet hours"
-          description="Routine banners and sounds wait until the window ends, then arrive as one notice. Failed checks, approvals and questions still come through unless you muted them. Reminders you set still fire."
+          description="Routine banners and sounds wait until the window ends, then arrive as one notice. Failed checks always come through. Approvals and questions do too, unless you muted them. Reminders you set still fire."
         >
           <QuietHoursSetting />
         </Row>
