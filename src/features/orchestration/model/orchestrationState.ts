@@ -1,6 +1,7 @@
 import { pathKey } from "../../../shared/lib/paths";
 import type { OrchestrationChoice } from "./orchestrationPlan";
 import type { HarnessId } from "../../sessions/model/session";
+import { normalizeClosingUsage, type ClosingUsage } from "./closingUsage";
 import {
   normalizeCheckRun,
   normalizeGoalCheck,
@@ -159,6 +160,9 @@ export type OrchestrationRun = {
   repairCycles?: Record<string, string[][]>;
   /** Extend rounds taken, for a re-plan that adds nodes. */
   extends?: number;
+  /** WP-148: usage the children had recorded when this run finished. Absent unless the run is finished, and absent
+   * when no child recorded a count. Never a row of zeros. */
+  closingUsage?: ClosingUsage;
 };
 
 export function workspaceIdentity(
@@ -290,6 +294,8 @@ export function normalizeOrchestrationRun(
     run.extends >= 0
       ? { extends: run.extends }
       : { extends: undefined }),
+    closingUsage:
+      run.status === "finished" ? normalizeClosingUsage(run.closingUsage) : undefined,
   };
 }
 
