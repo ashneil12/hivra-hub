@@ -314,6 +314,49 @@ describe("telling the programme about a red CI", () => {
     expect(noticed).not.toHaveBeenCalled();
   });
 
+  it("tells the notice who owns the wake and which watch it came from", async () => {
+    const wakes = [wake({ id: "pr-watch-w1-1" })];
+    const store = backend(wakes);
+    store.api.list = vi.fn(async () => [watch({ id: "w1", repoRoot: "/code/hivra" })]);
+    const app = host([mono()]);
+    const noticed = vi.fn();
+    const tracker = new PrWatchTracker(store.api, { ...app.host, noticed });
+    await tracker.refresh();
+    await tracker.deliver();
+    const [, about] = noticed.mock.calls[0];
+    expect(about.owner.id).toBe("mono-hivra");
+    expect(about.watch?.repoRoot).toBe("/code/hivra");
+
+    // a watch the list does not have yet is still noticed, with the owner alone
+    const early = vi.fn();
+    await new PrWatchTracker(backend([wake({ id: "pr-watch-w1-2" })]).api, { ...host([mono()]).host, noticed: early }).deliver();
+    expect(early.mock.calls[0][1].watch).toBeUndefined();
+  });
+
+  it("reports a wake only after it is marked queued, so a write that failed cannot report it twice", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const wakes = [wake({ id: "pr-watch-w1-1" })];
+    const store = backend(wakes);
+    const mark = store.api.setDelivery;
+    let fails = 1;
+    store.api.setDelivery = vi.fn(async (ids, delivery) => {
+      if (fails-- > 0) throw new Error("database is locked");
+      return mark(ids, delivery);
+    });
+    const app = host([mono()]);
+    const noticed = vi.fn();
+    const tracker = new PrWatchTracker(store.api, { ...app.host, noticed });
+
+    await expect(tracker.deliver()).rejects.toThrow("database is locked");
+    expect(noticed).not.toHaveBeenCalled();
+    expect(wakes[0].delivery).toBe("pending");
+
+    await tracker.deliver();
+    expect(noticed).toHaveBeenCalledTimes(1);
+    await tracker.deliver();
+    expect(noticed).toHaveBeenCalledTimes(1);
+  });
+
   it("does not report a wake whose owner is gone, and a failing notice does not stop delivery", async () => {
     vi.spyOn(console, "warn").mockImplementation(() => undefined);
     const noticed = vi.fn();

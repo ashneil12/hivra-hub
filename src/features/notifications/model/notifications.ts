@@ -4,6 +4,7 @@ import { loadSoundsEnabled, playCue } from "../../settings/model/sounds";
 import {
   allowsProjectNotification,
   projectNotificationVerdict,
+  type NotificationCategory,
   type NotificationSubject,
 } from "./notificationPreferences";
 import { monoReplyText } from "../../monos/model/monoReaction";
@@ -377,6 +378,24 @@ export async function announceStuckWorker(notice: {
     }
   }
   playCue("inputRequested", subject);
+}
+
+/**
+ * A failure about work in these project folders (a red CI on a watched pull request). Quiet hours never hold it, but
+ * a mute of `category` on any of those projects still silences it. A folder that is no known project has no mute.
+ */
+export function failureNoticeAllowed(
+  folders: ReadonlyArray<string | null | undefined>,
+  category: NotificationCategory,
+  occurredAt: number,
+): boolean {
+  for (const folder of folders) {
+    const project = folder ? knownNotificationProject(folder) : undefined;
+    if (!project) continue;
+    const verdict = projectNotificationVerdict({ projectId: project.id, category, occurredAt, failure: true });
+    if (verdict === "muted") return false;
+  }
+  return true;
 }
 
 /** `shown`: the system took it. `off`: notifications are off or denied, so none is owed. `failed`: try again later. */

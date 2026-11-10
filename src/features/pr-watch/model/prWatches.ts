@@ -204,10 +204,12 @@ export type PrWatchHost = {
   /** Put a wake in the owner's queue (deduplicated by its id). */
   queueWake(ownerId: string, message: QueuedMessage): Promise<void>;
   /**
-   * A wake is going to a live owner for the first time. Called once per wake, never again when a crash puts it in the
-   * queue a second time. A throw is logged and does not hold the wake back.
+   * A wake is going to a live owner for the first time. Called once per wake, after it is marked queued, so a write
+   * that failed (and will be tried again) has not been noticed yet, and never again when a crash puts it in the queue a
+   * second time. `watch` is the watch as of the last read, when the list has one. A throw is logged and does not hold
+   * the wake back.
    */
-  noticed?(wake: PrWake): void;
+  noticed?(wake: PrWake, about: { owner: Session; watch: PrWatch | undefined }): void;
 };
 
 /**
@@ -317,8 +319,8 @@ export class PrWatchTracker {
           }
           if (owner.queuedMessages?.some((message) => message.id === wake.id)) continue;
         } else {
-          this.notice(wake);
           await this.backend.setDelivery([wake.id], "queued");
+          this.notice(wake, owner);
         }
         await this.host.queueWake(wake.ownerSession, wakeMessage(wake));
         summary.queued++;
@@ -332,9 +334,9 @@ export class PrWatchTracker {
     });
   }
 
-  private notice(wake: PrWake): void {
+  private notice(wake: PrWake, owner: Session): void {
     try {
-      this.host.noticed?.(wake);
+      this.host.noticed?.(wake, { owner, watch: this.watches.find((watch) => watch.id === wake.watchId) });
     } catch (error) {
       console.warn("PR watch: couldn't note a wake; it is still delivered", error);
     }
