@@ -4738,6 +4738,33 @@ mod tests {
         assert!(!inside.join("emulate.pid").exists());
     }
 
+    /// `stop_stand_ins` does nothing unless the app calls it: once at the next start, before the
+    /// names are put back, and once when the app exits. Those two calls are in `lib.rs`, which an
+    /// upstream merge rewrites often, and nothing else would notice one going missing.
+    #[test]
+    fn the_app_stops_its_fakes_at_the_next_start_and_when_it_quits() {
+        let lib = include_str!("lib.rs");
+        let start = lib
+            .find("stacks::stop_stand_ins(&claim.data_dir)")
+            .expect("the start does not stop a fake left by the last run");
+        let resume = lib
+            .find("stacks::resume_names(&env)")
+            .expect("the start does not put the running stacks' names back");
+        assert!(
+            start < resume,
+            "a left-over fake must be stopped before its name is put back"
+        );
+        let exit = lib
+            .find("tauri::RunEvent::Exit =>")
+            .expect("the app has no exit handler");
+        let arm = &lib[exit..];
+        let arm = &arm[..arm.find("_ => {}").expect("the exit arm has no end")];
+        assert!(
+            arm.contains("stacks::stop_stand_ins("),
+            "quitting the app leaves its fake services running"
+        );
+    }
+
     /// A stand-in left behind by a quit or a crash is stopped, and a pid file that is not inside
     /// this data folder's stacks directory is left alone.
     #[cfg(unix)]
