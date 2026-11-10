@@ -6366,9 +6366,11 @@ mod tests {
                 // Asked for its version it answers; started as the stand-in it stays up a moment, as the real one
                 // does. One that exits at once has gone by the time its start time is read, which macOS cannot do
                 // for a process that has ended (Linux still can), so the start was refused on a quick runner.
+                // `/bin/sleep` by its full path: the stand-in runs with PATH set to this folder alone
+                // (`emulate::child_env`), so a bare `sleep` is not found and the script would end at once.
                 std::fs::write(
                     &node,
-                    "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo v24.0.0; exit 0; fi\nsleep 2\nexit 0\n",
+                    "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo v24.0.0; exit 0; fi\n/bin/sleep 5\nexit 0\n",
                 )
                 .unwrap();
                 std::fs::set_permissions(&node, std::fs::Permissions::from_mode(0o755)).unwrap();
