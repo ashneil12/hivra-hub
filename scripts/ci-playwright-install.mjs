@@ -1,10 +1,13 @@
 #!/usr/bin/env node
 // WP-154: install Playwright's browsers for the CI browser job.
 // A cache hit only installs OS packages. A miss downloads the pinned browsers as well.
-// The workflow runs this once and, if that attempt fails, once more. The 8 minute
-// step limit is what stops a hung download; this file does not treat a timeout as success.
+// The workflow runs this once and, if that attempt fails, once more. The step limit is
+// what stops a hung download; this file does not treat a timeout as success.
+// The OS packages' .deb files are kept between runs too (--debs): on 10 Nov 2026 the Ubuntu
+// mirror sent about 70 of them in 8 minutes, and most browser jobs timed out before a test ran.
 
 import { spawnSync } from "node:child_process";
+import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { pathToFileURL } from "node:url";
 
@@ -16,6 +19,23 @@ const BROWSERS = ["chromium", "webkit"];
  * @returns {string}
  */
 export function browserCachePath(home) {
+  return `${checkedHome(home)}/.cache/ms-playwright`;
+}
+
+/**
+ * Where the job keeps the .deb files of the browsers' OS packages between runs.
+ * @param {string} home
+ * @returns {string}
+ */
+export function debsCachePath(home) {
+  return `${checkedHome(home)}/.cache/hivra-apt-debs`;
+}
+
+/**
+ * @param {string} home
+ * @returns {string}
+ */
+function checkedHome(home) {
   if (
     typeof home !== "string" ||
     home.length === 0 ||
@@ -26,7 +46,77 @@ export function browserCachePath(home) {
   ) {
     throw new Error("home directory is not a usable cache path");
   }
-  return `${home}/.cache/ms-playwright`;
+  return home;
+}
+
+/** apt-get keeps the .deb files it downloads, so a successful install can hand them to the cache. */
+export const KEEP_DEBS_CONF = 'APT::Keep-Downloaded-Packages "true";\nBinary::apt::APT::Keep-Downloaded-Packages "true";\n';
+const KEEP_DEBS_FILE = "/etc/apt/apt.conf.d/99hivra-keep-debs";
+const APT_ARCHIVES = "/var/cache/apt/archives";
+
+/**
+ * A directory the commands below may use: absolute, no `..`, nothing a shell or find would read as more.
+ * @param {string} dir
+ * @returns {string}
+ */
+function checkedDir(dir) {
+  if (
+    typeof dir !== "string" ||
+    !dir.startsWith("/") ||
+    dir.includes("\0") ||
+    /[\r\n]/.test(dir) ||
+    dir.split("/").includes("..")
+  ) {
+    throw new Error("the .deb directory is not a usable path");
+  }
+  return dir;
+}
+
+/**
+ * Before the install: tell apt-get to keep what it downloads, and put the kept .deb files where apt looks first, so
+ * it downloads only what changed. Never overwrites a file apt already has. On a cache miss the directory is not
+ * there yet, and only the keep setting is written.
+ * @param {string} dir
+ * @param {boolean} restored
+ * @returns {[string, string[]][]}
+ */
+export function seedDebsCommands(dir, restored) {
+  const from = checkedDir(dir);
+  /** @type {[string, string[]][]} */
+  const commands = [["sudo", ["sh", "-c", 'printf "%s" "$1" > "$2"', "sh", KEEP_DEBS_CONF, KEEP_DEBS_FILE]]];
+  if (restored) {
+    commands.push(["sudo", ["find", from, "-maxdepth", "1", "-type", "f", "-name", "*.deb", "-exec", "cp", "--update=none", "-t", APT_ARCHIVES, "{}", "+"]]);
+  }
+  return commands;
+}
+
+/**
+ * After a successful install: copy apt's .deb files into the directory the workflow caches.
+ * @param {string} dir
+ * @returns {[string, string[]][]}
+ */
+export function collectDebsCommands(dir) {
+  const to = checkedDir(dir);
+  return [
+    ["mkdir", ["-p", to]],
+    ["find", [APT_ARCHIVES, "-maxdepth", "1", "-type", "f", "-name", "*.deb", "-exec", "cp", "--update=none", "-t", to, "{}", "+"]],
+  ];
+}
+
+/**
+ * Runs each command and carries on past a failure: the .deb cache only saves time, so a step that fails here must not
+ * fail the install. Returns how many failed.
+ * @param {[string, string[]][]} commands
+ * @param {(command: string, args: string[]) => { status: number | null, error?: Error }} spawn
+ * @returns {number}
+ */
+export function runBestEffort(commands, spawn) {
+  let failed = 0;
+  for (const [command, args] of commands) {
+    const result = spawn(command, args);
+    if (!result || result.error || result.status !== 0) failed += 1;
+  }
+  return failed;
 }
 
 /**
@@ -124,13 +214,17 @@ function main(argv) {
     process.stdout.write(`path=${browserCachePath(homedir())}\n`);
     return 0;
   }
+  if (argv.includes("--print-debs-path")) {
+    process.stdout.write(`debs=${debsCachePath(homedir())}\n`);
+    return 0;
+  }
   if (argv.includes("--print-image-os")) {
     process.stdout.write(`image-os=${imageOs(process.env)}\n`);
     return 0;
   }
   const flag = argv.indexOf("--cache-hit");
   if (flag === -1 || flag + 1 >= argv.length) {
-    process.stderr.write("usage: ci-playwright-install.mjs --cache-hit true|false\n");
+    process.stderr.write("usage: ci-playwright-install.mjs --cache-hit true|false [--debs DIR]\n");
     return 1;
   }
   let cacheHit;
@@ -140,10 +234,27 @@ function main(argv) {
     process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
     return 1;
   }
+  const debsFlag = argv.indexOf("--debs");
+  let debs;
+  if (debsFlag !== -1) {
+    try {
+      debs = checkedDir(argv[debsFlag + 1]);
+    } catch (error) {
+      process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
+      return 1;
+    }
+  }
+  const spawn = (command, args) => spawnSync(command, args, { stdio: "inherit" });
   if (process.platform === "linux" && !waitForAptIdle(aptBusy, sleepSync)) {
     process.stderr.write("apt-get is still running after 6 minutes; trying the install anyway\n");
   }
-  const { status } = runInstall(cacheHit, (command, args) => spawnSync(command, args, { stdio: "inherit" }));
+  if (process.platform === "linux" && debs && runBestEffort(seedDebsCommands(debs, existsSync(debs)), spawn) > 0) {
+    process.stderr.write("could not use the kept .deb files; apt downloads them\n");
+  }
+  const { status } = runInstall(cacheHit, spawn);
+  if (status === 0 && process.platform === "linux" && debs && runBestEffort(collectDebsCommands(debs), spawn) > 0) {
+    process.stderr.write("could not keep the .deb files for the next run\n");
+  }
   return status;
 }
 
