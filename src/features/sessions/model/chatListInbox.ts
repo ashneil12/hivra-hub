@@ -32,6 +32,13 @@ export type ChatAttention = {
    * known. A need with no time cannot be shown to be newer than a settle, so it does not undo one.
    */
   needAt?: number;
+  /**
+   * An approval the person must answer has no time: the list was told of it from elsewhere (the Sidebar's approval ids,
+   * which also cover a Lead whose worker asks and a chat in a remote project), or its card carries none. It cannot be
+   * shown to be older than a settle, and an approval is never hidden, so it brings a settled chat back and the chat
+   * cannot be settled while it waits.
+   */
+  approvalUndated?: boolean;
   ownMessage: "none" | "undated" | "at";
   lastUserMessageAt: number | null;
   repliedAt?: number;
@@ -281,6 +288,7 @@ export function chatAttention(session: {
     }) != null;
   const own = lastOwnMessage(session.blocks);
   const repliedAt = lastReplyAt(session.blocks);
+  const approvalUndated = needsApproval && hasUndatedApprovalCard(session.blocks);
   const needAt = newestNeedAt([
     needsApproval ? newestApprovalAt(session.blocks) : undefined,
     hasQuestion ? askedAt(session.pendingQuestion) : undefined,
@@ -292,6 +300,7 @@ export function chatAttention(session: {
     failed,
     needsPerson: needsApproval || hasQuestion || failed,
     ...(needAt != null ? { needAt } : {}),
+    ...(approvalUndated ? { approvalUndated } : {}),
     ownMessage: own.kind,
     lastUserMessageAt: own.kind === "at" ? own.at : null,
     ...(repliedAt != null ? { repliedAt } : {}),
@@ -306,6 +315,16 @@ function newestNeedAt(times: readonly (number | undefined)[]): number | undefine
 /** When the newest undecided approval card was asked, from the card itself. */
 function newestApprovalAt(blocks: readonly AttentionBlock[]): number | undefined {
   return newestNeedAt(blocks.map((block) => (block.approval && !block.approval.decided ? block.approval.at : undefined)));
+}
+
+/** An undecided approval card with no time of its own. */
+function hasUndatedApprovalCard(blocks: readonly AttentionBlock[]): boolean {
+  return blocks.some(
+    (block) =>
+      block.approval &&
+      !block.approval.decided &&
+      !(typeof block.approval.at === "number" && Number.isFinite(block.approval.at) && block.approval.at > 0),
+  );
 }
 
 function askedAt(question: unknown): number | undefined {
@@ -384,6 +403,9 @@ export function wakesEarly(snoozeAt: number, attention: ChatAttention): boolean 
  * with a failed turn, a usage limit or an open question keeps it settled, and it does not drop back to the shelf later
  * only when that need clears.
  *
+ * An approval is the exception: it is never hidden. One with no time (`approvalUndated`) cannot be shown to be older than
+ * the settle, so it brings the chat back, and the Settle action is disabled while one waits (`inboxMenuChoices`).
+ *
  * A new message: the person writes after the settle, or a turn the person started finishes after it. A turn the app
  * starts itself, such as one a worker's report begins, does not: `repliedAt` only follows the person's own messages, so
  * the app's own notes do not unsettle a chat.
@@ -391,6 +413,7 @@ export function wakesEarly(snoozeAt: number, attention: ChatAttention): boolean 
  * A need or a message with no time cannot be shown to be newer than the settle, so it does not undo one.
  */
 export function settledWakes(settledAt: number, attention: ChatAttention): boolean {
+  if (attention.approvalUndated) return true;
   if (attention.needsPerson && attention.needAt != null && attention.needAt > settledAt) return true;
   const wrote =
     attention.ownMessage === "at" && attention.lastUserMessageAt != null && attention.lastUserMessageAt > settledAt;
@@ -476,8 +499,11 @@ export function attentionWithApprovals(
       hasQuestion: current?.hasQuestion ?? false,
       failed: current?.failed ?? false,
       needsPerson: true,
-      // The need it already had keeps its time; an approval listed from elsewhere has none to add.
+      // The need it already had keeps its time. An approval listed from elsewhere has none to add, so it is undated and
+      // never hidden. A chat whose only need is its own open question is listed too (the ids mean "needs input"), and
+      // that question has a time of its own, so it is not an approval from elsewhere.
       ...(current?.needAt != null ? { needAt: current.needAt } : {}),
+      ...(current?.hasQuestion ? {} : { approvalUndated: true }),
       ownMessage: current?.ownMessage ?? "none",
       lastUserMessageAt: current?.lastUserMessageAt ?? null,
       ...(current?.repliedAt != null ? { repliedAt: current.repliedAt } : {}),
@@ -583,25 +609,44 @@ function sameDay(a: Date, b: Date): boolean {
   return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
 }
 
+/** True when any of these chats has an approval waiting whose time is not known (Settle is off for the selection). */
+export function settleHeldBack(
+  ids: readonly string[],
+  attention: ReadonlyMap<string, ChatAttention> | undefined,
+): boolean {
+  return !!attention && ids.some((id) => attention.get(id)?.approvalUndated === true);
+}
+
 export type InboxMenuChoice = {
   id: string;
   label: string;
+  /** Why the choice is disabled, in plain words. */
+  description?: string;
   disabled?: boolean;
   children?: { id: string; label: string; disabled?: boolean }[];
 };
+
+/** Why Settle is off while an approval waits whose time is not known: settling it would bounce straight back. */
+export function settleBlockedReason(count: number): string {
+  return count === 1 ? "Answer its approval first" : "Answer their approvals first";
+}
 
 export function inboxMenuChoices(
   ids: readonly string[],
   marks: Readonly<Record<string, InboxMark | undefined>>,
   now: Date,
+  attention?: ReadonlyMap<string, ChatAttention>,
 ): InboxMenuChoice[] {
+  const heldBack = settleHeldBack(ids, attention);
   const snoozed = ids.some((id) => {
     const mark = cleanMark(marks[id]);
     return mark?.snoozeAt != null && mark.snoozeUntil != null;
   });
   return [
     ...(snoozed ? [{ id: "inbox-unsnooze", label: "Unsnooze" }] : []),
-    { id: "inbox-settle", label: "Settle" },
+    heldBack
+      ? { id: "inbox-settle", label: "Settle", disabled: true, description: settleBlockedReason(ids.length) }
+      : { id: "inbox-settle", label: "Settle" },
     {
       id: "inbox-snooze",
       label: "Snooze",

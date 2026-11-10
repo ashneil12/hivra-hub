@@ -134,3 +134,51 @@ test("a chat settled while it already needs you stays settled, and comes back fo
   await expect(page.locator("[data-settled-shelf]")).toHaveCount(0);
   await expect(page.locator("body")).not.toContainText(/[—–]/);
 });
+
+test("a settled chat comes back when an approval is listed for it from elsewhere, and goes back once answered", async ({ page }) => {
+  await page.goto(PAGE);
+  await setting(page, true);
+
+  await pick(page, "beta", "Settle");
+  await expect(row(page, "beta")).toHaveCount(0);
+  await expect(page.locator("[data-settled-shelf]")).toContainText("1");
+
+  // The approval has no card in beta's own chat and no time: an approval is never hidden, so beta is back.
+  await page.getByRole("button", { name: "Beta approval listed", exact: true }).click();
+  await expect(row(page, "beta")).toBeVisible();
+  await expect(page.locator("[data-settled-shelf]")).toHaveCount(0);
+
+  // Answered: nothing about it is new any more, so it is back on the shelf.
+  await page.getByRole("button", { name: "Beta listed approval answered", exact: true }).click();
+  await expect(row(page, "beta")).toHaveCount(0);
+  await expect(page.locator("[data-settled-shelf]")).toContainText("1");
+  await expect(page.locator("body")).not.toContainText(/[—–]/);
+});
+
+test("Settle is disabled, with the reason, while a listed approval waits on the chat", async ({ page }) => {
+  await page.goto(PAGE);
+  await setting(page, true);
+  await page.getByRole("button", { name: "Beta approval listed", exact: true }).click();
+
+  await row(page, "beta").click({ button: "right" });
+  const settle = page.getByRole("menuitem", { name: /^Settle/ });
+  await expect(settle).toBeDisabled();
+  await expect(settle).toContainText("Answer its approval first");
+  // Clicking it does nothing: the chat stays in the list and the notice never shows.
+  await settle.click({ force: true });
+  await expect(page.locator("[data-inbox-notice]")).toHaveCount(0);
+  await expect(row(page, "beta")).toBeVisible();
+  // Snooze is not held back.
+  await expect(page.getByRole("menuitem", { name: "Snooze", exact: true })).toBeEnabled();
+  await page.keyboard.press("Escape");
+
+  // A chat with no approval waiting settles as usual, and beta's settle is open again once its approval is answered.
+  await pick(page, "alpha", "Settle");
+  await expect(row(page, "alpha")).toHaveCount(0);
+  await page.getByRole("button", { name: "Beta listed approval answered", exact: true }).click();
+  await row(page, "beta").click({ button: "right" });
+  await expect(page.getByRole("menuitem", { name: "Settle", exact: true })).toBeEnabled();
+  await page.keyboard.press("Escape");
+  await expect(page.locator("body")).not.toContainText(/[—–]/);
+});
+

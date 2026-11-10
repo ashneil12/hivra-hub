@@ -43,6 +43,9 @@ function Fixture() {
   const enabled = useChatListInbox();
   const [tab, setTab] = useState<SidebarTabId>("sessions");
   const [blocks, setBlocks] = useState<Blocks>({});
+  // Approvals the list is told about from elsewhere (a Lead whose worker asks, a remote project's chat): ids only, no
+  // card in the chat's own blocks and no time. App passes the same kind of set as approvalSessionIds.
+  const [listed, setListed] = useState<ReadonlySet<string>>(new Set());
   const live = useMemo(
     () => summaries.map((row) => ({ id: row.id, busy: true, blocks: blocks[row.id] ?? [] })),
     [blocks],
@@ -57,7 +60,7 @@ function Fixture() {
         open
         sessions={summaries}
         busySessionIds={new Set()}
-        approvalSessionIds={new Set()}
+        approvalSessionIds={new Set(listed)}
         chatAttention={attention}
         activeSessionId="none"
         status="idle"
@@ -84,6 +87,12 @@ function Fixture() {
         <div style={{ display: "flex", flexDirection: "column", gap: 4, marginTop: 8 }}>
           <button type="button" onClick={() => set("alpha", [approval("p-alpha")])}>
             Needs you
+          </button>
+          <button type="button" onClick={() => setListed(new Set(["beta"]))}>
+            Beta approval listed
+          </button>
+          <button type="button" onClick={() => setListed(new Set())}>
+            Beta listed approval answered
           </button>
           <button type="button" onClick={() => set("alpha", [approval("p-alpha-again")])}>
             Alpha asks again
