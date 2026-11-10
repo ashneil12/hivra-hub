@@ -638,26 +638,26 @@ export function readProjectImage(root: string, path: string): Promise<Uint8Array
 
 /**
  * Bytes of an image a chat's Markdown shows from this computer. Rust reads it
- * only if it lies inside one of `roots` (the chat's own folders) or the app's
- * generated-images folder, symlinks followed, and its bytes are an image; the
- * reply that named it is untrusted. A connected machine already keeps every
- * read inside its projects.
+ * only if it lies inside a folder the app's records give chat `sessionId` (its
+ * own folder and worktree, its Mono's projects and their worktrees, its
+ * workers' folders) or the app's generated-images folder, symlinks followed,
+ * and its bytes are an image; the reply that named it is untrusted. A
+ * connected machine already keeps every read inside its projects.
  */
-export function readChatImage(path: string, roots: string[]): Promise<Uint8Array> {
+export function readChatImage(path: string, sessionId: string): Promise<Uint8Array> {
   if (path.startsWith(REMOTE_PATH_PREFIX)) return readBinaryFile(path);
-  return invokeLocal<ArrayBuffer>("read_chat_image", { path, roots }).then(
+  return invokeLocal<ArrayBuffer>("read_chat_image", { path, sessionId }).then(
     (buffer) => new Uint8Array(buffer),
   );
 }
 
 /**
- * Let the asset protocol stream one local video a chat's Markdown shows.
- * Rust adds it to the scope, and answers with the path to load, only if it
- * lies inside one of `roots` (the chat's own folders) or the app's
- * generated-images folder.
+ * Let the asset protocol stream one local video a chat's Markdown shows. Rust
+ * adds it to the scope, and answers with the path to load, only if it lies
+ * inside a folder the app's records give chat `sessionId`.
  */
-export function allowVideoStream(path: string, roots: string[]): Promise<string> {
-  return invokeLocal<string>("allow_video_stream", { path, roots });
+export function allowVideoStream(path: string, sessionId: string): Promise<string> {
+  return invokeLocal<string>("allow_video_stream", { path, sessionId });
 }
 
 export type GeneratedImageAsset = {

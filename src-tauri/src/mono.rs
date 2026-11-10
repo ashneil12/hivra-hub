@@ -249,6 +249,13 @@ fn monos_root(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(resolved_root(&data))
 }
 
+/// The Monos' roster as the app last saved it (`MONOS.json`), for readers that need to know which projects a Mono
+/// works on and which chat is its own (`chat_media.rs`). `None` when there is no file or it cannot be read.
+pub(crate) fn roster_value(app: &AppHandle) -> Option<serde_json::Value> {
+    let text = roster_load(&monos_root(app).ok()?).ok()?.text?;
+    serde_json::from_str(&text).ok()
+}
+
 pub fn content_hash(text: &str) -> String {
     Sha256::digest(text.as_bytes())
         .iter()

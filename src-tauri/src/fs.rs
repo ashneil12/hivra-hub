@@ -5793,9 +5793,9 @@ fn is_network_automount(path: &Path) -> bool {
         if name.eq_ignore_ascii_case("net") || name.eq_ignore_ascii_case("network"))
 }
 
-/// A folder a chat's Markdown may load local media from: the path as the chat
-/// names it, which a path is first held to as text, and the real path with
-/// symlinks followed, which the file must then lie inside.
+/// A folder a chat's Markdown may load local media from: the path as the chat's
+/// records name it, which a path is first held to as text, and the real path
+/// with symlinks followed, which the file must then lie inside.
 #[derive(Debug)]
 struct MediaRoot {
     text: PathBuf,
@@ -5806,34 +5806,69 @@ struct MediaRoot {
 /// shows a test whether the disk was asked.
 type Canonicalize<'a> = &'a dyn Fn(&Path) -> std::io::Result<PathBuf>;
 
-/// The folders a chat's Markdown may load local media from.
+/// Folders that are too broad to be a chat's own, whatever its records say:
+/// each would let a chat show anything the user keeps below it.
+struct Withheld {
+    home: Option<PathBuf>,
+    app_data: Option<PathBuf>,
+}
+
+/// Folders that list other volumes or whole systems, which hold everything.
+const BROAD_FOLDERS: &[&str] = &["/Volumes", "/private", "/mnt", "/media"];
+
+impl Withheld {
+    fn new(home: Option<&Path>, app_data: Option<&Path>, canonicalize: Canonicalize) -> Self {
+        Self {
+            home: home.and_then(|path| canonicalize(path).ok()),
+            app_data: app_data.and_then(|path| canonicalize(path).ok()),
+        }
+    }
+
+    /// Whether `real` (canonical) is the filesystem root, a mounted-volumes
+    /// folder, the home folder or any folder above it (`/Users`, `C:\Users`),
+    /// the app's data folder or any folder above it, or the home folder's
+    /// `Library` or anything in it (Mail, Messages, keychains, other apps' data).
+    fn covers(&self, real: &Path) -> bool {
+        real.parent().is_none()
+            || is_network_automount(real)
+            || BROAD_FOLDERS.iter().any(|broad| real == Path::new(broad))
+            || self.home.as_ref().is_some_and(|home| {
+                home.starts_with(real) || real.starts_with(home.join("Library"))
+            })
+            || self
+                .app_data
+                .as_ref()
+                .is_some_and(|data| data.starts_with(real))
+    }
+}
+
+/// The folders a chat's Markdown may load local media from, out of the folders
+/// the app's records name for the chat (`chat_media::folders`) and the app's
+/// generated-images folder.
 ///
 /// A reply, or a chat imported from elsewhere, is untrusted text, so a path in
-/// it is shown only when it names a file inside the chat's own working folders
-/// (its project, or its worktree) or the app's generated-images folder. A
-/// folder that is missing, or is not on this computer (`local_path_text`), is
-/// left out without the disk being asked about it. So is one too broad to be a
-/// chat's own: the filesystem root, or the home folder itself, which would let
-/// a chat show anything the user keeps there.
+/// it is shown only when it names a file inside the chat's own folders or the
+/// generated-images folder. A folder that is missing, or is not on this
+/// computer (`local_path_text`), is left out without the disk being asked
+/// about it. So is one that is too broad to be a chat's own (`Withheld`): most
+/// Mono chats start in the home folder, which is never a root, and show what
+/// lies in their projects and the projects' worktrees instead. The
+/// generated-images folder is the app's own, so it is not held to that.
 fn chat_media_roots_via(
-    chat_roots: &[String],
+    folders: &[String],
     generated_dir: Option<&Path>,
-    home: Option<&Path>,
+    withheld: &Withheld,
     canonicalize: Canonicalize,
 ) -> Vec<MediaRoot> {
-    let home = home.and_then(|home| canonicalize(home).ok());
-    let mut roots = Vec::new();
-    for root in chat_roots {
-        let Some(text) = local_path_text(root) else {
+    let mut roots: Vec<MediaRoot> = Vec::new();
+    for folder in folders {
+        let Some(text) = local_path_text(folder) else {
             continue;
         };
         let Ok(real) = canonicalize(&text) else {
             continue;
         };
-        if real.parent().is_none()
-            || home.as_deref() == Some(real.as_path())
-            || is_network_automount(&real)
-        {
+        if withheld.covers(&real) || roots.iter().any(|root| root.real == real) {
             continue;
         }
         roots.push(MediaRoot { text, real });
@@ -5846,18 +5881,28 @@ fn chat_media_roots_via(
     roots
 }
 
-/// `chat_media_roots_via` for a chat's folders as the webview names them, with
-/// this app's generated-images folder.
-fn chat_media_scope(app: &AppHandle, chat_roots: &[String]) -> Vec<MediaRoot> {
-    let generated = app
-        .path()
-        .app_data_dir()
-        .ok()
-        .map(|dir| dir.join(GENERATED_IMAGE_DIR));
+/// The folders chat `session_id` may show media from: what the app's own
+/// records say about it (its folder and worktree, the projects of the Mono it
+/// belongs to and their worktrees, the workers it delegated to), not what the
+/// window that asks says.
+fn chat_media_scope(
+    app: &AppHandle,
+    store: &crate::session_store::SessionStore,
+    session_id: &str,
+) -> Result<Vec<MediaRoot>, String> {
+    let roster = crate::mono::roster_value(app);
+    let folders = crate::chat_media::folders(&*store.lock_conn()?, roster.as_ref(), session_id);
+    let app_data = app.path().app_data_dir().ok();
+    let generated = app_data.as_ref().map(|dir| dir.join(GENERATED_IMAGE_DIR));
     let home = crate::dirs_home().map(PathBuf::from);
-    chat_media_roots_via(chat_roots, generated.as_deref(), home.as_deref(), &|path| {
-        std::fs::canonicalize(path)
-    })
+    let canonicalize: Canonicalize = &|path| std::fs::canonicalize(path);
+    let withheld = Withheld::new(home.as_deref(), app_data.as_deref(), canonicalize);
+    Ok(chat_media_roots_via(
+        &folders,
+        generated.as_deref(),
+        &withheld,
+        canonicalize,
+    ))
 }
 
 /// The canonical file `path` names, if it is a file of the wanted `kind` that
@@ -5902,19 +5947,21 @@ fn chat_media_file(
 }
 
 /// Let the asset protocol serve one local video, so a chat can stream it with
-/// range requests instead of reading the whole file into memory. `roots` are
-/// the chat's own folders: the video must lie inside one of them (or the
-/// generated-images folder) and be a video container, and only then does that
-/// one file join the scope. Anything else is refused before the scope changes,
-/// so a reply cannot widen what the webview may load. Returns the canonical
-/// path the caller should load.
-#[tauri::command]
+/// range requests instead of reading the whole file into memory. The video must
+/// lie inside one of the folders the app's records give chat `session_id`
+/// (`chat_media_scope`) or the generated-images folder, and be a video
+/// container, and only then does that one file join the scope. Anything else is
+/// refused before the scope changes, so a reply cannot widen what the webview
+/// may load. Returns the canonical path the caller should load. The disk work
+/// runs off the main thread.
+#[tauri::command(async)]
 pub fn allow_video_stream(
     app: AppHandle,
+    store: tauri::State<'_, crate::session_store::SessionStore>,
+    session_id: String,
     path: String,
-    roots: Vec<String>,
 ) -> Result<String, String> {
-    let roots = chat_media_scope(&app, &roots);
+    let roots = chat_media_scope(&app, &store, &session_id)?;
     allow_video_stream_in(&path, &roots, |file| {
         app.asset_protocol_scope()
             .allow_file(file)
@@ -5967,22 +6014,20 @@ fn looks_like_chat_image(bytes: &[u8]) -> bool {
 
 /// Read an image that a chat's Markdown shows from this computer.
 ///
-/// The reply is untrusted, so the file must lie inside one of the chat's own
-/// folders (`roots`, usually its project or worktree) or the app's
+/// The reply is untrusted, so the file must lie inside one of the folders the
+/// app's records give chat `session_id` (`chat_media_scope`) or the app's
 /// generated-images folder, with symlinks followed, and its bytes must be an
 /// image. The caller sniffs them again for the blob it makes, as for
 /// `read_binary_file`.
-#[tauri::command]
-pub async fn read_chat_image(
+#[tauri::command(async)]
+pub fn read_chat_image(
     app: AppHandle,
+    store: tauri::State<'_, crate::session_store::SessionStore>,
+    session_id: String,
     path: String,
-    roots: Vec<String>,
 ) -> Result<tauri::ipc::Response, String> {
-    let roots = chat_media_scope(&app, &roots);
-    let bytes = tauri::async_runtime::spawn_blocking(move || read_chat_image_in(&path, &roots))
-        .await
-        .map_err(|e| e.to_string())??;
-    Ok(tauri::ipc::Response::new(bytes))
+    let roots = chat_media_scope(&app, &store, &session_id)?;
+    read_chat_image_in(&path, &roots).map(tauri::ipc::Response::new)
 }
 
 fn read_chat_image_in(path: &str, roots: &[MediaRoot]) -> Result<Vec<u8>, String> {
@@ -7171,13 +7216,18 @@ mod tests {
     const PNG_BYTES: [u8; 8] = [0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a];
 
     fn media_roots(
-        chat_roots: &[String],
+        folders: &[String],
         generated: Option<&Path>,
         home: Option<&Path>,
+        app_data: Option<&Path>,
     ) -> Vec<MediaRoot> {
-        chat_media_roots_via(chat_roots, generated, home, &|path| {
-            std::fs::canonicalize(path)
-        })
+        let disk: Canonicalize = &|path| std::fs::canonicalize(path);
+        chat_media_roots_via(
+            folders,
+            generated,
+            &Withheld::new(home, app_data, disk),
+            disk,
+        )
     }
 
     /// A chat's folder `repo`, beside a folder that shares its name as a
@@ -7232,11 +7282,12 @@ mod tests {
             self.dir.0.join(relative).to_string_lossy().into_owned()
         }
 
-        /// The chat's folders as the webview names them, plus the app's.
+        /// The chat's folder, plus the app's generated-images folder.
         fn roots(&self) -> Vec<MediaRoot> {
             media_roots(
                 &[self.repo.to_string_lossy().into_owned()],
                 Some(&self.generated),
+                None,
                 None,
             )
         }
@@ -7275,7 +7326,7 @@ mod tests {
             PNG_BYTES
         );
         // A chat with no folder still shows the app's own generated images.
-        let only_generated = media_roots(&[], Some(&media.generated), None);
+        let only_generated = media_roots(&[], Some(&media.generated), None, None);
         assert_eq!(
             read_chat_image_in(&media.at("data/generated-images/one.png"), &only_generated)
                 .unwrap(),
@@ -7349,7 +7400,7 @@ mod tests {
         );
         // The chat's folder may itself be reached through a link.
         std::os::unix::fs::symlink(repo, media.dir.0.join("repo-link")).unwrap();
-        let through_link = media_roots(&[media.at("repo-link")], None, None);
+        let through_link = media_roots(&[media.at("repo-link")], None, None, None);
         assert_eq!(
             read_chat_image_in(&media.at("repo-link/docs/shot.png"), &through_link).unwrap(),
             PNG_BYTES
@@ -7391,43 +7442,237 @@ mod tests {
     }
 
     #[test]
-    fn chat_images_ignore_folders_too_broad_to_be_a_chats_own() {
-        let media = ChatMedia::new("chat-image-broad");
-        let secret = media.at("secret.png");
-        let root_of_disk = media
-            .dir
-            .0
-            .ancestors()
-            .last()
-            .unwrap()
-            .to_string_lossy()
-            .into_owned();
-        let home = media.dir.0.clone();
+    fn a_folder_that_is_too_broad_is_never_a_chats_own() {
+        let dir = tmp("chat-media-broad");
+        let home = dir.0.join("home/me");
+        let app_data = dir.0.join("data/Support/app");
+        let generated = app_data.join("generated-images");
+        for folder in [
+            home.join("Library/Mail"),
+            home.join("Libraries"),
+            home.join("proj"),
+            home.join(".ssh"),
+            dir.0.join("data/other"),
+            generated.clone(),
+        ] {
+            std::fs::create_dir_all(folder).unwrap();
+        }
+        std::fs::write(home.join("proj/shot.png"), PNG_BYTES).unwrap();
+        std::fs::write(home.join("Library/Mail/leak.png"), PNG_BYTES).unwrap();
+        std::fs::write(home.join("loose.png"), PNG_BYTES).unwrap();
+        std::fs::write(generated.join("one.png"), PNG_BYTES).unwrap();
+        let text = |path: &Path| path.to_string_lossy().into_owned();
+        let roots = |folders: &[PathBuf]| {
+            let folders: Vec<String> = folders.iter().map(|folder| text(folder)).collect();
+            media_roots(&folders, None, Some(&home), Some(&app_data))
+        };
 
-        // The filesystem root, the home folder itself and a relative folder
-        // would each make every file a chat's own.
+        // The filesystem root, the home folder and every folder above it, the
+        // app's data folder and every folder above it, and the home folder's
+        // Library with all it holds, would each make files a chat's own that
+        // the chat has no business showing.
+        let root_of_disk = dir.0.ancestors().last().unwrap().to_path_buf();
         for broad in [
             root_of_disk,
-            home.to_string_lossy().into_owned(),
-            "repo".into(),
+            dir.0.clone(),
+            dir.0.join("home"),
+            home.clone(),
+            home.join("Library"),
+            home.join("Library/Mail"),
+            app_data.clone(),
+            app_data.parent().unwrap().to_path_buf(),
+            dir.0.join("data"),
         ] {
-            let roots = media_roots(std::slice::from_ref(&broad), None, Some(&home));
-            assert!(roots.is_empty(), "{broad}: {roots:?}");
-            assert_eq!(
-                read_chat_image_in(&secret, &roots).unwrap_err(),
-                CHAT_MEDIA_REFUSED
-            );
+            assert!(roots(std::slice::from_ref(&broad)).is_empty(), "{broad:?}");
         }
-        // A folder inside the home folder is a project like any other.
-        let inside = media_roots(&[media.at("repo")], None, Some(&home));
-        assert_eq!(inside.len(), 1);
-        // A folder that is not there is left out rather than failing the rest.
-        let roots = media_roots(
-            &[media.at("gone"), media.at("repo")],
-            Some(&media.dir.0.join("no-generated-images")),
-            None,
+        // Folders beside those are projects like any other.
+        for fine in [
+            home.join("proj"),
+            home.join("Libraries"),
+            home.join(".ssh"),
+            dir.0.join("data/other"),
+        ] {
+            assert_eq!(roots(std::slice::from_ref(&fine)).len(), 1, "{fine:?}");
+        }
+        assert_eq!(
+            read_chat_image_in(
+                &text(&home.join("loose.png")),
+                &roots(std::slice::from_ref(&home))
+            )
+            .unwrap_err(),
+            CHAT_MEDIA_REFUSED
         );
-        assert_eq!(roots.len(), 1);
+        let mail = text(&home.join("Library/Mail/leak.png"));
+        let library = roots(&[home.join("Library"), home.join("Library/Mail")]);
+        assert_eq!(
+            read_chat_image_in(&mail, &library).unwrap_err(),
+            CHAT_MEDIA_REFUSED
+        );
+        // The app's own generated-images folder is inside Library and the data
+        // folder, and still shows its images.
+        let with_generated = media_roots(&[], Some(&generated), Some(&home), Some(&app_data));
+        assert_eq!(
+            read_chat_image_in(&text(&generated.join("one.png")), &with_generated).unwrap(),
+            PNG_BYTES
+        );
+        // A relative folder, and one that is not there, are left out.
+        let rest = roots(&[PathBuf::from("proj"), home.join("gone")]);
+        assert!(rest.is_empty());
+        // Whole folders that list volumes or systems.
+        let withheld = Withheld::new(None, None, &|path| std::fs::canonicalize(path));
+        for broad in ["/Volumes", "/private", "/mnt", "/media"] {
+            assert!(withheld.covers(Path::new(broad)), "{broad}");
+        }
+        assert!(!withheld.covers(Path::new("/Volumes/Work/proj")));
+        assert!(!withheld.covers(Path::new("/private/var/folders/x/proj")));
+    }
+
+    /// A user's home with a project, a worktree of it and things that are theirs
+    /// but not any chat's, under one temporary folder.
+    struct Home {
+        dir: Tmp,
+        home: PathBuf,
+        project: PathBuf,
+        worktree: PathBuf,
+    }
+
+    impl Home {
+        fn new(label: &str) -> Self {
+            let dir = tmp(label);
+            let home = dir.0.join("home");
+            let project = home.join("Projects/p");
+            let worktree = home.join("Worktrees/p-feature");
+            for folder in [
+                project.clone(),
+                worktree.clone(),
+                home.join("Projects/other"),
+                home.join("Worktrees/other-feature"),
+                home.join("Desktop"),
+            ] {
+                std::fs::create_dir_all(folder).unwrap();
+            }
+            for file in [
+                project.join("shot.png"),
+                worktree.join("shot.png"),
+                home.join("Projects/other/shot.png"),
+                home.join("Worktrees/other-feature/shot.png"),
+                home.join("Desktop/private.png"),
+                home.join("loose.png"),
+            ] {
+                std::fs::write(file, PNG_BYTES).unwrap();
+            }
+            Self {
+                dir,
+                home,
+                project,
+                worktree,
+            }
+        }
+
+        fn text(&self, path: &Path) -> String {
+            path.to_string_lossy().into_owned()
+        }
+
+        /// What chat `session_id` may read: the roots the app's records give it.
+        fn roots(
+            &self,
+            conn: &rusqlite::Connection,
+            roster: Option<&serde_json::Value>,
+            session_id: &str,
+        ) -> Vec<MediaRoot> {
+            let folders = crate::chat_media::folders(conn, roster, session_id);
+            media_roots(&folders, None, Some(&self.home), None)
+        }
+
+        fn shows(&self, roots: &[MediaRoot], path: &Path) -> bool {
+            read_chat_image_in(&self.text(path), roots).is_ok()
+        }
+    }
+
+    fn insert_session(conn: &rusqlite::Connection, id: &str, cwd: &str, worktree: Option<&str>) {
+        conn.execute(
+            "INSERT INTO sessions (id, cwd, harness, model, runtime_mode, title, blocks_json, created_at, updated_at, worktree_cwd) VALUES (?1, ?2, 'codex', 'test', 'supervised', 'Test', '[]', 0, 0, ?3)",
+            rusqlite::params![id, cwd, worktree],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn a_mono_chat_that_starts_in_the_home_folder_shows_images_in_its_projects() {
+        let fixture = Home::new("chat-media-mono-in-home");
+        let store = crate::session_store::SessionStore::open_in_memory().unwrap();
+        let conn = store.lock_conn().unwrap();
+        let (home, project, worktree) = (
+            fixture.text(&fixture.home),
+            fixture.text(&fixture.project),
+            fixture.text(&fixture.worktree),
+        );
+        insert_session(&conn, "mono-chat", &home, None);
+        // A worker of the project, in a worktree of it.
+        insert_session(&conn, "worker", &project, Some(&worktree));
+        let roster = serde_json::json!({"monos": [
+            {"id": "ada", "sessionId": "mono-chat", "projects": [project]},
+        ]});
+
+        let roots = fixture.roots(&conn, Some(&roster), "mono-chat");
+        // What lies in its project, and in the project's worktree.
+        assert!(fixture.shows(&roots, &fixture.project.join("shot.png")));
+        assert!(fixture.shows(&roots, &fixture.worktree.join("shot.png")));
+        // The home folder is not a root, so nothing else in it is.
+        let real_home = std::fs::canonicalize(&fixture.home).unwrap();
+        assert!(roots.iter().all(|root| root.real != real_home));
+        for private in [
+            fixture.home.join("loose.png"),
+            fixture.home.join("Desktop/private.png"),
+            fixture.home.join("Projects/other/shot.png"),
+            fixture.home.join("Worktrees/other-feature/shot.png"),
+        ] {
+            assert!(!fixture.shows(&roots, &private), "{private:?}");
+        }
+        // The same Mono's chat with no projects shows nothing from the home.
+        let bare =
+            serde_json::json!({"monos": [{"id": "ada", "sessionId": "mono-chat", "projects": []}]});
+        let roots = fixture.roots(&conn, Some(&bare), "mono-chat");
+        assert!(roots.is_empty(), "{roots:?}");
+        assert!(!fixture.shows(&roots, &fixture.home.join("loose.png")));
+        let _ = &fixture.dir;
+    }
+
+    #[test]
+    fn a_lead_chat_shows_images_in_the_worktrees_of_its_workers() {
+        let fixture = Home::new("chat-media-lead");
+        let store = crate::session_store::SessionStore::open_in_memory().unwrap();
+        let conn = store.lock_conn().unwrap();
+        let (project, worktree) = (
+            fixture.text(&fixture.project),
+            fixture.text(&fixture.worktree),
+        );
+        let other_project = fixture.text(&fixture.home.join("Projects/other"));
+        let other_tree = fixture.text(&fixture.home.join("Worktrees/other-feature"));
+        insert_session(&conn, "lead", &project, None);
+        insert_session(&conn, "worker", &project, Some(&worktree));
+        // Another project's worker, which this Lead has nothing to do with.
+        insert_session(&conn, "stranger", &other_project, Some(&other_tree));
+        conn.execute(
+            "INSERT INTO delegations (id, owner_session, owner_mono, root_id, child_session, request_id, state, delivery, created_at, updated_at) VALUES ('d1', 'lead', 'lead-mono', 'd1', 'worker', 'd1', 'done', 'delivered', 0, 0)",
+            [],
+        )
+        .unwrap();
+
+        let roots = fixture.roots(&conn, None, "lead");
+        assert!(fixture.shows(&roots, &fixture.project.join("shot.png")));
+        assert!(fixture.shows(&roots, &fixture.worktree.join("shot.png")));
+        for not_its_own in [
+            fixture.home.join("loose.png"),
+            fixture.home.join("Desktop/private.png"),
+            fixture.home.join("Projects/other/shot.png"),
+            fixture.home.join("Worktrees/other-feature/shot.png"),
+        ] {
+            assert!(!fixture.shows(&roots, &not_its_own), "{not_its_own:?}");
+        }
+        // A chat the app has no record of shows nothing at all.
+        assert!(fixture.roots(&conn, None, "never-saved").is_empty());
+        let _ = &fixture.dir;
     }
 
     #[test]
@@ -7530,19 +7775,24 @@ mod tests {
         .map(String::from)
         .into();
 
+        let silent: Canonicalize = &silent_disk;
         let roots = chat_media_roots_via(
             &network,
             Some(Path::new("/net/host/app/generated-images")),
-            None,
-            &silent_disk,
+            &Withheld::new(None, None, silent),
+            silent,
         );
         assert!(roots.is_empty());
         assert!(asked.borrow().is_empty(), "the disk was asked: {:?}", asked);
 
         // A folder that is a link to a network share is dropped once resolved.
-        let linked = chat_media_roots_via(&["/work/proj".to_string()], None, None, &|_| {
-            Ok(PathBuf::from("/net/host/proj"))
-        });
+        let to_share: Canonicalize = &|_| Ok(PathBuf::from("/net/host/proj"));
+        let linked = chat_media_roots_via(
+            &["/work/proj".to_string()],
+            None,
+            &Withheld::new(None, None, to_share),
+            to_share,
+        );
         assert!(linked.is_empty());
     }
 

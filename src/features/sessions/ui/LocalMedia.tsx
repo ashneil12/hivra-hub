@@ -10,7 +10,7 @@ import {
   sniffImageMime,
   videoMimeForPath,
 } from "../../files/model/filePreview";
-import { chatMediaRoots, mayShowChatMedia } from "../model/chatMedia";
+import { mayShowChatMedia } from "../model/chatMedia";
 
 /** Whether a path names a file `LocalMedia` can show. */
 export function isLocalMediaPath(path: string): boolean {
@@ -21,12 +21,14 @@ type Media = { url: string; kind: "image" | "video" };
 
 /**
  * A local image or video, shown in place of the reply's link to it. The reply
- * is untrusted, so only a file inside the chat's own folder `cwd` (or the
- * app's generated-images folder) is ever loaded, and Rust checks that again
- * against the real path, symlinks followed. Anything else, and anything
- * unreadable, falls back to the link it replaced, and a path outside the
- * folder asks for nothing at all. Files load once they scroll near view, so a
- * long history doesn't read every file up front. Local videos stream through
+ * is untrusted, so Rust decides what may load: it takes the chat's id, works
+ * out from the app's records which folders that chat may show media from, and
+ * checks the real path, symlinks followed (see `model/chatMedia.ts`). Anything
+ * it refuses, and anything unreadable, falls back to the link it replaced. A
+ * file on a connected machine loads only from the chat's own project there. A
+ * chat with no id (one on a connected machine) asks for no local file. Files
+ * load once they scroll near view, so a long history doesn't read every file
+ * up front. Local videos stream through
  * the asset protocol, which allows just that file, so their size doesn't
  * matter; images, and files on a connected machine, are read whole within the
  * preview limit. Images are sniffed and videos take only an explicit video
@@ -34,19 +36,22 @@ type Media = { url: string; kind: "image" | "video" };
  */
 export function LocalMedia({
   path,
+  sessionId,
   cwd,
   label,
   onOpen,
   fallback,
 }: {
   path: string;
-  /** The chat's own folder, which the file must lie inside. */
+  /** The saved chat that shows it, which Rust holds the file to. */
+  sessionId: string | undefined;
+  /** The chat's own folder, which a file on a connected machine must lie inside. */
   cwd: string | undefined;
   label: string;
   onOpen?: () => void;
   fallback: ReactNode;
 }) {
-  const allowed = mayShowChatMedia(path, cwd);
+  const allowed = mayShowChatMedia(path, cwd, sessionId);
   const boxRef = useRef<HTMLSpanElement>(null);
   const [near, setNear] = useState(false);
   const [media, setMedia] = useState<Media | null>(null);
@@ -78,9 +83,10 @@ export function LocalMedia({
     const fail = () => {
       if (!cancelled) setFailed(true);
     };
-    const roots = chatMediaRoots(cwd);
+    // `allowed` is true for a local path only when there is a chat to ask for.
+    const chat = sessionId ?? "";
     if (videoMimeForPath(path) && !path.startsWith(REMOTE_PATH_PREFIX)) {
-      allowVideoStream(path, roots).then((allowedPath) => {
+      allowVideoStream(path, chat).then((allowedPath) => {
         if (!cancelled)
           setMedia({ url: convertFileSrc(allowedPath), kind: "video" });
       }, fail);
@@ -88,7 +94,7 @@ export function LocalMedia({
         cancelled = true;
       };
     }
-    readChatImage(path, roots).then((bytes) => {
+    readChatImage(path, chat).then((bytes) => {
       if (cancelled) return;
       const video = videoMimeForPath(path);
       const mime = video ?? sniffImageMime(bytes);
@@ -103,7 +109,7 @@ export function LocalMedia({
       cancelled = true;
       if (created) URL.revokeObjectURL(created);
     };
-  }, [allowed, near, path, cwd]);
+  }, [allowed, near, path, sessionId]);
 
   if (!allowed || failed) return <>{fallback}</>;
   // One fixed 16:9 box from placeholder to playback, so loading never moves

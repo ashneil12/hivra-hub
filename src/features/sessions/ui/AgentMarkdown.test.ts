@@ -180,9 +180,9 @@ describe("AgentMarkdown local media", () => {
     "[Open the screenshot](/Users/me/shot.png) and [the notes](/Users/me/notes.md)",
   ].join("\n");
 
-  it("shows local images and videos in the chat's folder in place of their links when enabled", () => {
+  it("shows local images and videos in place of their links when enabled, for a chat Rust can hold to its folders", () => {
     const markup = renderToStaticMarkup(
-      createElement(AgentMarkdown, { text, localMedia: true, cwd: "/Users/me" }),
+      createElement(AgentMarkdown, { text, localMedia: true, mediaSessionId: "chat-1", cwd: "/Users/me" }),
     );
 
     expect(markup).toContain('data-local-media="/Users/me/My Clips/demo.mp4"');
@@ -191,8 +191,8 @@ describe("AgentMarkdown local media", () => {
     expect(markup).toContain(">the notes</a>");
   });
 
-  it("keeps links, and shows an image's path as one, for files outside the chat's folders", () => {
-    for (const cwd of ["/Users/me/project", "/Users/me-evil", undefined]) {
+  it("keeps links, and shows an image's path as one, when there is no chat to ask for", () => {
+    for (const cwd of ["/Users/me/project", undefined]) {
       const markup = renderToStaticMarkup(
         createElement(AgentMarkdown, { text, localMedia: true, cwd }),
       );
@@ -204,25 +204,37 @@ describe("AgentMarkdown local media", () => {
     }
   });
 
-  it("shows an image in the app's generated-images folder wherever the chat works", () => {
-    const markup = renderToStaticMarkup(
-      createElement(AgentMarkdown, {
-        text: "![Art](/app/data/generated-images/one.png)",
-        localMedia: true,
-        cwd: "/work/repo",
-      }),
-    );
-
-    expect(markup).toContain('data-local-media="/app/data/generated-images/one.png"');
-  });
-
   it("keeps links and drops local images elsewhere", () => {
     const markup = renderToStaticMarkup(
-      createElement(AgentMarkdown, { text, cwd: "/Users/me" }),
+      createElement(AgentMarkdown, { text, cwd: "/Users/me", mediaSessionId: "chat-1" }),
     );
 
     expect(markup).not.toContain("data-local-media");
     expect(markup).toContain(">Open the screenshot</a>");
+  });
+});
+
+describe("AgentMarkdown picture sources", () => {
+  // A <source srcset> makes the webview fetch its own URL, and the app's asset
+  // scope covers the whole app data folder, so a reply could show any file
+  // there. A chat shows no <source>; the <img> inside still goes through the
+  // image rules.
+  const reply = (srcset: string) =>
+    `<picture><source srcset="${srcset}" type="image/png"><source srcSet="${srcset}"><img src="https://example.com/a.png" alt="A"></picture>`;
+
+  it.each([
+    "asset://localhost/Users/me/Library/Application%20Support/app/monocode.db",
+    "http://asset.localhost/Users/me/notes/a.png",
+    "https://example.com/a.png 1x, https://example.com/b.png 2x",
+  ])("renders no source element, in chat or with local media on: %s", (srcset) => {
+    for (const props of [{}, { localMedia: true, cwd: "/work/repo" }]) {
+      const markup = renderToStaticMarkup(
+        createElement(AgentMarkdown, { text: reply(srcset), ...props }),
+      );
+
+      expect(markup).not.toContain("<source");
+      expect(markup.toLowerCase()).not.toContain("srcset");
+    }
   });
 });
 

@@ -164,6 +164,8 @@ type FileLinkMenu = {
 
 const FileOpenContext = createContext<{
   cwd?: string;
+  /** The saved chat whose local media is shown; Rust holds each file to that chat's folders. */
+  mediaSessionId?: string;
   onOpenFile?: OpenFileFn;
   onFileContextMenu?: (
     event: ReactMouseEvent,
@@ -331,7 +333,7 @@ function MarkdownLink({
   ...props
 }: MarkdownLinkProps) {
   const allowRemoteMedia = useContext(RemoteMediaContext);
-  const { cwd, onOpenFile } = useContext(FileOpenContext);
+  const { cwd, mediaSessionId, onOpenFile } = useContext(FileOpenContext);
   const file = href ? resolveWorkspaceFileReference(href, cwd) : undefined;
   const label = textContent(children);
   const localMedia = useContext(LocalMediaContext);
@@ -348,6 +350,7 @@ function MarkdownLink({
     return (
       <LocalMedia
         path={file.path}
+        sessionId={mediaSessionId}
         cwd={cwd}
         label={label}
         onOpen={onOpenFile ? () => onOpenFile(file.path) : undefined}
@@ -546,7 +549,8 @@ function MarkdownImage({
 }: MarkdownImageProps) {
   const allowRemoteMedia = useContext(RemoteMediaContext);
   const localMedia = useContext(LocalMediaContext);
-  const { cwd, onOpenFile, documentImages } = useContext(FileOpenContext);
+  const { cwd, mediaSessionId, onOpenFile, documentImages } =
+    useContext(FileOpenContext);
   const url = typeof src === "string" ? src.trim() : "";
   if (url.startsWith("data:image/")) {
     return <img {...props} src={url} alt={alt ?? ""} />;
@@ -584,6 +588,7 @@ function MarkdownImage({
     return (
       <LocalMedia
         path={file.path}
+        sessionId={mediaSessionId}
         cwd={cwd}
         label={alt ?? ""}
         onOpen={onOpenFile ? () => onOpenFile(file.path) : undefined}
@@ -600,16 +605,13 @@ function MarkdownImage({
 }
 
 /**
- * A document's `<picture>` shows its `<img>`, which loads through
- * MarkdownImage. A `<source>` would make the webview fetch its own URL
- * instead, so documents drop them.
+ * A `<picture>` shows its `<img>`, which loads through MarkdownImage. A
+ * `<source srcset>` would make the webview fetch its own URL instead, and the
+ * asset protocol's scope covers the app's data folder, so a reply could show
+ * any file in it. Chat and documents alike drop the `<source>`.
  */
-function MarkdownPictureSource({
-  node: _node,
-  ...props
-}: ComponentProps<"source"> & { node?: unknown }) {
-  const { documentImages } = useContext(FileOpenContext);
-  return documentImages ? null : <source {...props} />;
+function MarkdownPictureSource() {
+  return null;
 }
 
 const MARKDOWN_COMPONENTS = {
@@ -660,6 +662,7 @@ export const AgentMarkdown = memo(function AgentMarkdown({
   onOpenFile,
   allowRemoteMedia,
   localMedia,
+  mediaSessionId,
   hardBreaks,
   documentPath,
 }: {
@@ -674,6 +677,8 @@ export const AgentMarkdown = memo(function AgentMarkdown({
   allowRemoteMedia?: boolean;
   /** Show local images and videos the text links to, in place of the links. */
   localMedia?: boolean;
+  /** With `localMedia`: the saved chat these are shown for. Rust works out its folders from the app's records. */
+  mediaSessionId?: string;
   /** Show a newline inside a block as a line break, as a document does (#591). */
   hardBreaks?: boolean;
   /**
@@ -695,12 +700,13 @@ export const AgentMarkdown = memo(function AgentMarkdown({
   const fileOpen = useMemo(
     () => ({
       cwd,
+      mediaSessionId,
       onOpenFile,
       onFileContextMenu,
       documentImages:
         documentPath && cwd ? { documentPath, root: cwd } : undefined,
     }),
-    [cwd, onOpenFile, onFileContextMenu, documentPath],
+    [cwd, mediaSessionId, onOpenFile, onFileContextMenu, documentPath],
   );
   const remarkPlugins = useMemo<PluggableList>(
     () => [
