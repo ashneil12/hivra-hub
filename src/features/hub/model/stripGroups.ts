@@ -46,8 +46,9 @@ export type StripLayout<P> = {
 
 /**
  * The strip's sections. With no groups and no filter it is exactly `projects`, in that order. A filter naming a group
- * that no longer exists is ignored (the full strip, saved order). An empty group is an empty section: nothing is
- * pulled in to fill it.
+ * that no longer exists is ignored (the full strip, saved order). A group with no project on the strip gets no heading
+ * (the list is shared with the classic rail's folder groups, which hold no strip project), except the group the filter
+ * is on: that one keeps its heading, as an empty section, and nothing is pulled in to fill it.
  */
 export function stripLayout<P extends { id: string }>(
   projects: readonly P[],
@@ -65,8 +66,24 @@ export function stripLayout<P extends { id: string }>(
   }
   const sections = groups.map((group) => ({ group, projects: byGroup.get(group.id) ?? [] }));
   const filter = filterId ? groups.find((group) => group.id === filterId) ?? null : null;
-  if (!filter) return { loose, groups: sections, filter: null };
+  if (!filter) return { loose, groups: sections.filter((section) => section.projects.length > 0), filter: null };
   return { loose: [], groups: sections.filter((section) => section.group.id === filter.id), filter };
+}
+
+/**
+ * The project "Move up" (-1) or "Move down" (+1) trades places with: its neighbour in its own section as the strip draws
+ * it (the projects in no group, or its group). Undefined at either end of that section, or for a project not shown.
+ */
+export function stripSectionNeighbour<P extends { id: string }>(
+  layout: StripLayout<P>,
+  projectId: string,
+  by: -1 | 1,
+): P | undefined {
+  for (const section of [layout.loose, ...layout.groups.map((group) => group.projects)]) {
+    const at = section.findIndex((project) => project.id === projectId);
+    if (at >= 0) return section[at + by];
+  }
+  return undefined;
 }
 
 // ---- This window's filter ----
@@ -134,11 +151,13 @@ export function useStripGroupsVersion(): number {
 
 // ---- Writes to the shared group list ----
 
-export type GroupWrite = "ok" | "stale" | "refused" | "failed";
+/** "gone": the group itself was deleted (in another window), so trying again can't work. */
+export type GroupWrite = "ok" | "stale" | "gone" | "refused" | "failed";
 
 /** A message for a write that did not happen; null for one that did. */
 export function groupWriteProblem(result: GroupWrite): string | null {
   if (result === "stale") return "The groups changed in another window. Nothing was changed here; try again.";
+  if (result === "gone") return "This group is gone: it was deleted in another window.";
   if (result === "refused") return "A group needs a name.";
   if (result === "failed") return "The groups could not be saved.";
   return null;
@@ -167,10 +186,19 @@ function newGroupId(): string {
 
 /**
  * Every write is based on the list this window last read (`basis`). If another window changed the list since, the
- * write is dropped, not merged or retried, so one window can't wipe a group the other just added.
+ * write is dropped, not merged or retried, so one window can't wipe a group the other just added. A write to one group
+ * (`groupId`) that is no longer in the list is "gone", whatever the basis: no retry can reach it.
  */
-function guarded(basis: readonly ProjectGroup[], write: (current: ProjectGroup[]) => GroupWrite): GroupWrite {
+function guarded(
+  basis: readonly ProjectGroup[],
+  write: (current: ProjectGroup[]) => GroupWrite,
+  groupId?: string,
+): GroupWrite {
   const current = loadProjectGroups();
+  if (groupId && !current.some((group) => group.id === groupId)) {
+    bump();
+    return "gone";
+  }
   if (!sameGroups(current, basis)) {
     bump();
     return "stale";
@@ -199,26 +227,36 @@ export function addStripGroup(
 export function renameStripGroup(basis: readonly ProjectGroup[], id: string, name: string): GroupWrite {
   const trimmed = name.trim();
   if (!trimmed) return "refused";
-  return guarded(basis, (current) => {
-    if (!current.some((group) => group.id === id)) return "stale";
-    const next = distinctGroupName(current, trimmed, id);
-    return saveProjectGroups(current.map((group) => (group.id === id ? { ...group, name: next } : group)))
-      ? "ok"
-      : "failed";
-  });
+  return guarded(
+    basis,
+    (current) => {
+      const next = distinctGroupName(current, trimmed, id);
+      return saveProjectGroups(current.map((group) => (group.id === id ? { ...group, name: next } : group)))
+        ? "ok"
+        : "failed";
+    },
+    id,
+  );
 }
 
 /** Deletes the heading only: its projects stay, in no group. This window's filter on it goes off. */
 export function deleteStripGroup(basis: readonly ProjectGroup[], id: string): GroupWrite {
-  return guarded(basis, (current) => {
-    if (!current.some((group) => group.id === id)) return "stale";
-    if (!deleteProjectGroup(id)) return "failed";
-    if (stripGroupFilter() === id) setStripGroupFilter(null);
-    return "ok";
-  });
+  return guarded(
+    basis,
+    () => {
+      if (!deleteProjectGroup(id)) return "failed";
+      if (stripGroupFilter() === id) setStripGroupFilter(null);
+      return "ok";
+    },
+    id,
+  );
 }
 
-/** Puts a strip project in a group, or in none with null. A group that is gone is refused as stale. */
+/**
+ * Puts a strip project in a group, or in none with null. A group that is gone is refused as stale (the chooser re-reads
+ * the list, so another pick can work). A project moved out of the group this window shows on its own would vanish from
+ * the strip, so this window's filter goes off and the project stays in view.
+ */
 export function setStripProjectGroup(projectId: string, groupId: string | null): GroupWrite {
   const groups = loadProjectGroups();
   if (groupId && !groups.some((group) => group.id === groupId)) {
@@ -227,9 +265,23 @@ export function setStripProjectGroup(projectId: string, groupId: string | null):
   }
   const next = loadProjectGroupAssignments(groups);
   const key = stripGroupKey(projectId);
+  const before = next[key];
   if (groupId) next[key] = groupId;
   else delete next[key];
-  return saveProjectGroupAssignments(next) ? "ok" : "failed";
+  if (!saveProjectGroupAssignments(next)) return "failed";
+  const shown = stripGroupFilter();
+  if (shown && before === shown && groupId !== shown) setStripGroupFilter(null);
+  return "ok";
+}
+
+/**
+ * A project made in this window while it shows one group joins that group, so it appears on the strip. If that can't
+ * be written, the filter goes off instead; either way the new project is in view.
+ */
+export function joinShownStripGroup(projectId: string): void {
+  const shown = stripGroupFilter();
+  if (!shown || !loadProjectGroups().some((group) => group.id === shown)) return;
+  if (setStripProjectGroup(projectId, shown) !== "ok") setStripGroupFilter(null);
 }
 
 /** What the strip reads in render. */

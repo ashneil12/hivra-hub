@@ -187,18 +187,28 @@ no folder path can take, so the strip and the classic rail never fight over a ke
     come back in the same slots when it goes off. The open project and its chats stay as they were.
   - The filter is view state for one window, kept in that window's `sessionStorage`: a reload keeps it, a new window
     starts without it, closing the window drops it, and it is never written into the group list or the project order.
-    A stored filter naming a group that is gone is ignored (the full strip). An empty group is an empty section.
+    A stored filter naming a group that is gone is ignored (the full strip). A group with no project on the strip (the
+    list is shared with the classic rail's folder groups) gets no heading, except the group the filter is on, which
+    keeps its heading and "Show all" as an empty section.
+  - A project never vanishes under the filter: one moved out of the shown group (No group, another group, New group)
+    turns this window's filter off, and one made with "+" while the filter is on joins the shown group (if that can't
+    be saved, the filter goes off instead).
+  - Move up / Move down in a project's menu trade places with the neighbour in its own section as the strip draws it
+    (the projects in no group, or its group); each is left out where there is no neighbour that way.
   - Every write to the shared group list is checked against the list that window last read. If another window changed
     it since, the write is dropped (not merged, not retried) and the menu says "The groups changed in another window.
-    Nothing was changed here; try again." The strip re-reads the list on another window's `storage` event and on focus.
+    Nothing was changed here; try again." A rename or delete of a group another window deleted closes its box and says
+    "This group is gone: it was deleted in another window." The strip re-reads the list on another window's `storage`
+    event and on focus.
   - A blank group name is refused. A second group with a name another group has gets a distinct one ("Work 2"), on
     create and on rename, and keeps its own id.
   - Deleting a group asks first ("Its projects stay on the strip."), removes the heading only, and turns this window's
     filter off if it was on that group.
 - `src/features/hub/ui/StripGroups.tsx`: the heading, its menu (Show only this group or Show all projects, Rename group,
-  Delete group) and the project menu's "Group" chooser (each group, No group, New group).
-- Hooks only in upstream-shaped files: one menu item and one mode in `ProjectMenu.tsx`, the sections in
-  `ProjectStrip.tsx`. No change to `App.tsx`, `src-tauri/src/lib.rs` or `SettingsView.tsx`; no setting, no migration, no
+  Delete group) and the project menu's "Group" chooser (each group, No group, New group). No group colour on the strip
+  or in the chooser: the strip keeps colour for status, and the shared palette has red, orange, yellow and green.
+- Hooks only in upstream-shaped files: one menu item and one mode in `ProjectMenu.tsx` (and its Move up / down reading
+  the strip's sections), the sections in `ProjectStrip.tsx`, one call in `NewProjectView.tsx`'s Create. No change to `App.tsx`, `src-tauri/src/lib.rs` or `SettingsView.tsx`; no setting, no migration, no
   Rust.
 - Split view and windows: nothing new was built, as the design says. The browser spec proves the existing split tree and
   a second window with the filter: a split of the open chat, a chat dragged from the list into the split (it fills the
@@ -225,8 +235,12 @@ no folder path can take, so the strip and the classic rail never fight over a ke
 
 ### Tests
 
-- `src/features/hub/model/stripGroups.test.ts`: the layout, the filter's storage, the guarded writes and the naming rules.
+- `src/features/hub/model/stripGroups.test.ts`: the layout (no heading for a group with no strip project), Move up /
+  down within a section, the filter's storage and when it goes off, a new project joining the shown group, the guarded
+  writes, a group gone in another window, and the naming rules.
 - `src/features/hub/ui/ProjectStrip.groups.test.ts`: the strip with no groups, making a group from the project menu, the
-  filter and its survival across a remount, Show all, delete with its question, a filter naming a missing group.
+  filter and its survival across a remount, Show all, delete with its question, a filter naming a missing group, Move up
+  / down within a section, a move to No group under the filter, a folder group with no heading, and the gone note.
+- `src/features/hub/ui/Projects.record.test.ts`: Create while the filter is on puts the new project in the shown group.
 - `tests/browser/wp137-spaces.spec.ts` (`npx playwright test -c tests/browser/wp137.config.ts`, Chromium and WebKit): the
   whole flow in the real app in a browser, a reload, a split, a drag into the split, and a second window.

@@ -152,3 +152,110 @@ it("a stored filter naming a group that is gone shows the full strip", async () 
   expect(tiles()).toEqual(["EXO", "Hivra", "Nibbii", "MonoCode Hub"]);
   expect(container.querySelector("[data-strip-show-all]")).toBeNull();
 });
+
+const seedGroups = (groups: { id: string; name: string }[], assignments: Record<string, string>) => {
+  localStorage.setItem("monocode.projectGroups", JSON.stringify(groups.map((g) => ({ ...g, collapsed: false }))));
+  localStorage.setItem("monocode.projectGroupAssignments", JSON.stringify(assignments));
+};
+const menuItems = () => [...document.querySelectorAll("[data-project-menu-item]")].map((el) => el.textContent);
+const closeMenu = () => act(() => document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })));
+
+it("Move up / Move down trade places within the project's own section, and show only where there is a neighbour", async () => {
+  // Saved order EXO, Hivra, Nibbii, Hub; drawn EXO, Nibbii | Side: Hivra, Hub.
+  seedGroups([{ id: "g1", name: "Side" }], { "hub-project:hivra": "g1", "hub-project:hub": "g1" });
+  render();
+  await until(() => headings().length === 1 && tiles().length === 4);
+  expect(tiles()).toEqual(["EXO", "Nibbii", "Hivra", "MonoCode Hub"]);
+
+  // Hub, last in Side: up only. In the saved order its neighbour above is Nibbii, which sits in another section.
+  openMenu("MonoCode Hub");
+  expect(menuItems()).toContain("Move up");
+  expect(menuItems()).not.toContain("Move down");
+  click(byText("[data-project-menu-item]", "Move up"));
+  await until(() => tiles().join() === "EXO,Nibbii,MonoCode Hub,Hivra");
+  expect(headings()).toEqual(["Side"]);
+
+  // Hivra is now last in Side; EXO is first of the projects in no group, Nibbii last.
+  openMenu("Hivra");
+  expect(menuItems().filter((label) => label?.startsWith("Move"))).toEqual(["Move up"]);
+  closeMenu();
+  openMenu("EXO");
+  expect(menuItems().filter((label) => label?.startsWith("Move"))).toEqual(["Move down"]);
+  closeMenu();
+  openMenu("Nibbii");
+  expect(menuItems().filter((label) => label?.startsWith("Move"))).toEqual(["Move up"]);
+  click(byText("[data-project-menu-item]", "Move up"));
+  await until(() => tiles().join() === "Nibbii,EXO,MonoCode Hub,Hivra");
+});
+
+it("with the filter on, moving a shown project to No group turns the filter off and the project stays on the strip", async () => {
+  seedGroups([{ id: "g1", name: "Side" }], { "hub-project:nibbii": "g1", "hub-project:hub": "g1" });
+  sessionStorage.setItem("hivra.stripGroupFilter", "g1");
+  render();
+  await until(() => tiles().length === 2);
+  expect(tiles()).toEqual(["Nibbii", "MonoCode Hub"]);
+  openMenu("MonoCode Hub");
+  click(byText("[data-project-menu-item]", "Group"));
+  click(document.querySelector('[data-project-group-choice=""]'));
+  await until(() => tiles().length === 4);
+  expect(tiles()).toEqual(["EXO", "Hivra", "MonoCode Hub", "Nibbii"]);
+  expect(sessionStorage.getItem("hivra.stripGroupFilter")).toBeNull();
+  expect(container.querySelector("[data-strip-show-all]")).toBeNull();
+});
+
+it("a group with no project on the strip (a classic rail folder group) gets no heading unless the filter is on it", async () => {
+  seedGroups(
+    [{ id: "g-folders", name: "Folders" }, { id: "g1", name: "Side" }],
+    { "/Users/example/code": "g-folders", "hub-project:vg-game": "g1" },
+  );
+  render();
+  await until(() => headings().length === 1 && tiles().length === 4);
+  expect(headings()).toEqual(["Side"]);
+
+  act(() => root.unmount());
+  root = createRoot(container);
+  sessionStorage.setItem("hivra.stripGroupFilter", "g-folders");
+  render();
+  await until(() => container.querySelector("[data-strip-show-all]") !== null);
+  expect(headings()).toEqual(["Folders"]);
+  expect(tiles()).toEqual([]);
+});
+
+it("a rename or delete box on a group another window deleted says the group is gone and closes the box", async () => {
+  seedGroups([{ id: "g1", name: "Side" }], { "hub-project:vg-game": "g1" });
+  render();
+  await until(() => headings().length === 1);
+  // Rename: the box is open here when the other window deletes the group (its write sends no event here).
+  click(container.querySelector("[data-strip-group]"));
+  click(document.querySelector('[data-strip-group-item="rename"]'));
+  const input = document.querySelector<HTMLInputElement>("[data-strip-group-rename] input")!;
+  localStorage.setItem("monocode.projectGroups", "[]");
+  act(() => {
+    const set = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
+    set.call(input, "Renamed");
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  act(() => input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true })));
+  expect(document.querySelector("[data-strip-group-rename]")).toBeNull();
+  expect(document.querySelector("[data-strip-group-gone]")?.textContent).toContain(
+    "This group is gone: it was deleted in another window.",
+  );
+  expect(document.querySelector("[data-strip-group-gone]")?.textContent).not.toMatch(/try again/);
+  await until(() => headings().length === 0);
+  click(byText("[data-strip-group-gone] button", "OK"));
+  expect(document.querySelector("[data-strip-group-gone]")).toBeNull();
+  expect(localStorage.getItem("monocode.projectGroups")).toBe("[]");
+
+  // Delete: the same.
+  act(() => root.unmount());
+  root = createRoot(container);
+  seedGroups([{ id: "g1", name: "Side" }], { "hub-project:vg-game": "g1" });
+  render();
+  await until(() => headings().length === 1);
+  click(container.querySelector("[data-strip-group]"));
+  click(document.querySelector('[data-strip-group-item="delete"]'));
+  localStorage.setItem("monocode.projectGroups", "[]");
+  click(document.querySelector("[data-strip-group-delete-yes]"));
+  expect(document.querySelector("[data-strip-group-delete-confirm]")).toBeNull();
+  expect(document.querySelector("[data-strip-group-gone]")?.textContent).toContain("This group is gone");
+});

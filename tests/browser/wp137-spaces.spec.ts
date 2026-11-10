@@ -64,6 +64,8 @@ async function openExo(page: Page) {
 }
 
 test("a group on the strip, Show only this group, a split and a second window, and no row moves", async ({ page, context }, info) => {
+  // The whole flow, two cold page loads and a reload: about 27 s in Chromium, so the default 30 s is too tight.
+  test.setTimeout(120_000);
   const engine = info.project.name;
   const errors: string[] = [];
   page.on("pageerror", (error) => errors.push(error.message));

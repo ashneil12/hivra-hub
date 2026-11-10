@@ -5,7 +5,7 @@ import { useEffect, useRef, useState } from "react";
 import { Popover, type PopoverAnchor } from "../../../shared/ui/Popover";
 import { CANCEL_FOCUS_RING } from "../../../shared/ui/ConfirmDelete";
 import { Check } from "../../../shared/ui/icons";
-import { projectGroupColor, type ProjectGroup } from "../../projects/model/projectGroups";
+import type { ProjectGroup } from "../../projects/model/projectGroups";
 import type { HubProject } from "../model/types";
 import {
   addStripGroup,
@@ -33,7 +33,10 @@ function Problem({ text }: { text: string | null }) {
   ) : null;
 }
 
-/** A group's heading on the strip: its name on a short line in its colour. A click opens its menu. */
+/**
+ * A group's heading on the strip: its name under a short grey line. No group colour: on the strip colour is kept for
+ * status (ProjectStrip.tsx), and the shared palette has red, orange, yellow and green. A click opens its menu.
+ */
 export function StripGroupHeading({
   group,
   filterOn,
@@ -60,7 +63,7 @@ export function StripGroupHeading({
         filterOn ? "bg-content/8" : ""
       }`}
     >
-      <span aria-hidden className="h-0.5 w-6 rounded-full" style={{ backgroundColor: projectGroupColor(group) }} />
+      <span aria-hidden className="h-0.5 w-6 rounded-full bg-content/20" />
       <span className={`max-w-full truncate text-[11px] leading-[14px] ${filterOn ? "text-content" : "text-content/55"}`}>
         {group.name}
       </span>
@@ -83,7 +86,7 @@ export function ShowAllProjectsButton() {
   );
 }
 
-type GroupMode = { kind: "menu" } | { kind: "rename" } | { kind: "delete" };
+type GroupMode = { kind: "menu" } | { kind: "rename" } | { kind: "delete" } | { kind: "gone"; at: PopoverAnchor };
 
 /** A group heading's menu. "Show only this group" is this window only; Rename and Delete change the shared list. */
 export function StripGroupMenu({
@@ -109,9 +112,26 @@ export function StripGroupMenu({
   }, [mode.kind]);
   const finish = (result: GroupWrite) => {
     const text = groupWriteProblem(result);
-    if (text) setProblem(text);
+    // Another window deleted the group: no retry can reach it, so the box closes and says so. Its heading leaves the
+    // strip, so the note stays where the heading was.
+    if (result === "gone") {
+      setProblem(text);
+      setMode({ kind: "gone", at: anchor instanceof HTMLElement ? anchor.getBoundingClientRect() : anchor });
+    } else if (text) setProblem(text);
     else onClose();
   };
+  if (mode.kind === "gone") {
+    return (
+      <Popover anchor={mode.at} side="right" align="start" width={240} constrainHeight={false} role="dialog"
+        aria-label="Group gone" onDismiss={onClose} className="flex flex-col gap-1.5 p-2" data-strip-group-gone>
+        <Problem text={problem} />
+        <div className="flex justify-end">
+          <button type="button" autoFocus onClick={onClose}
+            className={`rounded-md px-3 py-1.5 text-[13px] text-content/85 hover:bg-content/8 ${CANCEL_FOCUS_RING}`}>OK</button>
+        </div>
+      </Popover>
+    );
+  }
   if (mode.kind === "rename") {
     const commit = () => {
       if (name.trim() === group.name) return onClose();
@@ -183,6 +203,8 @@ export function ProjectGroupChooser({
     if (text) setProblem(text);
     else onClose();
   };
+  // Out of the group this window shows on its own (No group, another group, New group): the filter goes off in
+  // setStripProjectGroup, so the project stays in view instead of vanishing.
   const pick = (groupId: string | null) => {
     if (groupId === current) return onClose();
     finish(setStripProjectGroup(project.id, groupId));
@@ -194,7 +216,6 @@ export function ProjectGroupChooser({
       {groups.map((group) => (
         <button key={group.id} type="button" role="menuitemradio" aria-checked={current === group.id}
           data-project-group-choice={group.name} className={ITEM} onClick={() => pick(group.id)}>
-          <span aria-hidden className="size-2 shrink-0 rounded-full" style={{ backgroundColor: projectGroupColor(group) }} />
           <span className="min-w-0 flex-1 truncate">{group.name}</span>
           {current === group.id ? <Check className="size-3.5 shrink-0 text-content/70" /> : null}
         </button>
