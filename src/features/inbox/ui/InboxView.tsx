@@ -196,7 +196,8 @@ import {
   InboxCommentForm,
   type InboxReplyTarget,
 } from "./InboxComments";
-import { InboxPrDiff } from "./InboxPrDiff";
+import { InboxPrCode } from "./InboxPrDiff";
+import { githubReviewComments } from "../model/reviewGuide";
 import { PrAttribution } from "../../attribution/ui/PrAttribution";
 import { usePrAttribution } from "../../attribution/ui/usePrAttribution";
 import {
@@ -3001,11 +3002,22 @@ export function InboxDetail({
               ) : diffError ? (
                 <p className="text-[13px] text-content/50">{diffError}</p>
               ) : prDiff ? (
-                <InboxPrDiff
-                  key={`${item.projectPath}:${item.number}:${revision}:${diffMode}`}
+                <InboxPrCode
+                  diffKey={`${item.projectPath}:${item.number}:${revision}:${diffMode}`}
                   diff={prDiff}
                   fullFile={fullFile}
                   focusPath={diffFocusPath}
+                  guide={
+                    item.provider === "github"
+                      ? {
+                          repo: item.repo,
+                          number: item.number,
+                          title: item.title,
+                          cwd: item.projectPath || cwd,
+                          comments: githubReviewComments(thread),
+                        }
+                      : undefined
+                  }
                 />
               ) : (
                 <p className="text-[13px] text-content/45">No file changes</p>

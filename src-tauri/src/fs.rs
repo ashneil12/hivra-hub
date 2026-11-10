@@ -1551,6 +1551,9 @@ pub struct GitHubPrDiff {
     pub files: Vec<GitHubPrFile>,
     pub patch: String,
     pub truncated: bool,
+    /// The pull request's head commit, read in the same `gh pr view` call as the files (no extra request). A review
+    /// guide (WP-132) is kept against it, so a new push shows the guide as out of date.
+    pub head_sha: Option<String>,
 }
 
 const MAX_PR_DIFF_BYTES: usize = 2 * 1024 * 1024;
@@ -3904,7 +3907,7 @@ fn git_github_pr_diff_for(
     let fields = if full_context {
         "files,additions,deletions,baseRefOid,headRefOid"
     } else {
-        "files,additions,deletions"
+        "files,additions,deletions,headRefOid"
     };
     let json = gh_run(
         root,
@@ -4232,8 +4235,14 @@ fn parse_github_pr_diff_meta(json: &str) -> Result<GitHubPrDiff, String> {
         deletions: i64,
         #[serde(default)]
         files: Vec<FileRow>,
+        #[serde(default, rename = "headRefOid")]
+        head_ref_oid: Option<String>,
     }
     let row: Row = serde_json::from_str(json).map_err(|error| error.to_string())?;
+    let head_sha = row
+        .head_ref_oid
+        .map(|oid| oid.trim().to_string())
+        .filter(|oid| !oid.is_empty());
     Ok(GitHubPrDiff {
         additions: row.additions,
         deletions: row.deletions,
@@ -4248,6 +4257,7 @@ fn parse_github_pr_diff_meta(json: &str) -> Result<GitHubPrDiff, String> {
             .collect(),
         patch: String::new(),
         truncated: false,
+        head_sha,
     })
 }
 
@@ -11158,6 +11168,21 @@ mod tests {
         assert_eq!(diff.files[0].additions, 4);
         assert_eq!(diff.patch, "");
         assert!(!diff.truncated);
+        assert_eq!(diff.head_sha, None);
+    }
+
+    #[test]
+    fn parse_github_pr_diff_meta_keeps_the_head_commit() {
+        let json = r#"{
+            "additions": 1,
+            "deletions": 0,
+            "headRefOid": " bbb222 ",
+            "files": [{"path": "a.ts", "additions": 1, "deletions": 0}]
+        }"#;
+        let diff = parse_github_pr_diff_meta(json).unwrap();
+        assert_eq!(diff.head_sha.as_deref(), Some("bbb222"));
+        let blank = parse_github_pr_diff_meta(r#"{"headRefOid": "  ", "files": []}"#).unwrap();
+        assert_eq!(blank.head_sha, None);
     }
 
     #[test]
