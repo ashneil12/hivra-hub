@@ -118,6 +118,8 @@ export function planComposerSwitch(
 export function sessionChildHarnesses(session: Session): HarnessId[] {
   const ids = new Set<HarnessId>([session.harness]);
   if (session.pendingSwitch) ids.add(session.pendingSwitch.from);
+  // WP-121: the old CLI stays live until the next send, so Stop, close and detach must reach it.
+  if (session.portableResume) ids.add(session.portableResume.from);
   const last = lastHandoffBlock(session.blocks)?.handoff;
   if (last?.status === "preparing") ids.add(last.from);
   return [...ids];

@@ -10,7 +10,7 @@
       "name": "firstmate",
       "url": "https://github.com/kunchenguid/firstmate",
       "licence": "MIT",
-      "gave": "the first mate role, briefs with a definition of done, the status protocol and crew dispatch"
+      "gave": "the first mate role, briefs with a definition of done, the status protocol and crew dispatch. The Pi watcher arm is not part of Hivra"
     },
     {
       "name": "pstack",
@@ -214,7 +214,7 @@
       "name": "T3 Code",
       "url": "https://github.com/pingdotgg/t3code",
       "licence": "MIT",
-      "gave": "the PR watch rules, honest Claude results, delegation delivery and stop rules, limit auto-resume guards, worktree cleanup cases and 18 recorded Claude transcripts for the test bench, plus the source-control and review ideas behind WP-132 (stacked pull requests, review guides, viewed marks and extra forges; ideas only, not its code)"
+      "gave": "the PR watch rules, honest Claude results, delegation delivery and stop rules, limit auto-resume guards, worktree cleanup cases, 18 recorded Claude transcripts for the test bench, and a portable mid-thread handoff that says when a harness cannot resume"
     },
     {
       "name": "Aether",
@@ -239,6 +239,12 @@
       "url": "https://github.com/BarganConstantin/ccdeck",
       "licence": "AGPL-3.0",
       "gave": "ideas only: a live session tree (main agent at the root, subagents as nodes, inspectable tool calls) and a waiting-on-you list ordered questions first and longest wait first"
+    },
+    {
+      "name": "Memorilla",
+      "url": "https://github.com/snap-stanford/memorilla",
+      "licence": "Apache-2.0; its PersonalizationV4 data is CC BY 4.0",
+      "gave": "an external test set for chat-derived memory, the arm ladder its evaluation reports, and rules for writing a memory question that cannot be guessed (WP-106, ideas and data only)"
     }
   ],
   "components": [

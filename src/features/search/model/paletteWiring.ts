@@ -44,11 +44,11 @@ export type PaletteActions = {
 export type PaletteSideEffects = {
   /** The 80 ms debounce the key handler uses, so a double press runs once. */
   run: (name: string, fn: () => void) => void;
-  /** The chat in focus, worked out by App from its own refs. */
-  archiveChat: () => string | null;
+  /** The chat Esc would stop, worked out by App the way its Esc handler does. */
   stopChat: () => string | null;
-  archive: (sessionId: string) => void;
   stop: (sessionId: string) => void;
+  /** The very handler the archive shortcut runs, so it refuses where the shortcut refuses. */
+  archiveFocused: () => void;
   showHome: () => void;
   showChanges: () => void;
   openModelPicker: () => void;
@@ -124,10 +124,7 @@ function appHandlers(
     inbox: () => actions.onOpenInbox(),
     home: () => side.showHome(),
     changes: () => side.showChanges(),
-    "archive-chat": () => {
-      const id = side.archiveChat();
-      if (id) side.archive(id);
-    },
+    "archive-chat": () => side.archiveFocused(),
     "stop-chat": () => {
       const id = side.stopChat();
       if (id) side.stop(id);
