@@ -43,6 +43,10 @@ A reply over 512 KiB of UTF-8 is not framed. A null byte in the reply is removed
 
 The frame starts from the current theme: background, text, the plain font and the mono font. Those are written as `--hivra-background`, `--hivra-text`, `--hivra-font` and `--hivra-mono`, and as the default background, color and font on the page. They are not forced. A reply that sets its own background, color or font comes later in the document, so that rule wins. The tokens stay available for a reply that wants to follow the theme.
 
+## Detection
+
+A fence renders as a visual reply only when it is marked. The mark is the language `visual`, `visual-html` or `hivra-visual`. The only hint is an `html` or `htm` fence whose info string is the single word `visual`, with any letter case. A plain html fence, a javascript fence, inline html and an html fence with any other info string stay ordinary Markdown. A fence that is still streaming stays code, so a half-written reply is not framed.
+
 The host ignores messages from the frame except a height number from that frame, and it caps the height. The frame cannot ask the app to open a link, run a tool or read the page.
 
 Two replies do not share an origin. The shell only forwards a message from its own guest, and it only forwards a theme message back in.

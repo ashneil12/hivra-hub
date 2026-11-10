@@ -36,6 +36,8 @@ import { FileActionError } from "../../files/ui/FileActionError";
 import { FileTypeIcon } from "../../files/ui/FileTypeIcon";
 import { boundedCode } from "../../files/editor/codeHighlightPlugin";
 import { createLazyMermaidPlugin } from "../../files/editor/mermaidPlugin";
+import { visualFenceMark } from "../model/visualReply";
+import { VisualReplyFrame } from "./VisualReplyFrame";
 import {
   displayPath,
   isExtensionlessFileName,
@@ -410,6 +412,10 @@ function MarkdownCode({
     (fence.language ? fileNameForLanguage(fence.language) : "");
   const lineNumbers = !/\bnoLineNumbers\b/.test(meta);
   const code = textContent(children);
+  // WP-130: a marked visual reply renders in a sandbox. An unfinished fence stays code.
+  if (!incomplete && visualFenceMark(fence.language, meta)) {
+    return <VisualReplyFrame source={code} />;
+  }
   // Keep the original label when plaintext aliases normalize to "text",
   // including the empty label of an untagged fence.
   const isPlaintextFallback = PLAINTEXT_FENCE_LANGUAGES.has(

@@ -102,6 +102,21 @@ export function visualTooBig(source: string): boolean {
   return visualBytes(source) > VISUAL_REPLY_MAX_BYTES;
 }
 
+const VISUAL_FENCE_LANGUAGES = new Set(["visual", "visual-html", "hivra-visual"]);
+
+/**
+ * True when a fence is marked as a visual reply.
+ * The language `visual`, `visual-html` or `hivra-visual` is an explicit mark.
+ * The only hint is an `html` or `htm` fence whose info string is the single
+ * word `visual`. A plain html fence stays ordinary Markdown.
+ */
+export function visualFenceMark(language: string, meta: string): boolean {
+  const name = language.trim().toLowerCase();
+  if (VISUAL_FENCE_LANGUAGES.has(name)) return true;
+  if (name !== "html" && name !== "htm") return false;
+  return meta.trim().toLowerCase() === "visual";
+}
+
 function safeColor(value: string | undefined, fallback: string): string {
   if (!value) return fallback;
   const trimmed = value.trim();

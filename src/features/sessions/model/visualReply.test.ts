@@ -7,6 +7,7 @@ import {
   VISUAL_SANDBOX,
   visualCsp,
   visualDocument,
+  visualFenceMark,
   visualHeightFromMessage,
   visualThemeCss,
 } from "./visualReply";
@@ -179,5 +180,28 @@ describe("visual reply sandbox", () => {
     expect(tokens).toBeGreaterThan(-1);
     expect(own).toBeGreaterThan(tokens);
     expect(doc).not.toContain("!important");
+  });
+});
+
+describe("visual reply detection", () => {
+  it("marks an explicit visual fence and the single-word html hint", () => {
+    expect(visualFenceMark("visual", "")).toBe(true);
+    expect(visualFenceMark("visual-html", "ignored")).toBe(true);
+    expect(visualFenceMark("hivra-visual", "")).toBe(true);
+    expect(visualFenceMark(" Visual ", "")).toBe(true);
+    expect(visualFenceMark("html", "visual")).toBe(true);
+    expect(visualFenceMark("HTML", " Visual ")).toBe(true);
+    expect(visualFenceMark("htm", "VISUAL")).toBe(true);
+  });
+
+  it("does not treat ordinary html, prose or another language as a visual reply", () => {
+    expect(visualFenceMark("html", "")).toBe(false);
+    expect(visualFenceMark("html", "visual extra")).toBe(false);
+    expect(visualFenceMark("html", "not visual")).toBe(false);
+    expect(visualFenceMark("htm", "visual-html")).toBe(false);
+    expect(visualFenceMark("javascript", "visual")).toBe(false);
+    expect(visualFenceMark("", "visual")).toBe(false);
+    expect(visualFenceMark("svg", "")).toBe(false);
+    expect(visualFenceMark("html", "visual\nvisual")).toBe(false);
   });
 });
