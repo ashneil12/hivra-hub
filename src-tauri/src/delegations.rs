@@ -875,9 +875,10 @@ pub fn settle(conn: &mut Connection, input: SettleInput, now: i64) -> Result<Cha
     row.note(now, &by, "settled", detail);
     row.touch(now);
     save(&tx, &row)?;
-    // WP-157: one summary line. Cancelled work is not an outcome. A repeated settle never reaches here.
+    // WP-157: one summary line. Cancelled work is not an outcome. A repeated settle never reaches here. The line is
+    // written in a savepoint: a journal that cannot be written is logged and skipped, and the task is still done.
     if row.state == COMPLETED || row.state == FAILED {
-        record_work_outcome(&tx, &row)?;
+        crate::work_log::best_effort(&tx, "finished task", |conn| record_work_outcome(conn, &row));
     }
     tx.commit().map_err(|e| e.to_string())?;
     Ok(Change {

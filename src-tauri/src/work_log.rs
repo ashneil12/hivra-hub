@@ -6,6 +6,11 @@
 //! updates and deletes, and a second insert with the same source returns the
 //! first row instead of writing over it. Two windows both insert, so neither
 //! can overwrite the other.
+//!
+//! The log is a side record of work that already happened. A caller that writes
+//! a line inside its own transaction does it through `best_effort`: the write
+//! runs in a savepoint, and a failure rolls back that savepoint alone, so the
+//! finished task or the answered decision still commits.
 
 use std::time::Duration;
 
@@ -218,7 +223,6 @@ pub(crate) fn append(conn: &Connection, input: &NewLine<'_>) -> Result<Line, Str
         .offset_seconds
         .unwrap_or_else(|| local_offset_seconds(input.at_ms.div_euclid(1000)));
     let day = civil_day(input.at_ms, offset)?;
-    let _ = conn.busy_timeout(Duration::from_secs(5));
     let sql = "INSERT INTO work_log (project, day, kind, task_id, line, created_at, source)
                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)";
     let mut busy: u32 = 0;
@@ -236,6 +240,45 @@ pub(crate) fn append(conn: &Connection, input: &NewLine<'_>) -> Result<Line, Str
                 return read_source(conn, &source);
             }
             Err(err) => return Err(err.to_string()),
+        }
+    }
+}
+
+const SAVEPOINT: &str = "work_log_write";
+
+/// Run one journal write inside a savepoint on the caller's open transaction. When `write` fails, only the
+/// savepoint is rolled back: whatever the caller wrote before it stays, and the transaction can still commit.
+pub(crate) fn in_savepoint<T>(
+    conn: &Connection,
+    write: impl FnOnce(&Connection) -> Result<T, String>,
+) -> Result<T, String> {
+    conn.execute_batch(&format!("SAVEPOINT {SAVEPOINT}"))
+        .map_err(|e| e.to_string())?;
+    let outcome = write(conn).and_then(|value| {
+        conn.execute_batch(&format!("RELEASE {SAVEPOINT}"))
+            .map(|()| value)
+            .map_err(|e| e.to_string())
+    });
+    if outcome.is_err() {
+        // Back out this savepoint only, then drop it so the transaction is as it was before the write.
+        let _ = conn.execute_batch(&format!("ROLLBACK TO {SAVEPOINT}; RELEASE {SAVEPOINT}"));
+    }
+    outcome
+}
+
+/// The journal is a side record of work that already happened, so a journal write must never fail that work.
+/// Runs `write` in a savepoint. A failure is rolled back, logged as one warning line naming `what` was left
+/// out, and answered with `None`, and the caller carries on and commits its own transaction.
+pub(crate) fn best_effort<T>(
+    conn: &Connection,
+    what: &str,
+    write: impl FnOnce(&Connection) -> Result<T, String>,
+) -> Option<T> {
+    match in_savepoint(conn, write) {
+        Ok(value) => Some(value),
+        Err(why) => {
+            eprintln!("Work log: the {what} line was not written ({why}).");
+            None
         }
     }
 }

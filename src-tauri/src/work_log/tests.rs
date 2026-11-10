@@ -1058,6 +1058,143 @@ fn an_answered_decision_writes_one_line() {
     assert_eq!(still.state, crate::decisions::OPEN);
 }
 
+/// A journal that cannot be written: the table is there, but it refuses every insert.
+fn break_the_journal(conn: &Connection) {
+    conn.execute_batch(
+        "CREATE TRIGGER work_log_test_refuses_insert
+         BEFORE INSERT ON work_log
+         BEGIN
+           SELECT RAISE(ABORT, 'the journal is broken');
+         END;",
+    )
+    .unwrap();
+}
+
+fn stored_task_state(conn: &Connection, id: &str) -> String {
+    conn.query_row("SELECT state FROM delegations WHERE id = ?1", [id], |row| {
+        row.get(0)
+    })
+    .unwrap()
+}
+
+#[test]
+fn a_broken_work_log_does_not_stop_a_task_from_finishing() {
+    let store = memory();
+    let mut conn = store.lock_conn().unwrap();
+    break_the_journal(&conn);
+    let queued = unix_ms(2026, 11, 10);
+    for (index, state) in [crate::delegations::COMPLETED, crate::delegations::FAILED]
+        .into_iter()
+        .enumerate()
+    {
+        let row = crate::delegations::record(
+            &mut conn,
+            launch(
+                &format!("req-broken-{index}"),
+                &format!("worker-broken-{index}"),
+            ),
+            queued,
+        )
+        .unwrap();
+        let change = crate::delegations::settle(
+            &mut conn,
+            finish(&row.id, 1, state, "Wrote the file."),
+            queued + 60_000,
+        )
+        .expect("a journal that cannot be written must not fail the finish");
+        assert!(change.applied, "{state}");
+        assert_eq!(stored_task_state(&conn, &row.id), state);
+        assert_eq!(change.row.unwrap().state, state);
+    }
+    assert!(outcomes(&conn).is_empty());
+}
+
+#[test]
+fn a_broken_work_log_does_not_stop_an_answer_from_landing() {
+    let store = memory();
+    let mut conn = store.lock_conn().unwrap();
+    break_the_journal(&conn);
+    let at = unix_ms(2026, 11, 10);
+    crate::decisions::ask(
+        &mut conn,
+        crate::decisions::AskInput {
+            asked_by: "lead-chat".into(),
+            asked_by_mono: None,
+            project: Some("tally".into()),
+            key: "export-format".into(),
+            question: "Which export format should we keep?".into(),
+            options: vec!["CSV".into(), "JSON".into()],
+            recommended: None,
+            task_ids: Vec::new(),
+        },
+        at,
+    )
+    .unwrap();
+    let answered = crate::decisions::answer(
+        &mut conn,
+        "tally",
+        "export-format",
+        "Keep CSV.",
+        None,
+        at + 60_000,
+    )
+    .expect("a journal that cannot be written must not fail the answer");
+    assert!(answered.applied);
+    // The asker still hears the answer: the rest of the transaction was kept.
+    assert_eq!(answered.released.len(), 1);
+    let stored = crate::decisions::get(&conn, "tally", "export-format")
+        .unwrap()
+        .unwrap();
+    assert_eq!(stored.state, crate::decisions::ANSWERED);
+    assert_eq!(stored.answer.as_deref(), Some("Keep CSV."));
+    assert!(decisions(&conn).is_empty());
+}
+
+#[test]
+fn a_failed_journal_write_rolls_back_only_its_own_savepoint() {
+    let store = memory();
+    let mut conn = store.lock_conn().unwrap();
+    conn.execute_batch("CREATE TABLE scratch (n INTEGER)")
+        .unwrap();
+    let tx = conn.transaction().unwrap();
+    tx.execute("INSERT INTO scratch VALUES (1)", []).unwrap();
+    let skipped: Option<()> = best_effort(&tx, "scratch", |inner| {
+        inner
+            .execute("INSERT INTO scratch VALUES (2)", [])
+            .map_err(|e| e.to_string())?;
+        Err("the second write broke".to_string())
+    });
+    assert!(skipped.is_none());
+    // The savepoint is gone, so the name is free for the next write, and the transaction is still open.
+    let kept = best_effort(&tx, "scratch", |inner| {
+        inner
+            .execute("INSERT INTO scratch VALUES (3)", [])
+            .map_err(|e| e.to_string())
+    });
+    assert_eq!(kept, Some(1));
+    tx.commit().unwrap();
+    let rows: Vec<i64> = conn
+        .prepare("SELECT n FROM scratch ORDER BY n")
+        .unwrap()
+        .query_map([], |row| row.get(0))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert_eq!(rows, vec![1, 3]);
+}
+
+#[test]
+fn a_journal_that_works_is_written_through_the_savepoint() {
+    let store = memory();
+    let conn = store.lock_conn().unwrap();
+    let line = best_effort(&conn, "note", |inner| {
+        record_decision(inner, "tally", "k", "Which one?", "This one", 1_000)
+    })
+    .expect("a working journal writes its line");
+    assert!(line.line.contains("Which one?"));
+    assert_eq!(decisions(&conn).len(), 1);
+}
+
 #[test]
 fn two_windows_keep_one_line_for_one_decision_and_one_send_back() {
     let temp = TempDb::new();
