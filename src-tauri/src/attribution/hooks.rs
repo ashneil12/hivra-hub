@@ -274,11 +274,17 @@ fn make_folder(fs: &mut Fs, next: &Path, what: &str) -> Result<(), String> {
             Ok(meta) => return folder_is_real(&meta, what),
             Err(err) => err,
         };
-        // "Already exists" and then "not found" contradict each other: the
-        // other crew's folder has not finished showing up.
-        let settling = create.kind() == io::ErrorKind::AlreadyExists
-            || is_transient(&create, fs.windows, true)
-            || is_transient(&look, fs.windows, true);
+        // Only two answers to the create mean the other crew has the folder: it
+        // said "already exists", or it was refused as busy. Then a look that
+        // does not see the folder (not found, or busy too) is that folder not
+        // having finished showing up. A create that failed any other way, such
+        // as a missing parent or a real denial, followed by "not found" is a
+        // real failure and is not tried again.
+        let other_crew_has_it = create.kind() == io::ErrorKind::AlreadyExists
+            || is_transient(&create, fs.windows, false);
+        let not_visible_yet =
+            look.kind() == io::ErrorKind::NotFound || is_transient(&look, fs.windows, true);
+        let settling = other_crew_has_it && not_visible_yet;
         if !settling || round >= FS_TRIES {
             return Err(refuse(&format!(
                 "{what}: create: {create}; then look: {look}"
@@ -754,18 +760,35 @@ fn forwarder_script(real: &str) -> Result<String, String> {
 /// are touched; removing a link removes the link, never what it points at.
 /// Another crew installing into the same folder right now keeps its temp file.
 pub(crate) fn prune(root: &Path, dir: &Path, keep: &BTreeSet<String>) -> Result<(), String> {
-    prune_with(root, dir, keep, |path| std::fs::remove_file(path))
+    prune_in(&mut Fs::real(), root, dir, keep, |path| {
+        std::fs::remove_file(path)
+    })
 }
 
-/// `remove` is a parameter so a test can make one removal fail the way Windows
-/// fails it, without needing a Windows machine to hold a file open.
+/// `prune_in` on the real filesystem. `remove` is a parameter so a test can make
+/// one removal fail the way Windows fails it, without needing a Windows machine
+/// to hold a file open.
+#[cfg(test)]
 pub(crate) fn prune_with(
+    root: &Path,
+    dir: &Path,
+    keep: &BTreeSet<String>,
+    remove: impl FnMut(&Path) -> std::io::Result<()>,
+) -> Result<(), String> {
+    prune_in(&mut Fs::real(), root, dir, keep, remove)
+}
+
+/// A real hook file whose removal is refused as busy (an open handle, or a
+/// delete another crew has pending) is tried again, up to `FS_TRIES` times, on
+/// Windows only. Any other failure of that removal is a refusal at once.
+pub(crate) fn prune_in(
+    fs: &mut Fs,
     root: &Path,
     dir: &Path,
     keep: &BTreeSet<String>,
     mut remove: impl FnMut(&Path) -> std::io::Result<()>,
 ) -> Result<(), String> {
-    let entries = Fs::real()
+    let entries = fs
         .list(dir)
         .map_err(|err| refuse_io("prune: list the folder", &err))?;
     for entry in entries.flatten() {
@@ -790,7 +813,18 @@ pub(crate) fn prune_with(
         if temp && !temp_is_stale(&meta) {
             continue;
         }
-        match remove(&path) {
+        let mut tries = 1;
+        let removed = loop {
+            match remove(&path) {
+                // A temp file is disposable and is never waited for.
+                Err(err) if !temp && tries < FS_TRIES && is_transient(&err, fs.windows, false) => {
+                    fs.pause(tries);
+                    tries += 1;
+                }
+                other => break other,
+            }
+        };
+        match removed {
             Ok(()) => {}
             // The other crew renamed or removed it since the listing.
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}

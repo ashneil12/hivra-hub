@@ -1224,6 +1224,46 @@ fn a_real_containment_failure_is_never_retried() {
     }
 }
 
+/// "Not found" right after a create is only the other crew's folder not showing
+/// up yet when the create said the folder exists or was refused as busy. A
+/// create that failed for any other reason (the parent is missing, a real
+/// denial, a bad name) followed by "not found" is a real failure, and it stops
+/// at the first try even where busy errors are retried.
+#[test]
+fn a_create_that_failed_for_another_reason_is_not_retried() {
+    use super::hooks::{ensure_child_with, Call, Fs, REFUSAL};
+    use std::cell::Cell;
+    let scratch = Scratch::new();
+    let root = crate::fs::canonical(scratch.path()).unwrap();
+    let failures: Vec<Box<dyn Fn() -> std::io::Error>> = vec![
+        Box::new(|| std::io::ErrorKind::NotFound.into()),
+        Box::new(|| std::io::ErrorKind::PermissionDenied.into()),
+        Box::new(|| os_error(ERROR_INVALID_PARAMETER)),
+    ];
+    for failure in failures {
+        let creates = Cell::new(0);
+        let mut fault = |call: Call, _: &Path| match call {
+            Call::Create => {
+                creates.set(creates.get() + 1);
+                Some(failure())
+            }
+            // Nothing is there, and the look says so every time.
+            Call::Stat => Some(std::io::ErrorKind::NotFound.into()),
+            _ => None,
+        };
+        let refused = ensure_child_with(
+            &mut Fs::playing(true, &mut fault),
+            &root,
+            "attribution",
+            "attribution",
+        )
+        .unwrap_err();
+        assert!(refused.starts_with(REFUSAL), "{refused}");
+        assert!(refused.contains("attribution: create"), "{refused}");
+        assert_eq!(creates.get(), 1, "a real failure was retried: {refused}");
+    }
+}
+
 /// A call that stays busy is tried a fixed number of times and then fails with
 /// the error it got; one that is not busy is not tried again at all.
 #[test]
@@ -1410,6 +1450,157 @@ fn a_busy_rename_stops_waiting_when_the_other_crew_published() {
         1,
         "it waited on a hook that was already right"
     );
+}
+
+/// A stale forwarder that Windows will not delete this instant (a handle on it,
+/// or a delete another crew has pending) is deleted a moment later. Before, the
+/// first busy answer failed the whole install.
+#[test]
+fn a_busy_stale_hook_is_removed_on_a_later_try_on_windows() {
+    use super::hooks::{prune_in, Fs};
+    use std::cell::Cell;
+    let scratch = Scratch::new();
+    let (root, dir) = hooks_folder(&scratch);
+    let stale = dir.join("pre-commit");
+    write_aged(&stale, Duration::ZERO, "#!/bin/sh\n");
+    let calls = Cell::new(0);
+    let done = prune_in(
+        &mut Fs::playing(true, &mut |_, _| None),
+        &root,
+        &dir,
+        &keep_set(&["prepare-commit-msg"]),
+        |path| {
+            calls.set(calls.get() + 1);
+            match calls.get() {
+                1 => Err(os_error(ERROR_SHARING_VIOLATION)),
+                2 => Err(os_error(ERROR_ACCESS_DENIED)),
+                3 => Err(os_error(ERROR_LOCK_VIOLATION)),
+                _ => fs::remove_file(path),
+            }
+        },
+    );
+    assert!(done.is_ok(), "{done:?}");
+    assert_eq!(calls.get(), 4);
+    assert!(!stale.exists(), "the stale hook was left in the folder");
+}
+
+/// A hook that stays busy is still a refusal, after the bounded tries, and the
+/// refusal names the error. Off Windows, or for an error that is not busy, the
+/// first answer is final, and a temp file is never waited for.
+#[test]
+fn a_stale_hook_that_stays_busy_is_refused_after_the_bounded_tries() {
+    use super::hooks::{prune_in, Fs, FS_TRIES, REFUSAL};
+    use std::cell::Cell;
+    let scratch = Scratch::new();
+    let (root, dir) = hooks_folder(&scratch);
+    write_aged(&dir.join("pre-commit"), Duration::ZERO, "#!/bin/sh\n");
+    let cases: [(bool, std::io::Error, u32); 4] = [
+        (true, os_error(ERROR_SHARING_VIOLATION), FS_TRIES),
+        (true, os_error(ERROR_INVALID_PARAMETER), 1),
+        (true, std::io::ErrorKind::PermissionDenied.into(), 1),
+        (false, os_error(ERROR_SHARING_VIOLATION), 1),
+    ];
+    for (windows, failure, tries) in cases {
+        let calls = Cell::new(0u32);
+        let code = failure.raw_os_error();
+        let kind = failure.kind();
+        let refused = prune_in(
+            &mut Fs::playing(windows, &mut |_, _| None),
+            &root,
+            &dir,
+            &keep_set(&["prepare-commit-msg"]),
+            |_| {
+                calls.set(calls.get() + 1);
+                Err(match code {
+                    Some(code) => os_error(code),
+                    None => kind.into(),
+                })
+            },
+        )
+        .unwrap_err();
+        assert!(refused.starts_with(REFUSAL), "{refused}");
+        assert!(refused.contains("prune: remove a hook file"), "{refused}");
+        assert_eq!(calls.get(), tries, "windows {windows}, {refused}");
+    }
+    // A stale temp file is disposable: never waited for, never a refusal.
+    let temp = super::hooks::hook_temp(&dir);
+    write_aged(&temp, Duration::from_secs(3600), "partial");
+    fs::remove_file(dir.join("pre-commit")).unwrap();
+    let calls = Cell::new(0u32);
+    let done = prune_in(
+        &mut Fs::playing(true, &mut |_, _| None),
+        &root,
+        &dir,
+        &keep_set(&["prepare-commit-msg"]),
+        |_| {
+            calls.set(calls.get() + 1);
+            Err(os_error(ERROR_SHARING_VIOLATION))
+        },
+    );
+    assert!(done.is_ok(), "{done:?}");
+    assert_eq!(calls.get(), 1, "a temp file was waited for");
+}
+
+/// An install that fails must not be silent: the crew still runs, so this line
+/// is the only way a real Windows failure is ever seen. It carries the check
+/// and the OS error and nothing from the environment or the repository.
+#[test]
+fn a_failed_install_is_noted_and_the_crew_still_runs() {
+    let scratch = Scratch::new();
+    let made = GitRepo::new(&scratch);
+    git(&made.repo, &made.env(), &["init", "-b", "main"]).unwrap();
+    let secret = "hunter2-do-not-log";
+    let mut cmd = Command::new("git");
+    cmd.env("HOME", &made.home)
+        .env("GIT_CONFIG_GLOBAL", &made.global)
+        .env("GIT_CONFIG_KEY_0", secret);
+    let gone = scratch.path().join("no-such-data-folder");
+    let mut notes: Vec<String> = Vec::new();
+    super::apply_crew_env_noting(
+        &mut cmd,
+        &gone,
+        &made.repo,
+        "chat-1",
+        Some("task-1"),
+        |line| notes.push(line),
+    );
+    assert_eq!(notes.len(), 1, "{notes:?}");
+    assert!(notes[0].contains(super::hooks::REFUSAL), "{notes:?}");
+    assert!(
+        notes[0].contains("(check: data folder: resolve"),
+        "{notes:?}"
+    );
+    assert!(
+        !notes[0].contains(secret),
+        "an env value was logged: {notes:?}"
+    );
+    let repo = made.repo.to_string_lossy();
+    assert!(
+        !notes[0].contains(repo.as_ref()),
+        "a path was logged: {notes:?}"
+    );
+    assert!(
+        !cmd.get_envs().any(|(key, _)| key == "GIT_CONFIG_COUNT"),
+        "a failed install still pointed git at a hooks folder"
+    );
+
+    // A good install says nothing.
+    let data = scratch.path().join("data");
+    fs::create_dir_all(&data).unwrap();
+    let mut cmd = Command::new("git");
+    cmd.env("HOME", &made.home)
+        .env("GIT_CONFIG_GLOBAL", &made.global);
+    let mut quiet: Vec<String> = Vec::new();
+    super::apply_crew_env_noting(
+        &mut cmd,
+        &data,
+        &made.repo,
+        "chat-1",
+        Some("task-1"),
+        |line| quiet.push(line),
+    );
+    assert!(quiet.is_empty(), "{quiet:?}");
+    assert!(cmd.get_envs().any(|(key, _)| key == "GIT_CONFIG_COUNT"));
 }
 
 /// Every refusal names its check, and no two checks say the same thing, so a
