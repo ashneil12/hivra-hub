@@ -3,10 +3,17 @@ import {
   lazy,
   Suspense,
   useEffect,
+  useLayoutEffect,
+  useRef,
   useState,
   type ReactNode,
+  type RefObject,
 } from "react";
-import { splitFileText, type SplitFileText } from "../model/splitDiff";
+import {
+  splitFileText,
+  splitFocusId,
+  type SplitFileText,
+} from "../model/splitDiff";
 import type { UnifiedDiffFileModel } from "../model/unifiedDiffDocument";
 
 // WP-116: optional split view. @pierre/diffs is a pinned package, not copied source.
@@ -19,6 +26,9 @@ const PierreFile = lazy(() =>
 type Props = {
   files: readonly UnifiedDiffFileModel[];
   fill: boolean;
+  /** A file to bring to the top, by path or id, as the unified view does. */
+  focusPath?: string;
+  focusId?: string;
 };
 
 type Theme = "github-light" | "github-dark";
@@ -27,7 +37,7 @@ function themeName(light: boolean): Theme {
   return light ? "github-light" : "github-dark";
 }
 
-export function SplitDiffView({ files, fill }: Props) {
+export function SplitDiffView({ files, fill, focusPath, focusId }: Props) {
   const [light, setLight] = useState(() =>
     document.documentElement.classList.contains("theme-light"),
   );
@@ -50,20 +60,28 @@ export function SplitDiffView({ files, fill }: Props) {
         </SplitRegion>
       }
     >
-      <SplitFiles files={files} theme={themeName(light)} fill={fill} />
+      <SplitFiles
+        files={files}
+        theme={themeName(light)}
+        fill={fill}
+        focus={splitFocusId(files, focusId, focusPath)}
+      />
     </Suspense>
   );
 }
 
 function SplitRegion({
   fill,
+  regionRef,
   children,
 }: {
   fill: boolean;
+  regionRef?: RefObject<HTMLDivElement | null>;
   children: ReactNode;
 }) {
   return (
     <div
+      ref={regionRef}
       role="region"
       aria-label="Split diff"
       className={
@@ -77,17 +95,86 @@ function SplitRegion({
   );
 }
 
+/** Events that mean the person is moving the view themselves. */
+const SCROLL_INTENT = [
+  "wheel",
+  "touchstart",
+  "pointerdown",
+  "keydown",
+] as const;
+
 type FilesProps = {
   files: readonly UnifiedDiffFileModel[];
   theme: Theme;
   fill: boolean;
+  focus: string | undefined;
 };
 
-/** The region and its files, inside the Suspense boundary. */
-function SplitFiles({ files, theme, fill }: FilesProps) {
+/**
+ * The region and its files, inside the Suspense boundary. It first renders once
+ * the package has arrived, so the focused file is found and aligned as it mounts.
+ */
+function SplitFiles({ files, theme, fill, focus }: FilesProps) {
+  const region = useRef<HTMLDivElement | null>(null);
+  const list = useRef<HTMLDivElement | null>(null);
+  const nodes = useRef(new Map<string, HTMLElement>());
+  // The file being held at the top. Cleared as soon as the person scrolls.
+  const pinned = useRef<string | null>(null);
+
+  const align = () => {
+    const id = pinned.current;
+    const scroller = region.current;
+    const node = id ? nodes.current.get(id) : undefined;
+    if (!node || !scroller) return;
+    if (!fill) {
+      // The page or a parent scrolls, not this region.
+      node.scrollIntoView({ block: "start" });
+      return;
+    }
+    const top =
+      node.getBoundingClientRect().top -
+      scroller.getBoundingClientRect().top +
+      scroller.scrollTop;
+    scroller.scrollTop = Math.max(0, top);
+  };
+  const latestAlign = useRef(align);
+  latestAlign.current = align;
+
+  useLayoutEffect(() => {
+    pinned.current = focus ?? null;
+    latestAlign.current();
+  }, [focus]);
+
+  // Files above the focused one finish drawing after the first alignment and push
+  // it down. Keep it at the top until the person takes over the scrolling.
+  useEffect(() => {
+    const scroller = region.current;
+    const content = list.current;
+    if (!scroller || !content) return;
+    const release = () => {
+      pinned.current = null;
+    };
+    for (const type of SCROLL_INTENT) {
+      scroller.addEventListener(type, release, { passive: true });
+    }
+    const resized =
+      typeof ResizeObserver === "undefined"
+        ? null
+        : new ResizeObserver(() => {
+            if (pinned.current) latestAlign.current();
+          });
+    resized?.observe(content);
+    return () => {
+      for (const type of SCROLL_INTENT) {
+        scroller.removeEventListener(type, release);
+      }
+      resized?.disconnect();
+    };
+  }, []);
+
   return (
-    <SplitRegion fill={fill}>
-      <div>
+    <SplitRegion fill={fill} regionRef={region}>
+      <div ref={list}>
         {files.length === 0 ? (
           <p className="px-4 py-6 text-[13px] text-content/45">
             No file changes
@@ -96,7 +183,14 @@ function SplitFiles({ files, theme, fill }: FilesProps) {
           files.map((file) => {
             const text = splitFileText(file);
             return (
-              <div key={file.id}>
+              <div
+                key={file.id}
+                data-split-file={file.id}
+                ref={(node) => {
+                  if (node) nodes.current.set(file.id, node);
+                  else nodes.current.delete(file.id);
+                }}
+              >
                 {text ? (
                   <SplitBoundary label={text.name}>
                     <PierreFile file={text} theme={theme} />

@@ -82,13 +82,46 @@ it("loads the split package only when a file is drawn side by side", async () =>
   expect(pierre.loaded).toBe(0);
 
   // The first text file drawn side by side brings the package in.
-  await act(async () =>
-    root.render(createElement(ReviewDiff, { files: [binary, file] })),
-  );
-  await act(async () => {
-    await vi.waitFor(() =>
-      expect(container.querySelector("[data-pierre-split]")).not.toBeNull(),
+  const second = { ...file, id: "b.ts", path: "src/b.ts", label: "src/b.ts" };
+  const layout = vi
+    .spyOn(Element.prototype, "getBoundingClientRect")
+    .mockImplementation(function (this: Element) {
+      const id = this.getAttribute("data-split-file");
+      const region = this.closest("[aria-label='Split diff']");
+      const top = id === "b.ts" && region ? 500 - region.scrollTop : 0;
+      return {
+        top,
+        bottom: top,
+        left: 0,
+        right: 0,
+        width: 0,
+        height: 0,
+        x: 0,
+        y: top,
+      } as DOMRect;
+    });
+  try {
+    await act(async () =>
+      root.render(
+        createElement(ReviewDiff, {
+          files: [binary, file, second],
+          focusId: "b.ts",
+        }),
+      ),
     );
-  });
-  expect(pierre.loaded).toBe(1);
+    await act(async () => {
+      await vi.waitFor(() =>
+        expect(container.querySelector("[data-pierre-split]")).not.toBeNull(),
+      );
+    });
+    expect(pierre.loaded).toBe(1);
+    // The files were not in place until the package arrived. The focused one is
+    // still brought to the top once they are.
+    expect(
+      container.querySelector<HTMLElement>("[aria-label='Split diff']")
+        ?.scrollTop,
+    ).toBe(500);
+  } finally {
+    layout.mockRestore();
+  }
 });

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { UnifiedBlock, UnifiedLine } from "./unifiedDiff";
 import type { UnifiedDiffFileModel } from "./unifiedDiffDocument";
-import { canSplit, isPatchOnly, splitFileText } from "./splitDiff";
+import { canSplit, isPatchOnly, splitFileText, splitFocusId } from "./splitDiff";
 
 function line(kind: UnifiedLine["kind"], text: string): UnifiedLine {
   return { kind, text, oldNumber: null, newNumber: null };
@@ -123,5 +123,26 @@ describe("canSplit", () => {
 
   it("is true for an empty review, which shows its own note", () => {
     expect(canSplit([])).toBe(true);
+  });
+});
+
+describe("splitFocusId", () => {
+  const files = [
+    file({ id: "a.ts", path: "/repo/src/a.ts" }),
+    file({ id: "b.ts::staged", path: "/repo/src/b.ts" }),
+  ];
+
+  it("prefers an explicit id", () => {
+    expect(splitFocusId(files, "b.ts::staged", "/repo/src/a.ts")).toBe("b.ts::staged");
+  });
+
+  it("finds a file by path or by id, like the unified view does", () => {
+    expect(splitFocusId(files, undefined, "/repo/src/b.ts")).toBe("b.ts::staged");
+    expect(splitFocusId(files, undefined, "a.ts")).toBe("a.ts");
+  });
+
+  it("is undefined with no focus or an unknown path", () => {
+    expect(splitFocusId(files, undefined, undefined)).toBeUndefined();
+    expect(splitFocusId(files, undefined, "/repo/src/zzz.ts")).toBeUndefined();
   });
 });

@@ -54,7 +54,12 @@ export function ReviewDiff(props: Props) {
         />
       ) : null}
       {shown === "split" ? (
-        <SplitDiffView files={props.files} fill={fill} />
+        <SplitDiffView
+          files={props.files}
+          fill={fill}
+          focusPath={props.focusPath}
+          focusId={props.focusId}
+        />
       ) : (
         <div className={fill ? "min-h-0 flex-1" : undefined}>
           <UnifiedDiffView {...props} />

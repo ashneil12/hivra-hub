@@ -258,3 +258,162 @@ it("keeps offering Split while a file is still loading", async () => {
   });
   expect(splitRadio()).toBeDefined();
 });
+
+// Opening a file from the changes list brings it to the top of the diff. The
+// split view keeps that, the way the unified view does.
+const fileB = {
+  ...file,
+  id: "b.ts",
+  path: "/repo/src/b.ts",
+  label: "src/b.ts",
+};
+const fileA = { ...file, id: "a.ts", path: "/repo/src/a.ts" };
+
+/** Where each file starts inside the split view's content, in pixels. */
+type Offsets = Record<string, number>;
+
+/**
+ * happy-dom has no layout. This gives every file wrapper a position that
+ * follows the region's scrollTop, the way a browser would report it.
+ */
+function stubLayout(offsets: Offsets, regionTop = 100) {
+  return vi
+    .spyOn(Element.prototype, "getBoundingClientRect")
+    .mockImplementation(function (this: Element) {
+      const id = this.getAttribute("data-split-file");
+      const holder = this.closest("[aria-label='Split diff']");
+      const top =
+        id != null && holder
+          ? regionTop + (offsets[id] ?? 0) - holder.scrollTop
+          : this.getAttribute("aria-label") === "Split diff"
+            ? regionTop
+            : 0;
+      return { top, bottom: top, left: 0, right: 0, width: 0, height: 0, x: 0, y: top } as DOMRect;
+    });
+}
+
+function region(): HTMLElement {
+  const found = container.querySelector<HTMLElement>("[aria-label='Split diff']");
+  if (!found) throw new Error("missing split region");
+  return found;
+}
+
+it("scrolls the split view to the focused file by id", async () => {
+  localStorage.setItem(DIFF_PRESENTATION_KEY, "split");
+  const layout = stubLayout({ "a.ts": 0, "b.ts": 380 });
+  try {
+    await render({ files: [fileA, fileB], focusId: "b.ts" });
+    await waitForSplit();
+    expect(region().scrollTop).toBe(380);
+  } finally {
+    layout.mockRestore();
+  }
+});
+
+it("scrolls the split view to the focused file by path", async () => {
+  localStorage.setItem(DIFF_PRESENTATION_KEY, "split");
+  const layout = stubLayout({ "a.ts": 0, "b.ts": 380 });
+  try {
+    await render({ files: [fileA, fileB], focusPath: "/repo/src/b.ts" });
+    await waitForSplit();
+    expect(region().scrollTop).toBe(380);
+  } finally {
+    layout.mockRestore();
+  }
+});
+
+it("follows a new focus while staying on split", async () => {
+  localStorage.setItem(DIFF_PRESENTATION_KEY, "split");
+  const layout = stubLayout({ "a.ts": 0, "b.ts": 380 });
+  try {
+    await render({ files: [fileA, fileB], focusId: "b.ts" });
+    await waitForSplit();
+    expect(region().scrollTop).toBe(380);
+    await render({ files: [fileA, fileB], focusId: "a.ts" });
+    expect(region().scrollTop).toBe(0);
+  } finally {
+    layout.mockRestore();
+  }
+});
+
+it("brings the focused file up when the person switches from unified to split", async () => {
+  const layout = stubLayout({ "a.ts": 0, "b.ts": 380 });
+  try {
+    await render({ files: [fileA, fileB], focusId: "b.ts" });
+    expect(container.querySelector("[aria-label='Split diff']")).toBeNull();
+    await act(async () => button("Split").click());
+    await waitForSplit();
+    expect(region().scrollTop).toBe(380);
+  } finally {
+    layout.mockRestore();
+  }
+});
+
+it("leaves the split view where it is when nothing is focused", async () => {
+  localStorage.setItem(DIFF_PRESENTATION_KEY, "split");
+  const layout = stubLayout({ "a.ts": 0, "b.ts": 380 });
+  try {
+    await render({ files: [fileA, fileB] });
+    await waitForSplit();
+    expect(region().scrollTop).toBe(0);
+    await render({ files: [fileA, fileB], focusPath: "/repo/src/missing.ts" });
+    expect(region().scrollTop).toBe(0);
+  } finally {
+    layout.mockRestore();
+  }
+});
+
+it("keeps the focused file at the top while the diff settles, until the person scrolls", async () => {
+  localStorage.setItem(DIFF_PRESENTATION_KEY, "split");
+  const resized: Array<() => void> = [];
+  vi.stubGlobal(
+    "ResizeObserver",
+    class {
+      constructor(callback: () => void) {
+        resized.push(callback);
+      }
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    },
+  );
+  const offsets: Offsets = { "a.ts": 0, "b.ts": 380 };
+  const layout = stubLayout(offsets);
+  try {
+    await render({ files: [fileA, fileB], focusId: "b.ts" });
+    await waitForSplit();
+    expect(region().scrollTop).toBe(380);
+
+    // A file above finishes drawing and pushes the focused one down.
+    offsets["b.ts"] = 600;
+    resized.forEach((callback) => callback());
+    expect(region().scrollTop).toBe(600);
+
+    // Once the person scrolls, the view stops chasing the focused file.
+    await act(async () => {
+      region().dispatchEvent(new Event("wheel"));
+    });
+    offsets["b.ts"] = 800;
+    resized.forEach((callback) => callback());
+    expect(region().scrollTop).toBe(600);
+  } finally {
+    layout.mockRestore();
+  }
+});
+
+it("scrolls the page to the focused file when the review does not fill its pane", async () => {
+  localStorage.setItem(DIFF_PRESENTATION_KEY, "split");
+  const scrolled: Array<string | null> = [];
+  const spy = vi
+    .spyOn(Element.prototype, "scrollIntoView")
+    .mockImplementation(function (this: Element) {
+      scrolled.push(this.getAttribute("data-split-file"));
+    });
+  try {
+    await render({ files: [fileA, fileB], focusId: "b.ts", fill: false });
+    await waitForSplit();
+    expect(scrolled).toEqual(["b.ts"]);
+  } finally {
+    spy.mockRestore();
+  }
+});

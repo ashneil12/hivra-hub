@@ -32,6 +32,20 @@ export function canSplit(files: readonly UnifiedDiffFileModel[]): boolean {
   return !files.some(isPatchOnly);
 }
 
+/**
+ * The file a review was asked to bring up: an explicit id, else the file whose
+ * path or id matches. The same rule the unified view uses for focusId and focusPath.
+ */
+export function splitFocusId(
+  files: readonly UnifiedDiffFileModel[],
+  focusId: string | undefined,
+  focusPath: string | undefined,
+): string | undefined {
+  if (focusId) return focusId;
+  if (!focusPath) return undefined;
+  return files.find((file) => file.path === focusPath || file.id === focusPath)?.id;
+}
+
 /** Text for the split view, or null when this file should show its message instead. */
 export function splitFileText(file: UnifiedDiffFileModel): SplitFileText | null {
   if (file.binary || file.tooLarge || file.emptyMessage) return null;
