@@ -38,6 +38,7 @@ import { answerWork, changePath, commentId, noteDocComment, noteTaskComment, pha
 import { TaskList } from "./TaskList";
 import { TaskTimeline } from "./TaskTimeline";
 import { stackUrlFor } from "../../stacks/model/link";
+import { spendPulse, subscribeSpend, taskCeilingNote } from "../../usage/model/spendGate";
 
 type Scope = "all" | "project";
 
@@ -201,6 +202,8 @@ export function TasksScreen({ cwd, scope = "project", rail = false }: { cwd: str
   const [phaseTick, setPhaseTick] = useState(0);
   const [appUrl, setAppUrl] = useState<string | null>(null);
   const [now, setNow] = useState(() => Date.now());
+  // WP-176: the open task shows this project's ceiling, and a stopped run's reason.
+  const spendWatch = useSyncExternalStore(subscribeSpend, spendPulse, () => "0");
   const generation = useRef(0);
   const detailGeneration = useRef(0);
   const seenFocus = useRef(0);
@@ -752,6 +755,7 @@ export function TasksScreen({ cwd, scope = "project", rail = false }: { cwd: str
               onOpenChat={(id) => window.dispatchEvent(new CustomEvent("hivra:open-task-chat", { detail: id }))}
               commits={commits}
               appUrl={appUrl}
+              ceiling={spendWatch ? taskCeilingNote(cwd, open.chatId) : null}
             />
           </div>
         ) : null}

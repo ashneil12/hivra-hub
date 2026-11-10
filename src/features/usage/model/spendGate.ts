@@ -13,6 +13,7 @@ import {
   dropLimit,
   emptyBook,
   importSpendLimits,
+  formatMeasuredUsd,
   periodSpend,
   putLimit,
   resetSpendWarnings,
@@ -160,6 +161,12 @@ function adoptIfNewer(expected: number): boolean {
 export function subscribeSpend(listener: () => void): () => void {
   listeners.add(listener);
   return () => listeners.delete(listener);
+}
+
+/** Changes when a limit is saved or a run is held, so an open task can show it. */
+export function spendPulse(): string {
+  boot();
+  return `${book.revision}:${holds.size}`;
 }
 
 export function spendSnapshot(): { book: SpendBook; ceilings: Record<string, TaskCeiling> } {
@@ -423,6 +430,20 @@ export function ceilingHold(sessionId: string): string | undefined {
   return holds.get(sessionId);
 }
 
+/** The ceiling line for a task row. Empty held means the run has not been stopped. */
+export function taskCeilingNote(project: string, chatId?: string | null): { line: string; held: string } | null {
+  boot();
+  const ceiling = ceilingForProject(project);
+  if (!ceiling) return null;
+  const parts: string[] = [];
+  if (ceiling.hardUsd != null) parts.push(`Task ceiling ${formatMeasuredUsd(ceiling.hardUsd)}.`);
+  if (ceiling.dailyUsd != null) parts.push(`Unattended runs stop at ${formatMeasuredUsd(ceiling.dailyUsd)} today.`);
+  const line = parts.join(" ").trim();
+  if (!line) return null;
+  const held = chatId ? (holds.get(chatId) ?? "") : "";
+  return { line, held };
+}
+
 export function continueTask(sessionId: string): void {
   const run = runs.get(sessionId);
   if (!run) return;
@@ -482,6 +503,9 @@ export function reviewReportedTurn(input: {
     continued: run.continued,
   });
   if (verdict.ask) run.asked = true;
-  if (verdict.stopRun && verdict.reason.trim()) holds.set(input.sessionId, verdict.reason.trim());
+  if (verdict.stopRun && verdict.reason.trim()) {
+    holds.set(input.sessionId, verdict.reason.trim());
+    notify();
+  }
   return verdict;
 }
