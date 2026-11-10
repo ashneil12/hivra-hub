@@ -1550,20 +1550,38 @@ fn forward_answer(
 
 /// What `harness_spawn` applies for a Claude Code session on a custom model.
 pub fn prepare_routed_session(route: &CustomRoute) -> Result<RoutedEnv, String> {
+    let hosts = crate::key_binding::store_dir();
+    prepare_routed_session_in(hosts.as_deref(), route, |bound| {
+        read_key_in(KEY_SERVICE, &bound.custom_model_id)
+    })
+}
+
+/// The routed session for `route`, with the key read through `read_key`. The key is read only for the provider and
+/// address stored with it (WP-129), and the router is started at that stored address, never the caller's.
+pub(crate) fn prepare_routed_session_in(
+    hosts: Option<&std::path::Path>,
+    route: &CustomRoute,
+    read_key: impl FnOnce(&CustomRoute) -> Result<Option<String>, String>,
+) -> Result<RoutedEnv, String> {
     if !may_route(route) {
         return Err("This model isn't routed: Claude models always use your Claude login.".into());
     }
+    // The route is the stored one, rebuilt from its parsed address. A key with nothing stored, or a route that
+    // names another provider or address, gets no session at all.
+    let Some(route) = crate::key_binding::bound_route(hosts, route) else {
+        return Err(crate::key_binding::NOT_STORED_FOR_THIS.into());
+    };
     let key = if route.provider == "ollama" {
         None
     } else {
-        read_key_in(KEY_SERVICE, &route.custom_model_id)?
+        read_key(&route)?
     };
     let token = session_token(&route.provider, key.as_deref())?;
-    let port = ensure_router(route, &token)?;
+    let port = ensure_router(&route, &token)?;
     // The provider's own window for this model, asked once per route. Nothing here may fail the spawn: a session on
     // an assumed-200K window is still a working session.
-    let window = remembered_window(route, key.as_deref());
-    Ok(routed_env(route, &token, port, window))
+    let window = remembered_window(&route, key.as_deref());
+    Ok(routed_env(&route, &token, port, window))
 }
 
 // ---- quick pick: one short completion for a room's auto responder (WP-22) -----------------------------------------------
@@ -2063,6 +2081,50 @@ mod tests {
             prepare_routed_session(&route("xai", "https://api.x.ai/v1", "claude-sonnet-5"))
                 .is_err()
         );
+    }
+
+    /// WP-129: a routed Claude Code session reads a key only for the provider and address stored with it. The
+    /// caller's route cannot point a saved key at another address, another provider or another account.
+    #[test]
+    fn a_routed_session_reads_a_key_only_for_the_address_stored_with_it() {
+        let stored = CustomRoute {
+            provider: "custom".into(),
+            base_url: "https://llm.example/v1".into(),
+            model_id: "grok-4".into(),
+            custom_model_id: "routed-acct".into(),
+            reasoning_effort: None,
+        };
+        let hosts = hosts_with("routed-session", std::slice::from_ref(&stored));
+        let attempt = |given: &CustomRoute| {
+            let reads = std::cell::Cell::new(0usize);
+            let out = prepare_routed_session_in(Some(&hosts), given, |_| {
+                reads.set(reads.get() + 1);
+                Ok(Some("sk-routed-0123456789".to_string()))
+            });
+            (out.is_ok(), reads.get())
+        };
+        for address in WRONG_ADDRESSES {
+            let given = CustomRoute {
+                base_url: (*address).into(),
+                ..stored.clone()
+            };
+            assert_eq!(attempt(&given), (false, 0), "{address}");
+        }
+        let other_account = CustomRoute {
+            custom_model_id: "routed-other".into(),
+            ..stored.clone()
+        };
+        assert_eq!(attempt(&other_account), (false, 0));
+        let other_provider = CustomRoute {
+            provider: "openrouter".into(),
+            ..stored.clone()
+        };
+        assert_eq!(attempt(&other_provider), (false, 0));
+        // Nothing stored at all: the key is never read.
+        assert!(prepare_routed_session_in(None, &stored, |_| {
+            panic!("a key must not be read with no folder of stored hosts")
+        })
+        .is_err());
     }
 
     #[test]
