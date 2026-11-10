@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { temporaryWorktreeBranchName, type Worktree } from "../../source-control/model/worktrees";
 import { newSession, type Attachment, type Block, type Session } from "./session";
+import { clearThreadForkAsk, threadForkAskSnapshot } from "./threadForkAsk";
 import {
   forkAttemptGate,
   forkChat,
+  forkFocusedChat,
   forkSessionAtMessage,
   forkStillValid,
   forkWorktreeDefault,
@@ -318,6 +320,21 @@ describe("lastForkableBlockId", () => {
     ).toBe("a1");
     expect(lastForkableBlockId([])).toBeNull();
     expect(forkStillValid(chat(blocks), "a1")).toBe(true);
+    clearThreadForkAsk();
+    expect(forkFocusedChat(chat(blocks))).toBe(true);
+    expect(threadForkAskSnapshot()?.blockId).toBe("a1");
+    expect(
+      forkFocusedChat(
+        chat([
+          ...blocks,
+          block({ id: "hidden", role: "user", text: "app", internal: true }),
+        ]),
+      ),
+    ).toBe(true);
+    expect(threadForkAskSnapshot()?.blockId).toBe("a1");
+    expect(forkFocusedChat(chat([block({ id: "t1", role: "tool", text: "ran" })]))).toBe(false);
+    expect(forkFocusedChat(undefined)).toBe(false);
+    clearThreadForkAsk();
     expect(forkStillValid(chat(blocks), "t1")).toBe(false);
     expect(forkStillValid(undefined, "a1")).toBe(false);
   });

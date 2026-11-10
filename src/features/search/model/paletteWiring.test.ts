@@ -80,6 +80,7 @@ function sideEffects(
     newWindow: () => calls.push("new-window"),
     zoom: (action) => calls.push(`zoom:${action}`),
     editor: (action) => calls.push(`editor:${action}`),
+    forkChat: () => calls.push("fork"),
     ...overrides,
   };
 }
@@ -184,6 +185,17 @@ describe("the palette wiring", () => {
 
     expect(calls).toEqual([]);
     expect(run).not.toHaveBeenCalled();
+  });
+
+  it("forks the chat in focus from the palette", () => {
+    const calls: string[] = [];
+    expect(
+      runPaletteCommand(row("session.fork-from-here"), actions(calls), sideEffects(calls)),
+    ).toBe(true);
+    expect(calls).toEqual(["fork"]);
+    const blocked = row("session.fork-from-here", nowhere);
+    expect(runPaletteCommand(blocked, actions(calls), sideEffects(calls))).toBe(false);
+    expect(calls).toEqual(["fork"]);
   });
 
   it("sends zoom and editor rows to their own helpers", () => {

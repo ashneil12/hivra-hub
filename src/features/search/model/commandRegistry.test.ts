@@ -66,6 +66,7 @@ describe("the palette command registry", () => {
         "app.commit",
         "app.create-pr",
         "git.next-chat-worktree",
+        "session.fork-from-here",
       ]),
     );
     expect(row("app.new-chat").label).toBe("New chat");
@@ -80,6 +81,14 @@ describe("the palette command registry", () => {
     expect(next.blockedReason).toBeNull();
     expect(next.run).toEqual({ kind: "app", action: "next-chat-worktree" });
     expect(next.label).not.toMatch(/[—–]/);
+    const fork = row("session.fork-from-here", nowhere);
+    expect(fork.label).toBe("Fork from here");
+    expect(fork.group).toBe("Session");
+    expect(fork.needs).toBe("chat");
+    expect(fork.blockedReason).toBe("Open a chat first");
+    expect(fork.run).toEqual({ kind: "app", action: "fork-from-here" });
+    expect(fork.label).not.toMatch(/[—–]/);
+    expect(row("session.fork-from-here").blockedReason).toBeNull();
   });
 
   it("shows the person's current shortcut, and nothing when it is disabled", () => {

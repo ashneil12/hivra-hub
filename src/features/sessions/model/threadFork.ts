@@ -4,6 +4,7 @@ import {
   temporaryWorktreeBranchName,
   type Worktree,
 } from "../../source-control/model/worktrees";
+import { askThreadFork } from "./threadForkAsk";
 import type {
   Attachment,
   Block,
@@ -226,6 +227,14 @@ export function forkSessionAtMessage(
     }
   }
   return fork;
+}
+
+/** Ask to fork the latest real message. False when there is nothing to fork. */
+export function forkFocusedChat(session: Session | undefined): boolean {
+  const blockId = session ? lastForkableBlockId(session.blocks) : null;
+  if (!session || !blockId) return false;
+  askThreadFork(session.id, blockId);
+  return true;
 }
 
 /** The latest user or assistant message, or null when the chat has none. */

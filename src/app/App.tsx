@@ -155,7 +155,7 @@ import { useIdleSessionDetach } from "./hooks/useIdleSessionDetach";
 import { HarnessEventQueue } from "./model/harnessFlush";
 import { noteStreamApplied } from "../features/sessions/model/streamingPerformance";
 import { updateSessionState } from "./model/sessionState";
-import { insertFork } from "../features/sessions/model/threadFork";
+import { forkFocusedChat, insertFork } from "../features/sessions/model/threadFork";
 import { ThreadForkHost } from "../features/sessions/ui/ThreadForkHost";
 import { beginTabSwitch, commitTabSwitch } from "./model/navigationPerformance";
 import {
@@ -15867,6 +15867,12 @@ function Workspace({
         editor: (action) => {
           if (action === "replace") openReplaceInActiveEditor();
           else openFindInActiveEditor();
+        },
+        // WP-123: fork the chat in focus from its latest message.
+        forkChat: () => {
+          const id = paletteTargetsRef.current.archive;
+          if (!id) return;
+          forkFocusedChat(sessionsRef.current.find((session) => session.id === id));
         },
       }),
     [run, onShowSourceControl, onStopFromUser, onArchiveHistorySession],
