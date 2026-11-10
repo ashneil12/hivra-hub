@@ -13,6 +13,10 @@ Titles, commit messages, PR text, branch names and similar short text are genera
 
 T3 is moving this to a first-class setting in nightly 0.1.8 ([docs/user/text-generation.md](https://github.com/pingdotgg/t3code/blob/e85e0094dd4617a1eada1ad7961f2132a79e67b2/docs/user/text-generation.md)). Hivra's `textHarness.ts` starts a coding agent for the same job, which is slow and burns a paid coding turn.
 
+## Keys saved before this change
+
+Keys saved before this change must be re-saved under Other models before quick pick, memory, the context window and routed sessions use them. A key is used only at the provider, model and address it was saved with; a key saved before that binding was recorded is not sent anywhere until it is saved again. The Other models list and the memory model picker show each saved address, so the person can check it.
+
 ## Read first
 
 - Hivra: `textHarness.ts` and every caller (commit, PR, title, branch).
