@@ -68,11 +68,24 @@ describe("lead capability", () => {
   it("still says why for an unknown CLI, and stays quiet for an empty capable check", () => {
     expect(canLead("")).toBe(false);
     expect(canLead("not-a-cli")).toBe(false);
-    expect(leadBlockReason("not-a-cli")).toBe(
-      "not-a-cli cannot lead yet. This CLI is not in the lead table.",
-    );
-    expect(leadBlockReason("  ")).toBe("This CLI cannot lead yet. This CLI is not in the lead table.");
+    expect(leadBlockReason("not-a-cli")).toBe("not-a-cli cannot lead yet. The app does not know this CLI.");
+    expect(leadBlockReason("  ")).toBe("This CLI cannot lead yet. The app does not know this CLI.");
     expect(hasDelegateTool(TEAM, "not-a-cli")).toBe(false);
+  });
+
+  it("says why a CLI cannot lead in plain words, with none of the plumbing", () => {
+    expect(leadBlockReason("opencode")).toBe(
+      "OpenCode cannot lead yet. The app has no way to give it the tools a lead uses to hand out jobs.",
+    );
+    expect(leadBlockReason("cursor")).toBe(
+      "Cursor cannot lead yet. The app could only give it the tools a lead uses by passing it a private key, and it does not do that yet.",
+    );
+    for (const id of HARNESSES.filter((cli) => !canLead(cli))) {
+      const said = leadBlockReason(id) ?? "";
+      expect(said).not.toMatch(/\b(?:MCP|host|server|secret|session|request|table|token|env|config)\b/i);
+      expect(said).not.toMatch(/[\u2013\u2014]/);
+    }
+    expect(leadBlockReason("not-a-cli")).not.toMatch(/table/i);
   });
 
   it("gives a Codex lead the server and withholds it from a chat that does not lead", () => {

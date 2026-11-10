@@ -20,9 +20,10 @@ export type LeadCapability = {
   reason: string;
 };
 
-const NO_HOST = "This CLI has no MCP host the app can set for one chat.";
+// What a person reads in the lead strip, so no plumbing words: no MCP, host, secret or session request.
+const NO_HOST = "The app has no way to give it the tools a lead uses to hand out jobs.";
 const SECRET_IN_REQUEST =
-  "This CLI can take MCP servers, but the app cannot give it the lead tools without putting the connection secret in the session request.";
+  "The app could only give it the tools a lead uses by passing it a private key, and it does not do that yet.";
 
 export const LEAD_CAPABILITY: Record<HarnessId, LeadCapability> = {
   claude: { leads: true, attach: "claude-args", reason: "" },
@@ -59,7 +60,7 @@ export function leadBlockReason(harness: string): string | null {
   const reason =
     known && harness in LEAD_CAPABILITY
       ? LEAD_CAPABILITY[harness as HarnessId].reason
-      : "This CLI is not in the lead table.";
+      : "The app does not know this CLI.";
   return `${name} cannot lead yet. ${reason}`;
 }
 
