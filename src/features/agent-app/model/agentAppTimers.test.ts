@@ -73,22 +73,24 @@ describe("timers.*", () => {
     await expect(handleAgentApp(source, "r1", "timers.check", { command: "rm -rf build", note: "no" }, host)).rejects.toThrow(/doesn't run by itself/);
     expect(api.checkSet).not.toHaveBeenCalled();
     await expect(handleAgentApp(source, "r2", "timers.check", { command: "git status; rm -rf ~/data", note: "no" }, host)).rejects.toThrow(/doesn't run by itself/);
-    const set = (await handleAgentApp(source, "r3", "timers.check", { command: "npm test", note: "the build" }, host)) as { id: string; note: string };
+    // A test or build runs code an allowed edit may have just written, so a timer never watches one (review C1).
+    await expect(handleAgentApp(source, "r4", "timers.check", { command: "npm test", note: "the build" }, host)).rejects.toThrow(/doesn't run by itself/);
+    const set = (await handleAgentApp(source, "r3", "timers.check", { command: "git status", note: "the status" }, host)) as { id: string; note: string };
     expect(api.checkSet).toHaveBeenCalledOnce();
-    expect(api.checkSet).toHaveBeenCalledWith({ ownerSession: source.id, command: "npm test", pattern: "", note: "the build", intervalMs: 60_000, cwd: "/code/hivra" });
+    expect(api.checkSet).toHaveBeenCalledWith({ ownerSession: source.id, command: "git status", pattern: "", note: "the status", intervalMs: 60_000, cwd: "/code/hivra" });
     expect(set.id).toBe("check-1");
     expect(set.note).toContain("[MonoCode watcher]");
     expect(set.note).toContain("don't poll");
-    expect(set.note).not.toContain("npm test");
+    expect(set.note).not.toContain("git status");
     expect(set.note).toContain("in /code/hivra,");
   });
 
   it("a check runs in the folder the chat works in: its working copy when it has one, else its project", async () => {
     const { source, host, api } = fixture("mono");
-    await handleAgentApp(source, "r1", "timers.check", { command: "npm test", note: "project" }, host);
+    await handleAgentApp(source, "r1", "timers.check", { command: "git status", note: "project" }, host);
     expect(api.checkSet).toHaveBeenLastCalledWith(expect.objectContaining({ cwd: "/code/hivra" }));
     const inTree = { ...source, worktreeCwd: "/code/hivra-wt/fix one" };
-    await handleAgentApp(inTree, "r2", "timers.check", { command: "npm test", note: "worktree" }, host);
+    await handleAgentApp(inTree, "r2", "timers.check", { command: "git status", note: "worktree" }, host);
     expect(api.checkSet).toHaveBeenLastCalledWith(expect.objectContaining({ cwd: "/code/hivra-wt/fix one" }));
   });
 
