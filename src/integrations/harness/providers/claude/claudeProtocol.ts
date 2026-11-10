@@ -1291,7 +1291,7 @@ function contextUsedFromUsage(usage: Record<string, unknown> | null): number {
 /**
  * Aggregate token accounting for the completed Claude turn.
  *
- * The result record also carries `total_cost_usd`, the CLI's own price for the turn (WP-108). It is kept as reported
+ * The result record also carries `total_cost_usd`, the CLI process's running total (WP-108; the adapter turns it into the turn's own cost). It is kept as reported
  * and never derived: a CLI that doesn't send it gets a turn with tokens and no price.
  */
 export function turnMetricsFromResult(

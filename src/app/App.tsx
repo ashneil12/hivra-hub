@@ -13,6 +13,7 @@ import { appendControlEvent } from "./model/controlText";
 import { installCodingTeamDefault } from "../features/hub/model/codingTeamModel";
 import { noteSessionRuns, RUN_HEARTBEAT_MS, setProcessRunSource } from "../features/monos/model/sessionRuns";
 import { noteToolCalls, setRunToolTextSource } from "../features/hub/model/soulTamper";
+import { stripHiddenCharacters } from "../features/sessions/model/hiddenText";
 import { waitingOnYouLine } from "../features/sessions/model/approvalWait";
 import { listHarnessRuns } from "../integrations/harness/core/child";
 import { OPEN_CONNECTOR_EVENT } from "../features/hub/model/connectors";
@@ -202,6 +203,7 @@ import {
   type OrchestrationProposal,
 } from "../features/orchestration/model/orchestrationPlan";
 import { discoverOrchestrationSettings } from "../features/orchestration/model/orchestrationCatalog";
+import { watchDecisions } from "../features/orchestration/model/decisionWatch";
 import {
   attachOrchestrationWorkers,
   consolidateOrchestrationTabs,
@@ -377,11 +379,12 @@ import {
 } from "../features/source-control/model/worktrees";
 import {
   attachNewChatWorktree,
-  forgetNewChatFolderChoice,
   gitRepositoryOnThisComputer,
-  newChatStaysHere,
-  noteNewChatFolderChoice,
+  newChatWorktreeOpenFor,
   openNewChatWorktree,
+  pendingNewChatOfferCheck,
+  withNewChatFolderChoice,
+  withoutNewChatFolderChoice,
 } from "../features/source-control/model/newChatWorktree";
 import { UsageFooter } from "./shell/UsageFooter";
 import { useProjectBranches } from "../features/source-control/hooks/useProjectBranches";
@@ -581,7 +584,6 @@ import {
   isPreparingHandoff,
   pendingHandoff,
   pendingComposerSwitch,
-  planComposerSwitch,
   sessionChildHarnesses,
   sessionThroughTurn,
   shouldAskOutgoingAgent,
@@ -590,6 +592,13 @@ import {
   wrapHandoffPrompt,
   wrapRecoveredPrompt,
 } from "../features/sessions/model/handoff";
+import {
+  applyMidThreadSwitch,
+  commitMidThreadSwitch,
+  buildPortableTranscript,
+  restoreUnsentPortableResume,
+  wrapPortableResume,
+} from "../features/sessions/model/midThreadSwitch";
 import { requestOutgoingHandoff } from "../features/sessions/model/handoffTurn";
 import {
   applyBtwHarnessEvent,
@@ -785,7 +794,6 @@ import {
   fetchCodexRateLimits,
 } from "../features/providers/model/rateLimitsFetch";
 import { exhaustedWindowResetAt } from "../features/providers/model/rateLimits";
-import { dropContextWindow } from "../features/sessions/model/contextUsage";
 import {
   discardDraftSessionRecord,
   deleteSession,
@@ -898,6 +906,7 @@ import { appPolicy } from "./model/appIdentity";
 import {
   claimVerifyKickoff,
   pendingVerifyKickoff,
+  traceVerifyKickoff,
   verifyKickoffMono,
   verifyRun,
   watchVerifyMessages,
@@ -910,6 +919,7 @@ import {
 } from "../features/monos/model/delegationStore";
 import {
   holdForLimit,
+  nextHealthCheck,
   nextWake,
   planHeld,
   pumpWorkers,
@@ -1023,6 +1033,10 @@ import { finderShortcutAction, routeFinderHit } from "../features/search/model/f
 import type { PaletteContext } from "../features/search/model/commandRegistry";
 import { runPaletteRow } from "../features/search/model/paletteRun";
 import { runPaletteCommand } from "../features/search/model/paletteWiring";
+import {
+  focusBeforePalette,
+  paletteFocusOf,
+} from "../features/search/model/paletteFocus";
 import {
   finderFileOptions,
   requestDocFocus,
@@ -1314,66 +1328,18 @@ function userTurnCards(
   };
 }
 
-function withHarnessChoice(
-  session: Session,
-  harness: HarnessId,
-  model: string,
-  modelSettings: Record<string, string>,
-): Session {
-  return {
-    ...session,
-    harness,
-    model,
-    modelSettings,
-    title:
-      session.blocks.length === 0
-        ? HARNESS_LABEL[harness]
-        : formatSessionTitle(
-            harness,
-            sessionDisplayTitle(session.title, session.harness),
-          ),
-    ...(session.model === model
-      ? {}
-      : { context: dropContextWindow(session.context) }),
-    ...(session.harness === harness
-      ? {}
-      : { providerSessionId: undefined, providerAccountId: undefined }),
-  };
-}
-
 function withPlanBuildTarget(
   session: Session,
   target: PlanBuildTarget,
 ): Session {
   const resolved = resolveModel(target.harness, target.model);
   const modelSettings = mergeModelSettings(resolved, target.modelSettings);
-  const plan = planComposerSwitch(session, target.harness);
-  const next = withHarnessChoice(
-    session,
-    target.harness,
-    resolved.id,
+  // WP-121: the same switch the picker uses, including a resume or a labelled recap.
+  return applyMidThreadSwitch(session, {
+    harness: target.harness,
+    model: resolved.id,
     modelSettings,
-  );
-
-  if (plan.kind === "arm") {
-    return { ...next, pendingSwitch: plan.pending };
-  }
-  if (plan.kind === "revert") {
-    return {
-      ...next,
-      pendingSwitch: undefined,
-      ...(plan.restoreProviderSessionId
-        ? { providerSessionId: plan.restoreProviderSessionId }
-        : { providerSessionId: undefined }),
-      ...(plan.restoreProviderAccountId
-        ? { providerAccountId: plan.restoreProviderAccountId }
-        : { providerAccountId: undefined }),
-    };
-  }
-  if (plan.kind === "empty") {
-    return { ...next, pendingSwitch: undefined };
-  }
-  return next;
+  }).session;
 }
 
 function openSessionIds(tabs: WorkspaceTab[]): Set<string> {
@@ -6951,6 +6917,7 @@ function Workspace({
       }
       setProjectCwd(normalized);
       setRecents(rememberProject(normalized));
+      const folderChanged = !previous || !sameProjectPath(previous, normalized);
       setSessions((prev) =>
         prev.map((s) => {
           if (s.id !== sessionId) return s;
@@ -6959,7 +6926,7 @@ function Workspace({
           const base = isBlankSession(s)
             ? retargetSessionToProject(s, normalized)
             : s;
-          return {
+          const moved: Session = {
             ...base,
             cwd: normalized,
             branch: undefined,
@@ -6968,13 +6935,12 @@ function Workspace({
             workspaceMode: undefined,
             worktreeBase: undefined,
           };
+          // WP-110: a choice to stay in the old folder does not carry to another one.
+          return folderChanged ? withoutNewChatFolderChoice(moved) : moved;
         }),
       );
       // WP-110: a blank chat moved to another folder follows the worktree setting.
-      if (!previous || !sameProjectPath(previous, normalized)) {
-        forgetNewChatFolderChoice(sessionId);
-        attachNewChatWorktree(sessionId, normalized, setSessions);
-      }
+      if (folderChanged) attachNewChatWorktree(sessionId, normalized, setSessions);
       // The session's project just moved in place; a group only holds tabs that
       // share one project, so drop this tab out if it no longer matches.
       setTabs((prev) => {
@@ -7022,8 +6988,6 @@ function Workspace({
 
   const onWorkspaceModeChange = useCallback(
     (sessionId: string, mode: WorkspaceMode, base?: string) => {
-      // WP-110: choosing this folder keeps this chat out of a default worktree.
-      noteNewChatFolderChoice(sessionId, mode);
       setSessions((prev) =>
         prev.map((session) => {
           if (
@@ -7033,19 +6997,22 @@ function Workspace({
           ) {
             return session;
           }
-          return mode === "worktree"
-            ? base || session.worktreeBase
-              ? {
+          const chosen: Session =
+            mode === "worktree"
+              ? base || session.worktreeBase
+                ? {
+                    ...session,
+                    workspaceMode: "worktree",
+                    worktreeBase: base || session.worktreeBase,
+                  }
+                : session
+              : {
                   ...session,
-                  workspaceMode: "worktree",
-                  worktreeBase: base || session.worktreeBase,
-                }
-              : session
-            : {
-                ...session,
-                workspaceMode: undefined,
-                worktreeBase: undefined,
-              };
+                  workspaceMode: undefined,
+                  worktreeBase: undefined,
+                };
+          // WP-110: choosing this folder keeps this chat out of a default worktree, and it is held on the chat.
+          return withNewChatFolderChoice(chosen, mode);
         }),
       );
     },
@@ -7953,41 +7920,47 @@ function Workspace({
         resolved,
         current.modelSettings,
       );
-      const plan = planComposerSwitch(current, harness);
       const recoverLimit =
         !current.busy &&
         !!current.usageLimit &&
         (current.harness !== harness || current.model !== resolved.id);
-      if (plan.kind === "empty") {
-        void forgetHarnessSession(plan.forget, sessionId);
-      }
-      setSessions((prev) =>
-        prev.map((s) => {
-          if (s.id !== sessionId) return s;
-          let next = withHarnessChoice(s, harness, resolved.id, modelSettings);
-          if (plan.kind === "arm") {
-            next = { ...next, pendingSwitch: plan.pending };
-          } else if (plan.kind === "revert") {
-            next = {
-              ...next,
-              pendingSwitch: undefined,
-              ...(plan.restoreProviderSessionId
-                ? { providerSessionId: plan.restoreProviderSessionId }
-                : { providerSessionId: undefined }),
-              ...(plan.restoreProviderAccountId
-                ? { providerAccountId: plan.restoreProviderAccountId }
-                : { providerAccountId: undefined }),
-            };
-          } else if (plan.kind === "empty") {
-            next = { ...next, pendingSwitch: undefined };
-          }
-          return recoverLimit
-            ? isMonoSession(sessionId)
-              ? resumeMonoUsageLimit(next)
-              : resumeUsageLimitedSession(next)
-            : next;
-        }),
+      // WP-121: keep this thread when the target can resume. A refusal still arms the recap.
+      const switched = commitMidThreadSwitch(
+        {
+          get: (id) => sessionsRef.current.find((session) => session.id === id),
+          compareAndPut: (session, seen) => {
+            let applied = false;
+            // The updater runs during render. flushSync runs it now so a refused write is visible here.
+            flushSync(() => {
+              setSessions((prev) =>
+                prev.map((s) => {
+                  if (s.id !== session.id) return s;
+                  if (
+                    s.blocks.length !== seen.blocks ||
+                    s.harness !== seen.harness ||
+                    s.model !== seen.model
+                  ) {
+                    return s;
+                  }
+                  applied = true;
+                  const next = recoverLimit
+                    ? isMonoSession(sessionId)
+                      ? resumeMonoUsageLimit(session)
+                      : resumeUsageLimitedSession(session)
+                    : session;
+                  return next;
+                }),
+              );
+            });
+            return applied;
+          },
+        },
+        sessionId,
+        { harness, model: resolved.id, modelSettings },
       );
+      if (switched.kind === "ok" && switched.outcome.forget) {
+        void forgetHarnessSession(switched.outcome.forget, sessionId);
+      }
     },
     [],
   );
@@ -8105,10 +8078,12 @@ function Workspace({
   const submitSession = useCallback(
     (
       sessionId: string,
-      text: string,
+      rawText: string,
       attachments: Attachment[] = [],
       options?: SubmitOptions,
     ): SubmissionAcceptance => {
+      // Every turn is built from here: a hidden character never reaches the agent, whichever surface sent it.
+      const text = stripHiddenCharacters(rawText).text;
       const remote = sessionsRef.current.find(
         (session) => session.id === sessionId,
       );
@@ -8419,6 +8394,10 @@ function Workspace({
         (rawCommand ? submittedText : composeNoteMessage(noteCard, promptText));
 
       const pendingSwitch = pendingComposerSwitch(current);
+      // WP-121: a resumable switch sends its portable transcript. A refusal still uses pendingSwitch.
+      // A repair is not the person's next message, so it leaves the transcript for that message.
+      const portableResume =
+        pendingSwitch || options?.ciRepair ? undefined : current.portableResume;
 
       // A Mono accepts consecutive messages before its provider is connected.
       // The pending head is delivered once ready; later messages cannot overtake it.
@@ -8564,7 +8543,7 @@ function Workspace({
         });
       }
 
-      if (current.busy && !pendingSwitch) {
+      if (current.busy && !pendingSwitch && !portableResume) {
         // Ash wrote to a chat held on his OK: it can't read him until he decides, so say so now (S14).
         const heldLine =
           !options?.appRequestId && !options?.monoNote && !options?.queuedMessageId && !options?.monoSessionCompletion
@@ -8864,8 +8843,11 @@ function Workspace({
       const queuedHandoff =
         live && !pendingSwitch ? pendingHandoff(current) : null;
 
-      if (pendingSwitch && current.busy) {
-        void cancelHarnessTurn(pendingSwitch.from, sessionId);
+      if (current.busy && (pendingSwitch || portableResume)) {
+        void cancelHarnessTurn(
+          (pendingSwitch ?? portableResume)!.from,
+          sessionId,
+        );
       }
 
       dismissNoticesForContinuedSession(sessionId);
@@ -8914,6 +8896,11 @@ function Workspace({
                 rawCommand || options?.ciRepair ? s.noteCard : undefined,
               handoffCard:
                 rawCommand || options?.ciRepair ? s.handoffCard : undefined,
+              // WP-121: this send consumes the switch notice. The timeline marker stays.
+              // A slash command or a repair is not that send.
+              ...(rawCommand || options?.ciRepair
+                ? {}
+                : { portableResume: undefined, midThread: undefined }),
             };
             if (editedResend) {
               next = editedResend.replace(next);
@@ -9129,24 +9116,14 @@ function Workspace({
         // WP-110: ask and always start a new chat in a worktree. A refusal keeps
         // the creation function's own message.
         const tree = await openNewChatWorktree(
-          {
+          newChatWorktreeOpenFor(current, {
             setting: loadNewChatWorktree(),
-            firstTurn:
-              isFirstTurn &&
-              !current.worktreeCwd &&
-              !current.providerSessionId &&
-              !current.orchestrationLeadId &&
-              !current.inboxAsk &&
-              !current.worktreeRemoved &&
-              !current.automationId &&
-              !current.ephemeral,
+            isFirstTurn,
             toggleOn: createDraftWorktree,
-            declined: newChatStaysHere(sessionId),
-            cwd: current.cwd,
-            base: current.worktreeBase || "HEAD",
-          },
+          }),
           {
             gitOnThisComputer: gitRepositoryOnThisComputer,
+            offerCheck: pendingNewChatOfferCheck,
             createWorktree,
           },
         );
@@ -9235,7 +9212,12 @@ function Workspace({
             ),
           );
         }
-        let wrap = handoffCard
+        let wrap: {
+          from: HarnessId;
+          to: HarnessId;
+          text: string;
+          portable?: boolean;
+        } | null = handoffCard
           ? {
               from: handoffCard.from,
               to: current.harness,
@@ -9268,6 +9250,21 @@ function Workspace({
           await forgetHarnessSession(pendingSwitch.from, sessionId);
           if (turnGen.current.get(sessionId) !== gen) return;
           wrap = { from: pendingSwitch.from, to: current.harness, text: brief };
+        } else if (portableResume) {
+          if (portableResume.from !== current.harness) {
+            await forgetHarnessSession(portableResume.from, sessionId);
+          }
+          if (turnGen.current.get(sessionId) !== gen) return;
+          wrap = {
+            from: portableResume.from,
+            to: current.harness,
+            // Built now, not when the picker changed: output since the switch is in it.
+            text: buildPortableTranscript(
+              current.blocks,
+              portableResume.messageIds,
+            ),
+            portable: true,
+          };
         }
 
         const revealHandoff = (brief: string) => {
@@ -9313,6 +9310,8 @@ function Workspace({
           return event;
         };
 
+        // WP-121: set once the provider has accepted the portable transcript.
+        let portableDelivered = false;
         const pendingEditedEvents: HarnessEvent[] = [];
         const applyTurnEvent = (event: HarnessEvent) => {
           if (event.type === "session.providerLost") providerLost = true;
@@ -9328,6 +9327,8 @@ function Workspace({
               event.type === "session.providerBound")
           ) {
             revealHandoff(wrap.text);
+            // WP-121: the provider has the transcript. A later failure must not send it again.
+            if (wrap.portable) portableDelivered = true;
           }
           nudgeOpenEditors(event, workCwd);
           if (!orchestrator.forSession(sessionId))
@@ -9508,12 +9509,19 @@ function Workspace({
             inboxAskPrompt(
               rawCommand ? undefined : current.inboxAsk,
               wrap && !rawCommand
-                ? wrapHandoffPrompt(
-                    wrap.text,
-                    wrap.from,
-                    turnPrompt.trim() || CONTINUE_PROMPT,
-                    earlier,
-                  )
+                ? wrap.portable
+                  ? wrapPortableResume(
+                      wrap.text,
+                      wrap.from,
+                      turnPrompt.trim() || CONTINUE_PROMPT,
+                      earlier,
+                    )
+                  : wrapHandoffPrompt(
+                      wrap.text,
+                      wrap.from,
+                      turnPrompt.trim() || CONTINUE_PROMPT,
+                      earlier,
+                    )
                 : turnPrompt,
             ),
           );
@@ -9711,6 +9719,8 @@ function Workspace({
             if (profile) sendText = `${sendText}\n\n${profile}`;
           }
           await sendTurn(sendText);
+          // WP-121: the turn was handed over, so the transcript is not sent again.
+          if (wrap?.portable && !rawCommand) portableDelivered = true;
           if (teamHanded && teamPlan?.soul && !providerLost) {
             recordAgentContext(
               sessionId,
@@ -9773,6 +9783,20 @@ function Workspace({
           recoverEditedResend();
           if (turnGen.current.get(sessionId) !== gen) return;
           if (wrap) revealHandoff(wrap.text);
+          // WP-121: a timeout or a provider that never started is not the end of the switch.
+          if (wrap?.portable && !portableDelivered && portableResume) {
+            const resume = portableResume;
+            const notice = current.midThread;
+            sessionsRef.current = sessionsRef.current.map((session) =>
+              session.id === sessionId
+                ? restoreUnsentPortableResume(session, resume, notice, {
+                    harness: current.harness,
+                    model: current.model,
+                  })
+                : session,
+            );
+            setSessions(sessionsRef.current);
+          }
           const message =
             error instanceof Error
               ? error.message
@@ -9953,15 +9977,43 @@ function Workspace({
     [submitSession],
   );
 
+  /**
+   * The bench's way into a Mono's chat (below): open the Mono as Ash's click does, then the chat to type into, which is
+   * the Mono's own. While its chat loads, something else at startup (a tab the window restores) can take the view, which
+   * leaves the view empty or on another chat; the message still goes to the Mono it was meant for.
+   */
+  const openVerifyMonoChat = useCallback(
+    async (monoId: string) => {
+      await onOpenMono(monoId);
+      const view = monoViewIdRef.current;
+      const own = findMono(monoId)?.sessionId ?? null;
+      return { view, own, chat: own ?? view };
+    },
+    [onOpenMono],
+  );
+
   // The fake-Claude test bench (scripts/hub-verify-live.mjs): a dev copy with a verify plan opens a Mono on the plan's
   // scratch project and sends its first message, once per run. No plan reaches the daily app (src/verify_live.rs).
   const verifyKickoffStarted = useRef(false);
+  const verifyKickoffNoted = useRef(false);
   useEffect(() => {
-    if (verifyKickoffStarted.current || windowTransfer) return;
+    if (verifyKickoffStarted.current) return;
+    if (windowTransfer) {
+      traceVerifyKickoff("held-by-window-transfer");
+      return;
+    }
     const kickoff = pendingVerifyKickoff();
-    if (!kickoff) return;
+    if (!kickoff) {
+      // A plan whose kickoff this window won't send (already claimed by an earlier launch of the run, or none).
+      if (!verifyKickoffNoted.current && verifyRun()) traceVerifyKickoff("not-pending");
+      verifyKickoffNoted.current = true;
+      return;
+    }
     verifyKickoffStarted.current = true;
     claimVerifyKickoff(kickoff.runId);
+    traceVerifyKickoff("claimed", { monoId: kickoff.monoId ?? null, project: kickoff.project });
+    // Each change in what the window knows of the Mono it waits for, so a kickoff that never goes says why.
+    let seen = "";
     void verifyKickoffMono(kickoff, {
       create: (project, name) => {
         const mono = createMono([project]);
@@ -9971,18 +10023,30 @@ function Workspace({
       // A plan naming an existing Mono waits until the hub has tied it to the project.
       ready: (monoId, project) => {
         const mono = findMono(monoId);
+        const state = JSON.stringify({ found: !!mono, projects: mono?.projects ?? [], monos: listMonos().length });
+        if (state !== seen) {
+          seen = state;
+          traceVerifyKickoff("mono-state", JSON.parse(state) as Record<string, unknown>);
+        }
         return !!mono && monoWorksOn(mono, project);
       },
     }).then(async (monoId) => {
       if (!monoId) {
+        traceVerifyKickoff("gave-up", { seen });
         console.error(`verify kickoff: ${kickoff.monoId} never worked on ${kickoff.project}`);
         return;
       }
-      await onOpenMono(monoId);
-      const sessionId = monoViewIdRef.current;
-      if (sessionId) onSubmit(sessionId, kickoff.prompt);
+      traceVerifyKickoff("opening", { monoId });
+      const { view, own, chat } = await openVerifyMonoChat(monoId);
+      // "sending-to-mono-chat": the open lost the view to something else, so the send names the Mono's chat itself.
+      traceVerifyKickoff(!chat ? "no-chat-open" : chat === view ? "sending" : "sending-to-mono-chat", {
+        monoId,
+        view,
+        monoChat: own,
+      });
+      if (chat) onSubmit(chat, kickoff.prompt);
     });
-  }, [onOpenMono, onSubmit, windowTransfer]);
+  }, [openVerifyMonoChat, onSubmit, windowTransfer]);
   // ...and Ash's messages the bench sends mid-run (WP-04: the plan's messages file, verify_live.rs): each into its Mono's chat, as
   // he would type it there, once per run.
   useEffect(() => {
@@ -10005,17 +10069,17 @@ function Workspace({
         if (message.newMono) {
           const mono = createMono(message.newMono.project ? [message.newMono.project] : []);
           saveMonoName(mono.id, message.newMono.name);
-          await onOpenMono(mono.id);
-          const sessionId = monoViewIdRef.current;
-          if (sessionId) onSubmit(sessionId, message.prompt);
+          const { chat } = await openVerifyMonoChat(mono.id);
+          if (!chat) throw new Error(`no chat for the new Mono ${message.newMono.name}`);
+          onSubmit(chat, message.prompt);
           return;
         }
-        await onOpenMono(message.monoId);
-        const sessionId = monoViewIdRef.current;
-        if (sessionId) onSubmit(sessionId, message.prompt);
+        const { chat } = await openVerifyMonoChat(message.monoId);
+        if (!chat) throw new Error(`no chat for ${message.monoId}`);
+        onSubmit(chat, message.prompt);
       },
     });
-  }, [onOpenMono, onSubmit, startCodingTeamChat, windowTransfer]);
+  }, [openVerifyMonoChat, onSubmit, startCodingTeamChat, windowTransfer]);
 
   // onApproval is created once; it reaches the current helper through this.
   const decideMonoBlockRef = useRef<
@@ -11257,7 +11321,11 @@ function Workspace({
                 ...session,
                 queuedMessages: session.queuedMessages?.map((message) =>
                   message.id === messageId
-                    ? { ...message, text, error: undefined }
+                    ? {
+                        ...message,
+                        text: stripHiddenCharacters(text).text,
+                        error: undefined,
+                      }
                     : message,
                 ),
                 editingQueuedMessageId: undefined,
@@ -12897,6 +12965,8 @@ function Workspace({
           harness,
           models: modelsFor(harness).map(({ id, name }) => ({ id, name })),
         })),
+      // WP-91: an irreversible step's decision sits under the hub project of the run's folder, like a delegation does.
+      decisionProject: hubProjectIdFor,
       createWorker: async (run, task) => {
         const projectCwd = orchestrationProjectCwd(run);
         const leadCheckoutCwd = orchestrationCheckoutCwd(run);
@@ -13274,6 +13344,16 @@ function Workspace({
     orchestrator.sync();
   }, [sessions]);
 
+  // WP-91: a decision answered anywhere (the Inbox, Home or a chat) starts the irreversible step that waited on it.
+  useEffect(
+    () =>
+      watchDecisions(
+        (event, handler) => listen(event, () => handler()),
+        () => orchestrator.decisionsChanged(),
+      ),
+    [],
+  );
+
   const stopSessionRef = useRef(onStop);
   stopSessionRef.current = onStop;
   onStopRef.current = onStop;
@@ -13342,11 +13422,14 @@ function Workspace({
   }, [sessions, pumpWorkersNow]);
   useEffect(() => {
     const offRows = subscribeDelegations(pumpWorkersNow);
-    const offPool = subscribeWorkerPool(pumpWorkersNow);
     // A provider's reset changes no row: look again then, and now and then anyway.
     let timer = 0;
     const arm = () => {
-      const wake = nextWake(providerRoomNow, Date.now());
+      // WP-161: waiting builders also look at the machine again soon, so a pause that clears starts them, and the
+      // Needs you line for a held disk reads a fresh sample.
+      const resets = nextWake(providerRoomNow, Date.now());
+      const recheck = nextHealthCheck(Date.now());
+      const wake = resets === undefined ? recheck : recheck === undefined ? resets : Math.min(resets, recheck);
       timer = window.setTimeout(
         () => {
           pumpWorkersNow();
@@ -13355,6 +13438,13 @@ function Workspace({
         Math.min(60_000, Math.max(1_000, (wake ?? Infinity) - Date.now())),
       );
     };
+    // WP-161: a builder joining the queue (or a health read landing) sets the next look again, so a wait that began
+    // after the timer was set is not left to the 60 second cap.
+    const offPool = subscribeWorkerPool(() => {
+      pumpWorkersNow();
+      window.clearTimeout(timer);
+      arm();
+    });
     arm();
     return () => {
       offRows();
@@ -13733,7 +13823,14 @@ function Workspace({
                   monoNote: briefGates.note,
                   onSettled: (next) => void turnEnded(next, true),
                 });
-                if (!accepted) finish(briefGates.failed(result));
+                if (accepted && row) {
+                  // WP-157: the checks sent this work back. A repeat of the same try keeps the first line.
+                  void invoke("delegations_sent_back", {
+                    id: row.id,
+                    rework: gateFailures,
+                    report: result.result,
+                  }).catch(() => undefined);
+                } else if (!accepted) finish(briefGates.failed(result));
                 return;
               }
               if (briefGates?.action === "fail" || briefGates?.action === "unsure") {
@@ -13753,7 +13850,14 @@ function Workspace({
                     monoNote: gateAskNote(run),
                     onSettled: (next) => void turnEnded(next, true),
                   });
-                  if (!accepted) finish(gateFailedResult(result, run));
+                  if (accepted && row) {
+                    // WP-157: the checks sent this work back. A repeat of the same try keeps the first line.
+                    void invoke("delegations_sent_back", {
+                      id: row.id,
+                      rework: gateFailures,
+                      report: result.result,
+                    }).catch(() => undefined);
+                  } else if (!accepted) finish(gateFailedResult(result, run));
                   return;
                 }
                 if (verdict === "deliver-failed" && run) {
@@ -14956,7 +15060,13 @@ function Workspace({
     });
   }, []);
 
+  // The palette's input takes focus as it opens, so keep what had it before.
+  const paletteFocusRef = useRef<Element | null>(null);
+  const rememberPaletteFocus = () => {
+    paletteFocusRef.current = focusBeforePalette(document.activeElement);
+  };
   const onGoToFile = useCallback(() => {
+    rememberPaletteFocus();
     setSearchViewOpen(false);
     setInboxViewOpen(false);
     setNotesViewOpen(false);
@@ -14967,6 +15077,7 @@ function Workspace({
     setFilePickerOpen(true);
   }, []);
   const onOpenCommandPalette = useCallback(() => {
+    rememberPaletteFocus();
     setSearchViewOpen(false);
     setInboxViewOpen(false);
     setNotesViewOpen(false);
@@ -14978,6 +15089,7 @@ function Workspace({
   }, []);
   // WP-74: ⌘K opens the same palette, ready to search every kind.
   const onOpenFinder = useCallback(() => {
+    rememberPaletteFocus();
     setSearchViewOpen(false);
     setInboxViewOpen(false);
     setNotesViewOpen(false);
@@ -15829,6 +15941,18 @@ function Workspace({
   // WP-93: the command palette's rows for what the app can do right now, and
   // the one runner that sends each row to the handler its shortcut uses.
   // Read fresh on the render that opens the palette, so "now" means now.
+  // Esc stops the Mono's chat while the Mono view is open, else the focused
+  // tab's busy chat; Stop chat in the palette reads the same way.
+  const paletteStopTarget: string | null = monoViewId
+    ? sessions.find((session) => session.id === monoViewId)?.busy
+      ? monoViewId
+      : null
+    : focusedBusyAgentSessionId(
+        activeTabId,
+        tabs,
+        sessions,
+        projectTerminalFocusedRef.current,
+      );
   const paletteContext: PaletteContext = {
     project:
       isLocalProject(sidebarCwd) || isRemoteProjectPath(sidebarCwd)
@@ -15836,46 +15960,26 @@ function Workspace({
         : null,
     terminal: isLocalProject(projectCwd),
     chat: Boolean(activeSessionId),
-    busy: Boolean(
-      activeSessionId &&
-        sessions.find((session) => session.id === activeSessionId)?.busy,
-    ),
-    // The chord treats an input, a terminal or a dialog as not the chat's.
-    control:
-      document.activeElement instanceof Element &&
-      Boolean(
-        document.activeElement.closest(
-          'input, textarea, select, [contenteditable="true"], .cm-editor, .monocode-terminal, [role="dialog"]',
-        ),
-      ),
+    busy: Boolean(paletteStopTarget),
+    ...paletteFocusOf(paletteFocusRef.current),
     editor: Boolean(activeFile && isFilesystemTab(activeFile)),
   };
-  // WP-93: the two commands that act on the chat in focus. The key handlers
-  // work these out from the event; the palette has no event, so it reads the
-  // same refs they do.
-  const paletteTargetsRef = useRef<{ archive: string | null; stop: string | null }>({
-    archive: null,
-    stop: null,
-  });
-  paletteTargetsRef.current = {
-    archive:
-      activeSessionId && !(activeFile && isFilesystemTab(activeFile))
-        ? activeSessionId
-        : null,
-    stop:
-      activeSessionId &&
-      sessions.find((session) => session.id === activeSessionId)?.busy
-        ? activeSessionId
-        : null,
-  };
+  const paletteStopTargetRef = useRef<string | null>(null);
+  paletteStopTargetRef.current = paletteStopTarget;
   const runPaletteCommandFromFinder = useCallback(
     (row: Parameters<typeof runPaletteRow>[0]) =>
       runPaletteCommand(row, actions.current, {
         run,
-        archiveChat: () => paletteTargetsRef.current.archive,
-        stopChat: () => paletteTargetsRef.current.stop,
-        archive: (id) => void onArchiveHistorySession(id, true),
+        stopChat: () => paletteStopTargetRef.current,
         stop: (id) => onStopFromUser(id),
+        // The shortcut's own handler, as if it were pressed where focus was.
+        archiveFocused: () =>
+          onArchiveFocusedSession({
+            defaultPrevented: false,
+            target: focusBeforePalette(paletteFocusRef.current),
+            preventDefault: () => undefined,
+            stopPropagation: () => undefined,
+          } as unknown as KeyboardEvent),
         showHome: () => showAppItem("home"),
         showChanges: onShowSourceControl,
         openModelPicker: () =>
@@ -15896,7 +16000,7 @@ function Workspace({
           else openFindInActiveEditor();
         },
       }),
-    [run, onShowSourceControl, onStopFromUser, onArchiveHistorySession],
+    [run, onShowSourceControl, onStopFromUser, onArchiveFocusedSession],
   );
 
   useEffect(() => {
@@ -16849,6 +16953,8 @@ function Workspace({
     openNotes: () => homeOpenRef.current.onOpenNotes(),
     openSession: (id) => { void homeOpenRef.current.onSelectHistorySession(id); },
     openTeam: (projectId) => homeOpenRef.current.openCodingTeam(projectId),
+    // WP-161: a Needs you line about the machine (new builders waiting on disk) opens Settings where it says so.
+    openSettings: (section, anchor) => openSettings(section, anchor),
     projects: () => hubData().listProjects(),
   });
   // r63 (PM, 0.16.3): Pages (an automations-view mode) and Coding team were highlighted at once. Any view that covers

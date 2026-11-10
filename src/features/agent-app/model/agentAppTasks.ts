@@ -103,6 +103,8 @@ export type WorkerPoolHost = {
   openRows(): Delegation[];
   /** Start this worker now, or let it wait and say why. One the app is starting from the queue always starts. */
   admit(job: AdmitInput): Admission;
+  /** WP-161: read the machine (load, memory, disk) so the next `admit` sees a fresh sample. Never throws. */
+  refreshHealth?(): Promise<void>;
   /** It waits: kept in order with what starts it later (and its card shows in the chat that asked). */
   enqueue(job: QueuedWorker, launch: QuickLaunch): void;
   /** It started: out of the queue, counted as heavy if it is, and holding the files it changes (r87). */
@@ -1059,6 +1061,8 @@ async function delegate(
       harness: launch.harness,
       ...(files.length ? { files } : {}),
     };
+    // WP-161: look at the machine first, so a pause the person set applies to the very first launch too.
+    await tasks.pool.refreshHealth?.();
     const admission = tasks.pool.admit(job);
     if (!admission.start) {
       tasks.pool.enqueue(
