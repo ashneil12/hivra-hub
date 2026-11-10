@@ -218,6 +218,269 @@ describe("words a command runs with", () => {
   });
 });
 
+// WP-101 fix round 4, finding 1 (HIGH): the home check compared the raw word's first characters, so the same file written
+// `/./Users/…`, `//Users/…`, `/../Users/…`, `/users/…` was a different word to it. The kernel opens all of them. Every
+// spelling below names a file the plain form already holds, and every one has to hold.
+describe("a home file under another spelling (fix round 4, finding 1)", () => {
+  const FOLDER = "/Users/ash/Worktrees/hub-x";
+  const HOMES = [
+    // the plain forms
+    "~",
+    "~/",
+    "/Users/someone",
+    "/home/someone",
+    // a dot or a doubled slash anywhere on the way
+    "~/.",
+    "~//",
+    "~/./.",
+    "/./Users/someone",
+    "/././Users/someone",
+    "//Users/someone",
+    "///Users//someone",
+    "/Users/./someone",
+    "/Users//someone",
+    "/Users/someone/.",
+    "/./home/someone",
+    "//home//someone",
+    // climbing: `..` at the root stays at the root, so this still lands in the same place
+    "/../Users/someone",
+    "/../../Users/someone",
+    "/../../../../../Users/someone",
+    "/usr/local/../../Users/someone",
+    "/tmp/../Users/someone",
+    "/Users/x/../someone",
+    "/Users/someone/Library/..",
+    "/Users/someone/x/y/../..",
+    "~/../someone",
+    "~/x/../../someone",
+    "/home/x/../someone",
+    // a Mac's file system is case-insensitive: any case is the same folder
+    "/users/someone",
+    "/USERS/someone",
+    "/UsErS/SOMEONE",
+    "/Users/SOMEONE",
+    "/HOME/someone",
+    // the Mac's own other names for the same folder (firmlinks and the boot-volume link)
+    "/System/Volumes/Data/Users/someone",
+    "/system/volumes/data/users/someone",
+    "/System/Volumes/Data/./Users/someone",
+    "/Volumes/Macintosh HD/Users/someone",
+    "/Volumes/Data/Users/someone",
+    "/Volumes/Macintosh HD/System/Volumes/Data/Users/someone",
+    // root's own home on a Mac and on Linux
+    "/var/root",
+    "/private/var/root",
+    "/root",
+    // a Windows path, either slash
+    "C:/Users/someone",
+    "c:\\Users\\someone",
+  ];
+  const TARGETS = [
+    ".zshrc",
+    ".bashrc",
+    ".profile",
+    ".zprofile",
+    ".zshenv",
+    ".zlogin",
+    ".zlogout",
+    ".bash_login",
+    ".bash_logout",
+    ".kshrc",
+    ".cshrc",
+    ".tcshrc",
+    ".login",
+    ".logout",
+    "./.zshrc",
+    "//.zshrc",
+    "x/../.zshrc",
+    ".ZSHRC",
+    ".zshrc/",
+    ".zshrc/.",
+    "Library/Preferences/com.apple.foo.plist",
+    "Library/./Preferences/com.apple.foo.plist",
+    "Library//Preferences/com.apple.foo.plist",
+    "Library/x/../Preferences/com.apple.foo.plist",
+    "library/preferences/com.apple.foo.plist",
+    "LIBRARY/PREFERENCES/com.apple.foo.plist",
+    "Library/Preferences",
+    "Library/Preferences/",
+  ];
+  const join = (home: string, target: string) => `${home.replace(/\/$/, "")}/${target}`;
+
+  it("holds every spelling of a home shell startup file or preferences file", () => {
+    const missed: string[] = [];
+    for (const home of HOMES) {
+      for (const target of TARGETS) {
+        const word = join(home, target);
+        if (!credentialInWords(["cat", word])) missed.push(word);
+      }
+    }
+    expect(missed).toEqual([]);
+  });
+
+  it("holds the same spellings for head, tail, grep and git diff, and when the word is glued to an option", () => {
+    for (const word of [
+      "/./Users/someone/.zshrc",
+      "//Users/someone/.zshrc",
+      "/../Users/someone/.zshrc",
+      "/usr/local/../../Users/someone/.zshrc",
+      "/users/someone/.zshrc",
+      "/USERS/someone/.zshrc",
+      "/./Users/someone/Library/Preferences/com.apple.foo.plist",
+    ]) {
+      for (const words of [
+        ["head", "-n", "10000", word],
+        ["tail", "-n", "+1", word],
+        ["grep", "export", word],
+        ["grep", ".", word],
+        ["grep", "-n", "-e", "x", word],
+        ["wc", "-l", word],
+        ["file", word],
+        ["stat", word],
+        ["git", "diff", "--no-index", word, "/dev/null"],
+        ["git", "diff", word, "/dev/null"],
+        ["git", "diff", "--no-index", "/dev/null", word],
+        ["grep", `--file=${word}`, "x"],
+        ["wc", `--files0-from=${word}`],
+        ["rg", `--ignore-file=${word}`, "x"],
+      ])
+        expect(credentialInWords(words), words.join(" ")).not.toBeNull();
+      // A short option's value, glued on with no space or equals sign.
+      expect(credentialInWords(["grep", `-f${word}`, "x", "README.md"]), `-f${word}`).not.toBeNull();
+    }
+  });
+
+  it("holds a relative path that climbs out of the chat's folder into the home folder", () => {
+    for (const word of ["../../.zshrc", "../../.bashrc", "./../../.zshrc", "src/../../../.zshrc", "../../Library/Preferences/com.apple.foo.plist", "../../Library/./Preferences/x.plist", "../..//.zshrc", "../../.ZSHRC"])
+      expect(credentialInWords(["cat", word], FOLDER), word).not.toBeNull();
+    // With no folder to resolve against, a climb that ends at a shell startup file waits too.
+    for (const word of ["../.zshrc", "../../.zshrc", "../../Library/Preferences/x.plist", "src/../../.zshrc"])
+      expect(credentialInWords(["cat", word]), word).not.toBeNull();
+    // The chat's own copy of the name is the chat's file, and a climb that lands on nothing secret is a read.
+    for (const word of [".zshrc", "./.zshrc", "src/.zshrc", "src/../.zshrc", "../README.md", "../../README.md", "../notes.txt", "x/y/../../.profile"])
+      expect(credentialInWords(["cat", word], FOLDER), word).toBeNull();
+    for (const word of [".zshrc", "./.zshrc", "src/../.zshrc", "../README.md"]) expect(credentialInWords(["cat", word]), word).toBeNull();
+    // A chat that sits in the home folder itself: its own relative name is the home file.
+    expect(credentialInWords(["cat", ".zshrc"], "/Users/ash")).not.toBeNull();
+  });
+
+  it("lets through what is not a home shell file, whatever the spelling", () => {
+    for (const word of [
+      "/./Users/someone/notes.txt",
+      "//Users/someone/Documents/plan.md",
+      "/users/someone/Worktrees/hub-x/README.md",
+      "/Users/someone/Library/Caches/x",
+      "/Users/someone/Library/./Caches/x",
+      "/Users/Shared/readme.txt",
+      "/tmp/.zshrc",
+      "/tmp/../tmp/.zshrc",
+      "/etc/hosts",
+      "/./etc/hosts",
+      "/usr/local/../bin/tool",
+      "/Users",
+      "/./Users/",
+      "/home",
+      "~/./notes.txt",
+      "~/Documents/../notes.txt",
+      "/Volumes/Backup/readme.txt",
+      "/System/Volumes/Data/Users",
+    ])
+      expect(credentialInWords(["cat", word], FOLDER), word).toBeNull();
+  });
+
+  it("does not take a revision or a range for a path that climbs", () => {
+    for (const words of [
+      ["git", "diff", "main..feature"],
+      ["git", "diff", "HEAD~1..HEAD"],
+      ["git", "log", "a/b..c/d"],
+      ["git", "show", "HEAD~2"],
+      ["git", "diff", "origin/main...HEAD", "--", "src/app.ts"],
+    ])
+      expect(credentialInWords(words, FOLDER), words.join(" ")).toBeNull();
+  });
+});
+
+// The same resolving applies to every other place a path can hide in: a credential place spelled across a `.` or a `..`
+// (the two-part places are the ones that need their parts side by side), another case, or an invisible character.
+describe("a credential place under another spelling (fix round 4, finding 1)", () => {
+  it.each([
+    "/etc/./shadow",
+    "/etc/foo/../shadow",
+    "//etc//shadow",
+    "/./etc/shadow",
+    "/ETC/Shadow",
+    "/etc/./passwd",
+    "/etc/x/../passwd",
+    "/private/etc/./passwd",
+    "/private//etc/shadow",
+    "/etc/./gshadow",
+    "~/Library/./Keychains/login.keychain-db",
+    "~/Library/x/../Keychains",
+    "~/LIBRARY/KEYCHAINS",
+    "~/Library//Application Support/Code",
+    "~/Library/x/../Application Support",
+    "~/Library/./Cookies/Cookies.binarycookies",
+    "~/Library/./Safari/History.db",
+    "~/.config/./gh/hosts.yml",
+    "~/.config/x/../gh",
+    "~/.config/./gcloud/credentials.db",
+    "~/.local/./share/keyrings",
+    "~/.local/share/./keyrings/login.keyring",
+    "/Users/someone/.config/./hivra/key",
+    "/System/Volumes/Data/Users/someone/.aws/credentials",
+    "/Volumes/Macintosh HD/Users/someone/.ssh/id_rsa",
+    "~/.ssh/./id_rsa",
+    "~/.ssh/x/../id_rsa",
+    "~/.ssh/../.ssh/config",
+    "~\\.ssh\\id_rsa",
+    // a name the file system treats as the same one: compatibility forms, an invisible character, the Kelvin sign
+    "~/\uFF0Essh/config",
+    "~/.ss\u200Bh/config",
+    "~/.ss\u200Dh/config",
+    "~/.\u212Aube/config",
+    "~/.\u212AUBE/config",
+    "~/.net\u200Brc",
+    "~/.ssh\u200B/config",
+    "~/.AWS/credentials",
+    "~/.Ssh",
+  ])("holds %s", (path) => {
+    expect(credentialPath(path), path).toBe(true);
+  });
+
+  it.each([
+    "/etc/./hosts",
+    "/etc/x/../hosts",
+    "//etc//hosts",
+    "~/Library/./Caches/x",
+    "~/Library/x/../Caches",
+    "~/.config/./nvim/init.lua",
+    "~/./notes.txt",
+    "src/./app.ts",
+    "src/../app.ts",
+    "./README.md",
+    "../README.md",
+    "a//b/../c.ts",
+    "/Users/someone/Documents/./plan.md",
+    "~/.ssh/./known_hosts",
+    "~/.ssh/x/../known_hosts",
+  ])("lets %s through", (path) => {
+    expect(credentialPath(path), path).toBe(false);
+  });
+
+  it("holds a place that a climb makes adjacent, wherever the climb starts", () => {
+    expect(credentialPath("a/../etc/shadow")).toBe(true);
+    expect(credentialPath("../../etc/./shadow")).toBe(true);
+    expect(credentialPath("Library/x/../Keychains/y")).toBe(true);
+    expect(credentialPath("../Library/Keychains")).toBe(true);
+  });
+
+  it("holds text that names such a path too", () => {
+    expect(credentialInText("cat /etc/./shadow")).toBe(true);
+    expect(credentialInText("open ~/library/./keychains/login")).toBe(true);
+    expect(credentialInText("read /etc/./hosts")).toBe(false);
+  });
+});
+
 describe("a read that walks folders", () => {
   const FOLDER = "/Users/ash/Worktrees/hub-x";
 

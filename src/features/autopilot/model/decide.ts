@@ -110,7 +110,7 @@ export function approvalVerdict(
     // backslashes can hide a path from the raw text (`cat ~/.ne"t"rc`), so the red list reads the real words.
     const words = bashWords(block.approval?.call);
     if (words) {
-      const fromWords = redListInWords(words);
+      const fromWords = redListInWords(words, folder);
       if (fromWords) return { kind: "held", red: fromWords, what, why: "it touches the red list" };
     }
     // WP-101: a send, a delete, a payment, a publish or an account change always waits, whatever else says it may

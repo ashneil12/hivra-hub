@@ -126,6 +126,64 @@ export function credentialName(name: string): boolean {
   return Boolean(ext) || /[*?_-]/.test(stem);
 }
 
+// ---- reading a path the way the file system does ----------------------------------------------------------------------
+// WP-101 fix round 4, finding 1: a word was judged by its raw text, so `/./Users/…`, `//Users/…`, `/../Users/…`,
+// `/users/…` and `/etc/./shadow` were other words than the plain forms, and the kernel opens every one of them. A path
+// is folded and resolved here first, and a rule reads the result.
+
+/** Invisible format characters (zero width joiners, direction marks): some file systems ignore them in a name. */
+const INVISIBLE = /\p{Cf}/gu;
+
+/**
+ * A path as a Mac compares names: compatibility forms folded (a fullwidth `.` is `.`), invisible characters gone, lower
+ * case (the Kelvin sign is `k`), one kind of slash. Folding too much only ever holds more.
+ */
+function fold(path: string): string {
+  return path.normalize("NFKC").replace(INVISIBLE, "").toLowerCase().replace(/\\/g, "/");
+}
+
+type Resolved = {
+  /** The parts that are left once `.`, empty parts and every `..` that has something to cancel are gone. */
+  segments: string[];
+  /** Whether the path starts at a root (`/…`, `~/…`, `C:/…`) rather than at the working folder. */
+  rooted: boolean;
+  /** Whether a relative path still climbs out of where it started (leading `..` parts). */
+  climbs: boolean;
+};
+
+/**
+ * A folded path resolved the way the kernel resolves it. A rooted path cannot climb past its root: `/../x` is `/x`. A
+ * relative one keeps the climbs it cannot cancel. `~` stands for the home folder as `users/~`, so `~/../x` is a
+ * neighbour of the home folder, still under `users`. Either kind of slash and a drive letter are accepted.
+ */
+function resolvePath(folded: string): Resolved {
+  let rest = folded;
+  let rooted = rest.startsWith("/");
+  if (/^[a-z]:(?=\/|$)/.test(rest)) {
+    rooted = true;
+    rest = rest.slice(2);
+  }
+  const tilde = rest === "~" || rest.startsWith("~/");
+  const anchored = rooted || tilde;
+  const parts = rest.split(/[/:]/);
+  if (tilde) parts.shift();
+  const segments: string[] = tilde ? ["users", "~"] : [];
+  let climbs = false;
+  for (const part of parts) {
+    if (!part || part === ".") continue;
+    if (part === "..") {
+      if (segments.length && segments[segments.length - 1] !== "..") segments.pop();
+      else if (!anchored) {
+        segments.push("..");
+        climbs = true;
+      }
+      continue;
+    }
+    segments.push(part);
+  }
+  return { segments, rooted: anchored, climbs };
+}
+
 /** Whether a stretch of `parts` is one of the places, in order. */
 function placeAmong(parts: readonly string[]): boolean {
   return PLACES.some((place) => {
@@ -136,13 +194,8 @@ function placeAmong(parts: readonly string[]): boolean {
   });
 }
 
-/** Whether a path names a credential place or a credential file, by any segment. */
-export function credentialPath(path: string): boolean {
-  const parts = path
-    .toLowerCase()
-    .replace(/\\/g, "/")
-    .split(/[/:]/)
-    .filter(Boolean);
+/** Whether these (folded) parts name a credential place or a credential file. */
+function credentialSegments(parts: readonly string[]): boolean {
   if (!parts.length) return false;
   if (parts[parts.length - 1] === "known_hosts") return false;
   if (placeAmong(parts)) return true;
@@ -151,12 +204,26 @@ export function credentialPath(path: string): boolean {
   return credentialName(parts[parts.length - 1]);
 }
 
+/**
+ * Whether a path names a credential place or a credential file, by any segment. The parts are read as written and
+ * again once the path is resolved, so a two-part place (`etc/shadow`) cannot be split by a `.` or a `..`, and a name
+ * that only a climb leaves behind is still seen.
+ */
+export function credentialPath(path: string): boolean {
+  const folded = fold(path);
+  const written = folded.split(/[/:]/).filter(Boolean);
+  if (!written.length) return false;
+  return credentialSegments(written) || credentialSegments(resolvePath(folded).segments);
+}
+
 /** The pieces of a word that can name a path: the word, its bare form, and an `--opt=value` value. */
 function pieces(word: string): string[] {
   const out = [word];
   const bare = word.replace(/^-+/, "");
   if (bare !== word) out.push(bare);
   if (bare.includes("=")) out.push(bare.slice(bare.indexOf("=") + 1));
+  // A short option's value glued on with no space or `=` (`grep -f/Users/me/.zshrc`): the path starts at its first slash.
+  if (word.startsWith("-") && word.includes("/")) out.push(word.slice(word.indexOf("/")));
   return out;
 }
 
@@ -169,18 +236,76 @@ function patternLike(word: string): boolean {
 const GLOB = /[*?\[]/;
 
 /** Shell startup files. A copy under the home folder is that person's shell, not a file in the chat. */
-const SHELL_RC = new Set([".zshrc", ".bashrc", ".profile", ".bash_profile", ".zprofile", ".zshenv", ".zlogin"]);
+const SHELL_RC = new Set([
+  ".zshrc",
+  ".bashrc",
+  ".profile",
+  ".bash_profile",
+  ".zprofile",
+  ".zshenv",
+  ".zlogin",
+  ".bash_login",
+  ".bash_logout",
+  ".zlogout",
+  ".kshrc",
+  ".cshrc",
+  ".tcshrc",
+  ".login",
+  ".logout",
+]);
+
+/** A folder shallower than this (/, /Users, /Users/ash) is too broad to count as a chat's own. */
+const MIN_PROJECT_DEPTH = 3;
 
 /**
- * Whether a word is a shell startup file or a preferences file under a home folder (`~/…`, `/Users/…`, `/home/…`).
- * A relative `.zshrc` in the chat's folder is not: it has to start at one of those roots. History files are already
- * credential names.
+ * Whether absolute parts sit inside a person's home folder, however the path got there: `/Users/…` and `/home/…` in
+ * any case, the Mac's own other names for them (`/System/Volumes/Data/Users/…`, `/Volumes/<disk>/Users/…`, a
+ * `/private` prefix), and root's home (`/var/root`, `/root`).
  */
-function homeShellFile(word: string): boolean {
-  if (!word.startsWith("~/") && !word.startsWith("/Users/") && !word.startsWith("/home/")) return false;
-  const lower = word.toLowerCase();
-  if (lower.includes("/library/preferences/") || lower.endsWith("/library/preferences")) return true;
-  return SHELL_RC.has(lower.slice(lower.lastIndexOf("/") + 1));
+function underHome(parts: readonly string[]): boolean {
+  let rest = parts;
+  for (;;) {
+    if (rest[0] === "system" && rest[1] === "volumes" && rest[2] === "data") rest = rest.slice(3);
+    else if (rest[0] === "volumes" && rest.length > 1) rest = rest.slice(2);
+    else if (rest[0] === "private") rest = rest.slice(1);
+    else break;
+  }
+  if ((rest[0] === "users" || rest[0] === "home") && rest.length > 1) return true;
+  return rest[0] === "root" || (rest[0] === "var" && rest[1] === "root");
+}
+
+const preferencesIn = (parts: readonly string[]) => parts.some((part, i) => part === "library" && parts[i + 1] === "preferences");
+
+/** Whether absolute parts are a shell startup file or a preferences file under a home folder. */
+function homeShellParts(parts: readonly string[]): boolean {
+  return underHome(parts) && (SHELL_RC.has(parts[parts.length - 1] ?? "") || preferencesIn(parts));
+}
+
+/** The chat's folder as folded absolute parts, or null when there is none. */
+function foldedFolder(folder: string | undefined): string[] | null {
+  if (typeof folder !== "string" || !folder) return null;
+  const resolved = resolvePath(fold(folder));
+  return resolved.rooted ? resolved.segments : null;
+}
+
+/**
+ * Whether a word is a shell startup file or a preferences file under a home folder. The word is resolved first (`.`,
+ * `..`, repeated slashes, any case, the Mac's other names for a home folder), so `/./Users/me/.zshrc` and
+ * `/users/me/.zshrc` are the file `/Users/me/.zshrc` is. A relative name stays the chat's own file unless it climbs out
+ * of the folder: with the folder known it is resolved against it (`../../.zshrc` from `/Users/me/work/x` is the home
+ * file); with none, a climb that ends at a startup file is held. History files are already credential names.
+ */
+function homeShellFile(word: string, folder?: string): boolean {
+  const { segments, rooted, climbs } = resolvePath(fold(word));
+  if (rooted) return homeShellParts(segments);
+  const base = foldedFolder(folder);
+  if (!base) return climbs && (SHELL_RC.has(segments[segments.length - 1] ?? "") || preferencesIn(segments));
+  const up = segments.findIndex((part) => part !== "..");
+  const lead = up < 0 ? segments.length : up;
+  const full = [...base.slice(0, Math.max(0, base.length - lead)), ...segments.slice(lead)];
+  // Inside a folder deep enough to be a project, a file named like a startup file is the project's own.
+  if (base.length >= MIN_PROJECT_DEPTH && startsWith(full, base)) return false;
+  return homeShellParts(full);
 }
 
 /**
@@ -190,14 +315,14 @@ function homeShellFile(word: string): boolean {
  * whether or not the glob itself is a credential name. The same holds for `find -name`, `-iname` and `-path`. A glob
  * glued on with `=` (`--include=*netrc*`, `--glob=*history*`) is the same word.
  */
-export function credentialInWords(words: readonly string[]): string | null {
+export function credentialInWords(words: readonly string[], folder?: string): string | null {
   const head = words[0]?.replace(/^-+/, "") ?? "";
   const searches = head === "grep" || head === "rg" || head === "ag" || head === "fd" || head === "find";
   for (const word of words) {
     if (searches && pieces(word).some((piece) => GLOB.test(piece))) return word;
     if (searches && head !== "find" && patternLike(word)) continue;
     for (const piece of pieces(word)) {
-      if (piece && (homeShellFile(piece) || credentialPath(piece))) return piece;
+      if (piece && (homeShellFile(piece, folder) || credentialPath(piece))) return piece;
     }
   }
   return null;

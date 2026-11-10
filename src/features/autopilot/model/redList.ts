@@ -145,10 +145,11 @@ export function redListCategory(text: string): RedCategory | null {
 /**
  * The first red-list category the words of a command touch, or null. A command is judged on the words the shell would
  * pass (shellWords.ts), so a quoted path reads as the path it is: `cat ~/.ne"t"rc` names the netrc, and
- * `cat ~/.s''sh/config` names the ssh config.
+ * `cat ~/.s''sh/config` names the ssh config. `folder` is the chat's folder: a relative path that climbs out of it is
+ * resolved against it, so `cat ../../.zshrc` reads as the home file it is.
  */
-export function redListInWords(words: readonly string[]): RedCategory | null {
-  if (credentialInWords(words)) return "credentials";
+export function redListInWords(words: readonly string[], folder?: string): RedCategory | null {
+  if (credentialInWords(words, folder)) return "credentials";
   return redListCategory(words.join(" "));
 }
 

@@ -259,6 +259,98 @@ describe("a tool approval under autopilot", () => {
     expect(approvalVerdict(bash("cat ~/notes.txt"), FOLDER)).toMatchObject({ kind: "allow" });
   });
 
+  // WP-101 fix round 4, finding 1 (HIGH): the fix-3 check only matched a path that literally began `~/`, `/Users/` or
+  // `/home/`. Each command below opens the same file as the plain form, and each was allowed. `cat` of the shell startup
+  // file is the case the review ran; the rest are the same hole through other readers and other spellings.
+  it("holds a read of a home shell file or preferences file written another way (fix round 4, finding 1)", () => {
+    for (const command of [
+      "cat /./Users/ash/.zshrc",
+      "head -n 10000 /./Users/ash/.zshrc",
+      "tail -n +1 /./Users/ash/.zshrc",
+      "grep export /./Users/ash/.zshrc",
+      "grep . /./Users/ash/.zshrc",
+      "git diff --no-index /./Users/ash/.zshrc /dev/null",
+      "cat /../Users/ash/.zshrc",
+      "cat /usr/local/../../Users/ash/.zshrc",
+      "cat //Users/ash/.zshrc",
+      "cat /users/ash/.zshrc",
+      "cat /USERS/ash/.zshrc",
+      "head -n 5 /users/ash/.zshrc",
+      "head -n 5 /./Users/ash/Library/Preferences/com.apple.foo.plist",
+      "cat /users/ash/Library/Preferences/com.apple.foo.plist",
+      "cat /Users/ash/Library/./Preferences/com.apple.foo.plist",
+      "cat /Users/ash/../ash/.zshrc",
+      "cat /Users/./ash/.zshrc",
+      "cat /Users/ash/.zshrc/",
+      "cat /Users/ash/./.zshrc",
+      "cat /Users/ASH/.ZSHRC",
+      "cat ~/./.zshrc",
+      "cat ~//.zshrc",
+      "cat ~/../ash/.zshrc",
+      "cat /System/Volumes/Data/Users/ash/.zshrc",
+      "cat '/Volumes/Macintosh HD/Users/ash/.zshrc'",
+      "cat /var/root/.zshrc",
+      "cat /private/var/root/.zshrc",
+      "cat /root/.bashrc",
+      "cat /Users/ash/.bash_login",
+      "git diff /Users/ash/.zshrc /dev/null",
+      "git diff --no-index /dev/null /users/ash/.zshrc",
+      "grep -f/./Users/ash/.zshrc x README.md",
+      "grep --file=//Users/ash/.zshrc x README.md",
+      "wc --files0-from=/./Users/ash/.zshrc",
+      "file -f /users/ash/.zshrc",
+      "cat /etc/./shadow",
+      "cat /etc/x/../passwd",
+      "cat //etc//shadow",
+      "cat /ETC/SHADOW",
+      "cat ~/Library/./Keychains/login.keychain-db",
+      "cat ~/Library/x/../Keychains/login.keychain-db",
+      "cat ~/.config/./gh/hosts.yml",
+      "cat ~/.ssh/./id_rsa",
+    ])
+      expect(approvalVerdict(bash(command), FOLDER), command).toMatchObject({ kind: "held" });
+    // Ordinary reads of the same shapes stay reads.
+    for (const command of [
+      "cat /./Users/ash/Worktrees/hub-x/README.md",
+      "cat //Users/ash/Worktrees/hub-x/src/app.ts",
+      "cat /users/ash/Worktrees/hub-x/README.md",
+      "cat ./README.md",
+      "cat src/../README.md",
+      "cat ./.zshrc",
+      "cat ~/./notes.txt",
+      "cat /etc/./hosts",
+      "head -n 5 /./etc/hosts",
+      "git diff main..feature",
+      "git diff HEAD~1 -- src/app.ts",
+    ])
+      expect(approvalVerdict(bash(command), FOLDER), command).toMatchObject({ kind: "allow" });
+  });
+
+  // A relative path can reach the home folder by climbing out of the chat's folder. The folder is known here, so it is
+  // resolved against it. (`../README.md` climbs too, but lands on nothing secret.)
+  it("holds a relative path that climbs out of the chat's folder to a home shell file (fix round 4, finding 1)", () => {
+    for (const command of [
+      "cat ../../.zshrc",
+      "cat ./../../.zshrc",
+      "cat src/../../../.zshrc",
+      "head -n 5 ../../Library/Preferences/com.apple.foo.plist",
+      "cat ../..//.zshrc",
+      "grep export ../../.zshrc",
+      "git diff --no-index ../../.zshrc /dev/null",
+    ])
+      expect(approvalVerdict(bash(command), FOLDER), command).toMatchObject({ kind: "held" });
+    for (const command of ["cat ../README.md", "cat ../../README.md", "cat src/.zshrc", "cat src/../.zshrc"])
+      expect(approvalVerdict(bash(command), FOLDER), command).toMatchObject({ kind: "allow" });
+    // With no folder to resolve against, a climb to a startup file still waits.
+    expect(approvalVerdict(bash("cat ../../.zshrc"), undefined)).toMatchObject({ kind: "held" });
+    // The folder decides where a climb lands: out of a project under /tmp it reaches no home folder, and a chat that
+    // sits in the home folder itself has the home file as its own relative name.
+    expect(approvalVerdict(bash("cat ../.zshrc"), "/tmp/work/proj")).toMatchObject({ kind: "allow" });
+    expect(approvalVerdict(bash("cat .zshrc"), "/Users/ash")).toMatchObject({ kind: "held" });
+    expect(approvalVerdict(bash("cat ./Library/Preferences/com.apple.foo.plist"), "/Users/ash")).toMatchObject({ kind: "held" });
+    expect(approvalVerdict(bash("cat .zshrc"), FOLDER)).toMatchObject({ kind: "allow" });
+  });
+
   it("reads a command as the shell reads it, so quotes can't hide a login file (WP-101 fix round 2, item A)", () => {
     // A quoted piece joins the word it touches: the raw text never holds ".netrc", the word does.
     for (const command of [
