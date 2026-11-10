@@ -17,7 +17,7 @@ import os from "node:os";
 import path from "node:path";
 import { after, afterEach, test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { compareVersions, homeFromEnv, homePaths, isIsolatedHome, main, runnerDetachOptions, runnerPlist, runnerSubmitArgs, versionProblem } from "./hub-ship.mjs";
+import { compareVersions, homeFromEnv, homePaths, isIsolatedHome, main, runLimited, runnerDetachOptions, runnerPlist, runnerSubmitArgs, versionProblem } from "./hub-ship.mjs";
 import { appCommand, isInside } from "./ship-platform.mjs";
 import { PREVIOUS_APP, backupMonoHome, clearStartCache, isRunning, renameApp, sameStart, leaveSubmittedJob, monosHome, readJson, releaseLock, restoreData, retainShips, runShip, setStartTimeLog, sha256File, stampOf, tryLock, windowsStart, writeJson } from "./hub-ship-runner.mjs";
 
@@ -60,13 +60,11 @@ function strays() {
   return [...found.values()];
 }
 
+const WINDOWS_PROCESS_TIMEOUT_MS = 15_000;
+
 function straysWindows() {
   const bin = path.join(process.env.SystemRoot || "C:\\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
-  const ps = spawnSync(
-    bin,
-    ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", "Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,CommandLine | ConvertTo-Json -Compress"],
-    { encoding: "utf8", maxBuffer: 16 * 1024 * 1024 },
-  );
+  const ps = queryWindowsProcesses((command, args, options) => spawnSync(command, args, options), bin);
   let parsed = [];
   try {
     const value = JSON.parse(ps.stdout || "[]");
@@ -88,6 +86,19 @@ function straysWindows() {
       }
   }
   return [...found.values()];
+}
+
+/** WMI has no deadline of its own. A hung query is a failure, not a wait. */
+function queryWindowsProcesses(spawnImpl, bin) {
+  const ps = spawnImpl(
+    bin,
+    ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", "Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,CommandLine | ConvertTo-Json -Compress"],
+    { encoding: "utf8", maxBuffer: 16 * 1024 * 1024, timeout: WINDOWS_PROCESS_TIMEOUT_MS },
+  );
+  if (ps.error?.code === "ETIMEDOUT") {
+    throw new Error(`listing Windows processes did not finish within ${WINDOWS_PROCESS_TIMEOUT_MS / 1000}s`);
+  }
+  return ps;
 }
 
 function alive(pid) {
@@ -390,8 +401,75 @@ function rollbackCli(w, id, args = [], env = {}) {
   );
 }
 
+const SHIP_CLI_TIMEOUT_MS = 60_000;
+
+function runBounded(command, args, { timeoutMs = SHIP_CLI_TIMEOUT_MS, label, env } = {}) {
+  const result = spawnSync(command, args, { encoding: "utf8", timeout: timeoutMs, env });
+  if (result.error?.code === "ETIMEDOUT") {
+    throw new Error(`${label} did not finish within ${Math.round(timeoutMs / 1000)}s`);
+  }
+  return result;
+}
+
+test("a command that does not answer is stopped, and a rejected one is not rewritten", () => {
+  const started = Date.now();
+  assert.throws(
+    () =>
+      runLimited(execFileSync, process.execPath, ["-e", "setTimeout(() => {}, 1e8)"], {
+        timeout: 1000,
+        label: "git status",
+      }),
+    /git status did not answer within 1s/,
+  );
+  const elapsed = Date.now() - started;
+  assert.ok(elapsed < 5_000, `took ${elapsed}ms`);
+  assert.throws(
+    () =>
+      runLimited(
+        () => {
+          const error = new Error("not a git repository");
+          error.status = 128;
+          throw error;
+        },
+        "git",
+        ["status"],
+        { timeout: 15_000, label: "git status" },
+      ),
+    (error) => error.message === "not a git repository",
+  );
+});
+
+test("a child that does not exit is stopped within the bound", () => {
+  const started = Date.now();
+  assert.throws(
+    () => runBounded(NODE, ["-e", "setTimeout(() => {}, 1e8)"], { timeoutMs: 1000, label: "hub-ship" }),
+    /hub-ship did not finish within 1s/,
+  );
+  const elapsed = Date.now() - started;
+  assert.ok(elapsed < 5_000, `took ${elapsed}ms`);
+});
+
+test("a Windows process list that does not answer fails instead of hanging", () => {
+  let seen = 0;
+  assert.throws(
+    () =>
+      queryWindowsProcesses(() => {
+        const error = new Error("timed out");
+        error.code = "ETIMEDOUT";
+        return { error, stdout: "" };
+      }, "powershell.exe"),
+    /listing Windows processes did not finish within 15s/,
+  );
+  const ps = queryWindowsProcesses((_command, _args, options) => {
+    seen = options.timeout;
+    return { stdout: "[]" };
+  }, "powershell.exe");
+  assert.equal(seen, WINDOWS_PROCESS_TIMEOUT_MS);
+  assert.equal(ps.stdout, "[]");
+});
+
 function ship(w, args = [], env = {}) {
-  const result = spawnSync(
+  const result = runBounded(
     NODE,
     [
       "--disable-warning=ExperimentalWarning",
@@ -407,7 +485,7 @@ function ship(w, args = [], env = {}) {
       "30000,6000,30000",
       ...args,
     ],
-    { env: { ...w.env, ...env }, encoding: "utf8" },
+    { env: { ...w.env, ...env }, label: "hub-ship" },
   );
   const answer = JSON.parse(result.stdout.trim().split("\n").pop());
   return { code: result.status, answer };
@@ -693,10 +771,10 @@ test("a rollback drill goes all the way to a commit, then puts the old build bac
 
 test("hub:ship -- --drill-rollback under a temporary HOME detaches and does not register a service", async () => {
   const w = world();
-  const result = spawnSync(
+  const result = runBounded(
     NODE,
     ["--disable-warning=ExperimentalWarning", path.join(SCRIPTS, "hub-ship.mjs"), "--drill-rollback", "--json", "--repo", w.repo, "--timeouts", "30000,6000,30000"],
-    { env: w.env, encoding: "utf8" },
+    { env: w.env, label: "hub-ship" },
   );
   const answer = JSON.parse(result.stdout.trim().split("\n").pop());
   assert.equal(result.status, 0, JSON.stringify(answer));
