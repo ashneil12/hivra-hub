@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { appActions } from "../../agent-app/model/agentApp";
 import type { Habit } from "../../monos/model/monoHabits";
+import { NOTHING_ON_PROGRAMME } from "../../programme/model/morningProgramme";
 import {
   MORNING_HABIT_ID,
   MORNING_HABIT_STOCK_INSTRUCTIONS,
@@ -124,11 +125,37 @@ describe("morning habit", () => {
 
   it("names only sources this app has", () => {
     const text = morningHabit(1).instructions;
-    // The first draft of this package named a programme queue that was never built, and a work log. The work log
-    // exists now (WP-157), but a habit run is refused by it (agentAppWorkLog.test.ts), so the text does not send the run there.
-    expect(text).not.toMatch(/programme queue|work.?log/i);
+    // The first draft of this package named a programme queue that was not built yet, and a work log. Both exist now
+    // (WP-159, WP-157), but a habit run is refused by both tools (programme.test.ts, agentAppWorkLog.test.ts). The
+    // app reads them for the run instead, so the text names the sections the app adds, never a tool to call.
+    expect(text).not.toMatch(/work.?log|programme queue|app programme\.|programme_/i);
     const named = [...text.matchAll(/\bapp ([a-z]+\.[a-z]+)/g)].map((match) => match[1]);
     expect(named).toEqual(["tasks.list", "docs.list", "activity.list"]);
     for (const action of named) expect(appActions()).toContain(action);
+  });
+
+  it("tells the run what the programme section is and what its two states mean", () => {
+    const text = morningHabit(1).instructions;
+    expect(text).toContain('A section headed "Programme" may follow');
+    expect(text).toContain(NOTHING_ON_PROGRAMME);
+    expect(text).toMatch(/no such section, the app could not look, so say nothing about the programme/i);
+  });
+
+  it("brings text the app wrote before up to date, and still leaves an edit alone", () => {
+    const earlier = [
+      `${MORNING_HABIT_STOCK_INSTRUCTIONS}
+Also read the programme queue and the work log summary when they are there. Prefer an outcome line from the work log over a status line.`,
+      `${MORNING_HABIT_STOCK_INSTRUCTIONS}
+If a list of notable events still waiting follows, each one is worth saying: give it a plain line of its own, with no id, that says what happened.`,
+      `${MORNING_HABIT_STOCK_INSTRUCTIONS}
+If a list of notable events still waiting follows, each one is worth saying: give it a plain line of its own, with no id, that says what happened.
+A section headed "Finished yesterday" may follow: what finished yesterday, newest first, which the app read for you. Each is worth saying: give it a plain line of its own, with no id, that says what finished. "Nothing finished yesterday." means the app looked and nothing finished. If there is no such section, the app could not look, so say nothing about yesterday.`,
+    ];
+    for (const instructions of earlier) {
+      const next = withMorningHabit([habit({ id: MORNING_HABIT_ID, instructions })], 5);
+      expect(next[0].instructions).toBe(morningHabit(1).instructions);
+      const tweaked = withMorningHabit([habit({ id: MORNING_HABIT_ID, instructions: `${instructions}!` })], 5);
+      expect(tweaked[0].instructions).toBe(`${instructions}!`);
+    }
   });
 });

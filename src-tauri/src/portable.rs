@@ -37,6 +37,9 @@ use tauri::{AppHandle, Manager, State};
 use crate::plain_file::{self, Refusal};
 use crate::session_store::{self, now_millis, SessionStore, SessionUpsert};
 
+mod folders;
+use folders::{refused_project_folder, FolderRules};
+
 pub const FORMAT: &str = "monocode-hub-export";
 /// The newest export format this build writes and reads. A newer one is refused, never half-read.
 pub const VERSION: u64 = 2;
@@ -437,6 +440,8 @@ fn plain_name(name: &str) -> bool {
     !name.is_empty()
         && name.len() <= 120
         && !name.starts_with('.')
+        // Windows reads `monos.` and `monos ` as `monos`: a name that ends so is another spelling of a folder.
+        && !name.ends_with(['.', ' '])
         && name
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | ' '))
@@ -1167,6 +1172,35 @@ fn claude_transcript(env: &Env, provider_session_id: &str) -> Option<PathBuf> {
         let candidate = dir.path().join(&name);
         candidate.is_file().then_some(candidate)
     })
+}
+
+/// The name Claude Code gives a folder's transcripts: every character that isn't a letter or digit becomes `-`.
+fn claude_project_dir_name(folder: &str) -> String {
+    folder
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect()
+}
+
+/// The transcript is in the Claude project folder of this working folder, not just somewhere on this Mac.
+fn claude_transcript_for(env: &Env, provider_session_id: &str, folder: &str) -> bool {
+    session_file_id(provider_session_id)
+        && env.claude_home.as_ref().is_some_and(|home| {
+            home.join("projects")
+                .join(claude_project_dir_name(folder))
+                .join(format!("{provider_session_id}.jsonl"))
+                .is_file()
+        })
+}
+
+/// Another chat here already resumes this provider conversation.
+fn provider_id_held(conn: &Connection, provider_session_id: &str, own_id: &str) -> bool {
+    conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sessions WHERE provider_session_id = ?1 AND id != ?2)",
+        params![provider_session_id, own_id],
+        |row| row.get(0),
+    )
+    .unwrap_or(true)
 }
 
 struct SessionRow {
@@ -2084,14 +2118,37 @@ pub struct Inspection {
 }
 
 /// Two chats are the same when their words and blocks match. File paths are left out of the comparison: an import
-/// never keeps them (`drop_imported_file_paths`), so a chat that came in from this file must still read as here.
+/// never keeps them (`drop_imported_file_paths`), and keeps a tool row's paths only inside the chat's kept folder
+/// (`FolderRules::confine_tool_paths`), so a chat that came in from this file must still read as here.
 fn blocks_digest(title: &str, blocks: &[Value]) -> String {
     let mut blocks = Value::Array(blocks.to_vec());
     drop_imported_file_paths(&mut blocks);
+    drop_tool_paths(&mut blocks);
     let mut text = String::from(title);
     text.push('\n');
     text.push_str(&serde_json::to_string(&blocks).unwrap_or_default());
     sha256_hex(text.as_bytes())
+}
+
+/// Empties the paths an import may drop from a chat's tool rows and approvals (`FolderRules::confine_tool_paths`), for
+/// the comparison only.
+fn drop_tool_paths(blocks: &mut Value) {
+    let Some(list) = blocks.as_array_mut() else {
+        return;
+    };
+    for block in list {
+        for pointer in ["/tool/paths", "/approval/call/paths"] {
+            if let Some(paths) = block.pointer_mut(pointer) {
+                *paths = json!([]);
+            }
+        }
+        if let Some(preview) = block
+            .pointer_mut("/tool/preview")
+            .and_then(Value::as_object_mut)
+        {
+            preview.remove("path");
+        }
+    }
 }
 
 fn local_session_digest(conn: &Connection, id: &str) -> rusqlite::Result<Option<String>> {
@@ -2421,6 +2478,29 @@ pub struct WorkspaceImport {
     pub reminders: bool,
     #[serde(default)]
     pub delegations: bool,
+    /// Folders the window lists as projects (the project rail's), on top of the app's own project record. A chat or
+    /// automation keeps its folder only inside one of these or a project in that record; none given means only the record.
+    #[serde(default)]
+    pub known_folders: Vec<String>,
+    /// The Monos seated here (their ids): a chat keeps a Mono's own folder only for one of these.
+    #[serde(default)]
+    pub known_monos: Vec<String>,
+    /// This Mac's folder for each project the file names, by project id: `{from: the file's folder, to: this Mac's}`.
+    /// A chat's folder from another Mac (another user name, another home) is mapped through it, then judged as usual.
+    #[serde(default)]
+    pub folder_map: Vec<FolderMapping>,
+}
+
+/// A project the file names, for mapping a chat's folder from another Mac: its id and folder in the file, and this Mac's
+/// folder for the same id (blank when the project has none here yet).
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FolderMapping {
+    #[serde(default)]
+    pub project_id: String,
+    pub from: String,
+    #[serde(default)]
+    pub to: String,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -2445,6 +2525,13 @@ pub struct ImportReport {
     pub delegations_added: usize,
     /// WP-78: activity rows added. A row already stored, or older than 90 days, is not counted.
     pub activity_added: usize,
+    /// Chats whose folder (or worktree) the file named and that isn't inside a project here: it was cleared, so the chat
+    /// asks which project to use before it runs anything.
+    pub folders_cleared: usize,
+    /// Automations that lost a folder or worktree the same way (they come back paused).
+    pub automation_folders_cleared: usize,
+    /// Paths in tool rows and approvals that lay outside the chat's kept folders, dropped.
+    pub tool_paths_dropped: usize,
     /// Pictures of imported notes that were left out: a link, a file the manifest doesn't list, one that changed
     /// after the export was checked. Each is also said in `notes`.
     pub note_assets_skipped: usize,
@@ -2483,18 +2570,267 @@ fn import_opened<G: std::ops::Deref<Target = Connection>>(
     if opened.root().is_none() {
         return Ok(report);
     }
+    // Memory first (never under the chat store's lock). What it wrote is remembered as files: a chat can't keep a folder
+    // where one that a CLI reads as instructions now sits.
+    let mut written = Vec::new();
     if let Some(memory) = &request.memory {
-        import_memory(env, opened, memory, &mut report)?;
+        import_memory(env, opened, memory, &mut report, &mut written)?;
     }
+    // The folder rules load after it: a Mono's folder is one of a Mono seated here (never whatever is on disk), so a
+    // memory folder in the file (`monos/evil`) is nobody's, and a fresh Mac's restored Monos are theirs once seated. The
+    // project record is read without holding the chat store's lock.
+    let mut rules = {
+        let none = WorkspaceImport::default();
+        let ws = request.workspace.as_ref().unwrap_or(&none);
+        let map: Vec<folders::ProjectMapping> = ws
+            .folder_map
+            .iter()
+            .map(|pair| folders::ProjectMapping {
+                id: pair.project_id.clone(),
+                from: pair.from.clone(),
+                to: pair.to.clone(),
+            })
+            .collect();
+        FolderRules::load(
+            env,
+            &project_record_folders(env),
+            &ws.known_folders,
+            &ws.known_monos,
+            &map,
+        )
+    };
+    rules.note_written(&written);
     if let Some(workspace) = &request.workspace {
         let conn = lock()?;
-        import_workspace(env, &conn, opened, workspace, &mut report).map_err(|e| e.to_string())?;
+        import_workspace(env, &conn, opened, workspace, &mut report, &rules)
+            .map_err(|e| e.to_string())?;
+        // Said in the report, so nobody finds out by surprise.
+        if report.sessions_added + report.sessions_copied + report.automations_added > 0 {
+            report.notes.push(
+                "Every restored chat and automation comes back supervised, whatever its file said; raise it for the ones you want freer."
+                    .to_string(),
+            );
+        }
+        if report.folders_cleared + report.automation_folders_cleared > 0 {
+            report.notes.push(
+                "A chat or automation whose folder is in ~/agent-memory, in a hidden folder or outside your home folder can't be relinked; choose a folder for it."
+                    .to_string(),
+            );
+        }
     }
     // Files left out for their size, and a listed file that was fine when the export was checked and wasn't when it
     // was read: not used, and said.
     report.notes.extend(opened.left_out_notes().iter().cloned());
     report.notes.extend(opened.take_problems());
     Ok(report)
+}
+
+/// One chat that came in with no folder and can have one back now.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Relink {
+    pub session_id: String,
+    /// The folder as this Mac resolves it.
+    pub folder: String,
+    /// The project (or Mono) folder it sits in: what "Relink all" groups by.
+    pub group: String,
+}
+
+/// The chats that came in with no folder and can have the folder their file named back: it exists here, passes the
+/// same allow-list, sits inside a project this copy has or in the folder of a Mono seated here, and is not one the
+/// import itself wrote instructions into. A chat that has a folder, one with no note, and one whose folder still
+/// doesn't qualify are left out. Nothing runs from the note itself.
+pub(crate) fn relink_candidates(
+    env: &Env,
+    only: Option<&str>,
+    known: &[String],
+    known_monos: &[String],
+) -> Vec<Relink> {
+    let Ok(Some(conn)) = env.read_db() else {
+        return Vec::new();
+    };
+    let Ok(mut statement) = conn.prepare(
+        "SELECT n.session_id, n.cwd, n.project_id, n.rest FROM imported_chat_folders n
+         JOIN sessions s ON s.id = n.session_id
+         WHERE s.cwd = '' AND n.blocked = 0 AND (?1 IS NULL OR n.session_id = ?1)
+         ORDER BY n.session_id",
+    ) else {
+        return Vec::new();
+    };
+    let rows: Vec<(String, String, Option<String>, Option<String>)> = statement
+        .query_map([only], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+        })
+        .map(|rows| rows.flatten().collect())
+        .unwrap_or_default();
+    drop(statement);
+    drop(conn);
+    if rows.is_empty() {
+        return Vec::new();
+    }
+    let record = project_record(env);
+    let record_folders: Vec<String> = record.iter().map(|(_, folder)| folder.clone()).collect();
+    let rules = FolderRules::load(env, &record_folders, known, known_monos, &[]);
+    rows.into_iter()
+        .filter_map(|(session_id, named, project_id, rest)| {
+            // A chat whose file named a project is mapped through the project record as it is now, by id, the way a
+            // Mono's folder is: the project may only have got its folder here since the import.
+            let current = project_id.as_deref().and_then(|id| {
+                record
+                    .iter()
+                    .find(|(known, _)| known == id)
+                    .map(|(_, folder)| {
+                        Path::new(folder)
+                            .join(rest.as_deref().unwrap_or_default())
+                            .to_string_lossy()
+                            .into_owned()
+                    })
+            });
+            let kept = rules.vet(Some(current.as_deref().unwrap_or(&named)), None);
+            if kept.cwd.is_empty() {
+                return None;
+            }
+            // A Mono's folder is checked on disk again: instruction files there now (the import's snapshot may be old)
+            // keep it from being offered.
+            let group = kept.group.clone().unwrap_or_else(|| kept.cwd.clone());
+            if rules.is_mono_folder(Path::new(&group))
+                && rules.instructions_on_disk(Path::new(&kept.cwd), Path::new(&group))
+            {
+                return None;
+            }
+            Some(Relink {
+                group,
+                folder: kept.cwd,
+                session_id,
+            })
+        })
+        .collect()
+}
+
+pub(crate) fn relink_candidate(
+    env: &Env,
+    session_id: &str,
+    known: &[String],
+    known_monos: &[String],
+) -> Option<String> {
+    relink_candidates(env, Some(session_id), known, known_monos)
+        .into_iter()
+        .next()
+        .map(|relink| relink.folder)
+}
+
+/// Gives these chats their folders back and forgets their notes. Only a chat that still has none is touched.
+pub(crate) fn apply_relinks(
+    conn: &Connection,
+    relinks: &[Relink],
+) -> rusqlite::Result<Vec<Relink>> {
+    let mut applied = Vec::new();
+    for relink in relinks {
+        let changed = conn.execute(
+            "UPDATE sessions SET cwd = ?1, worktree_cwd = NULL WHERE id = ?2 AND cwd = ''",
+            params![relink.folder, relink.session_id],
+        )?;
+        conn.execute(
+            "DELETE FROM imported_chat_folders WHERE session_id = ?1",
+            [&relink.session_id],
+        )?;
+        if changed > 0 {
+            applied.push(relink.clone());
+        }
+    }
+    Ok(applied)
+}
+
+#[tauri::command]
+pub async fn portable_relink_candidate(
+    app: AppHandle,
+    session_id: String,
+    known_folders: Vec<String>,
+    known_monos: Vec<String>,
+) -> Result<Option<String>, String> {
+    let env = Env::for_app(&app)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        relink_candidate(&env, &session_id, &known_folders, &known_monos)
+    })
+    .await
+    .map_err(|e| e.to_string())
+}
+
+/// Every chat with no folder that can have one back, for the sidebar's "Relink all" (one button per project or Mono).
+#[tauri::command]
+pub async fn portable_relink_candidates(
+    app: AppHandle,
+    known_folders: Vec<String>,
+    known_monos: Vec<String>,
+) -> Result<Vec<Relink>, String> {
+    let env = Env::for_app(&app)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        relink_candidates(&env, None, &known_folders, &known_monos)
+    })
+    .await
+    .map_err(|e| e.to_string())
+}
+
+/// Relinks these chats: each is checked again now, then given its folder in the store. The window updates the ones it
+/// has open to the same folder.
+#[tauri::command]
+pub async fn portable_relink_apply(
+    app: AppHandle,
+    store: State<'_, SessionStore>,
+    session_ids: Vec<String>,
+    known_folders: Vec<String>,
+    known_monos: Vec<String>,
+) -> Result<Vec<Relink>, String> {
+    let env = Env::for_app(&app)?;
+    let wanted: BTreeSet<String> = session_ids.into_iter().collect();
+    let candidates = tauri::async_runtime::spawn_blocking(move || {
+        relink_candidates(&env, None, &known_folders, &known_monos)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .into_iter()
+    .filter(|relink| wanted.contains(&relink.session_id))
+    .collect::<Vec<_>>();
+    let conn = store.lock_conn()?;
+    apply_relinks(&conn, &candidates).map_err(|e| e.to_string())
+}
+
+/// The folders of the projects in the app's own record (`hub_local_docs`, key `projects`), read through a read-only
+/// connection so the chat store's lock isn't taken before the chats go in. Nothing found reads as no projects.
+fn project_record_folders(env: &Env) -> Vec<String> {
+    project_record(env)
+        .into_iter()
+        .map(|(_, folder)| folder)
+        .collect()
+}
+
+/// The app's own project record as `(id, folder)`, for the projects that have a folder.
+fn project_record(env: &Env) -> Vec<(String, String)> {
+    let Ok(Some(conn)) = env.read_db() else {
+        return Vec::new();
+    };
+    let raw: Option<String> = conn
+        .query_row(
+            "SELECT json FROM hub_local_docs WHERE key = 'projects'",
+            [],
+            |row| row.get(0),
+        )
+        .ok();
+    let Some(doc) = raw.and_then(|raw| serde_json::from_str::<Value>(&raw).ok()) else {
+        return Vec::new();
+    };
+    doc.get("projects")
+        .and_then(Value::as_array)
+        .map(|list| {
+            list.iter()
+                .filter_map(|project| {
+                    let id = project.get("id").and_then(Value::as_str)?;
+                    let folder = project.get("folder").and_then(Value::as_str)?;
+                    (!folder.trim().is_empty()).then(|| (id.to_string(), folder.to_string()))
+                })
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 fn new_id() -> String {
@@ -2516,10 +2852,11 @@ fn import_workspace(
     opened: &Opened,
     wanted: &WorkspaceImport,
     report: &mut ImportReport,
+    rules: &FolderRules,
 ) -> rusqlite::Result<()> {
     let tx = conn.unchecked_transaction()?;
     let mut after = AfterRows::default();
-    workspace_rows(env, &tx, opened, wanted, report, &mut after)?;
+    workspace_rows(env, &tx, opened, wanted, report, &mut after, rules)?;
     tx.commit()?;
     for (from, to) in &after.note_assets {
         let left_out = copy_note_assets(env, opened, from, to);
@@ -2631,6 +2968,7 @@ fn workspace_rows(
     wanted: &WorkspaceImport,
     report: &mut ImportReport,
     after: &mut AfterRows,
+    rules: &FolderRules,
 ) -> rusqlite::Result<()> {
     // Notes first: chats' artifact cards point at them.
     let note_ids: BTreeSet<&String> = wanted.notes.iter().collect();
@@ -2724,6 +3062,8 @@ fn workspace_rows(
     let mut paths_left_out = 0;
     let session_ids: BTreeSet<&String> = wanted.sessions.iter().collect();
     let session_copies: BTreeSet<&String> = wanted.session_copies.iter().collect();
+    // Chats that came in with this import under their own id: the only ones a delegation row may name.
+    let mut came_in: BTreeSet<String> = BTreeSet::new();
     for id in session_ids {
         if !session_file_id(id) {
             continue;
@@ -2753,7 +3093,10 @@ fn workspace_rows(
                 file["title"].as_str().unwrap_or("Chat").to_string(),
             )
         };
-        paths_left_out += insert_session(env, conn, &target, &title, &file)?;
+        let kept = insert_session(env, conn, &target, &title, &file, rules)?;
+        report.folders_cleared += usize::from(kept.cleared);
+        report.tool_paths_dropped += kept.paths_dropped;
+        paths_left_out += kept.files_left_out;
         if file["monoTranscript"].as_bool() == Some(true) {
             after.transcripts.push(target.clone());
         }
@@ -2761,6 +3104,7 @@ fn workspace_rows(
             report.sessions_copied += 1;
         } else {
             report.sessions_added += 1;
+            came_in.insert(id.clone());
         }
     }
 
@@ -2783,8 +3127,12 @@ fn workspace_rows(
             if !wanted_ids.contains(&id) || !session_file_id(&id) {
                 continue;
             }
-            // Comes back paused: nothing starts running on this Mac until Ash turns it on.
+            // Comes back paused: nothing starts running on this Mac until Ash turns it on. A folder that isn't a
+            // project here is cleared, so turning it on asks for one.
             automation["enabled"] = json!(false);
+            // A file doesn't choose how freely it runs: supervised, as imported chats are.
+            automation["runtimeMode"] = json!(IMPORTED_RUNTIME_MODE);
+            let cleared = rules.vet_automation(&mut automation);
             let next = automation["nextRunAt"].as_i64().unwrap_or(0);
             let updated = automation["updatedAt"].as_i64().unwrap_or_else(now_millis);
             let changed = conn.execute(
@@ -2793,6 +3141,7 @@ fn workspace_rows(
             )?;
             if changed > 0 {
                 report.automations_added += 1;
+                report.automation_folders_cleared += usize::from(cleared);
             } else {
                 report.kept += 1;
             }
@@ -2838,10 +3187,25 @@ fn workspace_rows(
             let Some(mut row) = delegation.as_object().cloned() else {
                 continue;
             };
-            // History only: nothing here runs it, reports it or copies it to Ash OS again.
-            let open = matches!(
+            // Only a row whose chats both came in with this import: one naming a chat that was here already would
+            // attach history (and a report to deliver) to something the file doesn't own.
+            let both_came_in = ["owner_session", "child_session"].iter().all(|key| {
+                row.get(*key)
+                    .and_then(Value::as_str)
+                    .is_some_and(|id| came_in.contains(id))
+            });
+            if !both_came_in {
+                continue;
+            }
+            // History only: nothing here runs it, reports it or copies it to Ash OS again. Any state that isn't a
+            // finished one settles as cancelled.
+            let open = !matches!(
                 row.get("state").and_then(Value::as_str),
-                Some(crate::delegations::RUNNING | crate::delegations::QUESTION)
+                Some(
+                    crate::delegations::COMPLETED
+                        | crate::delegations::FAILED
+                        | crate::delegations::CANCELLED
+                )
             );
             if open {
                 row.insert("state".into(), json!(crate::delegations::CANCELLED));
@@ -3077,6 +3441,20 @@ fn left_out_note(from: &str, reasons: &[&str]) -> String {
     format!("{count} of {note} {verb} not copied ({}).", why.join("; "))
 }
 
+/// How an imported chat or automation runs: a file never chooses it. `full-access` maps to a provider's bypass-permissions
+/// mode, so every mode a file names comes in as supervised, and the person raises it for that chat.
+const IMPORTED_RUNTIME_MODE: &str = "supervised";
+
+/// What an imported chat lost on the way in.
+struct Kept {
+    /// Its file named a folder that isn't inside a project here.
+    cleared: bool,
+    /// Paths in its tool rows that lay outside its folders.
+    paths_dropped: usize,
+    /// Generated-image and attachment paths left out of its blocks (`drop_imported_file_paths`).
+    files_left_out: usize,
+}
+
 /// Paths in an import come from the Mac that made the export, or from a file written by hand: never from this Mac.
 /// A chat that kept them would read whatever they name the first time it shows the picture, copies the message or
 /// sends it again. So the path of every generated image and of every attachment in the chat's blocks, side threads
@@ -3112,32 +3490,48 @@ fn drop_imported_file_paths(value: &mut Value) -> usize {
     }
 }
 
-/// Adds the chat to the store. Returns how many file paths in its blocks were left out (`drop_imported_file_paths`).
+/// Adds the chat to the store. Returns what it lost on the way in (`Kept`).
 fn insert_session(
     env: &Env,
     conn: &Connection,
     id: &str,
     title: &str,
     file: &Value,
-) -> rusqlite::Result<usize> {
+    rules: &FolderRules,
+) -> rusqlite::Result<Kept> {
     let engine = &file["engine"];
     let harness = engine["harness"].as_str().unwrap_or("claude").to_string();
-    // A provider session id is kept only where it can resume: the daily app, a Claude chat, its transcript here.
+    let text = |key: &str| file[key].as_str().map(str::to_string);
+    // The file's folder is nobody's choice here: kept only inside a project this copy has (folders.rs). A chat with
+    // none asks for one before it runs; it is never given the home folder.
+    let folders = rules.vet(file["cwd"].as_str(), file["worktreeCwd"].as_str());
+    // A provider session id is kept only where it can resume and is this chat's own: the daily app, a Claude chat that
+    // isn't private, no other chat here holds it, and its transcript lives in the project folder of the chat's vetted
+    // folder (a chat with none keeps none).
+    let private = file["private"].as_bool().unwrap_or(false);
+    let work_folder = folders.worktree.as_deref().unwrap_or(&folders.cwd);
     let provider = file["providerTranscript"]["providerSessionId"]
         .as_str()
-        .filter(|psid| !env.dev && harness == "claude" && claude_transcript(env, psid).is_some())
+        .filter(|psid| {
+            !env.dev
+                && harness == "claude"
+                && !private
+                && !work_folder.is_empty()
+                && claude_transcript_for(env, psid, work_folder)
+                && !provider_id_held(conn, psid, id)
+        })
         .map(str::to_string);
-    let text = |key: &str| file[key].as_str().map(str::to_string);
     let mut blocks = file.get("blocks").cloned().unwrap_or(json!([]));
-    let paths_left_out = drop_imported_file_paths(&mut blocks);
+    let files_left_out = drop_imported_file_paths(&mut blocks);
+    let paths_dropped = rules.confine_tool_paths(&mut blocks, &folders.roots);
     let session = SessionUpsert {
         sidebar_hidden: file["sidebarHidden"].as_bool().unwrap_or(false),
         id: id.to_string(),
-        cwd: text("cwd").unwrap_or_else(|| "~".into()),
+        cwd: folders.cwd.clone(),
         harness,
         model: engine["model"].as_str().unwrap_or("").to_string(),
         model_settings: engine.get("modelSettings").cloned().unwrap_or(json!({})),
-        runtime_mode: engine["runtimeMode"].as_str().unwrap_or("auto").to_string(),
+        runtime_mode: IMPORTED_RUNTIME_MODE.to_string(),
         title: title.to_string(),
         provider_session_id: provider,
         provider_account_id: None,
@@ -3147,7 +3541,7 @@ fn insert_session(
         context_used: file["contextUsed"].as_i64(),
         context_window: file["contextWindow"].as_i64(),
         branch: text("branch"),
-        worktree_cwd: text("worktreeCwd"),
+        worktree_cwd: folders.worktree.clone(),
         worktree_removed: file["worktreeRemoved"].as_bool().unwrap_or(false),
         linked_work_item: file.get("linkedWorkItem").filter(|v| !v.is_null()).cloned(),
         automation_id: text("automationId"),
@@ -3162,6 +3556,7 @@ fn insert_session(
         },
     };
     session_store::upsert_session(conn, &session)?;
+    note_named_folder(conn, id, &folders)?;
     // Keep the chat's own dates, place and flags rather than "made just now".
     conn.execute(
         "UPDATE sessions SET created_at = ?2, updated_at = ?3, archived = ?4, pinned = ?5, branch = ?6 WHERE id = ?1",
@@ -3174,7 +3569,43 @@ fn insert_session(
             text("branch"),
         ],
     )?;
-    Ok(paths_left_out)
+    Ok(Kept {
+        cleared: folders.cleared,
+        paths_dropped,
+        files_left_out,
+    })
+}
+
+/// What the file named for a chat whose folder was cleared, kept as an inert note nothing runs from: the window offers
+/// it back (`portable_relink_candidate`) once it exists here and passes the same checks. A chat that kept its folder
+/// has no note.
+fn note_named_folder(
+    conn: &Connection,
+    id: &str,
+    folders: &folders::Folders,
+) -> rusqlite::Result<()> {
+    match (&folders.named_cwd, folders.cwd.is_empty()) {
+        (Some(named), true) => {
+            conn.execute(
+                "INSERT OR REPLACE INTO imported_chat_folders (session_id, cwd, worktree_cwd, blocked, project_id, rest) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![
+                    id,
+                    named,
+                    folders.named_worktree,
+                    i64::from(folders.named_blocked),
+                    folders.named_project.as_ref().map(|(id, _)| id),
+                    folders.named_project.as_ref().map(|(_, rest)| rest),
+                ],
+            )?;
+        }
+        _ => {
+            conn.execute(
+                "DELETE FROM imported_chat_folders WHERE session_id = ?1",
+                [id],
+            )?;
+        }
+    }
+    Ok(())
 }
 
 fn import_memory(
@@ -3182,6 +3613,7 @@ fn import_memory(
     opened: &Opened,
     wanted: &MemoryImport,
     report: &mut ImportReport,
+    written: &mut Vec<PathBuf>,
 ) -> Result<(), String> {
     let Some(root) = opened.root() else {
         return Ok(());
@@ -3195,6 +3627,12 @@ fn import_memory(
     env.check_writable(&env.memory_root)?;
     for name in wanted_names {
         let target = env.memory_root.join(name);
+        // The Monos home takes only what mono.rs names, and only under its own name: another spelling or a link that
+        // reaches it (a case alias on a case-insensitive disk, `monos.` on Windows) would carry files past that.
+        if let Some(why) = aliases_monos_home(env, name, &target) {
+            report.notes.push(format!("{name} wasn't restored: {why}."));
+            continue;
+        }
         env.check_writable(&target)?;
         let bundle = root.join("memory").join(format!("{name}.git.bundle"));
         let history = opened.listed_file(&format!("memory/{name}.git.bundle"));
@@ -3212,6 +3650,10 @@ fn import_memory(
                             dropped.join(", ")
                         ));
                     }
+                    // Whatever a history's newest tree holds that a CLI would read (instruction and settings files,
+                    // anything hidden) is removed again, in every folder it restores.
+                    prune_unsafe(&target);
+                    written.extend(files_under(&target));
                 }
                 Err(why) => {
                     let _ = fs::remove_dir_all(&target);
@@ -3247,6 +3689,23 @@ fn import_memory(
                 ));
                 continue;
             }
+            // A memory import writes notes: `.md` files, never one a CLI reads as instructions, rules or settings
+            // (CLAUDE.md, AGENTS.md, AGENTS.override.md, opencode.json ...), nothing in a hidden folder.
+            if !folders::memory_note_file(&safe) {
+                report.notes.push(format!(
+                    "{path} wasn't written: a memory import only writes notes (.md files), never instructions, rules or settings."
+                ));
+                continue;
+            }
+            // And inside the Monos home (however it is spelled or linked to) only the names a Mono's folder uses.
+            if let Some(relative) = inside_monos_home(env, &dest) {
+                if !folders::mono_folder_file(&relative) {
+                    report.notes.push(format!(
+                        "{path} wasn't written: a Mono's folder only takes SOUL.md, MEMORY.md, soul-template.md and its memory and skills notes."
+                    ));
+                    continue;
+                }
+            }
             // Memory is text: a file that isn't UTF-8 is skipped, never written as nothing over what is here.
             let text = match opened.read_text(path) {
                 Ok(text) => text,
@@ -3269,11 +3728,13 @@ fn import_memory(
                 Ok(local) if local == text => fresh,
                 Ok(_) if fresh => {
                     write_within(&inside, &dest, &text)?;
+                    written.push(dest.clone());
                     true
                 }
                 Ok(_) => {
                     if wanted.keep_both {
                         write_within(&inside, &beside_name(&dest), &text)?;
+                        written.push(beside_name(&dest));
                         report.memory_files_beside += 1;
                     } else {
                         report.kept += 1;
@@ -3282,6 +3743,7 @@ fn import_memory(
                 }
                 Err(_) => {
                     write_within(&inside, &dest, &text)?;
+                    written.push(dest.clone());
                     report.memory_files_added += 1;
                     true
                 }
@@ -3296,6 +3758,148 @@ fn import_memory(
         }
     }
     Ok(())
+}
+
+/// Every file under a folder (the repository's own `.git` left out): what a restored history put there.
+fn files_under(dir: &Path) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(next) = stack.pop() {
+        let Ok(entries) = fs::read_dir(&next) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if entry.file_name() == ".git" {
+                continue;
+            }
+            match entry.file_type() {
+                Ok(kind) if kind.is_dir() => stack.push(path),
+                Ok(kind) if kind.is_file() => out.push(path),
+                _ => {}
+            }
+        }
+    }
+    out
+}
+
+/// A restored history's newest tree can hold files a CLI reads as instructions or settings and anything hidden: they are
+/// removed again, and the removal is amended into the restored tip so the folder isn't left with a dirty tree.
+fn prune_unsafe(root: &Path) {
+    let mut removed = false;
+    for file in files_under(root) {
+        let Ok(relative) = file.strip_prefix(root) else {
+            continue;
+        };
+        let hidden = relative.components().any(|part| {
+            matches!(part, Component::Normal(name) if name.to_string_lossy().starts_with('.'))
+        });
+        let instruction = file
+            .file_name()
+            .is_some_and(|name| folders::instruction_file(&name.to_string_lossy()));
+        if (hidden || instruction) && fs::remove_file(&file).is_ok() {
+            removed = true;
+        }
+    }
+    if removed && root.join(".git").exists() {
+        let git = |args: &[&str]| {
+            let mut command = Command::new("git");
+            crate::hide_window_console(&mut command);
+            command
+                .arg("-C")
+                .arg(root)
+                .args([
+                    "-c",
+                    "user.name=MonoCode",
+                    "-c",
+                    "user.email=import@monocode.invalid",
+                    "-c",
+                    "commit.gpgsign=false",
+                    "-c",
+                    "core.hooksPath=/dev/null",
+                ])
+                .args(args)
+                .output()
+        };
+        // Amended into the restored tip (the history keeps its length), so the folder is clean, not dirty.
+        let _ = git(&["add", "-A"]);
+        let _ = git(&["commit", "-q", "--amend", "--no-edit", "--allow-empty"]);
+    }
+}
+
+/// How a path component is compared when two spellings may be one folder: case-folded (a case-insensitive disk), with
+/// trailing dots and spaces dropped (Windows reads `monos.` and `monos ` as `monos`).
+fn fold_part(part: &std::ffi::OsStr) -> String {
+    part.to_string_lossy()
+        .trim_end_matches(['.', ' '])
+        .to_lowercase()
+}
+
+fn folded(path: &Path) -> Vec<String> {
+    path.components()
+        .filter_map(|part| match part {
+            Component::Normal(name) => Some(fold_part(name)),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Two paths are one place: the same device and inode where the disk says so, else the same resolved path read with
+/// case folded.
+fn same_place(a: &Path, b: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if let (Ok(x), Ok(y)) = (fs::metadata(a), fs::metadata(b)) {
+            return x.dev() == y.dev() && x.ino() == y.ino();
+        }
+    }
+    folded(&resolved(a)) == folded(&resolved(b))
+}
+
+/// The path inside the Monos home that `dest` is, however it is spelled or linked: the resolved paths, the same read
+/// with case folded and trailing dots and spaces dropped, and any folder above `dest` that is the Monos home by identity.
+fn inside_monos_home(env: &Env, dest: &Path) -> Option<PathBuf> {
+    let home = resolved(&env.monos_root);
+    let target = resolved(dest);
+    if let Ok(relative) = target.strip_prefix(&home) {
+        return Some(relative.to_path_buf());
+    }
+    let (home_parts, target_parts) = (folded(&home), folded(&target));
+    if target_parts.starts_with(&home_parts) {
+        let skip = home_parts.len();
+        let below: PathBuf = target
+            .components()
+            .filter(|part| matches!(part, Component::Normal(_)))
+            .skip(skip)
+            .map(|part| part.as_os_str().to_os_string())
+            .collect();
+        return Some(below);
+    }
+    let mut above = Some(target.as_path());
+    while let Some(folder) = above {
+        if folder.exists() && same_place(folder, &env.monos_root) {
+            return Some(target.strip_prefix(folder).ok()?.to_path_buf());
+        }
+        above = folder.parent();
+    }
+    None
+}
+
+/// Why a memory folder named `name` can't be restored because it reaches the Monos home under another name: it spells
+/// the Monos home's name another way (case, trailing dot or space), or it leads there (a link, a case alias).
+fn aliases_monos_home(env: &Env, name: &str, target: &Path) -> Option<&'static str> {
+    let home_name = env.monos_root.file_name()?;
+    if home_name.to_string_lossy() == name {
+        return None;
+    }
+    if fold_part(std::ffi::OsStr::new(name)) == fold_part(home_name) {
+        return Some("it is the Monos home under another spelling");
+    }
+    if target.exists() && same_place(target, &env.monos_root) {
+        return Some("it leads to the Monos home under another name");
+    }
+    None
 }
 
 #[derive(Debug)]
@@ -3734,6 +4338,25 @@ pub async fn portable_session_engines(
     tauri::async_runtime::spawn_blocking(move || session_engines(&env, &ids))
         .await
         .map_err(|e| e.to_string())?
+}
+
+/// The project folders an export names that can never be adopted (the folder isn't on this Mac, or it is the home
+/// folder, a folder that holds it, `/`, `/Volumes` or the app's data folder), each with why. A folder that can be
+/// adopted is left out. The import asks again as it registers, so ticking a folder never overrides this.
+#[tauri::command]
+pub async fn portable_project_folder_checks(
+    app: AppHandle,
+    paths: Vec<String>,
+) -> Result<BTreeMap<String, String>, String> {
+    let env = Env::for_app(&app)?;
+    Ok(project_folder_checks(&env, &paths))
+}
+
+fn project_folder_checks(env: &Env, paths: &[String]) -> BTreeMap<String, String> {
+    paths
+        .iter()
+        .filter_map(|path| refused_project_folder(env, path).map(|why| (path.clone(), why)))
+        .collect()
 }
 
 #[tauri::command]

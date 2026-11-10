@@ -61,6 +61,7 @@ function type(el: HTMLInputElement, value: string) {
 beforeEach(async () => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   localStorage.clear();
+  sessionStorage.clear();
   resetNameMoveForTest();
   t = await localTestHub();
   store = new HubStore({ transport: t.transport, ...FAST });
@@ -137,6 +138,24 @@ describe("New project", () => {
     expect(templateOf("moonrise-farm").id).toBe("product-saas");
     expect(projectDraft()).toBeNull();
     expect(JSON.parse(localStorage.getItem("monocode:hub-nav")!)).toEqual({ project: "moonrise-farm", item: "coding-team" });
+  });
+
+  it("WP-137: made while this window shows only one group, the project joins that group and shows on the strip", async () => {
+    localStorage.setItem("monocode.projectGroups", JSON.stringify([{ id: "g1", name: "Side", collapsed: false }]));
+    localStorage.setItem("monocode.projectGroupAssignments", JSON.stringify({ "hub-project:nibbii": "g1" }));
+    sessionStorage.setItem("hivra.stripGroupFilter", "g1");
+    answered("Moonrise Farm");
+    act(() => root.render(createElement("div", null, strip(), createElement(NewProjectView))));
+    await until(() => q("[data-hub-new-project-preview]"), "preview card");
+    expect(stripLabels()).toEqual(["Home", "Autopilot", "Side", "Nibbii", "Draft"]);
+    await act(async () => q("[data-hub-create-project]")!.click());
+    await until(() => stripLabels().includes("Moonrise"), "on the strip");
+    expect(stripLabels()).toEqual(["Home", "Autopilot", "Side", "Nibbii", "Moonrise"]);
+    expect(sessionStorage.getItem("hivra.stripGroupFilter")).toBe("g1");
+    expect(JSON.parse(localStorage.getItem("monocode.projectGroupAssignments")!)).toEqual({
+      "hub-project:nibbii": "g1",
+      "hub-project:moonrise-farm": "g1",
+    });
   });
 
   it("'No code' makes a project without a folder; a clashing name is refused in place and nothing changes", async () => {

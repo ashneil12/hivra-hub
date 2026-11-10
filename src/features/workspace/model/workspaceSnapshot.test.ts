@@ -35,6 +35,21 @@ function chat(id: string, cwd: string): Session {
   return session;
 }
 
+describe("a chat with no folder in a saved workspace", () => {
+  it("comes back with none, not the home folder", () => {
+    const session = chat("imported", "");
+    const tab = newTab(session.id);
+    const snapshot = collectWorkspaceSnapshot([tab], [session], tab.id, "~", new Map());
+    expect(snapshot.sessions[0].cwd).toBe("");
+    const restored = hydrateWorkspaceSnapshot(parseWorkspaceSnapshot(snapshot)!, new Map());
+    expect(restored?.sessions[0].cwd).toBe("");
+    // A snapshot that never wrote the key is the home folder, as before.
+    const old = JSON.parse(JSON.stringify(snapshot));
+    delete old.sessions[0].cwd;
+    expect(parseWorkspaceSnapshot(old)?.sessions[0].cwd).toBe("~");
+  });
+});
+
 describe("project return snapshots", () => {
   it("migrates saved host file tabs to shared remote paths", () => {
     const project = "remote://env/repo";

@@ -547,6 +547,8 @@ fn tools() -> Value {
         list.extend(creator_tools());
         // WP-157: the work log, add or read.
         list.extend(crate::work_log::mcp::tools());
+        // WP-159: the programme board. Not the per-job worker queue.
+        list.extend(crate::programme::mcp::tools());
     }
     tools
 }
@@ -828,11 +830,16 @@ pub(crate) fn call_tool(call: &mut Call, name: &str, args: &Value) -> Result<Val
         name if crate::tasks::mcp::NAMES.contains(&name) => crate::tasks::mcp::call(call.app, name, args),
         // WP-157: one work log line, or a day or a range.
         "work_log" => crate::work_log::mcp::call(call.app, args),
+        // WP-159: programme_list, programme_enqueue, programme_set_status, programme_park.
+        name if crate::programme::mcp::NAMES.contains(&name) => {
+            crate::programme::mcp::call(call.app, name, args)
+        }
         _ => Err(format!(
             "Unknown tool: {name}. Use delegate_task, task_status, task_wait, task_cancel, task_cannot, task_answer, task_accept, task_message, \
              ask_person, room_post, \
              room_read, mono_message, room_create, mono_create, mono_retire, team_create, page_build, hub_change, today_change, \
-             skills_learn, work_log, pr_watch, pr_unwatch, pr_watches, task_list, task_get, task_create or task_update."
+             skills_learn, work_log, pr_watch, pr_unwatch, pr_watches, task_list, task_get, task_create, task_update, \
+             programme_list, programme_enqueue, programme_set_status or programme_park."
         )),
     }
 }
@@ -1416,7 +1423,12 @@ mod tests {
                 "creator_draft",
                 "creator_state",
                 // WP-157
-                "work_log"
+                "work_log",
+                // WP-159
+                "programme_list",
+                "programme_enqueue",
+                "programme_set_status",
+                "programme_park"
             ]
         );
         for tool in lines[1]["result"]["tools"].as_array().unwrap() {

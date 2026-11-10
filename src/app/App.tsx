@@ -627,6 +627,7 @@ import {
 } from "../features/sessions/model/btw";
 
 import { isEditTool } from "../integrations/harness/core/preview";
+import { CHAT_NEEDS_FOLDER, hasChatFolder, withRelinkedFolder } from "../integrations/harness/core/chatFolder";
 import { sessionEditPaths } from "../features/sessions/model/checkpointEdits";
 import { useSessionChangeTotals } from "../features/sessions/ui/SessionReview";
 import {
@@ -6929,6 +6930,14 @@ function Workspace({
     [],
   );
 
+  // Relink all gave chats their folders in the store: the open copies take the folder and nothing else (no move to
+  // another project, nothing added to the recents, no change of the chat's own work).
+  const onSessionFolderRelinked = useCallback(
+    (sessionId: string, cwd: string) =>
+      setSessions((prev) => withRelinkedFolder(prev, sessionId, cwd)),
+    [setSessions],
+  );
+
   const onCwdChange = useCallback(
     (sessionId: string, cwd: string) => {
       const normalized = normalizeProjectPath(cwd);
@@ -8365,6 +8374,16 @@ function Workspace({
       if (isPreparingHandoff(current)) return false;
       saveRecentModelChoice(current.harness, current.model);
       const initialWorkCwd = sessionWorkCwd(current);
+      // A chat that came in from an export with no folder here asks for one before anything runs (the harness seam
+      // refuses it too, so nothing starts however the turn was reached).
+      if (!hasChatFolder(initialWorkCwd)) {
+        enqueueHarnessEvent(sessionId, {
+          type: "session.error",
+          message: CHAT_NEEDS_FOLDER,
+        });
+        flushHarnessEvents();
+        return false;
+      }
       const createDraftWorktree =
         !current.worktreeCwd && current.workspaceMode === "worktree";
       const accountProvider = supportsProviderAccounts(current.harness)
@@ -14679,6 +14698,8 @@ function Workspace({
             },
             // WP-70: the shared task list. The handler sets who is asking.
             taskStore: (command, args) => invoke(command, args),
+            // WP-159: the programme board. The handler sets who is asking.
+            programmeStore: (command, args) => invoke(command, args),
             // WP-88: projects on this copy, the activity log, and reviewed memory.
             knownProjects: () => hubData().listProjects().map((project) => ({
               id: project.id,
@@ -17736,6 +17757,7 @@ function Workspace({
       status={historyFailed ? "error" : "idle"}
       pending={historyPending}
       onSelectSession={onSelectSessionFromList}
+      onSetSessionFolder={onSessionFolderRelinked}
       onSelectRemoteSession={onSelectRemoteSession}
       onRemoteSessionDeleted={onRemoteSessionDeleted}
       onPrefetchSession={onPrefetchHistorySession}

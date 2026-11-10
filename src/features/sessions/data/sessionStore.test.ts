@@ -20,6 +20,16 @@ import {
 } from "./sessionStore";
 import { isPersistableId } from "../model/persistableId";
 
+// A chat that came in from an export with no folder (docs/PORTABLE.md) is saved with none. Tidying the path used to turn
+// it into `/`, which a launcher would then have started in.
+it("saves a chat with no folder as it is, never as the filesystem root", () => {
+  const session = newSession("claude", "");
+  session.blocks = [{ id: "u", role: "user", text: "Review" }];
+  expect(shouldPersistSession(session)).toBe(true);
+  expect(sanitizeSessionForPersist(session).cwd).toBe("");
+  expect(sanitizeSessionForPersist({ ...session, cwd: "  " }).cwd).toBe("");
+});
+
 it("persists sidebar visibility without making the session ephemeral", () => {
   const session = newSession("codex", "/tmp");
   session.blocks = [{ id: "u", role: "user", text: "Review" }];

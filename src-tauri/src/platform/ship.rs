@@ -221,17 +221,25 @@ mod tests {
         )
         .unwrap();
         std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
-        super::spawn_app_env(
-            &app,
-            &[
-                ("WP09_MARKER".into(), "kept".into()),
-                (
-                    "WP09_MARKER_PATH".into(),
-                    marker.to_string_lossy().into_owned(),
-                ),
-            ],
-        )
-        .unwrap();
+        let env = [
+            ("WP09_MARKER".to_string(), "kept".to_string()),
+            (
+                "WP09_MARKER_PATH".to_string(),
+                marker.to_string_lossy().into_owned(),
+            ),
+        ];
+        // A script written a moment ago can still be "busy" when another test's fork copied
+        // its open write handle (ETXTBSY, seen on Linux CI). Try again for a moment.
+        let mut tries = 0;
+        loop {
+            match super::spawn_app_env(&app, &env) {
+                Err(why) if why.raw_os_error() == Some(libc::ETXTBSY) && tries < 50 => {
+                    tries += 1;
+                    std::thread::sleep(std::time::Duration::from_millis(20));
+                }
+                other => break other.unwrap(),
+            }
+        }
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
         while !marker.exists() && std::time::Instant::now() < deadline {
             std::thread::sleep(std::time::Duration::from_millis(20));
