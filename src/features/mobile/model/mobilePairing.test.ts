@@ -110,6 +110,13 @@ describe("live approvals", () => {
     expect(publishedApprovals(live, new Set(), new Set(["chat-1"]), room).rows).toEqual([]);
     expect(publishedApprovals(live, new Set(["chat-1"]), new Set(), new Set(["other"])).rows).toHaveLength(1);
   });
+
+  it("never publishes a private chat's call, even when the chat is listed or a Mono's own", () => {
+    // WP-111: a private chat's tool command and paths stay off the phone.
+    const live = [session({ private: true, blocks: [tool(7, SHELL)] })];
+    expect(publishedApprovals(live, new Set(["chat-1"]), new Set()).rows).toEqual([]);
+    expect(publishedApprovals(live, new Set(), new Set(["chat-1"])).rows).toEqual([]);
+  });
 });
 
 describe("approve and deny", () => {
@@ -132,6 +139,9 @@ describe("approve and deny", () => {
       remoteBlocked: () => remote,
       answered,
       sources: sources(),
+      // Every session is a listed chat, so each live call is one the catalog publishes.
+      approvals: (live: readonly Session[]) =>
+        publishedApprovals(live, new Set(live.map((item) => item.id)), new Set()),
     };
   }
 
@@ -248,6 +258,53 @@ describe("approve and deny", () => {
       ),
     ).rejects.toThrow(/desktop/);
     expect(calls).toEqual([]);
+  });
+
+  it("refuses a live call the desktop did not publish, a room session the phone could never answer", async () => {
+    // The call is live in the window, but the catalog the phone was shown does not carry it.
+    // Approve must match the published rows, not every live call.
+    const room = session({ blocks: [tool(7, SHELL)] });
+    const published = publishedApprovals([room], new Set(), new Set(), new Set(["chat-1"]));
+    await expect(
+      runMobilePairing(
+        "session.approve",
+        { conversationId: "chat-1", requestId: 7, tool: "Bash", command: SHELL.command, paths: SHELL.paths },
+        { ...ctx([room]), approvals: () => published },
+      ),
+    ).rejects.toThrow(/does not match/);
+    expect(calls).toEqual([]);
+  });
+
+  it("fails closed when the window gives no published list to match against", async () => {
+    const live = [session({ blocks: [tool(7, SHELL)] })];
+    await expect(
+      runMobilePairing(
+        "session.approve",
+        { conversationId: "chat-1", requestId: 7, tool: "Bash", command: SHELL.command, paths: SHELL.paths },
+        { ...ctx(live), approvals: undefined },
+      ),
+    ).rejects.toThrow(/does not match/);
+    expect(calls).toEqual([]);
+  });
+
+  it("does not record a decision the window could not take, so a retry can", async () => {
+    // The window returns false when the call is gone or the session is not reachable.
+    // The phone must hear an error, not "done", and the call stays answerable.
+    const live = [session({ blocks: [tool(7, SHELL)] })];
+    const params = { conversationId: "chat-1", requestId: 7, tool: "Bash", command: SHELL.command, paths: SHELL.paths };
+    let accept = false;
+    const base = {
+      ...ctx(live),
+      approvals: () => publishedApprovals(live, new Set(["chat-1"]), new Set()),
+      approve: (sessionId: string, requestId: number, decision: "allow" | "deny") => {
+        calls.push([sessionId, requestId, decision]);
+        return accept;
+      },
+    };
+    await expect(runMobilePairing("session.approve", params, base)).rejects.toThrow(/Could not send/);
+    accept = true;
+    await expect(runMobilePairing("session.approve", params, base)).resolves.toMatchObject({ decision: "allow" });
+    expect(calls).toHaveLength(2);
   });
 });
 
@@ -388,8 +445,9 @@ describe("inbox lines", () => {
       remoteBlocked: () => false,
       sources: sources(),
     };
+    // Without the desktop's published list the inbox offers no approval at all.
     const unfiltered = await runMobilePairing("inbox.list", {}, { ...base, sessions: [room] });
-    expect(unfiltered).toMatchObject({ lines: [{ kind: "approval", requestId: 7 }] });
+    expect(unfiltered).toEqual({ lines: [] });
     const filtered = await runMobilePairing("inbox.list", {}, {
       ...base,
       sessions: [room],

@@ -93,21 +93,28 @@ export type PairingSources = {
 export type PairingContext = {
   sessions: readonly Session[];
   now: number;
-  approve: (sessionId: string, requestId: number, decision: ApprovalDecision) => void;
+  /**
+   * Sends the decision to the window's live call. Returns false when the window could not
+   * take it (the call is gone or the session is not reachable); the phone is then refused
+   * and the call stays answerable. Nothing here says "done" for a decision not sent.
+   */
+  approve: (sessionId: string, requestId: number, decision: ApprovalDecision) => boolean | void;
   /** A remote session whose desktop tab is not open cannot take the decision. */
   remoteBlocked: (session: Session) => boolean;
   sources?: PairingSources;
   /** Remembers a decision so a second call cannot allow it again. */
   answered?: Set<string>;
   /**
-   * The calls the inbox may show. Defaults to `liveApprovals`; the desktop passes the
-   * same filtered rows the catalog publishes, so a room-session or unlisted call is not
-   * shown to the phone as an approval it could never answer.
+   * The calls the phone may show and answer: the same filtered rows the catalog publishes.
+   * Both the inbox and approve/deny match only these. Without it nothing is shown and
+   * nothing is answered (fail closed).
    */
   approvals?: (sessions: readonly Session[]) => LiveApprovals;
 };
 
 const sharedAnswered = new Set<string>();
+
+const NO_APPROVALS: (sessions: readonly Session[]) => LiveApprovals = () => ({ rows: [], truncated: false });
 
 /** Test hook. The desktop process keeps the real set for the life of the window. */
 export function clearMobileApprovals(): void {
@@ -125,6 +132,8 @@ function approvable(session: Session): boolean {
   if (!session.id || session.id.length > 256 || session.id.includes("\0")) return false;
   if (session.worktreeRemoved || session.busy === false) return false;
   if (session.orchestrationLeadId || session.inboxAsk || session.sidebarHidden) return false;
+  // WP-111: a private chat's command and paths never leave the desktop.
+  if (session.private === true) return false;
   return cleanProject(session.cwd) != null;
 }
 
@@ -565,7 +574,7 @@ async function decide(method: string, params: Record<string, unknown>, ctx: Pair
   if (typeof conversationId !== "string" || !conversationId || conversationId.length > 256 || conversationId.includes("\0")) {
     throw new Error("This approval does not match a waiting tool call.");
   }
-  const pending = liveApprovals(ctx.sessions);
+  const pending = (ctx.approvals ?? NO_APPROVALS)(ctx.sessions);
   if (pending.truncated) throw new Error("Too many approvals to list from the phone.");
   const matches = pending.rows.filter((row) => row.conversationId === conversationId && row.requestId === requestId);
   if (matches.length !== 1) throw new Error("This approval does not match a waiting tool call.");
@@ -581,7 +590,9 @@ async function decide(method: string, params: Record<string, unknown>, ctx: Pair
   if (book.has(key)) throw new Error("This approval was already answered.");
   const session = ctx.sessions.find((item) => item.id === conversationId);
   if (!session || ctx.remoteBlocked(session)) throw new Error("Open this session on the desktop to answer it.");
-  ctx.approve(session.id, requestId, decision);
+  if (ctx.approve(session.id, requestId, decision) === false) {
+    throw new Error("Could not send this decision to the desktop. Try again.");
+  }
   book.add(key);
   return {
     requestId,
@@ -606,7 +617,7 @@ export async function runMobilePairing(
   const sources = ctx.sources ?? defaultSources();
   const crew = method === "crew.status";
   const loaded = await readSnapshot(sources, crew);
-  const pending = (ctx.approvals ?? liveApprovals)(ctx.sessions);
+  const pending = (ctx.approvals ?? NO_APPROVALS)(ctx.sessions);
   if (!crew && pending.truncated) throw new Error("Too many approvals to list from the phone.");
   let projects: string[];
   try {

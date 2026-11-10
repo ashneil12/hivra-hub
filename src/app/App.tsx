@@ -10652,8 +10652,8 @@ function Workspace({
   ensureOpenSessionRef.current = ensureOpenSession;
   // WP-150: inbox, crew status, and one tool call. Refused in Rust when phone access is off.
   const mobileApprovalRef = useRef<
-    (sessionId: string, requestId: number, decision: ApprovalDecision) => void
-  >(() => undefined);
+    (sessionId: string, requestId: number, decision: ApprovalDecision) => boolean
+  >(() => false);
   // Hivra WP-14: a first mate's messages to its running workers, stored first and delivered from the store.
   const steering = useSteering(sessions, {
     chat: async (id) => (await ensureOpenSessionRef.current(id)) ?? undefined,
@@ -10673,12 +10673,9 @@ function Workspace({
         method === "session.approve" ||
         method === "session.deny"
       ) {
-        // WP-150: the inbox shows the calls the catalog published, so it cannot offer a
-        // line (a room session, an unlisted chat) the phone could never answer.
-        const published =
-          method === "inbox.list"
-            ? await mobileCatalog(sessionsRef.current, sessionDefaults?.runtimeMode)
-            : null;
+        // WP-150: the inbox and an approve or deny match only the calls the catalog
+        // publishes, so a room session or unlisted chat is never offered or answered.
+        const published = await mobileCatalog(sessionsRef.current, sessionDefaults?.runtimeMode);
         return runMobilePairing(method, params, {
           sessions: sessionsRef.current,
           now: Date.now(),
@@ -10686,14 +10683,10 @@ function Workspace({
             mobileApprovalRef.current(sessionId, requestId, decision),
           remoteBlocked: (session) =>
             !!remoteProjectFor(session.cwd) && !remoteSessionActions(session.id),
-          ...(published
-            ? {
-                approvals: () => ({
-                  rows: published.approvals,
-                  truncated: !!published.approvalsTruncated,
-                }),
-              }
-            : {}),
+          approvals: () => ({
+            rows: published.approvals,
+            truncated: !!published.approvalsTruncated,
+          }),
         });
       }
       const text = typeof params.text === "string" ? params.text.trim() : "";
@@ -12693,10 +12686,12 @@ function Workspace({
     return () => window.removeEventListener("keydown", onEscape);
   }, [onStopFromUser]);
 
+  // Returns false when the decision was not sent (the call is gone), so the phone is
+  // told the truth and the call stays answerable.
   const onApproval = useCallback(
-    (sessionId: string, requestId: number, decision: ApprovalDecision) => {
+    (sessionId: string, requestId: number, decision: ApprovalDecision): boolean => {
       const session = sessionsRef.current.find((s) => s.id === sessionId);
-      if (!session || session.worktreeRemoved) return;
+      if (!session || session.worktreeRemoved) return false;
       // An approval a habit's hidden run asked for, put to the user in the
       // Mono's chat: answer the run, and settle the question in the chat.
       if (isMonoSession(sessionId)) {
@@ -12724,14 +12719,18 @@ function Workspace({
                 : "allow"
               : "cancelled",
           );
-          return;
+          // No relay waiting: the block was settled as cancelled, the tool did not run.
+          return !!(relay && run);
         }
       }
       if (remoteProjectFor(session.cwd)) {
-        remoteSessionActions(sessionId)?.approve(requestId, decision);
-        return;
+        const actions = remoteSessionActions(sessionId);
+        if (!actions) return false;
+        actions.approve(requestId, decision);
+        return true;
       }
       respondHarnessApproval(session.harness, sessionId, requestId, decision);
+      return true;
     },
     [],
   );
