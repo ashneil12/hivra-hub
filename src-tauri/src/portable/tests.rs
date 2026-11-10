@@ -5590,6 +5590,48 @@ fn what_counts_as_a_note_and_as_an_instruction_file() {
     assert!(!folders::instruction_file("today.md"));
 }
 
+/// Whether a folder holding these entries counts as having instructions on disk (a Mono's folder is offered back only
+/// without them).
+fn instructions_seen_in(layout: &Layout, name: &str, entries: &[&str]) -> bool {
+    let dir = layout.root.0.join(name);
+    fs::create_dir_all(&dir).unwrap();
+    for entry in entries {
+        if entry.ends_with('/') {
+            fs::create_dir_all(dir.join(entry.trim_end_matches('/'))).unwrap();
+        } else {
+            fs::write(dir.join(entry), "x\n").unwrap();
+        }
+    }
+    let rules = FolderRules::load(&layout.target, &[], &[], &[], &[]);
+    rules.instructions_on_disk(&dir, &dir)
+}
+
+#[test]
+fn a_folder_with_env_or_venv_is_still_offered_but_one_with_instructions_is_not() {
+    let layout = layout();
+    for plain in [
+        &[][..],
+        &[".env", ".venv/"][..],
+        &[".gitignore", ".DS_Store", ".git/"][..],
+        &["README.md", "src/"][..],
+    ] {
+        assert!(!instructions_seen_in(&layout, "plain", plain), "{plain:?} was refused");
+    }
+    for marked in [
+        &["CLAUDE.md"][..],
+        &["AGENTS.override.md"][..],
+        &[".claude/"][..],
+        &[".codex/"][..],
+        &[".cursor/"][..],
+        &[".gemini/"][..],
+        &[".opencode/"][..],
+        &[".github/"][..],
+        &["opencode.json"][..],
+    ] {
+        assert!(instructions_seen_in(&layout, "marked", marked), "{marked:?} was offered");
+    }
+}
+
 #[test]
 fn a_monos_folder_takes_only_the_names_mono_rs_uses() {
     let allowed = [

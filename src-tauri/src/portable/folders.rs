@@ -370,16 +370,20 @@ impl FolderRules {
     }
 
     /// A file a CLI would read as instructions sits, right now, in this folder or in a folder above it up to its Mono's
-    /// folder (inclusive): a hidden folder (other than git's own) counts too. Read from disk when a re-link is offered.
+    /// folder (inclusive), or one of the folders a CLI keeps its settings in sits there (`.claude`, `.codex`, ...). Other
+    /// hidden entries, such as `.env` or `.venv`, don't count. Read from disk when a re-link is offered.
     pub(super) fn instructions_on_disk(&self, dir: &Path, top: &Path) -> bool {
         let mut here = Some(dir);
         while let Some(folder) = here {
             if let Ok(entries) = std::fs::read_dir(folder) {
                 for entry in entries.flatten() {
                     let name = entry.file_name().to_string_lossy().into_owned();
-                    let hidden_tool = name.starts_with('.')
-                        && !matches!(name.as_str(), ".git" | ".gitignore" | ".DS_Store");
-                    if instruction_file(&name) || hidden_tool {
+                    // Only the names a CLI reads: an instruction file, or the folder one keeps its settings and rules in.
+                    let cli_folder = matches!(
+                        name.as_str(),
+                        ".claude" | ".codex" | ".cursor" | ".gemini" | ".opencode" | ".github"
+                    );
+                    if instruction_file(&name) || cli_folder {
                         return true;
                     }
                 }
