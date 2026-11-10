@@ -917,6 +917,7 @@ import {
 } from "../features/monos/model/delegationStore";
 import {
   holdForLimit,
+  nextHealthCheck,
   nextWake,
   planHeld,
   pumpWorkers,
@@ -13388,11 +13389,14 @@ function Workspace({
   }, [sessions, pumpWorkersNow]);
   useEffect(() => {
     const offRows = subscribeDelegations(pumpWorkersNow);
-    const offPool = subscribeWorkerPool(pumpWorkersNow);
     // A provider's reset changes no row: look again then, and now and then anyway.
     let timer = 0;
     const arm = () => {
-      const wake = nextWake(providerRoomNow, Date.now());
+      // WP-161: waiting builders also look at the machine again soon, so a pause that clears starts them, and the
+      // Needs you line for a held disk reads a fresh sample.
+      const resets = nextWake(providerRoomNow, Date.now());
+      const recheck = nextHealthCheck(Date.now());
+      const wake = resets === undefined ? recheck : recheck === undefined ? resets : Math.min(resets, recheck);
       timer = window.setTimeout(
         () => {
           pumpWorkersNow();
@@ -13401,6 +13405,13 @@ function Workspace({
         Math.min(60_000, Math.max(1_000, (wake ?? Infinity) - Date.now())),
       );
     };
+    // WP-161: a builder joining the queue (or a health read landing) sets the next look again, so a wait that began
+    // after the timer was set is not left to the 60 second cap.
+    const offPool = subscribeWorkerPool(() => {
+      pumpWorkersNow();
+      window.clearTimeout(timer);
+      arm();
+    });
     arm();
     return () => {
       offRows();
@@ -16895,6 +16906,8 @@ function Workspace({
     openNotes: () => homeOpenRef.current.onOpenNotes(),
     openSession: (id) => { void homeOpenRef.current.onSelectHistorySession(id); },
     openTeam: (projectId) => homeOpenRef.current.openCodingTeam(projectId),
+    // WP-161: a Needs you line about the machine (new builders waiting on disk) opens Settings where it says so.
+    openSettings: (section, anchor) => openSettings(section, anchor),
     projects: () => hubData().listProjects(),
   });
   // r63 (PM, 0.16.3): Pages (an automations-view mode) and Coding team were highlighted at once. Any view that covers

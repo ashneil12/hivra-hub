@@ -20,6 +20,7 @@ import {
   DEFAULT_LIMITS, MAX_WORKERS, limitsLine, setWorkerLimits, workerLimits,
 } from "../../monos/model/workerPool";
 import { WorkerDefaultControl } from "../../crew/ui/WorkerDefaultControl";
+import { BuilderScaleControls } from "../../monos/ui/BuilderScaleControls";
 import { plainErrorText } from "../../../shared/text/plainErrorText";
 
 /**
@@ -250,10 +251,12 @@ export function ProjectWorkers({ project, anchor, onClose }: { project: HubProje
     </label>
   );
   return (
-    <Popover anchor={anchor} side="right" align="start" width={280} constrainHeight={false} role="dialog" aria-label={`${project.name} workers`}
+    <Popover anchor={anchor} side="right" align="start" width={340} constrainHeight={false} role="dialog" aria-label={`${project.name} workers`}
       onDismiss={onClose} className="flex flex-col gap-2 p-2.5" data-project-workers-dialog>
-      {field("Workers at once", limits.workers, "workers", MAX_WORKERS)}
+      {field("Max builders", limits.workers, "workers", MAX_WORKERS)}
       {field("Of them on heavy tests", limits.heavy, "heavy", limits.workers)}
+      {/* WP-161: pauses apply to every project. Running builders are not stopped. */}
+      <BuilderScaleControls />
       <p className="text-[12px] leading-4 text-content/60" data-project-workers-line>
         {limitsLine(project.name, limits)} The rest wait their turn and start by themselves. You can also just tell its Lead.
       </p>

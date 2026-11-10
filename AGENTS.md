@@ -213,8 +213,14 @@ daily app. Its window says `Hivra Dev - <branch> @ <sha>` and carries a DEV ribb
 - **Port:** 1430 + 10 × (hash of the slot mod 50), the next free one in that grid if taken; never 1420. The generated
   `target/hub-dev/<slot>.conf.json` sets `devUrl` and `devCsp` (the base devCsp only allows 1420) and hands vite the
   port through `MONOCODE_VITE_PORT` in its own command.
-- **Rust build cache:** `CARGO_BUILD_BUILD_DIR=~/Library/Caches/monocode-hub/cargo-build` (hub:dev and hub:build), shared
-  by every worktree; each keeps its own `target/` for the final binary and bundle. Two builds at once wait for each other.
+- **Rust build cache:** `CARGO_BUILD_BUILD_DIR=~/Library/Caches/monocode-hub/cargo-build` (hub:dev, hub:build and
+  `npm run check:rust`), shared by every worktree; each keeps its own `target/` for the final binary and bundle. Two builds
+  at once wait for each other. CI keeps its own `target/`; `MONOCODE_OWN_TARGET=1` does the same for one local run.
+- **Disk floor:** `check:rust` and `hub:build` refuse to start (exit 75) under 30 GB free on the home volume
+  (`scripts/disk-guard.mjs`; `MONOCODE_DISK_FLOOR_GB` changes it, 0 turns it off). On 10 Nov 2026 about 90 worktrees, each
+  with its own 9-12 GB `target/`, filled the disk. `npm run hub:clean -- --yes` also clears the build output (`target/`,
+  `src-tauri/target`, `test-results/`, `playwright-report/`, a real `node_modules`) of a worktree that is kept but clean
+  and pushed; never a linked `node_modules`, a dirty or unpushed tree, or one something is running in.
 - **Hub data:** the dev copy keeps it in its own database, like the daily app (no Ash OS; see "Ash OS is retired").
 - **Seed (`npm run hub:seed-dev`, or `hub:dev -- --seed`):** an online SQLite backup of the daily `monocode.db`, opened
   read-only, then in the copy only: in-flight turns, queued messages, the tab snapshot, pending worktree removals,
