@@ -2780,6 +2780,28 @@ describe("tasks.fanout: contracts and waves in the normal delegate path (WP-171)
     expect(delegated.mock.calls[1][1]).toMatchObject({ childSessionId: "app-mono-exo-r1-board", title: expect.any(String) });
   });
 
+  it("with fresh-eyes on, holds each task for its review and keeps its place in the plan for the start", async () => {
+    const f = fanned();
+    const reviewed: { requestId: string; held?: Record<string, unknown> }[] = [];
+    f.api.freshEyes = vi.fn(async (input) => {
+      reviewed.push(input);
+      return { hold: input.requestId.endsWith("-api"), why: "Fresh-eyes review: waiting on you" };
+    });
+    const out = await f.fan("r1", [api, board, docs]);
+    expect(out.tasks.map((task) => [task.name, task.status, (task as { freshEyes?: boolean }).freshEyes ?? false])).toEqual([
+      ["api", "waiting", true],
+      ["board", "waiting", false],
+      ["docs", "running", false],
+    ]);
+    // The call the review keeps is the one that starts later: it still says which plan it is part of.
+    const held = reviewed.find((entry) => entry.requestId === "r1-api")!.held!;
+    expect(held.fanout).toMatchObject({ name: "api", plan: "r1" });
+    expect(typeof held.originalRequest === "string" || held.originalRequest === undefined).toBe(true);
+    expect(out.note).toContain("1 started now");
+    expect(out.note).toContain("1 waits for its fresh-eyes review");
+    expect(out.note).toContain("1 waits for what it needs");
+  });
+
   it("starts all of them at once when none needs another, up to the first mate's eight", async () => {
     const { fan, started } = fanned();
     const many = Array.from({ length: 8 }, (_, i) => ({ name: `t${i}`, brief: `Do part ${i}.`, goal: `part ${i} works` }));

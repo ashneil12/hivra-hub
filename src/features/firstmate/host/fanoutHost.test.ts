@@ -45,7 +45,10 @@ const queued: QueuedWorker = {
 const row = (patch: Partial<Delegation>) =>
   ({ id: "t-1", childSession: provider, state: "running", version: 1, updatedAt: 1, ...patch }) as Delegation;
 
-function host(rows: Delegation[], options: { stored?: () => Delegation | undefined; files?: Record<string, string> } = {}) {
+function host(
+  rows: Delegation[],
+  options: { stored?: () => Delegation | undefined; files?: Record<string, string>; reviewing?: (session: string) => boolean } = {},
+) {
   const time = { now: 1_000_000 };
   const files = options.files ?? {};
   const fetch = vi.fn(async () => options.stored?.());
@@ -55,6 +58,7 @@ function host(rows: Delegation[], options: { stored?: () => Delegation | undefin
     folder: (session) => (session === provider ? PROJECT : undefined),
     io: { exists: async (path) => path in files, read: async (path) => files[path] ?? null },
     now: () => time.now,
+    ...(options.reviewing ? { reviewing: options.reviewing } : {}),
   });
   return { ...built, fetch, time, files };
 }
@@ -141,5 +145,23 @@ describe("what the app lends the worker queue for a fan-out (WP-171)", () => {
   it("is only about a plan's own providers: a task outside any fan-out has nothing to wait for", async () => {
     const { settle } = host([row({ state: "completed", status: "done", version: 2 })]);
     await expect(settle([{ ...queued, input: { brief: "x" } }])).resolves.toBeUndefined();
+  });
+});
+
+describe("a provider held for its fresh-eyes review (WP-144 with WP-171)", () => {
+  it("has not started yet, so what needs it waits instead of being held as lost", async () => {
+    const lost = host([]);
+    await lost.settle([queued]);
+    expect(lost.dependency(job)).toMatchObject({ reason: "held" });
+    const held = new Set([provider]);
+    const reviewed = host([], { reviewing: (session) => held.has(session) });
+    await reviewed.settle([queued]);
+    expect(reviewed.dependency(job)).toEqual({
+      reason: "requires",
+      line: "Waiting for api to finish and be checked (api has not started yet). It starts by itself then.",
+    });
+    // Taken back, it is gone again, and what needs it is held for the first mate.
+    held.clear();
+    expect(reviewed.dependency(job)).toMatchObject({ reason: "held" });
   });
 });

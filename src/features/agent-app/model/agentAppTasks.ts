@@ -1332,7 +1332,7 @@ async function fanout(
         name,
         wave: link.wave,
         ...Object.fromEntries(
-          ["taskId", "childSessionId", "status", "title", "waiting", "modelName", "effort", "alreadyStarted"]
+          ["taskId", "childSessionId", "status", "title", "waiting", "freshEyes", "modelName", "effort", "alreadyStarted"]
             .filter((key) => out[key] !== undefined)
             .map((key) => [key, out[key]]),
         ),
@@ -1348,13 +1348,15 @@ async function fanout(
   // Said in the order the tasks were given, not the order they started.
   const byName = new Map(results.map((entry) => [entry.name, entry]));
   const ordered = parsed.tasks.map((task) => byName.get(task.name)!);
-  const waiting = ordered.filter((entry) => entry.status === "waiting").length;
+  // WP-144: a task held for its fresh-eyes review waits for the person's word, not for another task.
+  const reviewed = ordered.filter((entry) => entry.status === "waiting" && entry.freshEyes === true).length;
+  const waiting = ordered.filter((entry) => entry.status === "waiting" && entry.freshEyes !== true).length;
   const problems = ordered.filter((entry) => entry.status === "refused" || entry.status === "not started").length;
   return {
     waves: planned.waves,
     tasks: ordered,
     ...(planned.warnings.length ? { warnings: planned.warnings } : {}),
-    note: forUser`${ordered.length - waiting - problems} started now${waiting ? `; ${waiting} wait${waiting === 1 ? "s" : ""} for what ${waiting === 1 ? "it needs" : "they need"} to be delivered and checked, and start${waiting === 1 ? "s" : ""} by itself then` : ""}${problems ? `; ${problems} did not start (see each task's error)` : ""}. A task whose provider fails is held, not run anyway, and you hear what landed and what did not. Reports come back to you as their own turns. Tell Ash in one line what is running and what waits (in plain words: never a task id, a task name or a folder path), then end your turn.`,
+    note: forUser`${ordered.length - waiting - reviewed - problems} started now${reviewed ? `; ${reviewed} wait${reviewed === 1 ? "s" : ""} for ${reviewed === 1 ? "its" : "their"} fresh-eyes review` : ""}${waiting ? `; ${waiting} wait${waiting === 1 ? "s" : ""} for what ${waiting === 1 ? "it needs" : "they need"} to be delivered and checked, and start${waiting === 1 ? "s" : ""} by itself then` : ""}${problems ? `; ${problems} did not start (see each task's error)` : ""}. A task whose provider fails is held, not run anyway, and you hear what landed and what did not. Reports come back to you as their own turns. Tell Ash in one line what is running and what waits (in plain words: never a task id, a task name or a folder path), then end your turn.`,
   };
 }
 

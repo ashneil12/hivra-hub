@@ -35,6 +35,11 @@ export function fanoutHost(deps: {
   fetch(owner: string, session: string): Promise<Delegation | undefined>;
   /** The project folder a worker chat works for (where its finished work landed). */
   folder(session: string): string | undefined;
+  /**
+   * WP-144: the worker chat is held for its fresh-eyes review (fresh-eyes/model/gate.ts heldForReview). It has not
+   * started yet, so a task that needs it waits instead of being held as lost.
+   */
+  reviewing?(session: string): boolean;
   io?: FileIo;
   now?(): number;
 }): FanoutHost {
@@ -50,7 +55,7 @@ export function fanoutHost(deps: {
   };
   const lookup: DependencyLookup = {
     row: (session) => live(session) ?? fetched.get(session),
-    queued: (session) => queuedWorker(session) !== undefined,
+    queued: (session) => queuedWorker(session) !== undefined || deps.reviewing?.(session) === true,
     verified: (session, row) => verificationOf(session, row),
   };
   return {

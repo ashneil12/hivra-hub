@@ -9,6 +9,7 @@ import {
   cancelHeld,
   firstMateMayAccept,
   freshEyesLine,
+  heldForReview,
   heldWaiting,
   isPersonAnswer,
   LEASE_MS,
@@ -1076,5 +1077,21 @@ describe("Edit plan ends the brief it was said about", () => {
     await syncHeldDecisions({ storage, backend: inbox });
     expect(reviewFor(PROJECT, "r1", storage)?.held).toBeUndefined();
     expect(await heldWaiting("lead", { storage })).toEqual([]);
+  });
+});
+
+describe("a brief held for its review, as the worker queue reads it (WP-171)", () => {
+  it("is held from the review until it starts, and never once it started or was taken back", async () => {
+    const storage = windowOn(memoryDisk(), "a");
+    await enabled(storage);
+    const inbox = fakeInbox();
+    expect(heldForReview("app-lead-r1", storage)).toBe(false);
+    await review(storage, ask(), answering(FINDING), { backend: inbox });
+    expect(heldForReview("app-lead-r1", storage)).toBe(true);
+    // Another chat's brief, or another request of this one, is not this one.
+    expect(heldForReview("app-other-r1", storage)).toBe(false);
+    expect(heldForReview("app-lead-r2", storage)).toBe(false);
+    await cancelHeld("lead", "app-lead-r1", { storage, backend: inbox });
+    expect(heldForReview("app-lead-r1", storage)).toBe(false);
   });
 });
