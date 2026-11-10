@@ -704,6 +704,7 @@ import { useBusyChatsFeed } from "../features/monos/hooks/useBusyChatsFeed";
 import { useFirstMateCheckoutGuard } from "../features/firstmate/hooks/useFirstMateCheckoutGuard";
 import { useSteering } from "../features/firstmate/hooks/useSteering";
 import { firstMateLaunch } from "../features/firstmate/model/checkoutGuard";
+import { crewLaunch } from "../features/crew/model/crewSession";
 import { withLegacyBriefParts } from "../features/firstmate/model/brief";
 import { viewAfterRemoval, type RemovalOrigin } from "../features/sessions/model/sessionWorkspaceLifecycle";
 import { focusClosesMono, paneFocus } from "./model/paneFocus";
@@ -2183,6 +2184,8 @@ function Workspace({
   const lastBoundProvider = useRef(new Map<string, string>());
   // Delegation rows (model/delegations.ts), set once useDelegations runs below; submitSession re-attaches through it.
   const delegationsRef = useRef<DelegationTracker | null>(null);
+  // WP-143: what marks a chat as a crew's (crewSession.ts): the rows the UI reads and the ones this window launched since.
+  const crewRows = () => [...delegationRows(), ...(delegationsRef.current?.known() ?? [])];
   // PR watches (features/pr-watch), set once usePrWatches runs below; the queue marks their wakes delivered.
   const prWatchesRef = useRef<PrWatchTracker | null>(null);
   // Hivra WP-11: the first mate's wake queue; the queue marks its drained turns delivered.
@@ -9429,6 +9432,7 @@ function Workspace({
                   operatorAccess ||
                   orchestrator.run(sessionId)?.status === "active",
                 ...firstMateLaunch(current),
+                ...crewLaunch(current, crewRows()), // WP-143
                 ...(editedProviderTurnId
                   ? { providerTurnId: editedProviderTurnId }
                   : {}),
@@ -9488,6 +9492,7 @@ function Workspace({
                 orchestrator.run(sessionId)?.status === "active",
               appAccess: operatorAccess,
               ...firstMateLaunch(current),
+              ...crewLaunch(current, crewRows()), // WP-143
               text,
               attachments: turnAttachments,
               ...(editedResend ? { onAccepted: acceptEditedResend } : {}),
@@ -12431,6 +12436,7 @@ function Workspace({
               operatorEnabledInThread(current.blocks) ||
               orchestrator.run(sessionId)?.status === "active",
             ...firstMateLaunch(current),
+            ...crewLaunch(current, crewRows()), // WP-143
             onEvent: (event) => {
               if (turnGen.current.get(sessionId) !== gen) return;
               enqueueHarnessEvent(sessionId, event);
