@@ -76,6 +76,29 @@ in Settings, under About.
 - [Elephant-Goldfish](https://github.com/google/elephant-goldfish-model): a zero-context review of a plan before a crew starts (WP-144).
 - [Memorilla](https://github.com/snap-stanford/memorilla): an external test set for chat-derived memory, the arm ladder its evaluation reports, and rules for writing a memory question that cannot be guessed (WP-106, ideas and data only).
 - [numbrone](https://github.com/stevenmichaelthomas/numbrone): ideas only: a typed daily work log and retros that propose instruction edits only after the person agrees.
+- [Reason Network](https://github.com/reason-machines/reason-network): the rule that an agent saying someone approved is not that person's approval, and the one-task-per-session and point-first messaging rules (ideas only).
+- [Orchestrator.inc](https://github.com/OrchestratorInc/agent-orchestrator): ideas only: durable facts with status derived at read time, the rule that automation never types into a blocked session, and the chat hibernation boundary table (a new WP, not yet numbered).
+- [Paseo](https://github.com/getpaseo/paseo): the lifecycle idea: a closed agent keeps its identity and resumes its saved session on the next prompt, and an idle runtime is reclaimed after an hour behind a daemon check and a provider veto (ideas only).
+- [Happy](https://github.com/slopus/happy): one permission-mode resolution order and one mapping per CLI, written as Hivra's own matrix (ideas only; no Happy text or code copied).
+- [Paradev](https://github.com/ParadevAI/Paradev): two handoff verbs (a native fork that does not read a transcript, and a handoff from the harness store first), an omitted-context marker and trust checks on a reported transcript path (ideas only).
+- [Cloudroom](https://github.com/davidondrej/cloudroom): ideas only: teleport a running session between the Mac and a host (freeze, move history, resume with the same chat, model and effort), and the split of harness from core.
+- [Emdash](https://github.com/generalaction/emdash): ideas only: the host's inventory is authoritative, a deletion intent may outlive an unreachable host, and host calls fail fast.
+- [Jean](https://github.com/coollabsio/jean): ideas only: a plan that waits for approval before a GitHub issue is built, and one sidebar for local and remote machines.
+- [Paperclip](https://github.com/paperclipai/paperclip): ideas only: a spend limit that warns once and stops new builders at the limit, and goal ancestry on a run's briefs.
+- [bb](https://github.com/get-bb/bb): the principle that the person and the agent are both first-class operators of the same surfaces, with the CLI and API as first-class surfaces rather than sidecars (ideas only).
+- [HarnessRouter](https://github.com/HarnessRouter/harnessrouter): a closed error code set with a retry rule for each code, and the rule that a client who gave up must not assume the task stopped (ideas only).
+- [Omnigent](https://github.com/omnigent-ai/omnigent): a spend ceiling with a soft ask before a hard stop, and policies that stack from server to session (ideas only).
+- [Ghostex](https://github.com/maddada/Ghostex): automatic account switch at a usage limit, and a card that says when every account is full (Hivra already has the switch; ideas only).
+- [Nimbalyst](https://github.com/nimbalyst/nimbalyst): red and green accept or reject of an agent's change in the rendered document (ideas only).
+- [Traycer](https://github.com/traycerai/traycer): switching model inside one chat with context kept, and a capability table per agent (ideas only).
+- [Sidecar](https://github.com/marcus/sidecar): an agent opening a file at a line or a diff beside its terminal (ideas only).
+- [CC Switch](https://github.com/farion1231/cc-switch): a failover queue with a circuit breaker across providers, and resuming a local session in its own folder (ideas only).
+- [OpenCodex](https://github.com/lidge-jun/opencodex): a local gateway that lets Claude Code and Codex use other providers (ideas only).
+- [TanStack AI](https://github.com/TanStack/ai): tool approval that rebuilds a paused call from the message history on resume (ideas only).
+- [OpenClaw](https://github.com/openclaw/openclaw): a competitive reference for chat channels: unknown senders paired first, inbound messages untrusted (ideas only).
+- [activeloopai/hivemind](https://github.com/activeloopai/hivemind): repeated patterns in agent traces codified into SKILL.md files (ideas only; cloud-backed).
+- [AgenticBench](https://agenticbench.org): planted-secret checks on what a coding agent does with a machine and its data, as acceptance-test ideas for the secret vault (ideas only).
+- [Agentlas](https://github.com/agentlas-ai/agentlas-desktop): ideas only: an operating-system boundary around each agent's terminal, with secret paths and protected config paths (design first).
 
 Also [poteto](https://x.com/poteto)'s writing on skills and verification, including the
 [verification skill example](https://github.com/poteto/verification-skill-example).
