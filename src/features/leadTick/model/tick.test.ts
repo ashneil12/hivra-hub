@@ -1,8 +1,12 @@
 import { describe, expect, it } from "vitest";
 // The WP-155 helper the lead runs by hand. The tick keeps the same never-merge rule.
-import { securityParkReason } from "../../../../scripts/hivra-ship-green.mjs";
+import { NEVER_MERGE_PACKAGES as HELPER_PACKAGES, securityParkReason } from "../../../../scripts/hivra-ship-green.mjs";
 import type { ProgrammePackage, ProgrammeStatus } from "../../programme/model/programme";
-import { neverMergeReason, runLeadTick, tickRequestId, type LeadTickPorts, type TickWatch } from "./tick";
+import neverMergeList from "./neverMerge.json";
+import { NEVER_MERGE_PACKAGES, NOTED_KEY_MAX, neverMergeReason, runLeadTick, tickRequestId, type LeadTickPorts, type TickWatch } from "./tick";
+
+const NOW = 1_000_000_000;
+const HOUR = 60 * 60 * 1000;
 
 function row(patch: Partial<ProgrammePackage>): ProgrammePackage {
   return {
@@ -34,8 +38,10 @@ function watch(patch: Partial<TickWatch> & { status?: Partial<TickWatch["status"
     title: "WP-200: build the thing",
     headRef: "wp/200-thing",
     headSha: "abc1234",
+    project: "app",
     state: "watching",
     endReason: null,
+    endedAt: null,
     ...rest,
     status: {
       pr: "open",
@@ -45,6 +51,7 @@ function watch(patch: Partial<TickWatch> & { status?: Partial<TickWatch["status"
       failed: [],
       passed: true,
       mergeable: "mergeable",
+      labels: [],
       ...status,
     },
   };
@@ -110,7 +117,7 @@ function fake(options: {
   return state;
 }
 
-const base = { folder: "/code/app", shipOnGreen: false, noted: [] as string[] };
+const base = { folder: "/code/app", shipOnGreen: false, noted: [] as string[], now: NOW };
 
 describe("lead tick step (a): read the programme", () => {
   it("reads the board and says so plainly when it can't", async () => {
@@ -228,13 +235,14 @@ describe("lead tick step (c): read CI for programme pull requests", () => {
     expect(result.line).toBe("Nothing on the programme.");
   });
 
-  it("says once that CI failed on a head, not every tick", async () => {
+  it("reports a red CI in the line once per head, and never as a ping (the PR watch already sends ci-red)", async () => {
     const rows = [row({ id: "a", status: "pr_open" })];
     const red = [watch({ status: { passed: false, failed: ["test"] } })];
     const first = await runLeadTick(base, fake({ rows, watches: red }));
-    expect(first.attention).toEqual(["CI failed on #7 (WP-200): test."]);
+    expect(first.attention).toEqual([]);
+    expect(first.line).toContain("CI failed on #7 (WP-200): test.");
     const second = await runLeadTick({ ...base, noted: first.noted }, fake({ rows, watches: red }));
-    expect(second.attention).toEqual([]);
+    expect(second.line).not.toContain("CI failed");
   });
 
   it("ignores a pull request from another branch", async () => {
@@ -329,5 +337,116 @@ describe("never-merge rule", () => {
       { title: "WP-920 is fine", branch: "b", labels: [] },
     ];
     for (const pr of cases) expect(neverMergeReason(pr) !== "", JSON.stringify(pr)).toBe(securityParkReason(pr, []) !== "");
+  });
+
+  it("reads the security-park label from the pull request", () => {
+    expect(neverMergeReason({ title: "Plain", branch: "wp/200-thing", labels: ["security-park"] })).toBe("security-park label security-park");
+  });
+
+  it("has one never-merge list, shared by the tick and the WP-155 helper", () => {
+    expect([...NEVER_MERGE_PACKAGES]).toEqual(neverMergeList.packages);
+    expect([...HELPER_PACKAGES]).toEqual(neverMergeList.packages);
+  });
+});
+
+describe("lead tick: a watch belongs to its package", () => {
+  it("ignores another project's pull request on the same branch", async () => {
+    const ports = fake({
+      rows: [row({ id: "a", status: "pr_open" })],
+      watches: [watch({ project: "other", state: "ended", endReason: "merged", status: { pr: "merged" } })],
+    });
+    await runLeadTick({ ...base, shipOnGreen: true }, ports);
+    expect(ports.rows[0].status).toBe("pr_open");
+    expect(ports.calls.some((c) => c.startsWith("merge") || c === "status a merged")).toBe(false);
+  });
+
+  it("never merges another project's green pull request", async () => {
+    const ports = fake({ rows: [row({ id: "a", status: "pr_open" })], watches: [watch({ project: "other" })] });
+    await runLeadTick({ ...base, shipOnGreen: true }, ports);
+    expect(ports.calls.some((c) => c.startsWith("merge"))).toBe(false);
+  });
+
+  it("ignores a watch that ended before the package was claimed", async () => {
+    const ports = fake({
+      rows: [row({ id: "a", status: "pr_open", claimedAt: NOW - HOUR })],
+      watches: [watch({ state: "ended", endedAt: NOW - 2 * HOUR, endReason: "merged", status: { pr: "merged" } })],
+    });
+    await runLeadTick(base, ports);
+    expect(ports.rows[0].status).toBe("pr_open");
+  });
+
+  it("reads a watch that ended after the package was claimed", async () => {
+    const ports = fake({
+      rows: [row({ id: "a", status: "pr_open", claimedAt: NOW - 2 * HOUR })],
+      watches: [watch({ state: "ended", endedAt: NOW - HOUR, endReason: "merged", status: { pr: "merged" } })],
+    });
+    await runLeadTick(base, ports);
+    expect(ports.rows[0].status).toBe("merged");
+  });
+});
+
+describe("lead tick: the merge is checked again on the row", () => {
+  it("never merges a package that was parked while CI was being read", async () => {
+    const ports = fake({ rows: [row({ id: "a", status: "pr_open" })], watches: [watch({})] });
+    ports.watches = async () => {
+      ports.rows[0].securityPark = true;
+      return [watch({})];
+    };
+    const result = await runLeadTick({ ...base, shipOnGreen: true }, ports);
+    expect(ports.calls.some((c) => c.startsWith("merge"))).toBe(false);
+    expect(result.attention[0]).toContain("is parked for a security check");
+  });
+
+  it("counts a merge GitHub says already happened as settled, not as a refusal", async () => {
+    const ports = fake({
+      rows: [row({ id: "a", status: "pr_open" })],
+      watches: [watch({})],
+      merge: { outcome: "refused", reason: "owner/app#7 is already merged." },
+    });
+    const result = await runLeadTick({ ...base, shipOnGreen: true }, ports);
+    expect(ports.rows[0].status).toBe("merged");
+    expect(result.attention).toEqual([]);
+  });
+
+  it("never merges a pull request labelled security-park, even with Ship on green on", async () => {
+    const ports = fake({ rows: [row({ id: "a", status: "pr_open" })], watches: [watch({ status: { labels: ["security-park"] } })] });
+    const result = await runLeadTick({ ...base, shipOnGreen: true }, ports);
+    expect(ports.calls.some((c) => c.startsWith("merge"))).toBe(false);
+    expect(result.attention[0]).toContain("is parked for a security check");
+  });
+});
+
+describe("lead tick: a building package with no pull request", () => {
+  it("is settled after six hours, so its builder slot is free", async () => {
+    const ports = fake({ rows: [row({ id: "a", status: "building", claimedAt: NOW - 6 * HOUR - 1 })], slot: { ok: false, reason: "full" } });
+    const result = await runLeadTick(base, ports);
+    expect(ports.rows[0].status).toBe("failed");
+    expect(result.attention.join(" ")).toContain("WP-200 has no pull request after 6 hours");
+  });
+
+  it("keeps a package that only just started", async () => {
+    const ports = fake({ rows: [row({ id: "a", status: "building", claimedAt: NOW - 60_000 })], slot: { ok: false, reason: "full" } });
+    await runLeadTick(base, ports);
+    expect(ports.rows[0].status).toBe("building");
+  });
+});
+
+describe("lead tick: said-once keys", () => {
+  it("keeps every key within the store's limit, however long the reason or the row id", async () => {
+    const reason = "owner/app#7 is a draft; mark it ready first. ".repeat(40);
+    const longId = "row-".repeat(120);
+    const rows = [row({ id: longId, status: "pr_open" })];
+    const first = await runLeadTick(
+      { ...base, shipOnGreen: true },
+      fake({ rows, watches: [watch({ status: { failed: [] } })], merge: { outcome: "refused", reason } }),
+    );
+    expect(first.attention).toHaveLength(1);
+    expect(first.noted.length).toBeGreaterThan(0);
+    for (const key of first.noted) expect(key.length).toBeLessThanOrEqual(NOTED_KEY_MAX);
+    const second = await runLeadTick(
+      { ...base, shipOnGreen: true, noted: first.noted },
+      fake({ rows, watches: [watch({})], merge: { outcome: "refused", reason } }),
+    );
+    expect(second.attention).toEqual([]);
   });
 });

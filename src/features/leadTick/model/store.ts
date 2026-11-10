@@ -6,6 +6,7 @@
 import { memoryDisk, type LocalHubDisk } from "../../hub/model/localHub/localHub";
 import { tauriLocalHubDisk } from "../../hub/model/localHub/localTransport";
 import { defaultLeadTickSetting, LEAD_TICK_DOC_KEY, readLeadTickSetting, type LeadTickSetting } from "./setting";
+import { NOTED_KEY_MAX } from "./tick";
 
 /** What the last tick of a project did. */
 export type LeadTickRun = {
@@ -16,9 +17,9 @@ export type LeadTickRun = {
   noted: string[];
 };
 
-export const NOTED_LIMIT = 50;
+/** Said-once keys kept per project. A key that falls off is said again, so this is well above what a project has open. */
+export const NOTED_LIMIT = 200;
 const LINE_MAX = 500;
-const KEY_MAX = 300;
 const TRIES = 5;
 
 type Shape = { revision: number; settings: Record<string, LeadTickSetting>; runs: Record<string, LeadTickRun> };
@@ -37,7 +38,7 @@ function readRun(raw: unknown): LeadTickRun | undefined {
   if (typeof at !== "number" || !Number.isFinite(at) || at < 0) return undefined;
   const line = typeof value.lastLine === "string" ? value.lastLine.slice(0, LINE_MAX) : "";
   const noted = Array.isArray(value.noted)
-    ? value.noted.filter((key): key is string => typeof key === "string" && key.length > 0 && key.length <= KEY_MAX)
+    ? value.noted.filter((key): key is string => typeof key === "string" && key.length > 0 && key.length <= NOTED_KEY_MAX)
     : [];
   return { lastTickAt: at, lastLine: line, noted: noted.slice(-NOTED_LIMIT) };
 }
@@ -149,7 +150,7 @@ export function createLeadTickStore(disk: LocalHubDisk): LeadTickStore {
         draft.runs[key] = {
           lastTickAt: run.at,
           lastLine: run.line.slice(0, LINE_MAX),
-          noted: [...new Set(run.noted)].filter((k) => k && k.length <= KEY_MAX).slice(-NOTED_LIMIT),
+          noted: [...new Set(run.noted)].filter((k) => k && k.length <= NOTED_KEY_MAX).slice(-NOTED_LIMIT),
         };
       });
     },

@@ -7,7 +7,7 @@ import {
   MIN_INTERVAL_MINUTES,
   readLeadTickSetting,
 } from "./setting";
-import { createLeadTickStore } from "./store";
+import { createLeadTickStore, NOTED_LIMIT } from "./store";
 
 describe("lead tick setting", () => {
   it("is off by default, every 15 minutes, with Ship on green off", () => {
@@ -74,14 +74,14 @@ describe("lead tick store", () => {
     expect(store.runFor("/code/a")).toBeUndefined();
   });
 
-  it("records a tick and keeps the noted keys capped", async () => {
+  it("records a tick and keeps the noted keys capped at the limit, newest kept", async () => {
     const store = createLeadTickStore(memoryDisk());
-    const noted = Array.from({ length: 80 }, (_, i) => `k${i}`);
+    const noted = Array.from({ length: NOTED_LIMIT + 30 }, (_, i) => `k${i}`);
     await store.recordRun("/code/a", { at: 1_000, line: "Nothing to do.", noted });
     const run = store.runFor("/code/a");
     expect(run?.lastTickAt).toBe(1_000);
     expect(run?.lastLine).toBe("Nothing to do.");
-    expect(run?.noted.length).toBe(50);
-    expect(run?.noted.at(-1)).toBe("k79");
+    expect(run?.noted.length).toBe(NOTED_LIMIT);
+    expect(run?.noted.at(-1)).toBe(`k${NOTED_LIMIT + 29}`);
   });
 });

@@ -3,13 +3,9 @@
 // the person turned Ship on green on (and never a parked or never-merge package), and starts the next queued package
 // through the First Mate's own delegate_task when a builder slot is free. The lead never edits the project itself
 // (WP-10): a worker builds the package. Every step goes through ports, so each is tested with fakes.
-//
-// The WP-155 helper (scripts/hivra-ship-green.mjs) is what a person runs by hand; it only reports. Inside the app the
-// merge goes through delivery's merge path (src-tauri/src/delivery/merge.rs), which reads the pull request fresh,
-// refuses red, pending, draft and conflicting ones and open decisions, pins the head and logs who allowed it. It merges
-// without asking only when the project's "merge without asking" is on; otherwise it asks the person.
 
 import type { ProgrammePackage, ProgrammeStatus } from "../../programme/model/programme";
+import neverMerge from "./neverMerge.json";
 
 /** What the tick reads from a PR watch (pr_watch.rs `Watch`). */
 export type TickWatch = {
@@ -18,8 +14,12 @@ export type TickWatch = {
   title: string;
   headRef: string;
   headSha: string | null;
+  /** The programme project the watch belongs to (the project's hub id), or null when the watch names none. */
+  project: string | null;
   state: "watching" | "ended";
   endReason: string | null;
+  /** When the watch ended (ms), or null while it still watches. */
+  endedAt: number | null;
   status: {
     pr: "open" | "merged" | "closed" | "";
     draft: boolean;
@@ -28,6 +28,8 @@ export type TickWatch = {
     failed: string[];
     passed: boolean;
     mergeable: "mergeable" | "conflicting" | "unknown" | "";
+    /** The pull request's label names (pr_watch.rs `Status`). */
+    labels: string[];
   };
 };
 
@@ -64,6 +66,8 @@ export type LeadTickInput = {
   shipOnGreen: boolean;
   /** Keys of things already said (store.ts `noted`). */
   noted: readonly string[];
+  /** The clock (ms): a building package with no pull request for STALE_BUILD_MS is settled. */
+  now: number;
 };
 
 export type LeadTickResult = {
@@ -79,10 +83,36 @@ export function tickRequestId(packageId: string, claimedVersion: number): string
   return `lead-tick-${packageId}-${claimedVersion}`;
 }
 
-// ---- never merge: the WP-155 helper's rule (scripts/hivra-ship-green.mjs securityParkReason) ---------------------------
+/** The longest said-once key the store keeps (store.ts reads and writes keys up to this length). */
+export const NOTED_KEY_MAX = 300;
+const PART_MAX = 64;
 
-export const NEVER_MERGE_PACKAGES = ["WP-92", "WP-150", "WP-158"] as const;
-const PARK_LABELS = new Set(["security-park", "never-merge", "never-merge-here"]);
+function hash(text: string): string {
+  let h = 0x811c9dc5;
+  for (const ch of text) {
+    h ^= ch.codePointAt(0) ?? 0;
+    h = Math.imul(h, 0x01000193) >>> 0;
+  }
+  return h.toString(36);
+}
+
+/**
+ * A said-once key. Short parts stay readable; a long part (a refusal's reason, a row id) becomes a hash, so a key always
+ * fits NOTED_KEY_MAX and the same thing keeps the same key from one tick to the next.
+ */
+export function noteKey(...parts: string[]): string {
+  const key = parts.map((part) => (part.length > PART_MAX ? `#${hash(part)}` : part)).join(":");
+  return key.length > NOTED_KEY_MAX ? `#${hash(key)}` : key;
+}
+
+/** A building package with no pull request for this long holds a builder slot for nothing: the tick settles it. */
+export const STALE_BUILD_MS = 6 * 60 * 60 * 1000;
+
+// ---- never merge: the WP-155 helper's rule (scripts/hivra-ship-green.mjs securityParkReason) ---------------------------
+// One list, read by the tick and by the helper (both from neverMerge.json).
+
+export const NEVER_MERGE_PACKAGES: readonly string[] = neverMerge.packages;
+const PARK_LABELS = new Set<string>(neverMerge.labels);
 
 function mentions(text: string, id: string): boolean {
   const match = /^WP-(\d+)$/.exec(id);
@@ -106,11 +136,18 @@ export function neverMergeReason(pr: { title?: string; branch?: string; labels?:
 
 // ---- the tick ------------------------------------------------------------------------------------------------------
 
-/** The store matches branch names without case (programme enqueue and the open-row check), so the tick does too. */
+/**
+ * The watch for this package: same branch (case-insensitive, as the store matches branches), same project, and not one
+ * that ended before the package was claimed (that is an earlier attempt). A live watch first, then the latest ended one.
+ */
 function watchFor(row: ProgrammePackage, watches: readonly TickWatch[]): TickWatch | undefined {
   const branch = row.branch.toLowerCase();
-  const mine = watches.filter((w) => w.headRef.toLowerCase() === branch);
-  // A live watch first, then the latest ended one.
+  const mine = watches.filter((w) => {
+    if (w.headRef.toLowerCase() !== branch) return false;
+    if (w.project !== row.projectId) return false;
+    if (row.claimedAt !== null && w.endedAt !== null && w.endedAt < row.claimedAt) return false;
+    return true;
+  });
   return mine.find((w) => w.state === "watching") ?? mine[mine.length - 1];
 }
 
@@ -170,6 +207,9 @@ export async function runLeadTick(input: LeadTickInput, ports: LeadTickPorts): P
   const open = rows.filter((row) => row.status !== "merged");
   if (!open.length) return finish("Nothing on the programme.");
 
+  // Builder slots in use: the building packages (a settled one below gives its slot back).
+  let building = rows.filter((row) => row.status === "building").length;
+
   // (c) CI for the programme's pull requests, and (d) ship on green.
   const live = rows.filter((row) => row.status === "building" || row.status === "pr_open");
   let watches: TickWatch[] = [];
@@ -183,7 +223,23 @@ export async function runLeadTick(input: LeadTickInput, ports: LeadTickPorts): P
   for (const found of live) {
     let row = found;
     const watch = watchFor(row, watches);
-    if (!watch) continue;
+    if (!watch) {
+      // No pull request for a package that has run for hours: settle it, so the builder slot it holds is free.
+      if (row.status === "building" && row.claimedAt !== null && input.now - row.claimedAt >= STALE_BUILD_MS) {
+        try {
+          row = await ports.setStatus(row.id, row.version, "failed");
+          building -= 1;
+          once(
+            noteKey("stale", row.id, String(found.claimedAt)),
+            `${row.wp} has no pull request after 6 hours, so it is marked failed and its builder slot is free.`,
+            attention,
+          );
+        } catch {
+          // The row changed under us: the next tick reads it again.
+        }
+      }
+      continue;
+    }
     const pr = `#${watch.number} (${row.wp})`;
     const head = watch.headSha ?? "";
     try {
@@ -194,7 +250,7 @@ export async function runLeadTick(input: LeadTickInput, ports: LeadTickPorts): P
         continue;
       }
       if (watch.status.pr === "closed") {
-        once(`closed:${row.id}:${watch.number}`, `${pr} was closed without merging.`, attention);
+        once(noteKey("closed", row.id, String(watch.number)), `${pr} was closed without merging.`, attention);
         continue;
       }
       if (row.status === "building") {
@@ -204,25 +260,50 @@ export async function runLeadTick(input: LeadTickInput, ports: LeadTickPorts): P
     } catch {
       continue;
     }
+    // A red CI is said in the line, not as a ping: the PR watch already sends the ci-red notice for it.
     if (watch.status.failed.length) {
-      once(`red:${watch.number}:${head}`, `CI failed on ${pr}: ${watch.status.failed.slice(0, 3).join(", ")}.`, attention);
+      once(noteKey("red", String(watch.number), head), `CI failed on ${pr}: ${watch.status.failed.slice(0, 3).join(", ")}.`, did);
       continue;
     }
     if (!green(watch)) continue;
-    const park = row.securityPark || row.status === "parked" ? "security park" : neverMergeReason({ title: `${row.wp} ${watch.title}`, branch: row.branch });
+    const park =
+      row.securityPark || row.status === "parked"
+        ? "security park"
+        : neverMergeReason({ title: `${row.wp} ${watch.title}`, branch: row.branch, labels: watch.status.labels ?? [] });
     if (park) {
-      once(`park:${watch.number}:${head}`, `${pr} is green but is parked for a security check and is never merged by the tick.`, attention);
+      once(noteKey("park", String(watch.number), head), `${pr} is green but is parked for a security check and is never merged by the tick.`, attention);
       continue;
     }
     if (!input.shipOnGreen) {
-      once(`green:${watch.number}:${head}`, `${pr} is green. Ship on green is off, so it waits for you.`, did);
+      once(noteKey("green", String(watch.number), head), `${pr} is green. Ship on green is off, so it waits for you.`, did);
       continue;
     }
+    // The package is read again just before the merge: a park that landed while CI was being read holds it.
+    let current: ProgrammePackage | undefined;
+    try {
+      current = (await ports.list()).find((r) => r.id === row.id);
+    } catch {
+      continue;
+    }
+    if (!current) continue;
+    if (current.securityPark || current.status === "parked") {
+      once(noteKey("park", String(watch.number), head), `${pr} is green but is parked for a security check and is never merged by the tick.`, attention);
+      continue;
+    }
+    if (current.status === "merged") {
+      did.push(`${current.wp} is already merged (#${watch.number}).`);
+      continue;
+    }
+    row = current;
     let outcome: TickMergeOutcome;
     try {
       outcome = await ports.merge(watch.repo, watch.number);
     } catch (error) {
-      once(`merge-error:${watch.number}:${head}`, `Couldn't merge ${pr}: ${error instanceof Error ? error.message : String(error)}`, attention);
+      once(
+        noteKey("merge-error", String(watch.number), head),
+        `Couldn't merge ${pr}: ${error instanceof Error ? error.message : String(error)}`,
+        attention,
+      );
       continue;
     }
     if (outcome.outcome === "merged") {
@@ -234,9 +315,17 @@ export async function runLeadTick(input: LeadTickInput, ports: LeadTickPorts): P
       ports.outcome(`Merged ${row.wp}: ${row.title} (#${watch.number}).`);
       did.push(`Merged ${row.wp} (#${watch.number}).`);
     } else if (outcome.outcome === "needsYou") {
-      once(`ask:${watch.number}:${outcome.headSha}`, `${pr} needs your word to merge: ${outcome.question}`, attention);
+      once(noteKey("ask", String(watch.number), outcome.headSha), `${pr} needs your word to merge: ${outcome.question}`, attention);
+    } else if (/already merged/i.test(outcome.reason)) {
+      // GitHub already has it: the package is settled, not refused.
+      try {
+        await ports.setStatus(row.id, row.version, "merged");
+      } catch {
+        // The next tick reads the watch and settles the row.
+      }
+      did.push(`${row.wp} is already merged (#${watch.number}).`);
     } else {
-      once(`refused:${watch.number}:${head}:${outcome.reason}`, `${pr} was not merged: ${outcome.reason}`, attention);
+      once(noteKey("refused", String(watch.number), head, outcome.reason), `${pr} was not merged: ${outcome.reason}`, attention);
     }
   }
 
@@ -244,7 +333,6 @@ export async function runLeadTick(input: LeadTickInput, ports: LeadTickPorts): P
   const next = rows.find((row) => row.status === "queued" && !row.securityPark);
   let held = "";
   if (next) {
-    const building = rows.filter((row) => row.status === "building").length;
     const slot = ports.slot(building);
     if (!slot.ok) {
       held = `${next.wp} waits: ${slot.reason}`;
