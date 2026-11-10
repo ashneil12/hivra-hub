@@ -36,7 +36,11 @@ vi.mock("../../core/child", () => ({
       watchers.get(id)?.line(line),
     );
     child.on("exit", (code) => {
-      if (children.get(id) === child) children.delete(id);
+      // Only the child now spawned under this id reports its exit, as the real bridge checks the pid
+      // (isCurrentChildExit). A child an earlier step stopped can exit late on a loaded runner, after the next spawn
+      // has watched the same id, and would fail that new turn with "Claude Code exited".
+      if (children.get(id) !== child) return;
+      children.delete(id);
       watchers.get(id)?.exit(code);
     });
   },
