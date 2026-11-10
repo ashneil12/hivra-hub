@@ -156,6 +156,13 @@ import { useIdleSessionDetach } from "./hooks/useIdleSessionDetach";
 import { HarnessEventQueue } from "./model/harnessFlush";
 import { noteStreamApplied } from "../features/sessions/model/streamingPerformance";
 import { updateSessionState } from "./model/sessionState";
+import {
+  consumeForkPoint,
+  forkFocusedChat,
+  insertFork,
+  pendingForkBrief,
+} from "../features/sessions/model/threadFork";
+import { ThreadForkHost } from "../features/sessions/ui/ThreadForkHost";
 import { beginTabSwitch, commitTabSwitch } from "./model/navigationPerformance";
 import {
   SessionStateContext,
@@ -590,6 +597,7 @@ import {
   shouldAskOutgoingAgent,
   type HandoffComposerCard,
   userMessagesAfterHandoff,
+  wrapForkPrompt,
   wrapHandoffPrompt,
   wrapRecoveredPrompt,
 } from "../features/sessions/model/handoff";
@@ -3511,6 +3519,24 @@ function Workspace({
     attachNewChatWorktree(session.id, cwd, setSessions);
     return session.id;
   }, [appendTab, sessionDefaults?.runtimeMode, sidebarCwd]);
+
+  // WP-123: open a forked chat. The original is not written.
+  const openForkedSession = useCallback(
+    (session: Session) => {
+      updateSessionState(sessionsRef, setSessions, (sessions) =>
+        insertFork(sessions, session),
+      );
+      const tab = newTab(session.id);
+      appendTab(tab, session.cwd);
+      setActiveTabId(tab.id);
+      setComposerFocused(true);
+      setSearchViewOpen(false);
+      setInboxViewOpen(false);
+      setNotesViewOpen(false);
+      setAutomationsViewOpen(false);
+    },
+    [appendTab],
+  );
 
   const onSelectRemoteSession = useCallback(
     (project: string, remoteSessionId: string) => {
@@ -8878,8 +8904,12 @@ function Workspace({
         ...(options?.monoCheck ? { monoCheck: options.monoCheck } : {}),
       };
       const live = isLiveHarness(current.harness);
+      // WP-123: a forked chat's first send carries the chat copied into it; its provider has never seen it. That recap
+      // covers the whole copy, so it stands in for an older handoff recap that came along with the messages.
+      const queuedFork =
+        live && !pendingSwitch ? pendingForkBrief(current) : null;
       const queuedHandoff =
-        live && !pendingSwitch ? pendingHandoff(current) : null;
+        live && !pendingSwitch && !queuedFork ? pendingHandoff(current) : null;
 
       if (current.busy && (pendingSwitch || portableResume)) {
         void cancelHarnessTurn(
@@ -9257,13 +9287,15 @@ function Workspace({
           to: HarnessId;
           text: string;
           portable?: boolean;
+          /** WP-123: a fork's recap, worded as a fork's rather than a handoff's. */
+          fork?: boolean;
         } | null = handoffCard
           ? {
               from: handoffCard.from,
               to: current.harness,
               text: handoffCard.brief,
             }
-          : queuedHandoff;
+          : (queuedFork ?? queuedHandoff);
         if (pendingSwitch) {
           let agentText = "";
           if (
@@ -9451,9 +9483,11 @@ function Workspace({
             : intent === "plan" && !rawCommand
               ? planTurnPrompt(prompt)
               : prompt;
-          const earlier = queuedHandoff
-            ? userMessagesAfterHandoff(current)
-            : [];
+          const earlier = queuedFork
+            ? queuedFork.earlier
+            : queuedHandoff
+              ? userMessagesAfterHandoff(current)
+              : [];
           if (editedResend && canRewindHarnessLastTurn(current.harness)) {
             try {
               await rewindHarnessLastTurn({
@@ -9556,12 +9590,18 @@ function Workspace({
                       turnPrompt.trim() || CONTINUE_PROMPT,
                       earlier,
                     )
-                  : wrapHandoffPrompt(
-                      wrap.text,
-                      wrap.from,
-                      turnPrompt.trim() || CONTINUE_PROMPT,
-                      earlier,
-                    )
+                  : wrap.fork
+                    ? wrapForkPrompt(
+                        wrap.text,
+                        turnPrompt.trim() || CONTINUE_PROMPT,
+                        earlier,
+                      )
+                    : wrapHandoffPrompt(
+                        wrap.text,
+                        wrap.from,
+                        turnPrompt.trim() || CONTINUE_PROMPT,
+                        earlier,
+                      )
                 : turnPrompt,
             ),
           );
@@ -9814,7 +9854,9 @@ function Workspace({
                 ? completeHandoff(s, wrap.text)
                 : s;
               // A command owns its arguments; deliver the recap with the next chat prompt.
-              return rawCommand ? ready : consumeHandoff(ready);
+              return rawCommand
+                ? ready
+                : consumeForkPoint(consumeHandoff(ready));
             });
             setSessions(sessionsRef.current);
           }
@@ -16055,6 +16097,12 @@ function Workspace({
   };
   const paletteStopTargetRef = useRef<string | null>(null);
   paletteStopTargetRef.current = paletteStopTarget;
+  // WP-123: the chat Fork from here acts on: the one in view, and none while a file tab is.
+  const paletteForkTargetRef = useRef<string | null>(null);
+  paletteForkTargetRef.current =
+    activeSessionId && !(activeFile && isFilesystemTab(activeFile))
+      ? activeSessionId
+      : null;
   const runPaletteCommandFromFinder = useCallback(
     (row: Parameters<typeof runPaletteRow>[0]) =>
       runPaletteCommand(row, actions.current, {
@@ -16087,6 +16135,12 @@ function Workspace({
         editor: (action) => {
           if (action === "replace") openReplaceInActiveEditor();
           else openFindInActiveEditor();
+        },
+        // WP-123: fork the chat in focus from its latest message.
+        forkChat: () => {
+          const id = paletteForkTargetRef.current;
+          if (!id) return;
+          forkFocusedChat(sessionsRef.current.find((session) => session.id === id));
         },
       }),
     [run, onShowSourceControl, onStopFromUser, onArchiveFocusedSession],
@@ -18308,6 +18362,8 @@ function Workspace({
             onOpenSettings={() => openSettings("general", "notifications")}
             onHeightChange={setReminderNoticesHeight}
           />
+          {/* WP-123: fork a chat from one message. */}
+          <ThreadForkHost sessionsRef={sessionsRef} onOpen={openForkedSession} />
           {whatsNewVersion ? (
             <WhatsNewDialog
               version={whatsNewVersion}

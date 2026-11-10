@@ -19,6 +19,7 @@ import { Composer } from "./Composer";
 import { PrivateMark } from "./PrivateMark";
 import { MidThreadSwitchNotice } from "./MidThreadSwitchNotice";
 import { NewChatWorktreeBanner } from "./NewChatWorktreeBanner";
+import { askThreadFork } from "../model/threadForkAsk";
 import type { Worktree } from "../../source-control/model/worktrees";
 import {
   orchestrationCheckoutCwd,
@@ -1212,6 +1213,7 @@ const LocalSessionPane = memo(function LocalSessionPane({
                           }
                         : undefined
                     }
+                    onForkFromHere={(blockId) => askThreadFork(session.id, blockId)}
                     latestTurnAccessory={
                       // A Mono's chat: a new Mono or team it drafted sits after its reply, in the messages (r29, A6).
                       agent ? (
