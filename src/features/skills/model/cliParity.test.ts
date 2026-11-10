@@ -8,6 +8,7 @@ import {
   hiddenFromSentence,
   loadParityReport,
   readFailureNotice,
+  skillCopyPlan,
   skillNameFromMarkdown,
   skillSwitchNotice,
   tomlMcpServers,
@@ -422,6 +423,7 @@ describe("fixture project folders", () => {
     expect(shared).toMatchObject({ place: "agents", scope: "project", sharedFile: true, path: ".agents/skills/shared-review/SKILL.md" });
     expect(shared?.readers).toEqual(expect.arrayContaining(["claude", "codex", "cursor"]));
     expect(report.skills.filter((skill) => skill.name === "shared-review")).toHaveLength(1);
+    expect(skillCopyPlan(report)).toEqual([]);
     expect(hiddenFromSentence(report, "shared-review")).toBeNull();
     expect(hiddenFromSentence(report, "review-only")).toBe("This will not be visible to Codex or Cursor.");
     expect(hiddenFromSentence(report, "my-skill")).toBe("This will not be visible to Claude Code.");
@@ -474,6 +476,54 @@ describe("fixture project folders", () => {
     const report = await loadParityReport(project, home, nodeFs(), root);
     expect(report.rules.find((rule) => rule.path === "CLAUDE.md")).toMatchObject({ pointer: true, readers: ["claude"] });
     expect(skillSwitchNotice("claude", "codex", "Codex", report)).toBeNull();
+  });
+});
+
+describe("skill copies", () => {
+  const shared = {
+    name: "review",
+    path: ".agents/skills/review/SKILL.md",
+    scope: "project" as const,
+    place: "agents" as const,
+    readers: ["codex", "cursor", "opencode", "pi"],
+    sharedFile: true,
+  };
+  const claudeOnly = {
+    name: "review-only",
+    path: ".claude/skills/review-only/SKILL.md",
+    scope: "project" as const,
+    place: "claude" as const,
+    readers: ["claude"],
+    sharedFile: false,
+  };
+
+  it("does not copy a shared skill into another CLI folder or a new file type", () => {
+    const report: ParityReport = {
+      skills: [
+        shared,
+        { ...shared, path: "~/.agents/skills/review/SKILL.md", scope: "user" },
+        { ...shared, path: ".agents\\skills\\review\\SKILL.md" },
+        claudeOnly,
+        {
+          name: "escape",
+          path: "../../etc/skills/escape/SKILL.md",
+          scope: "project",
+          place: "claude",
+          readers: ["claude"],
+          sharedFile: false,
+        },
+      ],
+      mcp: [],
+      rules: [],
+    };
+    const plan = skillCopyPlan(report);
+    expect(plan).toEqual([]);
+    expect(skillCopyPlan({ skills: [], mcp: [], rules: [] })).toEqual([]);
+    const destinations = plan.map((copy) => copy.to).join("\n");
+    expect(destinations).not.toContain(".codex/skills");
+    expect(destinations).not.toContain(".cursor/skills");
+    expect(destinations).not.toContain("..");
+    expect(destinations).not.toMatch(/\.hivra\b/);
   });
 });
 

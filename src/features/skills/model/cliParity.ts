@@ -144,6 +144,25 @@ export function skillSwitchNotice(
   return `This will not be visible to ${CLI_LABEL[target]}: ${dropped.join(", ")}.`;
 }
 
+export type SkillCopy = { from: string; to: string };
+
+/**
+ * Files this package would write so another CLI can see a skill.
+ * A skill already in `.agents/skills` is the shared file. Nothing is copied
+ * into a CLI folder, and no new skill file type is introduced.
+ */
+export function skillCopyPlan(report: ParityReport): SkillCopy[] {
+  const copies: SkillCopy[] = [];
+  for (const skill of report.skills) {
+    const path = skill.path.replace(/\\/g, "/");
+    const shared = skill.sharedFile || path.includes(".agents/skills/");
+    if (!shared) continue;
+    // Codex, Cursor, OpenCode and Pi already read this file. A second body
+    // under `.codex/skills` or `.cursor/skills` would be a different file.
+  }
+  return copies;
+}
+
 /** CLIs in the panel that will not load a skill of this name. */
 export function skillHiddenFrom(report: ParityReport, name: string): ParityCli[] {
   return PANEL_CLIS.filter(
