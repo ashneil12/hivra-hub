@@ -38,6 +38,7 @@ export type SettingsSectionId =
   | "changes"
   | "decisions"
   | "activity"
+  | "repo-watch"
   | "usage"
   | "connected"
   | "dashboards"
@@ -114,6 +115,14 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
     description:
       "What agents and the app did, newest first. Kept for 90 days.",
     keywords: "activity log audit history who did what",
+  },
+  {
+    id: "repo-watch",
+    group: "app",
+    label: "Repo watch",
+    description:
+      "Pinned upstream repositories for this project, and a weekly check for what changed.",
+    keywords: "repo watch pin upstream github import licence",
   },
   {
     id: "usage",

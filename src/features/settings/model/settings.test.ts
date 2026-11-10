@@ -714,6 +714,7 @@ describe("settings navigation", () => {
       "changes",
       "decisions",
       "activity",
+      "repo-watch",
       "usage",
       "connected",
       "dashboards",

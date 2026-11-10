@@ -3,6 +3,8 @@ use tauri::Manager;
 mod account_identity;
 // WP-78: the activity log.
 mod activity;
+// WP-166: pinned upstream repos and the weekly check.
+mod repo_watch;
 // WP-86: commit attribution. Not a numbered migration.
 mod artifacts;
 mod attribution;
@@ -1178,6 +1180,9 @@ pub fn run() {
             project_logo::forget_logo_file,
             // WP-78: Settings → Activity.
             activity::activity_list,
+            // WP-166: project pin list and the upstream check.
+            repo_watch::repo_watch_load,
+            repo_watch::repo_watch_cas,
             // WP-86: commits on a task, and the agents behind a pull request.
             attribution::attribution_for_task,
             attribution::attribution_for_commits,
