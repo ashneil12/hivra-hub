@@ -399,6 +399,9 @@ describe("a tool approval under autopilot", () => {
         "../README.md",
         "/tmp/notes.txt",
         "/Users/ash/Documents/plan.md",
+        // A project that ships its own startup file: the read tool names it absolutely, and it is the project's.
+        `${FOLDER}/.zshrc`,
+        `${FOLDER}/src/.profile`,
       ])
         expect(approvalVerdict(read("Read", [path]), FOLDER), path).toMatchObject({ kind: "allow" });
       // No path at all, as with Grep, Glob and LS: nothing to judge, so the tool is read as before.

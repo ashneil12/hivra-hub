@@ -384,6 +384,30 @@ describe("a home file under another spelling (fix round 4, finding 1)", () => {
     expect(credentialInWords(["cat", ".zshrc"], "/Users/ash")).not.toBeNull();
   });
 
+  // A backup or a local copy of a startup file carries the same exports under another name.
+  it("holds a backup, a local copy or an editor copy of a startup file", () => {
+    for (const name of [".zshrc.bak", ".zshrc.local", ".zshrc.pre-oh-my-zsh", ".zshrc~", ".zshrc.swp", ".bashrc.save", ".bashrc_local", ".profile.old", ".zshenv.bak", ".bash_profile-backup", ".zprofile.d"])
+      for (const word of [`~/${name}`, `/Users/someone/${name}`, `/./users/someone/${name}`])
+        expect(credentialInWords(["cat", word]), word).not.toBeNull();
+    for (const name of [".zshrcfoo", ".profiled", ".bashrc2", ".loginitems", "zshrc.bak", "notes.zshrc.txt"])
+      expect(credentialInWords(["cat", `~/${name}`]), name).toBeNull();
+  });
+
+  // An absolute path inside the chat's own folder is the chat's file, like the relative name. A read tool always gives
+  // an absolute path, so a project that ships its own `.profile` or `.bashrc` is not held for it.
+  it("lets the chat's own copy of a startup file through when it is named by its absolute path", () => {
+    for (const word of [`${FOLDER}/.zshrc`, `${FOLDER}/src/.bashrc`, `${FOLDER}/./.profile`, "/users/ash/worktrees/hub-x/.zshrc", `${FOLDER}/x/../.zshrc`, `${FOLDER}/Library/Preferences/x.plist`])
+      expect(credentialInWords(["cat", word], FOLDER), word).toBeNull();
+    // Out of the folder by a climb, or into a folder that only starts the same, it is held.
+    for (const word of [`${FOLDER}/../.zshrc`, `${FOLDER}/../../.zshrc`, `${FOLDER}-copy/.zshrc`, `${FOLDER.replace("hub-x", "hub-xy")}/.zshrc`, "/Users/ash/.zshrc", `${FOLDER}/../../Library/Preferences/x.plist`])
+      expect(credentialInWords(["cat", word], FOLDER), word).not.toBeNull();
+    // With no folder to compare to, the absolute name is held as before; so is a folder as shallow as a home folder.
+    expect(credentialInWords(["cat", `${FOLDER}/.zshrc`])).not.toBeNull();
+    expect(credentialInWords(["cat", "/Users/ash/.zshrc"], "/Users/ash")).not.toBeNull();
+    expect(credentialInWords(["cat", "/Users/ash/.zshrc"], "/Users")).not.toBeNull();
+    expect(credentialInWords(["cat", "/Users/ash/.zshrc"], "/")).not.toBeNull();
+  });
+
   it("lets through what is not a home shell file, whatever the spelling", () => {
     for (const word of [
       "/./Users/someone/notes.txt",

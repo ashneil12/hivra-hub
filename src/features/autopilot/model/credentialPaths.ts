@@ -278,9 +278,16 @@ function underHome(parts: readonly string[]): boolean {
 
 const preferencesIn = (parts: readonly string[]) => parts.some((part, i) => part === "library" && parts[i + 1] === "preferences");
 
+/** A startup file's name, or a backup, a local copy or an editor copy of one (`.zshrc.bak`, `.zshrc.local`, `.zshrc~`). */
+function shellRcName(name: string): boolean {
+  if (SHELL_RC.has(name)) return true;
+  for (const rc of SHELL_RC) if (name.startsWith(rc) && /^[._~-]/.test(name.slice(rc.length))) return true;
+  return false;
+}
+
 /** Whether absolute parts are a shell startup file or a preferences file under a home folder. */
 function homeShellParts(parts: readonly string[]): boolean {
-  return underHome(parts) && (SHELL_RC.has(parts[parts.length - 1] ?? "") || preferencesIn(parts));
+  return underHome(parts) && (shellRcName(parts[parts.length - 1] ?? "") || preferencesIn(parts));
 }
 
 /** The chat's folder as folded absolute parts, or null when there is none. */
@@ -293,21 +300,24 @@ function foldedFolder(folder: string | undefined): string[] | null {
 /**
  * Whether a word is a shell startup file or a preferences file under a home folder. The word is resolved first (`.`,
  * `..`, repeated slashes, any case, the Mac's other names for a home folder), so `/./Users/me/.zshrc` and
- * `/users/me/.zshrc` are the file `/Users/me/.zshrc` is. A relative name stays the chat's own file unless it climbs out
- * of the folder: with the folder known it is resolved against it (`../../.zshrc` from `/Users/me/work/x` is the home
- * file); with none, a climb that ends at a startup file is held. History files are already credential names.
+ * `/users/me/.zshrc` are the file `/Users/me/.zshrc` is. A name inside the chat's own folder (deep enough to be a
+ * project, so not `/Users/me` itself) is the chat's file, absolute or relative. A relative name that climbs out of the
+ * folder is resolved against it (`../../.zshrc` from `/Users/me/work/x` is the home file); with no folder known, a
+ * climb that ends at a startup file is held. A backup or local copy of a startup file counts as one. History files
+ * are already credential names.
  */
 function homeShellFile(word: string, folder?: string): boolean {
   const { segments, rooted, climbs } = resolvePath(fold(word));
-  if (rooted) return homeShellParts(segments);
   const base = foldedFolder(folder);
-  if (!base) return climbs && (SHELL_RC.has(segments[segments.length - 1] ?? "") || preferencesIn(segments));
+  // Inside a folder deep enough to be a project, a file named like a startup file is the project's own. A read tool
+  // always names its file absolutely, so this holds for an absolute path too.
+  const ownFile = (parts: readonly string[]) => base !== null && base.length >= MIN_PROJECT_DEPTH && startsWith(parts, base);
+  if (rooted) return !ownFile(segments) && homeShellParts(segments);
+  if (!base) return climbs && (shellRcName(segments[segments.length - 1] ?? "") || preferencesIn(segments));
   const up = segments.findIndex((part) => part !== "..");
   const lead = up < 0 ? segments.length : up;
   const full = [...base.slice(0, Math.max(0, base.length - lead)), ...segments.slice(lead)];
-  // Inside a folder deep enough to be a project, a file named like a startup file is the project's own.
-  if (base.length >= MIN_PROJECT_DEPTH && startsWith(full, base)) return false;
-  return homeShellParts(full);
+  return !ownFile(full) && homeShellParts(full);
 }
 
 /**
