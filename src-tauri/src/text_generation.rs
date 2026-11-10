@@ -104,10 +104,13 @@ fn post_chat(url: &str, token: &str, body: &str, deadline: Duration) -> PostResu
     }
 }
 
-/// A saved key of 8 or more characters must not come back in the prompt, the body or the reply.
-/// Shorter than that, a substring check hits ordinary words ("model", "max_tokens") and refuses a good ask.
+/// The shortest key short text will use. Real provider keys are longer.
+const MIN_KEY_CHARS: usize = 8;
+
+/// A key must not come back in the prompt, the body or the reply. A shorter key is refused before this
+/// runs, because a substring check on a few characters hits ordinary words ("model", "max_tokens").
 fn holds_token(token: &str, text: &str) -> bool {
-    token.len() >= 8 && text.contains(token)
+    token.chars().count() >= MIN_KEY_CHARS && text.contains(token)
 }
 
 /// A name that holds a secret: pass, password, pwd, secret, token, api key and the like, in snake,
@@ -668,6 +671,13 @@ pub fn text_complete(
         Ok(token) => token,
         Err(_) => return refused("That model can't be used for this."),
     };
+    // A key shorter than this cannot be told apart from a word in the prompt or the reply, so
+    // `holds_token` cannot guard it. It is refused for this call, not sent.
+    if token.chars().count() < MIN_KEY_CHARS {
+        return refused(
+            "That key is too short to use here. Save the provider's full key under Other models.",
+        );
+    }
     if holds_token(&token, prompt) {
         return refused("That text contained a secret, so it was not sent.");
     }
@@ -874,12 +884,12 @@ mod tests {
             chat_reply(r#"{"choices":[{"message":{"content":"  "}}]}"#),
             PostResult::Status(200)
         );
-        let blank = ask(&xai(), "Say hi", Some("k"), |_, _, _| {
+        let blank = ask(&xai(), "Say hi", Some("test-key1"), |_, _, _| {
             PostResult::Answer("  \n".into())
         });
         assert_eq!(blank.kind, "empty");
         assert!(blank.text.is_empty());
-        let shape = ask(&xai(), "Say hi", Some("k"), |_, _, _| {
+        let shape = ask(&xai(), "Say hi", Some("test-key1"), |_, _, _| {
             PostResult::Status(200)
         });
         assert_eq!(shape.kind, "empty");
@@ -893,7 +903,7 @@ mod tests {
         let cases = [secret, " ".into(), "é".repeat(PROMPT_LIMIT + 1)];
         for prompt in cases {
             let mut called = false;
-            let outcome = ask(&xai(), &prompt, Some("k"), |_, _, _| {
+            let outcome = ask(&xai(), &prompt, Some("test-key1"), |_, _, _| {
                 called = true;
                 PostResult::Unreachable
             });
@@ -909,7 +919,7 @@ mod tests {
         ];
         for route in blocked {
             let mut called = false;
-            let outcome = ask(&route, "Say hi", Some("k"), |_, _, _| {
+            let outcome = ask(&route, "Say hi", Some("test-key1"), |_, _, _| {
                 called = true;
                 PostResult::Unreachable
             });
@@ -934,10 +944,15 @@ mod tests {
         assert!(!claude.text.contains("sk-ant"));
 
         let mut called = false;
-        let edge = ask(&xai(), &"é".repeat(PROMPT_LIMIT), Some("k"), |_, _, _| {
-            called = true;
-            PostResult::Answer("ok".into())
-        });
+        let edge = ask(
+            &xai(),
+            &"é".repeat(PROMPT_LIMIT),
+            Some("test-key1"),
+            |_, _, _| {
+                called = true;
+                PostResult::Answer("ok".into())
+            },
+        );
         assert!(called);
         assert!(edge.ok);
         assert_eq!(edge.text, "ok");
@@ -1033,9 +1048,48 @@ mod tests {
     }
 
     #[test]
+    fn a_key_shorter_than_eight_characters_is_not_used() {
+        // A short key cannot be told apart from a word in the reply, so it is refused, not sent.
+        for key in ["k", "hunter", "1234567", " abc ", "\u{4e2d}\u{6587}", ""] {
+            let mut called = false;
+            let outcome = ask(&xai(), "Say hi", Some(key), |_, _, _| {
+                called = true;
+                PostResult::Answer("A title".into())
+            });
+            assert!(!called, "{key:?}");
+            assert_eq!(outcome.kind, "refused", "{key:?}");
+            assert!(outcome.text.is_empty());
+            if !key.trim().is_empty() {
+                assert_eq!(
+                    outcome.reason,
+                    "That key is too short to use here. Save the provider's full key under Other models."
+                );
+                // The sentence never echoes the key. (A single letter would match the word "key".)
+                if key.trim().chars().count() > 2 {
+                    assert!(!outcome.reason.contains(key.trim()));
+                }
+            }
+        }
+        // Eight characters is the floor, and Ollama has no key to check.
+        let mut called = false;
+        let edge = ask(&xai(), "Say hi", Some("12345678"), |_, _, _| {
+            called = true;
+            PostResult::Answer("A title".into())
+        });
+        assert!(called && edge.ok);
+        let local = route("ollama", "http://localhost:11434", "llama3.2");
+        assert!(
+            ask(&local, "Say hi", None, |_, _, _| PostResult::Answer(
+                "x".into()
+            ))
+            .ok
+        );
+    }
+
+    #[test]
     fn a_timeout_or_a_busy_provider_can_be_tried_again() {
         for code in [408_u16, 429, 500, 599] {
-            let outcome = ask(&xai(), "Say hi", Some("k"), |_, _, _| {
+            let outcome = ask(&xai(), "Say hi", Some("test-key1"), |_, _, _| {
                 PostResult::Status(code)
             });
             assert!(!outcome.ok);
@@ -1043,13 +1097,13 @@ mod tests {
             assert!(outcome.reason.contains("tried again"), "{code}");
             assert!(outcome.text.is_empty());
         }
-        let down = ask(&xai(), "Say hi", Some("k"), |_, _, _| {
+        let down = ask(&xai(), "Say hi", Some("test-key1"), |_, _, _| {
             PostResult::Unreachable
         });
         assert_eq!(down.kind, "timeout");
         assert!(down.reason.contains("tried again"));
         for code in [400_u16, 401, 403, 404] {
-            let outcome = ask(&xai(), "Say hi", Some("k"), |_, _, _| {
+            let outcome = ask(&xai(), "Say hi", Some("test-key1"), |_, _, _| {
                 PostResult::Status(code)
             });
             assert_eq!(outcome.kind, "refused", "{code}");
