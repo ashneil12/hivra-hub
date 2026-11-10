@@ -203,6 +203,7 @@ import {
   type OrchestrationProposal,
 } from "../features/orchestration/model/orchestrationPlan";
 import { discoverOrchestrationSettings } from "../features/orchestration/model/orchestrationCatalog";
+import { watchDecisions } from "../features/orchestration/model/decisionWatch";
 import {
   attachOrchestrationWorkers,
   consolidateOrchestrationTabs,
@@ -904,6 +905,7 @@ import { appPolicy } from "./model/appIdentity";
 import {
   claimVerifyKickoff,
   pendingVerifyKickoff,
+  traceVerifyKickoff,
   verifyKickoffMono,
   verifyRun,
   watchVerifyMessages,
@@ -916,6 +918,7 @@ import {
 } from "../features/monos/model/delegationStore";
 import {
   holdForLimit,
+  nextHealthCheck,
   nextWake,
   planHeld,
   pumpWorkers,
@@ -9982,15 +9985,43 @@ function Workspace({
     [submitSession],
   );
 
+  /**
+   * The bench's way into a Mono's chat (below): open the Mono as Ash's click does, then the chat to type into, which is
+   * the Mono's own. While its chat loads, something else at startup (a tab the window restores) can take the view, which
+   * leaves the view empty or on another chat; the message still goes to the Mono it was meant for.
+   */
+  const openVerifyMonoChat = useCallback(
+    async (monoId: string) => {
+      await onOpenMono(monoId);
+      const view = monoViewIdRef.current;
+      const own = findMono(monoId)?.sessionId ?? null;
+      return { view, own, chat: own ?? view };
+    },
+    [onOpenMono],
+  );
+
   // The fake-Claude test bench (scripts/hub-verify-live.mjs): a dev copy with a verify plan opens a Mono on the plan's
   // scratch project and sends its first message, once per run. No plan reaches the daily app (src/verify_live.rs).
   const verifyKickoffStarted = useRef(false);
+  const verifyKickoffNoted = useRef(false);
   useEffect(() => {
-    if (verifyKickoffStarted.current || windowTransfer) return;
+    if (verifyKickoffStarted.current) return;
+    if (windowTransfer) {
+      traceVerifyKickoff("held-by-window-transfer");
+      return;
+    }
     const kickoff = pendingVerifyKickoff();
-    if (!kickoff) return;
+    if (!kickoff) {
+      // A plan whose kickoff this window won't send (already claimed by an earlier launch of the run, or none).
+      if (!verifyKickoffNoted.current && verifyRun()) traceVerifyKickoff("not-pending");
+      verifyKickoffNoted.current = true;
+      return;
+    }
     verifyKickoffStarted.current = true;
     claimVerifyKickoff(kickoff.runId);
+    traceVerifyKickoff("claimed", { monoId: kickoff.monoId ?? null, project: kickoff.project });
+    // Each change in what the window knows of the Mono it waits for, so a kickoff that never goes says why.
+    let seen = "";
     void verifyKickoffMono(kickoff, {
       create: (project, name) => {
         const mono = createMono([project]);
@@ -10000,18 +10031,30 @@ function Workspace({
       // A plan naming an existing Mono waits until the hub has tied it to the project.
       ready: (monoId, project) => {
         const mono = findMono(monoId);
+        const state = JSON.stringify({ found: !!mono, projects: mono?.projects ?? [], monos: listMonos().length });
+        if (state !== seen) {
+          seen = state;
+          traceVerifyKickoff("mono-state", JSON.parse(state) as Record<string, unknown>);
+        }
         return !!mono && monoWorksOn(mono, project);
       },
     }).then(async (monoId) => {
       if (!monoId) {
+        traceVerifyKickoff("gave-up", { seen });
         console.error(`verify kickoff: ${kickoff.monoId} never worked on ${kickoff.project}`);
         return;
       }
-      await onOpenMono(monoId);
-      const sessionId = monoViewIdRef.current;
-      if (sessionId) onSubmit(sessionId, kickoff.prompt);
+      traceVerifyKickoff("opening", { monoId });
+      const { view, own, chat } = await openVerifyMonoChat(monoId);
+      // "sending-to-mono-chat": the open lost the view to something else, so the send names the Mono's chat itself.
+      traceVerifyKickoff(!chat ? "no-chat-open" : chat === view ? "sending" : "sending-to-mono-chat", {
+        monoId,
+        view,
+        monoChat: own,
+      });
+      if (chat) onSubmit(chat, kickoff.prompt);
     });
-  }, [onOpenMono, onSubmit, windowTransfer]);
+  }, [openVerifyMonoChat, onSubmit, windowTransfer]);
   // ...and Ash's messages the bench sends mid-run (WP-04: the plan's messages file, verify_live.rs): each into its Mono's chat, as
   // he would type it there, once per run.
   useEffect(() => {
@@ -10034,17 +10077,17 @@ function Workspace({
         if (message.newMono) {
           const mono = createMono(message.newMono.project ? [message.newMono.project] : []);
           saveMonoName(mono.id, message.newMono.name);
-          await onOpenMono(mono.id);
-          const sessionId = monoViewIdRef.current;
-          if (sessionId) onSubmit(sessionId, message.prompt);
+          const { chat } = await openVerifyMonoChat(mono.id);
+          if (!chat) throw new Error(`no chat for the new Mono ${message.newMono.name}`);
+          onSubmit(chat, message.prompt);
           return;
         }
-        await onOpenMono(message.monoId);
-        const sessionId = monoViewIdRef.current;
-        if (sessionId) onSubmit(sessionId, message.prompt);
+        const { chat } = await openVerifyMonoChat(message.monoId);
+        if (!chat) throw new Error(`no chat for ${message.monoId}`);
+        onSubmit(chat, message.prompt);
       },
     });
-  }, [onOpenMono, onSubmit, startCodingTeamChat, windowTransfer]);
+  }, [openVerifyMonoChat, onSubmit, startCodingTeamChat, windowTransfer]);
 
   // onApproval is created once; it reaches the current helper through this.
   const decideMonoBlockRef = useRef<
@@ -12930,6 +12973,8 @@ function Workspace({
           harness,
           models: modelsFor(harness).map(({ id, name }) => ({ id, name })),
         })),
+      // WP-91: an irreversible step's decision sits under the hub project of the run's folder, like a delegation does.
+      decisionProject: hubProjectIdFor,
       createWorker: async (run, task) => {
         const projectCwd = orchestrationProjectCwd(run);
         const leadCheckoutCwd = orchestrationCheckoutCwd(run);
@@ -13307,6 +13352,16 @@ function Workspace({
     orchestrator.sync();
   }, [sessions]);
 
+  // WP-91: a decision answered anywhere (the Inbox, Home or a chat) starts the irreversible step that waited on it.
+  useEffect(
+    () =>
+      watchDecisions(
+        (event, handler) => listen(event, () => handler()),
+        () => orchestrator.decisionsChanged(),
+      ),
+    [],
+  );
+
   const stopSessionRef = useRef(onStop);
   stopSessionRef.current = onStop;
   onStopRef.current = onStop;
@@ -13375,11 +13430,14 @@ function Workspace({
   }, [sessions, pumpWorkersNow]);
   useEffect(() => {
     const offRows = subscribeDelegations(pumpWorkersNow);
-    const offPool = subscribeWorkerPool(pumpWorkersNow);
     // A provider's reset changes no row: look again then, and now and then anyway.
     let timer = 0;
     const arm = () => {
-      const wake = nextWake(providerRoomNow, Date.now());
+      // WP-161: waiting builders also look at the machine again soon, so a pause that clears starts them, and the
+      // Needs you line for a held disk reads a fresh sample.
+      const resets = nextWake(providerRoomNow, Date.now());
+      const recheck = nextHealthCheck(Date.now());
+      const wake = resets === undefined ? recheck : recheck === undefined ? resets : Math.min(resets, recheck);
       timer = window.setTimeout(
         () => {
           pumpWorkersNow();
@@ -13388,6 +13446,13 @@ function Workspace({
         Math.min(60_000, Math.max(1_000, (wake ?? Infinity) - Date.now())),
       );
     };
+    // WP-161: a builder joining the queue (or a health read landing) sets the next look again, so a wait that began
+    // after the timer was set is not left to the 60 second cap.
+    const offPool = subscribeWorkerPool(() => {
+      pumpWorkersNow();
+      window.clearTimeout(timer);
+      arm();
+    });
     arm();
     return () => {
       offRows();
@@ -16882,6 +16947,8 @@ function Workspace({
     openNotes: () => homeOpenRef.current.onOpenNotes(),
     openSession: (id) => { void homeOpenRef.current.onSelectHistorySession(id); },
     openTeam: (projectId) => homeOpenRef.current.openCodingTeam(projectId),
+    // WP-161: a Needs you line about the machine (new builders waiting on disk) opens Settings where it says so.
+    openSettings: (section, anchor) => openSettings(section, anchor),
     projects: () => hubData().listProjects(),
   });
   // r63 (PM, 0.16.3): Pages (an automations-view mode) and Coding team were highlighted at once. Any view that covers

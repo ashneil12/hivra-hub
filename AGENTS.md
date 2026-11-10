@@ -213,8 +213,14 @@ daily app. Its window says `Hivra Dev - <branch> @ <sha>` and carries a DEV ribb
 - **Port:** 1430 + 10 × (hash of the slot mod 50), the next free one in that grid if taken; never 1420. The generated
   `target/hub-dev/<slot>.conf.json` sets `devUrl` and `devCsp` (the base devCsp only allows 1420) and hands vite the
   port through `MONOCODE_VITE_PORT` in its own command.
-- **Rust build cache:** `CARGO_BUILD_BUILD_DIR=~/Library/Caches/monocode-hub/cargo-build` (hub:dev and hub:build), shared
-  by every worktree; each keeps its own `target/` for the final binary and bundle. Two builds at once wait for each other.
+- **Rust build cache:** `CARGO_BUILD_BUILD_DIR=~/Library/Caches/monocode-hub/cargo-build` (hub:dev, hub:build and
+  `npm run check:rust`), shared by every worktree; each keeps its own `target/` for the final binary and bundle. Two builds
+  at once wait for each other. CI keeps its own `target/`; `MONOCODE_OWN_TARGET=1` does the same for one local run.
+- **Disk floor:** `check:rust` and `hub:build` refuse to start (exit 75) under 30 GB free on the home volume
+  (`scripts/disk-guard.mjs`; `MONOCODE_DISK_FLOOR_GB` changes it, 0 turns it off). On 10 Nov 2026 about 90 worktrees, each
+  with its own 9-12 GB `target/`, filled the disk. `npm run hub:clean -- --yes` also clears the build output (`target/`,
+  `src-tauri/target`, `test-results/`, `playwright-report/`, a real `node_modules`) of a worktree that is kept but clean
+  and pushed; never a linked `node_modules`, a dirty or unpushed tree, or one something is running in.
 - **Hub data:** the dev copy keeps it in its own database, like the daily app (no Ash OS; see "Ash OS is retired").
 - **Seed (`npm run hub:seed-dev`, or `hub:dev -- --seed`):** an online SQLite backup of the daily `monocode.db`, opened
   read-only, then in the copy only: in-flight turns, queued messages, the tab snapshot, pending worktree removals,
@@ -244,8 +250,23 @@ store from the page's own localStorage, `monocode:dev-local-hub:<key>`). It has 
   the file in a branch changes nothing. Agents use `app actions.list` / `app actions.run`.
 - `scripts/setup-worktree.mjs` links `node_modules` from the main checkout when the lockfiles match (else `npm ci`) and
   links missing env files; it never replaces a real file and never writes through a link.
-- Settings > Worktrees > Clean up reports every worktree in `~/Worktrees`; nothing is removed without Ash's tap.
-  `monocode worktrees-report` prints the same report read-only. Never delete a worktree or its `target/` by hand.
+- Settings > Worktrees > Clean up reports every worktree in `~/Worktrees` (its size and how much of it is build
+  output); nothing is removed without Ash's tap. `monocode worktrees-report` prints the same report read-only. Never
+  delete a worktree or its `target/` by hand.
+- **A finished worktree gives its build output back by itself** (`src-tauri/src/worktree_autoclean.rs`; the daily app
+  only, a dev copy never runs it). Every 15 minutes, and 2 minutes after launch, it sweeps `~/Worktrees` and the
+  worktrees the app knows (chats, PR watches). A worktree is **finished** when a pull request from its branch merged or
+  closed with this exact commit as its head (the PR watch, else `gh pr list`, asked at most hourly per commit), or every
+  delegated task in it is accepted and its commit is in the branch's upstream, or its branch is merged into the mainline
+  with its commit on a remote. It must also be a linked worktree (never the main checkout) with an empty
+  `git status`, nothing running in it (an agent, terminal, project action, chat turn, dev copy, a cargo build holding
+  `.cargo-lock`, or any process of Ash's whose working folder is inside it, read with `lsof` just before the delete) and
+  untouched for 10 minutes. When those working folders can't be read (lsof fails, or on Windows, which can't say) the
+  sweep deletes nothing. Then only `target/`, `src-tauri/target/`, `test-results/`,
+  `playwright-report/` and every `node_modules/` that is a real folder go (a linked `node_modules` stays), each only
+  when git ignores it and tracks nothing in it. Each worktree is checked again under the removal reservation. The
+  switch is Settings > Worktrees > "Clear build output of finished worktrees", on by default, kept in
+  `<data>/worktree-autoclean.json` (a file it can't read means off).
 
 ## Signing (why the app kept asking for your password)
 
