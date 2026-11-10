@@ -375,6 +375,7 @@ pub(crate) fn parse_file_list(body: &str) -> Result<FileList, ()> {
     }
     let mut paths = Vec::new();
     let mut filenames = 0usize;
+    let mut current = std::collections::HashSet::new();
     for line in body.split(['\n', '\r']) {
         let line = line.trim();
         if line.is_empty() || line == "null" {
@@ -388,6 +389,10 @@ pub(crate) fn parse_file_list(body: &str) -> Result<FileList, ()> {
             continue;
         }
         if is_filename {
+            // A name listed twice would count as two files. The list is not the whole diff, so it is unread.
+            if !current.insert(path.clone()) {
+                return Err(());
+            }
             filenames += 1;
         }
         if paths.iter().any(|seen: &String| seen == &path) {
@@ -624,7 +629,7 @@ mod tests {
             ]
         );
         assert_eq!(
-            listed("src/a.rs\r\nsrc/a.rs\r\nnull\r\n\r\n").unwrap(),
+            listed("src/a.rs\r\nnull\r\n\r\n").unwrap(),
             vec!["src/a.rs".to_string()]
         );
         assert_eq!(
