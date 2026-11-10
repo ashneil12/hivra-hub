@@ -98,7 +98,11 @@ beforeEach(() => {
   extraRoots = [];
   vi.clearAllMocks();
   invokeMock.mockReset();
-  invokeMock.mockRejectedValue(new Error("No native side in a test."));
+  // The programme board is read before every morning run: answer it with an empty board, not a failure.
+invokeMock.mockImplementation(async (command: string) => {
+  if (command === "programme_list") return [];
+  throw new Error("No native side in a test.");
+});
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   const values = new Map<string, string>();
   vi.stubGlobal("localStorage", {
@@ -690,6 +694,7 @@ function yesterday() {
 
 it("tells the morning run what finished yesterday, newest first, for this Mono's own project", async () => {
   invokeMock.mockImplementation(async (command: string) => {
+    if (command === "programme_list") return [];
     if (command !== "work_log_read") throw new Error(`unexpected ${command}`);
     return [
       logRow({ line: "Done: first thing." }),

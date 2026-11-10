@@ -4,12 +4,18 @@ import { newSession, type Session } from "../../sessions/model/session";
 import { handleAgentApp, type AgentAppHost } from "../../agent-app/model/agentApp";
 import { CHECKER_MONO_ID } from "../../hub/model/hubMcp";
 import {
+  READ_NOTICE_AFTER,
   WORKER_REASON,
   applyProgrammeLoad,
+  clipText,
   collectProgramme,
   handleProgramme,
   programmeGroup,
+  programmeShows,
   readPackage,
+  retryDelayMs,
+  shownRows,
+  textLength,
   type ProgrammePackage,
 } from "./programme";
 
@@ -69,8 +75,26 @@ describe("programme rows", () => {
     expect(readPackage(null)).toBeUndefined();
     expect(readPackage({ ...row(), status: "nope" })).toBeUndefined();
     expect(readPackage({ ...row(), title: "" })).toBeUndefined();
-    expect(readPackage({ ...row(), notes: "a".repeat(2001) })).toBeUndefined();
     expect(readPackage(row())?.briefPath).toBe("docs/my briefs/note.md");
+  });
+
+  it("never drops a row for being long, and measures by characters, not UTF-16 units", () => {
+    const longTitle = "a".repeat(301);
+    expect(readPackage({ ...row(), title: longTitle })?.title).toBe(longTitle);
+    expect(readPackage({ ...row(), notes: "a".repeat(2001) })?.notes).toHaveLength(2001);
+    expect(readPackage({ ...row(), parkReason: "b".repeat(501), status: "parked" })).toBeDefined();
+    // 200 astral characters are 400 UTF-16 units but 200 characters: under the 300 limit, so not a drop either way.
+    const astral = "\u{1F600}".repeat(200);
+    expect(readPackage({ ...row(), title: astral })?.title).toBe(astral);
+    expect(textLength(astral)).toBe(200);
+    expect(textLength("a\u{1F600}")).toBe(2);
+  });
+
+  it("clips a long text for display by characters, never by UTF-16 unit", () => {
+    expect(clipText("abc", 3)).toBe("abc");
+    expect(clipText("abcd", 3)).toBe("ab\u2026");
+    expect(clipText("\u{1F600}".repeat(4), 4)).toBe("\u{1F600}".repeat(4));
+    expect(clipText("\u{1F600}".repeat(5), 4)).toBe("\u{1F600}".repeat(3) + "\u2026");
   });
 
   it("puts a security park with the parked rows and hides a merged one", () => {
@@ -82,24 +106,56 @@ describe("programme rows", () => {
     expect(programmeGroup(row({ status: "merged" }))).toBeUndefined();
   });
 
-  it("keeps the last rows when a read fails, and drops junk", async () => {
+  it("reads each project on its own: one bad board does not blank the rest", async () => {
     const missed = await collectProgramme(["crew"], async () => {
       throw new Error("timed out");
     });
     expect(missed).toEqual({ unavailable: true });
-    const empty = await collectProgramme(["crew", "notes"], async () => null);
-    expect(empty).toEqual({ rows: [] });
+    const bad = await collectProgramme(["crew", "notes"], async (project) => {
+      if (project === "notes") throw new Error("timed out");
+      return [row({ priority: 1 })];
+    });
+    expect(bad).toEqual({ rows: [row({ priority: 1 })], failed: ["notes"] });
+    const junk = await collectProgramme(["crew", "notes"], async () => null);
+    expect(junk).toEqual({ unavailable: true });
+    const empty = await collectProgramme(["crew"], async () => []);
+    expect(empty).toEqual({ rows: [], failed: [] });
     const mixed = await collectProgramme(["crew", "notes"], async (project) => {
       if (project === "notes") return [{ ...row({ id: "programme-2", projectId: "notes", priority: 2 }), extra: true }, { nope: 1 }];
       return [row({ priority: 1 })];
     });
-    expect(mixed).toEqual({ rows: [row({ id: "programme-2", projectId: "notes", priority: 2 }), row({ priority: 1 })] });
+    expect(mixed).toEqual({ rows: [row({ id: "programme-2", projectId: "notes", priority: 2 }), row({ priority: 1 })], failed: [] });
   });
 
-  it("drops a late read and retries a miss without clearing the board", () => {
-    expect(applyProgrammeLoad(1, 2, { rows: [row()] })).toEqual({ drop: true });
-    expect(applyProgrammeLoad(1, 1, { unavailable: true })).toEqual({ retry: true });
-    expect(applyProgrammeLoad(3, 3, { rows: [] })).toEqual({ rows: [] });
+  it("keeps the rows of a board that failed to read, and retries without clearing the rest", () => {
+    const kept = row({ id: "programme-9", projectId: "notes", title: "Kept" });
+    expect(applyProgrammeLoad(1, 2, { rows: [row()], failed: [] })).toEqual({ drop: true });
+    expect(applyProgrammeLoad(1, 1, { unavailable: true }, [kept])).toEqual({ rows: [kept], retry: true, clearNotice: false });
+    expect(
+      applyProgrammeLoad(4, 4, { rows: [row({ priority: 1 })], failed: ["notes"] }, [kept]),
+    ).toEqual({ rows: [row({ priority: 1 }), kept], retry: true, clearNotice: false });
+    expect(applyProgrammeLoad(3, 3, { rows: [], failed: [] })).toEqual({ rows: [], retry: false, clearNotice: true });
+  });
+
+  it("clears a notice only after a good read that started after the notice", () => {
+    expect(applyProgrammeLoad(5, 5, { rows: [], failed: [] }, [], 5)).toMatchObject({ clearNotice: false });
+    expect(applyProgrammeLoad(6, 6, { rows: [], failed: [] }, [], 5)).toMatchObject({ clearNotice: true });
+    expect(applyProgrammeLoad(6, 6, { unavailable: true }, [], 5)).toMatchObject({ clearNotice: false });
+  });
+
+  it("backs off on repeated read failures and says so plainly after a few", () => {
+    expect(retryDelayMs(1)).toBeLessThan(retryDelayMs(2));
+    expect(retryDelayMs(2)).toBeLessThan(retryDelayMs(3));
+    expect(retryDelayMs(50)).toBe(retryDelayMs(20));
+    expect(READ_NOTICE_AFTER).toBeGreaterThanOrEqual(2);
+  });
+
+  it("shows the panel only when a row sits in a group it shows, or a notice is set", () => {
+    expect(shownRows([row({ status: "merged" })])).toEqual([]);
+    expect(programmeShows([row({ status: "merged" })])).toBe(false);
+    expect(programmeShows([row({ status: "merged" })], "Could not clear.")).toBe(true);
+    expect(programmeShows([row({ status: "queued" })])).toBe(true);
+    expect(programmeShows([])).toBe(false);
   });
 });
 

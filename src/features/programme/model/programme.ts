@@ -61,10 +61,21 @@ export type ProgrammePackage = {
 
 const STATUSES: ReadonlySet<string> = new Set(["queued", "building", "pr_open", "merged", "parked", "failed"]);
 
-function text(value: unknown, max: number): string | undefined {
+/** Length in characters (code points), not UTF-16 units: an emoji is one character here. */
+export function textLength(value: string): number {
+  return [...value].length;
+}
+
+/** Clips a text for display only. The row keeps its full text. */
+export function clipText(value: string, max: number): string {
+  if (textLength(value) <= max) return value;
+  return [...value].slice(0, Math.max(0, max - 1)).join("") + "\u2026";
+}
+
+function text(value: unknown): string | undefined {
   if (typeof value !== "string") return undefined;
   const clean = value.replace(/\0/g, "");
-  if (!clean.trim() || clean.length > max) return undefined;
+  if (!clean.trim()) return undefined;
   return clean;
 }
 
@@ -81,12 +92,13 @@ function optionalWhole(value: unknown): number | null | undefined {
 export function readPackage(value: unknown): ProgrammePackage | undefined {
   if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
   const row = value as Record<string, unknown>;
-  const id = text(row.id, 80);
-  const projectId = text(row.projectId, 1000);
-  const wp = text(row.wp, 40);
-  const title = text(row.title, 300);
-  const briefPath = text(row.briefPath, 500);
-  const branch = text(row.branch, 200);
+  // A row the store wrote is kept whatever its length. The display clips; nothing here drops a long row.
+  const id = text(row.id);
+  const projectId = text(row.projectId);
+  const wp = text(row.wp);
+  const title = text(row.title);
+  const briefPath = text(row.briefPath);
+  const branch = text(row.branch);
   const status = typeof row.status === "string" && STATUSES.has(row.status) ? (row.status as ProgrammeStatus) : undefined;
   const priority = whole(row.priority);
   const version = whole(row.version);
@@ -99,8 +111,7 @@ export function readPackage(value: unknown): ProgrammePackage | undefined {
   if (claimedAt === undefined || finishedAt === undefined) return undefined;
   if (typeof row.securityPark !== "boolean") return undefined;
   const notes = typeof row.notes === "string" ? row.notes.replace(/\0/g, "") : "";
-  if (notes.length > 2000) return undefined;
-  const parkReason = row.parkReason === null ? null : row.parkReason === undefined ? null : text(row.parkReason, 500);
+  const parkReason = row.parkReason === null ? null : row.parkReason === undefined ? null : text(row.parkReason);
   if (row.parkReason != null && parkReason === undefined) return undefined;
   return {
     id,
@@ -134,42 +145,81 @@ export function programmeGroup(row: ProgrammePackage): ProgrammeGroup | undefine
   return undefined;
 }
 
-export type ProgrammeLoad = { rows: ProgrammePackage[] } | { unavailable: true };
+/** Rows that came back from the boards read, and the projects whose board did not (a throw or a non-list). */
+export type ProgrammeLoad = { rows: ProgrammePackage[]; failed: string[] } | { unavailable: true };
 
-/** A late read is dropped. A timeout or a miss keeps the rows already on screen. */
+/** Retries back off from five seconds to a minute. */
+export const PROGRAMME_RETRY_MS = 5_000;
+const RETRY_CAP_MS = 60_000;
+/** After this many failed reads in a row, the card says so in plain words. */
+export const READ_NOTICE_AFTER = 3;
+export const READ_NOTICE = "The programme could not be read. It will keep trying.";
+
+export function retryDelayMs(failures: number): number {
+  const steps = Math.max(0, Math.min(failures - 1, 20));
+  return Math.min(RETRY_CAP_MS, PROGRAMME_RETRY_MS * 2 ** steps);
+}
+
+function byPriority(a: ProgrammePackage, b: ProgrammePackage): number {
+  return b.priority - a.priority || a.createdAt - b.createdAt || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+}
+
+/**
+ * A late read is dropped. A board that failed keeps the rows it had (`previous`), and the rest are shown as read.
+ * `noticeAt` is the read that a notice was set by: only a later, complete read clears that notice.
+ */
 export function applyProgrammeLoad(
   mine: number,
   current: number,
   loaded: ProgrammeLoad,
-): { rows: ProgrammePackage[] } | { drop: true } | { retry: true } {
+  previous: readonly ProgrammePackage[] = [],
+  noticeAt = -1,
+): { rows: ProgrammePackage[]; retry: boolean; clearNotice: boolean } | { drop: true } {
   if (mine !== current) return { drop: true };
-  if ("unavailable" in loaded) return { retry: true };
-  return { rows: loaded.rows };
+  if ("unavailable" in loaded) return { rows: [...previous].sort(byPriority), retry: true, clearNotice: false };
+  const failed = new Set(loaded.failed);
+  const kept = previous.filter((row) => failed.has(row.projectId));
+  const retry = loaded.failed.length > 0;
+  return {
+    rows: [...loaded.rows, ...kept].sort(byPriority),
+    retry,
+    clearNotice: !retry && mine > noticeAt,
+  };
 }
 
 /**
- * One read of every project's board. A throw, a timeout or a missing command is not a final failure:
- * the caller keeps the rows it already has. A late caller drops the result itself.
+ * One read of every project's board, each on its own. One board that throws or does not answer with a list is
+ * recorded in `failed`; the others still come back. Only a read where every board failed is `unavailable`.
  */
 export async function collectProgramme(
   projects: readonly string[],
   read: (project: string) => Promise<unknown>,
 ): Promise<ProgrammeLoad> {
-  try {
-    const lists = await Promise.all(projects.map((project) => read(project)));
-    const rows: ProgrammePackage[] = [];
-    for (const list of lists) {
-      if (!Array.isArray(list)) continue;
-      for (const item of list) {
-        const row = readPackage(item);
-        if (row) rows.push(row);
-      }
+  const settled = await Promise.allSettled(projects.map(async (project) => read(project)));
+  const rows: ProgrammePackage[] = [];
+  const failed: string[] = [];
+  settled.forEach((result, index) => {
+    if (result.status === "rejected" || !Array.isArray(result.value)) {
+      failed.push(projects[index]);
+      return;
     }
-    rows.sort((a, b) => b.priority - a.priority || a.createdAt - b.createdAt || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
-    return { rows };
-  } catch {
-    return { unavailable: true };
-  }
+    for (const item of result.value) {
+      const row = readPackage(item);
+      if (row) rows.push(row);
+    }
+  });
+  if (projects.length > 0 && failed.length === projects.length) return { unavailable: true };
+  return { rows: rows.sort(byPriority), failed };
+}
+
+/** The rows the card shows: merged rows are done and are not shown. */
+export function shownRows(rows: readonly ProgrammePackage[]): ProgrammePackage[] {
+  return rows.filter((row) => programmeGroup(row) !== undefined);
+}
+
+/** The card shows when a row sits in a group it shows, or when a notice is set. A quiet board renders nothing. */
+export function programmeShows(rows: readonly ProgrammePackage[], notice?: string): boolean {
+  return shownRows(rows).length > 0 || !!notice;
 }
 
 type MateHost = Pick<AgentAppHost, "isMono" | "isHabitRun" | "monoOf" | "codingTeamOf" | "knownProjects" | "programmeStore">;
@@ -206,7 +256,7 @@ function mateProject(source: Session, host: MateHost, named: unknown): string {
 }
 
 function idOf(value: unknown): string {
-  if (typeof value !== "string" || !value.trim() || value.length > 80) throw new Error("id is required.");
+  if (typeof value !== "string" || !value.trim() || textLength(value) > 80) throw new Error("id is required.");
   return value.trim();
 }
 
