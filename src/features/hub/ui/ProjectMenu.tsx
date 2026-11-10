@@ -22,6 +22,7 @@ import {
 import { WorkerDefaultControl } from "../../crew/ui/WorkerDefaultControl";
 import { BuilderScaleControls } from "../../monos/ui/BuilderScaleControls";
 import { plainErrorText } from "../../../shared/text/plainErrorText";
+import { ProjectGroupChooser } from "./StripGroups";
 
 /**
  * Icons a project could wear on this Mac before Ash OS kept its shape: still drawn for a choice stored back then.
@@ -86,7 +87,7 @@ export function ProjectMonogramTile({ name, size }: { name: string; size: number
   );
 }
 
-type Mode = { kind: "menu" } | { kind: "icon" } | { kind: "rename" } | { kind: "workers" } | { kind: "remove" };
+type Mode = { kind: "menu" } | { kind: "icon" } | { kind: "rename" } | { kind: "workers" } | { kind: "remove" } | { kind: "group" };
 
 /**
  * Right-click (or the hover "⋯") on a project: Change icon or image, Rename, Show folder in Finder, Move up / down,
@@ -100,6 +101,8 @@ export function ProjectMenu({ project, anchor, onClose }: { project: HubProject;
   if (mode.kind === "rename") return <RenameProject project={project} anchor={anchor} onClose={onClose} />;
   if (mode.kind === "workers") return <ProjectWorkers project={project} anchor={anchor} onClose={onClose} />;
   if (mode.kind === "remove") return <RemoveFromHub project={project} anchor={anchor} onClose={onClose} />;
+  // WP-137: which group the project sits under on the strip.
+  if (mode.kind === "group") return <ProjectGroupChooser project={project} anchor={anchor} onClose={onClose} />;
   const item = (label: string, run: () => void, opts: { disabled?: boolean; danger?: boolean } = {}) => (
     <button
       type="button"
@@ -119,6 +122,7 @@ export function ProjectMenu({ project, anchor, onClose }: { project: HubProject;
       onDismiss={onClose} onContextMenu={(e) => e.preventDefault()} className="p-1" data-project-menu>
       {item("Change icon", () => setMode({ kind: "icon" }))}
       {item("Rename", () => setMode({ kind: "rename" }))}
+      {item("Group", () => setMode({ kind: "group" }))}
       {item("Workers at once", () => setMode({ kind: "workers" }))}
       {item("Show folder in Finder", () => {
         if (project.folder) void projectFileActions().then((a) => a.showFolder(project.folder!));
