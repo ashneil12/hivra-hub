@@ -1,6 +1,7 @@
 // What Home lists. One line each, no counts. A value from disk or another agent is untrusted.
 
 import { pathKey } from "../../../shared/lib/paths";
+import type { BuilderHoldNeed } from "../../monos/model/builderScale";
 import { HOME_CARD_LIMIT } from "../vendor/homeLayout";
 
 export type HomeTask = {
@@ -37,7 +38,7 @@ export type HomeChat = {
   openedAt: number;
 };
 
-export type HomeLineKind = "decision" | "question" | "review" | "moving" | "doc" | "chat";
+export type HomeLineKind = "decision" | "question" | "review" | "moving" | "doc" | "chat" | "builders";
 
 export type HomeLine = {
   id: string;
@@ -229,6 +230,22 @@ export function needsYouLines(
   }
   lines.sort(byAge);
   return lines;
+}
+
+/**
+ * WP-161: new builders are waiting on the disk pause. A line about the machine, not a project, so it has no project
+ * name in front. It leads Needs you: nothing new can start until the person frees space (or changes the floor).
+ * Its action opens Settings > Worktrees > Clean up (`targetFor`).
+ */
+export function builderHoldLine(need: BuilderHoldNeed): HomeLine {
+  return {
+    id: `builders:${need.id}`,
+    kind: "builders",
+    text: cleanLine(need.text),
+    projectId: "",
+    target: need.id,
+    at: 0,
+  };
 }
 
 /** Agent tasks in progress, except a question (that line is in Needs you). */

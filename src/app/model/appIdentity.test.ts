@@ -35,6 +35,7 @@ function injected(kind: "daily" | "dev", overrides: Record<string, unknown> = {}
       autoResume: on,
       notificationPrompt: on,
       globalShortcut: on,
+      clearBuildOutput: on,
     },
     ...overrides,
   };
