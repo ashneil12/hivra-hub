@@ -299,6 +299,8 @@ process.exit(0);
 const FAKE_CODESIGN = `#!/bin/sh
 # A stand-in for /usr/bin/codesign: the bundle (last argument) says how it is signed in Contents/Resources/fake.json.
 for last; do :; done
+# The entitlements a bundle carries (the dictation helper's audio input entitlement, WP-131b) are in Contents/Resources.
+if [ "$2" = "--entitlements" ]; then cat "$last/Contents/Resources/entitlements.plist" 2>/dev/null; exit 0; fi
 sig=$(sed -n 's/.*"signature":"\\([a-z-]*\\)".*/\\1/p' "$last/Contents/Resources/fake.json")
 if [ "$sig" = unsigned ]; then echo "$last: code object is not signed at all" >&2; exit 1; fi
 case "$1" in
@@ -316,6 +318,22 @@ function bundleAt(app, { sha, branch = "hub/test", dirty = false, identifier = H
     `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict><key>CFBundleIdentifier</key><string>${identifier}</string><key>CFBundleExecutable</key><string>monocode</string>${version ? `<key>CFBundleShortVersionString</key><string>${version}</string>` : ""}</dict></plist>
+`,
+  );
+  // The dictation helper (WP-131b): its own identifier, both usage strings, and the audio input entitlement.
+  const helper = path.join(app, "Contents/Helpers/MonoCode Dictation.app");
+  fs.mkdirSync(path.join(helper, "Contents/MacOS"), { recursive: true });
+  fs.mkdirSync(path.join(helper, "Contents/Resources"), { recursive: true });
+  fs.writeFileSync(
+    path.join(helper, "Contents/Info.plist"),
+    `<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0"><dict><key>CFBundleIdentifier</key><string>${identifier}.dictation</string><key>CFBundleExecutable</key><string>monocode-dictation</string><key>NSMicrophoneUsageDescription</key><string>Dictation listens while you dictate.</string><key>NSSpeechRecognitionUsageDescription</key><string>Dictation recognises speech on this Mac.</string></dict></plist>
+`,
+  );
+  fs.writeFileSync(
+    path.join(helper, "Contents/Resources/entitlements.plist"),
+    `<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0"><dict><key>com.apple.security.device.audio-input</key><true/></dict></plist>
 `,
   );
   const stamp = JSON.stringify({ sha, branch, dirty, builtAt: "2026-10-19T21:04:05Z" });
@@ -519,6 +537,7 @@ function ship(w, args = [], env = {}) {
     ],
     { env: { ...w.env, ...env }, label: "hub-ship" },
   );
+  if (!result.stdout.trim()) throw new Error(`hub-ship printed no answer (status ${result.status}): ${result.stderr}`);
   const answer = JSON.parse(result.stdout.trim().split("\n").pop());
   return { code: result.status, answer };
 }
@@ -961,6 +980,11 @@ test("refusals change nothing: dirty tree, commit mismatch, wrong identity, ad-h
       /CFBundleIdentifier = com\.monocode\.desktop/,
     ],
     ["an ad-hoc signature", (w) => bundleAt(w.bundle, { sha: w.sha, signature: "adhoc", root: w.root }), /signed ad hoc/],
+    [
+      "a bundle without the dictation helper (WP-131b)",
+      (w) => fs.rmSync(path.join(w.bundle, "Contents/Helpers"), { recursive: true, force: true }),
+      /Dictation helper: the dictation helper is missing/,
+    ],
     [
       "a different certificate",
       (w) => bundleAt(w.bundle, { sha: w.sha, signature: "someone-else", root: w.root }),

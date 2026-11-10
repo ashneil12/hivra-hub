@@ -25,7 +25,8 @@ import { execFileSync, spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { HUB_IDENTIFIER, readIdentifier, readStamp, readVersion, stampLabel, verifyDailyBundle } from "./hub-bundle.mjs";
+import { HUB_IDENTIFIER, kindOf, readIdentifier, readStamp, readVersion, stampLabel, verifyDailyBundle } from "./hub-bundle.mjs";
+import { helperProblemsFor } from "./hub-dictation-helper.mjs";
 // WP-09: install location, copy and the non-macOS runner. macOS paths stay homePathsFor("darwin").
 import {
   appCommand,
@@ -198,6 +199,13 @@ export function preflight({ repo, bundle, paths, skipHealthcheck = false, allowS
   const verified = verifyDailyBundle(bundle);
   facts.stamp = verified.stamp;
   for (const error of verified.errors) refusals.push(`Wrong bundle: ${error}`);
+  // WP-131b: the microphone belongs to the dictation helper inside the bundle. The same check hub:verify runs.
+  // (A bundle that isn't a Hub identity is already refused above, so there is no helper to name for it.)
+  if (exists(bundle) && kindOf(verified.identifier)) {
+    for (const problem of helperProblemsFor(bundle, { identifier: verified.identifier, codesign: codesignPath() })) {
+      refusals.push(`Dictation helper: ${problem}`);
+    }
+  }
   if (verified.stamp) {
     if (verified.stamp.dirty) refusals.push(`The build had uncommitted changes (${stampLabel(verified.stamp)}). Rebuild from a clean checkout.`);
     if (facts.head && verified.stamp.sha !== facts.head)

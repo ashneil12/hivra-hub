@@ -113,18 +113,26 @@ export function signingCommands({
   return [sign(helperApp, helperIdentifier, helperEntitlements), sign(hubApp, identifier, hubEntitlements)];
 }
 
-/** Reads the three facts the check needs from a built bundle, without launching it. */
-export function readBundleFacts(appPath) {
+/**
+ * Reads the three facts the check needs from a built bundle, without launching it. `codesign` is the same binary the
+ * ship checks use (a .mjs stand-in is run with node), so the tests can stand in for it.
+ */
+export function readBundleFacts(appPath, { codesign = "/usr/bin/codesign" } = {}) {
   const plistXml = (file) => {
     if (!existsSync(file)) return null;
-    return execFileSync("/usr/bin/plutil", ["-convert", "xml1", "-o", "-", file], { encoding: "utf8" });
+    try {
+      return execFileSync("/usr/bin/plutil", ["-convert", "xml1", "-o", "-", file], { encoding: "utf8" });
+    } catch {
+      return readFileSync(file, "utf8");
+    }
   };
   const entitlements = (target) => {
+    const args = ["-d", "--entitlements", ":-", target];
     try {
-      return execFileSync("/usr/bin/codesign", ["-d", "--entitlements", ":-", target], {
-        encoding: "utf8",
-        stdio: ["ignore", "pipe", "pipe"],
-      });
+      const run = codesign.endsWith(".mjs")
+        ? execFileSync(process.execPath, [codesign, ...args], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] })
+        : execFileSync(codesign, args, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+      return run;
     } catch {
       return "";
     }
@@ -141,6 +149,11 @@ export function readBundleFacts(appPath) {
         }
       : null,
   };
+}
+
+/** The problems with a built bundle's helper, read from the bundle. The same check hub:verify and hub:ship run. */
+export function helperProblemsFor(appPath, { identifier, codesign } = {}) {
+  return dictationHelperProblems({ identifier, ...readBundleFacts(appPath, codesign ? { codesign } : {}) });
 }
 
 function readConfigs() {

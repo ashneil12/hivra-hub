@@ -17,4 +17,4 @@ serde_json.workspace = true
 [target.'cfg(target_os = "macos")'.dependencies]
 block2 = "0.6.2"
 objc2 = { version = "0.6", features = ["exception"] }
-objc2-foundation = { version = "0.3", features = ["NSString"] }
+objc2-foundation = { version = "0.3", features = ["NSException", "NSString"] }

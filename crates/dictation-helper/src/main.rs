@@ -359,4 +359,29 @@ mod mac {
             is_final.as_bool(),
         )
     }
+
+    #[cfg(test)]
+    mod tests {
+        use super::guard;
+        use objc2::exception::{throw, Exception};
+        use objc2::rc::Retained;
+        use objc2_foundation::{NSException, NSString};
+
+        #[test]
+        fn a_raised_objective_c_exception_becomes_an_error_not_an_abort() {
+            let name = NSString::from_str("NSInvalidArgumentException");
+            let reason = NSString::from_str("probe");
+            let raised: Retained<NSException> = unsafe {
+                NSException::exceptionWithName_reason_userInfo(&name, Some(&reason), None)
+            };
+            // Foundation's NSException and objc2's Exception are the same Objective-C object.
+            let raised: Retained<Exception> = unsafe { Retained::cast_unchecked(raised) };
+            assert!(guard(|| -> u8 { throw(raised) }).is_err());
+        }
+
+        #[test]
+        fn a_call_that_returns_is_passed_through() {
+            assert_eq!(guard(|| 7u8), Ok(7));
+        }
+    }
 }

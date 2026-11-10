@@ -2,12 +2,14 @@
 // the only thing that lets macOS grant it the microphone, so these tests pin them.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import fs, { readFileSync } from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   dictationHelperProblems,
   helperBundleId,
+  helperProblemsFor,
   helperInfoPlist,
   signingCommands,
 } from "./hub-dictation-helper.mjs";
@@ -133,5 +135,17 @@ test("signing signs the helper with its own entitlements first, then the app, bo
     assert.ok(step.includes("runtime"), "hardened runtime");
     assert.ok(!step.includes("--deep"), "no --deep");
     assert.ok(step.includes("ABCDEF"), "the configured identity");
+  }
+});
+
+test("the check hub:verify and hub:ship share reads a missing helper from the bundle itself", () => {
+  const app = fs.mkdtempSync(path.join(os.tmpdir(), "hub-helper-"));
+  try {
+    fs.mkdirSync(path.join(app, "Contents"), { recursive: true });
+    fs.writeFileSync(path.join(app, "Contents/Info.plist"), goodHubInfo);
+    const problems = helperProblemsFor(app, { identifier: HUB });
+    assert.ok(problems.some((p) => /the dictation helper is missing/.test(p)), JSON.stringify(problems));
+  } finally {
+    fs.rmSync(app, { recursive: true, force: true });
   }
 });
