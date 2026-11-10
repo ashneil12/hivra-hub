@@ -15,11 +15,11 @@ const OPTIONS: { tier: MemoryTier; summary: string }[] = [
   },
   {
     tier: "cheap",
-    summary: "The text of each finished turn goes to a model you pick from Other models, billed by its provider. You need its key saved there.",
+    summary: "The text of each finished turn, with up to 30 facts already kept, goes to a model you pick from Other models, billed by its provider. You need its key saved there.",
   },
   {
     tier: "crew",
-    summary: "The text of each finished turn goes to your crew's signed-in CLI, and comes out of your plan. This is the default.",
+    summary: "The text of each finished turn, with up to 30 facts already kept, goes to your crew's signed-in CLI, and comes out of your plan. This is the default.",
   },
 ];
 
