@@ -1,6 +1,8 @@
-# Monocode mobile
+# Hivra mobile
 
-The Expo app lives in this directory and has its own npm dependencies and lockfile. The app pairs with the desktop over QUIC and shows its real workspace. Use a Node.js LTS release for development.
+Private development build of the inherited Expo app. It is not submitted to the App Store or Play Store. The phone's bundle id is `com.ash.hivra.mobile`. That is not the desktop app's id (`com.ash.monocode-hub`), which this build does not change. Pairing links from the desktop are still `monocode://pair` until that desktop protocol changes.
+
+The Expo app lives in this directory and has its own npm dependencies and lockfile. The app pairs with the desktop over QUIC and shows its real workspace. Use a Node.js LTS release for development. There is no production build, submit, or beta-update script or profile: this build is never published.
 
 ## Run locally
 
@@ -47,7 +49,7 @@ The account card also shows the desktop footer's usage windows, percentages and 
 
 ## EAS development builds
 
-Run EAS commands from `mobile/`. The iOS development and production profiles pin the Xcode 27.1 build image in `eas.json`; the simulator profile inherits it. Changes to the native transcript or hinge observer require a new native build, rather than only an EAS Update. The build input must include the root Cargo workspace and its path dependencies. The `eas-build-pre-install` hook installs the pinned Rust toolchain and builds the native transport before CocoaPods/Gradle runs.
+Run EAS commands from `mobile/`. The iOS development profile pins the Xcode 27.1 build image in `eas.json`; the simulator profile inherits it. Changes to the native transcript or hinge observer require a new native build. The build input must include the root Cargo workspace and its path dependencies. The `eas-build-pre-install` hook installs the pinned Rust toolchain and builds the native transport before CocoaPods/Gradle runs.
 
 The `development` profile builds for Android or physical iOS devices; `development-simulator` builds for the iOS simulator. EAS requires an Expo account, and physical iOS distribution requires Apple signing credentials.
 

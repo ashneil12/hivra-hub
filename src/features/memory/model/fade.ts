@@ -7,41 +7,54 @@
 // fade.test.ts. L(t), the hours into a lived day, the two bisections, the never-below-0 clamp and the 0 for a start
 // that can't be read are the original's. What changed: a moment is a Date or an ISO string rather than a datetime,
 // `days` is filtered to real dates once on the way in (the store it came from was untrusted), and `for_agent` is
-// gone because Hivra's days live in the memory doc, not in a store class. Everything below LivedClock (the curve,
-// the clocks and the visit marks) is Hivra's own.
+// gone because Hivra's days live in the memory doc, not in a store class. `at` places a moment by its UTC day number
+// instead of a date string (the same answer, without building a string for every moment it is asked about, which
+// recall does once per memory). Everything below LivedClock (the curve, the clocks and the visit marks) is Hivra's own.
 
 import { bump, type MemoryDoc, type MemoryItem } from "./doc";
+
+const DAY_MS = 86_400_000;
 
 /** The agent's own time: hours pass only on the days it lived. */
 export class LivedClock {
   /** The lived dates, sorted, one of each. */
   readonly days: string[];
-  private readonly lived: Set<string>;
+  /** The same days as whole days since 1970 (UTC), so a moment is placed without building a date string for it. */
+  private readonly dayNumbers: number[];
+  private readonly lived: Set<number>;
 
   constructor(days: readonly unknown[]) {
     this.days = [...new Set((Array.isArray(days) ? days : []).filter(readableDay))].sort();
-    this.lived = new Set(this.days);
+    this.dayNumbers = this.days.map((day) => Date.parse(`${day}T00:00:00Z`) / DAY_MS);
+    this.lived = new Set(this.dayNumbers);
   }
 
   /** L(moment): lived hours from the beginning up to `moment`. */
   at(moment: Date | string | number | undefined): number {
     const at = utc(moment);
     if (!at) return 0;
-    const day = dayOf(at);
-    let hours = 24 * lowerBound(this.days, day);
-    if (this.lived.has(day)) {
-      const midnight = Date.UTC(at.getUTCFullYear(), at.getUTCMonth(), at.getUTCDate());
-      hours += (at.getTime() - midnight) / 3_600_000;
-    }
+    const time = at.getTime();
+    const day = Math.floor(time / DAY_MS);
+    let hours = 24 * firstNotBelow(this.dayNumbers, day);
+    if (this.lived.has(day)) hours += (time - day * DAY_MS) / 3_600_000;
     return hours;
   }
 
   /** Lived hours from `start` to `end` (default now), never below 0. A start that can't be read gives 0. */
   hoursBetween(start: Date | string | number | undefined, end?: Date | string | number): number {
-    const begun = utc(start);
-    if (!begun) return 0;
-    const finish = utc(end) ?? new Date();
-    return Math.max(0, this.at(finish) - this.at(begun));
+    return this.hoursTo(end)(start);
+  }
+
+  /**
+   * `hoursBetween` with the end fixed. The end's lived hours are worked out here, once, and the reader this returns
+   * works out only each start's, so a loop over many starts to one moment pays for that moment once, not per start.
+   */
+  hoursTo(end?: Date | string | number): (start: Date | string | number | undefined) => number {
+    const through = this.at(utc(end) ?? new Date());
+    return (start) => {
+      const begun = utc(start);
+      return begun ? Math.max(0, through - this.at(begun)) : 0;
+    };
   }
 
   /** Lived dates after `start`'s date, up to and including `end`'s (default now). A start that can't be read gives 0. */
@@ -107,12 +120,21 @@ function lastUseOf(item: MemoryItem): number {
  * used. A memory shown in a recall fence is not used (Mnemos's rule): only a use signal calls `touch`.
  */
 export function fadeNow(item: MemoryItem, clock: LivedClock, now: Date | number): number {
-  const clockDays = clockDaysFor(item);
-  if (clockDays === undefined) return FULL;
-  const since = typeof now === "number" ? new Date(now) : now;
-  const hours = clock.hoursBetween(lastUseOf(item), since);
-  const livedDays = hours / 24;
-  return Math.max(0, Math.min(FULL, savedFade(item) * Math.pow(ASK_BELOW, livedDays / clockDays)));
+  return fadeReader(clock, now)(item);
+}
+
+/**
+ * `fadeNow` for many memories at one moment. The clock's reading of `now` is taken once here, so each memory only costs
+ * the reading of its own last use. A recall decision scores a whole store this way.
+ */
+export function fadeReader(clock: LivedClock, now: Date | number): (item: MemoryItem) => number {
+  const hoursSince = clock.hoursTo(now);
+  return (item) => {
+    const clockDays = clockDaysFor(item);
+    if (clockDays === undefined) return FULL;
+    const livedDays = hoursSince(lastUseOf(item)) / 24;
+    return Math.max(0, Math.min(FULL, savedFade(item) * Math.pow(ASK_BELOW, livedDays / clockDays)));
+  };
 }
 
 /** One use signal: a re-confirmation, the curator seeing the fact again, or the Mono reading it. Tops it up to full. */
@@ -187,19 +209,25 @@ function dayOf(at: Date): string {
   return at.toISOString().slice(0, 10);
 }
 
-/** The first index whose value is not below `value` (`bisect_left`). */
-function lowerBound(sorted: readonly string[], value: string): number {
-  return upperBound(sorted, value, true);
-}
-
-/** The first index whose value is above `value` (`bisect_right`), or where it would go; `left` includes equal values. */
-function upperBound(sorted: readonly string[], value: string, left = false): number {
+/** `bisect_left` over whole day numbers: the first index whose day is not below `value`. */
+function firstNotBelow(sorted: readonly number[], value: number): number {
   let low = 0;
   let high = sorted.length;
   while (low < high) {
     const middle = (low + high) >> 1;
-    const before = left ? sorted[middle] < value : sorted[middle] <= value;
-    if (before) low = middle + 1;
+    if (sorted[middle] < value) low = middle + 1;
+    else high = middle;
+  }
+  return low;
+}
+
+/** The first index whose value is above `value` (`bisect_right`), or where it would go. */
+function upperBound(sorted: readonly string[], value: string): number {
+  let low = 0;
+  let high = sorted.length;
+  while (low < high) {
+    const middle = (low + high) >> 1;
+    if (sorted[middle] <= value) low = middle + 1;
     else high = middle;
   }
   return low;

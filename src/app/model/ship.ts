@@ -250,7 +250,7 @@ export function shipCardView(status: ShipStatus, appVersion?: string): ShipCardV
     const version = appVersion && appVersion !== "0.0.0" ? appVersion.trim() : "";
     return {
       id: current.id,
-      text: version ? `MonoCode updated to ${version}. Is everything working?` : "MonoCode was updated. Is everything working?",
+      text: version ? `Hivra updated to ${version}. Is everything working?` : "Hivra was updated. Is everything working?",
       accept: true,
     };
   }

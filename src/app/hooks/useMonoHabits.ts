@@ -37,6 +37,16 @@ import {
   type Habit,
 } from "../../features/monos/model/monoHabits";
 import { appPolicy } from "../model/appIdentity";
+import { hubData, hubProjectIdFor } from "../../features/hub/model/hubData";
+import { morningWorkLogNote } from "../../features/workLog/model/morningLines";
+import { morningProgrammeNote } from "../../features/programme/model/morningProgramme";
+// WP-164: leftovers from the notable-event buffer go with the morning habit only.
+import {
+  commitSeen,
+  morningHabitNotes,
+  readNotableBuffer,
+  saveNotableBuffer,
+} from "../../features/notifications/model/notableEvents";
 
 const TICK_MS = 60_000;
 
@@ -180,6 +190,22 @@ export function useMonoHabits(
       const files = await loadMonoFiles(monoId);
       if (stopped || !findMono(monoId)) return;
       const now = Date.now();
+      // WP-157: the morning run is told what finished yesterday. The app reads the log; the run's own work_log tool
+      // stays refused for a habit run. A read that fails leaves the run with its usual prompt and no claim.
+      const yesterday = await morningWorkLogNote({
+        habitId,
+        now,
+        mono: findMono(monoId),
+        soul: files.soul,
+        projectIdFor: hubProjectIdFor,
+      });
+      // WP-159: and what is on its programme. The app reads the board; the run's programme tools stay refused.
+      const programme = await morningProgrammeNote({
+        habitId,
+        mono: findMono(monoId),
+        soul: files.soul,
+        projects: () => hubData().listProjects(),
+      });
       // Claim after preparation, from the latest definition. A queued habit
       // may have been removed, paused, rescheduled or claimed in another window.
       const habit = await claimHabit(monoId, habitId, now);
@@ -203,9 +229,13 @@ export function useMonoHabits(
       setHabitRunning(habit.id, now);
       host.add(run);
       let outcome: ControlOutcome;
+      // WP-164: a read that fails leaves the morning run with its usual instructions.
+      const waiting = morningHabitNotes(habit.id);
       try {
         // /operator gives the run the same app access the Mono has.
-        const prompt = `/operator ${habitRunPrompt(look, files, habit, now)}`;
+        // WP-157, WP-159 and WP-164: what finished yesterday, the programme, then the notable events still waiting.
+        const extra = [yesterday, programme, waiting.text].filter((part) => part?.trim()).join("\n\n");
+        const prompt = `/operator ${habitRunPrompt(look, files, habit, now, extra)}`;
         outcome = await watchRun(host, mono.id, habit, run.id, () =>
           host.run(run.id, prompt),
         );
@@ -249,6 +279,15 @@ export function useMonoHabits(
           launches,
           ...(cards.length ? [cards] : []),
         );
+      // WP-164: events the run was shown and the person was told about are done. A run that failed or said nothing
+      // leaves them for the next one.
+      if (report && waiting.ids.length) {
+        try {
+          commitSeen(readNotableBuffer, saveNotableBuffer, waiting.ids);
+        } catch (error) {
+          console.warn("Could not clear the notable events a morning run reported", error);
+        }
+      }
       await updateHabits(monoId, (habits) => ({
         habits: habits.map((entry) =>
           entry.id === habit.id

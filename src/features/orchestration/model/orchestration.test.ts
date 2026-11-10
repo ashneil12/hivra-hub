@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   Orchestrator,
+  handoffRelativePath,
   orchestrationPathKey,
   scopesOverlap,
   visibleUserPrompt,
@@ -644,6 +645,64 @@ describe("local orchestration", () => {
     expect(f.tasks()[0].workspace).toBeUndefined();
     expect(f.manager.run("lead")?.dispatches?.[0].stage).toBe("cleaned");
   });
+  it("closes a finished run with the usage its children recorded", async () => {
+    const f = setup();
+    await f.start();
+    await f.delegate(["src/a"]);
+    await vi.waitFor(() => expect(f.host.submit).toHaveBeenCalledOnce());
+    const task = f.tasks()[0];
+    const child = f.sessions.find((session) => session.id === task.sessionId)!;
+    child.blocks = [
+      {
+        id: "turn-1",
+        role: "user",
+        text: "do it",
+        turnMetrics: { inputTokens: 12, outputTokens: 340, costUsd: 0.02 },
+      },
+      {
+        id: "turn-1",
+        role: "user",
+        text: "do it",
+        turnMetrics: { inputTokens: 12, outputTokens: 340, costUsd: 0.02 },
+      },
+    ];
+    f.completions.get(task.sessionId)!({ status: "completed", text: "Done" });
+    await vi.waitFor(() => expect(f.tasks()[0].status).toBe("completed"));
+    await f.call("review", { taskId: task.id });
+
+    const result = await f.call("finish");
+
+    expect(result).toEqual({
+      finished: true,
+      usage: { inputTokens: 12, outputTokens: 340, costUsd: 0.02 },
+    });
+    expect(f.manager.run("lead")?.status).toBe("finished");
+    expect(f.manager.run("lead")?.closingUsage).toEqual({
+      inputTokens: 12,
+      outputTokens: 340,
+      costUsd: 0.02,
+    });
+  });
+
+  it("finishes when a child's usage cannot be read", async () => {
+    const f = setup();
+    await f.start();
+    await f.delegate(["src/a"]);
+    await vi.waitFor(() => expect(f.tasks()[0].sessionId).toBeTruthy());
+    const task = f.tasks()[0];
+    await f.call("cancel", { taskId: task.id });
+    const read = f.host.session;
+    f.host.session = (id) => {
+      if (id === task.sessionId) throw new Error("session store is down");
+      return read(id);
+    };
+
+    const result = await f.call("finish");
+
+    expect(result).toEqual({ finished: true });
+    expect(f.manager.run("lead")?.closingUsage).toBeUndefined();
+  });
+
   it("reports a cancelled dirty worktree instead of silently orphaning it", async () => {
     const f = setup();
     await f.start();
@@ -661,6 +720,7 @@ describe("local orchestration", () => {
       finished: true,
       cleanupPending: [`/worktrees/${task.id}`],
     });
+    expect(f.manager.run("lead")?.closingUsage).toBeUndefined();
     expect(f.tasks()[0].workspace?.checkoutCwd).toBe(`/worktrees/${task.id}`);
     expect(f.host.cleanupWorker).toHaveBeenCalledWith(
       expect.anything(),
@@ -963,6 +1023,111 @@ describe("local orchestration", () => {
     );
     expect(f.tasks()[0].error).toContain("outside its assignment");
     expect(f.manager.run("lead")!.status).toBe("active");
+  });
+
+  describe("a worker's handoff file", () => {
+    // The worker is told to write `.hivra/handoff/<taskId>.md` in its own checkout (workerTurnPrompt), so the scope
+    // guard must let exactly that one file through, however the harness names the path.
+    const writes = (path: string) => ({
+      type: "tool.started" as const,
+      callId: path,
+      title: "Write",
+      preview: { kind: "write" as const, path },
+    });
+    const started = async () => {
+      const f = setup();
+      await f.start();
+      await f.delegate(["brief.py"]);
+      await f.delegate(["commands.py"]);
+      await vi.waitFor(() => expect(f.host.submit).toHaveBeenCalledTimes(2));
+      const [task, other] = f.tasks();
+      return { f, task, other, checkout: task.workspace!.checkoutCwd };
+    };
+
+    it("leaves the task running when it writes its handoff, by a relative or an absolute path", async () => {
+      const { f, task, checkout } = await started();
+      expect(vi.mocked(f.host.submit).mock.calls[0][1]).toContain(
+        `.hivra/handoff/${task.id}.md`,
+      );
+      f.manager.observe(task.sessionId, writes(`.hivra/handoff/${task.id}.md`));
+      f.manager.observe(
+        task.sessionId,
+        writes(`${checkout}/.hivra/handoff/${task.id}.md`),
+      );
+      // A turn that ends is published only after every reported write has been checked, so a block shows here.
+      f.completions.get(task.sessionId)!({ status: "completed", text: "Done" });
+      await vi.waitFor(() => expect(f.tasks()[0].status).toBe("completed"));
+      expect(f.tasks()[0].error).toBeUndefined();
+      expect(f.manager.run("lead")!.status).toBe("active");
+      expect(f.tasks()[1].status).toBe("running");
+    });
+
+    it("stays running while the handoff is the only write it reported", async () => {
+      const { f, task } = await started();
+      f.manager.observe(task.sessionId, writes(`.hivra/handoff/${task.id}.md`));
+      await vi.waitFor(() => expect(f.store.resolvePath).toHaveBeenCalled());
+      // Let the check finish: a block would have landed by now.
+      for (let turn = 0; turn < 5; turn++)
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(f.tasks().map((entry) => entry.status)).toEqual([
+        "running",
+        "running",
+      ]);
+    });
+
+    it("still blocks every other write under .hivra, and another task's handoff", async () => {
+      const paths: Array<
+        (task: { id: string }, other: { id: string }) => string
+      > = [
+        (_task, other) => `.hivra/handoff/${other.id}.md`,
+        (task) => `.hivra/handoff/${task.id}.md.bak`,
+        (task) => `.hivra/handoff/sub/${task.id}.md`,
+        () => ".hivra/notes.md",
+        (task) => `.hivra/${task.id}.md`,
+        (task) => `.hivra/handoff/${task.id}.md/..`,
+      ];
+      for (const path of paths) {
+        const { f, task, other } = await started();
+        f.manager.observe(task.sessionId, writes(path(task, other)));
+        await vi.waitFor(() => expect(f.tasks()[0].status).toBe("blocked"));
+        expect(f.tasks()[0].error).toContain("outside its assignment");
+        expect(f.tasks()[1].status).toBe("running");
+        await f.manager.stopRun("lead");
+      }
+    });
+
+    it("blocks a handoff path that is really somewhere else, or in the lead's checkout", async () => {
+      const first = await started();
+      // A planted link: the reported path resolves to a file outside this worker's assignment.
+      first.f.store.resolvePath.mockImplementation(async (path: string) =>
+        path.endsWith(`${first.task.id}.md`) ? "/repo/commands.py" : path,
+      );
+      first.f.manager.observe(
+        first.task.sessionId,
+        writes(`.hivra/handoff/${first.task.id}.md`),
+      );
+      await vi.waitFor(() =>
+        expect(first.f.tasks()[0].status).toBe("blocked"),
+      );
+      await first.f.manager.stopRun("lead");
+
+      const second = await started();
+      // The same file name, but in the lead's own checkout: a worker never writes there.
+      second.f.manager.observe(
+        second.task.sessionId,
+        writes(`/repo/.hivra/handoff/${second.task.id}.md`),
+      );
+      await vi.waitFor(() =>
+        expect(second.f.tasks()[0].status).toBe("blocked"),
+      );
+      await second.f.manager.stopRun("lead");
+    });
+
+    it("names a handoff only for a task id that is one plain path segment", () => {
+      expect(handoffRelativePath("3f2a-91")).toBe(".hivra/handoff/3f2a-91.md");
+      for (const bad of ["", ".", "..", "../x", "a/b", "a\\b", "C:x", "a\0b", "a\nb"])
+        expect(() => handoffRelativePath(bad)).toThrow(/not a task id/);
+    });
   });
 
   it("keeps a paused run inspectable and automatically continues interrupted work on Resume", async () => {

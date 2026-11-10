@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { ask } from "@tauri-apps/plugin-dialog";
 import {
   bindHarnessSession,
+  cancelHarnessTurn,
   forgetHarnessSession,
   isLiveHarness,
 } from "../../integrations/harness/core/registry";
@@ -113,6 +114,21 @@ export function setQuitWorkspace(
 }
 
 /**
+ * A quit ends a compact the app is running for an idle chat (WP-115). It is not a
+ * turn, so Quit did not ask about it, but the CLI should be told to stop rather
+ * than be cut mid-write, and the watcher then lets go of the chat and its claim.
+ * Bounded: a CLI that does not answer never holds the quit up.
+ */
+async function cancelIdleCompactions(sessions: Session[]): Promise<void> {
+  const held = sessions.filter((session) => session.idleCompacting);
+  if (held.length === 0) return;
+  await Promise.race([
+    Promise.all(held.map((session) => cancelHarnessTurn(session.harness, session.id).catch(() => undefined))),
+    new Promise((resolve) => setTimeout(resolve, 1500)),
+  ]);
+}
+
+/**
  * Persist this window for a quit the coordinator has already confirmed.
  * Exiting is `confirm_quit`'s job, once every window has reported ready.
  * `shipUpdate` names the ship when the quit is for an update: cut turns are
@@ -123,6 +139,7 @@ export async function handleQuitRequested(shipUpdate?: string): Promise<boolean>
     liveWorkspace.flush();
     quitting = true;
     try {
+      await cancelIdleCompactions(liveWorkspace.sessions());
       await persistQuitState(
         liveWorkspace.sessions(),
         liveWorkspace.tabs(),

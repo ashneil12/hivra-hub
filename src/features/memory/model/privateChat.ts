@@ -74,7 +74,7 @@ export function privateChatKeys(chats: readonly PrivateFlag[]): Set<string> {
 }
 
 /**
- * True when any id is a private chat. A long key also matches a path whose file name is that key,
+ * True when any id is a private chat. A long key also matches a path whose file name is that key (or ends in `-<key>`, like a Codex rollout stem),
  * so a transcript named for the provider session is not offered. Short keys match only exactly.
  */
 export function chatIsPrivate(keys: ReadonlySet<string>, ids: readonly (string | null | undefined)[]): boolean {
@@ -85,7 +85,7 @@ export function chatIsPrivate(keys: ReadonlySet<string>, ids: readonly (string |
     const parts = raw.split(/[/\\]/);
     for (const key of keys) {
       if (key.length < 16) continue;
-      if (parts.some((part) => part === key || part.startsWith(`${key}.`))) return true;
+      if (parts.some((part) => part === key || part.startsWith(`${key}.`) || part.endsWith(`-${key}`) || part.endsWith(`-${key}.jsonl`))) return true;
     }
   }
   return false;

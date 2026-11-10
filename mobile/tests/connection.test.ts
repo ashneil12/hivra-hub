@@ -69,6 +69,11 @@ describe("QR invitation", () => {
       "expired",
     );
     expect(() => parseInvitation("https://example.com/?i=abc")).toThrow();
+    // The desktop still emits monocode://. The phone's own scheme is hivra,
+    // and accepting hivra:// here would drift ahead of that protocol.
+    expect(() =>
+      parseInvitation(link(invitation).replace("monocode:", "hivra:")),
+    ).toThrow(/Hivra/);
     expect(() =>
       parseInvitation(
         link({ ...invitation, addresses: [{ host: "host", port: 0 }] }),

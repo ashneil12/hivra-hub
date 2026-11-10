@@ -21,7 +21,9 @@ struct Device {
     name: String,
     fingerprint: String,
 }
-#[derive(Clone, Serialize, Deserialize)]
+// Hivra: every field defaults to off or empty. Upstream's Default opened a router port (open_router: true); here no
+// port mapping happens unless the person ticks it.
+#[derive(Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct Config {
     enabled: bool,
@@ -31,18 +33,6 @@ struct Config {
     remote_address: String,
     #[serde(default)]
     devices: Vec<Device>,
-}
-impl Default for Config {
-    fn default() -> Self {
-        // The listener stays down until `enabled` is on and this copy's phone policy allows it.
-        // `open_router` is today's value. It is only read after mobile access is already on.
-        Self {
-            enabled: false,
-            open_router: true,
-            remote_address: String::new(),
-            devices: Vec::new(),
-        }
-    }
 }
 struct Invitation {
     expires: u64,
@@ -1288,10 +1278,10 @@ mod tests {
         assert!(inner.config.devices.is_empty() && !host.path.exists());
     }
     #[test]
-    fn mobile_access_stays_off_and_the_router_default_is_unchanged() {
+    fn mobile_access_stays_off_and_the_router_default_is_off() {
         let config = Config::default();
         assert!(!config.enabled);
-        assert!(config.open_router);
+        assert!(!config.open_router);
         assert!(config.devices.is_empty());
         assert!(config.remote_address.is_empty());
     }
@@ -1518,5 +1508,12 @@ mod tests {
         assert!(pairing_gate(true, true, false).is_err());
         drop(inner);
         std::fs::remove_dir_all(&parent).unwrap();
+    }
+    #[test]
+    fn a_new_setup_does_not_open_a_router_port() {
+        assert!(!Config::default().open_router);
+        assert!(!Config::default().enabled);
+        let saved: Config = serde_json::from_str(r#"{"enabled":true}"#).unwrap();
+        assert!(!saved.open_router);
     }
 }

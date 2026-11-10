@@ -21,7 +21,7 @@ A call is refused unless every line below is true. A miss is an error, never an 
 - The caller is a device that enrolled with `device.enroll`, is still in the device list, and has not been revoked. Revoke removes its key before the next call is served. A call already in flight is dropped when the reply comes back if the key is gone.
 - The desktop window published the workspace. No window means no inbox, no crew, and no approval.
 
-Prefer Tailscale or the LAN. `open_router` is unchanged from today (it stays at its existing default, and it is only consulted after mobile access is on). This package does not add push tokens.
+Prefer Tailscale or the LAN. `open_router` defaults to off on main (a new setup opens no router port), and it is only consulted after mobile access is on. This package does not change it and does not add push tokens.
 
 ## Methods
 
@@ -44,7 +44,7 @@ A Mono's room-session call is not published. A room turn's approval is answered 
 2. `session.approve` / deny calling existing desktop approval path; never default allow; show exact command.
 3. `inbox.list` / waiting lines; `crew.status` read-only.
 4. Tests: flag off → methods rejected; flag on without policy → rejected; approve requires matching requestId; revoke device drops access.
-5. Do not enable `open_router` by default beyond today's behaviour; prefer documenting Tailscale/LAN. No push token work unless already gated.
+5. Keep `open_router` off by default (main's derived default); prefer documenting Tailscale/LAN. No push token work unless already gated.
 
 ## Done when
 

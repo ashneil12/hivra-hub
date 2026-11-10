@@ -367,6 +367,9 @@ export function habitRunPrompt(
   files: MonoFiles,
   habit: Habit,
   now: number,
+  /** Text the app adds after the habit's instructions: for the morning habit, what finished yesterday and the notable
+   * events still waiting (WP-157, WP-164). Other runs pass none. */
+  extra?: string,
 ): string {
   const lastRun = habit.lastRunAt
     ? ` It last ran ${new Date(habit.lastRunAt).toLocaleString()}${
@@ -384,7 +387,7 @@ You are running one of your habits on your own; the user did not just message yo
 
 Habit: ${habit.name}
 ${habit.instructions.trim()}
-
+${extra?.trim() ? `\n${extra.trim()}\n` : ""}
 Do the work now with your tools and the app CLI. Then reply with exactly the message you would send the user in your chat: short, in your own voice, only what they would want to know, with no preamble about running a habit. If there is nothing worth telling them, reply with exactly ${QUIET_MARKER} and nothing else; silence is the right answer more often than not. Save anything worth remembering with the memory actions before you reply.
 </habit_run>`);
 }

@@ -197,7 +197,7 @@ it("garbage on disk falls back, and a newer mirror is adopted without dropping a
   const kept = await readHome(disk, garbage, () => 99);
   expect(kept.doc.savedAt).toBe(10);
   expect(kept.doc.recent.map((item) => item.id)).toEqual(["old"]);
-  expect(kept.doc.arrangement.order.map((ref) => ref.kind === "builtin" && ref.id)).toEqual(["needs-you", "moving-now", "recent"]);
+  expect(kept.doc.arrangement.order.map((ref) => ref.kind === "builtin" && ref.id)).toEqual(["needs-you", "projects", "moving-now", "recent"]);
   expect(kept.rev).toBe(1);
 
   const mirror = storage({
