@@ -1,5 +1,8 @@
 import { setTurnTextDecorator } from "../integrations/harness/core/registry";
 // WP-85: terminal Claude sessions in the chat list.
+import { applyTeleportRow } from "./model/teleportSessionState";
+import { launchRecovery } from "../features/connections/model/teleportMove";
+import { teleportStateOf } from "../features/connections/model/teleportState";
 import { mergeTerminalSessions } from "../features/terminalMirror/model/list";
 import { TerminalMirrorPane } from "../features/terminalMirror/ui/TerminalMirrorPane";
 import { useTerminalMirror } from "../features/terminalMirror/ui/useTerminalMirror";
@@ -3537,6 +3540,17 @@ function Workspace({
   }, [appendTab, sessionDefaults?.runtimeMode, sidebarCwd]);
 
   // WP-123: open a forked chat. The original is not written.
+  // WP-177: once the first sessions are in App, finish or undo any chat move that stopped part way (launch recovery).
+  const launchRecoveryStarted = useRef(false);
+  useEffect(() => {
+    if (launchRecoveryStarted.current || sessions.length === 0) return;
+    launchRecoveryStarted.current = true;
+    void launchRecovery(sessions.map((session) => session.id), {
+      onRow: (row) => {
+        applyTeleportRow(sessionsRef, setSessions, row);
+      },
+    }).catch(() => undefined);
+  }, [sessions]);
   const openForkedSession = useCallback(
     (session: Session) => {
       updateSessionState(sessionsRef, setSessions, (sessions) =>
@@ -16955,6 +16969,11 @@ function Workspace({
   };
 
   const sessionPaneProps = {
+    // WP-177: a move's stored row goes into App's list, so the open chat and the next save see the move.
+    onTeleportRow: (row: Session) => {
+      applyTeleportRow(sessionsRef, setSessions, row);
+    },
+    onOpenChat: openForkedSession,
     workspaceSwitchingSessionId: workspaceNavigation.pending
       ? active?.id
       : undefined,
@@ -18718,6 +18737,12 @@ function selectedCommitSha(tab: WorkspaceTab): string | undefined {
 }
 
 
+/** WP-177: the machine a chat moved to, or undefined when it has not moved away. */
+function movedHostOf(session: Session): string | undefined {
+  const state = teleportStateOf(session);
+  return state.moved ? state.host : undefined;
+}
+
 function toTitleTab(
   tab: WorkspaceTab,
   sessions: Session[],
@@ -18821,6 +18846,8 @@ function toTitleTab(
         ? projectName(focusedFile.projectCwd ?? focusedFile.cwd)
         : "~",
     title: focused ? conversationTitle(focused) : "",
+    // WP-177: the header says where a moved chat went.
+    movedTo: focused ? movedHostOf(focused) : undefined,
     more,
     sessionCount: tabSessions.length,
     harnesses,

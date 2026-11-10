@@ -104,6 +104,7 @@ function Fixture() {
         session={port.current()}
         hosts={[{ id: "host-a", name: "Studio box" }]}
         endpointsFor={endpoints}
+        loadRow={async (chatId) => (chatId === port.current().id ? port.current() : null)}
         saveAndOpen={async (next) => {
           setSaved((list) => [...list, next.title]);
         }}

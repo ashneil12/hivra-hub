@@ -23,7 +23,7 @@ vi.mock("@tauri-apps/api/core", () => ({
   }),
 }));
 
-import { getSession, upsertSession } from "../../../features/sessions/data/sessionStore";
+import { forgetMovedRowsForTests, getSession, upsertSession } from "../../../features/sessions/data/sessionStore";
 import { sessionStoreChatPort } from "../data/teleportStorePort";
 import { localMoveEndpoint } from "./teleportLocal";
 import { sshMoveEndpoint, type HostCall } from "./teleportSsh";
@@ -72,6 +72,7 @@ describe("WP-177 the app's move path, against the real stores", () => {
   let call: HostCall;
   beforeEach(() => {
     backend.clear();
+    forgetMovedRowsForTests();
     unlockChat(CHAT);
     dir = mkdtempSync(path.join(tmpdir(), "wp177-app-"));
     host = new HostTeleportStore({ dir, selfId: HOST, providers: ["claude"], leaseRoot: path.join(dir, "leases") });
@@ -133,5 +134,39 @@ describe("WP-177 the app's move path, against the real stores", () => {
     expect(recovered).toEqual([expect.objectContaining({ chatId: CHAT, status: "moved" })]);
     expect(teleportStateOf((await getSession(CHAT))!)).toMatchObject({ moved: true });
     expect((await host.read(CHAT, "dev-desktop"))?.live).not.toBeNull();
+  });
+});
+
+describe("WP-177 startup recovery, called at launch", () => {
+  beforeEach(() => {
+    backend.clear();
+    forgetMovedRowsForTests();
+    unlockChat(CHAT);
+  });
+
+  it("launch recovery skips chats with no saved move, and reports each recovered row back to the app", async () => {
+    const { launchRecovery } = await import("./teleportMove");
+    await upsertSession(savedChat());
+    const dir2 = mkdtempSync(path.join(tmpdir(), "wp177-launch-"));
+    const host2 = new HostTeleportStore({ dir: dir2, selfId: HOST, providers: ["claude"], leaseRoot: path.join(dir2, "leases") });
+    const call: HostCall = async (method, params) =>
+      JSON.parse(JSON.stringify((await teleportRpc(host2, method, JSON.parse(JSON.stringify(params)), "dev-desktop")) ?? null));
+    const local = localMoveEndpoint({ machineId: MAC, port: sessionStoreChatPort(), labelFor: () => "Studio box" });
+    const rows: Session[] = [];
+    expect(await launchRecovery([CHAT], { port: sessionStoreChatPort(), local, remoteFor: () => sshMoveEndpoint(HOST, call), onRow: (r) => rows.push(r) })).toEqual([]);
+    expect(rows).toEqual([]);
+
+    // A move that stopped before the Mac released: the launch finishes it and tells the app.
+    const session = (await getSession(CHAT))!;
+    const planned = await planFromSession(session, MAC, HOST);
+    if (!planned.ok) throw new Error("plan");
+    const { approvePlan, moveChat } = await import("./teleport");
+    const stopped = { ...local, release: async () => { throw new Error("process stopped"); } };
+    await moveChat({ chatId: CHAT, from: stopped, to: sshMoveEndpoint(HOST, call), approval: approvePlan(planned.plan, click()), moveId: "launch-1", at: "t" });
+    const lines = await launchRecovery([CHAT], { port: sessionStoreChatPort(), local, remoteFor: () => sshMoveEndpoint(HOST, call), onRow: (r) => rows.push(r) });
+    expect(lines).toEqual([expect.objectContaining({ chatId: CHAT, status: "moved" })]);
+    expect(rows).toHaveLength(1);
+    expect(teleportStateOf(rows[0])).toMatchObject({ moved: true });
+    rmSync(dir2, { recursive: true, force: true });
   });
 });

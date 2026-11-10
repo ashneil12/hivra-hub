@@ -54,3 +54,36 @@ export async function listPairedHosts(): Promise<Array<{ id: string; name: strin
   const machines = await invoke<Array<{ id: string; name: string }>>("remote_machines");
   return Array.isArray(machines) ? machines.map((m) => ({ id: m.id, name: m.name })) : [];
 }
+
+/**
+ * Startup recovery as the app runs it at launch. The deps are the app's real ones by default: this Mac's saved store,
+ * and the SSH host reached through the same remote request every other host call uses. `onRow` gets each row a
+ * recovery changed, so the app's list holds the stored state.
+ */
+export async function launchRecovery(
+  chatIds: string[],
+  deps: {
+    port?: LocalChatPort;
+    local?: MoveEndpoint;
+    remoteFor?: (peer: string) => MoveEndpoint;
+    onRow?: (row: Session) => void;
+  } = {},
+): Promise<Array<{ chatId: string; moveId: string; status: MoveResult["status"] }>> {
+  const { sessionStoreChatPort } = await import("../data/teleportStorePort");
+  const { localMoveEndpoint } = await import("./teleportLocal");
+  const { sshMoveEndpoint } = await import("./teleportSsh");
+  const { remoteRequest } = await import("./connections");
+  const { getSession } = await import("../../sessions/data/sessionStore");
+  const port = deps.port ?? sessionStoreChatPort();
+  const local = deps.local ?? localMoveEndpoint({ machineId: "this-mac", port });
+  const remoteFor =
+    deps.remoteFor ?? ((peer: string) => sshMoveEndpoint(peer, (method, params) => remoteRequest(peer, method, params)));
+  const lines = await recoverSavedMoves({ chatIds, port, local, remoteFor });
+  if (deps.onRow) {
+    for (const line of new Set(lines.map((l) => l.chatId))) {
+      const row = await getSession(line);
+      if (row) deps.onRow(row);
+    }
+  }
+  return lines;
+}

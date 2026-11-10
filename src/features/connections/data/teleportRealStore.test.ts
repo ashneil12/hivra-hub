@@ -21,7 +21,7 @@ vi.mock("@tauri-apps/api/core", () => ({
   }),
 }));
 
-import { getSession, upsertSession } from "../../../features/sessions/data/sessionStore";
+import { forgetMovedRowsForTests, getSession, upsertSession } from "../../../features/sessions/data/sessionStore";
 import { sessionStoreChatPort } from "./teleportStorePort";
 import { localMoveEndpoint } from "../model/teleportLocal";
 import { isChatLocked, unlockChat } from "../model/teleportLock";
@@ -51,6 +51,7 @@ function savedChat(): Session {
 describe("WP-177 HIGH A: a move through the real session store", () => {
   beforeEach(() => {
     backend.clear();
+    forgetMovedRowsForTests();
     unlockChat(CHAT);
   });
 
@@ -91,6 +92,7 @@ describe("WP-177 HIGH A: a move through the real session store", () => {
 describe("WP-177 HIGH A: busy comes from the app's live state, not from the saved row", () => {
   beforeEach(() => {
     backend.clear();
+    forgetMovedRowsForTests();
     unlockChat(CHAT);
   });
 

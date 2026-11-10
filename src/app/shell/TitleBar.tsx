@@ -91,6 +91,8 @@ export type Tab = {
   title: string;
   /** Other conversation titles in this tab, focused session omitted. */
   more: string[];
+  /** WP-177: set when the focused chat moved to another machine; the name of that machine. */
+  movedTo?: string;
   sessionCount: number;
   harnesses: HarnessId[];
   /** Harnesses with an in-flight turn in this tab. */
@@ -232,6 +234,7 @@ export function tabCopy(tab: Tab): {
     if (sessions) metaParts.push(sessions);
   }
 
+  if (tab.movedTo) metaParts.unshift(`Moved to ${tab.movedTo}`);
   const meta = metaParts.join(" · ");
 
   const tooltipParts = [project];

@@ -266,6 +266,10 @@ export type SessionPaneProps = {
     reply: UserQuestionReply,
   ) => void;
   onQuestionInteraction?: (sessionId: string, requestId: number) => void;
+  /** WP-177: the stored row after a chat move, so the app's session list holds the moved state. */
+  onTeleportRow?: (row: Session) => void;
+  /** WP-177: opens a new chat (the recap) in the app. */
+  onOpenChat?: (session: Session) => void;
   onOpenFile: (path: string) => void;
   onOpenDiff: (
     path?: string,
@@ -405,6 +409,8 @@ const LocalSessionPane = memo(function LocalSessionPane({
   onApproval,
   onQuestionReply,
   onQuestionInteraction,
+  onTeleportRow,
+  onOpenChat,
   onOpenFile,
   onOpenDiff,
   onCommitChanges,
@@ -955,7 +961,7 @@ const LocalSessionPane = memo(function LocalSessionPane({
         globalBackgroundEffect === "gradient-blur") ? (
         <GradientBlurBackground />
       ) : null}
-      <AppTeleportPanel session={session} />
+      <AppTeleportPanel session={session} onRow={onTeleportRow} onOpen={onOpenChat} />
       {(() => {
         const moved = teleportStateOf(session);
         // The saved state is the truth after a restart: a moved or frozen chat stays locked, a settled one unlocks.

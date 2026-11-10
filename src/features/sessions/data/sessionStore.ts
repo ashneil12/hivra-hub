@@ -476,12 +476,29 @@ function enqueueSessionWrite<T>(
   return run;
 }
 
+/**
+ * WP-177: the chats saved as moved to another machine. A save of an older, pre-move copy of one of them is refused, so
+ * no writer (quit, a queue drain, a stale window) can bring a chat back to life on this Mac. A chat returns only with its
+ * "teleported-back" notice. Filled when a chat is read, so the guard holds after a restart too.
+ */
+const movedSessionIds = new Set<string>();
+
+/** Test-only reset: a new process starts with no moved rows known, and reads fill the set again. */
+export function forgetMovedRowsForTests(): void {
+  movedSessionIds.clear();
+}
+
 export async function upsertSession(
   session: Session,
 ): Promise<SessionSummary | null> {
   if (!shouldPersistSession(session) || deletedSessionIds.has(session.id)) {
     return null;
   }
+  const moved = teleportStateOf(session).moved;
+  const returning = session.blocks.some((b) => b.notice === "teleported-back");
+  if (movedSessionIds.has(session.id) && !moved && !returning) return null;
+  if (moved) movedSessionIds.add(session.id);
+  else if (returning) movedSessionIds.delete(session.id);
   const mono = !!session.monoTranscript || isMonoSession(session.id);
   const snapshot = mono
     ? session.blocks.filter((block) => monoPersistedBlock(block) !== null)
@@ -720,6 +737,7 @@ export async function readSession(sessionId: string): Promise<Session | null> {
   if (session.monoTranscript) monoSavedBlocks.set(sessionId, session.blocks);
   // WP-177: every read of a saved chat sets its send lock (moved or frozen), so a restart keeps it.
   syncTeleportLock(session);
+  if (teleportStateOf(session).moved) movedSessionIds.add(session.id);
   return session;
 }
 

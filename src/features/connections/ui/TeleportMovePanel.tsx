@@ -13,7 +13,7 @@ import { sshMoveEndpoint } from "../model/teleportSsh";
 import { remoteRequest } from "../model/connections";
 import { sessionStoreChatPort } from "../data/teleportStorePort";
 import { teleportStateOf } from "../model/teleportState";
-import { upsertSession } from "../../sessions/data/sessionStore";
+import { getSession, upsertSession } from "../../sessions/data/sessionStore";
 import { listPairedHosts } from "../model/teleportMove";
 
 export interface PairedHost {
@@ -28,6 +28,10 @@ export interface TeleportMovePanelProps {
   endpointsFor: (hostId: string) => { local: MoveEndpoint; remote: MoveEndpoint };
   /** Saves a new chat (the recap) and opens it. */
   saveAndOpen: (next: Session) => Promise<void>;
+  /** Receives the stored row after a move, so the app's session list holds the moved state. */
+  onRow?: (row: Session) => void;
+  /** Reads the stored row again after a move. Defaults to the saved store. */
+  loadRow?: (chatId: string) => Promise<Session | null>;
 }
 
 type Phase =
@@ -38,7 +42,7 @@ type Phase =
   | { kind: "failed"; message: string };
 
 export function TeleportMovePanel(props: TeleportMovePanelProps) {
-  const { session, hosts, endpointsFor, saveAndOpen } = props;
+  const { session, hosts, endpointsFor, saveAndOpen, onRow, loadRow = getSession } = props;
   const [phase, setPhase] = useState<Phase>({ kind: "idle" });
   const [hostId, setHostId] = useState<string>(hosts[0]?.id ?? "");
   const hostName = hosts.find((h) => h.id === hostId)?.name ?? hostId;
@@ -65,7 +69,12 @@ export function TeleportMovePanel(props: TeleportMovePanelProps) {
         moveId: `move-${Date.now()}`,
         at: new Date().toISOString(),
       });
-      if (result.status === "moved") setPhase({ kind: "done", hostId: phase.hostId, result });
+      if (result.status === "moved") {
+        // A failed reload does not undo the move: the move already happened and is saved step by step.
+        const row = await loadRow(session.id).catch(() => null);
+        if (row) onRow?.(row);
+        setPhase({ kind: "done", hostId: phase.hostId, result });
+      }
       else if (result.status === "refused") setPhase({ kind: "refused", refusal: result.refusal, hostId: phase.hostId });
       else setPhase({ kind: "failed", message: result.status === "failed" ? result.message : "The move did not finish. The chat stayed where it was." });
     } catch (error) {
@@ -151,8 +160,8 @@ export function TeleportMovePanel(props: TeleportMovePanelProps) {
  * The panel as the app mounts it: the paired hosts from the machine list, this Mac's saved chat store (busy from the app's
  * live session), and the SSH host reached through the same remote request every other host call uses.
  */
-export function AppTeleportPanel(props: { session: Session }) {
-  const { session } = props;
+export function AppTeleportPanel(props: { session: Session; onRow?: (row: Session) => void; onOpen?: (session: Session) => void }) {
+  const { session, onRow, onOpen } = props;
   const [hosts, setHosts] = useState<PairedHost[]>([]);
   useEffect(() => {
     let alive = true;
@@ -179,8 +188,10 @@ export function AppTeleportPanel(props: { session: Session }) {
           remote: sshMoveEndpoint(hostId, (method, params) => remoteRequest(hostId, method, params)),
         };
       }}
+      onRow={onRow}
       saveAndOpen={async (next) => {
         await upsertSession(next);
+        onOpen?.(next);
       }}
     />
   );
