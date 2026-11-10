@@ -161,6 +161,7 @@ fn pr(state: PrState, head: &str, checks: Vec<Check>) -> PrRead {
         base_ref: "main".into(),
         head_repo: Some("acme/web".into()),
         review_decision: None,
+        labels: Vec::new(),
         detail: Detail {
             head_sha: Some(head.into()),
             checks,
@@ -1090,6 +1091,35 @@ fn an_agent_merge_asks_the_person_and_merges_only_the_head_they_allowed() {
     );
     assert_eq!(merged_row.initiator, crate::activity::Who::person());
     assert_eq!(merged_row.summary, "Merged acme/web#7.");
+}
+
+#[test]
+fn an_agent_merge_refuses_a_security_park_label_even_on_an_approved_head() {
+    // The lead tick's rule, read fresh on the merge path: the label is checked here, not only in the tick's copy.
+    for label in [
+        "security-park",
+        "Security Park",
+        "never-merge",
+        "never-merge-here",
+    ] {
+        let s = store();
+        merge::approve(&s.lock_conn().unwrap(), "acme/web", 7, "h1", "person", 10).unwrap();
+        let mut parked = green("h1");
+        parked.labels = vec![label.into()];
+        let gh = FakeGithub::new(vec![parked]);
+        let outcome = merge::merge(&s, &gh, agent_merge("acme/web"), 20).unwrap();
+        assert!(
+            matches!(&outcome, MergeOutcome::Refused { reason } if reason.contains("an agent never merges it")),
+            "{label}: {outcome:?}"
+        );
+        assert!(gh.ran("pr", "merge").is_empty(), "{label}: nothing merges");
+        let log = merge::log(&s.lock_conn().unwrap(), "acme/web", 7).unwrap();
+        assert_eq!(
+            log.last().map(|l| l.outcome.as_str()),
+            Some("refused"),
+            "{label}"
+        );
+    }
 }
 
 fn remember_delivery(
