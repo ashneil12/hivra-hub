@@ -63,6 +63,8 @@ function workers(): Delegation[] {
       status: "working",
       createdAt: START - 12 * 60_000,
       childSession: "chat-working",
+      // WP-141: why the crew picked this worker's CLI, kept on its recorded line.
+      log: [{ at: START - 12 * 60_000, by: "owner:lead", event: "recorded", why: "Builder role prefers Codex." }],
     }),
     worker({
       id: "needs",
