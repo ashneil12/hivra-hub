@@ -152,6 +152,8 @@ export const TASK_FIELDS: ReadonlyArray<readonly [string, readonly string[]]> = 
       "code",
       // WP-144: a short reading list the fresh-eyes reviewers see with the plan.
       "reading",
+      // WP-141: builder, reviewer or researcher. A saved role row picks the CLI.
+      "role",
       // WP-70: the shared task this work moves. Not a worker's task id.
       "taskId",
     ],
@@ -1035,6 +1037,8 @@ async function delegate(
   if (tasks.crewRoute) {
     const baseline = model?.harness ?? source.harness;
     const baselineModel = model?.model ?? source.model;
+    const roleLabel =
+      input.role === undefined ? undefined : text(input.role, "role", 40).toLowerCase();
     try {
       const override = callerOverride(namedModel, input.effort);
       const monoRules = carriedMonoRules(owner.mono?.crewRules);
@@ -1045,7 +1049,9 @@ async function delegate(
       });
       const catalog = launchCatalog();
       const answer = await tasks.crewRoute({
-        labels: crewLabels(areasNamed(title, brief)),
+        labels: [
+          ...new Set([...(roleLabel ? [roleLabel] : []), ...crewLabels(areasNamed(title, brief))]),
+        ],
         paths: crewPaths(fileList(input.files), filesNamed(brief)),
         ...(override ? { override } : {}),
         ...(folder ? { project: folder } : {}),

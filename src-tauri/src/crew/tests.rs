@@ -2145,3 +2145,95 @@ fn the_first_mates_pick_reads_the_stored_rules_policy_and_roster() {
         "This chat is already three Monos deep, so another Mono was refused."
     );
 }
+
+/// A role row saved for everything (no project) still picks the CLI, including for a Mono, and the lock keeps that row.
+#[test]
+fn a_system_role_rule_reaches_a_mono_launch_and_the_lock_keeps_it() {
+    let store = memory();
+    let mut conn = store.lock_conn().unwrap();
+    let who = &[
+        ("claude", true, true),
+        ("codex", true, true),
+        ("grok", true, true),
+    ];
+    save(
+        &mut conn,
+        "system",
+        "system",
+        vec![draft("builder", "", "codex", "", "")],
+        0,
+        None,
+    )
+    .unwrap();
+    store::set_policy(
+        &mut conn,
+        "system",
+        "system",
+        &json!({ "lockDefault": true, "neverUse": [], "fallback": [] }),
+        1,
+    )
+    .unwrap();
+    let open = store::pick_at(
+        &conn,
+        &store::PickRequest {
+            route: query("builder", "", "", "", None, None, who),
+            monos: vec![],
+            lead_mono_id: None,
+            depth: 0,
+            at_cap: vec![],
+            mono_override: None,
+        },
+        &[],
+        i64::MAX,
+    )
+    .unwrap();
+    assert_eq!(open.cli.as_deref(), Some("codex"));
+    assert_eq!(open.reason, "Builder role prefers Codex.");
+
+    let locked = store::pick_at(
+        &conn,
+        &store::PickRequest {
+            route: query(
+                "builder",
+                "",
+                "",
+                "ada",
+                Some(pick_cli("grok", "", "")),
+                None,
+                who,
+            ),
+            monos: vec![],
+            lead_mono_id: Some("ada".into()),
+            depth: 0,
+            at_cap: vec![],
+            mono_override: None,
+        },
+        &[],
+        i64::MAX,
+    )
+    .unwrap();
+    assert_eq!(locked.cli.as_deref(), Some("codex"));
+    assert_eq!(
+        locked.reason,
+        "Always use my default is on, so this override was not applied. Builder role prefers Codex."
+    );
+
+    save(
+        &mut conn,
+        "project",
+        PROJECT,
+        vec![draft("builder", "", "grok", "", "")],
+        0,
+        None,
+    )
+    .unwrap();
+    let nearer = store::route(
+        &conn,
+        &query("builder", "", PROJECT, "ada", None, None, who),
+        &[],
+    )
+    .unwrap();
+    assert_eq!(nearer.cli.as_deref(), Some("grok"));
+    assert_eq!(nearer.cli_from, "rule");
+    assert_eq!(nearer.rule_label.as_deref(), Some("builder"));
+}

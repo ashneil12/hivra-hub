@@ -605,7 +605,7 @@ fn policy_in_force(conn: &Connection, query: &RouteQuery) -> Result<Value, Strin
     policy_for(conn, query.mono.as_deref(), query.project.as_deref())
 }
 
-/// The rules in force for a query: the Mono's (carried, else stored), then the project's, then plugins'.
+/// The rules in force for a query: the Mono's (carried, else stored), then the project's, then the system's, then plugins'.
 fn merged_rules(
     conn: &Connection,
     query: &RouteQuery,
@@ -620,7 +620,8 @@ fn merged_rules(
         Some(id) => load_optional(conn, "mono", id)?,
         None => Vec::new(),
     };
-    // WP-21: rules stored on the Mono beat a copy in the crew table, then the project's, then plugins'.
+    // WP-21: rules stored on the Mono beat a copy in the crew table, then the project's, then the
+    // system's (the screen saves role rows there when there is no project), then plugins'.
     let carried = carried_mono_rules(&query.mono_rules);
     let mono = if carried.is_empty() { stored } else { carried };
     let project = match query
@@ -632,7 +633,8 @@ fn merged_rules(
         Some(id) => load_optional(conn, "project", id)?,
         None => Vec::new(),
     };
-    Ok(rules::merge_rules(&mono, &project, plugins))
+    let system = load_optional(conn, "system", "system")?;
+    Ok(rules::merge_rules(&mono, &project, &system, plugins))
 }
 
 pub fn route_at(

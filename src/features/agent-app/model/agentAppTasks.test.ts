@@ -1097,6 +1097,21 @@ describe("tasks.delegate", () => {
     expect(withCrew).toMatchObject({ harness: "codex", model: "codex:gpt-5", modelSettings: { effort: "medium" } });
   });
 
+  it("sends a named role on the crew labels, ahead of the file areas", async () => {
+    const { source, host, api } = fixture();
+    api.crewRoute = vi.fn(async () => ({ cli: "codex", cliFrom: "rule", modelFrom: "none", effortFrom: "none" }));
+    await handleAgentApp(
+      source,
+      "r-role",
+      "tasks.delegate",
+      { brief: "Build the UI.", role: "Builder", files: ["src/app/main.tsx"] },
+      host,
+    );
+    expect(api.crewRoute).toHaveBeenCalledWith(
+      expect.objectContaining({ labels: ["builder", "ui"] }),
+    );
+  });
+
   it("moves a Claude task to Codex when a rule for its label says so", async () => {
     setHarnessModels("codex", [{ id: "codex:gpt-5", harness: "codex", name: "GPT-5", settings: [] }]);
     const { source, host, started, api } = fixture();
