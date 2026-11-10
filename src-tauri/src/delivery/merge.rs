@@ -7,10 +7,14 @@
 //! 3. refuses while a decision on that work is open (a question on any task in its tree, or a WP-14
 //!    decision in state open waiting on any of those tasks);
 //! 4. merges with the person's word (their own tap, or an approval they gave for this exact head) or, when the project's
-//!    "merge without asking" switch is on, without it; otherwise it asks and merges nothing;
+//!    "merge without asking" switch is on, without it, unless that project has turned the protected-path floor on and
+//!    the diff touches a protected path or its file list could not be read; otherwise it asks and merges nothing;
 //! 5. merges only the head it judged (`gh pr merge --match-head-commit`), and logs every attempt with who allowed it.
 //!
 //! A pull request with no checks at all needs the person's word even when the switch is on: no checks is not green.
+//! When the project has turned the protected-path floor on (WP-158, off until then), the switch is not enough
+//! for a diff that touches a protected path, or whose changed files could not be read. The person's word for
+//! that exact head still merges it.
 //!
 //! Red is never merged (firstmate, `bin/fm-pr-merge.sh`).
 
@@ -184,6 +188,49 @@ pub fn decide(read: &PrRead, open_decision: Option<&str>, allow: &Allow) -> Deci
             if no_checks { " (it has no checks)" } else { "" }
         )),
     }
+}
+
+fn named_files(hits: &[String]) -> String {
+    let shown: Vec<&str> = hits.iter().take(5).map(String::as_str).collect();
+    if hits.len() > 5 {
+        format!("{}, and {} more", shown.join(", "), hits.len() - 5)
+    } else {
+        shown.join(", ")
+    }
+}
+
+/// The protected-path floor. Off, the decision is unchanged, so a project that has not turned the floor on
+/// merges exactly as it did before. A decision that is not a merge is unchanged too: red still refuses, and
+/// a pull request with no checks still asks for the no-checks reason.
+pub(crate) fn floor_decision(
+    decision: Decision,
+    enabled: bool,
+    files: &super::protected::ChangedFiles,
+    extras: &[String],
+    pr: &str,
+) -> Decision {
+    if !enabled {
+        return decision;
+    }
+    let Decision::Merge { .. } = &decision else {
+        return decision;
+    };
+    let paths = match files {
+        super::protected::ChangedFiles::Unread => {
+            return Decision::Ask(format!(
+                "{pr}'s changed files couldn't be read, so it needs your word to merge."
+            ));
+        }
+        super::protected::ChangedFiles::Listed(paths) => paths,
+    };
+    let hits = super::protected::protected_hits(paths, extras);
+    if hits.is_empty() {
+        return decision;
+    }
+    Decision::Ask(format!(
+        "{pr} changes {}. It needs your word to merge.",
+        named_files(&hits)
+    ))
 }
 
 /// An open question on the work: a question on any task in its tree, or a WP-14 decision (state open)
@@ -388,7 +435,7 @@ pub fn merge(
         return Err("number must be the pull request's number".into());
     }
     let read = gh.read_pr(&repo, number);
-    let conn = store.lock_conn()?;
+    let mut conn = store.lock_conn()?;
     let read = match read {
         Ok(read) => read,
         Err(error) => {
@@ -431,6 +478,10 @@ pub fn merge(
         Some(id) => open_decision(&conn, id)?,
         None => None,
     };
+    let stored = match project.as_deref() {
+        Some(path) => Some(super::settings::get(&conn, path)?),
+        None => None,
+    };
     let allow = match &request.caller {
         Caller::Person { via } => Allow::Person {
             by: format!("person ({via})"),
@@ -439,18 +490,33 @@ pub fn merge(
             Some(by) => Allow::Person {
                 by: format!("{by} (approved this head)"),
             },
-            None if project
-                .as_deref()
-                .map(|p| super::settings::get(&conn, p))
-                .transpose()?
-                .is_some_and(|s| s.merge_without_asking) =>
-            {
-                Allow::Switch
-            }
+            None if stored.as_ref().is_some_and(|row| row.merge_without_asking) => Allow::Switch,
             None => Allow::Nobody,
         },
     };
-    let decision = decide(&read, open.as_deref(), &allow);
+    let decided = decide(&read, open.as_deref(), &allow);
+    // WP-158: only the switch consults the floor, and only once the project has turned it on.
+    // The person's own tap, and an approval of this exact head, are already their word.
+    let consult = matches!(allow, Allow::Switch)
+        && stored.as_ref().is_some_and(|row| row.protect_paths)
+        && matches!(decided, Decision::Merge { .. });
+    let decision = if consult {
+        let extras = stored
+            .as_ref()
+            .map(|row| row.protected_extra.clone())
+            .unwrap_or_default();
+        drop(conn);
+        let listed = super::protected::changed_files(gh, &repo, number);
+        let again = gh.read_pr(&repo, number);
+        let files = match again {
+            Ok(again) if again.detail.head_sha.as_deref() == Some(head.as_str()) => listed,
+            _ => super::protected::ChangedFiles::Unread,
+        };
+        conn = store.lock_conn()?;
+        floor_decision(decided, true, &files, &extras, &format!("{repo}#{number}"))
+    } else {
+        decided
+    };
     let allowed_by = match decision {
         Decision::Refuse(reason) => {
             record(

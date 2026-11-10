@@ -14,11 +14,6 @@
 //!
 //! Built-in patterns always apply. A project's extra patterns can only add hits.
 //! A pattern with `*`, `?` or `[` matches nothing, so a bare `*` cannot match every file.
-//!
-//! The matcher is unused by the merge path until that path consults it. The allow
-//! goes away in that change.
-
-#![allow(dead_code)]
 
 /// Directory names that are protected wherever they sit in the path.
 const DIRECTORIES: &[&str] = &[

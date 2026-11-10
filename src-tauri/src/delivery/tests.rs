@@ -7,7 +7,10 @@ use std::process::Command;
 use super::deliver::{self, DeliverInput};
 use super::events::{self, Kind, News};
 use super::github::fake::FakeGithub;
-use super::merge::{self, decide, Allow, Caller, Decision, MergeOutcome, MergeRequest, Method};
+use super::merge::{
+    self, decide, floor_decision, Allow, Caller, Decision, MergeOutcome, MergeRequest, Method,
+};
+use super::protected::ChangedFiles;
 use super::settings::{self, Mode, Probe};
 use super::teardown::{self, Safe};
 use crate::delegations::{self, RecordInput};
@@ -1448,4 +1451,375 @@ fn the_janitor_never_offers_to_remove_a_landed_but_unmerged_copy() {
     git(&f.project, &["checkout", "-q", "--", "a.txt"]);
     git(&f.project, &["merge", "-q", "--ff-only", "work"]);
     assert_eq!(teardown::guard(&f.project, &f.copy).unwrap(), Safe::Merged);
+}
+
+// ---- protected-path floor (WP-158) ---------------------------------------------------------------------------------------
+
+fn floor_project(tag: &str) -> PathBuf {
+    PathBuf::from(format!("/no/such/hivra-wp158-{tag}"))
+}
+
+fn turn_floor_on(store: &SessionStore, project: &Path) {
+    let conn = store.lock_conn().unwrap();
+    let current = settings::get(&conn, project.to_str().unwrap()).unwrap();
+    settings::set_protect_paths(
+        &conn,
+        project.to_str().unwrap(),
+        true,
+        current.updated_at,
+        current.updated_at.unwrap_or(0) + 1,
+    )
+    .unwrap();
+}
+
+fn protect_also(store: &SessionStore, project: &Path, paths: &[&str]) {
+    let conn = store.lock_conn().unwrap();
+    let current = settings::get(&conn, project.to_str().unwrap()).unwrap();
+    let owned: Vec<String> = paths.iter().map(|path| (*path).to_string()).collect();
+    settings::add_protected_paths(
+        &conn,
+        project.to_str().unwrap(),
+        &owned,
+        current.updated_at,
+        current.updated_at.unwrap_or(0) + 1,
+    )
+    .unwrap();
+}
+
+fn files_of(body: Result<&str, &str>) -> FakeGithub {
+    let gh = FakeGithub::new(vec![green("h1")]);
+    *gh.files.lock().unwrap() = Some(match body {
+        Ok(text) => Ok(text.to_string()),
+        Err(text) => Err(text.to_string()),
+    });
+    gh
+}
+
+fn asked(outcome: &MergeOutcome) -> String {
+    match outcome {
+        MergeOutcome::NeedsYou { question, .. } => question.clone(),
+        other => panic!("expected the merge to ask, got {other:?}"),
+    }
+}
+
+#[test]
+fn the_floor_off_decides_exactly_as_before() {
+    let decision = decide(&green("h1"), None, &Allow::Switch);
+    assert_eq!(
+        floor_decision(
+            decision.clone(),
+            false,
+            &ChangedFiles::Unread,
+            &["*".to_string()],
+            "acme/web#7",
+        ),
+        decision
+    );
+
+    let project = floor_project("off");
+    let s = store();
+    set_mode(&s, &project, Some(Mode::Pr), true);
+    remember_delivery(&s, &project, None, 7);
+    let mut request = agent_merge("acme/web");
+    request.project = Some("/not/the/delivery/project".into());
+    let gh = files_of(Ok(".github/workflows/x.yml\n"));
+    let merged = merge::merge(&s, &gh, request, 20).unwrap();
+    assert!(
+        matches!(&merged, MergeOutcome::Merged { allowed_by, .. } if allowed_by.contains("merge without asking")),
+        "the floor is off, so a protected diff still merges: {merged:?}"
+    );
+    assert!(
+        gh.ran("api", "--paginate").is_empty(),
+        "an off floor does not read the file list"
+    );
+}
+
+#[test]
+fn the_floor_names_at_most_five_files_and_an_unreadable_list_asks() {
+    let allowed = Decision::Merge {
+        allowed_by: "project setting: merge without asking".into(),
+    };
+    let six = ChangedFiles::Listed(vec![
+        ".github/workflows/a.yml".into(),
+        "migrations/001.sql".into(),
+        "Dockerfile".into(),
+        ".env".into(),
+        "compose.yml".into(),
+        "id_rsa".into(),
+    ]);
+    let named = floor_decision(allowed.clone(), true, &six, &[], "acme/web#7");
+    let question = asked_decision(&named);
+    for name in [
+        ".github/workflows/a.yml",
+        "migrations/001.sql",
+        "Dockerfile",
+        ".env",
+        "compose.yml",
+    ] {
+        assert!(question.contains(name), "{question}");
+    }
+    assert!(question.contains("1 more"), "{question}");
+    assert!(question.contains("your word"), "{question}");
+    assert!(!question.contains("id_rsa"), "{question}");
+    assert!(!question.contains('\u{2014}') && !question.contains('\u{2013}'));
+
+    let one = floor_decision(
+        allowed.clone(),
+        true,
+        &ChangedFiles::Listed(vec![".github/workflows/x.yml".into()]),
+        &[],
+        "acme/web#7",
+    );
+    let question = asked_decision(&one);
+    assert!(question.contains(".github/workflows/x.yml"), "{question}");
+    assert!(!question.contains("more"), "{question}");
+
+    assert_eq!(
+        floor_decision(
+            allowed.clone(),
+            true,
+            &ChangedFiles::Listed(vec!["readme.md".into()]),
+            &[],
+            "acme/web#7",
+        ),
+        allowed
+    );
+
+    let unread_decision = floor_decision(allowed, true, &ChangedFiles::Unread, &[], "acme/web#7");
+    let unread = asked_decision(&unread_decision);
+    assert!(unread.contains("couldn't be read"), "{unread}");
+    assert!(!unread.contains("secret"), "{unread}");
+}
+
+fn asked_decision(decision: &Decision) -> String {
+    match decision {
+        Decision::Ask(question) => question.clone(),
+        other => panic!("expected an ask, got {other:?}"),
+    }
+}
+
+#[test]
+fn yolo_merges_a_clean_diff_and_asks_for_a_protected_path() {
+    let project = floor_project("clean");
+    let s = store();
+    set_mode(&s, &project, Some(Mode::Pr), true);
+    turn_floor_on(&s, &project);
+    remember_delivery(&s, &project, None, 7);
+    let mut request = agent_merge("acme/web");
+    request.project = Some("/not/the/delivery/project".into());
+
+    let clean = files_of(Ok("readme.md\n"));
+    let merged = merge::merge(&s, &clean, request.clone(), 20).unwrap();
+    assert!(
+        matches!(&merged, MergeOutcome::Merged { allowed_by, .. } if allowed_by.contains("merge without asking")),
+        "{merged:?}"
+    );
+    assert_eq!(clean.ran("pr", "merge").len(), 1);
+
+    let protected = files_of(Ok(".github/workflows/x.yml\n"));
+    let outcome = merge::merge(&s, &protected, request, 30).unwrap();
+    let question = asked(&outcome);
+    assert!(question.contains(".github/workflows/x.yml"), "{question}");
+    assert!(question.contains("your word"), "{question}");
+    assert!(protected.ran("pr", "merge").is_empty());
+}
+
+#[test]
+fn an_unreadable_file_list_asks_and_does_not_repeat_the_reader_error() {
+    let project = floor_project("unread");
+    let s = store();
+    set_mode(&s, &project, Some(Mode::Pr), true);
+    turn_floor_on(&s, &project);
+    remember_delivery(&s, &project, None, 7);
+    let gh = files_of(Err("secret-token-in-error"));
+    let outcome = merge::merge(&s, &gh, agent_merge("acme/web"), 20).unwrap();
+    let question = asked(&outcome);
+    assert!(question.contains("couldn't be read"), "{question}");
+    assert!(!question.contains("secret-token"), "{question}");
+    assert!(gh.ran("pr", "merge").is_empty());
+    assert!(matches!(outcome, MergeOutcome::NeedsYou { .. }));
+}
+
+#[test]
+fn an_extra_path_asks_and_a_glob_matches_nothing() {
+    let project = floor_project("extra");
+    let s = store();
+    set_mode(&s, &project, Some(Mode::Pr), true);
+    turn_floor_on(&s, &project);
+    protect_also(&s, &project, &["docs/runbook.md"]);
+    remember_delivery(&s, &project, None, 7);
+    let mut request = agent_merge("acme/web");
+    request.project = Some("/not/the/delivery/project".into());
+
+    let hit = files_of(Ok("docs/runbook.md\n"));
+    let question = asked(&merge::merge(&s, &hit, request.clone(), 20).unwrap());
+    assert!(question.contains("docs/runbook.md"), "{question}");
+    assert!(hit.ran("pr", "merge").is_empty());
+
+    let miss = files_of(Ok("docs/other.md\n"));
+    let merged = merge::merge(&s, &miss, request.clone(), 30).unwrap();
+    assert!(
+        matches!(merged, MergeOutcome::Merged { .. }),
+        "a different file is not the extra path: {merged:?}"
+    );
+
+    let project = floor_project("star");
+    let s = store();
+    set_mode(&s, &project, Some(Mode::Pr), true);
+    turn_floor_on(&s, &project);
+    protect_also(&s, &project, &["*"]);
+    remember_delivery(&s, &project, None, 7);
+    let mut request = agent_merge("acme/web");
+    request.project = Some("/not/the/delivery/project".into());
+    let ordinary = files_of(Ok("readme.md\n"));
+    assert!(
+        matches!(
+            merge::merge(&s, &ordinary, request.clone(), 40).unwrap(),
+            MergeOutcome::Merged { .. }
+        ),
+        "a bare * matches nothing"
+    );
+    let built_in = files_of(Ok(".github/workflows/x.yml\n"));
+    let question = asked(&merge::merge(&s, &built_in, request, 50).unwrap());
+    assert!(
+        question.contains(".github/workflows/x.yml"),
+        "an extra * does not turn the built-in list off: {question}"
+    );
+}
+
+#[test]
+fn an_approval_of_this_head_still_merges_a_protected_diff() {
+    let project = floor_project("approved");
+    let s = store();
+    set_mode(&s, &project, Some(Mode::Pr), true);
+    turn_floor_on(&s, &project);
+    remember_delivery(&s, &project, None, 7);
+    let gh = files_of(Ok(".github/workflows/x.yml\n"));
+    let first = merge::merge(&s, &gh, agent_merge("acme/web"), 20).unwrap();
+    assert!(matches!(first, MergeOutcome::NeedsYou { .. }), "{first:?}");
+    assert!(gh.ran("pr", "merge").is_empty());
+    merge::approve(&s.lock_conn().unwrap(), "acme/web", 7, "h1", "person", 21).unwrap();
+    let merged = merge::merge(&s, &gh, agent_merge("acme/web"), 22).unwrap();
+    assert!(
+        matches!(&merged, MergeOutcome::Merged { allowed_by, .. } if allowed_by.contains("person")),
+        "{merged:?}"
+    );
+    assert_eq!(gh.ran("pr", "merge").len(), 1);
+    assert_eq!(
+        gh.ran("api", "--paginate").len(),
+        1,
+        "an approved head does not read the file list again"
+    );
+}
+
+#[test]
+fn the_persons_own_tap_merges_a_protected_diff_without_reading_files() {
+    let project = floor_project("person");
+    let s = store();
+    set_mode(&s, &project, Some(Mode::Pr), true);
+    turn_floor_on(&s, &project);
+    let gh = files_of(Ok(".github/workflows/x.yml\n"));
+    let request = MergeRequest {
+        caller: Caller::Person {
+            via: "Inbox".into(),
+        },
+        project: Some(project.to_string_lossy().into()),
+        ..agent_merge("acme/web")
+    };
+    let merged = merge::merge(&s, &gh, request, 20).unwrap();
+    assert!(matches!(merged, MergeOutcome::Merged { .. }), "{merged:?}");
+    assert!(gh.ran("api", "--paginate").is_empty());
+}
+
+#[test]
+fn a_moved_head_is_not_merged_on_the_file_list_of_the_old_one() {
+    let project = floor_project("moved");
+    let s = store();
+    set_mode(&s, &project, Some(Mode::Pr), true);
+    turn_floor_on(&s, &project);
+    remember_delivery(&s, &project, None, 7);
+    let gh = FakeGithub::new(vec![green("h1"), green("h2")]);
+    *gh.files.lock().unwrap() = Some(Ok("readme.md\n".into()));
+    let outcome = merge::merge(&s, &gh, agent_merge("acme/web"), 20).unwrap();
+    let question = asked(&outcome);
+    assert!(question.contains("couldn't be read"), "{question}");
+    assert!(gh.ran("pr", "merge").is_empty());
+}
+
+#[test]
+fn red_and_a_pull_request_with_no_checks_do_not_consult_the_floor() {
+    let project = floor_project("red");
+    let s = store();
+    set_mode(&s, &project, Some(Mode::Pr), true);
+    turn_floor_on(&s, &project);
+    remember_delivery(&s, &project, None, 7);
+    let red = FakeGithub::new(vec![pr(
+        PrState::Open,
+        "h1",
+        vec![check("build", CheckStatus::Failure, true)],
+    )]);
+    *red.files.lock().unwrap() = Some(Ok(".github/workflows/x.yml\n".into()));
+    let refused = merge::merge(&s, &red, agent_merge("acme/web"), 20).unwrap();
+    assert!(
+        matches!(&refused, MergeOutcome::Refused { reason } if reason.contains("Red is never merged")),
+        "{refused:?}"
+    );
+    assert!(red.ran("api", "--paginate").is_empty());
+
+    let unchecked = FakeGithub::new(vec![pr(PrState::Open, "h1", vec![])]);
+    *unchecked.files.lock().unwrap() = Some(Ok("readme.md\n".into()));
+    let question = asked(&merge::merge(&s, &unchecked, agent_merge("acme/web"), 30).unwrap());
+    assert!(question.contains("no checks"), "{question}");
+    assert!(!question.contains("couldn't be read"), "{question}");
+    assert!(unchecked.ran("api", "--paginate").is_empty());
+}
+
+#[test]
+fn a_mode_change_does_not_clear_the_floor_and_bad_extras_do_not_either() {
+    let s = store();
+    let project = "/no/such/hivra-wp158-keep";
+    let conn = s.lock_conn().unwrap();
+    let turned = settings::set_protect_paths(&conn, project, true, None, 10).unwrap();
+    let added = settings::add_protected_paths(
+        &conn,
+        project,
+        &[
+            "docs/runbook.md".into(),
+            "docs/runbook.md".into(),
+            "  ".into(),
+        ],
+        turned.updated_at,
+        11,
+    )
+    .unwrap();
+    assert_eq!(added.protected_extra, vec!["docs/runbook.md".to_string()]);
+    let mode = settings::set(&conn, project, Some(Mode::Pr), true, added.updated_at, 12).unwrap();
+    assert!(mode.merge_without_asking);
+    assert!(mode.protect_paths);
+    assert_eq!(mode.protected_extra, vec!["docs/runbook.md".to_string()]);
+    drop(conn);
+
+    let project = floor_project("bad-json");
+    let s = store();
+    set_mode(&s, &project, Some(Mode::Pr), true);
+    turn_floor_on(&s, &project);
+    remember_delivery(&s, &project, None, 7);
+    s.lock_conn()
+        .unwrap()
+        .execute(
+            "UPDATE delivery_settings SET protected_extra = 'not-json' WHERE project = ?1",
+            [settings::key(project.to_str().unwrap())],
+        )
+        .unwrap();
+    let stored = settings::get(&s.lock_conn().unwrap(), project.to_str().unwrap()).unwrap();
+    assert!(stored.protect_paths);
+    assert!(stored.protected_extra.is_empty());
+    let protected = files_of(Ok(".github/workflows/x.yml\n"));
+    let question = asked(&merge::merge(&s, &protected, agent_merge("acme/web"), 20).unwrap());
+    assert!(question.contains(".github/workflows/x.yml"), "{question}");
+    let clean = files_of(Ok("readme.md\n"));
+    assert!(matches!(
+        merge::merge(&s, &clean, agent_merge("acme/web"), 30).unwrap(),
+        MergeOutcome::Merged { .. }
+    ));
 }
