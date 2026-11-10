@@ -1,0 +1,20 @@
+[package]
+name = "monocode-dictation"
+description = "MonoCode Dictation: the helper app that holds the microphone for composer dictation (WP-131b)."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[[bin]]
+name = "monocode-dictation"
+path = "src/main.rs"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+block2 = "0.6.2"
+objc2 = { version = "0.6", features = ["exception"] }
+objc2-foundation = { version = "0.3", features = ["NSString"] }
