@@ -55,10 +55,10 @@ const OPEN_CSP = [
   "default-src 'none'",
   "script-src 'unsafe-inline'",
   "style-src 'unsafe-inline'",
-  "img-src data: blob: https: http:",
-  "font-src data: https: http:",
-  "media-src data: blob: https: http:",
-  "connect-src https: http: wss: ws:",
+  "img-src data: blob: https:",
+  "font-src data: https:",
+  "media-src data: blob: https:",
+  "connect-src https: wss:",
   "form-action 'none'",
   "frame-src 'none'",
   "child-src 'none'",
@@ -66,32 +66,23 @@ const OPEN_CSP = [
   "base-uri 'none'",
 ].join("; ");
 
-/**
- * The shell's policy. `frame-src 'none'` is what stops the guest navigating
+/*
+ * The shell carries the same policy as its guest. A srcdoc guest inherits the
+ * shell's policy and the two combine, so the guest can never get more than
+ * the shell allows. `frame-src 'none'` is what stops the guest navigating
  * itself: both browsers refuse that request. Srcdoc guests still load.
- * Subresource directives here are the wide set, because a srcdoc guest also
- * inherits this policy and the two are combined. The guest policy is the
- * tight one, so network opt-in stays off until that policy allows it.
- * Remote scripts stay off here too.
+ * With the network on, only https and wss are allowed: never plain http or
+ * ws, so localhost, the LAN and the app's own http schemes stay shut.
  */
-const SHELL_CSP = [
-  "default-src 'none'",
-  "script-src 'unsafe-inline'",
-  "style-src 'unsafe-inline'",
-  "img-src data: blob: https: http:",
-  "font-src data: https: http:",
-  "media-src data: blob: https: http:",
-  "connect-src https: http: wss: ws:",
-  "form-action 'none'",
-  "frame-src 'none'",
-  "child-src 'none'",
-  "object-src 'none'",
-  "base-uri 'none'",
-].join("; ");
 
 /** Locked unless `network` is exactly true. Remote scripts are never added. */
 export function visualCsp(network: boolean): string {
   return network === true ? OPEN_CSP : LOCKED_CSP;
+}
+
+/** The policy the app serves the shell with: the sandbox, then the same policy as the guest. */
+export function visualFrameCsp(network: boolean): string {
+  return `sandbox allow-scripts; ${visualCsp(network)}`;
 }
 
 export function visualBytes(source: string): number {
@@ -193,7 +184,7 @@ const HELPER = `(function () {
 })();`;
 
 /**
- * Forwards guest messages out, and theme messages in. Anything else from the
+ * Forwards only a height from the guest out, and theme messages in. Anything else from the
  * parent is ignored. The string must not contain a closing script tag.
  */
 const SHELL = `(function () {
@@ -201,7 +192,8 @@ const SHELL = `(function () {
     var guest = document.getElementById("hivra-visual-guest");
     if (!guest || !guest.contentWindow) return;
     if (event.source === guest.contentWindow) {
-      try { window.parent.postMessage(event.data, "*"); } catch (e) {}
+      if (!event.data || event.data.type !== "${VISUAL_HEIGHT_MESSAGE}") return;
+      try { window.parent.postMessage({ type: "${VISUAL_HEIGHT_MESSAGE}", height: Number(event.data.height) }, "*"); } catch (e) {}
       return;
     }
     if (event.source !== window.parent) return;
@@ -218,7 +210,7 @@ function escapeAttr(value: string): string {
 
 function guestDocument(body: string, theme: VisualTheme, network: boolean): string {
   const csp = visualCsp(network);
-  return `<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="${csp}"><meta name="color-scheme" content="${theme.scheme}"><style id="hivra-theme">${themeBlock(theme)}</style><script>${HELPER}</script></head><body>${body}</body></html>`;
+  return `<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="${csp}"><meta http-equiv="x-dns-prefetch-control" content="off"><meta name="color-scheme" content="${theme.scheme}"><style id="hivra-theme">${themeBlock(theme)}</style><script>${HELPER}</script></head><body>${body}</body></html>`;
 }
 
 /**
@@ -238,7 +230,7 @@ export function visualDocument(
   const safe = safeTheme(theme);
   const body = source.replace(/\u0000/g, "");
   const guest = escapeAttr(guestDocument(body, safe, network === true));
-  return `<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="${SHELL_CSP}"><style>html,body{margin:0;height:100%;background:${safe.background}}iframe{display:block;border:0;width:100%;height:100%;background:${safe.background}}</style><script>${SHELL}</script></head><body><iframe id="hivra-visual-guest" title="Visual reply" sandbox="${VISUAL_SANDBOX}" referrerpolicy="no-referrer" srcdoc="${guest}"></iframe></body></html>`;
+  return `<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="${visualCsp(network === true)}"><style>html,body{margin:0;height:100%;background:${safe.background}}iframe{display:block;border:0;width:100%;height:100%;background:${safe.background}}</style><script>${SHELL}</script></head><body><iframe id="hivra-visual-guest" title="Visual reply" sandbox="${VISUAL_SANDBOX}" referrerpolicy="no-referrer" srcdoc="${guest}"></iframe></body></html>`;
 }
 
 /** A height the host will apply. Anything that is not that message is ignored. */

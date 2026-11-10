@@ -50,7 +50,7 @@ test("a visual reply cannot reach the parent page or the network", async ({ page
       !/refused|frame-src|blocked form|violates the following/i.test(note),
   );
   expect(leaked).toEqual([]);
-  expect(notes.some((note) => /refused|frame-src|blocked form/i.test(note) && note.includes("1473"))).toBe(
+  expect(notes.some((note) => /refused|frame-src|blocked form/i.test(note) && note.includes(new URL(page.url()).port))).toBe(
     true,
   );
   expect(notes.some((note) => note.includes("@vite/client") && note.includes("origin 'null'"))).toBe(

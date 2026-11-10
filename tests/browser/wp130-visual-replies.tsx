@@ -8,7 +8,8 @@ import {
 import { VisualReplyFrame } from "../../src/features/sessions/ui/VisualReplyFrame";
 import "../../src/styles/index.css";
 
-// WP-130 proof fixture. Each reply tries one way out. None of that should work.
+// WP-130 proof fixture. Each reply tries one way out. None of that should work. Replies report to the top page:
+// the shell passes on only a height from its guest.
 // The navigation target is this dev server, so a slip would be a real page load.
 const NAV_TARGET = `${window.location.origin}/hivra-visual-nav`;
 
@@ -19,7 +20,7 @@ const PROBE = `<p id="ok">probe</p>
 <script>
 var result = { type: "hivra-probe", dom: false, net: "pending", img: "pending" };
 try { parent.document.title = "pwned"; result.dom = true; } catch (e) { result.dom = false; }
-function report() { parent.postMessage(result, "*"); }
+function report() { top.postMessage(result, "*"); }
 report();
 var img = new Image();
 img.onload = function () { result.img = "open"; report(); };
@@ -40,29 +41,29 @@ setTimeout(function () {
 
 const NAV = `<p>nav</p><script>
 var target = ${JSON.stringify(NAV_TARGET)};
-parent.postMessage({ type: "hivra-nav", step: "ready" }, "*");
+top.postMessage({ type: "hivra-nav", step: "ready" }, "*");
 var link = document.createElement("a");
 link.href = target;
 document.body.appendChild(link);
 link.click();
-try { location.href = target; } catch (e) { parent.postMessage({ type: "hivra-nav", step: "threw" }, "*"); }
-parent.postMessage({ type: "hivra-nav", step: "after", href: String(location.href) }, "*");
+try { location.href = target; } catch (e) { top.postMessage({ type: "hivra-nav", step: "threw" }, "*"); }
+top.postMessage({ type: "hivra-nav", step: "after", href: String(location.href) }, "*");
 setTimeout(function () {
-  parent.postMessage({ type: "hivra-nav", step: "late", href: String(location.href) }, "*");
+  top.postMessage({ type: "hivra-nav", step: "late", href: String(location.href) }, "*");
 }, 800);
 </script>`;
 
 const META = `<script>
-parent.postMessage({ type: "hivra-meta", step: "ready" }, "*");
-setTimeout(function () { parent.postMessage({ type: "hivra-meta", step: "late" }, "*"); }, 500);
+top.postMessage({ type: "hivra-meta", step: "ready" }, "*");
+setTimeout(function () { top.postMessage({ type: "hivra-meta", step: "late" }, "*"); }, 500);
 </script>
 <meta http-equiv="refresh" content="0;url=${NAV_TARGET}">`;
 
 const FORM = `<form action="${NAV_TARGET}" method="get"><input name="q" value="secret"></form>
 <script>
-parent.postMessage({ type: "hivra-form", step: "ready" }, "*");
-try { document.forms[0].submit(); } catch (e) { parent.postMessage({ type: "hivra-form", step: "threw" }, "*"); }
-setTimeout(function () { parent.postMessage({ type: "hivra-form", step: "late" }, "*"); }, 500);
+top.postMessage({ type: "hivra-form", step: "ready" }, "*");
+try { document.forms[0].submit(); } catch (e) { top.postMessage({ type: "hivra-form", step: "threw" }, "*"); }
+setTimeout(function () { top.postMessage({ type: "hivra-form", step: "late" }, "*"); }, 500);
 </script>`;
 
 const BREAKOUT = `</script><script>try { parent.document.title = "pwned"; } catch (e) {}</script>`;
