@@ -9,6 +9,7 @@
 //! stack's env block names its URL. If Node is missing or too old the stack still starts, and
 //! the named URLs then fail closed (connection refused) instead of reaching the real service.
 
+use std::io::Read;
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::Mutex;
@@ -373,34 +374,66 @@ pub fn parse_node_version(output: &str) -> Option<(String, u32)> {
     Some((version.to_string(), major))
 }
 
+/// How long `node --version` may take. It runs while the app opens, and a shim that waits on
+/// the network, or a version manager that is updating itself, must not hold the window.
+const NODE_PROBE_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
+
 /// Ask the `node` on this copy's PATH. A missing or old Node is a notice, not a failure.
 pub fn probe_node(path_env: Option<String>) -> NodeStatus {
+    probe_node_within(path_env, NODE_PROBE_WAIT)
+}
+
+fn probe_node_within(path_env: Option<String>, wait: std::time::Duration) -> NodeStatus {
     let mut command = Command::new("node");
     crate::hide_window_console(&mut command);
     command.arg("--version");
     command.stdin(Stdio::null());
     command.stdout(Stdio::piped());
-    command.stderr(Stdio::piped());
+    command.stderr(Stdio::null());
     if let Some(path) = path_env.filter(|path| !path.is_empty()) {
         command.env("PATH", path);
     }
-    match command.output() {
-        Err(_) => NodeStatus::Unavailable(
+    let Ok(mut child) = command.spawn() else {
+        return NodeStatus::Unavailable(
             "Node isn't installed, so the stand-in didn't start. The stack still runs.".into(),
-        ),
-        Ok(output) if !output.status.success() => NodeStatus::Unavailable(
+        );
+    };
+    let started = std::time::Instant::now();
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) if started.elapsed() < wait => {
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            // Slow or stuck: ended, so nothing is left running behind the note.
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return NodeStatus::Unavailable(
+                    "Node didn't answer in time, so the stand-in didn't start. The stack still runs."
+                        .into(),
+                );
+            }
+        }
+    };
+    if !status.success() {
+        return NodeStatus::Unavailable(
             "Node didn't answer, so the stand-in didn't start. The stack still runs.".into(),
+        );
+    }
+    let mut stdout = String::new();
+    if let Some(mut pipe) = child.stdout.take() {
+        let _ = pipe.read_to_string(&mut stdout);
+    }
+    match parse_node_version(&stdout) {
+        Some((version, major)) if major >= MIN_NODE_MAJOR => NodeStatus::Ready { version, major },
+        Some((version, _)) => NodeStatus::Unavailable(format!(
+            "Node {version} is older than {MIN_NODE_MAJOR}, so the stand-in didn't start. The stack still runs."
+        )),
+        None => NodeStatus::Unavailable(
+            "Node's version could not be read, so the stand-in didn't start. The stack still runs."
+                .into(),
         ),
-        Ok(output) => match parse_node_version(&String::from_utf8_lossy(&output.stdout)) {
-            Some((version, major)) if major >= MIN_NODE_MAJOR => NodeStatus::Ready { version, major },
-            Some((version, _)) => NodeStatus::Unavailable(format!(
-                "Node {version} is older than {MIN_NODE_MAJOR}, so the stand-in didn't start. The stack still runs."
-            )),
-            None => NodeStatus::Unavailable(
-                "Node's version could not be read, so the stand-in didn't start. The stack still runs."
-                    .into(),
-            ),
-        },
     }
 }
 
@@ -662,25 +695,50 @@ pub fn start(request: &StartRequest) -> Result<u32, String> {
         use std::os::unix::process::CommandExt;
         command.process_group(0);
     }
+    // Windows: the stand-in and whatever it starts (a Volta or Scoop shim starts the real node)
+    // live in one job that ends with it, so ending the job ends the tree, and the OS ends it
+    // with this app too.
+    #[cfg(windows)]
+    let job = crate::windows::create_job()
+        .map_err(|error| format!("The stand-in's job couldn't be made: {error}"))?;
+    #[cfg(windows)]
+    let mut child = crate::windows::spawn_in_job(&mut command, &job)
+        .map_err(|error| format!("The stand-in didn't start: {error}"))?;
+    #[cfg(not(windows))]
     let mut child = command
         .spawn()
         .map_err(|error| format!("The stand-in didn't start: {error}"))?;
     let pid = child.id();
-    // Asked of the handle `spawn` returned, so it is this process's start time and no other's.
+    // Asked of the child this app just started and has not waited for yet, so its pid cannot
+    // have been given to anything else: the start time is this process's and no other's.
     #[cfg(windows)]
     let start_token = super::process_win::start_token_of_child(&child);
-    #[cfg(not(windows))]
+    #[cfg(unix)]
+    let start_token = unix_start_token(pid);
+    #[cfg(not(any(unix, windows)))]
     let start_token: Option<String> = None;
+    let Some(start_token) = start_token else {
+        // Without a start time the stand-in could never be told from another program later,
+        // and a process this app cannot stop again is worse than no process.
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(
+            "The stand-in started, but its start time couldn't be read, so it was stopped.".into(),
+        );
+    };
     if let Err(error) = store::save(
         &request.stack_dir.join("emulate.pid"),
-        pid_file_text(pid, start_token.as_deref()).as_bytes(),
+        pid_file_text(pid, Some(&start_token)).as_bytes(),
     ) {
         // A process this app cannot stop again is worse than no process.
         let _ = child.kill();
+        let _ = child.wait();
         return Err(format!(
             "The stand-in started, but its pid couldn't be written, so it was stopped: {error}"
         ));
     }
+    #[cfg(windows)]
+    super::process_win::keep_job(&request.stack_dir, job);
     Ok(pid)
 }
 
@@ -722,14 +780,15 @@ pub fn child_env(path_env: Option<&str>) -> Vec<(String, String)> {
 /// What can be proved about the process named by `emulate.pid`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Probe {
-    /// The command line names the stand-in and this stack's own folder.
+    /// The process this app started: its start time is the one recorded, and it is node
+    /// running the stand-in.
     Ours,
     /// The pid is alive and is plainly another program: a recycled pid.
     NotOurs,
     /// No such process.
     Gone,
-    /// The pid is alive but cannot be proved either way: its command line could not be read,
-    /// or it is an emulate process that is not this stack's.
+    /// The pid is alive but cannot be proved either way: no start time was recorded, or one
+    /// of them could not be read, or it is an emulate process that is not this stack's.
     Unknown,
 }
 
@@ -743,7 +802,8 @@ enum Kill {
     Gone,
     /// The pid had been given to another program in between. Nothing was ended.
     NotOurs,
-    /// It is still there and could not be ended, or could not be looked at again.
+    /// It is still there and could not be ended, or could not be looked at again, or it was
+    /// ended and something still holds one of its ports.
     Failed,
 }
 
@@ -755,6 +815,17 @@ pub const STILL_RUNNING_NOTE: &str =
 /// stand-in is never killed, and never forgotten either: the pid file stays so the next stop
 /// can try again, and the message says how to end it by hand.
 pub fn stop(stack_dir: &Path) -> Result<(), String> {
+    // Windows: the stand-in this app started is in a job of its own. Ending the job ends the
+    // process and everything it started, and no pid is involved, so no pid can be a wrong one.
+    #[cfg(windows)]
+    if super::process_win::end_held_job(stack_dir) {
+        return if ports_released(stack_dir) {
+            let _ = std::fs::remove_file(stack_dir.join("emulate.pid"));
+            Ok(())
+        } else {
+            Err(STILL_RUNNING_NOTE.to_string())
+        };
+    }
     let dir = stack_dir.to_path_buf();
     stop_with(
         stack_dir,
@@ -763,8 +834,9 @@ pub fn stop(stack_dir: &Path) -> Result<(), String> {
     )
 }
 
-/// The pid file is `pid` and, on Windows, the process start time on the next line. Only the
-/// first line is the pid: a second line must not make the record unreadable.
+/// The pid file is `pid` and the process start time on the next line, which is what tells the
+/// stand-in from whatever has the pid later. Only the first line is the pid: a second line
+/// must not make the record unreadable.
 fn pid_file_text(pid: u32, start_token: Option<&str>) -> String {
     match start_token.filter(|token| valid_start_token(token)) {
         Some(token) => format!("{pid}\n{token}\n"),
@@ -782,9 +854,17 @@ fn pid_record(text: &str) -> Option<(u32, Option<String>)> {
     Some((pid, start))
 }
 
-/// A Windows file time: digits only, so a value read from disk cannot be anything but a number.
+/// A process start time: digits only, so a value read from disk cannot be anything but a number.
 fn valid_start_token(token: &str) -> bool {
     (1..=32).contains(&token.len()) && token.bytes().all(|byte| byte.is_ascii_digit())
+}
+
+/// The start time this app recorded for `pid`, or none when the pid file has none (an older
+/// run, or a file somebody wrote) or names another pid.
+fn recorded_start(stack_dir: &Path, pid: u32) -> Option<String> {
+    let text = std::fs::read_to_string(stack_dir.join("emulate.pid")).ok()?;
+    let (file_pid, start) = pid_record(&text)?;
+    (file_pid == pid).then_some(start).flatten()
 }
 
 fn stop_with(
@@ -826,94 +906,27 @@ fn stop_with(
     }
 }
 
-/// Whether `command` names `stack_dir` as a folder: the whole path, with a separator after it,
-/// and not as the tail of a longer path. A substring would take stack `s0000a001`'s stand-in
-/// for stack `s0000a0010`'s, and a path inside some other folder for this one's.
-fn names_stack_dir(command: &str, stack_dir: &Path) -> bool {
-    let stack = stack_dir.to_string_lossy();
-    let stack = stack.trim_end_matches(['/', '\\']);
-    if stack.is_empty() {
-        return false;
-    }
-    command.match_indices(stack).any(|(at, _)| {
+/// Whether `command` runs the stand-in on this stack's seed: `--seed <stack>/emulate.config.json`
+/// as one whole argument. Every file in a stack's folder is called `emulate.<something>`, so a
+/// command that merely names the folder or the log (`tail -f`, `less`, an editor) is not it, and
+/// neither is one that names a longer stack id or a path inside some other folder.
+fn names_seed(command: &str, stack_dir: &Path) -> bool {
+    let config = stack_dir.join("emulate.config.json");
+    let flag = format!("--seed {}", config.to_string_lossy());
+    command.match_indices(&flag).any(|(at, _)| {
         let before = command[..at].chars().next_back();
-        let after = command[at + stack.len()..].chars().next();
-        let starts_a_path =
-            before.is_none_or(|ch| ch.is_whitespace() || matches!(ch, '"' | '\'' | '='));
-        starts_a_path && matches!(after, Some('/' | '\\'))
+        let after = command[at + flag.len()..].chars().next();
+        before.is_none_or(char::is_whitespace) && after.is_none_or(char::is_whitespace)
     })
 }
 
-/// Kill only when the pid is still this stack's stand-in, looked at again now. On Windows the
-/// look and the kill are one open handle, so a pid reused in between is never ended.
-#[cfg(unix)]
-fn kill_if_still_ours(pid: u32, stack_dir: &Path) -> Kill {
-    match probe_stand_in(pid, stack_dir) {
-        Probe::Ours => {
-            kill_tree(pid);
-            Kill::Killed
-        }
-        Probe::Gone => Kill::Gone,
-        Probe::NotOurs => Kill::NotOurs,
-        Probe::Unknown => Kill::Failed,
-    }
-}
-
-#[cfg(unix)]
-fn probe_stand_in(pid: u32, stack_dir: &Path) -> Probe {
-    match command_of(pid) {
-        Some(command) if !command.contains("emulate") => Probe::NotOurs,
-        Some(command) => {
-            if names_stack_dir(&command, stack_dir) {
-                Probe::Ours
-            } else {
-                // Another stack's stand-in, or this one under a folder that moved: not ours
-                // to kill, and not provably a recycled pid either.
-                Probe::Unknown
-            }
-        }
-        None => {
-            if crate::proxy::routes::process_alive(pid) {
-                Probe::Unknown
-            } else {
-                Probe::Gone
-            }
-        }
-    }
-}
-
-#[cfg(unix)]
-fn command_of(pid: u32) -> Option<String> {
-    let output = Command::new("ps")
-        .args(["-o", "command=", "-p", &pid.to_string()])
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    let command = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    (!command.is_empty()).then_some(command)
-}
-
-#[cfg(unix)]
-fn kill_tree(pid: u32) {
-    if let Ok(pid) = i32::try_from(pid) {
-        // SAFETY: the probe above proved this pid is this stack's own stand-in.
-        unsafe {
-            libc::kill(-pid, libc::SIGTERM);
-        }
-        std::thread::sleep(std::time::Duration::from_millis(400));
-        unsafe {
-            libc::kill(-pid, libc::SIGKILL);
-        }
-    }
+/// Whether a program's file is Node's: `node` or `node.exe`, in whatever folder.
+fn image_is_node(image: &str) -> bool {
+    let name = image.rsplit(['/', '\\']).next().unwrap_or(image);
+    name.eq_ignore_ascii_case("node") || name.eq_ignore_ascii_case("node.exe")
 }
 
 /// What could be read about one pid. A missing field is not proof of anything.
-///
-/// Used on Windows, and by the tests on every platform. A macOS build that is not a test
-/// does not call it.
-#[cfg_attr(not(any(windows, test)), allow(dead_code))]
 struct ProcessFacts {
     image: Option<String>,
     command: Option<String>,
@@ -923,10 +936,11 @@ struct ProcessFacts {
 
 /// Whether the live process is the stand-in this stack started.
 ///
-/// A matching start time with the `node.exe` image, or a command line that names `emulate` and
-/// this stack's folder, is proof. The image name alone is not: a reused pid that is now some
-/// other `node.exe` must not be killed.
-#[cfg_attr(not(any(windows, test)), allow(dead_code))]
+/// Proof is the start time this app recorded when it started the process, found again on the
+/// live one, with the program being node, and, where the command line can be read, the command
+/// being node running the stand-in on this stack's seed. A pid file with no start time is never
+/// proof: the process is `Unknown` and is not signalled. A different start time is `NotOurs`,
+/// whatever the command line says.
 fn classify_stand_in(
     stack_dir: &Path,
     recorded_start: Option<&str>,
@@ -939,32 +953,227 @@ fn classify_stand_in(
     if start_mismatch {
         return Probe::NotOurs;
     }
-    let command_ours = facts
-        .command
-        .as_deref()
-        .is_some_and(|command| command.contains("emulate") && names_stack_dir(command, stack_dir));
-    if command_ours {
-        return Probe::Ours;
+    let node = facts.image.as_deref().is_some_and(image_is_node);
+    // A program that is plainly not node is another program.
+    if facts.image.is_some() && !node {
+        return Probe::NotOurs;
+    }
+    if let Some(command) = facts.command.as_deref() {
+        if !names_seed(command, stack_dir) {
+            // Another stack's stand-in, or this one under a folder that moved, is not ours
+            // to end and not provably a recycled pid either. Anything else is another program.
+            return if command.contains("emulate") {
+                Probe::Unknown
+            } else {
+                Probe::NotOurs
+            };
+        }
     }
     let start_matches = matches!(
         (recorded_start, facts.start_token.as_deref()),
         (Some(recorded), Some(live)) if recorded == live
     );
-    let node = facts
-        .image
-        .as_deref()
-        .is_some_and(|image| image.eq_ignore_ascii_case("node.exe"));
     if start_matches && node {
         return Probe::Ours;
     }
-    if facts.command.is_some() || facts.image.as_ref().is_some_and(|_| !node) {
-        return Probe::NotOurs;
-    }
     if facts.alive || node {
-        // Alive, or a node whose command line and start time could not be read.
+        // Alive, but not provably ours: no start time recorded or readable, or no program name.
         return Probe::Unknown;
     }
     Probe::Gone
+}
+
+/// The start time of `pid` as digits, in the form the pid file holds.
+///
+/// Linux: field 22 of `/proc/<pid>/stat`, in clock ticks since boot.
+#[cfg(target_os = "linux")]
+fn unix_start_token(pid: u32) -> Option<String> {
+    start_ticks_from_stat(&std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?)
+}
+
+/// macOS: the process's start time from `proc_pidinfo`, in microseconds.
+#[cfg(target_os = "macos")]
+fn unix_start_token(pid: u32) -> Option<String> {
+    let pid = i32::try_from(pid).ok()?;
+    // SAFETY: an all-zero `proc_bsdinfo` is a valid value for a struct of plain numbers.
+    let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
+    let size = std::mem::size_of::<libc::proc_bsdinfo>() as libc::c_int;
+    // SAFETY: `info` is a writable struct of exactly `size` bytes that outlives the call.
+    let written = unsafe {
+        libc::proc_pidinfo(
+            pid,
+            libc::PROC_PIDTBSDINFO,
+            0,
+            (&mut info as *mut libc::proc_bsdinfo).cast(),
+            size,
+        )
+    };
+    if written != size {
+        return None;
+    }
+    let micros = info
+        .pbi_start_tvsec
+        .checked_mul(1_000_000)?
+        .checked_add(info.pbi_start_tvusec)?;
+    (micros != 0).then(|| micros.to_string())
+}
+
+/// Another Unix has no start time this app reads, so it never has a stand-in it could end.
+#[cfg(all(unix, not(any(target_os = "linux", target_os = "macos"))))]
+fn unix_start_token(_pid: u32) -> Option<String> {
+    None
+}
+
+/// The 22nd field of `/proc/<pid>/stat`. The name (field 2) is in parentheses and may hold
+/// spaces and parentheses of its own, so the fields are counted from the last `)`.
+#[cfg_attr(not(any(target_os = "linux", test)), allow(dead_code))]
+fn start_ticks_from_stat(stat: &str) -> Option<String> {
+    let after_name = &stat[stat.rfind(')')? + 1..];
+    // After the name come the state (field 3) and then 18 more fields before the start time.
+    let ticks = after_name.split_whitespace().nth(19)?;
+    valid_start_token(ticks).then(|| ticks.to_string())
+}
+
+#[cfg(unix)]
+fn probe_stand_in(pid: u32, stack_dir: &Path) -> Probe {
+    let Some(command) = command_of(pid) else {
+        return if crate::proxy::routes::process_alive(pid) {
+            Probe::Unknown
+        } else {
+            Probe::Gone
+        };
+    };
+    let facts = ProcessFacts {
+        image: program_of(pid),
+        command: Some(command),
+        start_token: unix_start_token(pid),
+        alive: true,
+    };
+    classify_stand_in(stack_dir, recorded_start(stack_dir, pid).as_deref(), &facts)
+}
+
+#[cfg(unix)]
+fn command_of(pid: u32) -> Option<String> {
+    ps_column("command=", pid)
+}
+
+/// The program's file (a full path on macOS, the short name on Linux).
+#[cfg(unix)]
+fn program_of(pid: u32) -> Option<String> {
+    ps_column("comm=", pid)
+}
+
+#[cfg(unix)]
+fn ps_column(column: &str, pid: u32) -> Option<String> {
+    let output = Command::new("ps")
+        .args(["-o", column, "-p", &pid.to_string()])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    (!text.is_empty()).then_some(text)
+}
+
+/// How long a stand-in gets to end on SIGTERM before it is looked at again.
+#[cfg(unix)]
+const TERM_GRACE: std::time::Duration = std::time::Duration::from_millis(400);
+
+/// SIGTERM the stand-in's process group, wait, and only then SIGKILL it, and only if what is
+/// there is still the stand-in. The pid had been checked before SIGTERM; in the wait the
+/// stand-in may have ended and the pid, or the group id, been given to another program, and
+/// a SIGKILL sent blind would take that program's group down.
+#[cfg(unix)]
+fn end_group(
+    pid: u32,
+    grace: std::time::Duration,
+    still_ours: impl Fn() -> bool,
+    send: impl Fn(i32, i32),
+) {
+    let Ok(pid) = i32::try_from(pid) else {
+        return;
+    };
+    send(-pid, libc::SIGTERM);
+    std::thread::sleep(grace);
+    if still_ours() {
+        send(-pid, libc::SIGKILL);
+    }
+}
+
+/// Kill only when the pid is still this stack's stand-in, looked at again now. On Windows the
+/// look and the kill are one open handle, so a pid reused in between is never ended.
+#[cfg(unix)]
+fn kill_if_still_ours(pid: u32, stack_dir: &Path) -> Kill {
+    match probe_stand_in(pid, stack_dir) {
+        Probe::Ours => {
+            end_group(
+                pid,
+                TERM_GRACE,
+                || probe_stand_in(pid, stack_dir) == Probe::Ours,
+                |target, signal| {
+                    // SAFETY: the pid was proved to be this stack's own stand-in just before
+                    // this, and again before the signal that cannot be taken back.
+                    unsafe {
+                        libc::kill(target, signal);
+                    }
+                },
+            );
+            if ports_released(stack_dir) {
+                Kill::Killed
+            } else {
+                Kill::Failed
+            }
+        }
+        Probe::Gone => Kill::Gone,
+        Probe::NotOurs => Kill::NotOurs,
+        Probe::Unknown => Kill::Failed,
+    }
+}
+
+/// How long a stopped stand-in's ports get to be let go of.
+const PORTS_RELEASE_WAIT: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// Whether something answers on a loopback port.
+pub fn accepts_on_loopback(port: u16) -> bool {
+    port != 0
+        && std::net::TcpStream::connect_timeout(
+            &std::net::SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, port)),
+            std::time::Duration::from_millis(200),
+        )
+        .is_ok()
+}
+
+/// The ports the stand-in was given: each service's `port` in the seed it was started with.
+fn stand_in_ports(stack_dir: &Path) -> Vec<u16> {
+    let Ok(text) = std::fs::read_to_string(stack_dir.join("emulate.config.json")) else {
+        return Vec::new();
+    };
+    let Ok(Value::Object(config)) = serde_json::from_str::<Value>(&text) else {
+        return Vec::new();
+    };
+    config
+        .values()
+        .filter_map(|service| service.get("port")?.as_u64())
+        .filter_map(|port| u16::try_from(port).ok())
+        .collect()
+}
+
+/// Whether none of the stand-in's ports answers any more, after a moment's wait. A stand-in
+/// that was ended but whose child still holds a port has not been stopped, and nothing could
+/// find that child again once its pid file was gone.
+fn ports_released(stack_dir: &Path) -> bool {
+    let ports = stand_in_ports(stack_dir);
+    let deadline = std::time::Instant::now() + PORTS_RELEASE_WAIT;
+    loop {
+        if ports.iter().all(|port| !accepts_on_loopback(*port)) {
+            return true;
+        }
+        if std::time::Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
 }
 
 /// The first look, on Windows: open the process, and judge it by its start time and image.
@@ -994,7 +1203,8 @@ fn probe_held(process: &super::process_win::Process, pid: u32, stack_dir: &Path)
     classify_stand_in(stack_dir, recorded.as_deref(), &facts)
 }
 
-/// The second look and the kill, on one handle. The process is opened once, compared with the
+/// The second look and the kill, on one handle, for a stand-in this app did not start in this
+/// run (a job is what ends the ones it did). The process is opened once, compared with the
 /// start time this app recorded when it started it, and ended through that same handle, so a
 /// pid that was reused between the first look and now is never the process that is ended.
 #[cfg(windows)]
@@ -1008,7 +1218,11 @@ fn kill_if_still_ours(pid: u32, stack_dir: &Path) -> Kill {
     match probe_held(&process, pid, stack_dir) {
         Probe::Ours => {
             if process.terminate() {
-                Kill::Killed
+                if ports_released(stack_dir) {
+                    Kill::Killed
+                } else {
+                    Kill::Failed
+                }
             } else if process.exited() {
                 Kill::Gone
             } else {
@@ -1019,13 +1233,6 @@ fn kill_if_still_ours(pid: u32, stack_dir: &Path) -> Kill {
         Probe::NotOurs => Kill::NotOurs,
         Probe::Unknown => Kill::Failed,
     }
-}
-
-#[cfg(windows)]
-fn recorded_start(stack_dir: &Path, pid: u32) -> Option<String> {
-    let text = std::fs::read_to_string(stack_dir.join("emulate.pid")).ok()?;
-    let (file_pid, start) = pid_record(&text)?;
-    (file_pid == pid).then_some(start).flatten()
 }
 
 /// A stable map from a service to its env name: `GITHUB_BASE_URL`, `MONGODBATLAS_BASE_URL`.
@@ -1124,6 +1331,36 @@ pub(crate) mod tests {
         let (value, notice) = seed_or_default(&broken, &ports());
         assert!(notice.unwrap().contains("could not be read"));
         assert_eq!(value["stripe"]["port"], 22011);
+    }
+
+    /// `node --version` runs while the app opens. A `node` that never answers (a shim waiting on
+    /// the network, a version manager updating itself) is ended after a moment and the stack
+    /// gets a note, instead of holding the window until it does.
+    #[cfg(unix)]
+    #[test]
+    fn a_node_that_never_answers_is_ended_and_noted() {
+        use std::os::unix::fs::PermissionsExt;
+        let temp = Temp::new("node-slow");
+        let bin = temp.0.join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let node = bin.join("node");
+        std::fs::write(&node, "#!/bin/sh\nexec sleep 30\n").unwrap();
+        std::fs::set_permissions(&node, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let started = std::time::Instant::now();
+        let status = probe_node_within(
+            Some(format!("{}:/usr/bin:/bin", bin.display())),
+            Duration::from_millis(300),
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "the probe waited for a node that never answers"
+        );
+        match status {
+            NodeStatus::Unavailable(note) => assert!(note.contains("in time"), "{note}"),
+            other => panic!("a node that never answered was taken as {other:?}"),
+        }
+        // The wait the app uses is short.
+        assert!(NODE_PROBE_WAIT <= Duration::from_secs(10));
     }
 
     #[test]
@@ -1604,6 +1841,19 @@ pub(crate) mod tests {
         }
     }
 
+    fn wait_until_accepts(port: u16, within: Duration) -> bool {
+        let deadline = std::time::Instant::now() + within;
+        loop {
+            if accepts_on_loopback(port) {
+                return true;
+            }
+            if std::time::Instant::now() >= deadline {
+                return false;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+
     fn wait_until_gone(port: u16, within: Duration) -> bool {
         let deadline = std::time::Instant::now() + within;
         loop {
@@ -1727,6 +1977,33 @@ pub(crate) mod tests {
         );
     }
 
+    /// A real `node` that is, to the system, the stand-in of `stack_dir`: it runs
+    /// `-- start --seed <stack>/emulate.config.json --host 127.0.0.1` as its own process group,
+    /// and its pid file holds the start time, as `start` writes it. `None` where `node` is not
+    /// installed; the caller skips.
+    #[cfg(unix)]
+    pub(crate) fn node_stand_in(stack_dir: &Path) -> Option<std::process::Child> {
+        use std::os::unix::process::CommandExt;
+        std::fs::create_dir_all(stack_dir).ok()?;
+        let child = Command::new("node")
+            .args(["-e", "setTimeout(() => {}, 30000)", "--", "start", "--seed"])
+            .arg(stack_dir.join("emulate.config.json"))
+            .args(["--host", "127.0.0.1"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .process_group(0)
+            .spawn()
+            .ok()?;
+        let token = unix_start_token(child.id());
+        std::fs::write(
+            stack_dir.join("emulate.pid"),
+            pid_file_text(child.id(), token.as_deref()),
+        )
+        .ok()?;
+        Some(child)
+    }
+
     fn pid_file(stack: &Path, pid: u32) {
         std::fs::create_dir_all(stack).unwrap();
         std::fs::write(stack.join("emulate.pid"), format!("{pid}\n")).unwrap();
@@ -1810,33 +2087,88 @@ pub(crate) mod tests {
         assert!(!stack.join("emulate.pid").exists());
     }
 
+    /// Identity is the recorded start time, node, and node running the stand-in on this stack's
+    /// seed: all of them, read from the live process.
     #[cfg(unix)]
     #[test]
-    fn a_command_line_is_ours_only_with_emulate_and_this_stack_folder() {
+    fn a_process_is_ours_only_by_start_time_and_node_running_this_stacks_seed() {
         let temp = Temp::new("probe");
         let stack = temp.0.join("stack");
-        std::fs::create_dir_all(&stack).unwrap();
-        // An old-version stand-in whose folder is not the installed tool folder still counts.
-        let mut child = Command::new("sh")
-            .arg("-c")
-            .arg(format!(
-                "sleep 30; : emulate {}",
-                stack.join("emulate.config.json").display()
-            ))
-            .spawn()
-            .unwrap();
-        std::thread::sleep(Duration::from_millis(50));
-        assert_eq!(probe_stand_in(child.id(), &stack), Probe::Ours);
-        // A stack whose id only starts like this one's is another stack: kept, never killed.
-        let prefix = temp.0.join("sta");
-        assert_eq!(probe_stand_in(child.id(), &prefix), Probe::Unknown);
-        // An emulate process under another folder is kept, never killed.
-        assert_eq!(
-            probe_stand_in(child.id(), &temp.0.join("other")),
-            Probe::Unknown
-        );
-        let _ = child.kill();
-        let _ = child.wait();
+        let Some(mut node) = node_stand_in(&stack) else {
+            println!("skipped: node is not installed");
+            return;
+        };
+        assert_eq!(probe_stand_in(node.id(), &stack), Probe::Ours);
+        // The seed of another stack is another stack's stand-in: kept, never ended.
+        let other = temp.0.join("other");
+        std::fs::create_dir_all(&other).unwrap();
+        assert_eq!(probe_stand_in(node.id(), &other), Probe::Unknown);
+        // A start time that is not this process's: the pid was given to another program.
+        std::fs::write(
+            stack.join("emulate.pid"),
+            pid_file_text(node.id(), Some("1")),
+        )
+        .unwrap();
+        assert_eq!(probe_stand_in(node.id(), &stack), Probe::NotOurs);
+        // No start time recorded at all: never proof, however much the command line says.
+        std::fs::write(stack.join("emulate.pid"), pid_file_text(node.id(), None)).unwrap();
+        assert_eq!(probe_stand_in(node.id(), &stack), Probe::Unknown);
+        let _ = node.kill();
+        let _ = node.wait();
+    }
+
+    /// The end of a stand-in: its group gets SIGTERM, and only a process that is still the
+    /// stand-in after the wait gets SIGKILL. In the wait the pid, or the group id, may have gone
+    /// to a program a person is using.
+    #[cfg(unix)]
+    #[test]
+    fn the_kill_after_the_wait_is_sent_only_to_what_is_still_the_stand_in() {
+        for (still_ours, expected) in [
+            (true, vec![libc::SIGTERM, libc::SIGKILL]),
+            (false, vec![libc::SIGTERM]),
+        ] {
+            let sent = Mutex::new(Vec::new());
+            end_group(
+                4242,
+                Duration::from_millis(1),
+                || still_ours,
+                |target, signal| sent.lock().unwrap().push((target, signal)),
+            );
+            let sent = sent.into_inner().unwrap();
+            assert_eq!(
+                sent.iter().map(|(_, signal)| *signal).collect::<Vec<_>>(),
+                expected
+            );
+            // Always the whole group, never a bare pid.
+            assert!(sent.iter().all(|(target, _)| *target == -4242));
+        }
+    }
+
+    /// A real stand-in is ended for real: found by its start time and command, signalled, and
+    /// its pid file goes.
+    #[cfg(unix)]
+    #[test]
+    fn a_node_stand_in_is_ended_by_stop() {
+        let temp = Temp::new("stop-node");
+        let stack = temp.0.join("stack");
+        let Some(mut node) = node_stand_in(&stack) else {
+            println!("skipped: node is not installed");
+            return;
+        };
+        stop(&stack).unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        let mut ended = false;
+        while std::time::Instant::now() < deadline {
+            if node.try_wait().unwrap().is_some() {
+                ended = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        let _ = node.kill();
+        let _ = node.wait();
+        assert!(ended, "the stand-in was not ended");
+        assert!(!stack.join("emulate.pid").exists());
     }
 
     fn facts(
@@ -1875,14 +2207,14 @@ pub(crate) mod tests {
             ),
             Probe::Ours
         );
-        // The command line is enough when no start time was recorded.
+        // No start time was recorded: the command line is not enough, so it is never signalled.
         assert_eq!(
             classify_stand_in(
                 stack,
                 None,
                 &facts(Some("node.exe"), Some(ours), None, true)
             ),
-            Probe::Ours
+            Probe::Unknown
         );
         // Another node tree at the reused pid. Image alone used to count as proof.
         assert_eq!(
@@ -1948,48 +2280,132 @@ pub(crate) mod tests {
         }
     }
 
-    /// The stack's folder is matched as a folder: a stand-in whose command names a longer id
-    /// that starts with this one's is another stack's, and so is a path that merely contains it.
+    /// Every file in a stack's folder is called `emulate.<something>`, so a person who tails the
+    /// log, or opens it in `less`, has a command line that names `emulate` and the folder. On a
+    /// pid the stack's pid file still holds, that was proof enough to end the whole process
+    /// group at the next launch. Neither a pid file with no start time nor one with another
+    /// process's start time may end anything.
+    #[cfg(unix)]
     #[test]
-    fn a_command_names_a_stack_folder_only_as_a_whole_path() {
+    fn a_tail_of_the_stand_ins_log_on_the_recorded_pid_is_not_signalled() {
+        use std::os::unix::process::CommandExt;
+        for recorded in [None, Some("1")] {
+            let temp = Temp::new("tail-reused");
+            let stack = temp.0.join("stack");
+            std::fs::create_dir_all(&stack).unwrap();
+            let log = stack.join("emulate.log");
+            std::fs::write(&log, "hello\n").unwrap();
+            let mut tail = Command::new("tail")
+                .arg("-f")
+                .arg(&log)
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .process_group(0)
+                .spawn()
+                .unwrap();
+            std::thread::sleep(Duration::from_millis(100));
+            std::fs::write(
+                stack.join("emulate.pid"),
+                pid_file_text(tail.id(), recorded),
+            )
+            .unwrap();
+            let _ = stop(&stack);
+            let alive = tail.try_wait().unwrap().is_none();
+            let _ = tail.kill();
+            let _ = tail.wait();
+            assert!(
+                alive,
+                "a tail of the log was signalled (recorded start {recorded:?})"
+            );
+        }
+    }
+
+    /// The start time is read the way each system keeps it, and is the same every time for one
+    /// live process.
+    #[cfg(unix)]
+    #[test]
+    fn a_live_process_has_a_start_time_that_does_not_change() {
+        let first = unix_start_token(std::process::id()).expect("a start time");
+        assert!(valid_start_token(&first), "{first}");
+        assert_eq!(
+            unix_start_token(std::process::id()).as_deref(),
+            Some(first.as_str())
+        );
+        // A process that does not exist has none.
+        assert_eq!(unix_start_token(u32::MAX - 1), None);
+    }
+
+    /// `/proc/<pid>/stat`: the name is in parentheses and may hold spaces and parentheses, so the
+    /// fields are counted from the last `)`. The start time is the 22nd field.
+    #[test]
+    fn the_start_time_is_the_22nd_field_after_the_name() {
+        let stat = "1234 (node (x) y) S 1 1234 1234 0 -1 4194560 100 0 0 0 1 2 0 0 20 0 1 0 987654 5000 200 18446744073709551615";
+        assert_eq!(start_ticks_from_stat(stat).as_deref(), Some("987654"));
+        assert_eq!(start_ticks_from_stat("1234 (node) S 1"), None);
+        assert_eq!(start_ticks_from_stat("garbage"), None);
+    }
+
+    /// The stand-in is found by `--seed <stack>/emulate.config.json` as one whole argument. A
+    /// command that names the folder or its log (`tail -f`, `less`), a longer stack id that
+    /// starts like this one, or a path inside some other folder is not it.
+    #[test]
+    fn a_command_is_the_stand_in_only_by_its_own_seed_argument() {
         let stack = Path::new("/data/stacks/s0000a001");
         let ours = "node /tools/emulate/index.js start --seed /data/stacks/s0000a001/emulate.config.json --host 127.0.0.1";
         let longer = "node /tools/emulate/index.js start --seed /data/stacks/s0000a0010/emulate.config.json --host 127.0.0.1";
         let nested = "node /tools/emulate/index.js start --seed /other/data/stacks/s0000a001/emulate.config.json";
+        let tail = "tail -f /data/stacks/s0000a001/emulate.log";
+        let other_file = "node x.js --seed /data/stacks/s0000a001/emulate.log";
+        let glued = "node x.js --seed /data/stacks/s0000a001/emulate.config.json.bak";
         for (command, expected) in [
-            (ours, Probe::Ours),
-            (longer, Probe::NotOurs),
-            (nested, Probe::NotOurs),
+            (ours, true),
+            (longer, false),
+            (nested, false),
+            (tail, false),
+            (other_file, false),
+            (glued, false),
         ] {
+            assert_eq!(names_seed(command, stack), expected, "{command}");
+        }
+        // A folder with a space in its name (macOS "Application Support") still matches.
+        let spaced = Path::new("/Users/me/Library/Application Support/app/stacks/s1");
+        let command = "node /t/index.js start --seed /Users/me/Library/Application Support/app/stacks/s1/emulate.config.json --host 127.0.0.1";
+        assert!(names_seed(command, spaced));
+        // With the start time and node it is ours; the longer id's stand-in is another stack's.
+        for (command, expected) in [(ours, Probe::Ours), (longer, Probe::Unknown)] {
             assert_eq!(
                 classify_stand_in(
                     stack,
-                    None,
-                    &facts(Some("node.exe"), Some(command), None, true)
+                    Some("100"),
+                    &facts(
+                        Some("/usr/local/bin/node"),
+                        Some(command),
+                        Some("100"),
+                        true
+                    )
                 ),
                 expected,
                 "{command}"
             );
         }
-        // Windows paths, quoted or not, with their own separator.
-        let windows = Path::new("C:\\Data\\stacks\\s0000a001");
-        let quoted = "\"C:\\Program Files\\nodejs\\node.exe\" C:\\tools\\emulate\\index.js start --seed \"C:\\Data\\stacks\\s0000a001\\emulate.config.json\"";
-        let other = "node emulate C:\\Data\\stacks\\s0000a0010\\emulate.config.json";
+        // A tail of the log with the very start time recorded is still not node.
         assert_eq!(
             classify_stand_in(
-                windows,
-                None,
-                &facts(Some("node.exe"), Some(quoted), None, true)
-            ),
-            Probe::Ours
-        );
-        assert_eq!(
-            classify_stand_in(
-                windows,
-                None,
-                &facts(Some("node.exe"), Some(other), None, true)
+                stack,
+                Some("100"),
+                &facts(Some("/usr/bin/tail"), Some(tail), Some("100"), true)
             ),
             Probe::NotOurs
+        );
+        // No start time recorded: never ours, even for node with the right command.
+        assert_eq!(
+            classify_stand_in(
+                stack,
+                None,
+                &facts(Some("node"), Some(ours), Some("100"), true)
+            ),
+            Probe::Unknown
         );
     }
 
@@ -2079,6 +2495,96 @@ pub(crate) mod tests {
         let _ = node.wait();
         result.unwrap();
         assert!(ended, "the node stand-in is still running");
+        assert!(!stack.join("emulate.pid").exists());
+    }
+
+    fn node_is_installed() -> bool {
+        Command::new("node")
+            .arg("--version")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .is_ok_and(|status| status.success())
+    }
+
+    /// Starts a stand-in made by `script` (a node program that gets `start --seed <config>`)
+    /// for a service on `port`, the way `start` does. `None` where node is not installed.
+    fn start_scripted(temp: &Temp, script: &str, port: u16) -> Option<PathBuf> {
+        if !node_is_installed() {
+            println!("skipped: node is not installed");
+            return None;
+        }
+        let stack = temp.0.join("stack");
+        let tool = temp.0.join("index.js");
+        std::fs::write(&tool, script).unwrap();
+        let (config, _) = write_config(
+            &stack,
+            &[ServicePort {
+                service: "github".into(),
+                port,
+                base_url: format!("http://github.shop.localhost:{port}"),
+            }],
+        )
+        .unwrap();
+        start(&StartRequest {
+            stack_dir: stack.clone(),
+            config,
+            tool,
+            path_env: std::env::var("PATH").ok(),
+        })
+        .unwrap_or_else(|error| panic!("the scripted stand-in did not start: {error}"));
+        Some(stack)
+    }
+
+    /// A stand-in that starts the real server as a child and waits for it, which is what a
+    /// Volta or Scoop `node` shim does. Ending only the pid the stack recorded leaves the child
+    /// holding the port, and with the pid file gone nothing could find it again.
+    #[test]
+    fn stopping_a_stand_in_ends_what_it_started_too() {
+        let temp = Temp::new("stop-tree");
+        let port = free_port();
+        let script = "const { spawn } = require('node:child_process');\n\
+            const fs = require('node:fs');\n\
+            const config = JSON.parse(fs.readFileSync(process.argv[process.argv.indexOf('--seed') + 1], 'utf8'));\n\
+            const serve = `require('node:net').createServer().listen(${config.github.port}, '127.0.0.1')`;\n\
+            spawn(process.execPath, ['-e', serve], { stdio: 'ignore' });\n\
+            setTimeout(() => {}, 60000);\n";
+        let Some(stack) = start_scripted(&temp, script, port) else {
+            return;
+        };
+        assert!(
+            wait_until_accepts(port, Duration::from_secs(15)),
+            "the child never started listening on {port}"
+        );
+        let result = stop(&stack);
+        let released = wait_until_gone(port, Duration::from_secs(5));
+        assert!(
+            released,
+            "the child of the stand-in still holds port {port}"
+        );
+        result.unwrap();
+        assert!(!stack.join("emulate.pid").exists());
+    }
+
+    /// A stand-in that was ended while one of its ports is still answering has not been stopped:
+    /// the pid file stays, so the next stop can look again, and the sentence says it is running.
+    #[test]
+    fn a_port_still_held_after_the_stop_keeps_the_pid_file() {
+        let temp = Temp::new("stop-held");
+        // The port is held by something that is not the stand-in.
+        let stranger = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = stranger.local_addr().unwrap().port();
+        let script = "setTimeout(() => {}, 60000);\n";
+        let Some(stack) = start_scripted(&temp, script, port) else {
+            return;
+        };
+        let error = stop(&stack).unwrap_err();
+        assert!(error.contains("still running"), "{error}");
+        assert!(stack.join("emulate.pid").exists());
+        drop(stranger);
+        // The stand-in is gone by now, and with the port free the next stop finishes the job.
+        stop(&stack).unwrap();
         assert!(!stack.join("emulate.pid").exists());
     }
 

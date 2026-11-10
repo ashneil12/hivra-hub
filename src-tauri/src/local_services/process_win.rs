@@ -5,10 +5,20 @@
 //! it names one process for as long as it is open. The stand-in is looked at and ended through
 //! the same handle, so a pid reused in between is never the process that is ended. Nothing here
 //! starts another program: no PowerShell, no `taskkill`, and so nothing that can hang.
+//!
+//! A stand-in this app started in this run is in a job of its own, with everything it starts
+//! (a Volta or Scoop `node.exe` is a shim that starts the real node and waits for it). Ending
+//! the job ends the whole tree, which ending the one pid would not.
+
+use std::collections::HashMap;
+use std::os::windows::io::{AsRawHandle, OwnedHandle};
+use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock, PoisonError};
 
 use windows_sys::Win32::Foundation::{
     CloseHandle, GetLastError, ERROR_INVALID_PARAMETER, FILETIME, HANDLE, WAIT_OBJECT_0,
 };
+use windows_sys::Win32::System::JobObjects::TerminateJobObject;
 use windows_sys::Win32::System::Threading::{
     GetProcessTimes, OpenProcess, QueryFullProcessImageNameW, TerminateProcess,
     WaitForSingleObject, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
@@ -103,7 +113,6 @@ impl Drop for Process {
 /// The creation time of the process `child` is, in digits. Asked of the handle `spawn`
 /// returned, it is the time of the process this app started and no other.
 pub fn start_token_of_child(child: &std::process::Child) -> Option<String> {
-    use std::os::windows::io::AsRawHandle;
     start_token_raw(child.as_raw_handle())
 }
 
@@ -119,6 +128,34 @@ fn start_token_raw(handle: HANDLE) -> Option<String> {
     }
     let ticks = u64::from(created.dwLowDateTime) | (u64::from(created.dwHighDateTime) << 32);
     (ticks != 0).then(|| ticks.to_string())
+}
+
+/// The job of each stand-in this run started, by stack folder. A job is made to end with its
+/// last handle, so dropping one here ends the tree it holds.
+static JOBS: OnceLock<Mutex<HashMap<PathBuf, OwnedHandle>>> = OnceLock::new();
+
+fn jobs() -> std::sync::MutexGuard<'static, HashMap<PathBuf, OwnedHandle>> {
+    JOBS.get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+}
+
+/// Keep the job a stand-in was started in. A job already kept for the same stack ends with its
+/// last handle, which is this replacing it.
+pub fn keep_job(stack_dir: &Path, job: OwnedHandle) {
+    jobs().insert(stack_dir.to_path_buf(), job);
+}
+
+/// End the job of this stack's stand-in, and everything in it. False when this run holds none,
+/// and then the pid file is all there is to go on. Dropping the handle ends the job too, so a
+/// failed `TerminateJobObject` still ends it.
+pub fn end_held_job(stack_dir: &Path) -> bool {
+    let Some(job) = jobs().remove(stack_dir) else {
+        return false;
+    };
+    // SAFETY: the handle is an open job object this app made; it is closed when `job` drops.
+    unsafe { TerminateJobObject(job.as_raw_handle(), 1) };
+    true
 }
 
 #[cfg(test)]
