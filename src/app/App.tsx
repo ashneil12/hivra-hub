@@ -386,11 +386,12 @@ import {
 } from "../features/source-control/model/worktrees";
 import {
   attachNewChatWorktree,
-  forgetNewChatFolderChoice,
   gitRepositoryOnThisComputer,
-  newChatStaysHere,
-  noteNewChatFolderChoice,
+  newChatWorktreeOpenFor,
   openNewChatWorktree,
+  pendingNewChatOfferCheck,
+  withNewChatFolderChoice,
+  withoutNewChatFolderChoice,
 } from "../features/source-control/model/newChatWorktree";
 import { UsageFooter } from "./shell/UsageFooter";
 import { useProjectBranches } from "../features/source-control/hooks/useProjectBranches";
@@ -549,6 +550,7 @@ import {
   canCompactHarnessContext,
   canRewindHarnessLastTurn,
   canSteerHarness,
+  harnessCannotSteer,
   compactHarnessContext,
   rewindHarnessLastTurn,
   forgetHarnessSession,
@@ -720,6 +722,19 @@ import { useBusyChatsFeed } from "../features/monos/hooks/useBusyChatsFeed";
 import { useFirstMateCheckoutGuard } from "../features/firstmate/hooks/useFirstMateCheckoutGuard";
 import { useSteering } from "../features/firstmate/hooks/useSteering";
 import { firstMateLaunch } from "../features/firstmate/model/checkoutGuard";
+// WP-115: compact an idle Claude chat shortly before its prompt cache expires.
+import {
+  commitIdleCompactBusy,
+  watchIdleClaudeCompaction,
+} from "../integrations/harness/providers/claude/idleCompactWatch";
+// WP-115: plain sentence when this agent cannot redirect a running turn.
+import {
+  COMPACTING_NOTE,
+  QUEUED_MESSAGE_WAITS,
+  cantRedirectTurn,
+  cantTakeFollowUp,
+  followUpWhenBusy,
+} from "../features/sessions/model/cantDo";
 import { withLegacyBriefParts } from "../features/firstmate/model/brief";
 import { viewAfterRemoval, type RemovalOrigin } from "../features/sessions/model/sessionWorkspaceLifecycle";
 import { focusClosesMono, paneFocus } from "./model/paneFocus";
@@ -1155,6 +1170,7 @@ import {
   claimAutoContinue,
   resumeBlocked,
   resumePrompt,
+  isTurnRunning,
   shouldWriteInFlightSnapshot,
 } from "../features/sessions/model/inFlight";
 import {
@@ -2151,6 +2167,8 @@ function Workspace({
     canForward: false,
   });
   const turnGen = useRef(new Map<string, number>());
+  // Chats the idle compact watcher holds busy, and the turn generation it took. WP-115.
+  const idleCompactOwners = useRef(new Map<string, number>());
   const editedResends = useRef(createEditedResendCoordinator()).current;
   const lastPersisted = useRef(new Map<string, string>());
   const lastBoundProvider = useRef(new Map<string, string>());
@@ -2594,7 +2612,9 @@ function Workspace({
   const nextBusySessionIds = useMemo(() => {
     const ids = new Set<string>();
     for (const session of sessions) {
-      if (session.busy) {
+      // A chat held for a background compact is not working: it must not spin
+      // in the rail, publish a live turn, or read as finished when it ends.
+      if (isTurnRunning(session)) {
         ids.add(session.id);
         if (session.orchestrationLeadId) ids.add(session.orchestrationLeadId);
       }
@@ -6942,6 +6962,7 @@ function Workspace({
       }
       setProjectCwd(normalized);
       setRecents(rememberProject(normalized));
+      const folderChanged = !previous || !sameProjectPath(previous, normalized);
       setSessions((prev) =>
         prev.map((s) => {
           if (s.id !== sessionId) return s;
@@ -6950,7 +6971,7 @@ function Workspace({
           const base = isBlankSession(s)
             ? retargetSessionToProject(s, normalized)
             : s;
-          return {
+          const moved: Session = {
             ...base,
             cwd: normalized,
             branch: undefined,
@@ -6959,13 +6980,12 @@ function Workspace({
             workspaceMode: undefined,
             worktreeBase: undefined,
           };
+          // WP-110: a choice to stay in the old folder does not carry to another one.
+          return folderChanged ? withoutNewChatFolderChoice(moved) : moved;
         }),
       );
       // WP-110: a blank chat moved to another folder follows the worktree setting.
-      if (!previous || !sameProjectPath(previous, normalized)) {
-        forgetNewChatFolderChoice(sessionId);
-        attachNewChatWorktree(sessionId, normalized, setSessions);
-      }
+      if (folderChanged) attachNewChatWorktree(sessionId, normalized, setSessions);
       // The session's project just moved in place; a group only holds tabs that
       // share one project, so drop this tab out if it no longer matches.
       setTabs((prev) => {
@@ -7013,8 +7033,6 @@ function Workspace({
 
   const onWorkspaceModeChange = useCallback(
     (sessionId: string, mode: WorkspaceMode, base?: string) => {
-      // WP-110: choosing this folder keeps this chat out of a default worktree.
-      noteNewChatFolderChoice(sessionId, mode);
       setSessions((prev) =>
         prev.map((session) => {
           if (
@@ -7024,19 +7042,22 @@ function Workspace({
           ) {
             return session;
           }
-          return mode === "worktree"
-            ? base || session.worktreeBase
-              ? {
+          const chosen: Session =
+            mode === "worktree"
+              ? base || session.worktreeBase
+                ? {
+                    ...session,
+                    workspaceMode: "worktree",
+                    worktreeBase: base || session.worktreeBase,
+                  }
+                : session
+              : {
                   ...session,
-                  workspaceMode: "worktree",
-                  worktreeBase: base || session.worktreeBase,
-                }
-              : session
-            : {
-                ...session,
-                workspaceMode: undefined,
-                worktreeBase: undefined,
-              };
+                  workspaceMode: undefined,
+                  worktreeBase: undefined,
+                };
+          // WP-110: choosing this folder keeps this chat out of a default worktree, and it is held on the chat.
+          return withNewChatFolderChoice(chosen, mode);
         }),
       );
     },
@@ -8594,27 +8615,39 @@ function Workspace({
           flushHarnessEvents();
           return false;
         }
+        // The app is compacting this idle chat in the background (WP-115). Its
+        // busy flag is ours, there is no reply to steer into, and a message
+        // written now would land inside the compact.
+        const compacting = !!current.idleCompacting;
         const steerable =
-          isLiveHarness(current.harness) && canSteerHarness(current.harness);
-        const followUpBehavior =
-          current.worktreePreparing ||
-          intent === "plan" ||
-          intent === "orchestrate" ||
-          operatorCommand.matched ||
-          options?.waitForIdle
-            ? "queue"
-            : // The agent has yielded and only background work is left, which
-              // may never end (a dev server). Queuing would park the message
-              // behind it, so hand it to the agent now.
-              current.backgroundTasks?.length
-              ? "steer"
-              : // Messaging a Mono mid-reply is like texting a friend twice:
-                // it reads the new message now, or right after if it can't.
-                mono
-                ? steerable
-                  ? "steer"
-                  : "queue"
-                : (options?.followUpBehavior ?? loadFollowUpBehavior());
+          isLiveHarness(current.harness) &&
+          canSteerHarness(current.harness) &&
+          !compacting;
+        const followUpBehavior = followUpWhenBusy({
+          setting: options?.followUpBehavior ?? loadFollowUpBehavior(),
+          mustWait: !!(
+            current.worktreePreparing ||
+            intent === "plan" ||
+            intent === "orchestrate" ||
+            operatorCommand.matched ||
+            options?.waitForIdle
+          ),
+          onlyBackgroundWork: !!current.backgroundTasks?.length,
+          mono: !!mono,
+          steerable,
+          cannotRedirect: harnessCannotSteer(current.harness),
+          compacting,
+          alreadyQueued: !!options?.queuedMessageId,
+        });
+        if (followUpBehavior === "stay") {
+          // Already in the queue and not to go in now: it stays where it is.
+          enqueueHarnessEvent(sessionId, {
+            type: "status",
+            text: QUEUED_MESSAGE_WAITS,
+          });
+          flushHarnessEvents();
+          return false;
+        }
         if (followUpBehavior === "queue") {
           setSessions((prev) =>
             prev.map((s) =>
@@ -8650,11 +8683,15 @@ function Workspace({
           return true;
         }
         if (!steerable) {
-          // Harnesses that cannot steer (fx) used to drop the message on the
-          // floor here, so a follow-up sent mid-turn just vanished. Say so.
+          // WP-115: a stale button must not drop the message. A known refusal
+          // names the redirect; anything not live keeps the mid-turn line.
           enqueueHarnessEvent(sessionId, {
             type: "status",
-            text: `${current.harness} cannot take a follow-up mid-turn — wait for this turn to finish, or stop it first.`,
+            text: compacting
+              ? COMPACTING_NOTE
+              : harnessCannotSteer(current.harness)
+                ? cantRedirectTurn(current.harness)
+                : cantTakeFollowUp(current.harness),
           });
           flushHarnessEvents();
           return false;
@@ -9100,7 +9137,9 @@ function Workspace({
       if (editedResend && canRewindHarnessLastTurn(current.harness)) {
         editedResends.start(sessionId);
         const locked = sessionsRef.current.map((session) =>
-          session.id === sessionId ? { ...session, busy: true } : session,
+          session.id === sessionId
+            ? { ...session, busy: true, idleCompacting: undefined }
+            : session,
         );
         sessionsRef.current = locked;
         syncDockBadge(locked);
@@ -9144,24 +9183,14 @@ function Workspace({
         // WP-110: ask and always start a new chat in a worktree. A refusal keeps
         // the creation function's own message.
         const tree = await openNewChatWorktree(
-          {
+          newChatWorktreeOpenFor(current, {
             setting: loadNewChatWorktree(),
-            firstTurn:
-              isFirstTurn &&
-              !current.worktreeCwd &&
-              !current.providerSessionId &&
-              !current.orchestrationLeadId &&
-              !current.inboxAsk &&
-              !current.worktreeRemoved &&
-              !current.automationId &&
-              !current.ephemeral,
+            isFirstTurn,
             toggleOn: createDraftWorktree,
-            declined: newChatStaysHere(sessionId),
-            cwd: current.cwd,
-            base: current.worktreeBase || "HEAD",
-          },
+          }),
           {
             gitOnThisComputer: gitRepositoryOnThisComputer,
+            offerCheck: pendingNewChatOfferCheck,
             createWorktree,
           },
         );
@@ -9311,7 +9340,7 @@ function Workspace({
           setSessions((prev) =>
             prev.map((s) => {
               if (s.id !== sessionId || !isPreparingHandoff(s)) return s;
-              return { ...completeHandoff(s, brief), busy: true };
+              return { ...completeHandoff(s, brief), busy: true, idleCompacting: undefined };
             }),
           );
         };
@@ -10260,7 +10289,7 @@ function Workspace({
         role: "approval",
         text: block.text,
         ...(block.tool ? { tool: block.tool } : {}),
-        approval: { requestId },
+        approval: { requestId, at: Date.now() },
         monoHabit: { id: habit.id, name: habit.name, at: Date.now() },
       });
     },
@@ -11042,6 +11071,53 @@ function Workspace({
       document.removeEventListener("visibilitychange", onVisible);
     };
   }, [ensureAutomationRecovery, launchAutomation, shipHold]);
+
+  // WP-115: compact an idle Claude chat shortly before its prompt cache expires.
+  const idleCompactEvent = useRef(enqueueHarnessEvent);
+  idleCompactEvent.current = enqueueHarnessEvent;
+  useEffect(() => {
+    return watchIdleClaudeCompaction({
+      sessions: () => sessionsRef.current,
+      toInput: (session) => ({
+        sessionId: session.id,
+        cwd: sessionWorkCwd(session),
+        model: session.model,
+        modelSettings: session.modelSettings,
+        providerAccountId: supportsProviderAccounts(session.harness)
+          ? (session.providerAccountId ??
+            selectedProviderAccountId(session.harness, session.cwd))
+          : undefined,
+        runtimeMode: session.runtimeMode,
+        ephemeral: session.ephemeral === true,
+        controlsAgents:
+          isMonoSession(session.id) ||
+          operatorEnabledInThread(session.blocks) ||
+          orchestrator.run(session.id)?.status === "active",
+        ...firstMateLaunch(session),
+      }),
+      onEvent: (id, event) => idleCompactEvent.current(id, event),
+      // WP-115: hold the chat busy while compacting, so a send queues and a second look waits.
+      // Claimed once, then published. The store assigns the ref as well, so a
+      // diverged ref is put back afterwards.
+      markBusy: (sessionId, busy) => {
+        const result = commitIdleCompactBusy(
+          sessionState.snapshot(),
+          sessionsRef.current,
+          sessionId,
+          busy,
+          turnGen.current,
+          idleCompactOwners.current,
+        );
+        if (result.store !== sessionState.snapshot()) {
+          setSessions([...result.store]);
+          // Same array means the store publish already pointed the ref at it.
+          if (result.ref === result.store) return result.ok;
+        }
+        if (sessionsRef.current !== result.ref) sessionsRef.current = [...result.ref];
+        return result.ok;
+      },
+    });
+  }, []);
 
   const onInboxAppeared = useCallback(
     (items: Parameters<typeof claimInboxAutomationRuns>[0]) => {

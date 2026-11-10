@@ -401,6 +401,13 @@ export function canSteerHarness(id: HarnessId): boolean {
   return adapter.canSteer !== false;
 }
 
+/** True only when a live adapter says it cannot redirect a running turn. */
+export function harnessCannotSteer(id: HarnessId): boolean {
+  const adapter = adapters.get(id);
+  if (!adapter?.live) return false;
+  return adapter.canSteer === false;
+}
+
 export function canRewindHarnessLastTurn(id: HarnessId): boolean {
   const adapter = adapters.get(id);
   return adapter?.live === true && adapter.rewindLastTurn != null;
