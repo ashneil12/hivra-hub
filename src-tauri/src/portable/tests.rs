@@ -2092,7 +2092,8 @@ fn a_listed_picture_that_is_a_link_is_refused_even_when_the_hash_matches() {
 }
 
 /// The picture folder of the note, the folder of all notes' pictures, or the workspace folder is a link to a
-/// folder that holds the listed picture (so every listed hash still matches) and one more file.
+/// folder that holds the listed picture (so every listed hash still matches) and one more file. An export that lists
+/// files in such a folder isn't opened; one swapped for a link after the check is not followed by the copy.
 #[cfg(unix)]
 #[test]
 fn a_linked_picture_folder_is_never_followed() {
@@ -2108,6 +2109,8 @@ fn a_linked_picture_folder_is_never_followed() {
         let source = env_for(&source_dir.0);
         let target = env_for(&target_dir.0);
         let dest = note_export(&source, &out.0);
+        // Opened (and so checked) while the folders are real; swapped for links after.
+        let opened = open_export(&dest.to_string_lossy()).unwrap();
         let real = dest.join(linked);
         let elsewhere = outside.0.join("moved");
         fs::rename(&real, &elsewhere).unwrap();
@@ -2122,20 +2125,26 @@ fn a_linked_picture_folder_is_never_followed() {
         };
         fs::write(reached.join("unlisted.png"), PRIVATE_KEY).unwrap();
 
-        let store = open_store(&target);
-        let conn = store.lock_conn().unwrap();
-        let report = import_held(&target, &conn, &note_import(&dest)).unwrap();
+        assert_eq!(
+            copy_note_assets(&target, &opened, "note-1", "note-1"),
+            vec!["its folder is a link"],
+            "{linked}"
+        );
         assert_eq!(
             files_under(&target.data_dir.join(NOTE_ASSET_DIR)),
             Vec::<String>::new(),
             "{linked} is a link and was followed"
         );
         assert_not_in_pictures(&target, "OPENSSH PRIVATE KEY");
-        assert_eq!(report.note_assets_skipped, 1, "{linked}: {report:?}");
+
+        // Listed in a linked folder from the start: not opened.
+        let store = open_store(&target);
+        let conn = store.lock_conn().unwrap();
+        let why = import_held(&target, &conn, &note_import(&dest)).unwrap_err();
+        assert!(why.contains("outside"), "{linked}: {why}");
         assert_eq!(
-            report.notes,
-            vec!["1 picture of note note-1 was not copied (its folder is a link).".to_string()],
-            "{linked}"
+            files_under(&target.data_dir.join(NOTE_ASSET_DIR)),
+            Vec::<String>::new()
         );
     }
 }
@@ -2899,7 +2908,7 @@ fn inspect_holds_no_more_than_a_budget_of_the_webviews_files() {
         let path = dest.to_string_lossy().into_owned();
         move || inspect(&target, &path)
     });
-    let why = result.err().expect("150 MB of setup files was inspected");
+    let why = result.expect_err("150 MB of setup files was inspected");
     assert!(why.contains("too large to preview"), "{why}");
 }
 
@@ -3047,4 +3056,155 @@ fn an_export_folder_that_is_a_link_inside_the_picked_folder_is_not_taken() {
     fs::remove_file(picked.join("export")).unwrap();
     fs::rename(&dest, picked.join("export")).unwrap();
     assert!(open_refused(&picked).is_err(), "the control opens");
+}
+
+/// The folder git reads a history bundle from is the importer's alone, and goes with it.
+#[cfg(unix)]
+#[test]
+fn a_private_scratch_folder_is_owner_only_and_goes_when_dropped() {
+    use std::os::unix::fs::PermissionsExt;
+    let scratch = Scratch::private("test").unwrap();
+    let path = scratch.0.clone();
+    assert_eq!(
+        fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+        0o700
+    );
+    assert!(fs::read_dir(&path).unwrap().next().is_none());
+    drop(scratch);
+    assert!(!path.exists());
+}
+
+/// The copy git is given: the bytes that hash as listed and nothing else, in a file only this user can open, and
+/// never a file that isn't a bundle, a link, or one that no longer hashes as listed.
+#[test]
+fn a_listed_bundle_is_copied_only_as_the_bytes_that_hash_as_listed() {
+    let source_dir = TestDir::new("source");
+    let out = TestDir::new("out");
+    let source = env_for(&source_dir.0);
+    let dest = memory_export(&source, &out.0);
+    let bundle = dest.join("memory/ash.git.bundle");
+    let bytes = fs::read(&bundle).unwrap();
+    assert!(
+        BUNDLE_HEADERS.contains(&&bytes[..16]),
+        "the control is a bundle"
+    );
+    let listed_for = |bytes: &[u8]| Listed {
+        path: "memory/ash.git.bundle".into(),
+        declared: bytes.len() as u64,
+        sha256: sha256_hex(bytes),
+    };
+    let scratch = Scratch::private("test").unwrap();
+    let copy = scratch.0.join("copy");
+
+    copy_listed_bundle(&bundle, &listed_for(&bytes), &copy).unwrap();
+    assert_eq!(fs::read(&copy).unwrap(), bytes);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(
+            fs::metadata(&copy).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+    }
+
+    // Other bytes of the same length, a longer file, a shorter one: none hashes as listed.
+    for (n, other) in [
+        vec![b'x'; bytes.len()],
+        [bytes.clone(), vec![0; 10]].concat(),
+        bytes[..bytes.len() - 1].to_vec(),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        fs::write(&bundle, &other).unwrap();
+        let copy = scratch.0.join(format!("changed-{n}"));
+        assert!(
+            matches!(
+                copy_listed_bundle(&bundle, &listed_for(&bytes), &copy),
+                Err(HistoryRefusal::NotAsListed)
+            ),
+            "{n}"
+        );
+    }
+
+    // Hashes as listed and isn't a bundle (a gitfile, text, nothing).
+    for (n, text) in [&b"gitdir: /elsewhere/.git\n"[..], b"hello", b""]
+        .into_iter()
+        .enumerate()
+    {
+        fs::write(&bundle, text).unwrap();
+        let copy = scratch.0.join(format!("not-{n}"));
+        assert!(
+            matches!(
+                copy_listed_bundle(&bundle, &listed_for(text), &copy),
+                Err(HistoryRefusal::NotABundle)
+            ),
+            "{n}"
+        );
+    }
+
+    #[cfg(unix)]
+    {
+        fs::write(&bundle, &bytes).unwrap();
+        let aside = scratch.0.join("aside.bundle");
+        fs::rename(&bundle, &aside).unwrap();
+        std::os::unix::fs::symlink(&aside, &bundle).unwrap();
+        assert!(matches!(
+            copy_listed_bundle(&bundle, &listed_for(&bytes), &scratch.0.join("link-copy")),
+            Err(HistoryRefusal::NotAsListed)
+        ));
+    }
+}
+
+/// Names Windows doesn't take for what they say are refused in an export's paths there (the check itself runs
+/// everywhere so it is tested everywhere).
+#[test]
+fn windows_names_that_are_not_what_they_say_are_unsafe() {
+    for name in [
+        "CON", "con", "NUL.txt", "aux.md", "COM1", "lpt9.png", "a:stream", "x.", "x ", "C:",
+    ] {
+        assert!(windows_unsafe_name(name), "{name}");
+    }
+    for name in [
+        "MEMORY.md",
+        "console.md",
+        "COM0",
+        "COM10",
+        "LPT",
+        "nul-ish",
+        "a.b",
+        "1-shot.png",
+    ] {
+        assert!(!windows_unsafe_name(name), "{name}");
+    }
+}
+
+/// What an export writes is what an import will take: a file past the size its kind may be is refused at the
+/// export, not written into one nothing can open.
+#[test]
+fn an_export_refuses_a_file_an_import_would_not_take() {
+    let dir = TestDir::new("writer");
+    let mut writer = Writer {
+        root: dir.0.clone(),
+        secrets: 0,
+        files: Vec::new(),
+    };
+    for (relative, size) in [
+        ("setup/big.json", MAX_TEXT_FILE + 1),
+        ("memory/ash/big.md", MAX_TEXT_FILE + 1),
+        (
+            "workspace/note-assets/note-1/big.png",
+            crate::notes::IMAGE_MAX_BYTES + 1,
+        ),
+    ] {
+        let why = writer
+            .bytes(relative, &vec![b' '; size as usize])
+            .expect_err("a file no import takes was written");
+        assert!(why.contains(relative) && why.contains("too large"), "{why}");
+        assert!(!dir.0.join(relative).exists(), "{relative} was written");
+    }
+    // The largest a text file may be goes in.
+    writer
+        .bytes("setup/edge.json", &vec![b' '; MAX_TEXT_FILE as usize])
+        .unwrap();
 }

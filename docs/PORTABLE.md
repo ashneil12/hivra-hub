@@ -46,10 +46,18 @@ The archive is the same tree under one top folder. Nothing in it is a secret:
 
 1. **Read** (`portable_inspect`): a folder, `.tar.gz` (unpacked to a scratch folder: links, devices and paths that climb
    out are refused) or v1 `.json`. Every listed file must match its SHA-256; a newer format is refused in plain words.
-   Listed files, and `manifest.json` itself, are read through one reader (`plain_file.rs`): a link, a pipe or a device
-   is refused unread (a listed link to `/dev/urandom` can't fill the memory, a pipe can't hang the open), and no more
-   bytes are read than the manifest says the file holds. A file the manifest doesn't list is never read, the fixed
-   `workspace/*.json` names included, and each later read of a listed file hashes the bytes it uses.
+   What the manifest lists is checked before a byte is read: at most 500,000 files, each with a path inside the export, a
+   size, and no more than its kind may be (a note's picture 20 MB, a memory folder's history bundle 1 GB, any other
+   text or JSON file 64 MB), all of them together no more than 8 GB, and none listed twice (`a/./b`, `a//b` and `A/B`
+   are one file). The export writes by the same limits. Then each listed file, and `manifest.json` itself (64 MB at
+   most), is read through one reader (`plain_file.rs`): a link, a pipe or a device is refused unread (a listed link to
+   `/dev/urandom` can't fill the memory, a pipe can't hang the open), no more bytes are read than the manifest says,
+   and each listed file's folder must really be inside the export (a link above it is refused, and a picked folder
+   that holds the export only as a link isn't taken for it). A file the manifest doesn't list is never read, the fixed
+   `workspace/*.json` names included; each later read of a listed file hashes the bytes it uses, and one that changed
+   since is left out with a line in the report. A single `.json` is read the same way. Inspect holds at most 128 MB of
+   the webview's files. An archive is unpacked against its byte budget by the size the tar crate really copies (a PAX
+   size overrides the header's) and the bytes really written.
 2. **Preview** (`importPlan.ts`): for every item, New / Already here / Differs, and clashes by id and by name (a project
    or Mono or model called the same). New things are ticked; things already here are left alone; Differs keeps Ash's.
 3. **Restore** only adds:
@@ -61,7 +69,11 @@ The archive is the same tree under one top folder. Nothing in it is a secret:
    - Teams, connectors (sign in again), Pages (no permissions), models (enter the key again), settings (missing ones;
      the differing ones only if ticked).
    - Memory: missing files are written, identical ones skipped, differing ones kept (or the file's added beside as
-     `<name>.imported.md` if ticked). A folder that isn't here yet comes back with its history from the bundle.
+     `<name>.imported.md` if ticked). A folder that isn't here yet comes back with its history from the bundle. git is
+     never handed the bundle's path in the export (`git clone` decides for itself what a path means: a gitfile there
+     clones the repository it names, and `<path>.git` beside it is cloned instead): the listed bytes are copied, hashed
+     as they go, into a private folder as its only file, checked to begin `# v2 git bundle` or `# v3 git bundle`, and
+     cloned from there. The folder is removed afterwards, also on an error.
    - Workspace: new chats, notes, automations (**paused**), reminders (an overdue one comes back done), delegations
      (**history only**: open ones settle as cancelled, delivery disposed, nothing mirrored to Ash OS again). A chat or
      note already here and different is kept; ticked, the file's comes in as a copy with a new id.

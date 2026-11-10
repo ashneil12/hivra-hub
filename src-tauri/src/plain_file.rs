@@ -7,8 +7,13 @@
 //! 1. the name itself is looked at first (`symlink_metadata`): a link or anything that isn't a plain file is refused;
 //! 2. it is opened with `O_NOFOLLOW` (a link swapped in after that look is refused too) and `O_NONBLOCK` (a pipe
 //!    swapped in opens at once instead of waiting for a writer);
-//! 3. what was opened, the handle and not the name, is checked to be a plain file;
+//! 3. what was opened, the handle and not the name, is checked to be a plain file, and only then is `O_NONBLOCK`
+//!    cleared: what is read from here on is an ordinary blocking read of a regular file (which is also what a file
+//!    that iCloud has evicted needs, to wait while it comes back);
 //! 4. at most `cap` bytes are read, and a file that holds more is refused as soon as one more byte shows up.
+//!
+//! On Windows the same two looks are for a reparse point (a symlink or a junction): `FILE_FLAG_OPEN_REPARSE_POINT`
+//! opens it as itself, and one that is found is refused.
 //!
 //! A folder on the way to the file is not looked at: callers that need that (a note's pictures folder) check it.
 
@@ -29,10 +34,23 @@ pub enum Refusal {
     TooBig,
 }
 
+/// Whether `meta` is a link: a symlink, and on Windows any reparse point (a junction too).
+fn is_link(meta: &fs::Metadata) -> bool {
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+        if meta.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+            return true;
+        }
+    }
+    meta.file_type().is_symlink()
+}
+
 /// The file at `path` opened for reading, only if it is a plain file and not a link.
 pub fn open(path: &Path) -> Result<fs::File, Refusal> {
     let meta = fs::symlink_metadata(path).map_err(|_| Refusal::Unreadable)?;
-    if meta.file_type().is_symlink() {
+    if is_link(&meta) {
         return Err(Refusal::Link);
     }
     if !meta.file_type().is_file() {
@@ -45,6 +63,12 @@ pub fn open(path: &Path) -> Result<fs::File, Refusal> {
         use std::os::unix::fs::OpenOptionsExt;
         options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
     }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        // FILE_FLAG_OPEN_REPARSE_POINT: a link swapped in after the look above is opened as itself, not followed.
+        options.custom_flags(0x0020_0000);
+    }
     let file = options.open(path).map_err(|error| {
         // O_NOFOLLOW on a link that was swapped in after the look above.
         #[cfg(unix)]
@@ -54,11 +78,44 @@ pub fn open(path: &Path) -> Result<fs::File, Refusal> {
         let _ = error;
         Refusal::Unreadable
     })?;
-    // The handle, not the name: what was opened is a plain file.
-    if !file.metadata().is_ok_and(|m| m.is_file()) {
-        return Err(Refusal::NotAFile);
+    // The handle, not the name: what was opened is a plain file, and not a link.
+    match file.metadata() {
+        Ok(handle) if is_link(&handle) => return Err(Refusal::Link),
+        Ok(handle) if handle.is_file() => {}
+        Ok(_) => return Err(Refusal::NotAFile),
+        Err(_) => return Err(Refusal::Unreadable),
+    }
+    // A regular file can't wait for a writer: from here a read blocks only for the disk (or iCloud).
+    #[cfg(unix)]
+    if !clear_nonblocking(&file) {
+        return Err(Refusal::Unreadable);
     }
     Ok(file)
+}
+
+/// Whether O_NONBLOCK is set on `file`'s descriptor.
+#[cfg(unix)]
+fn nonblocking(file: &fs::File) -> Option<bool> {
+    use std::os::fd::AsRawFd;
+    // SAFETY: F_GETFL on a descriptor this process owns, read-only.
+    let flags = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_GETFL) };
+    (flags >= 0).then_some(flags & libc::O_NONBLOCK != 0)
+}
+
+#[cfg(unix)]
+fn clear_nonblocking(file: &fs::File) -> bool {
+    use std::os::fd::AsRawFd;
+    let Some(set) = nonblocking(file) else {
+        return false;
+    };
+    if !set {
+        return true;
+    }
+    // SAFETY: F_GETFL / F_SETFL on a descriptor this process owns; only O_NONBLOCK is cleared.
+    unsafe {
+        let flags = libc::fcntl(file.as_raw_fd(), libc::F_GETFL);
+        flags >= 0 && libc::fcntl(file.as_raw_fd(), libc::F_SETFL, flags & !libc::O_NONBLOCK) >= 0
+    }
 }
 
 /// Hands the bytes of the plain file at `path` to `sink` in pieces and returns how many there were. A file with more
@@ -176,6 +233,18 @@ mod tests {
             assert_eq!(read(&folder.0.join(name), 10), Err(Refusal::Link), "{name}");
         }
         assert_eq!(read(&folder.0.join("real"), 10).unwrap(), b"bytes");
+    }
+
+    /// Opened with O_NONBLOCK so a swapped-in pipe can't hold the open, then back to a plain blocking file once it is
+    /// known to be a regular one: a file that has to be fetched first (iCloud) is waited for, not failed with EAGAIN.
+    #[cfg(unix)]
+    #[test]
+    fn a_file_that_passed_is_a_blocking_file() {
+        let folder = Folder::new();
+        let path = folder.0.join("a");
+        fs::write(&path, b"x").unwrap();
+        let file = open(&path).unwrap();
+        assert_eq!(nonblocking(&file), Some(false));
     }
 
     #[cfg(unix)]

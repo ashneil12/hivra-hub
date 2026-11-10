@@ -318,15 +318,18 @@ fn save_note_image_into(
     })
 }
 
-/// `bytes` as a new file at `path`: never over one that is there, never through a link at that name.
+/// `bytes` as a new file at `path`: never over one that is there, never through a link at that name. A file that
+/// couldn't be created isn't this function's to remove (it may be somebody else's); one it created and then couldn't
+/// finish writing is removed, so no half of a picture is left.
 fn write_new_file(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     use std::io::Write;
-    let written = std::fs::OpenOptions::new()
+    let mut file = std::fs::OpenOptions::new()
         .write(true)
         .create_new(true)
-        .open(path)
-        .and_then(|mut file| file.write_all(bytes));
+        .open(path)?;
+    let written = file.write_all(bytes);
     if written.is_err() {
+        drop(file);
         let _ = std::fs::remove_file(path);
     }
     written
@@ -1293,6 +1296,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     const PRIVATE_KEY: &str = "-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEAAAAAPLANTED\n-----END OPENSSH PRIVATE KEY-----";
 
     #[test]
