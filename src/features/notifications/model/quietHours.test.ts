@@ -3,8 +3,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { NOTIFICATION_CATEGORIES } from "./notificationPreferences";
 import {
   QUIET_HOURS_KEY,
-  allowsProgrammeNotification,
   defaultQuietHours,
+  holdsForQuietHours,
   isQuietHour,
   loadQuietHours,
   parseQuietHours,
@@ -134,24 +134,10 @@ describe("quiet hours window", () => {
   });
 });
 
-describe("programme notices during quiet hours", () => {
+describe("what quiet hours hold", () => {
   const quiet = { enabled: true, start: "22:00", end: "08:00" };
 
-  function allowed(
-    category: string,
-    categoryMuted: boolean,
-    now: number,
-    hours = quiet,
-  ): boolean {
-    return allowsProgrammeNotification({
-      category: category as "agentFinished",
-      categoryMuted,
-      quiet: hours,
-      now,
-    });
-  }
-
-  it("holds routine categories and still shows approvals unless that category is muted", () => {
+  it("holds every routine category at night and never approvals and questions", () => {
     const routine = NOTIFICATION_CATEGORIES.map((item) => item.id).filter(
       (id) => id !== "agentInput",
     );
@@ -162,17 +148,18 @@ describe("programme notices during quiet hours", () => {
       "reminders",
     ]);
     for (const category of routine) {
-      expect(allowed(category, false, NIGHT)).toBe(false);
-      expect(allowed(category, false, DAY)).toBe(true);
-      expect(allowed(category, true, DAY)).toBe(false);
+      expect(holdsForQuietHours(category, NIGHT, quiet)).toBe(true);
+      expect(holdsForQuietHours(category, DAY, quiet)).toBe(false);
+      expect(holdsForQuietHours(category, NIGHT, { ...quiet, enabled: false })).toBe(false);
     }
-    expect(allowed("agentInput", false, NIGHT)).toBe(true);
-    expect(allowed("agentInput", true, NIGHT)).toBe(false);
-    expect(allowed("agentInput", true, DAY)).toBe(false);
-    expect(allowed("agentInput", false, DAY)).toBe(true);
-    expect(allowed("something-else", false, NIGHT)).toBe(false);
-    expect(
-      allowed("agentFinished", false, NIGHT, { ...quiet, enabled: false }),
-    ).toBe(true);
+    expect(holdsForQuietHours("agentInput", NIGHT, quiet)).toBe(false);
+    expect(holdsForQuietHours("agentInput", DAY, quiet)).toBe(false);
+  });
+
+  it("reads the stored window when none is passed", () => {
+    expect(holdsForQuietHours("agentFinished", NIGHT)).toBe(false);
+    saveQuietHours(quiet);
+    expect(holdsForQuietHours("agentFinished", NIGHT)).toBe(true);
+    expect(holdsForQuietHours("agentFinished", DAY)).toBe(false);
   });
 });

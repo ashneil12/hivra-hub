@@ -2,7 +2,8 @@
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { allowsProgrammeNotification, loadQuietHours, QUIET_HOURS_KEY } from "../model/quietHours";
+import { allowsProjectNotification } from "../model/notificationPreferences";
+import { loadQuietHours, QUIET_HOURS_KEY } from "../model/quietHours";
 import { QuietHoursSetting } from "./QuietHoursSetting";
 
 let container: HTMLDivElement;
@@ -53,24 +54,12 @@ describe("QuietHoursSetting", () => {
 
     setTime(end, "07:00");
     expect(loadQuietHours().end).toBe("07:00");
+    // the switch is the real gate: what every banner and sound asks before it shows
     const night = new Date(2026, 10, 10, 23, 30).getTime();
-    const quiet = loadQuietHours();
-    expect(
-      allowsProgrammeNotification({
-        category: "agentFinished",
-        categoryMuted: false,
-        quiet,
-        now: night,
-      }),
-    ).toBe(false);
-    expect(
-      allowsProgrammeNotification({
-        category: "agentInput",
-        categoryMuted: false,
-        quiet,
-        now: night,
-      }),
-    ).toBe(true);
+    expect(allowsProjectNotification({ projectId: "work", category: "agentFinished" }, night)).toBe(false);
+    expect(allowsProjectNotification({ projectId: "work", category: "agentInput" }, night)).toBe(true);
+    act(() => toggle.click());
+    expect(allowsProjectNotification({ projectId: "work", category: "agentFinished" }, night)).toBe(true);
   });
 
   it("follows a change written by another window", () => {

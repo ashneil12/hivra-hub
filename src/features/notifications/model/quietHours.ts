@@ -1,4 +1,6 @@
-// WP-164: quiet hours for routine programme notices. Approvals stay unless that category is muted.
+// WP-164: quiet hours. The gate every banner and sound asks (allowsProjectNotification) holds routine
+// categories inside the window. Approvals and questions stay unless that category is muted.
+// Reminders are the exception: Rust fires them (src-tauri/src/reminders.rs), so this window does not reach them.
 
 import type { NotificationCategory } from "./notificationPreferences";
 
@@ -89,17 +91,13 @@ export function isQuietHour(now: number, quiet: QuietHours): boolean {
 }
 
 /**
- * Programme ticks ask this before a routine notice. Quiet hours hold every
- * category except approvals and questions. A muted category stays muted at
- * any hour, including approvals.
+ * True when quiet hours hold this category right now: the window is on and the category is routine. Approvals and
+ * questions (`agentInput`) are never held here. Muting is a separate rule and wins at any hour.
  */
-export function allowsProgrammeNotification(input: {
-  category: NotificationCategory | string;
-  categoryMuted: boolean;
-  quiet: QuietHours;
-  now: number;
-}): boolean {
-  if (input.categoryMuted) return false;
-  if (!isQuietHour(input.now, input.quiet)) return true;
-  return input.category === "agentInput";
+export function holdsForQuietHours(
+  category: NotificationCategory,
+  now: number,
+  quiet: QuietHours = loadQuietHours(),
+): boolean {
+  return category !== "agentInput" && isQuietHour(now, quiet);
 }

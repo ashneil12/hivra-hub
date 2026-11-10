@@ -1099,11 +1099,11 @@ function GeneralPage({
             onChange={onNotificationsEnabled}
           />
         </Row>
-        {/* WP-164: routine programme notices wait. Approvals still come through. */}
+        {/* WP-164: routine banners and sounds wait for the end of the window. Failures and approvals come through. */}
         <Row
           id="quiet-hours"
           label="Quiet hours"
-          description="Routine programme notices wait. Approvals and questions still come through unless you muted them."
+          description="Routine banners and sounds wait until the window ends, then arrive as one notice. Failed checks, approvals and questions still come through unless you muted them. Reminders you set still fire."
         >
           <QuietHoursSetting />
         </Row>
