@@ -905,6 +905,7 @@ import { appPolicy } from "./model/appIdentity";
 import {
   claimVerifyKickoff,
   pendingVerifyKickoff,
+  traceVerifyKickoff,
   verifyKickoffMono,
   verifyRun,
   watchVerifyMessages,
@@ -9987,12 +9988,25 @@ function Workspace({
   // The fake-Claude test bench (scripts/hub-verify-live.mjs): a dev copy with a verify plan opens a Mono on the plan's
   // scratch project and sends its first message, once per run. No plan reaches the daily app (src/verify_live.rs).
   const verifyKickoffStarted = useRef(false);
+  const verifyKickoffNoted = useRef(false);
   useEffect(() => {
-    if (verifyKickoffStarted.current || windowTransfer) return;
+    if (verifyKickoffStarted.current) return;
+    if (windowTransfer) {
+      traceVerifyKickoff("held-by-window-transfer");
+      return;
+    }
     const kickoff = pendingVerifyKickoff();
-    if (!kickoff) return;
+    if (!kickoff) {
+      // A plan whose kickoff this window won't send (already claimed by an earlier launch of the run, or none).
+      if (!verifyKickoffNoted.current && verifyRun()) traceVerifyKickoff("not-pending");
+      verifyKickoffNoted.current = true;
+      return;
+    }
     verifyKickoffStarted.current = true;
     claimVerifyKickoff(kickoff.runId);
+    traceVerifyKickoff("claimed", { monoId: kickoff.monoId ?? null, project: kickoff.project });
+    // Each change in what the window knows of the Mono it waits for, so a kickoff that never goes says why.
+    let seen = "";
     void verifyKickoffMono(kickoff, {
       create: (project, name) => {
         const mono = createMono([project]);
@@ -10002,15 +10016,27 @@ function Workspace({
       // A plan naming an existing Mono waits until the hub has tied it to the project.
       ready: (monoId, project) => {
         const mono = findMono(monoId);
+        const state = JSON.stringify({ found: !!mono, projects: mono?.projects ?? [], monos: listMonos().length });
+        if (state !== seen) {
+          seen = state;
+          traceVerifyKickoff("mono-state", JSON.parse(state) as Record<string, unknown>);
+        }
         return !!mono && monoWorksOn(mono, project);
       },
     }).then(async (monoId) => {
       if (!monoId) {
+        traceVerifyKickoff("gave-up", { seen });
         console.error(`verify kickoff: ${kickoff.monoId} never worked on ${kickoff.project}`);
         return;
       }
+      traceVerifyKickoff("opening", { monoId });
       await onOpenMono(monoId);
       const sessionId = monoViewIdRef.current;
+      traceVerifyKickoff(sessionId ? "sending" : "no-chat-open", {
+        monoId,
+        view: sessionId,
+        monoChat: findMono(monoId)?.sessionId ?? null,
+      });
       if (sessionId) onSubmit(sessionId, kickoff.prompt);
     });
   }, [onOpenMono, onSubmit, windowTransfer]);
