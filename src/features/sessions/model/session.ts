@@ -528,7 +528,11 @@ export type Block = {
     /** The chat moved to (or started on) another account of its provider because one hit its limit (E5, accountWaterfall.ts). */
     | "account-moved"
     /** Ash wrote to a chat that is held on his OK for a tool call: it can't answer until he decides (approvalWait.ts). */
-    | "waiting-on-you";
+    | "waiting-on-you"
+    /** WP-177: the chat moved to another machine. The text names the host; the marker is the chat's only saved trace here. */
+    | "teleported"
+    /** WP-177: the chat came back to this Mac from another machine. */
+    | "teleported-back";
   /** An agent-to-agent note on a system block (who messaged whom, got stuck, reported; monos/model/agentNotes.ts). */
   agentNote?: import("../../monos/model/agentNotes").AgentNote;
   /** On a still-running note: the tasks it named, and the brief that stays open (one note per task and per brief). */
