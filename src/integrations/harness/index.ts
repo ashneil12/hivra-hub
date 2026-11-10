@@ -144,6 +144,8 @@ export {
   pickTextHarness,
   warmupText,
 } from "./core/textHarness";
+// WP-129: titles and branch names try the short text model first.
+export { generateBranchWithTextModel, generateTitleWithTextModel } from "./core/textHarness";
 export { warmupCursorText } from "./providers/cursor/cursorText";
 export { warmupOpenCodeText } from "./providers/opencode/opencodeText";
 export { warmupClaudeText } from "./providers/claude/claudeText";
