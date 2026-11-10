@@ -62,9 +62,27 @@ If Ash later says go, the order is: keep SSH and loopback as the default, add a 
 
 SPEC section 11 says the upstream remote host and the mobile app are kept and not rewritten. A later package adds a small hook. It does not fork those trees. WP-60 still owns the part this note does not: first-mate records and the watcher have to run on the host, or a closed laptop that was the desktop still loses the crew even when the host keeps the provider session.
 
-The other four decisions:
+### Phone
 
-2. The inherited Expo app is the starting point, not a dead end, and this package does not publish it. If Ash later says go, the first slice is chats (already there), approvals (not there) and diffs (already there). A terminal stays on the desktop. Files stay read-only until a later package.
+The inherited Expo app is the starting point, not a dead end. It already pairs with the desktop, shows chats, and does real work against the desktop's project. Starting a new phone app would throw that away. This package does not publish it, and it does not assume an App Store or Play Store listing.
+
+What it is today. The app is still named MonoCode. The Expo owner is `hardbeat920`. The iOS bundle id is `com.hardbeat920.monocode-mobile` (`mobile/app.json`). A Hivra listing would need Ash's own accounts, a new bundle id and a new Expo owner. That is his decision, not a step in this package.
+
+What already works, from the desktop's allow list in `src-tauri/src/mobile_access.rs` and the screens that call it. Read a chat, send, start, stop, rename, archive and delete a session. Answer an agent question (`session.answerQuestion`, `mobile/src/features/sessions/QuestionCard.tsx`). Resume after a usage limit. Read the file tree and a file, and search. Open the changes view, stage, and run the git action (`project.gitAction`), which is the commit and push path. Pick a model and a saved account. Dictate on the phone. `mobile/README.md` still says questions need the desktop. That sentence is stale. The question card answers them.
+
+What stays off the phone for a first slice.
+
+- Tool approvals. The transcript the phone shows says "Waiting for approval on desktop", and the allow list has no method that grants or denies one. This is the first gap to close if Ash says go, because the phone already tells him something is waiting and then cannot take the tap. Letting a phone allow a tool call is a security decision, and it stays his.
+- A terminal. There is no terminal route and no terminal method. A shell on a phone is a large jump in trust, and remote-host projects do not have a terminal yet either. It stays on the desktop.
+- Writing a file from the phone. The allow list can read a file. It cannot save one. Editing stays on the desktop until a later package has a reason and a review.
+- Crew, tasks, decisions and the Inbox. None of those methods are in the allow list. They can follow. They are not the first slice.
+- Push while the app is closed. The allow list has no push registration method. Do not promise a buzz in a pocket.
+
+What ships first, if he says go, in this order: the chats and questions that already work, then approvals, with diffs as they already are. Files stay a reader. The terminal stays on the desktop.
+
+How it connects. Pairing is a one-time code, QUIC with mutual TLS, and the desktop's identity is pinned by that code. The desktop must stay awake (`mobile/README.md`). Mobile access itself defaults to off (`enabled: false` in `src-tauri/src/mobile_access.rs`). Dev copies refuse phone access (`phone_access` in `src-tauri/src/instance.rs`). The router-mapping flag defaults to on, but it only acts after mobile access is turned on. This package does not change that default. Widening it, or turning mapping on for anyone who has not asked, is out. Changing the default so mapping stays off until a separate tap would be a behaviour change on upstream mobile code, which SPEC section 11 says not to touch. That change is an Ash decision, not a silent edit.
+
+The phone cannot reach the SSH host. Closing the laptop ends the peer the phone knows. A later package that wants the phone while the laptop is shut has to teach the host to speak the phone's protocol, or teach the phone to be a client of the host. That is the large piece. It is not started here. SPEC section 11 still says the mobile app is kept, so that later package is a small hook, not a rewrite.
 
 3. The web client is a page served by the desktop or the host, on an address the person can already reach. It is not a signed-in website Hivra operates. No Clerk, and no other third-party account kit.
 
