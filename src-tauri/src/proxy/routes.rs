@@ -38,6 +38,9 @@ pub struct Route {
     pub port: u16,
     /// The process that added the name. 0 is a static alias and never dies.
     pub pid: u32,
+    /// The stack that published the name. A second stack cannot take it, even in this process.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stack_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub registered_at: Option<u64>,
 }
@@ -313,6 +316,10 @@ impl RouteStore {
 
     /// Register a name. `force` replaces an entry whose owner is dead; it never signals a live
     /// process (portless kills it; Hivra leaves the other process alone and reports the clash).
+    ///
+    /// Stacks pass a stack id through [`Self::add_route_owned`]. This remains for a name that
+    /// has no stack, and for the tests.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn add_route(
         &self,
         hostname: &str,
@@ -320,15 +327,43 @@ impl RouteStore {
         pid: u32,
         force: bool,
     ) -> Result<(), RouteError> {
+        self.add_route_owned(hostname, port, pid, force, None)
+    }
+
+    /// Register a name for one stack. A hostname another stack id already holds is refused,
+    /// even when this process owns both and `force` is set: two projects must not share a name.
+    pub fn add_route_owned(
+        &self,
+        hostname: &str,
+        port: u16,
+        pid: u32,
+        force: bool,
+        stack_id: Option<&str>,
+    ) -> Result<(), RouteError> {
         let hostname = hostname.to_ascii_lowercase();
         if !valid_hostname(&hostname) || port == 0 {
             return Err(RouteError::Refused(format!(
                 "{hostname:?} is not a name this app publishes"
             )));
         }
+        let stack_id = stack_id
+            .map(str::trim)
+            .filter(|id| valid_route_stack_id(id))
+            .map(str::to_string);
         let _lock = self.acquire_lock().map_err(RouteError::Refused)?;
         let routes = self.load_routes_raw().map_err(RouteError::Refused)?;
         if let Some(existing) = routes.iter().find(|route| route.hostname == hostname) {
+            // Same pid is not the same stack: this process publishes every stack's names.
+            // A name a stack holds is refused to anyone who is not that stack, including a
+            // caller that brings no stack id and `force`.
+            if let Some(held) = existing.stack_id.as_deref() {
+                if stack_id.as_deref() != Some(held) {
+                    return Err(RouteError::Conflict(RouteConflict {
+                        hostname,
+                        existing_pid: existing.pid,
+                    }));
+                }
+            }
             let alive = existing.pid == 0 || process_alive(existing.pid);
             // A dead owner's name is taken over with `force`; a live owner's never is. Hivra
             // leaves the other process alone rather than signalling it as portless does.
@@ -353,6 +388,7 @@ impl RouteStore {
             hostname,
             port,
             pid,
+            stack_id,
             registered_at: Some(now_ms()),
         });
         self.save(&next).map_err(RouteError::Refused)
@@ -411,6 +447,27 @@ impl RouteStore {
         text.trim().parse::<u16>().ok().filter(|port| *port != 0)
     }
 
+    fn data_id_path(&self) -> PathBuf {
+        self.dir.join("data.id")
+    }
+
+    /// The data folder this proxy belongs to. A copy reuses a port only when the health
+    /// reply carries this id.
+    pub fn write_data_id(&self, id: &str) -> Result<(), String> {
+        if !valid_data_id(id) {
+            return Err("The proxy's data id is not one this app makes.".into());
+        }
+        self.ensure_dir()?;
+        std::fs::write(self.data_id_path(), format!("{id}\n"))
+            .map_err(|error| format!("The proxy's data id can't be written: {error}"))
+    }
+
+    pub fn read_data_id(&self) -> Option<String> {
+        let text = std::fs::read_to_string(self.data_id_path()).ok()?;
+        let id = text.trim();
+        valid_data_id(id).then(|| id.to_string())
+    }
+
     pub fn write_pid(&self) -> Result<(), String> {
         self.ensure_dir()?;
         std::fs::write(self.pid_path(), format!("{}\n", std::process::id()))
@@ -425,12 +482,37 @@ fn route_from_value(value: &serde_json::Value) -> Option<Route> {
     if !valid_hostname(&hostname) || !(1..=u16::MAX as u64).contains(&port) {
         return None;
     }
+    let stack_id = value
+        .get("stackId")
+        .and_then(|id| id.as_str())
+        .map(str::trim)
+        .filter(|id| valid_route_stack_id(id))
+        .map(str::to_string);
     Some(Route {
         hostname,
         port: port as u16,
         pid: u32::try_from(pid).ok()?,
+        stack_id,
         registered_at: value.get("registeredAt").and_then(|at| at.as_u64()),
     })
+}
+
+/// Lowercase hex, short enough for one header and not a path.
+fn valid_data_id(id: &str) -> bool {
+    (16..=64).contains(&id.len())
+        && id
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+}
+
+/// A stack id this app made: `s` plus lowercase hex. Anything else read from disk is ignored.
+fn valid_route_stack_id(id: &str) -> bool {
+    let Some(hex) = id.strip_prefix('s') else {
+        return false;
+    };
+    (8..=64).contains(&hex.len())
+        && hex.bytes().all(|byte| byte.is_ascii_hexdigit())
+        && !hex.bytes().any(|byte| byte.is_ascii_uppercase())
 }
 
 fn is_windows_lock_eperm(error: &std::io::Error) -> bool {
@@ -620,6 +702,67 @@ mod tests {
             other
         );
         assert_eq!(store.route_for_host("shop-a.localhost").unwrap().port, 4001);
+    }
+
+    #[test]
+    fn a_name_another_stack_holds_is_refused_even_with_force_and_the_same_pid() {
+        let dir = temp_dir("stack-clash");
+        let store = RouteStore::new(&dir);
+        let pid = std::process::id();
+        store
+            .add_route_owned(
+                "github-shop-a.localhost",
+                22011,
+                pid,
+                true,
+                Some("s01234567"),
+            )
+            .unwrap();
+        let err = store
+            .add_route_owned(
+                "github-shop-a.localhost",
+                22021,
+                pid,
+                true,
+                Some("s89abcdef"),
+            )
+            .unwrap_err();
+        assert!(matches!(err, RouteError::Conflict(_)), "{err}");
+        // No stack id at all is not a way past the refusal.
+        let err = store
+            .add_route("github-shop-a.localhost", 22022, pid, true)
+            .unwrap_err();
+        assert!(matches!(err, RouteError::Conflict(_)), "{err}");
+        assert_eq!(
+            store
+                .route_for_host("github-shop-a.localhost")
+                .unwrap()
+                .port,
+            22011
+        );
+        // The stack that holds the name may restate it.
+        store
+            .add_route_owned(
+                "github-shop-a.localhost",
+                22012,
+                pid,
+                true,
+                Some("s01234567"),
+            )
+            .unwrap();
+        assert_eq!(
+            store
+                .route_for_host("github-shop-a.localhost")
+                .unwrap()
+                .port,
+            22012
+        );
+        // A stack id read from disk that is not one this app makes is not an identity.
+        let raw =
+            r#"[{"hostname":"github-shop-a.localhost","port":22012,"pid":1,"stackId":"../x"}]"#;
+        std::fs::write(store.routes_path(), raw).unwrap();
+        let loaded = store.load_routes_raw().unwrap();
+        assert_eq!(loaded[0].stack_id, None, "{loaded:?}");
     }
 
     #[test]

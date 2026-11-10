@@ -72,7 +72,7 @@ pub struct StackEnv {
 
 /// The name registry, as the stack code sees it. Tests pass a memory list.
 pub trait NameRegistry: Send + Sync {
-    fn add(&self, hostname: &str, port: u16, pid: u32) -> Result<(), String>;
+    fn add(&self, hostname: &str, port: u16, pid: u32, stack_id: &str) -> Result<(), String>;
     fn remove(&self, hostname: &str, pid: u32) -> Result<(), String>;
 }
 
@@ -82,9 +82,9 @@ pub struct RouteNames {
 }
 
 impl NameRegistry for RouteNames {
-    fn add(&self, hostname: &str, port: u16, pid: u32) -> Result<(), String> {
+    fn add(&self, hostname: &str, port: u16, pid: u32, stack_id: &str) -> Result<(), String> {
         self.store
-            .add_route(hostname, port, pid, true)
+            .add_route_owned(hostname, port, pid, true, Some(stack_id))
             .map_err(|error| error.to_string())
     }
 
@@ -651,16 +651,29 @@ pub fn resume_names(env: &StackEnv) -> Result<(), String> {
         return Ok(());
     }
     let own = std::process::id();
+    // A port that is not accepting is not republished: the stand-in has gone, or something
+    // else would be reached by the old name.
+    let mut open: Vec<(String, String)> = Vec::new();
     if let Some(names) = &env.names {
         for entry in store.stacks.iter().filter(|entry| entry.running) {
             for name in &entry.names {
+                if !port_accepts(name.port) {
+                    continue;
+                }
                 // A name another live process holds is not this stack's to take.
-                let _ = names.add(&name.hostname, name.port, own);
+                let _ = names.add(&name.hostname, name.port, own, &entry.id);
+                open.push((entry.id.clone(), name.hostname.clone()));
             }
         }
     }
     update(&dir, |store| {
         for entry in store.stacks.iter_mut().filter(|entry| entry.running) {
+            if env.names.is_some() {
+                entry.names.retain(|name| {
+                    open.iter()
+                        .any(|(id, host)| id == &entry.id && host == &name.hostname)
+                });
+            }
             entry.owner_pid = own;
             if let Some(proxy_port) = env.proxy_port {
                 entry.proxy_port = Some(proxy_port);
@@ -671,6 +684,55 @@ pub fn resume_names(env: &StackEnv) -> Result<(), String> {
         }
         Ok(())
     })
+}
+
+/// Whether something on this machine accepts TCP on the loopback port a name points at.
+fn port_accepts(port: u16) -> bool {
+    if port == 0 {
+        return false;
+    }
+    std::net::TcpStream::connect_timeout(
+        &std::net::SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, port)),
+        Duration::from_millis(200),
+    )
+    .is_ok()
+}
+
+/// Stop every fake service this data folder started. Called on quit and at the next start,
+/// so a stand-in does not keep running after the app is gone.
+pub fn stop_stand_ins(data_dir: &Path) -> Result<(), String> {
+    let stand_in = EmulateStandIn::new(data_dir.to_path_buf());
+    let mut failure = None;
+    let store = load(&registry_dir(data_dir))?;
+    for entry in &store.stacks {
+        if let Err(error) = stand_in.stop(&stack_dir(data_dir, &entry.id)) {
+            failure.get_or_insert(error);
+        }
+    }
+    let root = registry_dir(data_dir).join("stacks");
+    let Ok(canonical_root) = crate::fs::canonical(&root) else {
+        return failure.map_or(Ok(()), Err);
+    };
+    let Ok(read) = std::fs::read_dir(&root) else {
+        return failure.map_or(Ok(()), Err);
+    };
+    for item in read.flatten() {
+        let path = item.path();
+        if !path.join("emulate.pid").is_file() {
+            continue;
+        }
+        let Ok(canonical) = crate::fs::canonical(&path) else {
+            continue;
+        };
+        // A link that leaves the stacks folder is not this app's stand-in to stop.
+        if !path_inside(&canonical_root, &canonical) {
+            continue;
+        }
+        if let Err(error) = stand_in.stop(&canonical) {
+            failure.get_or_insert(error);
+        }
+    }
+    failure.map_or(Ok(()), Err)
 }
 
 fn stop_entry(env: &StackEnv, entry: &Entry) -> Result<(), String> {
@@ -752,7 +814,7 @@ fn publish_names(env: &StackEnv, entry: &Entry) -> Result<(), String> {
     let pid = std::process::id();
     let mut added: Vec<&str> = Vec::new();
     for name in &entry.names {
-        if let Err(error) = names.add(&name.hostname, name.port, pid) {
+        if let Err(error) = names.add(&name.hostname, name.port, pid, &entry.id) {
             for hostname in added {
                 let _ = names.remove(hostname, pid);
             }
@@ -1122,9 +1184,12 @@ fn layout(
         let Some((_, port)) = emulated_ports.iter().find(|(service, _)| *service == name) else {
             continue;
         };
-        let base_url = match (
+        // The name is what the stand-in advertises (links, the proxy). The env block is what
+        // server-side code fetches. Node resolves through the OS, which does not treat
+        // `*.localhost` as loopback, so that address is the service's own loopback port.
+        let named = match (
             env.proxy_port,
-            crate::proxy::labels::service_hostname(&name, &label),
+            crate::proxy::labels::service_hostname(&name, &project_label, &label),
         ) {
             (Some(proxy), Some(host)) => {
                 published.push(Published {
@@ -1132,18 +1197,19 @@ fn layout(
                     port: *port,
                     service: Some(name.clone()),
                 });
-                format!("http://{host}:{proxy}")
+                Some(format!("http://{host}:{proxy}"))
             }
-            _ => format!("http://127.0.0.1:{port}"),
+            _ => None,
         };
+        let fetch_url = format!("http://127.0.0.1:{port}");
         let env_name = crate::stack_decl::base_url_env(service)
             .ok_or("An emulated service has no URL variable, so nothing was started.")?;
-        values.insert(env_name.clone(), base_url.clone());
+        values.insert(env_name.clone(), fetch_url);
         emulated.push(Emulated {
             service: name,
             env: env_name,
             port: *port,
-            base_url,
+            base_url: named.unwrap_or_else(|| format!("http://127.0.0.1:{port}")),
         });
     }
     Ok((values, url, published, emulated, label))
@@ -2570,22 +2636,29 @@ mod tests {
 
     #[derive(Default)]
     struct MemoryNames {
-        routes: Mutex<Vec<(String, u16, u32)>>,
+        routes: Mutex<Vec<(String, u16, u32, String)>>,
     }
 
     impl NameRegistry for MemoryNames {
-        fn add(&self, hostname: &str, port: u16, pid: u32) -> Result<(), String> {
+        fn add(&self, hostname: &str, port: u16, pid: u32, stack_id: &str) -> Result<(), String> {
             let mut routes = self.routes.lock().unwrap();
+            if let Some((.., held)) = routes.iter().find(|(name, ..)| name == hostname) {
+                if !held.is_empty() && held != stack_id {
+                    return Err(format!(
+                        "{hostname} is already a name used by another stack"
+                    ));
+                }
+            }
             if routes
                 .iter()
-                .any(|(name, _, owner)| name == hostname && *owner != pid)
+                .any(|(name, _, owner, _)| name == hostname && *owner != pid)
             {
                 return Err(format!(
                     "{hostname} is already a name used by a running process"
                 ));
             }
-            routes.retain(|(name, _, _)| name != hostname);
-            routes.push((hostname.to_string(), port, pid));
+            routes.retain(|(name, ..)| name != hostname);
+            routes.push((hostname.to_string(), port, pid, stack_id.to_string()));
             Ok(())
         }
 
@@ -2593,7 +2666,7 @@ mod tests {
             self.routes
                 .lock()
                 .unwrap()
-                .retain(|(name, _, owner)| name != hostname || *owner != pid);
+                .retain(|(name, _, owner, _)| name != hostname || *owner != pid);
             Ok(())
         }
     }
@@ -3996,11 +4069,9 @@ mod tests {
         .unwrap();
         // The app is named after the project and this worktree's branch.
         assert_eq!(pair(&pairs, "PUBLIC_URL"), "http://main-a.localhost:7400");
-        assert_eq!(
-            pair(&pairs, "GITHUB_BASE_URL"),
-            "http://github-a.localhost:7400"
-        );
-        assert_eq!(pair(&pairs, "STRIPE_URL"), "http://stripe-a.localhost:7400");
+        // The env block is the loopback port. The name, with the project in it, is published.
+        assert!(pair(&pairs, "GITHUB_BASE_URL").starts_with("http://127.0.0.1:"));
+        assert!(pair(&pairs, "STRIPE_URL").starts_with("http://127.0.0.1:"));
         // The stand-in got one port per service from the same block, none of them the app's.
         let started = stand_in.started.lock().unwrap();
         assert_eq!(started.len(), 1);
@@ -4014,10 +4085,10 @@ mod tests {
         assert_eq!(ports.len(), 2);
 
         let names = names.routes.lock().unwrap();
-        let hosts: Vec<&str> = names.iter().map(|(host, _, _)| host.as_str()).collect();
+        let hosts: Vec<&str> = names.iter().map(|(host, ..)| host.as_str()).collect();
         assert!(hosts.contains(&"main-a.localhost"));
-        assert!(hosts.contains(&"github-a.localhost"));
-        assert!(hosts.contains(&"stripe-a.localhost"));
+        assert!(hosts.contains(&"github-main-a.localhost"));
+        assert!(hosts.contains(&"stripe-main-a.localhost"));
 
         let status = status_for(&env, &fix.first).unwrap();
         let row = &status.stacks[0];
@@ -4025,6 +4096,171 @@ mod tests {
         assert_eq!(row.names.len(), 3);
         assert_eq!(row.emulated, vec!["github", "stripe"]);
         assert_eq!(row.mode, "Tests use fake GitHub and Stripe");
+    }
+
+    /// Node resolves names with the OS resolver, which does not treat `*.localhost` as loopback
+    /// (ENOTFOUND on Linux). The env block is what server-side code fetches, so it has to be the
+    /// service's own loopback port. The name stays the address the stand-in advertises.
+    #[test]
+    fn a_server_fetches_the_fake_service_at_the_env_url_with_node() {
+        let fix = Fix::new();
+        let stand_in = Arc::new(MemoryStandIn::default());
+        let names = Arc::new(MemoryNames::default());
+        let env = fix.named_env(Arc::clone(&names), 7400, Arc::clone(&stand_in));
+        let pairs = maybe_start(
+            &env,
+            &fix.main,
+            &fix.first,
+            true,
+            Some(&emulated_decl()),
+            false,
+            true,
+        )
+        .unwrap();
+        let github = pair(&pairs, "GITHUB_BASE_URL").to_string();
+        assert!(
+            github.starts_with("http://127.0.0.1:"),
+            "the env block must be an address Node can resolve, not a name: {github}"
+        );
+        let stripe = pair(&pairs, "STRIPE_URL");
+        assert!(
+            stripe.starts_with("http://127.0.0.1:"),
+            "the env block must be an address Node can resolve, not a name: {stripe}"
+        );
+        assert_ne!(github, stripe);
+        // The app's own address is still the name a browser resolves.
+        assert_eq!(pair(&pairs, "PUBLIC_URL"), "http://main-a.localhost:7400");
+        let advertised = stand_in
+            .started
+            .lock()
+            .unwrap()
+            .iter()
+            .flat_map(|(_, services)| services.clone())
+            .find(|service| service.service == "github")
+            .unwrap()
+            .base_url;
+        assert!(
+            advertised.starts_with("http://github-"),
+            "the stand-in must keep advertising the named url: {advertised}"
+        );
+        assert!(
+            !advertised.contains("127.0.0.1"),
+            "the stand-in must keep advertising the named url: {advertised}"
+        );
+
+        let port: u16 = github
+            .trim_start_matches("http://127.0.0.1:")
+            .parse()
+            .unwrap();
+        let listener = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, port))
+            .unwrap_or_else(|error| panic!("the env port {port} was not free: {error}"));
+        std::thread::spawn(move || {
+            let Ok((mut stream, _)) = listener.accept() else {
+                return;
+            };
+            let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
+            let mut buf = [0u8; 1024];
+            let _ = std::io::Read::read(&mut stream, &mut buf);
+            let body = b"from-the-fake";
+            let head = format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            let _ = std::io::Write::write_all(&mut stream, head.as_bytes());
+            let _ = std::io::Write::write_all(&mut stream, body);
+        });
+        let output = Command::new("node")
+            .args([
+                "-e",
+                "fetch(process.argv[1]).then(r=>r.text()).then(t=>{process.stdout.write(t)}).catch(e=>{console.error(e);process.exit(1)})",
+                &github,
+            ])
+            .output()
+            .expect("node is required to prove the env url is fetchable");
+        assert!(
+            output.status.success(),
+            "node could not fetch {github}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(String::from_utf8_lossy(&output.stdout), "from-the-fake");
+    }
+
+    /// Two projects on one branch used to publish `github-<branch>.localhost` and the second
+    /// write, force-added under this process's pid, silently replaced the first.
+    #[test]
+    fn two_projects_on_the_same_branch_both_faking_github_keep_their_own_name() {
+        let fix = Fix::new();
+        let blog = fix.tmp.root.join("blog");
+        let blog_tree = fix.tmp.root.join("blog work");
+        git(
+            &fix.tmp.root,
+            &["init", "-b", "main", blog.to_str().unwrap()],
+        );
+        std::fs::write(blog.join("README"), "blog\n").unwrap();
+        git(&blog, &["add", "README"]);
+        git(&blog, &["commit", "-qm", "initial"]);
+        git(
+            &blog,
+            &["worktree", "add", "-b", "a", blog_tree.to_str().unwrap()],
+        );
+        std::fs::write(blog_tree.join("docker-compose.yml"), "services: {}\n").unwrap();
+
+        let routes =
+            crate::proxy::routes::RouteStore::new(crate::proxy::server::proxy_dir(&fix.data));
+        let env = StackEnv {
+            names: Some(Arc::new(RouteNames {
+                store: routes.clone(),
+            })),
+            proxy_port: Some(7400),
+            stand_in: Some(Arc::new(MemoryStandIn::default())),
+            ..fix.env()
+        };
+        maybe_start(
+            &env,
+            &fix.main,
+            &fix.first,
+            true,
+            Some(&emulated_decl()),
+            false,
+            true,
+        )
+        .unwrap();
+        maybe_start(
+            &env,
+            &blog,
+            &blog_tree,
+            true,
+            Some(&emulated_decl()),
+            false,
+            true,
+        )
+        .unwrap();
+
+        let live = routes.load_routes_raw().unwrap();
+        let mut github: Vec<_> = live
+            .iter()
+            .filter(|route| route.hostname.starts_with("github-"))
+            .collect();
+        assert_eq!(github.len(), 2, "{live:?}");
+        github.sort_by(|left, right| left.hostname.cmp(&right.hostname));
+        assert_eq!(github[0].hostname, "github-blog-a.localhost");
+        assert_eq!(github[1].hostname, "github-main-a.localhost");
+        assert_ne!(github[0].port, github[1].port);
+        assert_ne!(github[0].stack_id, github[1].stack_id);
+        assert!(github[0].stack_id.is_some() && github[1].stack_id.is_some());
+
+        let held = github[1];
+        let err = routes.add_route_owned(
+            &held.hostname,
+            held.port.saturating_add(1),
+            std::process::id(),
+            true,
+            github[0].stack_id.as_deref(),
+        );
+        assert!(err.is_err(), "the other project took {}", held.hostname);
+        let still = routes.route_for_host(&held.hostname).unwrap();
+        assert_eq!(still.port, held.port);
+        assert_eq!(still.stack_id, held.stack_id);
     }
 
     #[test]
@@ -4056,11 +4292,11 @@ mod tests {
         down(&env, &fix.first).unwrap();
         let routes = names.routes.lock().unwrap();
         assert!(
-            routes.iter().all(|(host, _, _)| !host.contains("-a.")),
+            routes.iter().all(|(host, ..)| !host.contains("-a.")),
             "{routes:?}"
         );
         assert!(
-            routes.iter().any(|(host, _, _)| host.contains("-b.")),
+            routes.iter().any(|(host, ..)| host.contains("-b.")),
             "{routes:?}"
         );
         let first_id = load(&registry_dir(&env.data_dir))
@@ -4128,7 +4364,7 @@ mod tests {
             .lock()
             .unwrap()
             .iter()
-            .any(|(host, _, _)| host == "main-a.localhost"));
+            .any(|(host, ..)| host == "main-a.localhost"));
         git(&fix.first, &["switch", "-c", "renamed"]);
         let pairs = maybe_start(
             &env,
@@ -4146,12 +4382,12 @@ mod tests {
         );
         let routes = names.routes.lock().unwrap();
         assert!(
-            routes.iter().all(|(host, _, _)| host != "main-a.localhost"),
+            routes.iter().all(|(host, ..)| host != "main-a.localhost"),
             "{routes:?}"
         );
         assert!(routes
             .iter()
-            .any(|(host, _, _)| host == "main-renamed.localhost"));
+            .any(|(host, ..)| host == "main-renamed.localhost"));
     }
 
     #[test]
@@ -4260,15 +4496,30 @@ mod tests {
         let routes =
             crate::proxy::routes::RouteStore::new(crate::proxy::server::proxy_dir(&base.data_dir));
         // The previous app process published every name and is now gone.
+        // Two ports are still accepting; one name's port is closed and must not come back.
+        let app_listener = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let fake_listener =
+            std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let app_port = app_listener.local_addr().unwrap().port();
+        let fake_port = fake_listener.local_addr().unwrap().port();
+        let closed = {
+            let listener = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap();
+            let port = listener.local_addr().unwrap().port();
+            drop(listener);
+            port
+        };
         let dead = u32::MAX;
         routes
-            .add_route("main-a.localhost", 22010, dead, false)
+            .add_route("main-a.localhost", app_port, dead, false)
             .unwrap();
         routes
-            .add_route("github-a.localhost", 22011, dead, false)
+            .add_route("github-a.localhost", fake_port, dead, false)
             .unwrap();
         routes
-            .add_route("main-b.localhost", 22020, dead, false)
+            .add_route("stripe-a.localhost", closed, dead, false)
+            .unwrap();
+        routes
+            .add_route("main-b.localhost", closed, dead, false)
             .unwrap();
         let entry = |id: &str, tree: &Path, running: bool, names: Vec<Published>| Entry {
             id: id.into(),
@@ -4301,13 +4552,18 @@ mod tests {
                 vec![
                     Published {
                         hostname: "main-a.localhost".into(),
-                        port: 22010,
+                        port: app_port,
                         service: None,
                     },
                     Published {
                         hostname: "github-a.localhost".into(),
-                        port: 22011,
+                        port: fake_port,
                         service: Some("github".into()),
+                    },
+                    Published {
+                        hostname: "stripe-a.localhost".into(),
+                        port: closed,
+                        service: Some("stripe".into()),
                     },
                 ],
             ));
@@ -4317,7 +4573,7 @@ mod tests {
                 false,
                 vec![Published {
                     hostname: "main-b.localhost".into(),
-                    port: 22020,
+                    port: closed,
                     service: None,
                 }],
             ));
@@ -4325,7 +4581,7 @@ mod tests {
         })
         .unwrap();
         // The start of the new proxy removes the dead owner's names first.
-        assert_eq!(routes.prune_stale_routes().unwrap().len(), 3);
+        assert_eq!(routes.prune_stale_routes().unwrap().len(), 4);
 
         let env = StackEnv {
             names: Some(Arc::new(RouteNames {
@@ -4336,12 +4592,13 @@ mod tests {
         };
         resume_names(&env).unwrap();
 
+        let _hold = (app_listener, fake_listener);
         let live = routes.load_routes_raw().unwrap();
         assert_eq!(live.len(), 2, "{live:?}");
         let own = std::process::id();
         for (name, port) in [
-            ("main-a.localhost", 22010u16),
-            ("github-a.localhost", 22011),
+            ("main-a.localhost", app_port),
+            ("github-a.localhost", fake_port),
         ] {
             let route = routes
                 .route_for_host(name)
@@ -4349,14 +4606,81 @@ mod tests {
             assert_eq!(route.pid, own, "{name}");
             assert_eq!(route.port, port, "{name}");
         }
-        // A stack that was stopped before the restart is not brought back.
+        // A stack that was stopped before the restart is not brought back, and a name whose
+        // port is closed is not put back either.
         assert!(routes.route_for_host("main-b.localhost").is_none());
+        assert!(routes.route_for_host("stripe-a.localhost").is_none());
         let store = load(&registry_dir(&base.data_dir)).unwrap();
         let running = store.stacks.iter().find(|entry| entry.running).unwrap();
         assert_eq!(running.owner_pid, own);
         assert_eq!(running.proxy_port, Some(7500));
         // The app URL follows the proxy's new port too.
         assert_eq!(running.url.as_deref(), Some("http://main-a.localhost:7500"));
+        assert!(running
+            .names
+            .iter()
+            .all(|name| name.hostname != "stripe-a.localhost"));
+    }
+
+    /// A stand-in left behind by a quit or a crash is stopped, and a pid file that is not inside
+    /// this data folder's stacks directory is left alone.
+    #[cfg(unix)]
+    #[test]
+    fn a_fake_left_behind_is_stopped_and_one_outside_the_folder_is_not() {
+        use std::os::unix::fs::symlink;
+        use std::os::unix::process::CommandExt;
+        let fix = Fix::new();
+        let inside = registry_dir(&fix.data).join("stacks").join("s01234567");
+        let outside = fix.tmp.root.join("outside");
+        std::fs::create_dir_all(&inside).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        // The same path stop will prove against: canonicalize follows the temp symlink.
+        let inside = crate::fs::canonical(&inside).unwrap();
+        let outside = crate::fs::canonical(&outside).unwrap();
+        let spawn = |dir: &Path| {
+            let mut command = Command::new("sh");
+            command
+                .arg("-c")
+                .arg(format!("sleep 30; : emulate {}", dir.display()))
+                .process_group(0);
+            let child = command.spawn().unwrap();
+            std::thread::sleep(Duration::from_millis(50));
+            let pid = child.id();
+            std::fs::write(dir.join("emulate.pid"), format!("{pid}\n")).unwrap();
+            child
+        };
+        let mut ours = spawn(&inside);
+        let mut foreign = spawn(&outside);
+        // A link inside the stacks folder that points out of it must not be followed.
+        symlink(
+            &outside,
+            registry_dir(&fix.data).join("stacks").join("linked"),
+        )
+        .unwrap();
+        stop_stand_ins(&fix.data).unwrap();
+        let gone = ours.try_wait().ok().flatten().is_some()
+            || Command::new("ps")
+                .args(["-p", &ours.id().to_string()])
+                .output()
+                .map(|output| !output.status.success())
+                .unwrap_or(true);
+        assert!(
+            gone,
+            "the stand-in inside the data folder was still running"
+        );
+        let still = Command::new("ps")
+            .args(["-p", &foreign.id().to_string()])
+            .output()
+            .unwrap();
+        assert!(
+            still.status.success(),
+            "a process outside the stacks folder was killed"
+        );
+        let _ = ours.wait();
+        let _ = foreign.kill();
+        let _ = foreign.wait();
+        assert!(!inside.join("emulate.pid").exists());
+        assert!(outside.join("emulate.pid").exists());
     }
 
     #[test]

@@ -118,9 +118,37 @@ pub fn app_hostname(project: &str, label: &str) -> Option<String> {
     joined_hostname(project, label)
 }
 
-/// `<service>-<label>.localhost` for one emulated service.
-pub fn service_hostname(service: &str, label: &str) -> Option<String> {
-    joined_hostname(service, label)
+/// `<service>-<project>-<label>.localhost` for one emulated service.
+///
+/// The project is in the name so two projects on the same branch, both faking the same
+/// service, do not publish one hostname.
+pub fn service_hostname(service: &str, project: &str, label: &str) -> Option<String> {
+    let service = sanitize_for_hostname(service);
+    let project = sanitize_for_hostname(project);
+    let label = sanitize_for_hostname(label);
+    if service.is_empty() || project.is_empty() || label.is_empty() {
+        return None;
+    }
+    let raw = format!("{service}-{project}-{label}");
+    let prefix = if raw.len() <= MAX_LABEL {
+        raw
+    } else {
+        // The hash covers all three parts, so a truncated pair stays unique.
+        let hash = hex(&Sha256::digest(
+            format!("{service}/{project}/{label}").as_bytes(),
+        ));
+        let mut cut = String::new();
+        for ch in raw.chars() {
+            if cut.len() + ch.len_utf8() > MAX_LABEL - 7 {
+                break;
+            }
+            cut.push(ch);
+        }
+        let cut = cut.trim_end_matches('-');
+        format!("{cut}-{}", &hash[..6])
+    };
+    let host = format!("{prefix}.localhost");
+    valid_hostname(&host).then_some(host)
 }
 
 fn joined_hostname(first: &str, label: &str) -> Option<String> {
@@ -253,6 +281,27 @@ mod tests {
         assert_eq!(sanitize_for_hostname("  ..a  b..  "), "a-b");
         assert_eq!(sanitize_for_hostname("café"), "caf");
         assert_eq!(sanitize_for_hostname(""), "");
+    }
+
+    #[test]
+    fn a_service_name_carries_the_project_so_one_branch_can_serve_two() {
+        let shop = service_hostname("github", "shop", "feature").unwrap();
+        let blog = service_hostname("github", "blog", "feature").unwrap();
+        assert_eq!(shop, "github-shop-feature.localhost");
+        assert_eq!(blog, "github-blog-feature.localhost");
+        assert_ne!(shop, blog);
+        assert_eq!(shop, service_hostname("github", "shop", "feature").unwrap());
+        // A project or a service that is not a label is repaired, never published raw.
+        assert_eq!(
+            service_hostname("Git Hub", "My Shop", "feat/one").unwrap(),
+            "git-hub-my-shop-feat-one.localhost"
+        );
+        assert!(service_hostname("", "shop", "feature").is_none());
+        assert!(service_hostname("github", "", "feature").is_none());
+        let long = service_hostname(&"g".repeat(40), &"p".repeat(40), &"l".repeat(40)).unwrap();
+        let label = long.strip_suffix(".localhost").unwrap();
+        assert!(label.len() <= MAX_LABEL, "{long}");
+        assert!(valid_hostname(&long), "{long}");
     }
 
     #[test]
