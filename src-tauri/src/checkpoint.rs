@@ -2185,6 +2185,8 @@ mod tests {
         if !git(&source.0, &["clone", &source_path, &target_path]) {
             return;
         }
+        // Git on Windows may check the clone out with CRLF endings; both sides start from the same bytes.
+        std::fs::write(target.0.join("a.txt"), "head\n").unwrap();
         let from = source.0.to_string_lossy().into_owned();
         let to = target.0.to_string_lossy().into_owned();
         let (_root, store) = store();
