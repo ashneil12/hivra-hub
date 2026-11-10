@@ -128,10 +128,24 @@ fn seeded_memory() -> Memory {
 /// Which store an isolated (or a real) copy gets. Pure, so a test can prove the isolation choice without touching the
 /// login keychain or the environment.
 pub(crate) fn vault_for(isolated: bool) -> Box<dyn Vault> {
+    match vault_kind(isolated) {
+        VaultKind::Memory => Box::new(seeded_memory()),
+        VaultKind::OsKeychain => Box::new(Keychain),
+    }
+}
+
+/// The kind of store an isolated or a real copy gets, as a value a test can compare without touching either.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum VaultKind {
+    Memory,
+    OsKeychain,
+}
+
+pub(crate) fn vault_kind(isolated: bool) -> VaultKind {
     if isolated {
-        Box::new(seeded_memory())
+        VaultKind::Memory
     } else {
-        Box::new(Keychain)
+        VaultKind::OsKeychain
     }
 }
 
@@ -170,6 +184,13 @@ mod tests {
         assert!(store.remove("s", "value").unwrap());
         assert!(!store.remove("s", "value").unwrap());
         assert_eq!(store.read("s", "value").unwrap(), None);
+    }
+
+    #[test]
+    fn an_isolated_home_gets_the_memory_store_and_a_real_copy_the_keychain() {
+        // WP-92 step 14: a copy under a temporary HOME never reaches the login keychain.
+        assert_eq!(vault_kind(true), VaultKind::Memory);
+        assert_eq!(vault_kind(false), VaultKind::OsKeychain);
     }
 
     #[test]

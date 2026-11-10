@@ -1167,6 +1167,46 @@ fn a_once_grant_is_spent_once_even_when_two_runs_race_for_it() {
     )
     .unwrap()
     .is_none());
+    drop(conn);
+
+    // The race itself: two connections to one database file released together. The DELETE is compare-and-swap on the
+    // `once` row, so exactly one of them may win.
+    let dir = std::env::temp_dir().join(format!("wp92-race-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("race.sqlite");
+    let setup = Connection::open(&path).unwrap();
+    ensure_tables(&setup).unwrap();
+    put_grant(
+        &setup,
+        SCOPE_GLOBAL,
+        "stripe-api-key",
+        "mono",
+        "mono-1",
+        "stripe",
+        "once",
+        bench.now,
+    )
+    .unwrap();
+    drop(setup);
+    let start = std::sync::Arc::new(std::sync::Barrier::new(2));
+    let racers: Vec<_> = (0..2)
+        .map(|_| {
+            let (path, start) = (path.clone(), start.clone());
+            std::thread::spawn(move || {
+                let conn = Connection::open(&path).unwrap();
+                conn.busy_timeout(std::time::Duration::from_secs(5)).unwrap();
+                start.wait();
+                spend_once(&conn, SCOPE_GLOBAL, "stripe-api-key", "mono-1", "stripe").unwrap()
+            })
+        })
+        .collect();
+    let wins = racers
+        .into_iter()
+        .map(|racer| racer.join().unwrap())
+        .filter(|won| *won)
+        .count();
+    assert_eq!(wins, 1, "exactly one racing run may spend the once grant");
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 // ---- the tools' rules -----------------------------------------------------------------------------------------------

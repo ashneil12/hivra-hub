@@ -639,14 +639,26 @@ mod tests {
     }
 
     #[cfg(unix)]
+    #[cfg(unix)]
     #[test]
     fn the_value_is_never_in_the_printed_json() {
-        // The scrub is the only path to the printed text; a value is replaced in both streams.
-        let body = b"key=sk_live_abcdefgh\n";
-        let out = scrub::stream(body, &scrub::needles("sk_live_abcdefgh"));
-        let printed = json!({ "stdout": out.text }).to_string();
-        assert!(!printed.contains("sk_live_abcdefgh"));
-        assert!(printed.contains(scrub::MARKER));
+        // What `run_main` prints is `outcome.to_json()` (run.rs), and it is built from a real child that printed the
+        // value on both streams. The printed text must hold neither the value nor a fragment of it.
+        let tmp = std::env::temp_dir().join(format!("mc-printed-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        let script = fixture(
+            &tmp,
+            "print-key-twice",
+            "#!/bin/sh\nprintf 'out %s\\n' \"$STRIPE_API_KEY\"\nprintf 'err %s\\n' \"$STRIPE_API_KEY\" >&2\n",
+        );
+        let payload = run_payload(vec![crate::fs::path_to_js(&script)]);
+        let outcome = execute(&payload, "sk_live_abcdefgh", &tmp).unwrap();
+        assert_eq!(outcome.exit_code, Some(0));
+        let printed = outcome.to_json().to_string();
+        assert!(!printed.contains("sk_live_abcdefgh"), "{printed}");
+        assert!(!printed.contains("sk_live"), "{printed}");
+        assert!(printed.contains(scrub::MARKER), "{printed}");
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     // ---- fix round 1, item J: output that could not be read in time is not a silent run ----------------------------
