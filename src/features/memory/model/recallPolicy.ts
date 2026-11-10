@@ -9,18 +9,20 @@
 // the weights below still add up to one. Row-Bot asks a SQLite retrieval layer for candidates and
 // scores what comes back; here the store is small enough to score in one pass. Its memory statuses
 // (archived, needs review, superseded) become Hivra's: a fact with a removal waiting on the person
-// is archived, one with an update waiting is superseded, and an unreviewed proposal needs review. Reading
-// several Monos in one decision is Hivra's own.
+// is archived, one with an update waiting is superseded, and an unreviewed proposal needs review. The fade
+// penalty and reading several Monos in one decision are Hivra's own.
 // The word gates follow Mnemos (github.com/Riley-Coyote/mnemos-mcp, mnemos/cue.py and
 // mnemos/store/fts.py, Apache-2.0, ideas only, no code copied): at least four content words, two
 // distinctive shared words, at most three lines, and never the same memory twice in a conversation
 // (that last rule lives in shownMemory.ts).
 //
 // One decision covers every Mono a turn reads: their memories are scored together, so the three lines
-// are the three best across all of them, not three each.
+// are the three best across all of them, not three each. How far a memory has faded (fade.ts) takes
+// a little off its score, so a fact nobody has used in a long while needs a closer match to be shown.
 
 import { confidence, type Belief } from "../vendor/mercuryBelief";
 import { mentionsSecret, type MemoryDoc, type MemoryItem } from "./doc";
+import { fadeNow, livedClockOf } from "./fade";
 
 /** A turn shows at most this many memories. The one place to change it. */
 export const RECALL_MAX_LINES = 3;
@@ -58,6 +60,13 @@ const W_LEXICAL = 0.7;
 const W_RECENCY = 0.15;
 const W_TIER = 0.1;
 const W_EVIDENCE = 0.05;
+/**
+ * What a memory that has faded all the way loses from its score. Fade 1 (fresh, or a fact the person wrote
+ * themselves) loses nothing. It is small on purpose: it ranks a stale fact below a fresh one that fits as well
+ * and turns away a middling match, but a strong match is still shown, because deciding a fact is out of
+ * date is the "still true?" question's job, not recall's.
+ */
+export const RECALL_FADE_WEIGHT = 0.1;
 
 /** A hit in the fact itself beats one in its evidence, which beats one in where it came from. */
 const FIELD_FACT = 0.98;
@@ -144,8 +153,11 @@ export type RecallCandidate = {
   id: string;
   /** The Mono this memory belongs to, since one decision can read several. */
   mateId: string;
+  /** The parts below, less what its fade took off (RECALL_FADE_WEIGHT). */
   score: number;
   parts: RecallScoreParts;
+  /** How strong the memory was when scored, 1 for a fresh one down to 0. */
+  fade: number;
   matchedField: RecallField;
   tier: MemoryTier;
   picked: boolean;
@@ -480,6 +492,8 @@ export function recallDecision(input: RecallDecisionInput): RecallDecision {
   });
 
   const denominator = Math.min(terms.length, RECALL_LEXICAL_TERMS);
+  // The lived-day clock is built once for the whole store, not once per memory.
+  const clock = livedClockOf(doc);
   const candidates: RecallCandidate[] = mine.map((item, index) => {
     const factField = FIELD_FACT * ratio(factHits[index], denominator);
     const evidenceField = FIELD_EVIDENCE * ratio(evidenceHits[index], denominator);
@@ -494,12 +508,15 @@ export function recallDecision(input: RecallDecisionInput): RecallDecision {
       tier: TIER_COMPONENT[tier],
       evidence: confidence(beliefOf(item), now),
     };
-    const score = W_LEXICAL * parts.lexical + W_RECENCY * parts.recency + W_TIER * parts.tier + W_EVIDENCE * parts.evidence;
+    const fade = fadeNow(item, clock, now);
+    const weighed = W_LEXICAL * parts.lexical + W_RECENCY * parts.recency + W_TIER * parts.tier + W_EVIDENCE * parts.evidence;
+    const score = Math.max(0, weighed - RECALL_FADE_WEIGHT * (1 - fade));
     const candidate: RecallCandidate = {
       id: item.id,
       mateId: item.mateId,
       score: Math.round(score * 10_000) / 10_000,
       parts,
+      fade: Math.round(fade * 10_000) / 10_000,
       matchedField,
       tier,
       picked: false,

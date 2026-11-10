@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { memoryId, type MemoryDoc, type MemoryItem } from "./doc";
+import { fadeOf } from "./fade";
 import {
+  RECALL_FADE_WEIGHT,
   RECALL_MAX_LINES,
   buildQuery,
   recallDecision,
@@ -328,6 +330,90 @@ describe("Row-Bot cases carried over", () => {
     const decision = decide([unreviewed], "How do you like to write commit messages for a branch?");
     expect(decision.stop).toBe("no_valid_candidates");
     expect(decision.candidates[0].reason).toBe("needs_review");
+  });
+});
+
+describe("fade lowers the score", () => {
+  const MESSAGE = "How do you like to write commit messages for a branch?";
+  const DAY_MS = 86_400_000;
+
+  /** Every date from `from` to `to`, as the doc keeps its lived days. */
+  function days(from: string, to: string): string[] {
+    const out: string[] = [];
+    for (let at = Date.parse(`${from}T00:00:00Z`); at <= Date.parse(`${to}T00:00:00Z`); at += DAY_MS) {
+      out.push(new Date(at).toISOString().slice(0, 10));
+    }
+    return out;
+  }
+
+  it("scores a memory that has faded all the way below the same memory fresh", () => {
+    const fresh = item("Likes small commits");
+    const faded = item("Likes small commits", { fade: 0, lastUsedAt: NOW });
+    const decision = decide([fresh, faded], MESSAGE);
+    const freshScore = candidateFor(decision, fresh.id)!.score;
+    const fadedScore = candidateFor(decision, faded.id)!.score;
+    expect(fadedScore).toBeLessThan(freshScore);
+    expect(freshScore - fadedScore).toBeCloseTo(RECALL_FADE_WEIGHT, 3);
+  });
+
+  it("lowers the score further the more the memory has faded", () => {
+    const strengths = [1, 0.6, 0.2];
+    const items = strengths.map((fade) => item("Likes small commits", { fade, lastUsedAt: NOW }));
+    const decision = decide(items, MESSAGE);
+    const scores = items.map((memory) => candidateFor(decision, memory.id)!.score);
+    expect(scores[0]).toBeGreaterThan(scores[1]);
+    expect(scores[1]).toBeGreaterThan(scores[2]);
+  });
+
+  it("leaves a memory at full strength exactly where it was", () => {
+    const memory = item("Likes small commits");
+    const candidate = candidateFor(decide([memory], MESSAGE), memory.id)!;
+    const summed =
+      0.7 * candidate.parts.lexical + 0.15 * candidate.parts.recency + 0.1 * candidate.parts.tier + 0.05 * candidate.parts.evidence;
+    expect(candidate.fade).toBe(1);
+    expect(candidate.score).toBeCloseTo(summed, 3);
+  });
+
+  it("reads the fade from the lived days since the memory was last used", () => {
+    const used = Date.parse("2025-11-01T00:00:00Z");
+    const stale = item("Likes small commits", { lastUsedAt: used });
+    const today = item("Likes small commits", { lastUsedAt: NOW });
+    const store = { ...doc([stale, today]), livedDays: days("2025-10-01", "2026-03-01") };
+    const decision = recallDecision({ doc: store, mateId: MATE, message: MESSAGE, now: NOW, mode: "automatic" });
+    const staleRow = candidateFor(decision, stale.id)!;
+    const todayRow = candidateFor(decision, today.id)!;
+    expect(staleRow.fade).toBeCloseTo(fadeOf(store, stale, NOW), 4);
+    expect(staleRow.fade).toBeLessThan(0.5);
+    expect(todayRow.fade).toBe(1);
+    expect(staleRow.score).toBeLessThan(todayRow.score);
+  });
+
+  it("does not lower a fact the person wrote themselves, which does not fade", () => {
+    const used = Date.parse("2024-01-01T00:00:00Z");
+    const own = item("Likes small commits", { state: "edited", lastUsedAt: used });
+    const store = { ...doc([own]), livedDays: days("2024-01-01", "2026-03-01") };
+    const decision = recallDecision({ doc: store, mateId: MATE, message: MESSAGE, now: NOW, mode: "automatic" });
+    expect(candidateFor(decision, own.id)!.fade).toBe(1);
+  });
+
+  it("lets a middling match drop under the floor once it has faded, and keeps a strong one", () => {
+    const middling = item("Likes small commits");
+    const middlingFaded = item("Likes small commits", { fade: 0, lastUsedAt: NOW });
+    const strong = item("Write commit messages like a pro on every branch", { fade: 0, lastUsedAt: NOW });
+    const decision = decide([middling, middlingFaded, strong], MESSAGE);
+    expect(candidateFor(decision, middling.id)!.reason).toBeUndefined();
+    expect(candidateFor(decision, middlingFaded.id)!.reason).toBe("below_threshold");
+    expect(decision.picked).toContain(strong.id);
+  });
+
+  it("ranks the fresher of two facts that fit equally well above the faded one", () => {
+    // The id breaks a tie, so the faded one is the one that would have won it.
+    const [first, second] = [item("Write commit messages on a branch"), item("Write commit messages on a branch")].sort((a, b) =>
+      a.id.localeCompare(b.id),
+    );
+    const faded = { ...first, fade: 0.1, lastUsedAt: NOW };
+    const decision = decide([faded, second], MESSAGE);
+    expect(decision.picked).toEqual([second.id, faded.id]);
   });
 });
 
