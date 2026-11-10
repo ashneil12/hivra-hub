@@ -88,14 +88,26 @@ If the fetch fails, or git times out, the chat stays "Finished elsewhere" and sa
 
 Codex and Claude have no handoff, because their slices stop before a job exists.
 
-3. Legal and billing: list what would need Ash and counsel (stored tokens, spend caps, data leaving the machine). Do not add credentials.
-4. No implementation.
+### Legal and billing
+
+Ash and counsel decide these before any later package writes code. This page adds no credential, no key, and no account.
+
+1. Stored tokens. A Cursor cloud job, if the public API needs a key, would store a token Hivra does not store today for that purpose. The local CLI login is not automatically that key. Counsel should say whether a key the person creates in Cursor's dashboard may sit in the keychain, who can read it, and how sign-out deletes it. Until that is decided, no key is stored.
+2. Spend caps. The bill is the person's own Cursor plan, not a Hivra invoice. A cloud job can spend that plan with the laptop shut. Before "Run elsewhere" is shown, the person needs a cap: how many of these jobs may run at once, and a stop when the vendor says the plan is exhausted. There is no automatic retry that starts a new billed job. Hivra does not open a Cursor, OpenAI or Anthropic account, and it does not attach a payment method.
+3. Data leaving the machine. The prompt, and the repository the vendor clones, leave the machine and sit on the vendor's systems under that vendor's terms. Counsel should confirm that is acceptable for Ash's own repos before the setting can be turned on. Other people's private repos stay out until counsel says otherwise.
+4. No inbound network. No webhook, no tunnel, no device pairing, no public address. If the only documented way to hear status is a public callback, that way is not used. Hivra polls, or it does not show status. Nothing in this feature listens.
+5. Logs. A job id may be logged. Prompts, tokens, repository contents and diffs may not.
+6. Default off, including on a dev copy. Turning it on is a setting Ash flips after counsel, not a migration that enables it.
+
+### No implementation
+
+This package adds no TypeScript, Rust, UI, setting, migration, or secret. A later package, after Ash and counsel, would be the first one allowed to call a documented Cursor cloud API. Codex and Claude wait until a public API exists.
 
 ## Done when
 
 - [x] Each vendor has a public-capability note or a written "no public API".
-- [ ] Ash's legal and billing questions are listed.
-- [ ] No product code and no new secrets.
+- [x] Ash's legal and billing questions are listed.
+- [x] No product code and no new secrets.
 
 ## Licence
 
