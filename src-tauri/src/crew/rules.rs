@@ -22,7 +22,7 @@ pub struct Rule {
         rename = "taskCeilingUsd",
         skip_serializing_if = "Option::is_none",
         serialize_with = "ser_ceiling",
-        deserialize_with = "de_ceiling",
+        deserialize_with = "de_ceiling"
     )]
     pub task_ceiling_micros: Option<i64>,
     pub source: String,
@@ -53,9 +53,7 @@ fn ser_ceiling<S: serde::Serializer>(
 }
 
 /// A missing ceiling is off. A present one that is not a positive amount is marked refused.
-fn de_ceiling<'de, D: serde::Deserializer<'de>>(
-    deserializer: D,
-) -> Result<Option<i64>, D::Error> {
+fn de_ceiling<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Option<i64>, D::Error> {
     let value = Option::<serde_json::Value>::deserialize(deserializer)?;
     Ok(match value {
         None => None,
