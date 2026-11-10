@@ -127,8 +127,11 @@ the stack says so plainly instead of pretending, and that stack is not run unatt
    service's own loopback port, so a test fails closed (connection refused) instead of quietly reaching the real service.
 7. **Wiring it into the stack (WP-87).** A stack's declared service may name an emulated one
    (`{ "emulate": "github", "urlEnv": "GITHUB_BASE_URL" }`). Hivra writes each emulated service's port into the
-   generated emulate config (it honours a per-service `port`), registers `<service>-<project>-<label>.localhost` for it
-   (the project is in the name so two projects on one branch never share one), and puts `http://127.0.0.1:<port>` in
+   generated emulate config (it honours a per-service `port`), registers `<service>.<project>-<label>.localhost` for it
+   (the project is in the name so two projects on one branch never share one, and the service is a label of its own
+   so no hyphenated project or branch can read as it: project `github-shop`'s app on branch `a` is
+   `github-shop-a.localhost`, project `shop`'s fake GitHub is `github.shop-a.localhost`; two project folders with the
+   same name each add a short hash of their path), and puts `http://127.0.0.1:<port>` in
    the stack's env block under `urlEnv`, defaulting to `<SERVICE>_BASE_URL`: server-side code resolves names through
    the OS, which does not treat `*.localhost` as loopback. The named URL is what the stand-in advertises (its
    `baseUrl`, links and redirects) and what a browser opens through the proxy. A name another stack holds is refused,

@@ -999,6 +999,7 @@ fn reserve(
     let has_file = compose_path.is_some();
     let key = path_key(worktree);
     let project_key = path_key(project);
+    let project_part = project_name(store, project, &project_key);
     let names = port_names(stack);
     let emulated_services: Vec<String> = crate::stack_decl::emulated(stack)
         .into_iter()
@@ -1028,7 +1029,7 @@ fn reserve(
                 .collect();
             let (values, url, published, emulated, label) = layout(
                 env,
-                project,
+                &project_part,
                 worktree,
                 &existing.id,
                 stack,
@@ -1076,7 +1077,7 @@ fn reserve(
         emulated_services.into_iter().zip(emulated_ports).collect();
     let (values, url, published, emulated, label) = layout(
         env,
-        project,
+        &project_part,
         worktree,
         &id,
         stack,
@@ -1122,6 +1123,25 @@ fn reserve(
     Ok(entry)
 }
 
+/// The folder's name as a hostname part. Two project folders of the same name that both have
+/// a stack here each carry a short hash of their own path, so one branch in both is not one
+/// name; a project whose name is its own keeps the plain name.
+fn project_name(store: &Store, project: &Path, project_key: &str) -> String {
+    let folder = |path: &Path| {
+        path.file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "project".into())
+    };
+    let own = folder(project);
+    let own_part = crate::proxy::labels::sanitize_for_hostname(&own);
+    let shared = store.stacks.iter().any(|entry| {
+        !keys_eq(&entry.project, project_key)
+            && crate::proxy::labels::sanitize_for_hostname(&folder(Path::new(&entry.project)))
+                == own_part
+    });
+    crate::proxy::labels::project_label(&own, project_key, shared)
+}
+
 /// The env block, the app URL, the published names, the fake services, and the label.
 type Layout = (
     BTreeMap<String, String>,
@@ -1134,7 +1154,7 @@ type Layout = (
 /// The env block, the app URL, and the names and services this stack publishes.
 fn layout(
     env: &StackEnv,
-    project: &Path,
+    project_label: &str,
     worktree: &Path,
     id: &str,
     stack: &StackDecl,
@@ -1145,10 +1165,6 @@ fn layout(
     let label = stack_label(id, git_branch(worktree).as_deref(), is_pool_slot(worktree))
         .filter(|label| label.len() <= MAX_LABEL)
         .ok_or("This worktree's name could not be made, so nothing was started.")?;
-    let project_label = project
-        .file_name()
-        .map(|name| name.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "project".into());
     let app_port = stack
         .services
         .iter()
@@ -1164,7 +1180,7 @@ fn layout(
     let app_url = match (
         app_port,
         env.proxy_port,
-        crate::proxy::labels::app_hostname(&project_label, &label),
+        crate::proxy::labels::app_hostname(project_label, &label),
     ) {
         (Some(_port), Some(proxy), Some(host)) => format!("http://{host}:{proxy}"),
         (Some(port), _, _) => format!("http://127.0.0.1:{port}"),
@@ -1177,7 +1193,7 @@ fn layout(
     if let (Some(app_port), Some(_), Some(host)) = (
         app_port,
         env.proxy_port,
-        crate::proxy::labels::app_hostname(&project_label, &label),
+        crate::proxy::labels::app_hostname(project_label, &label),
     ) {
         published.push(Published {
             hostname: host,
@@ -1198,7 +1214,7 @@ fn layout(
         // `*.localhost` as loopback, so that address is the service's own loopback port.
         let named = match (
             env.proxy_port,
-            crate::proxy::labels::service_hostname(&name, &project_label, &label),
+            crate::proxy::labels::service_hostname(&name, project_label, &label),
         ) {
             (Some(proxy), Some(host)) => {
                 published.push(Published {
@@ -4098,8 +4114,8 @@ mod tests {
         let names = names.routes.lock().unwrap();
         let hosts: Vec<&str> = names.iter().map(|(host, ..)| host.as_str()).collect();
         assert!(hosts.contains(&"main-a.localhost"));
-        assert!(hosts.contains(&"github-main-a.localhost"));
-        assert!(hosts.contains(&"stripe-main-a.localhost"));
+        assert!(hosts.contains(&"github.main-a.localhost"));
+        assert!(hosts.contains(&"stripe.main-a.localhost"));
 
         let status = status_for(&env, &fix.first).unwrap();
         let row = &status.stacks[0];
@@ -4151,7 +4167,7 @@ mod tests {
             .unwrap()
             .base_url;
         assert!(
-            advertised.starts_with("http://github-"),
+            advertised.starts_with("http://github.main-a."),
             "the stand-in must keep advertising the named url: {advertised}"
         );
         assert!(
@@ -4250,12 +4266,12 @@ mod tests {
         let live = routes.load_routes_raw().unwrap();
         let mut github: Vec<_> = live
             .iter()
-            .filter(|route| route.hostname.starts_with("github-"))
+            .filter(|route| route.hostname.starts_with("github."))
             .collect();
         assert_eq!(github.len(), 2, "{live:?}");
         github.sort_by(|left, right| left.hostname.cmp(&right.hostname));
-        assert_eq!(github[0].hostname, "github-blog-a.localhost");
-        assert_eq!(github[1].hostname, "github-main-a.localhost");
+        assert_eq!(github[0].hostname, "github.blog-a.localhost");
+        assert_eq!(github[1].hostname, "github.main-a.localhost");
         assert_ne!(github[0].port, github[1].port);
         assert_ne!(github[0].stack_id, github[1].stack_id);
         assert!(github[0].stack_id.is_some() && github[1].stack_id.is_some());
@@ -4274,29 +4290,31 @@ mod tests {
         assert_eq!(still.stack_id, held.stack_id);
     }
 
-    /// Two projects whose folders have the same name, on the same branch, still collide on one
-    /// name. The second is refused, and stopping the refused stack must not take the first
-    /// stack's names away: both run in this process, so the pid alone cannot tell them apart.
-    #[test]
-    fn a_stack_refused_a_name_cannot_remove_it_from_the_stack_that_holds_it() {
-        let fix = Fix::new();
-        let twin_parent = fix.tmp.root.join("twin");
-        std::fs::create_dir_all(&twin_parent).unwrap();
-        let twin = twin_parent.join("main");
-        let twin_tree = twin_parent.join("twin work");
+    /// A repository called `folder` under `parent`, with a worktree on `branch` that has a
+    /// compose file. Returns the project folder and the worktree.
+    fn project_on_branch(
+        fix: &Fix,
+        parent: &str,
+        folder: &str,
+        branch: &str,
+    ) -> (PathBuf, PathBuf) {
+        let parent = fix.tmp.root.join(parent);
+        std::fs::create_dir_all(&parent).unwrap();
+        let project = parent.join(folder);
+        let tree = parent.join(format!("{folder} work"));
+        git(&parent, &["init", "-b", "main", project.to_str().unwrap()]);
+        std::fs::write(project.join("README"), "project\n").unwrap();
+        git(&project, &["add", "README"]);
+        git(&project, &["commit", "-qm", "initial"]);
         git(
-            &twin_parent,
-            &["init", "-b", "main", twin.to_str().unwrap()],
+            &project,
+            &["worktree", "add", "-b", branch, tree.to_str().unwrap()],
         );
-        std::fs::write(twin.join("README"), "twin\n").unwrap();
-        git(&twin, &["add", "README"]);
-        git(&twin, &["commit", "-qm", "initial"]);
-        git(
-            &twin,
-            &["worktree", "add", "-b", "a", twin_tree.to_str().unwrap()],
-        );
-        std::fs::write(twin_tree.join("docker-compose.yml"), "services: {}\n").unwrap();
+        std::fs::write(tree.join("docker-compose.yml"), "services: {}\n").unwrap();
+        (project, tree)
+    }
 
+    fn real_names_env(fix: &Fix) -> (StackEnv, crate::proxy::routes::RouteStore) {
         let routes =
             crate::proxy::routes::RouteStore::new(crate::proxy::server::proxy_dir(&fix.data));
         let env = StackEnv {
@@ -4307,6 +4325,64 @@ mod tests {
             stand_in: Some(Arc::new(MemoryStandIn::default())),
             ..fix.env()
         };
+        (env, routes)
+    }
+
+    /// Project `github-shop`'s app on branch `a` and project `shop`'s fake GitHub on branch `a`
+    /// were both `github-shop-a.localhost`: "-" joins parts that have hyphens of their own.
+    /// The fake is now a label of its own (`github.shop-a.localhost`), so both stacks start and
+    /// each keeps the name it asked for.
+    #[test]
+    fn an_app_named_like_another_projects_fake_service_does_not_clash_with_it() {
+        let fix = Fix::new();
+        let (app_project, app_tree) = project_on_branch(&fix, "apps", "github-shop", "a");
+        let (shop, shop_tree) = project_on_branch(&fix, "shops", "shop", "a");
+        let (env, routes) = real_names_env(&fix);
+        maybe_start(
+            &env,
+            &app_project,
+            &app_tree,
+            true,
+            Some(&ports_only()),
+            false,
+            true,
+        )
+        .unwrap();
+        maybe_start(
+            &env,
+            &shop,
+            &shop_tree,
+            true,
+            Some(&emulated_decl()),
+            false,
+            true,
+        )
+        .unwrap_or_else(|error| panic!("the second project was refused: {error}"));
+        let live = routes.load_routes_raw().unwrap();
+        let hosts: Vec<&str> = live.iter().map(|route| route.hostname.as_str()).collect();
+        assert!(hosts.contains(&"github-shop-a.localhost"), "{hosts:?}");
+        assert!(hosts.contains(&"github.shop-a.localhost"), "{hosts:?}");
+        let app = live
+            .iter()
+            .find(|route| route.hostname == "github-shop-a.localhost")
+            .unwrap();
+        let fake = live
+            .iter()
+            .find(|route| route.hostname == "github.shop-a.localhost")
+            .unwrap();
+        assert_ne!(app.stack_id, fake.stack_id);
+        assert_ne!(app.port, fake.port);
+    }
+
+    /// Two project folders with the same name, on the same branch, always made the same names:
+    /// the second was refused. A short hash of the project's path now tells them apart, and
+    /// only once the name repeats, so a project on its own keeps the plain name.
+    #[test]
+    fn two_project_folders_with_one_name_on_one_branch_both_get_names() {
+        let fix = Fix::new();
+        let (twin, twin_tree) = project_on_branch(&fix, "twin", "main", "a");
+        let (env, routes) = real_names_env(&fix);
+        // Alone, the project has the plain name.
         maybe_start(
             &env,
             &fix.main,
@@ -4317,11 +4393,19 @@ mod tests {
             true,
         )
         .unwrap();
-        let before = routes.load_routes_raw().unwrap();
-        assert_eq!(before.len(), 3, "{before:?}");
-
-        // Same folder name, same branch: the same names. The second stack is refused.
-        let error = maybe_start(
+        let alone: Vec<String> = routes
+            .load_routes_raw()
+            .unwrap()
+            .into_iter()
+            .map(|route| route.hostname)
+            .collect();
+        assert!(alone.contains(&"main-a.localhost".to_string()), "{alone:?}");
+        assert!(
+            alone.contains(&"github.main-a.localhost".to_string()),
+            "{alone:?}"
+        );
+        // A second folder of the same name, same branch: started, not refused.
+        maybe_start(
             &env,
             &twin,
             &twin_tree,
@@ -4330,12 +4414,115 @@ mod tests {
             false,
             true,
         )
+        .unwrap_or_else(|error| panic!("the twin project was refused: {error}"));
+        let both = routes.load_routes_raw().unwrap();
+        assert_eq!(both.len(), 6, "{both:?}");
+        let hosts: HashSet<&str> = both.iter().map(|route| route.hostname.as_str()).collect();
+        assert_eq!(hosts.len(), 6, "two stacks share a name: {both:?}");
+        // The twin carries a hash of its path; the first folder still holds its plain names
+        // until it starts again.
+        assert!(hosts.contains("main-a.localhost"), "{hosts:?}");
+        let hashed = |host: &str| {
+            let Some(rest) = host.strip_prefix("main-") else {
+                return false;
+            };
+            let Some(hash) = rest.strip_suffix("-a.localhost") else {
+                return false;
+            };
+            hash.len() == 6 && hash.bytes().all(|byte| byte.is_ascii_hexdigit())
+        };
+        assert!(hosts.iter().any(|host| hashed(host)), "{hosts:?}");
+        // Starting the first again gives it a hashed name too, and leaves no plain name behind.
+        maybe_start(
+            &env,
+            &fix.main,
+            &fix.first,
+            true,
+            Some(&emulated_decl()),
+            false,
+            true,
+        )
+        .unwrap();
+        let settled = routes.load_routes_raw().unwrap();
+        let hosts: HashSet<&str> = settled
+            .iter()
+            .map(|route| route.hostname.as_str())
+            .collect();
+        assert_eq!(settled.len(), 6, "{settled:?}");
+        assert_eq!(hosts.len(), 6, "{settled:?}");
+        assert!(!hosts.contains("main-a.localhost"), "{hosts:?}");
+        assert!(!hosts.contains("github.main-a.localhost"), "{hosts:?}");
+        // The same names come back after the stacks start again: they do not drift.
+        maybe_start(
+            &env,
+            &twin,
+            &twin_tree,
+            true,
+            Some(&emulated_decl()),
+            false,
+            true,
+        )
+        .unwrap();
+        maybe_start(
+            &env,
+            &fix.main,
+            &fix.first,
+            true,
+            Some(&emulated_decl()),
+            false,
+            true,
+        )
+        .unwrap();
+        let again: HashSet<String> = routes
+            .load_routes_raw()
+            .unwrap()
+            .into_iter()
+            .map(|route| route.hostname)
+            .collect();
+        let settled: HashSet<String> = settled.into_iter().map(|route| route.hostname).collect();
+        assert_eq!(again, settled);
+    }
+
+    /// A name another stack holds is refused to a second stack, and stopping the refused stack
+    /// must not take the first stack's names away: both run in this process, so the pid alone
+    /// cannot tell them apart. The clash here is the one the hyphen join still allows between
+    /// two apps: project `shop-a` on branch `b` and project `shop` on branch `a-b` are both
+    /// `shop-a-b.localhost`.
+    #[test]
+    fn a_stack_refused_a_name_cannot_remove_it_from_the_stack_that_holds_it() {
+        let fix = Fix::new();
+        let (held, held_tree) = project_on_branch(&fix, "held", "shop-a", "b");
+        let (refused, refused_tree) = project_on_branch(&fix, "refused", "shop", "a-b");
+        let (env, routes) = real_names_env(&fix);
+        maybe_start(
+            &env,
+            &held,
+            &held_tree,
+            true,
+            Some(&emulated_decl()),
+            false,
+            true,
+        )
+        .unwrap();
+        let before = routes.load_routes_raw().unwrap();
+        assert_eq!(before.len(), 3, "{before:?}");
+
+        // The same app name from another project: the second stack is refused.
+        let error = maybe_start(
+            &env,
+            &refused,
+            &refused_tree,
+            true,
+            Some(&emulated_decl()),
+            false,
+            true,
+        )
         .unwrap_err();
-        assert!(error.contains("main-a.localhost"), "{error}");
+        assert!(error.contains("shop-a-b.localhost"), "{error}");
         assert!(error.contains("another stack"), "{error}");
 
         // Stopping the refused stack leaves the first stack's names in place.
-        down(&env, &twin_tree).unwrap();
+        down(&env, &refused_tree).unwrap();
         let mut after = routes.load_routes_raw().unwrap();
         let mut before = before;
         before.sort_by(|left, right| left.hostname.cmp(&right.hostname));
@@ -4906,7 +5093,7 @@ mod tests {
             r#"{"services":[
                  {"name":"web","ports":[{"env":"PORT","url":true}]},
                  {"name":"git","emulate":"github",
-                  "env":{"GITHUB_WEB":"http://github-a.localhost:7400"}}
+                  "env":{"GITHUB_WEB":"http://github.main-a.localhost:7400"}}
                ]}"#,
         )
         .unwrap();
@@ -5005,7 +5192,7 @@ mod tests {
                     services: vec![ServicePort {
                         service: "github".into(),
                         port: 22010,
-                        base_url: "http://github-shop-wp-90.localhost:7400".into(),
+                        base_url: "http://github.shop-wp-90.localhost:7400".into(),
                     }],
                     path_env: Some(bin.to_string_lossy().into_owned()),
                 };
