@@ -1,0 +1,461 @@
+// WP-145: fact gaps before a worker's done counts.
+//
+// The cases follow AgentMon's Done Gate (codenotary/agentmon-live, Apache-2.0,
+// commit 296502feec4707f6f1a8e8b9383f8fccc3aef2ea): a failed check, a check that
+// went stale after a later edit, a pass claim with no run after the last code
+// edit, an open to-do, and an edited package no test reached. Docs-only edits
+// are not coverage gaps. Hivra's own wording. Not a line-by-line copy.
+
+import type { Block } from "../../sessions/model/session";
+
+/** A check command, same shape as the claim card's check list, narrowed to a test, a type check, a lint or a build. */
+const CHECK_COMMAND =
+  /(?:^|[\s;&|(])(?:npx\s+)?(?:vitest|jest|pytest|playwright|cypress|tsc|eslint|biome|ruff|mypy)\b|(?:^|[\s;&|(])cargo\s+(?:test|check|clippy|nextest)\b|(?:^|[\s;&|(])go\s+test\b|(?:^|[\s;&|(])swift\s+test\b|(?:^|[\s;&|(])make\s+(?:test|check|verify)\b|(?:^|[\s;&|(])(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?(?:test|check|lint|typecheck|[\w:-]*:test|[\w:-]*:check)\b/i;
+
+/** Coverage only counts a test runner. A type check or a lint can still fail the turn. */
+const TEST_COMMAND =
+  /(?:^|[\s;&|(])(?:npx\s+)?(?:vitest|jest|pytest|playwright|cypress)\b|(?:^|[\s;&|(])cargo\s+(?:test|nextest)\b|(?:^|[\s;&|(])go\s+test\b|(?:^|[\s;&|(])swift\s+test\b|(?:^|[\s;&|(])make\s+test\b|(?:^|[\s;&|(])(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?(?:test|[\w:-]*:test)\b/i;
+
+const DOC_EXT = new Set(["md", "mdx", "rst", "adoc", "txt"]);
+const DOC_NAME = new Set(["readme", "license", "licence", "notice", "changelog", "contributing", "authors"]);
+
+const MAX_CHECKS = 40;
+const MAX_EDITS = 80;
+const MAX_TODOS = 40;
+const MAX_ANSWER = 8000;
+const MAX_COMMAND = 2000;
+const MAX_DISPLAY = 80;
+const MAX_PATH = 500;
+const MAX_TODO = 160;
+const MAX_PACKAGE = 60;
+
+export type CheckStatus = "passed" | "failed" | "running";
+
+export type FactCheck = {
+  command: string;
+  status: CheckStatus;
+  at: number;
+};
+
+export type FactEdit = {
+  path: string;
+  at: number;
+};
+
+export type FactTodo = {
+  text: string;
+  open: boolean;
+};
+
+/** One turn's facts. Values from a transcript or another agent are untrusted and capped. */
+export type FactTurn = {
+  checks: FactCheck[];
+  edits: FactEdit[];
+  todos: FactTodo[];
+  answer: string;
+};
+
+/** Which pass claims the answer makes. Absent means it made none. */
+export type PassClaim = {
+  tests?: boolean;
+  build?: boolean;
+};
+
+type StoredCheck = FactCheck & { display: string };
+
+const CHECK_STATUS = new Set<CheckStatus>(["passed", "failed", "running"]);
+
+function asArray<T>(value: unknown): T[] {
+  return Array.isArray(value) ? (value as T[]) : [];
+}
+
+function stripControls(value: string): string {
+  return value.replace(/[\u0000-\u001F\u007F]/g, "");
+}
+
+function oneLine(value: string, max: number): string {
+  const line = stripControls(value).split(/\r?\n/)[0]?.replace(/\s+/g, " ").trim() ?? "";
+  return [...line].slice(0, max).join("");
+}
+
+function segmentsOf(path: string): string[] {
+  return stripControls(path)
+    .split(/[/\\]+/)
+    .map((part) => part.trim())
+    .filter((part) => part && part !== "." && part !== "..");
+}
+
+/** A docs path is not a coverage target and does not make an earlier test stale. `src/docs.ts` is code. */
+export function isDocsPath(path: string): boolean {
+  const segments = segmentsOf(path);
+  if (segments.length === 0) return false;
+  if (segments[0].toLowerCase() === "docs") return true;
+  const base = segments[segments.length - 1].toLowerCase();
+  const dot = base.lastIndexOf(".");
+  const ext = dot >= 0 ? base.slice(dot + 1) : "";
+  if (DOC_EXT.has(ext)) return true;
+  const stem = dot >= 0 ? base.slice(0, dot) : base;
+  return DOC_NAME.has(stem);
+}
+
+function validPackage(name: string): string | undefined {
+  const cleaned = stripControls(name).trim();
+  if (!cleaned || [...cleaned].length > MAX_PACKAGE) return undefined;
+  if (cleaned === "." || cleaned === ".." || /[/\\]/.test(cleaned)) return undefined;
+  if (!/^[\p{L}\p{N}._-]+$/u.test(cleaned)) return undefined;
+  return cleaned;
+}
+
+/**
+ * The package a path belongs to. `packages/`, `crates/` and `apps/` name it, then `src/features/`, then the parent
+ * directory. A bare filename has none. `..` is dropped, not resolved, and nothing is read from disk.
+ */
+export function packageOf(path: string): string | undefined {
+  const segments = segmentsOf(path);
+  if (segments.length < 2) return undefined;
+  for (let i = 0; i < segments.length - 1; i++) {
+    const dir = segments[i].toLowerCase();
+    if (dir === "packages" || dir === "crates" || dir === "apps") return validPackage(segments[i + 1]);
+  }
+  for (let i = 0; i < segments.length - 2; i++) {
+    if (segments[i].toLowerCase() === "src" && segments[i + 1].toLowerCase() === "features") {
+      return validPackage(segments[i + 2]);
+    }
+  }
+  return validPackage(segments[segments.length - 2]);
+}
+
+function looksLikePath(token: string): boolean {
+  return /[/\\]/.test(token) && !token.startsWith("-");
+}
+
+function commandTokens(command: string): string[] {
+  return command.split(/\s+/).map((token) => token.replace(/^["']|["']$/g, "")).filter(Boolean);
+}
+
+function pathTokens(command: string): string[] {
+  const out: string[] = [];
+  for (const token of commandTokens(command)) {
+    if (token.startsWith("-")) {
+      const eq = token.indexOf("=");
+      const value = eq >= 0 ? token.slice(eq + 1) : "";
+      if (value && looksLikePath(value)) out.push(value);
+      continue;
+    }
+    if (looksLikePath(token)) out.push(token);
+  }
+  return out;
+}
+
+function namedPackages(command: string): string[] {
+  const tokens = commandTokens(command);
+  const out: string[] = [];
+  for (let i = 0; i < tokens.length; i++) {
+    const token = tokens[i];
+    if (token === "-p" || token === "--package") {
+      const next = tokens[i + 1];
+      if (next && !next.startsWith("-")) out.push(next);
+    } else if (token.startsWith("-p=") || token.startsWith("--package=")) {
+      out.push(token.slice(token.indexOf("=") + 1));
+    }
+  }
+  return out;
+}
+
+function isTestCommand(command: string): boolean {
+  return TEST_COMMAND.test(command);
+}
+
+/** A project-wide test reaches every package. A path or a `-p` name reaches only what it names. */
+function testReaches(command: string, pkg: string): boolean {
+  if (!isTestCommand(command)) return false;
+  const named = namedPackages(command);
+  const paths = pathTokens(command);
+  if (named.length === 0 && paths.length === 0) return true;
+  if (named.some((name) => name === pkg)) return true;
+  return paths.some((path) => packageOf(path) === pkg);
+}
+
+function sanitizeCheck(raw: unknown): StoredCheck | undefined {
+  if (!raw || typeof raw !== "object") return undefined;
+  const row = raw as Partial<FactCheck>;
+  if (row.status !== "passed" && row.status !== "failed" && row.status !== "running") return undefined;
+  if (!CHECK_STATUS.has(row.status)) return undefined;
+  if (typeof row.at !== "number" || !Number.isFinite(row.at)) return undefined;
+  if (typeof row.command !== "string") return undefined;
+  const command = oneLine(row.command, MAX_COMMAND);
+  if (!command || !CHECK_COMMAND.test(command)) return undefined;
+  const display = [...command].slice(0, MAX_DISPLAY).join("").trimEnd();
+  return { command, display, status: row.status, at: row.at };
+}
+
+function sanitizeEdit(raw: unknown): FactEdit | undefined {
+  if (!raw || typeof raw !== "object") return undefined;
+  const row = raw as Partial<FactEdit>;
+  if (typeof row.path !== "string" || typeof row.at !== "number" || !Number.isFinite(row.at)) return undefined;
+  const path = stripControls(row.path).trim();
+  if (!path || [...path].length > MAX_PATH) return undefined;
+  return { path, at: row.at };
+}
+
+function sanitizeTodo(raw: unknown): FactTodo | undefined {
+  if (!raw || typeof raw !== "object") return undefined;
+  const row = raw as Partial<FactTodo>;
+  if (typeof row.text !== "string" || typeof row.open !== "boolean") return undefined;
+  const text = oneLine(row.text, MAX_TODO);
+  if (!text) return undefined;
+  return { text, open: row.open };
+}
+
+function cleanAnswer(answer: unknown): string {
+  if (typeof answer !== "string") return "";
+  const kept = answer.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, "");
+  return [...kept].slice(0, MAX_ANSWER).join("");
+}
+
+function sanitize(turn: FactTurn | undefined): {
+  checks: StoredCheck[];
+  edits: FactEdit[];
+  todos: FactTodo[];
+  answer: string;
+} {
+  return {
+    checks: asArray(turn?.checks).map(sanitizeCheck).filter((row): row is StoredCheck => !!row).slice(0, MAX_CHECKS),
+    edits: asArray(turn?.edits).map(sanitizeEdit).filter((row): row is FactEdit => !!row).slice(0, MAX_EDITS),
+    todos: asArray(turn?.todos).map(sanitizeTodo).filter((row): row is FactTodo => !!row).slice(0, MAX_TODOS),
+    answer: cleanAnswer(turn?.answer),
+  };
+}
+
+function lastCodeAt(edits: readonly FactEdit[]): number | undefined {
+  let last: number | undefined;
+  for (const edit of edits) {
+    if (isDocsPath(edit.path)) continue;
+    if (last === undefined || edit.at > last) last = edit.at;
+  }
+  return last;
+}
+
+function lineNegated(line: string): boolean {
+  return /\b(?:not|no|never|didn't|don't|haven't|failed|fail)\b/i.test(line);
+}
+
+function claimsWord(line: string, what: RegExp): boolean {
+  if (lineNegated(line)) return false;
+  return what.test(line) && /\b(?:pass(?:ed|es|ing)?|green)\b/i.test(line);
+}
+
+/** A tests or build pass the answer states, one line at a time. A denial on the same line cancels that line. */
+export function claimOf(answer: string): PassClaim | undefined {
+  const text = cleanAnswer(answer);
+  let tests = false;
+  let build = false;
+  for (const raw of text.split(/\r?\n/)) {
+    const line = raw.trim();
+    if (!line) continue;
+    if (claimsWord(line, /\btests?\b/i)) tests = true;
+    if (claimsWord(line, /\b(?:build|typecheck|type check)\b/i)) build = true;
+  }
+  if (!tests && !build) return undefined;
+  const claim: PassClaim = {};
+  if (tests) claim.tests = true;
+  if (build) claim.build = true;
+  return claim;
+}
+
+function failureGaps(checks: readonly StoredCheck[]): string[] {
+  const order: string[] = [];
+  const last = new Map<string, StoredCheck>();
+  for (const check of checks) {
+    if (!last.has(check.display)) order.push(check.display);
+    last.set(check.display, check);
+  }
+  const gaps: string[] = [];
+  for (const key of order) {
+    const check = last.get(key);
+    if (check?.status === "failed") gaps.push(`A check failed this turn (${check.display}).`);
+  }
+  return gaps;
+}
+
+function stale(checks: readonly StoredCheck[], edits: readonly FactEdit[]): boolean {
+  const last = lastCodeAt(edits);
+  if (last === undefined) return false;
+  const tests = checks.filter((check) => isTestCommand(check.command));
+  const passedBefore = tests.some((check) => check.status === "passed" && check.at <= last);
+  const finishedAfter = tests.some(
+    (check) => (check.status === "passed" || check.status === "failed") && check.at > last,
+  );
+  return passedBefore && !finishedAfter;
+}
+
+/** A finished check after the last code edit. With no code edit, a pass anywhere stands. A running check never does. */
+function claimHasEvidence(checks: readonly StoredCheck[], edits: readonly FactEdit[]): boolean {
+  const last = lastCodeAt(edits);
+  if (last === undefined) return checks.some((check) => check.status === "passed");
+  return checks.some((check) => (check.status === "passed" || check.status === "failed") && check.at > last);
+}
+
+function openTodos(todos: readonly FactTodo[]): string[] {
+  const seen = new Set<string>();
+  const open: string[] = [];
+  for (const todo of todos) {
+    if (!todo.open || seen.has(todo.text)) continue;
+    seen.add(todo.text);
+    open.push(todo.text);
+  }
+  return open;
+}
+
+/** Edited packages no finished test reached. Docs-only edits are skipped. */
+export function coverageGaps(turn: FactTurn): string[] {
+  const clean = sanitize(turn);
+  const seen = new Set<string>();
+  const gaps: string[] = [];
+  for (const edit of clean.edits) {
+    if (isDocsPath(edit.path)) continue;
+    const pkg = packageOf(edit.path);
+    if (!pkg || seen.has(pkg)) continue;
+    seen.add(pkg);
+    const reached = clean.checks.some(
+      (check) => (check.status === "passed" || check.status === "failed") && testReaches(check.command, pkg),
+    );
+    if (!reached) gaps.push(`No test reached ${pkg}.`);
+  }
+  return gaps;
+}
+
+/** Every fact gap in this turn, in a stable order. Empty when the facts support done. */
+export function doneGaps(turn: FactTurn): string[] {
+  const clean = sanitize(turn);
+  const gaps = [...failureGaps(clean.checks)];
+  if (stale(clean.checks, clean.edits)) gaps.push("Tests went stale after the last edit.");
+  const claim = claimOf(clean.answer);
+  if (claim && !claimHasEvidence(clean.checks, clean.edits)) {
+    if (claim.tests) gaps.push("The answer says the tests passed, but no check ran after the last edit.");
+    if (claim.build) gaps.push("The answer says the build passed, but no check ran after the last edit.");
+  }
+  const open = openTodos(clean.todos);
+  if (open.length === 1) gaps.push(`There is still an open to-do: ${open[0]}.`);
+  else if (open.length > 1) gaps.push(`There are still ${open.length} open to-dos.`);
+  gaps.push(...coverageGaps(turn));
+  return gaps;
+}
+
+/** The first line a person sees. One gap keeps its sentence. More than one counts the rest. */
+export function sentBackReason(gaps: readonly string[]): string {
+  const first = gaps[0];
+  if (!first) return "";
+  const lead = `${first.charAt(0).toLowerCase()}${first.slice(1)}`;
+  if (gaps.length === 1) return `Sent back: ${lead}`;
+  return `Sent back: ${lead} Also ${gaps.length - 1} more.`;
+}
+
+/**
+ * What is stored on the gate and sent back to the worker. One gap is the sentence alone. More than one repeats the
+ * list under it, so the fix round still has every gap.
+ */
+export function factSummary(gaps: readonly string[]): string {
+  if (gaps.length === 0) return "";
+  const head = sentBackReason(gaps);
+  if (gaps.length === 1) return head;
+  return `${head}\n${gaps.join("\n")}`;
+}
+
+function changedSomething(block: Block): boolean {
+  const tool = block.tool;
+  if (!tool) return false;
+  return (
+    tool.kind === "edit" ||
+    tool.kind === "write" ||
+    tool.preview?.kind === "write" ||
+    /^(?:edit|write|multi_?edit|apply_?patch|create|delete|move|rename)\b/i.test(tool.title ?? "")
+  );
+}
+
+function editPaths(block: Block): string[] {
+  if (!changedSomething(block)) return [];
+  const seen = new Set<string>();
+  const out: string[] = [];
+  const add = (path: string | undefined) => {
+    if (!path || seen.has(path)) return;
+    seen.add(path);
+    out.push(path);
+  };
+  for (const path of block.tool?.paths ?? []) add(path);
+  add(block.tool?.preview?.path);
+  for (const token of (block.tool?.title ?? "").split(/\s+/)) {
+    const clean = token.replace(/^["'`(\[]+|["'`)\].,;:]+$/g, "");
+    if (looksLikePath(clean)) add(clean);
+  }
+  return out;
+}
+
+function commandOf(block: Block): string {
+  const tool = block.tool;
+  if (!tool) return "";
+  const shell = tool.preview?.kind === "shell" ? tool.preview.title : undefined;
+  return (tool.command ?? tool.title ?? shell ?? "").trim();
+}
+
+function statusOf(status: string | undefined): CheckStatus | undefined {
+  const word = (status ?? "").trim().toLowerCase().replace(/[\s_-]+/g, "");
+  if (!word) return undefined;
+  if (word === "pending" || word === "running" || word === "inprogress") return "running";
+  if (word === "completed" || word === "complete" || word === "success" || word === "passed" || word === "ok") {
+    return "passed";
+  }
+  if (word === "cancelled" || word === "canceled") return undefined;
+  return "failed";
+}
+
+function currentTurn(blocks: readonly Block[]): Block[] {
+  let start = -1;
+  for (let i = blocks.length - 1; i >= 0; i--) {
+    const block = blocks[i];
+    if (block.role === "user" && !block.internal && !block.draft) {
+      start = i;
+      break;
+    }
+  }
+  return start < 0 ? [...blocks] : blocks.slice(start + 1);
+}
+
+/**
+ * Facts for the turn after the last real user message. A check still running stays running. The latest to-do list
+ * replaces earlier ones. `at` is the block's place in that turn.
+ */
+export function factsFromBlocks(blocks: readonly Block[], answer: string): FactTurn {
+  const turn = currentTurn(blocks);
+  const checks: FactCheck[] = [];
+  const edits: FactEdit[] = [];
+  let todos: FactTodo[] | undefined;
+  turn.forEach((block, at) => {
+    const command = commandOf(block);
+    const status = statusOf(block.tool?.status);
+    if (command && status && CHECK_COMMAND.test(command)) {
+      checks.push({ command, status, at });
+    }
+    for (const path of editPaths(block)) edits.push({ path, at });
+    if (block.taskList) {
+      todos = block.taskList.items.flatMap((item) => {
+        const text = item.text?.trim() ?? "";
+        if (!text) return [];
+        const open = item.status === "pending" || item.status === "in_progress";
+        return [{ text, open }];
+      });
+    }
+  });
+  const clean = sanitize({
+    checks,
+    edits,
+    todos: todos ?? [],
+    answer,
+  });
+  return {
+    checks: clean.checks.map(({ command, status, at }) => ({ command, status, at })),
+    edits: clean.edits,
+    todos: clean.todos,
+    answer: clean.answer,
+  };
+}
