@@ -261,7 +261,7 @@ const SHELL_RC = new Set([
   ".logout",
 ]);
 
-/** A folder shallower than this (/, /Users, /Users/ash) is too broad to count as a chat's own. */
+/** A folder shallower than this (/, /Users, /Users/someone) is too broad to count as a chat's own. */
 const MIN_PROJECT_DEPTH = 3;
 
 /**

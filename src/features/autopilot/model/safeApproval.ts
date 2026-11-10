@@ -45,7 +45,7 @@ const SHELL_TOOLS: ReadonlySet<string> = new Set(["Bash"]);
 const GUARDED_DIRS: ReadonlySet<string> = new Set([".git", ".claude", ".codex", ".cursor", ".husky", ".vscode", ".monocode", ".cargo", "node_modules"]);
 const GUARDED_FILES: ReadonlySet<string> = new Set([".mcp.json", ".envrc", ".npmrc", ".yarnrc", ".yarnrc.yml", ".gitmodules"]);
 
-/** A folder shallower than this (/, /Users, /Users/ash) is too broad to count as a chat's own. */
+/** A folder shallower than this (/, /Users, /Users/someone) is too broad to count as a chat's own. */
 const MIN_FOLDER_DEPTH = 3;
 
 /** An absolute POSIX path with ".", ".." and repeated slashes resolved; null when it isn't one or climbs past /. */

@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 import { editInside, editStaysInside, safeCall, safeCommand, type Locate } from "./safeApproval";
 import { shellWords } from "./shellWords";
 
-const FOLDER = "/Users/ash/Worktrees/hub-x";
+const FOLDER = "/Users/someone/Worktrees/hub-x";
 
 describe("shell commands", () => {
   it.each([
@@ -100,7 +100,7 @@ describe("shell commands", () => {
     "rg --pr-glob '*.txt' foo",
     "rg --pr-glob='*.txt' foo",
     "rg --pretty foo",
-    "git diff --output=/Users/ash/.zshrc",
+    "git diff --output=/Users/someone/.zshrc",
     "git log --ext-diff",
     "git branch -D main",
     "git branch --delete main",
@@ -316,15 +316,15 @@ describe("edits", () => {
     expect(editInside(`${FOLDER}/src/a.ts`, FOLDER)).toBeNull();
     expect(editInside("src/a.ts", FOLDER)).toBeNull();
     expect(editInside(`${FOLDER}/src/../README.md`, `${FOLDER}/`)).toBeNull();
-    for (const path of [`${FOLDER}/../hub-y/a.ts`, `${FOLDER}-other/a.ts`, "/Users/ash/.zshrc", "~/.zshrc", "../escape.ts", FOLDER, "/"])
+    for (const path of [`${FOLDER}/../hub-y/a.ts`, `${FOLDER}-other/a.ts`, "/Users/someone/.zshrc", "~/.zshrc", "../escape.ts", FOLDER, "/"])
       expect(editInside(path, FOLDER), path).not.toBeNull();
   });
 
   it("never touch what changes how tools run, and never from a folder too broad to be the chat's own", () => {
     for (const path of [".git/config", ".git/hooks/pre-commit", ".claude/settings.json", ".mcp.json", ".npmrc", ".envrc", ".husky/pre-commit", ".vscode/tasks.json", ".cargo/config.toml", "sub/.git/config", "node_modules/pkg/index.js"])
       expect(editInside(`${FOLDER}/${path}`, FOLDER), path).not.toBeNull();
-    expect(editInside("/Users/ash/notes.md", "/Users/ash")).not.toBeNull();
-    expect(editInside("/Users/ash/notes.md", "~")).not.toBeNull();
+    expect(editInside("/Users/someone/notes.md", "/Users/someone")).not.toBeNull();
+    expect(editInside("/Users/someone/notes.md", "~")).not.toBeNull();
     expect(editInside("/tmp/x/a.ts", undefined)).not.toBeNull();
   });
 });
@@ -394,7 +394,7 @@ describe("tool calls", () => {
 
 describe("where an edit really lands", () => {
   // The app's lookup (fs.rs git_locate_files): `shared` inside the folder is a link to the main checkout.
-  const MAIN = "/Users/ash/Projects/hub";
+  const MAIN = "/Users/someone/Projects/hub";
   const lookup: Locate = async (paths) =>
     paths.map((path) => {
       if (path.startsWith("/tmp/")) return null;

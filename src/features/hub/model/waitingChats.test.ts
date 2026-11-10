@@ -27,8 +27,8 @@ import {
 } from "./waitingChats";
 
 const PROJECTS: HubProject[] = [
-  { id: "vg-game", name: "EXO", shortName: "EXO", iconShape: "folder", folder: "/Users/ash/Projects/vg-game" },
-  { id: "hivra", name: "Hivra", shortName: "Hivra", iconShape: "folder", folder: "/Users/ash/Projects/hivra" },
+  { id: "vg-game", name: "EXO", shortName: "EXO", iconShape: "folder", folder: "/Users/someone/Projects/vg-game" },
+  { id: "hivra", name: "Hivra", shortName: "Hivra", iconShape: "folder", folder: "/Users/someone/Projects/hivra" },
 ];
 
 const ask = (requestId = 3, prompt = "Which boss comes first?"): UserQuestionPrompt => ({
@@ -39,7 +39,7 @@ const ask = (requestId = 3, prompt = "Which boss comes first?"): UserQuestionPro
 });
 
 type Chat = Parameters<typeof noteChats>[0][number];
-const chat = (over: Partial<Chat> & { id: string }): Chat => ({ cwd: "/Users/ash/Projects/vg-game", title: "claude · Boss fight", harness: "claude", blocks: [], ...over });
+const chat = (over: Partial<Chat> & { id: string }): Chat => ({ cwd: "/Users/someone/Projects/vg-game", title: "claude · Boss fight", harness: "claude", blocks: [], ...over });
 const markerChat = (id: string, text: string, over: Partial<Chat> = {}) =>
   chat({ id, blocks: [{ role: "user", text: "go", startedAt: 1 }, { role: "assistant", text }], ...over });
 
@@ -68,7 +68,7 @@ describe("which chats are waiting", () => {
   it("lists a live question and a Needs Ash line, each under its project, with the question and the pick", () => {
     noteChats([
       chat({ id: "s1", busy: true, pendingQuestion: ask() }),
-      markerChat("s2", "Needs Ash: Keep the old waitlist page?\nMy pick: Archive it.", { cwd: "/Users/ash/Projects/hivra", title: "claude · Waitlist" }),
+      markerChat("s2", "Needs Ash: Keep the old waitlist page?\nMy pick: Archive it.", { cwd: "/Users/someone/Projects/hivra", title: "claude · Waitlist" }),
       markerChat("s3", "All done."),
     ], 1000);
     expect(waitingChats().map((c) => [c.sessionId, c.projectName, c.chatName, c.question, c.pick])).toEqual([
@@ -79,8 +79,8 @@ describe("which chats are waiting", () => {
   });
 
   it("a Mono's chat is named after the Mono and filed under the project it leads", () => {
-    addMono({ id: "vg-game-lead", name: "EXO lead", mascot: "robot", color: "#888", projects: ["/Users/ash/Projects/vg-game"], sessionId: "lead-chat" });
-    noteChats([markerChat("lead-chat", "Needs Ash: Cut Area 3 from the demo?\nMy pick: Cut it.", { cwd: "/Users/ash" })]);
+    addMono({ id: "vg-game-lead", name: "EXO lead", mascot: "robot", color: "#888", projects: ["/Users/someone/Projects/vg-game"], sessionId: "lead-chat" });
+    noteChats([markerChat("lead-chat", "Needs Ash: Cut Area 3 from the demo?\nMy pick: Cut it.", { cwd: "/Users/someone" })]);
     expect(waitingChats().map((c) => [c.chatName, c.projectId])).toEqual([["EXO lead", "vg-game"]]);
   });
 

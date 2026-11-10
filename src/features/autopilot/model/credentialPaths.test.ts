@@ -79,7 +79,7 @@ describe("a credential place, by any segment of a path", () => {
   it.each([
     "~/.aws/config",
     "~/.aws",
-    "/Users/ash/.aws/credentials",
+    "/Users/someone/.aws/credentials",
     "~/.kube/config",
     "~/.ssh/config",
     "~/.ssh",
@@ -120,7 +120,7 @@ describe("a credential place, by any segment of a path", () => {
     "src/app.ts",
     "README.md",
     "src/features/autopilot/model/tokenizer.ts",
-    "/Users/ash/project/.env.example",
+    "/Users/someone/project/.env.example",
     "~/.ssh/known_hosts",
     "notes/plan.md",
     "package.json",
@@ -163,9 +163,9 @@ describe("words a command runs with", () => {
       ["head", "~/.zshrc"],
       ["tail", "~/.bashrc"],
       ["cat", "~/Library/Preferences/com.apple.foo.plist"],
-      ["cat", "/Users/ash/.zshrc"],
+      ["cat", "/Users/someone/.zshrc"],
       ["cat", "/home/user/.profile"],
-      ["cat", "/Users/ash/Library/Preferences/com.apple.foo.plist"],
+      ["cat", "/Users/someone/Library/Preferences/com.apple.foo.plist"],
       ["cat", "/home/user/Library/Preferences/foo.plist"],
       ["cat", "~/Library/Preferences"],
     ])
@@ -173,7 +173,7 @@ describe("words a command runs with", () => {
     expect(credentialInWords(["cat", ".zshrc"])).toBeNull();
     expect(credentialInWords(["cat", "src/.zshrc"])).toBeNull();
     expect(credentialInWords(["cat", "~/notes.txt"])).toBeNull();
-    expect(credentialInWords(["cat", "/Users/ash/Worktrees/hub-x/README.md"])).toBeNull();
+    expect(credentialInWords(["cat", "/Users/someone/Worktrees/hub-x/README.md"])).toBeNull();
   });
 
   it("holds the password file of a Mac under any command that names it", () => {
@@ -242,7 +242,7 @@ describe("words a command runs with", () => {
 // `/./Users/…`, `//Users/…`, `/../Users/…`, `/users/…` was a different word to it. The kernel opens all of them. Every
 // spelling below names a file the plain form already holds, and every one has to hold.
 describe("a home file under another spelling (fix round 4, finding 1)", () => {
-  const FOLDER = "/Users/ash/Worktrees/hub-x";
+  const FOLDER = "/Users/someone/Worktrees/hub-x";
   const HOMES = [
     // the plain forms
     "~",
@@ -381,7 +381,7 @@ describe("a home file under another spelling (fix round 4, finding 1)", () => {
       expect(credentialInWords(["cat", word], FOLDER), word).toBeNull();
     for (const word of [".zshrc", "./.zshrc", "src/../.zshrc", "../README.md"]) expect(credentialInWords(["cat", word]), word).toBeNull();
     // A chat that sits in the home folder itself: its own relative name is the home file.
-    expect(credentialInWords(["cat", ".zshrc"], "/Users/ash")).not.toBeNull();
+    expect(credentialInWords(["cat", ".zshrc"], "/Users/someone")).not.toBeNull();
   });
 
   // A backup or a local copy of a startup file carries the same exports under another name.
@@ -396,24 +396,24 @@ describe("a home file under another spelling (fix round 4, finding 1)", () => {
   // An absolute path inside the chat's own folder is the chat's file, like the relative name. A read tool always gives
   // an absolute path, so a project that ships its own `.profile` or `.bashrc` is not held for it.
   it("lets the chat's own copy of a startup file through when it is named by its absolute path", () => {
-    for (const word of [`${FOLDER}/.zshrc`, `${FOLDER}/src/.bashrc`, `${FOLDER}/./.profile`, "/users/ash/worktrees/hub-x/.zshrc", `${FOLDER}/x/../.zshrc`, `${FOLDER}/Library/Preferences/x.plist`])
+    for (const word of [`${FOLDER}/.zshrc`, `${FOLDER}/src/.bashrc`, `${FOLDER}/./.profile`, "/users/someone/worktrees/hub-x/.zshrc", `${FOLDER}/x/../.zshrc`, `${FOLDER}/Library/Preferences/x.plist`])
       expect(credentialInWords(["cat", word], FOLDER), word).toBeNull();
     // Out of the folder by a climb, or into a folder that only starts the same, it is held.
-    for (const word of [`${FOLDER}/../.zshrc`, `${FOLDER}/../../.zshrc`, `${FOLDER}-copy/.zshrc`, `${FOLDER.replace("hub-x", "hub-xy")}/.zshrc`, "/Users/ash/.zshrc", `${FOLDER}/../../Library/Preferences/x.plist`])
+    for (const word of [`${FOLDER}/../.zshrc`, `${FOLDER}/../../.zshrc`, `${FOLDER}-copy/.zshrc`, `${FOLDER.replace("hub-x", "hub-xy")}/.zshrc`, "/Users/someone/.zshrc", `${FOLDER}/../../Library/Preferences/x.plist`])
       expect(credentialInWords(["cat", word], FOLDER), word).not.toBeNull();
     // With no folder to compare to, the absolute name is held as before; so is a folder as shallow as a home folder.
     expect(credentialInWords(["cat", `${FOLDER}/.zshrc`])).not.toBeNull();
-    expect(credentialInWords(["cat", "/Users/ash/.zshrc"], "/Users/ash")).not.toBeNull();
-    expect(credentialInWords(["cat", "/Users/ash/.zshrc"], "/Users")).not.toBeNull();
-    expect(credentialInWords(["cat", "/Users/ash/.zshrc"], "/")).not.toBeNull();
+    expect(credentialInWords(["cat", "/Users/someone/.zshrc"], "/Users/someone")).not.toBeNull();
+    expect(credentialInWords(["cat", "/Users/someone/.zshrc"], "/Users")).not.toBeNull();
+    expect(credentialInWords(["cat", "/Users/someone/.zshrc"], "/")).not.toBeNull();
   });
 
   // Claude Code's file tools trim a path and resolve it before they open it, so a leading or trailing space is not a way out.
   it("reads a path with spaces or line breaks around it as the path it opens", () => {
-    for (const word of [" /Users/ash/.zshrc", "/Users/ash/.zshrc ", "\t/Users/ash/.zshrc", "\n/Users/ash/.zshrc\n", "  ~/.zshrc  ", " /./users/ash/Library/Preferences/x.plist"])
+    for (const word of [" /Users/someone/.zshrc", "/Users/someone/.zshrc ", "\t/Users/someone/.zshrc", "\n/Users/someone/.zshrc\n", "  ~/.zshrc  ", " /./users/someone/Library/Preferences/x.plist"])
       expect(credentialInWords(["cat", word], FOLDER), JSON.stringify(word)).not.toBeNull();
     expect(credentialPath(" ~/.ssh/id_rsa ")).toBe(true);
-    expect(credentialInPaths(["\n/Users/ash/.zshrc"], FOLDER)).not.toBeNull();
+    expect(credentialInPaths(["\n/Users/someone/.zshrc"], FOLDER)).not.toBeNull();
   });
 
   // The Linux names for the same thing: /proc/<pid>/root is the whole file system, and a process's environment and
@@ -546,18 +546,18 @@ describe("a credential place under another spelling (fix round 4, finding 1)", (
 });
 
 describe("a read tool's own paths (fix round 4, finding 4)", () => {
-  const FOLDER = "/Users/ash/Worktrees/hub-x";
+  const FOLDER = "/Users/someone/Worktrees/hub-x";
 
   it("names the first path that is a login, a credential place or a home shell file", () => {
-    expect(credentialInPaths(["/./Users/ash/.zshrc"], FOLDER)).toBe("/./Users/ash/.zshrc");
-    expect(credentialInPaths(["README.md", "/Users/ash/Library/Application Support/Code/x"], FOLDER)).toBe("/Users/ash/Library/Application Support/Code/x");
+    expect(credentialInPaths(["/./Users/someone/.zshrc"], FOLDER)).toBe("/./Users/someone/.zshrc");
+    expect(credentialInPaths(["README.md", "/Users/someone/Library/Application Support/Code/x"], FOLDER)).toBe("/Users/someone/Library/Application Support/Code/x");
     expect(credentialInPaths(["../../.zshrc"], FOLDER)).toBe("../../.zshrc");
     expect(credentialInPaths(["/etc/master.passwd"])).toBe("/etc/master.passwd");
   });
 
   it("reads a path with a space in it whole, which the text reading splits", () => {
-    expect(credentialInText("/users/ash/library/application support/code/user/settings.json")).toBe(false);
-    expect(credentialInPaths(["/users/ash/library/application support/code/user/settings.json"])).not.toBeNull();
+    expect(credentialInText("/users/someone/library/application support/code/user/settings.json")).toBe(false);
+    expect(credentialInPaths(["/users/someone/library/application support/code/user/settings.json"])).not.toBeNull();
   });
 
   it("is null for nothing and for ordinary paths", () => {
@@ -573,7 +573,7 @@ describe("a read tool's own paths (fix round 4, finding 4)", () => {
 });
 
 describe("a read that walks folders", () => {
-  const FOLDER = "/Users/ash/Worktrees/hub-x";
+  const FOLDER = "/Users/someone/Worktrees/hub-x";
 
   it("has to start inside the chat's own folder", () => {
     for (const words of [
@@ -586,7 +586,7 @@ describe("a read that walks folders", () => {
       ["grep", "-r", "x", `${FOLDER}/..`],
       ["rg", ".", "~/Library/Keychains"],
       ["rg", "-uuu", ".", "~"],
-      ["rg", "--no-ignore", "x", "/Users/ash"],
+      ["rg", "--no-ignore", "x", "/Users/someone"],
       ["rg", "--hidden", "x", "/etc"],
       ["fd", ".", "~"],
       ["tree", "~"],
@@ -599,8 +599,8 @@ describe("a read that walks folders", () => {
       expect(walkHeld(words, FOLDER), words.join(" ")).toBe(true);
     // A folder too broad to be a chat's own: only a relative place can be shown to stay inside the working folder.
     // Recursive grep is held everywhere, so this is a search that still has its ignore rules.
-    expect(walkHeld(["rg", "foo", "src"], "/Users/ash")).toBe(false);
-    expect(walkHeld(["grep", "-r", "x", "/Users/ash/src"], "/Users/ash")).toBe(true);
+    expect(walkHeld(["rg", "foo", "src"], "/Users/someone")).toBe(false);
+    expect(walkHeld(["grep", "-r", "x", "/Users/someone/src"], "/Users/someone")).toBe(true);
     expect(walkHeld(["grep", "-r", "x", "/etc"], undefined)).toBe(true);
     expect(walkHeld(["grep", "-r", "x", "../.."], undefined)).toBe(true);
   });
@@ -632,18 +632,18 @@ describe("a read that walks folders", () => {
   // folders). So its paths are held to the same rule as any other walk.
   it("holds a git diff that compares paths outside the chat's folder, with or without --no-index", () => {
     for (const words of [
-      ["git", "diff", "/Users/ash/.zshrc", "/dev/null"],
-      ["git", "diff", "--no-index", "/Users/ash/.zshrc", "/dev/null"],
-      ["git", "diff", "--no-index", "/dev/null", "/./Users/ash/.zshrc"],
+      ["git", "diff", "/Users/someone/.zshrc", "/dev/null"],
+      ["git", "diff", "--no-index", "/Users/someone/.zshrc", "/dev/null"],
+      ["git", "diff", "--no-index", "/dev/null", "/./Users/someone/.zshrc"],
       ["git", "diff", "--no-ind", "~/", "/tmp/empty"],
       ["git", "diff", "~/", "/tmp/empty"],
-      ["git", "diff", "--no-index", "/Users/ash", "/tmp/empty"],
-      ["git", "diff", "/Users/ash/", "/tmp/empty"],
+      ["git", "diff", "--no-index", "/Users/someone", "/tmp/empty"],
+      ["git", "diff", "/Users/someone/", "/tmp/empty"],
       ["git", "diff", "/tmp/empty", "/"],
       ["git", "diff", "--no-index", "..", "src"],
       ["git", "diff", "../other", "src"],
       ["git", "diff", "--stat", "/etc", "/tmp/empty"],
-      ["git", "diff", "HEAD", "--", "/Users/ash/.zshrc"],
+      ["git", "diff", "HEAD", "--", "/Users/someone/.zshrc"],
       ["git", "diff", "--no-index", `${FOLDER}/..`, "/tmp/empty"],
       ["git", "diff", "--no-index", "~/.aws", "/tmp/empty"],
     ])
@@ -772,7 +772,7 @@ describe("a read that walks folders", () => {
       expect(walkHeld(words, FOLDER), words.join(" ")).toBe(false);
     // Recursive grep waits wherever it starts, including a missing folder and one too shallow to be a chat's own.
     expect(walkHeld(["grep", "-r", "x", "src"], undefined)).toBe(true);
-    expect(walkHeld(["grep", "-r", "x", "src"], "/Users/ash")).toBe(true);
+    expect(walkHeld(["grep", "-r", "x", "src"], "/Users/someone")).toBe(true);
     expect(walkHeld(["rg", "-uuu", "foo", "src"], undefined)).toBe(true);
   });
 });

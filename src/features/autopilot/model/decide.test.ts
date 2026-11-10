@@ -122,7 +122,7 @@ describe("a question with no pick", () => {
 });
 
 describe("a tool approval under autopilot", () => {
-  const FOLDER = "/Users/ash/Worktrees/hub-x";
+  const FOLDER = "/Users/someone/Worktrees/hub-x";
   const SECRET_FILE = "/home/user/.ssh/id_ed25519";
   const bash = (command: string) => ({ text: "", tool: { title: command, kind: "execute" }, approval: { requestId: 1, call: { tool: "Bash", command } } });
 
@@ -212,7 +212,7 @@ describe("a tool approval under autopilot", () => {
     for (const command of ["rg -uuu . .", "rg -uu . .", "rg --no-ignore . .", "rg --hidden foo src", "grep -r BEGIN .", "grep -rn TODO src", "grep -d recurse BEGIN ."])
       expect(approvalVerdict(bash(command), FOLDER), command).toMatchObject({ kind: "held" });
     // An absolute place can't be shown to be inside the working folder.
-    expect(approvalVerdict(bash("grep -rn TODO /Users/ash/Projects/other"), undefined)).toMatchObject({ kind: "held" });
+    expect(approvalVerdict(bash("grep -rn TODO /Users/someone/Projects/other"), undefined)).toMatchObject({ kind: "held" });
     expect(approvalVerdict(bash("find . -name '.env'"), FOLDER)).toMatchObject({ kind: "held", red: "credentials" });
     // A search for the word is not a file: the names that merely hold a word pass.
     expect(approvalVerdict(bash("grep token src/app.ts"), FOLDER)).toMatchObject({ kind: "allow" });
@@ -262,9 +262,9 @@ describe("a tool approval under autopilot", () => {
       "head ~/.zshrc",
       "tail ~/.bashrc",
       "cat ~/Library/Preferences/com.apple.foo.plist",
-      "cat /Users/ash/.zshrc",
+      "cat /Users/someone/.zshrc",
       "cat /home/user/.profile",
-      "cat /Users/ash/Library/Preferences/com.apple.foo.plist",
+      "cat /Users/someone/Library/Preferences/com.apple.foo.plist",
       "less ~/.zshrc",
     ])
       expect(approvalVerdict(bash(command), FOLDER), command).toMatchObject({ kind: "held" });
@@ -278,41 +278,41 @@ describe("a tool approval under autopilot", () => {
   // file is the case the review ran; the rest are the same hole through other readers and other spellings.
   it("holds a read of a home shell file or preferences file written another way (fix round 4, finding 1)", () => {
     for (const command of [
-      "cat /./Users/ash/.zshrc",
-      "head -n 10000 /./Users/ash/.zshrc",
-      "tail -n +1 /./Users/ash/.zshrc",
-      "grep export /./Users/ash/.zshrc",
-      "grep . /./Users/ash/.zshrc",
-      "git diff --no-index /./Users/ash/.zshrc /dev/null",
-      "cat /../Users/ash/.zshrc",
-      "cat /usr/local/../../Users/ash/.zshrc",
-      "cat //Users/ash/.zshrc",
-      "cat /users/ash/.zshrc",
-      "cat /USERS/ash/.zshrc",
-      "head -n 5 /users/ash/.zshrc",
-      "head -n 5 /./Users/ash/Library/Preferences/com.apple.foo.plist",
-      "cat /users/ash/Library/Preferences/com.apple.foo.plist",
-      "cat /Users/ash/Library/./Preferences/com.apple.foo.plist",
-      "cat /Users/ash/../ash/.zshrc",
+      "cat /./Users/someone/.zshrc",
+      "head -n 10000 /./Users/someone/.zshrc",
+      "tail -n +1 /./Users/someone/.zshrc",
+      "grep export /./Users/someone/.zshrc",
+      "grep . /./Users/someone/.zshrc",
+      "git diff --no-index /./Users/someone/.zshrc /dev/null",
+      "cat /../Users/someone/.zshrc",
+      "cat /usr/local/../../Users/someone/.zshrc",
+      "cat //Users/someone/.zshrc",
+      "cat /users/someone/.zshrc",
+      "cat /users/someone/.zshrc",
+      "head -n 5 /users/someone/.zshrc",
+      "head -n 5 /./Users/someone/Library/Preferences/com.apple.foo.plist",
+      "cat /users/someone/Library/Preferences/com.apple.foo.plist",
+      "cat /Users/someone/Library/./Preferences/com.apple.foo.plist",
+      "cat /Users/someone/../ash/.zshrc",
       "cat /Users/./ash/.zshrc",
-      "cat /Users/ash/.zshrc/",
-      "cat /Users/ash/./.zshrc",
-      "cat /Users/ASH/.ZSHRC",
+      "cat /Users/someone/.zshrc/",
+      "cat /Users/someone/./.zshrc",
+      "cat /users/someone/.ZSHRC",
       "cat ~/./.zshrc",
       "cat ~//.zshrc",
       "cat ~/../ash/.zshrc",
-      "cat /System/Volumes/Data/Users/ash/.zshrc",
-      "cat '/Volumes/Macintosh HD/Users/ash/.zshrc'",
+      "cat /System/Volumes/Data/Users/someone/.zshrc",
+      "cat '/Volumes/Macintosh HD/Users/someone/.zshrc'",
       "cat /var/root/.zshrc",
       "cat /private/var/root/.zshrc",
       "cat /root/.bashrc",
-      "cat /Users/ash/.bash_login",
-      "git diff /Users/ash/.zshrc /dev/null",
-      "git diff --no-index /dev/null /users/ash/.zshrc",
-      "grep -f/./Users/ash/.zshrc x README.md",
-      "grep --file=//Users/ash/.zshrc x README.md",
-      "wc --files0-from=/./Users/ash/.zshrc",
-      "file -f /users/ash/.zshrc",
+      "cat /Users/someone/.bash_login",
+      "git diff /Users/someone/.zshrc /dev/null",
+      "git diff --no-index /dev/null /users/someone/.zshrc",
+      "grep -f/./Users/someone/.zshrc x README.md",
+      "grep --file=//Users/someone/.zshrc x README.md",
+      "wc --files0-from=/./Users/someone/.zshrc",
+      "file -f /users/someone/.zshrc",
       "cat /etc/master.passwd",
       "cat /private/etc/master.passwd",
       "cat /etc/./master.passwd",
@@ -329,9 +329,9 @@ describe("a tool approval under autopilot", () => {
       expect(approvalVerdict(bash(command), FOLDER), command).toMatchObject({ kind: "held" });
     // Ordinary reads of the same shapes stay reads.
     for (const command of [
-      "cat /./Users/ash/Worktrees/hub-x/README.md",
-      "cat //Users/ash/Worktrees/hub-x/src/app.ts",
-      "cat /users/ash/Worktrees/hub-x/README.md",
+      "cat /./Users/someone/Worktrees/hub-x/README.md",
+      "cat //Users/someone/Worktrees/hub-x/src/app.ts",
+      "cat /users/someone/Worktrees/hub-x/README.md",
       "cat ./README.md",
       "cat src/../README.md",
       "cat ./.zshrc",
@@ -351,23 +351,23 @@ describe("a tool approval under autopilot", () => {
 
     it("holds a home shell file, a preferences file or a login, spelled any way", () => {
       for (const path of [
-        "/Users/ash/.zshrc",
+        "/Users/someone/.zshrc",
         "~/.zshrc",
-        "/./Users/ash/.zshrc",
-        "//Users/ash/.zshrc",
-        "/users/ash/.zshrc",
-        "/USERS/ash/.zshrc",
-        "/../Users/ash/.zshrc",
-        "/usr/local/../../Users/ash/.zshrc",
-        "/Users/ash/../ash/.zshrc",
-        "/System/Volumes/Data/Users/ash/.zshrc",
-        "/Volumes/Macintosh HD/Users/ash/.zshrc",
-        "/Users/ash/Library/Preferences/com.apple.foo.plist",
-        "/./Users/ash/Library/Preferences/com.apple.foo.plist",
-        "/users/ash/Library/./Preferences/com.apple.foo.plist",
-        "/Users/ash/Library/Application Support/Code/User/settings.json",
-        "/Users/ash/.ssh/id_rsa",
-        "/./Users/ash/.aws/credentials",
+        "/./Users/someone/.zshrc",
+        "//Users/someone/.zshrc",
+        "/users/someone/.zshrc",
+        "/users/someone/.zshrc",
+        "/../Users/someone/.zshrc",
+        "/usr/local/../../Users/someone/.zshrc",
+        "/Users/someone/../ash/.zshrc",
+        "/System/Volumes/Data/Users/someone/.zshrc",
+        "/Volumes/Macintosh HD/Users/someone/.zshrc",
+        "/Users/someone/Library/Preferences/com.apple.foo.plist",
+        "/./Users/someone/Library/Preferences/com.apple.foo.plist",
+        "/users/someone/Library/./Preferences/com.apple.foo.plist",
+        "/Users/someone/Library/Application Support/Code/User/settings.json",
+        "/Users/someone/.ssh/id_rsa",
+        "/./Users/someone/.aws/credentials",
         "/etc/master.passwd",
         "/etc/./shadow",
         "../../.zshrc",
@@ -376,11 +376,11 @@ describe("a tool approval under autopilot", () => {
         for (const tool of ["Read", "NotebookRead"])
           expect(approvalVerdict(read(tool, [path]), FOLDER), `${tool} ${path}`).toMatchObject({ kind: "held", red: "credentials" });
       // One path among several is enough.
-      expect(approvalVerdict(read("Read", [`${FOLDER}/README.md`, "/./Users/ash/.zshrc"]), FOLDER)).toMatchObject({ kind: "held", red: "credentials" });
+      expect(approvalVerdict(read("Read", [`${FOLDER}/README.md`, "/./Users/someone/.zshrc"]), FOLDER)).toMatchObject({ kind: "held", red: "credentials" });
     });
 
     it("holds a path list it can't read, and a path with a NUL in it", () => {
-      for (const paths of ["/Users/ash/.zshrc", { 0: "/Users/ash/.zshrc" }, [7], [null], [["/Users/ash/.zshrc"]], ["/tmp/ok\0.txt"], ["/tmp/ok\0/../../Users/ash/.zshrc"]])
+      for (const paths of ["/Users/someone/.zshrc", { 0: "/Users/someone/.zshrc" }, [7], [null], [["/Users/someone/.zshrc"]], ["/tmp/ok\0.txt"], ["/tmp/ok\0/../../Users/someone/.zshrc"]])
         expect(approvalVerdict(read("Read", paths), FOLDER), JSON.stringify(paths)).toMatchObject({ kind: "held" });
     });
 
@@ -390,15 +390,15 @@ describe("a tool approval under autopilot", () => {
         "/./etc/hosts",
         `${FOLDER}/README.md`,
         `${FOLDER}/src/app.ts`,
-        "/./Users/ash/Worktrees/hub-x/README.md",
-        "/users/ash/Worktrees/hub-x/src/app.ts",
+        "/./Users/someone/Worktrees/hub-x/README.md",
+        "/users/someone/Worktrees/hub-x/src/app.ts",
         "README.md",
         "src/app.ts",
         "./src/../README.md",
         ".zshrc",
         "../README.md",
         "/tmp/notes.txt",
-        "/Users/ash/Documents/plan.md",
+        "/Users/someone/Documents/plan.md",
         // A project that ships its own startup file: the read tool names it absolutely, and it is the project's.
         `${FOLDER}/.zshrc`,
         `${FOLDER}/src/.profile`,
@@ -412,7 +412,7 @@ describe("a tool approval under autopilot", () => {
     it("leaves an edit's path to the edit rule, which already holds anything outside the folder", () => {
       const edit = (path: string) => ({ text: "", tool: { title: "Edit a.ts" }, approval: { requestId: 3, call: { tool: "Edit", paths: [path] } } });
       expect(approvalVerdict(edit(`${FOLDER}/src/a.ts`), FOLDER)).toMatchObject({ kind: "allow" });
-      expect(approvalVerdict(edit("/Users/ash/Documents/a.ts"), FOLDER)).toMatchObject({ kind: "held", red: null });
+      expect(approvalVerdict(edit("/Users/someone/Documents/a.ts"), FOLDER)).toMatchObject({ kind: "held", red: null });
     });
   });
 
@@ -440,8 +440,8 @@ describe("a tool approval under autopilot", () => {
   // file in them, hidden ones too, so it can dump a home folder without ever naming a login file.
   it("holds a git diff that compares paths outside the chat's folder (fix round 4, finding 1)", () => {
     for (const command of [
-      "git diff /Users/ash /tmp/empty",
-      "git diff --no-index /Users/ash/ /tmp/empty",
+      "git diff /Users/someone /tmp/empty",
+      "git diff --no-index /Users/someone/ /tmp/empty",
       "git diff ~/ /tmp/empty",
       "git diff --no-index ~/Documents /tmp/empty",
       "git diff /etc /tmp/empty",
@@ -473,8 +473,8 @@ describe("a tool approval under autopilot", () => {
     // The folder decides where a climb lands: out of a project under /tmp it reaches no home folder, and a chat that
     // sits in the home folder itself has the home file as its own relative name.
     expect(approvalVerdict(bash("cat ../.zshrc"), "/tmp/work/proj")).toMatchObject({ kind: "allow" });
-    expect(approvalVerdict(bash("cat .zshrc"), "/Users/ash")).toMatchObject({ kind: "held" });
-    expect(approvalVerdict(bash("cat ./Library/Preferences/com.apple.foo.plist"), "/Users/ash")).toMatchObject({ kind: "held" });
+    expect(approvalVerdict(bash("cat .zshrc"), "/Users/someone")).toMatchObject({ kind: "held" });
+    expect(approvalVerdict(bash("cat ./Library/Preferences/com.apple.foo.plist"), "/Users/someone")).toMatchObject({ kind: "held" });
     expect(approvalVerdict(bash("cat .zshrc"), FOLDER)).toMatchObject({ kind: "allow" });
   });
 
@@ -519,21 +519,21 @@ describe("a tool approval under autopilot", () => {
 
 describe("which project a chat belongs to", () => {
   const projects = [
-    { id: "hivra", folder: "/Users/ash/Projects/hivra" },
-    { id: "hub", folder: "/Users/ash/Projects/monocode-hub" },
+    { id: "hivra", folder: "/Users/someone/Projects/hivra" },
+    { id: "hub", folder: "/Users/someone/Projects/monocode-hub" },
     { id: "ash", folder: null },
   ];
 
   it("a Lead is its project; a one-project Mono that project; a multi-project Mono none", () => {
-    expect(chatProject({ cwd: "/Users/ash" }, projects, { projects: [], leadProjectId: "vg-game" })).toBe("vg-game");
-    expect(chatProject({ cwd: "/Users/ash" }, projects, { projects: ["/Users/ash/Projects/hivra"] })).toBe("hivra");
-    expect(chatProject({ cwd: "/Users/ash" }, projects, { projects: ["/Users/ash/Projects/hivra", "/Users/ash/Projects/monocode-hub"] })).toBeNull();
+    expect(chatProject({ cwd: "/Users/someone" }, projects, { projects: [], leadProjectId: "vg-game" })).toBe("vg-game");
+    expect(chatProject({ cwd: "/Users/someone" }, projects, { projects: ["/Users/someone/Projects/hivra"] })).toBe("hivra");
+    expect(chatProject({ cwd: "/Users/someone" }, projects, { projects: ["/Users/someone/Projects/hivra", "/Users/someone/Projects/monocode-hub"] })).toBeNull();
   });
 
   it("any other chat goes by its folder", () => {
-    expect(chatProject({ cwd: "/Users/ash/Projects/monocode-hub" }, projects)).toBe("hub");
-    expect(chatProject({ cwd: "/Users/ash/Projects/hivra/dashboard" }, projects)).toBe("hivra");
-    expect(chatProject({ cwd: "/Users/ash/Projects/hivra-old" }, projects)).toBeNull();
-    expect(chatProject({ cwd: "/tmp/x", worktreeCwd: "/Users/ash/Projects/hivra" }, projects)).toBe("hivra");
+    expect(chatProject({ cwd: "/Users/someone/Projects/monocode-hub" }, projects)).toBe("hub");
+    expect(chatProject({ cwd: "/Users/someone/Projects/hivra/dashboard" }, projects)).toBe("hivra");
+    expect(chatProject({ cwd: "/Users/someone/Projects/hivra-old" }, projects)).toBeNull();
+    expect(chatProject({ cwd: "/tmp/x", worktreeCwd: "/Users/someone/Projects/hivra" }, projects)).toBe("hivra");
   });
 });
