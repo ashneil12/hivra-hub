@@ -1,7 +1,7 @@
 // Where a login lives (WP-101 fix round 2, item B): a credential folder the command was never told the name of, and the
 // files that hold one under names the red list's patterns don't list. Both lists are here, held and passing.
 import { describe, expect, it } from "vitest";
-import { credentialInText, credentialInWords, credentialName, credentialPath, walkHeld } from "./credentialPaths";
+import { credentialInPaths, credentialInText, credentialInWords, credentialName, credentialPath, walkHeld } from "./credentialPaths";
 
 describe("a credential file, by name", () => {
   it.each([
@@ -500,6 +500,33 @@ describe("a credential place under another spelling (fix round 4, finding 1)", (
     expect(credentialInText("cat /etc//master.passwd")).toBe(true);
     expect(credentialInText("open ~/library/./keychains/login")).toBe(true);
     expect(credentialInText("read /etc/./hosts")).toBe(false);
+  });
+});
+
+describe("a read tool's own paths (fix round 4, finding 4)", () => {
+  const FOLDER = "/Users/ash/Worktrees/hub-x";
+
+  it("names the first path that is a login, a credential place or a home shell file", () => {
+    expect(credentialInPaths(["/./Users/ash/.zshrc"], FOLDER)).toBe("/./Users/ash/.zshrc");
+    expect(credentialInPaths(["README.md", "/Users/ash/Library/Application Support/Code/x"], FOLDER)).toBe("/Users/ash/Library/Application Support/Code/x");
+    expect(credentialInPaths(["../../.zshrc"], FOLDER)).toBe("../../.zshrc");
+    expect(credentialInPaths(["/etc/master.passwd"])).toBe("/etc/master.passwd");
+  });
+
+  it("reads a path with a space in it whole, which the text reading splits", () => {
+    expect(credentialInText("/users/ash/library/application support/code/user/settings.json")).toBe(false);
+    expect(credentialInPaths(["/users/ash/library/application support/code/user/settings.json"])).not.toBeNull();
+  });
+
+  it("is null for nothing and for ordinary paths", () => {
+    expect(credentialInPaths(undefined)).toBeNull();
+    expect(credentialInPaths(null)).toBeNull();
+    expect(credentialInPaths([])).toBeNull();
+    expect(credentialInPaths(["README.md", "src/app.ts", `${FOLDER}/src/a.ts`, "/etc/hosts"], FOLDER)).toBeNull();
+  });
+
+  it("holds what it can't read: a list that isn't a list, a path that isn't text, a NUL", () => {
+    for (const paths of ["/tmp/x", {}, 7, [7], [null], [undefined], [["/tmp/x"]], ["/tmp/a\0b"]]) expect(credentialInPaths(paths), JSON.stringify(paths)).not.toBeNull();
   });
 });
 

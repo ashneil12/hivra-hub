@@ -330,6 +330,23 @@ export function credentialInWords(words: readonly string[], folder?: string): st
   return null;
 }
 
+/**
+ * The first of a read tool's own file paths (a Read call's `file_path`) that is a credential or a home shell file, or
+ * null. A path is judged whole, as given, which the red list's reading of prose cannot do: it splits a path at a space,
+ * so `Library/Application Support/…` was never seen as one place, and it does not know a startup file at all. A paths
+ * field that is not a list, a path that is not text and a path with a NUL in it (the kernel stops reading a name there)
+ * are named too: they can't be read, so they are held. `folder` is the chat's folder, for a relative path that climbs.
+ */
+export function credentialInPaths(paths: unknown, folder?: string): string | null {
+  if (paths === undefined || paths === null) return null;
+  if (!Array.isArray(paths)) return "(a list of files it can't read)";
+  for (const path of paths) {
+    if (typeof path !== "string") return "(a file name that isn't text)";
+    if (path.includes("\0") || homeShellFile(path, folder) || credentialPath(path)) return path;
+  }
+  return null;
+}
+
 /** Whether prose names a credential file: only path-shaped words count, so ordinary text is left alone. */
 export function credentialInText(text: string): boolean {
   for (const raw of text.split(/[^a-z0-9_.~/-]+/)) {

@@ -79,6 +79,16 @@ export function editInside(path: string, folder: string | undefined): SafeVerdic
   return null;
 }
 
+/**
+ * The files a read-only tool names (the Read tool's `file_path`), as the provider gave them, for the credential check
+ * (credentialPaths.ts credentialInPaths). An edit's files are not here: its rule is `editInside`. The value is not
+ * trusted to be a list of text, so it is returned as it came and the check holds what it can't read.
+ */
+export function readPaths(call: ApprovalCall | undefined): unknown {
+  if (!call || typeof call.tool !== "string" || !READ_ONLY_TOOLS.has(call.tool)) return undefined;
+  return call.paths;
+}
+
 // ---- shell -------------------------------------------------------------------------------------------------------
 
 /** Chaining, substitution, redirection, subshells, a newline: never allowed by itself, quoted or not. */

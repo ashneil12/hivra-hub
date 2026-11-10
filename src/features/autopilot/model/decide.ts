@@ -12,7 +12,8 @@ import type { Block } from "../../sessions/model/session";
 import type { TrustedServers } from "./mcpTrust";
 import { callText, redListCategory, redListInWords, redVerdict, type RedCategory } from "./redList";
 import { questionVeto, reviewVeto } from "./reviewerRules";
-import { bashWords, safeCall } from "./safeApproval";
+import { credentialInPaths } from "./credentialPaths";
+import { bashWords, readPaths, safeCall } from "./safeApproval";
 import { forUser } from "../../hub/model/userName";
 
 export type CallVerdict =
@@ -113,6 +114,9 @@ export function approvalVerdict(
       const fromWords = redListInWords(words, folder);
       if (fromWords) return { kind: "held", red: fromWords, what, why: "it touches the red list" };
     }
+    // WP-101 fix round 4, finding 4: a read tool (Read, NotebookRead) names its file in `paths`, which the red list's text
+    // reading splits at a space and has no rule for a shell startup file in. The same path check as a shell word runs.
+    if (credentialInPaths(readPaths(block.approval?.call), folder)) return { kind: "held", red: "credentials", what, why: "it touches the red list" };
     // WP-101: a send, a delete, a payment, a publish or an account change always waits, whatever else says it may
     // (reviewerRules.ts). This can only hold, never allow.
     const reviewed = reviewVeto({

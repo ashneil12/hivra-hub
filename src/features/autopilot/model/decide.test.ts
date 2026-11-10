@@ -330,6 +330,75 @@ describe("a tool approval under autopilot", () => {
       expect(approvalVerdict(bash(command), FOLDER), command).toMatchObject({ kind: "allow" });
   });
 
+  // WP-101 fix round 4, finding 4: the Read tool names its file in `paths`, and neither check ever looked there for a home
+  // shell file (the red list's text reading splits a path at a space, and does not know a startup file at all).
+  describe("a Read tool call (fix round 4, finding 4)", () => {
+    const read = (tool: string, paths: unknown) => ({ text: "", tool: { title: `${tool} file`, kind: "read" }, approval: { requestId: 11, call: { tool, paths } } }) as never;
+
+    it("holds a home shell file, a preferences file or a login, spelled any way", () => {
+      for (const path of [
+        "/Users/ash/.zshrc",
+        "~/.zshrc",
+        "/./Users/ash/.zshrc",
+        "//Users/ash/.zshrc",
+        "/users/ash/.zshrc",
+        "/USERS/ash/.zshrc",
+        "/../Users/ash/.zshrc",
+        "/usr/local/../../Users/ash/.zshrc",
+        "/Users/ash/../ash/.zshrc",
+        "/System/Volumes/Data/Users/ash/.zshrc",
+        "/Volumes/Macintosh HD/Users/ash/.zshrc",
+        "/Users/ash/Library/Preferences/com.apple.foo.plist",
+        "/./Users/ash/Library/Preferences/com.apple.foo.plist",
+        "/users/ash/Library/./Preferences/com.apple.foo.plist",
+        "/Users/ash/Library/Application Support/Code/User/settings.json",
+        "/Users/ash/.ssh/id_rsa",
+        "/./Users/ash/.aws/credentials",
+        "/etc/master.passwd",
+        "/etc/./shadow",
+        "../../.zshrc",
+        "../../Library/Preferences/com.apple.foo.plist",
+      ])
+        for (const tool of ["Read", "NotebookRead"])
+          expect(approvalVerdict(read(tool, [path]), FOLDER), `${tool} ${path}`).toMatchObject({ kind: "held", red: "credentials" });
+      // One path among several is enough.
+      expect(approvalVerdict(read("Read", [`${FOLDER}/README.md`, "/./Users/ash/.zshrc"]), FOLDER)).toMatchObject({ kind: "held", red: "credentials" });
+    });
+
+    it("holds a path list it can't read, and a path with a NUL in it", () => {
+      for (const paths of ["/Users/ash/.zshrc", { 0: "/Users/ash/.zshrc" }, [7], [null], [["/Users/ash/.zshrc"]], ["/tmp/ok\0.txt"], ["/tmp/ok\0/../../Users/ash/.zshrc"]])
+        expect(approvalVerdict(read("Read", paths), FOLDER), JSON.stringify(paths)).toMatchObject({ kind: "held" });
+    });
+
+    it("still reads the chat's own files and ordinary files", () => {
+      for (const path of [
+        "/etc/hosts",
+        "/./etc/hosts",
+        `${FOLDER}/README.md`,
+        `${FOLDER}/src/app.ts`,
+        "/./Users/ash/Worktrees/hub-x/README.md",
+        "/users/ash/Worktrees/hub-x/src/app.ts",
+        "README.md",
+        "src/app.ts",
+        "./src/../README.md",
+        ".zshrc",
+        "../README.md",
+        "/tmp/notes.txt",
+        "/Users/ash/Documents/plan.md",
+      ])
+        expect(approvalVerdict(read("Read", [path]), FOLDER), path).toMatchObject({ kind: "allow" });
+      // No path at all, as with Grep, Glob and LS: nothing to judge, so the tool is read as before.
+      expect(approvalVerdict(read("Read", undefined), FOLDER)).toMatchObject({ kind: "allow" });
+      expect(approvalVerdict(read("Grep", undefined), FOLDER)).toMatchObject({ kind: "allow" });
+    });
+
+    it("leaves an edit's path to the edit rule, which already holds anything outside the folder", () => {
+      const edit = (path: string) => ({ text: "", tool: { title: "Edit a.ts" }, approval: { requestId: 3, call: { tool: "Edit", paths: [path] } } });
+      expect(approvalVerdict(edit(`${FOLDER}/src/a.ts`), FOLDER)).toMatchObject({ kind: "allow" });
+      expect(approvalVerdict(edit("/Users/ash/Documents/a.ts"), FOLDER)).toMatchObject({ kind: "held", red: null });
+    });
+  });
+
   // WP-101 fix round 4, finding 2: fd and ag short flags that turn the ignore rules off or show hidden files.
   it("holds an fd or ag search that shows hidden or ignored files, and ripgrep's -. (fix round 4, finding 2)", () => {
     for (const command of [
