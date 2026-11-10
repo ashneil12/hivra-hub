@@ -17,8 +17,10 @@ import {
   isLiveHarness,
   listHarnesses,
   refreshHarnessCatalogs,
+  canSteerHarnessSession,
   registerHarness,
   resetHarnessIdlePark,
+  routeHarnessSession,
   sendHarnessTurn,
   type HarnessAdapter,
 } from "./registry";
@@ -532,5 +534,38 @@ describe("harness registry", () => {
     bindHarnessSession("claude", "s2", "sess_2", "/repo");
     expect(restoreGoal).toHaveBeenCalledTimes(1);
     expect(restoreGoal).toHaveBeenCalledWith("s1", goal);
+  });
+});
+
+describe("More agents session route", () => {
+  it("sends a routed chat's turn to its route, never to the harness it was saved with", async () => {
+    const cursorTurns: string[] = [];
+    registerHarness(stub("cursor", { async sendTurn(input) { cursorTurns.push(input.text); } }));
+    const routed: string[] = [];
+    routeHarnessSession("chat-routed", {
+      ...stub("cursor"),
+      id: "more-agents",
+      canSteer: false,
+      async sendTurn(input: SendTurnInput) {
+        routed.push(input.text);
+      },
+    });
+    try {
+      const input = {
+        sessionId: "chat-routed",
+        cwd: "/tmp",
+        model: "",
+        runtimeMode: "default",
+        text: "hello",
+        onEvent: () => undefined,
+        harness: "cursor" as HarnessId,
+      } as unknown as SendTurnInput & { harness: HarnessId };
+      await sendHarnessTurn(input);
+      expect(routed).toEqual(["hello"]);
+      expect(cursorTurns).toEqual([]);
+      expect(canSteerHarnessSession("cursor", "chat-routed")).toBe(false);
+    } finally {
+      routeHarnessSession("chat-routed", null);
+    }
   });
 });

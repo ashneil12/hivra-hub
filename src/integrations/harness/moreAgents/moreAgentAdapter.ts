@@ -45,6 +45,10 @@ type Resume = { acpSessionId: string; cwd: string };
 const agentBySession = new Map<string, string>();
 const liveBySession = new Map<string, Live>();
 const resumeBySession = new Map<string, Resume>();
+/** The one start in progress per chat. A second message that arrives meanwhile waits for it, never spawns its own. */
+const starting = new Map<string, Promise<Live>>();
+/** Chats stopped while their start was still running: the start ends its process as soon as it has one. */
+const stopping = new Set<string>();
 
 function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -59,6 +63,7 @@ function startError(error: unknown): Error {
 }
 
 async function stop(sessionId: string): Promise<void> {
+  if (starting.has(sessionId)) stopping.add(sessionId);
   const live = liveBySession.get(sessionId);
   liveBySession.delete(sessionId);
   if (live) {
@@ -76,13 +81,29 @@ function settleApprovals(live: Live, decision: ApprovalDecision | "cancelled"): 
 }
 
 async function start(input: SendTurnInput, agentId: string): Promise<Live> {
+  const pending = starting.get(input.sessionId);
+  if (pending) {
+    const live = await pending;
+    live.onEvent = input.onEvent;
+    return live;
+  }
   const existing = liveBySession.get(input.sessionId);
   if (existing && existing.cwd === input.cwd && existing.agentId === agentId) {
     existing.onEvent = input.onEvent;
     return existing;
   }
   if (existing) await stop(input.sessionId);
+  const attempt = startLive(input, agentId);
+  starting.set(input.sessionId, attempt);
+  try {
+    return await attempt;
+  } finally {
+    if (starting.get(input.sessionId) === attempt) starting.delete(input.sessionId);
+    stopping.delete(input.sessionId);
+  }
+}
 
+async function startLive(input: SendTurnInput, agentId: string): Promise<Live> {
   const handlers: AcpHandlers = {};
   const acp = new AcpClient(input.sessionId, handlers);
   const ref: { current: Live | null } = { current: null };
@@ -121,6 +142,12 @@ async function start(input: SendTurnInput, agentId: string): Promise<Live> {
   } catch (error) {
     unwatchChild(input.sessionId);
     throw error;
+  }
+  if (stopping.has(input.sessionId)) {
+    acp.close(new Error("Stopped"));
+    unwatchChild(input.sessionId);
+    await killChild(input.sessionId).catch(() => undefined);
+    throw new Error("Stopped before it started.");
   }
 
   try {
