@@ -35,7 +35,10 @@ export type CompareRecord = {
   createdAt: number;
   /** The chat the compare was started from, when it is a real session id. */
   sourceId?: string;
+  /** Only chats that started. Each one has its own worktree. */
   children: FanOutChild[];
+  /** Models asked for that did not start because no worktree could be made for them. */
+  notStarted?: FanOutTargetRef[];
   winnerId?: string;
   discardedIds: string[];
   /** Clean-up state for discarded children only. Missing means still pending. */
