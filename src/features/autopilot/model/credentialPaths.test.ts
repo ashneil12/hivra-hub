@@ -536,6 +536,52 @@ describe("a read that walks folders", () => {
       expect(walkHeld(words, FOLDER), words.join(" ")).toBe(false);
   });
 
+  // WP-101 fix round 4, finding 1: `git diff` with two paths, one of them outside the repository, compares the two on
+  // disk with no `--no-index` at all, and it walks a folder it is given and prints every file in it (tried on scratch
+  // folders). So its paths are held to the same rule as any other walk.
+  it("holds a git diff that compares paths outside the chat's folder, with or without --no-index", () => {
+    for (const words of [
+      ["git", "diff", "/Users/ash/.zshrc", "/dev/null"],
+      ["git", "diff", "--no-index", "/Users/ash/.zshrc", "/dev/null"],
+      ["git", "diff", "--no-index", "/dev/null", "/./Users/ash/.zshrc"],
+      ["git", "diff", "--no-ind", "~/", "/tmp/empty"],
+      ["git", "diff", "~/", "/tmp/empty"],
+      ["git", "diff", "--no-index", "/Users/ash", "/tmp/empty"],
+      ["git", "diff", "/Users/ash/", "/tmp/empty"],
+      ["git", "diff", "/tmp/empty", "/"],
+      ["git", "diff", "--no-index", "..", "src"],
+      ["git", "diff", "../other", "src"],
+      ["git", "diff", "--stat", "/etc", "/tmp/empty"],
+      ["git", "diff", "HEAD", "--", "/Users/ash/.zshrc"],
+      ["git", "diff", "--no-index", `${FOLDER}/..`, "/tmp/empty"],
+      ["git", "diff", "--no-index", "~/.aws", "/tmp/empty"],
+    ])
+      expect(walkHeld(words, FOLDER), words.join(" ")).toBe(true);
+    // No folder is known: nothing absolute can be shown to be inside it.
+    expect(walkHeld(["git", "diff", "/etc/hosts", "/dev/null"], undefined)).toBe(true);
+    expect(walkHeld(["git", "diff", "../other", "src"], undefined)).toBe(true);
+  });
+
+  it("lets a git diff of revisions and of the chat's own files run", () => {
+    for (const words of [
+      ["git", "diff"],
+      ["git", "diff", "--stat"],
+      ["git", "diff", "HEAD~1"],
+      ["git", "diff", "HEAD~1", "--", "src/app.ts"],
+      ["git", "diff", "main..feature"],
+      ["git", "diff", "main...feature", "--", "src"],
+      ["git", "diff", "origin/main"],
+      ["git", "diff", "--cached", "--stat"],
+      ["git", "diff", "-U5", "HEAD"],
+      ["git", "diff", "--no-index", "src/a.ts", "src/b.ts"],
+      ["git", "diff", `${FOLDER}/src/a.ts`, `${FOLDER}/src/b.ts`],
+      ["git", "log", "-p", "--", "src/app.ts"],
+      ["git", "show", "HEAD:src/app.ts"],
+      ["git", "status"],
+    ])
+      expect(walkHeld(words, FOLDER), words.join(" ")).toBe(false);
+  });
+
   // WP-101 fix round 3, finding 2: an ignore-off search reads what a project keeps out of git, and grep has no ignore
   // list once it recurses. Both wait even when every path is inside the chat's folder.
   it("holds a search that turns ignores off, and recursive grep, even inside the chat's folder", () => {

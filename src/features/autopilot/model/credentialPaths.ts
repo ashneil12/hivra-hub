@@ -383,9 +383,15 @@ function grepRecurses(args: readonly string[]): boolean {
   return false;
 }
 
-/** Whether a command walks folders rather than reading the files it is named. */
+/**
+ * Whether a command walks folders rather than reading the files it is named. `git diff` is one: given two paths with one
+ * outside the repository (or any two, under `--no-index`) it compares them on disk, a folder against a folder prints
+ * every file in both, and no flag says so. Its revisions and pathspecs are relative words and stay inside the folder.
+ */
 function walksFolders(head: string, args: readonly string[]): boolean {
   switch (head) {
+    case "git":
+      return args[0] === "diff";
     case "rg":
     case "ag":
     case "find":

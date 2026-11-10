@@ -326,6 +326,23 @@ describe("a tool approval under autopilot", () => {
       expect(approvalVerdict(bash(command), FOLDER), command).toMatchObject({ kind: "allow" });
   });
 
+  // `git diff A B` with a path outside the repository is a file compare with no flag. Given two folders it prints every
+  // file in them, hidden ones too, so it can dump a home folder without ever naming a login file.
+  it("holds a git diff that compares paths outside the chat's folder (fix round 4, finding 1)", () => {
+    for (const command of [
+      "git diff /Users/ash /tmp/empty",
+      "git diff --no-index /Users/ash/ /tmp/empty",
+      "git diff ~/ /tmp/empty",
+      "git diff --no-index ~/Documents /tmp/empty",
+      "git diff /etc /tmp/empty",
+      "git diff ../other src",
+      "git diff --no-index / /tmp/empty",
+    ])
+      expect(approvalVerdict(bash(command), FOLDER), command).toMatchObject({ kind: "held" });
+    for (const command of ["git diff", "git diff --stat", "git diff HEAD~1 -- src/app.ts", "git diff main..feature", "git diff origin/main", "git diff --cached"])
+      expect(approvalVerdict(bash(command), FOLDER), command).toMatchObject({ kind: "allow" });
+  });
+
   // A relative path can reach the home folder by climbing out of the chat's folder. The folder is known here, so it is
   // resolved against it. (`../README.md` climbs too, but lands on nothing secret.)
   it("holds a relative path that climbs out of the chat's folder to a home shell file (fix round 4, finding 1)", () => {
