@@ -100,6 +100,9 @@ pub struct StandInRequest {
     pub stack_dir: PathBuf,
     pub services: Vec<ServicePort>,
     pub path_env: Option<String>,
+    /// Whether this start may fetch the package when it is not installed yet. A start a person
+    /// asked for may. The one at launch may not: the window would wait on a download.
+    pub may_download: bool,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -774,7 +777,9 @@ fn restart_fakes(env: &StackEnv, entry: &Entry) -> (bool, Option<String>) {
             ),
         );
     }
-    match restart_stand_in(env, entry) {
+    // The window is waiting on this launch, so nothing is downloaded here: a package that is
+    // not installed is a note, and starting the stack again fetches it.
+    match restart_stand_in(env, entry, false) {
         Ok(outcome) => (outcome.pid.is_some(), outcome.note),
         Err(error) => (false, Some(error)),
     }
@@ -986,13 +991,17 @@ fn publish_names(env: &StackEnv, entry: &Entry) -> Result<(), String> {
 /// Start this stack's stand-in. A missing or old Node is a note, not a failed stack: the named
 /// base URLs then fail closed (connection refused) rather than reaching the real service.
 fn start_stand_in(env: &StackEnv, entry: &Entry) -> Result<Option<String>, String> {
-    Ok(restart_stand_in(env, entry)?.note)
+    Ok(restart_stand_in(env, entry, true)?.note)
 }
 
 /// Stop this stack's stand-in and start it again. An old one that cannot be proved this app's
 /// to stop (it may still hold the ports) is a note, not a stack that can never start: the old
 /// one is left alone and nothing new is started beside it.
-fn restart_stand_in(env: &StackEnv, entry: &Entry) -> Result<StandInOutcome, String> {
+fn restart_stand_in(
+    env: &StackEnv,
+    entry: &Entry,
+    may_download: bool,
+) -> Result<StandInOutcome, String> {
     let Some(stand_in) = &env.stand_in else {
         return Ok(StandInOutcome::default());
     };
@@ -1023,6 +1032,7 @@ fn restart_stand_in(env: &StackEnv, entry: &Entry) -> Result<StandInOutcome, Str
         stack_dir: dir,
         services,
         path_env: env.path_env.clone(),
+        may_download,
     })
 }
 
@@ -1042,9 +1052,19 @@ impl EmulateStandIn {
 
     /// The tool to run, fetching it the first time and never again. `start` uses the real pin
     /// table; a test passes its own.
-    fn tool_for(&self, tarballs: &[emulate::Tarball]) -> Result<PathBuf, StandInOutcome> {
+    fn tool_for(
+        &self,
+        tarballs: &[emulate::Tarball],
+        may_download: bool,
+    ) -> Result<PathBuf, StandInOutcome> {
         if let Some(tool) = emulate::installed(&self.data_dir) {
             return Ok(tool);
+        }
+        if !may_download {
+            return Err(StandInOutcome {
+                pid: None,
+                note: Some(emulate::NOT_INSTALLED_NOTE.into()),
+            });
         }
         match emulate::install_files(&self.data_dir, self.fetcher.as_ref(), tarballs) {
             Ok(tool) => Ok(tool),
@@ -1076,7 +1096,7 @@ impl EmulateStandIn {
                 })
             }
         }
-        let tool = match self.tool_for(tarballs) {
+        let tool = match self.tool_for(tarballs, request.may_download) {
             Ok(tool) => tool,
             Err(outcome) => return Ok(outcome),
         };
@@ -4922,6 +4942,7 @@ mod tests {
         routes: crate::proxy::routes::RouteStore,
         routed_at_start: Mutex<Vec<Vec<String>>>,
         started: Mutex<Vec<(String, Vec<ServicePort>)>>,
+        may_download: Mutex<Vec<bool>>,
         outcome: Mutex<StandInOutcome>,
     }
 
@@ -4931,6 +4952,7 @@ mod tests {
                 routes: routes.clone(),
                 routed_at_start: Mutex::new(Vec::new()),
                 started: Mutex::new(Vec::new()),
+                may_download: Mutex::new(Vec::new()),
                 outcome: Mutex::new(StandInOutcome {
                     pid: Some(42),
                     note: None,
@@ -4949,6 +4971,7 @@ mod tests {
                 .map(|route| route.hostname)
                 .collect();
             self.routed_at_start.lock().unwrap().push(hosts);
+            self.may_download.lock().unwrap().push(request.may_download);
             self.started.lock().unwrap().push((
                 crate::fs::path_to_js(&request.stack_dir),
                 request.services.clone(),
@@ -5139,6 +5162,8 @@ mod tests {
                 ("stripe", fakes[1], "http://stripe.main-a.localhost:7500"),
             ]
         );
+        // The launch has the window waiting, so it fetches nothing.
+        assert_eq!(*stand_in.may_download.lock().unwrap(), vec![false]);
         // Nothing was published yet when the fakes started.
         assert_eq!(
             *stand_in.routed_at_start.lock().unwrap(),
@@ -5759,6 +5784,7 @@ mod tests {
                         base_url: "http://github.shop-wp-90.localhost:7400".into(),
                     }],
                     path_env: Some(bin.to_string_lossy().into_owned()),
+                    may_download: true,
                 };
                 Some(Self {
                     _temp: temp,
@@ -5821,6 +5847,36 @@ mod tests {
         // Nothing that `installed` would accept, and no version folder left half-made.
         assert!(emulate::installed(&fix.data).is_none());
         assert!(!emulate::tool_dir(&fix.data).exists());
+    }
+
+    /// The start at launch has the window waiting on it, so it never fetches the package: a
+    /// stack whose package is not there yet gets the "not installed" note, and the next start a
+    /// person asks for installs it.
+    #[test]
+    fn a_launch_never_downloads_the_stand_in() {
+        let Some(fix) = StandInFix::new().or_else(without_a_shell) else {
+            return;
+        };
+        let fetcher = fix.online();
+        let stand_in = fix.stand_in(fetcher.clone());
+        let request = StandInRequest {
+            stack_dir: fix.request.stack_dir.clone(),
+            services: fix.request.services.clone(),
+            path_env: fix.request.path_env.clone(),
+            may_download: false,
+        };
+        let outcome = stand_in.start_with(&request, &fix.table).unwrap();
+        assert_eq!(outcome.pid, None);
+        assert_eq!(outcome.note.as_deref(), Some(emulate::NOT_INSTALLED_NOTE));
+        assert_eq!(fetcher.hits(), 0, "a launch downloaded the package");
+        assert!(emulate::installed(&fix.data).is_none());
+        // Installed by a start a person asked for, the same request then runs without a download.
+        let first = stand_in.start_with(&fix.request, &fix.table).unwrap();
+        assert!(first.pid.is_some(), "{first:?}");
+        let hits = fetcher.hits();
+        let again = stand_in.start_with(&request, &fix.table).unwrap();
+        assert!(again.pid.is_some(), "{again:?}");
+        assert_eq!(fetcher.hits(), hits);
     }
 
     #[test]
