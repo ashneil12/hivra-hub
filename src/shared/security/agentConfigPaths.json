@@ -65,7 +65,8 @@
     "settings.local.json",
     "hooks.json",
     "config.toml",
-    "mcp.json"
+    "mcp.json",
+    "vite.config.ts"
   ],
   "dirs": [
     ".git",
@@ -89,7 +90,9 @@
     ".cline",
     ".aider",
     ".qwen",
-    "node_modules"
+    "node_modules",
+    ".devin",
+    ".worktreeinclude"
   ],
   "pathSuffixes": [
     "config/mise/config.toml",
