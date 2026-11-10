@@ -208,7 +208,7 @@
       "name": "oh-my-hermes",
       "url": "https://github.com/rlaope/oh-my-hermes",
       "licence": "MIT",
-      "gave": "the dag-ulw goal graph: a finish line first, write scopes, repair cycles, a verify node and a run verdict, planned for Wave J"
+      "gave": "the dag-ulw goal graph: a finish line first, write scopes, repair cycles, a verify node and a run verdict, and a finished run's close that counts the usage its children recorded (WP-91, WP-148)"
     },
     {
       "name": "T3 Code",
