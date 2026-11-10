@@ -54,7 +54,7 @@ export function fanoutHost(deps: {
     verified: (session, row) => verificationOf(session, row),
   };
   return {
-    dependency: fanoutDependency(lookup),
+    dependency: fanoutDependency(lookup, now),
     settle: (queue) =>
       settleFanout(queue, {
         // The window's rows only: a row read from the store is read again, so a running one never sticks.

@@ -25,6 +25,8 @@ const [api, board] = planFanout(
   }),
   "mono-exo",
   "req1",
+  // Sent long before the clock below: a provider the app cannot find is gone, not late to appear.
+  0,
 ).links;
 const provider = board.tasks.api.session;
 const job = { id: board.tasks.board.session, fanout: board };
@@ -44,7 +46,7 @@ const row = (patch: Partial<Delegation>) =>
   ({ id: "t-1", childSession: provider, state: "running", version: 1, updatedAt: 1, ...patch }) as Delegation;
 
 function host(rows: Delegation[], options: { stored?: () => Delegation | undefined; files?: Record<string, string> } = {}) {
-  const time = { now: 10_000 };
+  const time = { now: 1_000_000 };
   const files = options.files ?? {};
   const fetch = vi.fn(async () => options.stored?.());
   const built = fanoutHost({

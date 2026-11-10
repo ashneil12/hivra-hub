@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { parseFanout, type FanoutInput } from "./fanoutContract";
 import {
+  NEW_PLAN_GRACE_MS,
   dependencyVerdict,
   parseFanoutLink,
   planFanout,
@@ -200,9 +201,21 @@ describe("what a waiting task waits for (WP-171)", () => {
   });
 
   it("holds when the provider cannot be found at all, instead of waiting forever", () => {
-    const held = dependencyVerdict(link, lookup(undefined));
+    const held = dependencyVerdict(link, lookup(undefined), link.at + NEW_PLAN_GRACE_MS);
     expect(held).toMatchObject({ reason: "held" });
     expect(held!.line).toMatch(/can't find a/);
+  });
+
+  it("reads a provider it cannot find as late to appear for a minute after the plan went out, then as gone", () => {
+    const early = dependencyVerdict(link, lookup(undefined), link.at + 1_000);
+    expect(early).toMatchObject({ reason: "requires" });
+    expect(early!.line).toContain("looking for a's task");
+    expect(dependencyVerdict(link, lookup(undefined), link.at + NEW_PLAN_GRACE_MS - 1)).toMatchObject({ reason: "requires" });
+    expect(dependencyVerdict(link, lookup(undefined), link.at + NEW_PLAN_GRACE_MS)).toMatchObject({ reason: "held" });
+  });
+
+  it("stamps the plan with when it was sent", () => {
+    expect(planFanout(parsed, "mono-exo", "req9", 12_345).links.map((entry) => entry.at)).toEqual([12_345, 12_345]);
   });
 
   it("lets a failure win over a provider that is still working", () => {

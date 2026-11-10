@@ -66,7 +66,12 @@ export type FanoutLink = {
   tasks: Record<string, { session: string; title: string }>;
   contract: Contract;
   warnings: string[];
+  /** When the plan was sent (epoch ms): a provider this app cannot find yet is only late to show for a moment after. */
+  at: number;
 };
+
+/** How long after a plan was sent a provider that cannot be found is read as late to appear, not as gone. */
+export const NEW_PLAN_GRACE_MS = 60_000;
 
 /** A task's own request id inside a fan-out: the call's, then the task's name, within the 100 characters a request id may have. */
 export function taskRequestId(requestId: string, name: string): string {
@@ -81,7 +86,7 @@ export type PlannedFanout = {
 };
 
 /** The waves and every task's link for a checked fan-out sent by `owner` as `requestId`. */
-export function planFanout(parsed: ParsedFanout, owner: string, requestId: string): PlannedFanout {
+export function planFanout(parsed: ParsedFanout, owner: string, requestId: string, now: number = Date.now()): PlannedFanout {
   const names = parsed.tasks.map((task) => task.name);
   const plan = planWaves(names, parsed.contract);
   const warnings = [...parsed.warnings];
@@ -99,6 +104,7 @@ export function planFanout(parsed: ParsedFanout, owner: string, requestId: strin
     tasks,
     contract: parsed.contract,
     warnings,
+    at: now,
   }));
   return { links, waves: plan.waves, warnings };
 }
@@ -148,6 +154,7 @@ export function parseFanoutLink(value: unknown): FanoutLink {
       tasks,
       contract: readContract(value.contract, known),
       warnings: (value.warnings as unknown[]).map((warning) => text(warning, 400)),
+      at: typeof value.at === "number" && Number.isFinite(value.at) ? value.at : 0,
     };
   } catch (error) {
     throw new Error(`This fan-out link is not valid (${error instanceof Error ? error.message : String(error)}).`);
@@ -251,11 +258,13 @@ export function awaitsVerification(link: FanoutLink, name: string, row: RowView 
   return row !== undefined && rowOutcome(link, name, row) === undefined;
 }
 
-function outcomeOf(link: FanoutLink, name: string, lookup: DependencyLookup): Outcome {
+function outcomeOf(link: FanoutLink, name: string, lookup: DependencyLookup, now: number): Outcome {
   const session = link.tasks[name].session;
   const row = lookup.row(session);
   if (!row) {
     if (lookup.queued(session)) return { state: "waiting", detail: `${name} has not started yet` };
+    // Just after the plan went out, a provider the app has started may not show in its rows yet.
+    if (now - link.at < NEW_PLAN_GRACE_MS) return { state: "waiting", detail: `looking for ${name}'s task` };
     return { state: "failed", say: `can't find ${name}, so nothing is known about it (it may have been stopped)` };
   }
   const early = rowOutcome(link, name, row);
@@ -272,12 +281,12 @@ function outcomeOf(link: FanoutLink, name: string, lookup: DependencyLookup): Ou
  * that failed, was stopped, cannot be found or did not deliver HOLDS it, and the line says what landed, what did not
  * start and what to do. Otherwise it waits.
  */
-export function dependencyVerdict(link: FanoutLink, lookup: DependencyLookup): DependencyWait | undefined {
+export function dependencyVerdict(link: FanoutLink, lookup: DependencyLookup, now: number = Date.now()): DependencyWait | undefined {
   if (!link.after.length) return undefined;
-  const outcomes = link.after.map((name) => ({ name, outcome: outcomeOf(link, name, lookup) }));
+  const outcomes = link.after.map((name) => ({ name, outcome: outcomeOf(link, name, lookup, now) }));
   const failed = outcomes.find((entry) => entry.outcome.state === "failed");
   if (failed && failed.outcome.state === "failed") {
-    const others = Object.keys(link.tasks).map((name) => ({ name, outcome: outcomeOf(link, name, lookup) }));
+    const others = Object.keys(link.tasks).map((name) => ({ name, outcome: outcomeOf(link, name, lookup, now) }));
     const landed = others.filter((entry) => entry.outcome.state === "delivered").map((entry) => entry.name);
     const notStarted = Object.keys(link.tasks).filter((name) => !lookup.row(link.tasks[name].session));
     return {

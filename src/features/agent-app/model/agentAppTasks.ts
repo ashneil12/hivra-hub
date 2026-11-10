@@ -1209,7 +1209,7 @@ async function fanout(
   if (!/^[A-Za-z0-9_-]{1,100}$/.test(requestId))
     throw new Error("request ID must use letters, digits, underscores or hyphens (up to 100)");
   const parsed = parseFanout(input);
-  const planned = planFanout(parsed, source.id, requestId);
+  const planned = planFanout(parsed, source.id, requestId, (tasks.now ?? Date.now)());
   if (planned.links.some((link) => link.after.length) && !tasks.pool?.waitsOnProviders)
     throw new Error(
       "This build starts every task at once, so a task can't wait for one it needs. Send the tasks that need nothing now with delegate_task, and the rest after they report.",

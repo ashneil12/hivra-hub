@@ -172,7 +172,10 @@ export async function settleFanout(queue: readonly QueuedWorker[], deps: SettleD
  * The queue's `dependency` check: what a task of a fan-out still waits for, from the rows and the checks of what its
  * providers made. A plan record that cannot be read holds the task, never lets it through.
  */
-export function fanoutDependency(lookup: DependencyLookup): (job: { id: string; fanout: unknown }) => DependencyWait | undefined {
+export function fanoutDependency(
+  lookup: DependencyLookup,
+  now: () => number = Date.now,
+): (job: { id: string; fanout: unknown }) => DependencyWait | undefined {
   return (job) => {
     let link;
     try {
@@ -183,7 +186,7 @@ export function fanoutDependency(lookup: DependencyLookup): (job: { id: string; 
         line: "Held: this task's plan record is damaged, so it can't tell what it waits for. Cancel it with task_cancel (its childSessionId) and send it again.",
       };
     }
-    return dependencyVerdict(link, lookup);
+    return dependencyVerdict(link, lookup, now());
   };
 }
 
