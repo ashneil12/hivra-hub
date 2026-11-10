@@ -28,6 +28,7 @@ import { TerminalSessionsSetting } from "../../terminalMirror/ui/TerminalSession
 import { PhaseSettings } from "../../phases/ui/PhaseSettings";
 // WP-88: the morning note under the chat on Home.
 import { DailySummarySetting } from "../../chief/ui/DailySummarySetting";
+import { OvernightScoutSetting } from "../../overnightScout/ui/OvernightScoutSetting";
 import { GithubIssuesSetting } from "../../github-issues/ui/GithubIssuesSetting";
 import { appIdentity, buildLine } from "../../../app/model/appIdentity";
 
@@ -1061,6 +1062,14 @@ function GeneralPage({
           description="A few lines in the morning, when there is something to say."
         >
           <DailySummarySetting />
+        </Row>
+        {/* WP-165: overnight drafts. Off until the person turns it on. */}
+        <Row
+          id="overnight-scout"
+          label="Overnight scout"
+          description="Off until you turn it on. It writes a few draft packages at night and does not start work, merge, or spend."
+        >
+          <OvernightScoutSetting />
         </Row>
       </Group>
       <Group

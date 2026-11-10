@@ -37,6 +37,7 @@ import {
   type Habit,
 } from "../../features/monos/model/monoHabits";
 import { appPolicy } from "../model/appIdentity";
+import { SCOUT_HABIT_ID } from "../../features/overnightScout/model/habit";
 
 const TICK_MS = 60_000;
 
@@ -179,6 +180,25 @@ export function useMonoHabits(
       if (!mono || stopped || !findMono(monoId)) return;
       const files = await loadMonoFiles(monoId);
       if (stopped || !findMono(monoId)) return;
+      // WP-165: the overnight scout is code. It must not open a model session.
+      if (habitId === SCOUT_HABIT_ID) {
+        try {
+          const opened = await host.open(monoSessionId);
+          if (!opened || stopped || !findMono(monoId)) return;
+          const { runScheduledScout } = await import("../../features/overnightScout/model/scheduled");
+          const result = await runScheduledScout({ cwd: opened.cwd });
+          if (stopped || result.kind !== "quiet") return;
+          await updateHabits(monoId, (habits) => ({
+            habits: habits.map((entry) =>
+              entry.id === habitId ? afterRun(entry, Date.now(), { kind: "quiet", startedAt: Date.now() }) : entry,
+            ),
+            result: undefined,
+          }));
+        } catch (error) {
+          console.warn("Overnight scout did not finish", error);
+        }
+        return;
+      }
       const now = Date.now();
       // Claim after preparation, from the latest definition. A queued habit
       // may have been removed, paused, rescheduled or claimed in another window.

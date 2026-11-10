@@ -112,6 +112,9 @@ import { recalledFence } from "../features/memory/ui/recallForTurn";
 import { compactionCount } from "../features/memory/model/shownMemory";
 import { profileNote } from "../features/memory/ui/profileForTurn";
 import { ensureMorningHabit } from "../features/chief/model/habit";
+import { syncScoutHabit } from "../features/overnightScout/model/habit";
+import { readScoutSettings } from "../features/overnightScout/model/store";
+import { tauriLocalHubDisk } from "../features/hub/model/localHub/localTransport";
 import { readsEveryProject, turnRecallWide } from "../features/chief/model/scope";
 import { leadFor, leadMono, leadSpecFor } from "../features/hub/model/hubLeads";
 import type { HubProject } from "../features/hub/model/types";
@@ -14393,6 +14396,18 @@ function Workspace({
                 if (!readsEveryProject(findMono(monoId))) return list;
                 try {
                   await ensureMorningHabit(monoId, loadHabits, async (id, change) => updateHabits(id, change), Date.now());
+                } catch {
+                  return list;
+                }
+                // WP-165: the overnight scout stays off until its setting is on. A timeout keeps the old list.
+                try {
+                  await syncScoutHabit(
+                    monoId,
+                    loadHabits,
+                    async (id, change) => updateHabits(id, change),
+                    () => readScoutSettings(tauriLocalHubDisk),
+                    Date.now(),
+                  );
                 } catch {
                   return list;
                 }

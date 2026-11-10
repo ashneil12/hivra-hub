@@ -60,7 +60,13 @@ vi.mock("../../features/monos/model/monoFiles", async (original) => {
   };
 });
 
+vi.mock("../../features/overnightScout/model/scheduled", () => ({
+  runScheduledScout: vi.fn(async () => ({ kind: "retry" })),
+}));
+
 const { useMonoHabits } = await import("./useMonoHabits");
+const { runScheduledScout } = await import("../../features/overnightScout/model/scheduled");
+const { SCOUT_HABIT_ID } = await import("../../features/overnightScout/model/habit");
 const { shouldPersistSession } =
   await import("../../features/sessions/data/sessionStore");
 const { checkHabitsNow, noteHabitRunLaunch, relayApproval } =
@@ -639,4 +645,25 @@ it("uses a waiting habit's latest instructions when it launches", async () => {
     "Inspect only the release branch.",
   );
   await vi.waitFor(() => expect(stored[1].lastOutcome).toBe("quiet"));
+});
+
+it("does not start a model session for the overnight scout", async () => {
+  stored = [
+    {
+      id: SCOUT_HABIT_ID,
+      name: "Overnight scout",
+      instructions: "Reply with exactly NOTHING_TO_REPORT.",
+      schedule: { scheduleKind: "daily", time: "23:00", minute: 0, dayOfWeek: 0 },
+      enabled: true,
+      createdAt: 0,
+      nextRunAt: Date.now() - 60_000,
+    },
+  ];
+  const host = makeHost("should not run");
+  mountHost(host);
+  await vi.waitFor(() => expect(runScheduledScout).toHaveBeenCalled());
+  expect(host.run).not.toHaveBeenCalled();
+  expect(host.add).not.toHaveBeenCalled();
+  expect(host.post).not.toHaveBeenCalled();
+  expect(stored[0].lastOutcome).toBeUndefined();
 });
