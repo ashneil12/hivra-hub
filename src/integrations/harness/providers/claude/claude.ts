@@ -78,6 +78,7 @@ import {
   stringField,
   summarizeToolRequest,
   approvalCall,
+  approvalCallComplete,
   toClaudePermissionResult,
   toolKindFromName,
   toolResultsFromUserMessage,
@@ -848,15 +849,17 @@ function holdForOwedPrompt(live: Live): void {
   }, RESUME_GRACE_MS);
 }
 
+/** True when a live call was waiting and took the decision. False: nothing to answer here, so nothing ran. */
 export function respondClaudeApproval(
   sessionId: string,
   requestId: number,
   decision: ApprovalDecision,
-): void {
+): boolean {
   const live = liveByThread.get(sessionId);
   const pending = live?.approvals.get(requestId);
-  if (!pending) return;
+  if (!pending) return false;
   pending.resolve(decision);
+  return true;
 }
 
 export function respondClaudeQuestion(
@@ -2004,6 +2007,7 @@ async function handleControlRequest(
     callId: control.toolUseId,
     preview: previewFromTool(toolName, input),
     call: approvalCall(toolName, input),
+    callComplete: approvalCallComplete(toolName, input),
   });
   const decision = await pending;
   live.onEvent({ type: "approval.resolved", requestId: uiId, decision });
@@ -2132,6 +2136,7 @@ async function answerChildClaudeApproval(
     callId: toolUseId,
     preview: previewFromTool(toolName, input),
     call: approvalCall(toolName, input),
+    callComplete: approvalCallComplete(toolName, input),
     child: { name: child.name, sessionPort: child.sessionPort, detail: title },
   });
   try {
