@@ -54,13 +54,14 @@ describe("load and save", () => {
     });
   });
 
-  it("a Mono does not borrow the project, and a stale save does not write", () => {
+  it("a Mono with no row uses the project, then the system, and a stale save does not write", () => {
     const book = writePolicy({ system: { lockDefault: true, neverUse: ["codex"], fallback: [] }, projects: {}, monos: {} }, { project: "app" }, {
       lockDefault: false,
       neverUse: [],
       fallback: ["grok"],
     });
-    expect(policyInForce(book, { mono: "ada" }).lockDefault).toBe(false);
+    expect(policyInForce(book, { mono: "ada" })).toEqual({ lockDefault: true, neverUse: ["codex"], fallback: [] });
+    expect(policyInForce(book, { mono: "ada", project: "app" }).fallback).toEqual(["grok"]);
     expect(policyInForce(book, { project: "app" }).fallback).toEqual(["grok"]);
     const stale = casPolicy(1, 2, { lockDefault: true, neverUse: [], fallback: [] });
     expect(stale.ok).toBe(false);

@@ -1584,14 +1584,17 @@ fn never_use_skips_a_named_cli_and_a_role_label_is_a_rule() {
     assert_eq!(through.model.as_deref(), Some("from-brief"));
     assert_eq!(through.effort, None);
 
-    let own = store::route(
+    // Ada has no saved policy, so the project's Never use still applies.
+    let borrowed = store::route(
         &conn,
         &query("builder", "", PROJECT, "ada", None, None, who),
         &[],
     )
     .unwrap();
-    assert_eq!(own.cli.as_deref(), Some("codex"));
-    assert!(own.skipped.is_empty());
+    assert_eq!(borrowed.cli.as_deref(), Some("claude"));
+    assert_eq!(borrowed.cli_from, "default");
+    assert_eq!(borrowed.skipped.len(), 1);
+    assert_eq!(borrowed.skipped[0].value, "codex");
 
     store::set_policy(
         &mut conn,
@@ -1766,9 +1769,99 @@ fn fallback_order_is_walked_and_a_ban_is_on_the_ledger() {
     assert_eq!(rows.len(), 4);
 }
 
-/// A Mono with no saved policy does not take the project's list. Its own list does apply.
+/// A Mono id with no saved row uses the system policy. Project beats system. The Mono's own row still wins.
 #[test]
-fn a_mono_does_not_borrow_the_project_fallback() {
+fn a_mono_with_no_saved_policy_uses_the_system_policy() {
+    let store = memory();
+    let mut conn = store.lock_conn().unwrap();
+    let who = &[
+        ("claude", true, true),
+        ("codex", true, true),
+        ("grok", true, true),
+    ];
+    store::set_policy(
+        &mut conn,
+        "system",
+        "system",
+        &json!({ "lockDefault": false, "neverUse": ["claude"], "fallback": ["grok"] }),
+        0,
+    )
+    .unwrap();
+    let routed = store::route(&conn, &query("", "", "", "ada", None, None, who), &[]).unwrap();
+    assert_eq!(routed.cli.as_deref(), Some("codex"));
+    assert_eq!(routed.skipped[0].value, "claude");
+    assert_eq!(
+        routed.skipped[0].reason,
+        "Claude Code is on Never use, so it was skipped."
+    );
+
+    let row = fail_row(&mut conn, "worker-system-mono", Some("quota"), None);
+    let moved = store::on_failure(
+        &mut conn,
+        &failure(&row.id, None, None, "codex", who, None, Some("ada")),
+        1_200,
+    )
+    .unwrap();
+    assert_eq!(moved.to.as_deref(), Some("grok"));
+
+    store::set_policy(
+        &mut conn,
+        "project",
+        PROJECT,
+        &json!({ "lockDefault": true, "neverUse": ["codex"], "fallback": [] }),
+        0,
+    )
+    .unwrap();
+    let project = store::route(
+        &conn,
+        &query(
+            "",
+            "",
+            PROJECT,
+            "ada",
+            Some(pick_cli("grok", "", "")),
+            None,
+            who,
+        ),
+        &[],
+    )
+    .unwrap();
+    assert_eq!(project.cli.as_deref(), Some("claude"));
+    assert_eq!(project.cli_from, "default");
+    assert!(project
+        .skipped
+        .iter()
+        .any(|skip| skip.value == "grok" && skip.from == "override"));
+
+    store::set_policy(
+        &mut conn,
+        "mono",
+        "ada",
+        &json!({ "lockDefault": false, "neverUse": [], "fallback": ["codex"] }),
+        0,
+    )
+    .unwrap();
+    let own = fail_row(&mut conn, "worker-mono-own-policy", Some("quota"), None);
+    let used = store::on_failure(
+        &mut conn,
+        &failure(
+            &own.id,
+            None,
+            None,
+            "claude",
+            who,
+            Some(PROJECT),
+            Some("ada"),
+        ),
+        1_200,
+    )
+    .unwrap();
+    assert_eq!(used.to.as_deref(), Some("codex"));
+}
+
+/// A Mono with no saved policy takes the project's list. Its own list replaces that.
+#[test]
+fn a_mono_with_no_policy_uses_the_project_fallback() {
     let store = memory();
     let mut conn = store.lock_conn().unwrap();
     store::set_policy(
@@ -1799,13 +1892,16 @@ fn a_mono_does_not_borrow_the_project_fallback() {
         1_200,
     )
     .unwrap();
-    assert_eq!(borrowed.to.as_deref(), Some("codex"));
-    assert_eq!(borrowed.reason, "the account can't take it");
+    assert_eq!(borrowed.to.as_deref(), Some("grok"));
+    assert_eq!(
+        borrowed.reason,
+        "Claude Code can't take it, so this uses Grok."
+    );
     store::set_policy(
         &mut conn,
         "mono",
         "ada",
-        &json!({ "lockDefault": false, "neverUse": [], "fallback": ["grok"] }),
+        &json!({ "lockDefault": false, "neverUse": [], "fallback": ["codex"] }),
         0,
     )
     .unwrap();
@@ -1824,8 +1920,11 @@ fn a_mono_does_not_borrow_the_project_fallback() {
         1_200,
     )
     .unwrap();
-    assert_eq!(used.to.as_deref(), Some("grok"));
-    assert_eq!(used.reason, "Claude Code can't take it, so this uses Grok.");
+    assert_eq!(used.to.as_deref(), Some("codex"));
+    assert_eq!(
+        used.reason,
+        "Claude Code can't take it, so this uses Codex."
+    );
 }
 
 /// The lock does not switch. A known reset waits. No reset wakes the first mate. One CLI still waits as before.

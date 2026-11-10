@@ -136,8 +136,7 @@ export function saveBook(book: PolicyBook): PolicyBook {
 }
 
 /**
- * Project wins over system when the project has its own saved policy.
- * A Mono keeps its own and does not borrow the project's.
+ * A Mono uses its own saved policy. With no Mono row, a project uses its own, then the system.
  */
 export function policyInForce(
   book: PolicyBook,
@@ -145,7 +144,7 @@ export function policyInForce(
 ): CrewPolicy {
   if (where.mono) {
     const id = cleanKey(where.mono, true);
-    return id && book.monos[id] ? book.monos[id] : { lockDefault: false, neverUse: [], fallback: [] };
+    if (id && book.monos[id]) return book.monos[id];
   }
   if (where.project) {
     const id = cleanKey(where.project, false);

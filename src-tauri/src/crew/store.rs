@@ -573,8 +573,7 @@ fn cooled_clis(conn: &Connection, now: i64) -> Result<Vec<String>, String> {
     Ok(cooled)
 }
 
-/// A saved policy is the column, not a missing row. A Mono does not borrow the project or the system.
-/// A project uses its own when that column is set, and otherwise the system.
+/// A saved policy is the column, not a missing row. No column means this scope has nothing to apply.
 fn saved_policy(conn: &Connection, scope: &str, raw: &str) -> Result<Option<Value>, String> {
     let Ok((scope, id)) = scope_key(scope, raw) else {
         return Ok(None);
@@ -583,14 +582,16 @@ fn saved_policy(conn: &Connection, scope: &str, raw: &str) -> Result<Option<Valu
     Ok(text.map(|text| policy_value(Some(text))))
 }
 
-/// A Mono does not borrow the project or the system. A project uses its own when that column is set.
+/// A Mono uses its own saved policy. With no Mono column, a project uses its own, then the system.
 fn policy_for(
     conn: &Connection,
     mono: Option<&str>,
     project: Option<&str>,
 ) -> Result<Value, String> {
     if let Some(id) = mono.map(str::trim).filter(|id| !id.is_empty()) {
-        return Ok(saved_policy(conn, "mono", id)?.unwrap_or_else(|| sanitize_policy(&Value::Null)));
+        if let Some(policy) = saved_policy(conn, "mono", id)? {
+            return Ok(policy);
+        }
     }
     if let Some(id) = project.map(str::trim).filter(|id| !id.is_empty()) {
         if let Some(policy) = saved_policy(conn, "project", id)? {
