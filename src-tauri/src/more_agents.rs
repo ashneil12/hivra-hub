@@ -69,6 +69,7 @@ pub(crate) const CHANGED: &str =
     "The list changed in another window (revision). Reload it and try again.";
 pub(crate) const NOT_APPROVED: &str =
     "This agent is not approved to run. Allow it in More agents first.";
+pub(crate) const NO_COMMAND_FROM_APP: &str = "A More agents start takes no command from the app.";
 pub(crate) const CORRUPT: &str = "The saved More agents list cannot be read. It was left as it is.";
 
 /// Serialises every read-modify-write of the file, so an approval and a list write cannot overwrite each other.
@@ -327,6 +328,24 @@ pub(crate) fn approved_spawn(
         command: resolved,
         args,
     })
+}
+
+/// The start of a More agents process. The webview names the entry by its id and nothing else: a command, an argument
+/// or any other start field it sends (`other_fields_sent`: a binary, an account, a custom route, a Codex store, the
+/// Devin approval flag) is refused before the list is read. The command and arguments are the saved entry's, and only
+/// once the person has approved that command (`approved_spawn`).
+pub(crate) fn approved_start(
+    data_dir: &Path,
+    more_agent: &str,
+    command: &str,
+    args: &[String],
+    other_fields_sent: bool,
+    path_value: &str,
+) -> Result<Resolved, String> {
+    if !command.is_empty() || !args.is_empty() || other_fields_sent {
+        return Err(NO_COMMAND_FROM_APP.into());
+    }
+    approved_spawn(data_dir, more_agent, path_value)
 }
 
 /// An absolute path that is a file, or a bare name found on `path_value`. Anything else is not started.
@@ -683,5 +702,59 @@ mod tests {
             text.lines().any(|line| line == "PATH=/usr/bin:/bin"),
             "{text}"
         );
+    }
+
+    /// WP-134b: the webview names an entry by its id and sends nothing else. A request that carries a command, an
+    /// argument or any other start field is refused before a file is looked at.
+    #[test]
+    fn a_webview_command_never_starts_a_more_agent() {
+        let d = dir();
+        write_agents(d.path(), 0, vec![entry("wp134", "/opt/approved-agent", &["acp"])]).expect("seed");
+        set_approval(d.path(), "wp134", true).expect("approve");
+        for (command, args, other_fields) in [
+            ("/bin/sh", vec![], false),
+            ("/opt/approved-agent", vec![], false),
+            ("", vec!["-c".to_string(), "id".to_string()], false),
+            ("", vec![], true),
+        ] {
+            let refused = approved_start(d.path(), "wp134", command, &args, other_fields, "/usr/bin")
+                .expect_err("a webview-supplied start field is refused");
+            assert_eq!(refused, NO_COMMAND_FROM_APP);
+        }
+    }
+
+    /// WP-134b: an id that is not in the saved list, or is not approved, starts nothing.
+    #[test]
+    fn a_more_agent_id_outside_the_saved_approved_list_starts_nothing() {
+        let d = dir();
+        write_agents(d.path(), 0, vec![entry("wp134", "/opt/approved-agent", &["acp"])]).expect("seed");
+        assert_eq!(
+            approved_start(d.path(), "wp134", "", &[], false, "/usr/bin").expect_err("unapproved"),
+            NOT_APPROVED
+        );
+        assert_eq!(
+            approved_start(d.path(), "nobody", "", &[], false, "/usr/bin").expect_err("not listed"),
+            "This agent is no longer in your list."
+        );
+    }
+
+    /// WP-134b: an approved entry starts the command it names, found by the same rule as the eleven CLIs' path.
+    #[cfg(unix)]
+    #[test]
+    fn an_approved_entry_starts_through_approved_start_with_its_saved_arguments() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = dir();
+        let bin = d.path().join("bin");
+        std::fs::create_dir_all(&bin).expect("bin dir");
+        let tool = bin.join("wp134b-tool");
+        std::fs::write(&tool, b"#!/bin/sh\n").expect("tool");
+        std::fs::set_permissions(&tool, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        let path_value = bin.to_string_lossy().into_owned();
+        write_agents(d.path(), 0, vec![entry("wp134b", "wp134b-tool", &["acp", "--flag"])]).expect("seed");
+        set_approval(d.path(), "wp134b", true).expect("approve");
+        let run = approved_start(d.path(), "wp134b", "", &[], false, &path_value).expect("approved and present");
+        assert_eq!(run.id, "wp134b");
+        assert_eq!(run.command, tool.to_string_lossy());
+        assert_eq!(run.args, vec!["acp".to_string(), "--flag".to_string()]);
     }
 }

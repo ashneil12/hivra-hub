@@ -988,17 +988,19 @@ pub fn harness_spawn(
     let more = match more_agent.as_deref() {
         None => None,
         Some(agent) => {
-            if !command.is_empty()
-                || !args.is_empty()
-                || binary_provider.is_some()
+            let other_fields_sent = binary_provider.is_some()
+                || binary_path.is_some()
                 || account.is_some()
-            {
-                return Err("A More agents start takes no command from the app.".to_string());
-            }
+                || custom_route.is_some()
+                || codex_store.is_some()
+                || devin_ask_edits.is_some();
             let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
-            Some(crate::more_agents::approved_spawn(
+            Some(crate::more_agents::approved_start(
                 &data_dir,
                 agent,
+                &command,
+                &args,
+                other_fields_sent,
                 &gui_search_path(),
             )?)
         }
