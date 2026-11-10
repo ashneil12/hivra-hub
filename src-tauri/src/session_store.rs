@@ -568,9 +568,15 @@ fn usage_rows(conn: &Connection, since: i64) -> Result<Vec<UsageSessionRow>, Str
         let Ok((id, cwd, harness, model, blocks_json)) = row else {
             continue;
         };
-        let Ok(blocks) = serde_json::from_str::<Value>(&blocks_json) else {
+        let Ok(mut blocks) = serde_json::from_str::<Value>(&blocks_json) else {
             continue;
         };
+        // A first mate's transcript lives in mono_blocks and its blocks_json is `[]`.
+        if crate::mono_transcript::is_indexed(conn, &id).unwrap_or(false) {
+            if let Ok(user_blocks) = crate::mono_transcript::user_blocks(conn, &id) {
+                blocks = Value::Array(user_blocks);
+            }
+        }
         let turns = usage_turns(&blocks);
         if turns.is_empty() {
             continue;
@@ -694,7 +700,7 @@ pub fn session_private_keys(store: State<'_, SessionStore>) -> Result<Vec<Privat
 
 fn list_private_keys(conn: &Connection) -> rusqlite::Result<Vec<PrivateChatKey>> {
     let mut statement = conn.prepare(
-        "SELECT id, provider_session_id FROM sessions WHERE private_chat != 0 ORDER BY id ASC",
+        "SELECT id, provider_session_id FROM sessions WHERE private_chat != 0 OR (private_boundary_id IS NOT NULL AND private_boundary_id != '') ORDER BY id ASC",
     )?;
     let rows = statement.query_map([], |row| {
         let provider: Option<String> = row.get(1)?;
@@ -1634,6 +1640,8 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
     crate::ship::ensure_acceptance_table(conn)?;
     // WP-78: the activity log. In place, so an older build still opens this file.
     crate::activity::ensure_tables(conn)?;
+    // WP-157: the work log. In place, so an older build still opens this file.
+    crate::work_log::ensure_tables(conn)?;
     // WP-86: commit attribution. In place, so an older build still opens this file.
     crate::attribution::ensure_tables(conn)?;
     // WP-76: the trash ledger. Not a numbered migration: an older build simply never reads it.
@@ -2869,6 +2877,42 @@ mod tests {
     }
 
     #[test]
+    fn usage_rows_include_a_first_mate_whose_transcript_is_in_mono_blocks() {
+        let store = SessionStore::open_in_memory().unwrap();
+        let conn = store.lock_conn().unwrap();
+        let mut mono = sample("mono", "/tmp/a", "Mono");
+        mono.blocks = json!([
+            {
+                "id": "m1",
+                "role": "user",
+                "text": "mono prompt that must not travel",
+                "turnMetrics": { "inputTokens": 7, "outputTokens": 2, "costUsd": 0.01 }
+            },
+            { "id": "m2", "role": "assistant", "text": "reply" }
+        ]);
+        upsert_session(&conn, &mono).unwrap();
+        crate::mono_transcript::migrate_transcript(&conn, "mono").unwrap();
+        let stored: String = conn
+            .query_row(
+                "SELECT blocks_json FROM sessions WHERE id = 'mono'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(stored, "[]");
+
+        let rows = usage_rows(&conn, 0).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].id, "mono");
+        let blocks = rows[0].blocks.as_array().unwrap();
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(blocks[0]["turnMetrics"]["inputTokens"], 7);
+        assert!(!serde_json::to_string(&rows[0].blocks)
+            .unwrap()
+            .contains("must not travel"));
+    }
+
+    #[test]
     fn usage_rows_skip_a_trashed_chat() {
         let store = SessionStore::open_in_memory().unwrap();
         let conn = store.lock_conn().unwrap();
@@ -3623,6 +3667,10 @@ mod tests {
             .unwrap()
             .iter()
             .any(|item| item.id == "old" && item.private_chat));
+
+        // A chat switched back off still has a private part, so it stays on the list.
+        set_private(&conn, &row.id, false, Some("turn-3")).unwrap();
+        assert_eq!(list_private_keys(&conn).unwrap().len(), 1);
 
         // A boundary that is not a message id must not unlock the chat.
         conn.execute(

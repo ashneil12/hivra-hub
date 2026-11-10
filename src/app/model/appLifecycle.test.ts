@@ -609,3 +609,59 @@ describe("remembering the terminal dock side across restarts", () => {
     expect(await lastSavedDockSide()).toBe("left");
   });
 });
+
+// WP-110: choosing "this folder" on a new chat was only in memory, so a reload let "always" move the chat anyway.
+describe("a new chat's choice to stay in its folder across a reload", () => {
+  it("is saved with the page's own unload save and comes back from the boot loader", async () => {
+    // The boot loader remembers its first answer for the life of the page, so this test boots a page of its own.
+    vi.resetModules();
+    const { invoke: tauriInvoke } = await import("@tauri-apps/api/core");
+    const store = await import("../../features/sessions/data/sessionStore");
+    const { persistQuitState, loadResumedWorkspace } = await import("./appLifecycle");
+    const { newSession: fresh } = await import("../../features/sessions/model/session");
+    const { newTab: freshTab } = await import("../../features/workspace/model/layout");
+    const { newChatStaysHere, newChatWorktreeOpenFor, openNewChatWorktree } = await import(
+      "../../features/source-control/model/newChatWorktree"
+    );
+
+    const stayed = { ...fresh("claude", "/alpha"), id: "stay", worktreeDeclined: true };
+    const plain = { ...fresh("claude", "/alpha"), id: "plain" };
+    const tabs = [
+      { ...freshTab("stay"), id: "tab-stay" },
+      { ...freshTab("plain"), id: "tab-plain" },
+    ];
+    await persistQuitState([stayed, plain], tabs, "tab-stay", "/alpha", new Map(), "unload");
+    const saved = vi
+      .mocked(tauriInvoke)
+      .mock.calls.filter(([command]) => command === "workspace_set_snapshot")
+      .at(-1)?.[1] as { snapshot: unknown } | undefined;
+    expect(saved).toBeDefined();
+    // The webview gets back the JSON the store kept.
+    vi.mocked(store.loadWorkspaceSnapshot).mockResolvedValue(JSON.parse(JSON.stringify(saved!.snapshot)));
+
+    const resumed = await loadResumedWorkspace();
+    const kept = resumed?.sessions.find((session) => session.id === "stay");
+    const moved = resumed?.sessions.find((session) => session.id === "plain");
+    expect(kept && newChatStaysHere(kept)).toBe(true);
+    expect(moved && newChatStaysHere(moved)).toBe(false);
+
+    // The first send after the reload, with the setting on always.
+    const create = vi.fn(async () => {
+      throw new Error("a worktree must not be created for this chat");
+    });
+    const port = {
+      gitOnThisComputer: vi.fn(async () => true),
+      offerCheck: () => null,
+      createWorktree: create,
+    };
+    const send = (session: NonNullable<typeof kept>) =>
+      openNewChatWorktree(
+        newChatWorktreeOpenFor(session, { setting: "always", isFirstTurn: true, toggleOn: false }),
+        port,
+      );
+    expect(await send(kept!)).toBeNull();
+    expect(create).not.toHaveBeenCalled();
+    await expect(send(moved!)).rejects.toThrow("a worktree must not be created");
+    expect(create).toHaveBeenCalledTimes(1);
+  });
+});
