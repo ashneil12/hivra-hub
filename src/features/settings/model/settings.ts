@@ -190,7 +190,7 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
     description:
       "How transcripts read, what the composer does with a follow-up, how files save, and how diffs open.",
     keywords:
-      "transcript composer prompt message diff review layout format save editor",
+      "transcript composer prompt message diff review layout format save editor settle snooze inbox",
   },
   {
     id: "providers",
@@ -576,6 +576,13 @@ export const SETTINGS_INDEX: SettingsEntry[] = [
     section: "appearance",
     label: "Chat background",
     keywords: "wallpaper image picture opacity backdrop",
+  },
+  {
+    id: "chat-list-inbox",
+    section: "chat",
+    label: "Settle and snooze",
+    keywords:
+      "finished chats hide until time needs you top list sort shelf wake",
   },
   {
     id: "transcript-layout",

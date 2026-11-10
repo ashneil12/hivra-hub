@@ -783,6 +783,19 @@ describe("settings search", () => {
     ]);
   });
 
+  it("finds settle and snooze from the chat list words", () => {
+    expect(searchSettings("snooze")[0]).toMatchObject({
+      section: "chat",
+      sectionLabel: "Chat",
+      settingId: "chat-list-inbox",
+      label: "Settle and snooze",
+    });
+    expect(searchSettings("finished")[0]).toMatchObject({
+      section: "chat",
+      settingId: "chat-list-inbox",
+    });
+  });
+
   it("finds a setting by a word that is not in its label", () => {
     expect(searchSettings("steer")[0]).toMatchObject({
       section: "chat",
