@@ -148,7 +148,10 @@ the stack says so plainly instead of pretending, and that stack is not run unatt
    stopped only when it is provably the one the app started: the start time recorded when it was spawned (macOS
    `proc_pidinfo`, Linux `/proc/<pid>/stat`, Windows `GetProcessTimes`) is found again on the live process, the program
    is node, and where the command line can be read it runs `--seed <stack>/emulate.config.json`. A pid file with no start
-   time is never signalled, and SIGKILL goes out only if the process is still that stand-in after the SIGTERM wait. On
+   time is never signalled. After SIGTERM the stand-in's process group is watched and gets SIGKILL only if it is still there
+   at every look through the wait (a group id in use cannot be another program's, so a child that ignores SIGTERM is
+   ended even when its leader is gone, and a group that has gone is never signalled again). The pid file is removed
+   only if it still says what the stop read. On
    Windows each stand-in is in a Job Object of its own that ends with the app, and stopping ends the whole tree; a stop
    that leaves one of its ports answering keeps the pid file. At launch this runs in the background (a stack action
    waits for it), `node --version` has a five second limit, and for a stack that was still running the app starts that

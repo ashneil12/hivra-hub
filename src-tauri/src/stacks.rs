@@ -1075,7 +1075,7 @@ pub fn stop_stand_ins(data_dir: &Path) -> Result<(), String> {
 /// Stop one stack's stand-in under that stack's own lock, the one a reset holds across its
 /// stop-then-start, so the two cannot interleave and leave the new stand-in running. The lock
 /// belongs to the path the registry names (`lock_key`); the stand-in is stopped at `dir`.
-fn stop_under_lock(stand_in: &EmulateStandIn, lock_key: &Path, dir: &Path) -> Result<(), String> {
+fn stop_under_lock(stand_in: &dyn StandIn, lock_key: &Path, dir: &Path) -> Result<(), String> {
     let lock = stand_in_lock(lock_key);
     let started = Instant::now();
     let _held = loop {
@@ -1096,7 +1096,10 @@ fn stop_entry(env: &StackEnv, entry: &Entry) -> Result<(), String> {
     // WP-90: the stand-in and this stack's names go first, whatever runs in Compose.
     let mut failure = None;
     if let Some(stand_in) = &env.stand_in {
-        if let Err(error) = stand_in.stop(&stack_dir(&env.data_dir, &entry.id)) {
+        // Under the stack's own lock, the one a start holds while it stops and starts its
+        // stand-in, so a stop cannot land in the middle of one.
+        let dir = stack_dir(&env.data_dir, &entry.id);
+        if let Err(error) = stop_under_lock(stand_in.as_ref(), &dir, &dir) {
             failure = Some(error);
         }
     }
@@ -2426,41 +2429,53 @@ fn published_host_ports(text: &str) -> Vec<u16> {
 }
 
 /// Run a command to the end, up to `wait`, and return what it printed. A command that does not
-/// finish is ended.
+/// finish is ended. The whole of it, reading what it printed included, is inside `wait`: the
+/// pipes are read on threads that are never joined, because a child of the command can hold a
+/// pipe open after the command itself has exited, and a join would wait for it for as long as
+/// it lives, under the stack's lock.
 fn output_within(cmd: &mut Command, wait: Duration) -> Result<String, ComposeFailure> {
     let mut child = cmd.spawn().map_err(|_| ComposeFailure::Unreachable)?;
     let stderr = child.stderr.take();
     let stdout = child.stdout.take();
-    let err_reader = std::thread::spawn(move || capped(stderr));
-    let out_reader = std::thread::spawn(move || {
-        let mut text = String::new();
-        if let Some(pipe) = stdout {
-            let _ = pipe.take(64 * 1024).read_to_string(&mut text);
-        }
-        text
-    });
-    let started = Instant::now();
+    let (err_sent, err_read) = std::sync::mpsc::channel();
+    let (out_sent, out_read) = std::sync::mpsc::channel();
+    let _ = std::thread::Builder::new()
+        .name("hivra-docker-stderr".into())
+        .spawn(move || {
+            let _ = err_sent.send(capped(stderr));
+        });
+    let _ = std::thread::Builder::new()
+        .name("hivra-docker-stdout".into())
+        .spawn(move || {
+            let mut text = String::new();
+            if let Some(pipe) = stdout {
+                let _ = pipe.take(64 * 1024).read_to_string(&mut text);
+            }
+            let _ = out_sent.send(text);
+        });
+    let deadline = Instant::now() + wait;
     let status = loop {
         match child.try_wait() {
             Ok(Some(status)) => break status,
-            Ok(None) if started.elapsed() <= wait => std::thread::sleep(Duration::from_millis(30)),
+            Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(30)),
             Ok(None) => {
                 let _ = child.kill();
                 let _ = child.wait();
-                let _ = err_reader.join();
-                let _ = out_reader.join();
                 return Err(ComposeFailure::TimedOut);
             }
             Err(_) => {
                 let _ = child.kill();
-                let _ = err_reader.join();
-                let _ = out_reader.join();
                 return Err(ComposeFailure::Unreachable);
             }
         }
     };
-    let stderr = err_reader.join().unwrap_or_default();
-    let stdout = out_reader.join().unwrap_or_default();
+    let left = deadline.saturating_duration_since(Instant::now());
+    let stderr = err_read.recv_timeout(left).unwrap_or_default();
+    // What was printed is read to its end or not at all: a half answer is not trusted.
+    let left = deadline.saturating_duration_since(Instant::now());
+    let Ok(stdout) = out_read.recv_timeout(left) else {
+        return Err(ComposeFailure::TimedOut);
+    };
     if status.success() {
         Ok(stdout)
     } else {
@@ -5875,6 +5890,70 @@ mod tests {
             true,
         )
         .unwrap();
+    }
+
+    /// `docker ps` prints through a pipe, and a child of it can keep the pipe after it has
+    /// exited. Joining the readers waited for that child, under the stack's lock; the whole
+    /// question is now inside its limit.
+    #[cfg(unix)]
+    #[test]
+    fn a_child_that_holds_docker_s_pipe_does_not_hold_the_question() {
+        let mut command = Command::new("sh");
+        command
+            .args(["-c", "sleep 12 & echo 0.0.0.0:22010->3000/tcp; exit 0"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let started = Instant::now();
+        let result = output_within(&mut command, Duration::from_millis(500));
+        assert!(
+            started.elapsed() < Duration::from_secs(8),
+            "the question waited for a child that holds the pipe: {:?}",
+            started.elapsed()
+        );
+        // A half answer is not an answer.
+        assert!(matches!(result, Err(ComposeFailure::TimedOut)));
+        // And the ordinary case still answers.
+        let mut command = Command::new("sh");
+        command
+            .args(["-c", "echo 0.0.0.0:22010-\\>3000/tcp"])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let text = output_within(&mut command, Duration::from_secs(5)).unwrap();
+        assert!(text.contains("22010"), "{text}");
+    }
+
+    /// A stop (`down`, a pool return) takes the stack's own lock, the one a start holds while it
+    /// stops and starts the stand-in. A stop that did not could land in the middle of a slow
+    /// start and take the new stand-in's pid file with it.
+    #[test]
+    fn a_stop_waits_for_a_stand_in_that_is_being_started() {
+        let fix = Fix::new();
+        let stand_in = Arc::new(MemoryStandIn::default());
+        let names = Arc::new(MemoryNames::default());
+        let env = fix.named_env(Arc::clone(&names), 7400, Arc::clone(&stand_in));
+        maybe_start(
+            &env,
+            &fix.main,
+            &fix.first,
+            true,
+            Some(&emulated_decl()),
+            false,
+            true,
+        )
+        .unwrap();
+        let id = load(&registry_dir(&fix.data)).unwrap().stacks[0].id.clone();
+        let lock = stand_in_lock(&stack_dir(&fix.data, &id));
+        let held = lock.lock().unwrap();
+        let first = fix.first.clone();
+        let stopper = std::thread::spawn(move || down(&env, &first));
+        std::thread::sleep(Duration::from_millis(300));
+        assert!(
+            !stopper.is_finished(),
+            "the stop went ahead while a stand-in was being started"
+        );
+        drop(held);
+        stopper.join().unwrap().unwrap();
     }
 
     /// A stack list that can't be read must not leave a stand-in running: the stacks folder is
