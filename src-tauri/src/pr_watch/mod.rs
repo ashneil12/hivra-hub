@@ -135,6 +135,9 @@ pub struct Status {
     /// mergeable, conflicting or unknown.
     pub mergeable: String,
     pub review_decision: Option<String>,
+    /// The pull request's label names, as of the last read. Older stored watches read as none.
+    #[serde(default)]
+    pub labels: Vec<String>,
 }
 
 impl Status {
@@ -169,6 +172,7 @@ impl Status {
             }
             .into(),
             review_decision: read.review_decision.clone(),
+            labels: read.labels.clone(),
         }
     }
 
