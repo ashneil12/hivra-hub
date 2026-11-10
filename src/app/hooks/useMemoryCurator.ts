@@ -13,6 +13,7 @@ import { markLived } from "../../features/memory/model/fade";
 import { noteDeferred, noteOutcome } from "../../features/memory/model/health";
 import { notePaused, takeBudget } from "../../features/memory/model/memoryBudget";
 import { commitDoc } from "../../features/memory/model/review";
+import { memoryReadableBlocks } from "../../features/memory/model/privateChat";
 import { rulesAnswer } from "../../features/memory/model/ruleCurator";
 import { loadMemoryTier, tierSendsText, type MemoryTier } from "../../features/memory/model/tier";
 import type { Session } from "../../features/sessions/model/session";
@@ -71,7 +72,7 @@ export function lastExchange(blocks: readonly FeedBlock[]): { turnId: string; us
 }
 
 export function curatorFeeds(
-  sessions: readonly { id: string; busy?: boolean; blocks: readonly FeedBlock[] }[],
+  sessions: readonly { id: string; busy?: boolean; private?: boolean; privateBoundaryId?: string; blocks: readonly FeedBlock[] }[],
   fedLast: Map<string, string | undefined>,
   mateOf: (sessionId: string) => string | undefined,
 ): Array<{ mateId: string; sessionId: string; turnId: string; user: string; assistant: string }> {
@@ -80,7 +81,8 @@ export function curatorFeeds(
     if (session.busy) continue;
     const mateId = mateOf(session.id);
     if (!mateId) continue;
-    const turn = lastExchange(session.blocks);
+    // WP-111: a private chat is never read. After it is switched off, only messages past the boundary are.
+    const turn = lastExchange(memoryReadableBlocks(session));
     if (!turn || fedLast.get(session.id) === turn.turnId) continue;
     fedLast.set(session.id, turn.turnId);
     out.push({ mateId, sessionId: session.id, ...turn });

@@ -161,11 +161,26 @@ test("every button stays on one line, and rows still fit, from a wide page to a 
   await expect(frame.locator('[data-list="attention"] [data-item="a:hivra-lead"]')).toBeVisible();
   const inner = () => page.frames().find((f) => f !== page.mainFrame())!;
   // The page's own width is what its layout answers to (it sits in a column up to 768px wide with 32px at each side).
+  // A fixed sleep races WebKit: the iframe's layout is not flushed yet, so the measure sees a wrap or an overlap that
+  // is gone a frame later. Wait until two frames have passed and the measure is clean. A real wrap stays and fails.
   for (const width of [1100, 760, 700, 560, 420]) {
     await page.locator("#root").evaluate((root, w) => void (root.style.width = `${w}px`), width);
-    await page.waitForTimeout(250);
+    await expect.soft
+      .poll(
+        async () => {
+          const frame = inner();
+          await frame.evaluate(
+            () =>
+              new Promise<void>((resolve) => {
+                requestAnimationFrame(() => requestAnimationFrame(() => resolve(undefined)));
+              }),
+          );
+          return frame.evaluate(PROBLEMS);
+        },
+        { timeout: 2_000, message: `at ${width}px` },
+      )
+      .toEqual([]);
     await shot(page, `agents-width-${width}`);
-    expect.soft(await inner().evaluate(PROBLEMS), `at ${width}px`).toEqual([]);
   }
 });
 
