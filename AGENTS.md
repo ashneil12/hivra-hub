@@ -259,8 +259,10 @@ store from the page's own localStorage, `monocode:dev-local-hub:<key>`). It has 
   closed with this exact commit as its head (the PR watch, else `gh pr list`, asked at most hourly per commit), or every
   delegated task in it is accepted and its commit is in the branch's upstream, or its branch is merged into the mainline
   with its commit on a remote. It must also be a linked worktree (never the main checkout) with an empty
-  `git status`, nothing running in it (an agent, terminal, project action, chat turn, dev copy, or a cargo build holding
-  `.cargo-lock`) and untouched for 10 minutes. Then only `target/`, `src-tauri/target/`, `test-results/`,
+  `git status`, nothing running in it (an agent, terminal, project action, chat turn, dev copy, a cargo build holding
+  `.cargo-lock`, or any process of Ash's whose working folder is inside it, read with `lsof` just before the delete) and
+  untouched for 10 minutes. When those working folders can't be read (lsof fails, or on Windows, which can't say) the
+  sweep deletes nothing. Then only `target/`, `src-tauri/target/`, `test-results/`,
   `playwright-report/` and every `node_modules/` that is a real folder go (a linked `node_modules` stays), each only
   when git ignores it and tracks nothing in it. Each worktree is checked again under the removal reservation. The
   switch is Settings > Worktrees > "Clear build output of finished worktrees", on by default, kept in

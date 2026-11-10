@@ -13,8 +13,9 @@
 //! - its branch is merged into the mainline, with its commit on a remote.
 //!
 //! **And** the worktree is a linked worktree (never the main checkout) with an empty `git status`, nothing running in
-//! it (an agent, a terminal, a project action, a chat's turn, a dev copy, a cargo build holding its lock), and nothing
-//! touched for ten minutes. A pull request still open for an accepted, pushed task doesn't hold it back: its code is
+//! it (an agent, a terminal, a project action, a chat's turn, a dev copy, a cargo build holding its lock, or any other
+//! process of this user's whose working folder is in it: a shell, an agent CLI or a dev server started by hand), and
+//! nothing touched for ten minutes. A pull request still open for an accepted, pushed task doesn't hold it back: its code is
 //! on the remote, and a rebuild is all a later fix costs.
 //!
 //! **Then** only these folders go, each a real folder (never a link) that git ignores and tracks nothing in:
@@ -59,6 +60,9 @@ const FIRST_SWEEP: Duration = Duration::from_secs(2 * 60);
 /// A commit `gh` said nothing finished about is asked about again after this long.
 const PR_RECHECK_MS: u64 = 60 * 60_000;
 const MEASURE_LIMIT: Duration = Duration::from_secs(120);
+/// Reading the other processes' working folders takes longer than this: the sweep stops and deletes nothing.
+#[cfg(target_os = "macos")]
+const PROCESS_READ_LIMIT: Duration = Duration::from_secs(30);
 const SETTINGS_FILE: &str = "worktree-autoclean.json";
 
 // ---- the setting ----------------------------------------------------------------------------------------------------
@@ -229,8 +233,10 @@ fn table_exists(conn: &rusqlite::Connection, name: &str) -> bool {
     .is_ok()
 }
 
+/// The real path, in the form the rest of the app uses (no `\\?\` prefix on Windows), so every comparison here is
+/// between paths written the same way.
 fn canonical(path: PathBuf) -> PathBuf {
-    path.canonicalize().unwrap_or(path)
+    crate::fs::canonical(&path).unwrap_or(path)
 }
 
 impl Records {
@@ -298,7 +304,7 @@ impl Records {
         for row in rows {
             let (id, folder, worktree) = row.map_err(sql_error)?;
             if !worktree.trim().is_empty() {
-                records.known.push(expand_home(&worktree));
+                records.known.push(canonical(expand_home(&worktree)));
             }
             if let Some(accepted) = newest.get(&id) {
                 records.tasks.push(TaskChat {
@@ -461,7 +467,7 @@ pub struct Cleaning {
 /// Delete the folders, each after checking it again: allowed by name, a real folder inside the worktree with no
 /// linked folder on the way, ignored by git with nothing tracked in it. Links inside are unlinked, never followed.
 pub fn clear_folders(worktree: &Path, folders: &[String]) -> Result<Cleaning, String> {
-    let root = worktree.canonicalize().map_err(|e| e.to_string())?;
+    let root = crate::fs::canonical(worktree).map_err(|e| e.to_string())?;
     let mut cleaning = Cleaning::default();
     for relative in folders {
         if !allowed_folder(relative) {
@@ -471,7 +477,7 @@ pub fn clear_folders(worktree: &Path, folders: &[String]) -> Result<Cleaning, St
         if !real_dir(&path) {
             continue;
         }
-        match path.canonicalize() {
+        match crate::fs::canonical(&path) {
             Ok(real) if real == path && real.starts_with(&root) => {}
             _ => continue,
         }
@@ -531,6 +537,111 @@ fn cargo_building(_root: &Path, _folders: &[String]) -> bool {
     false
 }
 
+// ---- what else runs in a worktree -----------------------------------------------------------------------------------
+
+/// The working folders of this user's processes, each a real path. The app's own agents, terminals and actions are in
+/// its records already; this catches the rest: a shell in Terminal, an agent CLI or a dev server started by hand, a
+/// test run. An error when they can't be read, and then nothing is deleted (a guess never deletes anything).
+pub type RunningFolders = dyn Fn() -> Result<Vec<PathBuf>, String>;
+
+/// [`RunningFolders`] on this machine: `lsof` on macOS, `/proc` on Linux. Windows has no plain way to ask, so there it
+/// is always an error and the sweep clears nothing.
+pub fn process_folders() -> Result<Vec<PathBuf>, String> {
+    let folders = read_process_folders()?;
+    // This process has a working folder too: none at all means the answer was empty, not that nothing runs.
+    if folders.is_empty() {
+        return Err(
+            "Which programs run in a worktree can't be read, so nothing was cleared".into(),
+        );
+    }
+    Ok(folders.into_iter().map(canonical).collect())
+}
+
+#[cfg(target_os = "macos")]
+fn read_process_folders() -> Result<Vec<PathBuf>, String> {
+    let mut command = std::process::Command::new("/usr/sbin/lsof");
+    command.args(["-w", "-n", "-P", "-d", "cwd", "-F", "n"]);
+    Ok(lsof_folders(&output_within(
+        &mut command,
+        PROCESS_READ_LIMIT,
+    )?))
+}
+
+#[cfg(target_os = "linux")]
+fn read_process_folders() -> Result<Vec<PathBuf>, String> {
+    Ok(std::fs::read_dir("/proc")
+        .map_err(|error| format!("Which programs run in a worktree can't be read: /proc: {error}"))?
+        .flatten()
+        .filter(|entry| {
+            entry
+                .file_name()
+                .to_str()
+                .is_some_and(|name| name.bytes().all(|byte| byte.is_ascii_digit()))
+        })
+        .filter_map(|entry| std::fs::read_link(entry.path().join("cwd")).ok())
+        .collect())
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+fn read_process_folders() -> Result<Vec<PathBuf>, String> {
+    Err(
+        "This computer doesn't say which programs run in a worktree, so nothing is cleared here"
+            .into(),
+    )
+}
+
+/// The `n` lines of `lsof -F n`: one working folder per process.
+pub fn lsof_folders(text: &str) -> Vec<PathBuf> {
+    text.lines()
+        .filter_map(|line| line.strip_prefix('n'))
+        .filter(|path| path.starts_with('/'))
+        .map(PathBuf::from)
+        .collect()
+}
+
+/// A command's output, read while it runs (a full pipe must not stall it), given up on after `limit`.
+#[cfg(target_os = "macos")]
+fn output_within(command: &mut std::process::Command, limit: Duration) -> Result<String, String> {
+    use std::io::Read;
+    use std::process::Stdio;
+    let mut child = command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|error| format!("Which programs run in a worktree can't be read: {error}"))?;
+    let mut stdout = child.stdout.take().ok_or("lsof gave no output")?;
+    let reader = std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        let _ = stdout.read_to_end(&mut bytes);
+        bytes
+    });
+    let deadline = Instant::now() + limit;
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => break,
+            Ok(None) if Instant::now() >= deadline => {
+                let _ = child.kill();
+                let _ = child.wait();
+                let _ = reader.join();
+                return Err("Which programs run in a worktree took too long to read, so nothing was cleared".into());
+            }
+            Ok(None) => std::thread::sleep(Duration::from_millis(50)),
+            Err(error) => return Err(error.to_string()),
+        }
+    }
+    let bytes = reader
+        .join()
+        .map_err(|_| "lsof's output couldn't be read")?;
+    // lsof says 1 when it couldn't look at some processes (another user's): what it did list still counts.
+    Ok(String::from_utf8_lossy(&bytes).into_owned())
+}
+
+/// The first folder something runs in, inside `root`.
+fn running_in<'a>(root: &Path, folders: &'a [PathBuf]) -> Option<&'a PathBuf> {
+    folders.iter().find(|folder| folder.starts_with(root))
+}
+
 // ---- one worktree ---------------------------------------------------------------------------------------------------
 
 #[derive(Clone, Debug, Serialize)]
@@ -551,15 +662,18 @@ pub enum Outcome {
     Kept(String),
     Cleared(ClearedWorktree),
     Failed(String),
+    /// What runs in the worktree couldn't be read: nothing was deleted, and the sweep stops.
+    Blind(String),
 }
 
 /// Check one worktree and, when it is finished and quiet, delete its build output. The caller holds the removal
-/// reservation and built `ctx` under it.
+/// reservation and built `ctx` under it. What else runs in it is read last, just before anything goes.
 pub fn clear_one(
     path: &Path,
     ctx: &Context,
     records: &Records,
     github: &dyn Github,
+    running: &RunningFolders,
     checks: &mut PrChecks,
     now: u64,
 ) -> Outcome {
@@ -600,6 +714,17 @@ pub fn clear_one(
         Ok(why) => why,
         Err(reason) => return Outcome::Kept(reason),
     };
+    match running() {
+        Err(error) => return Outcome::Blind(error),
+        Ok(busy) => {
+            if let Some(folder) = running_in(&root, &busy) {
+                return Outcome::Kept(format!(
+                    "Something is running in it ({})",
+                    path_to_js(folder)
+                ));
+            }
+        }
+    }
     match clear_folders(&root, &folders) {
         Ok(cleaning) if cleaning.cleared.is_empty() && !cleaning.errors.is_empty() => {
             Outcome::Failed(cleaning.errors.join("; "))
@@ -702,6 +827,7 @@ fn sweep_candidates(
     records: &Records,
     context: &dyn Fn(&Path) -> Result<Context, String>,
     github: &dyn Github,
+    running: &RunningFolders,
     checks: &mut PrChecks,
     now: &dyn Fn() -> u64,
 ) -> LastRun {
@@ -730,10 +856,16 @@ fn sweep_candidates(
                 break;
             }
         };
-        match clear_one(path, &ctx, records, github, checks, now()) {
+        match clear_one(path, &ctx, records, github, running, checks, now()) {
             // Gone between the two looks.
             Outcome::NoOutput => run.checked -= 1,
             Outcome::Kept(_) => run.held_back += 1,
+            // Nothing is guessed: no more worktrees are checked this time.
+            Outcome::Blind(error) => {
+                run.held_back += 1;
+                run.errors.push(error);
+                break;
+            }
             Outcome::Failed(error) => run.errors.push(format!("{}: {error}", path_to_js(path))),
             Outcome::Cleared(done) => {
                 run.cleared_bytes += done.bytes;
@@ -764,7 +896,7 @@ fn sweep(app: &AppHandle, checks: &mut PrChecks) -> Result<LastRun, String> {
     let candidates: Vec<PathBuf> = discover(&roots, records.known_worktrees())
         .into_iter()
         .filter(|(_, kind)| *kind == Kind::Linked)
-        .map(|(path, _)| path.canonicalize().unwrap_or(path))
+        .map(|(path, _)| canonical(path))
         .collect();
     // The report's context measures every build-output folder; a sweep only needs the facts, and the folders it
     // deletes are measured once, as they go.
@@ -779,6 +911,7 @@ fn sweep(app: &AppHandle, checks: &mut PrChecks) -> Result<LastRun, String> {
         &records,
         &context,
         &RealGithub,
+        &process_folders,
         checks,
         &now_ms,
     );
@@ -1170,9 +1303,15 @@ mod tests {
             merged: reason == "merged",
             head_ref: head_ref.into(),
             head_sha: Some(head_sha.into()),
-            worktree: worktree.map(|path| path.canonicalize().unwrap()),
+            worktree: worktree.map(|path| crate::fs::canonical(path).unwrap()),
         });
         records
+    }
+
+    /// No process of the user's runs in any worktree.
+    #[cfg(unix)]
+    fn nothing_running() -> Result<Vec<PathBuf>, String> {
+        Ok(vec![PathBuf::from("/")])
     }
 
     #[cfg(unix)]
@@ -1182,7 +1321,15 @@ mod tests {
 
     #[cfg(unix)]
     fn run(tree: &Path, ctx: &Context, records: &Records, github: &dyn Github) -> Outcome {
-        clear_one(tree, ctx, records, github, &mut PrChecks::new(), later())
+        clear_one(
+            tree,
+            ctx,
+            records,
+            github,
+            &nothing_running,
+            &mut PrChecks::new(),
+            later(),
+        )
     }
 
     #[cfg(unix)]
@@ -1343,7 +1490,7 @@ mod tests {
         leave_output(&tree, &fx._temp.0);
         let mut records = Records::default();
         records.tasks.push(TaskChat {
-            folder: tree.canonicalize().unwrap(),
+            folder: crate::fs::canonical(&tree).unwrap(),
             accepted: true,
         });
         let ctx = Context::default();
@@ -1367,7 +1514,7 @@ mod tests {
         let tree = fx.add("two-chats");
         fx.work(&tree, "a.txt", true);
         leave_output(&tree, &fx._temp.0);
-        let folder = tree.canonicalize().unwrap();
+        let folder = crate::fs::canonical(&tree).unwrap();
         let mut records = Records::default();
         records.tasks.push(TaskChat {
             folder: folder.clone(),
@@ -1409,7 +1556,7 @@ mod tests {
         // The task was accepted and the branch is pushed: finished, whatever is open on GitHub, and GitHub isn't asked.
         let mut accepted = Records::default();
         accepted.tasks.push(TaskChat {
-            folder: tree.canonicalize().unwrap(),
+            folder: crate::fs::canonical(&tree).unwrap(),
             accepted: true,
         });
         let open = Fake {
@@ -1437,7 +1584,7 @@ mod tests {
         leave_output(&tree, &fx._temp.0);
         let mut accepted = Records::default();
         accepted.tasks.push(TaskChat {
-            folder: tree.canonicalize().unwrap(),
+            folder: crate::fs::canonical(&tree).unwrap(),
             accepted: true,
         });
         let ctx = Context::default();
@@ -1485,13 +1632,22 @@ mod tests {
         };
         let mut checks = PrChecks::new();
         let now = later();
-        clear_one(&tree, &ctx, &Records::default(), &down, &mut checks, now);
+        clear_one(
+            &tree,
+            &ctx,
+            &Records::default(),
+            &down,
+            &nothing_running,
+            &mut checks,
+            now,
+        );
         assert!(matches!(
             clear_one(
                 &tree,
                 &ctx,
                 &Records::default(),
                 &merged,
+                &nothing_running,
                 &mut checks,
                 now + 60_000
             ),
@@ -1503,6 +1659,7 @@ mod tests {
             &ctx,
             &Records::default(),
             &merged,
+            &nothing_running,
             &mut checks,
             now + PR_RECHECK_MS + 1,
         ) else {
@@ -1628,7 +1785,7 @@ mod tests {
         let head = fx.work(&tree, "a.txt", true);
         leave_output(&tree, &fx._temp.0);
         let records = pr_records("merged", "busy", &head, None);
-        let real = tree.canonicalize().unwrap();
+        let real = crate::fs::canonical(&tree).unwrap();
 
         let dev = Context {
             protected: vec![(real.clone(), "Its dev copy (slot busy) is running".into())],
@@ -1673,6 +1830,7 @@ mod tests {
             &ctx,
             &records,
             &no_prs(),
+            &nothing_running,
             &mut PrChecks::new(),
             now_ms(),
         ));
@@ -1715,7 +1873,7 @@ mod tests {
         let candidates: Vec<PathBuf> = discover(std::slice::from_ref(&fx.root), &[])
             .into_iter()
             .filter(|(_, kind)| *kind == Kind::Linked)
-            .map(|(path, _)| path.canonicalize().unwrap())
+            .map(|(path, _)| crate::fs::canonical(&path).unwrap())
             .collect();
         assert_eq!(candidates.len(), 6);
         // Another removal (a tap in Settings) holds this one right now.
@@ -1727,6 +1885,7 @@ mod tests {
             &records,
             &|_| Ok(Context::default()),
             &no_prs(),
+            &nothing_running,
             &mut checks,
             &later,
         );
@@ -1763,6 +1922,7 @@ mod tests {
             &records,
             &|_| Ok(Context::default()),
             &no_prs(),
+            &nothing_running,
             &mut checks,
             &later,
         );
@@ -1779,18 +1939,132 @@ mod tests {
         let head = fx.work(&tree, "m.txt", true);
         leave_output(&tree, &fx._temp.0);
         let records = pr_records("merged", "merged-pr", &head, None);
-        let candidates = vec![tree.canonicalize().unwrap()];
+        let candidates = vec![crate::fs::canonical(&tree).unwrap()];
         let run = sweep_candidates(
             &candidates,
             &records,
             &|_| Err("A lease file can't be read".into()),
             &no_prs(),
+            &nothing_running,
             &mut PrChecks::new(),
             &later,
         );
         assert_eq!(run.errors, ["A lease file can't be read"]);
         assert!(run.cleared.is_empty());
         assert!(tree.join("target/debug/big.bin").exists());
+    }
+
+    /// A shell, an agent CLI or a dev server started outside the app, with its working folder in the worktree.
+    #[cfg(unix)]
+    #[test]
+    fn a_worktree_another_program_runs_in_keeps_its_build_output() {
+        let fx = fixture();
+        let tree = crate::fs::canonical(fx.add("feature")).unwrap();
+        let head = fx.work(&tree, "f.txt", true);
+        leave_output(&tree, &fx._temp.0);
+        let records = pr_records("merged", "feature", &head, None);
+        let inside = tree.join("src-tauri");
+        let in_it = move || Ok::<_, String>(vec![PathBuf::from("/"), inside.clone()]);
+        let reason = kept(clear_one(
+            &tree,
+            &Context::default(),
+            &records,
+            &no_prs(),
+            &in_it,
+            &mut PrChecks::new(),
+            later(),
+        ));
+        assert!(reason.starts_with("Something is running in it"), "{reason}");
+        assert!(tree.join("target/debug/big.bin").exists());
+        // A neighbour whose name only starts the same way is somewhere else.
+        let neighbour = PathBuf::from(format!("{}-2", tree.display()));
+        let next_door = move || Ok::<_, String>(vec![neighbour.clone()]);
+        let outcome = clear_one(
+            &tree,
+            &Context::default(),
+            &records,
+            &no_prs(),
+            &next_door,
+            &mut PrChecks::new(),
+            later(),
+        );
+        assert!(matches!(outcome, Outcome::Cleared(_)), "{outcome:?}");
+        assert!(!tree.join("target").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_sweep_that_cannot_see_what_else_runs_deletes_nothing() {
+        let fx = fixture();
+        let one = fx.add("merged-one");
+        let one_head = fx.work(&one, "a.txt", true);
+        let two = fx.add("merged-two");
+        let two_head = fx.work(&two, "b.txt", true);
+        let mut records = pr_records("merged", "merged-one", &one_head, None);
+        records
+            .ended
+            .extend(pr_records("merged", "merged-two", &two_head, None).ended);
+        for tree in [&one, &two] {
+            leave_output(tree, &fx._temp.0);
+        }
+        let candidates = vec![
+            crate::fs::canonical(&one).unwrap(),
+            crate::fs::canonical(&two).unwrap(),
+        ];
+        let blind = || Err::<Vec<PathBuf>, String>("lsof couldn't run".into());
+        let run = sweep_candidates(
+            &candidates,
+            &records,
+            &|_| Ok(Context::default()),
+            &no_prs(),
+            &blind,
+            &mut PrChecks::new(),
+            &later,
+        );
+        assert_eq!(run.errors, ["lsof couldn't run"]);
+        assert!(run.cleared.is_empty());
+        // It stopped at the first one rather than guess about the rest.
+        assert_eq!((run.checked, run.held_back), (1, 1), "{run:?}");
+        for tree in [&one, &two] {
+            assert!(tree.join("target/debug/big.bin").exists(), "{tree:?}");
+        }
+    }
+
+    #[test]
+    fn lsof_lists_one_working_folder_per_process() {
+        let text = "p1\nfcwd\nn/\np42\nfcwd\nn/Users/ash/Worktrees/hub-x\np43\nfcwd\nnrelative\n";
+        assert_eq!(
+            lsof_folders(text),
+            [
+                PathBuf::from("/"),
+                PathBuf::from("/Users/ash/Worktrees/hub-x")
+            ]
+        );
+        assert!(lsof_folders("").is_empty());
+    }
+
+    #[test]
+    fn something_runs_in_a_worktree_only_inside_its_folder() {
+        let root = Path::new("/w/feature");
+        let busy = |folder: &str| running_in(root, &[PathBuf::from(folder)]).is_some();
+        assert!(busy("/w/feature"));
+        assert!(busy("/w/feature/src-tauri"));
+        assert!(!busy("/w/feature-2"));
+        assert!(!busy("/w"));
+        assert!(!busy("/"));
+    }
+
+    /// The real reading: this test's own working folder is among the answers. Windows can't say, so it never clears.
+    #[test]
+    fn this_process_is_among_the_programs_running() {
+        let read = process_folders();
+        if cfg!(any(target_os = "macos", target_os = "linux")) {
+            let here = crate::fs::canonical(std::env::current_dir().unwrap()).unwrap();
+            let folders = read.expect("the working folders can be read here");
+            assert!(folders.contains(&here), "{here:?} not in {folders:?}");
+        } else {
+            assert!(read.is_err());
+        }
     }
 
     /// A chat's newest delegated task, by the status the app shows, says whether its worktree is done.
@@ -1809,7 +2083,7 @@ mod tests {
                 rusqlite::params![name, tree.to_string_lossy()],
             )
             .unwrap();
-            tree.canonicalize().unwrap()
+            crate::fs::canonical(&tree).unwrap()
         };
         let done = make("done-chat");
         let redone = make("redone-chat");
@@ -1899,7 +2173,7 @@ mod tests {
         insert_watch("w2", 2, "ended", Some("comment-limit"), "other", "def");
         insert_watch("w3", 3, "watching", None, "third", "ghi");
         let records = Records::read(&conn).unwrap();
-        let real = tree.canonicalize().unwrap();
+        let real = crate::fs::canonical(&tree).unwrap();
         assert_eq!(records.known_worktrees(), std::slice::from_ref(&real));
         // By folder, and by branch and commit.
         assert_eq!(
