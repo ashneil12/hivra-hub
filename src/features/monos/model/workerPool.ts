@@ -1070,10 +1070,12 @@ export function admitWorker(job: AdmitInput, ctx: AdmitContext): Admission {
   if (needed) return { start: false, reason: needed.reason, line: needed.line };
   const shared = sharedWith(job, ctx.rows, ahead);
   if (shared) return { start: false, reason: "files", line: filesWaitLine(shared) };
-  // WP-171: the owner's open tasks count against the fan-out cap. Past it, this one waits and holds no project seat.
-  const pressure = fanoutPressure(job, ctx);
-  if (pressure !== undefined && pressure >= FANOUT_MAX_TASKS)
-    return { start: false, reason: "fanout", line: fanoutWaitLine(pressure) };
+  // WP-171: a task of a fan-out waits at the owner's cap. An ordinary worker does not: the project's own limit decides.
+  if (job.fanout !== undefined) {
+    const pressure = fanoutPressure(job, ctx);
+    if (pressure !== undefined && pressure >= FANOUT_MAX_TASKS)
+      return { start: false, reason: "fanout", line: fanoutWaitLine(pressure) };
+  }
   return decide(job, { running: load.running + ahead.length, heavy: load.heavy + ahead.filter((q) => q.heavy).length }, limits, room);
 }
 
@@ -1098,8 +1100,8 @@ export function nextWorkers(ctx: AdmitContext): QueuedWorker[] {
     if (!claimed && dependencyWait({ id: job.id, fanout: queuedFanout(job) }, ctx)) continue;
     if (!claimed && sharedWith(job, ctx.rows, start)) continue;
     const open = job.ownerSession ? (fanout.get(job.ownerSession) ?? ownerOpen(job.ownerSession, ctx.rows)) : undefined;
-    // Past the cap it waits, and it does not take a project seat from work that can still start.
-    if (!claimed && open !== undefined && open >= FANOUT_MAX_TASKS) continue;
+    // Past the cap a fan-out task waits, and it does not take a project seat. An ordinary worker is not capped here.
+    if (!claimed && queuedFanout(job) !== undefined && open !== undefined && open >= FANOUT_MAX_TASKS) continue;
     if (!claimed && !decide(job, load, limits, ctx.room(job.harness)).start) continue;
     if (!claimed) {
       start.push(job);
@@ -1119,8 +1121,10 @@ export function queuedLine(job: QueuedWorker, ctx: AdmitContext): string {
   if (needed) return needed.line;
   const shared = sharedWith(job, ctx.rows);
   if (shared) return filesWaitLine(shared);
-  const pressure = fanoutPressure(job, ctx);
-  if (pressure !== undefined && pressure >= FANOUT_MAX_TASKS) return fanoutWaitLine(pressure);
+  if (queuedFanout(job) !== undefined) {
+    const pressure = fanoutPressure(job, ctx);
+    if (pressure !== undefined && pressure >= FANOUT_MAX_TASKS) return fanoutWaitLine(pressure);
+  }
   const why = decide(job, load, limits, room);
   return why.start ? "Starting now." : why.line;
 }

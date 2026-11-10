@@ -184,14 +184,17 @@ describe("the fan-out cap is a queue wait, not a drop (WP-171)", () => {
 
   it("starts only as many as the cap leaves free, and the one past it stays queued for a fan-out reason", () => {
     const rows = [owned("w1"), owned("w2"), owned("w3")];
-    const queue = ["q1", "q2", "q3", "q4", "q5", "q6"].map((id) => job(id, { ownerSession: "lead" }));
+    const queue = ["q1", "q2", "q3", "q4", "q5", "q6"].map((id) => needs(id));
     const ctx = context({}, { rows, queue });
     expect(nextWorkers(ctx).map((q) => q.id)).toEqual(["q1", "q2", "q3", "q4", "q5"]);
     expect(queuedLine(queue[5], ctx)).toMatch(/the most one first mate runs at once/);
-    expect(admitWorker({ ...admitInput("extra"), ownerSession: "lead", fanout: undefined }, ctx)).toMatchObject({
+    expect(admitWorker({ ...admitInput("extra"), ownerSession: "lead" }, ctx)).toMatchObject({
       start: false,
       reason: "fanout",
     });
+    // An ordinary worker is not held by the fan-out cap. The project's own limit is what holds it.
+    const plain = job("plain", { ownerSession: "lead" });
+    expect(nextWorkers(context({}, { rows: Array.from({ length: 8 }, (_, i) => owned(`w${i}`)), queue: [plain] })).map((q) => q.id)).toEqual(["plain"]);
   });
 
   it("a start refused for the fan-out cap stays queued, and the next look starts it", async () => {
