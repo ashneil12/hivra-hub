@@ -3001,6 +3001,32 @@ fn webview_bytes_listed(dest: &Path) -> u64 {
         .sum()
 }
 
+/// The preview names what an import will leave out, before anything is restored: each file that is too big, with why.
+#[test]
+fn the_preview_names_the_files_an_import_will_leave_out() {
+    let source_dir = TestDir::new("source");
+    let target_dir = TestDir::new("target");
+    let out = TestDir::new("out");
+    let source = env_for(&source_dir.0);
+    let target = env_for(&target_dir.0);
+    let dest = note_export(&source, &out.0);
+    let before = webview_bytes_listed(&dest);
+    for name in ["a", "b", "c"] {
+        put_in_export(&dest, &format!("setup/big-{name}.json"), &[b' '; 100]);
+    }
+    let path = dest.to_string_lossy().into_owned();
+    let inspected = inspect_within(&target, &path, before + 250).unwrap();
+    let paths: Vec<&str> = inspected.left_out.iter().map(|f| f.path.as_str()).collect();
+    assert_eq!(paths, vec!["setup/big-c.json"], "{:?}", inspected.left_out);
+    assert!(
+        inspected.left_out[0].reason.contains("MB"),
+        "{:?}",
+        inspected.left_out
+    );
+    let json = serde_json::to_value(&inspected).unwrap();
+    assert_eq!(json["leftOut"][0]["path"], "setup/big-c.json", "{json}");
+}
+
 /// Inspect holds no more than a budget of the webview's files whole, so the file that would take them past it is left
 /// out (with a line in the report) and the ones before it come through. The budget here is set just past two of three
 /// 100-byte setup files; the real one is `MAX_INSPECT_BYTES`.
@@ -3406,6 +3432,135 @@ fn an_export_keeps_the_webviews_files_within_the_budget_inspect_holds() {
     );
 }
 
+/// setup/setup.json is never the one file the webview's budget leaves out: it goes in first, whatever its name sorts
+/// after.
+#[test]
+fn the_setup_file_goes_in_before_the_other_webview_files() {
+    let dir = TestDir::new("writer");
+    let mut writer = Writer::new(dir.0.clone());
+    writer.webview_budget = 250;
+    let files = BTreeMap::from([
+        ("setup/a.json".to_string(), " ".repeat(100)),
+        ("setup/monos/cos/SOUL.md".to_string(), "x".repeat(100)),
+        ("setup/setup.json".to_string(), " ".repeat(100)),
+    ]);
+    write_webview_files(&mut writer, &files).unwrap();
+    let written: Vec<&str> = writer
+        .files
+        .iter()
+        .map(|(name, _, _)| name.as_str())
+        .collect();
+    assert!(written.contains(&"setup/setup.json"), "{written:?}");
+    assert!(
+        !writer
+            .left_out
+            .iter()
+            .any(|n| n.contains("setup/setup.json")),
+        "{:?}",
+        writer.left_out
+    );
+}
+
+/// Setup files past the budget the preview holds stop the export with one plain line (their size and the limit),
+/// rather than an export that quietly misses some of them.
+#[test]
+fn an_export_whose_setup_files_are_past_the_budget_stops_with_one_line() {
+    let source_dir = TestDir::new("source");
+    let out = TestDir::new("out");
+    let source = env_for(&source_dir.0);
+    seed(&source);
+    let dest = out.0.join("export");
+    let mut request = export_request(&dest, Form::Folder);
+    request
+        .files
+        .insert("setup/big.json".into(), " ".repeat(3 * 1024 * 1024));
+    let why = export_within(&source, &request, 2 * 1024 * 1024).unwrap_err();
+    assert!(
+        why.contains("setup files") && why.contains("3.0 MB") && why.contains("2 MB"),
+        "{why}"
+    );
+    assert!(!why.contains('\n'), "{why}");
+    assert!(!dest.exists(), "an export was written");
+    // Within it, the same request goes through.
+    assert!(export_within(&source, &request, 8 * 1024 * 1024).is_ok());
+}
+
+/// A chat the writer leaves out (here: its name clashes with another's apart from capitals) isn't counted as exported.
+#[test]
+fn a_chat_left_out_of_an_export_is_not_counted() {
+    let source_dir = TestDir::new("source");
+    let out = TestDir::new("out");
+    let source = env_for(&source_dir.0);
+    seed(&source);
+    {
+        let store = open_store(&source);
+        let conn = store.lock_conn().unwrap();
+        add_session(
+            &conn,
+            "CHAT-1",
+            "Same name, other capitals",
+            "claude",
+            json!([block("x1", "user", "hello")]),
+            9_000,
+        );
+    }
+    let dest = out.0.join("export");
+    let report = export(&source, &export_request(&dest, Form::Folder)).unwrap();
+    let written = export_texts(&dest)
+        .into_keys()
+        .filter(|name| name.starts_with("workspace/sessions/"))
+        .count();
+    assert!(
+        report
+            .notes
+            .iter()
+            .any(|n| n.contains("CHAT-1") && n.contains("left out")),
+        "{:?}",
+        report.notes
+    );
+    assert_eq!(
+        report.counts["sessions"],
+        json!(written),
+        "{:?}",
+        report.counts
+    );
+}
+
+/// When workspace/notes.json is left out, the notes' pictures stay out too (and no note is counted).
+#[test]
+fn note_pictures_stay_out_when_the_notes_are_left_out() {
+    let source_dir = TestDir::new("source");
+    let out = TestDir::new("out");
+    let source = env_for(&source_dir.0);
+    seed(&source);
+    fs::create_dir_all(&out.0).unwrap();
+    let mut writer = Writer::new(out.0.clone());
+    // A file of the same name apart from capitals is in first: the writer leaves the real one out.
+    writer.bytes("workspace/NOTES.json", b"[]").unwrap();
+    let mut counts = Map::new();
+    let conn = source.read_db().unwrap().unwrap();
+    export_workspace(&source, &conn, &mut writer, &mut counts).unwrap();
+    assert!(
+        writer
+            .left_out
+            .iter()
+            .any(|n| n.contains("workspace/notes.json")),
+        "{:?}",
+        writer.left_out
+    );
+    let mut notes = Vec::new();
+    export_note_assets(&source, &mut writer, &counts, &mut notes).unwrap();
+    assert!(
+        !writer
+            .files
+            .iter()
+            .any(|(name, _, _)| name.starts_with("workspace/note-assets/")),
+        "{:?}",
+        writer.files
+    );
+    assert_eq!(counts["notes"], json!(0), "{counts:?}");
+}
+
 /// A history bundle past its cap is left out of the export with a line: the memory files still go.
 #[test]
 fn an_export_leaves_out_a_history_bundle_past_its_cap() {
@@ -3660,26 +3815,26 @@ fn odd_shapes_in_an_imported_chat_are_dropped_not_kept_and_do_not_fail_the_impor
     );
 }
 
-/// Sets an environment variable for the process and puts it back (tests share one process).
+/// Hands every git command a history restore runs on this thread `name=value`, as if the app had been started with it
+/// (tests run in parallel, so nothing is set for the whole process), and takes it away again.
 #[cfg(unix)]
-struct EnvVar(&'static str, Option<std::ffi::OsString>);
+struct InheritedGitEnv;
 
 #[cfg(unix)]
-impl EnvVar {
-    fn set(name: &'static str, value: &Path) -> Self {
-        let before = std::env::var_os(name);
-        std::env::set_var(name, value);
-        Self(name, before)
+impl InheritedGitEnv {
+    fn set(name: &str, value: &Path) -> Self {
+        INHERITED_GIT_ENV.with(|vars| {
+            vars.borrow_mut()
+                .push((name.into(), value.as_os_str().to_owned()));
+        });
+        Self
     }
 }
 
 #[cfg(unix)]
-impl Drop for EnvVar {
+impl Drop for InheritedGitEnv {
     fn drop(&mut self) {
-        match &self.1 {
-            Some(value) => std::env::set_var(self.0, value),
-            None => std::env::remove_var(self.0),
-        }
+        INHERITED_GIT_ENV.with(|vars| vars.borrow_mut().clear());
     }
 }
 
@@ -3702,6 +3857,7 @@ fn bundle_with_filter_files(dir: &Path) -> Vec<u8> {
     )
     .unwrap();
     fs::write(repo.join("A.md"), "a\n").unwrap();
+    fs::write(repo.join("MEMORY.md"), "an older memory\n").unwrap();
     git(&repo, &["init", "-q", "-b", "main"]);
     git(&repo, &["add", "-A"]);
     git(&repo, &["commit", "-q", "-m", "filtered"]);
@@ -3741,7 +3897,7 @@ fn restoring_a_history_runs_no_filter_and_drops_the_files_that_name_one() {
         ),
     )
     .unwrap();
-    let _global = EnvVar::set("GIT_CONFIG_GLOBAL", &config);
+    let _global = InheritedGitEnv::set("GIT_CONFIG_GLOBAL", &config);
 
     let store = open_store(&target);
     let conn = store.lock_conn().unwrap();
@@ -3775,6 +3931,106 @@ fn restoring_a_history_runs_no_filter_and_drops_the_files_that_name_one() {
         "{:?}",
         report.notes
     );
+}
+
+/// A git command in a restored memory folder, the way Ash would run one: his own global config (here a stand-in that
+/// defines the filters a hostile history names), hooks and attributes as git finds them.
+#[cfg(unix)]
+fn git_as_ash(folder: &Path, global: &Path, args: &[&str]) -> std::process::Output {
+    Command::new("git")
+        .arg("-C")
+        .arg(folder)
+        .args(args)
+        .env("GIT_CONFIG_GLOBAL", global)
+        .env("GIT_CONFIG_SYSTEM", "/dev/null")
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .output()
+        .unwrap()
+}
+
+/// The git control files left out of a restored history are gone from its HEAD too: the folder is clean, so an
+/// ordinary `git reset --hard` under Ash's own config can't bring the hostile `.gitattributes` and `.lfsconfig` back
+/// and run the filter they name.
+#[cfg(unix)]
+#[test]
+fn a_reset_after_a_restore_cannot_bring_the_control_files_back() {
+    let source_dir = TestDir::new("source");
+    let target_dir = TestDir::new("target");
+    let out = TestDir::new("out");
+    let outside = TestDir::new("outside");
+    let source = env_for(&source_dir.0);
+    let target = env_for(&target_dir.0);
+    let dest = memory_export(&source, &out.0);
+    assert!(dest.join("memory/ash/MEMORY.md").is_file());
+    put_in_export(
+        &dest,
+        "memory/ash.git.bundle",
+        &bundle_with_filter_files(&outside.0),
+    );
+    let store = open_store(&target);
+    let conn = store.lock_conn().unwrap();
+    let report = import_held(&target, &conn, &history_import(&dest)).unwrap();
+    assert_eq!(report.memory_history, vec!["ash".to_string()], "{report:?}");
+    let folder = target.memory_root.join("ash");
+
+    // Ash's global config, with a stand-in for git-lfs and the filter the history's attributes name.
+    let marker = outside.0.join("FILTER-RAN");
+    let global = outside.0.join("ash-gitconfig");
+    let run = format!("touch '{}'; cat", marker.display());
+    fs::write(
+        &global,
+        format!(
+            "[filter \"lfs\"]\n\tsmudge = {run}\n\tclean = {run}\n\trequired = true\n[filter \"evil\"]\n\tsmudge = {run}\n\tclean = {run}\n"
+        ),
+    )
+    .unwrap();
+
+    let tree = git_as_ash(&folder, &global, &["ls-tree", "-r", "--name-only", "HEAD"]);
+    assert!(tree.status.success());
+    let tree = String::from_utf8_lossy(&tree.stdout).into_owned();
+    for control in [".gitattributes", ".lfsconfig", ".gitmodules"] {
+        assert!(
+            !tree
+                .lines()
+                .any(|path| path.rsplit('/').next() == Some(control)),
+            "HEAD still holds {control}: {tree}"
+        );
+    }
+    let author = git_as_ash(&folder, &global, &["log", "-1", "--format=%an <%ae>%n%s"]);
+    let author = String::from_utf8_lossy(&author.stdout).into_owned();
+    assert!(
+        author.starts_with("Hivra import <import@hivra.invalid>"),
+        "{author}"
+    );
+
+    // Nothing staged or deleted: only what the import itself wrote (the export's newer MEMORY.md, its other files).
+    let status = git_as_ash(&folder, &global, &["status", "--porcelain"]);
+    let status = String::from_utf8_lossy(&status.stdout).into_owned();
+    for line in status.lines() {
+        assert!(
+            line.starts_with(" M ") || line.starts_with("?? "),
+            "unexpected status line {line:?} in {status}"
+        );
+    }
+    assert!(status.contains(" M MEMORY.md"), "{status}");
+
+    let reset = git_as_ash(&folder, &global, &["reset", "--hard", "--quiet"]);
+    assert!(
+        reset.status.success(),
+        "{}",
+        String::from_utf8_lossy(&reset.stderr)
+    );
+    for control in [".gitattributes", ".lfsconfig", ".gitmodules"] {
+        assert!(
+            !folder.join(control).exists(),
+            "the reset brought back {control}"
+        );
+    }
+    assert_eq!(
+        fs::read_to_string(folder.join("MEMORY.md")).unwrap(),
+        "an older memory\n"
+    );
+    assert!(!marker.exists(), "a filter ran on the reset");
 }
 
 /// The folder an archive is unpacked into is the importer's alone.
