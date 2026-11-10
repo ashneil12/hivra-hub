@@ -4,6 +4,7 @@
 // stops the whole tree beneath the task (stopTree.ts), a wait marks the chat as waiting (so its workers' questions come
 // back through the wait, not a wake), and an answer is noted for the question router before it reaches the worker.
 import type { AgentAppTasksHost } from "../../agent-app/model/agentAppTasks";
+import { reviewBeforeCrew } from "../../fresh-eyes/model/gate";
 import { decideGateVerdict, saveGatePlan } from "../../firstmate/model/completionGates";
 import type { Session } from "../../sessions/model/session";
 import type { UserQuestionReply } from "../../sessions/model/userQuestion";
@@ -163,6 +164,18 @@ export function delegationTasksHost(deps: DelegationTasksDeps): AgentAppTasksHos
     ...(deps.monoWork ? { monoWork: deps.monoWork } : {}),
     ...(deps.pool ? { pool: deps.pool } : {}),
     ...(deps.crewRoute ? { crewRoute: deps.crewRoute } : {}),
+    // WP-144: off unless this project turned fresh-eyes review on.
+    freshEyes: (input) =>
+      reviewBeforeCrew(input, {
+        ask: deps.firstMate ? (question) => deps.firstMate!.backend.ask(question) : undefined,
+        lookup: deps.firstMate
+          ? async (project, key) => {
+              const rows = await deps.firstMate!.backend.decisions();
+              const found = rows.find((row) => row.project === project && row.decisionKey === key);
+              return found ? { answer: found.answer, state: found.state } : null;
+            }
+          : undefined,
+      }),
     // WP-40: the brief's gates stay with the task, and its first mate accepts an unsure one.
     saveGates: (id, request, folder) => saveGatePlan(id, request, folder),
     decideGates: (owner, id, accept, reason) => decideGateVerdict(owner, id, accept, reason),

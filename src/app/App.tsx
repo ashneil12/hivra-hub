@@ -128,6 +128,7 @@ import {
   setLeadDelegator,
 } from "../features/hub/model/leadershipDelegation";
 import { bindCouncilApp } from "../features/council/model/seatSessions";
+import { bindFreshEyesApp } from "../features/fresh-eyes/model/bind";
 import { postLeadReport } from "../features/hub/model/roomReports";
 import { useDelegationTree } from "../features/monos/hooks/useDelegationTree";
 import { usePrWatches } from "../features/pr-watch/hooks/usePrWatches";
@@ -10819,6 +10820,29 @@ function Workspace({
           if (session) void submitSessionRef.current(session.id, text, [], { followsUp: true });
         });
       },
+    });
+  }, []);
+  useEffect(() => {
+    // WP-144: fresh-eyes reviewers are cheap sessions with an empty history. Off until a project turns the review on.
+    let folder = "~";
+    void homeDir().then((dir) => {
+      if (dir.trim()) folder = dir;
+    });
+    return bindFreshEyesApp({
+      sessions: () => sessionsRef.current,
+      add: (session) => {
+        sessionsRef.current = [...sessionsRef.current, session];
+        setSessions(sessionsRef.current);
+      },
+      submit: (sessionId, text, _history, options) => submitSessionRef.current(sessionId, text, [], options),
+      stop: (sessionId) => {
+        void onStopRef.current(sessionId, true);
+      },
+      remove: (sessionId) => {
+        sessionsRef.current = sessionsRef.current.filter((session) => session.id !== sessionId);
+        setSessions(sessionsRef.current);
+      },
+      cwd: () => folder,
     });
   }, []);
   const roomsHost = useRoomRunner({

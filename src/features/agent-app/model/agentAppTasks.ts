@@ -269,6 +269,17 @@ export type AgentAppTasksHost = {
     effortFrom?: string | null;
   } | null | undefined>;
   /**
+   * WP-144: fresh-eyes review before builders start. Absent means today's start.
+   * Hold only when `hold` is true.
+   */
+  freshEyes?(input: {
+    project: string;
+    requestId: string;
+    plan: string;
+    ownerSession: string;
+    reading?: unknown;
+  }): Promise<{ hold: boolean; why: string }>;
+  /**
    * Where a Mono's work goes (hub/model/monoTeams.ts). Absent outside the hub, where a Mono starts workers in its
    * projects as before.
    */
@@ -771,6 +782,29 @@ async function delegate(
       }
     } finally {
       unbindPhaseLauncher(sharedTask);
+    }
+  }
+  // WP-144: fresh-eyes review, off unless this project turned it on. Builders wait for approval.
+  if (tasks.freshEyes) {
+    const eyes = await tasks.freshEyes({
+      project: source.cwd,
+      requestId,
+      plan: brief,
+      ownerSession: source.id,
+      reading: input.reading,
+    });
+    if (eyes?.hold === true) {
+      return {
+        taskId: null,
+        childSessionId: `fresh-eyes-${requestId}`,
+        status: "working",
+        title,
+        freshEyes: true,
+        note:
+          typeof eyes.why === "string" && eyes.why.trim()
+            ? eyes.why
+            : "Fresh-eyes review: waiting on you",
+      };
     }
   }
   // WP-40: a bad gate is refused before a worker starts. Nothing named keeps the routes check alone.
