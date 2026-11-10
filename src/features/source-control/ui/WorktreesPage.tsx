@@ -28,6 +28,11 @@ import {
   type RemoveWorktree,
   type Worktree,
 } from "../model/worktrees";
+import {
+  worktreeIncludeLinesOf,
+  type WorktreeIncludeLines as IncludeLines,
+} from "../model/worktreeIncludeNote";
+import { hasIncludeLines, WorktreeIncludeLines } from "./WorktreeIncludeLines";
 
 export function WorktreesPage({
   cwd,
@@ -67,6 +72,8 @@ export function WorktreesPage({
   const { data, error: loadError, refresh } = useProjectWorktrees(project);
   const worktrees = data?.worktrees.filter((tree) => !tree.isMain) ?? [];
   const [error, setError] = useState<string>();
+  // WP-138: what copying the files named in .worktreeinclude did for the worktree just made.
+  const [created, setCreated] = useState<IncludeLines>();
   const [creating, setCreating] = useState(false);
   const [deleting, setDeleting] = useState<Worktree>();
   const [refreshingAfterFailure, setRefreshingAfterFailure] = useState(false);
@@ -87,13 +94,17 @@ export function WorktreesPage({
           onSelectProject={(path) => {
             setProject(path);
             setError(undefined);
+            setCreated(undefined);
             setDeleting(undefined);
           }}
         />
         <button
           type="button"
           disabled={!data}
-          onClick={() => setCreating(true)}
+          onClick={() => {
+            setCreated(undefined);
+            setCreating(true);
+          }}
           className="flex h-7.5 items-center gap-1.5 rounded-md px-2 text-[11px] hover:bg-content/12 disabled:opacity-40 active:scale-[0.97]"
         >
           <Plus className="size-3" />
@@ -126,6 +137,11 @@ export function WorktreesPage({
         <p role="alert" className="break-words text-[12px] text-red-400">
           {error}
         </p>
+      )}
+      {created && (
+        <div className="flex flex-col gap-1 text-[12px]">
+          <WorktreeIncludeLines lines={created} />
+        </div>
       )}
       {!project ? (
         <p className="text-[12px] text-content/50">
@@ -251,8 +267,10 @@ export function WorktreesPage({
           cwd={project}
           baseCwd={project}
           defaultRoot={data?.defaultRoot}
-          onCreated={() => {
+          onCreated={(tree) => {
             setCreating(false);
+            const include = worktreeIncludeLinesOf(tree);
+            setCreated(hasIncludeLines(include) ? include : undefined);
             refresh();
           }}
           onCancel={() => setCreating(false)}
