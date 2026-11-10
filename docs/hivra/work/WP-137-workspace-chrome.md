@@ -94,6 +94,24 @@ The right-hand panel and the split tree are two existing places a diff can sit. 
 
 Splitting does not change which project group is filtered, which folder a chat is in, or the order of either list. That rule is in the re-sort section.
 
+### Extra windows and the tray
+
+Extra windows are already worth having on macOS, and they are already built. A tray is not.
+
+App: New Window (`open_new_window` in `src-tauri/src/window.rs`) opens another workspace window. It is on the menu and the command palette. Each window is a view of the same projects and the same chats. The "Show only this group" filter, if a later build adds it, is per window, so one window can look at one group while the other shows the full rail.
+
+The second window must stay a view. Steering, delegations, stall watch, and PR watch already run only in the main window, because a second copy of the same App would submit the same pending rows twice (`useSteering.ts`). A later build must not start those loops in the extra window, and must not give the extra window its own chat list or its own copy of a chat.
+
+That is the recommendation. Keep New Window. Do not add a special "agents only" window. Cursor's Agents window is the product people compare when they want agents off to one side. Hivra's extra window is already the whole workspace, which covers that without a second kind of window. Cloud sessions are WP-136, not this note. Claude Desktop being kept open beside a coding app is the same job as this extra window, or as a split. This design does not add a design surface. The Codex app and Paseo are not a source for windows or a tray: the parity notes do not describe one.
+
+A macOS tray should wait.
+
+Windows already has a tray (`src-tauri/src/tray.rs`, Windows only). Closing a window there hides it, and a hidden window leaves the taskbar, so the tray is how you get it back. macOS does not have that hole. The Dock stays, and `show_hidden_or_open_new` brings hidden workspace windows back. The Mono menu bar is a chat for one Mono, not a list of every chat and not a stand-in for the Windows tray.
+
+A tray that listed chats would be a third inbox, next to the chat list and Being built. It would be pushed to float whatever needs the person, which is the re-sort this design forbids. Discussion 6889 can stay a note. If a tray is built later, it only opens the app. It does not list chats, and a click does not reorder anything.
+
+So: keep the extra window, on macOS and everywhere else it already exists. Do not add a macOS status item in the first build that follows this note.
+
 ## Done when
 
 - [ ] The design covers spaces, split, windows, and the re-sort rule.
