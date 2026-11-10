@@ -38,7 +38,9 @@ pub fn init<R: Runtime>() -> TauriPlugin<R> {
             crate::model_router::model_quick_pick,
             // WP-103: the cheap memory tier, and its "Test this model" check.
             crate::memory_cheap::memory_cheap_ask,
-            crate::memory_cheap::memory_cheap_test
+            crate::memory_cheap::memory_cheap_test,
+            // WP-129: short text. One completion, no tools and no path.
+            crate::text_generation::text_generation_ask
         ])
         // The main window is always shown at a usable size, whatever a later startup step does (launch_guard.rs).
         .on_event(|app, event| match event {
