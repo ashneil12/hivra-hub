@@ -45,6 +45,10 @@ pub struct Worktrees {
 }
 
 fn git(root: &Path, args: &[&str]) -> Result<String, String> {
+    // `git -C ""` changes nowhere: a chat with no folder would list the worktrees of the folder the app runs in.
+    if crate::chat_folder::is_blank(root) {
+        return Err(crate::chat_folder::NEEDS_FOLDER.into());
+    }
     let mut command = Command::new("git");
     crate::hide_window_console(&mut command);
     let output = command
