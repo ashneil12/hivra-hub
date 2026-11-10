@@ -1735,7 +1735,9 @@ fn an_outside_path_is_described_without_being_printed() {
             PathBuf::from(root.to_string_lossy().to_uppercase()).join("attribution"),
             "the data folder in another case",
         ),
-        (scratch.path().join("elsewhere"), "elsewhere"),
+        // Beside the data folder, not in it: on Linux the scratch path is already canonical, so a child of it
+        // would be inside.
+        (root.parent().unwrap().join("elsewhere"), "elsewhere"),
     ];
     for (found, said) in cases {
         let mut relabel = |_: &Path, _: PathBuf| found.clone();
