@@ -1,10 +1,13 @@
 #!/usr/bin/env node
-// WP-154: decide whether the RPM jobs should run.
-// Same idea as the AppImage skip in ci.yml: diff the push or the pull request
-// against its base, and build only when a packaging input changed. The CI rpm
-// command is `tauri build --bundles rpm` with no overlay, so the hub and
-// Windows configs are not inputs. A missing base, a sha that is not 40 hex
-// characters, or a git failure builds the package rather than skipping it.
+// WP-154: decide how much of the RPM work a CI run does.
+// Every run builds one image, the one the release workflow ships on, so a production
+// build runs on every pull request. The rest (the second image and the clean install)
+// is the "full" set. It runs on every push to main, every nightly run, and every pull
+// request whose diff against its base touches a packaging input, the same idea as the
+// AppImage skip in ci.yml. The CI rpm command is `tauri build --bundles rpm` with no
+// overlay, so the hub and Windows configs are not inputs. A missing event, a missing
+// base, a sha that is not 40 hex characters, or a git failure builds the full set
+// rather than skipping it.
 
 import { spawnSync } from "node:child_process";
 import { pathToFileURL } from "node:url";
@@ -101,6 +104,20 @@ export function resolvePackagingRun({ base, head, pattern, git }) {
   return { run: false, reason: "packaging files unchanged" };
 }
 
+/**
+ * Only a pull request is diffed. A push to main, the nightly run, a manual run and an event this
+ * script does not know all build the full set: building more is the safe mistake.
+ * @param {{ event: string | undefined, base: string, head: string, pattern: RegExp, git: Parameters<typeof resolvePackagingRun>[0]["git"] }} input
+ * @returns {{ full: boolean, reason: string }}
+ */
+export function planRpmBuild({ event, base, head, pattern, git }) {
+  if (event !== "pull_request") {
+    return { full: true, reason: "not a pull request, so every image builds" };
+  }
+  const decision = resolvePackagingRun({ base, head, pattern, git });
+  return { full: decision.run, reason: decision.reason };
+}
+
 function runGit(args) {
   const result = spawnSync("git", args, { encoding: "utf8" });
   return { status: result.status, stdout: result.stdout, error: result.error };
@@ -113,14 +130,15 @@ function main(argv) {
     process.stderr.write("kind must be rpm\n");
     return 1;
   }
-  const decision = resolvePackagingRun({
+  const plan = planRpmBuild({
+    event: process.env.PACKAGING_EVENT,
     base: process.env.PACKAGING_BASE ?? "",
     head: process.env.PACKAGING_HEAD ?? "",
     pattern: packagingPattern(RPM_PACKAGING_FILES),
     git: runGit,
   });
-  process.stdout.write(`run=${decision.run ? "true" : "false"}\n`);
-  process.stderr.write(`${decision.reason}\n`);
+  process.stdout.write(`full=${plan.full ? "true" : "false"}\n`);
+  process.stderr.write(`${plan.reason}\n`);
   return 0;
 }
 

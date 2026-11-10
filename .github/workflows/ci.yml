@@ -309,8 +309,10 @@ jobs:
         if: steps.packaging.outputs.run == 'true'
         run: bash scripts/assert-appimage-host-libs.sh
 
-  # Same base-sha diff as the AppImage job. A change that does not touch RPM inputs does not build the two images.
-  # The clean install needs the rpm job, so a skipped build skips that check too.
+  # Every run builds one RPM image, the image the release workflow publishes from, so a production build runs on every
+  # pull request. The full set (the second image and the clean install) runs on every push to main, every nightly run,
+  # and every pull request whose base-sha diff touches an RPM input, the same idea as the AppImage job. The script
+  # prints full=true or full=false. A missing event, a missing base or a git failure prints full=true.
   rpm-changes:
     if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     name: RPM packaging changes
@@ -318,7 +320,7 @@ jobs:
     permissions:
       contents: read
     outputs:
-      run: ${{ steps.packaging.outputs.run }}
+      full: ${{ steps.packaging.outputs.full }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -327,18 +329,20 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 20
-      - name: Skip unless RPM packaging files changed
+      - name: Decide whether the full RPM set runs
         id: packaging
         env:
-          PACKAGING_BASE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+          PACKAGING_EVENT: ${{ github.event_name }}
+          PACKAGING_BASE: ${{ github.event.pull_request.base.sha }}
           PACKAGING_HEAD: ${{ github.sha }}
         run: node scripts/ci-packaging-changed.mjs --kind rpm >> "$GITHUB_OUTPUT"
 
   rpm:
     needs: rpm-changes
+    # The production build: tauri's release build and the rpm bundle. It no longer waits for the gate's answer, only
+    # for the gate to have run. The gate's answer picks the images.
     if: >-
       needs.rpm-changes.result == 'success'
-      && needs.rpm-changes.outputs.run == 'true'
       && (github.event_name != 'pull_request' || !github.event.pull_request.draft)
     name: RPM build (${{ matrix.image }})
     timeout-minutes: 25
@@ -347,10 +351,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # almalinux:10 covers the Enterprise Linux path in
-        # scripts/install-linux-deps-fedora.sh (EPEL 10 + CRB), which is the
-        # only way to catch packages that are missing from EPEL 10.
-        image: [fedora:43, almalinux:10]
+        # almalinux:10 is the image release.yml builds the published rpm on, so every run builds it. It also covers
+        # the Enterprise Linux path in scripts/install-linux-deps-fedora.sh (EPEL 10 + CRB), which is the only way to
+        # catch packages that are missing from EPEL 10. fedora:43 joins it when the gate says full.
+        image: ${{ fromJSON(needs.rpm-changes.outputs.full == 'true' && '["almalinux:10","fedora:43"]' || '["almalinux:10"]') }}
     steps:
       # Neither fedora:43 nor almalinux:10 ships git, which actions/checkout
       # otherwise has to work around with a REST API tarball download.
@@ -402,7 +406,8 @@ jobs:
       - name: Upload rpm for the clean install check
         # Ship and test the EL 10 build. Fedora 43's glibc is newer, so a
         # fedora:43 rpm can dnf-install on AlmaLinux 10 and still fail to load.
-        if: matrix.image == 'almalinux:10'
+        # The clean install runs only for the full set, so only that run uploads.
+        if: matrix.image == 'almalinux:10' && needs.rpm-changes.outputs.full == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: rpm-package
@@ -411,7 +416,10 @@ jobs:
 
   rpm-clean-install:
     name: Clean rpm install
-    needs: rpm
+    needs: [rpm-changes, rpm]
+    # Part of the full set. A run that built only the production image has no rpm to hand over, so this skips.
+    # With no status function in the condition, a failed or skipped rpm job skips this one too.
+    if: needs.rpm-changes.outputs.full == 'true'
     runs-on: ubuntu-latest
     # Deliberately no setup script: this is the only job that can catch an rpm
     # whose Requires are missing, since everywhere else the -devel packages are
@@ -462,8 +470,8 @@ jobs:
   # WP-105: one required check that adds up the rest, so branch protection names one job instead of
   # every job. A new job stays out of this needs list until it has been green for a week. `if: always()`
   # means a failed or cancelled dependency still runs this job, so the failure is reported here too.
-  # Skipped counts as fine: a draft PR runs no jobs, and the AppImage and RPM checks skip when packaging
-  # files did not change. scripts/ci-ok.mjs prints one line naming every job and its result.
+  # Skipped counts as fine: a draft PR runs no jobs, and the AppImage check and the RPM full set skip when
+  # packaging files did not change. scripts/ci-ok.mjs prints one line naming every job and its result.
   ci-ok:
     name: ci-ok
     if: always()

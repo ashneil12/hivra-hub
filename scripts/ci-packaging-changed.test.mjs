@@ -1,6 +1,9 @@
-// WP-154: RPM builds only when packaging inputs changed, using the same base-sha
-// diff as the AppImage job. A missing base, a bad sha or a git failure builds
-// anyway. An unrelated push to main does not start Native Preview.
+// WP-154: the full RPM set (both images and the clean install) runs on every push to main, every
+// nightly run, and every pull request whose diff touches a packaging input. A pull request that does
+// not touch one still builds the image the release workflow ships on, so a production build runs on
+// every pull request. The decision uses the same base-sha diff as the AppImage job. A missing base,
+// a bad sha or a git failure builds the full set anyway. An unrelated push to main does not start
+// Native Preview.
 
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
@@ -14,6 +17,7 @@ import {
   RPM_PACKAGING_FILES,
   packagingPattern,
   parseGitPaths,
+  planRpmBuild,
   resolvePackagingRun,
 } from "./ci-packaging-changed.mjs";
 
@@ -22,6 +26,7 @@ const script = path.join(repo, "scripts", "ci-packaging-changed.mjs");
 const pattern = packagingPattern(RPM_PACKAGING_FILES);
 const ci = readFileSync(path.join(repo, ".github", "workflows", "ci.yml"), "utf8");
 const native = readFileSync(path.join(repo, ".github", "workflows", "native.yml"), "utf8");
+const release = readFileSync(path.join(repo, ".github", "workflows", "release.yml"), "utf8");
 
 const BASE = "a".repeat(40);
 const HEAD = "b".repeat(40);
@@ -127,6 +132,65 @@ test("a clean diff calls git with the two shas and no shell", () => {
   assert.deepEqual(calls[1], ["diff", "--name-only", "-z", "--no-renames", BASE, HEAD]);
 });
 
+function plan(overrides) {
+  const calls = [];
+  const inner = overrides.git ?? (() => ({ status: 0, stdout: overrides.stdout ?? "" }));
+  const result = planRpmBuild({
+    event: overrides.event,
+    base: Object.prototype.hasOwnProperty.call(overrides, "base") ? overrides.base : BASE,
+    head: Object.prototype.hasOwnProperty.call(overrides, "head") ? overrides.head : HEAD,
+    pattern,
+    git: (args) => {
+      calls.push(args);
+      return inner(args);
+    },
+  });
+  return { result, calls };
+}
+
+test("a push to main and a nightly run build everything, without asking git", () => {
+  for (const event of ["push", "schedule"]) {
+    const { result, calls } = plan({ event, stdout: "README.md\0" });
+    assert.equal(result.full, true, event);
+    assert.deepEqual(calls, [], `${event} must not need the diff`);
+    assert.match(result.reason, /every image builds/);
+  }
+  const noShas = plan({ event: "push", base: "", head: "" });
+  assert.equal(noShas.result.full, true);
+  assert.deepEqual(noShas.calls, []);
+});
+
+test("an event that is not a pull request, or is missing, builds everything", () => {
+  for (const event of ["workflow_dispatch", "", undefined, "pull_request_target", "Pull_Request", " pull_request"]) {
+    const { result, calls } = plan({ event, stdout: "README.md\0" });
+    assert.equal(result.full, true, JSON.stringify(event));
+    assert.deepEqual(calls, []);
+  }
+});
+
+test("a pull request builds the full set only when a packaging input changed", () => {
+  assert.equal(plan({ event: "pull_request", stdout: "README.md\0src/app/App.tsx\0" }).result.full, false);
+  assert.equal(plan({ event: "pull_request", stdout: "" }).result.full, false);
+  for (const file of RPM_PACKAGING_FILES) {
+    assert.equal(plan({ event: "pull_request", stdout: `${file}\0` }).result.full, true, file);
+  }
+  assert.equal(plan({ event: "pull_request", stdout: "README.md\0package.json\0" }).result.full, true);
+});
+
+test("a pull request that cannot be diffed builds the full set", () => {
+  assert.equal(plan({ event: "pull_request", base: "" }).result.full, true);
+  assert.equal(plan({ event: "pull_request", base: "0".repeat(40) }).result.full, true);
+  assert.equal(plan({ event: "pull_request", git: () => ({ status: 1, stdout: "" }) }).result.full, true);
+  assert.equal(plan({ event: "pull_request", git: () => ({ status: null, error: new Error("no git") }) }).result.full, true);
+  assert.equal(
+    plan({
+      event: "pull_request",
+      git: (args) => (args[0] === "cat-file" ? { status: 0, stdout: "" } : { status: 1, stdout: "" }),
+    }).result.full,
+    true,
+  );
+});
+
 function git(cwd, args) {
   execFileSync("git", args, {
     cwd,
@@ -159,50 +223,76 @@ function commitFile(cwd, name, body) {
   return execFileSync("git", ["rev-parse", "HEAD"], { cwd, encoding: "utf8" }).trim();
 }
 
-function runCli(cwd, base, head) {
+function runCli(cwd, base, head, event = "pull_request") {
   return spawnSync(process.execPath, [script, "--kind", "rpm"], {
     cwd,
     encoding: "utf8",
-    env: { ...process.env, PACKAGING_BASE: base, PACKAGING_HEAD: head },
+    env: { ...process.env, PACKAGING_EVENT: event, PACKAGING_BASE: base, PACKAGING_HEAD: head },
   });
 }
 
-test("the CLI builds when package.json changes and skips a docs-only commit", () => {
+test("the CLI builds the full set when package.json changes in a pull request, and not for a docs-only one", () => {
   const cwd = tempRepo();
   try {
     const base = commitFile(cwd, "README.md", "docs\n");
     const head = commitFile(cwd, "package.json", "{}\n");
     const built = runCli(cwd, base, head);
     assert.equal(built.status, 0, built.stderr);
-    assert.equal(built.stdout, "run=true\n");
+    assert.equal(built.stdout, "full=true\n");
     assert.match(built.stderr, /packaging files changed/);
 
     const docsHead = commitFile(cwd, "NOTES.md", "more docs\n");
     const skipped = runCli(cwd, head, docsHead);
     assert.equal(skipped.status, 0, skipped.stderr);
-    assert.equal(skipped.stdout, "run=false\n");
+    assert.equal(skipped.stdout, "full=false\n");
     assert.match(skipped.stderr, /unchanged/);
   } finally {
     rmSync(cwd, { recursive: true, force: true });
   }
 });
 
-test("the CLI builds when the base sha is missing or not a sha, and writes only the output line", () => {
+test("the CLI builds the full set for a docs-only push to main and for the nightly run", () => {
+  const cwd = tempRepo();
+  try {
+    const base = commitFile(cwd, "README.md", "docs\n");
+    const head = commitFile(cwd, "NOTES.md", "more docs\n");
+    assert.equal(runCli(cwd, base, head, "pull_request").stdout, "full=false\n");
+    for (const event of ["push", "schedule"]) {
+      const result = runCli(cwd, base, head, event);
+      assert.equal(result.status, 0, result.stderr);
+      assert.equal(result.stdout, "full=true\n", event);
+    }
+    const nightly = runCli(cwd, "", "", "schedule");
+    assert.equal(nightly.stdout, "full=true\n");
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("the CLI builds the full set when the event is missing, the base sha is missing or not a sha, and writes only the output line", () => {
+  const noEvent = spawnSync(process.execPath, [script, "--kind", "rpm"], {
+    cwd: repo,
+    encoding: "utf8",
+    env: { PATH: process.env.PATH ?? "", PACKAGING_BASE: BASE, PACKAGING_HEAD: HEAD },
+  });
+  assert.equal(noEvent.status, 0, noEvent.stderr);
+  assert.equal(noEvent.stdout, "full=true\n");
+
   const missing = spawnSync(process.execPath, [script, "--kind", "rpm"], {
     cwd: repo,
     encoding: "utf8",
-    env: { ...process.env, PACKAGING_BASE: "", PACKAGING_HEAD: "" },
+    env: { ...process.env, PACKAGING_EVENT: "pull_request", PACKAGING_BASE: "", PACKAGING_HEAD: "" },
   });
   assert.equal(missing.status, 0, missing.stderr);
-  assert.equal(missing.stdout, "run=true\n");
+  assert.equal(missing.stdout, "full=true\n");
 
   const junk = spawnSync(process.execPath, [script, "--kind", "rpm"], {
     cwd: repo,
     encoding: "utf8",
-    env: { ...process.env, PACKAGING_BASE: "not a sha", PACKAGING_HEAD: HEAD },
+    env: { ...process.env, PACKAGING_EVENT: "pull_request", PACKAGING_BASE: "not a sha", PACKAGING_HEAD: HEAD },
   });
   assert.equal(junk.status, 0, junk.stderr);
-  assert.equal(junk.stdout, "run=true\n");
+  assert.equal(junk.stdout, "full=true\n");
 });
 
 test("an unknown kind fails instead of skipping the build", () => {
@@ -211,20 +301,58 @@ test("an unknown kind fails instead of skipping the build", () => {
   assert.match(result.stderr, /kind/);
 });
 
-test("the RPM jobs run only after the packaging check says so", () => {
+function jobIf(block) {
+  const lines = block.split("\n");
+  const at = lines.findIndex((line) => /^ {4}if:/.test(line));
+  assert.notEqual(at, -1, "job has no if");
+  const first = lines[at].replace(/^ {4}if:\s*/, "");
+  if (first !== ">-" && first !== ">") return first.trim();
+  const folded = [];
+  for (let i = at + 1; i < lines.length && /^ {6}\S/.test(lines[i]); i += 1) folded.push(lines[i].trim());
+  return folded.join(" ");
+}
+
+test("the gate tells the RPM jobs what to build, from the event and the pull request's base", () => {
   const gate = jobBlock(ci, "rpm-changes");
   assert.match(gate, /fetch-depth:\s*0/);
-  assert.match(gate, /ci-packaging-changed\.mjs --kind rpm/);
-  assert.match(gate, /PACKAGING_BASE:/);
-  assert.match(gate, /github\.event\.pull_request\.base\.sha/);
-  assert.match(gate, /github\.event\.before/);
+  assert.match(gate, /ci-packaging-changed\.mjs --kind rpm >> "\$GITHUB_OUTPUT"/);
+  assert.match(gate, /PACKAGING_EVENT: \$\{\{ github\.event_name \}\}/);
+  assert.match(gate, /PACKAGING_BASE: \$\{\{ github\.event\.pull_request\.base\.sha \}\}/);
+  assert.match(gate, /PACKAGING_HEAD: \$\{\{ github\.sha \}\}/);
+  assert.match(gate, /outputs:\n\s+full: \$\{\{ steps\.packaging\.outputs\.full \}\}/);
+  assert.doesNotMatch(gate, /outputs\.run\b/);
+  // A push to main does not diff against github.event.before any more: it always builds the full set.
+  assert.doesNotMatch(gate, /github\.event\.before/);
+});
+
+test("the production build runs on every run, and only the second image and the clean install wait for the gate", () => {
   const rpm = jobBlock(ci, "rpm");
   assert.match(rpm, /needs:\s*rpm-changes/);
-  assert.match(rpm, /needs\.rpm-changes\.result == 'success'/);
-  assert.match(rpm, /needs\.rpm-changes\.outputs\.run == 'true'/);
+  assert.match(jobIf(rpm), /needs\.rpm-changes\.result == 'success'/);
+  assert.doesNotMatch(jobIf(rpm), /outputs/, "the build job itself no longer waits for the gate's answer");
+  const matrix =
+    /image: \$\{\{ fromJSON\(needs\.rpm-changes\.outputs\.full == 'true' && '(\[[^']*\])' \|\| '(\[[^']*\])'\) \}\}/.exec(rpm);
+  assert.ok(matrix, "the image list is not chosen by the gate's full output");
+  const full = JSON.parse(matrix[1]);
+  const one = JSON.parse(matrix[2]);
+  assert.deepEqual(full, ["almalinux:10", "fedora:43"]);
+  assert.deepEqual(one, ["almalinux:10"]);
+  // The one image every run builds is the image the release workflow publishes from.
+  const releaseJob = /\n {2}linux-rpm:\n(?:.*\n)*?\s+container: (\S+)/.exec(release);
+  assert.ok(releaseJob, "release.yml has no linux-rpm container");
+  assert.equal(one[0], releaseJob[1]);
+  // That build is the production build: tauri's release build, not a dev build or a check.
+  assert.match(rpm, /run: npm run build:fedora/);
+  assert.match(rpm, /timeout-minutes:\s*25/);
+});
+
+test("the clean install needs the second image's run, so it waits for the gate's full answer", () => {
   const clean = jobBlock(ci, "rpm-clean-install");
-  assert.match(clean, /needs:\s*rpm\b/);
-  assert.doesNotMatch(clean, /rpm-changes/);
+  assert.match(clean, /needs:\s*\[rpm-changes, rpm\]/);
+  assert.match(jobIf(clean), /needs\.rpm-changes\.outputs\.full == 'true'/);
+  const rpm = jobBlock(ci, "rpm");
+  const upload = rpm.slice(rpm.indexOf("name: Upload rpm for the clean install check"));
+  assert.match(upload, /if: matrix\.image == 'almalinux:10' && needs\.rpm-changes\.outputs\.full == 'true'/);
   for (const job of ["check", "browser", "host", "ship"]) {
     assert.doesNotMatch(jobBlock(ci, job), /rpm-changes/, job);
   }
