@@ -87,7 +87,7 @@ describe("what a proposal adds", () => {
   it("keeps each reason in plain words a person reads", () => {
     for (const reason of Object.values(ADDITION_REASON)) {
       expect(reason).toMatch(/^[A-Z].*\.$/);
-      expect(reason).not.toMatch(/[–—]/);
+      expect(reason).not.toMatch(/[\u2013\u2014]/);
     }
   });
 });

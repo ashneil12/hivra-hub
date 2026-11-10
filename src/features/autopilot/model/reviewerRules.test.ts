@@ -421,7 +421,7 @@ describe("the words a person reads", () => {
   it("are plain and carry no dash", () => {
     for (const reason of [...Object.values(ALWAYS_ASK_REASON), NO_REQUEST_REASON, UNCLEAR_REASON, LOOSER_REASON]) {
       expect(reason.length).toBeGreaterThan(0);
-      expect(reason).not.toMatch(/[–—]/);
+      expect(reason).not.toMatch(/[\u2013\u2014]/);
     }
   });
 });

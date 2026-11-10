@@ -477,7 +477,7 @@ describe("learn", () => {
     });
     expect(result.proposals).toEqual([]);
     expect(result.refused).toContain(reason);
-    expect(result.refused).not.toMatch(/[–—]/);
+    expect(result.refused).not.toMatch(/[\u2013\u2014]/);
   });
 
   it("catches an edit that sneaks one in after the proposal was measured", () => {
