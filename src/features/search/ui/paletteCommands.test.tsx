@@ -97,6 +97,7 @@ function Host({ onStop }: { onStop: (id: string) => void }) {
       newWindow: () => undefined,
       zoom: () => undefined,
       editor: () => undefined,
+      forkChat: () => undefined,
     });
   return createElement(
     "div",
