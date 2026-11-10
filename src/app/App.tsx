@@ -380,6 +380,7 @@ import {
   listedWorktreeFor,
   listWorktrees,
   namedWorktreeBranch,
+  temporaryWorktreeBranchName,
   orchestrationWorktreeBranchName,
   removeOrchestrationBranch,
   removeOrchestrationWorktree,
@@ -762,6 +763,19 @@ import { firstTurnAccount, providerName, reactToLimit, workerRoom } from "../fea
 import { claudeRunsOnSubscriptionBridge } from "../integrations/harness/providers/claude/claudeDeepseekBridge";
 import { getCachedRateLimits } from "../features/providers/model/rateLimitsCache";
 import { approvalSessionIdsOf } from "../features/sessions/model/approvalSessionIds";
+import {
+  discardFanOutLoser,
+  pickFanOutInStore,
+  releaseFanOutWorktrees,
+} from "../features/sessions/model/fanOutDecide";
+import {
+  defaultWorktreeRoots,
+  fanOutJanitorPort,
+  startFanOutSetup,
+} from "../features/sessions/model/fanOutJanitor";
+import { startFanOut } from "../features/sessions/model/fanOutLaunch";
+import { listCompares, putCompare, subscribeCompares } from "../features/sessions/model/fanOutStore";
+import { fanOutCompareRows, fanOutNotStartedLines } from "../features/sessions/model/fanOutView";
 import {
   HARNESSES,
   HARNESS_LABEL,
@@ -16784,6 +16798,98 @@ function Workspace({
     create: () => createMono().id,
   });
 
+  // WP-135: a discarded loser is stopped first, the same as pressing Stop in that chat.
+  const stopFanOutChild = useCallback(
+    async (childId: string) => {
+      const child = sessionsRef.current.find((session) => session.id === childId);
+      if (!child?.busy) return;
+      await onStop(childId);
+    },
+    [onStop],
+  );
+
+  // WP-135: the composer confirms the cap and the paid turns, then this starts one chat per model, each in its own
+  // worktree. A model that could not get a worktree does not start, and a compare that cannot start two, or cannot be
+  // saved, says why and gives back the worktrees it made.
+  const fanOutBusy = useRef(new Set<string>());
+  const onCompareModels = useCallback(
+    async (
+      sessionId: string,
+      prompt: string,
+      targets: readonly { provider: HarnessId; model: string }[],
+    ) => {
+      if (fanOutBusy.current.has(sessionId)) return false;
+      const source = sessionsRef.current.find((session) => session.id === sessionId);
+      if (!source || source.worktreeRemoved) return false;
+      fanOutBusy.current.add(sessionId);
+      try {
+        const takeBack = fanOutJanitorPort(source.cwd, onRemoveWorktree, stopFanOutChild);
+        const result = await startFanOut(
+          {
+            prompt,
+            targets,
+            cwd: source.cwd,
+            runtimeMode: source.runtimeMode,
+            sourceId: sessionId,
+            now: Date.now(),
+          },
+          {
+            git: gitRepositoryOnThisComputer,
+            branchName: temporaryWorktreeBranchName,
+            // The project's setup waits until two worktrees exist and the compare is saved: a setup that had already
+            // started would leave a worktree that could not be given back.
+            createWorktree: async (cwd, branch) => {
+              const tree = await createWorktree(cwd, branch, source.worktreeBase || "HEAD", false, {
+                runSetup: false,
+              });
+              return { path: tree.path, branch: tree.branch ?? branch, head: tree.head };
+            },
+            allowedRoots: defaultWorktreeRoots,
+            release: (worktrees) => releaseFanOutWorktrees(worktrees, takeBack),
+            save: putCompare,
+          },
+        );
+        if (!result.ok) return result.message;
+        const known = new Set(sessionsRef.current.map((session) => session.id));
+        const added = result.sessions.filter((session) => !known.has(session.id));
+        if (added.length === 0) return false;
+        sessionsRef.current = [...sessionsRef.current, ...added];
+        setSessions(sessionsRef.current);
+        // The project's setup starts now that the compare is saved; the chats start with the whole prompt, while the
+        // saved record keeps a capped copy.
+        for (const child of result.record.children) {
+          if (child.worktree.kind === "assigned") void startFanOutSetup(source.cwd, child.worktree.path);
+        }
+        for (const session of added) onSubmit(session.id, prompt);
+        return true;
+      } finally {
+        fanOutBusy.current.delete(sessionId);
+      }
+    },
+    [onSubmit, onRemoveWorktree, stopFanOutChild],
+  );
+
+  // WP-135: the compare sits on the chat it was started from. Picking leaves the winner's worktree.
+  const fanOutCompares = useSyncExternalStore(subscribeCompares, listCompares, listCompares);
+  const fanOutForSession = (sessionId: string) => {
+    const record = [...fanOutCompares].reverse().find((item) => item.sourceId === sessionId);
+    if (!record) return null;
+    return {
+      rows: fanOutCompareRows(record, sessionsRef.current),
+      notStarted: fanOutNotStartedLines(record),
+      onPick: (childId: string) => pickFanOutInStore(record.id, childId),
+      onDiscard: (childId: string) => {
+        const source = sessionsRef.current.find((item) => item.id === sessionId);
+        if (!source) return;
+        return discardFanOutLoser(
+          record.id,
+          childId,
+          fanOutJanitorPort(source.cwd, onRemoveWorktree, stopFanOutChild),
+        );
+      },
+    };
+  };
+
   const sessionPaneProps = {
     workspaceSwitchingSessionId: workspaceNavigation.pending
       ? active?.id
@@ -16805,6 +16911,8 @@ function Workspace({
     onSaveDraft,
     onRemoveDraft,
     onSubmit,
+    onCompareModels,
+    fanOutForSession,
     onStop: onStopFromUser,
     // A Mono's own Stop: its turn only (UniiChat stops "Unii's turn", not the agents at work).
     onStopTurn: (sessionId: string) => onStop(sessionId),
