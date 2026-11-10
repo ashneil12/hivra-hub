@@ -40,11 +40,14 @@ what exists. Evidence is from reading the code and its tests; no live dev-copy r
   chat on screen. The 3-minute timer ignores that on-screen check, so the chat on screen is parked too after three minutes.
 - Which CLIs resume by id: the adapters that implement `bindSession` and keep resume state. Only Claude was traced here.
 
-Open defect for Ash (not fixed here): the 3-minute park does not check for running background shells. In `claude.ts`,
-a turn is let go after `SHELL_HOLD_MS` (60 s) when only backgrounded shells are left (`holdForShells`,
-`finishActiveTurn`), and the comment there says those shells "keep running". The park then stops the tree about three
-minutes later, which would kill a dev server or watcher the agent started. This is read from code. A live check (start a
-background `sleep` in a chat, let the turn settle, watch the process at about four minutes) has not been run.
+Defect found, now fixed (afbf95e60): the 3-minute park did not check for background shells. A turn is let go after
+`SHELL_HOLD_MS` (60 s) when only backgrounded shells remain (`holdForShells` and `finishActiveTurn` in `claude.ts`), and
+the park then stopped the tree about three minutes later, killing a dev server or watcher the agent had started. The fix:
+an adapter can report `hasBackgroundWork`. Claude reports backgrounded shells and monitors, workflow runs, a follow-up
+turn on its way and subagents that have not completed (`claudeHasBackgroundWork`). While work runs, the park rechecks
+every 30 seconds and keeps the chat. Once the work ends, the chat gets a full idle time before it is parked. The warm
+limit skips busy chats too. A provider that throws counts as busy. Tests: `registry.test.ts` ("idle park with background
+work") and `claudeFakeCli.test.ts` (a real background shell and a real subagent through the Claude adapter).
 
 ## What to take (ideas only, written from the designs)
 
