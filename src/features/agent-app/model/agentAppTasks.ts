@@ -158,7 +158,7 @@ export const TASK_FIELDS: ReadonlyArray<readonly [string, readonly string[]]> = 
   ["tasks.answer", ["taskId", "requestId", "answers", "skip"]],
   // Hivra WP-14 (firstmate/model/steering.ts).
   ["tasks.message", ["taskId", "text", "whenBusy"]],
-  ["tasks.ask", ["key", "question", "options", "recommended", "taskIds", "answer"]],
+  ["tasks.ask", ["key", "question", "options", "recommended", "taskIds", "answer", "keys", "force", "reason"]],
 ];
 
 /** What a delegation's row records beyond a plain monitored launch. */

@@ -33,6 +33,9 @@ fn ask_input(asked_by: &str, key: &str, tasks: &[&str]) -> AskInput {
         options: vec!["Keep 30 days".into(), "Delete for good".into()],
         recommended: Some("Keep 30 days".into()),
         task_ids: tasks.iter().map(|t| t.to_string()).collect(),
+        keys: Vec::new(),
+        force: false,
+        reason: None,
     }
 }
 
@@ -365,7 +368,15 @@ fn standing_answers_stay_off_and_a_reworded_question_still_asks() {
     set_standing_enabled(&conn, false).unwrap();
     assert!(!standing_enabled(&conn).unwrap());
 
-    ask(&mut conn, ask_input("fm", "retention", &[]), 2).unwrap();
+    let mut first = ask_input("fm", "retention", &[]);
+    first.keys = vec!["sessions".into(), "retention".into()];
+    ask(&mut conn, first, 2).unwrap();
+    // Off: match words are not stored, and a later ask does not report a match.
+    assert!(get(&conn, "hivra", "retention")
+        .unwrap()
+        .unwrap()
+        .keys
+        .is_empty());
     answer(
         &mut conn,
         "hivra",
@@ -379,6 +390,12 @@ fn standing_answers_stay_off_and_a_reworded_question_still_asks() {
     again.question = "Keep deleted sessions for 30 days, or delete them for good?".into();
     let out = ask(&mut conn, again, 4).unwrap();
     assert!(out.created);
+    assert!(!out.matched);
+    assert!(out.standing_id.is_none());
+    assert!(out.decision.keys.is_empty());
+    let value = serde_json::to_value(&out).unwrap();
+    assert!(value.get("matched").is_none(), "{value}");
+    assert!(value.get("standingId").is_none(), "{value}");
     assert_eq!(out.decision.state, OPEN);
     assert!(out.decision.answer.is_none());
     assert_eq!(list(&conn, 10).unwrap().len(), 2);
@@ -428,6 +445,7 @@ fn asking_again_keeps_standing_keys_and_a_retire_reason() {
     let missing = retire(&mut conn, "hivra", "no-such-key", "The host changed", 5).unwrap();
     assert!(!missing.applied);
     assert!(missing.decision.is_none());
+    assert!(missing.relied.is_empty());
 
     let retired = retire(&mut conn, "hivra", "retention", "  The host changed  ", 6).unwrap();
     assert!(retired.applied);
@@ -606,4 +624,327 @@ fn the_standing_block_stops_at_twenty_rows_and_four_thousand_characters() {
     assert!(capped.contains("guidance, not permission"));
     assert!(capped.contains("S-"));
     assert!(!capped.contains(&"x".repeat(4_000)));
+}
+
+#[test]
+fn the_same_key_stays_one_decision_even_when_standing_answers_are_on() {
+    let store = store();
+    let mut conn = store.lock_conn().unwrap();
+    set_standing_enabled(&conn, true).unwrap();
+    let first = ask(&mut conn, ask_input("fm", "retention", &[]), 2).unwrap();
+    assert!(first.created);
+    assert!(!first.matched);
+    assert!(first.standing_id.is_none());
+    let words = first.decision.keys.clone();
+    assert!(words.contains(&"keep".to_string()), "{words:?}");
+    assert!(words.contains(&"session".to_string()), "{words:?}");
+    assert!(!words.iter().any(|word| word == "for"), "{words:?}");
+
+    // Force and new match words do not open a second row, and they do not replace the stored words.
+    let mut again = ask_input("fm", "retention", &[]);
+    again.keys = vec!["logo".into()];
+    again.force = true;
+    let second = ask(&mut conn, again, 3).unwrap();
+    assert!(!second.created);
+    assert!(!second.matched);
+    assert!(second.standing_id.is_none());
+    assert_eq!(second.decision.keys, words);
+    assert_eq!(second.decision.question, first.decision.question);
+    assert_eq!(list(&conn, 10).unwrap().len(), 1);
+}
+
+#[test]
+fn a_reworded_question_reuses_the_standing_answer() {
+    let store = store();
+    let mut conn = store.lock_conn().unwrap();
+    set_standing_enabled(&conn, true).unwrap();
+    ask(&mut conn, ask_input("fm", "retention", &[]), 2).unwrap();
+    answer(
+        &mut conn,
+        "hivra",
+        "retention",
+        "Keep 30 days",
+        Some("user".into()),
+        3,
+    )
+    .unwrap();
+    let kept = get(&conn, "hivra", "retention").unwrap().unwrap();
+
+    let child = record(&mut conn, launch("fm", "r2", "w2"), 4).unwrap();
+    let mut again = ask_input("fm", "retention-wording", &[&child.id]);
+    again.question = "Should we keep deleted sessions for 30 days, or delete them?".into();
+    let out = ask(&mut conn, again, 5).unwrap();
+    assert!(out.matched);
+    assert!(!out.created);
+    assert!(out.added.is_empty());
+    assert_eq!(out.decision.answer.as_deref(), Some("Keep 30 days"));
+    assert_eq!(out.decision.decision_key, "retention");
+    assert_eq!(out.standing_id.as_deref(), Some(kept.standing_id.as_str()));
+    assert_eq!(
+        out.standing_id.as_deref(),
+        Some(out.decision.standing_id.as_str())
+    );
+    assert_eq!(out.released.len(), 1);
+    assert_eq!(out.released[0].child_session, "w2");
+    let value = serde_json::to_value(&out).unwrap();
+    assert_eq!(value["matched"], true);
+    assert_eq!(value["standingId"], kept.standing_id);
+    assert_eq!(list(&conn, 10).unwrap().len(), 1);
+    assert!(get(&conn, "hivra", "retention")
+        .unwrap()
+        .unwrap()
+        .waiting
+        .is_empty());
+
+    let mut quiet = ask_input("fm", "retention-again", &[]);
+    quiet.question = "Should we keep deleted sessions for 30 days?".into();
+    assert!(ask(&mut conn, quiet, 6).unwrap().matched);
+
+    // The same task cited again does not add a second row.
+    let mut third = ask_input("fm", "retention-third", &[&child.id]);
+    third.question = "Should we keep deleted sessions for 30 days, or delete them?".into();
+    assert!(ask(&mut conn, third, 7).unwrap().matched);
+
+    let retired = retire(&mut conn, "hivra", "retention", "The host changed", 8).unwrap();
+    assert!(retired.applied);
+    let ids: Vec<&str> = retired
+        .relied
+        .iter()
+        .map(|row| row.task_id.as_str())
+        .collect();
+    assert_eq!(ids, vec![child.id.as_str(), "fm"]);
+
+    let twice = retire(&mut conn, "hivra", "retention", "A later reason", 9).unwrap();
+    assert!(!twice.applied);
+    assert_eq!(twice.relied.len(), retired.relied.len());
+
+    let mut fresh = ask_input("fm", "retention-after", &[]);
+    fresh.question = "Should we keep deleted sessions for 30 days, or delete them?".into();
+    let after = ask(&mut conn, fresh, 10).unwrap();
+    assert!(!after.matched);
+    assert!(after.created);
+    assert_eq!(after.decision.state, OPEN);
+    assert_eq!(list(&conn, 10).unwrap().len(), 2);
+}
+
+#[test]
+fn a_question_below_the_overlap_still_asks() {
+    let store = store();
+    let mut conn = store.lock_conn().unwrap();
+    set_standing_enabled(&conn, true).unwrap();
+    ask(&mut conn, ask_input("fm", "retention", &[]), 2).unwrap();
+    answer(
+        &mut conn,
+        "hivra",
+        "retention",
+        "Keep 30 days",
+        Some("user".into()),
+        3,
+    )
+    .unwrap();
+
+    let mut logo = ask_input("fm", "logo", &[]);
+    logo.question = "What colour should the new logo be?".into();
+    let logo = ask(&mut conn, logo, 4).unwrap();
+    assert!(logo.created);
+    assert!(!logo.matched);
+
+    let mut near = ask_input("fm", "logo-blue", &[]);
+    near.question = "Keep the logo blue?".into();
+    let near = ask(&mut conn, near, 5).unwrap();
+    assert!(near.created && !near.matched, "{near:?}");
+
+    let mut low = ask_input("fm", "logo-mix", &[]);
+    low.question = "Keep sessions, but change the logo colour, the blue and the font".into();
+    let low = ask(&mut conn, low, 6).unwrap();
+    assert!(low.created && !low.matched, "{low:?}");
+
+    let mut other = ask_input("fm", "other-retention", &[]);
+    other.project = Some("other".into());
+    other.question = "Should we keep deleted sessions for 30 days, or delete them?".into();
+    let other = ask(&mut conn, other, 7).unwrap();
+    assert!(other.created && !other.matched);
+
+    // Still open: a close wording is a new question, not a reuse.
+    let mut notes = ask_input("fm", "notes", &[]);
+    notes.question = "Ship the weekly notes, or hold them?".into();
+    ask(&mut conn, notes, 8).unwrap();
+    let mut notes_again = ask_input("fm", "notes-again", &[]);
+    notes_again.question = "Should we ship the weekly notes?".into();
+    let notes_again = ask(&mut conn, notes_again, 9).unwrap();
+    assert!(notes_again.created && !notes_again.matched);
+
+    let mut tiny = ask_input("fm", "tiny", &[]);
+    tiny.question = "Go now?".into();
+    let tiny = ask(&mut conn, tiny, 10).unwrap();
+    assert!(tiny.created && !tiny.matched);
+
+    set_standing(&mut conn, "hivra", "retention", false, 11)
+        .unwrap()
+        .unwrap();
+    let mut off = ask_input("fm", "retention-off", &[]);
+    off.question = "Should we keep deleted sessions for 30 days, or delete them?".into();
+    let off = ask(&mut conn, off, 12).unwrap();
+    assert!(off.created && !off.matched);
+    assert_eq!(off.decision.state, OPEN);
+}
+
+#[test]
+fn force_asks_again_only_with_a_reason() {
+    let store = store();
+    let mut conn = store.lock_conn().unwrap();
+    set_standing_enabled(&conn, true).unwrap();
+    ask(&mut conn, ask_input("fm", "retention", &[]), 2).unwrap();
+    answer(
+        &mut conn,
+        "hivra",
+        "retention",
+        "Keep 30 days",
+        Some("user".into()),
+        3,
+    )
+    .unwrap();
+
+    let mut forced = ask_input("fm", "retention-force", &[]);
+    forced.question = "Should we keep deleted sessions for 30 days, or delete them?".into();
+    forced.force = true;
+    let empty = ask(&mut conn, forced, 4).unwrap_err();
+    assert!(empty.contains("empty"), "{empty}");
+    assert_eq!(list(&conn, 10).unwrap().len(), 1);
+
+    let mut blank = ask_input("fm", "retention-force", &[]);
+    blank.question = "Should we keep deleted sessions for 30 days, or delete them?".into();
+    blank.force = true;
+    blank.reason = Some("   ".into());
+    assert!(ask(&mut conn, blank, 5).unwrap_err().contains("empty"));
+
+    let mut long = ask_input("fm", "retention-force", &[]);
+    long.question = "Should we keep deleted sessions for 30 days, or delete them?".into();
+    long.force = true;
+    long.reason = Some("x".repeat(301));
+    assert!(ask(&mut conn, long, 6).unwrap_err().contains("at most 300"));
+    assert_eq!(list(&conn, 10).unwrap().len(), 1);
+    assert!(get(&conn, "hivra", "retention-force").unwrap().is_none());
+
+    let mut reason = ask_input("fm", "retention-force", &[]);
+    reason.question = "Should we keep deleted sessions for 30 days, or delete them?".into();
+    reason.force = true;
+    reason.reason = Some("  The host now deletes them  ".into());
+    let opened = ask(&mut conn, reason, 7).unwrap();
+    assert!(!opened.matched);
+    assert!(opened.created);
+    assert_eq!(opened.decision.state, OPEN);
+    assert!(opened.decision.answer.is_none());
+    assert_eq!(
+        get(&conn, "hivra", "retention")
+            .unwrap()
+            .unwrap()
+            .answer
+            .as_deref(),
+        Some("Keep 30 days")
+    );
+    assert_eq!(list(&conn, 10).unwrap().len(), 2);
+
+    // No standing answer applies, so force does not need a reason.
+    let mut logo = ask_input("fm", "logo", &[]);
+    logo.question = "What colour should the new logo be?".into();
+    logo.force = true;
+    let logo = ask(&mut conn, logo, 8).unwrap();
+    assert!(logo.created && !logo.matched);
+}
+
+#[test]
+fn match_words_drop_the_invalid_ones_and_keep_twelve() {
+    let store = store();
+    let mut conn = store.lock_conn().unwrap();
+    set_standing_enabled(&conn, true).unwrap();
+
+    let mut logo = ask_input("fm", "logo", &[]);
+    logo.question = "What colour should the new logo be?".into();
+    logo.keys = vec![
+        "Session-Retention".into(),
+        "bad word".into(),
+        "x".into(),
+        "".into(),
+        "Session-Retention".into(),
+    ];
+    let logo = ask(&mut conn, logo, 2).unwrap();
+    assert!(logo.created && !logo.matched);
+    assert_eq!(logo.decision.keys, vec!["session-retention".to_string()]);
+
+    let mut derived = ask_input("fm", "derived", &[]);
+    derived.keys = vec![" ".into(), "x".into(), "bad word".into()];
+    let derived = ask(&mut conn, derived, 3).unwrap();
+    assert!(derived.created);
+    assert!(
+        derived.decision.keys.contains(&"keep".to_string()),
+        "{:?}",
+        derived.decision.keys
+    );
+    assert!(derived.decision.keys.contains(&"session".to_string()));
+    assert!(!derived.decision.keys.iter().any(|word| word == "for"));
+
+    let mut many = ask_input("fm", "font", &[]);
+    many.question = "Which font should the title use?".into();
+    many.keys = (0..13).map(|n| format!("k{n:02}")).collect();
+    let many = ask(&mut conn, many, 4).unwrap();
+    assert_eq!(many.decision.keys.len(), 12);
+    assert_eq!(many.decision.keys[0], "k00");
+    assert_eq!(many.decision.keys[11], "k11");
+    assert!(!many.decision.keys.iter().any(|word| word == "k12"));
+}
+
+#[test]
+fn the_closer_standing_answer_wins_and_a_tie_keeps_the_newer() {
+    let closer = store();
+    let mut conn = closer.lock_conn().unwrap();
+    set_standing_enabled(&conn, true).unwrap();
+    insert_answered(
+        &conn,
+        "hivra",
+        "full",
+        "Keep deleted sessions for 30 days, or delete them for good?",
+        "Keep",
+        4,
+    );
+    insert_answered(
+        &conn,
+        "hivra",
+        "part",
+        "Keep deleted sessions or the logo?",
+        "Archive",
+        9,
+    );
+    let mut asked = ask_input("fm", "again", &[]);
+    asked.question = "Should we keep deleted sessions for 30 days?".into();
+    let out = ask(&mut conn, asked, 10).unwrap();
+    assert!(out.matched);
+    assert_eq!(out.decision.decision_key, "full");
+    assert_eq!(out.decision.answer.as_deref(), Some("Keep"));
+
+    let tie = store();
+    let mut conn = tie.lock_conn().unwrap();
+    set_standing_enabled(&conn, true).unwrap();
+    insert_answered(
+        &conn,
+        "hivra",
+        "first",
+        "Keep deleted sessions for 30 days, or delete them for good?",
+        "Keep",
+        4,
+    );
+    insert_answered(
+        &conn,
+        "hivra",
+        "second",
+        "Keep deleted sessions for 30 days, or delete them for good?",
+        "Archive",
+        9,
+    );
+    let mut asked = ask_input("fm", "again", &[]);
+    asked.question = "Should we keep deleted sessions for 30 days, or delete them?".into();
+    let out = ask(&mut conn, asked, 10).unwrap();
+    assert!(out.matched);
+    assert_eq!(out.decision.decision_key, "second");
+    assert_eq!(out.decision.answer.as_deref(), Some("Archive"));
 }

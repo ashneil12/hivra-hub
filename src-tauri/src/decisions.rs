@@ -66,6 +66,13 @@ pub(crate) fn ensure_tables(conn: &Connection) -> rusqlite::Result<()> {
          CREATE TABLE IF NOT EXISTS decision_settings (
            key TEXT PRIMARY KEY,
            value TEXT NOT NULL
+         );
+         CREATE TABLE IF NOT EXISTS decision_citations (
+           project TEXT NOT NULL,
+           decision_key TEXT NOT NULL,
+           task_id TEXT NOT NULL,
+           cited_at INTEGER NOT NULL,
+           PRIMARY KEY (project, decision_key, task_id)
          );",
     )?;
     // Columns added after the first rows. An old store gets the defaults here; a new one takes the same path.
@@ -316,6 +323,19 @@ pub struct AskInput {
     /// The asker's own tasks that wait on the answer.
     #[serde(default)]
     pub task_ids: Vec<String>,
+    /// Short match words. Invalid ones are dropped. Empty: words are taken from the question.
+    #[serde(default)]
+    pub keys: Vec<String>,
+    /// Ask again even when a standing answer matches. Needs `reason` when one does.
+    #[serde(default)]
+    pub force: bool,
+    /// Why the standing answer does not apply. Required with `force` when one matches.
+    #[serde(default)]
+    pub reason: Option<String>,
+}
+
+fn skip_false(value: &bool) -> bool {
+    !*value
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -328,6 +348,12 @@ pub struct AskOutcome {
     pub added: Vec<String>,
     /// For an answered key, the messages that released the tasks that joined now.
     pub released: Vec<SteerMessage>,
+    /// True when a standing answer was reused instead of opening a new decision.
+    #[serde(default, skip_serializing_if = "skip_false")]
+    pub matched: bool,
+    /// The standing answer's id, only when `matched`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub standing_id: Option<String>,
 }
 
 /// Turns back a chat that isn't at the top of its work: its question is its own first mate's to take.
@@ -424,6 +450,245 @@ fn move_questions(conn: &mut Connection, ids: &[String], owner: &str, now: i64) 
     moved
 }
 
+const KEY_WORD_MAX: usize = 40;
+const KEY_WORDS_MAX: usize = 12;
+const MATCH_SHARED: usize = 2;
+
+fn is_stop(word: &str) -> bool {
+    matches!(
+        word,
+        "the"
+            | "and"
+            | "for"
+            | "are"
+            | "but"
+            | "not"
+            | "you"
+            | "your"
+            | "our"
+            | "this"
+            | "that"
+            | "with"
+            | "from"
+            | "into"
+            | "about"
+            | "than"
+            | "then"
+            | "what"
+            | "when"
+            | "where"
+            | "which"
+            | "who"
+            | "how"
+            | "why"
+            | "does"
+            | "did"
+            | "has"
+            | "have"
+            | "had"
+            | "was"
+            | "were"
+            | "been"
+            | "being"
+            | "should"
+            | "would"
+            | "could"
+            | "please"
+            | "just"
+            | "also"
+            | "they"
+            | "them"
+            | "their"
+            | "its"
+            | "can"
+            | "will"
+            | "shall"
+            | "may"
+    )
+}
+
+fn stem(word: &str) -> String {
+    let cut = if word.len() > 5 && word.ends_with("ing") {
+        &word[..word.len() - 3]
+    } else if word.len() > 4 && word.ends_with("ed") {
+        &word[..word.len() - 2]
+    } else if word.len() > 4 && word.ends_with('s') && !word.ends_with("ss") {
+        &word[..word.len() - 1]
+    } else {
+        word
+    };
+    if cut.len() > 4 && cut.ends_with('e') {
+        cut[..cut.len() - 1].to_string()
+    } else {
+        cut.to_string()
+    }
+}
+
+/// Alphanumeric words, lower case, short words and stop words dropped, lightly stemmed. Order is kept.
+fn words(text: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut current = String::new();
+    let push = |out: &mut Vec<String>, raw: &str| {
+        if raw.len() < 3 || is_stop(raw) {
+            return;
+        }
+        let stemmed = stem(raw);
+        if stemmed.len() < 3 || out.iter().any(|have| have == &stemmed) {
+            return;
+        }
+        out.push(stemmed);
+    };
+    for c in text.chars() {
+        if c.is_ascii_alphanumeric() {
+            current.push(c.to_ascii_lowercase());
+        } else if !current.is_empty() {
+            push(&mut out, &current);
+            current.clear();
+        }
+    }
+    if !current.is_empty() {
+        push(&mut out, &current);
+    }
+    out
+}
+
+fn accept_keys(raw: &[String], question: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for word in raw {
+        let word = word.trim().to_lowercase();
+        let length = word.chars().count();
+        if !(2..=KEY_WORD_MAX).contains(&length)
+            || !word.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+            || out.contains(&word)
+        {
+            continue;
+        }
+        out.push(word);
+        if out.len() >= KEY_WORDS_MAX {
+            return out;
+        }
+    }
+    if !out.is_empty() {
+        return out;
+    }
+    for word in words(question) {
+        if out.len() >= KEY_WORDS_MAX {
+            break;
+        }
+        out.push(word);
+    }
+    out
+}
+
+fn query_words(question: &str, keys: &[String]) -> Vec<String> {
+    let mut out = words(question);
+    for key in keys {
+        for word in words(key) {
+            if !out.contains(&word) {
+                out.push(word);
+            }
+        }
+    }
+    out
+}
+
+/// `shared / shorter >= 0.6`, compared as integers so a tie stays exact.
+fn scores_match(shared: usize, left: usize, right: usize) -> bool {
+    let shorter = left.min(right);
+    shorter > 0 && shared >= MATCH_SHARED && shared * 5 >= shorter * 3
+}
+
+fn better_score(shared: usize, shorter: usize, best_shared: usize, best_shorter: usize) -> bool {
+    shared * best_shorter > best_shared * shorter
+}
+
+fn best_match(
+    conn: &Connection,
+    project: &str,
+    question: &str,
+    keys: &[String],
+) -> Result<Option<Decision>, String> {
+    let query = query_words(question, keys);
+    if query.len() < MATCH_SHARED {
+        return Ok(None);
+    }
+    let sql = format!(
+        "SELECT {READ_COLUMNS} FROM decisions
+         WHERE project = ?1 AND state = ?2 AND standing != 0 AND retired_at IS NULL AND answer IS NOT NULL
+         ORDER BY answered_at DESC, rowid DESC"
+    );
+    let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map(params![project, ANSWERED], from_row)
+        .map_err(|e| e.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
+    let mut best: Option<(Decision, usize, usize)> = None;
+    for row in rows {
+        let theirs = query_words(&row.question, &row.keys);
+        let shared = query.iter().filter(|word| theirs.contains(word)).count();
+        let shorter = query.len().min(theirs.len());
+        if !scores_match(shared, query.len(), theirs.len()) {
+            continue;
+        }
+        let replace = match &best {
+            None => true,
+            Some((_, best_shared, best_shorter)) => {
+                better_score(shared, shorter, *best_shared, *best_shorter)
+            }
+        };
+        if replace {
+            best = Some((row, shared, shorter));
+        }
+    }
+    Ok(best.map(|(row, _, _)| row))
+}
+
+fn cite(
+    conn: &Connection,
+    project: &str,
+    key: &str,
+    task_id: &str,
+    now: i64,
+) -> Result<(), String> {
+    let task_id = task_id.trim();
+    if task_id.is_empty() {
+        return Ok(());
+    }
+    conn.execute(
+        "INSERT INTO decision_citations (project, decision_key, task_id, cited_at)
+         VALUES (?1, ?2, ?3, ?4)
+         ON CONFLICT (project, decision_key, task_id) DO NOTHING",
+        params![project, key, task_id, now],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+fn citations_for(
+    conn: &Connection,
+    project: &str,
+    key: &str,
+) -> Result<Vec<StandingCitation>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT task_id, cited_at FROM decision_citations
+             WHERE project = ?1 AND decision_key = ?2 ORDER BY cited_at, task_id",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map(params![project, key], |row| {
+            Ok(StandingCitation {
+                task_id: row.get(0)?,
+                cited_at: row.get(1)?,
+            })
+        })
+        .map_err(|e| e.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
+    Ok(rows)
+}
+
 pub fn ask(conn: &mut Connection, input: AskInput, now: i64) -> Result<AskOutcome, String> {
     let asked_by = input.asked_by.trim().to_string();
     if asked_by.is_empty() {
@@ -479,7 +744,47 @@ pub fn ask(conn: &mut Connection, input: AskInput, now: i64) -> Result<AskOutcom
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(|e| e.to_string())?;
     let existing = get(&tx, &project, &key)?;
+    // The same key stays one decision, even when standing answers are on and even with force.
+    // A different key can reuse an active answer while the setting is on.
+    if existing.is_none() && standing_enabled(&tx)? {
+        if let Some(hit) = best_match(&tx, &project, &question, &input.keys)? {
+            if !input.force {
+                let mut released = Vec::new();
+                let mut cited = task_ids.clone();
+                if cited.is_empty() {
+                    cited.push(asked_by.clone());
+                }
+                for id in &task_ids {
+                    if let Some(message) = release_one(&tx, &hit, id, now)? {
+                        released.push(message);
+                    }
+                }
+                for id in &cited {
+                    cite(&tx, &hit.project, &hit.decision_key, id, now)?;
+                }
+                let standing_id = hit.standing_id.clone();
+                tx.commit().map_err(|e| e.to_string())?;
+                return Ok(AskOutcome {
+                    decision: hit,
+                    created: false,
+                    added: Vec::new(),
+                    released,
+                    matched: true,
+                    standing_id: Some(standing_id),
+                });
+            }
+            // A match that should not apply still needs a one-line reason, or nothing is opened.
+            plain(input.reason.as_deref().unwrap_or(""), "The reason", 300)?;
+        }
+    }
     let created = existing.is_none();
+    let store_keys = created && standing_enabled(&tx)?;
+    // Taken before `question` moves into the new row. A repeat of the same key keeps the stored words.
+    let stored_keys = if store_keys {
+        accept_keys(&input.keys, &question)
+    } else {
+        Vec::new()
+    };
     let mut decision = existing.unwrap_or_else(|| Decision {
         project: project.clone(),
         decision_key: key.clone(),
@@ -497,7 +802,7 @@ pub fn ask(conn: &mut Connection, input: AskInput, now: i64) -> Result<AskOutcom
         updated_at: now,
         version: 0,
         standing: true,
-        keys: Vec::new(),
+        keys: stored_keys,
         retired_at: None,
         retired_reason: None,
         standing_id: String::new(),
@@ -538,6 +843,8 @@ pub fn ask(conn: &mut Connection, input: AskInput, now: i64) -> Result<AskOutcom
         created,
         added,
         released,
+        matched: false,
+        standing_id: None,
     })
 }
 
@@ -692,10 +999,11 @@ pub fn retire(
         });
     };
     if decision.retired_at.is_some() {
+        let relied = citations_for(&tx, project, key)?;
         return Ok(RetireOutcome {
             applied: false,
             decision: Some(decision),
-            relied: Vec::new(),
+            relied,
         });
     }
     let version = decision.version;
@@ -720,18 +1028,24 @@ pub fn retire(
         .map_err(|e| e.to_string())?;
     if changed == 0 {
         let current = get(&tx, project, key)?;
+        let relied = if current.is_some() {
+            citations_for(&tx, project, key)?
+        } else {
+            Vec::new()
+        };
         tx.commit().map_err(|e| e.to_string())?;
         return Ok(RetireOutcome {
             applied: false,
             decision: current,
-            relied: Vec::new(),
+            relied,
         });
     }
+    let relied = citations_for(&tx, project, key)?;
     tx.commit().map_err(|e| e.to_string())?;
     Ok(RetireOutcome {
         applied: true,
         decision: Some(decision),
-        relied: Vec::new(),
+        relied,
     })
 }
 

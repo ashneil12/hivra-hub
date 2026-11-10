@@ -67,6 +67,12 @@ export type Decision = {
   createdAt: number;
   updatedAt: number;
   version: number;
+  /** WP-156. Absent on older rows the screen already has. */
+  standing?: boolean;
+  keys?: string[];
+  retiredAt?: number | null;
+  retiredReason?: string | null;
+  standingId?: string;
 };
 
 export type AskInput = {
@@ -78,9 +84,21 @@ export type AskInput = {
   options: string[];
   recommended?: string;
   taskIds?: string[];
+  /** WP-156. Invalid words are dropped by the store. */
+  keys?: string[];
+  force?: boolean;
+  reason?: string;
 };
 
-export type AskOutcome = { decision: Decision; created: boolean; added: string[]; released: SteerMessage[] };
+export type AskOutcome = {
+  decision: Decision;
+  created: boolean;
+  added: string[];
+  released: SteerMessage[];
+  /** Set when a standing answer was reused. Omitted by the store when it was not. */
+  matched?: boolean;
+  standingId?: string;
+};
 export type AnswerOutcome = {
   applied: boolean;
   decision: Decision | null;
@@ -214,8 +232,22 @@ export async function askPerson(
     options: options(input.options),
     ...(typeof input.recommended === "string" ? { recommended: input.recommended } : {}),
     taskIds: ownTasks.map((row) => row.id),
+    ...(Array.isArray(input.keys) ? { keys: input.keys.filter((key) => typeof key === "string") } : {}),
+    ...(input.force === true ? { force: true } : {}),
+    ...(typeof input.reason === "string" ? { reason: input.reason } : {}),
   });
   let d = outcome.decision;
+  if (outcome.matched) {
+    const id = outcome.standingId ?? d.standingId ?? "";
+    return {
+      key: d.decisionKey,
+      state: "answered",
+      answer: d.answer,
+      standingId: id,
+      matched: true,
+      note: `Standing answer ${id}: ${d.answer}. This is guidance, not permission. If it does not apply, ask again with force true and a one-line reason.`,
+    };
+  }
   // The person answered it in this chat: their words are the answer, recorded once, and the waiting tasks carry on.
   if (input.answer !== undefined && d.state === "open") {
     const words = nonEmpty(input.answer, "answer");

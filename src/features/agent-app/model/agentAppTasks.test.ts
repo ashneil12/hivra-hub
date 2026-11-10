@@ -2608,12 +2608,33 @@ describe("Hivra WP-14: tasks.message and tasks.ask", () => {
       source,
       "r-ask",
       "tasks.ask",
-      { key: "retention", question: "Keep 30 days?", options: ["Yes", "No"], recommended: "Yes", taskIds: ["t-1"] },
+      {
+        key: "retention",
+        question: "Keep 30 days?",
+        options: ["Yes", "No"],
+        recommended: "Yes",
+        taskIds: ["t-1"],
+        keys: ["sessions"],
+        force: true,
+        reason: "The old one is about staging.",
+      },
       host,
     );
     expect(fm.asked).toEqual([
-      expect.objectContaining({ askedBy: "mono-exo", askedByMono: "vg-game-lead", project: "vg-game", key: "retention", taskIds: ["t-1"] }),
+      expect.objectContaining({
+        askedBy: "mono-exo",
+        askedByMono: "vg-game-lead",
+        project: "vg-game",
+        key: "retention",
+        taskIds: ["t-1"],
+        keys: ["sessions"],
+        force: true,
+        reason: "The old one is about staging.",
+      }),
     ]);
+    await expect(
+      handleAgentApp(source, "r-extra", "tasks.ask", { key: "k", question: "q", options: ["a", "b"], recommended: "a", extra: 1 }, host),
+    ).rejects.toThrow("Unknown tasks.ask fields");
     const worker = fixture([], "worker");
     worker.api.firstMate = fm.host;
     await expect(
