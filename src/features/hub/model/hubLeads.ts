@@ -148,47 +148,6 @@ export async function completeLeadAdoption(
 }
 
 type Register = (monoId: string, projectId: string) => Promise<unknown>;
-
-/**
- * Which Mono the app's store records as each project's Lead (memberships with role `lead`, the first one per project).
- * Only a Mono that belongs to that one project and nothing else counts: a team Mono that works across projects (Chief
- * of Staff, a PM) or one recorded as Lead of two projects is never anyone's Lead from the record.
- */
-export function leadsByProject(memberships: readonly { monoId?: unknown; projectId?: unknown; role?: unknown }[]): (projectId: string) => string | undefined {
-  const leads = new Map<string, string>();
-  const projectsOf = new Map<string, Set<string>>();
-  for (const m of memberships) {
-    if (typeof m.monoId !== "string" || typeof m.projectId !== "string") continue;
-    const set = projectsOf.get(m.monoId) ?? new Set<string>();
-    set.add(m.projectId);
-    projectsOf.set(m.monoId, set);
-    if (m.role === "lead" && !leads.has(m.projectId)) leads.set(m.projectId, m.monoId);
-  }
-  return (projectId) => {
-    const monoId = leads.get(projectId);
-    return monoId && projectsOf.get(monoId)?.size === 1 ? monoId : undefined;
-  };
-}
-
-/**
- * Whether the Mono the store records can be adopted as this project's Lead: on the roster and not removed, not the
- * checker, and not already the Lead of another project (or adopted for one earlier in this pass).
- */
-function adoptable(monoId: string, projectId: string, taken: ReadonlySet<string>): boolean {
-  if (monoId === CHECKER_ID || taken.has(monoId) || !findMono(monoId) || isMonoRemovedByUser(monoId)) return false;
-  const already = leadFor(monoId);
-  return !already || already.projectId === projectId;
-}
-/** The checker only reads (hubMcp.ts CHECKER_MONO_ID; not imported here, to keep this module free of the MCP setup). */
-const CHECKER_ID = "checker";
-
-export type EnsureOptions = {
-  /**
-   * The Lead the app's store records for a project (an import from Ash OS brings them). When that Mono is on the roster
-   * and the project has no `<project id>-lead`, it is adopted as the Lead: no second one is made.
-   */
-  leadOf?: (projectId: string) => string | undefined;
-};
 /** Which Leads each `register` already recorded, so a list that changes doesn't send them all again. */
 const registered = new WeakMap<Register, Set<string>>();
 
@@ -200,29 +159,15 @@ const registered = new WeakMap<Register, Set<string>>();
  * has the old default one, and its new project's folder goes first so its chats start there. `register` records in the app's own store (localHub.ts)
  * which Mono leads which project (`mono-project-add`, role lead), once per Lead, and `unregister` drops the
  * legacy seat's old project (`mono-project-remove`); their failures are ignored. `ash` (the global memory)
- * never gets one. `options.leadOf` names the Lead the app's store already records for a project (EnsureOptions).
+ * never gets one.
  */
-export function ensureProjectLeads(projects: readonly HubProject[], register?: Register, unregister?: Register, options: EnsureOptions = {}): EnsureResult {
+export function ensureProjectLeads(projects: readonly HubProject[], register?: Register, unregister?: Register): EnsureResult {
   const created: string[] = [];
   const tied: string[] = [];
   const adopted: string[] = [];
-  const taken = new Set<string>();
   for (const project of projects) {
     if (isGlobalProject(project.id)) continue;
-    let lead = leadSpecFor(project);
-    // The Lead the store records (an import from Ash OS) is this project's Lead when it is on the roster and the
-    // project has no Lead of its own id: adopted, never a second one made beside it. Never when Ash removed this
-    // project's own Lead (it stays without one, as before), and never a Mono that can't be adopted (adoptable).
-    const recorded = options.leadOf?.(project.id);
-    if (
-      recorded &&
-      recorded !== lead.id &&
-      !leadMono(lead) &&
-      !isMonoRemovedByUser(lead.id) &&
-      adoptable(recorded, project.id, taken)
-    )
-      lead = { projectId: lead.projectId, id: recorded, name: lead.name, projectName: lead.projectName };
-    taken.add(lead.id);
+    const lead = leadSpecFor(project);
     if (isMonoRemovedByUser(lead.id)) continue;
     rememberLead(lead);
     const existing = leadMono(lead);

@@ -192,6 +192,10 @@ const COPY_PREFIX: &str = "monocode-ashos-read-";
 
 /// Private copies a crash left behind (only this reader's own folders, and only old ones).
 fn sweep_stale_copies(temp: &Path) {
+    sweep_copies_older_than(temp, SystemTime::now());
+}
+
+fn sweep_copies_older_than(temp: &Path, now: SystemTime) {
     let Ok(entries) = std::fs::read_dir(temp) else {
         return;
     };
@@ -206,7 +210,7 @@ fn sweep_stale_copies(temp: &Path) {
         let old = meta
             .modified()
             .ok()
-            .and_then(|m| m.elapsed().ok())
+            .and_then(|m| now.duration_since(m).ok())
             .is_some_and(|age| age.as_secs() > STALE_COPY_SECS);
         if meta.file_type().is_dir() && old {
             let _ = std::fs::remove_dir_all(entry.path());
@@ -218,6 +222,7 @@ fn private_dir() -> Result<PathBuf, String> {
     let temp = std::env::temp_dir();
     sweep_stale_copies(&temp);
     let dir = temp.join(format!("{COPY_PREFIX}{}", uuid::Uuid::new_v4()));
+    #[cfg_attr(not(unix), allow(unused_mut))]
     let mut builder = std::fs::DirBuilder::new();
     #[cfg(unix)]
     {
@@ -1402,19 +1407,18 @@ pub(super) mod tests {
     #[test]
     fn a_copy_a_crash_left_behind_is_swept_and_nothing_else() {
         let temp = temp_dir();
-        let stale = temp.join(format!("{COPY_PREFIX}old"));
-        let fresh = temp.join(format!("{COPY_PREFIX}new"));
+        let copy = temp.join(format!("{COPY_PREFIX}left"));
         let other = temp.join("someone-else");
-        for dir in [&stale, &fresh, &other] {
+        for dir in [&copy, &other] {
             std::fs::create_dir_all(dir).unwrap();
         }
-        let long_ago = SystemTime::now() - std::time::Duration::from_secs(STALE_COPY_SECS + 60);
-        for dir in [&stale, &other] {
-            File::open(dir).unwrap().set_modified(long_ago).unwrap();
-        }
+        // Just made: kept.
         sweep_stale_copies(&temp);
-        assert!(!stale.exists());
-        assert!(fresh.exists());
+        assert!(copy.exists());
+        // An hour and more later: the reader's own copy goes, nothing else does.
+        let later = SystemTime::now() + std::time::Duration::from_secs(STALE_COPY_SECS + 60);
+        sweep_copies_older_than(&temp, later);
+        assert!(!copy.exists());
         assert!(other.exists());
         let _ = std::fs::remove_dir_all(temp);
     }
@@ -1473,18 +1477,22 @@ pub(super) mod tests {
             }
             let _ = std::fs::remove_dir_all(stand_in);
         }
-        // A hard link to the real record, and a `..` that doesn't resolve yet: refused too.
+        // A hard link to the real record (told apart by its inode, so Unix only), and a `..` that doesn't resolve
+        // yet: refused too.
         let elsewhere = temp_dir();
-        let hard = elsewhere.join("copy.db");
-        std::fs::hard_link(real.join(DATA_SUBPATH).join(DB_NAME), &hard).unwrap();
-        assert!(resolve(
-            false,
-            Some(hard),
-            None,
-            Some(home.clone()),
-            Some(real.clone())
-        )
-        .is_err());
+        #[cfg(unix)]
+        {
+            let hard = elsewhere.join("copy.db");
+            std::fs::hard_link(real.join(DATA_SUBPATH).join(DB_NAME), &hard).unwrap();
+            assert!(resolve(
+                false,
+                Some(hard),
+                None,
+                Some(home.clone()),
+                Some(real.clone())
+            )
+            .is_err());
+        }
         assert!(resolve(
             false,
             Some(elsewhere.join("not-yet/../../x.db")),

@@ -16,7 +16,7 @@ import { appHubTransport } from "./localHub/localTransport";
 import { startAshOsImport } from "./localHub/ashOsImport";
 import { appIdentity } from "../../../app/model/appIdentity";
 import { makesProjectLeads } from "./hubBundle";
-import { completeLeadAdoption, ensureProjectLeads, leadsByProject, reseedAdoptedLeadSoul } from "./hubLeads";
+import { completeLeadAdoption, ensureProjectLeads, reseedAdoptedLeadSoul } from "./hubLeads";
 import { registerClaudeGuards, registeredCodexLeadConfig, registeredHubMcpArgs, setHubDocsDir, setHubMcpServers, type HubMcpServers } from "./hubMcp";
 import { codingTeamChatProject } from "./codingTeam";
 import { invoke } from "@tauri-apps/api/core";
@@ -136,21 +136,7 @@ function startHubBundleLeads(store: HubStore): void {
     const key = strip.map((p) => `${p.id}:${p.folder ?? ""}`).join("|");
     if (!strip.length || key === seen) return;
     seen = key;
-    // The Leads the store already records (an import from Ash OS brings them) are adopted, not made again.
-    void appHubTransport()
-      .hub.monoProjects()
-      .then(
-        ({ memberships }) => memberships,
-        () => [],
-      )
-      .then((memberships) => runLeads(strip, leadsByProject(memberships)))
-      // A failed pass is tried again on the next change of the strip, never left as an unhandled rejection.
-      .catch(() => {
-        if (seen === key) seen = "";
-      });
-  };
-  const runLeads = (strip: HubProject[], leadOf: (projectId: string) => string | undefined) => {
-    const result = ensureProjectLeads(strip, register, unregister, { leadOf });
+    const result = ensureProjectLeads(strip, register, unregister);
     // Writes each new Lead's SOUL.md now (seeded from its standing instructions), not on its first chat.
     for (const id of result.created) void loadMonoFiles(id).catch(() => undefined);
     for (const id of result.adopted)
