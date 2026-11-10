@@ -18,7 +18,7 @@ What exists today: `src-tauri/src/provider_session_transfer.rs` copies a Claude 
 
 - WP-60 (leases and idempotent launch keys: a live holder is not replaced, and a dead one counts as released) and WP-61.
 - WP-121 (the resume case and the recap fallback, with no silent switch).
-- WP-133, which owns the laptop-closed transport and the relay. Not yet written; this WP waits for its transport decision.
+- WP-133 (design only, `docs/hivra/work/WP-133-remote-parity.md`), which owns the laptop-closed transport and the relay. This WP builds only the SSH host connection and does not decide the relay.
 - `src-tauri/src/provider_session_transfer.rs` for the transcript copy rules.
 - Cloudroom's README (ideas only, no code copied): the split of harness from core, and teleport as freeze, move history, resume.
 - PLAN.md, "From Aether": the subscription gap, which applies here too.
