@@ -123,6 +123,7 @@ import {
   contextCeilingFor,
   formatDuration,
   idleCompactionDue,
+  warmContextCeiling,
 } from "../../../../features/sessions/model/contextCeiling";
 import { formatTokens } from "../../../../features/sessions/model/contextUsage";
 import { RUNTIME_MODE_LABEL } from "../../../../features/sessions/model/session";
@@ -863,6 +864,9 @@ export function restoreClaudeTaskLists(
 }
 
 async function ensureLive(input: HarnessSessionInput): Promise<Live> {
+  // WP-104: a custom route's context window comes from the bundled catalogue, read on first use. Wait for it before
+  // any launch is computed, so the key compared below and the settings started with agree.
+  await warmContextCeiling(input.model);
   const planning = input.intent === "plan";
   // WP-41: one wiring snapshot feeds the append text and the plugin dirs, before the launch key is compared.
   const plugins = await claudePluginLaunch(input.cwd, input.sessionId);

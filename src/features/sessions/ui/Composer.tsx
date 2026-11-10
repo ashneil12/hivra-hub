@@ -109,6 +109,7 @@ import { AccessPicker } from "./AccessPicker";
 import { ComposerRunner } from "./ComposerRunner";
 import { ContextMeter } from "./ContextMeter";
 import { contextCeilingFor } from "../model/contextCeiling";
+import { catalogueVersion, subscribeCatalogue } from "../model/modelCatalogue";
 import { AttachmentChip } from "./AttachmentChip";
 import { BranchPicker } from "../../source-control/ui/BranchPicker";
 import { WorktreePicker } from "../../source-control/ui/WorktreePicker";
@@ -549,6 +550,8 @@ export function Composer({
     loadModelControls,
     () => "menu" as const,
   );
+  // WP-104: a custom route's window loads on first use; draw the context ceiling again when it arrives.
+  useSyncExternalStore(subscribeCatalogue, catalogueVersion, catalogueVersion);
   const controlsBeside = modelControls === "beside";
   const [notes, setNotes] = useState<Note[]>(() => peekNotes() ?? []);
   const [mention, setMention] = useState<MentionToken | null>(null);

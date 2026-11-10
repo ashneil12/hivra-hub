@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   contextCeilingFor,
+  warmContextCeiling,
   effectiveContextWindow,
   formatDuration,
   idleCompactionDue,
@@ -8,6 +9,7 @@ import {
   saveContextCeilingChoice,
 } from "./contextCeiling";
 import { rotationReason } from "../../monos/model/monoRotation";
+import bundled from "./modelsDev.json";
 
 const storage = new Map<string, string>();
 vi.stubGlobal("localStorage", {
@@ -59,6 +61,49 @@ describe("context ceiling", () => {
     expect(contextCeilingFor({ harness: "claude", model: "custom:m1" }, 300_000, catalogue)).toBe(300_000);
     expect(contextCeilingFor({ harness: "claude", model: "custom:m1" }, "off", catalogue)).toBeUndefined();
     expect(contextCeilingFor({ harness: "claude", model: "custom:missing" }, "model", catalogue)).toBe(400_000);
+  });
+
+  it("asks for the model's own provider's window before the bare id", () => {
+    const catalogue = {
+      "deepseek/widget-9": { context: 64_000, tools: true },
+      "widget-9": { context: 1_000_000, tools: true },
+    };
+    const save = (provider: string) =>
+      storage.set(
+        "monocode:custom-models",
+        JSON.stringify([{ id: "m1", name: "m1", provider, baseUrl: "http://127.0.0.1:9/v1", modelId: "widget-9" }]),
+      );
+    save("deepseek");
+    expect(contextCeilingFor({ harness: "claude", model: "custom:m1" }, "model", catalogue)).toBe(100_000);
+    save("custom");
+    expect(contextCeilingFor({ harness: "claude", model: "custom:m1" }, "model", catalogue)).toBe(1_000_000);
+  });
+
+  it("reads the bundled file once a custom route has asked for it, and a turn waits for it", async () => {
+    storage.set(
+      "monocode:custom-models",
+      JSON.stringify([
+        { id: "m1", name: "m1", provider: "deepseek", baseUrl: "http://127.0.0.1:9/v1", modelId: "deepseek-chat" },
+      ]),
+    );
+    // Asking starts the load. The family ceiling answers until it lands.
+    expect(contextCeilingFor({ harness: "claude", model: "custom:m1" })).toBe(400_000);
+    await warmContextCeiling("custom:m1");
+    // DeepSeek's own row for deepseek-chat, not the bare id another provider put first.
+    const table = bundled as Record<string, { context: number }>;
+    const own = table["deepseek/deepseek-chat"].context;
+    expect(own).not.toBe(table["deepseek-chat"].context);
+    expect(contextCeilingFor({ harness: "claude", model: "custom:m1" })).toBe(Math.min(own, 1_000_000));
+    expect(contextCeilingFor({ harness: "claude", model: "claude:claude-opus-5-5" })).toBe(350_000);
+  });
+
+  it("a Claude model's turn does not wait for, or load, the catalogue", async () => {
+    vi.resetModules();
+    const catalogue = await import("./modelCatalogue");
+    const ceiling = await import("./contextCeiling");
+    await ceiling.warmContextCeiling("claude:claude-opus-5-5");
+    await ceiling.warmContextCeiling("custom:missing");
+    expect(catalogue.catalogueVersion()).toBe(0);
   });
 
   it("takes the Settings choice, and nothing for Claude Code's default", () => {
