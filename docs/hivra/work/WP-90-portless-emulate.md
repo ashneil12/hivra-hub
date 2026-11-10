@@ -124,20 +124,25 @@ the stack says so plainly instead of pretending, and that stack is not run unatt
    into `src-tauri/src/local_services/base_url.rs`, and `persistence.rs`'s rules (write `wx` at 0600, fsync, rename;
    `link()` for create-or-read) into `src-tauri/src/local_services/store.rs`, with emulate's tests ported. If Node is
    missing or older than 24, the stack starts without the stand-in and says so once; the base URLs still point at the
-   named host, so a test fails closed (connection refused) instead of quietly reaching the real service.
+   service's own loopback port, so a test fails closed (connection refused) instead of quietly reaching the real service.
 7. **Wiring it into the stack (WP-87).** A stack's declared service may name an emulated one
    (`{ "emulate": "github", "urlEnv": "GITHUB_BASE_URL" }`). Hivra writes each emulated service's port into the
-   generated emulate config (it honours a per-service `port`), registers `<service>-<label>.localhost` for it, and puts
-   its named base URL in the stack's env block under `urlEnv`, defaulting to `<SERVICE>_BASE_URL`. The app itself
+   generated emulate config (it honours a per-service `port`), registers `<service>-<project>-<label>.localhost` for it
+   (the project is in the name so two projects on one branch never share one), and puts `http://127.0.0.1:<port>` in
+   the stack's env block under `urlEnv`, defaulting to `<SERVICE>_BASE_URL`: server-side code resolves names through
+   the OS, which does not treat `*.localhost` as loopback. The named URL is what the stand-in advertises (its
+   `baseUrl`, links and redirects) and what a browser opens through the proxy. A name another stack holds is refused,
+   and only the stack that holds a name removes it. The app itself
    gets `<project>-<label>.localhost` and `PUBLIC_URL`; the framework-specific names the project already declares
    (`PORT`, `VITE_PORT`, and so on) keep working. One stand-in process per stack, never `--portless`: emulate's
    `--portless` registers a global `<service>.emulate` alias with `--force`, so two worktrees would overwrite each
-   other's. The named base URL is the whole isolation.
+   other's. The per-stack port and name are the whole isolation.
 8. **State per worktree.** Seeds and snapshots live with the stack, not in the worktree, and `stack reset` puts the
    stand-in back to its seed between runs. A pool slot keeps its state (WP-82); `stack down` stops the stand-in, the
    app's processes and removes its names, and a stack whose worktree is gone appears in Clean up, removed only with a
    tap. A name or stand-in left by a crash is pruned on the next start, never silently re-pointed at a port now owned
-   by something else.
+   by something else: the app stops every stand-in it started when it quits and again at the next start, and puts a
+   name back only when its port still accepts a connection.
 9. **On screen and by chat.** The stack's card shows each name, whether it is emulated, and one line saying which
    mode it is in ("tests use fake GitHub and Stripe" or "reaches the real internet"). The task card links the named
    app URL. `app stacks` reads the same; a crew is told the app's named URL in its brief.
