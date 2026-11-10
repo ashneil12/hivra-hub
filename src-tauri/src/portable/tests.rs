@@ -5785,8 +5785,14 @@ fn a_folder_with_a_name_that_folds_to_instructions_is_held_back() {
         &["AGENTS.md "]
     ));
     assert!(instructions_seen_in(&layout, "hermes", &["HERMES.md"]));
-    // A hidden name that is only harmless with its dot kept: a trailing dot makes it another name.
-    assert!(instructions_seen_in(&layout, "dotted-env", &[".env."]));
+    // A hidden name that is only harmless with its dot kept: a trailing dot makes it another name. Windows drops a
+    // trailing dot when it creates a file, so there the name can't be on disk: the folder holds a plain `.env`.
+    if cfg!(windows) {
+        assert!(!instructions_seen_in(&layout, "dotted-env", &[".env."]));
+        assert!(layout.root.0.join("dotted-env").join(".env").is_file());
+    } else {
+        assert!(instructions_seen_in(&layout, "dotted-env", &[".env."]));
+    }
 }
 
 #[test]
@@ -5800,7 +5806,9 @@ fn a_restored_history_with_thousands_of_hidden_files_still_restores() {
     let target = env_for(&target_dir.0);
     let docs = source.memory_root.join("docs");
     fs::create_dir_all(&docs).unwrap();
-    let padding = "x".repeat(150);
+    // Windows' command line stops at 32,767 characters, so shorter names overflow it too; long ones would pass the
+    // 260-character path limit of the test's own git there.
+    let padding = "x".repeat(if cfg!(windows) { 40 } else { 150 });
     for index in 0..7000 {
         fs::write(docs.join(format!(".hidden-{index:05}-{padding}")), "x\n").unwrap();
     }
