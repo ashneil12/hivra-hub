@@ -184,6 +184,22 @@ pub(crate) fn create(
     base: &str,
     existing: bool,
 ) -> Result<Worktree, String> {
+    let mut tree = create_without_include(root, branch, base, existing)?;
+    // WP-138: named files from .worktreeinclude. A copy failure does not undo the worktree.
+    let include = crate::worktree_include::apply(root, Path::new(&tree.path));
+    tree.include_note = include.note;
+    tree.include_warning = include.warning;
+    Ok(tree)
+}
+
+/// `git worktree add` and nothing else: no `.worktreeinclude` files. For a checkout of code
+/// somebody else wrote (a pull request), where a secret copied in could be read by that code.
+pub(crate) fn create_without_include(
+    root: &Path,
+    branch: &str,
+    base: &str,
+    existing: bool,
+) -> Result<Worktree, String> {
     let branch = branch.trim();
     if branch.starts_with('-') || branch.starts_with('@') || branch.is_empty() {
         return Err("Enter a valid branch name".into());
@@ -250,17 +266,12 @@ pub(crate) fn create(
             ],
         )?;
     }
-    let mut tree = list(root)?
+    list(root)?
         .into_iter()
         .find(|tree| same_path(Path::new(&tree.path), &path))
         .ok_or_else(|| {
             "Worktree created, but could not be found. Refresh the working copies.".to_string()
-        })?;
-    // WP-138: named files from .worktreeinclude. A copy failure does not undo the worktree.
-    let include = crate::worktree_include::apply(root, Path::new(&tree.path));
-    tree.include_note = include.note;
-    tree.include_warning = include.warning;
-    Ok(tree)
+        })
 }
 
 /// Start the project's setup in a worktree that was just added. It runs before the agent's first turn: the chat
