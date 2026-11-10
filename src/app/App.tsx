@@ -723,6 +723,7 @@ import { useBusyChatsFeed } from "../features/monos/hooks/useBusyChatsFeed";
 import { useFirstMateCheckoutGuard } from "../features/firstmate/hooks/useFirstMateCheckoutGuard";
 import { useSteering } from "../features/firstmate/hooks/useSteering";
 import { firstMateLaunch } from "../features/firstmate/model/checkoutGuard";
+import { crewLaunch } from "../features/crew/model/crewSession";
 // WP-115: compact an idle Claude chat shortly before its prompt cache expires.
 import {
   commitIdleCompactBusy,
@@ -2189,6 +2190,8 @@ function Workspace({
   const lastBoundProvider = useRef(new Map<string, string>());
   // Delegation rows (model/delegations.ts), set once useDelegations runs below; submitSession re-attaches through it.
   const delegationsRef = useRef<DelegationTracker | null>(null);
+  // WP-143: what marks a chat as a crew's (crewSession.ts): the rows the UI reads and the ones this window launched since.
+  const crewRows = () => [...delegationRows(), ...(delegationsRef.current?.known() ?? [])];
   // PR watches (features/pr-watch), set once usePrWatches runs below; the queue marks their wakes delivered.
   const prWatchesRef = useRef<PrWatchTracker | null>(null);
   // Hivra WP-11: the first mate's wake queue; the queue marks its drained turns delivered.
@@ -8425,8 +8428,9 @@ function Workspace({
       }
       // The Mono has app access in every turn, without the command.
       const mono = isMonoSession(sessionId);
-      // So does a chat in a hub project's coding team on Claude Code: an orchestrator like the Lead, its delegate tool
-      // calls the app (codingTeam.ts). Noted before the turn, so its Claude Code starts with the tool and its project.
+      // WP-120: so does a chat in a hub project's coding team, on every CLI that can lead (not only Claude Code).
+      // An orchestrator like the Lead, its delegate tool calls the app (codingTeam.ts). Noted before the turn,
+      // so the session starts with the tool and its project.
       const team = mono ? undefined : codingTeamOf(current);
       const teamDelegates = !!team && hasDelegateTool(sessionId, current.harness);
       const queuedMonoMessage =
@@ -9518,6 +9522,7 @@ function Workspace({
                   operatorAccess ||
                   orchestrator.run(sessionId)?.status === "active",
                 ...firstMateLaunch(current),
+                ...crewLaunch(current, crewRows()), // WP-143
                 ...(editedProviderTurnId
                   ? { providerTurnId: editedProviderTurnId }
                   : {}),
@@ -9577,6 +9582,7 @@ function Workspace({
                 orchestrator.run(sessionId)?.status === "active",
               appAccess: operatorAccess,
               ...firstMateLaunch(current),
+              ...crewLaunch(current, crewRows()), // WP-143
               text,
               attachments: turnAttachments,
               ...(editedResend ? { onAccepted: acceptEditedResend } : {}),
@@ -12644,6 +12650,7 @@ function Workspace({
               operatorEnabledInThread(current.blocks) ||
               orchestrator.run(sessionId)?.status === "active",
             ...firstMateLaunch(current),
+            ...crewLaunch(current, crewRows()), // WP-143
             onEvent: (event) => {
               if (turnGen.current.get(sessionId) !== gen) return;
               enqueueHarnessEvent(sessionId, event);
