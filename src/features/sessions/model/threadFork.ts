@@ -424,6 +424,14 @@ function withForkWorktree(fork: Session, tree: Worktree): Session {
 }
 
 /**
+ * The checkout the new worktree branches from: the chat's own worktree, so the fork starts where the chat is. A chat
+ * with no worktree, or whose worktree was deleted, branches from the project.
+ */
+function worktreeOrigin(source: Session): string {
+  return source.worktreeCwd && !source.worktreeRemoved ? source.worktreeCwd : source.cwd;
+}
+
+/**
  * Copy the chat. When a new worktree is requested, creation goes through the
  * port and a refusal is left to the caller. This never removes a worktree.
  */
@@ -439,7 +447,7 @@ export async function forkChat(
   const sessionId = takeId(ids);
   if (!sessionId) return null;
   const tree = await port.createWorktree(
-    source.cwd,
+    worktreeOrigin(source),
     temporaryWorktreeBranchName(sessionId),
     "HEAD",
     false,

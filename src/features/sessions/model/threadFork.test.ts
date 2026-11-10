@@ -711,3 +711,40 @@ describe("the first send from a fork", () => {
   });
 });
 
+describe("the worktree a fork starts in", () => {
+  const blocks = [block({ id: "u1", role: "user", text: "Hi" })];
+
+  function run(source: Session) {
+    let seen: unknown[] = [];
+    const port: ForkWorktreePort = {
+      createWorktree: async (...args) => {
+        seen = args;
+        return tree("/work/proj-fork");
+      },
+    };
+    return forkChat(source, "u1", { useNewWorktree: true }, port, ids(["fork-1", "b1"])).then(
+      () => seen,
+    );
+  }
+
+  it("branches from the chat's own worktree, not from the project", async () => {
+    const source = chat(blocks, { worktreeCwd: "/work/proj-wt-a", branch: "mc/a" });
+    expect(await run(source)).toEqual([
+      "/work/proj-wt-a",
+      temporaryWorktreeBranchName("fork-1"),
+      "HEAD",
+      false,
+    ]);
+  });
+
+  it("branches from the project when the chat has no worktree", async () => {
+    const source = chat(blocks, { worktreeCwd: undefined, branch: undefined });
+    expect((await run(source))[0]).toBe("/work/proj");
+  });
+
+  it("branches from the project when the chat's worktree was deleted", async () => {
+    const source = chat(blocks, { worktreeCwd: "/work/proj-wt-a", worktreeRemoved: true });
+    expect((await run(source))[0]).toBe("/work/proj");
+  });
+});
+

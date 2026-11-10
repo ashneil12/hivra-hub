@@ -460,3 +460,23 @@ it("opens a fork that owes its history to the first send", async () => {
   expect(pendingForkBrief(source)).toBeNull();
 });
 
+it("starts the new worktree from the chat's own worktree", async () => {
+  const source = { ...chat(), worktreeCwd: "/work/proj-wt-a", branch: "mc/a" };
+  const calls: unknown[][] = [];
+  const port: ForkWorktreePort = {
+    createWorktree: async (...args) => {
+      calls.push(args);
+      return worktree("/work/proj-wt-b");
+    },
+  };
+  const opened: Session[] = [];
+  await renderHost(source, opened, { port, setting: () => "always" });
+  act(() => askThreadFork(source.id, "a1"));
+  await act(async () => {
+    document.querySelector<HTMLButtonElement>("[data-thread-fork-confirm]")?.click();
+  });
+  expect(calls[0]?.[0]).toBe("/work/proj-wt-a");
+  expect(calls[0]?.[2]).toBe("HEAD");
+  expect(opened[0].worktreeCwd).toBe("/work/proj-wt-b");
+});
+
