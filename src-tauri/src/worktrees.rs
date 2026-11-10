@@ -298,7 +298,20 @@ fn take_pool_slot(
     run_setup: Option<bool>,
 ) -> Result<Pooled, String> {
     let env = crate::worktree_pool::env_from_app(app);
-    match crate::worktree_pool::acquire(&env, root, branch, holder) {
+    take_pool_slot_with(&env, root, branch, holder, |tree| {
+        with_setup(app, tree, run_setup)
+    })
+}
+
+/// The pool path, with the step that starts setup passed in so a test can watch when it runs.
+fn take_pool_slot_with(
+    env: &crate::worktree_pool::PoolEnv,
+    root: &Path,
+    branch: &str,
+    holder: &str,
+    start_setup: impl FnOnce(Worktree) -> Worktree,
+) -> Result<Pooled, String> {
+    match crate::worktree_pool::acquire(env, root, branch, holder) {
         Ok(crate::worktree_pool::Checkout::Slot { path, fresh, .. }) => {
             let tree = list(root)?
                 .into_iter()
@@ -308,15 +321,16 @@ fn take_pool_slot(
                 })?;
             if fresh {
                 if let Err(error) = copy_checkout_state(root, Path::new(&tree.path)) {
-                    let _ = crate::worktree_pool::give_back(&env, root, &path);
+                    let _ = crate::worktree_pool::give_back(env, root, &path);
                     return Err(error);
                 }
-                let mut tree = with_setup(app, tree, run_setup);
-                // WP-138: a fresh slot gets the named files. A reused slot keeps its own copies.
+                let mut tree = tree;
+                // WP-138: a fresh slot gets the named files before setup starts, because setup
+                // may need them. A reused slot keeps its own copies.
                 let include = crate::worktree_include::apply(root, Path::new(&tree.path));
                 tree.include_note = include.note;
                 tree.include_warning = include.warning;
-                Ok(Pooled::Ready(Box::new(tree)))
+                Ok(Pooled::Ready(Box::new(start_setup(tree))))
             } else {
                 Ok(Pooled::Ready(Box::new(tree)))
             }
@@ -995,6 +1009,75 @@ mod tests {
         )
         .unwrap();
         Repo(dir)
+    }
+
+    /// A pool driven by the stand-in tool, with its own data folder and home, like a dev copy.
+    fn pool_env(tmp: &Path) -> crate::worktree_pool::PoolEnv {
+        crate::worktree_pool::PoolEnv {
+            dev: true,
+            data_dir: tmp.join("data"),
+            home: tmp.join("home"),
+            launch: Some(crate::worktree_pool::ToolLaunch {
+                program: PathBuf::from("node"),
+                args: vec![std::ffi::OsString::from(concat!(
+                    env!("CARGO_MANIFEST_DIR"),
+                    "/tests/treehouse_standin.mjs"
+                ))],
+            }),
+        }
+    }
+
+    #[test]
+    fn a_pool_slot_gets_named_files_before_setup_starts() {
+        let dir = std::env::temp_dir().join(format!(
+            "monocode-worktree-include-pool-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let root = dir.join("repo");
+        std::fs::create_dir_all(&root).unwrap();
+        git_checked(&root, &["init", "-b", "main"]).unwrap();
+        git_checked(&root, &["config", "core.autocrlf", "false"]).unwrap();
+        std::fs::write(root.join(".gitignore"), ".env\n").unwrap();
+        git_checked(&root, &["add", ".gitignore"]).unwrap();
+        git_checked(
+            &root,
+            &[
+                "-c",
+                "user.name=Test",
+                "-c",
+                "user.email=test@example.com",
+                "commit",
+                "-m",
+                "ignore",
+            ],
+        )
+        .unwrap();
+        std::fs::write(root.join(".env"), "first\n").unwrap();
+        std::fs::write(root.join(".worktreeinclude"), ".env\n").unwrap();
+        let env = pool_env(&dir);
+        let started = std::cell::Cell::new(None::<bool>);
+        let result = take_pool_slot_with(&env, &root, "mc/include-pool", "crew-a", |tree| {
+            // Recorded at the moment setup starts: the file must already be here.
+            started.set(Some(Path::new(&tree.path).join(".env").is_file()));
+            tree
+        })
+        .unwrap();
+        let tree = match result {
+            Pooled::Ready(tree) => *tree,
+            Pooled::Full(note) => panic!("pool full: {note}"),
+            Pooled::Plain(notice) => panic!("fallback: {notice:?}"),
+        };
+        assert_eq!(started.get(), Some(true), "setup started before the copy");
+        assert_eq!(
+            std::fs::read_to_string(Path::new(&tree.path).join(".env")).unwrap(),
+            "first\n"
+        );
+        assert_eq!(
+            tree.include_note.as_deref(),
+            Some("1 file named in .worktreeinclude is in this worktree.")
+        );
+        assert!(tree.include_warning.is_none());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
