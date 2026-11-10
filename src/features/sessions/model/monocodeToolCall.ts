@@ -14,6 +14,8 @@ export type MonoCodeToolCall = {
  */
 export type DelegateToolName =
   | "delegate_task"
+  // Hivra WP-171: the multi-part form of delegate_task.
+  | "delegate_tasks"
   | "task_status"
   | "task_wait"
   | "task_cancel"
@@ -39,6 +41,11 @@ const DELEGATE_TOOLS: Record<
   delegate_task: {
     labels: ["Delegate", "Delegating", "Delegated", "a task"],
     count: { noun: "task", id: (output) => output.taskId },
+  },
+  delegate_tasks: {
+    labels: ["Delegate", "Delegating", "Delegated", "a multi-part ask"],
+    // One call hands out several tasks: counted by the worker chats its result names.
+    count: { noun: "task", id: (output) => output.childSessionId },
   },
   task_status: { labels: ["Check", "Checking", "Checked", "task status"] },
   task_wait: { labels: ["Wait for", "Waiting for", "Waited for", "tasks"] },
@@ -79,6 +86,12 @@ export function delegateToolName(block: Block): DelegateToolName | undefined {
       return name as DelegateToolName;
   }
   return undefined;
+}
+
+/** A call that hands work to workers: delegate_task, or its multi-part form delegate_tasks (WP-171). */
+export function handsOutWork(block: Block): boolean {
+  const name = delegateToolName(block);
+  return name === "delegate_task" || name === "delegate_tasks";
 }
 
 function record(value: unknown): Record<string, unknown> | undefined {
@@ -179,7 +192,24 @@ export function delegateToolLabel(
     const job = delegateJobName(block);
     if (job) return `Asked a worker to: ${job}`;
   }
+  if (name === "delegate_tasks" && delegateToolDone(block)) {
+    const handed = fanoutSessions(block).length;
+    if (handed) return `Handed out ${quantity(handed, "task")}`;
+  }
   return `${delegateToolDone(block) ? done : running} ${object}`;
+}
+
+/**
+ * WP-171: the worker chats one delegate_tasks call handed out (started or waiting for what they need), from its result.
+ * A task the app refused names no chat, so it is not counted.
+ */
+export function fanoutSessions(block: Block): string[] {
+  const tasks = delegateToolData(block.tool?.detail)?.tasks;
+  if (!Array.isArray(tasks)) return [];
+  return tasks.flatMap((task) => {
+    const id = record(task)?.childSessionId;
+    return typeof id === "string" && id ? [id] : [];
+  });
 }
 
 function quantity(count: number, noun: string): string {
@@ -211,9 +241,13 @@ export function delegateToolsSummary(
     return `${verb} ${object}${times > 1 ? ` ${times} times` : ""}`;
   }
   // A call's result names its task (the input isn't kept once the call is done).
-  const ids = selected.map((step) => {
+  const ids = selected.flatMap((step) => {
+    if (name === "delegate_tasks") {
+      const handed = fanoutSessions(step);
+      return handed.length ? handed : [undefined];
+    }
     const id = definition.count!.id(delegateToolData(step.tool?.detail) ?? {});
-    return typeof id === "string" && id ? id : undefined;
+    return [typeof id === "string" && id ? id : undefined];
   });
   const count =
     new Set(ids.filter((id) => id !== undefined)).size +
