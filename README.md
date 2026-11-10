@@ -62,14 +62,15 @@ in Settings, under About.
 - [Kun Chen's dotfiles](https://github.com/kunchenguid/dotfiles): one AGENTS.md shared by every agent CLI.
 - [HumanLayer](https://github.com/humanlayer/humanlayer): research and plan before building. The skills were copied from apps/riptide-rpi-claude-plugin at f9bd73534a9fb7099a274f951b698b1297122fd9. Terminal sessions mirrored into the app, commit attribution and a local stack per worktree are still planned for Wave G.
 - [Matt Pocock's skills](https://github.com/mattpocock/skills): diagnosing-bugs, tdd, grill-me and grilling, copied from mattpocock/skills at 4ae2317ddb22b046e26455e4f9c9b3aaaf62212d and called by name only.
-- [portless](https://github.com/vercel-labs/portless): a stable name per worktree for its app and services, a local proxy that routes by name, and a route registry only its owner can remove (WP-90).
+- [portless](https://github.com/vercel-labs/portless): a stable name per worktree for its app and services, a local proxy that routes by name, and a route registry only its owner can remove (WP-90). The 0.17 parallel loopback dial and Windows route-lock retry are included (WP-139).
 - [emulate](https://github.com/vercel-labs/emulate): 14 stateful stand-ins for outside services, so a crew's tests use fake accounts instead of real ones (WP-90).
 - [oh-my-hermes](https://github.com/rlaope/oh-my-hermes): the dag-ulw goal graph: a finish line first, write scopes, repair cycles, a verify node and a run verdict, planned for Wave J.
 - [T3 Code](https://github.com/pingdotgg/t3code): the PR watch rules, honest Claude results, delegation delivery and stop rules, limit auto-resume guards, worktree cleanup cases and 18 recorded Claude transcripts for the test bench.
 - [T3 Code one-time schedules](https://github.com/pingdotgg/t3code): one prompt at a chosen local date and time, missed if the app is closed (WP-128).
 - [Aether](https://runaether.dev): ideas only: a machine per task, the person's own subscription, phone control and a reviewer that runs the changed code.
-- [Row-Bot](https://github.com/siddsachar/row-bot): the automatic recall policy: skip gates, a query builder, a weighted score, rejection reasons, a broad-query margin, a cap on lines and a trace (WP-99), and the correction rule behind the rules tier (WP-103).
+- [Row-Bot](https://github.com/siddsachar/row-bot): the automatic recall policy: skip gates, a query builder, a weighted score, rejection reasons, a broad-query margin, a cap on lines and a trace (WP-99), the correction rule behind the rules tier (WP-103), and a scan that refuses text which looks like instructions aimed at the model (WP-111).
 - [Mnemos](https://github.com/Riley-Coyote/mnemos-mcp): ideas for the recall rules (four content words, two distinctive shared words, at most three lines, each memory once per conversation; WP-99), and memory that fades over the days it was used rather than the calendar, with a lived-day clock and one question to the person before a fact goes stale (WP-100).
+- [ccdeck](https://github.com/BarganConstantin/ccdeck): ideas only: a live session tree (main agent at the root, subagents as nodes, inspectable tool calls) and a waiting-on-you list ordered questions first and longest wait first.
 
 Also [poteto](https://x.com/poteto)'s writing on skills and verification, including the
 [verification skill example](https://github.com/poteto/verification-skill-example).

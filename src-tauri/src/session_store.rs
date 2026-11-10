@@ -32,7 +32,7 @@ CREATE INDEX IF NOT EXISTS sessions_cwd_updated_idx
 /// The newest schema this build writes (`schema_migrations`). A database at a higher version was written by a newer
 /// build: it is refused, never opened or migrated, because this build would misread it (docs/PHASE-1B-DEV-SETUP.md).
 /// Raise it with every new numbered migration; `schema_version_matches_the_migrations` checks.
-pub const SCHEMA_VERSION: i64 = 19;
+pub const SCHEMA_VERSION: i64 = 20;
 
 /// A database newer than this build.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -272,6 +272,12 @@ pub struct SessionUpsert {
     /// None clears it: a met or cleared goal never comes back.
     #[serde(default)]
     pub goal: Option<Value>,
+    /// WP-111: memory does not read or write this chat. Omitted on old saves, which stay readable.
+    #[serde(default, rename = "private")]
+    pub private_chat: bool,
+    /// WP-111: after privacy is switched off, this message and everything before it stay unread.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub private_boundary_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -313,6 +319,9 @@ pub struct SessionSummary {
     pub linked_work_item: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub automation_id: Option<String>,
+    /// WP-111: memory leaves this chat alone. Absent on a chat saved before the flag existed.
+    #[serde(default, rename = "private")]
+    pub private_chat: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -358,6 +367,12 @@ pub struct SessionRecord {
     /// Archived chats keep their waiting queue paused after a restart: nothing is delivered to them.
     #[serde(default)]
     pub archived: bool,
+    /// WP-111: memory does not read or write this chat.
+    #[serde(default, rename = "private")]
+    pub private_chat: bool,
+    /// WP-111: messages at or before this id stay unread after privacy is switched off.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub private_boundary_id: Option<String>,
     pub created_at: i64,
     pub updated_at: i64,
 }
@@ -375,6 +390,29 @@ fn goal_json(goal: Option<&Value>) -> Option<String> {
     serde_json::to_string(goal)
         .ok()
         .filter(|json| json.len() <= GOAL_JSON_MAX)
+}
+
+/// A message id worth storing as a privacy boundary. Anything else stores nothing.
+fn stored_boundary(value: Option<&str>) -> Option<String> {
+    let value = value?.trim();
+    if value.is_empty()
+        || value.len() > 80
+        || !value
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+    {
+        return None;
+    }
+    Some(value.to_string())
+}
+
+/// A bad boundary from disk stays unread. An empty one means the chat was never private.
+pub(crate) fn boundary_for_read(value: Option<String>) -> Option<String> {
+    let raw = value?;
+    if raw.trim().is_empty() {
+        return None;
+    }
+    stored_boundary(Some(&raw)).or(Some("private-boundary-unreadable".to_string()))
 }
 
 #[tauri::command(async)]
@@ -637,6 +675,35 @@ pub fn session_get(
         crate::tool_detail::omit_large_details(&mut record.blocks);
     }
     Ok(record)
+}
+
+/// WP-111: ids of chats memory must not read.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PrivateChatKey {
+    pub id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider_session_id: Option<String>,
+}
+
+#[tauri::command(async)]
+pub fn session_private_keys(store: State<'_, SessionStore>) -> Result<Vec<PrivateChatKey>, String> {
+    let conn = store.conn.lock().map_err(|_| "Session store is locked")?;
+    list_private_keys(&conn).map_err(|error| error.to_string())
+}
+
+fn list_private_keys(conn: &Connection) -> rusqlite::Result<Vec<PrivateChatKey>> {
+    let mut statement = conn.prepare(
+        "SELECT id, provider_session_id FROM sessions WHERE private_chat != 0 ORDER BY id ASC",
+    )?;
+    let rows = statement.query_map([], |row| {
+        let provider: Option<String> = row.get(1)?;
+        Ok(PrivateChatKey {
+            id: row.get(0)?,
+            provider_session_id: provider.filter(|value| !value.is_empty()),
+        })
+    })?;
+    rows.collect()
 }
 
 /// Output the transcript omitted on load, fetched when its row is expanded.
@@ -948,6 +1015,56 @@ pub fn session_set_pinned(
     set_pinned(&conn, &session_id, pinned).map_err(|e| e.to_string())
 }
 
+/// WP-111: only this write changes the private flag. A later transcript save must not clear it.
+#[tauri::command(async)]
+pub fn session_set_private(
+    store: State<'_, SessionStore>,
+    session_id: String,
+    private_chat: bool,
+    private_boundary_id: Option<String>,
+) -> Result<(), String> {
+    validate_id(&session_id, "session")?;
+    let conn = store.conn.lock().map_err(|_| "Session store is locked")?;
+    set_private(
+        &conn,
+        &session_id,
+        private_chat,
+        private_boundary_id.as_deref(),
+    )
+    .map_err(|error| error.to_string())
+}
+
+pub(crate) fn set_private(
+    conn: &Connection,
+    session_id: &str,
+    private_chat: bool,
+    private_boundary_id: Option<&str>,
+) -> rusqlite::Result<()> {
+    let boundary = if private_chat {
+        stored_boundary(private_boundary_id)
+    } else {
+        match private_boundary_id
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            None => None,
+            Some(value) => stored_boundary(Some(value))
+                .or_else(|| Some("private-boundary-unreadable".to_string())),
+        }
+    };
+    conn.execute(
+        "UPDATE sessions
+         SET private_chat = ?2,
+             private_boundary_id = CASE
+               WHEN ?2 != 0 AND ?3 IS NULL THEN private_boundary_id
+               ELSE ?3
+             END
+         WHERE id = ?1",
+        params![session_id, i64::from(private_chat), boundary],
+    )?;
+    Ok(())
+}
+
 #[tauri::command(async)]
 pub fn session_set_linked_work_item(
     store: State<'_, SessionStore>,
@@ -1256,6 +1373,9 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         ("queued_messages_json", "TEXT NOT NULL DEFAULT '[]'"),
         ("queue_status", "TEXT"),
         ("sidebar_hidden", "INTEGER NOT NULL DEFAULT 0"),
+        // WP-111: old rows stay readable. The boundary is only set when privacy is switched off.
+        ("private_chat", "INTEGER NOT NULL DEFAULT 0"),
+        ("private_boundary_id", "TEXT"),
         // Added in place, not as a numbered migration, so an older build (a ship rollback) still opens this database.
         ("goal_json", "TEXT"),
     ] {
@@ -1421,6 +1541,23 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
             params![now_millis()],
         )?;
     }
+    if current < 20 {
+        // WP-111: the sidebar menu reads the private flag without opening the transcript.
+        ensure_session_column(conn, "private_chat", "INTEGER NOT NULL DEFAULT 0")?;
+        conn.execute_batch(
+            "DROP INDEX IF EXISTS sessions_cwd_cover_idx;
+             CREATE INDEX sessions_cwd_cover_idx
+               ON sessions (cwd, has_user_message, updated_at DESC, id, harness,
+                            model, runtime_mode, title, provider_session_id,
+                            created_at, branch, archived, pinned,
+                            linked_work_item_json, worktree_cwd, worktree_removed,
+                            is_draft, automation_id, sidebar_hidden, private_chat);",
+        )?;
+        conn.execute(
+            "INSERT INTO schema_migrations (version, applied_at) VALUES (20, ?1)",
+            params![now_millis()],
+        )?;
+    }
     // Create even when a version row already exists (another build may have
     // used the same numbers, or a previous run recorded the version without
     // the table). Restore writes into these; missing tables look like a
@@ -1470,7 +1607,7 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
                         model, runtime_mode, title, provider_session_id,
                         created_at, branch, archived, pinned,
                         linked_work_item_json, worktree_cwd, worktree_removed,
-                        is_draft, automation_id, sidebar_hidden);",
+                        is_draft, automation_id, sidebar_hidden, private_chat);",
     )?;
     crate::notes::ensure_notes_table(conn)?;
     crate::reminders::ensure_table(conn)?;
@@ -1733,8 +1870,9 @@ pub(crate) fn upsert_session(
            provider_session_id, blocks_json, created_at, updated_at, branch,
            context_used, context_window, worktree_cwd, has_user_message,
            linked_work_item_json, provider_account_id, worktree_removed, is_draft,
-           automation_id, queued_messages_json, queue_status, sidebar_hidden, goal_json
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25)
+           automation_id, queued_messages_json, queue_status, sidebar_hidden, goal_json,
+           private_chat, private_boundary_id
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27)
          ON CONFLICT(id) DO UPDATE SET
            cwd = excluded.cwd,
            harness = excluded.harness,
@@ -1785,12 +1923,15 @@ pub(crate) fn upsert_session(
             session.queue_status,
             i64::from(session.sidebar_hidden),
             goal_json(session.goal.as_ref()),
+            i64::from(session.private_chat),
+            stored_boundary(session.private_boundary_id.as_deref()),
         ],
     )?;
 
     remember_worker_from_blocks(conn, &session.id, &session.blocks)?;
     Ok(SessionSummary {
         sidebar_hidden: session.sidebar_hidden,
+        private_chat: session.private_chat,
         id: session.id.clone(),
         orchestration_lead_id: worker_parent(conn, &session.id)?,
         orchestration: orchestration_summary(conn, &session.id)?,
@@ -2161,7 +2302,7 @@ fn list_by_project(conn: &Connection, cwd: &str) -> rusqlite::Result<Vec<Session
                 created_at, updated_at, branch, archived, pinned,
                 linked_work_item_json,
                 (SELECT summary FROM orchestration_sidebar WHERE lead_id = sessions.id), worktree_cwd,
-                worktree_removed, is_draft, automation_id, sidebar_hidden
+                worktree_removed, is_draft, automation_id, sidebar_hidden, private_chat
          FROM sessions
          WHERE cwd = ?1
            AND has_user_message = 1
@@ -2177,6 +2318,7 @@ fn list_by_project(conn: &Connection, cwd: &str) -> rusqlite::Result<Vec<Session
         let linked_work_item = optional_json(row.get(12)?);
         Ok(SessionSummary {
             sidebar_hidden: row.get::<_, i64>(18)? != 0,
+            private_chat: row.get::<_, i64>(19)? != 0,
             id: row.get(0)?,
             orchestration_lead_id: None,
             orchestration: optional_json(row.get(13)?),
@@ -2214,7 +2356,7 @@ fn list_linked(conn: &Connection) -> rusqlite::Result<Vec<SessionSummary>> {
                 created_at, updated_at, branch, archived, pinned,
                 linked_work_item_json,
                 (SELECT summary FROM orchestration_sidebar WHERE lead_id = sessions.id), worktree_cwd,
-                worktree_removed, is_draft, automation_id, sidebar_hidden
+                worktree_removed, is_draft, automation_id, sidebar_hidden, private_chat
          FROM sessions
          WHERE has_user_message = 1
            AND linked_work_item_json IS NOT NULL
@@ -2228,6 +2370,7 @@ fn list_linked(conn: &Connection) -> rusqlite::Result<Vec<SessionSummary>> {
         let pinned: i64 = row.get(11)?;
         Ok(SessionSummary {
             sidebar_hidden: row.get::<_, i64>(18)? != 0,
+            private_chat: row.get::<_, i64>(19)? != 0,
             id: row.get(0)?,
             orchestration_lead_id: None,
             orchestration: optional_json(row.get(13)?),
@@ -2472,7 +2615,7 @@ fn get_session_record(
                 context_used, context_window, branch, worktree_cwd,
                 linked_work_item_json, provider_account_id, worktree_removed,
                 automation_id, queued_messages_json, queue_status, sidebar_hidden,
-                goal_json, archived
+                goal_json, archived, private_chat, private_boundary_id
          FROM sessions
          WHERE id = ?1 AND inbox_ask IS NULL
            AND id NOT IN (SELECT item_id FROM trash_items WHERE kind = 'chat')"
@@ -2525,6 +2668,8 @@ fn get_session_record(
                 automation_id: nonempty(row.get(18)?),
                 goal: optional_json(row.get(22)?),
                 archived: row.get::<_, i64>(23)? != 0,
+                private_chat: row.get::<_, i64>(24)? != 0,
+                private_boundary_id: boundary_for_read(row.get(25)?),
                 created_at: row.get(9)?,
                 updated_at: row.get(10)?,
             })
@@ -2869,6 +3014,8 @@ mod tests {
             linked_work_item: None,
             automation_id: None,
             goal: None,
+            private_chat: false,
+            private_boundary_id: None,
         }
     }
 
@@ -3050,7 +3197,7 @@ mod tests {
                        ON sessions (cwd, has_user_message, updated_at DESC, id, harness,
                                     model, runtime_mode, title, provider_session_id,
                                     created_at, branch, archived, pinned, linked_work_item_json);
-                     DELETE FROM schema_migrations WHERE version IN (16, 17, 18, 19);",
+                     DELETE FROM schema_migrations WHERE version IN (16, 17, 18, 19, 20);",
                 )
                 .unwrap();
                 migrate(&conn).unwrap();
@@ -3061,7 +3208,7 @@ mod tests {
                  SELECT id, cwd, harness, model, runtime_mode, title, provider_session_id,
                         created_at, updated_at, branch, archived, pinned,
                         linked_work_item_json, worktree_cwd, worktree_removed, is_draft,
-                        automation_id, sidebar_hidden,
+                        automation_id, sidebar_hidden, private_chat,
                         (SELECT summary FROM orchestration_sidebar WHERE lead_id = sessions.id)
                  FROM sessions
                  WHERE cwd = ?1
@@ -3414,6 +3561,105 @@ mod tests {
                 .unwrap()
                 .sidebar_hidden
         );
+    }
+
+    #[test]
+    fn private_chat_round_trips_and_a_bad_boundary_stays_locked() {
+        let store = SessionStore::open_in_memory().unwrap();
+        let conn = store.lock_conn().unwrap();
+        let mut row = sample("secret", "/tmp/a", "Secret");
+        row.private_chat = true;
+        row.private_boundary_id = Some("  turn-1  ".into());
+        row.provider_session_id = Some("provider-secret".into());
+        row.linked_work_item = Some(json!({"kind": "pr", "repo": "a/b", "number": 1}));
+        assert!(upsert_session(&conn, &row).unwrap().private_chat);
+        assert!(list_by_project(&conn, &row.cwd).unwrap()[0].private_chat);
+        assert!(list_linked(&conn).unwrap()[0].private_chat);
+        let stored = get_session(&conn, &row.id).unwrap().unwrap();
+        assert!(stored.private_chat);
+        assert_eq!(stored.private_boundary_id.as_deref(), Some("turn-1"));
+        let keys = list_private_keys(&conn).unwrap();
+        assert_eq!(keys.len(), 1);
+        assert_eq!(keys[0].id, "secret");
+        assert_eq!(
+            keys[0].provider_session_id.as_deref(),
+            Some("provider-secret")
+        );
+
+        // A later save of the chat, built before the switch, must not clear the flag.
+        let mut stale = row.clone();
+        stale.private_chat = false;
+        stale.private_boundary_id = None;
+        stale.title = "Secret, saved again".into();
+        upsert_session(&conn, &stale).unwrap();
+        let kept = get_session(&conn, &row.id).unwrap().unwrap();
+        assert!(kept.private_chat);
+        assert_eq!(kept.private_boundary_id.as_deref(), Some("turn-1"));
+        assert_eq!(kept.title, "Secret, saved again");
+
+        // Switching off records the boundary. Switching on again does not move it.
+        set_private(&conn, &row.id, false, Some("turn-2")).unwrap();
+        let opened = get_session(&conn, &row.id).unwrap().unwrap();
+        assert!(!opened.private_chat);
+        assert_eq!(opened.private_boundary_id.as_deref(), Some("turn-2"));
+        set_private(&conn, &row.id, true, None).unwrap();
+        let again = get_session(&conn, &row.id).unwrap().unwrap();
+        assert!(again.private_chat);
+        assert_eq!(again.private_boundary_id.as_deref(), Some("turn-2"));
+        set_private(&conn, &row.id, false, Some("../no")).unwrap();
+        assert_eq!(
+            get_session(&conn, &row.id)
+                .unwrap()
+                .unwrap()
+                .private_boundary_id
+                .as_deref(),
+            Some("private-boundary-unreadable")
+        );
+
+        // An old row, and a flag that was never set, stay readable.
+        upsert_session(&conn, &sample("old", "/tmp/a", "Old")).unwrap();
+        let old = get_session(&conn, "old").unwrap().unwrap();
+        assert!(!old.private_chat);
+        assert_eq!(old.private_boundary_id, None);
+        assert!(!list_by_project(&conn, "/tmp/a")
+            .unwrap()
+            .iter()
+            .any(|item| item.id == "old" && item.private_chat));
+
+        // A boundary that is not a message id must not unlock the chat.
+        conn.execute(
+            "UPDATE sessions SET private_chat = 0, private_boundary_id = '../no' WHERE id = 'secret'",
+            [],
+        )
+        .unwrap();
+        let locked = get_session(&conn, "secret").unwrap().unwrap();
+        assert!(!locked.private_chat);
+        assert_eq!(
+            locked.private_boundary_id.as_deref(),
+            Some("private-boundary-unreadable")
+        );
+    }
+
+    #[test]
+    fn private_chat_migration_keeps_existing_sessions_readable() {
+        let store = SessionStore::open_in_memory().unwrap();
+        let conn = store.lock_conn().unwrap();
+        upsert_session(&conn, &sample("existing", "/tmp/a", "Existing")).unwrap();
+        conn.execute_batch(
+            "DROP INDEX sessions_cwd_cover_idx;
+             ALTER TABLE sessions DROP COLUMN private_chat;
+             ALTER TABLE sessions DROP COLUMN private_boundary_id;
+             DELETE FROM schema_migrations WHERE version = 20;",
+        )
+        .unwrap();
+        migrate(&conn).unwrap();
+        migrate(&conn).unwrap();
+        let listed = list_by_project(&conn, "/tmp/a").unwrap();
+        assert!(!listed[0].private_chat);
+        let stored = get_session(&conn, "existing").unwrap().unwrap();
+        assert!(!stored.private_chat);
+        assert_eq!(stored.private_boundary_id, None);
+        assert!(list_private_keys(&conn).unwrap().is_empty());
     }
 
     #[test]
