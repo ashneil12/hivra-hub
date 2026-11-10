@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import { buildUsageHistory, type UsageHistory } from "./history";
+import { buildUsageHistory, type UsageHistory, type UsageSession } from "./history";
 import { readUsageSessions } from "./read";
 
 /**
@@ -12,8 +12,12 @@ import { readUsageSessions } from "./read";
 /** One day past the window, in milliseconds. */
 export const USAGE_LOOKBACK_MS = 31 * 24 * 60 * 60 * 1000;
 
-export async function loadUsageHistory(now: number): Promise<UsageHistory> {
+export async function loadUsageSessions(now: number): Promise<UsageSession[]> {
   const since = Number.isFinite(now) ? Math.trunc(now - USAGE_LOOKBACK_MS) : 0;
   const payload: unknown = await invoke("session_usage_rows", { since });
-  return buildUsageHistory(readUsageSessions(payload), { now });
+  return readUsageSessions(payload);
+}
+
+export async function loadUsageHistory(now: number): Promise<UsageHistory> {
+  return buildUsageHistory(await loadUsageSessions(now), { now });
 }
