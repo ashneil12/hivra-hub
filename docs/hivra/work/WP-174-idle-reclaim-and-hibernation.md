@@ -20,6 +20,32 @@ Hivra has no equivalent. The word "hibernate" does not appear in the app or the 
 
 Open question for the brief: the Paseo study states that an idle chat keeps its provider process; the Orchestrator.inc study did not trace it. Build step 1 settles it by measurement. If no idle chat holds a process, this package is not needed.
 
+## Build step 1: measurement (done, stopped here)
+
+Result: an idle chat does hold its agent CLI process, but only for about three minutes after its turn settles. The app
+already reclaims it. Reclaim is not built, because the proposed collector, closed state and load path would duplicate
+what exists. Evidence is from reading the code and its tests; no live dev-copy run was made (see PR.md, "could not check").
+
+- Claude runs as a persistent child: `--output-format stream-json --input-format stream-json`
+  (`src/integrations/harness/providers/claude/claudeProtocol.ts`, `buildClaudeSpawnArgs`). It waits on stdin between turns.
+- Every settled turn arms a park timer: `scheduleIdlePark` in `src/integrations/harness/core/registry.ts`, from the
+  `finally` of `sendHarnessTurn`. `HARNESS_IDLE_PARK_MS` is 3 minutes. Its timer calls `stopHarnessSession`, which
+  calls the adapter's `stopSession`. For Claude that is `stopClaudeSession` (`claude.ts`), which calls `killChild`, then
+  Rust `harness_kill`.
+- Rust kills the whole process group (`signal_tree` in `src-tauri/src/harness.rs`: `kill(-pid)`, then SIGTERM and SIGKILL
+  escalation). MCP servers and subagents in that group go with the CLI.
+- The resume state is kept (`stopSession` is documented as "kill the child but keep resume state"), so the next message
+  starts the CLI again with `--resume` (`claudeResume.test.ts`).
+- A warm-limit (`IDLE_AGENT_LIMIT_DEFAULT` = 3, `settings.ts`) parks the longest-idle extra warm CLIs sooner, sparing the
+  chat on screen. The 3-minute timer ignores that on-screen check, so the chat on screen is parked too after three minutes.
+- Which CLIs resume by id: the adapters that implement `bindSession` and keep resume state. Only Claude was traced here.
+
+Open defect for Ash (not fixed here): the 3-minute park does not check for running background shells. In `claude.ts`,
+a turn is let go after `SHELL_HOLD_MS` (60 s) when only backgrounded shells are left (`holdForShells`,
+`finishActiveTurn`), and the comment there says those shells "keep running". The park then stops the tree about three
+minutes later, which would kill a dev server or watcher the agent started. This is read from code. A live check (start a
+background `sleep` in a chat, let the turn settle, watch the process at about four minutes) has not been run.
+
 ## What to take (ideas only, written from the designs)
 
 - Hibernation is a process boundary, not a display status. The board keeps using activity and PR facts.
