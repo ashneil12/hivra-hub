@@ -38,6 +38,7 @@ export type SettingsSectionId =
   | "changes"
   | "decisions"
   | "activity"
+  | "work-log"
   | "usage"
   | "connected"
   | "dashboards"
@@ -116,6 +117,13 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
     keywords: "activity log audit history who did what",
   },
   {
+    id: "work-log",
+    group: "app",
+    label: "Work log",
+    description: "What got done, grouped by day. One project, or every project.",
+    keywords: "work log today outcomes decisions",
+  },
+  {
     id: "usage",
     group: "app",
     label: "Usage",
@@ -190,7 +198,7 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
     description:
       "How transcripts read, what the composer does with a follow-up, how files save, and how diffs open.",
     keywords:
-      "transcript composer prompt message diff review layout format save editor",
+      "transcript composer prompt message diff review layout format save editor settle snooze inbox",
   },
   {
     id: "providers",
@@ -362,6 +370,13 @@ export const SETTINGS_INDEX: SettingsEntry[] = [
       "project file .monocode project.json setup run dev slot check ship import trust buttons",
   },
   {
+    id: "worktree-autoclear",
+    section: "worktrees",
+    label: "Clear build output of finished worktrees",
+    keywords:
+      "disk space automatic auto finished merged closed pull request accepted target node_modules test-results playwright-report build output delete free",
+  },
+  {
     id: "worktree-cleanup",
     section: "worktrees",
     label: "Clean up worktrees",
@@ -403,6 +418,12 @@ export const SETTINGS_INDEX: SettingsEntry[] = [
     section: "general",
     label: "Notifications",
     keywords: "notify alert toast permission reminder background",
+  },
+  {
+    id: "quiet-hours",
+    section: "general",
+    label: "Quiet hours",
+    keywords: "quiet hours overnight mute programme notices",
   },
   {
     id: "notes",
@@ -576,6 +597,13 @@ export const SETTINGS_INDEX: SettingsEntry[] = [
     section: "appearance",
     label: "Chat background",
     keywords: "wallpaper image picture opacity backdrop",
+  },
+  {
+    id: "chat-list-inbox",
+    section: "chat",
+    label: "Settle and snooze",
+    keywords:
+      "finished chats hide until time needs you top list sort shelf wake",
   },
   {
     id: "transcript-layout",

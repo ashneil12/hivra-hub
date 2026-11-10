@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { loadMoreAgentsEnabled } from "../../settings/model/settings";
-import { AGENT_GONE, MORE_AGENTS_OFF, WAITS } from "./registryCopy";
+import { AGENT_GONE, MORE_AGENTS_OFF, NOT_APPROVED, WAITS } from "./registryCopy";
 import { registrySendPlan, registrySessionFields, type RegistryAgentRef } from "./registryPlan";
 
 const agent: RegistryAgentRef = {
@@ -9,7 +9,7 @@ const agent: RegistryAgentRef = {
   command: "copilot",
   args: ["acp"],
   protocol: "acp-v1",
-  env: [],
+  approved: true,
 };
 
 function throwingFallbacks() {
@@ -103,5 +103,21 @@ describe("registrySendPlan", () => {
     ).toEqual({ action: "queue", sentence: WAITS });
     expect(fallbacks.asHarness).not.toHaveBeenCalled();
     expect(fallbacks.fromId).not.toHaveBeenCalled();
+  });
+});
+
+describe("registrySendPlan approval", () => {
+  it("refuses an entry the person has not allowed to run, and starts nothing", () => {
+    const fallbacks = throwingFallbacks();
+    expect(
+      registrySendPlan({
+        enabled: true,
+        agents: [{ ...agent, approved: false }],
+        busy: false,
+        registryAgentId: agent.id,
+        fallbacks,
+      }),
+    ).toEqual({ action: "refuse", sentence: NOT_APPROVED, retryable: false });
+    expect(fallbacks.asHarness).not.toHaveBeenCalled();
   });
 });

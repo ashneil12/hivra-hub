@@ -4,7 +4,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { readSession } from "./sessionStore";
-import { REGISTRY_STORAGE_KEY } from "../../registry/model/registryList";
+import { REGISTRY_CHAT_LINKS_KEY } from "../../registry/model/registryList";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 
@@ -19,18 +19,9 @@ const record = (id: string, harness: string) => ({
   blocks: [],
 });
 
-const agent = {
-  id: "my-copilot",
-  name: "My Copilot",
-  command: "/opt/agents/copilot",
-  args: [],
-  protocol: "acp-v1",
-  env: [],
-};
-
-function installStorage(document: unknown) {
+function installStorage(links: Record<string, string> | null) {
   const raw = new Map<string, string>();
-  if (document) raw.set(REGISTRY_STORAGE_KEY, JSON.stringify(document));
+  if (links) raw.set(REGISTRY_CHAT_LINKS_KEY, JSON.stringify(links));
   vi.stubGlobal("localStorage", {
     getItem: (key: string) => raw.get(key) ?? null,
     setItem: (key: string, value: string) => raw.set(key, value),
@@ -43,7 +34,7 @@ afterEach(() => vi.unstubAllGlobals());
 
 describe("a saved More agents chat", () => {
   it("reads back with its agent id, and the harness stays one of the eleven", async () => {
-    installStorage({ rev: 2, agents: [agent], chats: { "chat-1": "my-copilot" } });
+    installStorage({ "chat-1": "my-copilot" });
     vi.mocked(invoke).mockResolvedValue(record("chat-1", "claude"));
     const session = await readSession("chat-1");
     expect(session?.registryAgentId).toBe("my-copilot");
@@ -51,14 +42,14 @@ describe("a saved More agents chat", () => {
   });
 
   it("still knows its agent after the agent was removed from the list", async () => {
-    installStorage({ rev: 3, agents: [], chats: { "chat-1": "my-copilot" } });
+    installStorage({ "chat-1": "my-copilot" });
     vi.mocked(invoke).mockResolvedValue(record("chat-1", "claude"));
     const session = await readSession("chat-1");
     expect(session?.registryAgentId).toBe("my-copilot");
   });
 
   it("does not make a chat of the eleven into a More agents chat", async () => {
-    installStorage({ rev: 2, agents: [agent], chats: { "chat-1": "my-copilot" } });
+    installStorage({ "chat-1": "my-copilot" });
     vi.mocked(invoke).mockResolvedValue(record("chat-2", "codex"));
     const session = await readSession("chat-2");
     expect(session?.registryAgentId).toBeUndefined();
@@ -66,7 +57,7 @@ describe("a saved More agents chat", () => {
   });
 
   it("never reads a registry id as a harness: an unknown stored id is not the agent", async () => {
-    installStorage({ rev: 2, agents: [agent], chats: {} });
+    installStorage({});
     vi.mocked(invoke).mockResolvedValue(record("chat-3", "my-copilot"));
     const session = await readSession("chat-3");
     // The existing rule for an unknown id. It must not turn into a link to the agent.

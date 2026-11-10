@@ -17,11 +17,14 @@ import {
   isLiveHarness,
   listHarnesses,
   refreshHarnessCatalogs,
+  canSteerHarnessSession,
   registerHarness,
   resetHarnessIdlePark,
+  routeHarnessSession,
   sendHarnessTurn,
   type HarnessAdapter,
 } from "./registry";
+import { CHAT_NEEDS_FOLDER } from "./chatFolder";
 import type { SendTurnInput, SteerTurnInput } from "./types";
 import { registerBuiltinHarnesses } from "./register";
 
@@ -329,6 +332,41 @@ describe("harness registry", () => {
     expect(pi).not.toHaveBeenCalled();
   });
 
+  // A chat whose folder was cleared on import (docs/PORTABLE.md) starts nothing, on any provider.
+  it.each(["claude", "codex", "cursor", "pi"] as const)(
+    "refuses a %s turn for a chat with no folder before the provider hears of it",
+    async (harness) => {
+      const sendTurn = vi.fn(async () => undefined);
+      const compactContext = vi.fn(async () => undefined);
+      registerHarness(stub(harness, { sendTurn, compactContext }));
+      for (const cwd of ["", "   "]) {
+        await expect(
+          sendHarnessTurn({
+            harness,
+            sessionId: "s1",
+            cwd,
+            model: "m",
+            text: "hi",
+            runtimeMode: "supervised",
+            onEvent: () => undefined,
+          }),
+        ).rejects.toThrow(CHAT_NEEDS_FOLDER);
+        await expect(
+          compactHarnessContext({
+            harness,
+            sessionId: "s1",
+            cwd,
+            model: "m",
+            runtimeMode: "supervised",
+            onEvent: () => undefined,
+          }),
+        ).rejects.toThrow(CHAT_NEEDS_FOLDER);
+      }
+      expect(sendTurn).not.toHaveBeenCalled();
+      expect(compactContext).not.toHaveBeenCalled();
+    },
+  );
+
   it("parks a live child a few minutes after the turn settles", async () => {
     vi.useFakeTimers();
     const stopSession = vi.fn(async () => undefined);
@@ -532,5 +570,38 @@ describe("harness registry", () => {
     bindHarnessSession("claude", "s2", "sess_2", "/repo");
     expect(restoreGoal).toHaveBeenCalledTimes(1);
     expect(restoreGoal).toHaveBeenCalledWith("s1", goal);
+  });
+});
+
+describe("More agents session route", () => {
+  it("sends a routed chat's turn to its route, never to the harness it was saved with", async () => {
+    const cursorTurns: string[] = [];
+    registerHarness(stub("cursor", { async sendTurn(input) { cursorTurns.push(input.text); } }));
+    const routed: string[] = [];
+    routeHarnessSession("chat-routed", {
+      ...stub("cursor"),
+      id: "more-agents",
+      canSteer: false,
+      async sendTurn(input: SendTurnInput) {
+        routed.push(input.text);
+      },
+    });
+    try {
+      const input = {
+        sessionId: "chat-routed",
+        cwd: "/tmp",
+        model: "",
+        runtimeMode: "default",
+        text: "hello",
+        onEvent: () => undefined,
+        harness: "cursor" as HarnessId,
+      } as unknown as SendTurnInput & { harness: HarnessId };
+      await sendHarnessTurn(input);
+      expect(routed).toEqual(["hello"]);
+      expect(cursorTurns).toEqual([]);
+      expect(canSteerHarnessSession("cursor", "chat-routed")).toBe(false);
+    } finally {
+      routeHarnessSession("chat-routed", null);
+    }
   });
 });

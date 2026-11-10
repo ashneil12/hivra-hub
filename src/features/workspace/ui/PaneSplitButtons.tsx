@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import { PanelBottom, PanelRight } from "../../../shared/ui/icons";
 import type { LayoutNode, SplitDir } from "../model/layout";
 import { splitBlockReason } from "../model/paneSplit";
@@ -52,6 +53,24 @@ export function PaneSplitButtons({
           </button>
         );
       })}
+    </div>
+  );
+}
+
+/**
+ * A pane that is on its own has no header bar: a bar above every lone chat or file only to hold two icons costs a
+ * row of the screen. Its split buttons sit in the top right corner instead, out of the layout, and show while the
+ * pane is hovered or one of them has keyboard focus (`:focus-visible`, so a mouse click that leaves a button focused
+ * does not keep the corner showing). The pane's root carries `group/pane`. Once the pane is in a
+ * split, its own header (or tab strip) holds the buttons and this corner is not used.
+ */
+export function PaneSplitCorner({ children }: { children: ReactNode }) {
+  return (
+    <div
+      data-pane-corner=""
+      className="absolute top-2 right-2 z-20 flex rounded-md bg-content/10 opacity-0 backdrop-blur-xl transition-opacity duration-150 group-hover/pane:opacity-100 has-[:focus-visible]:opacity-100 motion-reduce:transition-none"
+    >
+      {children}
     </div>
   );
 }

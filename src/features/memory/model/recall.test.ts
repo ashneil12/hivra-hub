@@ -82,6 +82,50 @@ describe("recallIntoTurn", () => {
     expect(none.message).toBe("the and for");
   });
 
+  it("withholds an unmatched memory without naming it", () => {
+    const matched = fact("Likes small commits", "confirmed");
+    const unmatched = fact("The zephyr quota is 9f3a and must stay private", "confirmed", {
+      updatedAt: NOW + 1,
+    });
+    const duplicate = { ...unmatched, id: `${unmatched.id}-dup` };
+    const store = doc([matched, unmatched, duplicate]);
+    const placed = recallIntoTurn({
+      system: "system",
+      message: "What did I say about writing small commits?",
+      doc: store,
+      mateId: "notes-lead",
+      now: NOW,
+    });
+    expect(placed.system).toBe("system");
+    expect(placed.message).toContain("Likes small commits");
+    expect(placed.message).not.toContain("zephyr");
+    expect(placed.message).not.toContain("9f3a");
+    expect(placed.message).not.toContain(unmatched.id);
+    expect(placed.message).not.toContain("record_index");
+    expect(placed.message).not.toContain("stored records");
+
+    const miss = recallIntoTurn({
+      system: "system",
+      message: "the and for",
+      doc: store,
+      mateId: "notes-lead",
+      now: NOW,
+    });
+    expect(miss.message).toBe("the and for");
+    expect(miss.message).not.toContain("zephyr");
+    expect(miss.message).not.toContain("small commits");
+
+    const empty = recallIntoTurn({
+      system: "system",
+      message: "What did I say about writing small commits?",
+      doc: doc([]),
+      mateId: "notes-lead",
+      now: NOW,
+    });
+    expect(empty.message).toBe("What did I say about writing small commits?");
+    expect(recallFence(store, [])).toBeUndefined();
+  });
+
   it("names the writer only when the reader is a different engine", () => {
     // The fence is tested on its own: which facts the policy picks is recallPolicy.test.ts's business.
     const written = doc([

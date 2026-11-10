@@ -5,7 +5,7 @@
 // Row-Bot Contributors): judge() and its opening/defect/retraction rules are kept line for line, with the store,
 // episode and signal parts left out because Hivra judges one turn at a time. What changed: the rules are JavaScript,
 // the "<row_bot_turn_context" cut stays, and Hivra adds a fact detector beside it (remember that, from now on,
-// always, never) that Row-Bot does not have.
+// always, never) that Row-Bot does not have. The licence text is LICENSE.row-bot beside this file.
 //
 // False facts are worse than missed ones, so every rule here is conservative: thanks, agreement, questions and
 // retractions never count, and a correction is only believed when the opening says the reply was wrong.

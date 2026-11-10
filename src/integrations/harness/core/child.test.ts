@@ -118,6 +118,22 @@ describe("child bridge", () => {
     await vi.runAllTimersAsync();
   });
 
+  it("starts no provider process for a chat with no folder", async () => {
+    installResolvedListeners();
+    const child = await loadChild();
+    const release = await child.acquireHarnessBridge();
+    for (const cwd of ["", "  "]) {
+      await expect(
+        child.spawnChild("probe", "claude", ["-p"], cwd),
+      ).rejects.toThrow("Choose a project folder for this chat first.");
+    }
+    expect(mocks.invoke).not.toHaveBeenCalledWith(
+      "harness_spawn",
+      expect.anything(),
+    );
+    release();
+  });
+
   it("reconciles an exit that arrives before spawn returns its pid", async () => {
     installResolvedListeners();
     const spawned = deferred<number>();
@@ -345,44 +361,36 @@ describe("child bridge", () => {
     release();
   });
 
-  // WP-134b: a More agents child is started by registry_agent_spawn and tracked like any other child.
-  it("starts a More agents child with registry_agent_spawn, never harness_spawn", async () => {
+  // WP-134b: a More agents child is started through the one More agents path (harness_spawn with the entry id). The
+  // webview sends no command, no arguments and no environment; the app reads the saved entry and runs only an approved one.
+  it("starts a More agents child with harness_spawn and the entry id only", async () => {
     installResolvedListeners();
     mocks.invoke.mockResolvedValue(77);
     const child = await loadChild();
-    await child.spawnRegistryChild("agent-chat", {
-      command: "my-agent",
-      args: ["acp", "--flag=$HOME"],
-      cwd: "/repo",
-      env: [{ name: "MODE", value: "typed" }],
-    });
+    await child.spawnMoreAgentChild("agent-chat", "my-agent", "/repo");
     expect(mocks.invoke).toHaveBeenCalledTimes(1);
-    expect(mocks.invoke).toHaveBeenCalledWith("registry_agent_spawn", {
+    expect(mocks.invoke).toHaveBeenCalledWith("harness_spawn", {
       sessionId: "agent-chat",
-      command: "my-agent",
-      args: ["acp", "--flag=$HOME"],
+      command: "",
+      args: [],
       cwd: "/repo",
-      env: [{ name: "MODE", value: "typed" }],
+      moreAgent: "my-agent",
     });
+    expect(mocks.invoke.mock.calls.map((call) => call[0])).not.toContain("registry_agent_spawn");
   });
 
   it("reaches the exit handler of a More agents child, even when the exit beats the pid", async () => {
     installResolvedListeners();
     const spawned = deferred<number>();
     mocks.invoke.mockImplementation((command: string) =>
-      command === "registry_agent_spawn" ? spawned.promise : Promise.resolve(),
+      command === "harness_spawn" ? spawned.promise : Promise.resolve(),
     );
     const child = await loadChild();
     const release = await child.acquireHarnessBridge();
     const onExit = vi.fn();
     child.watchChild("agent-chat", vi.fn(), onExit);
 
-    const spawning = child.spawnRegistryChild("agent-chat", {
-      command: "my-agent",
-      args: [],
-      cwd: "/repo",
-      env: [],
-    });
+    const spawning = child.spawnMoreAgentChild("agent-chat", "my-agent", "/repo");
     mocks.handlers.get("harness-exit")?.({
       payload: { sessionId: "agent-chat", code: 3, pid: 77 } as never,
     });
@@ -395,12 +403,7 @@ describe("child bridge", () => {
     const second = vi.fn();
     child.watchChild("agent-chat", vi.fn(), second);
     mocks.invoke.mockResolvedValue(78);
-    await child.spawnRegistryChild("agent-chat", {
-      command: "my-agent",
-      args: [],
-      cwd: "/repo",
-      env: [],
-    });
+    await child.spawnMoreAgentChild("agent-chat", "my-agent", "/repo");
     mocks.handlers.get("harness-exit")?.({
       payload: { sessionId: "agent-chat", code: 0, pid: 78 } as never,
     });
@@ -410,12 +413,10 @@ describe("child bridge", () => {
 
   it("does not hold output for a More agents child whose start failed", async () => {
     installResolvedListeners();
-    mocks.invoke.mockRejectedValue(new Error("Failed to start my-agent: not found (os error 2)"));
+    mocks.invoke.mockRejectedValue(new Error("This agent was not found. Check the command in More agents."));
     const child = await loadChild();
     const release = await child.acquireHarnessBridge();
-    await expect(
-      child.spawnRegistryChild("agent-chat", { command: "my-agent", args: [], cwd: "/repo", env: [] }),
-    ).rejects.toThrow("not found");
+    await expect(child.spawnMoreAgentChild("agent-chat", "my-agent", "/repo")).rejects.toThrow("not found");
     for (let i = 0; i < 5; i += 1) {
       mocks.handlers.get("harness-stdout")?.({
         payload: { sessionId: "agent-chat", line: `late ${i}` } as never,

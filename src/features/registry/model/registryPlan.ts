@@ -5,6 +5,7 @@ import { HARNESSES, type HarnessId } from "../../sessions/model/session";
 import {
   AGENT_GONE,
   MORE_AGENTS_OFF,
+  NOT_APPROVED,
   UNSUPPORTED_PROTOCOL,
   WAITS,
 } from "./registryCopy";
@@ -58,6 +59,10 @@ export function registrySendPlan(input: {
   }
   if (agent.protocol !== "acp-v1") {
     return { action: "refuse", sentence: UNSUPPORTED_PROTOCOL, retryable: false };
+  }
+  // The app checks the approval again when the chat starts; this only says why before it gets that far.
+  if (!agent.approved) {
+    return { action: "refuse", sentence: NOT_APPROVED, retryable: false };
   }
   if (input.busy) return { action: "queue", sentence: WAITS };
   return { action: "prompt", agent };

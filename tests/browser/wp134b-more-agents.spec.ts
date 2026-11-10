@@ -24,25 +24,28 @@ test("More agents stays off until it is switched on", async ({ page }) => {
   expect(text).not.toContain("/Users/");
 });
 
-test("a local command is kept, and a built-in name is refused", async ({ page }) => {
+test("a local command is kept, it waits for an approval, and a built-in name is refused", async ({ page }) => {
   await page.goto("/tests/browser/wp134b-more-agents.html");
   await page.getByRole("switch", { name: "More agents" }).click();
 
   await page.getByLabel("Agent name").fill("My Copilot");
   await page.getByLabel("Command").fill("/opt/agents/copilot");
   await page.getByLabel("Arguments").fill("acp\nhello world");
-  await page.getByLabel("Environment").fill("MODE=secret-value");
   await page.getByRole("button", { name: "Add agent" }).click();
 
   const list = page.locator("[data-agent-list]");
   await expect(list).toContainText("My Copilot");
   await expect(list).toContainText("/opt/agents/copilot");
   await expect(list).toContainText("2 arguments");
-  await expect(list).toContainText("1 environment variable.");
-  await expect(list).not.toContainText("secret-value");
+  await expect(list).toContainText("Not allowed to run yet.");
 
   await page.reload();
   await expect(page.locator("[data-agent-list]")).toContainText("My Copilot");
+
+  await page.getByRole("button", { name: "Allow My Copilot" }).click();
+  await expect(page.locator("[data-agent-list]")).toContainText("Allowed to run.");
+  await page.reload();
+  await expect(page.locator("[data-agent-list]")).toContainText("Allowed to run.");
 
   await page.getByRole("button", { name: "Start a chat with My Copilot" }).click();
   await expect(page.locator("[data-chat-request]")).toHaveAttribute("data-chat-request", "my-copilot");
@@ -50,21 +53,22 @@ test("a local command is kept, and a built-in name is refused", async ({ page })
   await page.getByLabel("Agent name").fill("Claude");
   await page.getByLabel("Command").fill("/opt/agents/copilot");
   await page.getByRole("button", { name: "Add agent" }).click();
-  await expect(page.getByText("That id is one of the built-in CLIs.")).toBeVisible();
+  await expect(
+    page.getByText("This is one of Hivra's own agent CLIs. Set it up under Agent CLIs instead."),
+  ).toBeVisible();
   await expect(page.locator("[data-agent-list] li")).toHaveCount(1);
 
   const text = await page.locator("body").innerText();
   expect(text).not.toMatch(/[—–]/);
   expect(text).not.toContain("/Users/");
-  expect(text).not.toContain("secret-value");
 });
 
 test("a bad entry is skipped and does not wipe the list", async ({ page }) => {
   await page.addInitScript(() => {
     localStorage.setItem(
-      "monocode.moreAgents",
+      "wp134b-list",
       JSON.stringify({
-        rev: 2,
+        revision: 2,
         agents: [
           {
             id: "good",
@@ -72,7 +76,6 @@ test("a bad entry is skipped and does not wipe the list", async ({ page }) => {
             command: "good-agent",
             args: [],
             protocol: "acp-v1",
-            env: [],
           },
           {
             id: "claude",
@@ -80,10 +83,9 @@ test("a bad entry is skipped and does not wipe the list", async ({ page }) => {
             command: "../secret-value",
             args: [],
             protocol: "acp-v1",
-            env: [{ name: "TOKEN", value: "secret-value" }],
           },
         ],
-        chats: {},
+        approved: [],
       }),
     );
   });

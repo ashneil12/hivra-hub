@@ -2,6 +2,7 @@
 
 import { openDocsMode } from "../../docs/docsMode";
 import { openCodingTeam, projectHasCodeFolder, setHubSelection } from "../../hub/model/hubNav";
+import type { SettingsSectionId } from "../../settings/model/settings";
 import { queueHomeDecision, queueHomeDoc, queueHomeTask } from "./pending";
 
 export type HomeOpenTarget =
@@ -9,7 +10,11 @@ export type HomeOpenTarget =
   | { kind: "task"; projectId: string; id: string }
   | { kind: "doc"; id: string }
   | { kind: "chat"; id: string; projectId: string }
-  | { kind: "coding"; projectId: string };
+  | { kind: "coding"; projectId: string }
+  | { kind: "settings"; section: SettingsSectionId; anchor: string };
+
+/** The Clean up card on Settings > Worktrees (`data-setting-id` in WorktreeCleanup.tsx). */
+export const WORKTREE_CLEANUP = "worktree-cleanup";
 
 export type HomeProjectRef = { id: string; folder?: string | null };
 
@@ -20,6 +25,8 @@ export type HomeOpenHands = {
   openNotes: () => void;
   openSession: (sessionId: string) => void;
   openTeam: (projectId: string) => void;
+  /** Settings, on a page and on the card to land on (the same call the app's own Settings links use). */
+  openSettings: (section: SettingsSectionId, anchor?: string) => void;
   projects: () => readonly HomeProjectRef[];
 };
 
@@ -59,6 +66,11 @@ export function applyHomeOpen(target: HomeOpenTarget, hands: HomeOpenHands): voi
     hands.openSession(target.id);
     return;
   }
+  if (target.kind === "settings") {
+    hands.closeChrome();
+    hands.openSettings(target.section, target.anchor);
+    return;
+  }
   hands.closeChrome();
   hands.openTeam(target.projectId);
 }
@@ -91,12 +103,14 @@ export function openFromHome(target: HomeOpenTarget): void {
     openDocsMode();
     window.dispatchEvent(new CustomEvent("monocode:home-open", { detail: "notes" }));
   }
+  // A settings line needs the workspace's hands. Without them there is nowhere to open it, so it does nothing.
 }
 
 export function targetFor(line: { kind: string; projectId: string; target: string }): HomeOpenTarget {
   if (line.kind === "decision") return { kind: "inbox", projectId: line.projectId, decisionKey: line.target };
   if (line.kind === "doc") return { kind: "doc", id: line.target };
   if (line.kind === "chat") return { kind: "chat", id: line.target, projectId: line.projectId };
-  if (line.kind === "coding") return { kind: "coding", projectId: line.projectId };
+  if (line.kind === "coding" || line.kind === "project") return { kind: "coding", projectId: line.projectId };
+  if (line.kind === "builders") return { kind: "settings", section: "worktrees", anchor: WORKTREE_CLEANUP };
   return { kind: "task", projectId: line.projectId, id: line.target };
 }

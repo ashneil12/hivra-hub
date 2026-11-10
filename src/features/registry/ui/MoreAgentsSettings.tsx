@@ -1,4 +1,6 @@
 // WP-134b. More agents, on the providers page, off until the person switches it on.
+// The list is the app's own (src-tauri/src/more_agents.rs). Adding an entry never runs it: the person allows it
+// separately, and a chat runs only an allowed entry, read again by the app when the chat starts.
 
 import { useEffect, useState, useSyncExternalStore } from "react";
 import {
@@ -8,14 +10,19 @@ import {
   subscribeMoreAgentsEnabled,
 } from "../../settings/model/settings";
 import {
-  addRegistryAgent,
-  loadRegistryDocument,
-  parseArgLines,
-  parseEnvLines,
-  removeRegistryAgent,
-  requestRegistryChat,
-  type LoadedRegistry,
-} from "../model/registryList";
+  addMoreAgent,
+  approveMoreAgent,
+  loadMoreAgents,
+  MoreAgentsChangedError,
+  newMoreAgentEntry,
+  removeMoreAgent,
+  subscribeMoreAgents,
+  suggestMoreAgentId,
+  type MoreAgentsList,
+} from "../../providers/model/moreAgents";
+import { refreshRegistry, requestRegistryChat } from "../model/registryList";
+
+const UNREADABLE = "The list could not be read. Nothing was changed.";
 
 export function MoreAgentsSettings({ cwd }: { cwd?: string }) {
   const on = useSyncExternalStore(
@@ -23,50 +30,74 @@ export function MoreAgentsSettings({ cwd }: { cwd?: string }) {
     loadMoreAgentsEnabled,
     () => MORE_AGENTS_ENABLED_DEFAULT,
   );
-  const [doc, setDoc] = useState<LoadedRegistry>(() => loadRegistryDocument());
+  const [list, setList] = useState<MoreAgentsList | null>(null);
+  const [readable, setReadable] = useState(true);
   const [name, setName] = useState("");
   const [command, setCommand] = useState("");
   const [argsText, setArgsText] = useState("");
-  const [envText, setEnvText] = useState("");
   const [error, setError] = useState<string | null>(null);
 
+  async function reload() {
+    try {
+      setList(await loadMoreAgents());
+      setReadable(true);
+    } catch {
+      setReadable(false);
+    }
+  }
+
   useEffect(() => {
-    setDoc(loadRegistryDocument());
+    if (!on) return;
+    void reload();
+    void refreshRegistry();
+    return subscribeMoreAgents(() => void reload());
   }, [on]);
 
-  useEffect(() => {
-    const reload = () => setDoc(loadRegistryDocument());
-    window.addEventListener("storage", reload);
-    return () => window.removeEventListener("storage", reload);
-  }, []);
-
-  function refresh() {
-    setDoc(loadRegistryDocument());
-  }
-
-  function addAgent() {
-    const parsedEnv = parseEnvLines(envText);
-    if (!parsedEnv.ok) {
-      setError(parsedEnv.reason);
-      return;
-    }
-    const added = addRegistryAgent({
-      name,
+  async function addAgent() {
+    if (!list) return;
+    const checked = newMoreAgentEntry({
+      id: suggestMoreAgentId(name),
+      name: name.trim(),
       command: command.trim(),
-      args: parseArgLines(argsText),
-      env: parsedEnv.env,
+      argsText,
     });
-    refresh();
-    if (!added.ok) {
-      setError(added.reason);
+    if (!checked.ok) {
+      setError(checked.reason);
       return;
     }
-    setName("");
-    setCommand("");
-    setArgsText("");
-    setEnvText("");
-    setError(null);
+    try {
+      setList(await addMoreAgent(list, checked.entry));
+      setName("");
+      setCommand("");
+      setArgsText("");
+      setError(null);
+    } catch (failure) {
+      setError(failure instanceof MoreAgentsChangedError ? failure.message : (failure as Error).message);
+      void reload();
+    }
   }
+
+  async function toggleApproval(id: string, allowed: boolean) {
+    try {
+      setList(await approveMoreAgent(id, allowed));
+      setError(null);
+    } catch (failure) {
+      setError((failure as Error).message);
+      void reload();
+    }
+  }
+
+  async function removeAgent(index: number) {
+    if (!list) return;
+    try {
+      setList(await removeMoreAgent(list, index));
+    } catch (failure) {
+      setError((failure as Error).message);
+      void reload();
+    }
+  }
+
+  const canEdit = readable && list !== null;
 
   return (
     <section id="setting-more-agents" data-setting-id="more-agents" className="pt-8">
@@ -95,9 +126,9 @@ export function MoreAgentsSettings({ cwd }: { cwd?: string }) {
       </div>
       {on ? (
         <div className="mt-3 rounded-xl border border-content/10 bg-content/3 px-4 py-3.5">
-          {doc.readable ? null : (
+          {readable ? null : (
             <p role="status" className="mb-3 text-[13px] text-content/70">
-              The list could not be read. Nothing was changed.
+              {UNREADABLE}
             </p>
           )}
           <div className="grid gap-3">
@@ -129,20 +160,10 @@ export function MoreAgentsSettings({ cwd }: { cwd?: string }) {
                 className="rounded-md border border-content/10 bg-transparent px-2 py-1.5 text-[13px] text-content"
               />
             </label>
-            <label className="grid gap-1 text-[12px] text-content/60">
-              Environment, one name=value per line. Values are not shown again.
-              <textarea
-                aria-label="Environment"
-                value={envText}
-                onChange={(event) => setEnvText(event.target.value)}
-                rows={2}
-                className="rounded-md border border-content/10 bg-transparent px-2 py-1.5 text-[13px] text-content"
-              />
-            </label>
             <button
               type="button"
-              disabled={!doc.readable}
-              onClick={addAgent}
+              disabled={!canEdit}
+              onClick={() => void addAgent()}
               className="w-fit rounded-md border border-content/10 px-2 py-1 text-[13px] text-content disabled:opacity-40"
             >
               Add agent
@@ -154,47 +175,53 @@ export function MoreAgentsSettings({ cwd }: { cwd?: string }) {
             ) : null}
           </div>
           <ul data-agent-list className="mt-4 grid gap-2">
-            {doc.agents.map((agent) => (
-              <li key={agent.id} className="flex flex-wrap items-center gap-2 text-[13px] text-content">
-                <span className="font-medium">{agent.name}</span>
-                <span className="text-content/50">{agent.command}</span>
-                <span className="text-content/50">
-                  {agent.args.length === 1 ? "1 argument" : `${agent.args.length} arguments`}
-                </span>
-                <span className="text-content/50">
-                  {agent.env.length === 0
-                    ? "No extra environment variables."
-                    : agent.env.length === 1
-                      ? "1 environment variable."
-                      : `${agent.env.length} environment variables.`}
-                </span>
-                <button
-                  type="button"
-                  aria-label={`Start a chat with ${agent.name}`}
-                  onClick={() => requestRegistryChat(agent.id, cwd ? { cwd } : undefined)}
-                  className="rounded-md border border-content/10 px-2 py-1"
-                >
-                  Start a chat
-                </button>
-                <button
-                  type="button"
-                  aria-label={`Remove ${agent.name}`}
-                  onClick={() => {
-                    removeRegistryAgent(agent.id);
-                    refresh();
-                  }}
-                  className="rounded-md border border-content/10 px-2 py-1"
-                >
-                  Remove
-                </button>
-              </li>
-            ))}
+            {(list?.rows ?? []).map((row, index) => {
+              if (!row.usable) return null;
+              const { entry } = row;
+              const approved = list?.approved.includes(entry.id) ?? false;
+              return (
+                <li key={entry.id} className="flex flex-wrap items-center gap-2 text-[13px] text-content">
+                  <span className="font-medium">{entry.name}</span>
+                  <span className="text-content/50">{entry.command}</span>
+                  <span className="text-content/50">
+                    {entry.args.length === 1 ? "1 argument" : `${entry.args.length} arguments`}
+                  </span>
+                  <span className="text-content/50">{approved ? "Allowed to run." : "Not allowed to run yet."}</span>
+                  <button
+                    type="button"
+                    aria-label={`${approved ? "Withdraw" : "Allow"} ${entry.name}`}
+                    onClick={() => void toggleApproval(entry.id, !approved)}
+                    className="rounded-md border border-content/10 px-2 py-1"
+                  >
+                    {approved ? "Withdraw" : "Allow"}
+                  </button>
+                  <button
+                    type="button"
+                    aria-label={`Start a chat with ${entry.name}`}
+                    onClick={() => requestRegistryChat(entry.id, cwd ? { cwd } : undefined)}
+                    className="rounded-md border border-content/10 px-2 py-1"
+                  >
+                    Start a chat
+                  </button>
+                  <button
+                    type="button"
+                    aria-label={`Remove ${entry.name}`}
+                    onClick={() => void removeAgent(index)}
+                    className="rounded-md border border-content/10 px-2 py-1"
+                  >
+                    Remove
+                  </button>
+                </li>
+              );
+            })}
           </ul>
-          {doc.rejected.map((row) => (
-            <p key={`${row.index}-${row.label}`} role="status" className="mt-2 text-[13px] text-content/70">
-              {row.label} was skipped. {row.reason}
-            </p>
-          ))}
+          {(list?.rows ?? []).map((row, index) =>
+            row.usable ? null : (
+              <p key={`${index}-${row.usable ? "" : (row.name ?? row.id ?? "")}`} role="status" className="mt-2 text-[13px] text-content/70">
+                {row.name ?? row.id ?? `Entry ${index + 1}`} was skipped. {row.reason}
+              </p>
+            ),
+          )}
         </div>
       ) : null}
     </section>

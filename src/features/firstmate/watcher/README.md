@@ -42,5 +42,5 @@ window is drained again, and a notice about a worker that moved on meanwhile is 
 
 Credits: the watcher, the wake queue and its drain follow [firstmate](https://github.com/kunchenguid/firstmate)
 (`bin/fm-watch.sh`, `bin/fm-wake-lib.sh`, `bin/fm-wake-drain.sh`, `bin/fm-classify-lib.sh`; MIT, Copyright (c) 2026 Kun
-Chen), re-told on the Hub's delivery ladder; no firstmate code is copied. The once-per-stretch stall notice is Raven's
+Chen), re-told on the Hub's delivery ladder; no firstmate code is copied. firstmate 74ba960 keeps a Pi arm child armed after that child or a successor dies; Hivra has no arm child, so that fix is not applied (WP-147). The once-per-stretch stall notice is Raven's
 idea, the 20-minute silence stop PandaCode's (ideas only).

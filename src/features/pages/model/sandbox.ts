@@ -21,10 +21,16 @@ export function readTokens(root: Element = document.documentElement): Record<str
  * hub.block(kind, data) for bundled blocks. It also tells the host how tall the page is, so the frame fits it.
  */
 const HELPER = `(() => {
+  const NONCE = "__NONCE__";
+  // Hidden from the page's own code, which must not learn the nonce: the host trusts only a document that knows it.
+  if (document.currentScript) document.currentScript.remove();
+  const hello = () => parent.postMessage({ type: "hub:hello", nonce: NONCE }, "*");
+  hello();
   let n = 0; const waiting = new Map(); const dataFns = []; const watches = new Map();
   window.addEventListener("message", (e) => {
     if (e.source !== parent) return;
     const m = e.data || {};
+    if (m.type === "hub:ping") hello();
     if (m.type === "hub:reply" && waiting.has(m.id)) { const w = waiting.get(m.id); waiting.delete(m.id); m.ok ? w.resolve(m.result) : w.reject(new Error(m.error)); }
     if (m.type === "hub:data") { const w = watches.get(m.watch); if (w) w.onData(m.data); dataFns.forEach((f) => f(m.data, m.call)); }
     if (m.type === "hub:watch-error") { const w = watches.get(m.watch); if (w && w.onError) w.onError(new Error(m.error)); }
@@ -119,9 +125,15 @@ export function specKey(spec: Pick<BespokeSpec, "html" | "css" | "js">): string 
 }
 const escapeClose = (s: string, tag: string) => s.replace(new RegExp(`</${tag}`, "gi"), `<\\/${tag}`);
 
-export function bespokeSrcdoc(spec: Pick<BespokeSpec, "html" | "css" | "js">, tokens: Record<string, string>, scheme: "dark" | "light" = "dark"): string {
+/** A fresh unguessable id for one frame's document (see PageBridgeOptions.nonce). */
+export function newFrameNonce(): string {
+  const bytes = crypto.getRandomValues(new Uint8Array(16));
+  return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+export function bespokeSrcdoc(spec: Pick<BespokeSpec, "html" | "css" | "js">, tokens: Record<string, string>, scheme: "dark" | "light" = "dark", nonce = ""): string {
   const vars = Object.entries(tokens).filter(([, v]) => v && !/[;{}<>]/.test(v)).map(([k, v]) => `${k}:${v}`).join(";");
   return `<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="${CSP}">
 <meta name="color-scheme" content="${scheme}"><style>:root{${vars};color-scheme:${scheme}}${BASE_CSS}</style><style>${escapeClose(spec.css ?? "", "style")}</style><style>${KIT_CSS}</style>
-<script>${HELPER}</script></head><body>${spec.html}<script>${escapeClose(spec.js ?? "", "script")}</script></body></html>`;
+<script>${HELPER.replace("__NONCE__", () => nonce.replace(/[^A-Za-z0-9-]/g, ""))}</script></head><body>${spec.html}<script>${escapeClose(spec.js ?? "", "script")}</script></body></html>`;
 }

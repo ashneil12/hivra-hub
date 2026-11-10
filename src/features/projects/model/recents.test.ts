@@ -7,6 +7,7 @@ import {
   loadProjectRailOrder,
   loadRecents,
   looksLikeProject,
+  normalizeProjectPath,
   projectRailItems,
   projectRailSections,
   rememberProject,
@@ -223,6 +224,17 @@ describe("archiveProject", () => {
     archiveProject("/tmp/gone");
     forgetProject("/tmp/gone");
     expect(loadArchivedProjects()).toEqual([]);
+    expect(loadRecents()).toEqual([]);
+  });
+});
+
+describe("a chat with no folder", () => {
+  it("stays blank when its path is tidied, and is never remembered as a project", () => {
+    expect(normalizeProjectPath("")).toBe("");
+    expect(normalizeProjectPath("   ")).toBe("");
+    expect(normalizeProjectPath("/")).toBe("/");
+    expect(normalizeProjectPath("/tmp/app/")).toBe("/tmp/app");
+    expect(rememberProject("")).toEqual([]);
     expect(loadRecents()).toEqual([]);
   });
 });

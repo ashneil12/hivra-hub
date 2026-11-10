@@ -25,6 +25,9 @@ export const CANNOT_CONTINUE =
 
 export const AGENT_GONE = "This agent is no longer in your list.";
 
+export const NOT_APPROVED =
+  "This agent is not approved to run. Allow it in More agents first.";
+
 export const NO_MODELS = "This agent did not name any models.";
 
 export const NOT_ANSWERING = "Not answering.";
