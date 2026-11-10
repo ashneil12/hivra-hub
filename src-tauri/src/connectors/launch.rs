@@ -181,9 +181,22 @@ pub fn prepare_with_vault(
         login = renew::renew(dir, store, &entry.id, &login)
             .map_err(|failure| redact(&failure.message(), &login.secrets()))?;
     }
+    // A saved key never stands in for a server address the person typed: that would send the key to a host outside the
+    // catalog. Such a login must hold its own copy, or the key stays out of the connector.
+    if !login.refs.is_empty() && sends_to_a_typed_url(entry) {
+        return Err(format!(
+            "{} sends its key to a server URL you typed, so a key saved under Settings > Secrets can't be used for it. Paste the key into the connector instead.",
+            entry.name
+        ));
+    }
     fill_from_vault(&mut login, dir, &args.projects, vault)?;
     let plan = plan(entry, &login)?;
     Ok((entry, login, plan))
+}
+
+/// A remote connector whose server address is a field the person types (`{mcp_url}`), not a fixed host.
+fn sends_to_a_typed_url(entry: &Entry) -> bool {
+    matches!(&entry.launch, Launch::Remote { url, .. } if url.contains('{'))
 }
 
 /// WP-92: turn every `{"secret": "<name>"}` field into its value, from the project's own scope first, then global.
@@ -681,6 +694,54 @@ pub(crate) mod tests {
         assert!(headers
             .iter()
             .any(|(_, value)| value == "Bearer ghp_ROTATED_SENTINEL"));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// WP-92 hard rule: a Keychain key is never sent to a server URL the person typed. Zapier's URL is a typed field
+    /// (`{mcp_url}`), so a saved key may not stand in for it, and nothing is read from the vault for that launch.
+    #[test]
+    fn a_saved_key_is_never_sent_to_a_url_the_person_typed() {
+        let dir = temp_dir();
+        let mut s = Settings::default();
+        s.connectors.insert(
+            "zapier".into(),
+            ConnectorState {
+                signed_in: true,
+                method: Some(Method::Token),
+                allow: vec![EVERYWHERE.into()],
+                ..Default::default()
+            },
+        );
+        settings::save(&dir, &s).unwrap();
+        let vault = crate::secrets::store::Memory::new();
+        let db = rusqlite::Connection::open(dir.join("monocode.db")).unwrap();
+        crate::secrets::ensure_tables(&db).unwrap();
+        crate::secrets::save_value(
+            &vault,
+            &db,
+            crate::secrets::SCOPE_GLOBAL,
+            "zapier-url",
+            Some("Zapier URL"),
+            "https://mcp.zapier.com/api/mcp/SENTINEL_TYPED_URL",
+            1_000,
+        )
+        .unwrap();
+        drop(db);
+        let store = Memory::default();
+        store
+            .put(
+                "zapier",
+                &Login {
+                    fields: BTreeMap::new(),
+                    refs: BTreeMap::from([("mcp_url".into(), "zapier-url".into())]),
+                    oauth: None,
+                },
+            )
+            .unwrap();
+        let a = signed(&store, "zapier", "m", &["/p/hivra"]);
+        let err = prepare_with_vault(&a, &dir, &store, &vault).unwrap_err();
+        assert!(err.contains("typed"), "{err}");
+        assert!(!err.contains("SENTINEL"), "{err}");
         std::fs::remove_dir_all(dir).unwrap();
     }
 
