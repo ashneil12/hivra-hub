@@ -244,6 +244,9 @@ fn a_finished_crew_runs_axi_with_its_intent_and_nothing_is_pushed() {
     assert!(text.contains("\"run\""), "{text}");
     assert!(text.contains("\"--yes\""), "{text}");
     assert!(text.contains("\"--intent\""), "{text}");
+    assert!(text.contains("\"--pr-title\""), "{text}");
+    assert!(text.contains("\"--pr-body-file\""), "{text}");
+    assert!(!text.contains("appendix"), "{text}");
     assert!(text.contains("The name reads clearly."), "{text}");
     assert!(!text.contains("\"start\""), "{text}");
     let remote = git(&main, &["ls-remote", "origin", "refs/heads/work"]);
