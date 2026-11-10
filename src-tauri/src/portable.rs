@@ -3806,7 +3806,9 @@ fn import_memory(
             // instruction file there is kept beside its original, for Ash to review, and anything else is left out.
             let monos_relative = inside_monos_home(env, &dest);
             if let Some(relative) = &monos_relative {
-                if !folders::mono_folder_file(relative) && !folders::instruction_file_for_review(relative) {
+                if !folders::mono_folder_file(relative)
+                    && !folders::instruction_file_for_review(relative)
+                {
                     report.notes.push(format!(
                         "{path} wasn't written: a Mono's folder only takes SOUL.md, MEMORY.md, soul-template.md and its memory and skills notes."
                     ));
@@ -3830,7 +3832,10 @@ fn import_memory(
                     continue;
                 }
             };
-            if monos_relative.as_ref().is_some_and(|relative| !folders::mono_folder_file(relative)) {
+            if monos_relative
+                .as_ref()
+                .is_some_and(|relative| !folders::mono_folder_file(relative))
+            {
                 // A history restored here took its instruction files out in a commit of its own: they don't come back.
                 if fresh {
                     report.notes.push(format!(

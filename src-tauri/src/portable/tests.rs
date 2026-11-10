@@ -5290,7 +5290,9 @@ fn a_restored_monos_history_keeps_only_its_notes() {
         "Hivra import <import@hivra.invalid>|Removed instruction and hidden files from an imported history"
     );
     assert!(
-        git_stdout(&root, &["status", "--porcelain"]).trim().is_empty(),
+        git_stdout(&root, &["status", "--porcelain"])
+            .trim()
+            .is_empty(),
         "the restored Monos home is clean"
     );
 }
@@ -5508,15 +5510,24 @@ fn a_memory_import_outside_the_monos_home_restores_its_files_as_they_are() {
         "opencode.json",
         "data.txt",
     ] {
-        assert!(root.join(kept).is_file(), "{kept} was not restored: {report:?}");
+        assert!(
+            root.join(kept).is_file(),
+            "{kept} was not restored: {report:?}"
+        );
     }
-    assert_eq!(fs::read_to_string(root.join("CLAUDE.md")).unwrap(), "my rules");
+    assert_eq!(
+        fs::read_to_string(root.join("CLAUDE.md")).unwrap(),
+        "my rules"
+    );
 }
 
 #[test]
 fn inside_the_monos_home_instruction_files_come_in_beside_their_original_for_review() {
     let layout = layout();
-    assert_eq!(layout.target.monos_root, layout.target.memory_root.join("monos"));
+    assert_eq!(
+        layout.target.monos_root,
+        layout.target.memory_root.join("monos")
+    );
     let report = import_memory_files(
         &layout,
         "monos",
@@ -5529,18 +5540,37 @@ fn inside_the_monos_home_instruction_files_come_in_beside_their_original_for_rev
         ],
     );
     let root = layout.target.monos_root.clone();
-    assert_eq!(fs::read_to_string(root.join("MEMORY.md")).unwrap(), "# monos\n");
-    assert_eq!(fs::read_to_string(root.join("lead/memory/sub/topic.md")).unwrap(), "a nested note");
-    assert_eq!(fs::read_to_string(root.join("lead/CLAUDE.imported.md")).unwrap(), "planted");
+    assert_eq!(
+        fs::read_to_string(root.join("MEMORY.md")).unwrap(),
+        "# monos\n"
+    );
+    assert_eq!(
+        fs::read_to_string(root.join("lead/memory/sub/topic.md")).unwrap(),
+        "a nested note"
+    );
+    assert_eq!(
+        fs::read_to_string(root.join("lead/CLAUDE.imported.md")).unwrap(),
+        "planted"
+    );
     assert_eq!(
         fs::read_to_string(root.join("lead/AGENTS.override.imported.md")).unwrap(),
         "planted override"
     );
-    for dropped in ["lead/CLAUDE.md", "lead/AGENTS.override.md", "lead/notes.txt"] {
-        assert!(!root.join(dropped).exists(), "{dropped} was written: {report:?}");
+    for dropped in [
+        "lead/CLAUDE.md",
+        "lead/AGENTS.override.md",
+        "lead/notes.txt",
+    ] {
+        assert!(
+            !root.join(dropped).exists(),
+            "{dropped} was written: {report:?}"
+        );
     }
     assert!(
-        report.notes.iter().any(|n| n.contains("CLAUDE.imported.md") && n.contains("review")),
+        report
+            .notes
+            .iter()
+            .any(|n| n.contains("CLAUDE.imported.md") && n.contains("review")),
         "{:?}",
         report.notes
     );
@@ -5615,7 +5645,10 @@ fn a_folder_with_env_or_venv_is_still_offered_but_one_with_instructions_is_not()
         &[".gitignore", ".DS_Store", ".git/"][..],
         &["README.md", "src/"][..],
     ] {
-        assert!(!instructions_seen_in(&layout, "plain", plain), "{plain:?} was refused");
+        assert!(
+            !instructions_seen_in(&layout, "plain", plain),
+            "{plain:?} was refused"
+        );
     }
     for marked in [
         &["CLAUDE.md"][..],
@@ -5628,7 +5661,10 @@ fn a_folder_with_env_or_venv_is_still_offered_but_one_with_instructions_is_not()
         &[".github/"][..],
         &["opencode.json"][..],
     ] {
-        assert!(instructions_seen_in(&layout, "marked", marked), "{marked:?} was offered");
+        assert!(
+            instructions_seen_in(&layout, "marked", marked),
+            "{marked:?} was offered"
+        );
     }
 }
 
@@ -5661,9 +5697,16 @@ fn an_imported_chats_media_roots_are_only_the_folders_folder_rules_keeps() {
                "engine": {"harness": "claude", "model": "m", "runtimeMode": "auto"}});
         insert_session(&env, &conn, id, "T", &file, &rules).unwrap();
         let kept = rules.vet(Some(&cwd.to_string_lossy()), None);
-        let allowed: Vec<String> = kept.roots.iter().map(|root| root.to_string_lossy().into_owned()).collect();
+        let allowed: Vec<String> = kept
+            .roots
+            .iter()
+            .map(|root| root.to_string_lossy().into_owned())
+            .collect();
         for root in crate::chat_media::folders(&conn, None, id).folders {
-            assert!(allowed.contains(&root), "{id}: {root} is a media root FolderRules does not keep ({allowed:?})");
+            assert!(
+                allowed.contains(&root),
+                "{id}: {root} is a media root FolderRules does not keep ({allowed:?})"
+            );
         }
     }
 }
@@ -5767,7 +5810,9 @@ fn a_restored_global_history_keeps_its_instruction_and_hidden_files_and_its_tip_
         "the tip commit moved"
     );
     assert!(
-        git_stdout(&root, &["status", "--porcelain"]).trim().is_empty(),
+        git_stdout(&root, &["status", "--porcelain"])
+            .trim()
+            .is_empty(),
         "the restored folder is clean"
     );
     assert_eq!(
