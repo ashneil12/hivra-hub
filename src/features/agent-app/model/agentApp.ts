@@ -36,6 +36,7 @@ import {
   type HarnessId,
   type Session,
 } from "../../sessions/model/session";
+import { isPrivateChat } from "../../memory/model/privateChat";
 import {
   addSessionToFolder,
   createFolderWithSessions,
@@ -1086,6 +1087,13 @@ async function handleMemory(
         : {}),
     };
   };
+  // WP-111: a private chat cannot write memory. Reading it is unchanged.
+  if (
+    isPrivateChat(source) &&
+    (action === "memory.add" || action === "memory.replace" || action === "memory.remove")
+  ) {
+    throw new Error("This chat is private, so memory was not changed.");
+  }
   switch (action) {
     case "memory.search": {
       const query =

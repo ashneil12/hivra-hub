@@ -39,7 +39,11 @@ import {
   clearMcpSettingsCache,
   loadMcpSettings,
 } from "../../settings/model/mcpSettingsCache";
-import type { ComposerTurnOptions, Attachment } from "../model/session";
+import type {
+  Attachment,
+  ComposerTurnOptions,
+  HarnessId,
+} from "../model/session";
 import {
   clearComposerDraft,
   getComposerDraft,
@@ -149,7 +153,7 @@ describe("Composer question focus", () => {
     ) => boolean | void,
     onSubmit: (text: string, attachments: Attachment[]) => void = () => {},
     sessionId?: string,
-    harness: "claude" | "codex" = "claude",
+    harness: HarnessId = "claude",
   ) {
     await act(async () =>
       root.render(
@@ -185,6 +189,8 @@ describe("Composer question focus", () => {
   it.each([
     ["/btw", ""],
     ["/btw some text here...", "some text here..."],
+    ["/side", ""],
+    ["/side what changed?", "what changed?"],
   ])("routes %s to BTW instead of the main submit", async (draft, text) => {
     const onBtwCommand = vi.fn(() => true);
     const onSubmit = vi.fn();
@@ -237,6 +243,52 @@ describe("Composer question focus", () => {
     const textarea = container.querySelector("textarea")!;
     await typeInto(textarea, "/btw ");
     expect(textarea.value).toBe("/btw ");
+    expect(container.querySelector("[data-side-notice]")).toBeNull();
+  });
+
+  it("opens a side question as soon as `/side ` is typed", async () => {
+    const onBtwCommand = vi.fn(() => true);
+    await renderComposer(undefined, vi.fn(), false, 0, undefined, onBtwCommand);
+    const textarea = container.querySelector("textarea")!;
+    await typeInto(textarea, "/side why");
+    expect(onBtwCommand).toHaveBeenCalledWith("why", { draft: true });
+    expect(textarea.value).toBe("");
+  });
+
+  it("says so, and keeps the draft, when this agent cannot run a side question", async () => {
+    const onBtwCommand = vi.fn(() => true);
+    const onSubmit = vi.fn();
+    await renderComposer(
+      undefined,
+      vi.fn(),
+      false,
+      0,
+      undefined,
+      onBtwCommand,
+      onSubmit,
+      undefined,
+      "hermes",
+    );
+    const textarea = container.querySelector("textarea")!;
+    await typeInto(textarea, "/side ");
+    expect(onBtwCommand).not.toHaveBeenCalled();
+    expect(textarea.value).toBe("/side ");
+    expect(container.querySelector("[data-side-notice]")?.textContent).toBe(
+      "This agent cannot answer a side question.",
+    );
+
+    await act(async () =>
+      textarea.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "Enter",
+          bubbles: true,
+          cancelable: true,
+        }),
+      ),
+    );
+    expect(onSubmit).not.toHaveBeenCalled();
+    expect(textarea.value).toBe("/side ");
+    expect(container.querySelector("[data-side-question]")).toBeNull();
   });
 
   it("opens a searchable MCP picker and sends selected context", async () => {

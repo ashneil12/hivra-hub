@@ -6,7 +6,7 @@ import {
   Share,
   X,
 } from "../../../shared/ui/icons";
-import { BTW_COMMAND } from "../model/btw";
+import { BTW_COMMAND, SIDE_COMMAND } from "../model/btw";
 import { DRAFT_COMMAND } from "../model/draftCommand";
 import { OPERATOR_COMMAND } from "../model/operatorCommand";
 import { ORCHESTRATOR_COMMAND } from "../model/orchestratorCommand";
@@ -84,6 +84,10 @@ export const MODE_COMMAND_STYLES: Record<string, ModeCommandStyle> = {
     },
   },
   [BTW_COMMAND.name]: {
+    Icon: MessageSquare,
+    className: "text-emerald-700 dark:text-emerald-200/90",
+  },
+  [SIDE_COMMAND.name]: {
     Icon: MessageSquare,
     className: "text-emerald-700 dark:text-emerald-200/90",
   },

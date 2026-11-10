@@ -37,7 +37,7 @@ const DOC: MemoryDoc = {
     turns: 12,
     stored: 4,
     deferred: 2,
-    dropped: { late: 1, secret: 3, ungrounded: 0, invalid: 0 },
+    dropped: { late: 1, secret: 3, ungrounded: 0, invalid: 0, orders: 0 },
     lastRunAt: NOW - 2 * 3_600_000,
   },
 };

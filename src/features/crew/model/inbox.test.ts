@@ -1,5 +1,6 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { afterAnswer, failureWords, inboxItems, noticesFrom, preserveAnswer, refuseAnswer, type DecisionInput } from "./inbox";
+import { afterAnswer, failureWords, inboxItems, noticesFrom, preserveAnswer, refuseAnswer, waitingPhrase, type DecisionInput } from "./inbox";
 import type { CrewWorkerInput } from "./rows";
 
 const PROJECT = "/work/proj";
@@ -156,6 +157,63 @@ describe("inbox items", () => {
     expect(blocked).toEqual([
       { id: "needs:blocked:5", immediate: true, title: "Blocked", at: 5 },
     ]);
+  });
+
+  it("puts the oldest question first, a credential between that and a failure, and the longest wait first inside the group", () => {
+    const now = 1_000_000_000_000;
+    const minute = 60_000;
+    const shown = inboxItems({
+      project: PROJECT,
+      decisions: [
+        decision({ decisionKey: "new", question: "Newer question", updatedAt: now - 5 * minute, waiting: [] }),
+        decision({ decisionKey: "old", question: "Oldest question", updatedAt: now - 20 * minute, waiting: [] }),
+        decision({ decisionKey: "blank", question: "No clock", updatedAt: 0, waiting: [] }),
+        decision({ decisionKey: "dashed", question: "Ship — it", updatedAt: now - 3 * minute, waiting: [] }),
+      ],
+      rows: [
+        worker({ id: "ask", status: "needs-you", title: "A word please", updatedAt: now - 12 * minute, statusNotice: "Pick one", childSession: "chat-ask" }),
+        worker({ id: "cred", status: "paused", errorClass: "auth", error: "not signed in", updatedAt: now - 90 * minute }),
+        worker({ id: "permit", status: "needs-you", title: "Needs a folder permission", updatedAt: now - 30 * minute }),
+        worker({ id: "boom", status: "failed", title: "It failed", updatedAt: now - 40 * minute, statusNotice: "The save did not finish." }),
+        worker({ id: "ready", status: "done", title: "Ready work", updatedAt: now - 8 * minute }),
+      ],
+    });
+    expect(shown.map((item) => item.title)).toEqual([
+      "Oldest question",
+      "A word please",
+      "Newer question",
+      "Ship, it",
+      "No clock",
+      "Needs a sign-in",
+      "Needs a permission",
+      "It failed",
+      "Ready for review",
+    ]);
+    expect(shown[0]?.kind).toBe("decision");
+    expect(shown.find((item) => item.id === "question:ask")).toMatchObject({ body: "Pick one", chatId: "chat-ask", statusWord: "needs you" });
+    expect(shown.find((item) => item.title === "Needs a permission")?.body).toBe("");
+    expect(shown.findIndex((item) => item.kind === "failure")).toBeGreaterThan(shown.findIndex((item) => item.title === "Needs a sign-in"));
+    expect(shown.findIndex((item) => item.title === "Needs a sign-in")).toBeGreaterThan(shown.findIndex((item) => item.title === "Newer question"));
+    const notices = noticesFrom(shown, [
+      worker({ id: "ask", status: "needs-you", title: "A word please", updatedAt: now - 12 * minute }),
+    ]);
+    expect(notices.find((notice) => notice.title === "A word please")?.immediate).toBe(true);
+    expect(notices.some((notice) => notice.id.startsWith("needs:ask"))).toBe(false);
+    expect(waitingPhrase(now - 12 * minute, now)).toBe("waiting 12 minutes");
+    expect(waitingPhrase(now - minute, now)).toBe("waiting 1 minute");
+    expect(waitingPhrase(now - 30_000, now)).toBe("waiting under a minute");
+    expect(waitingPhrase(now - 3 * 60 * minute, now)).toBe("waiting 3 hours");
+    expect(waitingPhrase(now - 3 * 24 * 60 * minute, now)).toBe("waiting 3 days");
+    expect(waitingPhrase(0, now)).toBeNull();
+    expect(waitingPhrase(Number.NaN, now)).toBeNull();
+    expect(waitingPhrase(now + minute, now)).toBeNull();
+  });
+
+  it("does not change how the pull request inbox is sorted", () => {
+    const source = readFileSync(new URL("../../inbox/model/githubTasks.ts", import.meta.url), "utf8");
+    expect(source).toContain("(Date.parse(b.updatedAt) || 0) - (Date.parse(a.updatedAt) || 0)");
+    const waiting = readFileSync(new URL("../../hub/model/waitingChats.ts", import.meta.url), "utf8");
+    expect(waiting).toContain("a.askedAt - b.askedAt");
   });
 
   it("shows nothing for an empty project", () => {

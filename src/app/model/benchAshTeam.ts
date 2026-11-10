@@ -2,7 +2,7 @@
 // seat them in one project's leadership room, so the behaviour benches have someone to talk to. A fresh copy offers
 // those templates with none ticked (WP-05); this is the bench ticking all of them, the way first launch does, then
 // writing Ash's souls and memory where those seeds still exist. A real launch does not call this.
-import { listMonos, updateMono } from "../../features/monos/model/mono";
+import { addMonoProject, findMono, listMonos, monoWorksOn, updateMono } from "../../features/monos/model/mono";
 import { defaultSoul, readAgentFile, writeAgentFile, type AgentFilePath } from "../../features/monos/model/monoFiles";
 import { addMember, ensureLeadership } from "../../features/hub/model/hubChats";
 import { seatedTeam } from "../../features/hub/model/hubTeam";
@@ -14,17 +14,23 @@ import { PLAIN_SOULS, TEAM_SOULS, teamMemorySeed } from "../../features/hub/mode
 type Read = (monoId: string, path: AgentFilePath) => Promise<{ text: string | null; hash: string }>;
 type Write = (monoId: string, path: AgentFilePath, text: string, expectedHash?: string) => Promise<unknown>;
 
-export type BenchMono = { id: string; name: string };
+/** `specId` is the starter template it came from, so a bench can pick a seat without matching on its name. */
+export type BenchMono = { id: string; name: string; specId: string };
 export type BenchTeam = { monos: BenchMono[]; wrote: string[] };
 
-type BenchOpts = { project?: string; read?: Read; write?: Write };
+type BenchOpts = { project?: string; folder?: string; read?: Read; write?: Write };
 
 const nameKey = (name: string | undefined) => (name ?? "").trim().toLowerCase();
 
 /**
- * Adds every starter template that isn't already on the roster (matched by name, so a second call adds nothing), seats
- * them in `project`'s leadership room, and writes Ash's soul and memory the way the old pre-load did: only where a seed
- * exists, and only over a soul that is still the app's. Returns the team, and the ids whose soul file it wrote.
+ * Adds every starter template that isn't already on the roster (matched by name, so a second call adds nothing), ties
+ * each to the project (once), seats them in its leadership room, and writes Ash's soul and memory the way the old
+ * pre-load did: only where a seed exists, and only over a soul that is still the app's. Returns the team, and the ids
+ * whose soul file it wrote.
+ *
+ * `project` is the hub project's id: the room is named after it. `folder` is where that project's files are; a Mono has
+ * to work on the folder, not the id, or a kickoff aimed at the folder never finds it (verifyKickoffMono), so that is
+ * what each seat is tied to. No folder means the id is a folder (the shapes a person types into Settings are both).
  */
 export async function benchAshTeam(readOrOpts?: Read | BenchOpts, writeArg?: Write): Promise<BenchTeam> {
   const opts: BenchOpts = typeof readOrOpts === "function" ? { read: readOrOpts, write: writeArg } : (readOrOpts ?? {});
@@ -46,9 +52,18 @@ export async function benchAshTeam(readOrOpts?: Read | BenchOpts, writeArg?: Wri
   }
 
   const project = opts.project?.trim();
+  const folder = (typeof opts.folder === "string" ? opts.folder.trim() : "") || project;
   if (project) {
     const room = ensureLeadership(project);
-    for (const mono of team) addMember(room.id, mono.id);
+    for (const seat of team) addMember(room.id, seat.id);
+  }
+  if (folder) {
+    for (const seat of team) {
+      // WP-05 left nothing tied to a project (`tieTeamToProjects` reads the now-empty `seatedTeam`). A bench's Monos
+      // have to work on the project it is about, or their kickoff never finds them (verifyKickoffMono).
+      const mono = findMono(seat.id);
+      if (mono && !monoWorksOn(mono, folder)) addMonoProject(seat.id, folder);
+    }
   }
 
   const wrote: string[] = [];
@@ -62,7 +77,7 @@ export async function benchAshTeam(readOrOpts?: Read | BenchOpts, writeArg?: Wri
     if (seen.has(member.id)) continue;
     if (await writeAshFiles(member.id, member.specId, read, write)) wrote.push(member.id);
   }
-  return { monos: team.map(({ id, name }) => ({ id, name })), wrote };
+  return { monos: team.map(({ id, name, specId }) => ({ id, name, specId })), wrote };
 }
 
 /**

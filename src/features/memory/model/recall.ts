@@ -3,6 +3,7 @@
 
 import { AGENT_ZERO_MEMORIES } from "../vendor/agentZeroMemories";
 import { engineName, type MemoryDoc, type MemoryItem } from "./doc";
+import { givesOrders, ORDER_NOTE } from "./orderScan";
 import { recallDecision, type RecallDecisionInput } from "./recallPolicy";
 
 export const RECALL_OPEN = "<untrusted_memory>";
@@ -26,7 +27,9 @@ function fenceFor(doc: MemoryDoc, picked: readonly string[], readingEngine?: str
     const item = byId.get(id);
     if (!item) return [];
     const text = item.text.split(RECALL_CLOSE).join("").split(RECALL_OPEN).join("");
-    return [`- ${new Date(item.updatedAt).toISOString()} ${text}${writtenBy(item, readingEngine)}`];
+    // WP-111: a memory that looks like instructions stays, with a note that it is data.
+    const orders = givesOrders(item.text) ? ` ${ORDER_NOTE}` : "";
+    return [`- ${new Date(item.updatedAt).toISOString()} ${text}${writtenBy(item, readingEngine)}${orders}`];
   });
   if (!lines.length) return undefined;
   const body = AGENT_ZERO_MEMORIES.replace("{{memories}}", lines.join("\n"));

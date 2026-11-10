@@ -41,10 +41,19 @@ export type MemoryItem = {
   lastUsedAt?: number;
   /** WP-100: how many times the "still true?" ask has been shown for it. Absent on old data, which reads as 0. */
   asked?: number;
+  /** WP-111: this fact disagrees with another one. Absent when nothing is parked. */
+  dispute?: MemoryDispute;
+};
+
+/** WP-111: a parked clash. `was` is the state the older fact had, and is absent on the newer fact. */
+export type MemoryDispute = {
+  otherId: string;
+  reason: string;
+  was?: "confirmed" | "edited";
 };
 
 /** WP-100: why the curator dropped a turn's fact. */
-export type DropReason = "late" | "secret" | "ungrounded" | "invalid";
+export type DropReason = "late" | "secret" | "ungrounded" | "invalid" | "orders";
 
 /** WP-100: how memory has been going, for the Memory screen's health card. Absent on old data, which reads as zeros. */
 export type MemoryHealth = {
@@ -171,7 +180,26 @@ function loadedItem(value: unknown): MemoryItem | undefined {
   if (rest.fade !== undefined && !(finite(rest.fade) && rest.fade <= 1)) delete rest.fade;
   if (rest.lastUsedAt !== undefined && !finite(rest.lastUsedAt)) delete rest.lastUsedAt;
   if (rest.asked !== undefined && !(finite(rest.asked) && Number.isInteger(rest.asked))) delete rest.asked;
+  const rawDispute = (value as { dispute?: unknown }).dispute;
+  if (rawDispute !== undefined) {
+    const dispute = loadedDispute(rest.id, rawDispute);
+    if (dispute) rest.dispute = dispute;
+    else delete rest.dispute;
+  }
   return rest;
+}
+
+/** A clash that cannot be read is dropped. The fact it was on is kept. */
+function loadedDispute(itemId: string, value: unknown): MemoryDispute | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const raw = value as { otherId?: unknown; reason?: unknown; was?: unknown };
+  if (typeof raw.otherId !== "string" || !ITEM_ID.test(raw.otherId) || raw.otherId === itemId) return undefined;
+  if (typeof raw.reason !== "string") return undefined;
+  const reason = raw.reason.trim();
+  if (!reason || reason.length > 200 || mentionsSecret(reason)) return undefined;
+  if (raw.was === undefined) return { otherId: raw.otherId, reason };
+  if (raw.was !== "confirmed" && raw.was !== "edited") return undefined;
+  return { otherId: raw.otherId, reason, was: raw.was };
 }
 
 /** The lived days the doc can read: real UTC dates, one of each, oldest first. */
@@ -207,6 +235,7 @@ function loadedHealth(value: unknown): MemoryHealth | undefined {
       secret: count(dropped.secret),
       ungrounded: count(dropped.ungrounded),
       invalid: count(dropped.invalid),
+      orders: count(dropped.orders),
     },
   };
   if (finite(raw.lastRunAt)) health.lastRunAt = raw.lastRunAt;
