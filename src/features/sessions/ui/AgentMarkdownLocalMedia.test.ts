@@ -168,6 +168,60 @@ describe("Markdown media on this computer is asked of Rust, by chat", () => {
   });
 });
 
+describe("A refused image is asked for again when what Rust knows may have changed", () => {
+  const settle = () =>
+    act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+  it("tries again for a new chat id, so a chat saved a moment later shows its image", async () => {
+    core.invoke.mockRejectedValue(REFUSED);
+    await render("![x](/work/repo/shot.png)", { cwd: CWD, mediaSessionId: "not-saved-yet" });
+    expect(container.querySelector("img")).toBeNull();
+    expect(container.querySelector("a")?.textContent).toBe("shot.png");
+
+    core.invoke.mockReset();
+    core.invoke.mockImplementation(async () => PNG.buffer.slice(0));
+    await render("![x](/work/repo/shot.png)", { cwd: CWD, mediaSessionId: "saved" });
+
+    expect(core.invoke.mock.calls).toEqual([
+      ["read_chat_image", { path: "/work/repo/shot.png", sessionId: "saved" }],
+    ]);
+    expect(container.querySelector("img")).not.toBeNull();
+  });
+
+  it("tries again when the roster changes, so a Mono given a project shows its images", async () => {
+    core.invoke.mockRejectedValue(REFUSED);
+    await render("![x](/work/proj/shot.png)");
+    expect(container.querySelector("img")).toBeNull();
+    expect(nativeCalls()).toEqual(["read_chat_image"]);
+
+    core.invoke.mockReset();
+    core.invoke.mockImplementation(async () => PNG.buffer.slice(0));
+    await act(async () => {
+      window.dispatchEvent(new CustomEvent("monocode:monos-changed"));
+    });
+    await settle();
+
+    expect(core.invoke.mock.calls).toEqual([
+      ["read_chat_image", { path: "/work/proj/shot.png", sessionId: CHAT }],
+    ]);
+    expect(container.querySelector("img")).not.toBeNull();
+  });
+
+  it("does not ask again on a roster change while an image shows", async () => {
+    await render("![x](/work/repo/shot.png)");
+    expect(nativeCalls()).toEqual(["read_chat_image"]);
+
+    await act(async () => {
+      window.dispatchEvent(new CustomEvent("monocode:monos-changed"));
+    });
+    await settle();
+
+    expect(nativeCalls()).toEqual(["read_chat_image"]);
+  });
+});
+
 describe("Markdown media in a chat on a connected machine", () => {
   const REMOTE = "remote://env-1/home/me/proj";
   const pngBase64 = () => btoa(String.fromCharCode(...PNG));

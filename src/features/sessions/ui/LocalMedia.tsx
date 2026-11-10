@@ -10,6 +10,7 @@ import {
   sniffImageMime,
   videoMimeForPath,
 } from "../../files/model/filePreview";
+import { subscribeMonos } from "../../monos/model/mono";
 import { mayShowChatMedia } from "../model/chatMedia";
 
 /** Whether a path names a file `LocalMedia` can show. */
@@ -56,6 +57,14 @@ export function LocalMedia({
   const [near, setNear] = useState(false);
   const [media, setMedia] = useState<Media | null>(null);
   const [failed, setFailed] = useState(false);
+  // What Rust allows depends on records that change (the chat is saved a moment
+  // after it starts, a Mono is given a project), so a refused file is asked for
+  // again when the roster changes, or the chat's id does.
+  const [attempt, setAttempt] = useState(0);
+  useEffect(() => {
+    if (!failed) return;
+    return subscribeMonos(() => setAttempt((count) => count + 1));
+  }, [failed]);
 
   useEffect(() => {
     const box = boxRef.current;
@@ -109,7 +118,7 @@ export function LocalMedia({
       cancelled = true;
       if (created) URL.revokeObjectURL(created);
     };
-  }, [allowed, near, path, sessionId]);
+  }, [allowed, near, path, sessionId, attempt]);
 
   if (!allowed || failed) return <>{fallback}</>;
   // One fixed 16:9 box from placeholder to playback, so loading never moves
