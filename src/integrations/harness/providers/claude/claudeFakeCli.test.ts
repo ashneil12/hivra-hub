@@ -1,5 +1,5 @@
 import { spawn, type ChildProcess } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
@@ -58,6 +58,7 @@ vi.mock("../../core/child", () => ({
 const {
   RECOVERED_FROM_BRIEF,
   bindClaudeSession,
+  claudeHasBackgroundWork,
   sendClaudeTurn,
   stopClaudeSession,
   __claudeTestReset,
@@ -82,6 +83,28 @@ beforeEach(() => {
             { sleep: 50 },
             { finishBackground: "agent-7" },
             { say: "AUDIT-DONE" },
+          ],
+        },
+        {
+          name: "serve",
+          match: "serve",
+          steps: [
+            { background: { id: "shell-9", kind: "shell", description: "dev server" } },
+            { say: "SERVER-UP" },
+            { waitFile: "finish-shell", timeoutMs: 15000 },
+            { finishBackground: "shell-9" },
+            { say: "SERVER-STOPPED" },
+          ],
+        },
+        {
+          name: "delegate",
+          match: "delegate",
+          steps: [
+            { background: { id: "agent-3", kind: "subagent", description: "Review" } },
+            { say: "REVIEWING" },
+            { waitFile: "finish-agent", timeoutMs: 15000 },
+            { finishBackground: "agent-3" },
+            { say: "REVIEWED" },
           ],
         },
         { name: "brief", match: "<brief>", steps: [{ say: "PICKED-UP" }] },
@@ -121,7 +144,42 @@ const reply = (events: HarnessEvent[]) =>
     .map((e) => e.text)
     .join("");
 
+async function until(check: () => boolean) {
+  const started = Date.now();
+  while (!check()) {
+    if (Date.now() - started > 10_000) throw new Error("timed out waiting");
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+}
+
+function release(name: string) {
+  mkdirSync(join(state, "gates"), { recursive: true });
+  writeFileSync(join(state, "gates", name), "");
+}
+
 describe("the live adapter against the fake Claude CLI", () => {
+  it("reports a backgrounded shell and a running subagent as work until each one finishes", async () => {
+    for (const [text, id, gate] of [
+      ["serve the app", "shell-9", "finish-shell"],
+      ["delegate the review", "agent-3", "finish-agent"],
+    ] as const) {
+      const events: HarnessEvent[] = [];
+      const finished = turn(text, events);
+      await until(() =>
+        events.some(
+          (e) =>
+            e.type === "background.work" &&
+            e.work.some((w) => w.id === id),
+        ),
+      );
+      expect(claudeHasBackgroundWork("chat")).toBe(true);
+
+      release(gate);
+      await finished;
+      expect(claudeHasBackgroundWork("chat")).toBe(false);
+    }
+  }, 40_000);
+
   it("runs a turn with background work and reports it with its id", async () => {
     const events: HarnessEvent[] = [];
     await turn("audit math.ts", events);
