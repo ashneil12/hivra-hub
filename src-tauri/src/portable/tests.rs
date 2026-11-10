@@ -2268,3 +2268,338 @@ fn a_listed_picture_that_hashes_as_listed_is_copied_and_never_replaces_one_alrea
     assert!(copy_note_assets(&target, &opened, "note-1", "note-1").is_empty());
     assert_eq!(fs::read_to_string(&picture).unwrap(), "mine");
 }
+
+// ---- reading a folder export's files and its own pictures (links, pipes, sizes, what the manifest lists) ------------
+
+/// Runs `f` on its own thread. A read that waits on a pipe, or never reaches the end of a device, would hang the whole
+/// run (or fill the memory first), so one that is still going after `seconds` stops the process, not just the test.
+fn finishes_within<T: Send + 'static>(seconds: u64, f: impl FnOnce() -> T + Send + 'static) -> T {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(f());
+    });
+    match rx.recv_timeout(std::time::Duration::from_secs(seconds)) {
+        Ok(value) => value,
+        Err(_) => {
+            eprintln!(
+                "still reading after {seconds}s: a file that never ends, or a pipe, is being read"
+            );
+            std::process::exit(70);
+        }
+    }
+}
+
+/// `open_export` on its own thread, as what it says when it refuses.
+fn open_refused(dest: &Path) -> Result<String, ()> {
+    let path = dest.to_string_lossy().into_owned();
+    match finishes_within(5, move || open_export(&path).map(|_| ())) {
+        Ok(()) => Err(()),
+        Err(why) => Ok(why),
+    }
+}
+
+fn edit_manifest(dest: &Path, edit: impl FnOnce(&mut Value)) {
+    let path = dest.join(MANIFEST);
+    let mut manifest: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+    edit(&mut manifest);
+    fs::write(&path, manifest.to_string()).unwrap();
+}
+
+#[cfg(unix)]
+fn make_pipe(path: &Path) {
+    let c_path = std::ffi::CString::new(path.to_string_lossy().as_bytes()).unwrap();
+    assert_eq!(unsafe { libc::mkfifo(c_path.as_ptr(), 0o600) }, 0);
+}
+
+/// A listed file that is a link to a device that never ends: reading it to the end would fill the memory and take
+/// the app down. It must be refused at the link, without reading a byte.
+#[cfg(unix)]
+#[test]
+fn a_listed_file_that_links_to_an_endless_device_is_refused_unread() {
+    let source_dir = TestDir::new("source");
+    let out = TestDir::new("out");
+    let source = env_for(&source_dir.0);
+    let dest = note_export(&source, &out.0);
+    let listed = dest.join("memory/ash/MEMORY.md");
+    fs::remove_file(&listed).unwrap();
+    std::os::unix::fs::symlink("/dev/urandom", &listed).unwrap();
+
+    let why = open_refused(&dest).expect("an export with a link to a device was opened");
+    assert!(
+        why.contains("memory/ash/MEMORY.md") && why.contains("link"),
+        "{why}"
+    );
+}
+
+/// A listed file that is a link to a plain file holding exactly the bytes the manifest hashes: the hash can't catch
+/// it, the link itself must be refused.
+#[cfg(unix)]
+#[test]
+fn a_listed_file_that_is_a_link_is_refused_even_when_the_hash_matches() {
+    let source_dir = TestDir::new("source");
+    let out = TestDir::new("out");
+    let outside = TestDir::new("outside");
+    let source = env_for(&source_dir.0);
+    let dest = note_export(&source, &out.0);
+    let listed = dest.join("memory/ash/MEMORY.md");
+    let bytes = fs::read(&listed).unwrap();
+    fs::write(outside.0.join("same.md"), bytes).unwrap();
+    fs::remove_file(&listed).unwrap();
+    std::os::unix::fs::symlink(outside.0.join("same.md"), &listed).unwrap();
+
+    let why = open_refused(&dest).expect("a listed link was opened");
+    assert!(
+        why.contains("memory/ash/MEMORY.md") && why.contains("link"),
+        "{why}"
+    );
+}
+
+/// A pipe where a listed file should be: a plain read waits for a writer that never comes.
+#[cfg(unix)]
+#[test]
+fn a_listed_file_that_is_a_pipe_does_not_hang_the_open() {
+    let source_dir = TestDir::new("source");
+    let out = TestDir::new("out");
+    let source = env_for(&source_dir.0);
+    let dest = note_export(&source, &out.0);
+    let listed = dest.join("memory/ash/MEMORY.md");
+    fs::remove_file(&listed).unwrap();
+    make_pipe(&listed);
+
+    let why = open_refused(&dest).expect("an export with a pipe in it was opened");
+    assert!(
+        why.contains("memory/ash/MEMORY.md") && why.contains("plain file"),
+        "{why}"
+    );
+}
+
+/// The manifest says a file holds fewer bytes than it does: only that many are read, and the hash (of the whole
+/// file) can't match them.
+#[test]
+fn a_file_longer_than_the_manifest_says_is_cut_at_that_size_and_fails_its_hash() {
+    let source_dir = TestDir::new("source");
+    let out = TestDir::new("out");
+    let source = env_for(&source_dir.0);
+    let dest = note_export(&source, &out.0);
+    edit_manifest(&dest, |manifest| {
+        for file in manifest["files"].as_array_mut().unwrap() {
+            if file["path"] == "memory/ash/MEMORY.md" {
+                file["bytes"] = json!(3);
+            }
+        }
+    });
+
+    let why = open_refused(&dest).expect("a file longer than listed was accepted");
+    assert!(
+        why.contains("memory/ash/MEMORY.md") && why.contains("damaged"),
+        "{why}"
+    );
+}
+
+/// The manifest itself is read like any other file: not through a link.
+#[cfg(unix)]
+#[test]
+fn a_manifest_that_is_a_link_is_refused() {
+    let source_dir = TestDir::new("source");
+    let out = TestDir::new("out");
+    let outside = TestDir::new("outside");
+    let source = env_for(&source_dir.0);
+    let dest = note_export(&source, &out.0);
+    fs::rename(dest.join(MANIFEST), outside.0.join("manifest.json")).unwrap();
+    std::os::unix::fs::symlink(outside.0.join("manifest.json"), dest.join(MANIFEST)).unwrap();
+
+    assert!(
+        open_refused(&dest).is_ok(),
+        "a manifest that is a link was read"
+    );
+}
+
+/// A file the manifest doesn't list is never read, whatever its name: the fixed workspace files included.
+#[test]
+fn a_workspace_file_the_manifest_does_not_list_is_never_read() {
+    let source_dir = TestDir::new("source");
+    let target_dir = TestDir::new("target");
+    let out = TestDir::new("out");
+    let source = env_for(&source_dir.0);
+    let target = env_for(&target_dir.0);
+    let dest = note_export(&source, &out.0);
+    let opened = open_export(&dest.to_string_lossy()).unwrap();
+    assert!(opened.json("workspace/notes.json").is_some(), "the control");
+    assert!(opened.read("memory/ash/MEMORY.md").is_some(), "the control");
+
+    // The files are all still there, only the manifest stops listing them.
+    edit_manifest(&dest, |manifest| {
+        manifest["files"].as_array_mut().unwrap().retain(|f| {
+            !f["path"]
+                .as_str()
+                .is_some_and(|p| p.starts_with("workspace/") && p.ends_with(".json"))
+        });
+    });
+    let opened = open_export(&dest.to_string_lossy()).unwrap();
+    for fixed in [
+        "workspace/notes.json",
+        "workspace/automations.json",
+        "workspace/reminders.json",
+        "workspace/delegations.json",
+        "workspace/doc-versions.json",
+        "workspace/doc-mentions.json",
+        "workspace/activity.json",
+        "workspace/sessions/chat-1.json",
+    ] {
+        assert!(dest.join(fixed).is_file(), "{fixed} is on disk");
+        assert!(opened.read(fixed).is_none(), "{fixed} was read unlisted");
+        assert!(opened.json(fixed).is_none(), "{fixed} was read unlisted");
+    }
+    // A name that was never a file of the export, listed or not.
+    assert!(opened.read("memory/ash/not-there.md").is_none());
+
+    let store = open_store(&target);
+    let conn = store.lock_conn().unwrap();
+    let report = import_held(&target, &conn, &note_import(&dest)).unwrap();
+    assert_eq!(report.notes_added + report.notes_copied, 0, "{report:?}");
+    assert!(
+        conn.query_row("SELECT COUNT(*) FROM notes", [], |row| row.get::<_, i64>(0))
+            .unwrap()
+            == 0,
+        "a note came in from a file the manifest doesn't list"
+    );
+}
+
+/// The bytes a read hands back are the ones that hash as listed: a listed file changed after the check is not used.
+#[test]
+fn a_listed_file_changed_after_the_check_is_not_read() {
+    let source_dir = TestDir::new("source");
+    let out = TestDir::new("out");
+    let source = env_for(&source_dir.0);
+    let dest = note_export(&source, &out.0);
+    let opened = open_export(&dest.to_string_lossy()).unwrap();
+    let listed = dest.join("memory/ash/MEMORY.md");
+    assert!(opened.read("memory/ash/MEMORY.md").is_some(), "the control");
+    // Other bytes of the same length (only the hash can tell), then a longer file (past the size the manifest gives).
+    let length = fs::read(&listed).unwrap().len();
+    for swapped in ["x".repeat(length), "y".repeat(length + 1000)] {
+        fs::write(&listed, swapped).unwrap();
+        assert!(
+            opened.read("memory/ash/MEMORY.md").is_none(),
+            "{length}: a file that no longer hashes as listed was used"
+        );
+    }
+}
+
+/// A listed picture whose name has a separator isn't one of the note's pictures: it isn't read, whatever is behind
+/// the folder it names.
+#[test]
+fn a_listed_picture_name_with_a_separator_is_refused() {
+    let source_dir = TestDir::new("source");
+    let target_dir = TestDir::new("target");
+    let out = TestDir::new("out");
+    let source = env_for(&source_dir.0);
+    let target = env_for(&target_dir.0);
+    let dest = note_export(&source, &out.0);
+    fs::create_dir_all(dest.join("workspace/note-assets/note-1/sub")).unwrap();
+    put_in_export(&dest, "workspace/note-assets/note-1/sub/x.png", &PICTURE);
+
+    let store = open_store(&target);
+    let conn = store.lock_conn().unwrap();
+    let report = import_held(&target, &conn, &note_import(&dest)).unwrap();
+    assert_eq!(
+        files_under(&target.data_dir.join(NOTE_ASSET_DIR)),
+        vec!["note-1/1-shot.png".to_string()]
+    );
+    assert_eq!(report.note_assets_skipped, 1, "{report:?}");
+    assert_eq!(
+        report.notes,
+        vec![
+            "1 picture of note note-1 was not copied (its name isn't one plain file name)."
+                .to_string()
+        ]
+    );
+
+    // And one that climbs out of its folder doesn't even open.
+    put_in_export(&dest, "workspace/note-assets/note-1/x.png", &PICTURE);
+    edit_manifest(&dest, |manifest| {
+        for file in manifest["files"].as_array_mut().unwrap() {
+            if file["path"] == "workspace/note-assets/note-1/x.png" {
+                file["path"] = json!("workspace/note-assets/note-1/../note-1/x.png");
+            }
+        }
+    });
+    let why = open_refused(&dest).expect("a path that climbs out was opened");
+    assert!(why.contains("bad path"), "{why}");
+}
+
+/// The picture folder of a note on this Mac, or the folder of them all, is a link: the export doesn't follow it (it
+/// would carry out whatever the link reaches), and says so.
+#[cfg(unix)]
+#[test]
+fn an_export_does_not_follow_a_linked_picture_folder_in_the_data_folder() {
+    for linked in ["note-assets", "note-assets/note-1"] {
+        let source_dir = TestDir::new("source");
+        let out = TestDir::new("out");
+        let outside = TestDir::new("outside");
+        let source = env_for(&source_dir.0);
+        seed(&source);
+        let real = source.data_dir.join(linked);
+        let elsewhere = outside.0.join("moved");
+        fs::rename(&real, &elsewhere).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, &real).unwrap();
+        let reached = if linked == "note-assets" {
+            elsewhere.join("note-1")
+        } else {
+            elsewhere.clone()
+        };
+        fs::write(reached.join("private.png"), PRIVATE_KEY).unwrap();
+
+        let dest = out.0.join("export");
+        let report = export(&source, &export_request(&dest, Form::Folder)).unwrap();
+        let carried: Vec<String> = export_texts(&dest)
+            .into_keys()
+            .filter(|name| name.starts_with("workspace/note-assets/"))
+            .collect();
+        assert_eq!(
+            carried,
+            Vec::<String>::new(),
+            "{linked} is a link and was followed"
+        );
+        assert!(
+            report
+                .notes
+                .iter()
+                .any(|n| n.contains("note-assets") && n.contains("link")),
+            "{linked}: {:?}",
+            report.notes
+        );
+    }
+}
+
+/// A picture past the size a note takes is left out of the export, not read to the end.
+#[test]
+fn an_export_leaves_out_a_picture_past_the_size_a_note_takes() {
+    let source_dir = TestDir::new("source");
+    let out = TestDir::new("out");
+    let source = env_for(&source_dir.0);
+    seed(&source);
+    let huge = source.data_dir.join("note-assets/note-1/huge.png");
+    let file = fs::File::create(&huge).unwrap();
+    file.set_len(crate::notes::IMAGE_MAX_BYTES + 1).unwrap();
+    drop(file);
+
+    let dest = out.0.join("export");
+    let report = export(&source, &export_request(&dest, Form::Folder)).unwrap();
+    let carried: Vec<String> = export_texts(&dest)
+        .into_keys()
+        .filter(|name| name.starts_with("workspace/note-assets/"))
+        .collect();
+    assert_eq!(
+        carried,
+        vec!["workspace/note-assets/note-1/1-shot.png".to_string()]
+    );
+    assert!(
+        report
+            .notes
+            .iter()
+            .any(|n| n.contains("huge.png") && n.contains("too large")),
+        "{:?}",
+        report.notes
+    );
+}
