@@ -12,9 +12,11 @@ import {
   type ReviewRun,
 } from "./review";
 import type { FreshEyesSetting } from "./setting";
-import { beginLaunch, finishLaunch, takeStarter } from "./held";
+import { beginStart, endStart, heldStarter } from "./held";
 import {
+  dropReview,
   freshEyesStorage,
+  loadFreshEyes,
   plainRecord,
   projectKey,
   putReview,
@@ -68,7 +70,7 @@ export type FreshEyesRequest = {
   plan: string;
   ownerSession: string;
   reading?: unknown;
-  /** The delegate call, kept so Approve can start the same brief. */
+  /** The delegate call, kept with the review so Approve can start the same brief, even after a restart. */
   held?: Record<string, unknown>;
   route?: { cli?: string | null; model?: string | null; effort?: string | null };
   actor?: "person" | "first-mate";
@@ -98,6 +100,13 @@ function lineFor(record: ReviewRecord | null, findings: Finding[]): string {
       findings: record?.findings.length ?? findings.length,
     }) ?? "Fresh-eyes review: waiting on you"
   );
+}
+
+/** What the record keeps so a decision can start the brief: who asked, and the call itself. */
+function keptBrief(input: FreshEyesRequest, record: ReviewRecord | null): Pick<ReviewRecord, "owner" | "held"> {
+  const held = plainRecord(input.held) ?? record?.held;
+  const owner = input.ownerSession.trim() || record?.owner;
+  return { ...(owner ? { owner } : {}), ...(held ? { held } : {}) };
 }
 
 /**
@@ -151,6 +160,7 @@ export async function reviewBeforeCrew(
           retry: run.retry,
           asked: false,
           plan: plan.replace(/\r\n/g, "\n").trim(),
+          ...keptBrief(input, record),
         },
         expected,
         storage,
@@ -169,6 +179,7 @@ export async function reviewBeforeCrew(
           retry: true,
           asked: false,
           plan: plan.replace(/\r\n/g, "\n").trim(),
+          ...keptBrief(input, record),
         },
         record?.revision ?? 0,
         storage,
@@ -185,10 +196,6 @@ export async function reviewBeforeCrew(
 
 function decided(record: ReviewRecord): boolean {
   return record.status === "approved" || record.status === "skipped_by_person" || record.status === "editing";
-}
-
-function heldBrief(input: FreshEyesRequest, record: ReviewRecord | null): Record<string, unknown> | undefined {
-  return plainRecord(input.held) ?? record?.held;
 }
 
 /**
@@ -210,7 +217,6 @@ async function holdOutsideHop(
   const cleanPlan = plan.replace(/\r\n/g, "\n").trim();
   if (shouldRun && port) {
     const expected = record?.revision ?? 0;
-    const held = heldBrief(input, record);
     const put = await putReview(
       {
         project,
@@ -222,7 +228,7 @@ async function holdOutsideHop(
         retry: false,
         asked: record?.asked ?? false,
         plan: cleanPlan,
-        ...(held ? { held } : {}),
+        ...keptBrief(input, record),
       },
       expected,
       storage,
@@ -243,7 +249,6 @@ async function holdOutsideHop(
     return { hold: true, why: lineFor(current, current?.findings ?? []) };
   }
   if (shouldRun && !port) {
-    const held = heldBrief(input, record);
     const put = await putReview(
       {
         project,
@@ -255,7 +260,7 @@ async function holdOutsideHop(
         retry: true,
         asked: false,
         plan: cleanPlan,
-        ...(held ? { held } : {}),
+        ...keptBrief(input, record),
       },
       record?.revision ?? 0,
       storage,
@@ -315,7 +320,7 @@ async function settleOutside(
     if (!record) return;
     const setting = settingFor(project, storage);
     if (mayLaunchBuilders(setting, record)) {
-      await launchIfHeld(project, input.requestId, storage);
+      await releaseHeld(storage);
       return;
     }
     if (record.status === "pending") await askOnce(input, project, key, record, setting, storage, deps.ask);
@@ -344,33 +349,109 @@ export async function answerFreshEyes(
       record = again.current ?? reviewFor(key, requestId, storage);
     }
   }
-  if (record && (record.status === "approved" || record.status === "skipped_by_person")) {
-    await launchIfHeld(key, requestId, storage);
-  }
-  return record;
+  if (record && decidedToStart(record)) await releaseHeld(storage);
+  return reviewFor(key, requestId, storage) ?? record;
 }
 
-async function launchIfHeld(project: string, requestId: string, storage: EyesStorage): Promise<void> {
-  const setting = settingFor(project, storage);
-  const record = reviewFor(project, requestId, storage);
-  if (!mayLaunchBuilders(setting, record)) return;
-  if (!beginLaunch(project, requestId)) return;
-  const starter = takeStarter(project, requestId);
-  if (!starter) {
-    finishLaunch(project, requestId, false);
-    return;
+function decidedToStart(record: ReviewRecord): boolean {
+  return record.status === "approved" || record.status === "skipped_by_person";
+}
+
+function startedAgain(result: unknown): boolean {
+  return (
+    !!result &&
+    typeof result === "object" &&
+    (result as { freshEyes?: unknown }).freshEyes === true &&
+    (result as { status?: unknown }).status === "waiting"
+  );
+}
+
+/**
+ * Start every held brief whose review the person approved or skipped. The start asks tasks.delegate again under the
+ * same request ID, so the brief meets the same checks, worker limits and waiting line as any other. Safe to call
+ * whenever something changes: a brief that already started, or is starting, is left alone. A brief whose chat is not
+ * open here waits until it is.
+ */
+export async function releaseHeld(storage: EyesStorage = freshEyesStorage()): Promise<void> {
+  const starter = heldStarter();
+  if (!starter) return;
+  for (const row of loadFreshEyes(storage).reviews) {
+    if (!row.held || !row.owner || row.launched || !decidedToStart(row)) continue;
+    if (!starter.canStart(row.owner)) continue;
+    if (!beginStart(row.project, row.requestId)) continue;
+    let failed = false;
+    try {
+      const result = await starter.start(row.owner, row.requestId, row.held);
+      if (!startedAgain(result)) await markLaunched(row.project, row.requestId, storage);
+    } catch {
+      failed = true;
+    } finally {
+      endStart(row.project, row.requestId, failed);
+    }
   }
-  try {
-    const result = await starter();
-    const waiting =
-      !!result &&
-      typeof result === "object" &&
-      (result as { freshEyes?: unknown }).freshEyes === true &&
-      (result as { status?: unknown }).status === "waiting";
-    finishLaunch(project, requestId, !waiting);
-  } catch {
-    finishLaunch(project, requestId, false);
+}
+
+/** The brief went back through tasks.delegate: keep the decision, drop the copy of the call. */
+async function markLaunched(project: string, requestId: string, storage: EyesStorage): Promise<void> {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const record = reviewFor(project, requestId, storage);
+    if (!record || record.launched) return;
+    const { held: _held, ...rest } = record;
+    const put = await putReview({ ...rest, launched: true }, record.revision, storage);
+    if (put.ok) return;
   }
+}
+
+/**
+ * A decision answered in the Inbox or Home. Apply it to the reviews that are waiting, then start what it released.
+ * App.tsx calls it when a decision changes.
+ */
+export async function syncHeldDecisions(
+  lookup: NonNullable<FreshEyesDeps["lookup"]>,
+  storage: EyesStorage = freshEyesStorage(),
+): Promise<void> {
+  for (const row of loadFreshEyes(storage).reviews) {
+    if (!row.held || row.launched || (row.status !== "pending" && row.status !== "editing")) continue;
+    await applyLookup(row.project, row.requestId, decisionKey(row.requestId), storage, lookup);
+  }
+  await releaseHeld(storage);
+}
+
+export type HeldWaiting = { childSessionId: string; title: string; line: string };
+
+/** The briefs this chat has waiting on a review, for task_status. Each is named by the chat it will be. */
+export function heldWaiting(owner: string, storage: EyesStorage = freshEyesStorage()): HeldWaiting[] {
+  return loadFreshEyes(storage)
+    .reviews.filter((row) => row.owner === owner && row.held && !row.launched)
+    .map((row) => ({
+      childSessionId: heldChatId(owner, row.requestId),
+      title: heldTitle(row.held),
+      line: lineFor(row, row.findings),
+    }));
+}
+
+/** task_cancel on a held brief: the review is forgotten and the brief never starts. True when one matched. */
+export async function cancelHeld(
+  owner: string,
+  childSessionId: string,
+  storage: EyesStorage = freshEyesStorage(),
+): Promise<boolean> {
+  const row = loadFreshEyes(storage).reviews.find(
+    (entry) => entry.owner === owner && entry.held && !entry.launched && heldChatId(owner, entry.requestId) === childSessionId,
+  );
+  if (!row) return false;
+  return dropReview(row.project, row.requestId, storage);
+}
+
+function heldChatId(owner: string, requestId: string): string {
+  return `app-${owner}-${requestId}`;
+}
+
+function heldTitle(held: Record<string, unknown> | undefined): string {
+  const named = typeof held?.title === "string" ? held.title.trim() : "";
+  if (named) return named.slice(0, 200);
+  const brief = typeof held?.brief === "string" ? held.brief : "";
+  return brief.trim().split("\n")[0].slice(0, 200) || "Held brief";
 }
 
 async function applyLookup(

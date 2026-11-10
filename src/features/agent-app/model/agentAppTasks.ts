@@ -17,7 +17,6 @@
 //   the goal and the hub project id.
 // - A finished result read through tasks.status counts as received: the row is acknowledged and its report turn
 //   dropped.
-import { dropHeld, isLaunching, keepHeld } from "../../fresh-eyes/model/held";
 import { monoHomeFence } from "../../hub/model/hubMcp";
 import type { QuickLaunch } from "../../quick-composer/model/quickComposer";
 import { modelEffortLabel, modelsFor, resolveModel } from "../../sessions/model/models";
@@ -286,6 +285,10 @@ export type AgentAppTasksHost = {
     /** The delegate call, kept so a later approval can start this same brief. */
     held?: Record<string, unknown>;
   }): Promise<{ hold: boolean; why: string }>;
+  /** WP-144: the chat's briefs waiting on a fresh-eyes review, each named by the chat it will be. */
+  freshEyesWaiting?(ownerSession: string): { childSessionId: string; title: string; line: string }[];
+  /** WP-144: the chat took back a brief waiting on a review (task_cancel). True when one matched. */
+  freshEyesCancel?(ownerSession: string, childSessionId: string): Promise<boolean>;
   /**
    * Where a Mono's work goes (hub/model/monoTeams.ts). Absent outside the hub, where a Mono starts workers in its
    * projects as before.
@@ -792,24 +795,17 @@ async function delegate(
     }
   }
   // WP-144: fresh-eyes review, off unless this project turned it on. Builders wait for approval.
-  // The brief stays a waiting task. Approve starts it; the reviewers do not sit inside this call.
+  // The review keeps this call as a waiting task, and Approve (or Skip once) asks tasks.delegate again under the same
+  // request ID. The reviewers run after this call returns, so it never waits on them.
   if (tasks.freshEyes) {
-    const heldInput = { ...input };
-    keepHeld(source.cwd, requestId, async () => delegate(source, requestId, heldInput, host, helpers));
-    let eyes: { hold: boolean; why: string } | undefined;
-    try {
-      eyes = await tasks.freshEyes({
-        project: source.cwd,
-        requestId,
-        plan: brief,
-        ownerSession: source.id,
-        reading: input.reading,
-        held: heldInput,
-      });
-    } catch (error) {
-      if (!isLaunching(source.cwd, requestId)) dropHeld(source.cwd, requestId);
-      throw error;
-    }
+    const eyes = await tasks.freshEyes({
+      project: source.cwd,
+      requestId,
+      plan: brief,
+      ownerSession: source.id,
+      reading: input.reading,
+      held: input,
+    });
     if (eyes?.hold === true) {
       return {
         taskId: null,
@@ -823,7 +819,6 @@ async function delegate(
             : "Fresh-eyes review: waiting on you",
       };
     }
-    if (!isLaunching(source.cwd, requestId)) dropHeld(source.cwd, requestId);
   }
   // WP-40: a bad gate is refused before a worker starts. Nothing named keeps the routes check alone.
   const gates = gateRequest(input);
@@ -1291,6 +1286,8 @@ async function status(source: Session, input: Record<string, unknown>, host: Age
   );
   // Waiting for a free worker: no task yet, only the chat it will be (H8).
   const queued = ids ? [] : (tasks.pool?.queued(source.id) ?? []);
+  // WP-144: a brief held for a fresh-eyes review is waiting too, though no worker is queued for it.
+  const reviewed = ids ? [] : (tasks.freshEyesWaiting?.(source.id) ?? []);
   const team = ids ? [] : await othersOpen(source, tasks);
   return {
     tasks: rows.map((row, index) =>
@@ -1300,19 +1297,28 @@ async function status(source: Session, input: Record<string, unknown>, host: Age
         trees[index].filter((entry) => entry.parentId === row.id),
       ),
     ),
-    ...(queued.length
+    ...(queued.length || reviewed.length
       ? {
-          waiting: queued.map(({ job, line }) => ({
-            childSessionId: job.id,
-            title: job.title,
-            status: "waiting",
-            waiting: line,
-            ...(job.heavy ? { heavy: true } : {}),
-          })),
+          waiting: [
+            ...queued.map(({ job, line }) => ({
+              childSessionId: job.id,
+              title: job.title,
+              status: "waiting",
+              waiting: line,
+              ...(job.heavy ? { heavy: true } : {}),
+            })),
+            ...reviewed.map((entry) => ({
+              childSessionId: entry.childSessionId,
+              title: entry.title,
+              status: "waiting",
+              waiting: entry.line,
+              freshEyes: true,
+            })),
+          ],
         }
       : {}),
     ...(team.length ? { othersRunning: team } : {}),
-    ...(rows.length || queued.length
+    ...(rows.length || queued.length || reviewed.length
       ? {}
       : {
           note: team.length
@@ -1396,6 +1402,8 @@ async function cancel(source: Session, input: Record<string, unknown>, host: Age
     input.reason === undefined ? "Cancelled by its owner." : text(input.reason, "reason", 500);
   // One still waiting for a free worker (named by its childSessionId) never starts.
   if (tasks.pool?.unqueue(source.id, id)) return { taskId: id, status: "cancelled", stopFailed: [] };
+  // WP-144: so does one held for a fresh-eyes review.
+  if (await tasks.freshEyesCancel?.(source.id, id)) return { taskId: id, status: "cancelled", stopFailed: [] };
   const [row] = await ownRows(source, tasks, [id]);
   const { stopFailed, cancelled } = await tasks.cancel(source.id, row, reason);
   const [after] = await tasks.owned(source.id, { ids: [id] });

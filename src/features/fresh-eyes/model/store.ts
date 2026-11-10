@@ -19,8 +19,12 @@ export type ReviewRecord = {
   /** The inbox question was asked. A failed ask stays false so the next start tries again. */
   asked: boolean;
   plan: string;
+  /** The chat that asked, so the held brief goes back to it when the review is decided. */
+  owner?: string;
   /** The delegate call kept while builders wait. Disk values are untrusted and dropped unless plain. */
   held?: Record<string, unknown>;
+  /** The held brief went back through tasks.delegate. It is not started a second time. */
+  launched?: boolean;
 };
 
 type FileShape = {
@@ -107,6 +111,10 @@ function normalize(row: ReviewRecord): ReviewRecord {
   };
   if (held) next.held = held;
   else delete next.held;
+  if (typeof row.owner === "string" && row.owner.trim()) next.owner = row.owner;
+  else delete next.owner;
+  if (row.launched === true) next.launched = true;
+  else delete next.launched;
   return next;
 }
 
@@ -284,5 +292,20 @@ export function putReview(
       return { ok: false, current: reviewFor(record.project, record.requestId, storage) };
     }
     return { ok: true, current: next };
+  });
+}
+
+/** Forget one review (its brief was cancelled). True when it was there. */
+export function dropReview(
+  project: string,
+  requestId: string,
+  storage: EyesStorage = freshEyesStorage(),
+): Promise<boolean> {
+  const key = projectKey(project);
+  return queued(() => {
+    const file = loadFreshEyes(storage);
+    if (!file.reviews.some((row) => row.project === key && row.requestId === requestId)) return false;
+    file.reviews = file.reviews.filter((row) => !(row.project === key && row.requestId === requestId));
+    return save(storage, file, file.revision);
   });
 }

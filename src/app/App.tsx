@@ -130,6 +130,9 @@ import {
 } from "../features/hub/model/leadershipDelegation";
 import { bindCouncilApp } from "../features/council/model/seatSessions";
 import { bindFreshEyesApp } from "../features/fresh-eyes/model/bind";
+import { releaseHeld, syncHeldDecisions } from "../features/fresh-eyes/model/gate";
+import { bindHeldStarter } from "../features/fresh-eyes/model/held";
+import { subscribeFreshEyes } from "../features/fresh-eyes/model/store";
 import { postLeadReport } from "../features/hub/model/roomReports";
 import { useDelegationTree } from "../features/monos/hooks/useDelegationTree";
 import { usePrWatches } from "../features/pr-watch/hooks/usePrWatches";
@@ -13484,6 +13487,51 @@ function Workspace({
       window.clearTimeout(timer);
     };
   }, [pumpWorkersNow]);
+  // WP-144: a brief held for a fresh-eyes review starts when the person approves or skips it. It is the same
+  // tasks.delegate call asked again under the same request ID, the way a waiting worker starts, so the checks, the
+  // worker limits and the waiting line all apply. The brief is kept with the review, so a restart does not lose it.
+  const steeringRef = useRef(steering);
+  steeringRef.current = steering;
+  useEffect(() => {
+    const unbind = bindHeldStarter({
+      canStart: (owner) =>
+        !!controlRequestRef.current && sessionsRef.current.some((session) => session.id === owner),
+      start: (owner, requestId, input) => {
+        // Its first ask answered "waiting" and that answer is remembered; this one starts it.
+        appReceipts.current.delete(`${owner}:${requestId}`);
+        return controlRequestRef.current!({
+          namespace: "app",
+          sessionId: owner,
+          requestId,
+          action: "tasks.delegate",
+          input,
+        });
+      },
+    });
+    const release = () => void releaseHeld();
+    const off = subscribeFreshEyes(release);
+    release();
+    // An answer given in the Inbox or Home reaches the review the same way a click on the crew card does.
+    const offDecisions = watchDecisions(
+      (event, handler) => listen(event, () => handler()),
+      () =>
+        void syncHeldDecisions(async (project, key) => {
+          const rows = await steeringRef.current.backend.decisions();
+          const found = rows.find((row) => row.project === project && row.decisionKey === key);
+          return found ? { answer: found.answer, state: found.state } : null;
+        }),
+    );
+    return () => {
+      offDecisions();
+      off();
+      unbind();
+    };
+  }, []);
+  // A chat opened after a restart can take the brief it asked for.
+  const openChatIds = useMemo(() => sessions.map((session) => session.id).join("\n"), [sessions]);
+  useEffect(() => {
+    void releaseHeld();
+  }, [openChatIds]);
   // A worker the provider refused for its limit keeps its task (H8): with no other account to move to (E5), it
   // carries on by itself, once per refusal. A refusal that named no reset gets E5's (heldRetryAt): the latest usage
   // reading's, else five hours on; a fresh reading that shows room brings the retry forward.

@@ -40,6 +40,14 @@ Before a first mate hands a plan to the crew, Hivra can run a cheap "fresh eyes"
 - [ ] Credits / SOURCES / NOTICE correct if any EGM text was translated; `credits.test.ts` green.
 - [ ] Browser spec covers the decision card.
 
+## How a held brief starts
+
+- With the setting on, `delegate_task` keeps the call (its reading list too) with the review and answers at once with a waiting task, `status: "waiting"`. The reviewers run after that answer, so the call never waits on them (the app call is cut at 35 s and the MCP hop at 40 s).
+- The brief shows in `task_status` under `waiting` and `task_cancel` takes it back.
+- Approve and Skip once (on the crew card, or as an answer in the Inbox) ask `tasks.delegate` again under the same request ID, the way a waiting worker starts. The usual checks, worker limits and waiting line apply. Edit plan does not start it.
+- The brief is stored with the review, so it survives a restart. A brief whose chat is not open yet starts once the chat is.
+- `delegate_task` accepts `reading` (up to 8 entries, each a path and its text).
+
 ## Licence
 
 Apache-2.0, Copyright 2026 Google LLC (elephant-goldfish-model). Follow Hivra vendor rules for any copied or translated files.

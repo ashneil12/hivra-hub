@@ -4,7 +4,7 @@
 // stops the whole tree beneath the task (stopTree.ts), a wait marks the chat as waiting (so its workers' questions come
 // back through the wait, not a wake), and an answer is noted for the question router before it reaches the worker.
 import type { AgentAppTasksHost } from "../../agent-app/model/agentAppTasks";
-import { reviewBeforeCrew } from "../../fresh-eyes/model/gate";
+import { cancelHeld, heldWaiting, reviewBeforeCrew } from "../../fresh-eyes/model/gate";
 import { decideGateVerdict, saveGatePlan } from "../../firstmate/model/completionGates";
 import type { Session } from "../../sessions/model/session";
 import type { UserQuestionReply } from "../../sessions/model/userQuestion";
@@ -181,6 +181,9 @@ export function delegationTasksHost(deps: DelegationTasksDeps): AgentAppTasksHos
         },
         { outsideHop: true },
       ),
+    // WP-144: a held brief is a waiting task: task_status lists it and task_cancel takes it back.
+    freshEyesWaiting: (owner) => heldWaiting(owner),
+    freshEyesCancel: (owner, childSessionId) => cancelHeld(owner, childSessionId),
     // WP-40: the brief's gates stay with the task, and its first mate accepts an unsure one.
     saveGates: (id, request, folder) => saveGatePlan(id, request, folder),
     decideGates: (owner, id, accept, reason) => decideGateVerdict(owner, id, accept, reason),
