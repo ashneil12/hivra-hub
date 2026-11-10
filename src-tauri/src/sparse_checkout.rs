@@ -1213,6 +1213,8 @@ mod tests {
     fn git_repo(scratch: &Scratch) -> PathBuf {
         let repo = scratch.repo("repo name");
         git_ok(&repo, &["init", "-b", "main"]);
+        // Windows runners check text out with CRLF by default; the tests compare bytes.
+        git_ok(&repo, &["config", "core.autocrlf", "false"]);
         std::fs::write(repo.join("keep.txt"), b"keep-this\n").unwrap();
         std::fs::write(repo.join("bulky.bin"), vec![7u8; 64]).unwrap();
         git_ok(&repo, &["add", "keep.txt", "bulky.bin"]);
