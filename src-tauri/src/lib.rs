@@ -48,6 +48,8 @@ pub mod disclaim;
 mod explore_agent; // WP-143: read-only check for an Explore agent the person already defined.
 mod external_editor;
 mod firstmate;
+// Hivra WP-172: the checkpoint of a First Mate fan-out, kept so a crash mid-plan can resume.
+mod fanout_checkpoint;
 mod fs;
 mod gates;
 mod gitlab;
@@ -724,6 +726,10 @@ pub fn run() {
             worker_queue::worker_queue_import_local,
             worker_queue::worker_queue_claim,
             worker_queue::worker_queue_finish,
+            // Hivra WP-172: a fan-out's checkpoint (save, list for resume, remove when settled).
+            fanout_checkpoint::fanout_checkpoint_save,
+            fanout_checkpoint::fanout_checkpoint_list,
+            fanout_checkpoint::fanout_checkpoint_remove,
             worker_queue::worker_settings,
             worker_queue::worker_limits_set,
             worker_queue::worker_model_set,
