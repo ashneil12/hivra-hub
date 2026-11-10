@@ -34,7 +34,9 @@ Prefer Tailscale or the LAN. `open_router` is unchanged from today (it stays at 
 
 `inbox.list` and `crew.status` take an optional `projectId` (the same encoded project id the workspace poll already uses). Without it they cover every project the desktop has, except a home folder. `session.approve` and `session.deny` take `conversationId`, `requestId`, `tool`, `command` (null when the tool has no command), and `paths`.
 
-An approval the desktop did not publish is refused in the pairing service, before the window is asked. The window checks the live session again and refuses if the call changed, the turn ended, or the session is a worker the lead answers. A second decision for the same request id is refused.
+An approval the desktop did not publish is refused in the pairing service, before the window is asked. The window checks the live session again and refuses if the call changed, the turn ended, or the session is a worker the lead answers. A second decision for the same call is refused. The answer is remembered by the call's own block id, not its request id, because request ids start again at 1 each time a harness process restarts.
+
+A Mono's room-session call is not published. A room turn's approval is answered through the Mono habit relay (the desktop sets it "cancelled" when no relay is waiting), not through the direct approval the phone calls, so a phone "allow" there could report done without the tool running. The phone shows no line for it and cannot answer it (fail closed). A Mono's own one-to-one chat is published: its approval is a plain harness call, answered directly. Every listed chat is published too.
 
 ## Build
 

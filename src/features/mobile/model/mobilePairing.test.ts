@@ -69,6 +69,7 @@ describe("live approvals", () => {
       {
         conversationId: "chat-1",
         requestId: 7,
+        blockId: "b-7",
         tool: "Bash",
         command: "git status --porcelain",
         paths: ["src/a.ts"],
@@ -98,6 +99,16 @@ describe("live approvals", () => {
     expect(publishedApprovals(live, listed, new Set(["chat-1"])).rows).toHaveLength(1);
     expect(publishedApprovals(live, new Set(["chat-1"]), new Set()).rows).toHaveLength(1);
     expect(publishedApprovals(live, listed, new Set(["other"])).rows).toEqual([]);
+  });
+
+  it("never publishes a Mono's room-session call, even when the session is listed", () => {
+    // A room turn answers through the Mono relay, not the direct approval, so a
+    // phone "allow" there would report done without the tool running.
+    const live = [session({ blocks: [tool(7, SHELL)] })];
+    const room = new Set(["chat-1"]);
+    expect(publishedApprovals(live, new Set(["chat-1"]), new Set(), room).rows).toEqual([]);
+    expect(publishedApprovals(live, new Set(), new Set(["chat-1"]), room).rows).toEqual([]);
+    expect(publishedApprovals(live, new Set(["chat-1"]), new Set(), new Set(["other"])).rows).toHaveLength(1);
   });
 });
 
@@ -196,6 +207,35 @@ describe("approve and deny", () => {
       runMobilePairing("session.approve", { ...params, all: true }, ctx([session({ blocks: [tool(3, SHELL)] })])),
     ).rejects.toThrow(/One tool call/);
     expect(calls).toEqual([["chat-1", 7, "deny"]]);
+  });
+
+  it("lets a later run reuse a request id after an earlier run already answered it", async () => {
+    // Each harness process numbers its approvals from 1 again. The answered set
+    // must key on the block, or the second run's real call reads as answered.
+    const first = session({ blocks: [{ ...tool(1, SHELL), id: "run-1-block" }] });
+    const params = {
+      conversationId: "chat-1",
+      requestId: 1,
+      tool: "Bash",
+      command: SHELL.command,
+      paths: SHELL.paths,
+    };
+    expect(await runMobilePairing("session.approve", params, ctx([first]))).toMatchObject({ requestId: 1 });
+    const second = session({ blocks: [{ ...tool(1, { ...SHELL, command: "git log -1" }), id: "run-2-block" }] });
+    const result = await runMobilePairing(
+      "session.approve",
+      { ...params, command: "git log -1" },
+      ctx([second]),
+    );
+    expect(result).toMatchObject({ requestId: 1, command: "git log -1" });
+    expect(calls).toEqual([
+      ["chat-1", 1, "allow"],
+      ["chat-1", 1, "allow"],
+    ]);
+    // The same block again is still refused.
+    await expect(runMobilePairing("session.approve", { ...params, command: "git log -1" }, ctx([second]))).rejects.toThrow(
+      /already/,
+    );
   });
 
   it("does not approve a remote session the desktop cannot reach", async () => {

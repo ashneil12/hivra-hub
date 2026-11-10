@@ -33,6 +33,8 @@ const MAX_PATHS = 64;
 export type PublishedApproval = {
   conversationId: string;
   requestId: number;
+  /** The block that carries this call. Unique for good, unlike a session's request ids. */
+  blockId: string;
   tool: string;
   /** The provider's command, unchanged. Null when the tool has none. */
   command: string | null;
@@ -125,6 +127,10 @@ function approvalOf(session: Session, block: Block): PublishedApproval | null {
   const call = approval?.call;
   const requestId = approval?.requestId;
   if (!approval || approval.decided) return null;
+  // A session's request ids start again at 1 with each harness process. Without
+  // the block's own id the answered set cannot tell a new call that reuses one
+  // from the call already decided.
+  if (typeof block.id !== "string" || !block.id || block.id.length > 256) return null;
   if (typeof requestId !== "number" || !Number.isSafeInteger(requestId) || requestId < 0) return null;
   const tool = call?.tool;
   if (typeof tool !== "string" || !tool.trim() || tool.length > MAX_TOOL || tool.includes("\0")) return null;
@@ -147,6 +153,7 @@ function approvalOf(session: Session, block: Block): PublishedApproval | null {
   return {
     conversationId: session.id,
     requestId,
+    blockId: block.id,
     tool,
     command,
     paths,
@@ -179,19 +186,26 @@ export function liveApprovals(sessions: readonly Session[]): LiveApprovals {
 }
 
 /**
- * Calls the phone may approve: a listed chat, or a Mono's own chat.
+ * Calls the phone may approve: a listed chat, or a Mono's own one-to-one chat.
  * A Mono's chat stays off the session list. A call from neither is not published.
+ * A room conversation runs in a session of its own, and answering one there goes
+ * through the Mono's habit/hidden-run path, not the direct approval the phone
+ * calls, so those are left out: better no answer than a "done" for a tool that
+ * never ran.
  */
 export function publishedApprovals(
   sessions: readonly Session[],
   listedSessionIds: ReadonlySet<string>,
   monoSessionIds: ReadonlySet<string>,
+  roomSessionIds: ReadonlySet<string> = new Set(),
 ): LiveApprovals {
   const live = liveApprovals(sessions);
   if (live.truncated) return live;
   return {
     rows: live.rows.filter(
-      (row) => listedSessionIds.has(row.conversationId) || monoSessionIds.has(row.conversationId),
+      (row) =>
+        !roomSessionIds.has(row.conversationId) &&
+        (listedSessionIds.has(row.conversationId) || monoSessionIds.has(row.conversationId)),
     ),
     truncated: false,
   };
@@ -555,7 +569,9 @@ async function decide(method: string, params: Record<string, unknown>, ctx: Pair
     throw new Error("The command does not match.");
   }
   const book = ctx.answered ?? sharedAnswered;
-  const key = `${conversationId}\0${requestId}`;
+  // The block id, not the request id: request ids restart at 1 with each run, so
+  // keying on them would refuse a new call that happened to reuse one.
+  const key = `${conversationId}\0${call.blockId}`;
   if (book.has(key)) throw new Error("This approval was already answered.");
   const session = ctx.sessions.find((item) => item.id === conversationId);
   if (!session || ctx.remoteBlocked(session)) throw new Error("Open this session on the desktop to answer it.");

@@ -214,11 +214,13 @@ export async function mobileCatalog(
     }),
   );
   // WP-150: the calls a paired phone may approve. A Mono's own chat is not a session card.
-  // The poll itself does not return these.
+  // The poll itself does not return these. A Mono's room sessions are left out: answering
+  // one goes through the Mono relay, which the phone's direct approval does not use.
   const approvals = publishedApprovals(
     live,
     new Set(sessions.keys()),
     new Set(monos.flatMap((mono) => (mono.sessionId ? [mono.sessionId] : []))),
+    new Set(roster.flatMap((mono) => Object.values(mono.roomSessions ?? {}))),
   );
   return {
     projects,
