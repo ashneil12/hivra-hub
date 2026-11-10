@@ -3,7 +3,7 @@ use std::io::{BufRead, BufReader, ErrorKind, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{mpsc, Mutex};
+use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -1753,10 +1753,11 @@ pub struct GitBranchEntry {
     pub remote: Option<String>,
 }
 
-/// Local branches, plus remote-only branches that can be checked out.
+/// Local branches, plus remote-only branches that can be checked out. A git that has not answered within
+/// `GIT_BRANCHES_LIMIT` is killed and the call fails, so a stuck git leaves no process behind.
 #[tauri::command]
 pub async fn git_branches(cwd: String) -> Result<GitBranches, String> {
-    tauri::async_runtime::spawn_blocking(move || Ok(git_branches_for(&expand_home(&cwd))))
+    tauri::async_runtime::spawn_blocking(move || git_branches_for(&expand_home(&cwd)))
         .await
         .map_err(|e| e.to_string())?
 }
@@ -4791,26 +4792,75 @@ fn git_is_work_tree(root: &Path) -> bool {
     git_stdout(root, &["rev-parse", "--is-inside-work-tree"]).as_deref() == Some("true")
 }
 
-fn git_branches_for(root: &Path) -> GitBranches {
-    if !git_is_work_tree(root) {
-        return GitBranches::default();
+/// How long `git_branches` lets git run, all its calls together, before it kills it and fails. The new chat's own
+/// wait for this list is shorter (`NEW_CHAT_GIT_WAIT_MS` in newChatWorktree.ts); this is what keeps a git that never
+/// answers from outliving that wait.
+const GIT_BRANCHES_LIMIT: Duration = Duration::from_secs(10);
+const GIT_BRANCHES_NO_ANSWER: &str = "git did not answer";
+/// A branch list is a few KB. This only stops a runaway.
+const GIT_BRANCHES_MAX_BYTES: usize = 64 * 1024 * 1024;
+
+fn git_branches_for(root: &Path) -> Result<GitBranches, String> {
+    git_branches_within(root, GIT_BRANCHES_LIMIT)
+}
+
+/// The branch list, with every git call it makes under one time limit. At `limit` the git still running is killed
+/// (`git_output_capped` stops on the flag) and the list fails with `GIT_BRANCHES_NO_ANSWER`, which is not "not a repo".
+fn git_branches_within(root: &Path, limit: Duration) -> Result<GitBranches, String> {
+    let expired = Arc::new(AtomicBool::new(false));
+    let (finished, finish) = mpsc::channel::<()>();
+    let flag = Arc::clone(&expired);
+    thread::spawn(move || {
+        // Dropping `finished` ends the wait at once: the list is done and nothing is left to expire.
+        if finish.recv_timeout(limit) == Err(mpsc::RecvTimeoutError::Timeout) {
+            flag.store(true, Ordering::Release);
+        }
+    });
+    let listed = list_git_branches(root, &expired);
+    drop(finished);
+    listed
+}
+
+/// One git call of the list: its trimmed output, `Ok(None)` when git refused it or printed nothing, `Err` when the
+/// limit passed (git was killed).
+fn git_listing_text(
+    root: &Path,
+    args: &[&str],
+    expired: &AtomicBool,
+) -> Result<Option<String>, String> {
+    let no_answer = || Err(GIT_BRANCHES_NO_ANSWER.to_string());
+    if expired.load(Ordering::Acquire) {
+        return no_answer();
+    }
+    match git_output_capped(root, args, GIT_BRANCHES_MAX_BYTES, Some(expired)) {
+        Some((bytes, false)) => {
+            let text = String::from_utf8_lossy(&bytes).trim().to_string();
+            Ok(Some(text).filter(|text| !text.is_empty()))
+        }
+        _ if expired.load(Ordering::Acquire) => no_answer(),
+        _ => Ok(None),
+    }
+}
+
+fn list_git_branches(root: &Path, expired: &AtomicBool) -> Result<GitBranches, String> {
+    let git = |args: &[&str]| git_listing_text(root, args, expired);
+    if git(&["rev-parse", "--is-inside-work-tree"])?.as_deref() != Some("true") {
+        return Ok(GitBranches::default());
     }
 
-    let current_branch = git_head_branch(root);
-    let head_sha = git_stdout(root, &["rev-parse", "--short", "HEAD"]);
+    let current_branch =
+        git(&["symbolic-ref", "--short", "HEAD"])?.filter(|branch| branch != "HEAD");
+    let head_sha = git(&["rev-parse", "--short", "HEAD"])?;
     let detached = current_branch.is_none() && head_sha.is_some();
     let current = current_branch.clone().or(head_sha);
 
     let mut branches = Vec::new();
     let mut local_names = HashSet::new();
-    if let Some(text) = git_run(
-        root,
-        &[
-            "for-each-ref",
-            "--format=%(refname:short)\t%(HEAD)",
-            "refs/heads",
-        ],
-    ) {
+    if let Some(text) = git(&[
+        "for-each-ref",
+        "--format=%(refname:short)\t%(HEAD)",
+        "refs/heads",
+    ])? {
         for line in text.lines() {
             let line = line.trim();
             if line.is_empty() {
@@ -4840,10 +4890,7 @@ fn git_branches_for(root: &Path) -> GitBranches {
         }
     }
 
-    if let Some(text) = git_run(
-        root,
-        &["for-each-ref", "--format=%(refname:short)", "refs/remotes"],
-    ) {
+    if let Some(text) = git(&["for-each-ref", "--format=%(refname:short)", "refs/remotes"])? {
         for line in text.lines() {
             let full = line.trim();
             if full.is_empty() {
@@ -4878,11 +4925,11 @@ fn git_branches_for(root: &Path) -> GitBranches {
             .then_with(|| a.remote.cmp(&b.remote))
     });
 
-    GitBranches {
+    Ok(GitBranches {
         current,
         detached,
         branches,
-    }
+    })
 }
 
 fn git_checkout_for(root: &Path, name: &str, remote: Option<&str>) -> Result<String, String> {
@@ -9608,7 +9655,7 @@ mod tests {
     fn git_branches_empty_outside_a_repo() {
         let dir = tmp("git-branches-none");
         std::fs::write(dir.0.join("notes.txt"), "hello\n").unwrap();
-        assert_eq!(git_branches_for(&dir.0), GitBranches::default());
+        assert_eq!(git_branches_for(&dir.0).unwrap(), GitBranches::default());
     }
 
     #[test]
@@ -9617,13 +9664,76 @@ mod tests {
         if !init_git(&dir.0, "main", None) {
             return;
         }
-        let listed = git_branches_for(&dir.0);
+        let listed = git_branches_for(&dir.0).unwrap();
         assert_eq!(listed.current.as_deref(), Some("main"));
         assert!(!listed.detached);
         assert!(listed
             .branches
             .iter()
             .any(|branch| { branch.name == "main" && branch.current && branch.remote.is_none() }));
+    }
+
+    /// Git reads `.git/config` first, so a FIFO there blocks every git command in the folder until something writes
+    /// to it: a git that never answers, with nothing to mock.
+    #[cfg(unix)]
+    fn repo_whose_git_never_answers(label: &str) -> Option<Tmp> {
+        let dir = tmp(label);
+        if !init_git_commit(&dir.0, &[("a.txt", "alpha\n")]) {
+            return None;
+        }
+        let config = dir.0.join(".git").join("config");
+        std::fs::remove_file(&config).ok()?;
+        let made = Command::new("mkfifo").arg(&config).status().ok()?;
+        made.success().then_some(dir)
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn git_branches_kills_a_git_that_does_not_answer_within_the_limit() {
+        use std::os::unix::fs::OpenOptionsExt;
+        let Some(dir) = repo_whose_git_never_answers("git-branches-hung") else {
+            return;
+        };
+        let config = dir.0.join(".git").join("config");
+        let root = dir.0.clone();
+        let (sender, receiver) = mpsc::channel();
+        let started = Instant::now();
+        // Off the test thread, so a limit that stops working fails this test and does not hang it.
+        thread::spawn(move || {
+            let _ = sender.send(git_branches_within(&root, Duration::from_millis(600)));
+        });
+        let result = receiver
+            .recv_timeout(Duration::from_secs(5))
+            .expect("git_branches did not return after its limit");
+        assert_eq!(result, Err(GIT_BRANCHES_NO_ANSWER.to_string()));
+        assert!(started.elapsed() >= Duration::from_millis(500));
+        // The killed git no longer has the FIFO open for reading, so a write open that does not wait finds no reader
+        // (ENXIO). A git left running would be the reader.
+        let gone = (0..50).any(|_| {
+            let opened = std::fs::OpenOptions::new()
+                .write(true)
+                .custom_flags(libc::O_NONBLOCK)
+                .open(&config);
+            match opened {
+                Err(error) if error.raw_os_error() == Some(libc::ENXIO) => true,
+                _ => {
+                    thread::sleep(Duration::from_millis(100));
+                    false
+                }
+            }
+        });
+        assert!(gone, "a git process was left running after the limit");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn git_branches_limit_does_not_cut_a_git_that_answers() {
+        let dir = tmp("git-branches-answers");
+        if !init_git_commit(&dir.0, &[("a.txt", "alpha\n")]) {
+            return;
+        }
+        let listed = git_branches_within(&dir.0, Duration::from_secs(30)).unwrap();
+        assert_eq!(listed.current.as_deref(), Some("main"));
     }
 
     #[test]
@@ -9636,7 +9746,7 @@ mod tests {
             git_create_branch_for(&dir.0, "feat/picker").unwrap(),
             "feat/picker"
         );
-        let listed = git_branches_for(&dir.0);
+        let listed = git_branches_for(&dir.0).unwrap();
         assert_eq!(listed.current.as_deref(), Some("feat/picker"));
         assert_eq!(git_checkout_for(&dir.0, "main", None).unwrap(), "main");
         assert_eq!(git_head_branch(&dir.0).as_deref(), Some("main"));
@@ -9760,7 +9870,7 @@ mod tests {
         {
             return;
         }
-        let listed = git_branches_for(&repo.0);
+        let listed = git_branches_for(&repo.0).unwrap();
         assert_eq!(listed.current.as_deref(), Some("main"));
         let remote = listed
             .branches
