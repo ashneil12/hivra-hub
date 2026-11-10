@@ -7,11 +7,13 @@ import { getSession } from "../../sessions/data/sessionStore";
 import type { QueuedMessage, Session } from "../../sessions/model/session";
 import { isOrchestratorChat } from "../../monos/model/orchestrators";
 import { setCurrentPrWatches } from "../model/prWatchBoard";
+import { noteNotable } from "../../notifications/model/notableDelivery";
 import {
   OWNER_RETRY_MS,
   PR_WATCH_WAKE,
   PR_WATCHES_CHANGED,
   PrWatchTracker,
+  ciRedEvent,
   loadOwner,
   tauriPrWatches,
   type PrWatchBackend,
@@ -40,6 +42,11 @@ export function usePrWatches(options: {
         isMono: isOrchestratorChat,
         load: (id) => loadOwner(latest.current.sessionsRef.current, id, getSession),
         queueWake: (monoId, message) => latest.current.queueWake(monoId, message),
+        // WP-164: a red CI is a notable event: one ping for it, even inside quiet hours (notableEvents.ts).
+        noticed: (wake) => {
+          const event = ciRedEvent(wake);
+          if (event) void noteNotable(event).catch((error: unknown) => console.warn("Could not note a red CI", error));
+        },
       }),
   );
   setCurrentPrWatches(tracker);

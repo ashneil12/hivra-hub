@@ -1,10 +1,13 @@
 // The PR watch's webview side (prWatches.ts, prWatchJobs.ts): a stored wake reaches its owner's chat exactly once,
 // across restarts, as an app notification; the board's words for a watch. The store is a stand-in with pr_watch.rs's
 // forward-only delivery rule.
+import { readFileSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
 import { newSession, type QueuedMessage, type Session } from "../../sessions/model/session";
 import {
+  CHECKS_FAILED_SUMMARY,
   PrWatchTracker,
+  ciRedEvent,
   loadOwner,
   prWatchLine,
   waitingActivity,
@@ -268,5 +271,65 @@ describe("the board", () => {
       "Checkout: /w/hivra-pr-42",
       "Started watching ashneil12/hivra#42",
     ]);
+  });
+});
+
+describe("telling the programme about a red CI", () => {
+  it("names a failed-checks wake as a ci-red event, and nothing else", () => {
+    expect(ciRedEvent(wake({ id: "pr-watch-w1-1", createdAt: 5_000 }))).toEqual({
+      id: "pr-watch-w1-1",
+      kind: "ci-red",
+      text: "PR #42: checks failed",
+      at: 5_000,
+    });
+    expect(
+      ciRedEvent(wake({ id: "pr-watch-w1-2", title: "PR #42: checks failed, new comments" }))?.text,
+    ).toBe("PR #42: checks failed, new comments");
+    // a merge conflict is a failed wake too, but it is not a red CI
+    expect(ciRedEvent(wake({ id: "a", title: "PR #42: merge conflict" }))).toBeNull();
+    expect(ciRedEvent(wake({ id: "b", title: "PR #42: stopped watching, could not read it", kind: "unreadable" }))).toBeNull();
+    expect(ciRedEvent(wake({ id: "c", title: "PR #42: checks passed", outcome: "completed" }))).toBeNull();
+    expect(ciRedEvent(wake({ id: "d", title: "PR #42: new comments", outcome: "updated" }))).toBeNull();
+    expect(ciRedEvent(wake({ id: "e", kind: "merged", title: "PR #42: merged", outcome: "completed" }))).toBeNull();
+  });
+
+  it("says the same words as the Rust side that writes the title", () => {
+    const source = readFileSync("src-tauri/src/pr_watch/wake.rs", "utf8");
+    expect(/const SUMMARY_FAILED: &str = "([^"]+)";/.exec(source)?.[1]).toBe(CHECKS_FAILED_SUMMARY);
+  });
+
+  it("reports a red CI once, when its wake first goes to the owner, not when it is queued again", async () => {
+    const wakes = [wake({ id: "pr-watch-w1-1" }), wake({ id: "pr-watch-w1-2", title: "PR #42: checks passed", outcome: "completed" })];
+    const store = backend(wakes);
+    const app = host([mono()]);
+    const noticed = vi.fn();
+    const tracker = new PrWatchTracker(store.api, { ...app.host, noticed });
+    await tracker.deliver();
+    expect(noticed.mock.calls.map(([w]) => w.id)).toEqual(["pr-watch-w1-1", "pr-watch-w1-2"]);
+
+    // the app died after marking it queued but before the queue was saved: it is queued again, not noticed again
+    noticed.mockClear();
+    const lost = [wake({ id: "pr-watch-w1-3", delivery: "queued" })];
+    await new PrWatchTracker(backend(lost).api, { ...host([mono()]).host, noticed }).deliver();
+    expect(noticed).not.toHaveBeenCalled();
+  });
+
+  it("does not report a wake whose owner is gone, and a failing notice does not stop delivery", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const noticed = vi.fn();
+    const gone = [wake({ id: "pr-watch-w1-1", ownerSession: "gone" })];
+    await new PrWatchTracker(backend(gone).api, { ...host([]).host, noticed }).deliver();
+    expect(noticed).not.toHaveBeenCalled();
+
+    const wakes = [wake({ id: "pr-watch-w1-1" })];
+    const app = host([mono()]);
+    const tracker = new PrWatchTracker(backend(wakes).api, {
+      ...app.host,
+      noticed: () => {
+        throw new Error("storage blocked");
+      },
+    });
+    expect(await tracker.deliver()).toEqual({ queued: 1, delivered: 0, dropped: 0 });
+    expect(wakes[0].delivery).toBe("queued");
   });
 });
