@@ -1450,6 +1450,57 @@ describe("tasks.delegate gates (WP-40)", () => {
   });
 });
 
+describe("tasks.delegate reads the machine first (WP-161)", () => {
+  it("looks at the machine before it decides, so the very first launch meets a pause", async () => {
+    const { source, host, api, started } = fixture();
+    const seen: string[] = [];
+    let diskLow = false;
+    api.pool = {
+      limits: () => ({ workers: 6, heavy: 2 }),
+      setLimits: () => ({ workers: 6, heavy: 2 }),
+      model: () => undefined,
+      openRows: () => [],
+      refreshHealth: async () => {
+        seen.push("read");
+        diskLow = true;
+      },
+      admit: () => {
+        seen.push("admit");
+        return diskLow
+          ? { start: false, line: "Free disk is 24 GB, which is below 30 GB. Running builders keep going.", reason: "health" }
+          : { start: true };
+      },
+      enqueue: () => void seen.push("enqueue"),
+      started: () => undefined,
+      queued: () => [],
+    } as unknown as AgentAppTasksHost["pool"];
+    const out = (await handleAgentApp(source, "r-disk", "tasks.delegate", { brief: "Add delete." }, host)) as {
+      status: string;
+      waiting: string;
+    };
+    expect(seen).toEqual(["read", "admit", "enqueue"]);
+    expect(out.status).toBe("waiting");
+    expect(out.waiting).toContain("Free disk is 24 GB");
+    expect(started).toHaveLength(0);
+  });
+
+  it("starts as before when the host does not read the machine", async () => {
+    const { source, host, api, started } = fixture();
+    api.pool = {
+      limits: () => ({ workers: 6, heavy: 2 }),
+      setLimits: () => ({ workers: 6, heavy: 2 }),
+      model: () => undefined,
+      openRows: () => [],
+      admit: () => ({ start: true }),
+      enqueue: () => undefined,
+      started: () => undefined,
+      queued: () => [],
+    } as unknown as AgentAppTasksHost["pool"];
+    await handleAgentApp(source, "r-plain", "tasks.delegate", { brief: "Add delete." }, host);
+    expect(started).toHaveLength(1);
+  });
+});
+
 describe("tasks.accept (WP-40)", () => {
   it("accepts one of its own and refuses one that isn't, or a refusal with no reason", async () => {
     const rows = [
