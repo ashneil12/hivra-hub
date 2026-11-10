@@ -810,6 +810,10 @@ fn port_accepts(port: u16) -> bool {
     .is_ok()
 }
 
+/// How long the stop at quit waits for a stack whose stand-in is being restarted. A start may
+/// be downloading; a stand-in left running after the app is gone is worse than the race.
+const STOP_LOCK_WAIT: Duration = Duration::from_secs(5);
+
 /// Stop every fake service this data folder started. Called on quit and at the next start,
 /// so a stand-in does not keep running after the app is gone.
 pub fn stop_stand_ins(data_dir: &Path) -> Result<(), String> {
@@ -820,7 +824,8 @@ pub fn stop_stand_ins(data_dir: &Path) -> Result<(), String> {
     match load(&registry_dir(data_dir)) {
         Ok(store) => {
             for entry in &store.stacks {
-                if let Err(error) = stand_in.stop(&stack_dir(data_dir, &entry.id)) {
+                let dir = stack_dir(data_dir, &entry.id);
+                if let Err(error) = stop_under_lock(&stand_in, &dir, &dir) {
                     failure.get_or_insert(error);
                 }
             }
@@ -829,10 +834,23 @@ pub fn stop_stand_ins(data_dir: &Path) -> Result<(), String> {
             failure.get_or_insert(error);
         }
     }
-    let root = registry_dir(data_dir).join("stacks");
+    let registry = registry_dir(data_dir);
+    let root = registry.join("stacks");
     let Ok(canonical_root) = crate::fs::canonical(&root) else {
         return failure.map_or(Ok(()), Err);
     };
+    // The stacks folder is where every stand-in's pid file lives. One that is itself a link, or
+    // a junction, leads somewhere this app did not make for it, and what is in there is not
+    // this app's to stop.
+    let in_place = crate::fs::canonical(&registry)
+        .is_ok_and(|registry| canonical_root == registry.join("stacks"))
+        && !std::fs::symlink_metadata(&root).is_ok_and(|meta| meta.file_type().is_symlink());
+    if !in_place {
+        failure.get_or_insert(
+            "The stacks folder is a link, so it was not searched for stand-ins to stop.".into(),
+        );
+        return failure.map_or(Ok(()), Err);
+    }
     let Ok(read) = std::fs::read_dir(&root) else {
         return failure.map_or(Ok(()), Err);
     };
@@ -848,11 +866,31 @@ pub fn stop_stand_ins(data_dir: &Path) -> Result<(), String> {
         if !path_inside(&canonical_root, &canonical) {
             continue;
         }
-        if let Err(error) = stand_in.stop(&canonical) {
+        if let Err(error) = stop_under_lock(&stand_in, &path, &canonical) {
             failure.get_or_insert(error);
         }
     }
     failure.map_or(Ok(()), Err)
+}
+
+/// Stop one stack's stand-in under that stack's own lock, the one a reset holds across its
+/// stop-then-start, so the two cannot interleave and leave the new stand-in running. The lock
+/// belongs to the path the registry names (`lock_key`); the stand-in is stopped at `dir`.
+fn stop_under_lock(stand_in: &EmulateStandIn, lock_key: &Path, dir: &Path) -> Result<(), String> {
+    let lock = stand_in_lock(lock_key);
+    let started = Instant::now();
+    let _held = loop {
+        match lock.try_lock() {
+            Ok(guard) => break Some(guard),
+            Err(std::sync::TryLockError::Poisoned(poisoned)) => break Some(poisoned.into_inner()),
+            Err(std::sync::TryLockError::WouldBlock) if started.elapsed() < STOP_LOCK_WAIT => {
+                std::thread::sleep(Duration::from_millis(25));
+            }
+            // Waited long enough. The stand-in is stopped anyway.
+            Err(std::sync::TryLockError::WouldBlock) => break None,
+        }
+    };
+    stand_in.stop(dir)
 }
 
 fn stop_entry(env: &StackEnv, entry: &Entry) -> Result<(), String> {
@@ -5305,7 +5343,10 @@ mod tests {
         let mut command = Command::new("sh");
         command
             .arg("-c")
-            .arg(format!("sleep 30; : emulate {}", inside.display()))
+            .arg(format!(
+                "sleep 30; : emulate {}",
+                inside.join("emulate.config.json").display()
+            ))
             .process_group(0);
         let mut child = command.spawn().unwrap();
         std::thread::sleep(Duration::from_millis(50));
@@ -5326,6 +5367,123 @@ mod tests {
             "the stand-in was left running behind an unreadable list"
         );
         assert!(!inside.join("emulate.pid").exists());
+    }
+
+    /// The stacks folder is where every stand-in's pid file lives. If it is itself a link, the
+    /// walk would take another folder's processes for this app's and end them.
+    #[cfg(unix)]
+    #[test]
+    fn a_stacks_folder_that_is_a_link_is_not_followed() {
+        use std::os::unix::fs::symlink;
+        use std::os::unix::process::CommandExt;
+        let fix = Fix::new();
+        let elsewhere = fix.tmp.root.join("elsewhere");
+        let stack = elsewhere.join("s01234567");
+        std::fs::create_dir_all(&stack).unwrap();
+        let stack = crate::fs::canonical(&stack).unwrap();
+        let mut command = Command::new("sh");
+        command
+            .arg("-c")
+            .arg(format!(
+                "sleep 30; : emulate {}",
+                stack.join("emulate.config.json").display()
+            ))
+            .process_group(0);
+        let mut child = command.spawn().unwrap();
+        std::thread::sleep(Duration::from_millis(50));
+        std::fs::write(stack.join("emulate.pid"), format!("{}\n", child.id())).unwrap();
+        std::fs::create_dir_all(registry_dir(&fix.data)).unwrap();
+        symlink(&elsewhere, registry_dir(&fix.data).join("stacks")).unwrap();
+
+        let error = stop_stand_ins(&fix.data).unwrap_err();
+        assert!(error.contains("link"), "{error}");
+        let alive = Command::new("ps")
+            .args(["-p", &child.id().to_string()])
+            .output()
+            .unwrap()
+            .status
+            .success();
+        let _ = child.kill();
+        let _ = child.wait();
+        assert!(alive, "a process behind a linked stacks folder was ended");
+        assert!(stack.join("emulate.pid").exists());
+    }
+
+    /// The quit-time stop takes the same one-at-a-time lock a reset takes, so it cannot stop a
+    /// stand-in in the middle of a reset's stop-then-start and leave the new one running.
+    #[test]
+    fn the_stop_at_quit_waits_for_a_stack_that_is_being_restarted() {
+        let fix = Fix::new();
+        let id = "s0000a001";
+        update(&registry_dir(&fix.data), |store| {
+            store
+                .stacks
+                .push(running_entry(&fix, id, &fix.first, 1, [2, 3]));
+            Ok(())
+        })
+        .unwrap();
+        let lock = stand_in_lock(&stack_dir(&fix.data, id));
+        let held = lock.lock().unwrap();
+        let data = fix.data.clone();
+        let stopper = std::thread::spawn(move || stop_stand_ins(&data));
+        std::thread::sleep(Duration::from_millis(300));
+        assert!(
+            !stopper.is_finished(),
+            "the stop at quit did not wait for the stack's lock"
+        );
+        drop(held);
+        stopper.join().unwrap().unwrap();
+    }
+
+    /// A stand-in that cannot be proved this app's to stop may still hold the ports. It used to
+    /// fail every later start of that stack for good; it is a note on the card now, the old one
+    /// is left alone, and nothing is started beside it.
+    #[test]
+    fn an_old_fake_that_cannot_be_stopped_is_a_note_and_not_a_stack_that_cannot_start() {
+        struct Stubborn {
+            started: Mutex<usize>,
+        }
+        impl StandIn for Stubborn {
+            fn start(&self, _request: &StandInRequest) -> Result<StandInOutcome, String> {
+                *self.started.lock().unwrap() += 1;
+                Ok(StandInOutcome {
+                    pid: Some(1),
+                    note: None,
+                })
+            }
+
+            fn stop(&self, _stack_dir: &Path) -> Result<(), String> {
+                Err(emulate::STILL_RUNNING_NOTE.to_string())
+            }
+        }
+        let fix = Fix::new();
+        let stand_in = Arc::new(Stubborn {
+            started: Mutex::new(0),
+        });
+        let env = StackEnv {
+            stand_in: Some(stand_in.clone()),
+            ..fix.env()
+        };
+        maybe_start(
+            &env,
+            &fix.main,
+            &fix.first,
+            true,
+            Some(&emulated_decl()),
+            false,
+            true,
+        )
+        .unwrap_or_else(|error| panic!("the stack could not start: {error}"));
+        assert_eq!(*stand_in.started.lock().unwrap(), 0);
+        let store = load(&registry_dir(&fix.data)).unwrap();
+        assert!(store.stacks[0].running);
+        assert_eq!(
+            store.stacks[0].note.as_deref(),
+            Some(emulate::STILL_RUNNING_NOTE)
+        );
+        // A reset says the same and still does not fail.
+        reset(&env, &fix.first).unwrap();
+        assert_eq!(*stand_in.started.lock().unwrap(), 0);
     }
 
     /// `stop_stand_ins` does nothing unless the app calls it: once at the next start, before the
@@ -5374,7 +5532,10 @@ mod tests {
             let mut command = Command::new("sh");
             command
                 .arg("-c")
-                .arg(format!("sleep 30; : emulate {}", dir.display()))
+                .arg(format!(
+                    "sleep 30; : emulate {}",
+                    dir.join("emulate.config.json").display()
+                ))
                 .process_group(0);
             let child = command.spawn().unwrap();
             std::thread::sleep(Duration::from_millis(50));

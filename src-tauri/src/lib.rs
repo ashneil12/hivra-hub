@@ -460,7 +460,9 @@ pub fn run() {
                 eprintln!("WP-90: the named-app proxy did not start: {error}");
             }
             // stack-fakes (#88): a fake left from the last run is stopped before its name is put back.
-            let _ = stacks::stop_stand_ins(&claim.data_dir);
+            if let Err(error) = stacks::stop_stand_ins(&claim.data_dir) {
+                eprintln!("WP-90: a fake service left by the last run was not stopped: {error}");
+            }
             // WP-90: a stack still marked running from the last launch keeps its names on
             // this process; the new proxy has just pruned the previous owner's.
             match stacks::env_from_app(app.handle()) {
@@ -1302,8 +1304,15 @@ pub fn run() {
             // WP-81: stop the check's daemon with the app. It is not a login item.
             crate::delivery_gate::stop_daemons();
             // stack-fakes (#88): fake services stop with the app, not after it.
-            if let Ok(dir) = crate::project_file::data_dir(handle) {
-                let _ = stacks::stop_stand_ins(&dir);
+            match crate::project_file::data_dir(handle) {
+                Ok(dir) => {
+                    if let Err(error) = stacks::stop_stand_ins(&dir) {
+                        eprintln!("WP-90: a fake service was not stopped at quit: {error}");
+                    }
+                }
+                Err(error) => {
+                    eprintln!("WP-90: the fake services were not stopped at quit: {error}");
+                }
             }
         }
         _ => {}
