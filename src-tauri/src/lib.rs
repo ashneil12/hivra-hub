@@ -122,6 +122,8 @@ mod reminders;
 mod remote;
 mod remote_ssh;
 mod resources;
+// WP-161: load, free memory and free disk. The command takes no path.
+mod builder_health;
 mod room_council;
 mod rooms;
 mod search;
@@ -1170,6 +1172,8 @@ pub fn run() {
             window_transfer::take_window_transfer,
             chat_background::save_chat_background,
             resources::resource_usage,
+            // WP-161: the health sample the builder pause reads. No path argument.
+            builder_health::builder_health,
             resources::resource_processes,
             resources::resource_stop_tool,
             chat_background::remove_chat_background,

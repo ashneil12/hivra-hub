@@ -147,6 +147,8 @@ export function scaleLine(scale: BuilderScale): string {
 
 /** A reading older than this is missing, not a reason to pause. */
 export const HEALTH_STALE_MS = 15_000;
+/** How long a health sample is reused before another read. */
+export const HEALTH_CACHE_MS = 4_000;
 
 /**
  * One health sample. A missing field skips that check. `readAt` with `now` drops a sample older than

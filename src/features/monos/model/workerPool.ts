@@ -26,6 +26,8 @@ import { cleanStoredDefault, readProjectWorkerDefault } from "../../crew/model/w
 import type { Pick as WorkerPick } from "../../crew/model/resolve";
 import {
   DEFAULT_BUILDER_SCALE,
+  HEALTH_CACHE_MS,
+  HEALTH_STALE_MS,
   builderLaunchAllowed,
   builderScaleIsDefault,
   builderScaleToStored,
@@ -807,6 +809,94 @@ export type AdmitContext = {
 
 /** The latest health sample. A launch with none yet is allowed. Reset drops it. */
 let healthNow: BuilderHealth | undefined;
+let healthEpoch = 0;
+let healthInflight: Promise<void> | undefined;
+let healthTimeoutMs = 3_000;
+const defaultHealthReader = (): Promise<unknown> => invoke("builder_health");
+let healthReader: () => Promise<unknown> = defaultHealthReader;
+
+/** The sample a launch reads. Undefined until a read has landed. */
+export function builderHealth(): BuilderHealth | undefined {
+  return healthNow;
+}
+
+/** Tests stand in for the command. `null` puts the command back. */
+export function setBuilderHealthReader(reader: (() => Promise<unknown>) | null): void {
+  healthReader = reader ?? defaultHealthReader;
+}
+
+/** Tests shorten the wait. `null` puts the 3s wait back. */
+export function setBuilderHealthTimeout(ms: number | null): void {
+  healthTimeoutMs = ms == null || !Number.isFinite(ms) || ms < 1 ? 3_000 : ms;
+}
+
+function finiteHealth(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null;
+}
+
+/** A command payload. Only the known numbers are kept. Anything else is missing, not a pause. */
+function healthFromWire(raw: unknown, now: number): BuilderHealth | null {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const row = raw as Record<string, unknown>;
+  const cores = finiteHealth(row.cores);
+  const readAt = finiteHealth(row.readAt);
+  return {
+    load1: finiteHealth(row.load1),
+    cores: cores != null && cores >= 1 ? Math.round(cores) : null,
+    freeMemoryGb: finiteHealth(row.freeMemoryGb),
+    freeDiskGb: finiteHealth(row.freeDiskGb),
+    readAt: readAt ?? now,
+  };
+}
+
+function withTimeout<T>(work: Promise<T>, ms: number): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error("The health reading timed out")), ms);
+    work.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (error: unknown) => {
+        clearTimeout(timer);
+        reject(error instanceof Error ? error : new Error("The health reading failed"));
+      },
+    );
+  });
+}
+
+async function refreshBuilderHealthOnce(): Promise<void> {
+  const epoch = healthEpoch;
+  const held = healthNow;
+  const now = Date.now();
+  if (held && held.now == null && typeof held.readAt === "number" && now - held.readAt < HEALTH_CACHE_MS) return;
+  let sample: BuilderHealth | null = null;
+  try {
+    sample = healthFromWire(await withTimeout(healthReader(), healthTimeoutMs), now);
+  } catch (error) {
+    sample = null;
+    const internals = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+    if (internals) console.warn("Could not read builder health", error);
+  }
+  if (epoch !== healthEpoch) return;
+  if (sample) {
+    setBuilderHealth(sample);
+    return;
+  }
+  // A timeout is not a pause. Keep a fresh sample, drop one old enough that it must not keep pausing.
+  if (held?.now != null) return;
+  if (held && typeof held.readAt === "number" && now - held.readAt <= HEALTH_STALE_MS) return;
+  setBuilderHealth(null);
+}
+
+/** Reads health unless the sample is still fresh. One read at a time. Never throws. */
+export function refreshBuilderHealth(): Promise<void> {
+  if (healthInflight) return healthInflight;
+  healthInflight = refreshBuilderHealthOnce().finally(() => {
+    healthInflight = undefined;
+  });
+  return healthInflight;
+}
 
 /**
  * The sample the launch gate reads. A sample that is older than the one already held is ignored,
@@ -965,6 +1055,10 @@ export function resetWorkerPool(): void {
   settingsEpoch = Promise.resolve();
   wroteSettings();
   settingsCopy = { limits: {}, heavy: new Set(), builderScale: { ...DEFAULT_BUILDER_SCALE, load: { kind: "default" } } };
+  healthEpoch += 1;
+  healthInflight = undefined;
+  healthReader = defaultHealthReader;
+  healthTimeoutMs = 3_000;
   healthNow = undefined;
   loading = undefined;
   changed();
@@ -1036,6 +1130,8 @@ export async function pumpWorkers(deps: {
   start(job: QueuedWorker): Promise<unknown>;
   failed?(job: QueuedWorker, error: unknown): void;
 }): Promise<QueuedWorker[]> {
+  // WP-161: a fresh sample when the last one is old. A timeout keeps the last fresh sample, or none.
+  await refreshBuilderHealth();
   for (const job of queuedWorkers()) if (deps.ownerGone?.(job)) await dequeueWorker(job.id);
   const queue = queuedWorkers().filter((job) => deps.canStart?.(job) ?? true);
   if (!queue.length) return [];
