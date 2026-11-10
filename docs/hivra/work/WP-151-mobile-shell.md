@@ -23,7 +23,7 @@ Private development build of the inherited Expo app. Nothing here is submitted t
 - **WP-07 step 2.** The desktop identifier stays `com.ash.monocode-hub`. This package does not migrate data and does not ask for a new desktop id.
 - **Pairing payload.** The desktop still builds `monocode://pair?i=…`. The phone still accepts only that scheme. A `hivra://` link is rejected, so the phone cannot drift ahead of the desktop. The registered app scheme (`hivra`) is how the phone app is opened; it is not the pairing protocol.
 - **Native module.** `MonocodeLink` and the Rust link stay under their code names. Those are not the name on the home screen.
-- **EAS profiles.** `development-simulator` stays. The inherited production block is unchanged and has no store credentials. Do not run the production build, submit, or beta-update scripts.
+- **EAS profiles.** `development`, `development-simulator` and `preview` stay. The inherited production build profile, the submit section and the `build:ios`, `submit:ios` and `update:beta` scripts are deleted (10 Nov 2026), and `mobile/tests/hivraIdentity.test.ts` fails if any comes back.
 - **The daily desktop app.** Nothing in this package launches, copies, or ships `~/Applications/MonoCode Hub.app`.
 
 ## Icons

@@ -9,6 +9,9 @@ const app = JSON.parse(
 const eas = JSON.parse(
   readFileSync(new URL("../eas.json", import.meta.url), "utf8"),
 );
+const pkg = JSON.parse(
+  readFileSync(new URL("../package.json", import.meta.url), "utf8"),
+);
 
 describe("Hivra private mobile identity", () => {
   it("names the phone app Hivra without taking the desktop bundle id", () => {
@@ -30,7 +33,16 @@ describe("Hivra private mobile identity", () => {
     expect(app.extra).toBeUndefined();
     expect(app.updates).toEqual({ enabled: false });
     expect(eas.build["development-simulator"].ios.simulator).toBe(true);
-    expect(eas.submit.production).toEqual({});
+    // A private build only: no store profile, no submit, no over-the-air channel.
+    expect(eas.build.production).toBeUndefined();
+    expect(eas.submit).toBeUndefined();
+    for (const profile of Object.values(eas.build) as Array<{ distribution?: string }>) {
+      expect(profile.distribution).not.toBe("store");
+    }
+    expect(pkg.scripts["build:ios"]).toBeUndefined();
+    expect(pkg.scripts["submit:ios"]).toBeUndefined();
+    expect(pkg.scripts["update:beta"]).toBeUndefined();
+    expect(JSON.stringify(pkg.scripts)).not.toMatch(/eas-cli|\bsubmit\b|\bupdate\b/);
     expect(JSON.stringify(eas)).not.toMatch(
       /appleId|ascAppId|serviceAccountKeyPath|googleServiceAccount/,
     );
