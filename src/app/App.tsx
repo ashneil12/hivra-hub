@@ -203,6 +203,7 @@ import {
   type OrchestrationProposal,
 } from "../features/orchestration/model/orchestrationPlan";
 import { discoverOrchestrationSettings } from "../features/orchestration/model/orchestrationCatalog";
+import { watchDecisions } from "../features/orchestration/model/decisionWatch";
 import {
   attachOrchestrationWorkers,
   consolidateOrchestrationTabs,
@@ -12930,6 +12931,8 @@ function Workspace({
           harness,
           models: modelsFor(harness).map(({ id, name }) => ({ id, name })),
         })),
+      // WP-91: an irreversible step's decision sits under the hub project of the run's folder, like a delegation does.
+      decisionProject: hubProjectIdFor,
       createWorker: async (run, task) => {
         const projectCwd = orchestrationProjectCwd(run);
         const leadCheckoutCwd = orchestrationCheckoutCwd(run);
@@ -13306,6 +13309,16 @@ function Workspace({
   useEffect(() => {
     orchestrator.sync();
   }, [sessions]);
+
+  // WP-91: a decision answered anywhere (the Inbox, Home or a chat) starts the irreversible step that waited on it.
+  useEffect(
+    () =>
+      watchDecisions(
+        (event, handler) => listen(event, () => handler()),
+        () => orchestrator.decisionsChanged(),
+      ),
+    [],
+  );
 
   const stopSessionRef = useRef(onStop);
   stopSessionRef.current = onStop;
