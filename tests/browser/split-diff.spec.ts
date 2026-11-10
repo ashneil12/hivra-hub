@@ -160,9 +160,18 @@ test("split brings the focused file to the top, until the person scrolls", async
   const before = await scrollTop();
   await page.mouse.wheel(0, 400);
   await expect.poll(scrollTop).toBeGreaterThan(before + 100);
+  // WebKit animates a wheel scroll, so wait until it has come to rest before reading where it stopped.
+  const settled = async () => {
+    const first = await scrollTop();
+    await page.waitForTimeout(200);
+    return (await scrollTop()) === first;
+  };
+  await expect.poll(settled).toBe(true);
   const moved = await scrollTop();
   await page.waitForTimeout(600);
   expect(await scrollTop()).toBe(moved);
+  // And the focused file was not pulled back to the top.
+  expect(Math.abs(await offset())).toBeGreaterThan(100);
 });
 
 test("a pull request review is unified only, even after Split was chosen", async ({
