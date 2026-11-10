@@ -52,6 +52,42 @@
       },
       {
         "dir": true,
+        "path": "app-data/plugins/claude/hivra-mcode"
+      },
+      {
+        "dir": true,
+        "path": "app-data/plugins/claude/hivra-mcode/.claude-plugin"
+      },
+      {
+        "path": "app-data/plugins/claude/hivra-mcode/.claude-plugin/plugin.json",
+        "text": "{\"description\":\"Team skills a first mate calls by name. Hivra's skill index lists them.\",\"name\":\"hivra-mcode\",\"version\":\"0.1.0\"}"
+      },
+      {
+        "dir": true,
+        "path": "app-data/plugins/claude/hivra-mcode/skills"
+      },
+      {
+        "link": "app-data/plugins/installed/hivra-mcode/skills/context-tax-audit",
+        "path": "app-data/plugins/claude/hivra-mcode/skills/context-tax-audit"
+      },
+      {
+        "link": "app-data/plugins/installed/hivra-mcode/skills/independent-review",
+        "path": "app-data/plugins/claude/hivra-mcode/skills/independent-review"
+      },
+      {
+        "link": "app-data/plugins/installed/hivra-mcode/skills/long-session-check",
+        "path": "app-data/plugins/claude/hivra-mcode/skills/long-session-check"
+      },
+      {
+        "link": "app-data/plugins/installed/hivra-mcode/skills/subagent-split-check",
+        "path": "app-data/plugins/claude/hivra-mcode/skills/subagent-split-check"
+      },
+      {
+        "link": "app-data/plugins/installed/hivra-mcode/skills/taste-to-checks",
+        "path": "app-data/plugins/claude/hivra-mcode/skills/taste-to-checks"
+      },
+      {
+        "dir": true,
         "path": "app-data/plugins/claude/hivra-rpi"
       },
       {
@@ -168,6 +204,10 @@
       },
       {
         "dir": true,
+        "path": "app-data/plugins/data/hivra-mcode"
+      },
+      {
+        "dir": true,
         "path": "app-data/plugins/data/hivra-rpi"
       },
       {
@@ -183,6 +223,10 @@
         "path": "app-data/plugins/installed/hivra-creator"
       },
       {
+        "carried": "hivra-mcode",
+        "path": "app-data/plugins/installed/hivra-mcode"
+      },
+      {
         "carried": "hivra-rpi",
         "path": "app-data/plugins/installed/hivra-rpi"
       },
@@ -192,7 +236,7 @@
       },
       {
         "path": "app-data/plugins/lock.json",
-        "text": "{\n  \"version\": 1,\n  \"plugins\": {\n    \"hivra-creator\": {\n      \"version\": \"1.0.0\",\n      \"source\": {\n        \"kind\": \"bundled\",\n        \"location\": \"https://github.com/ashneil12/hivra-hub/tree/ff5b2b4fb7e432cb1ec2f74d07dc2339596bdba6/src-tauri/plugins/hivra-creator\",\n        \"pin\": \"ff5b2b4fb7e432cb1ec2f74d07dc2339596bdba6\",\n        \"path\": \"src-tauri/plugins/hivra-creator\"\n      },\n      \"integrity\": \"sha256-d5591d33a5dc774501cbb64187c49fe3a7642a541a1e252743553313fb9b5900\"\n    },\n    \"hivra-rpi\": {\n      \"version\": \"0.1.0\",\n      \"source\": {\n        \"kind\": \"bundled\",\n        \"location\": \"https://github.com/humanlayer/humanlayer/tree/f9bd73534a9fb7099a274f951b698b1297122fd9/apps/riptide-rpi-claude-plugin\",\n        \"pin\": \"f9bd73534a9fb7099a274f951b698b1297122fd9\",\n        \"path\": \"apps/riptide-rpi-claude-plugin\"\n      },\n      \"integrity\": \"sha256-37b26fd43e51661aafdd392d36eba3e306b4dcb23ed1bed89acecef7ff4baaf3\"\n    },\n    \"pstack\": {\n      \"version\": \"0.15.36\",\n      \"source\": {\n        \"kind\": \"bundled\",\n        \"location\": \"https://github.com/cursor/plugins/tree/6ea74587e384e1a8035c09ae33a46fe3f881eb9b/pstack\",\n        \"pin\": \"6ea74587e384e1a8035c09ae33a46fe3f881eb9b\",\n        \"path\": \"pstack\"\n      },\n      \"integrity\": \"sha256-2e17267c45433bad5e001beee53c4c78919890fd15304d0700eb628506c59fbb\"\n    }\n  }\n}\n"
+        "text": "{\n  \"version\": 1,\n  \"plugins\": {\n    \"hivra-creator\": {\n      \"version\": \"1.0.0\",\n      \"source\": {\n        \"kind\": \"bundled\",\n        \"location\": \"https://github.com/ashneil12/hivra-hub/tree/ff5b2b4fb7e432cb1ec2f74d07dc2339596bdba6/src-tauri/plugins/hivra-creator\",\n        \"pin\": \"ff5b2b4fb7e432cb1ec2f74d07dc2339596bdba6\",\n        \"path\": \"src-tauri/plugins/hivra-creator\"\n      },\n      \"integrity\": \"sha256-d5591d33a5dc774501cbb64187c49fe3a7642a541a1e252743553313fb9b5900\"\n    },\n    \"hivra-mcode\": {\n      \"version\": \"0.1.0\",\n      \"source\": {\n        \"kind\": \"bundled\",\n        \"location\": \"https://github.com/MiniMax-AI/mcode-stack/tree/88f84be7075106d8ce283e5d3a8138cdb8f9a205/stacks/ronny/skills\",\n        \"pin\": \"88f84be7075106d8ce283e5d3a8138cdb8f9a205\",\n        \"path\": \"stacks/ronny/skills\"\n      },\n      \"integrity\": \"sha256-478b559219b0c4a1550b747e45368ef1ed45c11c0e355514cfe9a017df850c16\"\n    },\n    \"hivra-rpi\": {\n      \"version\": \"0.1.0\",\n      \"source\": {\n        \"kind\": \"bundled\",\n        \"location\": \"https://github.com/humanlayer/humanlayer/tree/f9bd73534a9fb7099a274f951b698b1297122fd9/apps/riptide-rpi-claude-plugin\",\n        \"pin\": \"f9bd73534a9fb7099a274f951b698b1297122fd9\",\n        \"path\": \"apps/riptide-rpi-claude-plugin\"\n      },\n      \"integrity\": \"sha256-37b26fd43e51661aafdd392d36eba3e306b4dcb23ed1bed89acecef7ff4baaf3\"\n    },\n    \"pstack\": {\n      \"version\": \"0.15.36\",\n      \"source\": {\n        \"kind\": \"bundled\",\n        \"location\": \"https://github.com/cursor/plugins/tree/6ea74587e384e1a8035c09ae33a46fe3f881eb9b/pstack\",\n        \"pin\": \"6ea74587e384e1a8035c09ae33a46fe3f881eb9b\",\n        \"path\": \"pstack\"\n      },\n      \"integrity\": \"sha256-2e17267c45433bad5e001beee53c4c78919890fd15304d0700eb628506c59fbb\"\n    }\n  }\n}\n"
       },
       {
         "dir": true,
@@ -205,6 +249,10 @@
       {
         "dir": true,
         "path": "home/.agents/skills"
+      },
+      {
+        "link": "app-data/plugins/installed/hivra-mcode/skills/context-tax-audit",
+        "path": "home/.agents/skills/context-tax-audit"
       },
       {
         "link": "app-data/plugins/installed/hivra-rpi/skills/create-plan",
@@ -243,6 +291,10 @@
         "path": "home/.agents/skills/implement-plan"
       },
       {
+        "link": "app-data/plugins/installed/hivra-mcode/skills/independent-review",
+        "path": "home/.agents/skills/independent-review"
+      },
+      {
         "link": "app-data/plugins/installed/hivra-rpi/skills/iterate-design",
         "path": "home/.agents/skills/iterate-design"
       },
@@ -275,6 +327,10 @@
         "path": "home/.agents/skills/iterate-technical"
       },
       {
+        "link": "app-data/plugins/installed/hivra-mcode/skills/long-session-check",
+        "path": "home/.agents/skills/long-session-check"
+      },
+      {
         "link": "app-data/plugins/installed/hivra-rpi/skills/product-document",
         "path": "home/.agents/skills/product-document"
       },
@@ -293,6 +349,14 @@
       {
         "link": "app-data/plugins/installed/hivra-rpi/skills/rpi-tdd",
         "path": "home/.agents/skills/rpi-tdd"
+      },
+      {
+        "link": "app-data/plugins/installed/hivra-mcode/skills/subagent-split-check",
+        "path": "home/.agents/skills/subagent-split-check"
+      },
+      {
+        "link": "app-data/plugins/installed/hivra-mcode/skills/taste-to-checks",
+        "path": "home/.agents/skills/taste-to-checks"
       },
       {
         "link": "app-data/plugins/installed/hivra-rpi/skills/technical-document",
@@ -323,6 +387,7 @@
       "claudeMcpServers": {},
       "claudePluginDirs": [
         "<TMP>/app-data/plugins/claude/hivra-creator",
+        "<TMP>/app-data/plugins/claude/hivra-mcode",
         "<TMP>/app-data/plugins/claude/hivra-rpi"
       ],
       "codexMcpServers": {},
@@ -378,6 +443,42 @@
       {
         "link": "app-data/plugins/installed/hivra-creator/skills/write-skill",
         "path": "app-data/plugins/claude/hivra-creator/skills/write-skill"
+      },
+      {
+        "dir": true,
+        "path": "app-data/plugins/claude/hivra-mcode"
+      },
+      {
+        "dir": true,
+        "path": "app-data/plugins/claude/hivra-mcode/.claude-plugin"
+      },
+      {
+        "path": "app-data/plugins/claude/hivra-mcode/.claude-plugin/plugin.json",
+        "text": "{\"description\":\"Team skills a first mate calls by name. Hivra's skill index lists them.\",\"name\":\"hivra-mcode\",\"version\":\"0.1.0\"}"
+      },
+      {
+        "dir": true,
+        "path": "app-data/plugins/claude/hivra-mcode/skills"
+      },
+      {
+        "link": "app-data/plugins/installed/hivra-mcode/skills/context-tax-audit",
+        "path": "app-data/plugins/claude/hivra-mcode/skills/context-tax-audit"
+      },
+      {
+        "link": "app-data/plugins/installed/hivra-mcode/skills/independent-review",
+        "path": "app-data/plugins/claude/hivra-mcode/skills/independent-review"
+      },
+      {
+        "link": "app-data/plugins/installed/hivra-mcode/skills/long-session-check",
+        "path": "app-data/plugins/claude/hivra-mcode/skills/long-session-check"
+      },
+      {
+        "link": "app-data/plugins/installed/hivra-mcode/skills/subagent-split-check",
+        "path": "app-data/plugins/claude/hivra-mcode/skills/subagent-split-check"
+      },
+      {
+        "link": "app-data/plugins/installed/hivra-mcode/skills/taste-to-checks",
+        "path": "app-data/plugins/claude/hivra-mcode/skills/taste-to-checks"
       },
       {
         "dir": true,
@@ -745,6 +846,10 @@
       },
       {
         "dir": true,
+        "path": "app-data/plugins/data/hivra-mcode"
+      },
+      {
+        "dir": true,
         "path": "app-data/plugins/data/hivra-rpi"
       },
       {
@@ -760,6 +865,10 @@
         "path": "app-data/plugins/installed/hivra-creator"
       },
       {
+        "carried": "hivra-mcode",
+        "path": "app-data/plugins/installed/hivra-mcode"
+      },
+      {
         "carried": "hivra-rpi",
         "path": "app-data/plugins/installed/hivra-rpi"
       },
@@ -769,7 +878,7 @@
       },
       {
         "path": "app-data/plugins/lock.json",
-        "text": "{\n  \"version\": 1,\n  \"plugins\": {\n    \"hivra-creator\": {\n      \"version\": \"1.0.0\",\n      \"source\": {\n        \"kind\": \"bundled\",\n        \"location\": \"https://github.com/ashneil12/hivra-hub/tree/ff5b2b4fb7e432cb1ec2f74d07dc2339596bdba6/src-tauri/plugins/hivra-creator\",\n        \"pin\": \"ff5b2b4fb7e432cb1ec2f74d07dc2339596bdba6\",\n        \"path\": \"src-tauri/plugins/hivra-creator\"\n      },\n      \"integrity\": \"sha256-d5591d33a5dc774501cbb64187c49fe3a7642a541a1e252743553313fb9b5900\"\n    },\n    \"hivra-rpi\": {\n      \"version\": \"0.1.0\",\n      \"source\": {\n        \"kind\": \"bundled\",\n        \"location\": \"https://github.com/humanlayer/humanlayer/tree/f9bd73534a9fb7099a274f951b698b1297122fd9/apps/riptide-rpi-claude-plugin\",\n        \"pin\": \"f9bd73534a9fb7099a274f951b698b1297122fd9\",\n        \"path\": \"apps/riptide-rpi-claude-plugin\"\n      },\n      \"integrity\": \"sha256-37b26fd43e51661aafdd392d36eba3e306b4dcb23ed1bed89acecef7ff4baaf3\"\n    },\n    \"pstack\": {\n      \"version\": \"0.15.36\",\n      \"source\": {\n        \"kind\": \"bundled\",\n        \"location\": \"https://github.com/cursor/plugins/tree/6ea74587e384e1a8035c09ae33a46fe3f881eb9b/pstack\",\n        \"pin\": \"6ea74587e384e1a8035c09ae33a46fe3f881eb9b\",\n        \"path\": \"pstack\"\n      },\n      \"integrity\": \"sha256-2e17267c45433bad5e001beee53c4c78919890fd15304d0700eb628506c59fbb\"\n    }\n  }\n}\n"
+        "text": "{\n  \"version\": 1,\n  \"plugins\": {\n    \"hivra-creator\": {\n      \"version\": \"1.0.0\",\n      \"source\": {\n        \"kind\": \"bundled\",\n        \"location\": \"https://github.com/ashneil12/hivra-hub/tree/ff5b2b4fb7e432cb1ec2f74d07dc2339596bdba6/src-tauri/plugins/hivra-creator\",\n        \"pin\": \"ff5b2b4fb7e432cb1ec2f74d07dc2339596bdba6\",\n        \"path\": \"src-tauri/plugins/hivra-creator\"\n      },\n      \"integrity\": \"sha256-d5591d33a5dc774501cbb64187c49fe3a7642a541a1e252743553313fb9b5900\"\n    },\n    \"hivra-mcode\": {\n      \"version\": \"0.1.0\",\n      \"source\": {\n        \"kind\": \"bundled\",\n        \"location\": \"https://github.com/MiniMax-AI/mcode-stack/tree/88f84be7075106d8ce283e5d3a8138cdb8f9a205/stacks/ronny/skills\",\n        \"pin\": \"88f84be7075106d8ce283e5d3a8138cdb8f9a205\",\n        \"path\": \"stacks/ronny/skills\"\n      },\n      \"integrity\": \"sha256-478b559219b0c4a1550b747e45368ef1ed45c11c0e355514cfe9a017df850c16\"\n    },\n    \"hivra-rpi\": {\n      \"version\": \"0.1.0\",\n      \"source\": {\n        \"kind\": \"bundled\",\n        \"location\": \"https://github.com/humanlayer/humanlayer/tree/f9bd73534a9fb7099a274f951b698b1297122fd9/apps/riptide-rpi-claude-plugin\",\n        \"pin\": \"f9bd73534a9fb7099a274f951b698b1297122fd9\",\n        \"path\": \"apps/riptide-rpi-claude-plugin\"\n      },\n      \"integrity\": \"sha256-37b26fd43e51661aafdd392d36eba3e306b4dcb23ed1bed89acecef7ff4baaf3\"\n    },\n    \"pstack\": {\n      \"version\": \"0.15.36\",\n      \"source\": {\n        \"kind\": \"bundled\",\n        \"location\": \"https://github.com/cursor/plugins/tree/6ea74587e384e1a8035c09ae33a46fe3f881eb9b/pstack\",\n        \"pin\": \"6ea74587e384e1a8035c09ae33a46fe3f881eb9b\",\n        \"path\": \"pstack\"\n      },\n      \"integrity\": \"sha256-2e17267c45433bad5e001beee53c4c78919890fd15304d0700eb628506c59fbb\"\n    }\n  }\n}\n"
       },
       {
         "dir": true,
@@ -806,6 +915,10 @@
       {
         "link": "app-data/plugins/installed/pstack/skills/bro",
         "path": "home/.agents/skills/bro"
+      },
+      {
+        "link": "app-data/plugins/installed/hivra-mcode/skills/context-tax-audit",
+        "path": "home/.agents/skills/context-tax-audit"
       },
       {
         "link": "app-data/plugins/installed/pstack/skills/correct",
@@ -868,6 +981,10 @@
         "path": "home/.agents/skills/in-your-own-words"
       },
       {
+        "link": "app-data/plugins/installed/hivra-mcode/skills/independent-review",
+        "path": "home/.agents/skills/independent-review"
+      },
+      {
         "link": "app-data/plugins/installed/pstack/skills/interrogate",
         "path": "home/.agents/skills/interrogate"
       },
@@ -910,6 +1027,10 @@
       {
         "link": "app-data/plugins/installed/pstack/skills/ketchup-video",
         "path": "home/.agents/skills/ketchup-video"
+      },
+      {
+        "link": "app-data/plugins/installed/hivra-mcode/skills/long-session-check",
+        "path": "home/.agents/skills/long-session-check"
       },
       {
         "link": "app-data/plugins/installed/pstack/skills/maintain-formal-verification-skill",
@@ -1076,8 +1197,16 @@
         "path": "home/.agents/skills/statechart"
       },
       {
+        "link": "app-data/plugins/installed/hivra-mcode/skills/subagent-split-check",
+        "path": "home/.agents/skills/subagent-split-check"
+      },
+      {
         "link": "app-data/plugins/installed/pstack/skills/swarm",
         "path": "home/.agents/skills/swarm"
+      },
+      {
+        "link": "app-data/plugins/installed/hivra-mcode/skills/taste-to-checks",
+        "path": "home/.agents/skills/taste-to-checks"
       },
       {
         "link": "app-data/plugins/installed/pstack/skills/tdd",
@@ -1132,6 +1261,7 @@
       "claudeMcpServers": {},
       "claudePluginDirs": [
         "<TMP>/app-data/plugins/claude/hivra-creator",
+        "<TMP>/app-data/plugins/claude/hivra-mcode",
         "<TMP>/app-data/plugins/claude/hivra-rpi",
         "<TMP>/app-data/plugins/claude/pstack"
       ],
