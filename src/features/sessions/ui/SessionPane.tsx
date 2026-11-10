@@ -61,6 +61,7 @@ import {
 import { sessionHasBtwThreads, supportsBtwHarness } from "../model/btw";
 import { BtwSheet, useBtwConversation } from "./BtwSheet";
 import { AgentTranscript } from "./AgentTranscript";
+import { lineageForThread } from "../model/subagentLineage";
 import { PooledTranscript, type TranscriptPool } from "./TranscriptPool";
 import { TranscriptFind } from "./TranscriptFind";
 import {
@@ -424,6 +425,11 @@ const LocalSessionPane = memo(function LocalSessionPane({
   );
   const title = sessionDisplayTitle(session.title, session.harness, firstAskOf(session));
   const isEmpty = session.blocks.length === 0;
+  // WP-122: native CLI children, separate from the first-mate crew. Read once per change to the blocks, not per render.
+  const lineage = useMemo(
+    () => lineageForThread(session.harness, session.blocks),
+    [session.harness, session.blocks],
+  );
   const editedPaths = useMemo(
     () => (session.busy ? undefined : sessionEditPaths(session.blocks)),
     [session.blocks, session.busy],
@@ -1094,6 +1100,7 @@ const LocalSessionPane = memo(function LocalSessionPane({
                   onMouseDown={focusPane}
                 >
                   <AgentTranscript
+                    lineage={lineage}
                     blocks={
                       agent && !monoTranscript.viewingOlderPage
                         ? monoPendingTranscriptBlocks(
