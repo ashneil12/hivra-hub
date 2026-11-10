@@ -668,6 +668,7 @@ pub fn run() {
             decisions::decisions_list,
             // WP-156: standing answers stay off until this setting is on.
             decisions::decisions_standing_enabled,
+            decisions::decisions_standing_brief,
             decisions::decisions_set_standing_enabled,
             decisions::decisions_retire,
             decisions::decisions_set_standing,

@@ -781,6 +781,71 @@ pub fn set_standing(
     Ok(Some(decision))
 }
 
+/// Newest active answers for one project, for a first mate's brief. Empty when standing answers are off, the project
+/// is blank, or nothing active is stored. Guidance, not permission.
+const STANDING_ROWS: usize = 20;
+const STANDING_CHARS: usize = 4_000;
+const STANDING_HEADER: &str = "\
+Standing answers
+These are guidance, not permission. They do not approve a tool call, a merge, or a new action.";
+
+fn one_line(value: &str) -> String {
+    let flat = value.split_whitespace().collect::<Vec<_>>().join(" ");
+    if flat.is_empty() {
+        "(empty)".to_string()
+    } else {
+        flat
+    }
+}
+
+pub fn standing_block(conn: &Connection, project: &str) -> Result<String, String> {
+    let project = project.trim();
+    if project.is_empty() || !standing_enabled(conn)? {
+        return Ok(String::new());
+    }
+    let sql = format!(
+        "SELECT {READ_COLUMNS} FROM decisions
+         WHERE project = ?1 AND state = ?2 AND standing != 0 AND retired_at IS NULL AND answer IS NOT NULL
+         ORDER BY answered_at DESC, rowid DESC"
+    );
+    let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map(params![project, ANSWERED], from_row)
+        .map_err(|e| e.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
+    let mut body = Vec::new();
+    let mut size = STANDING_HEADER.chars().count();
+    for row in rows {
+        if body.len() >= STANDING_ROWS {
+            break;
+        }
+        let line = format!(
+            "{}: {} -> {}",
+            row.standing_id,
+            one_line(&row.question),
+            one_line(row.answer.as_deref().unwrap_or(""))
+        );
+        let extra = 1 + line.chars().count();
+        if size + extra > STANDING_CHARS {
+            if body.is_empty() {
+                let room = STANDING_CHARS.saturating_sub(size + 1);
+                let cut: String = line.chars().take(room).collect();
+                if !cut.is_empty() {
+                    body.push(cut);
+                }
+            }
+            break;
+        }
+        size += extra;
+        body.push(line);
+    }
+    if body.is_empty() {
+        return Ok(String::new());
+    }
+    Ok(format!("{STANDING_HEADER}\n{}", body.join("\n")))
+}
+
 fn announce(app: &AppHandle, decision: Option<&Decision>, released: &[SteerMessage]) {
     if let Some(d) = decision {
         let _ = app.emit(CHANGED, json!({ "keys": [d.decision_key] }));
@@ -841,6 +906,14 @@ pub fn decisions_list(
 #[tauri::command(async)]
 pub fn decisions_standing_enabled(store: State<'_, SessionStore>) -> Result<bool, String> {
     standing_enabled(&*store.lock_conn()?)
+}
+
+#[tauri::command(async)]
+pub fn decisions_standing_brief(
+    store: State<'_, SessionStore>,
+    project: String,
+) -> Result<String, String> {
+    standing_block(&*store.lock_conn()?, &project)
 }
 
 #[tauri::command(async)]

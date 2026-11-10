@@ -97,6 +97,8 @@ export type FirstMateBackend = {
   ask(input: AskInput): Promise<AskOutcome>;
   answer(project: string, key: string, answer: string, by?: string): Promise<AnswerOutcome>;
   decisions(answered?: number): Promise<Decision[]>;
+  /** WP-156: the standing-answers block for one project. Empty while the setting is off. */
+  standingBrief?(project: string): Promise<string>;
 };
 
 export const tauriFirstMate: FirstMateBackend = {
@@ -107,6 +109,7 @@ export const tauriFirstMate: FirstMateBackend = {
   ask: (input) => invoke("decisions_ask", { input }),
   answer: (project, key, answer, by) => invoke("decisions_answer", { project, key, answer, by }),
   decisions: (answered) => invoke("decisions_list", { answered }),
+  standingBrief: (project) => invoke("decisions_standing_brief", { project }),
 };
 
 /** What delivery knows about the worker's chat. Undefined: the chat is gone. */

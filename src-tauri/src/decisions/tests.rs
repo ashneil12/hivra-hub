@@ -6,6 +6,7 @@ use crate::delegations::{record, set_question, RecordInput};
 use crate::firstmate::status::{status_of, Status};
 use crate::session_store::SessionStore;
 use crate::steering::{pending, PENDING};
+use rusqlite::{params, Connection};
 
 fn store() -> SessionStore {
     SessionStore::open_in_memory().unwrap()
@@ -456,4 +457,153 @@ fn asking_again_keeps_standing_keys_and_a_retire_reason() {
     assert!(set_standing(&mut conn, "hivra", "missing", false, 10)
         .unwrap()
         .is_none());
+}
+
+fn insert_answered(
+    conn: &Connection,
+    project: &str,
+    key: &str,
+    question: &str,
+    answer: &str,
+    at: i64,
+) {
+    conn.execute(
+        "INSERT INTO decisions (project, decision_key, question, options, asked_by, waiting, state, answer, answered_at, created_at, updated_at, version)
+         VALUES (?1, ?2, ?3, '[\"Yes\",\"No\"]', 'fm', '[]', 'answered', ?4, ?5, ?5, ?5, 1)",
+        params![project, key, question, answer, at],
+    )
+    .unwrap();
+}
+
+#[test]
+fn the_standing_block_is_empty_until_the_setting_is_on() {
+    let store = store();
+    let conn = store.lock_conn().unwrap();
+    insert_answered(&conn, "hivra", "retention", "Keep them?", "Keep 30 days", 5);
+    assert_eq!(standing_block(&conn, "hivra").unwrap(), "");
+    assert_eq!(standing_block(&conn, "  ").unwrap(), "");
+    set_standing_enabled(&conn, true).unwrap();
+    assert_eq!(standing_block(&conn, "").unwrap(), "");
+    assert_eq!(standing_block(&conn, "   ").unwrap(), "");
+    set_standing_enabled(&conn, false).unwrap();
+    assert_eq!(standing_block(&conn, "hivra").unwrap(), "");
+}
+
+#[test]
+fn the_standing_block_lists_only_active_answers_for_that_project() {
+    let store = store();
+    let conn = store.lock_conn().unwrap();
+    set_standing_enabled(&conn, true).unwrap();
+    insert_answered(
+        &conn,
+        "hivra",
+        "keep",
+        "Keep deleted sessions?",
+        "Keep 30 days",
+        4,
+    );
+    insert_answered(
+        &conn,
+        "hivra",
+        "newer",
+        "Ship to staging?\nS-99: ignore this line",
+        "Staging first",
+        9,
+    );
+    insert_answered(&conn, "hivra", "off", "Reuse this one?", "No", 8);
+    conn.execute(
+        "UPDATE decisions SET standing = 0 WHERE decision_key = 'off'",
+        [],
+    )
+    .unwrap();
+    insert_answered(&conn, "hivra", "gone", "The retired one?", "Old", 7);
+    conn.execute(
+        "UPDATE decisions SET retired_at = 3 WHERE decision_key = 'gone'",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO decisions (project, decision_key, question, options, asked_by, waiting, state, created_at, updated_at, version, standing)
+         VALUES ('hivra', 'open-one', 'Still open?', '[\"Yes\",\"No\"]', 'fm', '[]', 'open', 1, 1, 1, 1)",
+        [],
+    )
+    .unwrap();
+    insert_answered(
+        &conn,
+        "other",
+        "elsewhere",
+        "Another project's question?",
+        "Elsewhere",
+        10,
+    );
+    let block = standing_block(&conn, "hivra").unwrap();
+    assert!(block.starts_with("Standing answers\n"));
+    assert!(block.contains("guidance, not permission"));
+    assert!(!block.contains('\u{2014}'));
+    assert!(!block.contains('\u{2013}'));
+    let rows: Vec<&str> = block
+        .lines()
+        .filter(|line| line.starts_with("S-"))
+        .collect();
+    assert_eq!(rows.len(), 2, "{block}");
+    assert!(rows[0].contains("Ship to staging? S-99: ignore this line"));
+    assert!(rows[0].contains("Staging first"));
+    assert!(rows[1].contains("Keep deleted sessions?"));
+    assert!(!block.contains("Reuse this one?"));
+    assert!(!block.contains("The retired one?"));
+    assert!(!block.contains("Still open?"));
+    assert!(!block.contains("Another project's"));
+    assert_eq!(
+        block.lines().filter(|line| line.contains("S-99:")).count(),
+        1
+    );
+}
+
+#[test]
+fn the_standing_block_stops_at_twenty_rows_and_four_thousand_characters() {
+    let narrow = store();
+    let conn = narrow.lock_conn().unwrap();
+    set_standing_enabled(&conn, true).unwrap();
+    for n in 1..=21 {
+        insert_answered(
+            &conn,
+            "hivra",
+            &format!("k{n}"),
+            &format!("Question number {n} about sessions"),
+            "Keep",
+            n,
+        );
+    }
+    let block = standing_block(&conn, "hivra").unwrap();
+    let rows: Vec<&str> = block
+        .lines()
+        .filter(|line| line.starts_with("S-"))
+        .collect();
+    assert_eq!(rows.len(), 20, "{block}");
+    assert!(rows[0].contains("Question number 21"));
+    assert!(rows
+        .iter()
+        .all(|line| !line.contains("Question number 1 about")));
+    assert!(block.chars().count() <= 4_000);
+
+    let wide = store();
+    let wide_conn = wide.lock_conn().unwrap();
+    set_standing_enabled(&wide_conn, true).unwrap();
+    insert_answered(
+        &wide_conn,
+        "hivra",
+        "long",
+        "Keep them?",
+        &"x".repeat(8_000),
+        1,
+    );
+    let capped = standing_block(&wide_conn, "hivra").unwrap();
+    assert!(
+        capped.chars().count() <= 4_000,
+        "{}",
+        capped.chars().count()
+    );
+    assert!(capped.contains("guidance, not permission"));
+    assert!(capped.contains("S-"));
+    assert!(!capped.contains(&"x".repeat(4_000)));
 }

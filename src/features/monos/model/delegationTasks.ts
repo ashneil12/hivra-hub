@@ -136,6 +136,18 @@ export function delegationTasksHost(deps: DelegationTasksDeps): AgentAppTasksHos
         .sort((a, b) => b.createdAt - a.createdAt)[0];
     },
     ...(deps.firstMate ? { firstMate: deps.firstMate } : {}),
+    // WP-156: a Lead's brief can carry standing answers. A timeout or a refused call leaves the brief unchanged.
+    ...(deps.firstMate?.backend.standingBrief
+      ? {
+          standingBrief: async (project: string) => {
+            try {
+              return (await deps.firstMate!.backend.standingBrief!(project)) ?? "";
+            } catch {
+              return "";
+            }
+          },
+        }
+      : {}),
     // Hivra WP-10: the depth cap, checked by the store before anything starts.
     ...(deps.backend.checkDepth
       ? { checkDepth: (owner: string) => deps.backend.checkDepth!(owner) }

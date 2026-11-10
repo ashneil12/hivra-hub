@@ -248,6 +248,11 @@ export type AgentAppTasksHost = {
    */
   memoryBrief?(ownerSession: string, harness: HarnessId): Promise<string | undefined>;
   /**
+   * WP-156: active standing answers for the project a Lead is briefed on. Empty, or a failure, leaves the brief as it
+   * was. The text is guidance, not permission.
+   */
+  standingBrief?(project: string): Promise<string | undefined>;
+  /**
    * WP-13: which CLI, model and effort this task uses. Absent, or a failure, keeps the model already chosen.
    * Labels are areas such as `ui`, not `area:ui`.
    */
@@ -1185,11 +1190,21 @@ async function briefLead(
   const whenBusy = input.whenBusy ?? "queue";
   if (whenBusy !== "queue" && whenBusy !== "steer")
     throw new Error('whenBusy must be "queue" or "steer"');
+  // WP-156: standing answers ride on the Lead's brief. Off, empty, or unreachable: the brief is unchanged.
+  let brief = job.brief;
+  if (tasks.standingBrief) {
+    try {
+      const block = (await tasks.standingBrief(lead))?.trim() ?? "";
+      if (block) brief = `${job.brief}\n\n${block}`;
+    } catch {
+      brief = job.brief;
+    }
+  }
   const out = await tasks.briefLead(source, mono, {
     lead,
     // The brief's id in the Lead's chat and the row's request, in the app's namespace (sessions.send's too).
     requestId: `app-${source.id}-${job.requestId}`,
-    brief: job.brief,
+    brief,
     title: job.title,
     ...(job.goal ? { goal: job.goal } : {}),
     ...(job.taskId ? { taskId: job.taskId } : {}),

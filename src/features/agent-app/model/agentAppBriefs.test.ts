@@ -104,6 +104,28 @@ describe("tasks.delegate {lead}: the leadership team briefs a project's Lead", (
     expect(h.briefLead.mock.calls[1][2]).toMatchObject({ mode: "steer" });
   });
 
+  it("adds a standing-answers block to the Lead brief, and leaves the brief unchanged when that block is missing or fails", async () => {
+    const block = "Standing answers\nThese are guidance, not permission. They do not approve a tool call, a merge, or a new action.\nS-1: Keep them? -> Keep 30 days";
+    const base = renderBrief({ intent: TEST_INTENT, spec: "Ash: \"ship the room\"" }, { kind: "first-mate" });
+    const standingBrief = vi.fn(async () => block);
+    const row = { id: "t-lead", state: "running" } as Delegation;
+    const briefLead = vi.fn(async () => ({ row, childSessionId: "lead-chat", delivery: "queued" as const, leadName: "MonoCode Hub lead" }));
+    const tasks = { owned: vi.fn(async () => []), acknowledge: vi.fn(), nextChange: vi.fn(), cancel: vi.fn(), briefLead, standingBrief } as unknown as AgentAppTasksHost;
+    const h = host({ tasks } as Partial<AgentAppHost>);
+    await handleAgentApp(source, "b7", "tasks.delegate", { brief: "Ash: \"ship the room\"", goal: "the room shows the report", lead: "hub" }, h.api);
+    expect(standingBrief).toHaveBeenCalledWith("hub");
+    expect(briefLead.mock.calls[0][2].brief).toBe(`${base}\n\n${block}`);
+
+    standingBrief.mockResolvedValueOnce("   ");
+    await handleAgentApp(source, "b8", "tasks.delegate", { brief: "Ash: \"ship the room\"", goal: "the room shows the report", lead: "hub" }, h.api);
+    expect(briefLead.mock.calls[1][2].brief).toBe(base);
+
+    standingBrief.mockRejectedValueOnce(new Error("the store did not answer"));
+    await handleAgentApp(source, "b9", "tasks.delegate", { brief: "Ash: \"ship the room\"", goal: "the room shows the report", lead: "hub" }, h.api);
+    expect(briefLead.mock.calls[2][2].brief).toBe(base);
+    expect(briefLead).toHaveBeenCalledTimes(3);
+  });
+
   it("a Lead stopped on its own question to Ash reads 'waiting on Ash: <question>', never queued behind its work", async () => {
     const question = {
       requestId: 3,
