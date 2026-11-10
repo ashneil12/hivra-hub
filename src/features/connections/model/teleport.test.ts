@@ -174,7 +174,7 @@ describe("WP-177 freeze rules", () => {
     expect(refusal).not.toBeNull();
     expect(refusal?.reason).toBe("turn-running");
     expect(refusal?.offer).toBe("finish-then-move");
-    expect(refusal?.message).not.toMatch(/[–—]/);
+    expect(refusal?.message).not.toMatch(/[\u2013\u2014]/);
   });
 
   it("refuses while a tool approval is pending", () => {
