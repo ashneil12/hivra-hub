@@ -166,3 +166,71 @@ describe("the pump settles what a dependent waits on before it starts anything (
   });
 });
 
+describe("the fan-out cap is a queue wait, not a drop (WP-171)", () => {
+  const CAP = "Not started: you already have 8 tasks running, the most one first mate runs at once (8).";
+  const owned = (child: string, owner = "lead") =>
+    ({
+      childSession: child,
+      project: "tally",
+      state: "running" as const,
+      follow: null,
+      title: child,
+      ownerSession: owner,
+    }) as AdmitContext["rows"][number];
+
+  beforeEach(() => {
+    setWorkerLimits("tally", { workers: 30, heavy: 30 });
+  });
+
+  it("starts only as many as the cap leaves free, and the one past it stays queued for a fan-out reason", () => {
+    const rows = [owned("w1"), owned("w2"), owned("w3")];
+    const queue = ["q1", "q2", "q3", "q4", "q5", "q6"].map((id) => job(id, { ownerSession: "lead" }));
+    const ctx = context({}, { rows, queue });
+    expect(nextWorkers(ctx).map((q) => q.id)).toEqual(["q1", "q2", "q3", "q4", "q5"]);
+    expect(queuedLine(queue[5], ctx)).toMatch(/the most one first mate runs at once/);
+    expect(admitWorker({ ...admitInput("extra"), ownerSession: "lead", fanout: undefined }, ctx)).toMatchObject({
+      start: false,
+      reason: "fanout",
+    });
+  });
+
+  it("a start refused for the fan-out cap stays queued, and the next look starts it", async () => {
+    await enqueueWorker(job("over", { ownerSession: "lead", title: "Ship the board" }));
+    let refuse = true;
+    const started: string[] = [];
+    const dropped: string[] = [];
+    const run = () =>
+      pumpWorkers({
+        openRows: () => [],
+        room,
+        start: async (queued) => {
+          if (refuse) throw new Error(CAP);
+          started.push(queued.id);
+        },
+        failed: (queued) => void dropped.push(queued.id),
+      });
+    await run();
+    expect(dropped).toEqual([]);
+    expect(queuedWorkers().map((q) => q.id)).toEqual(["over"]);
+    refuse = false;
+    await run();
+    expect(started).toEqual(["over"]);
+    expect(queuedWorkers()).toEqual([]);
+  });
+
+  it("tells the owner, by name, when a waiting task is dropped for any other reason", async () => {
+    await enqueueWorker(job("bad", { ownerSession: "lead", title: "Ship the board" }));
+    const told: string[] = [];
+    await pumpWorkers({
+      openRows: () => [],
+      room,
+      start: async () => {
+        throw new Error("No such project");
+      },
+      dropped: (_job, line) => void told.push(line),
+    });
+    expect(queuedWorkers()).toEqual([]);
+    expect(told).toEqual([expect.stringContaining("Ship the board")]);
+  });
+});
+

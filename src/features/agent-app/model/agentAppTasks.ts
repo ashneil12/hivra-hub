@@ -1172,7 +1172,7 @@ async function delegate(
     };
     // WP-161: look at the machine first, so a pause the person set applies to the very first launch too.
     await tasks.pool.refreshHealth?.();
-    const admission = tasks.pool.admit({ ...job, ...(link ? { fanout: link } : {}) });
+    const admission = tasks.pool.admit({ ...job, ownerSession: source.id, ...(link ? { fanout: link } : {}) });
     if (!admission.start) {
       tasks.pool.enqueue(
         {

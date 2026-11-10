@@ -967,6 +967,7 @@ import {
   nextHealthCheck,
   nextWake,
   planHeld,
+  droppedTaskLine,
   pumpWorkers,
   queuedWorkers,
   retryNow,
@@ -13603,8 +13604,17 @@ function Workspace({
           input: withLegacyBriefParts(job.input, job.title),
         });
       },
-      failed: (job, error) =>
-        console.warn(`A waiting worker (${job.title}) could not start`, error),
+      failed: (job, error) => {
+        console.warn(`A waiting worker (${job.title}) could not start`, error);
+        // WP-171: a waiting task that is dropped is told to the chat that asked, once. A cap refusal never gets here.
+        const line = droppedTaskLine(job, error);
+        void queueMonoSessionCompletionRef.current(job.ownerSession, {
+          id: `dropped-${job.id}`,
+          text: `[MonoCode] ${line} (this is the app, not the person.)`,
+          attachments: [],
+          monoNote: { kind: "message", from: "Tasks", line: line.length > 160 ? `${line.slice(0, 157)}...` : line },
+        });
+      },
     })
       .catch(console.error)
       .finally(() => {

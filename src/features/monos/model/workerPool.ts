@@ -19,6 +19,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import type { WorkerPoolHost } from "../../agent-app/model/agentAppTasks";
 import type { Delegation } from "./delegations";
+import { FANOUT_MAX_TASKS } from "../../firstmate/model/fanoutContract";
 import type { DependencyWait } from "../../firstmate/model/fanoutWaves";
 import type { ProviderRateLimits } from "../../providers/model/rateLimits";
 import { freshRoomAfter, limitResetAt } from "../../providers/model/accountWaterfall";
@@ -634,6 +635,27 @@ export async function refreshWorkerQueue(): Promise<void> {
 export function claimWorker(id: string): Promise<boolean> {
   return backend.claim(id, windowId).catch(() => false);
 }
+/**
+ * The start was refused because the owner is already at the fan-out cap. Drop the lease and put the job back, so the
+ * next look can start it. Taking it and adding it again clears the claim (add keeps no lease) without a new command.
+ */
+async function releaseForRetry(job: QueuedWorker): Promise<void> {
+  const { claimedUntil: _claimed, ...plain } = job;
+  noteQueueEdit();
+  copy = copy.some((queued) => queued.id === job.id)
+    ? copy.map((queued) => (queued.id === job.id ? plain : queued))
+    : [...copy, plain];
+  changed();
+  const removed = await backend.take(job.id).catch(() => false);
+  if (!removed) {
+    await refreshWorkerQueue();
+    return;
+  }
+  await backend.add(plain).catch((error: unknown) => console.warn("Could not keep a waiting worker", error));
+  noteQueueEdit();
+  await refreshWorkerQueue();
+}
+
 /** It started (or its start was refused): out of the queue, if this window still holds it. */
 export function finishWorker(id: string): Promise<boolean> {
   if (copy.some((q) => q.id === id)) {
@@ -678,8 +700,11 @@ export function dequeueWorker(id: string): Promise<boolean> {
 
 // ---- deciding ----------------------------------------------------------------------------------------------------
 
-/** WP-171: `requires` waits for the tasks of its fan-out that provide what it needs; `held` is that wait when one of them failed. */
-export type WaitReason = "workers" | "heavy" | "limit" | "files" | "health" | "requires" | "held";
+/**
+ * WP-171: `requires` waits for the tasks of its fan-out that provide what it needs; `held` is that wait when one of
+ * them failed; `fanout` is the owner's own cap (a first mate runs at most FANOUT_MAX_TASKS at once).
+ */
+export type WaitReason = "workers" | "heavy" | "limit" | "files" | "health" | "requires" | "held" | "fanout";
 export type Admission = { start: true } | { start: false; reason: WaitReason; line: string };
 
 const clock = (ms: number) => new Date(ms).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
@@ -708,6 +733,8 @@ export type AdmitInput = {
   files?: readonly string[];
   /** WP-171: its fan-out link (firstmate/model/fanoutWaves.ts), when it is one task of a contract. Opaque here. */
   fanout?: unknown;
+  /** The chat that asked. When set, its open tasks count toward the fan-out cap. Absent: the cap is not applied. */
+  ownerSession?: string;
 };
 
 // ---- r87: two jobs never change the same files at once ------------------------------------------------------------
@@ -807,7 +834,8 @@ export function filesWaitLine(shared: { title: string; file: string }): string {
 }
 
 export type AdmitContext = {
-  rows: readonly (Pick<Delegation, "project" | "state" | "childSession" | "follow"> & Partial<Pick<Delegation, "title">>)[];
+  rows: readonly (Pick<Delegation, "project" | "state" | "childSession" | "follow"> &
+    Partial<Pick<Delegation, "title" | "ownerSession">>)[];
   room: (harness: string) => ProviderRoom;
   limits?: (project: string) => WorkerLimits;
   heavy?: (childSession: string) => boolean;
@@ -965,6 +993,61 @@ function decide(job: AdmitInput, load: ProjectLoad, limits: WorkerLimits, room: 
   return { start: true };
 }
 
+/** Open tasks of one owner: running or asking, and not a followed brief (the same rows check_fanout counts). */
+function ownerOpen(owner: string, rows: AdmitContext["rows"]): number {
+  let n = 0;
+  for (const row of rows) {
+    if (row.ownerSession !== owner || row.follow) continue;
+    if (row.state !== "running" && row.state !== "question") continue;
+    n += 1;
+  }
+  return n;
+}
+
+/** The line for a task that would put its owner over the fan-out cap. `open` is how many already count. */
+export function fanoutWaitLine(open: number): string {
+  return `Waiting: you already have ${open} tasks running, the most one first mate runs at once (${FANOUT_MAX_TASKS}). It starts by itself when one finishes.`;
+}
+
+/** One line for the owner when a waiting task is dropped instead of started. Names the task. */
+export function droppedTaskLine(job: Pick<QueuedWorker, "title">, error: unknown): string {
+  const why = error instanceof Error ? error.message : String(error);
+  const name = job.title.trim() || "A waiting task";
+  return `"${name}" was dropped before it could start: ${why}`;
+}
+
+/** The rust cap refusal (firstmate check_fanout). A task that hits it waits; it is not a final failure. */
+function capRefusal(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.includes("the most one first mate runs at once");
+}
+
+/**
+ * How many of this owner's tasks already count against the cap, before `job` would start: open rows, jobs ahead of
+ * it that would start now, and any job another window has claimed. A job with no owner is not capped.
+ */
+function fanoutPressure(job: { id: string; ownerSession?: string }, ctx: AdmitContext): number | undefined {
+  if (!job.ownerSession) return undefined;
+  const queue = ctx.queue ?? queuedWorkers();
+  const at = queue.findIndex((queued) => queued.id === job.id);
+  const ahead = at < 0 ? queue : queue.slice(0, at);
+  const starters = nextWorkers({ ...ctx, queue: ahead });
+  let n = ownerOpen(job.ownerSession, ctx.rows);
+  const counted = new Set<string>();
+  for (const queued of starters) {
+    if (queued.ownerSession !== job.ownerSession || counted.has(queued.id)) continue;
+    counted.add(queued.id);
+    n += 1;
+  }
+  for (const queued of queue) {
+    if (queued.id === job.id || queued.ownerSession !== job.ownerSession || !isClaimed(queued) || counted.has(queued.id))
+      continue;
+    counted.add(queued.id);
+    n += 1;
+  }
+  return n;
+}
+
 /**
  * A new delegate_task: start now, or wait. It also waits behind work of the same project that is already waiting
  * (first asked, first started), except that a waiting heavy job never holds a light one up.
@@ -987,6 +1070,10 @@ export function admitWorker(job: AdmitInput, ctx: AdmitContext): Admission {
   if (needed) return { start: false, reason: needed.reason, line: needed.line };
   const shared = sharedWith(job, ctx.rows, ahead);
   if (shared) return { start: false, reason: "files", line: filesWaitLine(shared) };
+  // WP-171: the owner's open tasks count against the fan-out cap. Past it, this one waits and holds no project seat.
+  const pressure = fanoutPressure(job, ctx);
+  if (pressure !== undefined && pressure >= FANOUT_MAX_TASKS)
+    return { start: false, reason: "fanout", line: fanoutWaitLine(pressure) };
   return decide(job, { running: load.running + ahead.length, heavy: load.heavy + ahead.filter((q) => q.heavy).length }, limits, room);
 }
 
@@ -994,6 +1081,12 @@ export function admitWorker(job: AdmitInput, ctx: AdmitContext): Admission {
 export function nextWorkers(ctx: AdmitContext): QueuedWorker[] {
   const queue = ctx.queue ?? queuedWorkers();
   const loads = new Map<string, ProjectLoad>();
+  // A claim already holds a slot, including one later in the queue than the job being considered.
+  const fanout = new Map<string, number>();
+  for (const job of queue) {
+    if (!job.ownerSession || !isClaimed(job)) continue;
+    fanout.set(job.ownerSession, (fanout.get(job.ownerSession) ?? ownerOpen(job.ownerSession, ctx.rows)) + 1);
+  }
   const start: QueuedWorker[] = [];
   for (const job of queue) {
     const load = loads.get(job.project) ?? projectLoad(job.project, ctx.rows, ctx.heavy);
@@ -1004,8 +1097,14 @@ export function nextWorkers(ctx: AdmitContext): QueuedWorker[] {
     // WP-171: not until everything it needs is delivered; it keeps its place and takes no seat meanwhile.
     if (!claimed && dependencyWait({ id: job.id, fanout: queuedFanout(job) }, ctx)) continue;
     if (!claimed && sharedWith(job, ctx.rows, start)) continue;
+    const open = job.ownerSession ? (fanout.get(job.ownerSession) ?? ownerOpen(job.ownerSession, ctx.rows)) : undefined;
+    // Past the cap it waits, and it does not take a project seat from work that can still start.
+    if (!claimed && open !== undefined && open >= FANOUT_MAX_TASKS) continue;
     if (!claimed && !decide(job, load, limits, ctx.room(job.harness)).start) continue;
-    if (!claimed) start.push(job);
+    if (!claimed) {
+      start.push(job);
+      if (job.ownerSession) fanout.set(job.ownerSession, (open ?? ownerOpen(job.ownerSession, ctx.rows)) + 1);
+    }
     loads.set(job.project, { running: load.running + 1, heavy: load.heavy + (job.heavy ? 1 : 0) });
   }
   return start;
@@ -1020,6 +1119,8 @@ export function queuedLine(job: QueuedWorker, ctx: AdmitContext): string {
   if (needed) return needed.line;
   const shared = sharedWith(job, ctx.rows);
   if (shared) return filesWaitLine(shared);
+  const pressure = fanoutPressure(job, ctx);
+  if (pressure !== undefined && pressure >= FANOUT_MAX_TASKS) return fanoutWaitLine(pressure);
   const why = decide(job, load, limits, room);
   return why.start ? "Starting now." : why.line;
 }
@@ -1184,6 +1285,8 @@ export async function pumpWorkers(deps: {
   canStart?(job: QueuedWorker): boolean;
   start(job: QueuedWorker): Promise<unknown>;
   failed?(job: QueuedWorker, error: unknown): void;
+  /** A waiting task was dropped (not a cap refusal, and not a chat that is gone). One line, naming the task. */
+  dropped?(job: QueuedWorker, line: string): void;
 }): Promise<QueuedWorker[]> {
   // WP-161: a fresh sample when the last one is old. A timeout keeps the last fresh sample, or none.
   await refreshBuilderHealth();
@@ -1206,7 +1309,14 @@ export async function pumpWorkers(deps: {
         await deps.start(job);
         started.push(job);
       } catch (error) {
+        // The cap moved between the decision and the start. It keeps its place and is tried again; nobody is told
+        // it failed, because it has not.
+        if (capRefusal(error)) {
+          await releaseForRetry(job);
+          continue;
+        }
         deps.failed?.(job, error);
+        deps.dropped?.(job, droppedTaskLine(job, error));
       }
       // Started, or refused for good: either way it no longer waits.
       await finishWorker(job.id);
