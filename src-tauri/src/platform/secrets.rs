@@ -91,6 +91,19 @@ pub fn not_removed() -> &'static str {
     }
 }
 
+/// WP-92: the person said no to the system prompt (or it could not be shown). Not "locked": nothing needs unlocking,
+/// the person only has to allow it when it asks again.
+pub fn denied() -> &'static str {
+    #[cfg(target_os = "macos")]
+    {
+        "Your Mac's keychain didn't let this app use that key. Click Allow when macOS asks, then try again."
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        "Your secret store didn't let this app use that key. Allow it when it asks, then try again."
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::backend_name;
@@ -135,6 +148,7 @@ mod tests {
                 super::not_read(),
                 super::not_removed(),
                 super::locked(),
+                super::denied(),
             ] {
                 assert!(!sentence.contains("Keychain"), "{sentence}");
             }
