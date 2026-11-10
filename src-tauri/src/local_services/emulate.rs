@@ -666,9 +666,17 @@ pub fn start(request: &StartRequest) -> Result<u32, String> {
         .spawn()
         .map_err(|error| format!("The stand-in didn't start: {error}"))?;
     let pid = child.id();
+    // Asked of the handle `spawn` returned, so it is this process's start time and no other's.
+    #[cfg(windows)]
+    let start_token = {
+        use std::os::windows::io::AsRawHandle;
+        super::process_win::start_token_of(child.as_raw_handle())
+    };
+    #[cfg(not(windows))]
+    let start_token: Option<String> = None;
     if let Err(error) = store::save(
         &request.stack_dir.join("emulate.pid"),
-        pid_file_text(pid).as_bytes(),
+        pid_file_text(pid, start_token.as_deref()).as_bytes(),
     ) {
         // A process this app cannot stop again is worse than no process.
         let _ = child.kill();
@@ -728,6 +736,20 @@ pub enum Probe {
     Unknown,
 }
 
+/// What the kill step found, looking again at the moment it acts. Only `Failed` leaves the pid
+/// file: the other three mean this stack has no stand-in running any more.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Kill {
+    /// It was this stack's stand-in and it has been ended.
+    Killed,
+    /// It exited between the first look and the kill.
+    Gone,
+    /// The pid had been given to another program in between. Nothing was ended.
+    NotOurs,
+    /// It is still there and could not be ended, or could not be looked at again.
+    Failed,
+}
+
 /// Said when a stand-in cannot be proved this app's own to stop. The pid file is kept.
 pub const STILL_RUNNING_NOTE: &str =
     "The old stand-in is still running; stop it from Activity Monitor or restart the app.";
@@ -746,12 +768,11 @@ pub fn stop(stack_dir: &Path) -> Result<(), String> {
 
 /// The pid file is `pid` and, on Windows, the process start time on the next line. Only the
 /// first line is the pid: a second line must not make the record unreadable.
-fn pid_file_text(pid: u32) -> String {
-    #[cfg(windows)]
-    if let Some(token) = process_start_token(pid) {
-        return format!("{pid}\n{token}\n");
+fn pid_file_text(pid: u32, start_token: Option<&str>) -> String {
+    match start_token.filter(|token| valid_start_token(token)) {
+        Some(token) => format!("{pid}\n{token}\n"),
+        None => format!("{pid}\n"),
     }
-    format!("{pid}\n")
 }
 
 fn pid_record(text: &str) -> Option<(u32, Option<String>)> {
@@ -764,7 +785,7 @@ fn pid_record(text: &str) -> Option<(u32, Option<String>)> {
     Some((pid, start))
 }
 
-/// A Windows file time: digits only, so a value read from disk cannot change the probe command.
+/// A Windows file time: digits only, so a value read from disk cannot be anything but a number.
 fn valid_start_token(token: &str) -> bool {
     (1..=32).contains(&token.len()) && token.bytes().all(|byte| byte.is_ascii_digit())
 }
@@ -772,7 +793,7 @@ fn valid_start_token(token: &str) -> bool {
 fn stop_with(
     stack_dir: &Path,
     probe: impl Fn(u32) -> Probe,
-    kill: impl Fn(u32) -> bool,
+    kill: impl Fn(u32) -> Kill,
 ) -> Result<(), String> {
     let path = stack_dir.join("emulate.pid");
     let text = match std::fs::read_to_string(&path) {
@@ -794,36 +815,51 @@ fn stop_with(
         // can try again, and say in plain words how to end it now.
         Probe::Unknown => Err(STILL_RUNNING_NOTE.to_string()),
         Probe::Ours => {
-            // `kill` checks again on Windows, immediately before taskkill. A pid reused in
-            // between is not killed, and the file stays so the next stop can look again.
-            if kill(pid) {
-                let _ = std::fs::remove_file(&path);
-                Ok(())
-            } else {
-                Err(STILL_RUNNING_NOTE.to_string())
+            // `kill` looks again at the moment it acts. A stand-in that exited in between,
+            // or a pid given to another program, is not a stand-in still running: the stack
+            // has none, so the file goes and the stop is a success.
+            match kill(pid) {
+                Kill::Killed | Kill::Gone | Kill::NotOurs => {
+                    let _ = std::fs::remove_file(&path);
+                    Ok(())
+                }
+                Kill::Failed => Err(STILL_RUNNING_NOTE.to_string()),
             }
         }
     }
 }
 
-/// Kill only when the pid is still this stack's stand-in. On Windows that check is repeated
-/// here, because a pid can be reused between the first look and `taskkill /T /F`.
-fn kill_if_still_ours(pid: u32, stack_dir: &Path) -> bool {
-    if !still_ours(pid, stack_dir) {
+/// Whether `command` names `stack_dir` as a folder: the whole path, with a separator after it,
+/// and not as the tail of a longer path. A substring would take stack `s0000a001`'s stand-in
+/// for stack `s0000a0010`'s, and a path inside some other folder for this one's.
+fn names_stack_dir(command: &str, stack_dir: &Path) -> bool {
+    let stack = stack_dir.to_string_lossy();
+    let stack = stack.trim_end_matches(['/', '\\']);
+    if stack.is_empty() {
         return false;
     }
-    kill_tree(pid);
-    true
+    command.match_indices(stack).any(|(at, _)| {
+        let before = command[..at].chars().next_back();
+        let after = command[at + stack.len()..].chars().next();
+        let starts_a_path =
+            before.is_none_or(|ch| ch.is_whitespace() || matches!(ch, '"' | '\'' | '='));
+        starts_a_path && matches!(after, Some('/' | '\\'))
+    })
 }
 
-#[cfg(windows)]
-fn still_ours(pid: u32, stack_dir: &Path) -> bool {
-    probe_stand_in(pid, stack_dir) == Probe::Ours
-}
-
-#[cfg(not(windows))]
-fn still_ours(_pid: u32, _stack_dir: &Path) -> bool {
-    true
+/// Kill only when the pid is still this stack's stand-in, looked at again now. On Windows the
+/// look and the kill are one open handle, so a pid reused in between is never ended.
+#[cfg(unix)]
+fn kill_if_still_ours(pid: u32, stack_dir: &Path) -> Kill {
+    match probe_stand_in(pid, stack_dir) {
+        Probe::Ours => {
+            kill_tree(pid);
+            Kill::Killed
+        }
+        Probe::Gone => Kill::Gone,
+        Probe::NotOurs => Kill::NotOurs,
+        Probe::Unknown => Kill::Failed,
+    }
 }
 
 #[cfg(unix)]
@@ -831,7 +867,7 @@ fn probe_stand_in(pid: u32, stack_dir: &Path) -> Probe {
     match command_of(pid) {
         Some(command) if !command.contains("emulate") => Probe::NotOurs,
         Some(command) => {
-            if command.contains(stack_dir.to_string_lossy().as_ref()) {
+            if names_stack_dir(&command, stack_dir) {
                 Probe::Ours
             } else {
                 // Another stack's stand-in, or this one under a folder that moved: not ours
@@ -876,16 +912,6 @@ fn kill_tree(pid: u32) {
     }
 }
 
-#[cfg(windows)]
-fn kill_tree(pid: u32) {
-    let _ = Command::new("taskkill")
-        .args(["/PID", &pid.to_string(), "/T", "/F"])
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status();
-}
-
 /// What could be read about one pid. A missing field is not proof of anything.
 ///
 /// Used on Windows, and by the tests on every platform. A macOS build that is not a test
@@ -898,44 +924,11 @@ struct ProcessFacts {
     alive: bool,
 }
 
-/// `NAME=`, `START=` and `CMD=` lines from the Windows process query. Pure, so the reused-pid
-/// cases are tested on every platform.
-#[cfg_attr(not(any(windows, test)), allow(dead_code))]
-fn process_facts(output: &str, alive: bool) -> ProcessFacts {
-    let mut image = None;
-    let mut start_token = None;
-    let mut command = None;
-    for line in output.lines() {
-        if let Some(value) = line.strip_prefix("NAME=") {
-            let value = value.trim();
-            if image.is_none() && !value.is_empty() {
-                image = Some(value.to_string());
-            }
-        } else if let Some(value) = line.strip_prefix("START=") {
-            let value = value.trim();
-            if start_token.is_none() && valid_start_token(value) {
-                start_token = Some(value.to_string());
-            }
-        } else if let Some(value) = line.strip_prefix("CMD=") {
-            let value = value.trim();
-            if command.is_none() && !value.is_empty() {
-                command = Some(value.to_string());
-            }
-        }
-    }
-    ProcessFacts {
-        image,
-        command,
-        start_token,
-        alive,
-    }
-}
-
 /// Whether the live process is the stand-in this stack started.
 ///
-/// A matching start time or a command line that names `emulate` and this stack's folder is
-/// proof. The image name alone is not: a reused pid that is now some other `node.exe` must
-/// not be killed, and `taskkill /T` would take that process's whole tree with it.
+/// A matching start time with the `node.exe` image, or a command line that names `emulate` and
+/// this stack's folder, is proof. The image name alone is not: a reused pid that is now some
+/// other `node.exe` must not be killed.
 #[cfg_attr(not(any(windows, test)), allow(dead_code))]
 fn classify_stand_in(
     stack_dir: &Path,
@@ -949,10 +942,10 @@ fn classify_stand_in(
     if start_mismatch {
         return Probe::NotOurs;
     }
-    let stack = stack_dir.to_string_lossy();
-    let command_ours = facts.command.as_deref().is_some_and(|command| {
-        !stack.is_empty() && command.contains("emulate") && command.contains(stack.as_ref())
-    });
+    let command_ours = facts
+        .command
+        .as_deref()
+        .is_some_and(|command| command.contains("emulate") && names_stack_dir(command, stack_dir));
     if command_ours {
         return Probe::Ours;
     }
@@ -977,10 +970,58 @@ fn classify_stand_in(
     Probe::Gone
 }
 
+/// The first look, on Windows: open the process, and judge it by its start time and image.
 #[cfg(windows)]
 fn probe_stand_in(pid: u32, stack_dir: &Path) -> Probe {
+    use super::process_win::{OpenFailure, Process};
+    match Process::open(pid, false) {
+        Err(OpenFailure::Gone) => Probe::Gone,
+        Err(OpenFailure::Refused) => Probe::Unknown,
+        Ok(process) => probe_held(&process, pid, stack_dir),
+    }
+}
+
+/// Judge an open process. A process that has ended is gone, whatever else its handle says.
+#[cfg(windows)]
+fn probe_held(process: &super::process_win::Process, pid: u32, stack_dir: &Path) -> Probe {
+    if process.exited() {
+        return Probe::Gone;
+    }
     let recorded = recorded_start(stack_dir, pid);
-    classify_stand_in(stack_dir, recorded.as_deref(), &live_facts(pid))
+    let facts = ProcessFacts {
+        image: process.image_name(),
+        command: None,
+        start_token: process.start_token(),
+        alive: true,
+    };
+    classify_stand_in(stack_dir, recorded.as_deref(), &facts)
+}
+
+/// The second look and the kill, on one handle. The process is opened once, compared with the
+/// start time this app recorded when it started it, and ended through that same handle, so a
+/// pid that was reused between the first look and now is never the process that is ended.
+#[cfg(windows)]
+fn kill_if_still_ours(pid: u32, stack_dir: &Path) -> Kill {
+    use super::process_win::{OpenFailure, Process};
+    let process = match Process::open(pid, true) {
+        Ok(process) => process,
+        Err(OpenFailure::Gone) => return Kill::Gone,
+        Err(OpenFailure::Refused) => return Kill::Failed,
+    };
+    match probe_held(&process, pid, stack_dir) {
+        Probe::Ours => {
+            if process.terminate() {
+                Kill::Killed
+            } else if process.exited() {
+                Kill::Gone
+            } else {
+                Kill::Failed
+            }
+        }
+        Probe::Gone => Kill::Gone,
+        Probe::NotOurs => Kill::NotOurs,
+        Probe::Unknown => Kill::Failed,
+    }
 }
 
 #[cfg(windows)]
@@ -988,90 +1029,6 @@ fn recorded_start(stack_dir: &Path, pid: u32) -> Option<String> {
     let text = std::fs::read_to_string(stack_dir.join("emulate.pid")).ok()?;
     let (file_pid, start) = pid_record(&text)?;
     (file_pid == pid).then_some(start).flatten()
-}
-
-#[cfg(windows)]
-fn process_start_token(pid: u32) -> Option<String> {
-    process_facts(&powershell_process(pid)?, true).start_token
-}
-
-#[cfg(windows)]
-fn live_facts(pid: u32) -> ProcessFacts {
-    if let Some(output) = powershell_process(pid) {
-        let facts = process_facts(&output, true);
-        if facts.image.is_some() || facts.command.is_some() || facts.start_token.is_some() {
-            return facts;
-        }
-    }
-    let image = tasklist_image(pid);
-    let alive = image.is_some() || crate::proxy::routes::process_alive(pid);
-    ProcessFacts {
-        image,
-        command: None,
-        start_token: None,
-        alive,
-    }
-}
-
-/// Process id, start time and command line. The pid is a number this app parsed, never a
-/// string read from the command line, so it cannot change what PowerShell runs.
-#[cfg(windows)]
-fn powershell_process(pid: u32) -> Option<String> {
-    let script = format!(
-        "$p = Get-CimInstance Win32_Process -Filter \"ProcessId={pid}\"; \
-         if (-not $p) {{ exit 2 }}; \
-         Write-Output ('NAME=' + $p.Name); \
-         Write-Output ('START=' + $p.CreationDate.ToFileTime()); \
-         Write-Output ('CMD=' + $p.CommandLine)"
-    );
-    let mut command = Command::new("powershell");
-    crate::hide_window_console(&mut command);
-    let output = command
-        .args(["-NoProfile", "-NonInteractive", "-Command", &script])
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    Some(String::from_utf8_lossy(&output.stdout).into_owned())
-}
-
-#[cfg(windows)]
-fn tasklist_image(pid: u32) -> Option<String> {
-    let output = Command::new("tasklist")
-        .args(["/FI", &format!("PID eq {pid}"), "/FO", "CSV", "/NH"])
-        .stdin(Stdio::null())
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    tasklist_image_name(&String::from_utf8_lossy(&output.stdout))
-}
-
-/// The first CSV field of `tasklist /FO CSV /NH`: `"node.exe","4321",...` gives `node.exe`,
-/// and an empty answer (the pid is gone) gives nothing. Pure, so every platform tests it.
-#[cfg_attr(not(any(windows, test)), allow(dead_code))]
-fn tasklist_image_name(output: &str) -> Option<String> {
-    for line in output.lines() {
-        let line = line.trim();
-        if line.is_empty() {
-            continue;
-        }
-        // tasklist's "no task matches" line names no process.
-        if line.starts_with("INFO:") {
-            return None;
-        }
-        let field = match line.strip_prefix('"') {
-            Some(rest) => rest.split('"').next().unwrap_or("").to_string(),
-            None => line.split(',').next().unwrap_or("").to_string(),
-        };
-        return (!field.is_empty()).then_some(field);
-    }
-    None
 }
 
 /// A stable map from a service to its env name: `GITHUB_BASE_URL`, `MONGODBATLAS_BASE_URL`.
@@ -1789,7 +1746,7 @@ pub(crate) mod tests {
             |_| Probe::Ours,
             |pid| {
                 killed.lock().unwrap().push(pid);
-                true
+                Kill::Killed
             },
         )
         .unwrap();
@@ -1808,7 +1765,7 @@ pub(crate) mod tests {
             |_| Probe::Unknown,
             |pid| {
                 killed.lock().unwrap().push(pid);
-                true
+                Kill::Killed
             },
         )
         .unwrap_err();
@@ -1829,7 +1786,7 @@ pub(crate) mod tests {
             |_| Probe::NotOurs,
             |pid| {
                 killed.lock().unwrap().push(pid);
-                true
+                Kill::Killed
             },
         )
         .unwrap();
@@ -1848,7 +1805,7 @@ pub(crate) mod tests {
             |_| Probe::Gone,
             |pid| {
                 killed.lock().unwrap().push(pid);
-                true
+                Kill::Killed
             },
         )
         .unwrap();
@@ -1865,11 +1822,17 @@ pub(crate) mod tests {
         // An old-version stand-in whose folder is not the installed tool folder still counts.
         let mut child = Command::new("sh")
             .arg("-c")
-            .arg(format!("sleep 30; : emulate {}", stack.display()))
+            .arg(format!(
+                "sleep 30; : emulate {}",
+                stack.join("emulate.config.json").display()
+            ))
             .spawn()
             .unwrap();
         std::thread::sleep(Duration::from_millis(50));
         assert_eq!(probe_stand_in(child.id(), &stack), Probe::Ours);
+        // A stack whose id only starts like this one's is another stack: kept, never killed.
+        let prefix = temp.0.join("sta");
+        assert_eq!(probe_stand_in(child.id(), &prefix), Probe::Unknown);
         // An emulate process under another folder is kept, never killed.
         assert_eq!(
             probe_stand_in(child.id(), &temp.0.join("other")),
@@ -1877,32 +1840,6 @@ pub(crate) mod tests {
         );
         let _ = child.kill();
         let _ = child.wait();
-    }
-
-    #[test]
-    fn tasklist_output_names_the_image_or_nothing() {
-        // A live pid that is ours.
-        assert_eq!(
-            tasklist_image_name("\"node.exe\",\"4321\",\"Console\",\"1\",\"32,456 K\"\n")
-                .as_deref(),
-            Some("node.exe")
-        );
-        assert_eq!(
-            tasklist_image_name("\"NODE.EXE\",\"4321\",\"Console\",\"1\",\"32 K\"\r\n").as_deref(),
-            Some("NODE.EXE")
-        );
-        // A recycled pid that now names another program.
-        assert_eq!(
-            tasklist_image_name("\"Finder.exe\",\"4321\",\"Console\",\"1\",\"32 K\"\n").as_deref(),
-            Some("Finder.exe")
-        );
-        // No task matches: the pid is gone, and nothing may be killed.
-        assert_eq!(tasklist_image_name(""), None);
-        assert_eq!(tasklist_image_name("\n \r\n"), None);
-        assert_eq!(
-            tasklist_image_name("INFO: No tasks are running which match the specified criteria."),
-            None
-        );
     }
 
     fn facts(
@@ -1922,7 +1859,7 @@ pub(crate) mod tests {
     #[test]
     fn a_reused_node_pid_is_not_this_stand_in() {
         let stack = Path::new("/stacks/s01234567");
-        let ours = "node index.js start --seed emulate.config.json /stacks/s01234567";
+        let ours = "node index.js start --seed /stacks/s01234567/emulate.config.json";
         // The command line names this stack, but the start time is a different process.
         assert_eq!(
             classify_stand_in(
@@ -1973,9 +1910,11 @@ pub(crate) mod tests {
         );
     }
 
+    /// The kill step looks again when it acts. A stand-in that cannot be ended is still running:
+    /// the file stays and the sentence says how to end it by hand.
     #[test]
-    fn a_kill_that_loses_the_pid_keeps_the_file_and_kills_nothing() {
-        let temp = Temp::new("stop-race");
+    fn a_kill_that_fails_keeps_the_file_and_says_it_is_still_running() {
+        let temp = Temp::new("stop-failed");
         let stack = temp.0.join("stack");
         pid_file(&stack, 4242);
         let killed = Mutex::new(Vec::new());
@@ -1984,7 +1923,7 @@ pub(crate) mod tests {
             |_| Probe::Ours,
             |pid| {
                 killed.lock().unwrap().push(pid);
-                false
+                Kill::Failed
             },
         )
         .unwrap_err();
@@ -1992,6 +1931,69 @@ pub(crate) mod tests {
         assert!(stack.join("emulate.pid").exists());
         // The closure was asked, and it refused. Nothing else may be killed.
         assert_eq!(*killed.lock().unwrap(), vec![4242]);
+    }
+
+    /// A fake that exits between the first look and the kill used to be "still running": the
+    /// stop failed and the pid file was kept for a process that was not there. It is gone, which
+    /// is what a stop is for, so it is a success and the file goes. The same holds when the pid
+    /// was given to another program in the gap, and nothing was ended.
+    #[test]
+    fn a_fake_that_is_gone_or_replaced_by_the_second_look_is_a_stop_that_worked() {
+        for (outcome, name) in [(Kill::Gone, "gone"), (Kill::NotOurs, "reused")] {
+            let temp = Temp::new(&format!("stop-{name}-race"));
+            let stack = temp.0.join("stack");
+            pid_file(&stack, 4242);
+            stop_with(&stack, |_| Probe::Ours, |_| outcome).unwrap();
+            assert!(
+                !stack.join("emulate.pid").exists(),
+                "the pid file of a stand-in that was {name} is still there"
+            );
+        }
+    }
+
+    /// The stack's folder is matched as a folder: a stand-in whose command names a longer id
+    /// that starts with this one's is another stack's, and so is a path that merely contains it.
+    #[test]
+    fn a_command_names_a_stack_folder_only_as_a_whole_path() {
+        let stack = Path::new("/data/stacks/s0000a001");
+        let ours = "node /tools/emulate/index.js start --seed /data/stacks/s0000a001/emulate.config.json --host 127.0.0.1";
+        let longer = "node /tools/emulate/index.js start --seed /data/stacks/s0000a0010/emulate.config.json --host 127.0.0.1";
+        let nested = "node /tools/emulate/index.js start --seed /other/data/stacks/s0000a001/emulate.config.json";
+        for (command, expected) in [
+            (ours, Probe::Ours),
+            (longer, Probe::NotOurs),
+            (nested, Probe::NotOurs),
+        ] {
+            assert_eq!(
+                classify_stand_in(
+                    stack,
+                    None,
+                    &facts(Some("node.exe"), Some(command), None, true)
+                ),
+                expected,
+                "{command}"
+            );
+        }
+        // Windows paths, quoted or not, with their own separator.
+        let windows = Path::new("C:\\Data\\stacks\\s0000a001");
+        let quoted = "\"C:\\Program Files\\nodejs\\node.exe\" C:\\tools\\emulate\\index.js start --seed \"C:\\Data\\stacks\\s0000a001\\emulate.config.json\"";
+        let other = "node emulate C:\\Data\\stacks\\s0000a0010\\emulate.config.json";
+        assert_eq!(
+            classify_stand_in(
+                windows,
+                None,
+                &facts(Some("node.exe"), Some(quoted), None, true)
+            ),
+            Probe::Ours
+        );
+        assert_eq!(
+            classify_stand_in(
+                windows,
+                None,
+                &facts(Some("node.exe"), Some(other), None, true)
+            ),
+            Probe::NotOurs
+        );
     }
 
     #[test]
@@ -2004,18 +2006,84 @@ pub(crate) mod tests {
         // A second line that is not a start time is ignored, not a reason to drop the pid.
         assert_eq!(pid_record("4242\nnot-a-time\n").unwrap(), (4242, None));
         assert_eq!(pid_record("nope\n"), None);
-        let parsed = process_facts(
-            "NAME=node.exe\nSTART=133000\nCMD=node emulate /stacks/s01234567\n",
-            true,
-        );
-        assert_eq!(parsed.image.as_deref(), Some("node.exe"));
-        assert_eq!(parsed.start_token.as_deref(), Some("133000"));
+        // What is written is what is read back, and a token that is not digits is never written.
+        assert_eq!(pid_file_text(4242, Some("133000")), "4242\n133000\n");
+        assert_eq!(pid_file_text(4242, None), "4242\n");
+        assert_eq!(pid_file_text(4242, Some("12;calc")), "4242\n");
         assert_eq!(
-            parsed.command.as_deref(),
-            Some("node emulate /stacks/s01234567")
+            pid_record(&pid_file_text(4242, Some("133000"))).unwrap(),
+            (4242, Some("133000".to_string()))
         );
-        // A start time that is not digits cannot be the one this app wrote.
-        assert_eq!(process_facts("START=12;calc\n", true).start_token, None);
+    }
+
+    /// Windows only: real processes, so the handle calls are exercised and not just the rules.
+    #[cfg(windows)]
+    fn record_pid(stack: &Path, child: &std::process::Child) {
+        use std::os::windows::io::AsRawHandle;
+        std::fs::create_dir_all(stack).unwrap();
+        let token = super::super::process_win::start_token_of(child.as_raw_handle());
+        std::fs::write(
+            stack.join("emulate.pid"),
+            pid_file_text(child.id(), token.as_deref()),
+        )
+        .unwrap();
+    }
+
+    /// A pid that now belongs to another program is not ended, and its pid file goes.
+    #[cfg(windows)]
+    #[test]
+    fn a_program_that_is_not_node_at_the_recorded_pid_is_left_running() {
+        let temp = Temp::new("win-reused");
+        let stack = temp.0.join("stack");
+        let mut other = Command::new("ping")
+            .args(["-n", "30", "127.0.0.1"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        record_pid(&stack, &other);
+        stop(&stack).unwrap();
+        let still_running = other.try_wait().unwrap().is_none();
+        let _ = other.kill();
+        let _ = other.wait();
+        assert!(still_running, "another program was ended");
+        assert!(!stack.join("emulate.pid").exists());
+    }
+
+    /// The stand-in is `node.exe`: found by its start time and image, then ended through the
+    /// handle it was opened with. Skipped where Node is not installed.
+    #[cfg(windows)]
+    #[test]
+    fn a_node_stand_in_is_ended_through_its_handle() {
+        let temp = Temp::new("win-node");
+        let stack = temp.0.join("stack");
+        let Ok(mut node) = Command::new("node")
+            .args(["-e", "setTimeout(() => {}, 30000)"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+        else {
+            println!("skipped: node is not installed");
+            return;
+        };
+        record_pid(&stack, &node);
+        let result = stop(&stack);
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        let mut ended = false;
+        while std::time::Instant::now() < deadline {
+            if node.try_wait().unwrap().is_some() {
+                ended = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        let _ = node.kill();
+        let _ = node.wait();
+        result.unwrap();
+        assert!(ended, "the node stand-in is still running");
+        assert!(!stack.join("emulate.pid").exists());
     }
 
     #[test]
