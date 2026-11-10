@@ -309,24 +309,27 @@ fn save_note_image_into(
         .as_nanos();
     let stored_name = format!("{stamp}-{safe_name}");
     let destination = dir.join(&stored_name);
-    // A new file: never over one that is there, and never through a link at that name.
-    let written = std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&destination)
-        .and_then(|mut file| {
-            use std::io::Write;
-            file.write_all(&bytes)
-        });
-    if let Err(error) = written {
-        let _ = std::fs::remove_file(&destination);
-        return Err(format!("{}: {error}", destination.display()));
-    }
+    write_new_file(&destination, &bytes)
+        .map_err(|error| format!("{}: {error}", destination.display()))?;
 
     Ok(NoteImageAsset {
         name: display_name,
         markdown_path: format!("/{NOTE_ASSET_DIR}/{note_id}/{stored_name}"),
     })
+}
+
+/// `bytes` as a new file at `path`: never over one that is there, never through a link at that name.
+fn write_new_file(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    let written = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+        .and_then(|mut file| file.write_all(bytes));
+    if written.is_err() {
+        let _ = std::fs::remove_file(path);
+    }
+    written
 }
 
 fn note_image_names(source: &Path) -> Result<(String, String), String> {
@@ -1326,6 +1329,21 @@ mod tests {
             Vec::<(String, Vec<u8>)>::new(),
             "the key was copied into the notes' pictures"
         );
+    }
+
+    /// A copy that finds a file already at its name fails, and the file that was there stays.
+    #[test]
+    fn a_copy_never_removes_a_file_it_did_not_create() {
+        let folders = Folders::new();
+        let taken = folders.elsewhere.join("taken.png");
+        std::fs::write(&taken, b"mine").unwrap();
+        let error = write_new_file(&taken, b"theirs").unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::AlreadyExists);
+        assert_eq!(std::fs::read(&taken).unwrap(), b"mine");
+        // A file nobody had is written whole.
+        let fresh = folders.elsewhere.join("fresh.png");
+        write_new_file(&fresh, b"theirs").unwrap();
+        assert_eq!(std::fs::read(&fresh).unwrap(), b"theirs");
     }
 
     /// A pipe named `x.png` is not a picture, and reading it must not wait for a writer.

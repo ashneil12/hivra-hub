@@ -1453,6 +1453,11 @@ fn manifest_root(dir: &Path) -> Option<PathBuf> {
 }
 
 fn unpack(archive: &Path) -> Result<Scratch, String> {
+    unpack_within(archive, MAX_UNPACKED)
+}
+
+/// `unpack` with the most bytes the archive may unpack to.
+fn unpack_within(archive: &Path, budget: u64) -> Result<Scratch, String> {
     let scratch = Scratch::temp("import")?;
     let file = fs::File::open(archive).map_err(|e| format!("{}: {e}", archive.display()))?;
     let mut tar = tar::Archive::new(flate2::read::GzDecoder::new(file));
@@ -1490,7 +1495,7 @@ fn unpack(archive: &Path) -> Result<Scratch, String> {
             fs::create_dir_all(&target).map_err(|e| e.to_string())?;
         } else if kind.is_file() {
             total += entry.header().size().unwrap_or(0);
-            if total > MAX_UNPACKED {
+            if total > budget {
                 return Err("That archive is too large to be an export.".into());
             }
             if let Some(parent) = target.parent() {
@@ -2052,16 +2057,26 @@ pub fn import<G: std::ops::Deref<Target = Connection>>(
     lock: impl FnOnce() -> Result<G, String>,
 ) -> Result<ImportReport, String> {
     let opened = open_export(&request.path)?;
+    import_opened(env, &opened, request, lock)
+}
+
+/// `import` of an export that is already open and checked.
+fn import_opened<G: std::ops::Deref<Target = Connection>>(
+    env: &Env,
+    opened: &Opened,
+    request: &ImportRequest,
+    lock: impl FnOnce() -> Result<G, String>,
+) -> Result<ImportReport, String> {
     let mut report = ImportReport::default();
     if opened.root().is_none() {
         return Ok(report);
     }
     if let Some(memory) = &request.memory {
-        import_memory(env, &opened, memory, &mut report)?;
+        import_memory(env, opened, memory, &mut report)?;
     }
     if let Some(workspace) = &request.workspace {
         let conn = lock()?;
-        import_workspace(env, &conn, &opened, workspace, &mut report).map_err(|e| e.to_string())?;
+        import_workspace(env, &conn, opened, workspace, &mut report).map_err(|e| e.to_string())?;
     }
     Ok(report)
 }

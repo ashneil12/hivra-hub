@@ -2613,3 +2613,438 @@ fn an_export_leaves_out_a_picture_past_the_size_a_note_takes() {
         report.notes
     );
 }
+
+// ---- round 2: the history bundle, sizes by kind, the manifest's own list, tar sizes ----------------------------------
+
+/// A repository somewhere else with one file, `EVIL.md`, in its only commit.
+fn evil_repo(dir: &Path) -> PathBuf {
+    let repo = dir.join("evil");
+    fs::create_dir_all(&repo).unwrap();
+    fs::write(repo.join("EVIL.md"), "carried in from elsewhere\n").unwrap();
+    git(&repo, &["init", "-q", "-b", "main"]);
+    git(&repo, &["add", "-A"]);
+    git(&repo, &["commit", "-q", "-m", "evil"]);
+    repo
+}
+
+/// A folder export of the seeded memory (ash and hivra, with their history), no workspace.
+fn memory_export(source: &Env, out: &Path) -> PathBuf {
+    seed(source);
+    let dest = out.join("export");
+    let mut request = export_request(&dest, Form::Folder);
+    request.workspace = false;
+    export(source, &request).unwrap();
+    assert!(dest.join("memory/ash.git.bundle").is_file());
+    dest
+}
+
+fn history_import(dest: &Path) -> ImportRequest {
+    ImportRequest {
+        path: dest.to_string_lossy().into_owned(),
+        memory: Some(MemoryImport {
+            projects: vec!["ash".into()],
+            keep_both: false,
+            history: true,
+        }),
+        workspace: None,
+    }
+}
+
+/// The subjects of the commits in the memory folder this import made.
+fn history_subjects(target: &Env, name: &str) -> Vec<String> {
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(target.memory_root.join(name))
+        .args(["log", "--format=%s"])
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_SYSTEM", "/dev/null")
+        .output()
+        .unwrap();
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .map(str::to_string)
+        .collect()
+}
+
+/// A listed, correctly hashed `memory/ash.git.bundle` that is a gitfile: `git clone` takes its path for a repository
+/// and clones the one it names. It is no bundle, so it is never handed to git.
+#[cfg(unix)]
+#[test]
+fn a_history_bundle_that_is_a_gitfile_never_clones_the_repo_it_names() {
+    let source_dir = TestDir::new("source");
+    let target_dir = TestDir::new("target");
+    let out = TestDir::new("out");
+    let outside = TestDir::new("outside");
+    let source = env_for(&source_dir.0);
+    let target = env_for(&target_dir.0);
+    let dest = memory_export(&source, &out.0);
+    let repo = evil_repo(&outside.0);
+    put_in_export(
+        &dest,
+        "memory/ash.git.bundle",
+        format!("gitdir: {}\n", repo.join(".git").display()).as_bytes(),
+    );
+
+    let store = open_store(&target);
+    let conn = store.lock_conn().unwrap();
+    let report = import_held(&target, &conn, &history_import(&dest)).unwrap();
+    assert!(
+        !target.memory_root.join("ash/EVIL.md").exists(),
+        "git cloned a repository the export only pointed at"
+    );
+    assert_eq!(history_subjects(&target, "ash"), Vec::<String>::new());
+    assert!(report.memory_history.is_empty(), "{report:?}");
+    assert!(
+        report
+            .notes
+            .iter()
+            .any(|n| n.contains("history of ash") && n.contains("wasn't restored")),
+        "{:?}",
+        report.notes
+    );
+    // The files themselves still come in.
+    assert!(target.memory_root.join("ash/MEMORY.md").is_file());
+}
+
+/// A real, listed bundle, and an unlisted bare repository beside it named `<bundle>.git`: `git clone` tries that
+/// name first and clones the bare repository instead. The bundle's own bytes are what restores.
+#[test]
+fn a_bare_repo_beside_the_history_bundle_is_not_what_gets_cloned() {
+    let source_dir = TestDir::new("source");
+    let target_dir = TestDir::new("target");
+    let out = TestDir::new("out");
+    let outside = TestDir::new("outside");
+    let source = env_for(&source_dir.0);
+    let target = env_for(&target_dir.0);
+    let dest = memory_export(&source, &out.0);
+    let repo = evil_repo(&outside.0);
+    for beside in ["memory/ash.git.bundle.git", "memory/ash.git.bundle.bundle"] {
+        let bare = dest.join(beside);
+        git(
+            &outside.0,
+            &[
+                "clone",
+                "-q",
+                "--bare",
+                &repo.to_string_lossy(),
+                &bare.to_string_lossy(),
+            ],
+        );
+    }
+    let store = open_store(&target);
+    let conn = store.lock_conn().unwrap();
+    let report = import_held(&target, &conn, &history_import(&dest)).unwrap();
+    assert!(
+        !target.memory_root.join("ash/EVIL.md").exists(),
+        "git cloned the bare repository beside the bundle"
+    );
+    assert_eq!(report.memory_history, vec!["ash".to_string()], "{report:?}");
+    assert_eq!(history_subjects(&target, "ash"), vec!["memory".to_string()]);
+}
+
+/// The normal case: a real bundle restores the folder's history, and it is a plain file in a private folder when
+/// git reads it.
+#[test]
+fn a_real_history_bundle_still_restores() {
+    let source_dir = TestDir::new("source");
+    let target_dir = TestDir::new("target");
+    let out = TestDir::new("out");
+    let source = env_for(&source_dir.0);
+    let target = env_for(&target_dir.0);
+    let dest = memory_export(&source, &out.0);
+
+    let store = open_store(&target);
+    let conn = store.lock_conn().unwrap();
+    let report = import_held(&target, &conn, &history_import(&dest)).unwrap();
+    assert_eq!(report.memory_history, vec!["ash".to_string()], "{report:?}");
+    assert_eq!(history_subjects(&target, "ash"), vec!["memory".to_string()]);
+    assert!(target.memory_root.join("ash/MEMORY.md").is_file());
+}
+
+/// What a file is allowed to be, by kind, is checked from the manifest before a byte is read: the numbers are the
+/// attacker's, and a hashed file of any declared size would otherwise be read whole.
+#[test]
+fn a_file_declared_larger_than_its_kind_allows_is_refused_before_it_is_read() {
+    const GIB: u64 = 1024 * 1024 * 1024;
+    for (relative, declared) in [
+        ("setup/setup.json", 4 * GIB),
+        ("workspace/sessions/chat-1.json", 65 * 1024 * 1024),
+        ("workspace/note-assets/note-1/1-shot.png", 21 * 1024 * 1024),
+        ("memory/ash.git.bundle", 2 * GIB),
+    ] {
+        let source_dir = TestDir::new("source");
+        let out = TestDir::new("out");
+        let source = env_for(&source_dir.0);
+        let dest = note_export(&source, &out.0);
+        if relative == "setup/setup.json" {
+            assert!(dest.join(relative).is_file(), "{relative} is listed");
+        }
+        edit_manifest(&dest, |manifest| {
+            for file in manifest["files"].as_array_mut().unwrap() {
+                if file["path"] == relative {
+                    file["bytes"] = json!(declared);
+                }
+            }
+        });
+        let why = open_refused(&dest).unwrap_or_else(|()| panic!("{relative}: opened"));
+        assert!(
+            why.contains(relative) && why.contains("too large"),
+            "{relative}: {why}"
+        );
+    }
+}
+
+#[test]
+fn a_listed_file_with_no_size_is_refused() {
+    let source_dir = TestDir::new("source");
+    let out = TestDir::new("out");
+    let source = env_for(&source_dir.0);
+    let dest = note_export(&source, &out.0);
+    edit_manifest(&dest, |manifest| {
+        for file in manifest["files"].as_array_mut().unwrap() {
+            if file["path"] == "memory/ash/MEMORY.md" {
+                file.as_object_mut().unwrap().remove("bytes");
+            }
+        }
+    });
+    let why = open_refused(&dest).expect("a file with no size was opened");
+    assert!(
+        why.contains("memory/ash/MEMORY.md") && why.contains("how big"),
+        "{why}"
+    );
+}
+
+/// Nine bundles of a gigabyte each are listed: more than an archive may unpack to. Nothing is read for it.
+#[test]
+fn sizes_that_add_up_past_what_an_archive_may_hold_are_refused() {
+    let source_dir = TestDir::new("source");
+    let out = TestDir::new("out");
+    let source = env_for(&source_dir.0);
+    let dest = note_export(&source, &out.0);
+    edit_manifest(&dest, |manifest| {
+        let files = manifest["files"].as_array_mut().unwrap();
+        for n in 0..9 {
+            files.push(json!({"path": format!("memory/p{n}.git.bundle"), "bytes": 1024 * 1024 * 1024u64, "sha256": "0"}));
+        }
+    });
+    let why = open_refused(&dest).expect("an export listing nine gigabytes was opened");
+    assert!(why.contains("too large"), "{why}");
+}
+
+#[test]
+fn more_listed_files_than_an_archive_may_hold_are_refused() {
+    let source_dir = TestDir::new("source");
+    let out = TestDir::new("out");
+    let source = env_for(&source_dir.0);
+    let dest = note_export(&source, &out.0);
+    let manifest = fs::read_to_string(dest.join(MANIFEST)).unwrap();
+    let mut value: Value = serde_json::from_str(&manifest).unwrap();
+    value["files"] = Value::Null;
+    let head = value.to_string();
+    // "files":null is replaced by that many empty entries; nothing is hashed for an export this long.
+    let empties = vec!["{}"; MAX_ENTRIES + 1].join(",");
+    fs::write(
+        dest.join(MANIFEST),
+        head.replace("\"files\":null", &format!("\"files\":[{empties}]")),
+    )
+    .unwrap();
+    let why = open_refused(&dest).expect("an export listing too many files was opened");
+    assert!(why.contains("too many"), "{why}");
+}
+
+/// The same file listed again under another spelling is hashed again and again: refused, however it is spelled.
+#[test]
+fn a_file_listed_twice_is_refused_however_it_is_spelled() {
+    for again in [
+        "memory/ash/MEMORY.md",
+        "memory/./ash/MEMORY.md",
+        "memory/ash//MEMORY.md",
+        "Memory/Ash/memory.md",
+    ] {
+        let source_dir = TestDir::new("source");
+        let out = TestDir::new("out");
+        let source = env_for(&source_dir.0);
+        let dest = note_export(&source, &out.0);
+        edit_manifest(&dest, |manifest| {
+            let files = manifest["files"].as_array_mut().unwrap();
+            let first = files
+                .iter()
+                .find(|f| f["path"] == "memory/ash/MEMORY.md")
+                .unwrap()
+                .clone();
+            let mut second = first;
+            second["path"] = json!(again);
+            files.push(second);
+        });
+        let why = open_refused(&dest).unwrap_or_else(|()| panic!("{again}: opened"));
+        assert!(why.contains("more than once"), "{again}: {why}");
+    }
+}
+
+/// Two correctly hashed setup files, each as large as a text file may be: Inspect would read both whole and send
+/// them to the window. It holds no more than a budget.
+#[test]
+fn inspect_holds_no_more_than_a_budget_of_the_webviews_files() {
+    let source_dir = TestDir::new("source");
+    let out = TestDir::new("out");
+    let source = env_for(&source_dir.0);
+    let dest = note_export(&source, &out.0);
+    let size = 50 * 1024 * 1024;
+    let zeros = vec![b' '; size];
+    for name in ["a", "b", "c"] {
+        put_in_export(&dest, &format!("setup/big-{name}.json"), &zeros);
+    }
+    let result = finishes_within(60, {
+        let target = env_for(&TestDir::new("target").0);
+        let path = dest.to_string_lossy().into_owned();
+        move || inspect(&target, &path)
+    });
+    let why = result.err().expect("150 MB of setup files was inspected");
+    assert!(why.contains("too large to preview"), "{why}");
+}
+
+/// A tar.gz with one file whose header says it holds nothing and whose PAX record says `size` bytes: the tar crate
+/// copies the PAX size.
+fn pax_sized_archive(path: &Path, size: usize) {
+    use std::io::Write;
+    fn header(name: &str, kind: tar::EntryType, size: u64) -> [u8; 512] {
+        let mut header = tar::Header::new_gnu();
+        header.set_path(name).unwrap();
+        header.set_entry_type(kind);
+        header.set_size(size);
+        header.set_mode(0o644);
+        header.set_cksum();
+        *header.as_bytes()
+    }
+    let mut body = format!(" size={size}\n");
+    let mut length = body.len() + 1;
+    while format!("{length}{body}").len() != length {
+        length += 1;
+    }
+    body = format!("{length}{body}");
+    let pad = |out: &mut Vec<u8>| out.resize(out.len().div_ceil(512) * 512, 0);
+
+    let mut tar_bytes = Vec::new();
+    tar_bytes.extend_from_slice(&header("pax", tar::EntryType::XHeader, body.len() as u64));
+    tar_bytes.extend_from_slice(body.as_bytes());
+    pad(&mut tar_bytes);
+    tar_bytes.extend_from_slice(&header("export/zeros.bin", tar::EntryType::Regular, 0));
+    tar_bytes.resize(tar_bytes.len() + size, 0);
+    pad(&mut tar_bytes);
+    tar_bytes.resize(tar_bytes.len() + 1024, 0);
+    let mut gz =
+        flate2::write::GzEncoder::new(fs::File::create(path).unwrap(), flate2::Compression::fast());
+    gz.write_all(&tar_bytes).unwrap();
+    gz.finish().unwrap();
+}
+
+/// The size the budget is checked against is the one the tar crate will copy (a PAX size overrides the header's), and
+/// what is copied never runs past what is left of the budget.
+#[test]
+fn a_pax_size_cannot_get_past_the_unpack_budget() {
+    let dir = TestDir::new("pax");
+    let archive = dir.0.join("pax.tar.gz");
+    pax_sized_archive(&archive, 3 * 1024 * 1024);
+    // The control: the same archive unpacks within a budget that fits it.
+    assert!(unpack_within(&archive, 4 * 1024 * 1024).is_ok());
+    let why = unpack_within(&archive, 1024 * 1024)
+        .err()
+        .expect("3 MiB came out of a 1 MiB budget");
+    assert!(why.contains("too large"), "{why}");
+}
+
+/// A single picked `.json` is read like any other file the export names: not past the size a manifest can be, and
+/// not through a link.
+#[test]
+fn a_picked_json_file_is_read_through_the_plain_reader() {
+    let dir = TestDir::new("single");
+    let v1 = json!({"format": V1_FORMAT, "version": 1}).to_string();
+    let plain = dir.0.join("setup.json");
+    fs::write(&plain, &v1).unwrap();
+    assert!(matches!(
+        open_export(&plain.to_string_lossy()),
+        Ok(Opened::V1(_))
+    ));
+
+    // Valid JSON, padded to one byte past what a manifest may be: never read whole.
+    let padded = dir.0.join("padded.json");
+    let mut bytes = v1.clone().into_bytes();
+    bytes.resize(MAX_MANIFEST as usize + 1, b' ');
+    fs::write(&padded, bytes).unwrap();
+    assert!(open_export(&padded.to_string_lossy()).is_err());
+
+    #[cfg(unix)]
+    {
+        let link = dir.0.join("link.json");
+        std::os::unix::fs::symlink(&plain, &link).unwrap();
+        assert!(open_export(&link.to_string_lossy()).is_err());
+    }
+}
+
+/// A listed workspace file that changes between the check and the import isn't used, and the report says so.
+#[test]
+fn a_listed_workspace_file_that_changed_after_the_check_is_reported() {
+    let source_dir = TestDir::new("source");
+    let target_dir = TestDir::new("target");
+    let out = TestDir::new("out");
+    let source = env_for(&source_dir.0);
+    let target = env_for(&target_dir.0);
+    let dest = note_export(&source, &out.0);
+    let opened = open_export(&dest.to_string_lossy()).unwrap();
+    fs::write(dest.join("workspace/notes.json"), "[]").unwrap();
+
+    let store = open_store(&target);
+    let conn = store.lock_conn().unwrap();
+    let report = import_opened(&target, &opened, &note_import(&dest), || Ok(&*conn)).unwrap();
+    assert_eq!(report.notes_added, 0, "{report:?}");
+    assert!(
+        report
+            .notes
+            .iter()
+            .any(|n| n.contains("workspace/notes.json") && n.contains("changed")),
+        "{:?}",
+        report.notes
+    );
+}
+
+/// The export's own folder holds a link to a folder elsewhere with the very files the manifest lists: each listed
+/// file's folder must be inside the export, so the export isn't opened.
+#[cfg(unix)]
+#[test]
+fn a_listed_file_in_a_folder_that_leads_outside_the_export_is_refused() {
+    for linked in ["memory", "memory/ash", "workspace"] {
+        let source_dir = TestDir::new("source");
+        let out = TestDir::new("out");
+        let outside = TestDir::new("outside");
+        let source = env_for(&source_dir.0);
+        let dest = note_export(&source, &out.0);
+        let real = dest.join(linked);
+        let elsewhere = outside.0.join("moved");
+        fs::rename(&real, &elsewhere).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, &real).unwrap();
+        let why = open_refused(&dest).unwrap_or_else(|()| panic!("{linked}: opened"));
+        assert!(why.contains("outside"), "{linked}: {why}");
+    }
+}
+
+/// An export root that is a link to somewhere else inside the picked folder isn't taken for the export.
+#[cfg(unix)]
+#[test]
+fn an_export_folder_that_is_a_link_inside_the_picked_folder_is_not_taken() {
+    let source_dir = TestDir::new("source");
+    let out = TestDir::new("out");
+    let outside = TestDir::new("outside");
+    let source = env_for(&source_dir.0);
+    let dest = note_export(&source, &out.0);
+    let picked = outside.0.join("picked");
+    fs::create_dir_all(&picked).unwrap();
+    std::os::unix::fs::symlink(&dest, picked.join("export")).unwrap();
+    assert!(
+        open_refused(&picked).is_ok(),
+        "a linked folder was the export"
+    );
+    // The control: the same export, as a real folder inside the picked one.
+    fs::remove_file(picked.join("export")).unwrap();
+    fs::rename(&dest, picked.join("export")).unwrap();
+    assert!(open_refused(&picked).is_err(), "the control opens");
+}
