@@ -2,6 +2,7 @@
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { MorningDrafts } from "../../overnightScout/ui/MorningDrafts";
 import { defaultArrangement, hideSection, pinPanel } from "../model/arrangement";
 import type { HomeLine } from "../model/lines";
 import { HomeScreen } from "./HomeScreen";
@@ -109,4 +110,23 @@ it("keeps a hidden section hidden and still lists a pinned panel that is not in 
   expect(container.textContent).toContain("Show Needs you");
   expect(container.querySelector("[data-home-section='panel:my-panels:missing']")?.textContent).toContain("This panel is not available.");
   expect(container.textContent).toContain("Pin Example board");
+});
+
+it("lists overnight drafts without a way to start them, and still keeps the chat first", () => {
+  draw({
+    drafts: createElement(MorningDrafts, {
+      drafts: [
+        { id: "draft-auth", title: "Auth for the desk", parked: true, brief: "Parked for a security check.\n<script>bad</script>" },
+        { id: "draft-queue", title: "Show the queue", parked: false, brief: "Source: firstmate (MIT).\n" },
+      ],
+    }),
+  });
+  expect(container.querySelector("[data-home] > div")?.firstElementChild?.hasAttribute("data-home-start")).toBe(true);
+  expect(container.querySelector("[data-home-empty]")).toBeNull();
+  expect(container.querySelector("[data-overnight-draft='parked']")?.textContent).toContain("Parked for a security check.");
+  expect(container.querySelector("[data-overnight-draft='waiting']")?.textContent).toContain("Waiting for you.");
+  expect(container.querySelector("script")).toBeNull();
+  expect(container.textContent).toContain("<script>bad</script>");
+  const names = [...container.querySelectorAll("button")].map((button) => button.textContent ?? "");
+  expect(names.some((name) => /start|merge|spend|launch/i.test(name))).toBe(false);
 });

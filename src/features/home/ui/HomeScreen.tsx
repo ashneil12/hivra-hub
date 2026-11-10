@@ -108,6 +108,7 @@ export function HomeScreen({
   known,
   failed,
   summary,
+  drafts,
   reply,
   onOpen,
   onMove,
@@ -126,6 +127,8 @@ export function HomeScreen({
   known: boolean;
   failed: boolean;
   summary?: readonly HomeNote[];
+  /** WP-165: overnight drafts. Passed only when there is something to show. */
+  drafts?: ReactNode;
   reply?: { text?: string; notes?: readonly HomeNote[] };
   onOpen: (line: HomeLine) => void;
   onMove: (key: string, dir: -1 | 1) => void;
@@ -150,7 +153,7 @@ export function HomeScreen({
   const pinned = new Set(arrangement.order.filter((ref) => ref.kind === "panel").map(sectionKey));
   const offered = catalog.filter((panel) => !pinned.has(sectionKey({ kind: "panel", plugin: panel.plugin, panelId: panel.panelId })));
   const summaryNotes = summary ?? [];
-  const quiet = known && needsYou.length + moving.length + recent.length === 0 && summaryNotes.length === 0;
+  const quiet = known && needsYou.length + moving.length + recent.length === 0 && summaryNotes.length === 0 && !drafts;
   return (
     <div
       data-home
@@ -164,6 +167,8 @@ export function HomeScreen({
             <Notes notes={summaryNotes} onOpen={onOpen} />
           </div>
         ) : null}
+        {/* WP-165: overnight drafts on the morning list. Nothing here starts work. */}
+        {drafts}
         {visible.map((ref, index) => {
           const key = sectionKey(ref);
           const title = sectionTitle(ref, catalog);

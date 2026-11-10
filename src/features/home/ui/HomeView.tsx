@@ -12,13 +12,15 @@ import { readsEveryProject } from "../../chief/model/scope";
 import { listMonos } from "../../monos/model/mono";
 import { loadHabits } from "../../monos/model/monoHabits";
 import { useHubDataVersion, hubData } from "../../hub/model/hubData";
-import { LOCAL_HUB_CHANGED } from "../../hub/model/localHub/localTransport";
+import { LOCAL_HUB_CHANGED, tauriLocalHubDisk } from "../../hub/model/localHub/localTransport";
 import { PanelFrame } from "../../panels/ui/PanelTabs";
 import { hideSection, moveSection, pinPanel, showSection, unpin } from "../model/arrangement";
 import { LateHomeLoad, createHomeLoader, mergeHomeLoad, realHomeSource, type HomeSnapshot } from "../model/load";
 import { hubProjectId, movingLines, namesFor, needsYouLines, recentLines } from "../model/lines";
 import { openFromHome, targetFor } from "../model/opener";
 import { HOME_DOC_KEY, changeHome, type HomeDoc } from "../model/store";
+import { MorningDrafts } from "../../overnightScout/ui/MorningDrafts";
+import { useMorningDrafts } from "../../overnightScout/ui/useMorningDrafts";
 import { HomeScreen } from "./HomeScreen";
 import { keepListening } from "./listenRetry";
 
@@ -156,6 +158,8 @@ export function HomeView() {
     chats: snap?.chats ?? [],
   });
   const summary = summaryLines(report, snap?.summaryOff === true, readings);
+  // WP-165: the morning list of overnight drafts. It does not start work.
+  const morning = useMorningDrafts(tauriLocalHubDisk);
   async function onAsk(text: string) {
     const current = snapRef.current;
     const next = await asks.current?.ask(text, {
@@ -184,6 +188,7 @@ export function HomeView() {
       known={snap != null}
       failed={failed}
       summary={summary}
+      drafts={morning.length > 0 ? <MorningDrafts drafts={morning} /> : undefined}
       reply={reply}
       onOpen={(line) => openFromHome(targetFor(line))}
       onMove={(key, dir) => void update((doc) => ({ ...doc, arrangement: moveSection(doc.arrangement, key, dir) }))}
