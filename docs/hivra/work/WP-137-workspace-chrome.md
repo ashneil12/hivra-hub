@@ -157,3 +157,9 @@ This package stops at the design. No setting, no migration, no component, and no
 ## Licence
 
 The behaviour in this note is inspired by T3 Code (https://github.com/pingdotgg/t3code at commit `e85e0094dd4617a1eada1ad7961f2132a79e67b2`), MIT, Copyright (c) 2026 T3 Tools Inc. Ideas need no credits.json component. This note does not copy T3 source. It does not copy T3 Connect, Clerk, telemetry, or the T3 name.
+
+## Addendum (10 Nov 2026): an agent can show a file or a diff beside its chat
+
+Source: Sidecar (MIT, Copyright (c) 2025 Marcus Vorwaller). Ideas only, no code copied. Design input only, since WP-137 is design.
+
+Add a chat card of type file (path and line) or diff (a commit or the working tree) that an agent can post, shaped like Sidecar's `sidecar open path:line`. The card opens in the pane tree this WP defines. It is one more card type, not a second layout: no pane, window or space is added for it. No new capability advert is needed, since `app actions.list` already lists the verbs. Done when the design names the card, its refusals (a path outside the project, a missing file) and the pane it opens in, and reuses the existing pane split.
