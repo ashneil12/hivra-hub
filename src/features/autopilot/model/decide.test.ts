@@ -472,7 +472,8 @@ describe("a tool approval under autopilot", () => {
     expect(approvalVerdict(bash("cat ../../.zshrc"), undefined)).toMatchObject({ kind: "held" });
     // The folder decides where a climb lands: out of a project under /tmp it reaches no home folder, and a chat that
     // sits in the home folder itself has the home file as its own relative name.
-    expect(approvalVerdict(bash("cat ../.zshrc"), "/tmp/work/proj")).toMatchObject({ kind: "allow" });
+    // Round 4, item 1: the climb lands on a dot-named file outside the chat's folder, which the structural rule holds.
+    expect(approvalVerdict(bash("cat ../.zshrc"), "/tmp/work/proj")).toMatchObject({ kind: "held" });
     expect(approvalVerdict(bash("cat .zshrc"), "/Users/someone")).toMatchObject({ kind: "held" });
     expect(approvalVerdict(bash("cat ./Library/Preferences/com.apple.foo.plist"), "/Users/someone")).toMatchObject({ kind: "held" });
     expect(approvalVerdict(bash("cat .zshrc"), FOLDER)).toMatchObject({ kind: "allow" });

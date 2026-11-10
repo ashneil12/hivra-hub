@@ -18,7 +18,7 @@
 // main checkout) doesn't carry it out.
 
 import type { ApprovalCall } from "../../sessions/model/session";
-import { credentialInWords, walkHeld } from "./credentialPaths";
+import { credentialInWords, timerOutside, walkHeld } from "./credentialPaths";
 import { isProtectedConfig, segmentsOf } from "./protectedConfig";
 import { splitMcpTool, toolEffect } from "./mcpEffect";
 import { serverTrusted, type TrustedServers } from "./mcpTrust";
@@ -98,10 +98,30 @@ export function readPaths(call: ApprovalCall | undefined): unknown {
   return call.paths;
 }
 
-/** A string that names a place: a path, a home folder, an address, or a host ("evil.example", "x.y/z", "https://"). */
-const NAMES_PLACE = /[\\/~]|\w\.\w|:\/\//;
+/**
+ * A string that names a place: a path, a home folder, an address, or a host ("evil.example", "x.y/z", "https://"). A
+ * climb (`..`) is a place too.
+ */
+const NAMES_PLACE = /[\\/~]|\w\.\w|:\/\/|\.\./;
 /** A scheme at the start ("http:", "file:", "mailto:"): an address however it is written (review round 3, item 4). */
 const SCHEME = /^[a-z][\w+.-]*:/i;
+/** The loopback name, as a word of its own: `localhost`, `x.localhost` (round 4, item 6). */
+const LOOPBACK = /(^|[^a-z0-9])localhost($|[^a-z0-9])/i;
+/** An address written as one number (`16909060` is 1.2.3.4) or in hex: an IP however it is spelled (round 4, item 6). */
+const NUMERIC_HOST = /^(\d{8,10}|0x[0-9a-f]+)$/i;
+
+/**
+ * An argument as a name reads once the look-alikes are folded (round 4, item 6): NFKC (fullwidth `．`), the ideographic
+ * full stops (U+3002 and the halfwidth U+FF61, which NFKC does not fold to a dot), and percent-encoded dots, slashes and
+ * backslashes, decoded again while they keep appearing.
+ */
+function plainName(value: string): string {
+  let text = value.normalize("NFKC").replace(/[\u3002\uFF61]/g, ".");
+  for (let i = 0; i < 4 && /%(2e|2f|5c)/i.test(text); i++) {
+    text = text.replace(/%2e/gi, ".").replace(/%2f/gi, "/").replace(/%5c/gi, "\\");
+  }
+  return text;
+}
 
 /**
  * Why an MCP call's arguments can't be read as harmless, or null. An argument that names a path, a URL or a host sends
@@ -112,7 +132,9 @@ function argsReason(args: unknown): SafeVerdict {
   if (!Array.isArray(args)) return "its arguments can't be read plainly, so it waits for Ash";
   for (const value of args) {
     if (typeof value !== "string") return "its arguments can't be read plainly, so it waits for Ash";
-    if (NAMES_PLACE.test(value) || SCHEME.test(value)) return "its arguments name a file, folder or address, so it waits for Ash";
+    const plain = plainName(value).trim();
+    if (NAMES_PLACE.test(plain) || SCHEME.test(plain) || LOOPBACK.test(plain) || NUMERIC_HOST.test(plain))
+      return "its arguments name a file, folder or address, so it waits for Ash";
   }
   return null;
 }
@@ -128,7 +150,8 @@ export function searchStartsOutside(call: ApprovalCall | undefined, folder: stri
   if (call.glob !== undefined) return true;
   if (call.paths === undefined) return false;
   if (!Array.isArray(call.paths) || call.paths.some((path) => typeof path !== "string")) return true;
-  return walkHeld(["rg", ...call.paths], folder);
+  // Under `find`, not `rg`: a search's paths are where it walks from, and none of them is a pattern to skip.
+  return walkHeld(["find", ...call.paths], folder);
 }
 
 // ---- shell -------------------------------------------------------------------------------------------------------
@@ -419,6 +442,9 @@ function safeCallInner(call: ApprovalCall | undefined, folder: string | undefine
 export function commandNamesLogin(command: string): SafeVerdict {
   const words = bashWords({ tool: "Bash", command });
   if (!words) return UNREADABLE_COMMAND;
+  // A timer has no chat folder, so a rooted word, a climb or a dot-named part is outside it: the rule the Rust timer check
+  // holds (watcher/safe_cmd.rs names_login_or_outside; round 4, item 4).
+  if (timerOutside(words)) return "it names a folder outside the chat's own, so it waits for Ash";
   return credentialInWords(words) ? "it names a login store or searches files the ignore rules hide, so it waits for Ash" : null;
 }
 

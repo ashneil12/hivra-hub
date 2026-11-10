@@ -389,7 +389,10 @@ describe("a home file under another spelling (fix round 4, finding 1)", () => {
     for (const name of [".zshrc.bak", ".zshrc.local", ".zshrc.pre-oh-my-zsh", ".zshrc~", ".zshrc.swp", ".bashrc.save", ".bashrc_local", ".profile.old", ".zshenv.bak", ".bash_profile-backup", ".zprofile.d"])
       for (const word of [`~/${name}`, `/Users/someone/${name}`, `/./users/someone/${name}`])
         expect(credentialInWords(["cat", word]), word).not.toBeNull();
-    for (const name of [".zshrcfoo", ".profiled", ".bashrc2", ".loginitems", "zshrc.bak", "notes.zshrc.txt"])
+    // Round 4, item 1: a dot-named file outside the chat's folder is held by the structural rule, whatever its name.
+    for (const name of [".zshrcfoo", ".profiled", ".bashrc2", ".loginitems"])
+      expect(credentialInWords(["cat", `~/${name}`]), name).not.toBeNull();
+    for (const name of ["zshrc.bak", "notes.zshrc.txt"])
       expect(credentialInWords(["cat", `~/${name}`]), name).toBeNull();
   });
 
@@ -434,8 +437,6 @@ describe("a home file under another spelling (fix round 4, finding 1)", () => {
       "/Users/someone/Library/Caches/x",
       "/Users/someone/Library/./Caches/x",
       "/Users/Shared/readme.txt",
-      "/tmp/.zshrc",
-      "/tmp/../tmp/.zshrc",
       "/etc/hosts",
       "/./etc/hosts",
       "/usr/local/../bin/tool",
@@ -448,6 +449,8 @@ describe("a home file under another spelling (fix round 4, finding 1)", () => {
       "/System/Volumes/Data/Users",
     ])
       expect(credentialInWords(["cat", word], FOLDER), word).toBeNull();
+    // Round 4, item 1: a dot-named file outside the chat's folder is held, even a shell startup file in /tmp.
+    for (const word of ["/tmp/.zshrc", "/tmp/../tmp/.zshrc"]) expect(credentialInWords(["cat", word], FOLDER), word).not.toBeNull();
   });
 
   it("does not take a revision or a range for a path that climbs", () => {

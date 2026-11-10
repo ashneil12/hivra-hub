@@ -2,7 +2,9 @@
 //!
 //! A check timer may run a command only when that function would allow it. This is a line-by-line port of the shell
 //! half, not a second list: the names, the flags and the refusals stay the ones already written there. Do not add a
-//! command here.
+//! command here. The path rules are the ones credentialPaths.ts applies to a timer (no chat folder known, so a dot-named
+//! part, a climb or a rooted word is outside it). The parity test (`parity` below) runs the same commands through both
+//! sides from src/shared/security/approvalParity.json.
 
 use std::sync::OnceLock;
 
@@ -98,7 +100,8 @@ fn git_read(args: &[String]) -> Option<&'static str> {
         return Some("only git status, diff, log, show and branch run by themselves");
     }
     let rest = &args[1..];
-    if has(rest, &["--output", "--ext-diff"]) {
+    // Round 4, item 4: --textconv runs an outside program on every file, as --ext-diff does.
+    if has(rest, &["--output", "--ext-diff", "--textconv"]) {
         return Some("it writes a file or runs an outside diff");
     }
     if sub == "branch" {
@@ -161,100 +164,55 @@ fn cargo_read(args: &[String]) -> Option<&'static str> {
     None
 }
 
-/// Round 2 (WP-101 low): the words a read names that could reach a login store, a folder outside the chat's own, or
-/// files a search's ignore rules hide. A relative path below the folder passes; an absolute or home path, a climb
-/// (`..`), a hidden name (`.env`, `.ssh`, `.git`), a credential-shaped name and a glob in a search are held. The full
-/// check is credentialPaths.ts (run when a check is set from the app); this is the same rule for the words a timer holds.
-fn names_login_or_outside(head: &str, args: &[String]) -> Option<&'static str> {
-    const HELD: &str = "it names a login store, a folder outside the chat's own, or files the ignore rules hide, so it waits for Ash";
-    let search = matches!(head, "rg" | "grep" | "ag" | "fd" | "find");
-    let mut pattern_seen = false;
-    for arg in args {
-        // A flag's words: its value after `=`, and a path glued on with no space from its first slash (`-f/Users/me/.netrc`,
-        // which the shell hands to the program as one word). Round 3, item 5: the glued form was skipped before.
-        let mut words: Vec<&str> = Vec::new();
-        if arg.starts_with('-') {
-            if let Some((_, value)) = arg.split_once('=') {
-                words.push(value);
-            }
-            if let Some(at) = arg.find('/') {
-                words.push(&arg[at..]);
-            }
-        } else {
-            words.push(arg.as_str());
-        }
-        for word in words {
-            if search && word.contains(['*', '?', '[']) {
-                return Some(HELD);
-            }
-            // A search's first bare word is its pattern, as grep reads it; a word with a dot, a slash, a tilde or a
-            // backslash is a path, so it is read as one.
-            if search && head != "find" && !pattern_seen && !word.contains(['.', '/', '~', '\\']) {
-                pattern_seen = true;
-                continue;
-            }
-            let climbs_or_hides = word
-                .split(['/', '\\', ':'])
-                .any(|part| part == ".." || (part.len() > 1 && part.starts_with('.')));
-            let rooted = word.starts_with(['~', '/', '\\']) || is_drive_path(word);
-            // Round 3: the shared config list (agentConfigPaths.json) and brace lists that name a folder outside. A word that
-            // is not ASCII is held here: this side has no Unicode folding, so it cannot tell a spelling it would miss.
-            let segments: Vec<&str> = word.split(['/', '\\']).collect();
-            if rooted
-                || climbs_or_hides
-                || credential_name(word)
-                || !word.is_ascii()
-                || braces_outside(word)
-                || protected_config(&segments)
-            {
-                return Some(HELD);
-            }
-        }
-    }
-    None
-}
+const HELD: &str = "it names a login store, a folder outside the chat's own, or files the ignore rules hide, so it waits for Ash";
+const UNREADABLE_LIST: &str = "the shared list of agent configs can't be read, so it waits for Ash";
 
-/// The shared list of agent and tool configs, read at build time from the same file the TypeScript approval check imports
-/// (src/shared/security/agentConfigPaths.json), so the two lists cannot drift (review round 3, item 1).
+/// The shared list of agent and tool configs (src/shared/security/agentConfigPaths.json), compiled in from the same file
+/// the TypeScript approval check imports, so the two lists cannot drift (review round 3, item 1).
 const PROTECTED_JSON: &str = include_str!("../../../src/shared/security/agentConfigPaths.json");
 
+/// The names a timer reads by. `pathSequences` (the guard's own source) is an edit's rule only, and a timer never edits, so
+/// it is not read here (src/features/autopilot/model/protectedConfig.ts holds it for an edit).
 struct ProtectedList {
     files: Vec<String>,
     dirs: Vec<String>,
     suffixes: Vec<Vec<String>>,
 }
 
-fn protected_list() -> &'static ProtectedList {
-    static LIST: OnceLock<ProtectedList> = OnceLock::new();
-    LIST.get_or_init(|| {
-        let value: serde_json::Value =
-            serde_json::from_str(PROTECTED_JSON).expect("agentConfigPaths.json parses");
-        let names = |key: &str| -> Vec<String> {
-            value[key]
-                .as_array()
-                .expect("a list of names")
-                .iter()
-                .map(|name| fold_segment(name.as_str().expect("a name")))
-                .collect()
-        };
-        ProtectedList {
-            files: names("files"),
-            dirs: names("dirs"),
-            suffixes: value["pathSuffixes"]
-                .as_array()
-                .expect("pathSuffixes")
-                .iter()
-                .map(|suffix| {
-                    suffix
-                        .as_str()
-                        .expect("a suffix")
-                        .split('/')
-                        .map(fold_segment)
-                        .collect()
-                })
-                .collect(),
-        }
+/// The list read fail-closed (round 4, item 9): a malformed file is None, and then every read holds. Nothing here may
+/// panic, since a panic inside a check poisons the store's lock until the app restarts.
+fn parse_protected(json: &str) -> Option<ProtectedList> {
+    let value: serde_json::Value = serde_json::from_str(json).ok()?;
+    let names = |key: &str| -> Option<Vec<String>> {
+        value
+            .get(key)?
+            .as_array()?
+            .iter()
+            .map(|name| name.as_str().map(fold_segment))
+            .collect()
+    };
+    let runs = |key: &str| -> Option<Vec<Vec<String>>> {
+        value
+            .get(key)?
+            .as_array()?
+            .iter()
+            .map(|run| {
+                run.as_str()
+                    .map(|text| text.split('/').map(fold_segment).collect())
+            })
+            .collect()
+    };
+    Some(ProtectedList {
+        files: names("files")?,
+        dirs: names("dirs")?,
+        suffixes: runs("pathSuffixes")?,
     })
+}
+
+fn protected_list() -> Option<&'static ProtectedList> {
+    static LIST: OnceLock<Option<ProtectedList>> = OnceLock::new();
+    LIST.get_or_init(|| parse_protected(PROTECTED_JSON))
+        .as_ref()
 }
 
 /// A segment folded as the TypeScript side folds it, for the ASCII names this side reads: lower case, trailing dots and
@@ -266,14 +224,8 @@ fn fold_segment(part: &str) -> String {
 }
 
 /// Whether the segments of a path name a protected config: a folder in the list, a file in the list, or a listed suffix.
-/// The dot rule is not here: a read's own dot-named file is ordinary, as in safeApproval.ts's read words.
-fn protected_config(segments: &[&str]) -> bool {
-    let list = protected_list();
-    let folded: Vec<String> = segments
-        .iter()
-        .filter(|part| !part.is_empty())
-        .map(|part| fold_segment(part))
-        .collect();
+/// The dot rule is not here: the timer's dot rule is the dot check in `names_login_or_outside`.
+fn protected_config(list: &ProtectedList, folded: &[String]) -> bool {
     let Some(last) = folded.last() else {
         return false;
     };
@@ -311,42 +263,337 @@ fn is_drive_path(word: &str) -> bool {
         && (bytes[2] == b'/' || bytes[2] == b'\\')
 }
 
-/// A file name that is a login store whatever folder holds it: the key and token stems, key and certificate
-/// extensions, and the SSH and cloud key names. Mirrors the common cases of credentialName (credentialPaths.ts).
-fn credential_name(word: &str) -> bool {
-    let name = word
-        .rsplit(['/', '\\'])
-        .next()
-        .unwrap_or("")
-        .to_ascii_lowercase();
-    let (stem, ext) = match name.rsplit_once('.') {
-        Some((stem, ext)) if !stem.is_empty() => (stem, ext),
-        _ => (name.as_str(), ""),
+/// A Windows 8.3 short name in one segment (`ENV~1`, `CLAUDE~1.MD`), which hides the real name from a plain check (round 4,
+/// item 5). The same pattern as safeApproval's TypeScript side.
+fn short_name_segment(part: &str) -> bool {
+    static SHORT: OnceLock<Regex> = OnceLock::new();
+    SHORT
+        .get_or_init(|| {
+            Regex::new(r"^[^~/\\]{1,8}~\d+(\.[^.]{1,3})?$").expect("short name pattern")
+        })
+        .is_match(part)
+}
+
+// The names, places and extensions credentialPaths.ts holds, in the same words (round 4: a parity test holds the two
+// sides together, src/shared/security/approvalParity.json).
+const CREDENTIAL_PREFIXES: &[&str] = &[
+    "id_rsa",
+    "id_ed25519",
+    "id_ecdsa",
+    "id_dsa",
+    "service-account",
+    "terraform.tfstate",
+    "kubeconfig",
+];
+const CREDENTIAL_NAMES: &[&str] = &[
+    ".netrc",
+    "_netrc",
+    ".pgpass",
+    ".my.cnf",
+    ".npmrc",
+    ".pypirc",
+    ".dockercfg",
+    ".git-credentials",
+    ".s3cfg",
+    ".boto",
+    ".htpasswd",
+    ".envrc",
+    ".claude.json",
+    ".gitconfig",
+    ".terraformrc",
+    ".bash_history",
+    ".zsh_history",
+    ".psql_history",
+    ".python_history",
+    "authorized_keys",
+    ".yarnrc.yml",
+    ".yarnrc",
+    "fish_history",
+    "login data",
+    ".dev.vars",
+    ".sentryclirc",
+    ".mysql_history",
+    ".node_repl_history",
+];
+const STEM_WORDS: &[&str] = &[
+    "secret",
+    "secrets",
+    "credential",
+    "credentials",
+    "token",
+    "tokens",
+    "password",
+    "passwords",
+    "passwd",
+];
+const KEY_EXTENSIONS: &[&str] = &["key", "pem", "p12", "pfx", "jks", "keystore", "tfvars"];
+const CODE_EXTENSIONS: &[&str] = &["ts", "tsx", "js", "jsx", "mjs", "cjs", "rs", "py", "md"];
+const WORD_PREFIXES: &[&str] = &["api_key", "apikey", "api-key", "token"];
+const CONTAINED_WORDS: &[&str] = &[
+    "secret",
+    "credential",
+    "token",
+    "password",
+    "passwd",
+    "apikey",
+    "api_key",
+    "api-key",
+];
+const TEMPLATE_SUFFIXES: &[&str] = &[".example", ".sample", ".template", ".dist"];
+/// Folders that hold logins, in any position (the PLACES list of credentialPaths.ts).
+const CREDENTIAL_PLACES: &[&[&str]] = &[
+    &[".aws"],
+    &[".kube"],
+    &[".ssh"],
+    &[".codex"],
+    &[".gemini"],
+    &[".local", "share", "opencode"],
+    &[".wrangler"],
+    &[".config", "wrangler"],
+    &[".config", "rclone"],
+    &[".config", "sops"],
+    &[".config", "stripe"],
+    &[".config", "doctl"],
+    &[".config", "glab-cli"],
+    &[".config", "hub"],
+    &[".gnupg"],
+    &[".docker"],
+    &[".azure"],
+    &[".password-store"],
+    &[".mozilla"],
+    &[".pki"],
+    &[".npm"],
+    &[".terraform.d"],
+    &[".hermes"],
+    &[".pi"],
+    &[".omp"],
+    &[".cursor"],
+    &[".grok"],
+    &[".config", "opencode"],
+    &[".fly"],
+    &[".railway"],
+    &[".ngrok2"],
+    &[".m2"],
+    &[".zsh_sessions"],
+    &[".git"],
+    &["etc", "shadow"],
+    &["etc", "gshadow"],
+    &["etc", "passwd"],
+    &["etc", "master.passwd"],
+    &[".config", "gh"],
+    &[".config", "gcloud"],
+    &[".config", "hivra"],
+    &[".config", "hermes"],
+    &[".config", "fish", "config.fish"],
+    &[".config", "github-copilot"],
+    &[".config", "configstore"],
+    &[".config", "ngrok"],
+    &[".config", "op"],
+    &[".vol"],
+    &["library", "keychains"],
+    &["library", "application support"],
+    &["library", "cookies"],
+    &["library", "safari"],
+    &[".local", "share", "keyrings"],
+    &["appdata", "roaming", "github cli"],
+    &["appdata", "roaming", "rclone"],
+    &["appdata", "roaming", "npm", "etc"],
+    &["appdata", "local", "google", "chrome"],
+    &["appdata", "local", "microsoft", "edge"],
+];
+
+/// `.env`, `.env.local`, `app.env`, but not the templates (`.env.example`), as credentialPaths.ts reads them.
+fn env_file(file: &str) -> bool {
+    let env = file == ".env"
+        || (file.starts_with(".env.") && file.len() > 5)
+        || (file.len() > 4 && file.ends_with(".env"));
+    env && !TEMPLATE_SUFFIXES
+        .iter()
+        .any(|suffix| file.ends_with(suffix))
+}
+
+/// The stem and the extension of a name, as credentialPaths.ts's `parts` reads them.
+fn split_name(name: &str) -> (&str, &str) {
+    match name.rfind('.') {
+        Some(dot) if dot > 0 && dot < name.len() - 1 => (&name[..dot], &name[dot + 1..]),
+        _ => (name, ""),
+    }
+}
+
+/// Whether one file name is a login store, as credentialName (credentialPaths.ts) reads it. Round 4: a leading dot is no
+/// part of the name, and any name with "history" in it is a store unless it is a source file.
+fn credential_name(name: &str) -> bool {
+    let file = name.to_ascii_lowercase();
+    if file.is_empty() || file == "known_hosts" {
+        return false;
+    }
+    if env_file(&file) {
+        return true;
+    }
+    let bare = file.trim_start_matches('.');
+    let (stem, ext) = split_name(bare);
+    if CREDENTIAL_PREFIXES
+        .iter()
+        .any(|prefix| bare.starts_with(prefix))
+    {
+        return true;
+    }
+    if CREDENTIAL_NAMES.contains(&file.as_str())
+        || CREDENTIAL_NAMES.contains(&bare)
+        || STEM_WORDS.contains(&stem)
+    {
+        return true;
+    }
+    if KEY_EXTENSIONS.contains(&ext) {
+        return true;
+    }
+    if bare.contains("history") && !CODE_EXTENSIONS.contains(&ext) {
+        return true;
+    }
+    if CODE_EXTENSIONS.contains(&ext) {
+        return false;
+    }
+    if WORD_PREFIXES.iter().any(|prefix| stem.starts_with(prefix)) {
+        return true;
+    }
+    if !stem.contains(['_', '-']) || !CONTAINED_WORDS.iter().any(|word| stem.contains(word)) {
+        return false;
+    }
+    !ext.is_empty() || stem.contains(['*', '?', '_', '-'])
+}
+
+/// Whether the folded segments of a path are a credential place or a credential file (credentialSegments).
+fn credential_segments(parts: &[String]) -> bool {
+    let Some(last) = parts.last() else {
+        return false;
     };
-    [
-        "id_rsa",
-        "id_ed25519",
-        "id_ecdsa",
-        "id_dsa",
-        "service-account",
-        "terraform.tfstate",
-        "kubeconfig",
-    ]
-    .iter()
-    .any(|prefix| name.starts_with(prefix))
-        || [
-            "credential",
-            "credentials",
-            "secret",
-            "secrets",
-            "token",
-            "tokens",
-            "password",
-            "passwords",
-            "passwd",
-        ]
-        .contains(&stem)
-        || ["key", "pem", "p12", "pfx", "jks", "keystore", "tfvars"].contains(&ext)
+    if last == "known_hosts" {
+        return false;
+    }
+    let process_secret = parts.iter().enumerate().any(|(i, part)| {
+        part == "proc"
+            && matches!(
+                parts.get(i + 2).map(String::as_str),
+                Some("environ" | "cmdline" | "cwd" | "root")
+            )
+    });
+    let in_place = CREDENTIAL_PLACES.iter().any(|place| {
+        parts
+            .windows(place.len())
+            .any(|window| window.iter().map(String::as_str).eq(place.iter().copied()))
+    });
+    if in_place || process_secret {
+        return true;
+    }
+    // A folder that holds logins (`secrets/`, `.ssh/`) makes every file under it a credential place too.
+    if parts[..parts.len() - 1].iter().any(|part| {
+        STEM_WORDS.contains(&part.as_str()) || CREDENTIAL_NAMES.contains(&part.as_str())
+    }) {
+        return true;
+    }
+    credential_name(last)
+}
+
+/// The pieces of a word that can name a path: the word, its bare form, the value after an `=`, the path glued to a short
+/// option from its first slash, and the value after a short option's letter (`-f.netrc`). Mirrors credentialPaths.ts.
+fn pieces(word: &str) -> Vec<&str> {
+    let mut out = vec![word];
+    let bare = word.trim_start_matches('-');
+    if bare != word {
+        out.push(bare);
+    }
+    if let Some((_, value)) = bare.split_once('=') {
+        out.push(value);
+    }
+    if word.starts_with('-') {
+        if let Some(at) = word.find('/') {
+            out.push(&word[at..]);
+        }
+    }
+    if word.len() > 2 && word.starts_with('-') && !word.starts_with("--") {
+        if let Some(rest) = word.get(2..) {
+            out.push(rest);
+        }
+    }
+    out
+}
+
+/// Whether a search's option names its pattern (-e, -f, --regexp, --file, also in a cluster), so no bare word is one.
+fn pattern_option(arg: &str) -> bool {
+    let short_cluster =
+        arg.starts_with('-') && !arg.starts_with("--") && arg[1..].contains(['e', 'f']);
+    short_cluster || matches!(arg.split('=').next(), Some("--regexp" | "--file"))
+}
+
+/// The long options that turn the ignore rules off or show hidden files (credentialPaths.ts IGNORE_OFF_LONG).
+const IGNORE_OFF_LONG: &[&str] = &[
+    "--hidden",
+    "--unrestricted",
+    "--no-ignore",
+    "--no-global-ignore",
+    "--skip-vcs-ignores",
+    "--all-types",
+    "--all-text",
+];
+
+/// Whether one argument turns a search's ignore rules off (credentialPaths.ts unrestricted).
+fn unrestricted(head: &str, arg: &str) -> bool {
+    let name = arg.split('=').next().unwrap_or("");
+    if name.starts_with("--") {
+        let long = name.to_ascii_lowercase();
+        return IGNORE_OFF_LONG.iter().any(|option| {
+            long.starts_with(option) || (long.len() >= 4 && option.starts_with(long.as_str()))
+        });
+    }
+    if !(name.starts_with('-') && name.len() > 1) {
+        return false;
+    }
+    let cluster = &name[1..];
+    if cluster.to_ascii_lowercase().contains('u') {
+        return true;
+    }
+    match head {
+        "rg" => cluster.contains('.'),
+        "fd" => cluster.contains(['H', 'I']),
+        "ag" => cluster.contains(['a', 't']),
+        _ => false,
+    }
+}
+
+/// Whether the command walks past the ignore rules (credentialPaths.ts ignoreOff).
+fn ignore_off(head: &str, args: &[String]) -> bool {
+    if head == "find" {
+        return args.iter().any(|arg| {
+            let name = arg.split('=').next().unwrap_or("").to_ascii_lowercase();
+            name == "--hidden" || name.starts_with("--no-ignore")
+        });
+    }
+    matches!(head, "rg" | "ag" | "grep" | "fd") && args.iter().any(|arg| unrestricted(head, arg))
+}
+
+/// Whether grep walks the tree: -r, -R, --recursive, --dereference-recursive, or -d recurse (credentialPaths.ts
+/// grepRecurses).
+fn grep_recurses(args: &[String]) -> bool {
+    for (i, arg) in args.iter().enumerate() {
+        let name = arg.split('=').next().unwrap_or("");
+        let short = name.starts_with('-') && !name.starts_with("--") && name.len() > 1;
+        if (short && name[1..].contains(['r', 'R']))
+            || name == "--recursive"
+            || name == "--dereference-recursive"
+        {
+            return true;
+        }
+        if name == "-d" || name == "--directories" {
+            let mode = match arg.split_once('=') {
+                Some((_, mode)) => Some(mode),
+                None => args.get(i + 1).map(String::as_str),
+            };
+            if mode == Some("recurse") {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 fn rg_read(args: &[String]) -> Option<&'static str> {
@@ -357,10 +604,84 @@ fn rg_read(args: &[String]) -> Option<&'static str> {
     }
 }
 
+/// Why a timer's words name a login store or a folder outside the chat's own, or None. A timer has no folder, so anything
+/// rooted, anything with a climb, and any dot-named part is outside (credentialPaths.ts with no folder).
+fn names_login_or_outside(
+    head: &str,
+    args: &[String],
+    list: Option<&ProtectedList>,
+) -> Option<&'static str> {
+    let Some(list) = list else {
+        return Some(UNREADABLE_LIST);
+    };
+    if ignore_off(head, args) || (head == "grep" && grep_recurses(args)) {
+        return Some(HELD);
+    }
+    let search = matches!(head, "rg" | "grep" | "ag" | "fd" | "find");
+    let git = head == "git";
+    let no_index = args.iter().any(|arg| arg == "--no-index");
+    // A search's first bare word is its pattern, as grep reads it, unless an option names the pattern itself.
+    let mut pattern_seen = search && head != "find" && args.iter().any(|arg| pattern_option(arg));
+    for arg in args {
+        let arg = arg.as_str();
+        let words = pieces(arg);
+        if search && words.iter().any(|piece| piece.contains(['*', '?', '['])) {
+            return Some(HELD);
+        }
+        if search
+            && head != "find"
+            && !pattern_seen
+            && !arg.starts_with('-')
+            && !arg.contains(['.', '/', '~', '\\'])
+        {
+            pattern_seen = true;
+            continue;
+        }
+        for piece in words {
+            if piece.is_empty() {
+                continue;
+            }
+            // This side has no Unicode folding, so a name that is not ASCII is held rather than judged.
+            if !piece.is_ascii() {
+                return Some(HELD);
+            }
+            let segments: Vec<&str> = piece.split(['/', '\\', ':']).collect();
+            let climbs_or_hides = segments
+                .iter()
+                .any(|part| *part == ".." || (part.len() > 1 && part.starts_with('.')));
+            let rooted = piece.starts_with(['~', '/', '\\']) || is_drive_path(piece);
+            // Round 4, item 5: a git revision (`HEAD~1`) is not a file name, unless `--no-index` makes git compare files.
+            let short_names_read = !(git && !no_index && !piece.contains(['/', '\\']));
+            let short_name =
+                short_names_read && segments.iter().any(|part| short_name_segment(part));
+            let folded: Vec<String> = segments
+                .iter()
+                .filter(|part| !part.is_empty())
+                .map(|part| fold_segment(part))
+                .collect();
+            if rooted
+                || climbs_or_hides
+                || short_name
+                || braces_outside(piece)
+                || (!folded.is_empty()
+                    && (credential_segments(&folded) || protected_config(list, &folded)))
+            {
+                return Some(HELD);
+            }
+        }
+    }
+    None
+}
+
 /// None when autopilot would run this by itself. The reason otherwise. Same answers as `safeCommand`, plus the words a
 /// read names in a login store (round 2).
 /// An unreadable command is a reason, never an allow: `?` on the word list would invert that.
 pub fn verdict(command: &str) -> Option<String> {
+    verdict_with(command, protected_list())
+}
+
+/// `verdict` against a given list. A test passes a malformed list (None) to see that every read then holds.
+fn verdict_with(command: &str, list: Option<&ProtectedList>) -> Option<String> {
     if command.chars().any(|c| SHELL_META.contains(&c)) {
         return Some("it chains, substitutes or redirects".into());
     }
@@ -380,7 +701,7 @@ pub fn verdict(command: &str) -> Option<String> {
             return Some(format!("{other} isn't a read autopilot runs by itself"));
         }
     };
-    why.or_else(|| names_login_or_outside(&words[0], args))
+    why.or_else(|| names_login_or_outside(&words[0], args, list))
         .map(str::to_string)
 }
 
@@ -431,7 +752,7 @@ mod tests {
             "cat README.md",
             "rg -n 'foo bar' src",
             "rg \"fn main\" src-tauri",
-            "grep -rn TODO src",
+            "grep -n TODO src/app.ts",
             "head -50 src/app.ts",
             "wc -l src/app.ts",
             "pwd",
@@ -548,7 +869,7 @@ mod round3_tests {
 
     #[test]
     fn the_shared_config_list_parses_and_names_the_configs() {
-        let list = protected_list();
+        let list = protected_list().expect("the shared list parses");
         assert!(list.files.contains(&"opencode.jsonc".to_string()));
         assert!(list.files.contains(&"bunfig.toml".to_string()));
         assert!(list.dirs.contains(&".omp".to_string()));
@@ -594,5 +915,138 @@ mod round3_tests {
     fn a_plain_read_still_runs() {
         assert!(verdict("cat README.md").is_none());
         assert!(verdict("rg -n 'foo' src").is_none());
+    }
+}
+
+#[cfg(test)]
+mod round4_tests {
+    use super::*;
+
+    // WP-101 review round 4. Each case is one the TypeScript side (credentialPaths.ts, safeApproval.ts) holds too.
+
+    #[test]
+    fn a_dot_named_word_outside_the_folder_is_held_here_as_it_is_there() {
+        for command in [
+            "cat ~/.pi/agent/auth.json",
+            "cat ~/.config/opencode/opencode.json",
+            "cat ~/.cursor/mcp.json",
+            "cat ~/.grok/user-settings.json",
+            "cat ~/.claude/settings.json",
+            "cat ~/.omp/agent/auth.json",
+            "cat .gitignore",
+            "cat src/.github/ci.yml",
+        ] {
+            assert!(verdict(command).is_some(), "{command} was allowed");
+        }
+    }
+
+    #[test]
+    fn dot_named_secrets_and_history_files_are_held() {
+        for command in [
+            "cat .secrets",
+            "cat .token",
+            "cat .tokens",
+            "cat .dev.vars",
+            "cat ~/.zsh_sessions/abc.history",
+            "ls ~/.zsh_sessions",
+            "cat ~/.mysql_history",
+            "cat ~/.node_repl_history",
+            "cat ~/.fly/config.yml",
+            "cat ~/.railway/config.json",
+            "cat ~/.sentryclirc",
+            "cat ~/.ngrok2/ngrok.yml",
+            "cat ~/.m2/settings.xml",
+        ] {
+            assert!(verdict(command).is_some(), "{command} was allowed");
+        }
+    }
+
+    #[test]
+    fn a_search_that_walks_or_turns_off_the_ignore_rules_is_held() {
+        for command in [
+            "grep -rn TODO src",
+            "grep -R TODO src",
+            "grep -d recurse TODO src",
+            "grep --recursive TODO src",
+            "rg --hidden foo src",
+            "rg -uu foo src",
+            "rg -.n foo src",
+        ] {
+            assert!(verdict(command).is_some(), "{command} was allowed");
+        }
+    }
+
+    #[test]
+    fn textconv_and_glued_short_option_values_are_held() {
+        assert!(verdict("git log --textconv -p").is_some());
+        assert!(verdict("git diff --textconv HEAD~1").is_some());
+        assert!(verdict("grep -f.netrc x README.md").is_some());
+        assert!(verdict("grep -fsecrets README.md").is_some());
+    }
+
+    #[test]
+    fn eight_dot_three_names_are_held_in_any_segment_but_a_git_revision() {
+        for command in [
+            "cat ./ENV~1",
+            "cat ENV~1",
+            "rg -n . ENV~1",
+            "git diff --no-index NUL ENV~1",
+            "cat CLAUDE~1.MD",
+            "cat sub/CODEX~1/auth.json",
+        ] {
+            assert!(verdict(command).is_some(), "{command} was allowed");
+        }
+        // A git revision is not a file name, so it is read as before.
+        assert!(verdict("git diff HEAD~1 -- src/app.ts").is_none());
+        assert!(verdict("git log HEAD~3..HEAD").is_none());
+    }
+
+    #[test]
+    fn a_search_pattern_is_not_a_path_and_an_option_names_one() {
+        // A bare word is the pattern, so `token` is a search for the word.
+        assert!(verdict("rg -n token src").is_none());
+        // `-e` names the pattern, so the word after it is a file and is judged as one.
+        assert!(verdict("rg -e foo secrets").is_some());
+    }
+
+    #[test]
+    fn a_malformed_shared_list_holds_every_read_and_never_panics() {
+        assert!(parse_protected("{ not json").is_none());
+        assert!(parse_protected(r#"{"files": [1], "dirs": [], "pathSuffixes": []}"#).is_none());
+        assert!(parse_protected(r#"{"files": [], "dirs": [], "pathSuffixes": "x"}"#).is_none());
+        // With no list, the verdict holds before anything else is read.
+        assert!(verdict_with("git status", None).is_some());
+        assert!(verdict_with("cat README.md", None).is_some());
+        // The real list parses.
+        assert!(verdict_with("cat README.md", protected_list()).is_none());
+    }
+}
+
+#[cfg(test)]
+mod parity {
+    use super::*;
+
+    /// The same commands the TypeScript timer rule is tested on (src/shared/security/approvalParity.json). Each case says
+    /// whether a timer holds it; both sides must agree, and this side must hold whatever the TypeScript side holds.
+    #[test]
+    fn the_timer_check_holds_exactly_the_commands_the_typescript_side_holds() {
+        let file: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../src/shared/security/approvalParity.json"
+        ))
+        .expect("the parity cases parse");
+        let cases = file["cases"].as_array().expect("a list of cases");
+        assert!(
+            cases.len() > 90,
+            "the shared set is too small to mean anything"
+        );
+        for case in cases {
+            let command = case["command"].as_str().expect("a command");
+            let held = case["held"].as_bool().expect("a held flag");
+            assert_eq!(
+                verdict(command).is_some(),
+                held,
+                "parity: {command} (TypeScript holds it: {held})"
+            );
+        }
     }
 }

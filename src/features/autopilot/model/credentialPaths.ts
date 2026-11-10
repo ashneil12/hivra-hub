@@ -32,6 +32,18 @@ const PLACES: readonly (readonly string[])[] = [
   [".npm"],
   [".terraform.d"],
   [".hermes"],
+  // Round 4, item 1: the other agent CLIs' stores (pi, omp, Cursor, Grok, OpenCode's config), and the tool logins
+  // (Fly, Railway, ngrok v2, Maven's settings) that a read could reach.
+  [".pi"],
+  [".omp"],
+  [".cursor"],
+  [".grok"],
+  [".config", "opencode"],
+  [".fly"],
+  [".railway"],
+  [".ngrok2"],
+  [".m2"],
+  [".zsh_sessions"],
   [".git"],
   ["etc", "shadow"],
   ["etc", "gshadow"],
@@ -91,6 +103,11 @@ const NAMES = new Set([
   "fish_history",
   // Chrome's and Edge's saved passwords file on Windows (its folder is held above).
   "login data",
+  // Round 4, items 2 and 3: a dev secret file, and history stores that hold typed secrets.
+  ".dev.vars",
+  ".sentryclirc",
+  ".mysql_history",
+  ".node_repl_history",
 ]);
 
 /** A name that starts this way is a login store, whatever follows (`id_rsa.pub`, `terraform.tfstate.backup`). */
@@ -110,6 +127,12 @@ const KEY_EXTENSIONS = new Set(["key", "pem", "p12", "pfx", "jks", "keystore", "
  * these and only when the stem is not the whole name (`secrets.yaml`, `credentials.json` still hold).
  */
 const CODE_EXTENSIONS = new Set(["ts", "tsx", "js", "jsx", "mjs", "cjs", "rs", "py", "md"]);
+
+/**
+ * A Windows 8.3 short name in one segment (`ENV~1`, `CLAUDE~1.MD`, `AUTH~1.JSO`): the real name is hidden from a plain
+ * check (round 4, item 5). A git revision such as `HEAD~1` matches too, so git's words are read by `shortNamesRead`.
+ */
+const SHORT_NAME = /^[^~/\\]{1,8}~\d+(\.[^.]{1,3})?$/;
 
 /** The stem words a file name may hold; with a non-source extension or a dashed name the file is a login store. */
 const CONTAINED: readonly string[] = ["secret", "credential", "token", "password", "passwd", "apikey", "api_key", "api-key"];
@@ -146,11 +169,17 @@ export function credentialName(name: string): boolean {
   const lower = file.toLowerCase();
   if (!lower || lower === "known_hosts") return false;
   if (ENV_FILE.test(lower) && !ENV_TEMPLATE.test(lower)) return true;
-  const { stem, ext } = parts(lower);
-  if (PREFIXES.some((prefix) => lower.startsWith(prefix))) return true;
+  // Round 4, item 2: a leading dot is no part of the name (`.secrets` is `secrets`, `.token` is `token`), so the stem tests
+  // read the name without it. NAMES still sees the dotted form (`.netrc`).
+  const bare = lower.replace(/^\.+/, "");
+  const { stem, ext } = parts(bare);
+  if (PREFIXES.some((prefix) => bare.startsWith(prefix))) return true;
   // The whole name, before any extension: `secrets`, `credentials.ts`, `token.txt`.
-  if (NAMES.has(lower) || STEMS.has(stem)) return true;
+  if (NAMES.has(lower) || NAMES.has(bare) || STEMS.has(stem)) return true;
   if (KEY_EXTENSIONS.has(ext)) return true;
+  // Round 4, item 3: a history file names what was typed, secrets included (`.mysql_history`, `<id>.history`). A source
+  // file with the word in its name (`chatHistory.ts`) is code, so it passes.
+  if (bare.includes("history") && !CODE_EXTENSIONS.has(ext)) return true;
   if (CODE_EXTENSIONS.has(ext)) return false;
   // `apikey.txt`, `api_key.txt`: the word at the start, with anything but a source extension.
   if (WORD_PREFIXES.some((prefix) => stem.startsWith(prefix))) return true;
@@ -261,16 +290,62 @@ function credentialSegments(parts: readonly string[]): boolean {
 /**
  * Whether a path names a credential place or a credential file, by any segment. The parts are read as written and
  * again once the path is resolved, so a two-part place (`etc/shadow`) cannot be split by a `.` or a `..`, and a name
- * that only a climb leaves behind is still seen.
+ * that only a climb leaves behind is still seen. `shortNames` is off only for a git revision (`HEAD~1`), which is not a
+ * file name (see shortNamesRead).
  */
-export function credentialPath(path: string): boolean {
+export function credentialPath(path: string, shortNames = true): boolean {
   const folded = fold(path);
   const written = folded.split(/[/:]/).filter(Boolean);
   if (!written.length) return false;
-  // A Windows 8.3 short name (`CODEX~1`, `AUTH~1.JSO`) in a path hides the real name: held (round 3, item 2). Only inside a
-  // path (more than one segment), so a git revision such as `HEAD~1` is not a file.
-  if (written.length > 1 && written.some((part) => /~\d/.test(part))) return true;
+  // A Windows 8.3 short name in any segment hides the real name: held (round 3, item 2; round 4, item 5).
+  if (shortNames && written.some((part) => SHORT_NAME.test(part))) return true;
   return credentialSegments(written) || credentialSegments(resolvePath(folded).segments);
+}
+
+/**
+ * Whether a word's Windows short names are read. Git's words are revisions (`HEAD~1`, `main~2`) unless `--no-index` makes
+ * git compare two files on disk, and a word with a slash is a path in any command. Round 4, item 5.
+ */
+export function shortNamesRead(command: string, args: readonly string[], word: string): boolean {
+  return !(command === "git" && !args.includes("--no-index") && !/[/\\]/.test(word));
+}
+
+const dotNamed = (part: string) => part.startsWith(".") && part !== "." && part !== "..";
+
+/**
+ * Whether a path is outside the chat's own folder and has a dot-named segment anywhere in it (round 4, item 1). This is
+ * the structural rule the Rust check uses: a dot-named folder or file is a tool's config or a login, and a read or a
+ * search of one is held wherever it is outside the chat. Inside the chat's folder the named lists judge the path. A
+ * relative path is placed under the folder first, so `../.pi/x` from inside the chat is held and `./src/.github/x` is
+ * not. A relative path with no folder known is left to the timer's own rule (timerOutside), since the approval path
+ * always knows the folder; an absolute path with no folder that has a dot-named part is outside.
+ */
+export function dotOutside(path: string, folder: string | undefined): boolean {
+  const folded = fold(path);
+  const base = foldedFolder(folder);
+  const anchored = folded.startsWith("/") || /^[a-z]:/.test(folded) || folded === "~" || folded.startsWith("~/");
+  if (!anchored && !base) return false;
+  const absolute = anchored ? folded : `/${(base ?? []).join("/")}/${folded}`;
+  const { segments } = resolvePath(absolute);
+  if (base && base.length >= MIN_PROJECT_DEPTH && startsWith(segments, base)) return false;
+  return segments.some(dotNamed);
+}
+
+/** A search's option that names its pattern (`-e`, `-f`, `--regexp`, `--file`, also in a cluster such as `-ie`). */
+const PATTERN_OPTION = /^(-[^-]*[ef]|--(regexp|file)(=|$))/;
+
+/**
+ * Whether a timer's words are outside: a timer has no chat folder, so a rooted piece, a climb, or a dot-named part is
+ * outside it (round 4, item 4). Each piece of a word counts (`--format=%H/%s`, `-C~`, `-f.netrc`), as the Rust timer
+ * check counts them (watcher/safe_cmd.rs names_login_or_outside).
+ */
+export function timerOutside(words: readonly string[]): boolean {
+  return words.slice(1).some((word) =>
+    pieces(word).some((piece) => {
+      const parts = piece.split(/[/\\:]/);
+      return /^[~/\\]|^[a-z]:[/\\]/i.test(piece) || parts.some((part) => part === ".." || dotNamed(part));
+    }),
+  );
 }
 
 /** The pieces of a word that can name a path: the word, its bare form, and an `--opt=value` value. */
@@ -281,6 +356,8 @@ function pieces(word: string): string[] {
   if (bare.includes("=")) out.push(bare.slice(bare.indexOf("=") + 1));
   // A short option's value glued on with no space or `=` (`grep -f/Users/me/.zshrc`): the path starts at its first slash.
   if (word.startsWith("-") && word.includes("/")) out.push(word.slice(word.indexOf("/")));
+  // Round 4, item 4: and the value after the option's letter, with no slash at all (`grep -f.netrc x`).
+  if (/^-[^-]/.test(word) && word.length > 2) out.push(word.slice(2));
   return out;
 }
 
@@ -396,8 +473,8 @@ export function credentialInWords(words: readonly string[], folder?: string): st
   const head = words[0]?.replace(/^-+/, "") ?? "";
   const searches = head === "grep" || head === "rg" || head === "ag" || head === "fd" || head === "find";
   // Only the first bare word after the command is the pattern; a later bare word is a file (`grep '' secrets` names
-  // the file secrets, review lows).
-  let patternSeen = false;
+  // the file secrets, review lows). A -e or -f option names the pattern itself (round 4), so no bare word is one then.
+  let patternSeen = searches && head !== "find" && words.slice(1).some((word) => PATTERN_OPTION.test(word));
   for (const [index, word] of words.entries()) {
     if (searches && pieces(word).some((piece) => GLOB.test(piece))) return word;
     if (searches && head !== "find" && index > 0 && !patternSeen && patternLike(word)) {
@@ -405,7 +482,9 @@ export function credentialInWords(words: readonly string[], folder?: string): st
       continue;
     }
     for (const piece of pieces(word)) {
-      if (piece && (homeShellFile(piece, folder) || credentialPath(piece))) return piece;
+      if (!piece) continue;
+      if (homeShellFile(piece, folder) || credentialPath(piece, shortNamesRead(words[0], words.slice(1), piece))) return piece;
+      if (dotOutside(piece, folder)) return piece;
     }
   }
   return null;
@@ -423,7 +502,7 @@ export function credentialInPaths(paths: unknown, folder?: string): string | nul
   if (!Array.isArray(paths)) return "(a list of files it can't read)";
   for (const path of paths) {
     if (typeof path !== "string") return "(a file name that isn't text)";
-    if (path.includes("\0") || homeShellFile(path, folder) || credentialPath(path)) return path;
+    if (path.includes("\0") || homeShellFile(path, folder) || credentialPath(path) || dotOutside(path, folder)) return path;
   }
   return null;
 }
@@ -434,7 +513,9 @@ export function credentialInText(text: string): boolean {
     const word = raw.replace(/^[.~/-]+$/, "");
     if (!word) continue;
     if (!word.includes("/") && !word.includes(".") && !word.includes("~")) continue;
-    if (credentialPath(word)) return true;
+    // A git revision in prose (`HEAD~1`) is not a short file name; a command's words are judged with git's own rule.
+    const revision = /^[^/\\:]*~\d+$/.test(word);
+    if (credentialPath(word, !revision)) return true;
   }
   return false;
 }
@@ -578,10 +659,19 @@ export function walkHeld(words: readonly string[], folder: string | undefined): 
   if (args.some((arg) => BRACE_OUTSIDE.test(arg))) return true;
   if (!walksFolders(head, args)) return false;
   const root = folderParts(folder);
+  // A search's pattern is not a path: its first bare word, unless a -e or -f option names the pattern (round 4; the
+  // same rule credentialInWords and the Rust timer check read). A Grep or Glob call's paths are walked from, so
+  // searchStartsOutside passes them under `find`, which has no pattern.
+  const searching = head === "grep" || head === "rg" || head === "ag" || head === "fd";
+  let patternSeen = searching && args.some((arg) => PATTERN_OPTION.test(arg));
   for (const arg of args) {
     if (arg.startsWith("-")) continue;
+    if (searching && !patternSeen && patternLike(arg)) {
+      patternSeen = true;
+      continue;
+    }
     // Home-relative words and anything through a credential place are outside the chat's folder however they resolve.
-    if (arg.startsWith("~") || credentialPath(arg)) return true;
+    if (arg.startsWith("~") || credentialPath(arg, shortNamesRead(head, args, arg)) || dotOutside(arg, folder)) return true;
     if (!root) {
       // No folder known: only a relative place below the working folder can be shown to stay inside it.
       if (arg.startsWith("/")) return true;

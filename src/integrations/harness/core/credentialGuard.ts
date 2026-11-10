@@ -20,6 +20,9 @@ export const CREDENTIAL_DENY_RULES: readonly string[] = [
   "Read(~/.claude/.credentials.json)",
   "Read(~/.claude.json)",
   "Read(~/.codex/auth.json)",
+  // Round 4, item 1: pi's and omp's login stores (API keys and OAuth tokens in plain JSON).
+  "Read(~/.pi/agent/auth.json)",
+  "Read(~/.omp/agent/auth.json)",
   "Read(~/.aws/credentials)",
   "Read(~/.netrc)",
   "Read(~/.ssh/**)",
@@ -56,11 +59,14 @@ const KEYCHAIN = /(^|[\s;&|(`$])(\/usr\/bin\/)?security\s+(find-[\w-]+|dump-keyc
  * The home folder in every spelling a login file's path takes: ~, $HOME, a Mac or Linux home (with the Mac's /.nofollow/
  * and /.resolve/<n>/ prefixes), and a Windows drive (C:/Users/<me>). Matched against foldForSecrets' text (round 3, item 2).
  */
-const HOME = String.raw`(?:~|\$\{?home\}?|(?:[a-z]:)?(?:\/\.nofollow|\/\.resolve\/\d+)?\/(?:users|home)\/[^/\s]+)`;
+const HOME = String.raw`(?:~|\$\{?home\}?|%userprofile%|\/root|(?:[a-z]:)?(?:\/\.nofollow|\/\.resolve\/\d+)?\/(?:users|home)\/[^/\s]+)`;
 const SECRET_FILES: readonly RegExp[] = [
   new RegExp(`${HOME}\\/\\.claude\\/\\.credentials`),
   new RegExp(`${HOME}\\/\\.claude\\.json\\b`),
   new RegExp(`${HOME}\\/\\.codex\\/auth\\.json`),
+  // Round 4, item 1: pi's and omp's login stores, the same as the deny rules above.
+  new RegExp(`${HOME}\\/\\.pi\\/agent\\/auth\\.json`),
+  new RegExp(`${HOME}\\/\\.omp\\/agent\\/auth\\.json`),
   new RegExp(`${HOME}\\/\\.aws\\/credentials`),
   new RegExp(`${HOME}\\/\\.netrc\\b`),
   new RegExp(`${HOME}\\/\\.ssh\\/(id_|.*key)`),
@@ -107,11 +113,15 @@ export function credentialBlock(
   const secret = secretActionBlock(call.command);
   if (secret) return secret;
   const texts = [call.command ?? "", ...(call.paths ?? [])].filter(Boolean);
-  for (const text of texts) {
-    if (KEYCHAIN.test(text)) return CREDENTIAL_BLOCK_MESSAGE;
-    if (SECRET_FILES.some((re) => re.test(foldForSecrets(text)))) return CREDENTIAL_BLOCK_MESSAGE;
-    if (HUB_DB.test(text) || HUB_DB_TOOL.test(text)) return HUB_DB_BLOCK_MESSAGE;
-    const padded = ` ${text}`;
+  for (const raw of texts) {
+    // Round 4, item 7: quotes are the shell's, not the path's (`"$HOME"/.codex`, `~/.co''dex`), so the text is read both as
+    // written and with its quotes taken out.
+    for (const text of new Set([raw, raw.replace(/['"]/g, "")])) {
+      if (KEYCHAIN.test(text)) return CREDENTIAL_BLOCK_MESSAGE;
+      if (SECRET_FILES.some((re) => re.test(foldForSecrets(text)))) return CREDENTIAL_BLOCK_MESSAGE;
+    }
+    if (HUB_DB.test(raw) || HUB_DB_TOOL.test(raw)) return HUB_DB_BLOCK_MESSAGE;
+    const padded = ` ${raw}`;
     for (const match of padded.matchAll(ENV_PATH)) {
       if (!insideProject(match[1], cwd, home)) return CREDENTIAL_BLOCK_MESSAGE;
     }

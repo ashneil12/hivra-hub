@@ -10,6 +10,8 @@ type ProtectedList = {
   files: string[];
   dirs: string[];
   pathSuffixes: string[];
+  /** Folder runs that hold anywhere in a path (`src/shared/security`): the guard's own source (round 4, item 8). */
+  pathSequences: string[];
   holdAnyDotSegment: boolean;
 };
 
@@ -28,6 +30,7 @@ export function foldSegment(part: string): string {
 const FILES = new Set(LIST.files.map(foldSegment));
 const DIRS = new Set(LIST.dirs.map(foldSegment));
 const SUFFIXES: readonly (readonly string[])[] = LIST.pathSuffixes.map((suffix) => suffix.split("/").map(foldSegment));
+const SEQUENCES: readonly (readonly string[])[] = LIST.pathSequences.map((run) => run.split("/").map(foldSegment));
 
 /** A dot-named segment, as the list counts one: any start with "." other than "." and "..". */
 function dotSegment(part: string): boolean {
@@ -38,11 +41,16 @@ function dotSegment(part: string): boolean {
 const endsWith = (parts: readonly string[], suffix: readonly string[]) =>
   suffix.length <= parts.length && suffix.every((part, i) => parts[parts.length - suffix.length + i] === part);
 
+/** Whether a run of segments appears anywhere in the path, in order. */
+const holdsRun = (parts: readonly string[], run: readonly string[]) =>
+  parts.some((_, start) => run.every((part, i) => parts[start + i] === part));
+
 /**
  * Whether a path, given as its segments under the chat's folder, is a protected config: a dot-named segment (any folder
- * or file the tools read skills and settings from), a folder in the list, a file in the list, or a listed suffix.
- * `dotSegments` is off for a read command's words: a read of the chat's own dot-named file is ordinary (`cat ./.zshrc`
- * is allowed), and only the named config list holds it. Edits hold every dot-named segment.
+ * or file the tools read skills and settings from), a folder in the list, a file in the list, a listed suffix, or a run of
+ * folders the guard lives in (`pathSequences`, held for an edit only). `dotSegments` is off for a read command's words: a
+ * read of the chat's own dot-named file is ordinary (`cat ./.zshrc` is allowed), and only the named config list holds it.
+ * Edits hold every dot-named segment.
  */
 export function isProtectedConfig(parts: readonly string[], dotSegments = true): boolean {
   if (!parts.length) return false;
@@ -50,6 +58,8 @@ export function isProtectedConfig(parts: readonly string[], dotSegments = true):
   const folded = parts.map(foldSegment);
   if (folded.some((part) => DIRS.has(part))) return true;
   if (FILES.has(folded[folded.length - 1])) return true;
+  // The guard's own source is held for an edit only (dotSegments true): a read of it is ordinary (round 4, item 8).
+  if (dotSegments && SEQUENCES.some((run) => holdsRun(folded, run))) return true;
   return SUFFIXES.some((suffix) => endsWith(folded, suffix));
 }
 

@@ -170,6 +170,17 @@ fn folder(raw: &str) -> Result<String, String> {
         .ok_or_else(|| format!("{WHICH}: that folder name can't be used"))
 }
 
+/// The command judgement `set` makes, on its own. `watcher_check_set` runs it before it takes the store's lock (round 4,
+/// item 9), so a refused command never holds the lock, and a check that can't be judged never reaches the database.
+pub fn vet_command(command: &str) -> Result<(), String> {
+    if let Some(why) = safe_cmd::verdict(command) {
+        return Err(why);
+    }
+    // Parse once here so a command the table allows is also one we can exec with no shell.
+    safe_cmd::argv(command)?;
+    Ok(())
+}
+
 /// Arm a check. Refuses a command the safe table does not already allow, and does not insert a row then.
 pub fn set(conn: &mut Connection, input: CheckInput, now: i64) -> Result<Check, String> {
     let owner = input.owner_session.trim().to_string();
@@ -190,11 +201,7 @@ pub fn set(conn: &mut Connection, input: CheckInput, now: i64) -> Result<Check, 
     if command.chars().count() > COMMAND_MAX {
         return Err("that command is too long".into());
     }
-    if let Some(why) = safe_cmd::verdict(command) {
-        return Err(why);
-    }
-    // Parse once here so a command the table allows is also one we can exec with no shell.
-    safe_cmd::argv(command)?;
+    vet_command(command)?;
     let cwd = folder(&input.cwd)?;
     if input.pattern.chars().count() > PATTERN_MAX {
         return Err("the text to watch for is too long".into());
@@ -517,6 +524,22 @@ mod tests {
     const MIN: i64 = 60_000;
     const DAY: i64 = 24 * 60 * 60 * 1000;
     const SECRET: &str = "SECRET-OUTPUT";
+
+    // WP-101 review round 4, items 4 and 9: the timer's command judgement, with no lock or store in the way.
+    #[test]
+    fn a_command_the_timer_would_hold_is_refused_before_any_lock_is_taken() {
+        for command in [
+            "grep -rn TODO src",
+            "git log --textconv -p",
+            "cat ~/.pi/agent/auth.json",
+            "cat ./ENV~1",
+            "cat .secrets",
+        ] {
+            assert!(vet_command(command).is_err(), "{command} was accepted");
+        }
+        assert!(vet_command("git status").is_ok());
+        assert!(vet_command("rg -n token src").is_ok());
+    }
 
     fn store() -> SessionStore {
         SessionStore::open_in_memory().unwrap()
