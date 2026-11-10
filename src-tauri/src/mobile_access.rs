@@ -21,7 +21,9 @@ struct Device {
     name: String,
     fingerprint: String,
 }
-#[derive(Clone, Serialize, Deserialize)]
+// Hivra: every field defaults to off or empty. Upstream's Default opened a router port (open_router: true); here no
+// port mapping happens unless the person ticks it.
+#[derive(Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct Config {
     enabled: bool,
@@ -31,16 +33,6 @@ struct Config {
     remote_address: String,
     #[serde(default)]
     devices: Vec<Device>,
-}
-impl Default for Config {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            open_router: true,
-            remote_address: String::new(),
-            devices: Vec::new(),
-        }
-    }
 }
 struct Invitation {
     expires: u64,
@@ -1006,5 +998,12 @@ mod tests {
         let params = json!({"certificate":phone.certificate,"proof":phone.proof(&key).unwrap()});
         assert!(enroll(&host, &mut inner, &key, &params).is_err());
         assert!(inner.config.devices.is_empty() && !host.path.exists());
+    }
+    #[test]
+    fn a_new_setup_does_not_open_a_router_port() {
+        assert!(!Config::default().open_router);
+        assert!(!Config::default().enabled);
+        let saved: Config = serde_json::from_str(r#"{"enabled":true}"#).unwrap();
+        assert!(!saved.open_router);
     }
 }

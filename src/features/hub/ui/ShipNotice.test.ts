@@ -90,7 +90,7 @@ it("asks Ash whether the new build works, and records the answer he gives", asyn
   });
   ship.acceptShip.mockResolvedValue(undefined);
   await act(async () => root.render(createElement(ShipNotice)));
-  expect(container.textContent).toContain("MonoCode updated to 0.16.5. Is everything working?");
+  expect(container.textContent).toContain("Hivra updated to 0.16.5. Is everything working?");
   expect(container.textContent).not.toContain(ID);
   expect([...container.querySelectorAll("button")].map((b) => b.textContent)).toEqual(["Yes, it works", "Something's wrong"]);
   // Showing the question accepts nothing and reads nothing: only Ash's answer moves it on.

@@ -288,9 +288,10 @@ pub fn control_enable(
     session_id: String,
     cwd: String,
 ) -> Result<String, String> {
-    let cwd = std::fs::canonicalize(crate::fs::expand_home(&cwd)).map_err(|e| e.to_string())?;
+    let cwd =
+        std::fs::canonicalize(crate::chat_folder::require(&cwd)?).map_err(|e| e.to_string())?;
     if !cwd.is_dir() {
-        return Err("Choose a project folder first".into());
+        return Err(crate::chat_folder::NEEDS_FOLDER.into());
     }
     let cwd = comparison_path(&cwd);
     let mut inner = host
@@ -410,7 +411,7 @@ pub fn control_authorize_turn(
     cwd: String,
     app_access: bool,
 ) -> Result<(), String> {
-    let workdir = crate::fs::expand_home(&cwd);
+    let workdir = crate::chat_folder::require(&cwd)?;
     let cwd = std::fs::canonicalize(&workdir)
         .map_err(|e| format!("Working directory {}: {e}", workdir.display()))?;
     let cwd = comparison_path(&cwd);
@@ -612,10 +613,11 @@ pub fn control_scopes(cwd: String, files: Vec<String>) -> Result<Vec<String>, St
     if files.len() > 64 {
         return Err("At most 64 write scopes per task".into());
     }
+    let root = crate::chat_folder::require(&cwd)?;
     files
         .iter()
         .map(|file| {
-            resolve_scope(&crate::fs::expand_home(&cwd), file)
+            resolve_scope(&root, file)
                 .map_err(|error| format!("Invalid write scope \"{file}\": {error}"))
         })
         .collect()

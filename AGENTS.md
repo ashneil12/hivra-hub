@@ -63,7 +63,8 @@ refusal shows an alert and exits:
 - a database written by a newer build is refused (exit 65).
 
 A dev copy can't reach Ash's real things: it keeps its hub data (projects, Monos per project, Pages) in its own
-database, its one-time Ash OS import reads only a stand-in a test names, never the live service or its key, and
+database, its one-time Ash OS import reads only a stand-in a test names, never the live service, its key or its record
+on disk, and
 Keychain names are `monocode-hub-dev:*`. How it runs Claude is in [CLAUDE.md](CLAUDE.md) ("The dev copy's
 Claude"). The PR watch (`src-tauri/src/pr_watch`) reads GitHub through
 the user's `gh`, reads only; under a temporary HOME there is no gh login, and `MONOCODE_PR_WATCH_GH` (read by dev copies
@@ -213,12 +214,18 @@ daily app. Its window says `Hivra Dev - <branch> @ <sha>` and carries a DEV ribb
 - **Port:** 1430 + 10 × (hash of the slot mod 50), the next free one in that grid if taken; never 1420. The generated
   `target/hub-dev/<slot>.conf.json` sets `devUrl` and `devCsp` (the base devCsp only allows 1420) and hands vite the
   port through `MONOCODE_VITE_PORT` in its own command.
-- **Rust build cache:** `CARGO_BUILD_BUILD_DIR=~/Library/Caches/monocode-hub/cargo-build` (hub:dev and hub:build), shared
-  by every worktree; each keeps its own `target/` for the final binary and bundle. Two builds at once wait for each other.
+- **Rust build cache:** `CARGO_BUILD_BUILD_DIR=~/Library/Caches/monocode-hub/cargo-build` (hub:dev, hub:build and
+  `npm run check:rust`), shared by every worktree; each keeps its own `target/` for the final binary and bundle. Two builds
+  at once wait for each other. CI keeps its own `target/`; `MONOCODE_OWN_TARGET=1` does the same for one local run.
+- **Disk floor:** `check:rust` and `hub:build` refuse to start (exit 75) under 30 GB free on the home volume
+  (`scripts/disk-guard.mjs`; `MONOCODE_DISK_FLOOR_GB` changes it, 0 turns it off). On 10 Nov 2026 about 90 worktrees, each
+  with its own 9-12 GB `target/`, filled the disk. `npm run hub:clean -- --yes` also clears the build output (`target/`,
+  `src-tauri/target`, `test-results/`, `playwright-report/`, a real `node_modules`) of a worktree that is kept but clean
+  and pushed; never a linked `node_modules`, a dirty or unpushed tree, or one something is running in.
 - **Hub data:** the dev copy keeps it in its own database, like the daily app (no Ash OS; see "Ash OS is retired").
 - **Seed (`npm run hub:seed-dev`, or `hub:dev -- --seed`):** an online SQLite backup of the daily `monocode.db`, opened
   read-only, then in the copy only: in-flight turns, queued messages, the tab snapshot, pending worktree removals,
-  automations, reminders, orchestration rows, delegation rows, PR watches and every `provider_session_id` are cleared. It refuses the daily folder,
+  automations, reminders, orchestration rows, delegation rows, PR watches, the compare records (they name real worktrees) and every `provider_session_id` are cleared. It refuses the daily folder,
   a slot a running copy holds (its lock), a slot that already has chats (`--replace` moves them aside) and a source
   newer than the checkout's schema. It never writes back. Without a seed a slot starts empty.
 - One copy per slot: starting a slot that is already running says so and exits 75.
@@ -244,8 +251,23 @@ store from the page's own localStorage, `monocode:dev-local-hub:<key>`). It has 
   the file in a branch changes nothing. Agents use `app actions.list` / `app actions.run`.
 - `scripts/setup-worktree.mjs` links `node_modules` from the main checkout when the lockfiles match (else `npm ci`) and
   links missing env files; it never replaces a real file and never writes through a link.
-- Settings > Worktrees > Clean up reports every worktree in `~/Worktrees`; nothing is removed without Ash's tap.
-  `monocode worktrees-report` prints the same report read-only. Never delete a worktree or its `target/` by hand.
+- Settings > Worktrees > Clean up reports every worktree in `~/Worktrees` (its size and how much of it is build
+  output); nothing is removed without Ash's tap. `monocode worktrees-report` prints the same report read-only. Never
+  delete a worktree or its `target/` by hand.
+- **A finished worktree gives its build output back by itself** (`src-tauri/src/worktree_autoclean.rs`; the daily app
+  only, a dev copy never runs it). Every 15 minutes, and 2 minutes after launch, it sweeps `~/Worktrees` and the
+  worktrees the app knows (chats, PR watches). A worktree is **finished** when a pull request from its branch merged or
+  closed with this exact commit as its head (the PR watch, else `gh pr list`, asked at most hourly per commit), or every
+  delegated task in it is accepted and its commit is in the branch's upstream, or its branch is merged into the mainline
+  with its commit on a remote. It must also be a linked worktree (never the main checkout) with an empty
+  `git status`, nothing running in it (an agent, terminal, project action, chat turn, dev copy, a cargo build holding
+  `.cargo-lock`, or any process of Ash's whose working folder is inside it, read with `lsof` just before the delete) and
+  untouched for 10 minutes. When those working folders can't be read (lsof fails, or on Windows, which can't say) the
+  sweep deletes nothing. Then only `target/`, `src-tauri/target/`, `test-results/`,
+  `playwright-report/` and every `node_modules/` that is a real folder go (a linked `node_modules` stays), each only
+  when git ignores it and tracks nothing in it. Each worktree is checked again under the removal reservation. The
+  switch is Settings > Worktrees > "Clear build output of finished worktrees", on by default, kept in
+  `<data>/worktree-autoclean.json` (a file it can't read means off).
 
 ## Signing (why the app kept asking for your password)
 
@@ -321,7 +343,11 @@ and checks are empty until WP-14's decision store (`localHub/decisions.ts` is th
 the app asks Ash OS, read-only (`src-tauri/src/ash_os_import.rs`), and offers once to import its projects, memberships
 and kept Pages. Only a sure answer is kept: no Ash OS on the Mac (no key file, or a dev copy with no stand-in) starts
 clean for good; Ash OS not answering this time decides nothing and the next start tries again. Settings → Export and
-import → "Bring over from Ash OS" runs it again at any time (it only adds). Every hub chat denies `mcp__ash-os`, so
+import → "Bring over from Ash OS" runs it again at any time (it only adds). When the service gives nothing (it no longer
+runs), the import reads Ash OS's record on disk instead (`ash_os_import/disk.rs`: the database and its log copied
+into a private folder and only the copy opened, plus each strip project's `project.json`) and answers in the live
+reads' shape; Ash OS's files are never written and nothing is made beside them. A dev copy reads only a stand-in
+record named by `MONOCODE_ASHOS_DB` (and `MONOCODE_ASHOS_PROJECTS`), never the real one (the daily app ignores both). Every hub chat denies `mcp__ash-os`, so
 Ash's own user-scope Ash OS server never loads in one. The local store's documents carry a revision: a window writes
 only on top of the latest one and every window hears `local-hub://changed`.
 
@@ -329,6 +355,9 @@ only on top of the latest one and every window hears `local-hub://changed`.
 
 Settings → Export and import writes the whole setup (and, if ticked, the Ash OS memory and the workspace) to one
 `.tar.gz` or a folder, and reads one back through a preview. Import only adds: imported Monos wait for Ash's OK,
-connectors and model keys are entered again, automations come back paused, delegations come back as history. Secrets
+connectors and model keys are entered again, automations come back paused, delegations come back as history. A chat
+keeps the folder its file names only when it is inside a project this copy already has (links followed); otherwise it
+has none, asks for one and starts nothing until then (`src-tauri/src/chat_folder.rs` refuses every launch without a
+folder, never falling back to the home folder, `/` or the folder the app runs in). Secrets
 never go in (one pattern list for the webview and Rust, then a final scan of the export). A dev copy keeps its memory in
 its own data folder (`npm run hub:dev -- --memory <dir>` reads another one for Export) and never writes `~/agent-memory`.
