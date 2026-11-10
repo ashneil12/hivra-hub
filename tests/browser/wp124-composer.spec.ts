@@ -48,3 +48,25 @@ test("stashing a draft clears the composer and stays stored across a reload", as
   const stored = await page.evaluate(() => localStorage.getItem("monocode.composerStash.v1"));
   expect(stored).toContain("hold this thought");
 });
+
+test("a large paste can be put back as text", async ({ page }) => {
+  await openLead(page);
+  const large = ["build log for the mac app", "a line of the log".repeat(2_000), "the end"].join("\n");
+  await composer(page).click();
+  const inserted = await page.evaluate((value) => {
+    const data = new DataTransfer();
+    data.setData("text/plain", value);
+    return document.activeElement?.dispatchEvent(
+      new ClipboardEvent("paste", { clipboardData: data, bubbles: true, cancelable: true }),
+    ) ?? false;
+  }, large);
+  expect(inserted).toBe(false);
+  const chip = page.getByRole("button", { name: "Remove build log for the mac app.txt" });
+  await expect(chip).toBeVisible({ timeout: 15_000 });
+  await expect(page.locator("[data-composer-notice]").first()).toHaveText(
+    "That paste was large, so it became the file build log for the mac app.txt. Hold Shift while pasting to keep it inline.",
+  );
+  await page.getByRole("button", { name: "Keep as text" }).click();
+  await expect(chip).toHaveCount(0);
+  await expect(composer(page)).toHaveValue(large);
+});

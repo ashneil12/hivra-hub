@@ -211,6 +211,7 @@ import {
   restoreAttachments,
   stashDraft,
 } from "../model/draftStash";
+import { inlineAfterUndo, type LargePasteUndo } from "../model/largePasteUndo";
 import { DraftStashActions, useStashPresent } from "./DraftStashActions";
 import { type McpConnection } from "../../settings/model/mcp";
 import {
@@ -528,6 +529,8 @@ export function Composer({
   const [pasteError, setPasteError] = useState<string | null>(null);
   /** A paste or send where hidden characters were removed: news, not a failure. */
   const [pasteNotice, setPasteNotice] = useState<string | null>(null);
+  // WP-124: the latest large paste, so it can go back to inline text.
+  const [largePasteUndo, setLargePasteUndo] = useState<LargePasteUndo | null>(null);
   // WP-124: a stashed draft for this chat, including one saved in another window.
   const stashPresent = useStashPresent(sessionId);
   const [plusOpen, setPlusOpen] = useState(false);
@@ -1626,6 +1629,7 @@ export function Composer({
     setCreatingSkill(false);
     setCreateError(null);
     setPasteError(null);
+    setLargePasteUndo(null);
     syncHasValue("", []);
   };
   // WP-124: save the draft and clear the box. A failed save leaves the draft where it is.
@@ -1652,7 +1656,19 @@ export function Composer({
     if (!saved.ok) return;
     pasteGenerationRef.current += 1;
     for (const file of files) revokeAttachment(file);
+    setLargePasteUndo(null);
     applyComposerDraft("", []);
+  };
+  const keepLargePasteAsText = () => {
+    const undo = largePasteUndo;
+    if (!undo) return;
+    const files = attachmentsRef.current;
+    const removed = files.find((file) => file.id === undo.attachmentId);
+    const next = inlineAfterUndo(ref.current?.value ?? "", files, undo);
+    if (removed) revokeAttachment(removed);
+    setLargePasteUndo(null);
+    applyComposerDraft(next.draft, next.attachments);
+    ref.current?.focus();
   };
   const restoreCurrentDraft = () => {
     if (!sessionId || disabled || editingEarlier || resendEdited) return;
@@ -1878,6 +1894,7 @@ export function Composer({
             // WebKit can insert the paste after preventDefault; the new chip replaces it.
             if (captured) dropPastedText(captured, plain);
             addAttachments(pasted);
+            setLargePasteUndo({ attachmentId: pasted[0].id, text: paste.text });
             setPasteNotice(
               `That paste was large, so it became the file ${pasted[0].name}. Hold Shift while pasting to keep it inline.`,
             );
@@ -2329,6 +2346,18 @@ export function Composer({
           ) : pasteNotice ? (
             <p data-composer-notice className="px-3 pt-2 text-xs text-content/55">
               {pasteNotice}
+            </p>
+          ) : null}
+          {largePasteUndo ? (
+            <p className="px-3 pt-2 text-xs text-content/55">
+              <button
+                type="button"
+                aria-label="Keep as text"
+                className="rounded px-1 py-0.5 text-content/70 hover:bg-content/8"
+                onClick={keepLargePasteAsText}
+              >
+                Keep as text
+              </button>
             </p>
           ) : null}
           <DraftStashActions

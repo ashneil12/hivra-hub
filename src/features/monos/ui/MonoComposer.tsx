@@ -51,6 +51,7 @@ import {
   stashDraft,
 } from "../../sessions/model/draftStash";
 import { DraftStashActions, useStashPresent } from "../../sessions/ui/DraftStashActions";
+import { inlineAfterUndo, type LargePasteUndo } from "../../sessions/model/largePasteUndo";
 
 // Loaded on first open, with its emoji data, so neither weighs on startup.
 const EmojiPickerPopover = lazy(() =>
@@ -166,6 +167,8 @@ export function MonoComposer({
   const [dropError, setDropError] = useState<string | null>(null);
   /** A send or paste where hidden characters were removed: news, not a failure. */
   const [dropNotice, setDropNotice] = useState<string | null>(null);
+  // WP-124: the latest large paste, so it can go back to inline text.
+  const [largePasteUndo, setLargePasteUndo] = useState<LargePasteUndo | null>(null);
   const submittingRef = useRef(false);
   /** The paste shortcut was held at the last keydown, since a paste event carries no modifier keys. */
   const inlinePasteRef = useRef(false);
@@ -237,9 +240,23 @@ export function MonoComposer({
     if (!saved.ok) return;
     readGeneration.current += 1;
     for (const file of files) revokeAttachment(file);
+    setLargePasteUndo(null);
     update("");
     attachmentsRef.current = [];
     setAttachments([]);
+  };
+  const keepLargePasteAsText = () => {
+    const undo = largePasteUndo;
+    if (!undo || submittingRef.current) return;
+    const files = attachmentsRef.current;
+    const removed = files.find((file) => file.id === undo.attachmentId);
+    const next = inlineAfterUndo(textRef.current, files, undo);
+    if (removed) revokeAttachment(removed);
+    setLargePasteUndo(null);
+    update(next.draft);
+    attachmentsRef.current = next.attachments;
+    setAttachments(next.attachments);
+    field.current?.focus();
   };
   const restoreCurrentDraft = () => {
     if (!enabled || submittingRef.current || editingEarlier) return;
@@ -423,6 +440,7 @@ export function MonoComposer({
       update("");
       attachmentsRef.current = [];
       setAttachments([]);
+      setLargePasteUndo(null);
       setDropError(null);
     };
     const result = onSubmit(message, files, turnOptions);
@@ -572,6 +590,7 @@ export function MonoComposer({
                 saved = [];
               }
               if (saved.length) {
+                setLargePasteUndo({ attachmentId: saved[0].id, text: paste.text });
                 setDropNotice(
                   `That paste was large, so it became the file ${saved[0].name}. Hold Shift while pasting to keep it inline.`,
                 );
@@ -660,6 +679,18 @@ export function MonoComposer({
         ) : dropNotice ? (
           <p data-composer-notice className="px-3 pt-2 text-xs text-content/55">
             {dropNotice}
+          </p>
+        ) : null}
+        {largePasteUndo ? (
+          <p className="px-3 pt-2 text-xs text-content/55">
+            <button
+              type="button"
+              aria-label="Keep as text"
+              className="rounded px-1 py-0.5 text-content/70 hover:bg-content/8"
+              onClick={keepLargePasteAsText}
+            >
+              Keep as text
+            </button>
           </p>
         ) : null}
         <DraftStashActions
