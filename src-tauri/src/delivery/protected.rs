@@ -45,6 +45,7 @@ const FILE_NAMES: &[&str] = &[
     "cloudbuild.yaml",
     "agents.md",
     "claude.md",
+    ".envrc",
 ];
 
 /// File names protected as themselves or with a dotted suffix (`Dockerfile.prod`).
@@ -166,6 +167,18 @@ fn built_in_hit(path: &RepoPath) -> bool {
     path.lower.windows(2).any(|pair| {
         pair[0] == "src-tauri" && pair[1].starts_with("tauri") && pair[1].ends_with(".json")
     }) || delivery_source(path)
+        || capabilities_json(path)
+}
+
+/// `src-tauri/capabilities/*.json`, including a nested app. The directory is the prefix.
+fn capabilities_json(path: &RepoPath) -> bool {
+    match path.lower.last() {
+        Some(file) if extension_is(file, ".json") => path
+            .lower
+            .windows(2)
+            .any(|pair| pair[0] == "src-tauri" && pair[1] == "capabilities"),
+        _ => false,
+    }
 }
 
 /// The floor's own source. A merge that can edit this directory can delete the floor.
@@ -424,6 +437,12 @@ mod tests {
             "src-tauri/tauri.hub.conf.json",
             "src-tauri/tauri.linux.conf.json",
             "apps/desktop/src-tauri/tauri.windows.conf.json",
+            ".envrc",
+            "config/.envrc",
+            ".ENVRC",
+            "src-tauri/capabilities/main.json",
+            "apps/desktop/src-tauri/capabilities/desktop.json",
+            "src-tauri/capabilities/nested/extra.json",
         ];
         for path in protected {
             assert_eq!(hits(&[path], &[]), vec![path.to_string()], "{path}");
@@ -442,6 +461,9 @@ mod tests {
             "src-tauri/Cargo.toml",
             "not.github/workflows/x.yml",
             "mydockerfile",
+            "src-tauri/capabilities/readme.md",
+            "src-tauri/capabilities.json",
+            "other/capabilities/main.json",
         ] {
             assert!(hits(&[path], &[]).is_empty(), "{path}");
         }
