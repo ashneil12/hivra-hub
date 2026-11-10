@@ -151,7 +151,8 @@ export function CrewPanel({
     return [...ids].sort();
   }, [workers]);
   const liveSessions = useCrewSessions(project, extraIds);
-  const tree = crewTree({ project, workers, sessions: liveSessions, now });
+  // Built again only when something it draws changes, not on every render of the panel.
+  const tree = useMemo(() => crewTree({ project, workers, sessions: liveSessions, now }), [project, workers, liveSessions, now]);
 
   const rows = crewRows({
     project,

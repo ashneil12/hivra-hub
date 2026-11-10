@@ -21,6 +21,7 @@ export function MessageQueue({
   onEdit,
   onEditingChange,
   onSteer,
+  steerNote,
   onResume,
   variant = "queue",
   sendingId,
@@ -31,6 +32,8 @@ export function MessageQueue({
   onEdit?: (messageId: string, text: string) => void;
   onEditingChange?: (messageId?: string) => void;
   onSteer?: (messageId: string) => void;
+  /** Replaces Steer when this agent cannot redirect a running turn. Shown once. */
+  steerNote?: string;
   onResume?: () => void;
   variant?: "queue" | "messages";
   sendingId?: string;
@@ -102,6 +105,11 @@ export function MessageQueue({
           <div role="status" className="py-1 text-[11px] text-content/50">
             {sendingId ? "Sending…" : "Waiting to send"}
           </div>
+        ) : null}
+        {steerNote?.trim() ? (
+          <p role="note" className="py-1 text-[12px] text-content/70">
+            {steerNote}
+          </p>
         ) : null}
         {messages.map((message, index) => {
           const sending = sendingId === message.id;
@@ -179,7 +187,7 @@ export function MessageQueue({
                       </p>
                     ) : null}
                   </div>
-                  {onSteer && !message.monoSessionCompletion ? (
+                  {onSteer && !steerNote?.trim() && !message.monoSessionCompletion ? (
                     <button
                       type="button"
                       disabled={sending}
