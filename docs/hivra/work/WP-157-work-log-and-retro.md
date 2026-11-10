@@ -17,7 +17,7 @@ stevenmichaelthomas/numbrone (MIT, created 8 Nov 2026, 107 stars on 9 Nov; "a ch
 ## Read first
 
 - Hivra `origin/main`: `src-tauri/src/activity.rs` (WP-78), `src-tauri/src/decisions.rs`, `src-tauri/src/delivery/` (finished work rows), `src-tauri/src/learn_stores/` (caps, accept write), `src/features/hub/model/botChanges.ts` (Settings → Changes), `src/features/firstmate/contract.md`.
-- Reference (MIT, Copyright (c) 2026 numbrone contributors): https://github.com/stevenmichaelthomas/numbrone at commit `0632b01` — `skills/numbrone/templates/CLAUDE.md` (Keeping the work log, Retros, Learned rules), `skills/numbrone/scripts/numbrone` (`log` command). Ideas only unless a sentence is quoted; numbrone is a bash/Markdown skill, so there is little code to translate.
+- Reference (MIT, Copyright (c) 2026 numbrone contributors): https://github.com/stevenmichaelthomas/numbrone at commit `0632b01`: `skills/numbrone/templates/CLAUDE.md` (Keeping the work log, Retros, Learned rules), `skills/numbrone/scripts/numbrone` (`log` command). Ideas only unless a sentence is quoted; numbrone is a bash/Markdown skill, so there is little code to translate.
 
 ## Build
 
