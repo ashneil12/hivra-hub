@@ -35,6 +35,19 @@ const pids = new Set();
 const roots = [];
 
 /**
+ * How long the real app waits for a held data folder before it refuses with exit 75: `LOCK_WAIT` in
+ * src-tauri/src/instance.rs, read from the source so the fake app below can't drift from it. A rename or a change of
+ * shape fails here, loudly, instead of leaving the fake on an old number.
+ */
+function realLockWaitMs() {
+  const source = fs.readFileSync(path.join(SCRIPTS, "..", "src-tauri", "src", "instance.rs"), "utf8");
+  const found = /^const LOCK_WAIT: Duration = Duration::from_(secs|millis)\((\d+)\);/m.exec(source);
+  if (!found) throw new Error("instance.rs no longer has `const LOCK_WAIT: Duration = Duration::from_secs(N);`: teach realLockWaitMs() its new shape");
+  return Number(found[2]) * (found[1] === "secs" ? 1000 : 1);
+}
+const REAL_LOCK_WAIT_MS = realLockWaitMs();
+
+/**
  * Every live process started from one of this suite's temporary folders (its command line names the folder: the fake
  * app, the shell that execs it, the runner), plus anything those spawned.
  */
@@ -180,13 +193,23 @@ const read = (file) => { try { return JSON.parse(fs.readFileSync(file, "utf8"));
 const data = path.join(process.env.HOME, "Library/Application Support/com.ash.monocode-hub");
 fs.mkdirSync(data, { recursive: true });
 let lock = null;
-// Wait for the lock to go, with a deadline far past what a loaded machine needs holding it.
-const deadline = Date.now() + 60_000;
+// Wait the way the real app does (src-tauri/src/instance.rs): try, and while another copy holds the folder retry every
+// 100 ms until its LOCK_WAIT is over, then refuse with exit 75. Never longer: the runner opens a build with the folder
+// free, so a build that has to wait here would have to wait in the real app too.
+const started = Date.now();
+let tries = 0;
 while (!lock) {
+  tries += 1;
   const db = new DatabaseSync(path.join(data, "instance-owner.sqlite"));
   try { db.exec("PRAGMA busy_timeout = 0"); db.exec("BEGIN EXCLUSIVE"); lock = db; }
-  catch { db.close(); if (Date.now() > deadline) process.exit(75); await sleep(100); }
+  catch {
+    db.close();
+    if (tries === 1) fs.writeFileSync(path.join(process.env.HOME, "lock-waiting.json"), JSON.stringify({ pid: process.pid, at: Date.now() }));
+    if (Date.now() - started >= ${REAL_LOCK_WAIT_MS}) process.exit(75);
+    await sleep(100);
+  }
 }
+fs.appendFileSync(path.join(process.env.HOME, "lock-waits.jsonl"), JSON.stringify({ sha: fake.sha, pid: process.pid, tries, waitedMs: Date.now() - started }) + "\n");
 // Keep the lock reachable for the life of the process: a collected DatabaseSync closes and drops the lock.
 globalThis.instanceLock = lock;
 const lstart = spawnSync("/bin/ps", ["-o", "lstart=", "-p", String(process.pid)], { encoding: "utf8", env: { ...process.env, LC_ALL: "C" } }).stdout.trim();
@@ -677,25 +700,84 @@ test("a ship commits: the new build is in place, the old one kept, the database 
   assert.equal(receipt.outcome, "committed");
   assert.equal(receipt.running.sha, w.sha);
   assert.equal(receipt.from.sha, SHA_A);
+  // Who holds the folder while the runner opens a build? Nobody: the old app has quit, the runner held the folder for
+  // the swap and let go just before opening the new build, so the build takes it on its first try. The real app only
+  // waits LOCK_WAIT (the fake app waits the same), so a runner that opened a build while still holding it would fail here.
+  assert.deepEqual(
+    lockWaits(w).map((took) => [took.sha, took.tries]),
+    [[SHA_A, 1], [w.sha, 1]],
+    "the trial build found the data folder free",
+  );
   assert.equal(readJson(path.join(w.data, "running.json")).sha, w.sha);
   assert.equal(readJson(path.join(w.data, "ship/current.json")).id, answer.id);
   assert.equal(state.launch.mode, "direct", "under a temporary HOME the app is opened directly");
   assert.equal(state.launch.env.CFFIXED_USER_HOME, w.home);
 });
 
-// The app takes the data folder's lock like the real one. On a loaded machine the previous holder can take longer
-// than a couple of seconds to let go; the app must wait for the lock to go, not give up and make the ship roll back.
-test("the app waits for a held data-folder lock instead of giving up after two seconds", async () => {
+const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/** Each fake app that took the data folder, in order: which build, and how many tries it needed. */
+function lockWaits(w) {
+  try {
+    return fs
+      .readFileSync(path.join(w.home, "lock-waits.jsonl"), "utf8")
+      .split("\n")
+      .filter(Boolean)
+      .map((line) => JSON.parse(line));
+  } catch {
+    return [];
+  }
+}
+
+/** The fake app, started like `startApp`, with a promise for how it ended. */
+function startAppWatched(w) {
+  const spec = appCommand(w.app, w.home);
+  const child = spawn(spec.command, spec.args, { env: w.env, detached: true, stdio: "ignore" });
+  pids.add(child.pid);
+  const exited = new Promise((resolve) => child.once("exit", (code, signal) => resolve({ code, signal, at: Date.now() })));
+  child.unref();
+  return { pid: child.pid, exited };
+}
+
+// The fake app takes the data folder's lock the way the real one does (src-tauri/src/instance.rs): retry every 100 ms
+// for the real wait, then refuse with exit 75. It used to wait 60 s, so every ship test would have passed a build that
+// the real app, giving up after 2 s, turns into a rolled-back ship. Nothing here lets it wait longer than the app.
+test("a copy that finds the data folder held takes it once the holder lets go inside the app's wait", async () => {
   const w = world();
-  const lock = tryLock(path.join(w.data, "instance-owner.sqlite"));
-  assert.ok(lock, "the test holds the data folder's lock");
-  const pid = startApp(w);
-  // Past the old two-second budget, where the app used to exit 75.
-  await new Promise((resolve) => setTimeout(resolve, 3000));
-  assert.equal(alive(pid), true, "the app is still waiting for the lock, not gone");
-  releaseLock(lock);
-  const running = await until("the app to take the lock", () => readJson(path.join(w.data, "running.json")), 30_000);
-  assert.equal(running.pid, pid);
+  let holder = tryLock(path.join(w.data, "instance-owner.sqlite"));
+  assert.ok(holder, "the test holds the data folder's lock");
+  try {
+    const app = startAppWatched(w);
+    await until("the app to find the folder held", () => readJson(path.join(w.home, "lock-waiting.json")));
+    await pause(REAL_LOCK_WAIT_MS / 4);
+    assert.equal(alive(app.pid), true, "the app is still inside its wait, not gone");
+    releaseLock(holder);
+    holder = null;
+    const running = await until("the app to take the folder", () => readJson(path.join(w.data, "running.json")), REAL_LOCK_WAIT_MS + 30_000);
+    assert.equal(running.pid, app.pid);
+    assert.ok(lockWaits(w)[0].tries > 1, "it had to retry for the folder");
+  } finally {
+    releaseLock(holder);
+  }
+});
+
+test("a copy still finding the data folder held when the app's wait is over refuses with exit 75, as the real app does", async () => {
+  const w = world();
+  const holder = tryLock(path.join(w.data, "instance-owner.sqlite"));
+  assert.ok(holder, "the test holds the data folder's lock");
+  try {
+    const app = startAppWatched(w);
+    const waiting = await until("the app to find the folder held", () => readJson(path.join(w.home, "lock-waiting.json")));
+    let ended = null;
+    app.exited.then((how) => (ended = how));
+    await until("the app to give up", () => ended, REAL_LOCK_WAIT_MS + 10_000);
+    assert.equal(ended.code, 75, `it refused: ${JSON.stringify(ended)}`);
+    assert.ok(ended.at - waiting.at >= REAL_LOCK_WAIT_MS - 500, `it waited the real ${REAL_LOCK_WAIT_MS} ms before refusing, not less`);
+    assert.equal(readJson(path.join(w.data, "running.json")), null, "it never took the folder");
+    assert.deepEqual(lockWaits(w), []);
+  } finally {
+    releaseLock(holder);
+  }
 });
 
 test("no commit rolls back: the old app returns and the database matches its copy byte for byte", async () => {
@@ -719,6 +801,13 @@ test("no commit rolls back: the old app returns and the database matches its cop
   const receipt = readJson(path.join(dir, "receipt.json"));
   assert.equal(receipt.outcome, "rolled-back");
   assert.equal(receipt.running.sha, SHA_A);
+  // The rollback hands the folder over the same way: the stopped trial build is gone, the runner held the folder to
+  // put the old build back, and the reopened old build takes it on its first try.
+  assert.deepEqual(
+    lockWaits(w).map((took) => [took.sha, took.tries]),
+    [[w.sha, 1], [SHA_A, 1]],
+    "the trial build and the reopened old build each found the data folder free",
+  );
 });
 
 test("a build that exits during its trial is rolled back at once", async () => {
