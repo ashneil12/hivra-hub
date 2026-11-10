@@ -14,14 +14,14 @@ Hivra took OpenBot's approval-gate semantics. Source watch digest 2026-11-09 fla
 
 ## Read first
 
-- OpenBot (Apache-2.0): commit `644d07d` and surrounding approval-gate tests.
+- OpenBot (MIT): commit `644d07d` and surrounding approval-gate tests.
 - Hivra `origin/main`: approval / permission wait paths. Do not weaken fail-closed behaviour.
 
 ## Build
 
 1. Docs: copy this file to `docs/hivra/work/WP-146-openbot-approval-carry.md`. Note the OpenBot fix on the existing OpenBot SOURCES / credits line.
 2. Find any path where a turn continues, auto-answers, or marks success while an approval is still open. Fix so the turn stays waiting; UI says waiting for approval in plain words.
-3. Tests: pending approval leaves the session waiting; denying then continuing is a separate explicit step; approving then continuing works. Fail closed if the approval record is missing.
+3. Tests: an open approval leaves the session waiting; a denial is an answer, so the turn goes on without that call; approving then continuing works. Fail closed if the approval record is missing.
 4. Out of scope: vault (WP-92), phone approve (mobile wave), browser-action cards.
 
 ## Done when
