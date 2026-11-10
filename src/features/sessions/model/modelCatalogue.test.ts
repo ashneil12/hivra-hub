@@ -1,3 +1,6 @@
+import { readdirSync, readFileSync } from "node:fs";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import bundled from "./modelsDev.json";
 import { catalogueWindow, loadCatalogue } from "./modelCatalogue";
@@ -128,6 +131,14 @@ describe("the bundled catalogue loads when something asks, not with the module",
     await mod.loadCatalogue();
     expect(reads).toBe(1);
     expect(mod.catalogueWindow("lazy-model", undefined, "deepseek")).toBe(77_000);
+  });
+
+  it("no module the app starts with imports the file at the top, where it would come back into the main chunk", () => {
+    const src = fileURLToPath(new URL("../../..", import.meta.url));
+    const offenders = readdirSync(src, { recursive: true, encoding: "utf8" })
+      .filter((file) => /\.tsx?$/.test(file) && !/\.test\.tsx?$/.test(file))
+      .filter((file) => /^\s*(import|export)\s[^\n]*modelsDev\.json/m.test(readFileSync(join(src, file), "utf8")));
+    expect(offenders).toEqual([]);
   });
 
   it("an explicit table never loads the file", async () => {
