@@ -1,9 +1,10 @@
-//! WP-143: is an Explore agent already defined for a Claude Code session?
+//! WP-143: may a Claude Code session get the cheap Explore flag, or is something already in the way?
 //!
 //! A hub crew or Mono session on Anthropic gets a cheap Explore agent through Claude Code's `--agents` flag. That
 //! flag outranks the agents in `.claude/agents`, so passing it would shadow an Explore the person wrote. This
-//! answers that one question, and only reads: it lists folders and reads the top of a few files. It never creates,
-//! changes or removes anything, in the project or in the person's Claude config folder.
+//! answers that question (and whether the environment sends Claude Code to Bedrock, Vertex, Foundry or another API
+//! base URL), and only reads: it lists folders, reads the top of a few files and reads environment variables. It
+//! never creates, changes or removes anything, in the project or in the person's Claude config folder.
 //!
 //! The answer errs toward "defined". A folder that can't be read, a file that can't be opened, a config folder that
 //! can't be found or a folder too large to scan all say "defined", so the session starts without the flag instead of
@@ -23,7 +24,9 @@ const MAX_ENTRIES: usize = 2000;
 /// Only the front of a file is read: the `name:` line is in the frontmatter at the top.
 const HEAD_BYTES: u64 = 4096;
 
-/// True when an agent named Explore is defined for a session working in `cwd`, or when that can't be told.
+/// True when the session must start without the cheap Explore flag: an agent named Explore is already defined for a
+/// session working in `cwd`, the environment points Claude Code at a backend other than Anthropic's own (Bedrock,
+/// Vertex, Foundry or another API base URL, where the `haiku` alias isn't ours to assume), or either can't be told.
 ///
 /// `provider_account_id` is the Claude account the session runs on: a signed-in profile has its own config folder.
 #[tauri::command(async)]
@@ -32,8 +35,28 @@ pub fn claude_explore_agent_defined(
     cwd: String,
     provider_account_id: Option<String>,
 ) -> bool {
+    if other_backend_selected(|key| std::env::var(key).ok()) {
+        return true;
+    }
     let config = config_dir(&app, provider_account_id.as_deref());
     explore_defined(config.as_deref(), Path::new(&cwd))
+}
+
+/// True when the environment Claude Code starts in selects Bedrock, Vertex or Foundry, or another API base URL.
+/// A session the hub routes to an Other model is already kept off the flag by its launch; this covers a person who
+/// runs Claude Code on another backend through their own environment. Only the process environment is read.
+pub(crate) fn other_backend_selected(env: impl Fn(&str) -> Option<String>) -> bool {
+    const SWITCHES: [&str; 3] = [
+        "CLAUDE_CODE_USE_BEDROCK",
+        "CLAUDE_CODE_USE_VERTEX",
+        "CLAUDE_CODE_USE_FOUNDRY",
+    ];
+    let on = |value: String| {
+        let value = value.trim().to_ascii_lowercase();
+        !matches!(value.as_str(), "" | "0" | "false" | "no" | "off")
+    };
+    SWITCHES.iter().any(|key| env(key).is_some_and(on))
+        || env("ANTHROPIC_BASE_URL").is_some_and(|url| !url.trim().is_empty())
 }
 
 /// The folder Claude Code reads its user-level agents from for this account, as the app starts it
@@ -389,6 +412,59 @@ mod tests {
                 .unwrap();
             assert_eq!(String::from_utf8_lossy(&status.stdout), "?? README.md\n");
         }
+    }
+
+    fn env_of<'a>(pairs: &'a [(&'a str, &'a str)]) -> impl Fn(&str) -> Option<String> + 'a {
+        move |key| {
+            pairs
+                .iter()
+                .find(|(name, _)| *name == key)
+                .map(|(_, value)| value.to_string())
+        }
+    }
+
+    #[test]
+    fn a_plain_environment_is_anthropic() {
+        assert!(!other_backend_selected(env_of(&[])));
+        assert!(!other_backend_selected(env_of(&[
+            ("ANTHROPIC_API_KEY", "sk-test"),
+            ("PATH", "/usr/bin"),
+        ])));
+    }
+
+    #[test]
+    fn bedrock_vertex_and_foundry_are_not_anthropic() {
+        for key in [
+            "CLAUDE_CODE_USE_BEDROCK",
+            "CLAUDE_CODE_USE_VERTEX",
+            "CLAUDE_CODE_USE_FOUNDRY",
+        ] {
+            for on in ["1", "true", "TRUE", "yes", " 1 "] {
+                assert!(other_backend_selected(env_of(&[(key, on)])), "{key}={on}");
+            }
+            for off in ["", " ", "0", "false", "False", "no", "off"] {
+                assert!(
+                    !other_backend_selected(env_of(&[(key, off)])),
+                    "{key}={off:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn another_api_base_url_is_not_anthropic() {
+        assert!(other_backend_selected(env_of(&[(
+            "ANTHROPIC_BASE_URL",
+            "https://openrouter.ai/api"
+        )])));
+        assert!(!other_backend_selected(env_of(&[(
+            "ANTHROPIC_BASE_URL",
+            ""
+        )])));
+        assert!(!other_backend_selected(env_of(&[(
+            "ANTHROPIC_BASE_URL",
+            "  "
+        )])));
     }
 
     #[test]

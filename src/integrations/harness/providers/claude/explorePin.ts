@@ -9,7 +9,8 @@
  *   DeepSeek launcher or a routed Other model already runs its sub-agents on its own model (subagentModelEnv in
  *   claudeProtocol.ts), and an ordinary chat in someone's own project is left exactly as it was.
  * - Never shadows an Explore the person defined. `--agents` outranks `.claude/agents`, so an Explore at the user or
- *   project level (src-tauri/src/explore_agent.rs reads that) means the flag is not passed.
+ *   project level (src-tauri/src/explore_agent.rs reads that) means the flag is not passed. The same check keeps the
+ *   flag off a session whose environment selects Bedrock, Vertex, Foundry or another API base URL.
  * - Plan stays on the session model.
  *
  * `subagentModelEnv` is unchanged. Other CLIs get their sub-agent model from the environment and are not touched.
@@ -39,8 +40,9 @@ export function exploreAgentsArgs(): string[] {
 }
 
 /**
- * True when an Explore agent is already defined for a session in `cwd` (user level or project level), or when that
- * can't be told. A throw means the same as true: the session starts without the flag.
+ * True when the session must start without the flag: an Explore agent is already defined for it in `cwd` (user level
+ * or project level), the environment selects Bedrock, Vertex, Foundry or another API base URL, or that can't be told.
+ * A throw means the same as true.
  */
 export type ExploreLookup = (input: { cwd: string; providerAccountId?: string }) => Promise<boolean>;
 
