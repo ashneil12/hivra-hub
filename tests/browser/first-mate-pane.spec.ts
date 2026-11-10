@@ -1,7 +1,7 @@
 import { expect, test } from "@playwright/test";
 
 const REASON =
-  "OpenCode cannot lead yet. This CLI has no MCP host the app can set for one chat. Switch the lead. This crew and its memory stay.";
+  "OpenCode cannot lead yet. The app has no way to give it the tools a lead uses to hand out jobs. Switch this chat to one that can. Its history stays.";
 
 type PaneWindow = Window & { __lastModelChange?: { sessionId: string; harness: string; model: string } };
 
@@ -29,4 +29,17 @@ test("the real pane shows the lead strip only on a CLI that cannot lead, and its
   expect(change?.harness).toBe("claude");
   // This chat can lead now, so its strip has gone.
   await expect(page.locator("[data-lead-cli-notice]")).toHaveCount(0);
+});
+
+test("the real pane lets Ash dismiss the strip, and keeps it dismissed for that chat", async ({ page }) => {
+  await page.goto("/tests/browser/first-mate-pane.html");
+  const notice = page.locator("[data-lead-cli-notice]");
+  await expect(notice).toBeVisible();
+  await notice.locator("[data-lead-cli-dismiss]").click();
+  await expect(notice).toHaveCount(0);
+  // The chat itself carries on, still on the CLI it had.
+  await expect(page.locator("[data-harness]")).toHaveText("opencode");
+  await page.reload();
+  await expect(page.locator("[data-harness]")).toHaveText("opencode");
+  await expect(notice).toHaveCount(0);
 });

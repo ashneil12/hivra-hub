@@ -81,6 +81,8 @@ import {
 import { MonoHeader } from "../../monos/ui/MonoHeader";
 import { reportTeamOf, useDelegationPane } from "../../monos/hooks/useDelegationPane";
 import { readTeamReport } from "../../monos/model/teamReport";
+import { useDelegationRows } from "../../monos/model/delegationStore";
+import { ownsWork } from "../../monos/model/delegationView";
 import { MonoModelLine } from "../../monos/ui/MonoModelLine";
 import { isOrchestratorChat } from "../../monos/model/orchestrators";
 import { isCodingTeamChat, useCodingTeamVersion } from "../../hub/model/codingTeam";
@@ -461,6 +463,8 @@ const LocalSessionPane = memo(function LocalSessionPane({
   // A coding team's own chat (codingTeam.ts) sends like a Mono's: Stop in the send button, the model line above the box.
   const teamChat = !agent && isCodingTeamChat(session.id);
   const delegationPane = useDelegationPane(session.id, isOrchestratorChat(session.id), !!session.pendingQuestion);
+  // WP-120: the lead strip names the crew only when this chat has handed work out.
+  const hasCrew = ownsWork(session.id, useDelegationRows());
   // A Mono shows only its own background, never the project's or the app's.
   const projectBackground = mono
     ? monoChatBackground(mono.id)
@@ -992,6 +996,8 @@ const LocalSessionPane = memo(function LocalSessionPane({
       {session.firstMate ? (
         <LeadCliNotice
           harness={session.harness}
+          sessionId={session.id}
+          hasCrew={hasCrew}
           onSwitch={(cli) => onModelChange(session.id, cli, preferredModelId(cli))}
         />
       ) : null}

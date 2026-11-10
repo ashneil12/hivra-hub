@@ -1,7 +1,7 @@
 import { expect, test } from "@playwright/test";
 
 const REASON =
-  "OpenCode cannot lead yet. This CLI has no MCP host the app can set for one chat. Switch the lead. This crew and its memory stay.";
+  "OpenCode cannot lead yet. The app has no way to give it the tools a lead uses to hand out jobs. Switch this chat to one that can. Its history stays.";
 
 test("the strip offers only a chosen CLI that can lead, and goes once this CLI can lead", async ({ page }) => {
   await page.goto("/tests/browser/lead-cli.html");
@@ -29,4 +29,15 @@ test("a chat already leading on a capable CLI shows no strip", async ({ page }) 
   await page.locator("[data-set-harness=claude]").click();
   await expect(page.locator("[data-harness]")).toHaveText("claude");
   await expect(page.locator("[data-lead-cli-notice]")).toHaveCount(0);
+});
+
+test("Ash can dismiss the strip, and it stays dismissed for the chat after a reload", async ({ page }) => {
+  await page.goto("/tests/browser/lead-cli.html");
+  const notice = page.locator("[data-lead-cli-notice]");
+  await expect(notice).toBeVisible();
+  await notice.locator("[data-lead-cli-dismiss]").click();
+  await expect(notice).toHaveCount(0);
+  await page.reload();
+  await expect(page.locator("[data-harness]")).toHaveText("opencode");
+  await expect(notice).toHaveCount(0);
 });

@@ -16,7 +16,7 @@ function Fixture() {
   const [harness, setHarness] = useState<HarnessId>("opencode");
   return (
     <div>
-      <LeadCliNotice harness={harness} onSwitch={setHarness} />
+      <LeadCliNotice harness={harness} sessionId="lead-chat" onSwitch={setHarness} />
       <output data-harness="">{harness}</output>
       {/* Lets a spec open a chat that already leads on a capable CLI. */}
       <button type="button" data-set-harness="claude" onClick={() => setHarness("claude")}>

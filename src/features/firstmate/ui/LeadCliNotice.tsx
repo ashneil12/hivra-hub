@@ -1,5 +1,7 @@
 // WP-120: the strip a lead chat shows when its CLI cannot lead yet. It offers
 // only the CLIs Ash ticked at first launch that can lead and are installed here.
+// It speaks of this chat only (a pick changes this chat's CLI, nothing else), and
+// Ash can close it for a chat.
 import { useSyncExternalStore } from "react";
 import {
   getHarnessAvailabilitySnapshot,
@@ -12,12 +14,24 @@ import {
   chosenLeadPresence,
   leadSwitchOffer,
 } from "../model/leadCli";
+import {
+  dismissLeadStrip,
+  leadStripDismissed,
+  leadStripVersion,
+  subscribeLeadStrip,
+} from "../model/leadStripDismissal";
 
 export function LeadCliNotice({
   harness,
+  sessionId,
+  hasCrew = false,
   onSwitch,
 }: {
   harness: string;
+  /** The chat this strip belongs to: Ash closes it per chat. */
+  sessionId: string;
+  /** This chat has handed work to workers, so the line says they stay. */
+  hasCrew?: boolean;
   onSwitch?: (cli: HarnessId) => void;
 }) {
   // A probe that finishes after this chat opens re-reads its result here.
@@ -26,9 +40,10 @@ export function LeadCliNotice({
     getHarnessAvailabilitySnapshot,
     () => 0,
   );
+  useSyncExternalStore(subscribeLeadStrip, leadStripVersion, () => 0);
   const present = chosenLeadPresence((cli) => isHarnessAvailable(cli));
   const offer = leadSwitchOffer(harness, present);
-  if (!offer) return null;
+  if (!offer || leadStripDismissed(sessionId)) return null;
   const choices = offer.choices;
   return (
     <div
@@ -37,7 +52,9 @@ export function LeadCliNotice({
     >
       <p data-lead-cli-reason="">
         {offer.reason}
-        {choices.length > 0 ? " Switch the lead. This crew and its memory stay." : null}
+        {choices.length > 0
+          ? ` Switch this chat to one that can. ${hasCrew ? "Its workers and history stay." : "Its history stays."}`
+          : null}
       </p>
       {choices.length > 0 ? (
         <div data-lead-cli-picker="" className="flex flex-wrap gap-1">
@@ -62,6 +79,14 @@ export function LeadCliNotice({
           ))}
         </div>
       ) : null}
+      <button
+        type="button"
+        data-lead-cli-dismiss=""
+        className="ml-auto rounded px-2 py-0.5 text-content/60 hover:bg-content/10"
+        onClick={() => dismissLeadStrip(sessionId)}
+      >
+        Dismiss
+      </button>
     </div>
   );
 }
