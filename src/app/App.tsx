@@ -155,7 +155,12 @@ import { useIdleSessionDetach } from "./hooks/useIdleSessionDetach";
 import { HarnessEventQueue } from "./model/harnessFlush";
 import { noteStreamApplied } from "../features/sessions/model/streamingPerformance";
 import { updateSessionState } from "./model/sessionState";
-import { forkFocusedChat, insertFork } from "../features/sessions/model/threadFork";
+import {
+  consumeForkPoint,
+  forkFocusedChat,
+  insertFork,
+  pendingForkBrief,
+} from "../features/sessions/model/threadFork";
 import { ThreadForkHost } from "../features/sessions/ui/ThreadForkHost";
 import { beginTabSwitch, commitTabSwitch } from "./model/navigationPerformance";
 import {
@@ -8881,8 +8886,12 @@ function Workspace({
         ...(options?.monoCheck ? { monoCheck: options.monoCheck } : {}),
       };
       const live = isLiveHarness(current.harness);
+      // WP-123: a forked chat's first send carries the chat copied into it; its provider has never seen it. That recap
+      // covers the whole copy, so it stands in for an older handoff recap that came along with the messages.
+      const queuedFork =
+        live && !pendingSwitch ? pendingForkBrief(current) : null;
       const queuedHandoff =
-        live && !pendingSwitch ? pendingHandoff(current) : null;
+        live && !pendingSwitch && !queuedFork ? pendingHandoff(current) : null;
 
       if (pendingSwitch && current.busy) {
         void cancelHarnessTurn(pendingSwitch.from, sessionId);
@@ -9261,7 +9270,7 @@ function Workspace({
               to: current.harness,
               text: handoffCard.brief,
             }
-          : queuedHandoff;
+          : (queuedFork ?? queuedHandoff);
         if (pendingSwitch) {
           let agentText = "";
           if (
@@ -9430,9 +9439,11 @@ function Workspace({
             : intent === "plan" && !rawCommand
               ? planTurnPrompt(prompt)
               : prompt;
-          const earlier = queuedHandoff
-            ? userMessagesAfterHandoff(current)
-            : [];
+          const earlier = queuedFork
+            ? queuedFork.earlier
+            : queuedHandoff
+              ? userMessagesAfterHandoff(current)
+              : [];
           if (editedResend && canRewindHarnessLastTurn(current.harness)) {
             try {
               await rewindHarnessLastTurn({
@@ -9784,7 +9795,9 @@ function Workspace({
                 ? completeHandoff(s, wrap.text)
                 : s;
               // A command owns its arguments; deliver the recap with the next chat prompt.
-              return rawCommand ? ready : consumeHandoff(ready);
+              return rawCommand
+                ? ready
+                : consumeForkPoint(consumeHandoff(ready));
             });
             setSessions(sessionsRef.current);
           }

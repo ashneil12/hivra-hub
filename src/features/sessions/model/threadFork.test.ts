@@ -2,9 +2,11 @@ import { describe, expect, it } from "vitest";
 import { memoryReadableBlocks, UNREADABLE_BOUNDARY } from "../../memory/model/privateChat";
 import { temporaryWorktreeBranchName, type Worktree } from "../../source-control/model/worktrees";
 import { sanitizeSessionForPersist } from "../data/sessionStore";
+import { pendingHandoff, wrapHandoffPrompt } from "./handoff";
 import { newSession, type Attachment, type Block, type Session } from "./session";
 import { clearThreadForkAsk, threadForkAskSnapshot } from "./threadForkAsk";
 import {
+  consumeForkPoint,
   forkAttemptGate,
   forkChat,
   forkFocusedChat,
@@ -14,6 +16,7 @@ import {
   forkWorktreeError,
   insertFork,
   lastForkableBlockId,
+  pendingForkBrief,
   type ForkIds,
   type ForkWorktreePort,
 } from "./threadFork";
@@ -604,6 +607,107 @@ describe("a forked private chat", () => {
     );
     expect(fork!.private).toBe(true);
     expect(fork!.worktreeCwd).toBe("/work/new-wt");
+  });
+});
+
+describe("the first send from a fork", () => {
+  function conversation(): Session {
+    return chat([
+      block({ id: "u1", role: "user", text: "Launch plan: ship on Friday" }),
+      block({ id: "a1", role: "assistant", text: "Agreed, Friday it is" }),
+      block({ id: "u2", role: "user", text: "Now plan the budget" }),
+      block({ id: "a2", role: "assistant", text: "Budget draft" }),
+    ]);
+  }
+
+  /** The calls App.tsx makes when a chat's next message goes out: a fork's recap, else a handoff's. */
+  function firstPrompt(session: Session, typed: string): string | null {
+    const owed = pendingForkBrief(session);
+    if (owed) return wrapHandoffPrompt(owed.text, owed.from, typed, owed.earlier);
+    const handoff = pendingHandoff(session);
+    return handoff ? wrapHandoffPrompt(handoff.text, handoff.from, typed) : null;
+  }
+
+  const fresh = ["fork-1", "b1", "b2"];
+
+  it("carries the copied history, and nothing from after the fork point", () => {
+    const fork = forkSessionAtMessage(conversation(), "a1", ids(fresh))!;
+    const prompt = firstPrompt(fork, "And the budget?")!;
+    expect(prompt).toContain("Launch plan: ship on Friday");
+    expect(prompt).toContain("Agreed, Friday it is");
+    expect(prompt).toContain("And the budget?");
+    expect(prompt).not.toContain("Now plan the budget");
+    expect(prompt).not.toContain("Budget draft");
+  });
+
+  it("is owed by a chat that was forked, and by no other", () => {
+    expect(pendingForkBrief(conversation())).toBeNull();
+    const fork = forkSessionAtMessage(conversation(), "a1", ids(fresh))!;
+    expect(pendingForkBrief(fork)).not.toBeNull();
+  });
+
+  it("is still owed after the chat is saved and opened again", () => {
+    const fork = forkSessionAtMessage(conversation(), "a1", ids(fresh))!;
+    const saved = sanitizeSessionForPersist(fork);
+    expect(saved.blocks.map((entry) => entry.forkPoint)).toEqual([undefined, true]);
+    const reopened: Session = { ...fork, blocks: saved.blocks };
+    expect(firstPrompt(reopened, "Next")).toContain("Launch plan: ship on Friday");
+  });
+
+  it("is owed once: a taken turn clears it, and the fork itself is not changed", () => {
+    const fork = forkSessionAtMessage(conversation(), "a1", ids(fresh))!;
+    const before = structuredClone(fork);
+    const after = consumeForkPoint(fork);
+    expect(pendingForkBrief(after)).toBeNull();
+    expect(firstPrompt(after, "Next")).toBeNull();
+    expect(pendingForkBrief(fork)).not.toBeNull();
+    expect(fork).toEqual(before);
+    expect(after.blocks.at(-1)).not.toBe(fork.blocks.at(-1));
+    expect(after.blocks[0]).toBe(fork.blocks[0]);
+    expect(consumeForkPoint(after)).toBe(after);
+  });
+
+  it("is still owed after a first message that failed, and names that message", () => {
+    const fork = forkSessionAtMessage(conversation(), "a1", ids(fresh))!;
+    const failed = {
+      ...fork,
+      blocks: [...fork.blocks, block({ id: "n1", role: "user", text: "Send the invoice" })],
+    };
+    const owed = pendingForkBrief(failed)!;
+    expect(owed.text).toContain("Launch plan: ship on Friday");
+    expect(owed.earlier).toEqual(["Send the invoice"]);
+  });
+
+  it("marks only its own last message when a fork is forked again", () => {
+    const first = forkSessionAtMessage(conversation(), "a2", ids(["fork-1", "b1", "b2", "b3", "b4"]))!;
+    const second = forkSessionAtMessage(first, first.blocks[3].id, ids(["fork-2", "c1", "c2", "c3", "c4"]))!;
+    expect(second.blocks.filter((entry) => entry.forkPoint)).toHaveLength(1);
+    expect(second.blocks.at(-1)!.forkPoint).toBe(true);
+    const earlierPoint = forkSessionAtMessage(first, first.blocks[1].id, ids(["fork-3", "d1", "d2"]))!;
+    expect(earlierPoint.blocks.filter((entry) => entry.forkPoint)).toHaveLength(1);
+    expect(earlierPoint.blocks.at(-1)!.forkPoint).toBe(true);
+  });
+
+  it("does not repeat the user's messages after an older handoff divider", () => {
+    const source = chat([
+      block({ id: "u1", role: "user", text: "Launch plan: ship on Friday" }),
+      block({
+        id: "h1",
+        role: "handoff",
+        text: "old recap",
+        handoff: { from: "codex", to: "claude", status: "ready" },
+      }),
+      block({ id: "u2", role: "user", text: "Said after the switch" }),
+      block({ id: "a2", role: "assistant", text: "Done" }),
+    ]);
+    const fork = forkSessionAtMessage(source, "a2", ids(["fork-1", "b1", "b2", "b3", "b4"]))!;
+    expect(pendingForkBrief(fork)!.earlier).toEqual([]);
+  });
+
+  it("is not owed when the copy has nothing a recap could say", () => {
+    const source = chat([block({ id: "u1", role: "user", text: "   " })]);
+    const fork = forkSessionAtMessage(source, "u1", ids(["fork-1", "b1"]))!;
+    expect(pendingForkBrief(fork)).toBeNull();
   });
 });
 

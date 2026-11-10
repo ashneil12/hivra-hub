@@ -5,12 +5,14 @@ import {
   temporaryWorktreeBranchName,
   type Worktree,
 } from "../../source-control/model/worktrees";
+import { buildDeterministicHandoff } from "./handoff";
 import { askThreadFork } from "./threadForkAsk";
 import type {
   Attachment,
   Block,
   BtwMessage,
   BtwThread,
+  HarnessId,
   Session,
 } from "./session";
 
@@ -155,6 +157,7 @@ function copyBlocks(
     block.id = id;
     block.streaming = false;
     delete block.providerTurnId;
+    delete block.forkPoint;
     if (block.approval && !block.approval.decided) delete block.approval;
     if (block.attachments) {
       const files: Attachment[] = [];
@@ -225,7 +228,9 @@ export function forkSessionAtMessage(
   const copied = copyBlocks(source.blocks, index, ids);
   if (!copied) return null;
   const { blocks, blockIds } = copied;
+  // The new provider conversation has never seen these messages: its first send carries a recap through this one.
   const last = blocks[blocks.length - 1];
+  last.forkPoint = true;
   const modelSettings = plainStringRecord(source.modelSettings);
   const fork: Session = {
     id,
@@ -258,6 +263,56 @@ export function forkSessionAtMessage(
     }
   }
   return fork;
+}
+
+/** What a fork's first send carries: the chat copied into it, as a handoff recap does. */
+export type ForkBrief = {
+  from: HarnessId;
+  to: HarnessId;
+  text: string;
+  /** Messages typed in the fork after the copy and before a turn was taken (a first send that failed). */
+  earlier: string[];
+};
+
+/**
+ * The recap a forked chat still owes its provider, or null when none is owed. It is built from the copied messages
+ * (the same recap a handoff sends), so the agent that answers in the fork knows what was said before it.
+ */
+export function pendingForkBrief(session: Session): ForkBrief | null {
+  if (!session || !Array.isArray(session.blocks)) return null;
+  let at = -1;
+  for (let index = session.blocks.length - 1; index >= 0; index -= 1) {
+    if (session.blocks[index]?.forkPoint) {
+      at = index;
+      break;
+    }
+  }
+  if (at < 0) return null;
+  const text = buildDeterministicHandoff({
+    ...session,
+    blocks: session.blocks.slice(0, at + 1),
+  });
+  if (!text.trim()) return null;
+  const earlier = session.blocks
+    .slice(at + 1)
+    .filter((block) => block.role === "user")
+    .map((block) => (block.ciContext || block.text).trim())
+    .filter(Boolean);
+  return { from: session.harness, to: session.harness, text, earlier };
+}
+
+/** A turn was taken: the fork no longer owes its recap. Blocks are replaced, not edited, so the save sees it. */
+export function consumeForkPoint(session: Session): Session {
+  if (!session.blocks.some((block) => block.forkPoint)) return session;
+  return {
+    ...session,
+    blocks: session.blocks.map((block) => {
+      if (!block.forkPoint) return block;
+      const next = { ...block };
+      delete next.forkPoint;
+      return next;
+    }),
+  };
 }
 
 /** Ask to fork the latest real message. False when there is nothing to fork. */

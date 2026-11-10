@@ -436,6 +436,12 @@ export type Block = {
   appRequestId?: string;
   /** Provider-reported token metrics for this user turn, when available. */
   turnMetrics?: TurnMetrics;
+  /**
+   * WP-123: the last message copied into a forked chat. Until a turn is taken, the chat's next send carries a recap of
+   * the chat through this message, because the new provider conversation has never seen it. Saved with the block, so
+   * it survives a restart; cleared once that turn is taken.
+   */
+  forkPoint?: true;
   tool?: {
     callId?: string;
     title?: string;

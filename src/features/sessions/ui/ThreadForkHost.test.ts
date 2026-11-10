@@ -5,7 +5,7 @@ import { afterEach, beforeEach, expect, it } from "vitest";
 import type { Worktree } from "../../source-control/model/worktrees";
 import { memoryReadableBlocks } from "../../memory/model/privateChat";
 import { newSession, type Block, type Session } from "../model/session";
-import type { ForkWorktreePort } from "../model/threadFork";
+import { pendingForkBrief, type ForkWorktreePort } from "../model/threadFork";
 import { askThreadFork, clearThreadForkAsk } from "../model/threadForkAsk";
 import { ForkFromHereButton } from "./ForkFromHereButton";
 import { ThreadForkHost } from "./ThreadForkHost";
@@ -443,5 +443,20 @@ it("opens a fork of a private chat as private, and keeps what was private unread
   expect(opened[0].privateBoundaryId).toBe(opened[0].blocks[0].id);
   expect(source.private).toBe(true);
   expect(source.privateBoundaryId).toBe("u1");
+});
+
+it("opens a fork that owes its history to the first send", async () => {
+  const source = chat();
+  const opened: Session[] = [];
+  await renderHost(source, opened);
+  act(() => askThreadFork(source.id, "a1"));
+  await act(async () => {
+    document.querySelector<HTMLButtonElement>("[data-thread-fork-confirm]")?.click();
+  });
+  const owed = pendingForkBrief(opened[0]);
+  expect(owed?.text).toContain("First");
+  expect(owed?.text).toContain("Answer");
+  expect(owed?.text).not.toContain("Later");
+  expect(pendingForkBrief(source)).toBeNull();
 });
 
