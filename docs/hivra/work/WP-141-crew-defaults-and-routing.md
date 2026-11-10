@@ -68,11 +68,11 @@ Stored with the same worker-default / crew settings (project then system; Mono k
 
 ## Done when
 
-- [ ] One Settings screen sets default CLI/model, optional builder/reviewer/researcher overrides, locks, and fallback order.
-- [ ] First-mate pick can choose a CLI or an existing Mono, with a short visible reason on the crew row.
-- [ ] Always use my default and Never use are enforced in resolve and reroute; quota fallback follows the person's order and is never silent.
-- [ ] No second router or second defaults store. Browser specs green on Chromium and WebKit for the new controls.
-- [ ] WP-120's lead-capability table is not regressively limited to Claude (coordinate if both are open).
+- [x] One Settings screen sets default CLI/model, optional builder/reviewer/researcher overrides, locks, and fallback order.
+- [x] First-mate pick can choose a CLI or an existing Mono, with a short visible reason on the crew row. The first mate asks with `tasks.pick` (any CLI that can lead, through the app tool); `delegate_task` keeps the route's reason as `why` on the row's recorded line, returns it as `crewWhy`, and the Crew tab shows it.
+- [x] Always use my default and Never use are enforced in resolve and reroute; quota fallback follows the person's order and is never silent.
+- [x] No second router or second defaults store. Browser specs green on Chromium and WebKit for the new controls.
+- [x] WP-120's lead-capability table is not regressively limited to Claude (coordinate if both are open).
 
 ## Licence
 
