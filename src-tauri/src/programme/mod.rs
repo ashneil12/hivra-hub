@@ -10,6 +10,7 @@ mod gitrun;
 mod lock;
 mod names;
 mod settings;
+mod tick;
 mod update;
 
 use rusqlite::Connection;
@@ -20,6 +21,7 @@ use crate::session_store::{now_millis, SessionStore};
 
 pub use checkout::Checkout;
 pub use settings::{Strategy, UpdateSettings};
+pub use tick::{consider_conflict, Tick};
 pub use update::{update_from_main, UpdateReport};
 
 pub(crate) fn ensure_tables(conn: &Connection) -> rusqlite::Result<()> {

@@ -22,6 +22,8 @@ import { TeamsPage } from "../../hub/ui/TeamsPage";
 import { PluginsPage } from "../../plugins/ui/DiscoverPage";
 import { CrewRulesPage } from "../../crew/ui/CrewRulesPage";
 import { GateSetting } from "../../delivery-gate/ui/GateSetting";
+// WP-162: update a conflicting package from main. Off until the person turns it on.
+import { ProgrammeUpdateSetting } from "../../programme/ui/ProgrammeUpdateSetting";
 // WP-85: show Claude sessions started in a terminal.
 import { TerminalSessionsSetting } from "../../terminalMirror/ui/TerminalSessionsSetting";
 // WP-84: the project's default phase path.
@@ -744,6 +746,8 @@ export function SettingsView({
                   <CrewRulesPage cwd={cwd} />
                   {/* WP-81: check work before it goes to GitHub. Off until the person turns it on. */}
                   <GateSetting project={cwd} />
+                  {/* WP-162: update a conflicting package from main. Off until the person turns it on. */}
+                  <ProgrammeUpdateSetting project={cwd} />
                   {/* WP-77: labelled GitHub issues become tasks. Off until the person turns it on. */}
                   <GithubIssuesSetting project={cwd} />
                 </>

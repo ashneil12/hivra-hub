@@ -8,6 +8,7 @@ use rusqlite::Connection;
 use super::checkout::{self, Bind};
 use super::gitrun;
 use super::settings::{self, Strategy};
+use super::tick::{self, Tick};
 use super::update::{self, fetch_args, merge_args, push_args, rebase_args, Outcome};
 use super::UpdateReport;
 
@@ -622,6 +623,53 @@ fn settings_default_to_off_and_merge_and_a_stale_write_is_refused() {
     assert_eq!(got.strategy, Strategy::Merge);
     assert!(settings::get(&conn, " ").is_err());
     let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn the_tick_only_reports_until_the_setting_is_on() {
+    let lab = Lab::open("pkg");
+    lab.commit(&lab.package, "pkg.txt", "pkg\n");
+    lab.push(&lab.package, "pkg");
+    lab.commit(&lab.main, "trunk.txt", "trunk\n");
+    lab.push(&lab.main, "main");
+    let before = lab.sha(&lab.package, "HEAD");
+    let main_sha = lab.sha(&lab.main, "refs/heads/main");
+    let conn = memory();
+    lab.bind(&conn, "pkg");
+
+    match tick::consider_conflict(&conn, "pkg-1").unwrap() {
+        Tick::Reported { message } => {
+            assert!(message.contains("only reported"), "{message}");
+            assert!(message.contains("Nothing was merged"), "{message}");
+        }
+        other => panic!("expected a report, got {other:?}"),
+    }
+    assert_eq!(lab.sha(&lab.package, "HEAD"), before);
+    assert_eq!(lab.sha(&lab.main, "refs/heads/main"), main_sha);
+    assert_eq!(lab.sha(&lab.origin, "refs/heads/main"), main_sha);
+
+    settings::set(
+        &conn,
+        lab.main.to_str().unwrap(),
+        true,
+        Strategy::Merge,
+        0,
+        1,
+    )
+    .unwrap();
+    match tick::consider_conflict(&conn, "pkg-1").unwrap() {
+        Tick::Ran(report) => match report.outcome {
+            Outcome::Updated { method, head } => {
+                assert_eq!(method, Strategy::Merge);
+                assert_ne!(head, before);
+                assert_eq!(head, lab.sha(&lab.package, "HEAD"));
+            }
+            other => panic!("expected an update, got {other:?}"),
+        },
+        other => panic!("expected the update to run, got {other:?}"),
+    }
+    assert_eq!(lab.sha(&lab.main, "refs/heads/main"), main_sha);
+    assert_eq!(lab.sha(&lab.origin, "refs/heads/main"), main_sha);
 }
 
 #[test]
