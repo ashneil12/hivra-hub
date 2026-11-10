@@ -1009,6 +1009,536 @@ fn two_crews_installing_together_both_get_the_hook() {
     assert!(script.trim_end().ends_with("exit 0"));
 }
 
+// The hooks folder when two crews install at once on Windows. The race itself
+// only happens there, so these play Windows' answers back on any platform and
+// check the pieces: which errors are worth another try, that the retry is
+// bounded and never reaches a containment decision, and that every refusal
+// says which check it was.
+
+fn os_error(code: i32) -> std::io::Error {
+    std::io::Error::from_raw_os_error(code)
+}
+
+/// The Win32 numbers by name.
+const ERROR_ACCESS_DENIED: i32 = 5;
+const ERROR_SHARING_VIOLATION: i32 = 32;
+const ERROR_LOCK_VIOLATION: i32 = 33;
+const ERROR_INVALID_PARAMETER: i32 = 87;
+const ERROR_ALREADY_EXISTS: i32 = 183;
+
+#[test]
+fn only_busy_windows_errors_are_transient() {
+    use super::hooks::is_transient;
+    for code in [
+        ERROR_ACCESS_DENIED,
+        ERROR_SHARING_VIOLATION,
+        ERROR_LOCK_VIOLATION,
+    ] {
+        for mid_create in [false, true] {
+            assert!(
+                is_transient(&os_error(code), true, mid_create),
+                "os error {code} is another process holding the file on Windows"
+            );
+            // The same numbers are EIO, EPIPE and EDOM on Unix: a real failure.
+            assert!(
+                !is_transient(&os_error(code), false, mid_create),
+                "os error {code} was retried off Windows"
+            );
+        }
+    }
+    for code in [
+        1,
+        53,
+        123,
+        267,
+        ERROR_INVALID_PARAMETER,
+        ERROR_ALREADY_EXISTS,
+    ] {
+        for windows in [false, true] {
+            for mid_create in [false, true] {
+                assert!(
+                    !is_transient(&os_error(code), windows, mid_create),
+                    "os error {code} is not a busy file (windows {windows}, mid_create {mid_create})"
+                );
+            }
+        }
+    }
+    let missing: std::io::Error = std::io::ErrorKind::NotFound.into();
+    assert!(
+        is_transient(&missing, true, true),
+        "not found while the other crew is mid-create is worth a retry"
+    );
+    assert!(
+        !is_transient(&missing, true, false),
+        "a path that was never seen is not mid-create"
+    );
+    assert!(
+        !is_transient(&missing, false, true),
+        "nothing makes a path appear later on Unix"
+    );
+    let denied: std::io::Error = std::io::ErrorKind::PermissionDenied.into();
+    assert!(
+        !is_transient(&denied, true, true),
+        "a kind with no OS number is not classified by guessing"
+    );
+}
+
+/// What Windows answers a crew that loses the race to make a folder: the
+/// create is refused as busy and the look that follows does not see the folder
+/// yet. The first try used to turn that into a refusal.
+#[test]
+fn a_folder_the_other_crew_is_making_is_waited_for_on_windows() {
+    use super::hooks::{ensure_child_with, Call, Fs};
+    use std::cell::Cell;
+    let scratch = Scratch::new();
+    let root = crate::fs::canonical(scratch.path()).unwrap();
+    let (creates, looks) = (Cell::new(0), Cell::new(0));
+    let mut fault = |call: Call, _: &Path| match call {
+        Call::Create => {
+            creates.set(creates.get() + 1);
+            (creates.get() == 1).then(|| os_error(ERROR_ACCESS_DENIED))
+        }
+        Call::Stat => {
+            looks.set(looks.get() + 1);
+            (looks.get() == 2).then(|| os_error(ERROR_ACCESS_DENIED))
+        }
+        _ => None,
+    };
+    let made = ensure_child_with(
+        &mut Fs::playing(true, &mut fault),
+        &root,
+        "attribution",
+        "attribution",
+    );
+    let made = made.unwrap_or_else(|err| panic!("the loser of the race was refused: {err}"));
+    assert!(made.is_dir());
+    assert_eq!(creates.get(), 2, "it did not go round again");
+}
+
+/// The same answers off Windows are a real failure, and stop at the first try:
+/// this is what every platform did before.
+#[test]
+fn the_same_answers_off_windows_are_not_retried() {
+    use super::hooks::{ensure_child_with, Call, Fs, REFUSAL};
+    use std::cell::Cell;
+    let scratch = Scratch::new();
+    let root = crate::fs::canonical(scratch.path()).unwrap();
+    let creates = Cell::new(0);
+    let mut fault = |call: Call, _: &Path| match call {
+        Call::Create => {
+            creates.set(creates.get() + 1);
+            Some(os_error(ERROR_ACCESS_DENIED))
+        }
+        _ => None,
+    };
+    let refused = ensure_child_with(
+        &mut Fs::playing(false, &mut fault),
+        &root,
+        "attribution",
+        "attribution",
+    )
+    .unwrap_err();
+    assert!(refused.starts_with(REFUSAL), "{refused}");
+    assert!(refused.contains("attribution: create"), "{refused}");
+    assert!(
+        refused.contains(&format!("os error {ERROR_ACCESS_DENIED}")),
+        "{refused}"
+    );
+    assert_eq!(creates.get(), 1, "it retried off Windows");
+}
+
+/// The other crew made the folder, and the look that follows does not see it
+/// for a moment. "Already exists" then "not found" cannot both be true, so it
+/// looks again.
+#[test]
+fn a_folder_that_exists_but_is_not_visible_yet_is_waited_for() {
+    use super::hooks::{ensure_child_with, Call, Fs};
+    use std::cell::Cell;
+    let scratch = Scratch::new();
+    let root = crate::fs::canonical(scratch.path()).unwrap();
+    let looks = Cell::new(0);
+    let mut fault = |call: Call, path: &Path| match call {
+        Call::Create => {
+            // The other crew's create, which the first try lost to.
+            let _ = fs::create_dir(path);
+            Some(std::io::ErrorKind::AlreadyExists.into())
+        }
+        Call::Stat => {
+            looks.set(looks.get() + 1);
+            // The first look is before the create; the next two come after it
+            // and do not see what the other crew made.
+            (looks.get() == 2 || looks.get() == 3)
+                .then(|| std::io::Error::from(std::io::ErrorKind::NotFound))
+        }
+        _ => None,
+    };
+    let made = ensure_child_with(
+        &mut Fs::playing(true, &mut fault),
+        &root,
+        "attribution",
+        "attribution",
+    );
+    assert!(made.is_ok(), "{made:?}");
+}
+
+/// A link or a file in the way is a containment answer, not a busy one: it is
+/// refused on the first look with no create and no second look, even where
+/// the busy errors are retried. So is a path that leaves the data folder.
+#[test]
+fn a_real_containment_failure_is_never_retried() {
+    use super::hooks::{ensure_child_with, Call, Fs, REFUSAL};
+    use std::cell::Cell;
+    let scratch = Scratch::new();
+    let root = crate::fs::canonical(scratch.path()).unwrap();
+    fs::write(root.join("afile"), "x").unwrap();
+    #[cfg(unix)]
+    {
+        let elsewhere = scratch.path().join("elsewhere");
+        fs::create_dir(&elsewhere).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, root.join("alink")).unwrap();
+    }
+    let outside = std::env::temp_dir().join("hivra-elsewhere");
+    let outside = outside.to_str().unwrap();
+    let mut cases = vec![
+        ("afile", "afile: is not a folder", 1),
+        (outside, "afile: path leaves the data folder", 0),
+        ("..", "afile: not a folder name", 0),
+    ];
+    #[cfg(unix)]
+    cases.push(("alink", "afile: is a link", 1));
+    for (rel, expect, looks_expected) in cases {
+        let calls = Cell::new(0);
+        let mut fault = |_: Call, _: &Path| {
+            calls.set(calls.get() + 1);
+            None
+        };
+        let refused =
+            ensure_child_with(&mut Fs::playing(true, &mut fault), &root, rel, "afile").unwrap_err();
+        assert!(refused.starts_with(REFUSAL), "{refused}");
+        assert!(refused.contains(expect), "{rel}: {refused}");
+        assert_eq!(
+            calls.get(),
+            looks_expected,
+            "{rel}: it went on after the refusal"
+        );
+    }
+}
+
+/// A call that stays busy is tried a fixed number of times and then fails with
+/// the error it got; one that is not busy is not tried again at all.
+#[test]
+fn the_retry_is_bounded_and_ignores_other_errors() {
+    use super::hooks::{ensure_child_with, Call, Fs, FS_TRIES};
+    use std::cell::Cell;
+    let scratch = Scratch::new();
+    let root = crate::fs::canonical(scratch.path()).unwrap();
+    fs::create_dir(root.join("attribution")).unwrap();
+    for (code, tries) in [
+        (ERROR_SHARING_VIOLATION, FS_TRIES),
+        (ERROR_LOCK_VIOLATION, FS_TRIES),
+        (ERROR_ACCESS_DENIED, FS_TRIES),
+        (ERROR_INVALID_PARAMETER, 1),
+    ] {
+        let resolves = Cell::new(0);
+        let mut fault = |call: Call, _: &Path| match call {
+            Call::Resolve => {
+                resolves.set(resolves.get() + 1);
+                Some(os_error(code))
+            }
+            _ => None,
+        };
+        let refused = ensure_child_with(
+            &mut Fs::playing(true, &mut fault),
+            &root,
+            "attribution",
+            "attribution",
+        )
+        .unwrap_err();
+        assert!(refused.contains("attribution: resolve"), "{refused}");
+        assert!(refused.contains(&format!("os error {code}")), "{refused}");
+        assert_eq!(resolves.get(), tries, "os error {code}");
+    }
+}
+
+/// A busy hook is waited out, both before it is replaced and after.
+#[test]
+fn a_busy_hook_is_waited_out_on_windows() {
+    use super::hooks::{install_one_with, Call, Fs};
+    use std::cell::Cell;
+    let scratch = Scratch::new();
+    let (root, dir) = hooks_folder(&scratch);
+    let script = "#!/bin/sh\n# busy\n";
+    fs::write(dir.join("prepare-commit-msg"), "#!/bin/sh\n# old\n").unwrap();
+    let (looks, resolves) = (Cell::new(0), Cell::new(0));
+    let mut fault = |call: Call, _: &Path| match call {
+        Call::Stat => {
+            looks.set(looks.get() + 1);
+            (looks.get() < 3).then(|| os_error(ERROR_SHARING_VIOLATION))
+        }
+        Call::Resolve => {
+            resolves.set(resolves.get() + 1);
+            (resolves.get() % 3 != 0).then(|| os_error(ERROR_ACCESS_DENIED))
+        }
+        _ => None,
+    };
+    let done = install_one_with(
+        &mut Fs::playing(true, &mut fault),
+        &root,
+        &dir,
+        "prepare-commit-msg",
+        script,
+    );
+    assert!(done.is_ok(), "{done:?}");
+    assert_eq!(
+        fs::read_to_string(dir.join("prepare-commit-msg")).unwrap(),
+        script
+    );
+    assert!(looks.get() >= 3 && resolves.get() >= 6);
+}
+
+/// The first publish is the one place only a fresh data folder reaches: both
+/// crews write a temp file and move it over the hook at the same moment, and on
+/// Windows the move is refused as busy while a scanner or the other crew holds
+/// the file. The old wait was 2 ms between new temp files, which a loaded
+/// machine outlasts; the busy move is now retried on the same file.
+#[test]
+fn a_busy_rename_is_waited_out_on_the_same_temp_file() {
+    use super::hooks::{publish_hook_in, Call, Fs, FS_TRIES};
+    use std::cell::Cell;
+    let scratch = Scratch::new();
+    let (root, dir) = hooks_folder(&scratch);
+    let dest = dir.join("prepare-commit-msg");
+    let script = "#!/bin/sh\n# first publish\n";
+    let (renames, temps) = (Cell::new(0), Cell::new(0));
+    let mut fault = |call: Call, _: &Path| match call {
+        Call::Rename => {
+            renames.set(renames.get() + 1);
+            (renames.get() < FS_TRIES).then(|| os_error(ERROR_SHARING_VIOLATION))
+        }
+        _ => None,
+    };
+    let published = publish_hook_in(
+        &mut Fs::playing(true, &mut fault),
+        &root,
+        &dir,
+        &dest,
+        script,
+        |hooks| {
+            temps.set(temps.get() + 1);
+            super::hooks::hook_temp(hooks)
+        },
+    );
+    assert!(published.is_ok(), "{published:?}");
+    assert_eq!(fs::read_to_string(&dest).unwrap(), script);
+    assert_eq!(renames.get(), FS_TRIES, "it did not wait for the last try");
+    assert_eq!(
+        temps.get(),
+        1,
+        "it wrote a new temp file instead of waiting"
+    );
+}
+
+/// A move that stays busy gives up after the same bounded number of tries per
+/// temp file, and the refusal says what it hit last.
+#[test]
+fn a_rename_that_stays_busy_gives_up_and_says_so() {
+    use super::hooks::{publish_hook_in, Call, Fs, FS_TRIES, REFUSAL};
+    use std::cell::Cell;
+    let scratch = Scratch::new();
+    let (root, dir) = hooks_folder(&scratch);
+    let dest = dir.join("prepare-commit-msg");
+    let renames = Cell::new(0);
+    let mut fault = |call: Call, _: &Path| match call {
+        Call::Rename => {
+            renames.set(renames.get() + 1);
+            Some(os_error(ERROR_ACCESS_DENIED))
+        }
+        _ => None,
+    };
+    let refused = publish_hook_in(
+        &mut Fs::playing(true, &mut fault),
+        &root,
+        &dir,
+        &dest,
+        "#!/bin/sh\n",
+        super::hooks::hook_temp,
+    )
+    .unwrap_err();
+    assert!(refused.starts_with(REFUSAL), "{refused}");
+    assert!(refused.contains("publish: gave up"), "{refused}");
+    assert!(refused.contains("rename temp over the hook"), "{refused}");
+    assert!(refused.contains("os error 5"), "{refused}");
+    assert_eq!(
+        renames.get(),
+        8 * FS_TRIES as usize,
+        "eight temp files, each tried FS_TRIES times"
+    );
+    assert!(!dest.exists());
+    let left: Vec<_> = fs::read_dir(&dir).unwrap().collect();
+    assert!(left.is_empty(), "temp files left behind: {left:?}");
+}
+
+/// If the other crew already published, a busy move has nothing to wait for.
+#[test]
+fn a_busy_rename_stops_waiting_when_the_other_crew_published() {
+    use super::hooks::{publish_hook_in, Call, Fs};
+    use std::cell::Cell;
+    let scratch = Scratch::new();
+    let (root, dir) = hooks_folder(&scratch);
+    let dest = dir.join("prepare-commit-msg");
+    let script = "#!/bin/sh\n# other crew\n";
+    fs::write(&dest, script).unwrap();
+    let renames = Cell::new(0);
+    let mut fault = |call: Call, _: &Path| match call {
+        Call::Rename => {
+            renames.set(renames.get() + 1);
+            Some(os_error(ERROR_SHARING_VIOLATION))
+        }
+        _ => None,
+    };
+    let published = publish_hook_in(
+        &mut Fs::playing(true, &mut fault),
+        &root,
+        &dir,
+        &dest,
+        script,
+        super::hooks::hook_temp,
+    );
+    assert!(published.is_ok(), "{published:?}");
+    assert_eq!(
+        renames.get(),
+        1,
+        "it waited on a hook that was already right"
+    );
+}
+
+/// Every refusal names its check, and no two checks say the same thing, so a
+/// failure in CI says which one it was.
+#[test]
+fn every_refusal_says_which_check_failed() {
+    use super::hooks::{ensure_child_with, install_one_with, Call, Fs, REFUSAL};
+    let scratch = Scratch::new();
+    let (root, dir) = hooks_folder(&scratch);
+    let mut said: Vec<String> = Vec::new();
+    let mut real = Fs::real();
+    said.push(ensure_child_with(&mut real, &root, "..", "x").unwrap_err());
+    let outside = std::env::temp_dir().join("hivra-elsewhere");
+    said.push(ensure_child_with(&mut real, &root, outside.to_str().unwrap(), "x").unwrap_err());
+    fs::write(root.join("afile"), "x").unwrap();
+    said.push(ensure_child_with(&mut real, &root, "afile", "x").unwrap_err());
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(scratch.path(), root.join("alink")).unwrap();
+        said.push(ensure_child_with(&mut real, &root, "alink", "x").unwrap_err());
+    }
+    // The parent is not there, so the create fails and so does the look.
+    said.push(ensure_child_with(&mut real, &root.join("gone"), "x", "x").unwrap_err());
+    let mut resolve_fails = |call: Call, _: &Path| {
+        (call == Call::Resolve).then(|| std::io::Error::from(std::io::ErrorKind::InvalidInput))
+    };
+    said.push(
+        ensure_child_with(
+            &mut Fs::playing(false, &mut resolve_fails),
+            &root,
+            "attribution-less",
+            "x",
+        )
+        .unwrap_err(),
+    );
+    said.push(install_one_with(&mut real, &root, &dir, "Bad Name", "s").unwrap_err());
+    fs::create_dir(dir.join("pre-commit")).unwrap();
+    said.push(install_one_with(&mut real, &root, &dir, "pre-commit", "s").unwrap_err());
+    let dest = dir.join("prepare-commit-msg");
+    said.push(
+        super::hooks::publish_hook_with(&root, &dir, &dest, "s", |hooks| {
+            hooks.join("missing").join("x.tmp")
+        })
+        .unwrap_err(),
+    );
+    said.push(
+        super::hooks::publish_hook_with(&root, &dir, &dest, "s", |_| {
+            scratch.path().join("outside.tmp")
+        })
+        .unwrap_err(),
+    );
+    said.push(
+        super::hooks::prune_with(&root, &root.join("gone"), &keep_set(&[]), |_| Ok(()))
+            .unwrap_err(),
+    );
+    fs::remove_dir(dir.join("pre-commit")).unwrap();
+    write_aged(&dir.join("commit-msg"), Duration::ZERO, "#!/bin/sh\n");
+    said.push(
+        super::hooks::prune_with(&root, &dir, &keep_set(&["prepare-commit-msg"]), |_| {
+            Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied))
+        })
+        .unwrap_err(),
+    );
+    for text in &said {
+        assert!(text.starts_with(REFUSAL), "{text}");
+        assert!(text.contains("(check: "), "no check named: {text}");
+    }
+    let distinct: BTreeSet<&String> = said.iter().collect();
+    assert_eq!(
+        distinct.len(),
+        said.len(),
+        "two checks say the same thing: {said:#?}"
+    );
+}
+
+/// Many crews starting together on a data folder with nothing in it: each
+/// makes the three folders, publishes the hook and prunes, with the starting
+/// gun the git calls give the two-crew test. Every one of them must get the
+/// same folder and a complete hook, and a failure names the check.
+#[test]
+fn many_crews_installing_into_a_fresh_data_folder_all_get_the_hook() {
+    use super::hooks::{ensure_child_with, install_one_with, Fs};
+    use std::sync::{Arc, Barrier};
+    let scratch = Scratch::new();
+    let script = "#!/bin/sh\n# many crews\nexit 0\n";
+    for round in 0..25 {
+        let data = scratch.path().join(format!("data-{round}"));
+        fs::create_dir_all(&data).unwrap();
+        let root = crate::fs::canonical(&data).unwrap();
+        let start = Arc::new(Barrier::new(8));
+        let crews: Vec<_> = (0..8)
+            .map(|_| {
+                let root = root.clone();
+                let start = Arc::clone(&start);
+                std::thread::spawn(move || -> Result<PathBuf, String> {
+                    start.wait();
+                    let mut fs = Fs::real();
+                    let attribution =
+                        ensure_child_with(&mut fs, &root, "attribution", "attribution")?;
+                    let hooks = ensure_child_with(&mut fs, &attribution, "hooks", "hooks")?;
+                    let dir = ensure_child_with(&mut fs, &hooks, "repo", "repo folder")?;
+                    install_one_with(&mut fs, &root, &dir, "prepare-commit-msg", script)?;
+                    super::hooks::prune(&root, &dir, &keep_set(&["prepare-commit-msg"]))?;
+                    Ok(dir)
+                })
+            })
+            .collect();
+        let dirs: Vec<PathBuf> = crews
+            .into_iter()
+            .enumerate()
+            .map(|(crew, handle)| {
+                handle
+                    .join()
+                    .unwrap()
+                    .unwrap_or_else(|err| panic!("round {round}, crew {crew}: {err}"))
+            })
+            .collect();
+        assert!(
+            dirs.windows(2).all(|pair| pair[0] == pair[1]),
+            "round {round}"
+        );
+        assert_eq!(
+            fs::read_to_string(dirs[0].join("prepare-commit-msg")).unwrap(),
+            script,
+            "round {round}"
+        );
+    }
+}
+
 #[test]
 fn a_repo_with_no_commit_still_hashes_new_lines() {
     let scratch = Scratch::new();
