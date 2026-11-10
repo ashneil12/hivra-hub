@@ -1,6 +1,12 @@
 // WP-178: the protected-paths list and the after-turn report. The report names what a turn touched; it never blocks or reverts.
 import { describe, expect, it } from "vitest";
-import { PROTECTED_PATHS, diffFingerprints, matchProtected, reportProtectedTouches } from "./protectedPaths";
+import {
+  PROTECTED_PATHS,
+  checkTurnForProtectedPaths,
+  diffFingerprints,
+  matchProtected,
+  reportProtectedTouches,
+} from "./protectedPaths";
 
 describe("matchProtected", () => {
   it.each([
@@ -77,5 +83,20 @@ describe("reportProtectedTouches", () => {
   it("only reports: the result has no revert or block field", () => {
     const report = reportProtectedTouches([".claude/settings.json"]);
     expect(Object.keys(report).sort()).toEqual(["summary", "touched"]);
+  });
+});
+
+describe("checkTurnForProtectedPaths (the after-turn check)", () => {
+  it("reports a protected file a turn wrote, from two fingerprint snapshots", () => {
+    const before = { "~/.zshrc": "1", ".git/config": "2", "src/a.ts": "3" };
+    const after = { "~/.zshrc": "1", ".git/config": "2", "src/a.ts": "4", ".git/hooks/pre-commit": "5" };
+    const report = checkTurnForProtectedPaths(before, after);
+    expect(report.touched.map((t) => t.path)).toEqual([".git/hooks/pre-commit"]);
+    expect(report.summary).toMatch(/1 protected path changed/);
+  });
+
+  it("is clean when a turn changed only ordinary files", () => {
+    const report = checkTurnForProtectedPaths({ "src/a.ts": "1" }, { "src/a.ts": "2" });
+    expect(report.touched).toEqual([]);
   });
 });

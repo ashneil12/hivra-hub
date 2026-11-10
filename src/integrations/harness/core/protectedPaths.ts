@@ -119,3 +119,15 @@ export function reportProtectedTouches(changedPaths: readonly string[]): Protect
           .join(", ")}. Reported only; nothing was blocked or reverted.`;
   return { touched, summary };
 }
+
+/**
+ * The after-turn check: the fingerprints of the protected files before a turn and after it, and the report of what
+ * changed. Git status cannot see .git/hooks or .git/config (the WP-10 checkout guard uses it), so the caller takes the
+ * fingerprints itself. Report only: nothing is blocked or reverted.
+ */
+export function checkTurnForProtectedPaths(
+  before: Record<string, string>,
+  after: Record<string, string>,
+): ProtectedTouchReport {
+  return reportProtectedTouches(diffFingerprints(before, after));
+}
