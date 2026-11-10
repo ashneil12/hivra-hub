@@ -523,6 +523,8 @@ fn tools() -> Value {
         list.extend(crate::tasks::mcp::tools());
         // WP-34: creator.draft and creator.state. Kept out of the literal above (json!'s recursion limit).
         list.extend(creator_tools());
+        // WP-159: the programme board. Not the per-job worker queue.
+        list.extend(crate::programme::mcp::tools());
     }
     tools
 }
@@ -800,11 +802,16 @@ pub(crate) fn call_tool(call: &mut Call, name: &str, args: &Value) -> Result<Val
         }
         // WP-70: task_list, task_get, task_create, task_update.
         name if crate::tasks::mcp::NAMES.contains(&name) => crate::tasks::mcp::call(call.app, name, args),
+        // WP-159: programme_list, programme_enqueue, programme_set_status, programme_park.
+        name if crate::programme::mcp::NAMES.contains(&name) => {
+            crate::programme::mcp::call(call.app, name, args)
+        }
         _ => Err(format!(
             "Unknown tool: {name}. Use delegate_task, task_status, task_wait, task_cancel, task_cannot, task_answer, task_accept, task_message, \
              ask_person, room_post, \
              room_read, mono_message, room_create, mono_create, mono_retire, team_create, page_build, hub_change, today_change, \
-             skills_learn, pr_watch, pr_unwatch, pr_watches, task_list, task_get, task_create or task_update."
+             skills_learn, pr_watch, pr_unwatch, pr_watches, task_list, task_get, task_create, task_update, \
+             programme_list, programme_enqueue, programme_set_status or programme_park."
         )),
     }
 }
@@ -1386,7 +1393,12 @@ mod tests {
                 "task_create",
                 "task_update",
                 "creator_draft",
-                "creator_state"
+                "creator_state",
+                // WP-159
+                "programme_list",
+                "programme_enqueue",
+                "programme_set_status",
+                "programme_park"
             ]
         );
         for tool in lines[1]["result"]["tools"].as_array().unwrap() {

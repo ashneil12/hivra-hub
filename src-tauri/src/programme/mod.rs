@@ -4,6 +4,7 @@
 //! queue. The table, the statuses and the park rule are Hivra's. This is not the per-job worker queue.
 
 pub(crate) mod commands;
+pub(crate) mod mcp;
 mod store;
 
 pub(crate) use store::ensure_tables;
