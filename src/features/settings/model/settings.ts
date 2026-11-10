@@ -38,6 +38,7 @@ export type SettingsSectionId =
   | "changes"
   | "decisions"
   | "activity"
+  | "work-log"
   | "usage"
   | "connected"
   | "dashboards"
@@ -114,6 +115,13 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
     description:
       "What agents and the app did, newest first. Kept for 90 days.",
     keywords: "activity log audit history who did what",
+  },
+  {
+    id: "work-log",
+    group: "app",
+    label: "Work log",
+    description: "What got done, grouped by day. One project, or every project.",
+    keywords: "work log today outcomes decisions",
   },
   {
     id: "usage",
