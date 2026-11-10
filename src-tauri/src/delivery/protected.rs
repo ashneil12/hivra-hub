@@ -124,6 +124,7 @@ struct SharedList {
     files: Vec<String>,
     dirs: Vec<String>,
     path_suffixes: Vec<String>,
+    path_sequences: Vec<String>,
     hold_any_dot_segment: bool,
 }
 
@@ -131,6 +132,7 @@ pub(crate) struct Shared {
     files: Vec<String>,
     dirs: Vec<String>,
     suffixes: Vec<Vec<String>>,
+    sequences: Vec<Vec<String>>,
     hold_any_dot_segment: bool,
 }
 
@@ -162,6 +164,11 @@ fn load_shared(json: &str) -> Result<Shared, String> {
             .path_suffixes
             .iter()
             .map(|suffix| segments(suffix))
+            .collect(),
+        sequences: list
+            .path_sequences
+            .iter()
+            .map(|run| segments(run))
             .collect(),
         hold_any_dot_segment: list.hold_any_dot_segment,
     })
@@ -325,6 +332,15 @@ fn shared_hit(path: &RepoPath, list: &Shared) -> bool {
         .lower
         .last()
         .is_some_and(|file| list.files.iter().any(|name| name == file))
+    {
+        return true;
+    }
+    // A folder run (`src/features/autopilot/model`) holds wherever it sits. The floor only sees changed files, so this
+    // is an edit rule, the same rule #201 applies to an edit in protectedConfig.ts.
+    if list
+        .sequences
+        .iter()
+        .any(|run| contains_seq(&path.lower, run))
     {
         return true;
     }
@@ -1242,9 +1258,16 @@ mod tests {
         )
         .is_err());
         assert!(load_shared(
-            r#"{"version":1,"files":[],"dirs":[],"pathSuffixes":[],"holdAnyDotSegment":false}"#
+            r#"{"version":1,"files":[],"dirs":[],"pathSuffixes":[],"pathSequences":[],"holdAnyDotSegment":false}"#
         )
         .is_ok());
+        assert!(
+            load_shared(
+                r#"{"version":1,"files":[],"dirs":[],"pathSuffixes":[],"holdAnyDotSegment":false}"#
+            )
+            .is_err(),
+            "a list without pathSequences does not load, so every path is held"
+        );
         assert!(shared_list().is_ok(), "the list in the repository loads");
         let paths = ["src/lib.rs", "docs/notes.md"];
         assert_eq!(
@@ -1276,5 +1299,27 @@ mod tests {
         }
         assert!(hits(&["src/shared/other.ts"], &[]).is_empty());
         assert!(hits(&["src/vite-config-notes.md"], &[]).is_empty());
+    }
+
+    #[test]
+    fn a_folder_run_from_path_sequences_is_held_anywhere_it_sits() {
+        // `pathSequences` in the shared list (#201): a run of folders, in order, anywhere in the path. The autopilot guard's
+        // own source is one of them, so a merge that edits safeApproval.ts asks first, wherever the run sits in the path.
+        for path in [
+            "src/features/autopilot/model/safeApproval.ts",
+            "apps/web/src/features/autopilot/model/safeApproval.ts",
+            "SRC/Features/Autopilot/MODEL/safeApproval.ts",
+            "src/features/autopilot/model/nested/deeper.ts",
+        ] {
+            assert_eq!(hits(&[path], &[]), vec![path.to_string()], "{path}");
+        }
+        assert!(
+            hits(&["src/features/autopilot/ui/panel.tsx"], &[]).is_empty(),
+            "a sibling folder of the run is not held"
+        );
+        assert!(
+            hits(&["src/features/autopilot/modelling.ts"], &[]).is_empty(),
+            "a run matches whole segments, not a prefix of one"
+        );
     }
 }
