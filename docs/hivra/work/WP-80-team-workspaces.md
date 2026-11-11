@@ -61,13 +61,17 @@ endpoint in `team-workspace.json` (app data folder). Both default to off and emp
 ## Left (not built, not in this change)
 
 - **Real hosted server:** not built, and not provisioned. The fixture is the only server.
-- **Settings toggle in the UI:** the commands exist; there is no Settings control, so no browser spec on chromium or
-  webkit yet.
-- **Store wiring:** the task and doc stores do not call the sync gate or the board filter yet. Until they do, the
-  filters are unused by the app.
+- **Settings switch:** built in Settings > Connections, off by default, with a join form. A browser spec runs on
+  chromium and webkit against the real component with a fake IPC.
+- **Store wiring (push only):** a save of the `projects` document sends the shared projects when the switch is on.
+  Nothing reads team data back into the app: there is no pull, so a change from another member does not appear here.
+  Nothing marks a project shared yet (no control; a record needs `shared: true` in the stored document). The board
+  filter and the document field merge are not called by the task or doc stores.
+- **Field merge in the app:** `put_fields` and `get_fields` exist on the client and run against the stand-in only.
 - **Live editing with Yjs, and presence cursors:** not built; the revision check and presence list are the stand-in.
-- **Two dev copies on one machine:** not run, so the cross-copy board edit and private-project check are not proven.
-- **Token storage:** the token sits in the settings file in plain text. It should move to the OS keychain before any
-  real use.
+- **Two dev copies on one machine:** not run. Without a pull path a second copy cannot show a first copy's change, so
+  the cross-copy board edit, the per-field merge in the app and presence in the app are not proven.
+- **Token storage:** the token is kept in the Keychain (`monocode-hub:team-workspace`, dev copies `monocode-hub-dev:`).
+  Not exercised against the real Keychain by the tests, which use an in-memory store.
 - **Invitation delivery:** the link is shown once by whoever makes it; no delivery channel exists.
 - **Dependencies:** WP-61 (Hivra Cloud) is not used. The endpoint is a generic placeholder.
