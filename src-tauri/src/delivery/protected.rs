@@ -196,6 +196,15 @@ fn fold(segment: &str) -> String {
         .to_string()
 }
 
+/// A whole path folded the way [`fold`] folds each name, for matching a list entry to a changed file (`/` only).
+pub(crate) fn fold_path(text: &str) -> String {
+    text.replace('\\', "/")
+        .split('/')
+        .map(fold)
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
 /// The folded segments of a path written in the list (`config/mise/config.toml`).
 fn segments(text: &str) -> Vec<String> {
     text.split('/')

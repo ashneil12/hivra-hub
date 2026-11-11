@@ -84,6 +84,14 @@ pub fn protected_area(path: &str) -> Option<&'static str> {
     if !ALLOWED_ROOTS.iter().any(|root| path.starts_with(root)) {
         return Some("the app's engine and build");
     }
+    // A path the look may otherwise change is still refused when it is on the security list. The list is the same one
+    // the merge gate reads, so a hub change cannot rewrite who answered a review, or the list itself, and ship it.
+    if crate::delivery::merge::security_paths()
+        .iter()
+        .any(|pattern| crate::delivery::merge::glob_match(pattern, path))
+    {
+        return Some("the security review");
+    }
     None
 }
 

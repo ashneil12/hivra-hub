@@ -568,7 +568,14 @@ fn a_worker_without_an_approval_is_asked_first_and_gets_nothing() {
     .unwrap();
     assert_eq!(cmd.get_envs().count(), 0);
     // "Once" is a grant for exactly one worker.
-    answer_secret(&mut conn, &key, "Once", None, bench.now + 1).unwrap();
+    answer_secret(
+        &mut conn,
+        &key,
+        "Once",
+        Some("person".into()),
+        bench.now + 1,
+    )
+    .unwrap();
     let second = worker::prepare(&bench.vault, &mut conn, worker_request(), bench.now + 2).unwrap();
     assert!(matches!(second, worker::WorkerOutcome::Ready { .. }));
     let third = worker::prepare(&bench.vault, &mut conn, worker_request(), bench.now + 3).unwrap();
@@ -627,11 +634,14 @@ fn a_chat_forwarding_an_answer_on_a_secret_key_leaves_it_open_and_waiting() {
 
 #[test]
 fn only_the_persons_own_paths_settle_a_secret_card() {
-    // The Inbox sends no answerer and the check cards `person`; the Needs sheet `user` and an agent's name do not settle it.
+    // The Inbox sends `person`. Nobody named, the Needs sheet, a page, the captain and autopilot do not settle it.
     for (by, settles) in [
-        (None, true),
+        (None, false),
         (Some("user"), false),
         (Some("person"), true),
+        (Some("page:pg_1"), false),
+        (Some("captain:c1"), false),
+        (Some("autopilot"), false),
         (Some("chat:chat-1"), false),
         (Some("Tally"), false),
         (Some("worker-1"), false),
@@ -677,7 +687,14 @@ fn only_the_persons_own_paths_settle_a_secret_card() {
             )
             .unwrap();
         }
-        answer_secret(&mut conn, &decision_key, "Once", None, bench.now + 2).unwrap();
+        answer_secret(
+            &mut conn,
+            &decision_key,
+            "Once",
+            Some("person".to_string()),
+            bench.now + 2,
+        )
+        .unwrap();
         assert!(
             matches!(
                 prepare_run(&bench.vault, &mut conn, run_request("Tally"), bench.now + 3).unwrap(),
@@ -690,7 +707,8 @@ fn only_the_persons_own_paths_settle_a_secret_card() {
 
 #[test]
 fn the_person_answering_through_their_own_path_still_grants() {
-    for by in [None, Some("person".to_string())] {
+    // Nobody named is not the person on a secret card. Only exact `person` grants.
+    let unnamed = {
         let bench = Bench::new();
         let mut conn = bench.store.lock_conn().unwrap();
         save_value(
@@ -708,15 +726,47 @@ fn the_person_answering_through_their_own_path_still_grants() {
         else {
             panic!("the first use must ask");
         };
-        answer_secret(&mut conn, &decision_key, "Once", by.clone(), bench.now + 1).unwrap();
-        assert!(
-            matches!(
-                prepare_run(&bench.vault, &mut conn, run_request("Tally"), bench.now + 2).unwrap(),
-                RunOutcome::Granted { .. }
-            ),
-            "{by:?} must grant"
+        let refused =
+            answer_secret(&mut conn, &decision_key, "Once", None, bench.now + 1).unwrap_err();
+        assert_eq!(
+            refused,
+            "Only the person can approve a secret run. Ask them on their card."
         );
-    }
+        prepare_run(&bench.vault, &mut conn, run_request("Tally"), bench.now + 2).unwrap()
+    };
+    assert!(
+        matches!(unnamed, RunOutcome::Waiting { .. }),
+        "nobody named must not grant"
+    );
+    let bench = Bench::new();
+    let mut conn = bench.store.lock_conn().unwrap();
+    save_value(
+        &bench.vault,
+        &conn,
+        SCOPE_GLOBAL,
+        NAME,
+        None,
+        VALUE,
+        bench.now,
+    )
+    .unwrap();
+    let RunOutcome::Waiting { decision_key, .. } =
+        prepare_run(&bench.vault, &mut conn, run_request("Tally"), bench.now).unwrap()
+    else {
+        panic!("the first use must ask");
+    };
+    answer_secret(
+        &mut conn,
+        &decision_key,
+        "Once",
+        Some("person".to_string()),
+        bench.now + 1,
+    )
+    .unwrap();
+    assert!(matches!(
+        prepare_run(&bench.vault, &mut conn, run_request("Tally"), bench.now + 2).unwrap(),
+        RunOutcome::Granted { .. }
+    ));
 }
 
 #[test]
@@ -754,7 +804,14 @@ fn an_answered_secret_row_not_answered_by_the_person_is_never_a_grant() {
     assert!(crate::decisions::get(&conn, "", &decision_key)
         .unwrap()
         .is_some());
-    answer_secret(&mut conn, &decision_key, "Once", None, bench.now + 3).unwrap();
+    answer_secret(
+        &mut conn,
+        &decision_key,
+        "Once",
+        Some("person".into()),
+        bench.now + 3,
+    )
+    .unwrap();
     assert!(matches!(
         prepare_run(&bench.vault, &mut conn, run_request("Tally"), bench.now + 4).unwrap(),
         RunOutcome::Granted { .. }
@@ -781,7 +838,14 @@ fn a_once_answer_for_one_mono_is_not_spent_by_another() {
         panic!("the first use must ask");
     };
     // The person answered the card Tally's first run put up.
-    answer_secret(&mut conn, &decision_key, "Once", None, bench.now + 1).unwrap();
+    answer_secret(
+        &mut conn,
+        &decision_key,
+        "Once",
+        Some("person".into()),
+        bench.now + 1,
+    )
+    .unwrap();
     // Another Mono never gets that answer as its own run.
     assert!(matches!(
         prepare_run(&bench.vault, &mut conn, run_request("Other"), bench.now + 2).unwrap(),

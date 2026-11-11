@@ -1632,6 +1632,20 @@ pub fn gate_respond(
     answer: String,
     project: Option<String>,
 ) -> Result<(), String> {
+    respond(&store, &decision_key, &answer, project.as_deref())
+}
+
+/// The webview's answer to a delivery check, recorded as the person. Any other key is refused: this path must not be a
+/// way to answer a security review, a fresh-eyes review, or any other question.
+pub(crate) fn respond(
+    store: &SessionStore,
+    decision_key: &str,
+    answer: &str,
+    project: Option<&str>,
+) -> Result<(), String> {
+    if !decisions::is_gate_key(decision_key) {
+        return Err("Only a delivery check can be answered here.".into());
+    }
     // A named project is the one the card is showing. An empty one matches nothing, so a blank folder cannot
     // fall through onto whichever run happens to share the key. An omitted project keeps the older callers working.
     let project = match project {
@@ -1644,7 +1658,7 @@ pub fn gate_respond(
         }
         None => {
             let conn = store.lock_conn()?;
-            match project_for_key(&conn, &decision_key)? {
+            match project_for_key(&conn, decision_key)? {
                 Some(found) => found,
                 None => return Ok(()),
             }
@@ -1653,10 +1667,10 @@ pub fn gate_respond(
     let _ = decisions::answer(
         &mut *store.lock_conn()?,
         &project,
-        &decision_key,
-        &answer,
+        decision_key,
+        answer,
         Some("person".into()),
         now_millis(),
     );
-    forward_answer(&store, &project, &decision_key, &answer)
+    forward_answer(store, &project, decision_key, answer)
 }

@@ -200,8 +200,16 @@ fn answering_a_secret_card_without_the_version_that_was_read_is_refused() {
     let RunOutcome::Waiting { decision_key, .. } = outcome else {
         panic!("a card");
     };
-    let err =
-        crate::decisions::answer(&mut conn, "", &decision_key, "Once", None, NOW + 1).unwrap_err();
+    // The person, and still no version: the refusal is the missing version, not the answerer.
+    let err = crate::decisions::answer(
+        &mut conn,
+        "",
+        &decision_key,
+        "Once",
+        Some("person".into()),
+        NOW + 1,
+    )
+    .unwrap_err();
     assert!(
         err.contains("Read the card again"),
         "a missing version must be refused inside the store: {err}"

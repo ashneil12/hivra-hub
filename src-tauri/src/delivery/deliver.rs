@@ -815,7 +815,20 @@ pub fn deliver(
             }
         }
     }
-    insert(&*store.lock_conn()?, &delivery)?;
+    let conn = store.lock_conn()?;
+    insert(&conn, &delivery)?;
+    // WP-203: the author is the engine of the work's own session (sessions.harness), read here, never from the caller.
+    if let Some(author) = match &input.delegation_id {
+        Some(id) => super::review::author_for_delegation(&conn, id)?,
+        None => None,
+    } {
+        conn.execute(
+            "UPDATE work_deliveries SET author = ?1 WHERE id = ?2",
+            rusqlite::params![author, delivery.id],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    drop(conn);
     if gated {
         let marked = {
             let conn = store.lock_conn()?;
