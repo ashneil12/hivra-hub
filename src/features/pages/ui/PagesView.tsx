@@ -3,7 +3,7 @@ import { OverlayNav } from "../../../app/shell/TitleBar";
 import { WindowControls } from "../../../app/shell/WindowControls";
 import { IS_MAC } from "../../../platform/tauri/platform";
 import { ArrowUp, Book, DashboardSquare, MoreHorizontal, Pin, Plus, Undo2 } from "../../../shared/ui/icons";
-import { useHubSelection } from "../../hub/model/hubNav";
+import { openMonoChat, useHubSelection } from "../../hub/model/hubNav";
 import { homeInView } from "../../hub/model/homeScope";
 import { leadFor } from "../../hub/model/hubLeads";
 import { listMonos, monoWorksOn } from "../../monos/model/mono";
@@ -29,7 +29,8 @@ import { SessionStateContext } from "../../sessions/model/sessionStateStore";
 import { useNow } from "../../hub/model/liveJobs";
 import { loadActiveSchemeId } from "../../settings/model/themeSchemes";
 import { HubChangeContent } from "../../hubChange/ui/HubChangeView";
-import { setChatPreviewShown, settleChatPreview, useChatPagePreview } from "../../selfBuild/model/pagesChat";
+import { chatPreview, setChatPreviewShown, settleChatPreview, useChatPagePreview } from "../../selfBuild/model/pagesChat";
+import { chatPageVersion, dropChatPageVersion, useChatPageVersion } from "../../selfBuild/model/pageAsks";
 import { OPEN_EDIT_TODAY, todayPreviewWaiting } from "../../selfBuild/model/todayChat";
 import { FLOW_LABEL, type ChangeFlow } from "../../hubChange/model/hubChange";
 import { CalendarBlock, monthOf } from "./CalendarBlock";
@@ -523,6 +524,22 @@ function AskBox({ onAsk, monos, monoId, onPick, placeholder, label = "Describe t
 /** A build in flight or back; `ready` marks a ready-made page (its preview, with nothing built). */
 /** `chat`: a page a Mono built from its own chat (selfBuild/model/pagesChat.ts), previewed here like any other. */
 type Build = { prompt: string; ready?: boolean; chat?: Page } & ({ state: "building" } | BuildPageResult);
+type NotReady = Exclude<BuildPageResult, { status: "ready" }>;
+
+/** The card's line when no page came back (G15): who has it and why, in plain words. */
+function BuildProblem({ result, by }: { result: NotReady; by: string }) {
+  const heading = { "turned-down": `Sent back to ${by}`, busy: `${by} is busy`, "no-page": "No page yet", error: "That didn't work" }[result.status];
+  return (
+    <div className="rounded-lg px-3 py-2.5" role="status" data-pages-build-problem={result.status} {...(result.status === "turned-down" ? { "data-pages-turned-down": "" } : {})}>
+      <div className="text-[13px] text-content">{heading}</div>
+      <div className="text-[13px] leading-5 text-content/60">{result.status === "turned-down" ? "Turned down automatically: " : ""}{result.reason}</div>
+    </div>
+  );
+}
+/** Straight to the first mate's own chat, where the ask is. */
+function OpenChat({ monoId, name }: { monoId: string; name: string }) {
+  return <button type="button" className={quietBtn} data-pages-open-chat onClick={() => openMonoChat(monoId)}>Open {name}'s chat</button>;
+}
 
 /** Ash OS refused or couldn't take the last page tap: one quiet line with OK. */
 function PagesProblem() {
@@ -620,10 +637,18 @@ export function PagesContent() {
   const askerId = picked && seated.some((m) => m.id === picked) ? picked : defaultBuilder(projectId, seated);
   const asker = seated.find((m) => m.id === askerId)?.name ?? "A Mono";
 
+  // G15: the ask goes to the first mate's own chat; its answer lands only while this ask is still the one on the card.
+  const asking = useRef(0);
   const ask = (prompt: string) => {
+    const mine = ++asking.current;
     setBuild({ prompt, state: "building" });
     setSentBack(undefined);
-    void buildPage({ projectId, monoId: askerId, prompt }).then((result) => setBuild({ prompt, ...result }));
+    void buildPage({ projectId, monoId: askerId, prompt }).then((result) => {
+      if (mine !== asking.current) return;
+      // A page from the first mate's chat is that chat's preview, so Keep or Discard here settles it everywhere.
+      const chatPage = result.status === "ready" && result.previewId ? chatPreview(result.previewId)?.page : undefined;
+      setBuild((b) => (b && !("status" in b) ? { prompt, ...result, ...(chatPage ? { chat: chatPage } : {}) } : b));
+    });
   };
   const ready = build && "status" in build && build.status === "ready" ? build : undefined;
   const offers = READY_PAGES.filter((r) => !pages.some((p) => p.request === r.request));
@@ -652,30 +677,16 @@ export function PagesContent() {
       <div className="w-full px-6 py-10 xl:px-8" data-pages-build-state={"status" in build ? build.status : "building"}>
         <div className="mb-1 text-[12px] text-content/60">“{build.prompt}” · asked {asker}</div>
         {"status" in build ? (
-          build.status === "building" ? (
-            <div className={`${card} flex items-center gap-3 p-5 text-[13px] text-content/80`} role="status" data-pages-still-building>
-              <span aria-hidden className="size-3.5 animate-spin rounded-full border-2 border-content/20 border-t-content/70" />
-              <span className="min-w-0 flex-1 leading-5">{build.reason}</span>
-            </div>
-          ) : build.status === "not-connected" ? (
-            <div className={`${card} p-5`} data-pages-not-connected>
-              <div className="text-[14px] text-content">Not connected yet</div>
-              <p className="mt-1 text-[13px] leading-5 text-content/70">{build.reason} When it's back, {asker} builds the page here and you see a preview first.</p>
-            </div>
-          ) : (
-            <div className="rounded-lg px-3 py-2.5" data-pages-turned-down>
-              <div className="text-[13px] text-content">{build.status === "turned-down" ? "Sent back to " + asker : "That didn't work"}</div>
-              <div className="text-[13px] leading-5 text-content/60">{build.status === "turned-down" ? "Turned down automatically: " : ""}{"reason" in build ? build.reason : ""}</div>
-            </div>
-          )
+          build.status !== "ready" ? <BuildProblem result={build} by={asker} /> : null
         ) : (
           <div className={`${card} flex items-center gap-3 p-5 text-[13px] text-content/80`} role="status">
             <span aria-hidden className="size-3.5 animate-spin rounded-full border-2 border-content/20 border-t-content/70" />
-            {asker} is building your page…
+            {asker} is building your page in its chat…
           </div>
         )}
         <div className="mt-4 flex gap-2">
           <button type="button" className={quietBtn} onClick={() => { setBuild(undefined); setNewPage(false); }}>Back to Pages</button>
+          {!("status" in build) || build.status !== "turned-down" ? <OpenChat monoId={askerId} name={asker} /> : null}
           {"status" in build && build.status !== "turned-down" ? <button type="button" className={primaryBtn} data-pages-try-again onClick={() => ask(build.prompt)}>Try again</button> : null}
         </div>
       </div>
@@ -696,7 +707,7 @@ export function PagesContent() {
             {preview.warnings.map((w) => (
               <div key={w.rule} className="flex items-start gap-3 text-[13px]">
                 <span className="min-w-0 flex-1 leading-5 text-content/85">{w.plain}</span>
-                <button type="button" className={quietBtn} onClick={() => { setSentBack(w.plain); ask(`${preview.request}\n\nFix this in the page: ${w.plain}`); }}>Fix it</button>
+                <button type="button" className={quietBtn} onClick={() => { if (ready?.chat) settleChatPreview(ready.chat.id); setSentBack(w.plain); ask(`${preview.request}\n\nFix this in the page: ${w.plain}`); }}>Fix it</button>
               </div>
             ))}
             {sentBack ? <div className="text-[12px] text-content/70" role="status">Sent back to {asker}: “{sentBack}”</div> : null}
@@ -868,22 +879,36 @@ type Rebuild = { prompt: string; monoId: string; by: string } & ({ state: "build
  */
 function PageRebuild({ page, asking, onDone, seated, projectId, children }: { page: Page; asking: boolean; onDone: () => void; seated: { id: string; name: string }[]; projectId: string; children: ReactNode }) {
   const [run, setRun] = useState<Rebuild>();
-  const [viewing, setViewing] = useState<{ id?: string; spec: PageSpec; request: string; by: string }>();
+  // `chat`: a version the first mate built in its own chat from this card's ask (G15, pageAsks.ts).
+  const [viewing, setViewing] = useState<{ id?: string; spec: PageSpec; request: string; by: string; chat?: boolean }>();
+  const chatVersion = useChatPageVersion(page.id);
+  const runs = useRef(0);
+  // A version that lands after the card stopped waiting replaces its "No page yet" line with the waiting row.
+  useEffect(() => {
+    if (chatVersion) setRun((r) => (r && "status" in r && r.status !== "ready" ? undefined : r));
+  }, [chatVersion]);
   const [picked, setPicked] = useState<string>();
   const [busy, setBusy] = useState(false);
   const builderId = picked && seated.some((m) => m.id === picked) ? picked : page.monoId && seated.some((m) => m.id === page.monoId) ? page.monoId : defaultBuilder(projectId, seated);
   const builder = seated.find((m) => m.id === builderId)?.name ?? page.by;
   const ask = (prompt: string, monoId = builderId, by = builder) => {
+    const mine = ++runs.current;
     setRun({ prompt, monoId, by, state: "building" });
-    void rebuildPage({ pageId: page.id, monoId, prompt, current: page.spec }).then((result) => {
+    void rebuildPage({ pageId: page.id, monoId, prompt, current: page.spec, projectId }).then((result) => {
+      if (mine !== runs.current) return;
       setRun({ prompt, monoId, by, ...result });
       if (result.status === "ready") {
-        setViewing({ id: result.pageId, spec: result.spec, request: prompt, by });
+        setViewing({ id: result.pageId, spec: result.spec, request: prompt, by, chat: !!chatPageVersion(page.id) });
         onDone();
       }
     });
   };
-  const close = () => { setViewing(undefined); setRun(undefined); };
+  const close = () => {
+    if (viewing?.chat) dropChatPageVersion(page.id);
+    runs.current++;
+    setViewing(undefined);
+    setRun(undefined);
+  };
 
   if (viewing) {
     const added = newAsks(page, viewing.spec);
@@ -915,39 +940,32 @@ function PageRebuild({ page, asking, onDone, seated, projectId, children }: { pa
     );
   }
 
-  const waiting = page.newVersion;
+  // A version waiting on the page: the record's, or one a first mate built in its chat after the card stopped waiting.
+  const waiting = page.newVersion ?? (chatVersion ? { ...chatVersion, id: undefined } : undefined);
   return (
     <>
       {asking && !run ? (
         <div className="mb-4" data-pages-rebuild-ask>
-          <div className="mb-1.5 text-[12px] text-content/70">Say what should change. {builder} changes the page and shows you the new version first.</div>
+          <div className="mb-1.5 text-[12px] text-content/70">Say what should change. {builder} changes the page in its chat and shows you the new version here first.</div>
           <AskBox onAsk={(text) => ask(text)} monos={seated} monoId={builderId} onPick={setPicked} placeholder="What should change? Like “add a column for stuck time”…" label="What should change" />
         </div>
       ) : null}
       {run ? (
         <div className="mb-4" data-pages-rebuild-state={"status" in run ? run.status : "building"}>
           <div className="mb-1 text-[12px] text-content/60">“{run.prompt}” · asked {run.by}</div>
-          {!("status" in run) || run.status === "building" ? (
+          {!("status" in run) ? (
             <div className={`${card} flex items-center gap-3 p-4 text-[13px] text-content/80`} role="status">
               <span aria-hidden className="size-3.5 animate-spin rounded-full border-2 border-content/20 border-t-content/70" />
-              <span className="min-w-0 flex-1 leading-5">{"status" in run ? run.reason : `${run.by} is changing the page…`}</span>
-              {"status" in run ? <button type="button" className={primaryBtn} onClick={() => ask(run.prompt, run.monoId, run.by)}>Try again</button> : null}
-            </div>
-          ) : run.status === "not-connected" ? (
-            <div className={`${card} p-4`}>
-              <div className="text-[14px] text-content">Not connected yet</div>
-              <p className="mt-1 text-[13px] leading-5 text-content/70">{run.reason}</p>
+              <span className="min-w-0 flex-1 leading-5">{run.by} is changing the page in its chat…</span>
             </div>
           ) : run.status !== "ready" ? (
-            <div className="rounded-lg px-3 py-2.5">
-              <div className="text-[13px] text-content">{run.status === "turned-down" ? `Sent back to ${run.by}` : "That didn't work"}</div>
-              <div className="text-[13px] leading-5 text-content/60">{run.status === "turned-down" ? "Turned down automatically: " : ""}{run.reason}</div>
-            </div>
+            <BuildProblem result={run} by={run.by} />
           ) : null}
-          {"status" in run && run.status !== "ready" ? (
+          {!("status" in run) || run.status !== "ready" ? (
             <div className="mt-2 flex gap-2">
-              <button type="button" className={quietBtn} onClick={() => setRun(undefined)}>Back to the page</button>
-              {run.status === "error" ? <button type="button" className={primaryBtn} onClick={() => ask(run.prompt, run.monoId, run.by)}>Try again</button> : null}
+              <button type="button" className={quietBtn} onClick={() => { runs.current++; setRun(undefined); }}>Back to the page</button>
+              {!("status" in run) || run.status !== "turned-down" ? <OpenChat monoId={run.monoId} name={run.by} /> : null}
+              {"status" in run && run.status !== "turned-down" ? <button type="button" className={primaryBtn} data-pages-try-again onClick={() => ask(run.prompt, run.monoId, run.by)}>Try again</button> : null}
             </div>
           ) : null}
         </div>
@@ -955,7 +973,7 @@ function PageRebuild({ page, asking, onDone, seated, projectId, children }: { pa
       {waiting && !run ? (
         <div className={`${card} mb-4 flex items-center gap-2 px-3 py-2 text-[12px] text-content/80`} data-pages-version-waiting>
           <span className="min-w-0 flex-1 truncate">New version from {waiting.by}: “{waiting.request}”</span>
-          <button type="button" className={quietBtn} onClick={() => setViewing({ id: waiting.id, spec: waiting.spec, request: waiting.request, by: waiting.by })}>See it</button>
+          <button type="button" className={quietBtn} onClick={() => setViewing({ id: waiting.id, spec: waiting.spec, request: waiting.request, by: waiting.by, chat: !page.newVersion })}>See it</button>
         </div>
       ) : null}
       {children}

@@ -23,6 +23,8 @@ export type HubProject = {
   parked?: boolean;
   /** Ash turned on "Share with my team" for this project. Only his click sets it. */
   shared?: boolean;
+  /** What it is, in a sentence (New project's interview, the local store's `oneLine`). */
+  oneLine?: string;
 };
 
 /** Everything a project has, listed where Monocode's sidebar lists Projects. */

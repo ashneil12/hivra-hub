@@ -4,10 +4,10 @@ import {
   defaultModelId,
   modelEffortLabel,
   modelEffortSetting,
-  modelsFor,
   resolveModel,
 } from "../../sessions/model/models";
-import { HARNESSES, HARNESS_TITLE, type HarnessId } from "../../sessions/model/session";
+import { HARNESS_TITLE, type HarnessId } from "../../sessions/model/session";
+import { ModelPicker, ModelSettingRows } from "../../sessions/ui/ModelPicker";
 import { WorkerDefaultControl } from "../../crew/ui/WorkerDefaultControl";
 import { noteMonoSettings } from "../model/monoCardLog";
 import {
@@ -21,7 +21,6 @@ import {
   type Mono,
 } from "../model/mono";
 import { modelOffersFast, queueCardRun, settingsForCard } from "../model/monoRun";
-import { SwitchRow } from "./monoPanelParts";
 
 export type CardOffer = { name: string; kind: "skill" | "command" };
 
@@ -33,14 +32,12 @@ type Props = {
   modelSettings: Record<string, string>;
   busy?: boolean;
   offers?: readonly CardOffer[];
-  onModelChange: (harness: HarnessId, model: string) => void;
+  /** False when the session did not take the model (missing, busy handing off, or a conflict). */
+  onModelChange: (harness: HarnessId, model: string) => void | boolean;
   onModelSettingsChange: (settings: Record<string, string>) => void;
 };
 
 type Run = { harness: HarnessId; model: string; settings: Record<string, string> };
-
-const SELECT =
-  "max-w-full rounded-lg border border-content/10 bg-content/5 px-2 py-1 text-[13px] text-content outline-none focus:border-content/30";
 
 // findMono parses the roster on every read, so a fresh object each time would loop useSyncExternalStore.
 const monoCache = new Map<string, { json: string; mono: Mono | undefined }>();
@@ -73,6 +70,7 @@ export function MonoCard({
   const mono = useSyncExternalStore(subscribeMonos, () => monoSnapshot(monoId), () => monoSnapshot(monoId));
   const [loaded, setLoaded] = useState<readonly CardOffer[] | null>(null);
   const [override, setOverride] = useState<Run | null>(null);
+  const [, snapBack] = useState(0);
   const fromProps: Run = { harness, model, settings: modelSettings };
   const run = override ?? fromProps;
 
@@ -88,7 +86,13 @@ export function MonoCard({
       .then((mod) => mod.loadSkills({ harness, cwd }))
       .then((rows) => {
         if (gone) return;
-        setLoaded(rows.map((row) => ({ name: row.name, kind: row.kind === "native" ? ("command" as const) : ("skill" as const) })));
+        setLoaded(
+          rows.flatMap((row) =>
+            row.kind === "builtin"
+              ? []
+              : [{ name: row.name, kind: row.kind === "native" ? ("command" as const) : ("skill" as const) }],
+          ),
+        );
       })
       .catch(() => {
         if (!gone) setLoaded([]);
@@ -101,7 +105,6 @@ export function MonoCard({
   const catalog = offers ?? loaded ?? [];
   const resolved = resolveModel(run.harness, run.model);
   const fastOn = modelOffersFast(resolved);
-  const effort = modelEffortSetting(resolved);
   const effortLabel = modelEffortLabel(resolved, run.settings);
   // The session's own fast wins; with none, the launch uses the Mono's flag, so show that.
   const fast = fastOn && (run.settings.fast !== undefined ? run.settings.fast === "true" : mono?.engineFast === true);
@@ -111,6 +114,11 @@ export function MonoCard({
     const storedFast = modelOffersFast(chosen) ? engineFast : undefined;
     const settings = settingsForCard(chosen, next.settings, storedFast);
     const shown: Run = { harness: next.harness, model: chosen.id, settings };
+    // A session that is missing, handing off, or lost a compare-and-set did not change. Leave the card as it was.
+    if (!busy && onModelChange(shown.harness, shown.model) === false) {
+      snapBack((n) => n + 1);
+      return;
+    }
     setOverride(shown);
     updateMono(monoId, (current) => {
       const updated = { ...current, engine: shown.harness, engineModel: shown.model };
@@ -127,7 +135,6 @@ export function MonoCard({
         ...(typeof storedFast === "boolean" ? { engineFast: storedFast } : {}),
       });
     } else {
-      onModelChange(shown.harness, shown.model);
       onModelSettingsChange(settings);
     }
     noteMonoSettings(monoId, summary);
@@ -160,21 +167,22 @@ export function MonoCard({
     );
   }
 
-  function onEffort(value: string) {
-    if (!effort) return;
+  function onSettings(next: Record<string, string>) {
+    const chosen = resolveModel(run.harness, run.model);
+    const storedFast = modelOffersFast(chosen)
+      ? next.fast !== undefined
+        ? next.fast === "true"
+        : findMono(monoId)?.engineFast
+      : undefined;
+    const changed = Object.keys(next).find((key) => next[key] !== run.settings[key]);
+    const name = changed === "fast" ? "Fast" : changed === "effort" || changed === "reasoning" ? "Effort" : changed ?? "Setting";
     commit(
-      { ...run, settings: { ...run.settings, [effort.id]: value } },
-      findMono(monoId)?.engineFast,
-      `Effort set to ${effort.options.find((option) => option.value === value)?.label ?? value}.`,
+      { ...run, settings: next },
+      storedFast,
+      changed ? `${name} set to ${next[changed] ?? ""}.` : "Settings changed.",
     );
   }
 
-  function onFast(on: boolean) {
-    commit({ ...run, settings: run.settings }, on, on ? "Fast mode on." : "Fast mode off.");
-  }
-
-  const harnesses = HARNESSES.filter((id) => id === run.harness || modelsFor(id).length > 0);
-  const models = modelsFor(run.harness);
   const role = mono ? monoRole(mono) : undefined;
   const lead = isProjectLeadId(monoId);
 
@@ -195,40 +203,32 @@ export function MonoCard({
           .join(", ")}
       >
         <div data-mono-card-runs className="flex flex-col gap-2">
-          <label className="flex items-center justify-between gap-3 text-[13px] text-content/80">
-            CLI
-            <select aria-label="CLI" className={SELECT} value={run.harness} onChange={(event) => onHarness(event.target.value as HarnessId)}>
-              {harnesses.map((id) => (
-                <option key={id} value={id}>
-                  {HARNESS_TITLE[id] ?? id}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label className="flex items-center justify-between gap-3 text-[13px] text-content/80">
-            Model
-            <select aria-label="Model" className={SELECT} value={resolved.id} onChange={(event) => onModel(event.target.value)}>
-              {models.map((item) => (
-                <option key={item.id} value={item.id}>
-                  {item.name}
-                </option>
-              ))}
-              {models.some((item) => item.id === resolved.id) ? null : <option value={resolved.id}>{resolved.name}</option>}
-            </select>
-          </label>
-          {effort ? (
-            <label className="flex items-center justify-between gap-3 text-[13px] text-content/80">
-              Effort
-              <select aria-label="Effort" className={SELECT} value={run.settings[effort.id] ?? effort.value} onChange={(event) => onEffort(event.target.value)}>
-                {effort.options.map((option) => (
-                  <option key={option.value} value={option.value}>
-                    {option.label}
-                  </option>
-                ))}
-              </select>
-            </label>
-          ) : null}
-          {fastOn ? <SwitchRow label="Fast" description="Answers sooner on this model." on={fast} onChange={onFast} /> : null}
+          <ModelPicker
+            fields
+            hideSettings
+            hotkeys={false}
+            harness={run.harness}
+            model={resolved.id}
+            values={run.settings}
+            onChange={(nextHarness, nextModel) => {
+              if (nextHarness !== run.harness) onHarness(nextHarness);
+              else onModel(nextModel);
+            }}
+            onSettingsChange={onSettings}
+          />
+          <ModelSettingRows
+            fields
+            harness={run.harness}
+            model={resolved.id}
+            values={run.settings}
+            onSettingsChange={onSettings}
+            row={({ label, control }) => (
+              <label className="flex items-center justify-between gap-3 text-[13px] text-content/80">
+                {label}
+                {control}
+              </label>
+            )}
+          />
         </div>
       </Section>
       <Section id="workers" title="Its workers" summary="What its workers run on">
