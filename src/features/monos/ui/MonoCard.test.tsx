@@ -150,7 +150,7 @@ it("keeps compatible context and fast when the model changes", async () => {
   });
   const select = container.querySelector<HTMLSelectElement>('[data-mono-card-runs] [aria-label="Model"]')!;
   await act(async () => pick(select, to!.id));
-  const settings = onModelSettingsChange.mock.calls.at(-1)?.[0] as Record<string, string>;
+  const settings = onModelSettingsChange.mock.calls[onModelSettingsChange.mock.calls.length - 1]?.[0] as Record<string, string>;
   expect(settings).toMatchObject({ effort: "high", context: "1m", fast: "true" });
   expect(settings).not.toHaveProperty("thinking");
 });

@@ -20,7 +20,7 @@ import {
   updateMono,
   type Mono,
 } from "../model/mono";
-import { modelOffersFast, queueCardRun, withMonoFast } from "../model/monoRun";
+import { modelOffersFast, queueCardRun, settingsForCard } from "../model/monoRun";
 import { SwitchRow } from "./monoPanelParts";
 
 export type CardOffer = { name: string; kind: "skill" | "command" };
@@ -83,10 +83,12 @@ export function MonoCard({
   useEffect(() => {
     if (offers) return;
     let gone = false;
-    void import("../../../platform/tauri/fs")
-      .then((mod) => mod.listSkills(cwd))
+    // The same slash catalog the composer uses. A harness command is kind "command"; a file skill stays a skill.
+    void import("../../skills/model/skills")
+      .then((mod) => mod.loadSkills({ harness, cwd }))
       .then((rows) => {
-        if (!gone) setLoaded(rows.map((row) => ({ name: row.name, kind: "skill" as const })));
+        if (gone) return;
+        setLoaded(rows.map((row) => ({ name: row.name, kind: row.kind === "native" ? ("command" as const) : ("skill" as const) })));
       })
       .catch(() => {
         if (!gone) setLoaded([]);
@@ -94,19 +96,19 @@ export function MonoCard({
     return () => {
       gone = true;
     };
-  }, [cwd, offers]);
+  }, [cwd, harness, offers]);
 
   const catalog = offers ?? loaded ?? [];
   const resolved = resolveModel(run.harness, run.model);
   const fastOn = modelOffersFast(resolved);
   const effort = modelEffortSetting(resolved);
   const effortLabel = modelEffortLabel(resolved, run.settings);
-  const fast = fastOn && (mono?.engineFast === true || (mono?.engineFast === undefined && run.settings.fast === "true"));
+  const fast = fastOn && run.settings.fast === "true";
 
   function commit(next: Run, engineFast: boolean | undefined, summary: string) {
     const chosen = resolveModel(next.harness, next.model);
     const storedFast = modelOffersFast(chosen) ? engineFast : undefined;
-    const settings = withMonoFast(chosen, next.settings, storedFast);
+    const settings = settingsForCard(chosen, next.settings, storedFast);
     const shown: Run = { harness: next.harness, model: chosen.id, settings };
     setOverride(shown);
     updateMono(monoId, (current) => {
@@ -132,10 +134,9 @@ export function MonoCard({
 
   function onHarness(nextHarness: HarnessId) {
     const nextModel = resolveModel(nextHarness, defaultModelId(nextHarness));
-    const setting = modelEffortSetting(nextModel);
     const keptFast = modelOffersFast(nextModel) ? mono?.engineFast : undefined;
     commit(
-      { harness: nextHarness, model: nextModel.id, settings: setting ? { [setting.id]: setting.value } : {} },
+      { harness: nextHarness, model: nextModel.id, settings: run.settings },
       keptFast,
       `Runs on ${HARNESS_TITLE[nextHarness] ?? nextHarness}.`,
     );
@@ -147,9 +148,11 @@ export function MonoCard({
     const kept = setting && run.settings[setting.id] && setting.options.some((option) => option.value === run.settings[setting.id])
       ? run.settings[setting.id]
       : setting?.value;
+    const settings = { ...run.settings };
+    if (setting && kept) settings[setting.id] = kept;
     const keptFast = modelOffersFast(chosen) ? mono?.engineFast : undefined;
     commit(
-      { harness: run.harness, model: chosen.id, settings: setting && kept ? { [setting.id]: kept } : {} },
+      { harness: run.harness, model: chosen.id, settings },
       keptFast,
       `Runs on ${chosen.name}.`,
     );

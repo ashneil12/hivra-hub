@@ -60,3 +60,11 @@ test("the card's sections, fast mode, skills and the worker line", async ({ page
   await expect(card.locator("[data-mono-card-fallback]")).toHaveText("Not set up yet.");
   await shot(page, info, "fallback");
 });
+
+test("a command from the slash catalog can be picked without injected offers", async ({ page }) => {
+  await page.setViewportSize({ width: 960, height: 900 });
+  await page.goto("/tests/browser/mono-card.html?catalog=1");
+  const card = page.locator("[data-mono-card='ada']");
+  await card.locator('[data-mono-card-section="skills"]').click();
+  await expect(card.getByRole("checkbox", { name: "Commands ship" })).toBeVisible();
+});
