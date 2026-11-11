@@ -459,6 +459,8 @@ pub fn run() {
         .manage(window_transfer::WindowTransferState::new())
         .manage(live_turns::LiveTurns::default())
         .setup(move |app| {
+            // WP-80: while the team switch is on, pick up other members' changes every few seconds (off costs a file read).
+            team_workspace::start_polling(app.handle().clone());
             // Windows: still here, so no running copy took over this launch (instance::claim).
             if !claim.owner {
                 instance::claim_after_handoff(&identity, &version, &claim.data_dir);
@@ -567,6 +569,7 @@ pub fn run() {
             team_workspace::team_workspace_status,
             team_workspace::team_workspace_save,
             team_workspace::team_workspace_accept,
+            team_workspace::team_workspace_presence,
             mobile_access::mobile_configure,
             mobile_access::mobile_invite,
             mobile_access::mobile_cancel_invite,

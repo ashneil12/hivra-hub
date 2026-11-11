@@ -385,6 +385,8 @@ struct Server {
     docs: HashMap<String, HashMap<String, (u64, String)>>,
     presence: HashMap<String, u64>,
     synced: Vec<Value>,
+    /// Ids of shared projects: every `project:<id>` document that has been written.
+    projects: std::collections::BTreeSet<String>,
 }
 
 impl Server {
@@ -395,6 +397,7 @@ impl Server {
             docs: HashMap::new(),
             presence: HashMap::new(),
             synced: Vec::new(),
+            projects: Default::default(),
         }
     }
 }
@@ -496,6 +499,10 @@ fn route(req: &Req, s: &mut Server) -> (u16, Value) {
             accounts.sort();
             (200, json!({ "accounts": accounts }))
         }
+        ("GET", "/v1/projects", _) => {
+            let ids: Vec<&String> = s.projects.iter().collect();
+            (200, json!({ "ids": ids }))
+        }
         ("GET", _, Some(id)) => {
             let fields = s.docs.get(&id).cloned().unwrap_or_default();
             let out: serde_json::Map<String, Value> = fields
@@ -511,6 +518,9 @@ fn route(req: &Req, s: &mut Server) -> (u16, Value) {
             let Some(incoming) = body["fields"].as_object() else {
                 return (400, json!({ "error": "no fields" }));
             };
+            if let Some(project) = id.strip_prefix("project:") {
+                s.projects.insert(project.to_string());
+            }
             let doc = s.docs.entry(id).or_default();
             let mut written = serde_json::Map::new();
             let mut conflicts = serde_json::Map::new();
@@ -993,4 +1003,211 @@ fn the_status_shows_the_saved_address_and_never_the_token() {
     let shown = serde_json::to_string(&status).unwrap();
     assert!(shown.contains("\"endpoint\":\"https://team.example.test/v1\""));
     assert!(!shown.contains("device-secret-token"));
+}
+
+// --- pull and per-field merge between members ------------------------------------------------
+
+fn two_members() -> (Client, Client, Arc<Mutex<Server>>) {
+    let mut ws = team();
+    let invite_a = create_invitation(&mut ws, "owner", Role::Member, NOW).unwrap();
+    let invite_b = create_invitation(&mut ws, "owner", Role::Member, NOW).unwrap();
+    let server = Arc::new(Mutex::new(Server::new(ws)));
+    let endpoint = serve(server.clone());
+    let ann = client_for(
+        &endpoint,
+        &client_for(&endpoint, "")
+            .accept(&invite_a, "ann")
+            .unwrap()
+            .token,
+    );
+    let ben = client_for(
+        &endpoint,
+        &client_for(&endpoint, "")
+            .accept(&invite_b, "ben")
+            .unwrap()
+            .token,
+    );
+    (ann, ben, server)
+}
+
+fn shared_record(id: &str, name: &str) -> Value {
+    json!({
+        "id": id,
+        "name": name,
+        "shared": true,
+        "folder": "/opt/local-only/projects/exo",
+        "shortName": "EXO",
+        "tasks": []
+    })
+}
+
+fn doc_with(records: Vec<Value>) -> Value {
+    json!({ "projects": records })
+}
+
+fn record<'a>(doc: &'a Value, id: &str) -> &'a Value {
+    doc["projects"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["id"] == id)
+        .unwrap()
+}
+
+#[test]
+fn a_change_on_one_device_arrives_on_the_other_on_its_next_round() {
+    let (ann, ben, _server) = two_members();
+    let a1 = sync_round(
+        &ann,
+        &doc_with(vec![shared_record("exo", "EXO")]),
+        &SyncState::default(),
+    )
+    .unwrap();
+    let b1 = sync_round(&ben, &doc_with(vec![]), &SyncState::default()).unwrap();
+    assert_eq!(record(&b1.doc, "exo")["name"], "EXO");
+    assert_eq!(record(&b1.doc, "exo")["shared"], true);
+    assert!(
+        record(&b1.doc, "exo").get("folder").is_none(),
+        "the local folder arrived on the other device"
+    );
+
+    let a2 = sync_round(
+        &ann,
+        &doc_with(vec![shared_record("exo", "EXO game")]),
+        &a1.state,
+    )
+    .unwrap();
+    assert!(a2.pushed > 0);
+    let b2 = sync_round(&ben, &b1.doc, &b1.state).unwrap();
+    assert_eq!(record(&b2.doc, "exo")["name"], "EXO game");
+}
+
+#[test]
+fn the_local_folder_and_the_shared_flag_never_reach_the_server() {
+    let (ann, _ben, server) = two_members();
+    sync_round(
+        &ann,
+        &doc_with(vec![shared_record("exo", "EXO")]),
+        &SyncState::default(),
+    )
+    .unwrap();
+    let guard = server.lock().unwrap();
+    let stored = serde_json::to_string(&guard.docs).unwrap();
+    assert!(
+        !stored.contains("/opt/local-only"),
+        "a local folder path left the machine: {stored}"
+    );
+    assert!(
+        !stored.contains("\"shared\""),
+        "the shared flag was stored: {stored}"
+    );
+    assert!(guard.docs.contains_key("project:exo"));
+}
+
+#[test]
+fn a_local_edit_is_never_replaced_by_a_value_pulled_from_the_server() {
+    let (ann, ben, _server) = two_members();
+    let a1 = sync_round(
+        &ann,
+        &doc_with(vec![shared_record("exo", "EXO")]),
+        &SyncState::default(),
+    )
+    .unwrap();
+    let b1 = sync_round(&ben, &doc_with(vec![]), &SyncState::default()).unwrap();
+    // Ann renames and syncs. Ben has typed his own name for the same field, not synced yet.
+    let a2 = sync_round(
+        &ann,
+        &doc_with(vec![shared_record("exo", "EXO game")]),
+        &a1.state,
+    )
+    .unwrap();
+    let mut ben_local = b1.doc.clone();
+    ben_local["projects"][0]["name"] = json!("Ben's title");
+
+    let b2 = sync_round(&ben, &ben_local, &b1.state).unwrap();
+    assert_eq!(record(&b2.doc, "exo")["name"], "Ben's title");
+    assert!(
+        b2.state.conflicts.iter().any(|c| c == "exo.name"),
+        "the replaced edit was not recorded"
+    );
+
+    // The server now holds Ben's value, so Ann gets it on her next round.
+    let a3 = sync_round(&ann, &a2.doc, &a2.state).unwrap();
+    assert_eq!(record(&a3.doc, "exo")["name"], "Ben's title");
+}
+
+#[test]
+fn concurrent_edits_to_different_fields_both_survive() {
+    let (ann, ben, _server) = two_members();
+    let a1 = sync_round(
+        &ann,
+        &doc_with(vec![shared_record("exo", "EXO")]),
+        &SyncState::default(),
+    )
+    .unwrap();
+    let b1 = sync_round(&ben, &doc_with(vec![]), &SyncState::default()).unwrap();
+    let mut ann_local = a1.doc.clone();
+    ann_local["projects"][0]["name"] = json!("EXO game");
+    let mut ben_local = b1.doc.clone();
+    ben_local["projects"][0]["shortName"] = json!("XG");
+
+    let a2 = sync_round(&ann, &ann_local, &a1.state).unwrap();
+    let b2 = sync_round(&ben, &ben_local, &b1.state).unwrap();
+    let a3 = sync_round(&ann, &a2.doc, &a2.state).unwrap();
+    for doc in [&a3.doc, &b2.doc] {
+        assert_eq!(record(doc, "exo")["name"], "EXO game");
+        assert_eq!(record(doc, "exo")["shortName"], "XG");
+    }
+    assert!(a3.state.conflicts.is_empty() && b2.state.conflicts.is_empty());
+}
+
+#[test]
+fn an_unshared_project_stops_syncing_and_is_not_pulled_back() {
+    let (ann, ben, _server) = two_members();
+    let a1 = sync_round(
+        &ann,
+        &doc_with(vec![shared_record("exo", "EXO")]),
+        &SyncState::default(),
+    )
+    .unwrap();
+    let mut unshared = a1.doc.clone();
+    unshared["projects"][0]["shared"] = json!(false);
+    let a2 = sync_round(&ann, &unshared, &a1.state).unwrap();
+    assert_eq!(a2.pushed, 0, "an unshared project was pushed");
+
+    let mut private_edit = a2.doc.clone();
+    private_edit["projects"][0]["name"] = json!("private rename");
+    let a3 = sync_round(&ann, &private_edit, &a2.state).unwrap();
+    assert_eq!(record(&a3.doc, "exo")["name"], "private rename");
+
+    let b1 = sync_round(&ben, &doc_with(vec![]), &SyncState::default()).unwrap();
+    assert_eq!(
+        record(&b1.doc, "exo")["name"],
+        "EXO",
+        "ben got the private rename"
+    );
+}
+
+#[test]
+fn a_project_id_that_is_not_a_plain_name_is_never_sent() {
+    let (ann, _ben, server) = two_members();
+    sync_round(
+        &ann,
+        &doc_with(vec![shared_record("../escape", "x")]),
+        &SyncState::default(),
+    )
+    .unwrap();
+    assert!(server.lock().unwrap().projects.is_empty());
+}
+
+#[test]
+fn the_joined_name_survives_saving_the_switch_and_is_kept_out_of_the_token_store() {
+    let dir = std::env::temp_dir().join(format!("tw-account-{}", Uuid::new_v4()));
+    let path = dir.join(CONFIG_FILE);
+    remember_account(&path, "ann").unwrap();
+    save_config(&path, true, "https://team.example.test/v1").unwrap();
+    save_config(&path, false, "https://team.example.test/v1").unwrap();
+    assert_eq!(load_account(&path), "ann");
+    assert!(load_config(&path).token.is_empty());
+    let _ = std::fs::remove_dir_all(dir);
 }

@@ -21,8 +21,12 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
-use std::{path::Path, time::Duration};
-use tauri::Manager;
+use std::{
+    collections::{BTreeMap, BTreeSet, HashMap},
+    path::Path,
+    time::Duration,
+};
+use tauri::{Emitter, Manager};
 use url::{Host, Url};
 use uuid::Uuid;
 
@@ -258,10 +262,19 @@ pub fn load_config(path: &Path) -> Config {
 }
 
 fn write_config(path: &Path, config: &Config) -> Result<(), String> {
+    let account = load_account(path);
+    write_config_with(path, config, (!account.is_empty()).then_some(account))
+}
+
+fn write_config_with(path: &Path, config: &Config, account: Option<String>) -> Result<(), String> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     }
-    let body = serde_json::to_vec_pretty(config).map_err(|e| e.to_string())?;
+    let mut body: Value = serde_json::to_value(config).map_err(|e| e.to_string())?;
+    if let Some(account) = account {
+        body["account"] = json!(account);
+    }
+    let body = serde_json::to_vec_pretty(&body).map_err(|e| e.to_string())?;
     let tmp = path.with_extension("json.tmp");
     std::fs::write(&tmp, &body).map_err(|e| e.to_string())?;
     std::fs::rename(&tmp, path).map_err(|e| e.to_string())
@@ -278,6 +291,20 @@ pub fn save_config(path: &Path, enabled: bool, endpoint: &str) -> Result<Config,
     config.endpoint = endpoint;
     write_config(path, &config)?;
     Ok(config)
+}
+
+/// The name this device joined with, kept beside the switch. It is not a secret, and the presence list shows it.
+pub fn remember_account(path: &Path, account: &str) -> Result<(), String> {
+    write_config_with(path, &load_config(path), Some(account.to_string()))
+}
+
+/// The joined name, or empty when none was kept.
+pub fn load_account(path: &Path) -> String {
+    std::fs::read(path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+        .and_then(|raw| raw["account"].as_str().map(str::to_string))
+        .unwrap_or_default()
 }
 
 /// Where this device's workspace token lives: the Keychain in the app, a memory double in tests.
@@ -623,17 +650,387 @@ pub fn sync_on_write(
     sync_outbound(&config, &shared_projects_from_doc(doc))
 }
 
-/// Called after the app keeps a new `projects` document. The sync runs on a worker thread, and a failure is logged only:
-/// the local store stays the source of truth, and the next change tries again.
-pub fn sync_after_change<R: tauri::Runtime>(app: &tauri::AppHandle<R>, doc: Value) {
-    let Ok(path) = config_path(app) else {
-        return;
+pub const PROJECT_DOC_PREFIX: &str = "project:";
+/// The app-store document that holds, per field, what this device last agreed with the server.
+pub const SYNC_STATE_KEY: &str = "team-sync";
+const CONFLICT_LIMIT: usize = 50;
+/// How often a device with the switch on asks the server for other members' changes.
+pub const POLL_SECS: u64 = 15;
+
+/// The server revision of one field and the value it had at that revision, as this device last saw it.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct FieldBase {
+    pub rev: u64,
+    /// None when the field was absent (or removed) at that revision.
+    pub value: Option<Value>,
+}
+
+/// Per shared project, per field: what this device last agreed with the server. A local value that differs from its
+/// base is an edit not yet synced; a server revision that differs from the base is another member's edit.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SyncState {
+    pub projects: BTreeMap<String, BTreeMap<String, FieldBase>>,
+    /// Fields where this device's edit replaced another member's edit, as "project.field" (the newest last).
+    pub conflicts: Vec<String>,
+}
+
+/// The shared machine as the project sync sees it. `Client` is the real one; the tests use the same trait.
+pub trait ProjectRemote {
+    fn list_projects(&self) -> Result<Vec<String>, String>;
+    fn read_fields(&self, doc: &str) -> Result<HashMap<String, (u64, String)>, String>;
+    fn write_fields(&self, doc: &str, changes: &[(&str, u64, &str)]) -> Result<FieldWrite, String>;
+}
+
+impl ProjectRemote for Client {
+    fn list_projects(&self) -> Result<Vec<String>, String> {
+        let (status, body) = self.call("GET", "/v1/projects", None)?;
+        let body = Self::ok(status, body, "listing the shared projects")?;
+        Ok(body["ids"]
+            .as_array()
+            .map(|ids| {
+                ids.iter()
+                    .filter_map(|v| v.as_str().map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default())
+    }
+    fn read_fields(&self, doc: &str) -> Result<HashMap<String, (u64, String)>, String> {
+        self.get_fields(doc)
+    }
+    fn write_fields(&self, doc: &str, changes: &[(&str, u64, &str)]) -> Result<FieldWrite, String> {
+        self.put_fields(doc, changes)
+    }
+}
+
+/// What one round did: the project document and sync state to keep, and how many fields moved each way.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Round {
+    pub doc: Value,
+    pub state: SyncState,
+    pub pushed: usize,
+    pub pulled: usize,
+}
+
+/// A project id that is safe to put in a document path: lowercase letters, digits, dashes and underscores.
+fn safe_project_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 64
+        && id
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_')
+}
+
+/// A field's text as the server keeps it (JSON). "null" is a removed field.
+fn parse_body(body: &str) -> Option<Value> {
+    match serde_json::from_str::<Value>(body) {
+        Ok(Value::Null) => None,
+        Ok(value) => Some(value),
+        Err(_) => Some(Value::String(body.to_string())),
+    }
+}
+
+/// The fields a project record syncs. The id, the shared flag and the local folder never leave the machine.
+fn record_fields(record: &Value) -> BTreeMap<String, Value> {
+    record
+        .as_object()
+        .map(|fields| {
+            fields
+                .iter()
+                .filter(|(name, value)| {
+                    !matches!(name.as_str(), "id" | "folder" | "shared") && !value.is_null()
+                })
+                .map(|(name, value)| (name.clone(), value.clone()))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn record_index(doc: &Value, id: &str) -> Option<usize> {
+    doc["projects"]
+        .as_array()?
+        .iter()
+        .position(|p| p["id"].as_str() == Some(id))
+}
+
+/// One pass of the project sync, pure so the tests can run it against any `ProjectRemote`.
+///
+/// Pull: a shared project another member made that this device does not have yet is added. Push and pull per field:
+/// - a field only this device changed is pushed on top of the revision it was based on;
+/// - a field only another member changed is taken, unless this device has an edit to it that is not synced;
+/// - a field both changed keeps this device's value (it is never overwritten by a pulled value), is pushed on top of
+///   the server's current revision, and is recorded in `conflicts`.
+///
+/// Projects not marked shared (including ones that were unshared) are never sent, and an id that is not a plain name
+/// is never sent. The local folder path and the shared flag are never sent.
+pub fn sync_round(
+    remote: &dyn ProjectRemote,
+    doc: &Value,
+    state: &SyncState,
+) -> Result<Round, String> {
+    let mut doc = if doc["projects"].is_array() {
+        doc.clone()
+    } else {
+        json!({ "projects": [] })
     };
+    let mut state = state.clone();
+    let mut pushed = 0;
+    let mut pulled = 0;
+
+    let have: BTreeSet<String> = doc["projects"]
+        .as_array()
+        .map(|list| {
+            list.iter()
+                .filter_map(|p| p["id"].as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default();
+    for id in remote.list_projects()? {
+        if !safe_project_id(&id) || have.contains(&id) {
+            continue;
+        }
+        let fields = remote.read_fields(&format!("{PROJECT_DOC_PREFIX}{id}"))?;
+        let mut record = json!({ "id": id, "shared": true });
+        let base = state.projects.entry(id.clone()).or_default();
+        for (name, (rev, body)) in fields {
+            let value = parse_body(&body);
+            if let Some(value) = &value {
+                record[name.as_str()] = value.clone();
+            }
+            base.insert(name, FieldBase { rev, value });
+        }
+        if let Some(list) = doc["projects"].as_array_mut() {
+            list.push(record);
+        }
+        pulled += 1;
+    }
+
+    let local_ids: Vec<String> = doc["projects"]
+        .as_array()
+        .map(|list| {
+            list.iter()
+                .filter(|p| p["shared"].as_bool() == Some(true))
+                .filter_map(|p| p["id"].as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default();
+    for id in local_ids {
+        if !safe_project_id(&id) {
+            continue;
+        }
+        let Some(index) = record_index(&doc, &id) else {
+            continue;
+        };
+        let doc_id = format!("{PROJECT_DOC_PREFIX}{id}");
+        let server = remote.read_fields(&doc_id)?;
+        let local = record_fields(&doc["projects"][index]);
+        let base_map = state.projects.get(&id).cloned().unwrap_or_default();
+        let names: BTreeSet<String> = local
+            .keys()
+            .chain(server.keys())
+            .chain(base_map.keys())
+            .cloned()
+            .collect();
+
+        // (name, revision to write on top of, value to send or None for a removal, the server moved on too)
+        let mut writes: Vec<(String, u64, Option<Value>, bool)> = Vec::new();
+        // (name, value to take, server revision) for fields only another member changed.
+        let mut takes: Vec<(String, Option<Value>, u64)> = Vec::new();
+        for name in names {
+            let mine = local.get(&name).cloned();
+            let base = base_map.get(&name).cloned().unwrap_or_default();
+            let (server_rev, server_value) = match server.get(&name) {
+                Some((rev, body)) => (*rev, parse_body(body)),
+                None => (0, None),
+            };
+            let local_changed = mine != base.value;
+            let server_changed = server_rev != base.rev;
+            match (local_changed, server_changed) {
+                (false, false) => {}
+                (false, true) => takes.push((name, server_value, server_rev)),
+                (true, moved) => {
+                    let base_rev = if moved { server_rev } else { base.rev };
+                    writes.push((name, base_rev, mine, moved && server_value != base.value));
+                }
+            }
+        }
+
+        for (name, value, rev) in takes {
+            match &value {
+                Some(value) => doc["projects"][index][name.as_str()] = value.clone(),
+                None => {
+                    if let Some(fields) = doc["projects"][index].as_object_mut() {
+                        fields.remove(&name);
+                    }
+                }
+            }
+            state
+                .projects
+                .entry(id.clone())
+                .or_default()
+                .insert(name, FieldBase { rev, value });
+            pulled += 1;
+        }
+
+        if writes.is_empty() {
+            continue;
+        }
+        let body_of =
+            |value: &Option<Value>| value.as_ref().map_or("null".to_string(), Value::to_string);
+        let first: Vec<(String, u64, String)> = writes
+            .iter()
+            .map(|(name, rev, value, _)| (name.clone(), *rev, body_of(value)))
+            .collect();
+        let refs: Vec<(&str, u64, &str)> = first
+            .iter()
+            .map(|(n, r, b)| (n.as_str(), *r, b.as_str()))
+            .collect();
+        let mut result = remote.write_fields(&doc_id, &refs)?;
+
+        // A field that moved on the server since it was read gets one more try on top of the server's revision. The
+        // local value wins, and the replaced edit is recorded.
+        let retry: Vec<(String, u64, String)> = first
+            .iter()
+            .filter_map(|(name, _, body)| {
+                result
+                    .conflicts
+                    .get(name)
+                    .map(|current| (name.clone(), *current, body.clone()))
+            })
+            .collect();
+        if !retry.is_empty() {
+            let refs: Vec<(&str, u64, &str)> = retry
+                .iter()
+                .map(|(n, r, b)| (n.as_str(), *r, b.as_str()))
+                .collect();
+            let second = remote.write_fields(&doc_id, &refs)?;
+            result.written.extend(second.written);
+            result.conflicts = second.conflicts;
+        }
+
+        let mut replaced: Vec<String> = writes
+            .iter()
+            .filter(|(_, _, _, moved)| *moved)
+            .map(|(name, _, _, _)| format!("{id}.{name}"))
+            .collect();
+        replaced.extend(retry.iter().map(|(name, _, _)| format!("{id}.{name}")));
+        let entry = state.projects.entry(id.clone()).or_default();
+        for (name, rev) in &result.written {
+            let value = writes
+                .iter()
+                .find(|(n, _, _, _)| n == name)
+                .and_then(|(_, _, value, _)| value.clone());
+            entry.insert(name.clone(), FieldBase { rev: *rev, value });
+            pushed += 1;
+        }
+        for item in replaced {
+            if !state.conflicts.contains(&item) {
+                state.conflicts.push(item);
+            }
+        }
+        let extra = state.conflicts.len().saturating_sub(CONFLICT_LIMIT);
+        state.conflicts.drain(0..extra);
+    }
+
+    Ok(Round {
+        doc,
+        state,
+        pushed,
+        pulled,
+    })
+}
+
+/// One round against the configured server, for the stored `projects` document. Does nothing, and reads no token, while
+/// the switch is off. The document is written only if it has not changed since it was read; otherwise the next round
+/// tries again. The shared machine is never called while the store's lock is held.
+pub fn run_round<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Result<(), String> {
+    let path = config_path(app)?;
+    if !load_config(&path).enabled {
+        return Ok(());
+    }
+    let config = load_signed_in_config(&path, &Keychain);
+    let Some(client) = Client::from_config(&config)? else {
+        return Ok(());
+    };
+    if config.token.is_empty() {
+        return Ok(());
+    }
+    let account = load_account(&path);
+    if !account.is_empty() {
+        client.heartbeat(&account)?;
+    }
+    if let Ok(people) = client.presence() {
+        if let Ok(mut shown) = PRESENCE.lock() {
+            *shown = people;
+        }
+    }
+
+    let store = app.state::<crate::session_store::SessionStore>();
+    let (doc, rev, stored_state) = {
+        let conn = store.lock_conn()?;
+        let current = crate::local_hub::read_doc(&conn, "projects")?;
+        let state = crate::local_hub::read_doc(&conn, SYNC_STATE_KEY)?;
+        (
+            current.value.unwrap_or_else(|| json!({ "projects": [] })),
+            current.rev,
+            state.value,
+        )
+    };
+    let state: SyncState = stored_state
+        .and_then(|value| serde_json::from_value(value).ok())
+        .unwrap_or_default();
+    let round = sync_round(&client, &doc, &state)?;
+    if round.doc == doc && round.state == state {
+        return Ok(());
+    }
+
+    let conn = store.lock_conn()?;
+    let state_json = serde_json::to_value(&round.state).map_err(|e| e.to_string())?;
+    let Some(new_rev) = crate::local_hub::write_if(&conn, "projects", &round.doc, Some(rev))?
+    else {
+        return Ok(());
+    };
+    crate::local_hub::write_if(&conn, SYNC_STATE_KEY, &state_json, None)?;
+    drop(conn);
+    if round.pulled > 0 {
+        let _ = app.emit(
+            crate::local_hub::CHANGED_EVENT,
+            json!({ "key": "projects", "rev": new_rev }),
+        );
+    }
+    Ok(())
+}
+
+/// Called after the app keeps a new `projects` document: runs a round on a worker thread. A failure is logged only; the
+/// local store stays the source of truth and the next round tries again.
+pub fn sync_after_change<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
+    let app = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        if let Err(reason) = sync_on_write(&path, &Keychain, &doc) {
+        if let Err(reason) = run_round(&app) {
             eprintln!("team workspace: the change did not sync: {reason}");
         }
     });
+}
+
+/// Runs a round every `POLL_SECS`, so another member's change arrives without a restart. Off costs one file read.
+pub fn start_polling<R: tauri::Runtime>(app: tauri::AppHandle<R>) {
+    std::thread::spawn(move || loop {
+        std::thread::sleep(Duration::from_secs(POLL_SECS));
+        if let Err(reason) = run_round(&app) {
+            eprintln!("team workspace: a sync round did not finish: {reason}");
+        }
+    });
+}
+
+/// The people checked in at the shared machine, as of the last round. Empty while the switch is off.
+static PRESENCE: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
+#[tauri::command]
+pub fn team_workspace_presence() -> Vec<String> {
+    PRESENCE
+        .lock()
+        .map(|people| people.clone())
+        .unwrap_or_default()
 }
 
 /// What the settings screen may show. Reading it makes no network call and never reveals the token.
@@ -705,5 +1102,6 @@ pub fn team_workspace_accept(
         Client::from_config(&config)?.ok_or("team workspaces are off; turn them on first")?;
     let grant = client.accept(invitation.trim(), account.trim())?;
     remember_token(&Keychain, &grant.token)?;
+    remember_account(&path, account.trim())?;
     Ok(status_for(&load_signed_in_config(&path, &Keychain)))
 }
