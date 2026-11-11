@@ -28,5 +28,5 @@ test("Settings lists the allowed lines, and Remove takes one out", async ({ page
 test("the guard's words use no em or en dashes", async ({ page }) => {
   await page.goto("/tests/browser/commit-guard.html");
   const text = await page.locator("main").innerText();
-  expect(text).not.toMatch(/[–—]/);
+  expect(text).not.toMatch(/[\u2013\u2014]/);
 });
