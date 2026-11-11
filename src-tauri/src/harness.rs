@@ -1197,6 +1197,9 @@ pub fn harness_spawn(
             )?)
         }
     };
+    let more_id = more.as_ref().map(|run| run.id.clone());
+    let more_argv0 = more.as_ref().and_then(|run| run.argv0.clone());
+    let more_sha = more.as_ref().map(|run| run.sha256.clone());
     let more_run = more.is_some();
     let (command, args) = match more {
         Some(run) => (run.command, run.args),
@@ -1308,8 +1311,11 @@ pub fn harness_spawn(
     };
     // macOS: start the CLI as its own responsible process, so a privacy prompt names the CLI and not the Hub
     // (src/disclaim.rs). Same pid, pipes, cwd and process group; a plain spawn when it can't or is switched off.
-    // A More agents child that will be sandboxed is not disclaimed here. The sandbox wraps the approved command, and
-    // that wrap is the program that gets spawned.
+    // A More agents child that will be sandboxed is not disclaimed as the spawned program. The sandbox wrap is the
+    // last step and is what gets spawned. The invoked name and the approved hash are applied inside that wrap, so
+    // they still name the canonical command the sandbox runs. When the sandbox is off, this is the plain launcher
+    // path: `launch_program` is the approved command, with the invoked name and the approved hash. A non-More start
+    // keeps `launch_program`, which may already be the sandbox launcher. There is no hard link.
     let disclaim_launcher = if sandbox_more {
         None
     } else {
@@ -1318,8 +1324,20 @@ pub fn harness_spawn(
             app.path().app_data_dir().ok().as_deref(),
         )
     };
-    let mut cmd =
-        crate::disclaim::command(launch_program.as_os_str(), disclaim_launcher.as_deref());
+    let (spawn_argv0, spawn_sha): (Option<&std::ffi::OsStr>, Option<&str>) = if sandbox_more {
+        (None, None)
+    } else {
+        (
+            more_argv0.as_deref().map(std::ffi::OsStr::new),
+            more_sha.as_deref(),
+        )
+    };
+    let mut cmd = crate::disclaim::command(
+        launch_program.as_os_str(),
+        disclaim_launcher.as_deref(),
+        spawn_argv0,
+        spawn_sha,
+    );
     // A More agents child runs in its own empty folder, never the chat folder: nothing a chat holds is a relative input.
     let spawn_dir = if more_run {
         crate::more_agents::run_folder(&app.path().app_data_dir().map_err(|e| e.to_string())?)?
@@ -1416,14 +1434,33 @@ pub fn harness_spawn(
         );
     }
     // WP-134: a More agents child gets no app environment (keys, the control endpoint): only the allow-list.
-    // WP-178: when the sandbox is on, the wrap is the last step before spawn. The approved command is the program
-    // the sandbox wraps, the child runs in its run folder, and that folder is in the profile's allowed set.
-    // skip_outer_sandbox does not apply. A later change hard-links the approved file just above this wrap.
+    // The last hash in this process is here, after the run folder exists and immediately before the spawn.
+    // A text-file-busy retry hashes again before the next spawn. On macOS the disclaim launcher hashes once more,
+    // immediately before exec. When the sandbox is on, that launcher sits inside the wrap, so the hash still
+    // applies to the approved program, and the wrap is the last step before spawn.
+    let more_recheck = if more_run {
+        if !sandbox_more {
+            crate::more_agents::restrict_env(&mut cmd, &gui_search_path());
+        }
+        let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+        let id = more_id.as_deref().unwrap_or("").to_string();
+        if let Err(error) = crate::more_agents::confirm_before_spawn(&data_dir, &id, &command) {
+            let _ = crate::more_agents::remove_run_folder(&data_dir, &spawn_dir);
+            return Err(error);
+        }
+        Some((data_dir, id, command.clone()))
+    } else {
+        None
+    };
+    // WP-178: when the sandbox is on, the wrap is the last step before spawn. It wraps the approved canonical
+    // command. The invoked name and the approved hash are passed through the wrap, so they apply to the program
+    // the sandbox runs. skip_outer_sandbox does not apply. There is no hard link.
     if sandbox_more {
         let home = match std::env::var_os("HOME").map(PathBuf::from) {
             Some(home) => home,
             None => {
-                let error = "The agent did not start: HOME is not set, so the macOS sandbox cannot be built.";
+                let error =
+                    "The agent did not start: HOME is not set, so the macOS sandbox cannot be built.";
                 return refuse_more_agent_sandbox(
                     data_dir.as_deref(),
                     &spawn_dir,
@@ -1440,6 +1477,8 @@ pub fn harness_spawn(
             data_dir.as_deref(),
             &home,
             skip_outer_sandbox,
+            more_argv0.as_deref().map(std::ffi::OsStr::new),
+            more_sha.as_deref(),
         ) {
             Ok(wrapped) => wrapped,
             Err(error) => {
@@ -1451,11 +1490,18 @@ pub fn harness_spawn(
                 );
             }
         };
-    } else if more_run {
-        crate::more_agents::restrict_env(&mut cmd, &gui_search_path());
     }
+    let recheck = || match more_recheck.as_ref() {
+        Some((data_dir, id, command)) => {
+            crate::more_agents::confirm_before_spawn(data_dir, id, command)
+        }
+        None => Ok(()),
+    };
+    let recheck_ref = more_recheck
+        .is_some()
+        .then_some(&recheck as &dyn Fn() -> Result<(), String>);
     let mut child = child_or_reap(
-        spawn_managed(&mut cmd),
+        spawn_managed(&mut cmd, recheck_ref),
         more_run,
         || app.path().app_data_dir().ok(),
         &spawn_dir,
@@ -1652,12 +1698,19 @@ fn refuse_more_agent_sandbox(
 
 /// The last step before a More agents child is spawned, when the sandbox is on.
 ///
-/// The approved command is the program the sandbox wraps. The child keeps its run folder as its working directory, and
-/// that folder is in the profile's allowed set. `skip_outer_sandbox` is ignored: a More agents child does not skip the
-/// wrap. A later change hard-links the approved file above the wrap, in the same folder as that file.
+/// The approved canonical command is the program the sandbox runs. There is no hard link. `argv0` is the invoked
+/// name when it differs from that path, and `expect_sha256` is the approved file's hash. Both are passed through
+/// the wrap: the disclaim launcher, when it is on, is what the sandbox execs, and it checks the hash and sets the
+/// invoked name immediately before it execs the canonical path. A direct start (the launcher is off) ignores the
+/// hash, the same as any other direct start, and `sandbox-exec` does not keep a direct `argv0`. The last hash in
+/// this process is `confirm_before_spawn`, which has already run.
+///
+/// The child keeps its run folder as its working directory, and that folder is in the profile's allowed set.
+/// `skip_outer_sandbox` is ignored: a More agents child does not skip the wrap.
 ///
 /// The process group is set after the wrap, so the leader is the sandbox launcher. The allow-listed environment is
 /// applied after that, because the wrap builds a new command.
+#[allow(clippy::too_many_arguments)]
 fn wrap_more_agent_at_spawn(
     cmd: Command,
     approved: &str,
@@ -1666,22 +1719,29 @@ fn wrap_more_agent_at_spawn(
     data_dir: Option<&Path>,
     home: &Path,
     skip_outer_sandbox: Option<bool>,
+    argv0: Option<&std::ffi::OsStr>,
+    expect_sha256: Option<&str>,
 ) -> Result<Command, String> {
     // A Codex chat can skip the outer sandbox. A More agents child cannot.
     let _ = skip_outer_sandbox;
     let checkout = workdir.to_path_buf();
     let allowed = spawn_dir.to_path_buf();
-    // The hard link of the approved file goes here, just before this wrap, so the sandbox starts that link.
     let prefix = crate::agent_sandbox::more_agent_wrap(
         home,
         data_dir,
         std::slice::from_ref(&checkout),
         std::slice::from_ref(&allowed),
     )?;
+    let cmd = pass_more_agent_pin(cmd, approved, data_dir, argv0, expect_sha256);
     let Some(prefix) = prefix else {
-        // The sandbox is off. The child still gets only the allow-listed environment.
+        // The sandbox is off. The pin rebuilds the command, so the process group and the pipes are set again.
+        // The child still gets only the allow-listed environment.
         let mut cmd = cmd;
+        prepare_child(&mut cmd, approved);
         crate::more_agents::restrict_env(&mut cmd, &gui_search_path());
+        cmd.stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
         return Ok(cmd);
     };
     let mut cmd = crate::agent_sandbox::under_wrap(cmd, Some(prefix.as_slice()));
@@ -1691,6 +1751,45 @@ fn wrap_more_agent_at_spawn(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     Ok(cmd)
+}
+
+/// Put the disclaim launcher, the invoked name and the approved hash in front of `cmd`'s arguments.
+///
+/// The launcher hashes `approved` by path and then execs that path. `under_wrap` keeps the program and the
+/// arguments, so the sandbox runs the launcher and the hash still applies to the canonical command. When the
+/// launcher is off, a direct start ignores the hash. Nothing is added when there is no name and no hash.
+fn pass_more_agent_pin(
+    cmd: Command,
+    approved: &str,
+    data_dir: Option<&Path>,
+    argv0: Option<&std::ffi::OsStr>,
+    expect_sha256: Option<&str>,
+) -> Command {
+    if argv0.is_none() && expect_sha256.is_none() {
+        return cmd;
+    }
+    let launcher = crate::disclaim::launcher_for(std::ffi::OsStr::new(approved), data_dir);
+    let mut inner = crate::disclaim::command(
+        std::ffi::OsStr::new(approved),
+        launcher.as_deref(),
+        argv0,
+        expect_sha256,
+    );
+    inner.args(cmd.get_args());
+    if let Some(dir) = cmd.get_current_dir() {
+        inner.current_dir(dir);
+    }
+    for (key, value) in cmd.get_envs() {
+        match value {
+            Some(value) => {
+                inner.env(key, value);
+            }
+            None => {
+                inner.env_remove(key);
+            }
+        }
+    }
+    inner
 }
 
 /// The child from a start, or the error the caller sees when the start failed. A More agents run folder
@@ -1719,6 +1818,8 @@ fn child_or_reap(
 
 #[cfg(test)]
 mod failed_spawn_tests {
+    #[cfg(unix)]
+    use super::retry_text_file_busy;
     use super::{child_or_reap, spawn_managed};
     use std::path::PathBuf;
     use std::process::Command;
@@ -1757,7 +1858,7 @@ mod failed_spawn_tests {
 
         // Not a More agents start: this failure has no run folder of its own, so the working folder stays.
         let ordinary = child_or_reap(
-            spawn_managed(&mut cmd),
+            spawn_managed(&mut cmd, None),
             false,
             || Some(data.0.clone()),
             &run,
@@ -1770,7 +1871,7 @@ mod failed_spawn_tests {
         );
 
         let failed = child_or_reap(
-            spawn_managed(&mut cmd),
+            spawn_managed(&mut cmd, None),
             true,
             || Some(data.0.clone()),
             &run,
@@ -1798,6 +1899,43 @@ mod failed_spawn_tests {
             "a missing data folder was treated as a removed run folder"
         );
         crate::more_agents::remove_run_folder(&data.0, &kept).expect("reap leftover");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_text_file_busy_retry_checks_again_before_the_next_spawn() {
+        let checks = std::cell::Cell::new(0);
+        let spawns = std::cell::Cell::new(0);
+        let recheck = || {
+            checks.set(checks.get() + 1);
+            Ok(())
+        };
+        let result = retry_text_file_busy(Some(&recheck), || {
+            let n = spawns.get();
+            spawns.set(n + 1);
+            if n < 2 {
+                Err(std::io::Error::from_raw_os_error(libc::ETXTBSY))
+            } else {
+                Err(std::io::Error::new(std::io::ErrorKind::NotFound, "stop"))
+            }
+        });
+        assert!(result.is_err());
+        assert_eq!(spawns.get(), 3);
+        assert_eq!(checks.get(), 2);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_failed_recheck_stops_the_text_file_busy_retry() {
+        let spawns = std::cell::Cell::new(0);
+        let recheck = || Err("changed".to_string());
+        let result = retry_text_file_busy(Some(&recheck), || {
+            spawns.set(spawns.get() + 1);
+            Err(std::io::Error::from_raw_os_error(libc::ETXTBSY))
+        });
+        let error = result.expect_err("the retry stopped");
+        assert_eq!(spawns.get(), 1);
+        assert_eq!(error.to_string(), "changed");
     }
 }
 
@@ -1866,6 +2004,8 @@ mod more_agent_sandbox_tests {
             Some(&scratch.0),
             &home,
             Some(true),
+            None,
+            None,
         )
         .expect("the start is built");
 
@@ -1931,6 +2071,107 @@ mod more_agent_sandbox_tests {
                 "off macOS the sandbox is off, so the approved command starts directly"
             );
         }
+
+        crate::more_agents::remove_run_folder(&scratch.0, &run).expect("reap run");
+    }
+
+    /// The sandbox wrap is the spawned program, and the approved hash and the invoked name are inside it. The
+    /// disclaim launcher, when it is on, is what the sandbox execs: it checks the hash, then execs the canonical
+    /// path. When the launcher is off, a direct start ignores the hash, so the flag is not on the command.
+    #[test]
+    fn a_sandboxed_more_agents_start_keeps_the_hash_and_the_invoked_name() {
+        let scratch = Scratch(std::env::temp_dir().join(format!(
+            "wp178-more-pin-{}",
+            uuid::Uuid::new_v4()
+        )));
+        std::fs::create_dir_all(&scratch.0).expect("scratch");
+        let home = scratch.0.join("home");
+        let chat = scratch.0.join("chat");
+        std::fs::create_dir_all(&home).expect("home");
+        std::fs::create_dir_all(&chat).expect("chat");
+        crate::agent_sandbox::write_setting(&scratch.0, true).expect("sandbox on");
+        let run = crate::more_agents::run_folder(&scratch.0).expect("run folder");
+        let approved = std::env::current_exe().expect("test binary");
+        let approved_text = approved
+            .to_str()
+            .expect("the test binary path is text")
+            .to_string();
+        let sha = "ab".repeat(32);
+        let mut cmd = Command::new(&approved);
+        cmd.arg("--flag").current_dir(&run);
+
+        let wrapped = wrap_more_agent_at_spawn(
+            cmd,
+            &approved_text,
+            &run,
+            &chat,
+            Some(&scratch.0),
+            &home,
+            Some(true),
+            Some(std::ffi::OsStr::new("bunx")),
+            Some(&sha),
+        )
+        .expect("the start is built");
+
+        let args: Vec<String> = wrapped
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+        let launcher_on = crate::disclaim::launcher_for(
+            std::ffi::OsStr::new(&approved_text),
+            Some(scratch.0.as_path()),
+        )
+        .is_some();
+        #[cfg(target_os = "macos")]
+        assert!(
+            launcher_on,
+            "the disclaim launcher is off, so the hash cannot be checked inside the wrap"
+        );
+        if launcher_on {
+            let sha_at = args
+                .iter()
+                .position(|arg| arg == "--expect-sha256")
+                .expect("the approved hash is passed through the wrap");
+            assert_eq!(args.get(sha_at + 1).map(String::as_str), Some(sha.as_str()));
+            let name_at = args
+                .iter()
+                .position(|arg| arg == "--argv0")
+                .expect("the invoked name is passed through the wrap");
+            assert!(sha_at < name_at, "the hash is not before the invoked name");
+            assert_eq!(args.get(name_at + 1).map(String::as_str), Some("bunx"));
+            let dash = args
+                .iter()
+                .position(|arg| arg == "--")
+                .expect("the launcher flags end before the command");
+            assert!(name_at < dash);
+            assert_eq!(
+                args.get(dash + 1).map(String::as_str),
+                Some(approved_text.as_str()),
+                "the hash does not apply to the canonical command"
+            );
+        } else {
+            assert!(
+                !args.iter().any(|arg| arg == "--expect-sha256"),
+                "a direct start, with the launcher off, put the hash on the command"
+            );
+        }
+        assert!(
+            args.iter().any(|arg| arg == "--flag"),
+            "the approved arguments stay on the command"
+        );
+
+        #[cfg(target_os = "macos")]
+        assert_eq!(
+            wrapped.get_program(),
+            std::ffi::OsStr::new(crate::agent_sandbox::SANDBOX_EXEC),
+            "the spawned program is the sandbox launcher"
+        );
+        #[cfg(not(target_os = "macos"))]
+        assert_eq!(
+            wrapped.get_program(),
+            approved.as_os_str(),
+            "off macOS the sandbox is off, so the approved command starts directly"
+        );
 
         crate::more_agents::remove_run_folder(&scratch.0, &run).expect("reap run");
     }
@@ -2411,7 +2652,8 @@ pub(crate) fn exec_output(
         }
     }
 
-    let child = spawn_managed(&mut cmd).map_err(|e| format!("Failed to run {command}: {e}"))?;
+    let child =
+        spawn_managed(&mut cmd, None).map_err(|e| format!("Failed to run {command}: {e}"))?;
     let pid = child.id();
     let (tx, rx) = mpsc::channel();
     thread::spawn(move || {
@@ -2471,17 +2713,22 @@ fn isolate_child(cmd: &mut Command) {
     }
 }
 
-fn spawn_managed(cmd: &mut Command) -> std::io::Result<std::process::Child> {
+fn spawn_managed(
+    cmd: &mut Command,
+    recheck: Option<&dyn Fn() -> Result<(), String>>,
+) -> std::io::Result<std::process::Child> {
     #[cfg(windows)]
     {
+        let _ = recheck;
         crate::windows::spawn_managed(cmd)
     }
     #[cfg(unix)]
     {
-        spawn_retrying_text_file_busy(cmd)
+        spawn_retrying_text_file_busy(cmd, recheck)
     }
     #[cfg(not(any(unix, windows)))]
     {
+        let _ = recheck;
         cmd.spawn()
     }
 }
@@ -2492,16 +2739,36 @@ fn spawn_managed(cmd: &mut Command) -> std::io::Result<std::process::Child> {
 /// So a binary written seconds ago — a CLI mid-upgrade, or a `--version` probe
 /// of a path the user just pointed us at — can be briefly unrunnable rather
 /// than wrong, and reporting it as invalid is the wrong answer.
+/// `recheck` runs after the wait and before the next spawn, so a More agents start hashes the
+/// program again. A failed recheck stops the retry.
 #[cfg(unix)]
-fn spawn_retrying_text_file_busy(cmd: &mut Command) -> std::io::Result<std::process::Child> {
+fn spawn_retrying_text_file_busy(
+    cmd: &mut Command,
+    recheck: Option<&dyn Fn() -> Result<(), String>>,
+) -> std::io::Result<std::process::Child> {
+    retry_text_file_busy(recheck, || cmd.spawn())
+}
+
+#[cfg(unix)]
+fn retry_text_file_busy(
+    recheck: Option<&dyn Fn() -> Result<(), String>>,
+    mut attempt_spawn: impl FnMut() -> std::io::Result<std::process::Child>,
+) -> std::io::Result<std::process::Child> {
     const ATTEMPTS: u32 = 4;
     for attempt in 1..ATTEMPTS {
-        match cmd.spawn() {
-            Err(e) if is_text_file_busy(&e) => thread::sleep(Duration::from_millis(20) * attempt),
+        match attempt_spawn() {
+            Err(error) if is_text_file_busy(&error) => {
+                thread::sleep(Duration::from_millis(20) * attempt);
+                if let Some(check) = recheck {
+                    if let Err(error) = check() {
+                        return Err(std::io::Error::other(error));
+                    }
+                }
+            }
             settled => return settled,
         }
     }
-    cmd.spawn()
+    attempt_spawn()
 }
 
 #[cfg(unix)]
@@ -3626,7 +3893,7 @@ fn help_mentions_rpc_mode(path: &Path) -> bool {
     // fails outright without a PATH that has node on it.
     apply_gui_env(&mut cmd);
     isolate_child(&mut cmd);
-    let Ok(child) = spawn_managed(&mut cmd) else {
+    let Ok(child) = spawn_managed(&mut cmd, None) else {
         return false;
     };
     let pid = child.id();
@@ -3720,7 +3987,7 @@ fn fx_help_mentions_acp(path: &Path) -> bool {
     // fails outright without a PATH that has node on it.
     apply_gui_env(&mut cmd);
     isolate_child(&mut cmd);
-    let Ok(child) = spawn_managed(&mut cmd) else {
+    let Ok(child) = spawn_managed(&mut cmd, None) else {
         return false;
     };
     let pid = child.id();
@@ -3784,7 +4051,7 @@ fn grok_help_mentions_agent(path: &Path) -> bool {
         .stderr(Stdio::piped());
     apply_gui_env(&mut cmd);
     isolate_child(&mut cmd);
-    let Ok(child) = spawn_managed(&mut cmd) else {
+    let Ok(child) = spawn_managed(&mut cmd, None) else {
         return false;
     };
     let pid = child.id();

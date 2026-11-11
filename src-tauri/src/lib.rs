@@ -731,6 +731,8 @@ pub fn run() {
             steering::steering_settle,
             decisions::decisions_ask,
             decisions::decisions_answer,
+            // WP-215: a first mate notes a call it settled.
+            decisions::decisions_note,
             decisions::decisions_list,
             // WP-156: standing answers stay off until this setting is on.
             decisions::decisions_standing_enabled,
