@@ -69,6 +69,21 @@ export function PluginApprovals({ refresh = 0, onChanged }: Props) {
         <article key={card.id} className="rounded-md border border-stroke px-3 py-2" data-request={card.id}>
           <h3 className="text-[13px] text-content">{card.title}</h3>
           <p className="mt-1 text-[12px] text-content/70">{card.body}</p>
+          {card.scanLine ? (
+            <section className="mt-2 rounded border border-stroke px-2 py-1" aria-label="Install check">
+              <p className="text-[12px] text-content/70">{card.scanLine}</p>
+              {card.findings.length ? (
+                <ul className="mt-1 list-disc pl-4 text-[12px] text-content/70">
+                  {card.findings.map((found, index) => (
+                    <li key={`${index}-${found.path}`}>
+                      {found.path ? `${found.path}: ` : ""}
+                      {found.message}
+                    </li>
+                  ))}
+                </ul>
+              ) : null}
+            </section>
+          ) : null}
           <div className="mt-2 flex gap-2">
             <SecondaryButton disabled={busy} onClick={() => void answer(card.id, true)}>
               Allow

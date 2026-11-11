@@ -111,6 +111,10 @@ export function targetFor(line: { kind: string; projectId: string; target: strin
   if (line.kind === "doc") return { kind: "doc", id: line.target };
   if (line.kind === "chat") return { kind: "chat", id: line.target, projectId: line.projectId };
   if (line.kind === "coding" || line.kind === "project") return { kind: "coding", projectId: line.projectId };
+  // WP-176: a spend pause opens the limit. A disk pause still opens Clean up.
+  if (line.kind === "builders" && line.target === "builders-spend") {
+    return { kind: "settings", section: "crew", anchor: "spend-limit" };
+  }
   if (line.kind === "builders") return { kind: "settings", section: "worktrees", anchor: WORKTREE_CLEANUP };
   return { kind: "task", projectId: line.projectId, id: line.target };
 }

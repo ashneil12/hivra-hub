@@ -37,13 +37,17 @@ describe("sub-agent model follows the worker's provider", () => {
     expect(envOf(args)).toEqual({
       CLAUDE_CODE_SUBAGENT_MODEL: "deepseek-v4.1-flash",
       CLAUDE_CODE_WORKFLOW_SUBAGENT_MODEL: "deepseek-v4.1-flash",
+      CLAUDE_BASH_MAINTAIN_PROJECT_WORKING_DIR: "1",
     });
   });
 
   it("an Anthropic worker (the test API key's Haiku workers) keeps Ash's own Haiku rule untouched", () => {
     cliPath = "/usr/local/bin/claude";
     for (const model of ["claude-haiku-5-5", "claude-sonnet-5", undefined]) {
-      expect(envOf(buildClaudeSpawnArgs({ model }))).toBeUndefined();
+      const env = envOf(buildClaudeSpawnArgs({ model }));
+      expect(env?.CLAUDE_CODE_SUBAGENT_MODEL).toBeUndefined();
+      expect(env?.CLAUDE_CODE_WORKFLOW_SUBAGENT_MODEL).toBeUndefined();
+      expect(env?.CLAUDE_BASH_MAINTAIN_PROJECT_WORKING_DIR).toBe("1");
     }
   });
 

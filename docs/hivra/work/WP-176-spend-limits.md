@@ -1,4 +1,4 @@
-# WP-XX: Spend limits, with a warning and no new builders at the limit
+# WP-176: Spend limits, with a warning and no new builders at the limit
 
 | Wave | Size | Depends on | Grok OK |
 | --- | --- | --- | --- |

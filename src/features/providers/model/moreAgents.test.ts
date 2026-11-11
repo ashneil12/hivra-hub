@@ -3,6 +3,14 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const invoke = vi.fn();
 vi.mock("@tauri-apps/api/core", () => ({ invoke: (...args: unknown[]) => invoke(...args) }));
 
+const listeners = vi.hoisted(() => new Map<string, (event: unknown) => void>());
+vi.mock("@tauri-apps/api/event", () => ({
+  listen: vi.fn(async (name: string, handler: (event: unknown) => void) => {
+    listeners.set(name, handler);
+    return () => listeners.delete(name);
+  }),
+}));
+
 const {
   FIRST_CLASS_COMMANDS,
   MORE_AGENT_COPY,
@@ -58,8 +66,10 @@ describe("More agents entries", () => {
     expect(parseMoreAgentEntry({ ...good, protocol: "acp-v2" }).ok).toBe(false);
     expect(parseMoreAgentEntry({ ...good, protocol: undefined }).ok).toBe(false);
     expect(parseMoreAgentEntry({ ...good, args: "--acp --verbose" }).ok).toBe(false);
-    const parsed = parseMoreAgentEntry({ ...good, args: ["$HOME", "a b", "~/x"] });
-    expect(parsed.ok && parsed.entry.args).toEqual(["$HOME", "a b", "~/x"]);
+    const parsed = parseMoreAgentEntry({ ...good, args: ["$HOME", "a b"] });
+    expect(parsed.ok && parsed.entry.args).toEqual(["$HOME", "a b"]);
+    // "~/x" is not expanded by anything that starts the agent, so it names a relative path and is refused.
+    expect(parseMoreAgentEntry({ ...good, args: ["~/x"] }).ok).toBe(false);
   });
 
   it("refuses ids that are not plain slugs and commands that are not one line", () => {
@@ -156,5 +166,54 @@ describe("More agents approvals", () => {
     const list = await approveMoreAgent("copilot", true);
     expect(invoke).toHaveBeenLastCalledWith("more_agents_approve", { id: "copilot", allowed: true, shown: null });
     expect(list.approved).toEqual(["copilot"]);
+  });
+});
+
+describe("a change made in another window reaches this window", () => {
+  it("re-reads the list when the app announces a change, so a withdrawn run stops here too", async () => {
+    const { subscribeMoreAgentsChanges } = await import("./moreAgents");
+    const onChange = vi.fn();
+    const stop = await subscribeMoreAgentsChanges(onChange);
+    expect(listeners.has("more-agents-changed")).toBe(true);
+    listeners.get("more-agents-changed")?.({});
+    expect(onChange).toHaveBeenCalledTimes(1);
+    stop();
+  });
+});
+
+
+describe("argument rules match the app", () => {
+  it("allows versions, dotted values, addresses and ordinary flags", async () => {
+    const { argumentProblem } = await import("./moreAgents");
+    expect(argumentProblem("/opt/npx", ["some-acp-agent@1.2.3", "--acp"])).toBeNull();
+    expect(argumentProblem("/opt/agent", ["--model=gpt-4.1"])).toBeNull();
+    expect(argumentProblem("/opt/agent", ["--host", "127.0.0.1"])).toBeNull();
+    expect(argumentProblem("/opt/uvx", ["agent==0.3.1"])).toBeNull();
+    expect(argumentProblem("/opt/claude", ["-m", "sonnet"])).toBeNull();
+    expect(argumentProblem("/opt/agent", ["-mode", "fast"])).toBeNull();
+  });
+
+  it("refuses a relative file, an inline program and a loader that names no absolute file", async () => {
+    const { argumentProblem } = await import("./moreAgents");
+    expect(argumentProblem("/opt/node", ["agent.mjs"])).not.toBeNull();
+    expect(argumentProblem("/opt/node", ["--env-file=.env"])).not.toBeNull();
+    expect(argumentProblem("/opt/node", ["-r", "./x"])).not.toBeNull();
+    expect(argumentProblem("/opt/node", ["../secret"])).not.toBeNull();
+    expect(argumentProblem("/opt/node", ["~/secret"])).not.toBeNull();
+    expect(argumentProblem("/usr/bin/python3", ["-m", "x"])).not.toBeNull();
+    expect(argumentProblem("/usr/bin/python3", ["-Bm", "x"])).not.toBeNull();
+    expect(argumentProblem("/opt/node", ["-pe", "1"])).not.toBeNull();
+    expect(argumentProblem("/usr/bin/python3", ["-m", "/abs/mod.py"])).toBeNull();
+  });
+});
+
+// Review #231 r2 repro (MEDIUM, functional; mirror of review_231_r2_a_model_slug_with_a_slash_is_accepted in
+// more_agents.rs): a model name with a slash reads as a relative path, so the entry is refused when it is added.
+describe("review #231 r2: a provider/model name is not a path", () => {
+  it("allows a model slug with a slash, with or without =", async () => {
+    const { argumentProblem } = await import("./moreAgents");
+    expect(argumentProblem("/opt/agent", ["--model", "openai/gpt-4.1"])).toBeNull();
+    expect(argumentProblem("/opt/agent", ["--model=anthropic/claude-sonnet-4"])).toBeNull();
+    expect(argumentProblem("/opt/agent", ["--model", "Qwen/Qwen2.5-Coder-32B-Instruct"])).toBeNull();
   });
 });

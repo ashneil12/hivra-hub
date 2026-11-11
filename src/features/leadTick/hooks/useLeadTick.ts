@@ -22,6 +22,7 @@ import {
 import { noteNotable } from "../../notifications/model/notableDelivery";
 import { loadQuietHours } from "../../notifications/model/quietHours";
 import type { Session } from "../../sessions/model/session";
+import { judgeLaunch } from "../../usage/model/spendGate";
 import { appPorts, slotAnswer } from "../model/ports";
 import { LeadTickScheduler, type LeadContext } from "../model/schedule";
 import { leadTickStore } from "../model/store";
@@ -86,6 +87,7 @@ export function useLeadTick(host: LeadTickHost): void {
                 inFlight,
                 health: builderHealth(),
                 scale: builderScale(),
+                spend: judgeLaunch({ project, harness: "", warn: false }),
               }),
             delegate: (owner, requestId, input) => crewDelegate(owner, requestId, input),
           },

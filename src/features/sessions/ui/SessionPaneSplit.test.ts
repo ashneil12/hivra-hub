@@ -143,6 +143,9 @@ describe("session pane split buttons", () => {
     expect(corner).not.toBeNull();
     expect(corner?.querySelector("[data-pane-split='right']")).not.toBeNull();
     expect(corner?.querySelector("[data-pane-split='down']")).not.toBeNull();
+    // WP-125: the copy link stays visible. The corner is hidden until hover, so the link is not inside it.
+    expect(container.textContent).toContain("Copy chat link");
+    expect(corner?.textContent ?? "").not.toContain("Copy chat link");
     expect(button("right")?.disabled).toBe(false);
     expect(button("down")?.disabled).toBe(false);
   });
@@ -174,6 +177,8 @@ describe("session pane split buttons", () => {
     render(props({ session: { ...props().session, private: true } }));
     expect(container.querySelector("[data-pane-header]")).toBeNull();
     expect(container.querySelector("[data-private-chat]")?.textContent).toBe("Private");
+    expect(container.textContent).toContain("Copy chat link");
+    expect(container.querySelector("[data-pane-corner]")?.textContent ?? "").not.toContain("Copy chat link");
     expect(container.querySelector("[data-pane-corner] [data-pane-split='right']")).not.toBeNull();
     expect(container.querySelector("[data-pane-corner] [data-private-chat]")).toBeNull();
   });
@@ -183,6 +188,7 @@ describe("session pane split buttons", () => {
     expect(container.querySelector("[data-pane-header]")).toBeNull();
     expect(container.querySelector("[data-pane-corner]")).toBeNull();
     expect(container.querySelector("[data-pane-splits]")).toBeNull();
+    expect(container.textContent).toContain("Copy chat link");
   });
 
   it("puts the buttons on the split header and leaves a drag off them", () => {
