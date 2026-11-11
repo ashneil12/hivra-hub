@@ -62,6 +62,7 @@ import { defaultModelId } from "../model/models";
 import { readRetiredGrokModel } from "../model/grokRetirement";
 
 import { HARNESSES, RUNTIME_MODES } from "../model/session";
+import { registryAgentIdForSession } from "../../registry/model/registryList";
 import type { InFlightRef } from "../model/inFlight";
 
 import { restoreOrchestrationProposal } from "../../orchestration/model/orchestrationPlan";
@@ -1770,6 +1771,8 @@ function recordToSession(record: SessionRecord): Session {
   const linkedWorkItem = sanitizeLinkedWorkItem(record.linkedWorkItem);
   const queuedMessages = sanitizeQueuedMessages(record.queuedMessages);
   const goal = openGoal(record.goal);
+  // WP-134b: the chat map says this session belongs to More agents. The stored harness stays one of the eleven.
+  const registryAgentId = registryAgentIdForSession(record.id);
   return {
     id: record.id,
     sidebarHidden: record.sidebarHidden === true || undefined,
@@ -1779,6 +1782,7 @@ function recordToSession(record: SessionRecord): Session {
       : {}),
     cwd: record.cwd,
     harness: asHarness(record.harness),
+    ...(registryAgentId ? { registryAgentId } : {}),
     // WP-16: the retired Grok model id reads as the default Claude model. Nothing is written back.
     model: readRetiredGrokModel(record.model, defaultModelId("claude")),
     modelSettings:

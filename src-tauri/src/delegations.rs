@@ -167,6 +167,16 @@ pub(crate) fn ensure_tables(conn: &Connection) -> rusqlite::Result<()> {
     if !has_run_started {
         conn.execute_batch("ALTER TABLE delegations ADD COLUMN run_started_at INTEGER;")?;
     }
+    // A row a memory or chat import wrote: history from another copy, which lends no folder (chat_media). Older stores
+    // get the column here, with every existing row unmarked.
+    let has_imported = conn
+        .prepare("SELECT 1 FROM pragma_table_info('delegations') WHERE name = 'imported'")?
+        .exists([])?;
+    if !has_imported {
+        conn.execute_batch(
+            "ALTER TABLE delegations ADD COLUMN imported INTEGER NOT NULL DEFAULT 0;",
+        )?;
+    }
     Ok(())
 }
 
@@ -2616,6 +2626,24 @@ mod tests {
             (reopened.id.as_str(), reopened.state.as_str()),
             (row.id.as_str(), RUNNING)
         );
+    }
+
+    /// The same owner and request id get the row already there back, even one the owner cancelled, so a restart that
+    /// wants a worker of its own must send a new request id (WP-172: fanoutCheckpoint.ts resume, confirm).
+    #[test]
+    fn a_cancelled_request_comes_back_as_the_same_row_so_a_restart_needs_a_new_request_id() {
+        let store = store();
+        let mut conn = store.lock_conn().unwrap();
+        let first = record(&mut conn, launch("mono", "req-x", "child-x"), 10).unwrap();
+        cancel(&mut conn, std::slice::from_ref(&first.id), None, None, 11).unwrap();
+        let again = record(&mut conn, launch("mono", "req-x", "child-x"), 12).unwrap();
+        assert_eq!(
+            (again.id.as_str(), again.state.as_str()),
+            (first.id.as_str(), CANCELLED)
+        );
+        let restarted = record(&mut conn, launch("mono", "req-x-r2", "child-x"), 13).unwrap();
+        assert_ne!(restarted.id, first.id);
+        assert_eq!(restarted.state, RUNNING);
     }
 
     /// A worker waiting on its owner's answer is taken over by a later request: the question is no longer anyone's.
