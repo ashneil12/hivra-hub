@@ -1405,11 +1405,28 @@ pub async fn firstmate_run_gates(
             return Ok(None);
         };
         // No stored plan and nothing in the facts: the routes check still runs in the webview.
+        // A send-back from the previous round is cleared here, or the delivered row stays failed.
         if plan.is_none()
             && facts
                 .as_ref()
                 .is_none_or(|turn| super::fact_gaps::done_gaps(turn).is_empty())
         {
+            if row.gate_verdict.as_deref() == Some(GateVerdict::FAILED)
+                && super::status::sent_back_on(&row)
+            {
+                let change = delegations::set_gate_verdict(
+                    &mut *store.lock_conn()?,
+                    &row.id,
+                    GateVerdict::PASSED,
+                    "the later facts show no gap",
+                    None,
+                    now_millis(),
+                )?;
+                if change.applied {
+                    let _ = app.emit(delegations::CHANGED, serde_json::json!({ "ids": [row.id] }));
+                    crate::tasks::emit_for_delegations(&app); // WP-70
+                }
+            }
             return Ok(None);
         }
         let round = next_round(&*store.lock_conn()?, &row.id)?;

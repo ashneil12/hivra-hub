@@ -866,3 +866,59 @@ fn the_claude_verdict_call_sends_the_prompt_on_stdin_with_no_tools() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+// ---- review round 1 (PR #232): failing repro --------------------------------------------------------------------------
+
+// HIGH: a plan-less worker sent back for a fact gap and then fixed keeps the first round's "failed" verdict.
+// `firstmate_run_gates` returns `None` for a plan-less turn with no gap before it writes anything, so nothing replaces
+// the stored failure; the delivered row shows Failed ("Sent back: ...") and `task_accept` can't fix it (unsure only).
+#[test]
+fn r1_a_planless_turn_fixed_after_a_send_back_does_not_stay_failed() {
+    use crate::firstmate::fact_gaps::{done_gaps, FactCheck, FactEdit, FactTurn};
+    use crate::firstmate::status::Status;
+    let mut conn = store();
+    let row = record_row(&mut conn);
+    // Round 1, as the command does it: no stored plan, a fact gap, the fact-only record's verdict on the row.
+    let first = fact_only_record(&row.id, 1, 2, &stale_facts()).expect("a gap");
+    let applied = crate::delegations::set_gate_verdict(
+        &mut conn,
+        &row.id,
+        first.verdict.stored(),
+        &first.summary,
+        None,
+        2,
+    )
+    .unwrap();
+    assert!(applied.applied);
+    // Round 2: the worker reran the test after its edit. No plan and no gap, so the command returns before it writes,
+    // the routes check passes in the webview, and the report is delivered as completed.
+    let fixed = FactTurn {
+        checks: vec![
+            FactCheck {
+                command: "npm test".into(),
+                status: "passed".into(),
+                at: 1.0,
+            },
+            FactCheck {
+                command: "npm test".into(),
+                status: "passed".into(),
+                at: 3.0,
+            },
+        ],
+        edits: vec![FactEdit {
+            path: "src/features/crew/row.ts".into(),
+            at: 2.0,
+        }],
+        ..Default::default()
+    };
+    assert!(done_gaps(&fixed).is_empty());
+    assert!(fact_only_record(&row.id, 2, 4, &fixed).is_none());
+    let settled = settle_done(&mut conn, &row);
+    assert_eq!(
+        settled.status,
+        Status::Done,
+        "delivered work still shows {:?}: {:?}",
+        settled.status,
+        settled.status_notice
+    );
+}

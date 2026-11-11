@@ -128,6 +128,12 @@ fn sent_back_line(summary: &str) -> Option<String> {
     Some(line.to_string())
 }
 
+/// Whether the newest gates line is a real send-back. The verdict on the row is separate: a later delivery can
+/// clear it without losing the line.
+pub(crate) fn sent_back_on(row: &Delegation) -> bool {
+    sent_back_notice(row, GateVerdict::Failed).is_some()
+}
+
 /// The newest gates summary, and only when this verdict is a failure. An older line does not outlive a later one.
 fn sent_back_notice(row: &Delegation, gates: GateVerdict) -> Option<String> {
     if gates != GateVerdict::Failed {

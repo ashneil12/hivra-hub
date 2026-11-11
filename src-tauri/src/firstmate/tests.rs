@@ -379,15 +379,23 @@ fn a_sent_back_reason_is_the_notice_and_a_stall_still_wins() {
         .unwrap()
         .row
         .unwrap();
+    // The status rule itself: a completed row whose verdict is still failed shows the reason.
+    let mut held = open.clone();
+    held.state = COMPLETED.into();
+    assert_eq!(
+        status(&held, GateVerdict::Failed),
+        (
+            Status::Failed,
+            Some("Sent back: a check failed this turn (npm test). Also 1 more.".into())
+        )
+    );
+    // Delivering the fix clears that failure. The log keeps the reason.
     let done = settle(&mut conn, finish(&open, COMPLETED), 6)
         .unwrap()
         .row
         .unwrap();
-    assert_eq!(done.status, Status::Failed);
-    assert_eq!(
-        done.status_notice.as_deref(),
-        Some("Sent back: a check failed this turn (npm test). Also 1 more.")
-    );
+    assert_eq!(done.status, Status::Done);
+    assert!(done.status_notice.is_none());
 
     let mut poisoned = done.clone();
     poisoned.log.push(serde_json::json!({

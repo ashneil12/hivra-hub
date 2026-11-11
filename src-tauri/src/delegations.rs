@@ -883,6 +883,15 @@ pub fn settle(conn: &mut Connection, input: SettleInput, now: i64) -> Result<Cha
         detail["error_class"] = json!(class);
     }
     row.note(now, &by, "settled", detail);
+    // A plan-less fix round writes no new verdict when the facts are clean, so the first round's
+    // send-back would still be on the row when the report is delivered. A completed delivery clears
+    // that failure. A verdict that is not a send-back stays as it is. The log keeps the reason.
+    if row.state == COMPLETED
+        && row.gate_verdict.as_deref() == Some(crate::firstmate::status::GateVerdict::FAILED)
+        && crate::firstmate::status::sent_back_on(&row)
+    {
+        row.gate_verdict = Some(crate::firstmate::status::GateVerdict::PASSED.into());
+    }
     row.touch(now);
     save(&tx, &row)?;
     // WP-157: one summary line. Cancelled work is not an outcome. A repeated settle never reaches here. The line is
