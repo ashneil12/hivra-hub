@@ -51,11 +51,11 @@ test("home lists what needs the person, follows a task as it moves, and keeps an
   await expect(page.getByRole("heading", { name: "Recent" })).toBeVisible();
 
   await page.getByRole("button", { name: "Move Recent up" }).click();
-  await expect(page.locator("[data-home]")).toHaveAttribute("data-home-order", "needs-you recent moving-now");
+  await expect(page.locator("[data-home]")).toHaveAttribute("data-home-order", "needs-you projects recent moving-now");
   await page.getByRole("button", { name: "Hide Needs you" }).click();
   await expect(page.getByRole("heading", { name: "Needs you" })).toHaveCount(0);
   await page.getByRole("button", { name: "Pin Example board" }).click();
-  await expect(page.locator("[data-home]")).toHaveAttribute("data-home-order", "recent moving-now panel:my-panels:board");
+  await expect(page.locator("[data-home]")).toHaveAttribute("data-home-order", "projects recent moving-now panel:my-panels:board");
   await expect(page.frameLocator("iframe[title='Example board']").getByText("Example: board")).toBeVisible();
 
   const pinned = page.locator("[data-home-section='panel:my-panels:board']");
@@ -65,7 +65,7 @@ test("home lists what needs the person, follows a task as it moves, and keeps an
   await page.locator("[data-wp73-shell]").screenshot({ path: `docs/hivra/work/proofs/wp-73/${testInfo.project.name}.png` });
 
   await page.reload();
-  await expect(page.locator("[data-home]")).toHaveAttribute("data-home-order", "recent moving-now panel:my-panels:board");
+  await expect(page.locator("[data-home]")).toHaveAttribute("data-home-order", "projects recent moving-now panel:my-panels:board");
   await expect(page.getByRole("heading", { name: "Needs you" })).toHaveCount(0);
 });
 
@@ -77,4 +77,18 @@ test("an empty home says all quiet and offers a chat, with no empty section", as
   await expect(page.getByRole("heading", { name: "Recent" })).toHaveCount(0);
   await expect(page.locator("[data-home-start]")).toBeVisible();
   await expect(page.getByRole("button", { name: "Start a chat with Crew" })).toHaveCount(0);
+});
+
+test("with no project at all, home says the projects are still in Ash OS and offers to bring them over", async ({ page }) => {
+  await page.goto("/tests/browser/wp73-home.html?noprojects=1");
+  const note = page.locator("[data-home-no-projects]");
+  await expect(note).toContainText("Your projects haven't come over from Ash OS yet.");
+  await expect(note.getByRole("button", { name: "Bring them over" })).toBeVisible();
+  await expect(page.getByText("All quiet.")).toHaveCount(0);
+  await expect(page.getByRole("heading", { name: "Projects" })).toHaveCount(0);
+  // An ask with nowhere to file it says so, instead of asking which project.
+  await page.getByLabel("Ask").fill("Write the notes");
+  await page.getByRole("button", { name: "Send" }).click();
+  await expect(page.locator("[data-home-reply]")).toContainText("There are no projects yet.");
+  await expect(note.getByRole("button", { name: "New project" })).toBeVisible();
 });

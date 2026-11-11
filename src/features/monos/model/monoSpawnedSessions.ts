@@ -1,6 +1,7 @@
 import { unwrapShellCommand } from "../../../integrations/harness/core/shellIntent";
 import {
   delegateToolData,
+  fanoutSessions,
   monoCodeToolCall,
 } from "../../sessions/model/monocodeToolCall";
 import {
@@ -120,7 +121,8 @@ export function waitingCardAfterStart(
 type SessionReceipt = {
   launches: MonoSpawnedSession[];
   listed: MonoSpawnedSession[];
-  sentSessionId?: string;
+  /** Chats a call sent work to: one for delegate_task or sessions.send, each task's for delegate_tasks (WP-171). */
+  sentSessionIds: string[];
 };
 
 const blockReceipts = new WeakMap<Block, SessionReceipt>();
@@ -132,6 +134,7 @@ function sessionReceipt(block: Block): SessionReceipt {
   const found: SessionReceipt = {
     launches: sanitizeMonoSpawnedSessions(block.monoSpawnedSessions),
     listed: [],
+    sentSessionIds: [],
   };
   if (
     block.tool &&
@@ -151,12 +154,16 @@ function sessionReceipt(block: Block): SessionReceipt {
         })
       : undefined;
     // The delegate tool's delegate_task names the worker's chat; its details come from the launch the app recorded.
+    // WP-171: delegate_tasks names one chat for each task it handed out.
     const delegated =
       call?.delegate === "delegate_task"
-        ? delegateToolData(block.tool.detail)?.childSessionId
-        : undefined;
-    if (typeof delegated === "string" && delegated.startsWith("app-"))
-      found.sentSessionId = delegated;
+        ? [delegateToolData(block.tool.detail)?.childSessionId]
+        : call?.delegate === "delegate_tasks"
+          ? fanoutSessions(block)
+          : [];
+    for (const id of delegated)
+      if (typeof id === "string" && id.startsWith("app-"))
+        found.sentSessionIds.push(id);
     if (
       call &&
       ["sessions.start", "sessions.list", "sessions.send"].includes(call.action)
@@ -201,7 +208,7 @@ function sessionReceipt(block: Block): SessionReceipt {
           receipt.result?.submitted === true &&
           typeof receipt.result.sessionId === "string"
         ) {
-          found.sentSessionId = receipt.result.sessionId;
+          found.sentSessionIds.push(receipt.result.sessionId);
         }
       } catch {
         // Incomplete or truncated output is not a confirmed launch.
@@ -231,8 +238,10 @@ export function monoSpawnedSessions(
     for (const entry of receipt.launches) {
       if (!found.has(entry.sessionId)) found.set(entry.sessionId, entry);
     }
-    const sent = receipt.sentSessionId && known.get(receipt.sentSessionId);
-    if (sent && !found.has(sent.sessionId)) found.set(sent.sessionId, sent);
+    for (const id of receipt.sentSessionIds) {
+      const sent = known.get(id);
+      if (sent && !found.has(sent.sessionId)) found.set(sent.sessionId, sent);
+    }
   }
   return [...found.values()];
 }
@@ -254,6 +263,8 @@ export type LaunchedSessionView = {
   /** Out of its provider's usage and held (H8): when it tries again by itself, and the provider's name. */
   retryAt?: number;
   provider?: string;
+  /** Waiting on another task of this fan-out, not on a free worker (WP-171). The card says so. */
+  forTask?: boolean;
 };
 
 export function launchedSessionState(session: Session): LaunchedSessionState {

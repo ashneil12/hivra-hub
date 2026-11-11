@@ -14,6 +14,7 @@ import {
   type WorktreeSetup,
 } from "../../projects/model/projectActions";
 import { janitorRemovalHead } from "./worktreeJanitor";
+import { rememberWorktreeInclude, withCreatedInclude } from "./worktreeIncludeNote";
 
 export type Worktree = {
   path: string;
@@ -30,6 +31,12 @@ export type Worktree = {
   setup?: WorktreeSetup;
   /** Said once, when this checkout was a plain git worktree because the pool was off or not installed. */
   poolNotice?: string;
+  /** WP-138: set when files named in .worktreeinclude are in this new worktree. No file contents. */
+  includeNote?: string;
+  /** WP-138: set when a listed file could not be copied. No file contents. */
+  includeWarning?: string;
+  /** Said when a fork's checkout could not be given the chat's uncommitted changes (`carryChanges`). */
+  changesNotice?: string;
 };
 export type Worktrees = { worktrees: Worktree[]; defaultRoot: string };
 
@@ -45,7 +52,7 @@ export async function createWorktree(
   branch: string,
   base: string,
   existing: boolean,
-  options: { runSetup?: boolean } = {},
+  options: { runSetup?: boolean; carryChanges?: boolean } = {},
 ) {
   const tree = await invoke<Worktree>("git_worktree_create", {
     cwd,
@@ -53,6 +60,8 @@ export async function createWorktree(
     base,
     existing,
     ...(options.runSetup === false ? { runSetup: false } : {}),
+    // A fork starts from a chat that has edited files: the new checkout gets them too, or says it could not.
+    ...(options.carryChanges === true ? { carryChanges: true } : {}),
   });
   notifyGitChanged();
   return tree;
@@ -230,13 +239,36 @@ export function detachSessionWorktree<T extends { cwd: string; worktreeCwd?: str
   };
 }
 
+/**
+ * The worktree a picker asked for, from a fresh listing. A listing has no .worktreeinclude
+ * note, so the note and warning on the tree the picker was given (a create result) are
+ * carried over; a failed copy would otherwise never be seen.
+ */
+export function listedWorktreeFor(
+  listed: readonly Worktree[],
+  tree: Worktree,
+): Worktree | undefined {
+  const found = listed.find(
+    (entry) => pathKey(entry.path) === pathKey(tree.path) && !entry.missing,
+  );
+  return found ? withCreatedInclude(found, tree) : undefined;
+}
+
 /** Existing working copies stay bound; removed ones can be replaced in place. */
 export function sessionInWorktree(session: Session, tree: Worktree): Session {
+  // WP-138: a create result carries the include note. A later listing does not clear it.
+  const include = rememberWorktreeInclude(session.id, tree);
   if (
     !session.worktreeRemoved &&
     pathKey(sessionWorkCwd(session)) === pathKey(tree.path)
-  )
-    return session;
+  ) {
+    if (!include.note && !include.warning) return session;
+    return {
+      ...session,
+      ...(include.note ? { includeNote: include.note } : {}),
+      ...(include.warning ? { includeWarning: include.warning } : {}),
+    };
+  }
   const target =
     session.worktreeRemoved && !isBlankSession(session)
       ? appendReadyHandoff(
@@ -266,6 +298,8 @@ export function sessionInWorktree(session: Session, tree: Worktree): Session {
     providerSessionId: undefined,
     context: undefined,
     pendingSwitch: undefined,
+    ...(include.note ? { includeNote: include.note } : {}),
+    ...(include.warning ? { includeWarning: include.warning } : {}),
   };
 }
 

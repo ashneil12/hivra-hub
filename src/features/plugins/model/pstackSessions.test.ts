@@ -83,8 +83,12 @@ const snapshot = JSON.parse(
 const tmps: string[] = [];
 let current: PluginWiring;
 
+/** Where the registry left a plugin's files, the way a session's instruction writes it (forward slashes). */
+const installed = (tmp: string, plugin: string) =>
+  join(tmp, "app-data", "plugins", "installed", plugin).replaceAll("\\", "/");
+
 /** Lay out what the registry left in one state, in a fresh folder, and hand sessions that state's wiring. */
-function layOut(state: State): { home: string } {
+function layOut(state: State): { home: string; tmp: string } {
   const tmp = mkdtempSync(join(tmpdir(), "hivra-pstack-sessions-"));
   tmps.push(tmp);
   const at = (text: string) => text.replaceAll("<TMP>", tmp);
@@ -97,7 +101,7 @@ function layOut(state: State): { home: string } {
     else writeFileSync(path, file.path.endsWith(".json") ? atJson(file.text ?? "") : at(file.text ?? ""));
   }
   current = JSON.parse(atJson(JSON.stringify(state.wiring))) as PluginWiring;
-  return { home: join(tmp, "home") };
+  return { home: join(tmp, "home"), tmp };
 }
 
 async function waitFor(check: () => boolean, what: string) {
@@ -124,7 +128,8 @@ async function claudeSees(sessionId: string) {
   const seen = await probeClaude(args);
   lines.get(sessionId)!(JSON.stringify({ type: "result", subtype: "success", session_id: `sess_${sessionId}` }));
   await Promise.race([turn.catch(() => undefined), new Promise((r) => setTimeout(r, 50))]);
-  return { args, skills: seen.skills };
+  const at = args.indexOf("--append-system-prompt");
+  return { args, skills: seen.skills, instruction: at >= 0 ? args[at + 1] : "" };
 }
 
 async function codexSees(sessionId: string, home: string) {
@@ -139,7 +144,30 @@ async function codexSees(sessionId: string, home: string) {
     onEvent: () => {},
   });
   const start = codexSent.slice(before).find((m) => m.method === "thread/start")!;
-  return (await probeCodex(start.params.config, home)).skills;
+  return {
+    skills: (await probeCodex(start.params.config, home)).skills,
+    instruction: String(start.params.developerInstructions ?? ""),
+  };
+}
+
+/**
+ * The skill lines a session's instruction gives for the plugin folder `root`: the folder on a line of its own, then one
+ * `name | … | skills/<dir>/SKILL.md` line per skill. Each path, joined to the folder, must be a SKILL.md the registry
+ * really left there, and must be the one that names that skill. A skill the instruction doesn't list is not here.
+ */
+function indexedUnder(instruction: string, root: string): string[] {
+  const rows = instruction.split("\n");
+  const head = rows.indexOf(root);
+  if (head < 0) return [];
+  const names: string[] = [];
+  for (const row of rows.slice(head + 1)) {
+    const cells = row.split(" | ");
+    const rel = cells.at(-1) ?? "";
+    if (cells.length < 3 || !/^skills\/[^/]+\/SKILL\.md$/.test(rel)) break;
+    expect(readFileSync(join(root, rel), "utf8"), rel).toContain(`name: ${cells[0]}\n`);
+    names.push(cells[0]);
+  }
+  return names.sort();
 }
 
 beforeAll(() => {
@@ -147,8 +175,10 @@ beforeAll(() => {
 });
 
 afterAll(async () => {
-  for (const id of ["claude-pstack-on", "claude-pstack-off"]) await stopClaudeSession(id).catch(() => undefined);
-  for (const id of ["codex-pstack-on", "codex-pstack-off"]) await stopCodexSession(id).catch(() => undefined);
+  for (const id of ["claude-pstack-on", "claude-pstack-index", "claude-pstack-off"])
+    await stopClaudeSession(id).catch(() => undefined);
+  for (const id of ["codex-pstack-on", "codex-pstack-index", "codex-pstack-off"])
+    await stopCodexSession(id).catch(() => undefined);
   __claudeTestReset();
   __codexTestReset();
   setClaudePluginArgs(undefined);
@@ -168,30 +198,51 @@ describe("pstack reaches every chat", () => {
     const claude = await claudeSees("claude-pstack-on");
     const creator = ["write-command", "write-mono", "write-panel", "write-persona", "write-skill"];
     const rpi = readdirSync(join(CARRIED, "hivra-rpi", "skills"));
-    const expected = [...snapshot.skills, ...creator, ...rpi];
+    const mcode = readdirSync(join(CARRIED, "hivra-mcode", "skills"));
+    const expected = [...snapshot.skills, ...creator, ...rpi, ...mcode];
     expect(claude.args).toContain("--plugin-dir");
     expect(claude.skills).toEqual(expect.arrayContaining(expected));
     expect(claude.skills).toHaveLength(expected.length);
     const codex = await codexSees("codex-pstack-on", home);
-    expect(codex).toEqual(expect.arrayContaining(expected));
-    expect(codex).toHaveLength(expected.length);
+    expect(codex.skills).toEqual(expect.arrayContaining(expected));
+    expect(codex.skills).toHaveLength(expected.length);
+  });
+
+  // WP-117: the MiniMax skills carry disable-model-invocation, so Claude Code does not offer them to the model itself.
+  // The instruction a session is given is how a first mate learns they exist and where each one is.
+  it("on: both CLIs are told every MiniMax skill and where it is, beside the pstack index", async () => {
+    const { home, tmp } = layOut(snapshot.on);
+    const mcode = readdirSync(join(CARRIED, "hivra-mcode", "skills")).sort();
+    const claude = await claudeSees("claude-pstack-index");
+    const codex = await codexSees("codex-pstack-index", home);
+    for (const text of [claude.instruction, codex.instruction]) {
+      expect(indexedUnder(text, installed(tmp, "hivra-mcode"))).toEqual(mcode);
+      expect(indexedUnder(text, installed(tmp, "pstack"))).toContain("tdd");
+      for (const name of mcode) expect(text.split("\n").filter((row) => row.startsWith(`${name} | `))).toHaveLength(1);
+    }
   });
 
   it("switched off: pstack's skills are gone and the Creator skills stay", async () => {
-    const { home } = layOut(snapshot.off);
+    const { home, tmp } = layOut(snapshot.off);
     const claude = await claudeSees("claude-pstack-off");
     const creator = ["write-command", "write-mono", "write-panel", "write-persona", "write-skill"];
     const rpi = readdirSync(join(CARRIED, "hivra-rpi", "skills"));
-    const staying = [...creator, ...rpi];
+    const mcode = readdirSync(join(CARRIED, "hivra-mcode", "skills"));
+    const staying = [...creator, ...rpi, ...mcode];
     expect(claude.args).toContain("--plugin-dir");
     expect(claude.skills).toEqual(expect.arrayContaining(staying));
     expect(claude.skills).toHaveLength(staying.length);
     expect(claude.skills).not.toContain("tdd");
     expect(claude.skills).toContain("rpi-tdd");
     const codex = await codexSees("codex-pstack-off", home);
-    expect(codex).toEqual(expect.arrayContaining(staying));
-    expect(codex).toHaveLength(staying.length);
-    expect(codex).not.toContain("tdd");
-    expect(codex).toContain("rpi-tdd");
+    expect(codex.skills).toEqual(expect.arrayContaining(staying));
+    expect(codex.skills).toHaveLength(staying.length);
+    expect(codex.skills).not.toContain("tdd");
+    expect(codex.skills).toContain("rpi-tdd");
+    // The pstack index goes with pstack. The MiniMax skills are a plugin of their own and stay listed.
+    for (const text of [claude.instruction, codex.instruction]) {
+      expect(text).not.toContain(installed(tmp, "pstack"));
+      expect(indexedUnder(text, installed(tmp, "hivra-mcode"))).toEqual([...mcode].sort());
+    }
   });
 });

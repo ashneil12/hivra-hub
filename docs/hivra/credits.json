@@ -10,7 +10,7 @@
       "name": "firstmate",
       "url": "https://github.com/kunchenguid/firstmate",
       "licence": "MIT",
-      "gave": "the first mate role, briefs with a definition of done, the status protocol and crew dispatch"
+      "gave": "the first mate role, briefs with a definition of done, the status protocol and crew dispatch. The Pi watcher arm is not part of Hivra"
     },
     {
       "name": "pstack",
@@ -52,7 +52,7 @@
       "name": "OpenBot",
       "url": "https://github.com/CopilotKit/openbot",
       "licence": "MIT",
-      "gave": "approval gates, an audit trail, typed handoffs and quiet digests"
+      "gave": "approval gates that stop at an unapproved action, an audit trail, typed handoffs and quiet digests"
     },
     {
       "name": "Rerun",
@@ -208,13 +208,31 @@
       "name": "oh-my-hermes",
       "url": "https://github.com/rlaope/oh-my-hermes",
       "licence": "MIT",
-      "gave": "the dag-ulw goal graph: a finish line first, write scopes, repair cycles, a verify node and a run verdict, planned for Wave J"
+      "gave": "the dag-ulw goal graph: a finish line first, write scopes, repair cycles, a verify node and a run verdict, and a finished run's close that counts the usage its children recorded (WP-91, WP-148)"
     },
     {
       "name": "T3 Code",
       "url": "https://github.com/pingdotgg/t3code",
       "licence": "MIT",
-      "gave": "the PR watch rules, honest Claude results, delegation delivery and stop rules, limit auto-resume guards, worktree cleanup cases and 18 recorded Claude transcripts for the test bench"
+      "gave": "the PR watch rules, honest Claude results, delegation delivery and stop rules, limit auto-resume guards, worktree cleanup cases, 18 recorded Claude transcripts for the test bench, a lead that can start work on any funded CLI (WP-120), a portable mid-thread handoff that says when a harness cannot resume, native subagent lineage with a child's approval answered on the parent thread (WP-122, ideas from the v0.1.0 and v0.1.7 release notes at e85e0094dd4617a1eada1ad7961f2132a79e67b2), forking a chat from a message (WP-123), copying the files named in .worktreeinclude into a new worktree (WP-138), and one prompt sent to several models from the thread sidebar (docs/user/thread-sidebar.md at e85e0094dd4617a1eada1ad7961f2132a79e67b2), and the open request for vendor cloud sessions (idea only, WP-136). WP-133 takes the remote, phone and web idea only (commit e85e0094) and does not copy T3 Connect"
+    },
+    {
+      "name": "T3 Code usage",
+      "url": "https://github.com/pingdotgg/t3code/blob/e85e0094dd4617a1eada1ad7961f2132a79e67b2/docs/user/usage.md",
+      "licence": "MIT",
+      "gave": "always-on context remaining in an open chat, usage history filters by provider and model, and dollar figures labelled as estimates (WP-127), from docs/user/usage.md at e85e0094dd4617a1eada1ad7961f2132a79e67b2"
+    },
+    {
+      "name": "T3 Code html renders",
+      "url": "https://github.com/pingdotgg/t3code/blob/e85e0094dd4617a1eada1ad7961f2132a79e67b2/docs/user/html-renders.md",
+      "licence": "MIT",
+      "gave": "sandboxed visual HTML replies in chat, from its html renders note at commit e85e0094dd4617a1eada1ad7961f2132a79e67b2 (ideas only, no code copied)"
+    },
+    {
+      "name": "T3 Code voice input",
+      "url": "https://github.com/pingdotgg/t3code/blob/e85e0094dd4617a1eada1ad7961f2132a79e67b2/docs/user/voice-input.md",
+      "licence": "MIT",
+      "gave": "desktop dictation that writes into the draft and does not send, from its voice input note at commit e85e0094dd4617a1eada1ad7961f2132a79e67b2 (ideas only, no code copied)"
     },
     {
       "name": "T3 Code one-time schedules",
@@ -245,6 +263,192 @@
       "url": "https://github.com/BarganConstantin/ccdeck",
       "licence": "AGPL-3.0",
       "gave": "ideas only: a live session tree (main agent at the root, subagents as nodes, inspectable tool calls) and a waiting-on-you list ordered questions first and longest wait first"
+    },
+    {
+      "name": "mcode-stack",
+      "url": "https://github.com/MiniMax-AI/mcode-stack",
+      "licence": "MIT",
+      "gave": "team skills a first mate calls by name: whether work should go to a subagent, a review that sees only the diff, the requirement and the test results, and turning a repeated correction into a check (WP-117)"
+    },
+    {
+      "name": "Pierre",
+      "url": "https://github.com/pierrecomputer/pierre",
+      "licence": "Apache-2.0",
+      "gave": "an optional split (side-by-side) diff, pinned as an npm package, with unified staying the default (WP-116)"
+    },
+    {
+      "name": "Claude Code subagents",
+      "url": "https://code.claude.com/docs/en/sub-agents",
+      "licence": "public docs",
+      "gave": "a cheap Explore agent passed to a crew session as a flag, so its search does not run on the lead model (ideas only, WP-143)"
+    },
+    {
+      "name": "models.dev",
+      "url": "https://github.com/anomalyco/models.dev",
+      "licence": "MIT",
+      "gave": "a catalogue of each model's context window and whether it can call tools, bundled so a custom route can read it offline (WP-104)"
+    },
+    {
+      "name": "Elephant-Goldfish",
+      "url": "https://github.com/google/elephant-goldfish-model",
+      "licence": "Apache-2.0",
+      "gave": "a zero-context review of a plan before a crew starts (WP-144)"
+    },
+    {
+      "name": "Memorilla",
+      "url": "https://github.com/snap-stanford/memorilla",
+      "licence": "Apache-2.0; its PersonalizationV4 data is CC BY 4.0",
+      "gave": "an external test set for chat-derived memory, the arm ladder its evaluation reports, and rules for writing a memory question that cannot be guessed (WP-106, ideas and data only)"
+    },
+    {
+      "name": "numbrone",
+      "url": "https://github.com/stevenmichaelthomas/numbrone",
+      "licence": "MIT",
+      "gave": "ideas only: a typed daily work log and retros that propose instruction edits only after the person agrees"
+    },
+    {
+      "name": "Reason Network",
+      "url": "https://github.com/reason-machines/reason-network",
+      "licence": "MIT OR Apache-2.0",
+      "gave": "the rule that an agent saying someone approved is not that person's approval, and the one-task-per-session and point-first messaging rules (ideas only)"
+    },
+    {
+      "name": "Orchestrator.inc",
+      "url": "https://github.com/OrchestratorInc/agent-orchestrator",
+      "licence": "Apache-2.0",
+      "gave": "ideas only: durable facts with status derived at read time, the rule that automation never types into a blocked session, and the chat hibernation boundary table (a new WP, not yet numbered)"
+    },
+    {
+      "name": "Paseo",
+      "url": "https://github.com/getpaseo/paseo",
+      "licence": "Apache-2.0",
+      "gave": "the lifecycle idea: a closed agent keeps its identity and resumes its saved session on the next prompt, and an idle runtime is reclaimed after an hour behind a daemon check and a provider veto (ideas only)"
+    },
+    {
+      "name": "Happy",
+      "url": "https://github.com/slopus/happy",
+      "licence": "MIT",
+      "gave": "one permission-mode resolution order and one mapping per CLI, written as Hivra's own matrix (ideas only; no Happy text or code copied)"
+    },
+    {
+      "name": "Paradev",
+      "url": "https://github.com/ParadevAI/Paradev",
+      "licence": "MIT",
+      "gave": "two handoff verbs (a native fork that does not read a transcript, and a handoff from the harness store first), an omitted-context marker and trust checks on a reported transcript path (ideas only)"
+    },
+    {
+      "name": "Cloudroom",
+      "url": "https://github.com/davidondrej/cloudroom",
+      "licence": "Apache-2.0",
+      "gave": "ideas only: teleport a running session between the Mac and a host (freeze, move history, resume with the same chat, model and effort), and the split of harness from core"
+    },
+    {
+      "name": "Emdash",
+      "url": "https://github.com/generalaction/emdash",
+      "licence": "Apache-2.0",
+      "gave": "ideas only: the host's inventory is authoritative, a deletion intent may outlive an unreachable host, and host calls fail fast"
+    },
+    {
+      "name": "Jean",
+      "url": "https://github.com/coollabsio/jean",
+      "licence": "Apache-2.0",
+      "gave": "ideas only: a plan that waits for approval before a GitHub issue is built, and one sidebar for local and remote machines"
+    },
+    {
+      "name": "Paperclip",
+      "url": "https://github.com/paperclipai/paperclip",
+      "licence": "MIT",
+      "gave": "ideas only: a spend limit that warns once and stops new builders at the limit, and goal ancestry on a run's briefs"
+    },
+    {
+      "name": "bb",
+      "url": "https://github.com/get-bb/bb",
+      "licence": "MIT",
+      "gave": "the principle that the person and the agent are both first-class operators of the same surfaces, with the CLI and API as first-class surfaces rather than sidecars (ideas only)"
+    },
+    {
+      "name": "HarnessRouter",
+      "url": "https://github.com/HarnessRouter/harnessrouter",
+      "licence": "Apache-2.0",
+      "gave": "a closed error code set with a retry rule for each code, and the rule that a client who gave up must not assume the task stopped (ideas only)"
+    },
+    {
+      "name": "Omnigent",
+      "url": "https://github.com/omnigent-ai/omnigent",
+      "licence": "Apache-2.0",
+      "gave": "a spend ceiling with a soft ask before a hard stop, and policies that stack from server to session (ideas only)"
+    },
+    {
+      "name": "Ghostex",
+      "url": "https://github.com/maddada/Ghostex",
+      "licence": "MIT",
+      "gave": "automatic account switch at a usage limit, and a card that says when every account is full (Hivra already has the switch; ideas only)"
+    },
+    {
+      "name": "Nimbalyst",
+      "url": "https://github.com/nimbalyst/nimbalyst",
+      "licence": "MIT",
+      "gave": "red and green accept or reject of an agent's change in the rendered document (ideas only)"
+    },
+    {
+      "name": "Traycer",
+      "url": "https://github.com/traycerai/traycer",
+      "licence": "MIT",
+      "gave": "switching model inside one chat with context kept, and a capability table per agent (ideas only)"
+    },
+    {
+      "name": "Sidecar",
+      "url": "https://github.com/marcus/sidecar",
+      "licence": "MIT",
+      "gave": "an agent opening a file at a line or a diff beside its terminal (ideas only)"
+    },
+    {
+      "name": "CC Switch",
+      "url": "https://github.com/farion1231/cc-switch",
+      "licence": "MIT",
+      "gave": "a failover queue with a circuit breaker across providers, and resuming a local session in its own folder (ideas only)"
+    },
+    {
+      "name": "OpenCodex",
+      "url": "https://github.com/lidge-jun/opencodex",
+      "licence": "MIT",
+      "gave": "a local gateway that lets Claude Code and Codex use other providers (ideas only)"
+    },
+    {
+      "name": "TanStack AI",
+      "url": "https://github.com/TanStack/ai",
+      "licence": "MIT",
+      "gave": "tool approval that rebuilds a paused call from the message history on resume (ideas only)"
+    },
+    {
+      "name": "OpenClaw",
+      "url": "https://github.com/openclaw/openclaw",
+      "licence": "MIT",
+      "gave": "a competitive reference for chat channels: unknown senders paired first, inbound messages untrusted (ideas only)"
+    },
+    {
+      "name": "activeloopai/hivemind",
+      "url": "https://github.com/activeloopai/hivemind",
+      "licence": "Apache-2.0",
+      "gave": "repeated patterns in agent traces codified into SKILL.md files (ideas only; cloud-backed)"
+    },
+    {
+      "name": "AgenticBench",
+      "url": "https://agenticbench.org",
+      "licence": "no licence file",
+      "gave": "planted-secret checks on what a coding agent does with a machine and its data, as acceptance-test ideas for the secret vault (ideas only)"
+    },
+    {
+      "name": "Agentlas",
+      "url": "https://github.com/agentlas-ai/agentlas-desktop",
+      "licence": "Apache-2.0",
+      "gave": "ideas only: an operating-system boundary around each agent's terminal, with secret paths and protected config paths (design first)"
+    },
+    {
+      "name": "Atomic Agent",
+      "url": "https://github.com/AtomicBot-ai/atomic-agent",
+      "licence": "MIT",
+      "gave": "contracts for a multi-part fan-out (what each part owns, provides and requires, and the checks it must pass), dependency waves, the person's own request quoted in every worker brief, and a few prompt lines (WP-171)"
     }
   ],
   "components": [
@@ -541,16 +745,16 @@
       "url": "https://github.com/siddsachar/row-bot",
       "licence": "Apache-2.0",
       "copyright": "Copyright 2026 Row-Bot Contributors",
-      "where": "src/features/memory/model/recallPolicy.ts",
-      "how": "memory_policy.py translated to TypeScript, its test cases ported, for WP-99. The semantic and graph score terms are folded into lexical matching, because Hivra has no embeddings and no graph; the store is scored in one pass rather than through a SQLite candidate query; Row-Bot's memory statuses become Hivra's: a fact with a removal waiting is archived, one with an update waiting is superseded, and an unreviewed proposal needs review."
+      "where": "src/features/memory/model/recallPolicy.ts, src/features/memory/model/LICENSE.row-bot",
+      "how": "memory_policy.py translated to TypeScript, its test cases ported, for WP-99. The semantic and graph score terms are folded into lexical matching, because Hivra has no embeddings and no graph; the store is scored in one pass rather than through a SQLite candidate query; Row-Bot's memory statuses become Hivra's: a fact with a removal waiting is archived, one with an update waiting is superseded, and an unreviewed proposal needs review. Hivra adds a small penalty for a memory that has faded, and scores the memories of every Mono a turn reads in one decision. Licence text in src/features/memory/model/LICENSE.row-bot."
     },
     {
       "name": "Row-Bot's correction rule",
       "url": "https://github.com/siddsachar/row-bot",
       "licence": "Apache-2.0",
       "copyright": "Copyright 2026 Row-Bot Contributors",
-      "where": "src/features/memory/model/ruleCurator.ts",
-      "how": "learning/corrections.py translated line for line to TypeScript for WP-103, with its correction, not-a-correction and ambiguous cases ported to ruleCurator.test.ts. The store, episode and signal parts are left out because Hivra judges one turn at a time; the `<row_bot_turn_context` cut, the first-400-characters retraction window, the defect and asking sentence rules and the conservative order are the original's. Hivra adds its own fact detector beside it (remember that, from now on, always, never)."
+      "where": "src/features/memory/model/ruleCurator.ts, src/features/memory/model/LICENSE.row-bot",
+      "how": "learning/corrections.py translated line for line to TypeScript for WP-103, with its correction, not-a-correction and ambiguous cases ported to ruleCurator.test.ts. The store, episode and signal parts are left out because Hivra judges one turn at a time; the `<row_bot_turn_context` cut, the first-400-characters retraction window, the defect and asking sentence rules and the conservative order are the original's. Hivra adds its own fact detector beside it (remember that, from now on, always, never). Licence text in src/features/memory/model/LICENSE.row-bot."
     },
     {
       "name": "Mnemos's lived-day clock",
@@ -581,8 +785,40 @@
       "url": "https://github.com/siddsachar/row-bot",
       "licence": "Apache-2.0",
       "copyright": "Copyright 2026 Row-Bot Contributors",
-      "where": "src/features/memory/model/orderScan.ts",
-      "how": "external_content.py's injection scan translated to TypeScript, with its cases ported (WP-111). The fence and the warning sentence are not used. A match refuses a proposed memory and is noted on recall. It never deletes one."
+      "where": "src/features/memory/model/orderScan.ts, src/features/memory/model/LICENSE.row-bot",
+      "how": "external_content.py's injection scan translated to TypeScript, with its cases ported (WP-111). The fence and the warning sentence are not used. A match refuses a proposed memory and is noted on recall. It never deletes one. Licence text in src/features/memory/model/LICENSE.row-bot."
+    },
+    {
+      "name": "MiniMax Code's subagent-split-check, independent-review and taste-to-checks",
+      "url": "https://github.com/MiniMax-AI/mcode-stack",
+      "licence": "MIT",
+      "copyright": "Copyright (c) 2026 MiniMax Code",
+      "where": "src-tauri/plugins/hivra-mcode/skills/subagent-split-check, src-tauri/plugins/hivra-mcode/skills/independent-review, src-tauri/plugins/hivra-mcode/skills/taste-to-checks, src-tauri/plugins/hivra-mcode/skills/long-session-check, src-tauri/plugins/hivra-mcode/skills/context-tax-audit",
+      "how": "Copied from stacks/ronny/skills at 88f84be7075106d8ce283e5d3a8138cdb8f9a205. The three named skills, plus the short long-session-check and context-tax-audit. Each file adds disable-model-invocation, so Claude Code does not offer it to the model itself; Hivra's skill index lists each one and where it is, and a first mate reads it when the work fits (WP-117). context-tax-audit turns two em dashes into a comma and a full stop. The skill text is otherwise unchanged."
+    },
+    {
+      "name": "models.dev's model catalogue",
+      "url": "https://github.com/anomalyco/models.dev",
+      "licence": "MIT",
+      "copyright": "Copyright (c) 2025 models.dev",
+      "where": "src/features/sessions/model/modelsDev.json, src/features/sessions/model/LICENSE.models-dev",
+      "how": "The models.dev catalogue trimmed to each model's context window and tool flag, at commit b4b8ca36 (WP-104). The generator and the provider files are not copied. The app reads the file offline."
+    },
+    {
+      "name": "Pierre Diffs",
+      "url": "https://github.com/pierrecomputer/pierre/tree/main/packages/diffs",
+      "licence": "Apache-2.0",
+      "copyright": "Copyright 2025 Pierre Computer Company",
+      "where": "package.json, src/features/source-control/ui/pierreDiff.tsx",
+      "how": "Pinned npm package for the optional split diff view (WP-116)."
+    },
+    {
+      "name": "Atomic Agent's fan-out contract",
+      "url": "https://github.com/AtomicBot-ai/atomic-agent",
+      "licence": "MIT",
+      "copyright": "Copyright (c) 2026 Atomic Bot",
+      "where": "src/features/firstmate/model/fanoutContract.ts, src/features/firstmate/model/fanoutWaves.ts, src/features/firstmate/model/fanoutChecks.ts, src/features/firstmate/model/originalRequest.ts",
+      "how": "The contract's kinds of provide, its description and search-path rules, the contract block and per-task lines, and the requires-cycle walk (contract.ts); the wave planner and its cycle fallback (contract-waves.ts); the presence check of a provide in a file (contract-checks.ts); and the bounded quote of the person's request with its follow-up rule (worker-prompt.ts), translated to TypeScript at commit 1b4e641525c5b1427b48ff6b8d9932dc26bd8256 (WP-171). Hivra reads the contract from each task of one delegate_tasks call, refuses a requirement nothing provides and a provide nobody could check before anything starts, holds a task whose provider failed or did not deliver instead of running it anyway, fails a check that could not run, runs a declared check as the task's WP-40 checks gate, reads the request from the first mate's chat (the person's own messages only), and quotes it behind a mark on every line."
     }
   ]
 }

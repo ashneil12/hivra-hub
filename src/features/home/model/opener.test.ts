@@ -2,7 +2,9 @@
 import { beforeEach, expect, it, vi } from "vitest";
 import { currentHubSelection, setHubSelection } from "../../hub/model/hubNav";
 import { resetHomePending, takeHomeDecision, takeHomeDoc, takeHomeTask } from "./pending";
-import { applyHomeOpen, targetFor } from "./opener";
+import { SETTINGS_INDEX } from "../../settings/model/settings";
+import { builderHoldLine } from "./lines";
+import { applyHomeOpen, targetFor, WORKTREE_CLEANUP } from "./opener";
 
 beforeEach(() => {
   localStorage.clear();
@@ -22,6 +24,7 @@ function hands() {
     openNotes: vi.fn(),
     openSession: vi.fn(),
     openTeam: vi.fn(),
+    openSettings: vi.fn(),
     projects: () => projects,
   };
 }
@@ -60,4 +63,27 @@ it("a decision is queued for the inbox, and a task or a doc is queued for its ow
 
   applyHomeOpen({ kind: "coding", projectId: "crew" }, used);
   expect(used.openTeam).toHaveBeenCalledWith("crew");
+});
+
+it("the held-builders line opens Settings > Worktrees > Clean up, and nothing else", () => {
+  const line = builderHoldLine({
+    id: "builders-disk",
+    text: "New builders are waiting: 24 GB free, under the 30 GB floor",
+    action: "Free up space",
+    freeGb: 24,
+    floorGb: 30,
+  });
+  expect(targetFor(line)).toEqual({ kind: "settings", section: "worktrees", anchor: "worktree-cleanup" });
+  const used = hands();
+  applyHomeOpen(targetFor(line), used);
+  expect(used.closeChrome).toHaveBeenCalledOnce();
+  expect(used.openSettings).toHaveBeenCalledExactlyOnceWith("worktrees", "worktree-cleanup");
+  expect(used.openTeam).not.toHaveBeenCalled();
+  expect(used.openInbox).not.toHaveBeenCalled();
+  expect(used.openSession).not.toHaveBeenCalled();
+  // The place it names is a real card in Settings: the anchor is the id the Settings index scrolls to.
+  expect(SETTINGS_INDEX.find((entry) => entry.id === WORKTREE_CLEANUP)).toMatchObject({
+    section: "worktrees",
+    label: "Clean up worktrees",
+  });
 });

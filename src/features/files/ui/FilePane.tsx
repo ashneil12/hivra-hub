@@ -20,7 +20,7 @@ import {
   type LayoutNode,
   type SplitDir,
 } from "../../workspace/model/layout";
-import { PaneSplitButtons } from "../../workspace/ui/PaneSplitButtons";
+import { PaneSplitButtons, PaneSplitCorner } from "../../workspace/ui/PaneSplitButtons";
 import { isImagePath, isVideoPath } from "../model/filePreview";
 import type { TerminalMetaPatch } from "../../terminal/model/terminalTab";
 import type { EditorNavigationTarget } from "../../search/model/search";
@@ -134,7 +134,7 @@ function FilePaneComponent({
   );
   return (
     <div
-      className="flex h-full min-h-0 min-w-0 flex-1 flex-col"
+      className="group/pane relative flex h-full min-h-0 min-w-0 flex-1 flex-col"
       onMouseDown={() => onFocus(pane.id)}
     >
       {showTabs ? (
@@ -152,12 +152,8 @@ function FilePaneComponent({
           trailing={splitButtons}
         />
       ) : splitButtons ? (
-        <div
-          data-pane-header=""
-          className="flex h-9 shrink-0 items-center justify-end border-b border-stroke px-1.5"
-        >
-          {splitButtons}
-        </div>
+        // A pane on its own has no header bar: the buttons show in its corner while it is hovered.
+        <PaneSplitCorner>{splitButtons}</PaneSplitCorner>
       ) : null}
       <div data-pane-body="" className="relative min-h-0 flex-1">
         {(deferBody ? [] : pane.files).map((file) => {

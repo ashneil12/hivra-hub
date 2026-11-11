@@ -1,5 +1,6 @@
 // WP-51: load reviewed memory for one turn. A timeout or a missing file recalls nothing this time.
 // WP-99: each memory reaches a conversation once; a compaction or a restart sends them again.
+// One decision covers every Mono the turn reads: at most three lines, in one fence, however many Monos there are.
 
 import { invoke } from "@tauri-apps/api/core";
 import { parseDoc } from "../model/doc";
@@ -29,26 +30,14 @@ export async function recalledFence(
     const sessionId = wide?.sessionId;
     const shown = sessionId ? shownIds(sessionId, wide?.compacted ?? 0) : undefined;
     const now = Date.now();
-    const blocks: string[] = [];
-    const picked: string[] = [];
-    for (const id of mates) {
-      const decision = recallDecision({
-        doc,
-        mateId: id,
-        message,
-        now,
-        mode: "automatic",
-        exclude: shown,
-      });
-      // WP-99: the Memory screen can say why this Mono's last turn got what it got.
-      recordRecall(decision, now);
-      const block = recallFence(doc, decision.picked, readingEngine);
-      if (!block) continue;
-      blocks.push(block);
-      picked.push(...decision.picked);
-    }
-    if (sessionId && picked.length) noteShown(sessionId, picked);
-    return blocks.length ? blocks.join("\n\n") : undefined;
+    const decision = recallDecision({ doc, mateId, mateIds: mates, message, now, mode: "automatic", exclude: shown });
+    // WP-99: the Memory screen can say why each Mono's last turn got what it got.
+    recordRecall(decision, now);
+    const fence = recallFence(doc, decision.picked, readingEngine);
+    if (!fence) return undefined;
+    // A copy of a picked sentence under another Mono is as good as shown: noted too, it does not come back later.
+    if (sessionId) noteShown(sessionId, [...decision.picked, ...decision.copiesShown]);
+    return fence;
   } catch {
     return undefined;
   }

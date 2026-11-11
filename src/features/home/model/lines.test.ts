@@ -1,5 +1,6 @@
 import { expect, it } from "vitest";
 import {
+  builderHoldLine,
   type HomeChat,
   type HomeDecision,
   type HomeDoc,
@@ -13,6 +14,7 @@ import {
   parseDecision,
   parseDoc,
   parseTask,
+  projectLines,
   recentLines,
   sanitizeProjects,
   taskReadKeys,
@@ -175,4 +177,48 @@ it("empty, missing and untrusted rows are dropped", () => {
     { id: "win", name: "win", folder: "C:\\work\\hivra" },
   ]);
   expect(sanitizeProjects("nope")).toEqual([]);
+});
+
+it("the held-builders line is about the machine: it names the free space and has no project in front", () => {
+  const line = builderHoldLine({
+    id: "builders-disk",
+    text: "New builders are waiting:  24 GB free, under the 30 GB floor\n",
+    action: "Free up space",
+    freeGb: 24,
+    floorGb: 30,
+  });
+  expect(line).toEqual({
+    id: "builders:builders-disk",
+    kind: "builders",
+    text: "New builders are waiting: 24 GB free, under the 30 GB floor",
+    projectId: "",
+    target: "builders-disk",
+    at: 0,
+  });
+  expect(line.text).not.toContain("·");
+});
+
+it("gives each project one line: needs you first, else its first moving task, else just its name", () => {
+  const projects: HomeProject[] = [
+    { id: "crew", name: "Crew", folder: null },
+    { id: "site", name: "Site\nnew", folder: "/work/site" },
+    { id: "notes", name: "Notes", folder: null },
+    { id: "crew", name: "Crew again", folder: null },
+  ];
+  const name = namesFor(projects);
+  const tasks: HomeTask[] = [
+    { id: "q", projectId: "crew", title: "Which font?", status: "In progress", source: "person", assignee: null, needsYou: true, trashedAt: null, createdAt: 1 },
+    { id: "w", projectId: "site", title: "Write the notes", status: "In progress", source: "agent", assignee: "Ada", needsYou: false, trashedAt: null, createdAt: 2 },
+    { id: "c", projectId: "crew", title: "Crew task", status: "In progress", source: "agent", assignee: "Ada", needsYou: false, trashedAt: null, createdAt: 3 },
+  ];
+  const needs = needsYouLines([], tasks, name);
+  const moving = movingLines(tasks, name);
+  const lines = projectLines(projects, needs, moving, tasks);
+  expect(lines.map((line) => line.text)).toEqual(["Crew · needs you", "Site new · Write the notes", "Notes"]);
+  expect(lines.map((line) => [line.kind, line.projectId, line.target])).toEqual([
+    ["project", "crew", "crew"],
+    ["project", "site", "site"],
+    ["project", "notes", "notes"],
+  ]);
+  expect(lines.some((line) => /\d/.test(line.text))).toBe(false);
 });

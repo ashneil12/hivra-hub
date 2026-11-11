@@ -126,6 +126,26 @@ export function backgroundAskFits(tier: MemoryTier, model: string | undefined, n
 }
 
 /**
+ * WP-103: wraps an ask so the budget is taken at the moment of the real call, not before the curator's early returns
+ * (already done, a secret, empty). When it does not fit, nothing is called and `onPaused` hears of it.
+ */
+export function budgetedAsk(
+  tier: MemoryTier,
+  model: string | undefined,
+  ask: (prompt: string) => Promise<CuratorAsk>,
+  onPaused: () => void,
+  now: () => number = Date.now,
+): (prompt: string) => Promise<CuratorAsk> {
+  return async (prompt) => {
+    if (!backgroundAskFits(tier, model, now())) {
+      onPaused();
+      return { ok: false, kind: "timeout", reason: "The memory spending limit is reached." };
+    }
+    return ask(prompt);
+  };
+}
+
+/**
  * WP-103: a turn left for later is counted once on the health card, however many times it is tried again. Bounded so
  * a long session cannot grow the set without limit.
  */
@@ -139,10 +159,26 @@ export function firstDeferral(counted: Set<string>, key: string): boolean {
   return true;
 }
 
+/** WP-103: a turn that fails for a reason that may pass is asked at most this many times in all. */
+export const MAX_TRIES = 2;
+
+/** Counts one failed try of a turn. True while the turn may still be asked again. Bounded like firstDeferral. */
+export function mayTryAgain(tries: Map<string, number>, key: string): boolean {
+  const used = (tries.get(key) ?? 0) + 1;
+  tries.delete(key);
+  tries.set(key, used);
+  if (tries.size > 500) {
+    const oldest = tries.keys().next().value;
+    if (oldest !== undefined) tries.delete(oldest);
+  }
+  return used < MAX_TRIES;
+}
+
 export function useMemoryCurator(sessions: readonly Session[], enabled: boolean): void {
   const on = enabled && isMainWindow();
   const fedLast = useRef(new Map<string, string | undefined>());
   const countedDeferrals = useRef(new Set<string>());
+  const attempts = useRef(new Map<string, number>());
   useEffect(() => {
     if (!on) return;
     for (const feed of curatorFeeds(sessions, fedLast.current, mateForSession)) {
@@ -168,15 +204,22 @@ export function useMemoryCurator(sessions: readonly Session[], enabled: boolean)
         // carries it from here, so the memory written says which tier wrote it.
         const choice = loadMemoryTier();
         const tierCtx: CuratorContext = { ...ctx, via: choice.tier };
-        if (!backgroundAskFits(choice.tier, choice.model, ctx.now)) {
+        // The budget is taken inside the ask, just before the real call, so a turn that never reaches a model
+        // (already done, a secret, empty) spends nothing.
+        const turnKey = `${ctx.mateId}:${ctx.turnId}`;
+        let paused = false;
+        const guarded = budgetedAsk(choice.tier, choice.model, curatorAsk(choice.tier, tierCtx, choice.model), () => {
+          paused = true;
+        });
+        const result = await collectAnswer(loaded, tierCtx, guarded);
+        if (paused) {
           fedLast.current.delete(feed.sessionId);
           return;
         }
-        const result = await collectAnswer(loaded, tierCtx, curatorAsk(choice.tier, tierCtx, choice.model));
         if (result.kind === "deferred") {
           // WP-103: the card should say a model failed to answer, not stay silent about it. The turn is not done, so
           // the next turn tries it again; the count moves on its first failure only.
-          if (firstDeferral(countedDeferrals.current, `${ctx.mateId}:${ctx.turnId}`)) {
+          if (firstDeferral(countedDeferrals.current, turnKey)) {
             const at = Date.now();
             try {
               await commitDoc(loadDoc, saveDoc, (doc) => noteDeferred(markLived(doc, at), at));
@@ -184,7 +227,9 @@ export function useMemoryCurator(sessions: readonly Session[], enabled: boolean)
               // The count is a nicety: not being able to write it never holds the turn back.
             }
           }
-          fedLast.current.delete(feed.sessionId);
+          // At most MAX_TRIES asks a turn: after that it is left alone, so a model that never answers cannot burn
+          // the budget for every other chat.
+          if (mayTryAgain(attempts.current, turnKey)) fedLast.current.delete(feed.sessionId);
           return;
         }
         try {

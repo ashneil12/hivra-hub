@@ -1,3 +1,4 @@
+import { parksForApproval } from "./approvalCarry";
 import { isPreparingHandoff } from "./handoff";
 import { resumeStopped, wasTurnInterrupted } from "./inFlight";
 import type { Block, MessageQueueStatus, QueuedMessage, Session, TurnIntent } from "./session";
@@ -142,6 +143,9 @@ export function canSteerQueuedHead(session: Session): boolean {
     session.queueStatus !== "resuming" &&
     !isEditingQueuedHead(session) &&
     !isPreparingHandoff(session) &&
+    // WP-146: a queued follow-up does not enter a turn that is still waiting on approval, unless the agent
+    // has yielded with only background work left (the send path hands it over then too).
+    !parksForApproval(session) &&
     head.intent !== "plan" &&
     head.intent !== "orchestrate"
   );

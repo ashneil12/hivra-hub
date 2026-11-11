@@ -4,12 +4,15 @@
 import { useState, type ReactNode } from "react";
 import { sectionKey, type HomeArrangement, type SectionRef } from "../model/arrangement";
 import type { HomeLine, HomeLineKind } from "../model/lines";
+import { FREE_UP_SPACE } from "../../monos/model/builderScale";
+import { ArrowUp } from "../../../shared/ui/icons";
 import type { CatalogPanel } from "../../panels/model/panelTabs";
 import { HOME_MAX_WIDTH, HOME_STAGGER_MS } from "../vendor/homeLayout";
 import "./home.css";
 
 const TITLE: Record<string, string> = {
   "needs-you": "Needs you",
+  projects: "Projects",
   "moving-now": "Moving now",
   recent: "Recent",
 };
@@ -60,34 +63,96 @@ export function HomeChatBox({
 }) {
   const [text, setText] = useState("");
   const notes = reply?.notes ?? [];
+  const ready = text.trim().length > 0;
   return (
-    <form
-      data-home-start=""
-      className="rounded-lg border border-stroke px-4 py-3"
-      onSubmit={(event) => {
-        event.preventDefault();
-        onAsk(text);
-      }}
-    >
-      <label className="block text-[13px] text-content">
-        Ask
+    <div data-home-start="" className="flex flex-col">
+      <form
+        className="flex items-center gap-2 rounded-xl border border-stroke bg-content/[0.03] py-1.5 pr-1.5 pl-4 transition-colors focus-within:border-content/30"
+        onSubmit={(event) => {
+          event.preventDefault();
+          // An empty ask is not a question: nothing to answer, so nothing is said.
+          if (!ready) return;
+          onAsk(text);
+        }}
+      >
         <input
           aria-label="Ask"
           value={text}
+          placeholder="Ask what's happening, or tell a project what to do"
           onChange={(event) => setText(event.target.value)}
-          className="mt-2 w-full bg-transparent text-[13px] text-content outline-none"
+          className="min-w-0 flex-1 bg-transparent py-1.5 text-[14px] text-content outline-none placeholder:text-content/40"
         />
-      </label>
-      <button type="submit" className="mt-2 text-[13px] text-content underline-offset-2 hover:underline">
-        Ask
-      </button>
+        <button
+          type="submit"
+          aria-label="Send"
+          title="Send"
+          disabled={!ready}
+          // The same send button as a chat's composer (MonoComposer.tsx).
+          className="primary-action grid size-7 shrink-0 place-items-center rounded-md transition-[background-color,color,transform] duration-150 active:scale-90 disabled:cursor-default"
+        >
+          <ArrowUp className="size-3.5" strokeWidth={2} aria-hidden />
+        </button>
+      </form>
       {reply?.text || notes.length > 0 ? (
-        <div data-home-reply className="mt-3 border-t border-stroke pt-2">
-          {reply?.text ? <p className="text-[13px] text-content">{reply.text}</p> : null}
+        <div data-home-reply className="mt-2 rounded-xl border border-stroke px-4 py-2">
+          {reply?.text ? <p className="py-1 text-[13px] text-content">{reply.text}</p> : null}
           {notes.length > 0 ? <Notes notes={notes} onOpen={onOpen} /> : null}
         </div>
       ) : null}
-    </form>
+    </div>
+  );
+}
+
+/** Home's state when the app holds no project yet: why, and the way to get one. */
+export type NoProjects = {
+  /** The projects are still in Ash OS, which didn't answer when the app last asked. */
+  inAshOs: boolean;
+  /** How the last "Bring them over" went, in one line. */
+  outcome?: string;
+  busy?: boolean;
+};
+
+function NoProjectsNote({
+  state,
+  onBringOver,
+  onNewProject,
+}: {
+  state: NoProjects;
+  onBringOver?: () => void;
+  onNewProject?: () => void;
+}) {
+  return (
+    <div data-home-no-projects className="flex flex-col items-start gap-2 rounded-xl border border-stroke px-4 py-3">
+      <p className="text-[13px] text-content">
+        {state.inAshOs
+          ? "Your projects haven't come over from Ash OS yet. Bring them over: it only adds, and Ash OS isn't changed."
+          : "No projects yet. Add one to give it a coding team and its own Monos."}
+      </p>
+      {state.outcome ? <p data-home-import-outcome className="text-[13px] text-content/70">{state.outcome}</p> : null}
+      <div className="flex items-center gap-4">
+        {state.inAshOs && onBringOver ? (
+          <button
+            type="button"
+            data-home-action="bring-over"
+            disabled={state.busy}
+            className="text-[13px] text-content underline-offset-2 hover:underline disabled:text-content/40"
+            onClick={onBringOver}
+          >
+            {state.busy ? "Bringing them over…" : "Bring them over"}
+          </button>
+        ) : null}
+        {onNewProject ? (
+          <button
+            type="button"
+            data-home-action="new-project"
+            className="text-[13px] text-content underline-offset-2 hover:underline"
+            onClick={onNewProject}
+          >
+            New project
+          </button>
+        ) : null}
+      </div>
+    </div>
   );
 }
 
@@ -101,6 +166,10 @@ function Control({ name, onClick }: { name: string; onClick: () => void }) {
 
 export function HomeScreen({
   needsYou,
+  projects = [],
+  noProjects,
+  onBringOver,
+  onNewProject,
   moving,
   recent,
   arrangement,
@@ -117,8 +186,15 @@ export function HomeScreen({
   onUnpin,
   onAsk,
   renderPanel,
+  programme,
 }: {
   needsYou: readonly HomeLine[];
+  /** One line per project (the overview). */
+  projects?: readonly HomeLine[];
+  /** Set when the app holds no project: Home says why instead of "All quiet." */
+  noProjects?: NoProjects;
+  onBringOver?: () => void;
+  onNewProject?: () => void;
   moving: readonly HomeLine[];
   recent: readonly HomeLine[];
   arrangement: HomeArrangement;
@@ -135,9 +211,12 @@ export function HomeScreen({
   onUnpin: (key: string) => void;
   onAsk: (text: string) => void;
   renderPanel?: (panel: CatalogPanel) => ReactNode;
+  /** WP-159: the programme card. Absent when the board is empty, so a quiet home stays quiet. */
+  programme?: ReactNode;
 }) {
   const lines: Record<string, readonly HomeLine[]> = {
     "needs-you": needsYou,
+    projects,
     "moving-now": moving,
     recent,
   };
@@ -150,7 +229,9 @@ export function HomeScreen({
   const pinned = new Set(arrangement.order.filter((ref) => ref.kind === "panel").map(sectionKey));
   const offered = catalog.filter((panel) => !pinned.has(sectionKey({ kind: "panel", plugin: panel.plugin, panelId: panel.panelId })));
   const summaryNotes = summary ?? [];
-  const quiet = known && needsYou.length + moving.length + recent.length === 0 && summaryNotes.length === 0;
+  // Quiet is about activity: the projects overview alone is not something happening.
+  const quiet =
+    known && !programme && !noProjects && needsYou.length + moving.length + recent.length === 0 && summaryNotes.length === 0;
   return (
     <div
       data-home
@@ -159,6 +240,8 @@ export function HomeScreen({
     >
       <div className="mx-auto flex flex-col gap-6 px-6 pt-12 pb-8" style={{ maxWidth: HOME_MAX_WIDTH }}>
         {known ? <HomeChatBox reply={reply} onAsk={onAsk} onOpen={onOpen} /> : null}
+        {known && noProjects ? <NoProjectsNote state={noProjects} onBringOver={onBringOver} onNewProject={onNewProject} /> : null}
+        {programme ?? null}
         {known && summaryNotes.length > 0 ? (
           <div data-home-summary className="rounded-lg border border-stroke px-3 py-2">
             <Notes notes={summaryNotes} onOpen={onOpen} />
@@ -175,17 +258,38 @@ export function HomeScreen({
               key={key}
               data-home-section={key}
               aria-label={title}
-              className="home-enter rounded-lg border border-stroke"
+              className="home-enter group rounded-lg border border-stroke"
               style={{ animationDelay: `${index * HOME_STAGGER_MS}ms` }}
             >
               <header className="flex items-center gap-3 px-3 py-2">
                 <h2 className="min-w-0 flex-1 truncate text-[13px] font-medium text-content">{title}</h2>
-                <Control name={`Move ${title} up`} onClick={() => place > 0 && onMove(key, -1)} />
-                <Control name={`Move ${title} down`} onClick={() => place < visible.length - 1 && onMove(key, 1)} />
-                <Control name={`Hide ${title}`} onClick={() => onHide(key)} />
-                {ref.kind === "panel" ? <Control name={`Unpin ${title}`} onClick={() => onUnpin(key)} /> : null}
+                {/* Arranging is there when it's wanted: on hover or keyboard focus, not as words on every card. */}
+                <div data-home-arrange className="flex items-center gap-3 opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
+                  <Control name={`Move ${title} up`} onClick={() => place > 0 && onMove(key, -1)} />
+                  <Control name={`Move ${title} down`} onClick={() => place < visible.length - 1 && onMove(key, 1)} />
+                  <Control name={`Hide ${title}`} onClick={() => onHide(key)} />
+                  {ref.kind === "panel" ? <Control name={`Unpin ${title}`} onClick={() => onUnpin(key)} /> : null}
+                </div>
               </header>
-              {ref.kind === "builtin" ? rows.map((line) => (
+              {ref.kind === "builtin" ? rows.map((line) => line.kind === "builders" ? (
+                // WP-161: a line about the machine, not a place to open: its text says what is wrong and its one
+                // action opens Settings > Worktrees > Clean up. The text wraps, so the free space is never clipped.
+                <div
+                  key={line.id}
+                  data-home-line="builders"
+                  className="flex min-h-10 w-full items-center gap-3 border-t border-stroke px-3 py-1.5 text-[13px] text-content"
+                >
+                  <span className="min-w-0 flex-1">{line.text}</span>
+                  <button
+                    type="button"
+                    data-home-action="free-up-space"
+                    className="shrink-0 text-[12px] text-content underline-offset-2 hover:underline"
+                    onClick={() => onOpen(line)}
+                  >
+                    {FREE_UP_SPACE}
+                  </button>
+                </div>
+              ) : (
                 <button
                   key={line.id}
                   type="button"

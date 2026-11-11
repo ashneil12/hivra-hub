@@ -840,13 +840,39 @@ export async function readRoom(
 }
 
 /**
+ * What an imported room's message says in place of its files. A file's path comes from the Mac that made the export (or
+ * from a file written by hand), never from this one, and a room hands each attachment's path to the Mono that answers
+ * and prints it in the transcript it shows its Monos. So the attachments are dropped and the message says so; its text
+ * and the rest of the message stay.
+ */
+function withoutImportedFiles(message: ChatMessage): ChatMessage {
+  const files = (message as { attachments?: unknown }).attachments;
+  if (files === undefined) return message;
+  const { attachments: _files, ...rest } = message;
+  const names = (Array.isArray(files) ? files : []).flatMap((file: unknown) => {
+    const name = (file as { name?: unknown } | null)?.name;
+    return typeof name === "string" && name.trim() ? [name.trim()] : [];
+  });
+  if (names.length === 0) return rest;
+  const note = `[Attached: ${names.join(", ")}. The files are not on this Mac.]`;
+  return { ...rest, text: rest.text ? `${rest.text}\n\n${note}` : note };
+}
+
+function withoutImportedFilePaths(chats: GroupChat[]): GroupChat[] {
+  return chats.map((c) => ({
+    ...c,
+    conversations: c.conversations.map((conv) => ({ ...conv, messages: conv.messages.map(withoutImportedFiles) })),
+  }));
+}
+
+/**
  * Restore exported chats without duplicating an existing conversation. With `mergeConversations`, a chat that is
  * already here gains the file's conversations it doesn't have (its own are never touched). Returns how many chats
  * and conversations were added.
  */
 export function importChats(imported: GroupChat[], { mergeConversations = false }: { mergeConversations?: boolean } = {}): { chats: number; conversations: number } {
   const present = new Set(chats.map((c) => c.id));
-  const valid = validGroupChats(imported);
+  const valid = withoutImportedFilePaths(validGroupChats(imported));
   let conversations = 0;
   const addedConversations: { chatId: string; conv: ChatConversation }[] = [];
   if (mergeConversations) {

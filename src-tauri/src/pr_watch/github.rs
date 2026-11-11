@@ -26,6 +26,7 @@ fn pull_request_query() -> String {
   repository(owner: $owner, name: $name) {{ nameWithOwner pullRequest(number: $number) {{ \
     number url title state isDraft merged mergedAt closedAt mergeCommit {{ oid }} \
     headRefOid headRefName baseRefName headRepository {{ nameWithOwner }} mergeable reviewDecision author {{ login }} \
+    labels(first: 100) {{ nodes {{ name }} }} \
     commits(last: 1) {{ nodes {{ commit {{ oid statusCheckRollup {{ state contexts(first: 100) {{ totalCount \
       pageInfo {{ hasNextPage endCursor }} nodes {{ {CHECK_FIELDS} }} }} }} }} }} }} \
     comments(last: 50) {{ totalCount nodes {{ {REMARK_FIELDS} isMinimized }} }} \
@@ -71,6 +72,8 @@ pub struct PrRead {
     /// The repository the head branch is in (`headRepository`); `None` when GitHub shows none (a deleted fork).
     pub head_repo: Option<String>,
     pub review_decision: Option<String>,
+    /// The label names (the first 100). The lead tick never merges a pull request labelled security-park.
+    pub labels: Vec<String>,
     pub detail: Detail,
     /// Comments, reviews and review comments, oldest first. `None` when the read could not see them all.
     pub remarks: Option<Vec<Remark>>,
@@ -564,6 +567,16 @@ pub fn parse(json: &str) -> Result<PrRead, ReadError> {
         base_ref: text(pr, "baseRefName").unwrap_or_default(),
         head_repo,
         review_decision: text(pr, "reviewDecision"),
+        labels: pr
+            .pointer("/labels/nodes")
+            .and_then(Value::as_array)
+            .map(|nodes| {
+                nodes
+                    .iter()
+                    .filter_map(|n| n.get("name").and_then(Value::as_str).map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default(),
         detail: Detail {
             head_sha,
             checks,
@@ -730,6 +743,20 @@ pub(crate) mod tests {
             read(&gh, "not a repo", 1),
             Err(ReadError::Failed(_))
         ));
+    }
+
+    #[test]
+    fn the_pull_request_labels_are_read_for_the_security_park_guard() {
+        let mut json: Value = serde_json::from_str(RECORDED_REQUIRED).unwrap();
+        json["data"]["repository"]["pullRequest"]["labels"] = serde_json::json!({
+            "nodes": [{ "name": "security-park" }, { "name": "docs" }]
+        });
+        let gh = FakeGh::new(vec![Ok(json.to_string())]);
+        let read = read(&gh, "cli/cli", 14716).unwrap();
+        assert_eq!(
+            read.labels,
+            vec!["security-park".to_string(), "docs".to_string()]
+        );
     }
 
     #[test]

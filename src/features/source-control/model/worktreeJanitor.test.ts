@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
+  buildOutputBytes,
+  buildOutputFolders,
   formatAge,
   formatBytes,
   tapBytes,
@@ -34,6 +36,8 @@ const report = (entries: JanitorEntry[]): JanitorReport => ({
   roots: ["/w"],
   entries,
   totalBytes: 0,
+  buildOutputBytes: 0,
+  buildOutputCount: 0,
   removeCount: 0,
   removeBytes: 0,
   freeCount: 0,
@@ -56,6 +60,25 @@ describe("clean-up taps", () => {
     const free = tapTargets(r, "free");
     expect(free.map((e) => e.branch)).toEqual(["merged", "idle"]);
     expect(tapBytes(free, "free")).toBe(2_500);
+  });
+
+  it("adds up the build output a worktree holds, never counting a link", () => {
+    const output = {
+      buildOutput: [
+        { path: "node_modules", bytes: 400_000_000, linked: false, ignored: true },
+        { path: "target", bytes: 9_100_000_000, linked: false, ignored: true },
+        { path: "dist", bytes: 0, linked: false, ignored: true },
+        { path: "coverage", bytes: null, linked: false, ignored: true },
+        { path: ".next", bytes: 5_000, linked: true, ignored: false },
+      ],
+    };
+    expect(buildOutputBytes(output)).toBe(9_500_000_000);
+    // Biggest first; an empty folder and a link are left out; one that couldn't be measured is said so.
+    expect(buildOutputFolders(output)).toBe(
+      "target 9.1 GB, node_modules 400 MB, coverage size unknown",
+    );
+    expect(buildOutputBytes({ buildOutput: [] })).toBe(0);
+    expect(buildOutputFolders({ buildOutput: [] })).toBe("");
   });
 
   it("formats sizes and ages like the report", () => {

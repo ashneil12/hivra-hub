@@ -1,3 +1,5 @@
+import { holdsForQuietHours } from "./quietHours";
+
 export const NOTIFICATION_CATEGORIES = [
   { id: "pullRequests", label: "Pull requests / Merge requests" },
   { id: "issues", label: "Issues and Linear tasks" },
@@ -13,6 +15,8 @@ export type NotificationSubject = {
   projectId: string;
   category: NotificationCategory;
   occurredAt?: number;
+  /** Something the person was waiting on failed. Quiet hours never hold it; a mute still does. */
+  failure?: boolean;
 };
 export type ProjectNotificationPreference = {
   disabled: NotificationCategory[];
@@ -135,16 +139,31 @@ export function updateNotificationPreferences(
   if (typeof window !== "undefined") window.dispatchEvent(new Event(CHANGE));
 }
 
+/**
+ * What the gate says about one notice. `quiet` is a routine notice held by quiet hours (WP-164): not shown now, and a
+ * caller that has something to say later keeps it. `muted` is dropped for good.
+ */
+type NotificationVerdict = "allow" | "muted" | "quiet";
+
+export function projectNotificationVerdict(
+  subject: NotificationSubject,
+  now = Date.now(),
+): NotificationVerdict {
+  const rule = getProjectNotificationRule(subject.projectId, subject.category);
+  const allowed =
+    rule.enabled &&
+    now > rule.after &&
+    (subject.occurredAt === undefined || subject.occurredAt > rule.after);
+  if (!allowed) return "muted";
+  if (subject.failure) return "allow";
+  return holdsForQuietHours(subject.category, now) ? "quiet" : "allow";
+}
+
 export function allowsProjectNotification(
   subject: NotificationSubject,
   now = Date.now(),
 ): boolean {
-  const rule = getProjectNotificationRule(subject.projectId, subject.category);
-  return (
-    rule.enabled &&
-    now > rule.after &&
-    (subject.occurredAt === undefined || subject.occurredAt > rule.after)
-  );
+  return projectNotificationVerdict(subject, now) === "allow";
 }
 
 export function isProjectMuted(

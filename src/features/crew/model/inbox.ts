@@ -16,6 +16,8 @@ export type DecisionInput = {
   askedBy?: string | null;
   waiting?: unknown;
   state?: string | null;
+  /** When it was asked. The wait is counted from here, never from `updatedAt`. */
+  createdAt?: number;
   updatedAt?: number;
 };
 
@@ -31,6 +33,14 @@ export type FirstMateItem = {
   recommended: string | null;
   project: string;
   key: string | null;
+  /**
+   * When this item started waiting on a person: a decision from when it was asked, a blocked row from when it got
+   * stuck, a failed or finished row from when it ended, any other row from when it was created. Zero when that start
+   * is not known. It is never the last update:
+   * a stream update or a refresh must not reset how long someone has waited.
+   */
+  since: number;
+  /** The newest change to the item. It names the item's notice for the digest, and says nothing about how long it waited. */
   updatedAt: number;
 };
 
@@ -85,6 +95,27 @@ function waitKey(value: number): number {
   return value > 0 && Number.isFinite(value) ? value : Number.MAX_SAFE_INTEGER;
 }
 
+function stamp(value: unknown): number {
+  return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : 0;
+}
+
+/**
+ * When a row began to wait: a blocked row from when it got stuck, a failed or finished one from when it ended (a worker
+ * made at 09:00 that fails at 12:00 has waited since 12:00), any other from when it was created.
+ */
+function rowSince(row: CrewWorkerInput): number {
+  if (row.stallKind === "blocked") {
+    const stalled = stamp(row.stalledAt);
+    if (stalled > 0) return stalled;
+  }
+  const status = knownStatus(row.status);
+  if (status === "failed" || status === "done") {
+    const ended = stamp(row.settledAt);
+    if (ended > 0) return ended;
+  }
+  return stamp(row.createdAt);
+}
+
 /** The first plain line of a failure. A stack frame or a secret is not shown. */
 export function failureWords(notice?: string | null, error?: string | null): string {
   return firstPlainLine(`${notice ?? ""}\n${error ?? ""}`) ?? "This work failed.";
@@ -105,10 +136,13 @@ function credentialTitle(row: CrewWorkerInput): string {
   return "Needs a sign-in";
 }
 
-/** A needs-you row that is blocked on a permission, not on a question. */
+/**
+ * A needs-you row that is blocked on a permission, not on a question. Only the status notice and the error say so:
+ * the title is what the work is called, and "Fix the permission check" is not a permission ask.
+ */
 function permissionAsk(row: CrewWorkerInput): boolean {
   if (knownStatus(row.status) !== "needs-you") return false;
-  const text = `${row.title ?? ""}\n${row.statusNotice ?? ""}\n${row.error ?? ""}`.toLowerCase();
+  const text = `${row.statusNotice ?? ""}\n${row.error ?? ""}`.toLowerCase();
   return /permission|access denied|not allowed/.test(text);
 }
 
@@ -192,6 +226,7 @@ export function inboxItems(input: {
       recommended: choice.recommended,
       project,
       key,
+      since: stamp(decision.createdAt),
       updatedAt: decision.updatedAt ?? 0,
     });
   }
@@ -218,6 +253,7 @@ export function inboxItems(input: {
         recommended: null,
         project,
         key: null,
+        since: rowSince(row),
         updatedAt: row.updatedAt ?? 0,
       });
       continue;
@@ -235,6 +271,7 @@ export function inboxItems(input: {
         recommended: null,
         project,
         key: null,
+        since: rowSince(row),
         updatedAt: row.updatedAt ?? 0,
       });
       continue;
@@ -252,6 +289,7 @@ export function inboxItems(input: {
         recommended: null,
         project,
         key: null,
+        since: rowSince(row),
         updatedAt: row.updatedAt ?? 0,
       });
       continue;
@@ -269,6 +307,7 @@ export function inboxItems(input: {
         recommended: null,
         project,
         key: null,
+        since: rowSince(row),
         updatedAt: row.updatedAt ?? 0,
       });
       continue;
@@ -288,12 +327,13 @@ export function inboxItems(input: {
         recommended: null,
         project,
         key: null,
+        since: rowSince(row),
         updatedAt: row.updatedAt ?? 0,
       });
     }
   }
   const rank: Record<FirstMateInboxKind, number> = { decision: 0, question: 0, credential: 1, failure: 2, review: 2 };
-  items.sort((a, b) => rank[a.kind] - rank[b.kind] || waitKey(a.updatedAt) - waitKey(b.updatedAt) || a.id.localeCompare(b.id));
+  items.sort((a, b) => rank[a.kind] - rank[b.kind] || waitKey(a.since) - waitKey(b.since) || a.id.localeCompare(b.id));
   return items;
 }
 

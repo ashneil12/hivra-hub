@@ -304,6 +304,14 @@ fn load_state(data_dir: &Path) -> StateFile {
     serde_json::from_slice(&bytes).unwrap_or(StateFile { last_good: None })
 }
 
+/// WP-104: the time of the last good backup this app recorded. A missing, empty or unreadable file is none.
+pub(crate) fn last_good_at(data_dir: &Path) -> Option<i64> {
+    load_state(data_dir)
+        .last_good
+        .map(|good| good.created_at)
+        .filter(|at| *at > 0)
+}
+
 fn record_last_good(data_dir: &Path, id: &str, created_at: i64) -> Result<(), BackupError> {
     let path = data_dir.join(STATE_FILE);
     for _ in 0..2 {

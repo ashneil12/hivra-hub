@@ -27,9 +27,11 @@ import {
   type HandoffFile,
   type TaskHandoff,
 } from "./orchestrationGoal";
+import { sumChildUsage, usageFromSession } from "./closingUsage";
 import {
   normalizeOrchestrationRun,
   orchestrationCheckoutCwd,
+  orchestrationProjectCwd,
   orchestrationWorkspace,
   workspaceIdentity,
   type OrchestrationDispatch,
@@ -109,6 +111,11 @@ export type OrchestrationHost = {
     decision: ApprovalDecision,
   ): void;
   answerQuestion(id: string, requestId: number, reply: UserQuestionReply): void;
+  /**
+   * WP-91: the project a decision about this run's folder sits under (the hub project's id, as a delegation's project
+   * is named). Without it, or when it names nothing, the folder itself is the project.
+   */
+  decisionProject?(projectCwd: string): string | undefined;
 };
 /** A WP-14 decision raised through the app's decision store (`decisions_ask`). */
 export type StoredDecision = {
@@ -130,6 +137,7 @@ type Storage = {
     taskId: string;
     title: string;
     reason: string;
+    project?: string;
   }): Promise<StoredDecision>;
   decisions(): Promise<StoredDecision[]>;
 };
@@ -137,6 +145,25 @@ type Storage = {
 /** The decision key for an irreversible step: stable for the run and the task, so re-raising never duplicates it. */
 export const irreversibleDecisionKey = (leadId: string, taskId: string) =>
   `irreversible/${leadId}/${taskId}`;
+
+/**
+ * What `decisions_ask` is given for an irreversible step. The project is the one the run works in: a decision with
+ * none is under no project, which the Inbox and Home both leave out, so nobody would ever see it to answer it.
+ */
+export const decisionAskInput = (input: {
+  leadId: string;
+  taskId: string;
+  title: string;
+  reason: string;
+  project?: string;
+}) => ({
+  askedBy: input.leadId,
+  ...(input.project?.trim() ? { project: input.project.trim() } : {}),
+  key: irreversibleDecisionKey(input.leadId, input.taskId),
+  question: `${input.title} cannot be undone: ${input.reason} Approve it, or send it back with your words.`,
+  options: ["Approve", "Send back"],
+  recommended: "Send back",
+});
 
 const decisionRecord = (value: unknown): StoredDecision | null => {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
@@ -167,15 +194,9 @@ const storage: Storage = {
   disable: (sessionId) => invoke("control_disable", { sessionId }),
   scopes: (cwd, files) => invoke("control_scopes", { cwd, files }),
   resolvePath: (path) => invoke("control_write_path", { path }),
-  askDecision: async ({ leadId, taskId, title, reason }) => {
+  askDecision: async (input) => {
     const outcome = (await invoke("decisions_ask", {
-      input: {
-        askedBy: leadId,
-        key: irreversibleDecisionKey(leadId, taskId),
-        question: `${title} cannot be undone: ${reason} Approve it, or send it back with your words.`,
-        options: ["Approve", "Send back"],
-        recommended: "Send back",
-      },
+      input: decisionAskInput(input),
     })) as { decision?: unknown };
     const decision = decisionRecord(outcome?.decision);
     if (!decision) throw new Error("The decision store answered nothing");
@@ -364,7 +385,24 @@ export function workerTurnPrompt(
 
 /** Where a worker writes its handoff, relative to its own checkout. */
 export const HANDOFF_DIR = ".hivra/handoff";
-export const handoffRelativePath = (taskId: string) => `${HANDOFF_DIR}/${taskId}.md`;
+/**
+ * A handoff is named after its task id, so the id must be one plain path segment: no separator, drive letter, `..` or
+ * control character. The same rule as `goal_graph::handoff::safe_segment`, which reads the file back. A task read
+ * from disk with any other id gets no handoff path rather than one that leads out of the checkout.
+ */
+const plainSegment = (id: string) =>
+  id.length > 0 &&
+  id.length <= 128 &&
+  id !== "." &&
+  id !== ".." &&
+  ![...id].some((char) => "\\/:".includes(char) || /\p{Cc}/u.test(char));
+export const handoffRelativePath = (taskId: string) => {
+  if (!plainSegment(taskId))
+    throw new Error(
+      `A handoff file is named after its task id, and ${JSON.stringify(taskId)} is not a task id.`,
+    );
+  return `${HANDOFF_DIR}/${taskId}.md`;
+};
 
 /** Task text a person should see: the assignment envelope stays in the send. */
 export function visibleUserPrompt(text: string): string {
@@ -736,6 +774,19 @@ export class Orchestrator {
     return entry;
   }
 
+  /** The project an irreversible step's decision sits under: the host's name for it, else the run's folder. */
+  private decisionProject(leadId: string): string | undefined {
+    const run = this.run(leadId);
+    if (!run) return undefined;
+    const folder = orchestrationProjectCwd(run);
+    try {
+      return this.host?.decisionProject?.(folder)?.trim() || folder;
+    } catch (error) {
+      console.error("Could not name the decision's project", error);
+      return folder;
+    }
+  }
+
   /**
    * WP-91: the person's stand on an irreversible step. Raised before the task's first dispatch and answered only by
    * the person; an unanswered one means that part does not start.
@@ -762,6 +813,7 @@ export class Orchestrator {
           taskId: task.id,
           title: task.title,
           reason: task.irreversibleReason ?? "it cannot be undone",
+          project: this.decisionProject(leadId),
         });
       } catch (error) {
         console.error("Could not park the irreversible step", error);
@@ -2149,10 +2201,29 @@ Run the whole check again and report what you observed.`,
               });
           }
         }
+        const current = this.run(run.leadId)!;
+        // WP-148: the close counts what the children had recorded. A session that cannot be read is left out, never
+        // stored as zero, and never stops the run from finishing.
+        const closingUsage = sumChildUsage(
+          current.tasks.map((task) => {
+            let usage: ReturnType<typeof usageFromSession>;
+            try {
+              usage = usageFromSession(this.host?.session(task.sessionId));
+            } catch {
+              usage = undefined;
+            }
+            return { sessionId: task.sessionId, usage };
+          }),
+        );
         const result = await record(
-          { ...this.run(run.leadId)!, status: "finished" },
+          {
+            ...current,
+            status: "finished",
+            closingUsage,
+          },
           {
             finished: true,
+            ...(closingUsage ? { usage: closingUsage } : {}),
             ...(cleanupPending.length ? { cleanupPending } : {}),
           },
         );
@@ -3024,6 +3095,30 @@ Run the whole check again and report what you observed.`,
       }, 0);
     }
   }
+  /**
+   * WP-91: whether a reported write, already resolved, is this task's own handoff: `.hivra/handoff/<taskId>.md` in
+   * the checkout it works in, and no other path. The checkout root is resolved and the handoff is joined to it as
+   * written, so a `.hivra` or `handoff` link that leads elsewhere resolves to some other path and fails the
+   * comparison, and so does another task's handoff, a file beside it or the same name in the lead's checkout.
+   * Anything that cannot be resolved is not allowed.
+   */
+  private async isOwnHandoff(
+    run: OrchestrationRun,
+    task: OrchestrationTask,
+    resolved: string,
+  ): Promise<boolean> {
+    try {
+      const root = await this.store.resolvePath(
+        task.workspace?.checkoutCwd ?? orchestrationCheckoutCwd(run),
+      );
+      return (
+        orchestrationPathKey(resolved) ===
+        orchestrationPathKey(`${root}/${handoffRelativePath(task.id)}`)
+      );
+    } catch {
+      return false;
+    }
+  }
   observe(id: string, event: HarnessEvent) {
     if (event.type !== "tool.started" && event.type !== "tool.updated") return;
     const run = this.forSession(id);
@@ -3079,6 +3174,9 @@ Run the whole check again and report what you observed.`,
           )
         )
           continue;
+        // WP-91: the handoff the worker was told to write is the one file outside its scope it may write.
+        if (await this.isOwnHandoff(run, task, normalized)) continue;
+        if (!stillRunning()) return;
         await this.blockTask(
           run.leadId,
           task.id,

@@ -165,6 +165,7 @@ import type {
 } from "../../features/sessions/model/session";
 import type { LiveAgent } from "../../features/sessions/model/liveAgents";
 import type { SessionSummary } from "../../features/sessions/data/sessionStore";
+import { NeedsFolderSection } from "./NeedsFolderSection";
 import {
   keybindingShortcutLabel,
   subscribeKeybindings,
@@ -229,6 +230,7 @@ import {
   attentionWithApprovals,
   compareInboxOrder,
   inboxMenuChoices,
+  settleHeldBack,
   snoozeUntil,
   splitInboxSessions,
   type ChatAttention,
@@ -348,6 +350,12 @@ type Props = {
   sessions: SessionSummary[];
   busySessionIds: Set<string>;
   approvalSessionIds: Set<string>;
+  /**
+   * The ids in `approvalSessionIds` that are listed because a worker they lead needs input, not for a need of the
+   * chat's own. A Lead can have an open question of its own and a worker's approval at once; the first is dated and
+   * a settle holds for it, the second is not and is never hidden (WP-113).
+   */
+  approvalElsewhereSessionIds?: Set<string>;
   /** WP-113: why a listed chat needs the person, when settle and snooze is on. */
   chatAttention?: ReadonlyMap<string, ChatAttention>;
   activeSessionId?: string;
@@ -357,6 +365,8 @@ type Props = {
   /** First listing for this project has not arrived yet. */
   pending: boolean;
   onSelectSession: (sessionId: string) => void;
+  /** A chat that had no folder was given one outside the window's own picker (Relink all): the open copy takes it too. */
+  onSetSessionFolder?: (sessionId: string, cwd: string) => void;
   onSelectRemoteSession?: (project: string, sessionId: string) => void;
   onRemoteSessionDeleted?: (sessionId: string) => void;
   onSessionNavigationOrder?: (ids: readonly string[]) => void;
@@ -529,12 +539,14 @@ function SidebarComponent({
   sessions,
   busySessionIds,
   approvalSessionIds,
+  approvalElsewhereSessionIds,
   chatAttention,
   activeSessionId,
   openSessions = [],
   status,
   pending,
   onSelectSession: onSelectLocalSession,
+  onSetSessionFolder,
   onSelectRemoteSession,
   onRemoteSessionDeleted,
   onSessionNavigationOrder,
@@ -913,7 +925,12 @@ function SidebarComponent({
   );
   // WP-113: with the setting on, settled and snoozed chats leave the active list.
   const inboxAttention = inboxOn
-    ? attentionWithApprovals(chatAttention, listedApprovalSessionIds)
+    ? attentionWithApprovals(
+        chatAttention,
+        listedApprovalSessionIds,
+        // A remote project's flag says only that a chat needs input, so none of its ids is known to be a worker's.
+        remoteProject ? undefined : approvalElsewhereSessionIds,
+      )
     : undefined;
   const inboxRows = splitInboxSessions(listedSessions, {
     enabled: inboxOn,
@@ -1740,11 +1757,12 @@ function SidebarComponent({
     ...(inboxOn
       ? [
           { kind: "sep" as const },
-          ...inboxMenuChoices(menuSessionIds, inboxDoc.chats, new Date(inboxNow)).map(
+          ...inboxMenuChoices(menuSessionIds, inboxDoc.chats, new Date(inboxNow), inboxAttention).map(
             (choice) => ({
               kind: "item" as const,
               id: choice.id,
               label: choice.label,
+              description: choice.description,
               disabled: choice.disabled,
               submenu: choice.children?.map((child) => ({
                 kind: "item" as const,
@@ -1901,6 +1919,8 @@ function SidebarComponent({
     }
     // WP-113: settle and snooze never archive or delete the chat.
     if (id === "inbox-settle") {
+      // An approval waiting on a chat is never hidden: the menu item is off, and a late pick does nothing either.
+      if (settleHeldBack(sessionIds, inboxAttention)) return;
       settleChats(sessionIds);
       return;
     }
@@ -2995,6 +3015,15 @@ function SidebarComponent({
           {/* Hub mode: the project's items, which the classic rail lists in
               place of Projects. */}
           {inset ? hubItems : null}
+          {/* Chats that came in from an export with no folder here: listed together until each gets one. */}
+          {!remoteProject ? (
+            <NeedsFolderSection
+              onSelect={onSelectSession}
+              activeSessionId={activeSessionId}
+              openSessions={openSessions}
+              onRelinked={onSetSessionFolder}
+            />
+          ) : null}
           {!cwd || cwd === "~" ? (
             <div className="px-3 py-2 text-[12px] text-content/50">
               <p>No project folder</p>

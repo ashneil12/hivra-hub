@@ -1210,6 +1210,28 @@ async function main() {
   let teardown = null;
   let cleanupResult = { ran: false, why: "the run never reached a launch with the window's driver; the temporary HOME goes with everything in it" };
 
+  // The window's kickoff steps (verifyKickoff.ts traceVerifyKickoff: the driver's done/kickoff-*.json), kept per launch
+  // in evidence/kickoff/launch-<n>/: a kickoff that never reaches the fake says where it stopped.
+  const keepKickoffTraces = () => {
+    const done = path.join(driverDir, "done");
+    let names = [];
+    try {
+      names = fs.readdirSync(done).filter((name) => /^kickoff-[A-Za-z0-9._-]+\.json$/.test(name));
+    } catch {
+      return [];
+    }
+    if (!names.length) return [];
+    const into = path.join(evidence, "kickoff", `launch-${launches}`);
+    fs.mkdirSync(into, { recursive: true });
+    for (const name of names.sort()) {
+      try {
+        fs.renameSync(path.join(done, name), path.join(into, name));
+      } catch {
+        // a step written while this ran is kept with the next launch
+      }
+    }
+    return names.map((name) => name.replace(/^kickoff-\d+-|\.json$/g, ""));
+  };
   const cleanup = async () => {
     if (app && alive(app.pid)) {
       try {
@@ -1249,6 +1271,7 @@ async function main() {
         log(`cleanup: ${cleanupResult.ok ? "OK" : "LEFT SOMETHING"} ${JSON.stringify(cleanupResult.leftovers ?? cleanupResult.error ?? {})}`);
       }
       await cleanup();
+      keepKickoffTraces();
       // The database, after the app is gone (WAL and all).
       if (dataDir) {
         try {
@@ -1429,7 +1452,8 @@ async function main() {
         process.kill(pid, "SIGKILL");
       }
       await until(() => pids.every((pid) => !alive(pid)), 15_000);
-      log(`killed launch ${launches} (${why})`);
+      const steps = keepKickoffTraces();
+      log(`killed launch ${launches} (${why})${steps.length ? `; its kickoff: ${steps.join(", ")}` : ""}`);
       // Its Claude children see stdin close and exit.
       await sleep(500);
     };

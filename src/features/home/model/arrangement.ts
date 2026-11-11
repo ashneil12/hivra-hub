@@ -1,6 +1,7 @@
 // How Home is arranged. Nothing is pinned until the person pins it. A saved value is untrusted.
 
-export const BUILTINS = ["needs-you", "moving-now", "recent"] as const;
+// "projects" (Ash, 5 Nov: "a general overview of all your projects that you can customize") sits under Needs you.
+export const BUILTINS = ["needs-you", "projects", "moving-now", "recent"] as const;
 export type BuiltinId = (typeof BUILTINS)[number];
 
 export type SectionRef =
@@ -46,7 +47,7 @@ function parseRef(item: unknown): SectionRef | null {
   return null;
 }
 
-/** Drop a bad, empty, duplicate or path-like section. A missing built-in goes back at the end, so a partial file cannot lose Needs you. */
+/** Drop a bad, empty, duplicate or path-like section. A missing built-in goes back (see below), so a partial file cannot lose Needs you. */
 export function parseArrangement(raw: unknown): HomeArrangement {
   const blank = defaultArrangement(0);
   if (!raw || typeof raw !== "object") return blank;
@@ -63,11 +64,16 @@ export function parseArrangement(raw: unknown): HomeArrangement {
       order.push(ref);
     }
   }
-  for (const id of BUILTINS) {
-    if (seen.has(id)) continue;
-    order.push({ kind: "builtin", id });
+  // A missing built-in goes back, never lost: right after the built-in that comes before it in BUILTINS when that one is
+  // here (so Projects, new in 0.16.14, lands under Needs you in an arrangement saved before it), else at the end.
+  BUILTINS.forEach((id, index) => {
+    if (seen.has(id)) return;
+    const before = index > 0 ? BUILTINS[index - 1] : undefined;
+    const at = before ? order.findIndex((ref) => ref.kind === "builtin" && ref.id === before) : -1;
+    if (at >= 0) order.splice(at + 1, 0, { kind: "builtin", id });
+    else order.push({ kind: "builtin", id });
     seen.add(id);
-  }
+  });
   const hidden: string[] = [];
   const hiddenSeen = new Set<string>();
   if (Array.isArray(rec.hidden)) {

@@ -6,7 +6,7 @@ import { setCodexDeveloperInstructions, setCodexExtraConfig } from "../../../int
 import { REMOTE_PATH_PREFIX } from "../../../shared/lib/remotePaths";
 import { browserAgentFor } from "../../browser/model/agent";
 import { plainEnglishEndings } from "../../firstmate/model/plainEnglish";
-import { pstackInstallRoot, sessionInstruction } from "./pstackAutopilot";
+import { mcodeInstallRoot, pstackInstallRoot, sessionInstruction } from "./pstackAutopilot";
 import { claudeAdditions, codexConfig, NO_WIRING, type PluginWiring } from "./pluginWiring";
 
 /** The wiring for a session in `cwd`. A folder on a connected machine gets none: plugins live on this one. */
@@ -24,6 +24,15 @@ export async function pluginWiringFor(cwd: string, sessionId?: string): Promise<
   }
 }
 
+/** What a session is told about the skills of the plugins that are on for it, from one wiring read. */
+function instructionFor(wiring: PluginWiring): string {
+  return sessionInstruction({
+    pstackRoot: pstackInstallRoot(wiring.claudePluginDirs),
+    mcodeRoot: mcodeInstallRoot(wiring.claudePluginDirs),
+    plainEnglish: plainEnglishEndings(),
+  });
+}
+
 export function registerPluginSessions(
   read: (cwd: string, sessionId?: string) => Promise<PluginWiring> = pluginWiringFor,
 ): void {
@@ -33,12 +42,12 @@ export function registerPluginSessions(
     const wiring = await read(cwd, sessionId);
     return {
       additions: claudeAdditions(wiring),
-      append: sessionInstruction({ pstackRoot: pstackInstallRoot(wiring.claudePluginDirs), plainEnglish: plainEnglishEndings() }),
+      append: instructionFor(wiring),
     };
   });
   setCodexDeveloperInstructions(async (cwd) => {
     const wiring = await read(cwd);
-    return sessionInstruction({ pstackRoot: pstackInstallRoot(wiring.claudePluginDirs), plainEnglish: plainEnglishEndings() });
+    return instructionFor(wiring);
   });
 }
 

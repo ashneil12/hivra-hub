@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Importing an export no longer writes instruction files under their own names in any memory folder. An export's CLAUDE.md, AGENTS.md, AGENTS.override.md, settings or hook files come in beside their originals as `NAME.imported.md`, with a line in the report, in every folder, not only the Monos home. A history restored for a memory folder loses its instruction and hidden files in a commit of its own, and the export's tip is kept under `refs/hivra/imported-tip`; a failed removal refuses the history. Memory notes outside the Monos home are only `.md` files again, and anything else that is not a note is left out with a line saying so.
+- An imported chat no longer lends a worker's worktree as a media root through a delegation the export wrote for it; only a Mono's own chats lend their workers' worktrees.
+- A folder with another tool's hidden folder (`.agents`, `.grok`, `.Claude`, ...) or any link is held back from being offered back. The allow-list of harmless hidden names is compared in lower case.
+- An export's instruction file is held for review only in a Mono's id folder or its `memory` and `skills` folders, not at any depth under an id.
+
+- Importing an export no longer trusts the folders it names. A chat (and an automation) keeps its folder only when it is a real folder on this Mac inside a project the app already has, with links followed; otherwise it comes in with no folder, says "Choose a project folder for this chat first." and offers the folder picker. Nothing starts for a chat with no folder: agents, terminals, project actions, the control port and git all refuse it instead of using the home folder or the folder the app runs in. The import report says how many chats lost their folder, and a "Needs a folder" group in the sidebar lists them. Paths in an imported chat's tool rows are kept only inside the chat's folder. The import preview lists every project folder the file wants to register, each unticked (with "Tick all" for a restore of your own); only ticked folders are adopted, they are registered before the chats are judged, and only a git repository strictly inside the home folder (nothing hidden, not Library, memory or app data) is accepted, whatever is ticked. A chat's folder is kept under the same allow-list, the rules are loaded before the memory is written, and an imported chat or automation comes in supervised. A Mono's project folders are this Mac's own project folders only, and a seated Mono's project list only grows when ticked. A chat's folder from another user or home is mapped to this Mac's own by project id, a chat can't keep a folder where the import wrote an instruction file, and the Needs a folder group offers Relink all per project or Mono. A memory import writes only notes, in every folder (never CLAUDE.md, AGENTS.md, AGENTS.override.md, opencode.json and the like), a memory folder that reaches the Monos home under another spelling or link is refused, and a Mono's folder takes only the names the app itself uses.
+
+### Added
+
+- A finished worktree now gives its build output back by itself. When a worktree's pull request merged or closed, or its task was accepted and its branch pushed, and it has no uncommitted changes and nothing running in it, the app deletes its `target/`, `src-tauri/target/`, `test-results/`, `playwright-report/` and real `node_modules/` folders (a linked `node_modules` stays; code, branches and chats are never touched). The switch is Settings > Worktrees > "Clear build output of finished worktrees", on by default. A dev copy never runs it.
+- Settings > Worktrees > Clean up now shows how much build output each worktree holds, and the total.
+
+### Fixed
+
+- Deleting or purging a chat no longer leaves its generated images behind when one of the chat's image paths points outside the app's generated-images folder. That path is still refused and its file is never touched, but it is now skipped (counted and logged once, without the path) and the chat's other images are removed. The delete command now returns how many images it removed and how many it skipped; a real read or delete failure on one file no longer stops the rest either, and is reported once every path has been tried.
+
 ## [0.16.1] - 2026-10-28
 
 ### Changed
