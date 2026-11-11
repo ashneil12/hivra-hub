@@ -979,6 +979,7 @@ import {
   removeMono,
   updateMono,
   saveMonoName,
+  saveMonoRole,
   saveMonoSessionId,
   saveOpenMono,
   subscribeMonos,
@@ -6004,9 +6005,14 @@ function Workspace({
   }, [closeMonoView, monosEnabled, onOpenMono]);
 
   /** A new Mono opens straight away, ready to be told what it works on. */
-  const onCreateMono = useCallback((projects?: readonly string[]) => {
+  const onCreateMono = useCallback((projects?: readonly string[], profile?: { name: string; role?: string }) => {
     const monoId = createMono(projects).id;
-    setMonoSettingsFor(monoId);
+    // Dropwave's "New first mate" names it before it exists, so it opens on its chat, ready to talk to. Its look and
+    // model are in its settings, as for any first mate.
+    if (profile) {
+      saveMonoName(monoId, profile.name.trim().slice(0, 40));
+      if (profile.role?.trim()) saveMonoRole(monoId, profile.role);
+    } else setMonoSettingsFor(monoId);
     void onOpenMono(monoId);
   }, [onOpenMono]);
 

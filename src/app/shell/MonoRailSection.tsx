@@ -65,6 +65,8 @@ import {
   subscribeMonos,
   updateMono,
   monoForSession,
+  addMonoProject,
+  isProjectLeadId,
   type MonoState,
 } from "../../features/monos/model/mono";
 
@@ -76,8 +78,8 @@ export type MonoRailProps = {
   /** Replies each Mono has that the user has not looked at yet, by Mono id. */
   unseenCounts?: ReadonlyMap<string, number>;
   onOpen: (monoId: string) => void;
-  /** Creates a Mono, given these projects to start with. */
-  onCreate: (projects?: readonly string[]) => void;
+  /** Creates a Mono, given these projects to start with. With a name (the hub's "New first mate"), it is named too. */
+  onCreate: (projects?: readonly string[], profile?: { name: string; role?: string }) => void;
   onDelete: (monoId: string) => void;
   /** Deletes the Mono's 1:1 chat only (r30d): the caller asks first; the Mono, soul and memory stay. */
   onDeleteChat?: (monoId: string) => void;
@@ -132,6 +134,14 @@ export function railMonos<M extends { id: string; name?: string; projects: strin
 }
 
 /** Open a Mono's team (monoTeams.ts): a Lead's coding team on the Lead, or a Mono's own team on its chat. */
+/**
+ * Dropwave (Ash, 11 Nov): the first mates a project could take on from the ones already made. Not the ones already on
+ * it, not the Chief of Staff (on every project already) and not another project's Lead.
+ */
+export function joinableMonos<M extends { id: string; projects: string[] }>(list: readonly M[], project: string, chiefId?: string): M[] {
+  return list.filter((mono) => !mono.projects.includes(project) && mono.id !== chiefId && !isProjectLeadId(mono.id));
+}
+
 export function openTeam(team: TeamTarget): void {
   if (team.kind === "coding") openCodingTeam(team.projectId, { lead: true });
   else openMonoTeam(team.monoId, { owner: true });
@@ -246,6 +256,9 @@ export function MonoRailSection({
   const toggleStuckPanel = (anchor: HTMLElement, monoId?: string) =>
     setStuckPanel((open) => (open && open.anchor === anchor ? undefined : { monoId, anchor }));
   const [menu, setMenu] = useState<{ id: string; anchor: PopoverAnchor }>();
+  // Dropwave: the project a new first mate joins. The hub names it by `projectFilter`; Home has none.
+  const addTo = rank ? (projectFilter && projectFilter !== HOME_MONOS ? projectFilter : undefined) : project;
+  const [adding, setAdding] = useState<HTMLElement>();
   const [background, setBackground] = useState<string>();
   const backgroundMono = background ? findMono(background) : undefined;
   // What each Mono has out (its workers live in its team, never listed here), read once for its line and the folded summary.
@@ -295,7 +308,8 @@ export function MonoRailSection({
 
   // Hub: a project with no Monos shows nothing here; its empty Leadership
   // team offers "Add a Mono" instead, so the intro card isn't doubled up.
-  if (monos.length === 0 && projectFilter) return null;
+  // Dropwave: a project keeps the heading and its "+" even with none, since first mates are the owner's to add.
+  if (monos.length === 0 && projectFilter && !(rank && addTo)) return null;
   // With no Mono yet, the card stands in for the rail's section (plain
   // Monocode only; the hub has its default team). A project with none of its
   // own offers one under the label instead.
@@ -346,12 +360,15 @@ export function MonoRailSection({
             </span>
           ) : null}
         </button>
-        {monos.length ? (
+        {monos.length || rank ? (
           <button
             type="button"
-            title="New mono"
-            aria-label="New mono"
-            onClick={() => onCreate(project ? [project] : undefined)}
+            title={rank ? "New first mate" : "New mono"}
+            aria-label={rank ? "New first mate" : "New mono"}
+            aria-haspopup={rank ? "dialog" : undefined}
+            data-new-first-mate={rank ? "" : undefined}
+            // The hub asks who first (a new one, or one already made); plain MonoCode makes one straight away.
+            onClick={(event) => (rank ? setAdding(event.currentTarget) : onCreate(project ? [project] : undefined))}
             className={`grid size-5 shrink-0 place-items-center rounded-md text-content/50 hover:bg-content/8 hover:text-content${
               project ? " -mr-0.5" : ""
             }`}
@@ -418,7 +435,11 @@ export function MonoRailSection({
           project ? "" : " px-2"
         }`}
       >
-        {monos.length === 0 ? (
+        {monos.length === 0 && rank ? (
+          <p className="px-2 py-1 text-[12px] leading-4 text-content/50" data-mono-rail-empty>
+            {addTo ? "No first mates here yet. The Chief of Staff covers this project. Add one with +." : "No first mates yet. Add one with +."}
+          </p>
+        ) : monos.length === 0 ? (
           <RailAction
             label="New mono"
             icon={Plus}
@@ -660,6 +681,9 @@ export function MonoRailSection({
           onClose={() => setMenu(undefined)}
         />
       ) : null}
+      {adding ? (
+        <NewFirstMatePanel anchor={adding} project={addTo} onCreate={onCreate} onClose={() => setAdding(undefined)} />
+      ) : null}
       {backgroundMono ? (
         <ProjectBackgroundDialog
           project={monoBackgroundKey(backgroundMono.id)}
@@ -669,6 +693,96 @@ export function MonoRailSection({
         />
       ) : null}
     </div>
+  );
+}
+
+/**
+ * Dropwave (Ash, 11 Nov): the "+" beside First mates. A new first mate gets its name (and what it looks after) here
+ * and joins the project in view; or one made earlier is added to this project. A project starts with only the Chief
+ * of Staff, so who else is on it is the owner's choice.
+ */
+function NewFirstMatePanel({
+  anchor,
+  project,
+  onCreate,
+  onClose,
+}: {
+  anchor: HTMLElement;
+  /** The project in view. None on a screen that belongs to no project: the new first mate starts on none. */
+  project: string | undefined;
+  onCreate: MonoRailProps["onCreate"];
+  onClose: () => void;
+}) {
+  useSyncExternalStore(subscribeMonos, monosSnapshot);
+  const [name, setName] = useState("");
+  const [role, setRole] = useState("");
+  const others = project ? joinableMonos(listMonos(), project, pickChief(listMonos())?.id) : [];
+  const field =
+    "w-full rounded-lg border border-content/10 bg-content/5 px-2.5 py-1.5 text-[13px] text-content outline-none ring-accent/40 placeholder:text-content/45 focus:ring-1";
+  return (
+    <Popover
+      anchor={anchor}
+      side="right"
+      align="start"
+      gap={4}
+      width={280}
+      constrainHeight={false}
+      onDismiss={onClose}
+      role="dialog"
+      aria-label="New first mate"
+      className="p-3"
+    >
+      <form
+        data-new-first-mate-form
+        className="flex flex-col gap-2"
+        onSubmit={(event) => {
+          event.preventDefault();
+          const named = name.trim();
+          if (!named) return;
+          onCreate(project ? [project] : undefined, { name: named, ...(role.trim() ? { role: role.trim() } : {}) });
+          onClose();
+        }}
+      >
+        <span className="text-[13px] font-medium text-content">New first mate</span>
+        <input autoFocus value={name} maxLength={40} placeholder="Name" aria-label="First mate's name" onChange={(event) => setName(event.target.value)} className={field} />
+        <input value={role} maxLength={40} placeholder="What it looks after (optional)" aria-label="What it looks after" onChange={(event) => setRole(event.target.value)} className={field} />
+        <button
+          type="submit"
+          disabled={!name.trim()}
+          className="h-7 self-start rounded-md bg-accent px-2.5 text-[12px] font-medium leading-none text-black disabled:opacity-40"
+        >
+          Create
+        </button>
+      </form>
+      {project && others.length ? (
+        <>
+          <div role="separator" className="my-2.5 h-px bg-content/10" />
+          <span className="px-0.5 text-[12px] text-content/50">Or add one you already have</span>
+          <ul className="mt-1 flex max-h-48 flex-col gap-px overflow-y-auto" data-new-first-mate-existing>
+            {others.map((mono) => {
+              const look = monoLook(mono);
+              return (
+                <li key={mono.id}>
+                  <button
+                    type="button"
+                    data-add-first-mate={mono.id}
+                    onClick={() => {
+                      addMonoProject(mono.id, project);
+                      onClose();
+                    }}
+                    className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-[13px] text-content/85 hover:bg-content/8"
+                  >
+                    <MonoRailMascot name={look.mascot} color={look.color} status="idle" className="size-4 shrink-0" />
+                    <span className="min-w-0 shrink-0 truncate">{look.name}</span>
+                    {look.role ? <span className="min-w-0 flex-1 truncate text-[11px] text-content/45">{look.role}</span> : null}
+                  </button>
+                </li>
+              );
+            })}
+          </ul>
+        </>
+      ) : null}
+    </Popover>
   );
 }
 

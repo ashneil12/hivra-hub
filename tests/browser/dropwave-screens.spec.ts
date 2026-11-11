@@ -148,6 +148,40 @@ test("a first mate's chat list is its own: no chats with anyone else until Every
   await expect(page.locator("[data-session-card]:visible").filter({ hasText: "Chief of Staff" })).toHaveCount(0);
 });
 
+test("the plus beside First mates makes a new one for this project, or adds one already made", async ({ page }) => {
+  await home(page);
+  await project(page, "Hivra").click();
+  await page.locator("[data-new-first-mate]:visible").first().click();
+  const panel = page.getByRole("dialog", { name: "New first mate" });
+  await expect(panel).toBeVisible();
+  // Nothing is made until it has a name.
+  await expect(panel.getByRole("button", { name: "Create" })).toBeDisabled();
+  // Milo works on SafeTube only, so Hivra can take Milo on. Iris is on Hivra already, and leads stay with their project.
+  const existing = panel.locator("[data-new-first-mate-existing]");
+  await expect(existing).toContainText("Milo");
+  await expect(existing).not.toContainText("Iris");
+  await expect(existing).not.toContainText("lead");
+  await expect(existing).not.toContainText("Chief of Staff");
+
+  await panel.getByLabel("First mate's name").fill("Example mate");
+  await panel.getByLabel("What it looks after").fill("Runs the launch");
+  await panel.getByRole("button", { name: "Create" }).click();
+  await expect(panel).toHaveCount(0);
+  // It is on Hivra's list under its name, and its chat is the open one.
+  const made = page.locator('[data-mono-rail-list] [aria-current="true"]');
+  await expect(made).toContainText("Example mate");
+  await expect(made).toContainText("Runs the launch");
+  await expect(page.locator("[data-session-composer]:visible").first()).toBeVisible();
+
+  // It was made for Hivra only. SafeTube can add it from the ones already made.
+  await project(page, "SafeTube").click();
+  await expect(page.locator("[data-mono-rail-list]").getByText("Example mate", { exact: true })).toHaveCount(0);
+  await page.locator("[data-new-first-mate]:visible").first().click();
+  await panel.locator('[data-new-first-mate-existing] button').filter({ hasText: "Example mate" }).click();
+  await expect(panel).toHaveCount(0);
+  await expect(page.locator("[data-mono-rail-list]").getByText("Example mate", { exact: true })).toHaveCount(1);
+});
+
 test("Compare models closes on a click away and shows a tick box on every row", async ({ page }) => {
   await home(page);
   await project(page, "Hivra").click();
