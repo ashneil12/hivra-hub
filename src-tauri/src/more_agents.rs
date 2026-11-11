@@ -961,7 +961,6 @@ mod tests {
             vec![entry("wp134", "/opt/approved-agent", &["acp"])],
         )
         .expect("seed");
-        set_approval(d.path(), "wp134", true).expect("approve");
         for (command, args, other_fields) in [
             ("/bin/sh", vec![], false),
             ("/opt/approved-agent", vec![], false),
@@ -1013,7 +1012,7 @@ mod tests {
             vec![entry("wp134b", "wp134b-tool", &["acp", "--flag"])],
         )
         .expect("seed");
-        set_approval(d.path(), "wp134b", true).expect("approve");
+        approve(d.path(), "wp134b", &path_value).expect("approve");
         let run = approved_start(d.path(), "wp134b", "", &[], false, &path_value)
             .expect("approved and present");
         assert_eq!(run.id, "wp134b");
