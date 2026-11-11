@@ -123,19 +123,40 @@ pub(super) struct Folders {
     pub group: Option<String>,
 }
 
+/// How a name is compared wherever two spellings may be one file: NFKD (U+017F, the long s, and the compatibility forms
+/// become their plain letters), then upper- and lower-cased (a case-insensitive disk keeps one file under every case),
+/// with trailing dots and spaces dropped (Windows reads `AGENTS.md.` as `AGENTS.md`). The one rule every name check in
+/// the portable code uses, and the rule the shared agent-config list follows.
+pub(super) fn fold_name(name: &str) -> String {
+    use unicode_normalization::UnicodeNormalization;
+    let decomposed: String = name.nfkd().collect();
+    decomposed
+        .to_uppercase()
+        .to_lowercase()
+        .replace('\u{17F}', "s")
+        .trim_end_matches(['.', ' '])
+        .to_string()
+}
+
 /// Files a CLI reads as instructions, rules, settings or tool servers from the folder it starts in and the folders above
-/// it (Claude Code, Codex, Gemini, OpenCode, Cursor, Windsurf, Cline, Copilot, Qwen). A deny-list, used only to decide
-/// where a written file is read from: what an import may write is an allow-list (`memory_note_file`).
+/// it (Claude Code, Codex, Gemini, OpenCode, Cursor, Windsurf, Cline, Copilot, Qwen, Hermes, Grok, Crush, AGENT.md). A
+/// deny-list, used only to decide where a written file is read from: what an import may write is an allow-list
+/// (`memory_note_file`). Compared folded (`fold_name`). SOUL.md is left out on purpose: a Mono's own soul is restored
+/// under that name, and holding it would break soul restore.
 pub(super) fn instruction_file(name: &str) -> bool {
     matches!(
-        name.to_ascii_lowercase().as_str(),
+        fold_name(name).as_str(),
         "claude.md"
             | "claude.local.md"
             | "agents.md"
+            | "agent.md"
             | "agents.override.md"
             | "gemini.md"
             | "qwen.md"
             | "codex.md"
+            | "hermes.md"
+            | "grok.md"
+            | "crush.md"
             | "copilot-instructions.md"
             | "settings.json"
             | "settings.local.json"
@@ -177,8 +198,9 @@ fn note_name(name: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, ' ' | '.' | '-' | '_'))
 }
 
-/// What a Mono's folder may be given by an import, by the names `mono.rs` itself uses: `<id>/SOUL.md`, `MEMORY.md`,
-/// `soul-template.md`, `memory/<name>.md` or `skills/<name>.md`. `relative` is the path inside the Monos home.
+/// What a Mono's folder may be given by an import, by the names `mono.rs` itself uses: `MEMORY.md` at the Monos home,
+/// `<id>/SOUL.md`, `<id>/MEMORY.md`, `<id>/soul-template.md`, and notes (`.md`) under `<id>/memory/` or `<id>/skills/`,
+/// nested as deep as the folder goes. `relative` is the path inside the Monos home.
 pub(super) fn mono_folder_file(relative: &Path) -> bool {
     let parts: Vec<String> = relative
         .components()
@@ -188,16 +210,81 @@ pub(super) fn mono_folder_file(relative: &Path) -> bool {
         })
         .collect::<Option<_>>()
         .unwrap_or_default();
-    let named = |name: &str| memory_note_file(Path::new(name)) && note_name(name);
     match parts.as_slice() {
+        [file] => file == "MEMORY.md",
         [id, file] => {
             plain_id(id) && matches!(file.as_str(), "SOUL.md" | "MEMORY.md" | "soul-template.md")
         }
-        [id, dir, file] => {
-            plain_id(id) && matches!(dir.as_str(), "memory" | "skills") && named(file)
-        }
+        [id, dir, rest @ ..] => match rest.split_last() {
+            Some((last, folders)) => {
+                plain_id(id)
+                    && matches!(dir.as_str(), "memory" | "skills")
+                    && folders.iter().all(|folder| note_name(folder))
+                    && memory_note_file(Path::new(last))
+                    && note_name(last)
+            }
+            None => false,
+        },
         _ => false,
     }
+}
+
+/// A file a CLI reads as instructions, rules or settings, at a plain path (no hidden part, in any folder): a memory import
+/// keeps such a file beside its original for Ash to review, never under its own name. `relative` is inside the memory
+/// folder.
+pub(super) fn instruction_file_at(relative: &Path) -> bool {
+    let plain_path = relative.components().all(|part| match part {
+        Component::Normal(name) => !name.to_string_lossy().starts_with('.'),
+        _ => false,
+    });
+    plain_path
+        && relative
+            .file_name()
+            .is_some_and(|name| instruction_file(&name.to_string_lossy()))
+}
+
+/// An instruction file inside the Monos home that an import may hold beside its original for review. Only a Mono's own
+/// place takes one: the id folder (`<id>/CLAUDE.md`) and the `memory` and `skills` notes under it, nested as deep as the
+/// folder goes. Anywhere else (the Monos home itself, another depth, a hidden folder) it is refused. `relative` is inside
+/// the Monos home.
+pub(super) fn instruction_file_for_review(relative: &Path) -> bool {
+    let parts: Vec<String> = relative
+        .components()
+        .map(|part| match part {
+            Component::Normal(name) => Some(name.to_string_lossy().into_owned()),
+            _ => None,
+        })
+        .collect::<Option<_>>()
+        .unwrap_or_default();
+    let Some((file, folders)) = parts.split_last() else {
+        return false;
+    };
+    if !instruction_file(file) {
+        return false;
+    }
+    match folders {
+        [] => false,
+        [id] => plain_id(id),
+        [id, dir, rest @ ..] => {
+            plain_id(id)
+                && matches!(dir.as_str(), "memory" | "skills")
+                && rest.iter().all(|folder| note_name(folder))
+        }
+    }
+}
+
+/// A hidden entry a folder may hold without a CLI reading instructions from it (compared folded): git's own files,
+/// `.gitignore`, the Finder's `.DS_Store`, and the environment and virtualenv files of a project. Only a plain ASCII name
+/// with no trailing dot or space counts: on Windows `.git.` is git's folder, so any other spelling is held back.
+fn harmless_hidden(name: &str) -> bool {
+    if !name.is_ascii() || name.ends_with(['.', ' ']) {
+        return false;
+    }
+    let key = fold_name(name);
+    matches!(
+        key.as_str(),
+        ".git" | ".gitignore" | ".ds_store" | ".env" | ".venv"
+    ) || key.starts_with(".env.")
 }
 
 fn plain_id(name: &str) -> bool {
@@ -348,17 +435,20 @@ impl FolderRules {
         self.mono_folders.iter().any(|mono| mono == dir)
     }
 
-    /// A file a CLI would read as instructions sits, right now, in this folder or in a folder above it up to its Mono's
-    /// folder (inclusive): a hidden folder (other than git's own) counts too. Read from disk when a re-link is offered.
+    /// Whether a folder may be offered back, judged from disk when a re-link is offered: held back when a file a CLI
+    /// reads as instructions sits in this folder or in a folder above it up to its Mono's folder (inclusive), when any
+    /// hidden entry sits there that is not on the short list of harmless ones (`harmless_hidden`, compared lowercased,
+    /// so `.agents`, `.Claude` and any other tool's folder count), or when any entry there is a link.
     pub(super) fn instructions_on_disk(&self, dir: &Path, top: &Path) -> bool {
         let mut here = Some(dir);
         while let Some(folder) = here {
             if let Ok(entries) = std::fs::read_dir(folder) {
                 for entry in entries.flatten() {
                     let name = entry.file_name().to_string_lossy().into_owned();
-                    let hidden_tool = name.starts_with('.')
-                        && !matches!(name.as_str(), ".git" | ".gitignore" | ".DS_Store");
-                    if instruction_file(&name) || hidden_tool {
+                    // A link could point anywhere, and an unreadable entry is not known to be harmless.
+                    let link = entry.file_type().map_or(true, |kind| kind.is_symlink());
+                    let hidden_unknown = name.starts_with('.') && !harmless_hidden(&name);
+                    if instruction_file(&name) || hidden_unknown || link {
                         return true;
                     }
                 }

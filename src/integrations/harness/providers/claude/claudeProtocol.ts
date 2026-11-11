@@ -38,6 +38,7 @@ import {
 } from "./claudeFailure";
 import { claudeBridgeKind } from "./claudeDeepseekBridge";
 import { bridgeLaunchModel } from "../../../../features/sessions/model/deepseekBridge";
+import { cliPermissionSetting } from "../../core/permissionMatrix";
 
 /** Claude Code versions that first ship Opus 5.5 / Opus 5 / Sonnet 5 / Fable 5 / Opus 4.8 / 4.7. */
 export const MINIMUM_CLAUDE_OPUS_5_5_VERSION = "2.1.280";
@@ -159,16 +160,8 @@ export function compareSemver(left: string, right: string): number {
 export function runtimeModeToPermission(
   mode: RuntimeMode,
 ): ClaudePermissionMode {
-  switch (mode) {
-    case "auto-accept-edits":
-      return "acceptEdits";
-    case "auto":
-      return "auto";
-    case "full-access":
-      return "bypassPermissions";
-    default:
-      return "default";
-  }
+  // The table in core/permissionMatrix.ts holds every CLI's setting for each mode.
+  return cliPermissionSetting("claude", mode) as ClaudePermissionMode;
 }
 
 /** Older model ids that reject `xhigh` and want `max` instead. */
@@ -1260,6 +1253,20 @@ export function approvalCall(
     ...(command !== undefined ? { command } : {}),
     ...(paths.length ? { paths } : {}),
   };
+}
+
+/** The Bash input keys the phone shows: the command it runs, its description and its timeout. */
+const PHONE_SHOWN_BASH_KEYS = new Set(["command", "description", "timeout"]);
+
+/**
+ * WP-150: whether everything the call runs with is in the view `approvalCall` gives the phone, so an allow from
+ * the phone runs exactly what it showed. Only a Bash call whose input has no key beyond the three above
+ * qualifies. An MCP call, WebFetch, Write, Edit, Task, a Bash sandbox override or any other key does not:
+ * the desktop still decides it, and the phone never sees it.
+ */
+export function approvalCallComplete(toolName: string, input: Record<string, unknown>): boolean {
+  if (toolName !== "Bash" || typeof input.command !== "string") return false;
+  return Object.keys(input).every((key) => PHONE_SHOWN_BASH_KEYS.has(key));
 }
 
 export function summarizeToolRequest(

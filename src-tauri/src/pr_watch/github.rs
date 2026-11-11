@@ -24,8 +24,9 @@ fn pull_request_query() -> String {
   viewer {{ login }} \
   rateLimit {{ remaining resetAt cost }} \
   repository(owner: $owner, name: $name) {{ nameWithOwner pullRequest(number: $number) {{ \
-    number url title state isDraft merged mergedAt closedAt mergeCommit {{ oid }} \
-    headRefOid headRefName baseRefName headRepository {{ nameWithOwner }} mergeable reviewDecision author {{ login }} \
+    number url title state isDraft merged mergedAt closedAt mergeCommit {{ oid }} changedFiles \
+    headRefOid headRefName baseRefName baseRef {{ target {{ oid }} }} headRepository {{ nameWithOwner }} mergeable reviewDecision author {{ login }} \
+    labels(first: 100) {{ nodes {{ name }} }} \
     commits(last: 1) {{ nodes {{ commit {{ oid statusCheckRollup {{ state contexts(first: 100) {{ totalCount \
       pageInfo {{ hasNextPage endCursor }} nodes {{ {CHECK_FIELDS} }} }} }} }} }} }} \
     comments(last: 50) {{ totalCount nodes {{ {REMARK_FIELDS} isMinimized }} }} \
@@ -68,13 +69,20 @@ pub struct PrRead {
     pub merged_at: Option<String>,
     pub head_ref: String,
     pub base_ref: String,
+    /// The base branch's current tip (`baseRef.target.oid`). `None` when GitHub shows no such branch.
+    pub base_tip: Option<String>,
     /// The repository the head branch is in (`headRepository`); `None` when GitHub shows none (a deleted fork).
     pub head_repo: Option<String>,
     pub review_decision: Option<String>,
+    /// The label names (the first 100). The lead tick never merges a pull request labelled security-park.
+    pub labels: Vec<String>,
     pub detail: Detail,
     /// Comments, reviews and review comments, oldest first. `None` when the read could not see them all.
     pub remarks: Option<Vec<Remark>>,
     pub rate: Option<RateLimit>,
+    /// How many files GitHub says this pull request changes (`changedFiles`). `None` when the read
+    /// didn't say, which the merge floor treats as unread.
+    pub changed_files: Option<u64>,
 }
 
 impl PrRead {
@@ -564,6 +572,16 @@ pub fn parse(json: &str) -> Result<PrRead, ReadError> {
         base_ref: text(pr, "baseRefName").unwrap_or_default(),
         head_repo,
         review_decision: text(pr, "reviewDecision"),
+        labels: pr
+            .pointer("/labels/nodes")
+            .and_then(Value::as_array)
+            .map(|nodes| {
+                nodes
+                    .iter()
+                    .filter_map(|n| n.get("name").and_then(Value::as_str).map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default(),
         detail: Detail {
             head_sha,
             checks,
@@ -576,6 +594,11 @@ pub fn parse(json: &str) -> Result<PrRead, ReadError> {
         },
         remarks: Some(remarks),
         rate,
+        changed_files: pr.get("changedFiles").and_then(Value::as_u64),
+        base_tip: pr
+            .pointer("/baseRef/target/oid")
+            .and_then(Value::as_str)
+            .map(str::to_string),
     })
 }
 
@@ -730,6 +753,20 @@ pub(crate) mod tests {
             read(&gh, "not a repo", 1),
             Err(ReadError::Failed(_))
         ));
+    }
+
+    #[test]
+    fn the_pull_request_labels_are_read_for_the_security_park_guard() {
+        let mut json: Value = serde_json::from_str(RECORDED_REQUIRED).unwrap();
+        json["data"]["repository"]["pullRequest"]["labels"] = serde_json::json!({
+            "nodes": [{ "name": "security-park" }, { "name": "docs" }]
+        });
+        let gh = FakeGh::new(vec![Ok(json.to_string())]);
+        let read = read(&gh, "cli/cli", 14716).unwrap();
+        assert_eq!(
+            read.labels,
+            vec!["security-park".to_string(), "docs".to_string()]
+        );
     }
 
     #[test]

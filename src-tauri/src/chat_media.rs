@@ -6,11 +6,13 @@
 //! holds each folder to what a chat's own can be (`Withheld`) and checks a path against them
 //! (`chat_media_file_via`); this module only names candidates.
 //!
-//! An import writes rows too (chats, delegations), and what it writes is not the user's own record, so no row an
-//! import could write grants a folder by itself:
+//! An import writes rows too (chats, delegations), and what it writes is not the user's own record. Of those rows only
+//! a chat's own folder reaches here, and it does so only as the folder `FolderRules` kept when the import wrote it
+//! (`sessions.cwd` is that vetted folder; `fs.rs` still checks it against `Withheld`). The rest grants nothing by itself:
 //!
-//! - a delegation counts only when its owner is one of the chats the roster gives this chat's Mono, which an import
-//!   cannot name (the roster is the window's own file, and ids are random), not by the Mono id it carries;
+//! - a delegation counts only when its owner is this chat or one of the chats the roster gives this chat's Mono (the
+//!   roster is the window's own file, and ids are random), not by the Mono id it carries, and never when an import
+//!   wrote it (a row marked `imported`);
 //! - a worktree counts only when the project's own git records it (`is_worktree_of`), whichever chat row names it,
 //!   so a chat whose folder matches a real project cannot lend that project a worktree such as `~/Pictures`;
 //! - a worker's bare folder never counts, only its worktree.
@@ -40,7 +42,7 @@ pub(crate) struct ChatFolders {
 }
 
 /// The folders for chat `session_id`: its folder and worktree, the projects of its Mono, and the worktrees of those
-/// projects (and of the workers it delegated to) that git records. The app reads `candidates` under the database
+/// projects (and of the workers its Mono's own chats delegated to) that git records. The app reads `candidates` under the database
 /// lock and calls `vet` after letting go of it; this is both in one, for the tests.
 #[cfg(test)]
 pub(crate) fn folders(conn: &Connection, roster: Option<&Value>, session_id: &str) -> ChatFolders {
@@ -76,7 +78,9 @@ pub(crate) fn candidates(
     projects.extend(owner.projects);
     projects.extend(hub_projects(conn, &owner.monos));
 
-    // Workers: only those delegated by one of the Mono's own chats, and only their worktree.
+    // Workers: only those delegated by the chat itself or by one of the Mono's own chats (the roster's, this chat
+    // included when the roster gives it), and only their worktree. A delegation an import wrote is marked and lends
+    // nothing (`delegated_children`), so an imported chat's own id as owner in those rows does not count either.
     let mut owners = owner.chats;
     owners.push(session_id.to_string());
     let workers = delegated_children(conn, &owners)
@@ -232,11 +236,12 @@ fn hub_projects(conn: &Connection, monos: &[String]) -> Vec<String> {
         .collect()
 }
 
-/// The chats of the workers that these chats, the Mono's own, delegated to.
+/// The chats of the workers that these chats, the Mono's own, delegated to. A row an import wrote (`imported`) is history
+/// and lends nothing; an older database without the column is refused the same way (no rows, no folders).
 fn delegated_children(conn: &Connection, owners: &[String]) -> Vec<String> {
-    let Ok(mut query) =
-        conn.prepare("SELECT DISTINCT child_session FROM delegations WHERE owner_session = ?1")
-    else {
+    let Ok(mut query) = conn.prepare(
+        "SELECT DISTINCT child_session FROM delegations WHERE owner_session = ?1 AND imported = 0",
+    ) else {
         return Vec::new();
     };
     let mut children = Vec::new();
@@ -418,6 +423,21 @@ mod tests {
     fn delegation(conn: &Connection, id: &str, owner: &str, mono: Option<&str>, child: &str) {
         conn.execute(
             "INSERT INTO delegations (id, owner_session, owner_mono, root_id, child_session, request_id, state, delivery, created_at, updated_at) VALUES (?1, ?2, ?3, ?1, ?4, ?1, 'done', 'delivered', 0, 0)",
+            params![id, owner, mono, child],
+        )
+        .unwrap();
+    }
+
+    /// A delegation row an import wrote (marked, so it lends nothing).
+    fn imported_delegation(
+        conn: &Connection,
+        id: &str,
+        owner: &str,
+        mono: Option<&str>,
+        child: &str,
+    ) {
+        conn.execute(
+            "INSERT INTO delegations (id, owner_session, owner_mono, root_id, child_session, request_id, state, delivery, created_at, updated_at, imported) VALUES (?1, ?2, ?3, ?1, ?4, ?1, 'done', 'delivered', 0, 0, 1)",
             params![id, owner, mono, child],
         )
         .unwrap();
@@ -766,6 +786,41 @@ mod tests {
         assert_eq!(found[0], format!("/trees/t{}", WORKTREES_PER_PROJECT + 4));
         assert!(!found.contains(&"/trees/t0".to_string()));
         assert!(found.contains(&"/trees/t5".to_string()));
+    }
+
+    #[test]
+    fn an_imported_delegation_row_lends_its_chat_no_worktree() {
+        // LOW (#206 review): a delegation row an import wrote is marked, and a marked row never lends a worktree, even to
+        // the chat it names as owner. The same chat's own delegations (made here, not marked) still count.
+        let dir = tmp("imported-row");
+        let store = store();
+        let conn = store.lock_conn().unwrap();
+        let project = repo(&dir.0, "p");
+        let imported_tree = worktree(&project, &dir.0.join("trees/p-a"), "p-a");
+        let own_tree = worktree(&project, &dir.0.join("trees/p-b"), "p-b");
+        session(&conn, "imported", &text(&dir.0), None, 0);
+        session(
+            &conn,
+            "worker",
+            &text(&project),
+            Some(&text(&imported_tree)),
+            0,
+        );
+        session(
+            &conn,
+            "local-worker",
+            &text(&project),
+            Some(&text(&own_tree)),
+            0,
+        );
+        imported_delegation(&conn, "d1", "imported", None, "worker");
+        delegation(&conn, "d2", "imported", None, "local-worker");
+
+        let found = folders_of(&conn, None, "imported");
+        assert!(!found.contains(&text(&imported_tree)), "{found:?}");
+        assert!(found.contains(&text(&own_tree)), "{found:?}");
+        let on_roster = json!({"monos": [{"id": "ada", "sessionId": "imported", "projects": []}]});
+        assert!(!folders_of(&conn, Some(&on_roster), "imported").contains(&text(&imported_tree)));
     }
 
     #[test]
