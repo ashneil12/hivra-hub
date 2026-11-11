@@ -195,11 +195,70 @@ describe("crewPolicyForLead routes with the project and system defaults", () => 
       },
       system: () => ({ cli: "codex" } as never),
     });
-    expect(lookedUp).toEqual(["/pkg", "/repo"]);
+    // The folder is checked first (it is not a project here), then the most specific owner, and the search stops.
+    expect(lookedUp).toEqual(["/worktrees/repo-wt", "/repo"]);
     expect(policy).toMatchObject({ lock: true, lockedDefault: "claude" });
     const route = calls.find(([command]) => command === "crew_route");
     expect(route?.[1]).toMatchObject({
       query: { project: "/worktrees/repo-wt", defaults: expect.objectContaining({ project: { cli: "claude" }, system: { cli: "codex" } }) },
     });
+  });
+});
+
+// Round 11. The project default is the folder's own worker default even when no crew row owns the folder, and among
+// several owners the most specific folder wins. A worktree is not a hub project, so the route is sent the owner's default.
+describe("crewPolicyForLead uses the owning project's worker default", () => {
+  function routeEcho(command: string, args?: unknown): unknown {
+    if (command === "crew_rules_get") return { policy: { lockDefault: true, neverUse: [], fallback: [] }, policyOwn: true };
+    if (command !== "crew_route") return undefined;
+    const query = (args as { query?: { defaults?: { project?: { cli?: string }; system?: { cli?: string } } } } | undefined)?.query;
+    return { cli: query?.defaults?.project?.cli ?? query?.defaults?.system?.cli ?? null };
+  }
+
+  it("uses the folder's own worker default when no crew project owns it", async () => {
+    vi.mocked(invoke).mockImplementation(async (command: string, args?: unknown) => {
+      if (command === "crew_projects_owning") return [];
+      return routeEcho(command, args);
+    });
+    const policy = await crewPolicyForLead("/repo", "lead", {
+      project: (owner) => (owner === "/repo" ? ({ cli: "claude" } as never) : undefined),
+      system: () => ({ cli: "codex" } as never),
+    });
+    expect(policy).toMatchObject({ lock: true, lockedDefault: "claude" });
+  });
+
+  it("uses the most specific owning project's default, not the outermost", async () => {
+    vi.mocked(invoke).mockImplementation(async (command: string, args?: unknown) => {
+      if (command === "crew_projects_owning") return ["/repo", "/repo/pkg"];
+      return routeEcho(command, args);
+    });
+    const policy = await crewPolicyForLead("/worktrees/repo-wt/pkg", "lead", {
+      project: (owner) => {
+        if (owner === "/repo") return { cli: "codex" } as never;
+        if (owner === "/repo/pkg") return { cli: "claude" } as never;
+        return undefined;
+      },
+      system: () => ({ cli: "grok" } as never),
+    });
+    expect(policy).toMatchObject({ lock: true, lockedDefault: "claude" });
+  });
+
+  it("asks for hub project roots so a worktree with no crew row still finds the worker default", async () => {
+    const seen: unknown[] = [];
+    vi.mocked(invoke).mockImplementation(async (command: string, args?: unknown) => {
+      if (command === "crew_projects_owning") {
+        seen.push(args);
+        const roots = (args as { roots?: string[] } | undefined)?.roots ?? [];
+        return roots.includes("/repo") ? ["/repo"] : [];
+      }
+      return routeEcho(command, args);
+    });
+    const policy = await crewPolicyForLead("/worktrees/repo-wt", "lead", {
+      project: (owner) => (owner === "/repo" ? ({ cli: "claude" } as never) : undefined),
+      system: () => ({ cli: "codex" } as never),
+      roots: ["/repo"],
+    });
+    expect(seen.some((args) => (args as { roots?: string[] } | undefined)?.roots?.includes("/repo"))).toBe(true);
+    expect(policy).toMatchObject({ lock: true, lockedDefault: "claude" });
   });
 });

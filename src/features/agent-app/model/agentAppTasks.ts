@@ -63,6 +63,7 @@ import {
 } from "../../crew/model/taskRoute";
 import { routeReason } from "../../crew/model/pick";
 import { CLI_ORDER, cliLabel, isCli } from "../../crew/model/clis";
+import { projectDefaultForFolder } from "../../crew/model/host";
 import { routeDefaults } from "../../crew/model/workerDefault";
 import {
   activityNoteSummary,
@@ -330,6 +331,8 @@ export type AgentAppTasksHost = {
   /** The hub project id of a folder, and the folder of a hub project id. */
   hubProjectId?(folder: string): string | undefined;
   hubProjectFolder?(id: string): string | undefined;
+  /** WP-141 round 11: every hub project folder, so a worktree can find the project that owns it. */
+  hubProjectRoots?(): readonly string[];
   /** The clock waits are measured on; tests pin it. */
   now?(): number;
   /** Workers per project, and the ones waiting for a free worker (H8). */
@@ -677,6 +680,19 @@ function carriedMonoRules(rules: unknown): CrewRule[] {
 
 /** Only a Mono's own chat or a coding-team chat has tasks; the checker only reads. */
 /** WP-141: the folder whose crew policy a launch or a pick reads: the chat's team, else the project it names, else its own. */
+/**
+ * WP-141 round 11: the worker default for a folder. The folder's own hub project, then the most specific project that
+ * owns it. A host that has not named hub roots looks the folder up only, and does not ask which projects own it.
+ */
+function projectDefaultFor(tasks: AgentAppTasksHost, folder: string) {
+  const roots = tasks.hubProjectRoots?.();
+  return projectDefaultForFolder(
+    folder,
+    (key) => tasks.pool?.projectDefault?.(tasks.hubProjectId?.(key) ?? key),
+    roots === undefined ? undefined : { roots },
+  );
+}
+
 function crewScopeFolder(owner: TaskOwner, source: Session, named: string | undefined, tasks: AgentAppTasksHost): string {
   if (owner.team) return owner.team.folder;
   if (named === undefined) return source.cwd;
@@ -745,7 +761,7 @@ export async function gateSessionStart(
         ...(mono?.id ? { mono: mono.id } : {}),
         defaults: routeDefaults({
           mono: mono?.workerDefault,
-          project: tasks.pool?.projectDefault?.(tasks.hubProjectId?.(folder) ?? folder),
+          project: await projectDefaultFor(tasks, folder),
           system: tasks.pool?.systemDefault?.(),
         }),
       });
@@ -1200,7 +1216,7 @@ async function delegate(
       const monoRules = carriedMonoRules(owner.mono?.crewRules);
       const defaults = routeDefaults({
         mono: owner.mono?.workerDefault,
-        project: tasks.pool?.projectDefault?.(projectKey),
+        project: await projectDefaultFor(tasks, policyFolder),
         system: tasks.pool?.systemDefault?.(),
       });
       const catalog = launchCatalog();
@@ -2557,7 +2573,7 @@ async function pickWorker(source: Session, input: Record<string, unknown>, host:
   const monoRules = carriedMonoRules(owner.mono?.crewRules);
   const defaults = routeDefaults({
     mono: owner.mono?.workerDefault,
-    project: tasks.pool?.projectDefault?.(projectKey),
+    project: await projectDefaultFor(tasks, folder),
     system: tasks.pool?.systemDefault?.(),
   });
   const catalog = launchCatalog();

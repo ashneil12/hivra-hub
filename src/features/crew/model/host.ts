@@ -12,6 +12,7 @@ import { sanitizePolicy } from "./policy";
 import { routeDefaults } from "./workerDefault";
 import { monoForSession } from "../../monos/model/mono";
 import { hasHeadlessChildBackend } from "../../../integrations/harness/core/child";
+import { pathKey } from "../../../shared/lib/paths";
 import type { CrewPickAnswer, CrewPickQuery } from "../../agent-app/model/agentAppTasks";
 import type { LeadTarget } from "../../hub/model/leadershipDelegation";
 
@@ -211,27 +212,60 @@ function usableDefault(
   return pick;
 }
 
+type WorkerPick = Parameters<typeof routeDefaults>[0]["project"];
+
+/** Longer paths first, then the path text, so a package beats the repository that contains it. */
+function mostSpecificFirst(owners: readonly string[]): string[] {
+  return [...owners].sort((left, right) => {
+    const leftKey = pathKey(left);
+    const rightKey = pathKey(right);
+    return rightKey.length - leftKey.length || leftKey.localeCompare(rightKey);
+  });
+}
+
+/**
+ * WP-141 round 11: the worker default for a folder. Its own hub project wins, then the most specific project that
+ * owns it. `opts` absent looks up the folder only, so a caller that has not named hub roots makes no ownership read.
+ */
+export async function projectDefaultForFolder(
+  folder: string,
+  lookup: (key: string) => WorkerPick,
+  opts?: { roots?: readonly string[] },
+): Promise<WorkerPick> {
+  const own = usableDefault(lookup(folder));
+  if (own) return own;
+  if (!opts) return undefined;
+  const seen = pathKey(folder);
+  for (const owner of mostSpecificFirst(await owningProjects(folder, opts.roots))) {
+    if (pathKey(owner) === seen) continue;
+    const pick = usableDefault(lookup(owner));
+    if (pick) return pick;
+  }
+  return undefined;
+}
+
 /**
  * Round 8 (MED-C): the crew policy in force for a plan the Lead starts in a folder. It reads the Lead's own Mono, and
  * the locked default the route picks for that Mono and folder, so a plan is judged against that default rather than
  * the Lead's own CLI. A route that can't be read fails the plan closed.
  *
- * Round 10: the project default is the first owning project's, the same owners the policy in force already resolved.
- * The Lead's own folder is not a project when it is a worktree, so looking the default up there misses the lock's CLI.
+ * Round 11: the project default is the folder's own worker default, then the most specific owning project's. Hub project
+ * folders are passed as roots, so a project with a worker default and no crew row is still found.
  */
 export async function crewPolicyForLead(
   folder: string,
   leadId: string,
   defaults?: {
-    project?: (folder: string) => Parameters<typeof routeDefaults>[0]["project"];
+    project?: (folder: string) => WorkerPick;
     system?: () => Parameters<typeof routeDefaults>[0]["system"];
+    roots?: readonly string[];
   },
 ): Promise<{ neverUse: string[]; lock: boolean; lockedDefault?: string }> {
   const mono = monoForSession(leadId);
-  const { neverUse, lock, owners } = await policyInForce(mono?.id, folder);
+  const { neverUse, lock } = await policyInForce(mono?.id, folder);
   if (!lock) return { neverUse, lock: false };
   const project = defaults?.project
-    ? owners.map((owner) => usableDefault(defaults.project?.(owner))).find((pick) => pick !== undefined)
+    ? await projectDefaultForFolder(folder, defaults.project, { roots: defaults.roots })
     : undefined;
   let route: Route;
   try {
@@ -256,10 +290,13 @@ export async function crewPolicyForLead(
  * Round 9 (LOW-3): the saved projects that own a folder, read by the gate (crew_projects_owning). A folder the gate
  * cannot answer for falls back to the folder itself, so the Mono's and the system's policies still apply.
  */
-async function owningProjects(folder: string): Promise<string[]> {
+async function owningProjects(folder: string, roots?: readonly string[]): Promise<string[]> {
   let got: unknown;
   try {
-    got = await invoke<unknown>("crew_projects_owning", { folder });
+    got = await invoke<unknown>("crew_projects_owning", {
+      folder,
+      ...(roots && roots.length > 0 ? { roots: [...roots] } : {}),
+    });
   } catch (error) {
     throw new Error(`The crew policy could not be read, so nothing was started (${reasonOf(error)}).`);
   }

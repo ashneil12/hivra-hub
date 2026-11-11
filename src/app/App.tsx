@@ -257,6 +257,7 @@ import { ShipNotice } from "../features/hub/ui/ShipNotice";
 import {
   hubData,
   hubProjectFolder,
+  hubProjectFolders,
   hubProjectIdFor,
   nameHubProject,
   useHubDataVersion,
@@ -13346,6 +13347,8 @@ function Workspace({
         crewPolicyForLead(folder, leadId, {
           project: (owner) => projectWorkerDefault(hubProjectIdFor(owner) ?? owner),
           system: () => systemWorkerDefault(),
+          // WP-141 round 11: hub project folders, so a Lead in a worktree finds the project's worker default.
+          roots: hubProjectFolders(),
         }),
       // WP-91: an irreversible step's decision sits under the hub project of the run's folder, like a delegation does.
       decisionProject: hubProjectIdFor,
@@ -15015,6 +15018,8 @@ function Workspace({
               questions: delegationTreeRef.current.questions,
               hubProjectId: hubProjectIdFor,
               hubProjectFolder,
+              // WP-141 round 11: hub project folders, so a worktree's session, brief and pick share the project's default.
+              hubProjectRoots: hubProjectFolders,
               unqueue: (childSession, requestId) => {
                 const next = sessionsRef.current.map((session) => {
                   if (session.id !== childSession) return session;

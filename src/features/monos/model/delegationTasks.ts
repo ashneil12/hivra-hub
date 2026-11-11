@@ -38,6 +38,8 @@ export type DelegationTasksDeps = {
   questions?: QuestionRouter;
   hubProjectId?(folder: string): string | undefined;
   hubProjectFolder?(id: string): string | undefined;
+  /** WP-141 round 11: hub project folders, so a worktree finds the project's worker default. */
+  hubProjectRoots?(): readonly string[];
   nextChange?(ms: number): Promise<void>;
   now?(): number;
   /** Take a followed brief back out of its chat's queue, if it still waits there (followedBriefs.ts). */
@@ -198,6 +200,7 @@ export function delegationTasksHost(deps: DelegationTasksDeps): AgentAppTasksHos
     decideGates: (owner, id, accept, reason) => decideGateVerdict(owner, id, accept, reason),
     ...(deps.hubProjectId ? { hubProjectId: deps.hubProjectId } : {}),
     ...(deps.hubProjectFolder ? { hubProjectFolder: deps.hubProjectFolder } : {}),
+    ...(deps.hubProjectRoots ? { hubProjectRoots: deps.hubProjectRoots } : {}),
     ...(deps.now ? { now: deps.now } : {}),
   };
 }
