@@ -184,7 +184,12 @@ function isRelativeFile(value: string): boolean {
   if (!value || value.includes("://") || value.startsWith("@")) return false;
   if (value.startsWith("/") || /^[A-Za-z]:[\\/]/.test(value)) return false;
   const ext = value.includes(".") ? value.slice(value.lastIndexOf(".") + 1).toLowerCase() : "";
-  return value.includes("/") || value.includes("\\") || value.startsWith(".") || SCRIPT_EXTENSIONS.includes(ext);
+  const segments = value.split(/[/\\]/);
+  // A slash in a model name is not a path. Refuse a .. segment, a ~ path, a leading dot, or a script or config name.
+  return segments.some((segment) => segment === "..")
+    || segments.some((segment) => segment.startsWith("~"))
+    || value.startsWith(".")
+    || SCRIPT_EXTENSIONS.includes(ext);
 }
 
 /** The reason an argument list is refused, or null when it is allowed. */

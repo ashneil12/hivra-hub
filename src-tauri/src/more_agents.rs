@@ -5,7 +5,7 @@
 //! rules for display; this module is the last check before anything runs.
 
 use serde_json::{json, Value};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Mutex;
@@ -709,18 +709,33 @@ fn inline_flag(arg: &str) -> bool {
     }
 }
 
-/// A relative path argument: the child would read it from the folder it runs in, which nothing pins. A scoped package
-/// name (`@scope/pkg`) and a URL are not paths. Every value an argument can carry is checked, not only the argument.
+/// A relative file argument. Refused: a `..` segment, a `~` path, a leading `.`, or a script or config file name.
+/// A slash in a model name (`openai/gpt-4.1`) is not a path. A scoped package (`@scope/pkg`) and a URL are not paths.
+/// The child runs in an empty folder, so a relative word cannot reach a chat file. Every value an argument can carry
+/// is checked, not only the argument.
 fn relative_file_arg(arg: &str) -> bool {
     candidates(arg).into_iter().any(|value| {
         !value.is_empty()
             && !value.contains("://")
             && !value.starts_with('@')
             && !Path::new(value).is_absolute()
-            && (value.contains(['/', '\\'])
+            && (has_parent_segment(value)
+                || has_tilde(value)
                 || value.starts_with('.')
                 || names_a_script_or_config(value))
     })
+}
+
+/// `..` as its own path segment (`../x`, `foo/../x`), not a word that merely contains two dots.
+fn has_parent_segment(value: &str) -> bool {
+    value.split(['/', '\\']).any(|segment| segment == "..")
+}
+
+/// A home path: `~`, `~/x`, or a segment that starts with `~`.
+fn has_tilde(value: &str) -> bool {
+    value
+        .split(['/', '\\'])
+        .any(|segment| segment.starts_with('~'))
 }
 
 /// A bare file name by its extension: `agent.mjs`, `settings.json`. A version (`pkg@1.2.3`), a model (`gpt-4.1`)
@@ -895,11 +910,11 @@ pub(crate) fn approved_spawn(
     if pins_now != approval.pins {
         return Err(ON_DISK_CHANGED.into());
     }
-    // The program that runs is a private copy named by its hash, not the file the person approved: nothing that can
-    // write the original after the check can change what starts (the copy is hashed before it is named).
-    let resolved = private_copy(data_dir, &approval.sha256, Path::new(&resolved))?
-        .to_string_lossy()
-        .into_owned();
+    // Run the canonical file itself, hashed again immediately before the path is handed back. A launcher then still
+    // finds the files installed beside it. A write between this hash and the spawn can still change the file.
+    if file_sha256(Path::new(&resolved)).ok().as_deref() != Some(approval.sha256.as_str()) {
+        return Err(ON_DISK_CHANGED.into());
+    }
     let name = entry
         .get("name")
         .and_then(Value::as_str)
@@ -946,7 +961,11 @@ pub(crate) fn run_folder(data_dir: &Path) -> Result<PathBuf, String> {
                 return Err("The More agents folder is a link, so it is not used.".into());
             }
             Ok(meta) if meta.file_type().is_symlink() => {
-                std::fs::remove_file(folder).map_err(err)?;
+                // remove_file drops a symlink. A Windows directory junction is a symlink remove_file
+                // refuses; remove_dir drops the junction and not the folder it points at.
+                if std::fs::remove_file(folder).is_err() {
+                    std::fs::remove_dir(folder).map_err(err)?;
+                }
             }
             _ => {}
         }
@@ -959,9 +978,15 @@ pub(crate) fn run_folder(data_dir: &Path) -> Result<PathBuf, String> {
         builder.mode(0o700);
     }
     builder.create(&run).map_err(err)?;
-    // Folders from earlier starts are not needed once they are an hour old; a fresh one may be a start in progress.
+    let mut live = LIVE_RUNS.lock().unwrap_or_else(|e| e.into_inner());
+    // Folders from earlier starts are not needed once they are an hour old. One this process handed out and has not
+    // reaped is still a child's working folder, so it is left alone even when its mtime is old.
     if let Ok(entries) = std::fs::read_dir(&run) {
         for entry in entries.flatten() {
+            let path = entry.path();
+            if live.contains(&path) {
+                continue;
+            }
             let old = entry
                 .metadata()
                 .and_then(|m| m.modified())
@@ -969,7 +994,7 @@ pub(crate) fn run_folder(data_dir: &Path) -> Result<PathBuf, String> {
                 .and_then(|t| t.elapsed().ok())
                 .is_some_and(|age| age > std::time::Duration::from_secs(3600));
             if old {
-                let _ = std::fs::remove_dir_all(entry.path());
+                let _ = std::fs::remove_dir_all(path);
             }
         }
     }
@@ -977,8 +1002,12 @@ pub(crate) fn run_folder(data_dir: &Path) -> Result<PathBuf, String> {
     builder.create(&dir).map_err(err)?;
     // An empty package.json stops npm's search for a project above this folder.
     std::fs::write(dir.join("package.json"), b"{}").map_err(err)?;
+    live.insert(dir.clone());
     Ok(dir)
 }
+
+/// Run folders this process created and has not reaped. The sweep skips them.
+static LIVE_RUNS: Mutex<BTreeSet<PathBuf>> = Mutex::new(BTreeSet::new());
 
 /// Removes one More agents run folder after its child has exited. A link, the run root, and anything that is not a
 /// direct child of `<data>/more-agents/run` are left where they are.
@@ -998,7 +1027,11 @@ pub(crate) fn remove_run_folder(data_dir: &Path, run_dir: &Path) -> Result<(), S
         return Err("That folder is not one More agents run.".into());
     }
     std::fs::remove_dir_all(&real_dir)
-        .map_err(|error| format!("Could not remove the run folder: {error}"))
+        .map_err(|error| format!("Could not remove the run folder: {error}"))?;
+    let mut live = LIVE_RUNS.lock().unwrap_or_else(|e| e.into_inner());
+    live.remove(run_dir);
+    live.remove(&real_dir);
+    Ok(())
 }
 
 /// An absolute path that is a file, or a bare name found on `path_value`. Anything else is not started.
@@ -1061,43 +1094,15 @@ fn still_approved(approval: &Approval, fp: &str, path: Option<&str>) -> bool {
             .all(|(pin, sha)| file_sha256(Path::new(pin)).is_ok_and(|now| &now == sha))
 }
 
-/// Copies an approved program into the app's own folder under its hash and returns that copy's path. The bytes are
-/// read once and hashed; only a copy whose hash is the approved one is written, and it is named by that hash.
-fn private_copy(data_dir: &Path, sha256: &str, source: &Path) -> Result<PathBuf, String> {
-    use sha2::{Digest, Sha256};
-    let dir = data_dir.join("more-agents").join("bin");
-    std::fs::create_dir_all(&dir).map_err(|_| NOT_APPROVED.to_string())?;
-    let target = dir.join(sha256);
-    if target.is_file() && file_sha256(&target).is_ok_and(|now| now == sha256) {
-        return Ok(target);
-    }
-    let bytes = std::fs::read(source).map_err(|_| NOT_APPROVED.to_string())?;
-    let hashed: String = Sha256::digest(&bytes)
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect();
-    if hashed != sha256 {
-        return Err(ON_DISK_CHANGED.into());
-    }
-    let temp = dir.join(format!("{sha256}.{}.tmp", uuid::Uuid::new_v4()));
-    std::fs::write(&temp, &bytes).map_err(|_| NOT_APPROVED.to_string())?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(&temp, std::fs::Permissions::from_mode(0o500));
-    }
-    std::fs::rename(&temp, &target).map_err(|_| {
-        let _ = std::fs::remove_file(&temp);
-        NOT_APPROVED.to_string()
-    })?;
-    Ok(target)
-}
-
 /// SHA-256 of a file's bytes, hex. A file that cannot be read is not approved.
+/// On Unix the hash is cached by path, mtime, size, inode and ctime, so an in-place edit is seen even when the writer
+/// puts the mtime back. Windows has no ctime a user cannot reset, so it does not cache.
 fn file_sha256(path: &Path) -> Result<String, String> {
     use sha2::{Digest, Sha256};
     let meta = std::fs::metadata(path).map_err(|_| NOT_APPROVED.to_string())?;
+    #[cfg(unix)]
     let stamp = FileStamp::of(&meta);
+    #[cfg(unix)]
     if let Some((cached, sha)) = SHA_CACHE
         .lock()
         .unwrap_or_else(|e| e.into_inner())
@@ -1108,6 +1113,8 @@ fn file_sha256(path: &Path) -> Result<String, String> {
             return Ok(sha);
         }
     }
+    #[cfg(not(unix))]
+    let _ = meta;
     #[cfg(test)]
     HASHES.with(|h| h.set(h.get() + 1));
     let bytes = std::fs::read(path).map_err(|_| NOT_APPROVED.to_string())?;
@@ -1115,6 +1122,7 @@ fn file_sha256(path: &Path) -> Result<String, String> {
         .iter()
         .map(|byte| format!("{byte:02x}"))
         .collect();
+    #[cfg(unix)]
     SHA_CACHE
         .lock()
         .unwrap_or_else(|e| e.into_inner())
@@ -1122,33 +1130,38 @@ fn file_sha256(path: &Path) -> Result<String, String> {
     Ok(sha)
 }
 
-/// What a cached hash is keyed on: the file's modification time, size and inode.
+/// What a cached hash is keyed on: modification time, size, inode, and the inode change time.
+/// ctime moves on every write and a user cannot put it back, so an in-place edit misses the cache.
+#[cfg(unix)]
 #[derive(Clone, PartialEq, Eq, Debug)]
 struct FileStamp {
     modified: u128,
     size: u64,
     inode: u64,
+    changed_secs: i64,
+    changed_nsec: i64,
 }
 
+#[cfg(unix)]
 impl FileStamp {
     fn of(meta: &std::fs::Metadata) -> Self {
+        use std::os::unix::fs::MetadataExt;
         let modified = meta
             .modified()
             .ok()
             .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
             .map_or(0, |d| d.as_nanos());
-        #[cfg(unix)]
-        let inode = std::os::unix::fs::MetadataExt::ino(meta);
-        #[cfg(not(unix))]
-        let inode = 0;
         FileStamp {
             modified,
             size: meta.len(),
-            inode,
+            inode: meta.ino(),
+            changed_secs: meta.ctime(),
+            changed_nsec: meta.ctime_nsec(),
         }
     }
 }
 
+#[cfg(unix)]
 static SHA_CACHE: Mutex<BTreeMap<PathBuf, (FileStamp, String)>> = Mutex::new(BTreeMap::new());
 #[cfg(test)]
 thread_local! {
@@ -2118,7 +2131,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn an_approved_program_runs_from_the_app_folder_not_the_original() {
+    fn an_approved_program_runs_from_its_canonical_path() {
         let d = dir();
         let tool = make_tool(&d.path().join("bin"), "wp134-copy", b"#!/bin/sh\n");
         let path_value = tool.parent().unwrap().to_string_lossy().into_owned();
@@ -2126,8 +2139,7 @@ mod tests {
         approve(d.path(), "wp134", &path_value).expect("approve");
         let run = approved_spawn(d.path(), "wp134", &path_value).expect("run");
         let original = std::fs::canonicalize(&tool).expect("canonical");
-        assert_ne!(Path::new(&run.command), original.as_path());
-        assert!(Path::new(&run.command).starts_with(d.path()));
+        assert_eq!(Path::new(&run.command), original.as_path());
     }
 
     #[cfg(unix)]
@@ -2168,7 +2180,6 @@ mod tests {
         );
     }
 
-    #[cfg(unix)]
     #[test]
     fn an_unchanged_program_is_hashed_once_and_a_changed_one_again() {
         let d = dir();
@@ -2177,14 +2188,21 @@ mod tests {
         let before = HASHES.with(|h| h.get());
         let first = file_sha256(&file).expect("hash");
         assert_eq!(file_sha256(&file).expect("hash again"), first);
+        // Unix caches an unchanged file. Windows does not cache, so every read hashes.
+        #[cfg(unix)]
         assert_eq!(
             HASHES.with(|h| h.get()) - before,
             1,
             "the unchanged file was read again"
         );
+        #[cfg(not(unix))]
+        assert_eq!(HASHES.with(|h| h.get()) - before, 2);
         std::fs::write(&file, b"a longer second version").expect("rewrite");
         assert_ne!(file_sha256(&file).expect("hash changed"), first);
+        #[cfg(unix)]
         assert_eq!(HASHES.with(|h| h.get()) - before, 2);
+        #[cfg(not(unix))]
+        assert_eq!(HASHES.with(|h| h.get()) - before, 3);
     }
 
     #[test]
@@ -2233,6 +2251,8 @@ mod tests {
         assert!(checked_fields(&entry("wp134", "/opt/node", &["agent.mjs"])).is_err());
         assert!(checked_fields(&entry("wp134", "/opt/node", &["--env-file=.env"])).is_err());
         assert!(checked_fields(&entry("wp134", "/opt/node", &["./agent.mjs"])).is_err());
+        assert!(checked_fields(&entry("wp134", "/opt/node", &["../secret"])).is_err());
+        assert!(checked_fields(&entry("wp134", "/opt/node", &["~/secret"])).is_err());
         assert!(checked_fields(&entry("wp134", "/opt/npx", &["-y", "@scope/pkg"])).is_ok());
         assert!(checked_fields(&entry("wp134", "/opt/npx", &["https://example.com/a.ts"])).is_ok());
     }
@@ -2498,5 +2518,149 @@ mod tests {
         std::os::unix::fs::symlink(&evil, &link).expect("relink");
         let shown = view(&read_stored(d.path()).expect("read"), &path_value);
         assert_eq!(shown["approved"], json!([]));
+    }
+
+    // Review #231 r2 repro (HIGH, functional): the approved program runs from a private copy at
+    // `<data>/more-agents/bin/<sha256>`, away from the folder it was installed in. Every npm-installed launcher or
+    // agent is a script that loads files beside it: `npx` resolves to `.../npm/bin/npx-cli.js`, whose first line is
+    // `require('../lib/cli.js')`, so the copy dies with "Cannot find module '../lib/cli.js'" (checked by hand with
+    // node 22's npx). The same holds for `gemini`, `copilot` and every `#!/usr/bin/env node` bin, and on Windows for
+    // `npx.cmd`, whose copy has no extension and is not run through cmd at all. This sh script has the same shape: a
+    // bin linked from PATH that loads `../lib/cli.sh` relative to itself.
+    #[cfg(unix)]
+    #[test]
+    fn review_231_r2_an_installed_program_still_finds_the_files_beside_it() {
+        let d = dir();
+        let pkg = d.path().join("lib").join("node_modules").join("fake-acp");
+        std::fs::create_dir_all(pkg.join("lib")).expect("pkg lib");
+        std::fs::write(
+            pkg.join("lib").join("cli.sh"),
+            b"echo started-from-install\n",
+        )
+        .expect("cli");
+        let cli = make_tool(
+            &pkg.join("bin"),
+            "fake-acp-cli.sh",
+            b"#!/bin/sh\n. \"$(dirname \"$0\")/../lib/cli.sh\"\n",
+        );
+        let bin = d.path().join("bin");
+        std::fs::create_dir_all(&bin).expect("bin");
+        std::os::unix::fs::symlink(&cli, bin.join("fake-acp"))
+            .expect("PATH link, as npm makes one");
+        let path_value = bin.to_string_lossy().into_owned();
+        write_agents(d.path(), 0, vec![entry("wp134", "fake-acp", &["--acp"])]).expect("seed");
+        approve(d.path(), "wp134", &path_value).expect("approve");
+        let run = approved_spawn(d.path(), "wp134", &path_value).expect("starts as approved");
+        let out = std::process::Command::new(&run.command)
+            .args(&run.args)
+            .output()
+            .expect("spawn the approved program");
+        assert!(
+            out.status.success()
+                && String::from_utf8_lossy(&out.stdout).contains("started-from-install"),
+            "the approved program could not run from {}: {}",
+            run.command,
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    // Review #231 r2 repro (MEDIUM, functional, same class as r5's dotted words): a model name with a slash is read as
+    // a relative path and refused. `--model openai/gpt-4.1`, `--model=anthropic/claude-sonnet-4` (OpenRouter, opencode,
+    // goose, aider style) and a Hugging Face id cannot be given at all, with or without `=`. The child now starts in its
+    // own empty run folder, so a relative word cannot reach a chat file anyway.
+    #[test]
+    fn review_231_r2_a_model_slug_with_a_slash_is_accepted() {
+        for args in [
+            &["--model", "openai/gpt-4.1"][..],
+            &["--model=anthropic/claude-sonnet-4"][..],
+            &["--model", "Qwen/Qwen2.5-Coder-32B-Instruct"][..],
+        ] {
+            assert!(
+                checked_fields(&entry("wp134", "/opt/agent", args)).is_ok(),
+                "{args:?} is refused as a relative file"
+            );
+        }
+    }
+
+    // Review #231 r2 repro (MEDIUM, functional): a new start sweeps every run folder whose mtime is over an hour old,
+    // and a folder's mtime does not move while its child runs (nothing is added to it). A More agents chat open for
+    // over an hour has its working folder deleted under it the moment any other More agents chat starts. After that
+    // every process it starts without its own cwd fails: node aborts in `uv_cwd`, python's os.getcwd() raises, git
+    // says "Unable to read current working directory" (an MCP server the agent launches with npx, a tool it runs).
+    #[cfg(unix)]
+    #[test]
+    fn review_231_r2_a_folder_a_child_still_runs_in_is_not_swept() {
+        let d = dir();
+        let data = d.path().join("data");
+        let live = run_folder(&data).expect("first run");
+        let mut child = std::process::Command::new("sleep")
+            .arg("30")
+            .current_dir(&live)
+            .spawn()
+            .expect("a child that is still running");
+        // An hour and more since the folder was made: the child is still there.
+        let aged = std::process::Command::new("touch")
+            .args(["-t", "202001010000.00"])
+            .arg(&live)
+            .status()
+            .expect("touch");
+        assert!(aged.success());
+        let _second = run_folder(&data).expect("another chat starts");
+        let still_there = live.is_dir();
+        let _ = child.kill();
+        let _ = child.wait();
+        assert!(
+            still_there,
+            "a running child's folder was swept by another start"
+        );
+    }
+
+    // Review #231 r2 repro (MEDIUM): the hash cache is keyed on path, mtime, size and inode, all of which an edit in
+    // place keeps when the writer puts the mtime back (utimensat, `touch -r`). The pin check then reads the old hash
+    // from the cache and the changed script runs on the old approval. The same cache backs the private copy's check in
+    // `private_copy`. The inode change time (ctime) cannot be set back by a user and is not in the key.
+    #[cfg(unix)]
+    #[test]
+    fn review_231_r2_a_pinned_script_edited_in_place_does_not_run() {
+        use std::io::Write;
+        let d = dir();
+        let bin = d.path().join("bin");
+        make_tool(&bin, "wp134-runner", b"#!/bin/sh\n");
+        let script = d.path().join("agent.mjs");
+        std::fs::write(&script, b"console.log('approved')").expect("script");
+        let path_value = bin.to_string_lossy().into_owned();
+        let arg = script.to_string_lossy().into_owned();
+        write_agents(
+            d.path(),
+            0,
+            vec![entry("wp134", "wp134-runner", &[arg.as_str()])],
+        )
+        .expect("seed");
+        approve(d.path(), "wp134", &path_value).expect("approve");
+        approved_spawn(d.path(), "wp134", &path_value).expect("starts as approved");
+        let before = std::fs::metadata(&script)
+            .expect("meta")
+            .modified()
+            .expect("mtime");
+        {
+            let mut file = std::fs::OpenOptions::new()
+                .write(true)
+                .open(&script)
+                .expect("open in place");
+            // The same length, so the size in the key does not move either.
+            file.write_all(b"require('cp').exec('x')").expect("edit");
+            file.set_modified(before).expect("put the mtime back");
+        }
+        assert_ne!(
+            std::fs::read(&script).expect("read"),
+            b"console.log('approved')"
+        );
+        assert_eq!(
+            approved_spawn(d.path(), "wp134", &path_value)
+                .err()
+                .as_deref(),
+            Some(ON_DISK_CHANGED),
+            "an edited pinned script ran on the old approval"
+        );
     }
 }
