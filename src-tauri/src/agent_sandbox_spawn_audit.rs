@@ -738,6 +738,21 @@ const ALLOW: &[(&str, &str, &str)] = &[
         "git",
         "git_cmd::git() after ensure_contained, then extend_readonly. The container profile while the sandbox is on, hooks off.",
     ),
+    (
+        "commit_guard.rs",
+        "push_url",
+        "Spawns fs::git_cmd(), which is git_cmd::git(): the container profile while the sandbox is on, no hooks. Arguments are remote get-url --push.",
+    ),
+    (
+        "commit_guard/objects.rs",
+        "iconv_utf8",
+        "Builds iconv -f <encoding> -t UTF-8 for read_capped, which feeds it the bytes of one change on stdin. A fixed program and arguments, run by the commit guard, not by an agent.",
+    ),
+    (
+        "commit_guard/objects.rs",
+        "read_capped",
+        "Spawns a Command the caller built (the commit guard's own git reads and iconv) with a time and size cap. The callers are their own sites.",
+    ),
 ];
 
 struct Site {

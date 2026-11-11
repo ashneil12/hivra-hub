@@ -14,7 +14,10 @@ import {
   Settings,
   Zap,
   DashboardSquare,
+  Bot,
 } from "../../shared/ui/icons";
+import { IS_HUB_BUNDLE } from "../../features/hub/model/hubBundle";
+import { showAppItem } from "../../features/hub/model/hubNav";
 import { pinnedPages, requestOpenPage, usePagesVersion } from "../../features/pages/model/pages";
 import {
   useEffect,
@@ -599,6 +602,10 @@ export function ProjectRail({
           />
           <div className="flex shrink-0 flex-col gap-px p-2">
             <GithubStarPrompt />
+            {IS_HUB_BUNDLE ? (
+              // WP-219: the rail's Agents tile, until WP-213 owns it.
+              <RailAction label="Agents" icon={Bot} onClick={() => showAppItem("agents")} ariaLabel="Agents" />
+            ) : null}
             <RailAction
               label="Settings"
               icon={Settings}

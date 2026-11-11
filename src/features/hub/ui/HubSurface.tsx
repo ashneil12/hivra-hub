@@ -16,6 +16,7 @@ import { ProjectPagesView } from "./ProjectPagesView";
 import { AutopilotView } from "../../autopilot/ui/AutopilotView";
 import { HomeView } from "../../home/ui/HomeView";
 import { TasksScreen } from "../../tasks/ui/TasksScreen";
+import { AgentsBoardScreen } from "../../agents-board/ui/AgentsBoardScreen";
 
 /**
  * Main area for the hub views that are not a project's workspace: rooms, Pages, a new project, restore, autopilot.
@@ -41,6 +42,8 @@ export function HubSurface({ selection }: { selection: HubSelection }) {
   }, [home, first]);
   // WP-73: Home, before the no-project redirect and before a project's own item.
   if (selection.item === "home") return <HomeView />;
+  // WP-219: the Agents board. On by default. Not a project item.
+  if (selection.item === "agents") return <AgentsBoardScreen />;
   if (selection.item === "new-project") return <NewProjectView />;
   if (selection.item === "restore") return <RestorePreview />;
   if (selection.item === "autopilot") return <AutopilotView />;

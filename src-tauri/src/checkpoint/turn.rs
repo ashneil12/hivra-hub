@@ -669,7 +669,9 @@ fn capture_workspace(root: &Path, reference: &str) -> Result<String, String> {
         "-c",
         "core.fsyncMethod=fsync",
     ];
-    run(&[durable.as_slice(), &["add", "-A", "--", "."]].concat())?;
+    let add = crate::commit_guard::add_all_pathspec(root)?;
+    let add: Vec<&str> = add.iter().map(String::as_str).collect();
+    run(&[durable.as_slice(), add.as_slice()].concat())?;
     let tree = String::from_utf8(run(&[durable.as_slice(), &["write-tree"]].concat())?)
         .map_err(|e| e.to_string())?;
     let commit = String::from_utf8(run(&[

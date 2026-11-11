@@ -1034,11 +1034,9 @@ pub async fn git_discard_all(cwd: String) -> Result<(), String> {
 /// Stage every changed file in the repo.
 #[tauri::command]
 pub async fn git_stage_all(cwd: String) -> Result<(), String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        git_checked(&expand_home(&cwd), &["add", "-A", "--", "."])
-    })
-    .await
-    .map_err(|e| e.to_string())?
+    tauri::async_runtime::spawn_blocking(move || crate::commit_guard::stage_all(&expand_home(&cwd)))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 /// Unstage every staged file.
@@ -2942,6 +2940,7 @@ fn git_commit_selected_for(root: &Path, message: &str, paths: &[String]) -> Resu
         return Err("Commit message cannot be empty".into());
     }
     let paths = git_selected_paths(root, paths)?;
+    crate::commit_guard::refuse_selected(root, &paths)?;
     let existing: Vec<&str> = paths
         .iter()
         .filter(|path| std::fs::symlink_metadata(root.join(path)).is_ok())
@@ -2979,6 +2978,7 @@ impl Drop for GitSelectionIndex {
 fn git_selected_context_for(root: &Path, paths: &[String]) -> Result<GitStagedContext, String> {
     no_blank_root(root)?;
     let paths = git_selected_paths(root, paths)?;
+    crate::commit_guard::refuse_selected(root, &paths)?;
     let index_dir = std::env::temp_dir().join(format!("monocode-git-selection-{}", Uuid::new_v4()));
     let directory = std::fs::DirBuilder::new();
     #[cfg(unix)]
@@ -3040,6 +3040,7 @@ fn git_commit_args(root: &Path, message: &str, extra: &[&str]) -> Result<(), Str
     if message.is_empty() {
         return Err("Commit message cannot be empty".into());
     }
+    crate::commit_guard::refuse_staged_agent_files(root)?;
     let mut args = vec!["commit"];
     args.extend_from_slice(extra);
     args.extend(["--cleanup=strip", "-m", message]);
@@ -3061,18 +3062,54 @@ fn git_head_message_for(root: &Path) -> Result<String, String> {
     git_stdout(root, &["log", "-1", "--pretty=%B"]).ok_or_else(|| "No commits yet".to_string())
 }
 
-fn git_push_for(root: &Path) -> Result<(), String> {
-    if git_stdout(root, &["rev-parse", "--abbrev-ref", "@{upstream}"]).is_some() {
-        return git_checked(root, &["push"]);
+/// Pushes the current branch with an explicit refspec, to the remote the guard checked (WP-200). A bare `git push`
+/// would follow the person's push configuration, which the guard does not read. `--no-follow-tags` and
+/// `--recurse-submodules=no` keep an annotated tag and a submodule commit from leaving with this push: the guard
+/// did not read them. Git LFS still runs the repository's own hook and uploads objects; only the pointer file was
+/// scanned. The app does not turn that filter off.
+pub(crate) fn git_push_for(root: &Path) -> Result<(), String> {
+    let upstream = git_stdout(root, &["rev-parse", "--abbrev-ref", "@{upstream}"]).is_some();
+    let remote = if upstream {
+        crate::commit_guard::push_remote(root)
+    } else {
+        git_remote_name(root).ok_or_else(|| "No git remote to push to".to_string())?
+    };
+    let sha = crate::commit_guard::gate_outgoing_to(root, &remote)?;
+    let branch = git_branch(root).ok_or_else(|| "Not on a branch".to_string())?;
+    let refspec = format!("{sha}:refs/heads/{branch}");
+    // A commit-graph or a pack bitmap can name a tree the guard did not read. These flags are also on the guard's
+    // own reads. `-u` with a `<sha>:refs/heads/<branch>` refspec does not set the upstream, so that is done after.
+    let mut args = vec![
+        "-c",
+        "core.commitGraph=false",
+        "-c",
+        "pack.useBitmaps=false",
+        "push",
+    ];
+    if !upstream {
+        args.push("-u");
     }
-    let remote = git_remote_name(root).ok_or_else(|| "No git remote to push to".to_string())?;
-    git_checked(root, &["push", "-u", &remote, "HEAD"])
+    args.extend([
+        "--no-follow-tags",
+        "--recurse-submodules=no",
+        &remote,
+        &refspec,
+    ]);
+    git_checked(root, &args)?;
+    if !upstream {
+        let tracking = format!("--set-upstream-to={remote}/{branch}");
+        // The push has already landed. A detached checkout, or a remote whose fetch refspec does not map this
+        // branch, cannot record the upstream. That must not be reported as a failed push.
+        if let Err(error) = git_checked(root, &["branch", &tracking, &branch]) {
+            eprintln!("git push landed, but the upstream was not recorded: {error}");
+        }
+    }
+    Ok(())
 }
 
 fn git_sync_changes_for(root: &Path) -> Result<(), String> {
     if git_stdout(root, &["rev-parse", "--abbrev-ref", "@{upstream}"]).is_some() {
         git_checked(root, &["pull", "--no-edit", "--ff"]).map_err(with_signing_hint)?;
-        return git_checked(root, &["push"]);
     }
     git_push_for(root)
 }
@@ -4522,6 +4559,7 @@ fn git_pr_create_for(root: &Path, input: &GitPrCreateInput) -> Result<String, St
     if title.is_empty() {
         return Err("Pull request title cannot be empty".into());
     }
+    crate::commit_guard::gate_outgoing(root)?;
     let stamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_nanos())
@@ -4762,7 +4800,11 @@ fn git_cmd_keeping_hooks() -> Command {
 }
 
 fn git_cmd_for_args_with_path(args: &[&str], gui_path: impl FnOnce() -> String) -> Command {
-    let stripped = args.strip_prefix(&["--literal-pathspecs"]).unwrap_or(args);
+    let mut stripped = args.strip_prefix(&["--literal-pathspecs"]).unwrap_or(args);
+    // `-c key=value` pairs come before the action. Skipping them keeps the login-shell PATH and the hooks on a push.
+    while stripped.first() == Some(&"-c") && stripped.len() >= 2 {
+        stripped = &stripped[2..];
+    }
     let kind = stripped.first().copied();
     if matches!(kind, Some("commit" | "push" | "pull" | "fetch")) {
         // Signers, hooks and credential helpers may only be on the login-shell PATH. Hooks stay on.
@@ -12667,6 +12709,43 @@ mod tests {
                     && value == Some(std::ffi::OsStr::new("gui-git-path"))
             }));
         }
+        let prefixed = git_cmd_for_args_with_path(
+            &[
+                "-c",
+                "core.commitGraph=false",
+                "-c",
+                "pack.useBitmaps=false",
+                "push",
+            ],
+            || "gui-git-path".into(),
+        );
+        assert!(prefixed.get_envs().any(|(key, value)| {
+            key == std::ffi::OsStr::new("PATH")
+                && value == Some(std::ffi::OsStr::new("gui-git-path"))
+        }));
+    }
+
+    #[test]
+    fn a_push_with_leading_config_pairs_keeps_the_repos_hooks() {
+        // Main's WP-200 push passes `-c` pairs before the action; the sandbox branch must still treat it as Ash's push.
+        let prefixed = git_cmd_for_args_with_path(
+            &[
+                "-c",
+                "core.commitGraph=false",
+                "-c",
+                "pack.useBitmaps=false",
+                "push",
+            ],
+            || "gui-git-path".into(),
+        );
+        let args: Vec<String> = prefixed
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+        assert!(
+            !args.iter().any(|arg| arg == "core.hooksPath=/dev/null"),
+            "a -c prefixed push lost the repository's hooks: {args:?}"
+        );
     }
 
     #[test]

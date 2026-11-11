@@ -2999,6 +2999,60 @@ fn a_pattern_that_matches_nothing_is_refused_on_write_and_nothing_is_saved() {
     assert_eq!(kept.updated_at, None);
 }
 
+#[test]
+fn a_refspec_push_sets_the_upstream() {
+    let remote = temp("push-sha-remote");
+    git(&remote.0, &["init", "-q", "--bare", "-b", "main"]);
+    let local = temp("push-sha");
+    git(&local.0, &["init", "-q", "-b", "main"]);
+    let url = format!("file://{}", remote.0.display());
+    git(&local.0, &["remote", "add", "origin", &url]);
+    std::fs::write(local.0.join("README.md"), "hello\n").unwrap();
+    git(&local.0, &["add", "-A"]);
+    git(&local.0, &["commit", "-q", "-m", "base"]);
+    let sha = git(&local.0, &["rev-parse", "HEAD"]);
+    deliver::push_sha(&local.0, "origin", "main", &sha).unwrap();
+    assert_eq!(
+        git(&local.0, &["rev-parse", "--abbrev-ref", "@{upstream}"]),
+        "origin/main"
+    );
+}
+
+#[test]
+fn a_push_that_lands_still_succeeds_when_the_upstream_cannot_be_recorded() {
+    let remote = temp("push-sha-nomap");
+    git(&remote.0, &["init", "-q", "--bare", "-b", "main"]);
+    let local = temp("push-sha-nomap-local");
+    git(&local.0, &["init", "-q", "-b", "main"]);
+    let url = format!("file://{}", remote.0.display());
+    git(&local.0, &["remote", "add", "origin", &url]);
+    git(
+        &local.0,
+        &[
+            "config",
+            "remote.origin.fetch",
+            "+refs/heads/main:refs/remotes/origin/main",
+        ],
+    );
+    std::fs::write(local.0.join("README.md"), "hello\n").unwrap();
+    git(&local.0, &["add", "-A"]);
+    git(&local.0, &["commit", "-q", "-m", "base"]);
+    git(&local.0, &["push", "-q", "origin", "HEAD:refs/heads/main"]);
+    git(&local.0, &["checkout", "-q", "-b", "topic"]);
+    std::fs::write(local.0.join("README.md"), "topic\n").unwrap();
+    git(&local.0, &["commit", "-q", "-am", "topic"]);
+    let sha = git(&local.0, &["rev-parse", "HEAD"]);
+    deliver::push_sha(&local.0, "origin", "topic", &sha).expect("the push landed");
+    assert!(
+        git_ok(&remote.0, &["rev-parse", "--verify", "refs/heads/topic"]),
+        "the remote did not receive the branch"
+    );
+    assert!(
+        !git_ok(&local.0, &["rev-parse", "--abbrev-ref", "@{upstream}"]),
+        "a fetch refspec that does not map the branch still recorded an upstream"
+    );
+}
+
 // ---- review/220-r1 repros (red at 82876e1b) ---------------------------------------------------------------------------
 
 /// WP-92's vault (#213) is src-tauri/src/secrets/**, not src-tauri/src/vault/**: a later change to it merges unreviewed.

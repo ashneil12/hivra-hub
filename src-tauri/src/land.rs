@@ -89,8 +89,35 @@ pub(crate) fn project_of(checkout: &Path, project: &Path) -> bool {
         && folder.parent() == Some(parent)
 }
 
+type StagedSide = (String, Option<Vec<u8>>);
+type WorkerPatch = (Vec<u8>, Vec<String>, String, Vec<StagedSide>);
+
+/// An index path a same-user process cannot plant ahead of time. The name is random and the file is created with
+/// `create_new`, then removed so `read-tree` can write a real index. An empty file is not a valid index.
+fn exclusive_index() -> Result<PathBuf, String> {
+    for _ in 0..8 {
+        let path = std::env::temp_dir().join(format!(
+            "monocode-land-{}.index",
+            uuid::Uuid::new_v4().simple()
+        ));
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+        {
+            Ok(_) => {
+                std::fs::remove_file(&path).map_err(|error| error.to_string())?;
+                return Ok(path);
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error.to_string()),
+        }
+    }
+    Err("the landing index could not be created".into())
+}
+
 /// The worker's whole change against where its copy started, as a binary patch, and the files it touches.
-fn worker_patch(checkout: &Path, project: &Path) -> Result<(Vec<u8>, Vec<String>, String), String> {
+fn worker_patch(checkout: &Path, project: &Path) -> Result<WorkerPatch, String> {
     let (ok, head, why) = git(project, &["rev-parse", "HEAD"], None, None)?;
     if !ok {
         return Err(format!("the project's commit couldn't be read: {why}"));
@@ -103,12 +130,7 @@ fn worker_patch(checkout: &Path, project: &Path) -> Result<(Vec<u8>, Vec<String>
         ));
     }
     let base = String::from_utf8_lossy(&base).trim().to_string();
-    let index: PathBuf = std::env::temp_dir().join(format!(
-        "monocode-land-{}-{}.index",
-        std::process::id(),
-        NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-    ));
-    let _ = std::fs::remove_file(&index);
+    let index = exclusive_index()?;
     let result = (|| {
         let (ok, _, why) = git(checkout, &["read-tree", "HEAD"], Some(&index), None)?;
         if !ok {
@@ -117,36 +139,21 @@ fn worker_patch(checkout: &Path, project: &Path) -> Result<(Vec<u8>, Vec<String>
         // WP-91: a worker's handoff is a note kept in its own checkout, never one of its changes (checkpoint.rs leaves
         // it out of integration too), so it is not work that has to land before the copy can go.
         let handoff = format!(":(exclude){}", crate::goal_graph::handoff::DIR);
-        let (ok, _, why) = git(
-            checkout,
-            &["add", "-A", "--", ".", &handoff],
-            Some(&index),
-            None,
-        )?;
+        // WP-200: untracked agent files (local approvals, saved transcripts) are left out of what lands too.
+        let mut add = crate::commit_guard::add_all_pathspec(checkout)?;
+        add.push(handoff);
+        let add: Vec<&str> = add.iter().map(String::as_str).collect();
+        let (ok, _, why) = git(checkout, &add, Some(&index), None)?;
         if !ok {
             return Err(format!("the copy's changes couldn't be gathered: {why}"));
         }
-        let (_, names, _) = git(
-            checkout,
-            &["diff", "--cached", "--name-only", &base],
-            Some(&index),
-            None,
-        )?;
-        let (ok, patch, why) = git(
-            checkout,
-            &["diff", "--cached", "--binary", &base],
-            Some(&index),
-            None,
-        )?;
-        if !ok {
-            return Err(format!("the copy's change couldn't be written out: {why}"));
-        }
-        let files = String::from_utf8_lossy(&names)
-            .lines()
-            .map(str::to_string)
-            .filter(|l| !l.is_empty())
-            .collect();
-        Ok((patch, files, base.clone()))
+        // WP-200: the staged blobs are checked, not a coloured diff. Git LFS and submodules are not followed.
+        let files = crate::commit_guard::scan_landing_index(checkout, &index, &base, project)?;
+        // The patch and the three-way side both come from the staged blobs. A textconv driver and the working
+        // tree must not supply bytes the check never read.
+        let patch = crate::commit_guard::landing_patch(checkout, &index, &base)?;
+        let staged = crate::commit_guard::staged_blobs(checkout, &index, &files)?;
+        Ok((patch, files, base.clone(), staged))
     })();
     let _ = std::fs::remove_file(&index);
     result
@@ -155,7 +162,7 @@ fn worker_patch(checkout: &Path, project: &Path) -> Result<(Vec<u8>, Vec<String>
 /// Hivra WP-12 (the teardown guard, src/delivery/teardown.rs): whether everything the worker changed is already in the
 /// project, so removing its copy loses nothing. A change that is only partly there counts as not landed.
 pub(crate) fn landed_in(checkout: &Path, project: &Path) -> Result<bool, String> {
-    let (patch, _, _) = worker_patch(checkout, project)?;
+    let (patch, _, _, _) = worker_patch(checkout, project)?;
     if patch.is_empty() {
         return Ok(true);
     }
@@ -173,7 +180,7 @@ pub(crate) fn land(checkout: &Path, project: &Path) -> Result<Landing, String> {
         return Err("Only a worker's own copy of this project lands in it.".into());
     }
     let _turn = one_at_a_time();
-    let (patch, files, base) = worker_patch(checkout, project)?;
+    let (patch, files, base, staged) = worker_patch(checkout, project)?;
     if patch.is_empty() {
         return Ok(Landing {
             outcome: "nothing".into(),
@@ -181,6 +188,8 @@ pub(crate) fn land(checkout: &Path, project: &Path) -> Result<Landing, String> {
             why: "the worker changed no files".into(),
         });
     }
+    // WP-200: an agent's approvals file the worker committed or staged itself does not land.
+    crate::commit_guard::refuse_land_names(project, &files)?;
     let (fits, _, why) = git(project, &["apply", "--check", "-"], None, Some(&patch))?;
     if !fits {
         let (already, _, _) = git(
@@ -197,7 +206,7 @@ pub(crate) fn land(checkout: &Path, project: &Path) -> Result<Landing, String> {
             });
         }
         // Another worker changed the same files first: a three-way merge per file, written only if every file merges.
-        return Ok(match merged(checkout, project, &base, &files)? {
+        return Ok(match merged(checkout, project, &base, &files, &staged)? {
             Ok(writes) => {
                 for (path, content) in writes {
                     let target = project.join(&path);
@@ -272,12 +281,10 @@ fn read(path: &Path) -> Option<Vec<u8>> {
 
 /// Three-way merge of one file's three versions: the merged bytes, or None when they clash (or aren't text).
 fn merge3(ours: &[u8], base: &[u8], theirs: &[u8]) -> Result<Option<Vec<u8>>, String> {
-    let dir = std::env::temp_dir().join(format!(
-        "monocode-merge-{}-{}",
-        std::process::id(),
-        NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-    ));
-    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    // A random name, made here: a folder or link planted under a predictable name is never used (#227 r9 review).
+    let dir =
+        std::env::temp_dir().join(format!("monocode-merge-{}", uuid::Uuid::new_v4().simple()));
+    std::fs::create_dir(&dir).map_err(|e| e.to_string())?;
     let result = (|| {
         let (o, b, t) = (dir.join("ours"), dir.join("base"), dir.join("theirs"));
         std::fs::write(&o, ours).map_err(|e| e.to_string())?;
@@ -306,12 +313,20 @@ fn merged(
     project: &Path,
     base: &str,
     files: &[String],
+    staged: &[StagedSide],
 ) -> Result<Result<Writes, Vec<String>>, String> {
     let mut writes = Vec::new();
     let mut clashing = Vec::new();
     for path in files {
         let start = start_of(checkout, base, path)?;
-        let worker = read(&checkout.join(path));
+        let worker = match staged.iter().find(|(name, _)| name == path) {
+            Some((_, bytes)) => bytes.clone(),
+            None => {
+                return Err(
+                    "the copy's staged file couldn't be read, so nothing was landed.".into(),
+                )
+            }
+        };
         let now = read(&project.join(path));
         if worker == now || worker == start {
             continue;
@@ -366,7 +381,7 @@ pub(crate) fn refresh(checkout: &Path, project: &Path) -> Result<Vec<String>, St
         return Err("Only a worker's own copy of this project is brought up to date.".into());
     }
     let _turn = one_at_a_time();
-    let (_, files, base) = worker_patch(checkout, project)?;
+    let (_, files, base, _) = worker_patch(checkout, project)?;
     let mut marked = Vec::new();
     let kept = snapshot_dir(checkout)?;
     // r86 (c02 r85 run 1: the copy got the project's App.tsx calling `weekTotals`, but not the format.ts that defines
@@ -564,6 +579,29 @@ mod tests {
             .output()
             .unwrap();
         assert!(String::from_utf8_lossy(&status.stdout).contains("?? new.txt"));
+    }
+
+    #[test]
+    fn a_landing_leaves_a_predictable_index_name_untouched() {
+        let (project, copy) = repo("index-name");
+        std::fs::write(copy.join("a.txt"), "two\n").unwrap();
+        let pid = std::process::id();
+        let mut planted = Vec::new();
+        for n in 0..8 {
+            let path = std::env::temp_dir().join(format!("monocode-land-{pid}-{n}.index"));
+            std::fs::write(&path, b"planted-secret").unwrap();
+            planted.push(path);
+        }
+        let landing = land(&copy, &project).unwrap();
+        assert_eq!(landing.outcome, "landed");
+        for path in &planted {
+            assert_eq!(
+                std::fs::read(path).unwrap(),
+                b"planted-secret",
+                "the landing index used a predictable name"
+            );
+            let _ = std::fs::remove_file(path);
+        }
     }
 
     #[test]
