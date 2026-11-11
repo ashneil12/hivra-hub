@@ -530,14 +530,14 @@ function changeRepo() {
   return { folder, sha: git("rev-parse", "HEAD") };
 }
 
-test("the review command runs on a three-file change and writes findings for its head", { skip: process.platform === "win32" }, () => {
+test("the review command runs on a three-file change and writes findings for its head", () => {
   const { folder, sha } = changeRepo();
   const reviews = mkdtempSync(join(tmpdir(), "wp203-reviews-"));
   try {
     const candidates = join(folder, "candidates.json");
     writeFileSync(candidates, JSON.stringify([rejected()]));
     const run = cli(["--base", "main", "--head", "feature", "--author", "claude", "--reviewer", "codex",
-      "--candidates", candidates, "--verifier", "cat", "--reviews", reviews], folder);
+      "--candidates", candidates, "--verifier", `"${process.execPath}" -e "process.stdin.pipe(process.stdout)"`, "--reviews", reviews], folder);
     assert.equal(run.status, 0, run.stdout + run.stderr);
     assert.match(run.stdout, /3 files/);
     assert.match(run.stdout, /worker default/);
@@ -549,7 +549,7 @@ test("the review command runs on a three-file change and writes findings for its
   }
 });
 
-test("candidates without a verifier are refused and nothing is written", { skip: process.platform === "win32" }, () => {
+test("candidates without a verifier are refused and nothing is written", () => {
   const { folder, sha } = changeRepo();
   const reviews = mkdtempSync(join(tmpdir(), "wp203-reviews-"));
   try {
@@ -567,7 +567,7 @@ test("candidates without a verifier are refused and nothing is written", { skip:
 });
 
 // Item 5 end to end: a planted high written by the command blocks the ship helper for that exact head.
-test("a planted high-severity finding from the command blocks the ship helper on that head", { skip: process.platform === "win32" }, () => {
+test("a planted high-severity finding from the command blocks the ship helper on that head", () => {
   const { folder } = changeRepo();
   const reviews = mkdtempSync(join(tmpdir(), "wp203-planted-"));
   try {
@@ -582,7 +582,7 @@ test("a planted high-severity finding from the command blocks the ship helper on
     const candidates = join(folder, "planted.json");
     writeFileSync(candidates, JSON.stringify([confirmed()]));
     const review = cli(["--base", "main", "--head", "feature", "--author", "claude", "--reviewer", "codex",
-      "--candidates", candidates, "--verifier", "cat", "--reviews", reviews], folder);
+      "--candidates", candidates, "--verifier", `"${process.execPath}" -e "process.stdin.pipe(process.stdout)"`, "--reviews", reviews], folder);
     assert.equal(review.status, 0, review.stdout + review.stderr);
     const decision = evaluatePullRequest(prFor({ sha, files: changed }), [{ ...greenRuns[0], headSha: sha }], { repo: REPO, reviewsRoot: reviews });
     assert.equal(decision.ok, false);
@@ -695,10 +695,7 @@ const PLANNED_ALLOW_LIST = Object.freeze({
   "**/commit_guard*": "commit guard, PR #227",
   "**/agent_sandbox*": "agent sandbox, PR #208",
   "**/spend_ledger*": "spend ledger, PR #217",
-  "**/more_agents*": "more agents, PR #204",
   "src/features/commit-guard/**": "commit guard, hyphen path, PR #227",
-  "src/integrations/harness/moreAgents/**": "more agents, camelCase path, PR #204",
-  "src/features/providers/model/moreAgents.ts": "more agents module, PR #204",
   "scripts/agent-sandbox-probe.mjs": "agent sandbox probe, PR #208",
   "**/commit_guard/**": "commit guard module folder, PR #227",
   "**/agent_sandbox/**": "agent sandbox module folder, PR #208",

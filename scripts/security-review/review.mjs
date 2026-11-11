@@ -458,7 +458,7 @@ export async function runCli(argv, { cwd = process.cwd(), out = console.log, err
     return 1;
   }
   const verifier = (candidate) => {
-    const ran = spawnSync("sh", ["-c", opts.verifier], { cwd: repo, input: JSON.stringify(candidate), encoding: "utf8", timeout: 600000 });
+    const ran = spawnSync(opts.verifier, { cwd: repo, input: JSON.stringify(candidate), encoding: "utf8", timeout: 600000, shell: true });
     if (ran.status !== 0) throw new Error(`The verifier failed: ${(ran.stderr || "").trim() || `exit ${ran.status}`}`);
     return JSON.parse(ran.stdout);
   };

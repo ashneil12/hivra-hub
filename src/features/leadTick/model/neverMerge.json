@@ -91,7 +91,16 @@
     "src-tauri/src/lib.rs",
     "src/features/hub/model/localHub/decisions.ts",
     "src/features/crew/ui/FirstMateInboxPanel.tsx",
-    "src/features/fresh-eyes/model/gate.ts"
+    "src/features/fresh-eyes/model/gate.ts",
+    "src/features/pages/model/pageActions.ts",
+    "src/features/pages/model/bridge.ts",
+    "src/features/pages/model/pageBridgeHost.ts",
+    "src/features/pages/model/pages.ts",
+    "src/features/selfBuild/model/pagesChat.ts",
+    "src/features/hub/model/hubStore.ts",
+    "src/features/hub/model/liveHubData.ts",
+    "src/features/hub/model/localHub/localTransport.ts",
+    "src-tauri/src/self_build.rs"
   ],
   "plannedPaths": [
     "src-tauri/src/secrets/**",
@@ -100,10 +109,7 @@
     "**/commit_guard*",
     "**/agent_sandbox*",
     "**/spend_ledger*",
-    "**/more_agents*",
     "src/features/commit-guard/**",
-    "src/integrations/harness/moreAgents/**",
-    "src/features/providers/model/moreAgents.ts",
     "scripts/agent-sandbox-probe.mjs",
     "**/commit_guard/**",
     "**/agent_sandbox/**"

@@ -13,11 +13,16 @@ const neverMerge = JSON.parse(readFileSync(resolve(root, "src/features/leadTick/
 
 const PLANNED = [
   "src/features/commit-guard/**",
-  "src/integrations/harness/moreAgents/**",
-  "src/features/providers/model/moreAgents.ts",
   "scripts/agent-sandbox-probe.mjs",
   "**/commit_guard/**",
   "**/agent_sandbox/**",
+];
+
+// More agents landed (#204). The patterns stay gated, and they are no longer planned.
+const LANDED = [
+  "**/more_agents*",
+  "src/integrations/harness/moreAgents/**",
+  "src/features/providers/model/moreAgents.ts",
 ];
 
 const GATED_NOW = [
@@ -40,6 +45,9 @@ const GATED_NOW = [
   }),
   "src/crate/commit_guard/mod.rs",
   "src/crate/agent_sandbox/mod.rs",
+  "src/features/providers/model/moreAgents.ts",
+  "src/integrations/harness/moreAgents/moreAgentAdapter.ts",
+  "src-tauri/src/more_agents.rs",
 ];
 
 test("repro 220 r5: answer, launch and ship files are security paths", () => {
@@ -52,8 +60,12 @@ test("repro 220 r5: hyphen, camelCase and module folders are planned and gated",
     assert.ok(neverMerge.securityPaths.includes(pattern), `${pattern} is not a security path`);
     assert.ok((neverMerge.plannedPaths ?? []).includes(pattern), `${pattern} is not planned`);
   }
+  for (const pattern of LANDED) {
+    assert.ok(neverMerge.securityPaths.includes(pattern), `${pattern} is not a security path`);
+    assert.equal((neverMerge.plannedPaths ?? []).includes(pattern), false, `${pattern} is still planned after it landed`);
+  }
   const source = readFileSync(resolve(here, "security-review.test.mjs"), "utf8");
-  assert.match(source, /"\*\*\/more_agents\*": "more agents, PR #204"/);
+  assert.doesNotMatch(source, /"\*\*\/more_agents\*": "more agents, PR #204"/);
   assert.match(source, /"\*\*\/spend_ledger\*": "spend ledger, PR #217"/);
 });
 
