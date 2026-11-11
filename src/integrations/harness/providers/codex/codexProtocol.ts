@@ -56,11 +56,52 @@ export function runtimeModeToCodexConfig(
   mode: RuntimeMode,
   controlsAgents?: boolean,
   firstMate?: boolean,
+  /** While Hivra's sandbox is on, Codex must not review its own approvals. */
+  hivraSandbox?: boolean,
 ): CodexThreadConfig {
   // Hivra WP-10: a first mate reads and never edits, whatever the chat's mode: Codex's read-only sandbox, with no
   // escalation, and network for the delegate tool's loopback (the same shape a plan turn runs in).
   if (firstMate) return withNetwork(FIRST_MATE_CONFIG, true);
-  return withNetwork(baseCodexConfig(mode), controlsAgents);
+  const config = baseCodexConfig(mode);
+  const reviewed =
+    hivraSandbox && (mode === "auto" || mode === "auto-accept-edits")
+      ? { ...config, approvalsReviewer: "user" as const }
+      : config;
+  return withNetwork(reviewed, controlsAgents);
+}
+
+/** Auto and auto-accept grant every permission, unless Hivra's sandbox is on. Then nothing is granted for them. */
+export function codexGrantsPermissionsAutomatically(
+  runtimeMode: RuntimeMode,
+  hivraSandbox: boolean,
+): boolean {
+  if (hivraSandbox) return false;
+  return runtimeMode === "auto" || runtimeMode === "auto-accept-edits";
+}
+
+/**
+ * Who may apply a file change without asking. While Hivra's sandbox is on, only an in-workspace change in
+ * auto-accept-edits is automatic. No paths, or a path outside the workspace, asks. `/work-secret` is not inside `/work`.
+ */
+export function codexAutoFileChange(
+  runtimeMode: RuntimeMode,
+  hivraSandbox: boolean,
+  paths: string[] | undefined,
+  cwd: string,
+): "allow" | null {
+  if (runtimeMode === "supervised" || runtimeMode === "auto") return null;
+  if (runtimeMode === "full-access") return "allow";
+  if (!hivraSandbox) return "allow";
+  if (!paths || paths.length === 0) return null;
+  if (paths.every((path) => pathInside(path, cwd))) return "allow";
+  return null;
+}
+
+function pathInside(path: string, cwd: string): boolean {
+  const file = path.replace(/\\/g, "/").replace(/\/+$/, "");
+  const root = cwd.replace(/\\/g, "/").replace(/\/+$/, "");
+  if (!file || !root) return false;
+  return file === root || file.startsWith(`${root}/`);
 }
 
 const FIRST_MATE_CONFIG: CodexThreadConfig = {
@@ -129,11 +170,14 @@ export function buildThreadStartParams(input: {
   serviceTier?: string;
   /** WP-41: pstack and plain-English text. Empty adds nothing. Codex keeps what a thread started with. */
   developerInstructions?: string;
+  /** While Hivra's sandbox is on, auto modes ask Ash instead of reviewing themselves. */
+  hivraSandbox?: boolean;
 }): Record<string, unknown> {
   const config = runtimeModeToCodexConfig(
     input.runtimeMode,
     input.controlsAgents,
     input.firstMate,
+    input.hivraSandbox,
   );
   return {
     cwd: input.cwd,
@@ -176,11 +220,14 @@ export function buildTurnStartParams(input: {
   effort?: string;
   serviceTier?: string;
   intent?: TurnIntent;
+  /** While Hivra's sandbox is on, auto modes ask Ash instead of reviewing themselves. */
+  hivraSandbox?: boolean;
 }): Record<string, unknown> {
   const runtimeConfig = runtimeModeToCodexConfig(
     input.runtimeMode,
     input.controlsAgents,
     input.firstMate,
+    input.hivraSandbox,
   );
   const config: CodexThreadConfig =
     input.intent === "plan"

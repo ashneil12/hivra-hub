@@ -10,6 +10,8 @@ import {
   mapCodexNotification,
   mapCodexSubagentSteps,
   codexSkipsOuterSandbox,
+  codexAutoFileChange,
+  codexGrantsPermissionsAutomatically,
   runtimeModeToCodexConfig,
   toCodexApprovalDecision,
 } from "./codexProtocol";
@@ -66,6 +68,28 @@ describe("runtimeModeToCodexConfig", () => {
       approvalsReviewer: "auto_review",
       sandboxPolicy: { type: "workspaceWrite" },
     });
+  });
+
+  it("asks Ash to review while Hivra's sandbox is on, even in auto", () => {
+    expect(runtimeModeToCodexConfig("auto", false, false, true).approvalsReviewer).toBe("user");
+    expect(
+      runtimeModeToCodexConfig("auto-accept-edits", false, false, true).approvalsReviewer,
+    ).toBe("user");
+    expect(codexGrantsPermissionsAutomatically("auto", true)).toBe(false);
+    expect(codexGrantsPermissionsAutomatically("auto-accept-edits", true)).toBe(false);
+    expect(codexGrantsPermissionsAutomatically("auto", false)).toBe(true);
+    expect(
+      codexAutoFileChange("auto-accept-edits", true, ["/outside/secret"], "/work"),
+    ).toBeNull();
+    expect(
+      codexAutoFileChange("auto-accept-edits", true, undefined, "/work"),
+    ).toBeNull();
+    expect(
+      codexAutoFileChange("auto-accept-edits", true, ["/work/a.ts"], "/work"),
+    ).toBe("allow");
+    expect(codexAutoFileChange("auto-accept-edits", false, ["/outside/secret"], "/work")).toBe(
+      "allow",
+    );
   });
 
   it("opens the sandbox network only for a lead, which needs the control socket", () => {
