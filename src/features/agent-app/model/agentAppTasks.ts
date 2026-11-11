@@ -408,7 +408,15 @@ export type AgentAppTasksHost = {
    * WP-141: the one gate a worker or session launch passes before its process starts (crew_launch_check). It rejects
    * with the reason when the CLI is on Never use, is not the locked default under the lock, or the policy can't be read.
    */
-  crewGate?(input: { cli: string; folder?: string; mono?: string; lockedDefault?: string; sessionId: string }): Promise<void>;
+  crewGate?(input: {
+    cli: string;
+    folder?: string;
+    mono?: string;
+    lockedDefault?: string;
+    sessionId: string;
+    /** The session that started this one, so the child keeps that session's projects. */
+    parentSession?: string;
+  }): Promise<void>;
   /** WP-141 HIGH-B: whether any saved crew policy, in any scope, has the lock on. */
   crewAnyLock?(): Promise<boolean>;
   /**
@@ -765,7 +773,14 @@ function errorText(error: unknown): string {
  */
 export async function gateCrewStart(
   tasks: Pick<AgentAppTasksHost, "crewGate"> | undefined,
-  input: { cli: string; folder?: string; mono?: string; route?: CrewRouteAnswer | null; sessionId: string },
+  input: {
+    cli: string;
+    folder?: string;
+    mono?: string;
+    route?: CrewRouteAnswer | null;
+    sessionId: string;
+    parentSession?: string;
+  },
 ): Promise<void> {
   // WP-141 round 5: a build with no gate refuses. Failing open here let a launch through without a decision.
   if (!tasks?.crewGate) throw new Error("The crew gate is unavailable, so nothing was started.");
@@ -775,6 +790,7 @@ export async function gateCrewStart(
     ...(input.mono ? { mono: input.mono } : {}),
     ...(input.route?.cli ? { lockedDefault: input.route.cli } : {}),
     sessionId: input.sessionId,
+    ...(input.parentSession ? { parentSession: input.parentSession } : {}),
   });
 }
 
@@ -810,7 +826,7 @@ export async function gateSessionStart(
       throw new Error(`The crew policy could not be read, so nothing was started (${errorText(error)}).`);
     }
   }
-  await gateCrewStart(tasks, { cli, folder, mono: mono?.id, route, sessionId });
+  await gateCrewStart(tasks, { cli, folder, mono: mono?.id, route, sessionId, parentSession: source.id });
 }
 
 function taskOwner(source: Session, host: AgentAppHost): { owner: TaskOwner; tasks: AgentAppTasksHost } {
