@@ -131,3 +131,11 @@ Every item of Ash's vision maps to packages, so nothing is dropped.
 | Skills a first mate calls by name: split only for a measured reason, review a diff from a clean context, and turn a repeated correction into a check (mcode-stack, 9 Nov) | 117 |
 | A programme of packages the first mate keeps, in an order that survives a restart | 159 |
 | A timed lead pass over the programme: start the next package, read CI, merge only what is safe when allowed | 160 |
+
+## CI tools
+
+Tools the pipeline runs. Nothing here is copied into the tree, so these rows are not part of the Credits list. That list is the table under "The sources".
+
+| Source | Licence | What Hivra takes | How | Packages |
+| --- | --- | --- | --- | --- |
+| [cargo-nextest](https://github.com/nextest-rs/nextest) | Apache-2.0 OR MIT | A failed Rust test is retried once on its own, a pass on retry is reported as flaky and does not block, a hung test is stopped by name, and the run writes JUnit | Pinned CI tool (WP-173). No code copied | 173 |
