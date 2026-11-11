@@ -302,3 +302,99 @@ test("a record the validator refuses is never written as findings", async () => 
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+// Item 5: the merge gate. A security-sensitive change cannot merge while it has a confirmed high or critical finding
+// for its head, or no findings file for that exact head. The path list is neverMerge.json's, not a copy.
+const { securityGate, isSecuritySensitive, SECURITY_PATHS } = await import("./security-review/review.mjs");
+const neverMergeList = JSON.parse(readFileSync(resolve(here, "../src/features/leadTick/model/neverMerge.json"), "utf8"));
+const OTHER_HEAD = "fedcba9876543210fedcba9876543210fedcba98";
+const SENSITIVE = ["src-tauri/src/mobile_access.rs"];
+
+async function reviewedRoot(records, head = HEAD) {
+  const root = mkdtempSync(join(tmpdir(), "wp203-gate-"));
+  const run = await runReview({
+    root,
+    head,
+    author: "claude",
+    reviewer: "codex",
+    files: ["scripts/security-review/review.mjs"],
+    candidates: records,
+    verifier: async (candidate) => candidate,
+    read: fakeRead(),
+  });
+  assert.equal(run.ok, true, run.reason);
+  return root;
+}
+
+test("only the security paths and park labels make the gate apply", () => {
+  assert.deepEqual(SECURITY_PATHS, neverMergeList.securityPaths, "the path list is shared with neverMerge.json");
+  assert.equal(isSecuritySensitive({ files: ["docs/hivra/PLAN.md"], labels: [] }), "");
+  assert.notEqual(isSecuritySensitive({ files: SENSITIVE, labels: [] }), "");
+  assert.notEqual(isSecuritySensitive({ files: ["docs/a.md"], labels: ["security-park"] }), "");
+});
+
+test("a stale head is refused: the review is for another sha", async () => {
+  const root = await reviewedRoot([rejected()], OTHER_HEAD);
+  try {
+    const gate = securityGate({ head: HEAD, files: SENSITIVE, reviewsRoot: root });
+    assert.equal(gate.status, "refuse");
+    assert.match(gate.reason, /no security review for head/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a confirmed high finding for this head is refused", async () => {
+  const root = await reviewedRoot([confirmed()]);
+  try {
+    const gate = securityGate({ head: HEAD, files: SENSITIVE, reviewsRoot: root });
+    assert.equal(gate.status, "refuse");
+    assert.match(gate.reason, /confirmed high/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a needs_validation finding adds one Inbox line and does not block", async () => {
+  const root = await reviewedRoot([needsValidation(), { ...needsValidation(), fingerprint: "review-second-candidate" }]);
+  try {
+    const gate = securityGate({ head: HEAD, files: SENSITIVE, reviewsRoot: root });
+    assert.equal(gate.status, "pass", gate.reason);
+    assert.equal(gate.inbox.length, 1, "one line, not one per candidate");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a clean findings file passes", async () => {
+  const root = await reviewedRoot([rejected()]);
+  try {
+    const gate = securityGate({ head: HEAD, files: SENSITIVE, reviewsRoot: root });
+    assert.deepEqual([gate.status, gate.inbox], ["pass", []]);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a non-security change skips the gate even with no findings", () => {
+  const gate = securityGate({ head: HEAD, files: ["docs/hivra/PLAN.md"], labels: [], reviewsRoot: scratch() });
+  assert.equal(gate.status, "skip");
+});
+
+test("a security-park label with no findings is refused", () => {
+  const gate = securityGate({ head: HEAD, files: ["docs/a.md"], labels: ["security-park"], reviewsRoot: scratch() });
+  assert.equal(gate.status, "refuse");
+});
+
+test("a review whose author and reviewer are the same builder is refused at the gate", async () => {
+  const root = await reviewedRoot([rejected()]);
+  try {
+    const meta = JSON.parse(readFileSync(join(root, HEAD, "run.json"), "utf8"));
+    writeFileSync(join(root, HEAD, "run.json"), JSON.stringify({ ...meta, reviewer: "claude" }));
+    const gate = securityGate({ head: HEAD, files: SENSITIVE, reviewsRoot: root });
+    assert.equal(gate.status, "refuse");
+    assert.match(gate.reason, /same builder/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});

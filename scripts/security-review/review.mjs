@@ -6,7 +6,7 @@
 // merge gate. Hunting itself is done by a builder following reference/SKILL.md; this file records and checks it.
 
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -153,4 +153,94 @@ export async function runReview(input) {
   } finally {
     rmSync(scratch, { recursive: true, force: true });
   }
+}
+
+// The path list and the park labels are the lead tick's own list (neverMerge.json), read here, never copied.
+const NEVER_MERGE = JSON.parse(readFileSync(join(here, "../../src/features/leadTick/model/neverMerge.json"), "utf8"));
+/** Paths a change can touch to make it security-sensitive (the secret vault, remote access, phone pairing, approvals, plugin installs). */
+export const SECURITY_PATHS = Object.freeze([...NEVER_MERGE.securityPaths]);
+const PARK_LABELS = Object.freeze([...NEVER_MERGE.labels]);
+const FULL_SHA = /^[0-9a-f]{40}$/;
+const BLOCKING_SEVERITIES = new Set(["high", "critical"]);
+
+/** A glob with `**` (any path), `*` (within one folder name) and `?` (one character). */
+export function globToRegExp(glob) {
+  let source = "";
+  for (let i = 0; i < glob.length; i++) {
+    const char = glob[i];
+    if (char === "*" && glob[i + 1] === "*") {
+      source += ".*";
+      i++;
+      if (glob[i + 1] === "/") i++;
+    } else if (char === "*") {
+      source += "[^/]*";
+    } else if (char === "?") {
+      source += "[^/]";
+    } else {
+      source += char.replace(/[.+^${}()|[\]\\]/g, "\\$&");
+    }
+  }
+  return new RegExp(`^${source}$`);
+}
+
+/** The label as the lead tick names it: trimmed, lower case, spaces and underscores as dashes. */
+function labelKey(label) {
+  return String(label).trim().toLowerCase().split(/[\s_]+/).filter(Boolean).join("-");
+}
+
+/**
+ * Why a change is security-sensitive: a changed file matches a security path, or the pull request carries a park
+ * label. Empty when it is not.
+ * @param {{ files: string[], labels?: string[], securityPaths?: string[], parkLabels?: string[] }} change
+ * @returns {string}
+ */
+export function isSecuritySensitive({ files, labels = [], securityPaths = SECURITY_PATHS, parkLabels = PARK_LABELS }) {
+  const matchers = securityPaths.map(globToRegExp);
+  const file = (files ?? []).find((path) => matchers.some((match) => match.test(path)));
+  if (file) return `changes ${file}`;
+  const label = labels.find((name) => parkLabels.includes(labelKey(name)));
+  return label ? `is labelled ${label}` : "";
+}
+
+const refuseGate = (reason) => ({ status: "refuse", reason, inbox: [] });
+
+/**
+ * The merge gate for one head. Skips a change that is not security-sensitive. Otherwise it needs the findings for that
+ * exact head, written by a different builder, that validate, with no confirmed high or critical finding. Pure apart
+ * from reading the review folder.
+ * @param {{ head: string, files: string[], labels?: string[], reviewsRoot: string,
+ *   validate?: (file: string) => { ok: boolean, output: string } }} input
+ * @returns {{ status: "skip" | "pass" | "refuse", reason: string, inbox: string[] }}
+ */
+export function securityGate({ head, files, labels = [], reviewsRoot, validate = validateFindingsFile }) {
+  const why = isSecuritySensitive({ files, labels });
+  if (!why) return { status: "skip", reason: "", inbox: [] };
+  const sha = String(head ?? "").trim().toLowerCase();
+  const short = sha.slice(0, 12);
+  if (!FULL_SHA.test(sha)) return refuseGate(`The security gate needs the full head sha (${why}).`);
+  const file = findingsPathFor(reviewsRoot, sha);
+  if (!existsSync(file)) {
+    return refuseGate(`This change ${why}, and there is no security review for head ${short}. Run the review on this head first.`);
+  }
+  let meta;
+  try {
+    meta = JSON.parse(readFileSync(join(reviewsRoot, sha, "run.json"), "utf8"));
+  } catch {
+    return refuseGate(`The security review for head ${short} has no readable run record.`);
+  }
+  if (meta.head !== sha) return refuseGate(`The security review on record is for another head, not ${short}.`);
+  const roles = checkBuilders({ author: meta.author, reviewer: meta.reviewer });
+  if (!roles.ok) return refuseGate(roles.reason);
+  const check = validate(file);
+  if (!check.ok) return refuseGate(`The findings for head ${short} do not validate. ${check.output}`);
+  const records = JSON.parse(readFileSync(file, "utf8"));
+  const high = records.find((r) => r.verdict === "confirmed" && BLOCKING_SEVERITIES.has(r.severity?.overall_severity));
+  if (high) {
+    return refuseGate(`A confirmed ${high.severity.overall_severity} finding is open on head ${short}: ${high.title}.`);
+  }
+  const pending = records.filter((r) => r.verdict === "needs_validation");
+  const inbox = pending.length
+    ? [`Security review of ${short}: ${pending.length} candidate${pending.length === 1 ? "" : "s"} need validation (${pending.map((r) => r.title).join("; ")}).`]
+    : [];
+  return { status: "pass", reason: "", inbox };
 }

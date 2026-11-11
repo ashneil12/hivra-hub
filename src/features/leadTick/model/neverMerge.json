@@ -1,4 +1,27 @@
 {
-  "packages": ["WP-92", "WP-150", "WP-158"],
-  "labels": ["security-park", "never-merge", "never-merge-here"]
+  "packages": [
+    "WP-92",
+    "WP-150",
+    "WP-158"
+  ],
+  "labels": [
+    "security-park",
+    "never-merge",
+    "never-merge-here"
+  ],
+  "securityPaths": [
+    "src-tauri/src/mobile_access.rs",
+    "src-tauri/src/remote*.rs",
+    "src-tauri/src/remote_ssh.rs",
+    "src-tauri/src/connectors/secrets.rs",
+    "src-tauri/src/platform/secrets.rs",
+    "src-tauri/src/vault/**",
+    "src/features/vault/**",
+    "src/features/mobile/**",
+    "src/features/portable/model/secrets.ts",
+    "src/features/sessions/model/approval*.ts",
+    "src/features/sessions/ui/ApprovalToasts.tsx",
+    "src/features/plugins/**",
+    "src-tauri/src/plugins/**"
+  ]
 }
