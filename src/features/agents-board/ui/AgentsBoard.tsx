@@ -7,11 +7,27 @@ import { filterBoard, settledToday, type BoardFilter, type BoardStateFilter } fr
 import { cancelStop, confirmStop, requestStop, stopTarget, type StopPhase } from "../model/stop";
 import { flattenBoard, type BoardNode, type BoardState } from "../model/tree";
 
-const CHIP: Record<BoardState, { label: string; className: string }> = {
-  "needs-you": { label: "Needs you", className: "bg-[#e5484d]/15 text-[#e5484d]" },
-  working: { label: "Working", className: "bg-[#3b82f6]/15 text-[#60a5fa]" },
-  done: { label: "Done", className: "bg-emerald-400/15 text-emerald-300" },
-  idle: { label: "Idle", className: "bg-white/10 text-white/45" },
+const CHIP: Record<BoardState, { label: string; own: string; rolled: string }> = {
+  "needs-you": {
+    label: "Needs you",
+    own: "border border-transparent bg-[#e5484d]/15 text-[#e5484d]",
+    rolled: "border border-[#e5484d]/70 bg-transparent text-[#e5484d]/75",
+  },
+  working: {
+    label: "Working",
+    own: "border border-transparent bg-[#3b82f6]/15 text-[#60a5fa]",
+    rolled: "border border-[#60a5fa]/60 bg-transparent text-[#60a5fa]/75",
+  },
+  done: {
+    label: "Done",
+    own: "border border-transparent bg-emerald-400/15 text-emerald-300",
+    rolled: "border border-emerald-300/55 bg-transparent text-emerald-300/75",
+  },
+  idle: {
+    label: "Idle",
+    own: "border border-transparent bg-white/10 text-white/45",
+    rolled: "border border-white/30 bg-transparent text-white/40",
+  },
 };
 
 export function AgentsBoard({
@@ -96,7 +112,7 @@ export function AgentsBoard({
           <aside data-readonly-chat className="flex w-[380px] shrink-0 flex-col border-l border-white/10">
             <div className="border-b border-white/10 px-4 py-3">
               <p className="text-[14px] font-medium">{current.name}</p>
-              <p className="mt-1 text-[12px] text-white/50">{CHIP[current.state].label}</p>
+              <p className="mt-1 text-[12px] text-white/50">{chipText(current)}</p>
             </div>
             <div className="min-h-0 flex-1 space-y-2 overflow-auto px-4 py-3 text-[13px] leading-5 text-white/80">
               {(lines[current.id] ?? []).length ? (
@@ -129,6 +145,11 @@ export function AgentsBoard({
       </div>
     </div>
   );
+}
+
+function chipText(node: BoardNode): string {
+  const label = CHIP[node.state].label;
+  return node.rolledUp ? `${label}, from a row under it` : label;
 }
 
 function setState(
@@ -195,6 +216,7 @@ function Rows({
         data-node={node.id}
         data-role={node.role}
         data-state={node.state}
+        data-rolled={node.rolledUp ? "true" : "false"}
         data-done-today={doneToday ? "true" : "false"}
         onClick={() => onPick(node.id)}
         className={`grid cursor-pointer items-center gap-x-3 px-3 py-2 text-[13px] ${selected === node.id ? "bg-white/8" : "hover:bg-white/5"}`}
@@ -227,7 +249,12 @@ function Rows({
             <span data-name>{node.name}</span>
           </button>
         </div>
-        <span data-chip className={`justify-self-start rounded-full px-1.5 py-0.5 text-[11px] ${CHIP[node.state].className}`}>
+        <span
+          data-chip
+          data-rolled={node.rolledUp ? "true" : "false"}
+          title={node.rolledUp ? "From a row under it" : undefined}
+          className={`justify-self-start rounded-full px-1.5 py-0.5 text-[11px] ${node.rolledUp ? CHIP[node.state].rolled : CHIP[node.state].own}`}
+        >
           {CHIP[node.state].label}
         </span>
         <span className="min-w-0 truncate text-white/55">{node.task ?? ""}</span>
