@@ -46,7 +46,7 @@ const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? o
 /** The question, in plain words. */
 export function importQuestion(found: Pick<ImportFound, "projects" | "pages">): string {
   const kept = found.pages.filter((p) => (p as { state?: unknown })?.state === "kept").length;
-  const parts = [plural(found.projects.length, "project"), ...(kept ? [plural(kept, "kept Page")] : [])];
+  const parts = [plural(found.projects.length, "project"), ...(kept ? [plural(kept, "kept Hub")] : [])];
   return `Hivra no longer uses Ash OS. Bring your ${parts.join(" and ")} over from it? It only adds; Ash OS isn't changed.`;
 }
 
@@ -76,7 +76,7 @@ export async function runAshOsImport(hub: LocalHub, deps: ImportDeps, options: {
   const message = found.message ? { message: found.message } : {};
   if (found.state === "unreachable") return later(found.message);
   if (found.state !== "found") return keep({ decided: "none", at, ...message });
-  if (!found.projects.length && !found.pages.length) return keep({ decided: "none", at, message: "Ash OS holds no projects or kept Pages." });
+  if (!found.projects.length && !found.pages.length) return keep({ decided: "none", at, message: "Ash OS holds no projects or kept Hubs." });
   const answer = await deps.ask(importQuestion(found));
   if (answer === "later") return later("The question was closed without a choice.");
   if (answer === "clean") return keep({ decided: "declined", at });
@@ -187,7 +187,7 @@ export function importOutcome(decision: ImportDecision): string {
     case "imported": {
       const a = decision.added ?? { projects: 0, memberships: 0, pages: 0 };
       return a.projects + a.memberships + a.pages
-        ? `Brought over ${plural(a.projects, "project")}, ${plural(a.memberships, "Mono's project", "Monos' projects")} and ${plural(a.pages, "kept Page")}.`
+        ? `Brought over ${plural(a.projects, "project")}, ${plural(a.memberships, "Mono's project", "Monos' projects")} and ${plural(a.pages, "kept Hub")}.`
         : "Everything Ash OS held is already here.";
     }
     case "declined":

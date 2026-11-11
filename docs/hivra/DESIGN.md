@@ -17,7 +17,7 @@ reason for it. Check them against the code before leaning on a file name: files 
 - **First mates** each run one line of work (a project's Lead runs its code; Design review reviews screens). A first
   mate has its own crew of workers and can have several chats.
 - **Teams** are optional group chats of first mates inside a project. Council is a mode of a team's chat, not a place.
-- **Pages** are small screens a first mate builds for the owner (Ash also calls them hubs). They are how the app is
+- **Hubs** are small screens a first mate builds for the owner (the code still calls them pages). They are how the app is
   extended without changing its code.
 
 ## 2. Words
@@ -29,7 +29,7 @@ reason for it. Check them against the code before leaning on a file name: files 
 | Needs you (in red) | Stuck, Blocked, Attention | "No Stuck word." One list, one colour (`NEEDS_YOU_RED`, `src/features/hub/ui/StatusMark.tsx`). |
 | Inbox (sidebar row, with the red Needs you count) | Needs you as a place name in the full rail | The compact rail keeps "Needs you". |
 | Teams, team chat | Rooms, groups | |
-| Pages | Dashboards, panels | "Hubs" is Ash's own word for them; the label on screen is Pages until he says otherwise. |
+| Hubs | Pages, dashboards, panels | Ash's word (11 Nov). The code keeps `pages` in its names; a person never reads that word for them. A note's page in Notes is still a page. "The hub" never means the app itself: say "the app". |
 | Home | Today, Overview | |
 | Working, Stopped, Done | Running, Failed, Completed | Plain words, the same three everywhere. |
 
@@ -42,7 +42,7 @@ Example text in a mockup or a test starts with "Example:" and never contains a r
    count, then +. Home is selected whenever Home or Home's Chief of Staff chat is open (`homeInView`,
    `src/features/hub/model/homeScope.ts`).
 2. **Sidebar** (`src/app/shell/ProjectRail.tsx`), always in this order:
-   Search; **Home**; **Chief of Staff** (`HubTopNav.tsx`); Inbox; Notes; Automations; Pages; pinned pages;
+   Search; **Home**; **Chief of Staff** (`HubTopNav.tsx`); Inbox; Notes; Automations; Hubs; pinned hubs;
    **First mates** (`MonoRailSection.tsx`, inside a project only: "no first mates on Home"; its + is "New first
    mate": a name and what it looks after, or one already made added to this project. A project starts with the Chief
    of Staff and its lead; every other first mate is the person's choice); **Teams**
@@ -68,7 +68,7 @@ name. Opening the Chief of Staff from Home keeps Home selected.
    mate it does not belong to.
 3. **Always say who you are talking to.** A chat's header, its row in the list and its empty state carry the first
    mate's name and mascot, never a model name or the word "Chat" alone.
-4. **The gallery look for list screens** (Pages, Automations, Settings lists): full width with `px-6 pt-5 pb-10
+4. **The gallery look for list screens** (Hubs, Automations, Settings lists): full width with `px-6 pt-5 pb-10
    xl:px-8`; a 20px semibold title; one grey line under it; pill filters (`h-7 rounded-full px-3 text-[12px]`, the
    selected one `bg-content text-background-base`); then cards (`rounded-lg border border-stroke`). No centred narrow
    column for a list.
@@ -117,7 +117,7 @@ name. Opening the Chief of Staff from Home keeps Home selected.
 | What is selected | `src/features/hub/model/hubNav.ts` (`HubSelection`), `homeScope.ts` |
 | A first mate and its chats | `src/features/monos/model/mono.ts`, `monoWorkspace.ts` |
 | Team chat, council switch | `src/features/hub/ui/GroupChatView.tsx`, `RoomResponder.tsx`, `src/features/council/ui/` |
-| Pages | `src/features/pages/ui/PagesView.tsx`, `src/features/pages/model/pages.ts` |
+| Hubs | `src/features/pages/ui/PagesView.tsx`, `src/features/pages/model/pages.ts` |
 | Settings | `src/features/settings/ui/SettingsView.tsx`, `src/app/shell/SettingsRail.tsx`, `src/features/hub/ui/TeamsPage.tsx` |
 | First run | `src/features/hub/ui/HubOnboarding.tsx`, `HubOnboardingSetup.tsx`, `HubOnboardingGate.tsx` |
 | Composer extras (Compare) | `src/features/sessions/ui/FanOutPicker.tsx` |

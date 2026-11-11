@@ -56,7 +56,7 @@ test("opens in Classic with Focused stored, and every main Hub screen renders th
     ["Inbox", /^Inbox(,|$)/, (p) => p.getByRole("region", { name: "Inbox" })],
     ["Coding team", /^EXO lead,/, (p) => p.getByRole("main").getByRole("heading", { name: "EXO lead" })],
     ["Leadership team", /^Leadership team$/, (p) => p.getByPlaceholder("Message EXO's leadership team")],
-    ["Pages", /^Pages$/, (p) => p.getByRole("region", { name: "Pages" })],
+    ["Hubs", /^Hubs$/, (p) => p.getByRole("region", { name: "Hubs" })],
     ["Notes", /^Notes$/, (p) => p.getByRole("region", { name: "Notes" })],
     ["Automations", /^Automations$/, (p) => p.getByRole("heading", { name: "New automation" })],
   ];

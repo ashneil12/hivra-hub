@@ -456,7 +456,7 @@ function switcher(source: Session, host: AutopilotAppHost, deps: AutopilotAppDep
     .projects()
     .filter((p) => p.folder && mono.projects.some((path) => pathKey(path) === pathKey(p.folder!)))
     .map((p) => p.id);
-  if (!own.length) throw new Error("You have no hub project to switch autopilot for.");
+  if (!own.length) throw new Error("You have no project to switch autopilot for.");
   return { monoId: mono.id, name, allowed: own };
 }
 

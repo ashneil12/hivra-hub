@@ -66,7 +66,7 @@ button:disabled{opacity:.45;cursor:default}
 // Plain DOM, no libraries: a page re-draws on every push and keeps what Ash is typing (and where) across a redraw.
 const BASE_JS = `
 const $ = (sel) => document.querySelector(sel);
-// r67 (Critiquito): a page still waiting for Allow says what to tap, not "Can't read …: This page is waiting for you…".
+// r67 (Critiquito): a hub still waiting for Allow says what to tap, not "Can't read …: This hub is waiting for you…".
 const problemLine = (what, err) => /waiting for you to allow/i.test(String((err && err.message) || "")) ? "Tap Allow to show " + what : "Can't read " + what + ": " + ((err && err.message) || err);
 const el = (tag, cls, text) => { const x = document.createElement(tag); if (cls) x.className = cls; if (text != null) x.textContent = String(text); return x; };
 const WORD = { asking: "Asking", stuck: "With its lead", working: "Working", paused: "Paused", idle: "Idle", failed: "Failed", done: "Done", stopped: "Stopped" };
@@ -542,7 +542,7 @@ export const READY_PAGES: readonly ReadyPage[] = [
   { id: "agents", title: "Agents", what: "Every agent and what it's doing, with the ones that need you on top: answer, open or stop them from one place.", request: AGENTS_READY, spec: AGENTS_PAGE },
   { id: "needs-you", title: "Needs you", what: "Everything waiting on you in one place: the chats asking you something, then what your projects want you to look at. Answer or take it from here.", request: NEEDS_READY, spec: NEEDS_PAGE },
   { id: "being-built", title: "Being built", what: "What is being built right now across every project, with anything that needs you on top, and a way into the agent doing it.", request: BUILT_READY, spec: BUILT_PAGE },
-  { id: "projects", title: "Projects", what: "Your projects with what each one holds and what in it is waiting on you, opened in place without leaving the page.", request: PROJECTS_READY, spec: PROJECTS_PAGE },
+  { id: "projects", title: "Projects", what: "Your projects with what each one holds and what in it is waiting on you, opened in place without leaving the hub.", request: PROJECTS_READY, spec: PROJECTS_PAGE },
 ];
 
 /** The one line a ready-made page explains itself with (C8), by the request it was kept with; undefined for any other. */

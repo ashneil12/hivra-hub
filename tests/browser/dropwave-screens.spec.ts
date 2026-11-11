@@ -76,13 +76,13 @@ test("Home is its own place: its Chief of Staff keeps Home lit and nothing from 
   await expect(page.locator("[data-hub-top-project]")).toHaveCount(0);
 });
 
-test("Pages opens on the project in view, and on everything from Home", async ({ page }) => {
+test("Hubs opens on the project in view, and on everything from Home", async ({ page }) => {
   await home(page);
-  await page.getByRole("button", { name: "Pages", exact: true }).first().click();
+  await page.getByRole("button", { name: "Hubs", exact: true }).first().click();
   await expect(page.getByRole("tab", { name: "All" })).toHaveAttribute("aria-selected", "true");
 
   await project(page, "Hivra").click();
-  await page.getByRole("button", { name: "Pages", exact: true }).first().click();
+  await page.getByRole("button", { name: "Hubs", exact: true }).first().click();
   await expect(page.getByRole("tab", { name: "Hivra" })).toHaveAttribute("aria-selected", "true");
 });
 

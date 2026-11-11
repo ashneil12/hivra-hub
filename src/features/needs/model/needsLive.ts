@@ -436,9 +436,9 @@ function pageFacts(pages: readonly Page[], list: readonly ProjectRef[]): Approva
   return pages.filter(needsAllow).map((page) => ({
     id: page.id,
     projectId: projectIdOf(page.projectId, list),
-    who: "Pages",
+    who: "Hubs",
     at: page.keptAt ?? 0,
-    sentence: `${page.title || "A page"} asks for access.`,
+    sentence: `${page.title || "A hub"} asks for access.`,
     open: { where: "page" as const, id: page.id },
     reviewOnly: true,
     onOpen: () => {

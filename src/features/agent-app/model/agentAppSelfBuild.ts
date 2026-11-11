@@ -130,11 +130,11 @@ export async function handleSelfBuild(
       if (typeof input.ask !== "string" || !input.ask.trim()) throw new Error(forUser("ask must be Ash's words for the change"));
       const title = typeof input.title === "string" ? input.title : undefined;
       const { changeId, folder } = await startHubChange(input.ask.trim(), title, me.name);
-      const task = await delegate(hubChangeBrief(input.ask.trim(), folder), title ?? "Change the hub", folder, input.ask.trim());
+      const task = await delegate(hubChangeBrief(input.ask.trim(), folder), title ?? "Change the app", folder, input.ask.trim());
       return {
         changeId,
         task,
-        note: forUser("A Claude Code worker is making it in a preview copy; your live hub is unchanged. Tell Ash in one line and end your turn. When its report comes back, call hub_change with changeId and ready true."),
+        note: forUser("A Claude Code worker is making it in a preview copy; your live app is unchanged. Tell Ash in one line and end your turn. When its report comes back, call hub_change with changeId and ready true."),
       };
     }
     case "creator.draft": {

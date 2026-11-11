@@ -102,7 +102,7 @@ it("the page_build answer tells the first mate the preview is on the Pages card;
   let out: ReturnType<typeof previewFromChat> | undefined;
   const chat = fakeChat({ onRead: (reads) => { if (reads === 2) out = previewFromChat({ project: "hivra", spec: SPEC }, { monoId: "ed", name: "Ed" }); } });
   await buildPage({ projectId: "hivra", monoId: "ed", prompt: "a page of every agent" }, { roster, chat: chat.host, ...clock() });
-  expect(out!.note).toMatch(/Pages card/);
+  expect(out!.note).toMatch(/Hubs card/);
   expect(out!.project).toBe("Hivra");
   settleChatPreview(out!.previewId);
   // No ask open any more: the chat's own build is shown as before.
@@ -153,7 +153,7 @@ it("a change that comes after the card stopped waiting still lands on its kept p
   const chat = fakeChat();
   const result = await rebuildPage({ pageId: "page-agents", monoId: "ed", prompt: "Add stuck time", current: CURRENT }, { roster, chat: chat.host, ...clock() });
   expect(result.status).toBe("no-page");
-  expect(result.status !== "ready" && result.reason).toContain("the new version waits on this page");
+  expect(result.status !== "ready" && result.reason).toContain("the new version waits on this hub");
   previewFromChat({ spec: CHANGED, request: "Add stuck time" }, { monoId: "ed", name: "Ed" });
   expect(chatPageVersion("page-agents")?.spec.title).toBe("Agents and stuck time");
 });

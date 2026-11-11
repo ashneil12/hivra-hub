@@ -216,7 +216,7 @@ export const CREDENTIAL_DENY_RULES: readonly string[] = [
  * MonoCode tools already give the parts an agent may see. Enforced like the keychain rule, in code for every harness.
  */
 export const HUB_DB_BLOCK_MESSAGE =
-  "Blocked by MonoCode: agents never read the hub's database or the window's storage directly. Don't retry it or look for it another way. Use the MonoCode tools: task_status for work and workers, room_read for a room's messages, and your own memory files for what Ash said. If none of them has it, say so plainly.";
+  "Blocked by MonoCode: agents never read the app's database or the window's storage directly. Don't retry it or look for it another way. Use the MonoCode tools: task_status for work and workers, room_read for a room's messages, and your own memory files for what Ash said. If none of them has it, say so plainly.";
 
 /** The same, as Claude Code deny rules for every hub chat. */
 export const HUB_DB_DENY_RULES: readonly string[] = [

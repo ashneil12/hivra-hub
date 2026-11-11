@@ -358,7 +358,7 @@ function inbox(now: number) {
     item("exo", "pr", 118, "Area 3 boss: second phase and new music cue", 3, [["gameplay", "5319e7"]]),
     item("exo", "issue", 112, "Playtest build is too big to upload", 7, [["build", "fbca04"]]),
     item("hivra", "pr", 27, "Home: one box to start a chat with the Chief of Staff", 2, [["design", "1d76db"]]),
-    item("hivra", "issue", 25, "Pages should open without a tab bar", 26, [["design", "1d76db"]]),
+    item("hivra", "issue", 25, "Hubs should open without a tab bar", 26, [["design", "1d76db"]]),
     item("nibbii", "pr", 9, "Onboarding copy, second pass", 11, [], true),
   ];
 }

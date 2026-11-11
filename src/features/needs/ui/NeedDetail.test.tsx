@@ -149,5 +149,5 @@ it("says so when the words did not send, and keeps them", async () => {
 it("a page asking for access has no chat behind it: no reply box, and Open leads to the page", async () => {
   await show(need({ kind: "approval", open: { where: "page", id: "p1" }, who: "Example page" }));
   expect(container.querySelector("[data-need-reply]")).toBeNull();
-  expect(container.querySelector("[data-need-open]")?.textContent).toBe("Open the page");
+  expect(container.querySelector("[data-need-open]")?.textContent).toBe("Open the hub");
 });

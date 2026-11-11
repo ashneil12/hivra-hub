@@ -71,7 +71,7 @@ describe("a refused change", () => {
     await act(async () => input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true })));
     await until(() => document.querySelector("[data-project-rename-problem]"), "the refusal");
     const text = document.querySelector("[data-project-rename-problem]")?.textContent ?? "";
-    expect(text).toBe("The hub's database is busy. Nothing was lost. Try again in a moment.");
+    expect(text).toBe("The app's database is busy. Nothing was lost. Try again in a moment.");
     // Still open, so the same tap can be tried again.
     expect(document.querySelector('[aria-label="Project name"]')).not.toBeNull();
   });

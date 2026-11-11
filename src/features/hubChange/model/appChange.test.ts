@@ -32,7 +32,7 @@ it("Send to MonoCode Hub lead puts Ash's words in that Lead's own chat, through 
   expect(sent[0][0]).toBe("s-hub");
   expect(sent[0][1]).toContain("Make the sidebar icons bigger");
   expect(sent[0][1]).toMatch(/worktree[\s\S]*copy of the app[\s\S]*Ship/);
-  expect(sent[0][1]).toContain("(sent from Change the hub)");
+  expect(sent[0][1]).toContain("(sent from Change the app)");
 });
 
 it("the old Harness lead's seat is not adopted; a Lead with no chat yet is opened and the words follow once it has one", async () => {

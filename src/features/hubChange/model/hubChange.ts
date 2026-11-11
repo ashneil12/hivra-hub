@@ -27,9 +27,9 @@ export type ChangeResult =
 
 export const SEATED_ONLY = "You ask, and one of your own Monos builds it. Temporary workers can't.";
 export const HUB_CANT = "This can't change keys or the Keychain, account sign-ins, delete projects or Monos, or skip the preview.";
-export const FLOW_LABEL: Record<ChangeFlow, string> = { hub: "Change the hub", today: "Edit Today", connect: "Connect data" };
+export const FLOW_LABEL: Record<ChangeFlow, string> = { hub: "Change the app", today: "Edit Today", connect: "Connect data" };
 const NOT_WIRED: Record<ChangeFlow, string> = {
-  hub: "Changing the hub with a preview build isn't wired up. Ask the MonoCode Hub lead to change the app instead.",
+  hub: "Changing the app with a preview build isn't wired up. Ask the MonoCode Hub lead to change the app instead.",
   today: "Editing Today by chat isn't wired up.",
   connect: "Connecting your own data isn't wired up.",
 };
@@ -72,7 +72,7 @@ export async function redoChange(_previewId: string, _deps: ChangeDeps = {}): Pr
 
 setHubChangeHooks({ undo: (id) => undoChange(id), redo: (id) => redoChange(id) });
 
-const FLOW_WORD: Record<ChangeFlow, string> = { hub: "the hub", today: "Today", connect: "a connection" };
+const FLOW_WORD: Record<ChangeFlow, string> = { hub: "the app", today: "Today", connect: "a connection" };
 /** "<who> changed Today: Put “Sign-ups” on Today". `by` is the Mono that asked. */
 export function changeLine(c: Pick<HubChangeRecord, "by" | "flow" | "title">): string {
   return `${c.by} changed ${FLOW_WORD[c.flow]}: ${c.title}`;
@@ -107,7 +107,7 @@ export function stubPreview(req: ChangeRequest): ChangePreview {
       now: { sections: [{ title: "Needs you", rows: ["Example: Approve Q4 hiring plan", "Example: Pick the waitlist headline"] }] },
       preview: { sections: [{ title: "Needs you", rows: ["Example: Approve Q4 hiring plan", "Example: Pick the waitlist headline"] }, { title: "Builds this week", rows: ["Example: 15 across EXO, Hivra, Nibbii"] }] } };
   if (req.flow === "connect")
-    return { previewId: id, by, title: "Bug tracker on the EXO page",
+    return { previewId: id, by, title: "Bug tracker on the EXO hub",
       now: { sections: [{ title: "Open bugs", rows: ["Example: Shader step fails on Intel Macs", "Example: Jump clips through the ledge"] }, { title: "Source", rows: ["Example data"] }] },
       preview: { sections: [{ title: "Open bugs", rows: ["Example: Shader step fails on Intel Macs", "Example: Jump clips through the ledge", "Example: Save slot shows wrong date"] }, { title: "Source", rows: ["Example: Bug tracker · read-only · last read 2 min ago"] }] } };
   return { previewId: id, by, title: "Pin the backup chat and group the rest by week",

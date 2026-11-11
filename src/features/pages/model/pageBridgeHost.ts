@@ -15,9 +15,9 @@ import { isLiveRead, isRead, isTapCall, isWall, LIVE_READS, type Capability, typ
 export type PageSource = { read(args: Record<string, unknown>): unknown; subscribe(onChange: () => void): () => void };
 export type PageSources = Record<LiveRead, PageSource>;
 
-export const TAP_ONLY = "Pages act only when you tap something on them, so nothing was done.";
-const PREVIEW_TAP = "This is a preview: its buttons work once you keep the page.";
-const PREVIEW_OTHER = "This is a preview: it can do that once you keep the page.";
+export const TAP_ONLY = "Hubs act only when you tap something on them, so nothing was done.";
+const PREVIEW_TAP = "This is a preview: its buttons work once you keep the hub.";
+const PREVIEW_OTHER = "This is a preview: it can do that once you keep the hub.";
 const WATCH_ONLY = `Only live data can be watched: ${LIVE_READS.slice(0, -1).join(", ")} or ${LIVE_READS[LIVE_READS.length - 1]}.`;
 const MAX_WATCHES = 20;
 export const MIN_HEIGHT = 160;
@@ -161,7 +161,7 @@ export class PageBridgeHost {
   }
 
   private async call(id: string, call: string, args: Record<string, unknown>): Promise<void> {
-    if (!call) return this.reply(id, { ok: false, error: "That isn't a page call." });
+    if (!call) return this.reply(id, { ok: false, error: "That isn't a hub call." });
     const no = this.why({ call, args });
     // r61: a tap that is refused says so on the page too (the app's line), not only to the page's code.
     if (no) {
@@ -173,7 +173,7 @@ export class PageBridgeHost {
       if (isLiveRead(call)) return this.reply(id, { ok: true, result: this.o.sources[call].read(args) });
       const run = this.o.handlers?.[call];
       if (run) return this.reply(id, { ok: true, result: await run(args) });
-      this.reply(id, { ok: false, error: "Not connected yet: the hub can't do this for pages yet." });
+      this.reply(id, { ok: false, error: "Not connected yet: the app can't do this for hubs yet." });
     } catch (e) {
       this.reply(id, { ok: false, error: e instanceof Error && e.message ? e.message : "That didn't work." });
     }
@@ -186,7 +186,7 @@ export class PageBridgeHost {
     const no = this.why({ call, args });
     if (no) return this.reply(id, { ok: false, error: no });
     if (this.watches.has(id)) this.unwatch(id);
-    if (this.watches.size >= MAX_WATCHES) return this.reply(id, { ok: false, error: `A page can watch at most ${MAX_WATCHES} things at once.` });
+    if (this.watches.size >= MAX_WATCHES) return this.reply(id, { ok: false, error: `A hub can watch at most ${MAX_WATCHES} things at once.` });
     const w: Watch = { call, args, off: () => undefined };
     this.watches.set(id, w);
     w.off = this.o.sources[call].subscribe(() => this.schedule(id));

@@ -361,7 +361,7 @@ export function resolveProjects(wanted: readonly string[], own: readonly string[
     if (fromHub?.folder) return fromHub.folder;
     const mine = own.find((path) => projectKey(path) === projectKey(want) || path.split("/").pop()?.toLowerCase() === lower);
     if (mine) return mine;
-    throw new Error(`Unknown project ${want}: name one of the hub's projects or one of yours.`);
+    throw new Error(`Unknown project ${want}: name one of the app's projects or one of yours.`);
   });
 }
 

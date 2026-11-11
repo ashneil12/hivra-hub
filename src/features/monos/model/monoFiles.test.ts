@@ -149,22 +149,23 @@ it("keeps the hub's note about 1 KB, with nothing about formats, recording, dige
     expect(note, gone).not.toContain(gone);
 });
 
-// Alfred's hub-note.md (hub-scenarios/slim-souls, 21 Oct), word for word, with the bundled docs path filled in.
+// Alfred's hub-note.md (hub-scenarios/slim-souls, 21 Oct), with the bundled docs path filled in. Its words follow
+// the 11 Nov rename: a page Ash keeps is a hub, and "the hub" (the app itself) is the app.
 const ALFRED_NOTE = `You're running inside MonoCode Hub, Ash's app for running a small team of agents (Monos). Otherwise you're your normal self.
 
 - Your soul file says who you are and what you own. Your memory files are yours.
 - Ash talks to you in chats and rooms. Other Monos are in the rooms too.
-- Hub tools: hand work to another Mono, post in a room, make a new Mono with Ash in chat, make a page, and propose a change to the hub. Pages and hub changes show Ash a preview first; he clicks Apply or Discard. Anything applied can be undone in Bot changes.
+- App tools: hand work to another Mono, post in a room, make a new Mono with Ash in chat, make a hub, and propose a change to the app. Hubs and app changes show Ash a preview first; he clicks Apply or Discard. Anything applied can be undone in Bot changes.
 - When you save a memory, keep Ash's own words, credited to him. A question he asked stays a question, and nothing gets saved as further along than it was. Unapproved cards aren't decisions.
 - Deletes need Ash's own yes.
 - Name work by what it is, not task ids or paths.
-- For how a hub feature works, read the hub docs at HUB_DOCS_PATH before guessing.`;
+- For how an app feature works, read the app docs at HUB_DOCS_PATH before guessing.`;
 
 it("is Alfred's shared note word for word, the docs path filled in once known and its line left out before", () => {
   expect(HUB_NOTE_TEMPLATE).toBe(ALFRED_NOTE);
   expect(hubNote()).toBe(ALFRED_NOTE.split("\n").slice(0, -1).join("\n"));
   const look = { name: "Alfred", mascot: "skull", color: "#fff", projects: [] };
-  expect(monoContext(look, files(), { soul: true, memory: false })).not.toContain("hub docs");
+  expect(monoContext(look, files(), { soul: true, memory: false })).not.toContain("app docs");
   setHubDocsPath("/Applications/MonoCode.app/Contents/Resources/hub-docs/README.md");
   try {
     expect(hubNote()).toBe(ALFRED_NOTE.replace("HUB_DOCS_PATH", "/Applications/MonoCode.app/Contents/Resources/hub-docs/README.md"));

@@ -168,9 +168,9 @@ it("a preview shows live data it asked to read, but its buttons and everything e
   h.receive({ type: "hub:call", id: "c3", call: "mono.run", args: {} });
   await flush();
   expect(replies().map((r) => r.ok)).toEqual([true, false, false]);
-  expect(replies()[1].error).toBe("This is a preview: its buttons work once you keep the page.");
+  expect(replies()[1].error).toBe("This is a preview: its buttons work once you keep the hub.");
   // mono.run is a tap now (C4): a preview's button waits until the page is kept.
-  expect(replies()[2].error).toBe("This is a preview: its buttons work once you keep the page.");
+  expect(replies()[2].error).toBe("This is a preview: its buttons work once you keep the hub.");
   expect(acted).toEqual([]);
 });
 
@@ -200,10 +200,10 @@ it("the walls stay: never Monos, never the app itself; anything unknown is refus
   h.receive({ nonsense: true });
   await flush();
   expect(replies().map((r) => r.error)).toEqual([
-    "Pages can't do that: changing Monos and reaching the app directly are never allowed.",
-    "Pages can't do that: changing Monos and reaching the app directly are never allowed.",
+    "Hubs can't do that: changing Monos and reaching the app directly are never allowed.",
+    "Hubs can't do that: changing Monos and reaching the app directly are never allowed.",
     "Only live data can be watched: agents.read, jobs.read, needs.read or rooms.read.",
-    "Pages can't read your keys: a page can't reach the network, so a key would do nothing inside one.",
+    "Hubs can't read your keys: a hub can't reach the network, so a key would do nothing inside one.",
   ]);
 });
 
@@ -265,7 +265,7 @@ it("a web fetch reaches the page's own handler, and its plain refusal comes back
   expect(replies().sort((a, b) => String(a.id).localeCompare(String(b.id)))).toEqual([
     { type: "hub:reply", id: "c1", ok: false, error: "This page isn't connected to nope.example.com, so it can't read it." },
     { type: "hub:reply", id: "c2", ok: true, result: { status: 200, type: "application/json", body: "{}", url: "https://api.example.com" } },
-    { type: "hub:reply", id: "c3", ok: false, error: "Not connected yet: the hub can't do this for pages yet." },
+    { type: "hub:reply", id: "c3", ok: false, error: "Not connected yet: the app can't do this for hubs yet." },
   ]);
 });
 

@@ -779,7 +779,7 @@ function crewScopeFolder(owner: TaskOwner, source: Session, named: string | unde
   if (hub) return hub;
   // A bare name the hub doesn't know (a folder's last segment, say) is refused: the policy would be read for nothing.
   if (!named.startsWith("/") && !named.startsWith("~"))
-    throw new Error(`"${named}" is not one of the hub's projects, so nothing was started.`);
+    throw new Error(`"${named}" is not one of the app's projects, so nothing was started.`);
   return named;
 }
 

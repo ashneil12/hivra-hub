@@ -87,17 +87,17 @@ const asksOf = (spec: Record<string, unknown>): string[] =>
   spec.kind === "bespoke" && Array.isArray(spec.permissions) ? (spec.permissions as unknown[]).filter((x): x is string => typeof x === "string") : [];
 
 function approved(perms: unknown, spec: Record<string, unknown>): string[] {
-  if (!Array.isArray(perms) || !perms.every((x) => typeof x === "string")) throw new Error("permissions: a list of what the page asked for.");
+  if (!Array.isArray(perms) || !perms.every((x) => typeof x === "string")) throw new Error("permissions: a list of what the hub asked for.");
   const extra = perms.filter((x) => !asksOf(spec).includes(x));
-  if (extra.length) throw new Error(`The page didn't ask for ${extra.join(", ")}, so it can't be allowed that.`);
+  if (extra.length) throw new Error(`The hub didn't ask for ${extra.join(", ")}, so it can't be allowed that.`);
   return [...new Set(perms as string[])];
 }
 
 function validSpec(spec: unknown): Record<string, unknown> {
   const s = spec as Record<string, unknown> | null;
-  if (!s || typeof s !== "object" || !["blocks", "bespoke"].includes(String(s.kind))) throw new Error("The page is neither blocks nor a bespoke page.");
-  if (typeof s.title !== "string" || !s.title.trim()) throw new Error("The page has no title.");
-  if (s.kind === "blocks" && (!Array.isArray(s.blocks) || !s.blocks.length || s.blocks.length > 12)) throw new Error("The page needs 1 to 12 blocks.");
+  if (!s || typeof s !== "object" || !["blocks", "bespoke"].includes(String(s.kind))) throw new Error("The hub is neither blocks nor a bespoke hub.");
+  if (typeof s.title !== "string" || !s.title.trim()) throw new Error("The hub has no title.");
+  if (s.kind === "blocks" && (!Array.isArray(s.blocks) || !s.blocks.length || s.blocks.length > 12)) throw new Error("The hub needs 1 to 12 blocks.");
   const { pin: _pin, pageId: _id, ...clean } = s;
   return clone(clean);
 }
@@ -199,7 +199,7 @@ export class LocalHub {
         if (!stale) return result;
       }
       this.loaded = undefined;
-      throw new Error("The hub's record kept changing in another window; try again.");
+      throw new Error("The app's record kept changing in another window; try again.");
     };
     const next = this.queue.then(run, run);
     this.queue = next.catch(() => undefined);
@@ -276,7 +276,7 @@ export class LocalHub {
   projectRename(v: Payload): Promise<LocalProject> {
     return this.mutate(() => {
       const p = this.known(v.project_id);
-      if (p.archived) throw new Error(`${p.id} is not on the hub strip, so the hub has no name or shape for it`);
+      if (p.archived) throw new Error(`${p.id} is not on the app strip, so the app has no name or shape for it`);
       const before = JSON.stringify(p);
       if (v.name != null) {
         const name = String(v.name).trim();
@@ -310,7 +310,7 @@ export class LocalHub {
       const archiving = v.archived !== false;
       if (archiving && v.confirm !== true) {
         if (p.archived) throw new Error(`${p.id} is already archived`);
-        return { id: p.id, name: p.name, needsConfirm: true, archived: false, openAsks: 0, openNeeds: 0, say_to_ash: `Remove ${p.name} from the hub? Nothing is deleted and you can bring it back.` };
+        return { id: p.id, name: p.name, needsConfirm: true, archived: false, openAsks: 0, openNeeds: 0, say_to_ash: `Remove ${p.name} from the app? Nothing is deleted and you can bring it back.` };
       }
       if (!!p.archived === archiving) throw new Error(`${p.id} is ${archiving ? "already archived" : "not archived"}`);
       p.archived = archiving;
@@ -394,7 +394,7 @@ export class LocalHub {
 
   private findPage(id: unknown): LocalPage {
     const p = this.state.pages.find((x) => x.id === String(id ?? "").trim());
-    if (!p) throw new Error(`There is no page ${String(id ?? "")}.`);
+    if (!p) throw new Error(`There is no hub ${String(id ?? "")}.`);
     return p;
   }
 
@@ -415,7 +415,7 @@ export class LocalHub {
       const exists = this.state.pages.find((p) => p.id === id);
       if (!exists && v.spec && typeof v.spec === "object") {
         // A page the app built itself, saved to the record.
-        if (!PAGE_ID.test(id)) throw new Error("pageId: the page to save (letters, digits, dots, colons, dashes).");
+        if (!PAGE_ID.test(id)) throw new Error("pageId: the hub to save (letters, digits, dots, colons, dashes).");
         const sid = this.scope(v.projectId ?? v.project_id ?? v.project);
         const spec = validSpec(v.spec);
         const kept = v.kept === true;
@@ -429,7 +429,7 @@ export class LocalHub {
         return this.pageOut(row);
       }
       const p = this.findPage(id);
-      if (p.state === "removed") throw new Error("That page was removed. Restore it first.");
+      if (p.state === "removed") throw new Error("That hub was removed. Restore it first.");
       let changed = false;
       const versionId = v.useVersion ?? v.dropVersion;
       if (versionId) {
@@ -483,7 +483,7 @@ export class LocalHub {
       const p = this.findPage(v.pageId ?? v.page_id ?? v.id);
       const want = v.restore ? "kept" : "removed";
       if (p.state === want) return { ...this.pageOut(p), changed: false };
-      if (v.restore && !(p.state === "removed" && p.keptAt)) throw new Error("Only a page Ash kept and then removed can be restored.");
+      if (v.restore && !(p.state === "removed" && p.keptAt)) throw new Error("Only a hub Ash kept and then removed can be restored.");
       p.state = want;
       if (want === "kept" && !p.permissions.length) p.permissions = [...asksOf(p.spec)];
       p.version += 1;

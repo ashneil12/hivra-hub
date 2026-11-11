@@ -39,7 +39,7 @@ it("renames a project through the hub's own store, under the page's title, as a 
   expect(world.renames).toEqual([{ id: "hivra", name: "Hivra Studio" }]);
 
   const row = botChangesSince(0).find((c) => c.bot === "Scores" && c.write);
-  expect(row?.line).toBe("The page “Scores” renamed Hivra to Hivra Studio");
+  expect(row?.line).toBe("The hub “Scores” renamed Hivra to Hivra Studio");
   expect(row?.write).toMatchObject({ action: "project-rename", payload: { project_id: "hivra" }, before: { name: "Hivra" }, after: { name: "Hivra Studio" } });
 });
 
@@ -87,7 +87,7 @@ it("says so, and stays undoable, when the project has gone since", async () => {
 
   await undoBotChange([row.id]);
   const after = findBotChange(row.id);
-  expect(after?.problem).toBe("That project isn't on the hub any more, so nothing changed.");
+  expect(after?.problem).toBe("That project isn't on the app any more, so nothing changed.");
   expect(after?.undone).toBeFalsy();
 });
 

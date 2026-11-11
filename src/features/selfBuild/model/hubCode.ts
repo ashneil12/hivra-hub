@@ -64,7 +64,7 @@ registerChangeKind(HUB_CODE, {
     const applied = await commands.apply((data as ChangeData).id).catch((e) => Promise.reject(plain(e)));
     keepPinging(false);
     return applied.map((c) => ({
-      title: c.subject || "Hub change",
+      title: c.subject || "App change",
       data: { sha: c.sha, delivery: (data as ChangeData).delivery } satisfies Part,
     }));
   },
@@ -98,10 +98,10 @@ export async function startHubChange(ask: string, title: string | undefined, by:
 function deliveryText(delivery: HubDelivery) {
   if (delivery !== "rebuild") return {};
   return {
-    nowText: "Now: your hub as it is.",
+    nowText: "Now: your app as it is.",
     previewText: "Preview: open in your browser.",
     applyText: "Rebuild and ship",
-    workingText: "Building the hub with your change, then it restarts by itself. This takes a few minutes.",
+    workingText: "Building the app with your change, then it restarts by itself. This takes a few minutes.",
   };
 }
 
@@ -109,7 +109,7 @@ function deliveryText(delivery: HubDelivery) {
 export function hubChangeBrief(ask: string, folder: string): string {
   return [
     forUser`Ash asked for a change to MonoCode Hub itself: "${ask}"`,
-    forUser`Make it in ${folder}, a preview copy of the hub's own code. The running hub doesn't change until Ash clicks Apply.`,
+    forUser`Make it in ${folder}, a preview copy of the app's own code. The running app doesn't change until Ash clicks Apply.`,
     forUser("One git commit per separate part of the ask, each subject a few plain words Ash can read (\"New chat button is at the top\")."),
     "Only how the app looks and works on a screen can change here: src/ and public/, but not the engine (src/integrations, src/platform, src/features/sessions/model, src/features/hub/model, src/features/agent-app), Settings, keys, the Monos list or src/main.tsx. Those need a real build and go to the MonoCode Hub lead; the app refuses them here, so say so plainly if the ask needs one.",
     "Use the theme tokens for colour. Run npx tsc --noEmit and the tests of what you touched, then report each commit in one line.",
@@ -118,8 +118,8 @@ export function hubChangeBrief(ask: string, folder: string): string {
 
 /** The worker is done: show Ash Now | Preview. A change that touches the protected core is thrown away, said plainly. */
 export async function readyHubChange(changeId: string, by: string) {
-  if (!/^hc-[a-z0-9]+$/.test(changeId)) throw new Error("No hub change with that id. Start one with hub_change {ask}.");
-  const known = pending.get(changeId) ?? offeredChanges().find((o) => o.id === changeId) ?? { title: "Your hub change", by };
+  if (!/^hc-[a-z0-9]+$/.test(changeId)) throw new Error("No app change with that id. Start one with hub_change {ask}.");
+  const known = pending.get(changeId) ?? offeredChanges().find((o) => o.id === changeId) ?? { title: "Your app change", by };
   const got = await commands.collect(changeId).catch((e) => Promise.reject(plain(e)));
   if (got.blocked.length) {
     await commands.discard(changeId).catch(() => undefined);
@@ -128,7 +128,7 @@ export async function readyHubChange(changeId: string, by: string) {
     throw new Error(forUser`That change touches ${areas}, which has to be built and checked before it lands, so it can't go in here. It was thrown away and nothing changed. Tell Ash in those words: it goes to the MonoCode Hub lead.`);
   }
   if (!got.commits.length) throw new Error("The preview copy has no changes yet: wait for the worker's report.");
-  const parts = got.commits.map((c) => c.subject || "Hub change");
+  const parts = got.commits.map((c) => c.subject || "App change");
   offerChange({
     id: changeId,
     kind: HUB_CODE,
@@ -155,7 +155,7 @@ export async function undoHubPart(which: string) {
     rows.find((c) => c.after.toLowerCase() === want) ??
     rows.find((c) => c.after.toLowerCase().includes(want) || want.includes(c.after.toLowerCase()));
   if (!row)
-    throw new Error(`No applied hub change matches "${which}". Applied: ${rows.map((c) => `"${c.after}"`).join(", ") || "none"}.`);
+    throw new Error(`No applied app change matches "${which}". Applied: ${rows.map((c) => `"${c.after}"`).join(", ") || "none"}.`);
   // A rebuild undo runs the checks, the build and the ship with no tap (hub_change_revert). Ash's Undo in Bot
   // changes still does that, because that button is the tap. A chat asking for the same undo is not.
   // A row applied before the delivery tag holds the commit alone. Refuse unless this part is known to be in place.
@@ -177,8 +177,8 @@ export async function resumeLivePreview(): Promise<void> {
     kind: HUB_CODE,
     title:
       live.delivery === "rebuild"
-        ? "Your hub change (preview is open in your browser)"
-        : "Your hub change (preview is on)",
+        ? "Your app change (preview is open in your browser)"
+        : "Your app change (preview is on)",
     by: "A Mono",
     data: { id: live.id, delivery: live.delivery } satisfies ChangeData,
     previewing: true,

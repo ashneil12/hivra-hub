@@ -316,14 +316,14 @@ export function ProjectRail({
       />
       {onOpenPages ? (
         <RailAction
-          label="Pages"
+          label="Hubs"
           icon={DashboardSquare}
           onClick={() => {
             requestPagesList();
             onOpenPages();
           }}
           active={pagesActive && !(IS_HUB_BUNDLE && pinnedPageShown)}
-          ariaLabel="Pages"
+          ariaLabel="Hubs"
         />
       ) : null}
       {onOpenPages ? <PinnedPages onOpen={onOpenPages} active={pagesActive} /> : null}
@@ -1339,7 +1339,7 @@ function PinnedPages({ onOpen, active = false }: { onOpen: () => void; active?: 
   // sub-row under Pages.
   if (IS_HUB_BUNDLE)
     return (
-      <div className="contents" data-sidebar-pinned-pages aria-label="Pinned pages" role="group">
+      <div className="contents" data-sidebar-pinned-pages aria-label="Pinned hubs" role="group">
         {pinned.map((p) => (
           <RailAction
             key={p.id}
@@ -1353,7 +1353,7 @@ function PinnedPages({ onOpen, active = false }: { onOpen: () => void; active?: 
       </div>
     );
   return (
-    <div className="flex flex-col gap-px pl-6" data-sidebar-pinned-pages aria-label="Pinned pages" role="group">
+    <div className="flex flex-col gap-px pl-6" data-sidebar-pinned-pages aria-label="Pinned hubs" role="group">
       {pinned.map((p) => (
         <button
           key={p.id}

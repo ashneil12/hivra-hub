@@ -36,7 +36,7 @@ it("a row nobody's chat is behind has no reply box", () => {
 
 it("the card's Open button names where it goes, and a decision that lives in the Inbox has none", () => {
   expect(needPlace(item({ open: { where: "chat", id: "c1" }, projectId: "exo" }))).toEqual({ label: "Open chat", target: { kind: "chat", id: "c1", projectId: "exo" } });
-  expect(needPlace(item({ kind: "approval", open: { where: "page", id: "p1" } }))).toEqual({ label: "Open the page", target: { kind: "page", id: "p1" } });
+  expect(needPlace(item({ kind: "approval", open: { where: "page", id: "p1" } }))).toEqual({ label: "Open the hub", target: { kind: "page", id: "p1" } });
   expect(needPlace(item({ decisionKey: "ship" }))).toBeUndefined();
 });
 

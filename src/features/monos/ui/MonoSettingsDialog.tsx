@@ -278,7 +278,7 @@ function GeneralSection({
         <SettingGroup>
           <SwitchRow
             label="Read every project"
-            description="Reads tasks, pages and activity on this copy. It still files work into one project."
+            description="Reads tasks, hubs and activity on this copy. It still files work into one project."
             on={everyProject}
             onChange={(on) => {
               updateMono(monoId, ({ everyProject: _flag, ...mono }) => (on ? { ...mono, everyProject: true } : mono));

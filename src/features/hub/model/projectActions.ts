@@ -123,11 +123,11 @@ export async function archiveCheck(projectId: string): Promise<ArchiveCheck | un
 /** Take a project off the hub (`archived`) or bring it back. Nothing is deleted; its asks, memory and folder stay. */
 export async function archiveProject(projectId: string, archived = true): Promise<void> {
   const store = liveHubStore();
-  if (!store) throw new Error("Not connected to the hub.");
+  if (!store) throw new Error("Not connected to the app.");
   try {
     await store.act("project-archive", { project_id: projectId, archived, ...(archived ? { confirm: true } : {}) }, ["projects", "needs"]);
   } catch (e) {
-    throw plain(e, archived ? "It wasn't taken off the hub." : "It didn't come back.");
+    throw plain(e, archived ? "It wasn't taken off the app." : "It didn't come back.");
   }
 }
 
@@ -152,7 +152,7 @@ export type NewProjectResult = { project: HubProject; folder: string | null; rep
  */
 export async function createProject(input: NewProjectInput, makeFolder: (id: string) => Promise<string> = tauriMakeFolder): Promise<NewProjectResult> {
   const store = liveHubStore();
-  if (!store) throw new Error("Not connected to the hub.");
+  if (!store) throw new Error("Not connected to the app.");
   const name = input.name.trim();
   const id = projectSlug(name);
   if (store.getSnapshot().projects.some((p) => p.id === id)) throw new Error(`There is already a project called ${name}.`);

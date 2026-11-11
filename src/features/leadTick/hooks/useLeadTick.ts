@@ -46,7 +46,7 @@ function isMainWindow(): boolean {
 
 async function resolveLead(host: LeadTickHost, folder: string): Promise<LeadContext | { skip: string }> {
   const projectId = hubProjectIdFor(folder);
-  if (!projectId) return { skip: "This folder isn't one of the hub's projects." };
+  if (!projectId) return { skip: "This folder isn't one of the app's projects." };
   const lead = teamLeadOf(projectId);
   if (!lead) return { skip: "This project has no Lead yet." };
   const sessionId = findMono(lead.id)?.sessionId;

@@ -70,6 +70,6 @@ export function checkBespokePage(spec: Pick<BespokeSpec, "html" | "css" | "js">,
   if (LITERAL.test(`${spec.css ?? ""}\n${spec.html}\n${spec.js ?? ""}`))
     warnings.push({ rule: "own-colours", plain: "It uses its own colours instead of the theme's, so it won't change with your scheme." });
   if (rules(spec).some((r) => STATUS_VAR.test(r.body) && !/status|data-state/i.test(r.selector)))
-    warnings.push({ rule: "status-colours", plain: "It uses red, amber or green for decoration. Those colours mean status in the hub." });
+    warnings.push({ rule: "status-colours", plain: "It uses red, amber or green for decoration. Those colours mean status in the app." });
   return { blocked, warnings };
 }

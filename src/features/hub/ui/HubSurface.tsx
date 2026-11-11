@@ -196,7 +196,7 @@ function FirstTodayEmpty() {
 /** Local views remain accessible even while the shared service is unavailable. */
 function HomeTools() {
   return <nav aria-label="Workspace shortcuts" className="flex flex-wrap gap-2" data-hub-home-tools>
-    {(["Pages", "Notes", "Automations"] as const).map((name) => <button key={name} type="button" onClick={() => window.dispatchEvent(new CustomEvent("monocode:home-open", { detail: name.toLowerCase() }))}
+    {([["pages", "Hubs"], ["notes", "Notes"], ["automations", "Automations"]] as const).map(([open, name]) => <button key={open} type="button" onClick={() => window.dispatchEvent(new CustomEvent("monocode:home-open", { detail: open }))}
       className="rounded-md bg-content/5 px-3 py-1.5 text-[12px] text-content/75 hover:bg-content/10">{name}</button>)}
   </nav>;
 }

@@ -3,9 +3,10 @@ name: make-a-hub
 description: Build the owner a page (a "hub": a board, tracker, dashboard, doc list or small tool) inside the app without changing the app's code. Use when they say "make me a page", "a hub for X", "show me X somewhere", "I want a board/tracker/dashboard", or when you notice you keep answering the same status question by hand.
 ---
 
-# Make a hub (a page)
+# Make a hub
 
-A hub is a Page: a small screen you build, the owner previews, and keeps with one tap. It lives under Pages, can be
+A hub is a small screen you build, the owner previews, and keeps with one tap (the code and the `page_build` tool
+still call it a page). It lives under Hubs, can be
 pinned to the sidebar, and belongs to one project or to none. It is the way to add to the app without touching its
 code, so reach for it first. Changing one that already exists is the `editing-a-dashboard` skill.
 
@@ -20,7 +21,7 @@ page shows real rows or an honest empty line ("Nothing here yet"). A page with m
 ## 3. Build it from blocks when blocks can show it
 - The app's own blocks: `status`, `list`, `chart`, `barlist`, `note`, `calendar`. 1 to 12 blocks, each with a title.
   They already follow the theme and the three status colours.
-- Send it from your own chat with `page_build {project, spec}`. The owner sees the preview on Pages with Apply and
+- Send it from your own chat with `page_build {project, spec}`. The owner sees the preview on Hubs with Apply and
   Discard. After they say it looks good, keep it with `page_build {previewId, keep}`, or they tap Keep.
 - Go bespoke (`html`, `css`, `js`, `permissions`) only when blocks cannot do it. A bespoke page runs in a sandbox: no
   storage, no cookies, no network of its own. List every read and tap it makes in `permissions`; one it does not list

@@ -23,7 +23,7 @@ describe("codingTeamContext", () => {
     const text = codingTeamContext(TEAM);
     expect(text.startsWith(`${hubNote()}\n\n- This`)).toBe(true);
     expect(text).toContain("- This chat is in EXO's coding team (project `vg-game`), working in /Users/ash/Projects/vg-game. EXO lead keeps the project's board.");
-    expect(text).toContain("- Hub tools: hand work to another Mono");
+    expect(text).toContain("- App tools: hand work to another Mono");
     expect(text).not.toMatch(/money/i);
     expect(text).not.toContain("<project_memory>");
     for (const gone of ["<chat_rules>", "<ask_ash_rules>", "Needs Ash:", "Right:", "ash_remember"]) expect(text, gone).not.toContain(gone);

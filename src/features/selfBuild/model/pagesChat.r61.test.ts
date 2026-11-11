@@ -15,8 +15,8 @@ const spec = { kind: "blocks", title: "Agents now", blocks: [{ kind: "note", tit
 it("a page with no project is 'not tied to a project' on Pages, never Today, in the preview and once kept", async () => {
   const out = previewFromChat({ spec, request: "a page of agents" }, { monoId: "pm", name: "Projects Manager" });
   expect(out.project).toBe(NO_PROJECT);
-  expect(out.where).toBe("A preview on Pages (not tied to a project)");
+  expect(out.where).toBe("A preview on Hubs (not tied to a project)");
   expect(JSON.stringify(out)).not.toMatch(/on Today/);
   const kept = await keepFromChat(out.previewId, { monoId: "pm" }, () => true);
-  expect(kept.note).toMatch(/^It's on Pages \(not tied to a project\)/);
+  expect(kept.note).toMatch(/^It's on Hubs \(not tied to a project\)/);
 });

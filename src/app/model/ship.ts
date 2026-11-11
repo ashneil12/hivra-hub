@@ -230,7 +230,7 @@ export function shipCardView(status: ShipStatus, appVersion?: string): ShipCardV
     return {
       id: status.trial.id,
       text: "Checking the new build.",
-      detail: "Habits, automations and cut chats wait until its window, database and hub bridge are up.",
+      detail: "Habits, automations and cut chats wait until its window, database and app bridge are up.",
     };
   if (!current) return null;
   if (status.pending?.id === current.id && (current.phase === "staged" || current.phase === "waiting")) {
