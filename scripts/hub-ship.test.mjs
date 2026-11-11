@@ -1004,6 +1004,9 @@ test("refusals change nothing: dirty tree, commit mismatch, wrong identity, ad-h
     ],
   ];
   for (const [what, spoil, expected] of cases) {
+    // The dictation helper is checked on macOS only (hub-dictation-helper.mjs helperCheckApplies), so its refusal
+    // can't happen anywhere else.
+    if (what.includes("dictation helper") && process.platform !== "darwin") continue;
     const w = world();
     spoil(w);
     const before = fs.readFileSync(path.join(w.app, "Contents/MacOS/monocode"));
