@@ -6,7 +6,7 @@
 
 ## Goal
 
-Extend `src-tauri/src/mobile_access.rs` allowed methods so a paired phone can list waiting-on-him items (Inbox / decisions / approvals), read crew status, and approve or deny a single tool call with the exact command shown. All behind existing `enabled: false` default and `phone_access` policy. **Security-sensitive: park for Ash; do not merge in Grok programme.**
+Extend `src-tauri/src/mobile_access.rs` allowed methods so a paired phone can list waiting-on-him items (Inbox / decisions / approvals), read crew status, and approve or deny a single tool call with the exact command shown. All behind existing `enabled: false` default and `phone_access` policy. **Security-sensitive: parked for Ash, who approved the merge on 10 Nov 23:26 after a hard review with no high findings. Phone access stays off until he turns it on.**
 
 ## Why
 

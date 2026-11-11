@@ -649,6 +649,9 @@ pub fn run() {
             // Hivra WP-12: delivery modes and the one merge path.
             delivery::delivery_settings_get,
             delivery::delivery_settings_set,
+            // WP-158: the protected-path floor. Off until the project turns it on.
+            delivery::delivery_protect_paths_set,
+            delivery::delivery_protected_paths_add,
             delivery::delivery_list,
             delivery::delivery_deliver,
             delivery::delivery_fix_ask,
