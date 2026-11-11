@@ -256,3 +256,27 @@ test("with cross-platform CI off (the default), no Linux packaging job starts on
     }
   }
 });
+
+test("a merge into main cancels the older main run, but nothing cancels the pre-ship or the nightly run", () => {
+  const match = /\nconcurrency:\n {2}group: (.+)\n {2}cancel-in-progress: true\n/.exec(ci);
+  assert.ok(match, "ci.yml needs a top-level concurrency group with cancel-in-progress");
+  // The group is a string with ${{ }} parts: evaluate each part and join them, as GitHub does.
+  const group = (event_name, extra = {}) => {
+    const github = {
+      workflow: "CI",
+      event_name,
+      ref: "refs/heads/main",
+      run_id: extra.run_id ?? 1,
+      // GitHub reads a missing property as null; an empty object gives JavaScript the same answer.
+      event: { pull_request: extra.pr ?? {} },
+    };
+    return match[1].replace(/\$\{\{ (.+?) \}\}/g, (_, expression) => String(evaluate(expression, { github, needs: {} })));
+  };
+  assert.equal(group("push", { run_id: 1 }), group("push", { run_id: 2 }), "two pushes to main share a group");
+  assert.equal(group("pull_request", { pr: { number: 7 }, run_id: 1 }), group("pull_request", { pr: { number: 7 }, run_id: 2 }));
+  assert.notEqual(group("pull_request", { pr: { number: 7 } }), group("pull_request", { pr: { number: 8 } }));
+  for (const event of ["workflow_dispatch", "schedule"]) {
+    assert.notEqual(group(event, { run_id: 1 }), group(event, { run_id: 2 }), `${event} runs never share a group`);
+    assert.notEqual(group(event, { run_id: 1 }), group("push", { run_id: 1 }), `a push never cancels a ${event} run`);
+  }
+});
