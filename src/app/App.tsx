@@ -149,6 +149,8 @@ import { useLeadTick } from "../features/leadTick/hooks/useLeadTick";
 import { DrivingBar } from "../features/browser/ui/DrivingBar";
 // Hivra WP-60: a remote project's report, shown in the chat that started it.
 import { bindRemoteReports, placeRemoteReport } from "../features/firstmate/host/remoteReport";
+// Hivra WP-172: the fan-out checkpoint store (src-tauri/src/fanout_checkpoint.rs).
+import { tauriFanoutCheckpoints } from "../features/firstmate/host/fanoutCheckpointStore";
 import { OPEN_CREW, openCrew } from "../features/crew/model/focus";
 import { registerCrewCancel } from "../features/crew/model/cancel";
 import { registerCrewDelegate } from "../features/crew/model/retry";
@@ -14979,6 +14981,8 @@ function Workspace({
             tasks: delegationTasksHost({
               backend: tauriDelegations,
               firstMate: steering,
+              // WP-172: the fan-out checkpoint store (a plan cut short by a crash can be resumed).
+              fanoutCheckpoints: tauriFanoutCheckpoints,
               tracker: () => delegationsRef.current,
               session: (id) =>
                 sessionsRef.current.find((session) => session.id === id),

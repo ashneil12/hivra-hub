@@ -7,7 +7,25 @@ import { readTextFile, statFiles } from "../../../platform/tauri/fs";
 import type { Delegation } from "../../monos/model/delegations";
 import { queuedWorker, type QueuedWorker } from "../../monos/model/workerPool";
 import { fanoutDependency, settleFanout, verificationOf, type FileIo } from "../model/fanoutChecks";
-import type { DependencyLookup, RowView } from "../model/fanoutWaves";
+import type { FanoutCheckpoint } from "../model/fanoutCheckpoint";
+import { taskRequestId, type DependencyLookup, type RowView } from "../model/fanoutWaves";
+
+/**
+ * WP-172: the worker chat a plan's task has now, read from the plan's record: its latest start's request id, or its own
+ * when it was never started again. Undefined when the plan is not there (it was finished or removed).
+ */
+export async function currentTaskSession(
+  checkpoints: { list(owner: string): Promise<FanoutCheckpoint[]> } | undefined,
+  owner: string,
+  plan: string,
+  name: string,
+): Promise<string | undefined> {
+  if (!checkpoints) return undefined;
+  const found = (await checkpoints.list(owner)).find((entry) => entry.id === plan);
+  if (!found) return undefined;
+  const task = found.tasks.find((entry) => entry.name === name);
+  return `app-${owner}-${task?.requestId ?? taskRequestId(plan, name)}`;
+}
 
 /** The files a check reads, through the app's own commands: a path that is not a text file reads as missing. */
 export const tauriFileIo: FileIo = {
@@ -40,6 +58,8 @@ export function fanoutHost(deps: {
    * started yet, so a task that needs it waits instead of being held as lost.
    */
   reviewing?(session: string): boolean;
+  /** WP-172: the plan records a provider's current chat is read from (a start again takes a new one). */
+  checkpoints?(): { list(owner: string): Promise<FanoutCheckpoint[]> } | undefined;
   io?: FileIo;
   now?(): number;
 }): FanoutHost {
@@ -47,6 +67,9 @@ export function fanoutHost(deps: {
   /** Rows read from the store, for the queue to see; the window's own rows win once it has them. */
   const fetched = new Map<string, RowView>();
   const askedAt = new Map<string, number>();
+  /** WP-172: a waiting task names its provider by the chat the plan first gave it; this is the chat it has now. */
+  const latest = new Map<string, string>();
+  const chatOf = (session: string) => latest.get(session) ?? session;
 
   const live = (session: string): RowView | undefined => {
     let newest: Delegation | undefined;
@@ -54,14 +77,15 @@ export function fanoutHost(deps: {
     return newest;
   };
   const lookup: DependencyLookup = {
-    row: (session) => live(session) ?? fetched.get(session),
-    queued: (session) => queuedWorker(session) !== undefined || deps.reviewing?.(session) === true,
-    verified: (session, row) => verificationOf(session, row),
+    row: (session) => live(chatOf(session)) ?? fetched.get(chatOf(session)),
+    queued: (session) => queuedWorker(chatOf(session)) !== undefined || deps.reviewing?.(chatOf(session)) === true,
+    verified: (session, row) => verificationOf(chatOf(session), row),
   };
   return {
     dependency: fanoutDependency(lookup, now),
-    settle: (queue) =>
-      settleFanout(queue, {
+    settle: async (queue) => {
+      const checkpoints = deps.checkpoints?.();
+      const resolved = await settleFanout(queue, {
         // The window's rows only: a row read from the store is read again, so a running one never sticks.
         row: live,
         fetchRow: async (session, owner) => {
@@ -75,6 +99,9 @@ export function fanoutHost(deps: {
         folder: deps.folder,
         io: deps.io ?? tauriFileIo,
         now,
-      }),
+        current: (owner, plan, name) => currentTaskSession(checkpoints, owner, plan, name),
+      });
+      for (const [planned, session] of resolved) latest.set(planned, session);
+    },
   };
 }
