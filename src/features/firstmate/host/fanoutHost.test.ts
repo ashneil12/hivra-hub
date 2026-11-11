@@ -6,8 +6,9 @@ import type { Delegation } from "../../monos/model/delegations";
 import { enqueueWorker, resetWorkerPool, type QueuedWorker } from "../../monos/model/workerPool";
 import { forgetVerifications } from "../model/fanoutChecks";
 import { parseFanout } from "../model/fanoutContract";
-import { planFanout } from "../model/fanoutWaves";
-import { fanoutHost, REFETCH_MS, tauriFileIo } from "./fanoutHost";
+import { createCheckpoint, type FanoutCheckpoint } from "../model/fanoutCheckpoint";
+import { planFanout, restartRequestId } from "../model/fanoutWaves";
+import { currentTaskSession, fanoutHost, REFETCH_MS, tauriFileIo } from "./fanoutHost";
 
 const platformFs = vi.hoisted(() => ({ statFiles: vi.fn(), readTextFile: vi.fn() }));
 vi.mock("../../../platform/tauri/fs", () => platformFs);
@@ -163,5 +164,55 @@ describe("a provider held for its fresh-eyes review (WP-144 with WP-171)", () =>
     // Taken back, it is gone again, and what needs it is held for the first mate.
     held.clear();
     expect(reviewed.dependency(job)).toMatchObject({ reason: "held" });
+  });
+
+  // WP-172 review round 2 (HIGH): a provider stopped and started again is the one its waiting task looks for.
+  it("follows a provider started again to its new chat, read from the plan's record", async () => {
+    const restartedId = restartRequestId("req1", "api", 1);
+    const restartedChat = `app-mono-exo-${restartedId}`;
+    const plan: FanoutCheckpoint = createCheckpoint({
+      id: "req1",
+      owner: "mono-exo",
+      waves: [["api"], ["board"]],
+      tasks: [
+        { name: "api", wave: 1, input: {} },
+        { name: "board", wave: 2, input: {} },
+      ],
+      now: 0,
+    });
+    plan.tasks[0] = { ...plan.tasks[0], state: "started", requestId: restartedId, childSession: restartedChat };
+    const checkpoints = { list: vi.fn(async () => [plan]) };
+    const rows = [row({ state: "cancelled", version: 1 }), row({ id: "t-2", childSession: restartedChat, state: "running", version: 1 })];
+    const files: Record<string, string> = {};
+    const built = fanoutHost({
+      rows: () => rows,
+      fetch: vi.fn(async () => undefined),
+      folder: () => PROJECT,
+      io: { exists: async (path) => path in files, read: async (path) => files[path] ?? null },
+      now: () => 1_000_000,
+      checkpoints: () => checkpoints,
+    });
+    // The restarted api is running: board waits for it, not held as if api had been stopped for good.
+    await built.settle([queued]);
+    expect(built.dependency(job)).toMatchObject({ reason: "requires" });
+    // It delivers: what it made is checked on disk, and board goes.
+    Object.assign(rows[1], { state: "completed", status: "done", gateVerdict: "passed", version: 2 });
+    files[FILE] = 'app.get("/api/score", h)';
+    await built.settle([queued]);
+    expect(built.dependency(job)).toBeUndefined();
+  });
+
+  it("reads a provider's current chat from its plan, and keeps the plan's own chat when there is no plan", async () => {
+    const restartedId = restartRequestId("req1", "api", 1);
+    const plan = createCheckpoint({ id: "req1", owner: "mono-exo", waves: [["api"]], tasks: [{ name: "api", wave: 1, input: {} }], now: 0 });
+    const withRestart: FanoutCheckpoint = {
+      ...plan,
+      tasks: [{ ...plan.tasks[0], requestId: restartedId }],
+    };
+    expect(await currentTaskSession({ list: async () => [withRestart] }, "mono-exo", "req1", "api")).toBe(`app-mono-exo-${restartedId}`);
+    // A task never started again keeps its own chat; a plan that is gone has none to give.
+    expect(await currentTaskSession({ list: async () => [plan] }, "mono-exo", "req1", "api")).toBe(`app-mono-exo-f4_req1-api`);
+    expect(await currentTaskSession({ list: async () => [] }, "mono-exo", "req1", "api")).toBeUndefined();
+    expect(await currentTaskSession(undefined, "mono-exo", "req1", "api")).toBeUndefined();
   });
 });

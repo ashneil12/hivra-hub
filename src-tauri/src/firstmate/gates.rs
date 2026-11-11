@@ -1209,8 +1209,23 @@ impl Runners for AppRunners {
     }
 
     fn verdict(&self, prompt: &str) -> Result<String, String> {
-        let claude = crate::harness::harness_resolve_claude()?.path;
-        claude_verdict(&claude, &self.verdict_model, prompt, VERDICT_TIMEOUT)
+        // WP-176 round 4: a verdict is an automated turn. It is refused over the spend limit before it runs, and its
+        // call is noted in the ledger as an unpriced Claude call after it (gated_verdict, the same seam the tests drive).
+        use tauri::Manager;
+        let now = crate::spend_ledger::now_ms();
+        crate::spend_ledger::gated_verdict(
+            &|with| {
+                let store = self.app.state::<SessionStore>();
+                let conn = store.lock_conn()?;
+                with(&conn)
+            },
+            self.project_id.as_deref(),
+            now,
+            || {
+                let claude = crate::harness::harness_resolve_claude()?.path;
+                claude_verdict(&claude, &self.verdict_model, prompt, VERDICT_TIMEOUT)
+            },
+        )
     }
 }
 

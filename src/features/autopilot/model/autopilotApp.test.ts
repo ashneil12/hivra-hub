@@ -10,9 +10,9 @@ const NOW = new Date(2026, 9, 17, 15, 0).getTime();
 const MONDAY_9 = new Date(2026, 9, 19, 9, 0).getTime();
 
 const PROJECTS = [
-  { id: "vg-game", name: "EXO", folder: "/Users/ash/Projects/vg-game" },
-  { id: "hivra", name: "Hivra", folder: "/Users/ash/Projects/hivra" },
-  { id: "hub", name: "MonoCode Hub", folder: "/Users/ash/Projects/monocode-hub" },
+  { id: "vg-game", name: "EXO", folder: "/Users/someone/Projects/vg-game" },
+  { id: "hivra", name: "Hivra", folder: "/Users/someone/Projects/hivra" },
+  { id: "hub", name: "MonoCode Hub", folder: "/Users/someone/Projects/monocode-hub" },
 ];
 
 type Setup = { backend: MemoryAutopilot; deps: AutopilotAppDeps; holds: Map<string, RedCategory> };
@@ -37,8 +37,8 @@ function setup(): Setup {
 
 const MONOS: Record<string, { id: string; projects: string[] }> = {
   "cos-chat": { id: "ada", projects: PROJECTS.map((p) => p.folder) },
-  "hivra-chat": { id: "hivra-lead", projects: ["/Users/ash/Projects/hivra"] },
-  "mkt-chat": { id: "marketing", projects: ["/Users/ash/Projects/hub", "/Users/ash/Projects/monocode-hub"] },
+  "hivra-chat": { id: "hivra-lead", projects: ["/Users/someone/Projects/hivra"] },
+  "mkt-chat": { id: "marketing", projects: ["/Users/someone/Projects/hub", "/Users/someone/Projects/monocode-hub"] },
 };
 
 const host: AutopilotAppHost = {
@@ -51,7 +51,7 @@ function said(text: string, extra: Partial<Block> = {}): Block {
   return { id: crypto.randomUUID(), role: "user", text, ...extra };
 }
 
-function chat(id: string, blocks: Block[] = [], cwd = "/Users/ash"): Session {
+function chat(id: string, blocks: Block[] = [], cwd = "/Users/someone"): Session {
   return { ...newSession("claude", cwd), id, title: id, blocks };
 }
 
@@ -87,7 +87,7 @@ describe("switching autopilot from a chat", () => {
     const words = [said("go autopilot until Monday 9:00")];
     for (const id of ["worker-1", "habit-run"]) {
       await expect(
-        call(chat(id, words, "/Users/ash/Projects/hivra"), "autopilot.set", { until: "Monday 9:00", ashSaid: "go autopilot until Monday 9:00" }, s),
+        call(chat(id, words, "/Users/someone/Projects/hivra"), "autopilot.set", { until: "Monday 9:00", ashSaid: "go autopilot until Monday 9:00" }, s),
       ).rejects.toThrow("Workers and habit runs can't");
       await expect(call(chat(id, words), "autopilot.off", {}, s)).rejects.toThrow("Workers and habit runs can't");
     }
@@ -201,10 +201,29 @@ describe("autopilot.decide", () => {
     expect(marked).toMatchObject({ decision: "held", red: "send-as-ash" });
   });
 
+  it("never takes a call that sends, deletes, pays, publishes or changes access, and names no red category for it", async () => {
+    const s = setup();
+    await on(s, ["*"]);
+    for (const [question, recommendation] of [
+      ["Should I email Priya the invoice?", "Yes"],
+      ["Should I publish the release notes?", "Yes"],
+      ["Delete the old branch?", "Yes"],
+      ["Should I post the changelog to the public site?", "Yes"],
+    ] as const) {
+      const result = (await call(chat("hivra-chat"), "autopilot.decide", { question, recommendation }, s, `r-${question}`)) as Record<string, unknown>;
+      expect(result, question).toMatchObject({ decision: "held", act: "ask", red: null });
+      expect(result.redLabel, question).toBeUndefined();
+      expect(String(result.note)).toContain("sends, deletes, moves money, publishes or changes access");
+    }
+    expect(s.backend.entries.filter((e) => e.kind === "decision").every((e) => e.outcome === "held" && e.red === null)).toBe(true);
+    // It names no red category, so it doesn't hold the chat's next question.
+    expect(s.holds.has("hivra-chat")).toBe(false);
+  });
+
   it("covers a project only through its own switch or the one for everything", async () => {
     const s = setup();
     await on(s, ["vg-game"]);
-    const worker = chat("worker-1", [], "/Users/ash/Projects/hivra");
+    const worker = chat("worker-1", [], "/Users/someone/Projects/hivra");
     expect(await call(worker, "autopilot.decide", { question: "Rename it?", recommendation: "Yes" }, s)).toMatchObject({ autopilot: "off" });
     expect(await call(worker, "autopilot.decide", { question: "Rename it?", recommendation: "Yes", project: "EXO" }, s)).toMatchObject({ decision: "taken" });
     // A leadership chat spans projects: only the switch for everything covers it.

@@ -1,0 +1,159 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Hivra project home, first mate open</title>
+<!-- Mockup with example data (docs/hivra/UX.md, the captain model). Not app code. -->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0;background:#161616}
+a{color:#8ab8f5;text-decoration:none}a:hover{color:#b5d3fa}
+.app{width:100%;min-height:900px;display:flex;flex-wrap:wrap;background:#161616;color:#ececec;font-family:Inter,system-ui,sans-serif;font-size:13px;line-height:1.45}
+.nav{display:flex;flex:0 0 332px;min-height:900px}
+.strip{width:72px;background:#111111;border-right:1px solid #262626;display:flex;flex-direction:column;align-items:center;padding:14px 0;gap:6px;box-sizing:border-box}
+.tile{position:relative;display:flex;flex-direction:column;align-items:center;gap:4px;width:60px;padding:6px 0;border-radius:10px;color:#bdbdbd;font-size:10px}
+.tile.on{background:#262626;color:#ffffff}
+.sq{width:36px;height:36px;border-radius:9px;display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:600;color:#ffffff}
+.badge{position:absolute;top:2px;right:6px;min-width:16px;height:16px;padding:0 4px;box-sizing:border-box;border-radius:8px;background:#e5484d;color:#ffffff;font-size:10px;font-weight:600;display:flex;align-items:center;justify-content:center}
+.busy{position:absolute;top:34px;right:10px;width:8px;height:8px;border-radius:4px;background:#4a9ff5;border:2px solid #111111}
+.side{flex:1 1 auto;background:#1b1b1b;border-right:1px solid #262626;padding:16px 10px;box-sizing:border-box;display:flex;flex-direction:column;gap:2px}
+.ph{padding:0 10px 12px}
+.ph h1{margin:0;font-size:18px;font-weight:600}
+.item{display:flex;align-items:center;gap:10px;min-height:34px;padding:4px 10px;border-radius:7px;color:#d6d6d6}
+.item.on{background:#262626;color:#ffffff}
+.label{font-size:11px;font-weight:600;letter-spacing:.04em;text-transform:uppercase;color:#8f8f8f;padding:16px 10px 6px}
+.av{width:28px;height:28px;border-radius:14px;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:600;color:#111111;flex:0 0 28px}
+.who{display:flex;flex-direction:column;min-width:0}
+.who b{font-weight:500;color:#ececec}
+.who span{font-size:12px;color:#9a9a9a;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.chatrow{display:flex;align-items:center;gap:8px;padding:6px 10px;border-radius:7px;color:#d6d6d6}
+.chatrow span{margin-left:auto;font-size:11px;color:#8f8f8f}
+.main{flex:999 1 480px;min-width:0;display:flex;flex-direction:column;border-right:1px solid #262626}
+.mhead{display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:14px 24px;border-bottom:1px solid #262626}
+.mhead h2{margin:0;font-size:16px;font-weight:600}
+.chip{font-size:12px;font-weight:500;border-radius:12px;padding:3px 10px}
+.toggle{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:12px;color:#bdbdbd;background:transparent;border:1px solid #2c2c2c;border-radius:7px;padding:5px 10px;font-family:inherit}
+.knob{width:26px;height:14px;border-radius:7px;background:#3a3a3a;position:relative;display:inline-block}
+.knob i{position:absolute;left:2px;top:2px;width:10px;height:10px;border-radius:5px;background:#9a9a9a}
+.thread{flex:1;padding:22px 24px;display:flex;flex-direction:column;gap:16px;max-width:760px;width:100%;box-sizing:border-box}
+.you{align-self:flex-end;background:#2a2a2a;border-radius:12px;padding:8px 12px;max-width:75%}
+.lead{display:flex;gap:10px;align-items:flex-start}
+.lead p{margin:0 0 6px}
+.muted{color:#9a9a9a}
+.card{border:1px solid #2a2a2a;border-radius:10px;background:#1b1b1b;margin-top:6px}
+.crow{display:flex;align-items:center;gap:10px;padding:8px 12px;border-top:1px solid #262626;flex-wrap:wrap}
+.crow:first-child{border-top:0}
+.need{border:1px solid #6b2a2c;background:#241718;border-radius:10px;padding:12px 14px;margin-top:6px}
+.btns{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
+.btn{font-family:inherit;font-size:12px;font-weight:500;border-radius:7px;padding:6px 12px;border:1px solid #333333;background:#232323;color:#ececec;min-height:30px}
+.btn.primary{background:#4a9ff5;border-color:#4a9ff5;color:#0b1a2b}
+.compose{margin:0 24px 18px;border:1px solid #2c2c2c;border-radius:12px;background:#1b1b1b;max-width:712px}
+.compose input{width:100%;box-sizing:border-box;background:transparent;border:0;color:#ececec;font-family:inherit;font-size:14px;outline:none;padding:12px 14px}
+.cbar{display:flex;align-items:center;gap:8px;padding:0 10px 10px 14px;font-size:12px;color:#9a9a9a}
+.send{margin-left:auto;width:30px;height:30px;border-radius:8px;background:#4a9ff5;border:0;display:flex;align-items:center;justify-content:center}
+.crew{flex:1 1 300px;max-width:380px;min-width:0;display:flex;flex-direction:column;background:#181818}
+.tabs{display:flex;gap:4px;padding:10px 12px;border-bottom:1px solid #262626}
+.tab{font-size:12px;font-weight:500;padding:5px 10px;border-radius:6px;color:#bdbdbd}
+.tab.on{background:#262626;color:#ffffff}
+.worker{padding:12px 14px;border-bottom:1px solid #262626;display:flex;flex-direction:column;gap:4px}
+.wtop{display:flex;align-items:center;gap:8px}
+.wtop b{font-weight:500;flex:1;min-width:0}
+.pill{font-size:11px;font-weight:600;border-radius:10px;padding:2px 8px}
+.meta{font-size:12px;color:#9a9a9a}
+
+.glance{flex:1 1 300px;max-width:380px;min-width:0;display:flex;flex-direction:column;gap:12px;background:#181818;padding:16px 14px;box-sizing:border-box}
+.gh{font-size:11px;font-weight:600;letter-spacing:.04em;text-transform:uppercase;color:#8f8f8f}
+.box{border:1px solid #2a2a2a;border-radius:10px;background:#1b1b1b;padding:10px 12px;display:flex;flex-direction:column;gap:6px}
+.box.red{border-color:#6b2a2c;background:#241718}
+.bt{display:flex;align-items:center;gap:8px;font-weight:600}
+.bt span{margin-left:auto;font-weight:500;font-size:12px;color:#9a9a9a}
+.nums{display:flex;gap:10px}
+.num{flex:1;display:flex;flex-direction:column}
+.num b{font-size:18px;font-weight:600}
+.num span{font-size:11px;color:#9a9a9a}
+.dept{display:flex;align-items:center;gap:8px;font-size:12px;font-weight:500;border:1px solid #2c2c2c;border-radius:16px;padding:4px 10px 4px 4px;color:#ececec;background:#1b1b1b}
+.dept .av{width:22px;height:22px;flex:0 0 22px;font-size:10px}
+.dept.on{border-color:#4a9ff5}
+.drow{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.line{display:flex;gap:8px;font-size:12px;color:#d6d6d6}
+.line i{font-style:normal;color:#9a9a9a;flex:0 0 74px}
+</style>
+</head>
+<body>
+<div class="app">
+  <div class="nav" style="flex:0 0 72px">
+    <nav class="strip" aria-label="Places">
+      <a class="tile" href="Main.html"><span class="sq" style="background:#3a3a3a">H</span>Home</a>
+      <div style="width:32px;height:1px;background:#2c2c2c;margin:4px 0"></div>
+      <a class="tile" href="Project.html"><span class="sq" style="background:#5b4bd6">EX</span>EXO<span class="badge">1</span><span class="busy"></span></a>
+      <a class="tile on" href="Project.html"><span class="sq" style="background:#d9822b">Hi</span>Hivra<span class="badge">1</span><span class="busy"></span></a>
+      <a class="tile" href="Project.html"><span class="sq" style="background:#2f9e74">Ni</span>Nibbii<span class="badge">1</span><span class="busy"></span></a>
+      <a class="tile" href="Project.html"><span class="sq" style="background:#4a6fa5">MH</span>MonoCode Hub</a>
+      <a class="tile" href="Project.html"><span class="sq" style="background:#b54a6b">RC</span>Recall Checker</a>
+      <a class="tile" href="Project.html"><span class="sq" style="background:#8a6d3b">BD</span>Bark Desk</a>
+      <a class="tile" href="Project.html"><span class="sq" style="background:#c0453a">ST</span>SafeTube<span class="badge">1</span></a>
+      <button class="tile" style="background:transparent;border:0;font-family:inherit" aria-label="Add a project"><span class="sq" style="background:transparent;border:1px dashed #444444;color:#9a9a9a">+</span>Add</button>
+      <a class="tile" style="margin-top:auto" href="#" aria-label="Agents"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#9a9a9a" stroke-width="1.8" aria-hidden="true"><circle cx="12" cy="5" r="2.5"></circle><circle cx="5" cy="19" r="2.5"></circle><circle cx="19" cy="19" r="2.5"></circle><path d="M12 7.5v4M12 11.5 6 16.5M12 11.5l6 5"></path></svg>Agents</a>
+      <a class="tile" href="NeedsYou.html" aria-label="Decisions"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#9a9a9a" stroke-width="1.8" aria-hidden="true"><path d="M4 6h16M4 12h10M4 18h7"></path><path d="m15 17 2 2 4-4"></path></svg>Decisions<span class="badge">4</span></a>
+      <a class="tile" href="Model.html" aria-label="Settings"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#9a9a9a" stroke-width="1.8" aria-hidden="true"><circle cx="12" cy="12" r="3"></circle><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M4.9 19.1 7 17M17 7l2.1-2.1"></path></svg>Settings</a>
+    </nav>
+  </div>
+
+  <main class="main">
+    <div class="mhead">
+      <h2>Hivra</h2>
+      <span class="muted">Chief of Staff, on this project</span>
+      <button class="toggle" aria-label="Autopilot is off">Autopilot <span class="knob"><i></i></span> Off</button>
+    </div>
+    <div class="mhead" style="padding:10px 24px">
+      <span class="muted" style="font-size:12px">First mates</span>
+      <div class="drow">
+        <span class="dept on"><span class="av" style="background:#d9822b;color:#ffffff">Co</span>Coding<span class="muted">4 working</span></span>
+        <span class="dept"><span class="av" style="background:#d8b4fe">Ma</span>Marketing<span class="muted">drafting</span></span>
+        <span class="dept" style="padding-left:10px;color:#8ab8f5">+ Add a department</span>
+      </div>
+    </div>
+    <div class="thread">
+      <div class="you">Ship spend limits, and get the Windows build green.</div>
+      <div class="lead">
+        <span class="av" style="background:#4a9ff5;color:#0b1a2b">CS</span>
+        <div style="flex:1;min-width:0">
+          <p>On it. Coding has both. Spend limits merges when its checks are green; the Windows fix is with Coding's crew. I'll tell you when both are done.</p>
+        </div>
+      </div>
+      <div class="lead">
+        <span class="av" style="background:#4a9ff5;color:#0b1a2b">CS</span>
+        <div style="flex:1;min-width:0">
+          <p>Spend limits is merged. The Windows build is on its second try: a test read a short Windows folder name, and Coding is fixing the test, not the app.</p>
+          <p class="muted" style="font-size:12px;margin:0">Decided for you: merged #217 on green (your rule). Kept workers on Grok (your rule).</p>
+        </div>
+      </div>
+      <div class="lead">
+        <span class="av" style="background:#4a9ff5;color:#0b1a2b">CS</span>
+        <div style="flex:1;min-width:0">
+          <div class="need">
+            <b style="font-weight:600;color:#ff8a8d">Needs you.</b> The secret vault is ready to merge. It touches keys, so it's yours. I'd merge it: the hard review passed with nothing serious left.
+            <div class="btns"><button class="btn primary">Merge it</button><button class="btn">Not yet</button><button class="btn">Why is this mine?</button></div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="compose">
+      <input aria-label="Message the Chief of Staff" placeholder="Ask anything, or hand Hivra some work">
+      <div class="cbar">Chief of Staff on Claude<button class="send" aria-label="Send"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#0b1a2b" stroke-width="2.4" aria-hidden="true"><path d="M12 19V5M5 12l7-7 7 7"></path></svg></button></div>
+    </div>
+  </main>
+
+  <aside class="glance" aria-label="Coding, first mate" style="padding:0;gap:0">
+    <div class="mhead" style="padding:12px 14px"><span class="av" style="background:#d9822b;color:#ffffff">Co</span><b style="font-weight:600">Coding</b><span class="muted" style="font-size:12px">first mate</span><span class="muted" style="margin-left:auto;font-size:16px">&times;</span></div>
+    <div class="tabs"><span class="tab on">Chat</span><span class="tab">Crew 4</span><span class="tab">Changes</span><span class="tab">Files</span></div>
+    <div class="thread" style="padding:14px;gap:12px">
+      <div class="you" style="max-width:90%">Why is the Windows build still red?</div>
+      <div class="lead"><span class="av" style="background:#d9822b;color:#ffffff">Co</span><div style="flex:1;min-width:0"><p>One test reads a short Windows folder name (RUNNER~1). The fix is in the test, not the app. A worker is on it, second try, about 20 minutes left.</p><p class="muted" style="font-size:12px;margin:0">I've told the Chief of Staff.</p></div></div>
+    </div>
+    <div style="margin-top:auto;padding:0 14px 14px"><div class="compose" style="margin:0"><input aria-label="Message Coding" placeholder="Message Coding"><div class="cbar">Coding on Claude · crew on Grok<button class="send" aria-label="Send"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#0b1a2b" stroke-width="2.4" aria-hidden="true"><path d="M12 19V5M5 12l7-7 7 7"></path></svg></button></div></div></div>
+  </aside>
+</div>
+</body>
+</html>

@@ -2,7 +2,9 @@
 //!
 //! When the setting is on, `harness_spawn` starts each agent CLI as `/usr/bin/sandbox-exec -p <profile> <cli> <args…>`
 //! (`sandboxed_launch`), and project actions and Setup run as `sandbox-exec -p <profile> /bin/sh -c <command>`
-//! (`action_wrap`). The profile is a denylist: everything is allowed except what it names:
+//! (`action_wrap`). A More agents child is wrapped at the last step before spawn (`more_agent_wrap`): the approved
+//! command is the program inside the sandbox, and its run folder is allowed so the child can use that folder.
+//! The profile is a denylist: everything is allowed except what it names:
 //!
 //! - the secret places (SSH keys, GnuPG, cloud logins, password stores) and the shell profiles, read and written, and
 //!   their real targets when they are links. Keychains are write-only: a read deny there breaks `security`, which a CLI
@@ -740,6 +742,7 @@ fn deny_file_and_target(lines: &mut Vec<String>, path: &Path) {
 
 /// The whole app data folder under home, daily and dev copy (`com.ash.monocode-hub` plus anything after it in the same
 /// segment). Nothing inside it is carved out: an agent must not plant a gate, a ship file or a project file there.
+/// A More agents child allows its own run folder afterwards (`more_agent_wrap`), and nothing else in this folder.
 fn push_app_data(
     lines: &mut Vec<String>,
     home: &Path,
@@ -1195,6 +1198,37 @@ pub fn action_wrap(
             .to_string()
     })?;
     let profile = profile_with_checkouts(&home, data_dir, checkouts)?;
+    self_check(Path::new(SANDBOX_EXEC))?;
+    preflight_with(Path::new(SANDBOX_EXEC), &profile)?;
+    Ok(Some(vec![
+        OsString::from(SANDBOX_EXEC),
+        OsString::from("-p"),
+        OsString::from(profile),
+    ]))
+}
+
+/// The sandbox prefix for a More agents child, or `None` when the sandbox is off.
+///
+/// `allowed` is applied after the denies, so a folder inside the denied app data folder (the child's own run folder)
+/// can be used, and the rest of that data folder stays denied. `checkouts` are the trees whose `.git` is write-denied,
+/// the same as `sandboxed_launch`. A profile that fails its preflight is an error: the child must not start without it.
+pub fn more_agent_wrap(
+    home: &Path,
+    data_dir: Option<&Path>,
+    checkouts: &[PathBuf],
+    allowed: &[PathBuf],
+) -> Result<Option<Vec<OsString>>, String> {
+    if !enabled(data_dir) {
+        return Ok(None);
+    }
+    let mut profile = profile_with_checkouts(home, data_dir, checkouts)?;
+    for path in allowed {
+        for form in folder_forms(path)? {
+            profile.push_str(&format!(
+                "(allow file-read* file-write* (subpath \"{form}\"))\n"
+            ));
+        }
+    }
     self_check(Path::new(SANDBOX_EXEC))?;
     preflight_with(Path::new(SANDBOX_EXEC), &profile)?;
     Ok(Some(vec![

@@ -4,6 +4,7 @@
 // stops the whole tree beneath the task (stopTree.ts), a wait marks the chat as waiting (so its workers' questions come
 // back through the wait, not a wake), and an answer is noted for the question router before it reaches the worker.
 import type { AgentAppTasksHost } from "../../agent-app/model/agentAppTasks";
+import type { FanoutCheckpointStore } from "../../firstmate/host/fanoutCheckpointStore";
 import { backendFrom, cancelHeld, heldWaiting, reviewBeforeCrew } from "../../fresh-eyes/model/gate";
 import { decideGateVerdict, saveGatePlan } from "../../firstmate/model/completionGates";
 import type { Session } from "../../sessions/model/session";
@@ -45,6 +46,8 @@ export type DelegationTasksDeps = {
   briefLead?: AgentAppTasksHost["briefLead"];
   /** Whether the Lead a brief names exists, asked before a fresh-eyes review. */
   checkLead?: AgentAppTasksHost["checkLead"];
+  /** WP-156: the project that Lead keeps, so the brief carries that project's standing answers. */
+  leadProject?: AgentAppTasksHost["leadProject"];
   /** Where a Mono's work goes: its project's coding team, or its own team (hub/model/monoTeams.ts). */
   monoWork?: AgentAppTasksHost["monoWork"];
   /** Workers per project and the ones waiting for a free worker (H8, workerPool.ts). */
@@ -53,6 +56,8 @@ export type DelegationTasksDeps = {
   crewRoute?: AgentAppTasksHost["crewRoute"];
   /** Hivra WP-14: steering messages and decisions (firstmate/hooks/useSteering.ts). */
   firstMate?: AgentAppTasksHost["firstMate"];
+  /** Hivra WP-172: a fan-out's checkpoint, so a plan cut short can be resumed (fanoutCheckpointStore.ts). */
+  fanoutCheckpoints?: FanoutCheckpointStore;
 };
 
 export function delegationTasksHost(deps: DelegationTasksDeps): AgentAppTasksHost {
@@ -139,6 +144,20 @@ export function delegationTasksHost(deps: DelegationTasksDeps): AgentAppTasksHos
         .sort((a, b) => b.createdAt - a.createdAt)[0];
     },
     ...(deps.firstMate ? { firstMate: deps.firstMate } : {}),
+    // WP-156: a Lead's brief can carry standing answers. A timeout or a refused call leaves the brief unchanged.
+    ...(deps.firstMate?.backend.standingBrief
+      ? {
+          standingBrief: async (project: string) => {
+            try {
+              return (await deps.firstMate!.backend.standingBrief!(project)) ?? "";
+            } catch {
+              return "";
+            }
+          },
+        }
+      : {}),
+    // Hivra WP-172: a fan-out writes its plan here as it sends, and a resume reads it back.
+    ...(deps.fanoutCheckpoints ? { fanoutCheckpoints: deps.fanoutCheckpoints } : {}),
     // Hivra WP-10: the depth cap, checked by the store before anything starts.
     ...(deps.backend.checkDepth
       ? { checkDepth: (owner: string) => deps.backend.checkDepth!(owner) }
@@ -164,6 +183,7 @@ export function delegationTasksHost(deps: DelegationTasksDeps): AgentAppTasksHos
     },
     ...(deps.briefLead ? { briefLead: deps.briefLead } : {}),
     ...(deps.checkLead ? { checkLead: deps.checkLead } : {}),
+    ...(deps.leadProject ? { leadProject: deps.leadProject } : {}),
     ...(deps.monoWork ? { monoWork: deps.monoWork } : {}),
     ...(deps.pool ? { pool: deps.pool } : {}),
     ...(deps.crewRoute ? { crewRoute: deps.crewRoute } : {}),

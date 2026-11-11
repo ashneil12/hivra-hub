@@ -159,6 +159,15 @@ pub(crate) fn ensure_tables(conn: &Connection) -> rusqlite::Result<()> {
              ALTER TABLE delegations ADD COLUMN report TEXT;",
         )?;
     }
+    // WP-176 round 4: the redo link, kept apart from the row so a later save of the row cannot drop it.
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS delegation_redos (
+           new_id TEXT PRIMARY KEY,
+           old_id TEXT NOT NULL,
+           owner_session TEXT NOT NULL,
+           created_at INTEGER NOT NULL
+         );",
+    )?;
     // WP-42: when this run started. The log only keeps 50 lines, so a resume time stored there can be trimmed
     // before settle, and older proof would be attached as this run's.
     let has_run_started = conn
@@ -630,6 +639,10 @@ pub struct RecordInput {
     /// WP-70: the person's task this work picks up. Absent, a task is created with the delegation.
     #[serde(default)]
     pub task_id: Option<String>,
+    /// WP-176 round 5: the owner's row this one redoes. The link is written in the same transaction as the row, so it
+    /// exists before the chat's first turn is judged. Refused when that row is not the owner's.
+    #[serde(default)]
+    pub redoes: Option<String>,
 }
 
 const FOLLOWS: [&str; 3] = ["queue", "steer", "lead"];
@@ -650,6 +663,29 @@ fn open_for_child(conn: &Connection, child: &str) -> Result<Vec<Delegation>, Str
         "WHERE child_session = ?1 AND state IN ('running', 'question') ORDER BY created_at DESC, rowid DESC",
         &[&child],
     )
+}
+
+/// Keeps the redo link from `new_id` to the owner's `old_id` row. A link that is already kept is left as it is, so a
+/// retry cannot swap the parent. A parent that is not the owner's is refused.
+fn link_redo(
+    conn: &Connection,
+    owner: &str,
+    new_id: &str,
+    old_id: &str,
+    now: i64,
+) -> Result<(), String> {
+    let parent_is_owners = get(conn, old_id)?
+        .map(|old| old.owner_session == owner)
+        .unwrap_or(false);
+    if !parent_is_owners {
+        return Err("the task this one redoes is not one of yours".into());
+    }
+    conn.execute(
+        "INSERT OR IGNORE INTO delegation_redos (new_id, old_id, owner_session, created_at) VALUES (?1, ?2, ?3, ?4)",
+        rusqlite::params![new_id, old_id, owner, now],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 /// Record a delegation before its child starts. The same owner and request id return the row already there (a launch
@@ -696,6 +732,9 @@ pub fn record(conn: &mut Connection, input: RecordInput, now: i64) -> Result<Del
         }
         // WP-70: a retried record still has a task.
         crate::tasks::sync::on_delegation(&tx, &existing, input.task_id.as_deref())?;
+        if let Some(old) = input.redoes.as_deref() {
+            link_redo(&tx, &owner, &existing.id, old, now)?;
+        }
         tx.commit().map_err(|e| e.to_string())?;
         return Ok(existing);
     }
@@ -789,6 +828,9 @@ pub fn record(conn: &mut Connection, input: RecordInput, now: i64) -> Result<Del
     insert(&tx, &row)?;
     // WP-70: the brief's task, or the person's task this work picks up.
     crate::tasks::sync::on_delegation(&tx, &row, input.task_id.as_deref())?;
+    if let Some(old) = input.redoes.as_deref() {
+        link_redo(&tx, &row.owner_session, &row.id, old, now)?;
+    }
     tx.commit().map_err(|e| e.to_string())?;
     Ok(row)
 }
@@ -1436,6 +1478,37 @@ pub fn cancel(
     Ok(changed)
 }
 
+/// A chat that redid another: its child session and the session it took over from (WP-176 round 4).
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RedoLink {
+    pub child: String,
+    pub parent: String,
+}
+
+/// Every redo link, for the spend gate: a redo counts against the ceiling of the chat it redid.
+pub fn redo_links(conn: &Connection) -> Result<Vec<RedoLink>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT new_row.child_session, old_row.child_session
+               FROM delegation_redos link
+               JOIN delegations new_row ON new_row.id = link.new_id
+               JOIN delegations old_row ON old_row.id = link.old_id
+              ORDER BY link.created_at, link.new_id",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok(RedoLink {
+                child: row.get(0)?,
+                parent: row.get(1)?,
+            })
+        })
+        .map_err(|e| e.to_string())?;
+    rows.collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(|e| e.to_string())
+}
+
 /// The owner retried or split one of its tasks (delegate_task `redoes`): `task` is the new task that takes it on. Kept
 /// in the row's log, so its card can say what the Lead did after a restart too; several in one go are a split.
 pub fn note_redo(
@@ -1455,6 +1528,18 @@ pub fn note_redo(
     };
     if row.id == task {
         return Err("a task can't redo itself".into());
+    }
+    // The link is kept only for a new task that is the owner's: its chat then continues this one's spend ceiling
+    // (redo_links). A name that is not a task of the owner's is still noted in the log, as before, with no link.
+    if get(&tx, &task)?
+        .filter(|new| new.owner_session == owner)
+        .is_some()
+    {
+        tx.execute(
+            "INSERT OR IGNORE INTO delegation_redos (new_id, old_id, owner_session, created_at) VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params![task, row.id, owner, now],
+        )
+        .map_err(|e| e.to_string())?;
     }
     row.note(
         now,
@@ -2628,6 +2713,24 @@ mod tests {
         );
     }
 
+    /// The same owner and request id get the row already there back, even one the owner cancelled, so a restart that
+    /// wants a worker of its own must send a new request id (WP-172: fanoutCheckpoint.ts resume, confirm).
+    #[test]
+    fn a_cancelled_request_comes_back_as_the_same_row_so_a_restart_needs_a_new_request_id() {
+        let store = store();
+        let mut conn = store.lock_conn().unwrap();
+        let first = record(&mut conn, launch("mono", "req-x", "child-x"), 10).unwrap();
+        cancel(&mut conn, std::slice::from_ref(&first.id), None, None, 11).unwrap();
+        let again = record(&mut conn, launch("mono", "req-x", "child-x"), 12).unwrap();
+        assert_eq!(
+            (again.id.as_str(), again.state.as_str()),
+            (first.id.as_str(), CANCELLED)
+        );
+        let restarted = record(&mut conn, launch("mono", "req-x-r2", "child-x"), 13).unwrap();
+        assert_ne!(restarted.id, first.id);
+        assert_eq!(restarted.state, RUNNING);
+    }
+
     /// A worker waiting on its owner's answer is taken over by a later request: the question is no longer anyone's.
     #[test]
     fn a_row_taken_over_drops_its_waiting_question() {
@@ -3001,6 +3104,69 @@ mod tests {
         // Another chat's task, or itself: refused.
         assert!(note_redo(&mut conn, "someone-else", &row.id, "t-new", 600).is_err());
         assert!(note_redo(&mut conn, "lead", &row.id, &row.id, 600).is_err());
+    }
+
+    #[test]
+    fn a_redo_is_linked_in_its_own_record_and_refused_without_its_parent() {
+        // Round 5 HIGH-1: the link is written with the new row, so the chat's first turn already sees it. A parent that
+        // is not the owner's refuses the record, and a retried record cannot move the link to another parent.
+        let store = store();
+        let mut conn = store.lock_conn().unwrap();
+        let old = record(&mut conn, launch("lead", "r1", "worker-old"), 10).unwrap();
+        let other = record(&mut conn, launch("lead", "r9", "worker-other"), 11).unwrap();
+        let redo = RecordInput {
+            redoes: Some(old.id.clone()),
+            ..launch("lead", "r2", "worker-new")
+        };
+        let created = record(&mut conn, redo.clone(), 20).unwrap();
+        assert_eq!(
+            redo_links(&conn).unwrap(),
+            vec![RedoLink {
+                child: "worker-new".into(),
+                parent: "worker-old".into()
+            }],
+            "linked by the record itself, before any turn"
+        );
+        // A retry of the same request, naming another parent, keeps the first link.
+        let retry = RecordInput {
+            redoes: Some(other.id.clone()),
+            ..launch("lead", "r2", "worker-new")
+        };
+        record(&mut conn, retry, 25).unwrap();
+        assert_eq!(redo_links(&conn).unwrap().len(), 1);
+        assert_eq!(redo_links(&conn).unwrap()[0].parent, "worker-old");
+        // A parent of someone else's is refused, and no row is created for it.
+        let stranger = RecordInput {
+            redoes: Some(old.id.clone()),
+            ..launch("someone-else", "r3", "worker-x")
+        };
+        assert!(record(&mut conn, stranger, 30).is_err());
+        assert!(get(&conn, &created.id).unwrap().is_some());
+        assert!(query(&conn, "WHERE request_id = ?1", &[&"r3"])
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn a_redo_links_its_new_chat_to_the_one_it_redid() {
+        // Round 4 M-1: the redo the owner names is kept on the new chat's row, so the spend gate can count the redo
+        // against its parent's ceiling after a restart. Through the real record and redo path.
+        let store = store();
+        let mut conn = store.lock_conn().unwrap();
+        let old = record(&mut conn, launch("lead", "r1", "worker-old"), 10).unwrap();
+        let new = record(&mut conn, launch("lead", "r2", "worker-new"), 20).unwrap();
+        assert!(redo_links(&conn).unwrap().is_empty(), "no redo, no link");
+        note_redo(&mut conn, "lead", &old.id, &new.id, 30).unwrap();
+        assert_eq!(
+            redo_links(&conn).unwrap(),
+            vec![RedoLink {
+                child: "worker-new".into(),
+                parent: "worker-old".into()
+            }]
+        );
+        // A task of someone else's is refused, and links nothing.
+        assert!(note_redo(&mut conn, "someone-else", &old.id, &new.id, 40).is_err());
+        assert_eq!(redo_links(&conn).unwrap().len(), 1);
     }
 
     #[test]

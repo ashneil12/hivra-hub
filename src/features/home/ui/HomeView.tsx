@@ -10,7 +10,8 @@ import { summaryLines } from "../../chief/model/summary";
 import { MORNING_HABIT_ID } from "../../chief/model/habit";
 import { readsEveryProject } from "../../chief/model/scope";
 import { listMonos } from "../../monos/model/mono";
-import { builderHold, useWorkerPoolVersion } from "../../monos/model/workerPool";
+import { builderHold, spendHold, useWorkerPoolVersion } from "../../monos/model/workerPool";
+import { spendSnapshot, subscribeSpend } from "../../usage/model/spendGate";
 import { loadHabits } from "../../monos/model/monoHabits";
 import { useHubDataVersion, hubData, registryProjects } from "../../hub/model/hubData";
 import { showAppItem } from "../../hub/model/hubNav";
@@ -66,6 +67,8 @@ export function HomeView() {
   useHubDataVersion();
   // WP-161: the queue, the saved pauses and the machine's last reading, so a hold on new builders shows and clears here.
   useWorkerPoolVersion();
+  // WP-176: a spend limit change clears or shows the pause without waiting for the next queue tick.
+  useSyncExternalStore(subscribeSpend, () => spendSnapshot().book.revision, () => 0);
   const projectKey = hubData().listProjects().map((project) => `${project.id}\0${project.name}\0${project.folder ?? ""}`).join("\n");
 
   useEffect(() => {
@@ -288,7 +291,12 @@ export function HomeView() {
     }
   }
   const hold = builderHold();
-  const needsYou = [...(hold ? [builderHoldLine(hold)] : []), ...needsYouLines(snap?.decisions ?? [], tasks, name)];
+  const spend = spendHold();
+  const needsYou = [
+    ...(hold ? [builderHoldLine(hold)] : []),
+    ...(spend ? [builderHoldLine(spend)] : []),
+    ...needsYouLines(snap?.decisions ?? [], tasks, name),
+  ];
   const moving = movingLines(tasks, name);
   // The app holds no project at all (not one hidden by the trash or Ash's own "Remove from hub"): say why.
   const noProjects = snap && registryProjects().length === 0

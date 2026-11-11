@@ -637,7 +637,7 @@ fn steering_tools() -> Vec<Value> {
         json!({
             "name": "ask_person",
             "title": "Ask the person a decision",
-            "description": "Put one decision to the person, once, under a stable key you choose (like \"retention-policy\"). Only for a real choice you can't make from the brief or their words: answer your workers' questions yourself when you can. Give 2 to 6 short options and your recommended one. Asking again with the same key changes nothing (it never asks twice); name taskIds to have those tasks wait on the answer, and when the person answers, the answer goes to each of them and comes back to you as a new turn. If the key was already answered, you get the answer straight away. A worker can't use this: its question goes to its own first mate.",
+            "description": "Put one decision to the person, once, under a stable key you choose (like \"retention-policy\"). Only for a real choice you can't make from the brief or their words: answer your workers' questions yourself when you can. Give 2 to 6 short options and your recommended one. Asking again with the same key changes nothing (it never asks twice); name taskIds to have those tasks wait on the answer, and when the person answers, the answer goes to each of them and comes back to you as a new turn. If the key was already answered, you get the answer straight away. If standing answers are on and this question matches one, you get that answer and its id instead of a new question. That answer is guidance, not permission. Send force true and a one-line reason when it does not apply. A worker can't use this: its question goes to its own first mate.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -646,7 +646,10 @@ fn steering_tools() -> Vec<Value> {
                     "options": { "type": "array", "items": { "type": "string", "maxLength": 200 }, "minItems": 2, "maxItems": 6 },
                     "recommended": { "type": "string", "description": "The option you recommend, exactly as written in options." },
                     "taskIds": { "type": "array", "items": { "type": "string" }, "maxItems": 20, "description": "Your tasks (t-...) that wait on the answer." },
-                    "answer": { "type": "string", "maxLength": 2000, "description": "Only when the person has answered this key in your chat: their words. It is recorded once and releases the waiting tasks." }
+                    "answer": { "type": "string", "maxLength": 2000, "description": "Only when the person has answered this key in your chat: their words. It is recorded once and releases the waiting tasks." },
+                    "keys": { "type": "array", "items": { "type": "string", "maxLength": 40 }, "maxItems": 12, "description": "Short match words. Leave this out to use words from the question." },
+                    "force": { "type": "boolean", "description": "True, with reason, when a standing answer does not apply and the person should be asked." },
+                    "reason": { "type": "string", "maxLength": 300, "description": "One line on why the standing answer does not apply. Required with force when one matches." }
                 },
                 "required": ["key", "question", "options", "recommended"],
                 "additionalProperties": false
@@ -796,8 +799,21 @@ pub(crate) fn call_tool(call: &mut Call, name: &str, args: &Value) -> Result<Val
                 .call("tasks.message", &pick(object, &fields), &request_id)
         }
         "ask_person" => {
-            let fields = ["key", "question", "options", "recommended", "taskIds", "answer"];
+            let fields = ["key", "question", "options", "recommended", "taskIds", "answer", "keys", "force", "reason"];
             let object = arguments(args, &fields)?;
+            // WP-172: the question that starts a stopped task again is the app's alone: an agent may neither create it
+            // (with or without an answer) nor answer it. The key is trimmed first, so a leading space does not get past.
+            let restart = object
+                .get("key")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .is_some_and(crate::decisions::is_again_key);
+            if restart {
+                return Err(
+                    "Only the app asks whether a stopped task starts again, and only the person answers it in Needs. Name the task in a resume instead."
+                        .into(),
+                );
+            }
             call.app
                 .call("tasks.ask", &pick(object, &fields), &new_request_id())
         }
@@ -1356,6 +1372,44 @@ mod tests {
         (outcome, seen)
     }
 
+    /// WP-172: an agent may not create a stopped task's restart decision, with or without an answer, nor answer one.
+    /// The key is trimmed before the check, so a leading space does not get past it. An ordinary decision still works.
+    #[test]
+    fn an_agent_neither_creates_nor_answers_a_restart_decision() {
+        let clock = Arc::new(FakeClock::default());
+        let app = FakeApp::new(clock, |_, _, _| Ok(json!({ "state": "open" })));
+        let ask = |key: &str, answer: Option<&str>| {
+            let mut args = json!({
+                "key": key,
+                "question": "Start api again?",
+                "options": ["Start it again", "Leave it stopped"],
+                "recommended": "Leave it stopped",
+            });
+            if let Some(answer) = answer {
+                args["answer"] = json!(answer);
+            }
+            run_tool(&app, "ask_person", args).0
+        };
+        let restart = "fanout-again/r1/api/f2_r1-api/0123456789abcdef";
+        for key in [restart.to_string(), format!("  {restart}")] {
+            let refused = ask(&key, None).unwrap_err();
+            assert!(
+                refused.contains("Only the app asks whether a stopped task starts again"),
+                "{refused}"
+            );
+            let refused = ask(&key, Some("Start it again")).unwrap_err();
+            assert!(
+                refused.contains("Only the app asks whether a stopped task starts again"),
+                "{refused}"
+            );
+        }
+        // Nothing reached the app.
+        assert!(app.actions().is_empty());
+        // An ordinary decision keeps its answer as before.
+        assert!(ask("retention-policy", Some("Keep 30 days")).is_ok());
+        assert_eq!(app.actions(), vec!["tasks.ask".to_string()]);
+    }
+
     #[test]
     fn it_answers_initialize_and_lists_the_tools() {
         let clock = Arc::new(FakeClock::default());
@@ -1464,6 +1518,21 @@ mod tests {
         assert!(names.contains(&"delegate_tasks"));
         assert!(names.contains(&"task_message"));
         assert!(names.contains(&"ask_person"));
+        assert!(
+            names
+                .iter()
+                .all(|name| !name.contains("standing") && !name.contains("reuse")),
+            "an agent tool must not set standing answers: {names:?}"
+        );
+        let ask = listed
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|tool| tool["name"] == "ask_person")
+            .unwrap();
+        let props = ask["inputSchema"]["properties"].as_object().unwrap();
+        assert!(props.get("standing").is_none());
+        assert!(props.get("reuse").is_none());
     }
 
     #[test]

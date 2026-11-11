@@ -146,14 +146,17 @@ export async function acceptStaged(id: string): Promise<boolean> {
   const { state } = await loadState();
   const edit = parseRetroState(state).staged.find((row) => row.id === id);
   if (!edit) return false;
+  // The secret check comes first: a staged edit that names a secret is refused as a secret, not as a stale proposal
+  // (proposalFor reports a guard refusal as stale, which would hide the reason).
+  if (mentionsSecret(opinionBlock(edit)) || mentionsSecret(edit.evidence.map((row) => row.line).join("\n"))) {
+    throw new Error(SECRET_REFUSED);
+  }
   const opinions = await loadOpinions();
   const verdict = proposalFor(opinions.text, edit);
   if (verdict.kind === "stale") return false;
   if (verdict.kind === "full") throw new Error(FILE_FULL);
   if (verdict.kind === "ready") {
-    if (mentionsSecret(verdict.next) || mentionsSecret(edit.evidence.map((row) => row.line).join("\n"))) {
-      throw new Error(SECRET_REFUSED);
-    }
+    if (mentionsSecret(verdict.next)) throw new Error(SECRET_REFUSED);
     const wrote = await invoke<boolean>("learn_profile_save", {
       which: "opinions",
       expectedSha256: opinions.sha,

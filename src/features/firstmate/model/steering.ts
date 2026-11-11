@@ -67,6 +67,12 @@ export type Decision = {
   createdAt: number;
   updatedAt: number;
   version: number;
+  /** WP-156. Absent on older rows the screen already has. */
+  standing?: boolean;
+  keys?: string[];
+  retiredAt?: number | null;
+  retiredReason?: string | null;
+  standingId?: string;
 };
 
 export type AskInput = {
@@ -78,9 +84,21 @@ export type AskInput = {
   options: string[];
   recommended?: string;
   taskIds?: string[];
+  /** WP-156. Invalid words are dropped by the store. */
+  keys?: string[];
+  force?: boolean;
+  reason?: string;
 };
 
-export type AskOutcome = { decision: Decision; created: boolean; added: string[]; released: SteerMessage[] };
+export type AskOutcome = {
+  decision: Decision;
+  created: boolean;
+  added: string[];
+  released: SteerMessage[];
+  /** Set when a standing answer was reused. Omitted by the store when it was not. */
+  matched?: boolean;
+  standingId?: string;
+};
 export type AnswerOutcome = {
   applied: boolean;
   decision: Decision | null;
@@ -97,6 +115,8 @@ export type FirstMateBackend = {
   ask(input: AskInput): Promise<AskOutcome>;
   answer(project: string, key: string, answer: string, by?: string): Promise<AnswerOutcome>;
   decisions(answered?: number): Promise<Decision[]>;
+  /** WP-156: the standing-answers block for one project. Empty while the setting is off. */
+  standingBrief?(project: string): Promise<string>;
 };
 
 export const tauriFirstMate: FirstMateBackend = {
@@ -107,6 +127,7 @@ export const tauriFirstMate: FirstMateBackend = {
   ask: (input) => invoke("decisions_ask", { input }),
   answer: (project, key, answer, by) => invoke("decisions_answer", { project, key, answer, by }),
   decisions: (answered) => invoke("decisions_list", { answered }),
+  standingBrief: (project) => invoke("decisions_standing_brief", { project }),
 };
 
 /** What delivery knows about the worker's chat. Undefined: the chat is gone. */
@@ -202,6 +223,20 @@ export async function askPerson(
   ownTasks: Delegation[],
   host: FirstMateTasksHost,
 ): Promise<Record<string, unknown>> {
+  return (await askPersonRecorded(source, input, where, ownTasks, host)).result;
+}
+
+/**
+ * WP-172: askPerson, plus who the store recorded the answer from (`answeredBy`, null while it is open). A caller that
+ * acts only on the person's own answer reads it here: a chat answering for the model is not the person.
+ */
+export async function askPersonRecorded(
+  source: Pick<Session, "id">,
+  input: Record<string, unknown>,
+  where: { mono?: string; project?: string },
+  ownTasks: Delegation[],
+  host: FirstMateTasksHost,
+): Promise<{ result: Record<string, unknown>; answeredBy: string | null; question: string; options: string[] }> {
   const outcome = await host.backend.ask({
     askedBy: source.id,
     ...(where.mono ? { askedByMono: where.mono } : {}),
@@ -211,8 +246,27 @@ export async function askPerson(
     options: options(input.options),
     ...(typeof input.recommended === "string" ? { recommended: input.recommended } : {}),
     taskIds: ownTasks.map((row) => row.id),
+    ...(Array.isArray(input.keys) ? { keys: input.keys.filter((key) => typeof key === "string") } : {}),
+    ...(input.force === true ? { force: true } : {}),
+    ...(typeof input.reason === "string" ? { reason: input.reason } : {}),
   });
   let d = outcome.decision;
+  if (outcome.matched) {
+    const id = outcome.standingId ?? d.standingId ?? "";
+    return {
+      result: {
+        key: d.decisionKey,
+        state: "answered",
+        answer: d.answer,
+        standingId: id,
+        matched: true,
+        note: `A standing answer ${id} to a similar question: guidance, not permission. If it does not apply, ask again with force true and a one-line reason.`,
+      },
+      answeredBy: d.answeredBy,
+      question: d.question,
+      options: d.options,
+    };
+  }
   // The person answered it in this chat: their words are the answer, recorded once, and the waiting tasks carry on.
   if (input.answer !== undefined && d.state === "open") {
     const words = nonEmpty(input.answer, "answer");
@@ -220,28 +274,43 @@ export async function askPerson(
     if (answered.decision) d = answered.decision;
     if (answered.applied)
       return {
-        key: d.decisionKey,
-        state: d.state,
-        answer: d.answer,
-        released: answered.releasedTasks,
-        note: answered.releasedTasks.length
-          ? `Recorded their answer; ${answered.releasedTasks.length} waiting task(s) have it and carry on.`
-          : "Recorded their answer.",
+        result: {
+          key: d.decisionKey,
+          state: d.state,
+          answer: d.answer,
+          released: answered.releasedTasks,
+          note: answered.releasedTasks.length
+            ? `Recorded their answer; ${answered.releasedTasks.length} waiting task(s) have it and carry on.`
+            : "Recorded their answer.",
+        },
+        answeredBy: d.answeredBy,
+        question: d.question,
+        options: d.options,
       };
   }
   const base = { key: d.decisionKey, state: d.state, waiting: d.waiting };
   if (d.state === "answered")
     return {
-      ...base,
-      answer: d.answer,
-      note: `Already answered: ${d.answer}. Carry on from it; don't ask again.${outcome.released.length ? " The tasks you named have it too." : ""}`,
+      result: {
+        ...base,
+        answer: d.answer,
+        note: `Already answered: ${d.answer}. Carry on from it; don't ask again.${outcome.released.length ? " The tasks you named have it too." : ""}`,
+      },
+      answeredBy: d.answeredBy,
+      question: d.question,
+      options: d.options,
     };
   return {
-    ...base,
-    created: outcome.created,
-    note: outcome.created
-      ? "Asked. It waits in the person's Inbox; their answer comes back to you and to the tasks waiting on it as a new turn. Tell them in one line what you asked, then end your turn."
-      : "Already asked under this key; nothing changed. Their answer comes back to you as a new turn.",
+    result: {
+      ...base,
+      created: outcome.created,
+      note: outcome.created
+        ? "Asked. It waits in the person's Inbox; their answer comes back to you and to the tasks waiting on it as a new turn. Tell them in one line what you asked, then end your turn."
+        : "Already asked under this key; nothing changed. Their answer comes back to you as a new turn.",
+    },
+    answeredBy: d.answeredBy,
+    question: d.question,
+    options: d.options,
   };
 }
 
@@ -250,7 +319,8 @@ export type DeliveryDeps = {
   backend: FirstMateBackend;
   /** The worker's chat, loaded if it has to be; undefined when it is gone. */
   chat(id: string): Promise<Pick<Session, "id" | "busy" | "blocks" | "queuedMessages" | "harness"> | undefined>;
-  canSteer(chat: Pick<Session, "harness">): boolean;
+  // WP-134b: registryAgentId is set on a More agents chat, which cannot be steered.
+  canSteer(chat: Pick<Session, "harness" | "registryAgentId">): boolean;
   /** Put the text into the chat: into the running turn (`steer`) or as a new turn. False: it didn't take it. */
   submit(id: string, text: string, options: { appRequestId: string; steer: boolean }): Promise<boolean>;
   now?(): number;

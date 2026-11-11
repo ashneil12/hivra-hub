@@ -43,8 +43,27 @@ pub(crate) fn scoped_service(kind: Kind, service: &str) -> String {
     }
 }
 
+/// The More agents approval items (`monocode-hub:more-agents-*`) belong to the app's own code. A webview command
+/// cannot write, read or delete them: a deleted item would reset the approvals to nothing and bring a withdrawn one back.
+fn reserved(service: &str) -> bool {
+    // Credential Manager names are not case-sensitive, so the reserve is not either.
+    let lower = service.to_ascii_lowercase();
+    let name = lower
+        .strip_prefix(DEV_PREFIX)
+        .or_else(|| lower.strip_prefix("monocode-hub:"))
+        .unwrap_or(&lower);
+    name.starts_with("more-agents")
+}
+
 fn entry(service: &str, account: &str) -> Result<keyring::Entry, String> {
+    entry_with(service, account, false)
+}
+
+fn entry_with(service: &str, account: &str, internal: bool) -> Result<keyring::Entry, String> {
     check_service(service)?;
+    if !internal && reserved(service) {
+        return Err("The app keeps its own More agents approvals.".into());
+    }
     if account.is_empty() || account.len() > 200 {
         return Err("A login needs an account name.".into());
     }
@@ -58,6 +77,26 @@ fn entry(service: &str, account: &str) -> Result<keyring::Entry, String> {
     let service = scoped_service(kind, service);
     keyring::Entry::new(&service, account)
         .map_err(|_| crate::platform::secrets::unreachable().to_string())
+}
+
+/// For the app's own More agents items only (see `reserved`).
+#[cfg(not(test))]
+pub(crate) fn read_internal(service: &str, account: &str) -> Result<Option<String>, String> {
+    match entry_with(service, account, true)?.get_password() {
+        Ok(secret) => Ok(Some(secret)),
+        Err(keyring::Error::NoEntry) => Ok(None),
+        Err(_) => Err(crate::platform::secrets::not_read().into()),
+    }
+}
+
+#[cfg(not(test))]
+pub(crate) fn store_internal(service: &str, account: &str, secret: &str) -> Result<(), String> {
+    if secret.is_empty() {
+        return Err("Nothing to save.".into());
+    }
+    entry_with(service, account, true)?
+        .set_password(secret)
+        .map_err(|_| crate::platform::secrets::not_saved().to_string())
 }
 
 pub fn store(service: &str, account: &str, secret: &str) -> Result<(), String> {
@@ -201,6 +240,27 @@ pub async fn connector_login_delete(service: String, account: String) -> Result<
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Review r5 check (should pass): the webview's doors refuse the More agents items, daily and dev names.
+    #[test]
+    fn review_r5_the_more_agents_items_are_reserved_from_the_webview() {
+        for service in [
+            "monocode-hub:more-agents-approval-key",
+            "monocode-hub:more-agents-approval-generation",
+            "monocode-hub-dev:more-agents-approval-generation",
+        ] {
+            assert!(store(service, "approvals", "x").is_err());
+            assert!(exists(service, "approvals").is_err());
+            assert!(delete(service, "approvals").is_err());
+        }
+    }
+
+    // Review r5 repro (LOW, Windows): Credential Manager target names are not case-sensitive, so a differently cased
+    // name reaches the same item there. The reserve check is case-sensitive.
+    #[test]
+    fn review_r5_the_reserve_ignores_case() {
+        assert!(reserved("monocode-hub:More-Agents-approval-generation"));
+    }
 
     #[test]
     fn only_the_apps_own_services_are_reachable() {

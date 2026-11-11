@@ -5,6 +5,7 @@ import type {
   TaskListMeta,
   TurnIntent,
 } from "../../../features/sessions/model/session";
+import { admitSpendTurn, noteUnpricedTurn, spendGateActive, type TurnOrigin } from "../../../features/usage/model/spendGate";
 import { requireChatFolder } from "./chatFolder";
 import { credentialBlock } from "./credentialGuard";
 import { invoke, isTauri } from "@tauri-apps/api/core";
@@ -14,6 +15,7 @@ import type { PrContent } from "../../../features/source-control/model/gitText";
 import { hasLiveCatalog } from "../../../features/sessions/model/models";
 import type { UserQuestionReply } from "../../../features/sessions/model/userQuestion";
 import type { NativeCommandProvider } from "./nativeCommands";
+import { registryAgentIdForSession, unlinkRegistryChat } from "../../../features/registry/model/registryList";
 import {
   clearWorkflowRuns,
   noteWorkflowRun,
@@ -115,6 +117,8 @@ export type HarnessAdapter = {
   restoreTaskLists?(threadId: string, lists: TaskListMeta[]): void;
   /** Carry on with a restored session's saved goal (Claude Code's /goal). */
   restoreGoal?(threadId: string, goal: SessionGoal): void;
+  /** Round 12: a restored transcript already left the launch folder, so relative paths wait again. */
+  restoreMovedFolder?(threadId: string, blocks: Block[]): void;
   /** Refresh the model catalog overlay when supported. */
   refreshCatalog?(): Promise<void>;
   /** Optional LLM tab title for the first turn. */
@@ -254,7 +258,7 @@ function cancelIdlePark(sessionId: string): void {
 
 /** Whether the provider still runs work for this chat. A provider that throws is treated as busy: keep it warm. */
 function hasBackgroundWork(harness: HarnessId, sessionId: string): boolean {
-  const adapter = getHarness(harness);
+  const adapter = adapterFor(harness, sessionId);
   if (!adapter?.hasBackgroundWork) return false;
   try {
     return adapter.hasBackgroundWork(sessionId) === true;
@@ -356,6 +360,57 @@ export function registerHarness(adapter: HarnessAdapter): void {
   adapters.set(adapter.id, adapter);
 }
 
+/**
+ * WP-134: an adapter one chat runs through instead of one of the eleven, for a More agents entry
+ * (src/integrations/harness/moreAgents/). Its id is the entry's own, never a HarnessId, so it is never registered by
+ * id, never listed with the eleven, and never reached through `getHarness`.
+ */
+export type SessionRouteAdapter = Omit<HarnessAdapter, "id"> & { id: string };
+
+const sessionRoutes = new Map<string, SessionRouteAdapter>();
+
+/** Route one chat's turns, stops and answers to `adapter`; null puts it back on its harness. */
+export function routeHarnessSession(
+  sessionId: string,
+  adapter: SessionRouteAdapter | null,
+): void {
+  if (adapter) sessionRoutes.set(sessionId, adapter);
+  else sessionRoutes.delete(sessionId);
+}
+
+export function sessionRoute(sessionId: string): SessionRouteAdapter | undefined {
+  return sessionRoutes.get(sessionId);
+}
+
+/** The routed adapter when the chat has one, else its harness's. A routed chat never falls back to the harness. */
+function adapterFor(
+  harness: HarnessId,
+  sessionId: string,
+): SessionRouteAdapter | undefined {
+  return sessionRoutes.get(sessionId) ?? adapters.get(harness);
+}
+
+function requireAdapterFor(
+  harness: HarnessId,
+  sessionId: string,
+): SessionRouteAdapter {
+  const adapter = adapterFor(harness, sessionId);
+  if (!adapter) {
+    throw new Error(`No harness adapter registered for "${harness}"`);
+  }
+  return adapter;
+}
+
+/** Whether this chat's adapter can take a follow-up mid-turn. A routed chat answers for itself. */
+export function canSteerHarnessSession(
+  harness: HarnessId,
+  sessionId: string,
+): boolean {
+  const adapter = adapterFor(harness, sessionId);
+  if (!adapter?.live) return false;
+  return adapter.canSteer !== false;
+}
+
 export function getHarness(id: HarnessId): HarnessAdapter | undefined {
   return adapters.get(id);
 }
@@ -390,9 +445,15 @@ export function sendHarnessTurn(input: SendTurnInput & { harness: HarnessId }) {
   return queueSessionOperation(input.sessionId, async () => {
     // Before the control port or any provider hears of the turn: a chat with no folder starts nothing.
     requireChatFolder(input.cwd);
-    const adapter = requireHarness(input.harness);
+    const adapter = requireAdapterFor(input.harness, input.sessionId);
     if (!adapter.live) {
       throw new Error(`${input.harness} is not connected yet`);
+    }
+    // WP-176: the one admission point for spend. Every turn passes it, whatever started it (a person, a habit, a
+    // worker or a task). A refused turn starts nothing, and the reason is what the chat shows.
+    if (spendGateActive()) {
+      const admitted = await admitSpendTurn({ sessionId: input.sessionId, cwd: input.cwd, harness: input.harness, model: input.model, origin: input.origin });
+      if (!admitted.ok) throw new Error(admitted.reason);
     }
     cancelIdlePark(input.sessionId);
     idleParkEvents.set(input.sessionId, input.onEvent);
@@ -442,7 +503,7 @@ export async function stopHarnessTask(
   sessionId: string,
   taskId: string,
 ): Promise<boolean> {
-  const adapter = getHarness(harness);
+  const adapter = adapterFor(harness, sessionId);
   if (!adapter?.live || !adapter.stopTask) return false;
   return adapter.stopTask(sessionId, taskId);
 }
@@ -455,7 +516,7 @@ export async function stopHarnessTask(
 export async function applyHarnessSettings(
   input: LiveSettingsInput & { harness: HarnessId },
 ): Promise<LiveSettingsOutcome> {
-  const adapter = getHarness(input.harness);
+  const adapter = adapterFor(input.harness, input.sessionId);
   if (!adapter?.live || !adapter.applySettings) return "idle";
   return adapter.applySettings(input);
 }
@@ -470,7 +531,7 @@ export function compactHarnessContext(
 ): Promise<void> {
   return queueSessionOperation(input.sessionId, async () => {
     requireChatFolder(input.cwd);
-    const adapter = requireHarness(input.harness);
+    const adapter = requireAdapterFor(input.harness, input.sessionId);
     if (!adapter.live) {
       throw new Error(`${input.harness} is not connected yet`);
     }
@@ -509,7 +570,7 @@ export function rewindHarnessLastTurn(
 ): Promise<RewindLastTurnResult> {
   return queueSessionOperation(input.sessionId, async () => {
     requireChatFolder(input.cwd);
-    const adapter = requireHarness(input.harness);
+    const adapter = requireAdapterFor(input.harness, input.sessionId);
     if (!adapter.rewindLastTurn) {
       throw new Error(
         `${input.harness} does not support editing the last message`,
@@ -528,9 +589,14 @@ export function steerHarnessTurn(
   input: SteerTurnInput & { harness: HarnessId },
 ): Promise<void> {
   return queueSteerOperation(input.sessionId, async () => {
-    const adapter = requireHarness(input.harness);
+    const adapter = requireAdapterFor(input.harness, input.sessionId);
     if (!adapter.live) {
       throw new Error(`${input.harness} is not connected yet`);
+    }
+    // WP-176: a steer is a turn too, so it passes the same admission (an automated steer over a limit is refused).
+    if (spendGateActive()) {
+      const admitted = await admitSpendTurn({ sessionId: input.sessionId, cwd: input.cwd, harness: input.harness, model: input.model, origin: input.origin });
+      if (!admitted.ok) throw new Error(admitted.reason);
     }
     cancelIdlePark(input.sessionId);
     await adapter.steerTurn(input);
@@ -541,7 +607,7 @@ export async function cancelHarnessTurn(
   harness: HarnessId,
   sessionId: string,
 ): Promise<void> {
-  const adapter = getHarness(harness);
+  const adapter = adapterFor(harness, sessionId);
   if (!adapter?.live) return;
   cancelIdlePark(sessionId);
   await adapter.cancelTurn(sessionId);
@@ -555,7 +621,7 @@ export function respondHarnessApproval(
   requestId: number,
   decision: ApprovalDecision,
 ): boolean {
-  return getHarness(harness)?.respondApproval(sessionId, requestId, decision) === true;
+  return adapterFor(harness, sessionId)?.respondApproval(sessionId, requestId, decision) === true;
 }
 
 export function respondHarnessQuestion(
@@ -564,7 +630,7 @@ export function respondHarnessQuestion(
   requestId: number,
   reply: UserQuestionReply,
 ): void {
-  getHarness(harness)?.respondQuestion?.(sessionId, requestId, reply);
+  adapterFor(harness, sessionId)?.respondQuestion?.(sessionId, requestId, reply);
 }
 
 export function keepHarnessQuestionOpen(
@@ -572,7 +638,7 @@ export function keepHarnessQuestionOpen(
   sessionId: string,
   requestId: number,
 ): void {
-  getHarness(harness)?.keepQuestionOpen?.(sessionId, requestId);
+  adapterFor(harness, sessionId)?.keepQuestionOpen?.(sessionId, requestId);
 }
 
 export async function stopHarnessSession(
@@ -581,7 +647,7 @@ export async function stopHarnessSession(
 ): Promise<void> {
   cancelIdlePark(sessionId);
   idleParkEvents.delete(sessionId);
-  const adapter = getHarness(harness);
+  const adapter = adapterFor(harness, sessionId);
   if (!adapter?.live) return;
   await adapter.stopSession(sessionId);
 }
@@ -591,14 +657,17 @@ export async function forgetHarnessSession(
   sessionId: string,
 ): Promise<void> {
   cancelIdlePark(sessionId);
-  const adapter = getHarness(harness);
+  const adapter = adapterFor(harness, sessionId);
   if (!adapter) return;
   await adapter.forgetSession(sessionId);
 }
 
 /** A deleted chat: every adapter drops what it still keeps for it. */
 export function dropHarnessSession(sessionId: string): void {
+  // A More agents chat keeps its link until it is dropped; the list entry stays.
+  if (registryAgentIdForSession(sessionId)) unlinkRegistryChat(sessionId);
   for (const adapter of adapters.values()) adapter.dropSession?.(sessionId);
+  sessionRoutes.get(sessionId)?.dropSession?.(sessionId);
 }
 
 export function bindHarnessSession(
@@ -612,9 +681,11 @@ export function bindHarnessSession(
   /** The chat's saved /goal, so a restart carries on with it. */
   goal?: SessionGoal,
 ): void {
-  const adapter = getHarness(harness);
+  const adapter = adapterFor(harness, threadId);
   adapter?.bindSession(threadId, providerSessionId, cwd, providerAccountId);
   if (goal) adapter?.restoreGoal?.(threadId, goal);
+  // Round 12: before the task-list return, so a transcript with no task panel still drops the folder pin.
+  if (blocks?.length) adapter?.restoreMovedFolder?.(threadId, blocks);
   if (!blocks || !adapter?.restoreTaskLists) return;
   const lists = blocks.flatMap((block) =>
     block.role === "tasks" && block.taskList ? [block.taskList] : [],
@@ -682,13 +753,30 @@ export async function refreshHarnessCatalogs(
   );
 }
 
+/**
+ * A text call the adapter makes for the app (a title, a commit message, a PR, a branch name). It is automated work, so
+ * it passes the same spend admission as runHarnessTextPrompt, and what it ran is noted in the ledger as unpriced.
+ */
+async function gatedTextCall<T>(cwd: string, origin: TurnOrigin, run: () => Promise<T>): Promise<T> {
+  const sessionId = `text-prompt-${(textPromptSeq += 1)}`;
+  if (spendGateActive()) {
+    const admitted = await admitSpendTurn({ sessionId, cwd, harness: "claude", origin });
+    if (!admitted.ok) throw new Error(admitted.reason);
+  }
+  try {
+    return await run();
+  } finally {
+    noteUnpricedTurn({ sessionId, cwd });
+  }
+}
+
 export async function generateHarnessTitle(
   harness: HarnessId,
   input: TitleInput,
 ): Promise<GeneratedSessionTitle | null> {
   const adapter = getHarness(harness);
   if (!adapter?.generateTitle) return null;
-  return adapter.generateTitle(input);
+  return gatedTextCall("", "automated", () => adapter.generateTitle!(input));
 }
 
 export async function generateHarnessCommitMessage(
@@ -696,15 +784,19 @@ export async function generateHarnessCommitMessage(
   cwd: string,
   signal?: AbortSignal,
   paths?: readonly string[],
+  /** Who asked for it: a commit message Ash asks for is his turn (warned, not refused), otherwise automated. */
+  origin: TurnOrigin = "automated",
 ): Promise<string> {
   const adapter = requireHarness(harness);
   if (!adapter.generateCommitMessage) {
     throw new Error(`${harness} does not support commit message generation`);
   }
   signal?.throwIfAborted();
-  return paths === undefined
-    ? adapter.generateCommitMessage(cwd, signal)
-    : adapter.generateCommitMessage(cwd, signal, paths);
+  return gatedTextCall(cwd, origin, () =>
+    paths === undefined
+      ? adapter.generateCommitMessage!(cwd, signal)
+      : adapter.generateCommitMessage!(cwd, signal, paths),
+  );
 }
 
 export async function generateHarnessPrContent(
@@ -713,7 +805,7 @@ export async function generateHarnessPrContent(
 ): Promise<(PrContent & { base: string; head: string }) | null> {
   const adapter = getHarness(harness);
   if (!adapter?.generatePrContent) return null;
-  return adapter.generatePrContent(cwd);
+  return gatedTextCall(cwd, "automated", () => adapter.generatePrContent!(cwd));
 }
 
 export async function generateHarnessBranchName(
@@ -723,7 +815,7 @@ export async function generateHarnessBranchName(
 ): Promise<string | null> {
   const adapter = getHarness(harness);
   if (!adapter?.generateBranchName) return null;
-  return adapter.generateBranchName(cwd, message);
+  return gatedTextCall(cwd, "automated", () => adapter.generateBranchName!(cwd, message));
 }
 
 export async function warmupHarnessText(
@@ -770,7 +862,28 @@ function cancelledTextPrompt(): Error {
   return new Error("By-the-way request cancelled");
 }
 
+let textPromptSeq = 0;
+
+/**
+ * A text prompt (a title, a commit message, a memory or verdict pass) is automated work. It passes the spend gate's
+ * admission like any other automated turn, and what it ran is noted in the ledger as unpriced.
+ */
 export async function runHarnessTextPrompt(
+  input: TextPromptInput & { harness: HarnessId },
+): Promise<string> {
+  const sessionId = input.threadId ?? `text-prompt-${(textPromptSeq += 1)}`;
+  if (spendGateActive()) {
+    const admitted = await admitSpendTurn({ sessionId, cwd: input.cwd, harness: input.harness, model: input.model, origin: "automated" });
+    if (!admitted.ok) throw new Error(admitted.reason);
+  }
+  try {
+    return await runTextPromptUngated(input);
+  } finally {
+    noteUnpricedTurn({ sessionId, cwd: input.cwd });
+  }
+}
+
+async function runTextPromptUngated(
   input: TextPromptInput & { harness: HarnessId },
 ): Promise<string> {
   const adapter = requireHarness(input.harness);

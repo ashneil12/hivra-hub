@@ -25,12 +25,16 @@ import { CrewRulesPage } from "../../crew/ui/CrewRulesPage";
 import { GateSetting } from "../../delivery-gate/ui/GateSetting";
 // WP-85: show Claude sessions started in a terminal.
 import { TerminalSessionsSetting } from "../../terminalMirror/ui/TerminalSessionsSetting";
+// WP-134b: More agents, off until the person switches it on.
+import { MoreAgentsSettings } from "../../registry/ui/MoreAgentsSettings";
 // WP-84: the project's default phase path.
 import { PhaseSettings } from "../../phases/ui/PhaseSettings";
 // WP-104: copy diagnostics, and the health list.
 import { DiagnosticsPanel } from "../../diagnostics/ui/DiagnosticsPanel";
 // WP-88: the morning note under the chat on Home.
 import { DailySummarySetting } from "../../chief/ui/DailySummarySetting";
+// WP-156: standing answers stay off until this setting is on.
+import { StandingAnswersSetting } from "./StandingAnswersSetting";
 // WP-164: quiet hours for routine programme notices.
 import { QuietHoursSetting } from "../../notifications/ui/QuietHoursSetting";
 import { QUIET_HOURS_DESCRIPTION } from "../../notifications/model/quietHours";
@@ -1082,6 +1086,8 @@ function GeneralPage({
           <DailySummarySetting />
         </Row>
       </Group>
+      {/* WP-156: standing answers stay off until this is on. */}
+      <StandingAnswersSetting />
       <Group
         title="Alerts"
         description="How MonoCode reaches you while you are looking somewhere else."
@@ -4206,6 +4212,9 @@ function ProvidersPage({
           );
         })}
       </Group>
+
+      {/* WP-134b: More agents, off until the person switches it on. */}
+      <MoreAgentsSettings cwd={cwd} />
 
       <Group title="Advanced">
         <Row
