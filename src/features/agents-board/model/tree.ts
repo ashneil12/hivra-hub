@@ -288,3 +288,13 @@ function rollupStates(node: BoardNode): void {
 export function flattenBoard(node: BoardNode): BoardNode[] {
   return [node, ...node.children.flatMap(flattenBoard)];
 }
+
+/** Rows under this one whose own state is `state`, not a state they only repeat. */
+export function descendantOwnCount(node: BoardNode, state: BoardState): number {
+  let count = 0;
+  for (const child of node.children) {
+    if (child.ownState === state) count += 1;
+    count += descendantOwnCount(child, state);
+  }
+  return count;
+}

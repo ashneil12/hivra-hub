@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { defaultOpen, readOpenMap, rowOpen } from "./expand";
-import { confirmStop, requestStop, stopTarget } from "./stop";
+import { confirmStop, finishStop, requestStop, stopFailureText, stopTarget } from "./stop";
 import { agentsPageUsesBoard, sidebarShowsOrchestrationTree } from "./place";
 
 describe("expand", () => {
@@ -26,12 +26,20 @@ describe("expand", () => {
 });
 
 describe("stop", () => {
-  it("asks once, then stops, and does not ask again", () => {
+  it("asks once, then starts the stop, and does not ask again until it fails", () => {
     expect(requestStop("closed")).toEqual({ phase: "asking", stop: false });
-    expect(confirmStop("asking")).toEqual({ phase: "stopped", stop: true });
+    expect(confirmStop("asking")).toEqual({ phase: "stopping", stop: true });
+    expect(confirmStop("stopping")).toEqual({ phase: "stopping", stop: false });
+    expect(finishStop("stopping", true)).toBe("stopped");
     expect(confirmStop("stopped")).toEqual({ phase: "stopped", stop: false });
     expect(requestStop("stopped")).toEqual({ phase: "stopped", stop: false });
     expect(confirmStop("closed")).toEqual({ phase: "closed", stop: false });
+    expect(finishStop("stopping", false)).toBe("failed");
+    expect(requestStop("failed")).toEqual({ phase: "asking", stop: false });
+    expect(finishStop("closed", true)).toBe("closed");
+    expect(finishStop("stopped", false)).toBe("stopped");
+    expect(stopFailureText("Example worker", "the worker is gone")).toBe("Couldn't stop Example worker: the worker is gone");
+    expect(stopFailureText("  ", "")).toBe("Couldn't stop this chat: it did not stop");
   });
 
   it("drops the ask when that row is gone", () => {

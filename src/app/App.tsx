@@ -297,6 +297,7 @@ import { noteOpenedChat } from "../features/home/model/store";
 import { stampChat } from "../features/home/model/openedChat";
 import { useHomeOnOpen } from "../features/home/ui/useHomeOnOpen";
 import { useHomeOpener } from "../features/home/ui/useHomeOpener";
+import { setAgentsBoardSessionStop } from "../features/agents-board/model/sessionStop";
 import { placePrompt, rememberPromptSession } from "../features/sessions/model/threadLinkOpen";
 import { ThreadLinkNotice, useThreadLinkOpener } from "../features/sessions/ui/ThreadLinkActions";
 import {
@@ -13088,6 +13089,8 @@ function Workspace({
     },
     [flushHarnessEvents],
   );
+  // WP-219: a project chat or a sub-chat on the Agents board uses this same Stop.
+  useEffect(() => setAgentsBoardSessionStop((sessionId) => onStop(sessionId)), [onStop]);
   // The delegation tree (H4): workers' questions go to the Mono that delegated them, and Ash's Stop on a Mono with
   // work out stops everything beneath it (monos/hooks/useDelegationTree.ts).
   const delegationTree = useDelegationTree({

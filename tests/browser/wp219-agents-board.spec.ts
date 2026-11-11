@@ -41,6 +41,23 @@ test("the agents board", async ({ page }, info) => {
   await expect(board.locator("[data-node='newer']")).toHaveAttribute("data-rolled", "false");
   await expect(board.locator("[data-node='captain'] [data-chip]")).toHaveAttribute("data-rolled", "true");
   await expect(board.locator("[data-node='newer'] [data-chip]")).toHaveAttribute("data-rolled", "false");
+  await expect(board.locator("[data-node='captain']")).toContainText("1 needs you below");
+  await expect(board.getByText("Task", { exact: true })).toBeVisible();
+  await expect(board.getByText("Cost", { exact: true })).toBeVisible();
+  await expect(board.getByText("Time", { exact: true })).toBeVisible();
+  await expect(board.getByText("PR", { exact: true })).toBeVisible();
+  await expect(board.getByText("Checks", { exact: true })).toBeVisible();
+  const taskHead = await board.locator("[data-head='task']").boundingBox();
+  const taskCell = await board.locator("[data-node='home'] [data-task]").boundingBox();
+  const costHead = await board.locator("[data-head='cost']").boundingBox();
+  const costCell = await board.locator("[data-node='newer'] [data-cost]").boundingBox();
+  expect(taskHead && taskCell && Math.abs(taskHead.x - taskCell.x)).toBeLessThan(2);
+  expect(costHead && costCell && Math.abs(costHead.x + costHead.width - (costCell.x + costCell.width))).toBeLessThan(2);
+  const pillWidths = await board.locator("[data-chip][data-rolled='false']").evaluateAll((els) =>
+    els.map((el) => Math.round(el.getBoundingClientRect().width)),
+  );
+  expect(new Set(pillWidths).size).toBe(1);
+  expect(pillWidths[0]).toBeGreaterThan(80);
   await expectCount(board, "Needs you", "1");
   await expectCount(board, "Working", "2");
   await expectCount(board, "Done today", "1");
@@ -69,9 +86,13 @@ test("the agents board", async ({ page }, info) => {
   if (shoot) await page.screenshot({ path: `${afterDir}/filter.png` });
 
   await board.getByRole("button", { name: "Needs you", exact: true }).click();
+  await board.locator("[data-node='newer']").getByRole("button", { name: "Open", exact: true }).click();
+  await expect(board).toHaveAttribute("data-opened", "newer");
   await board.locator("[data-node='newer']").click();
   const chat = board.locator("[data-readonly-chat]");
   await expect(chat).toContainText("Example: The build failed on the Windows test.");
+  await chat.getByRole("button", { name: "Open to answer" }).click();
+  await expect(board).toHaveAttribute("data-opened", "newer");
   await expect(chat.locator("input, textarea, [contenteditable='true']")).toHaveCount(0);
   await chat.getByRole("button", { name: "Stop" }).click();
   await expect(chat.getByRole("dialog", { name: "Stop this chat" })).toBeVisible();
@@ -79,7 +100,7 @@ test("the agents board", async ({ page }, info) => {
   if (shoot) await page.screenshot({ path: `${afterDir}/readonly.png` });
   await chat.getByRole("button", { name: "Stop" }).click();
   await expect(chat.getByRole("button", { name: "Stop" })).toHaveCount(0);
-  await expect(chat.getByText("Read only")).toBeVisible();
+  await expect(chat.getByText("Stopped")).toBeVisible();
 });
 
 async function expectCount(board: import("@playwright/test").Locator, name: string, count: string) {

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { buildAgentsTree, flattenBoard, type BoardPerson, type BoardProject } from "./tree";
+import { buildAgentsTree, descendantOwnCount, flattenBoard, type BoardPerson, type BoardProject } from "./tree";
+import { rollupText } from "./words";
 
 const NOW = Date.UTC(2026, 10, 11, 15, 0, 0);
 
@@ -272,6 +273,11 @@ describe("buildAgentsTree", () => {
     const nodeOf = (id: string) => flattenBoard(root).find((node) => node.id === id);
     expect(nodeOf("captain")?.state).toBe("needs-you");
     expect(nodeOf("captain")?.rolledUp).toBe(true);
+    expect(descendantOwnCount(nodeOf("captain")!, "needs-you")).toBe(1);
+    expect(rollupText(1, "needs-you")).toBe("1 needs you below");
+    expect(rollupText(2, "needs-you")).toBe("2 need you below");
+    expect(rollupText(2, "working")).toBe("2 working");
+    expect(rollupText(0, "working")).toBeNull();
     expect(nodeOf("hivra-session")?.state).toBe("needs-you");
     expect(nodeOf("hivra-session")?.rolledUp).toBe(true);
     expect(nodeOf("coding")?.state).toBe("needs-you");
