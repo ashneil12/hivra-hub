@@ -117,7 +117,7 @@ export function waitingOnAsh(projectId?: string): WaitingItem[] {
 /**
  * The open rows Today shows for the project (stuck rows included, at most MAX_NEEDS), the same in example and real data
  * (SPEC: "every count matches the items you can see"), plus its chats waiting on Ash. The strip badge and the project
- * card add the Stuck section's rows to it (todayCounts.ts attentionCount).
+ * card used to add the Stuck section's rows. The rail badge now reads the one Needs you list.
  * Later is not counted: its own line says how many wait there. A row that ticked itself off no longer counts.
  */
 export function waitingCount(projectId: string): number {
