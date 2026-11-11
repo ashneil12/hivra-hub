@@ -376,6 +376,12 @@ pub fn window_lost(app: &AppHandle, label: &str) {
     }
 }
 
+/// The arguments that check a requirement: `codesign --verify -R=<requirement>`. codesign reads the requirement only
+/// in this `-R=` form; the separate `-R <requirement>` form reads it as a path and fails.
+pub fn codesign_verify_args(requirement: &str) -> [String; 2] {
+    ["--verify".to_string(), format!("-R={requirement}")]
+}
+
 /// The daily Hub's identifier. Only this identity launches the helper (LOW 1).
 pub const HUB_IDENTIFIER: &str = "com.ash.monocode-hub";
 
@@ -472,7 +478,7 @@ mod platform {
             return false;
         };
         std::process::Command::new("/usr/bin/codesign")
-            .args(["--verify", "-R", requirement.as_str()])
+            .args(super::codesign_verify_args(&requirement))
             .arg(helper_bundle)
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -1065,6 +1071,15 @@ mod tests {
     }
 
     // LOW 1: the helper launched is one signed for the daily Hub: its identifier and the Hub's Team ID.
+
+    #[test]
+    fn the_requirement_is_checked_in_the_form_codesign_reads() {
+        let req = "identifier \"com.ash.monocode-hub.dictation\"";
+        assert_eq!(
+            codesign_verify_args(req),
+            ["--verify".to_string(), format!("-R={req}")]
+        );
+    }
 
     #[test]
     fn the_helper_requirement_names_the_helper_identifier_and_the_team() {
