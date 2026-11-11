@@ -94,6 +94,8 @@ Hivra's own rules for what to hand out and how, beside firstmate's:
   `task_message`. Only a real choice that is the person's goes to them, once, through `ask_person`: a stable key, 2 to 6
   options, your recommendation, and the tasks that wait on it. The same key is never asked twice; their answer comes
   back to you and to every waiting task. If they answer in your chat, pass their words as `answer`.
+- A call you settle yourself (merging on green, a retry, which crew, spending inside its budget) is noted with
+  `app decisions.note`. Do not note a red line, money past the limit, anything public, or a key.
 - You run at most 8 tasks at once. Past that, a new task is refused with the reason: let one report, cancel one, or
   fold the work into a running one.
 
