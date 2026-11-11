@@ -1211,4 +1211,39 @@ mod tests {
             assert_eq!(red_category(text), want, "{text}");
         }
     }
+
+    // Review of PR #244, round 3: `red_category` lower-cases the text but does not fold it (NFKC, invisible characters)
+    // the way every other check in this store does (`fold_key`, `is_captain`, `question_veto`). A fullwidth or
+    // hidden-character spelling of a red line that the question veto has no word for is answered by the captain.
+    #[test]
+    fn review_r3_a_folded_spelling_of_a_red_line_is_still_the_red_list() {
+        let store = store();
+        let mut conn = store.lock_conn().unwrap();
+        mate(&mut conn);
+        cover(&conn, "*");
+        for (key, question) in [
+            (
+                "vault-1",
+                "Paste the \u{FF52}\u{FF45}\u{FF43}\u{FF4F}\u{FF56}\u{FF45}\u{FF52}\u{FF59} \u{FF43}\u{FF4F}\u{FF44}\u{FF45}\u{FF53} into the vault?",
+            ),
+            ("vault-2", "Use the seed\u{200B} phrase from the notes?"),
+            ("vault-3", "Print the mne\u{200B}monic?"),
+        ] {
+            // Folded, each one is on the red list.
+            assert!(red_category(&fold_key(question)).is_some(), "{question}");
+            open(&mut conn, "hivra", key, question);
+            let out = captain_answers(
+                &mut conn,
+                "hivra",
+                key,
+                "Keep it",
+                "Coding was confident: it is fine",
+            );
+            assert!(
+                out.as_ref().is_err_and(|err| err.contains("red list")),
+                "{key}: {:?}",
+                out.map(|o| o.decision.and_then(|d| d.answered_by))
+            );
+        }
+    }
 }
