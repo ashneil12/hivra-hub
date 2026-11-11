@@ -5711,6 +5711,41 @@ mod teleport_guard_tests {
         ));
     }
 
+    /// PR #214 review r2: the release the webview writes (teleportLocal.ts) keeps the marker alone, with no user message.
+    /// The project listing (`has_user_message = 1`) is what the sidebar and launch recovery read, so the moved chat, and a
+    /// move back's incoming copy stored on it, must still be listed.
+    #[test]
+    fn a_moved_chat_and_its_incoming_copy_stay_listed_in_their_project() {
+        let store = SessionStore::open_in_memory().unwrap();
+        let conn = store.lock_conn().unwrap();
+        save(&conn, Value::Array(base())).unwrap();
+        step(&conn, with(vec![frozen("m1")]), "m1", "freeze").unwrap();
+        step(
+            &conn,
+            Value::Array(vec![moved_away(1000.0)]),
+            "m1",
+            "release",
+        )
+        .unwrap();
+        let listed = list_by_project(&conn, "/tmp/teleport-guard").unwrap();
+        assert!(
+            listed.iter().any(|summary| summary.id == "chat-1"),
+            "a moved chat's marker row drops out of its project's list"
+        );
+        step(
+            &conn,
+            Value::Array(vec![moved_away(1000.0), incoming("m2")]),
+            "m2",
+            "incoming",
+        )
+        .unwrap();
+        let listed = list_by_project(&conn, "/tmp/teleport-guard").unwrap();
+        assert!(
+            listed.iter().any(|summary| summary.id == "chat-1"),
+            "a move back's incoming copy is invisible to launch recovery"
+        );
+    }
+
     #[test]
     fn an_abort_refuses_its_move_and_drops_its_copy_only() {
         let store = SessionStore::open_in_memory().unwrap();
