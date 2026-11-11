@@ -42,6 +42,8 @@ const KINDS: Record<string, string> = {
   "ship.trial": "Trial",
   "ship.rollback": "Rollback",
   "permission.grant": "Permission",
+  // WP-182: a change on a Mono's card.
+  "mono.settings": "Mono settings",
   // WP-180a: the automations screen writes these. The words match the line.
   "automation.started": "Automation started",
   "automation.completed": "Automation finished",

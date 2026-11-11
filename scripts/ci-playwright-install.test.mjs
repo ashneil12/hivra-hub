@@ -224,7 +224,9 @@ test("the browser job caches that directory, caps install at 15 minutes, and ret
   );
   assert.match(save, /continue-on-error:\s*true/);
   assert.doesNotMatch(browser, /npx playwright install/);
-  assert.match(browser, /--shard=\$\{\{ matrix\.shard \}\}\/4/);
+  assert.match(browser, /--shard=\$\{\{ matrix\.shard \}\}\/6/);
+  assert.match(browser, /shard: \[1, 2, 3, 4, 5, 6\]/);
+  assert.match(browser, /name: browser \(\$\{\{ matrix\.shard \}\}\/6\)/);
   assert.match(ci, /360 minutes/);
 });
 

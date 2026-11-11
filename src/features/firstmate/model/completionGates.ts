@@ -7,6 +7,8 @@
 import { invoke } from "@tauri-apps/api/core";
 import type { MonoSessionCompletionResult } from "../../monos/model/monoSessionCompletion";
 import { GATE_TRIES, gateAsk, gateFailedResult, type GateRun } from "../../monos/model/workerGate";
+import type { Block } from "../../sessions/model/session";
+import { factsFromBlocks, type FactTurn } from "./factGaps";
 
 /** The fixed set (gates.rs GateKind). */
 export const GATE_WORDS = ["diff", "checks", "committed", "ratchet", "routes"] as const;
@@ -108,24 +110,45 @@ function failedRun(summary: string | undefined): GateRun {
 }
 
 /**
+ * The first line of a fact-gap summary, when it is a real reason. A stored summary is untrusted: a blank, a control
+ * character, or a line too long to show falls back to the usual checks note.
+ */
+function sentBackLine(summary: string | undefined): string | undefined {
+  const line = summary?.split(/\r?\n/)[0]?.trim() ?? "";
+  if (!line.startsWith("Sent back:")) return undefined;
+  const rest = line.slice("Sent back:".length).trim();
+  if (!rest || line.length > 180) return undefined;
+  if (/[\u0000-\u001F\u007F]/.test(line)) return undefined;
+  return line;
+}
+
+function sentBackFailure(result: MonoSessionCompletionResult, line: string): MonoSessionCompletionResult {
+  return { ...result, status: "failed", error: `${line} Still failed after ${GATE_TRIES} tries.` };
+}
+
+/**
  * One round. `failures` is how many failed rounds this worker already had, not counting this one. A pass lands. The
  * first failure goes back to the worker; the second is failed. Unsure never uses that fix round and never lands: the
  * row stays completed so its first mate can accept or refuse it.
  */
 export function briefGateAction(record: GateRecordView, failures: number): BriefGateStep {
   if (record.verdict === "passed") return { action: "pass" };
+  const sentBack = record.verdict === "failed" ? sentBackLine(record.summary) : undefined;
   if (record.verdict === "failed" && failures + 1 < GATE_TRIES) {
     const run = failedRun(record.summary);
     return {
       action: "resend",
       ask: gateAsk(run),
-      note: RESEND_NOTE,
-      failed: (result) => gateFailedResult(result, run),
+      note: sentBack ? { kind: "message", from: "MonoCode", line: sentBack } : RESEND_NOTE,
+      failed: (result) => (sentBack ? sentBackFailure(result, sentBack) : gateFailedResult(result, run)),
     };
   }
   if (record.verdict === "failed") {
     const run = failedRun(record.summary);
-    return { action: "fail", apply: (result) => gateFailedResult(result, run) };
+    return {
+      action: "fail",
+      apply: (result) => (sentBack ? sentBackFailure(result, sentBack) : gateFailedResult(result, run)),
+    };
   }
   const summary = record.summary?.trim() || "The checks couldn't say the brief was met.";
   return {
@@ -141,17 +164,30 @@ export type BriefGateInput = {
   signedOff: boolean;
   report: string;
   failures: number;
+  /** WP-145: this turn's blocks. Facts are read from them when `facts` is absent. */
+  blocks?: readonly Block[];
+  /** WP-145: already-read facts. These win over `blocks`. */
+  facts?: FactTurn;
 };
+
+/** Facts from this turn's blocks. Missing blocks are not invented from the report. */
+function withFacts(input: BriefGateInput): BriefGateInput {
+  if (input.facts) return input;
+  if (!Array.isArray(input.blocks)) return input;
+  return { ...input, facts: factsFromBlocks(input.blocks, input.report) };
+}
 
 /** Runs the stored plan. `null`: the brief has no gates, and the routes check runs as before. */
 export async function runBriefGates(input: BriefGateInput): Promise<GateRecordView | null> {
+  const ready = withFacts(input);
   return invoke<GateRecordView | null>("firstmate_run_gates", {
     input: {
-      delegationId: input.delegationId,
-      checkout: input.checkout,
-      ...(input.projectId ? { projectId: input.projectId } : {}),
-      signedOff: input.signedOff,
-      report: input.report,
+      delegationId: ready.delegationId,
+      checkout: ready.checkout,
+      ...(ready.projectId ? { projectId: ready.projectId } : {}),
+      signedOff: ready.signedOff,
+      report: ready.report,
+      ...(ready.facts ? { facts: ready.facts } : {}),
     },
   });
 }
@@ -164,9 +200,10 @@ export async function briefGatesFor(
   input: BriefGateInput,
   run: (input: BriefGateInput) => Promise<GateRecordView | null> = runBriefGates,
 ): Promise<BriefGateStep | null> {
+  const ready = withFacts(input);
   let record: GateRecordView | null;
   try {
-    record = await run(input);
+    record = await run(ready);
   } catch {
     record = {
       verdict: "unsure",
@@ -174,7 +211,7 @@ export async function briefGatesFor(
     };
   }
   if (!record) return null;
-  return briefGateAction(record, input.failures);
+  return briefGateAction(record, ready.failures);
 }
 
 /** Keeps a started task's gates (firstmate_gates_plan). An empty plan keeps nothing. */

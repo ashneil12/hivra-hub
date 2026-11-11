@@ -44,6 +44,7 @@ import {
   mobileQuestionReply,
 } from "../features/mobile/model/mobileWorkspace";
 import { readMonoConversation } from "../features/monos/model/monoConversation";
+import { useApplyMonoCardRun } from "../features/monos/hooks/useApplyMonoCardRun";
 import {
   resumeMonoUsageLimit,
   switchMonoUsageLimitAccount,
@@ -74,7 +75,7 @@ import {
 import { delegationTasksHost } from "../features/monos/model/delegationTasks";
 import { withCrewAdvice } from "../features/crew/model/advice";
 import { crewAnyLock, crewLaunchCheck, crewPickFor, crewPolicyForLead, crewPolicyInForce, crewRouteFor, pickMonosFrom, recordCrewFailure, recordCrewPause } from "../features/crew/model/host";
-import { refuseNeverUseLead } from "../features/crew/model/lead";
+import { cliForLeadBrief, refuseBriefedLeadHarness, refuseNeverUseLead } from "../features/crew/model/lead";
 import {
   briefCancelled,
   briefSentAt,
@@ -123,7 +124,7 @@ import { compactionCount } from "../features/memory/model/shownMemory";
 import { profileNote } from "../features/memory/ui/profileForTurn";
 import { ensureMorningHabit } from "../features/chief/model/habit";
 import { readsEveryProject, turnRecallWide } from "../features/chief/model/scope";
-import { leadFor, leadMono, leadSpecFor } from "../features/hub/model/hubLeads";
+import { leadFor, leadMono, leadSpecFor, leadWorkingFolder } from "../features/hub/model/hubLeads";
 import type { HubProject } from "../features/hub/model/types";
 import { useDelegations } from "../features/monos/hooks/useDelegations";
 import { useFollowedBriefs } from "../features/monos/hooks/useFollowedBriefs";
@@ -297,6 +298,7 @@ import { noteOpenedChat } from "../features/home/model/store";
 import { stampChat } from "../features/home/model/openedChat";
 import { useHomeOnOpen } from "../features/home/ui/useHomeOnOpen";
 import { useHomeOpener } from "../features/home/ui/useHomeOpener";
+import { setAgentsBoardSessionStop } from "../features/agents-board/model/sessionStop";
 import { placePrompt, rememberPromptSession } from "../features/sessions/model/threadLinkOpen";
 import { ThreadLinkNotice, useThreadLinkOpener } from "../features/sessions/ui/ThreadLinkActions";
 import {
@@ -385,6 +387,7 @@ import {
   worktreeFocus,
 } from "../features/source-control/model/worktreeFocus";
 import { useProjectDiffStats } from "../features/source-control/hooks/useProjectDiffStats";
+import { onGuardFindingOpen } from "../features/commit-guard/model/openFinding";
 import { showWorktreeSetup } from "../features/source-control/model/worktreeSetup";
 import {
   listProjectActions,
@@ -1096,6 +1099,8 @@ import {
   type AutomationRun,
 } from "../features/automations/model/automations";
 import { automationRunErrorClass } from "../features/automations/model/runFailure";
+import { MissedScheduleNotice } from "../features/one-time-schedule/ui/OneTimeSchedulePanel";
+import { useOneTimeScheduleRunner } from "../features/one-time-schedule/ui/useOneTimeScheduleRunner";
 import { useQuickComposerLaunches } from "../features/quick-composer/hooks/useQuickComposerLaunches";
 import type { QuickLaunch } from "../features/quick-composer/model/quickComposer";
 import { claimInboxAutomationRuns } from "../features/automations/model/automationEvents";
@@ -5259,6 +5264,8 @@ function Workspace({
   const onShowSourceControl = useCallback(() => {
     setSidebarTab("changes");
   }, []);
+  // WP-200: a commit-guard refusal asked to be shown from a card or status line opens the Changes tab.
+  useEffect(() => onGuardFindingOpen(() => setSidebarTab("changes")), []);
 
   const onToggleChanges = useCallback(() => {
     onShowSourceControl();
@@ -8182,6 +8189,9 @@ function Workspace({
     [],
   );
 
+  // WP-182: a card edit during a turn waits until that turn is idle.
+  useApplyMonoCardRun(sessions, onModelChange, onModelSettingsChange);
+
   const onRuntimeModeChange = useCallback(
     (sessionId: string, runtimeMode: RuntimeMode) => {
       setSessions((prev) =>
@@ -10905,6 +10915,8 @@ function Workspace({
           },
         });
         if (!lead) throw new Error(`${input.target.leadName}'s chat isn't available.`);
+        // The chat exists now, so judge the CLI it will run before the brief is launched.
+        await refuseBriefedLeadHarness(lead, input.target, input.fromMonoId, crewPolicyInForce);
         const fromName = monoLook(from).name;
         const text =
           typeof input.brief === "string"
@@ -11322,7 +11334,9 @@ function Workspace({
       },
       submit: (sessionId, text, _history, options) => submitSessionRef.current(sessionId, text, [], options),
       // WP-141 round 6: a reviewer is a launch like a worker: its CLI passes the crew gate before its session starts.
-      crewGate: (session, reviewed) => crewLaunchCheck({ cli: session.harness, folder: reviewed, sessionId: session.id }),
+      // WP-141: the chat that asked is the reviewer's parent, so that chat's grant stays in force.
+      crewGate: (session, reviewed, parentSession) =>
+        crewLaunchCheck({ cli: session.harness, folder: reviewed, sessionId: session.id, parentSession }),
       stop: (sessionId) => {
         void onStopRef.current(sessionId, true);
       },
@@ -11498,6 +11512,34 @@ function Workspace({
       },
     });
   }, []);
+  // WP-128: one prompt at a chosen time. A closed app does not run it.
+  const oneTimeSchedules = useOneTimeScheduleRunner({
+    paused: () => shipHoldRef.current,
+    sessions: () =>
+      sessionsRef.current.map((session) => ({
+        id: session.id,
+        busy: Boolean(session.busy),
+      })),
+    projectPaths: () => {
+      const paths = recents.map((recent) => recent.path);
+      if (looksLikeProject(projectCwd)) paths.push(projectCwd);
+      return paths;
+    },
+    createChat: (folder) => {
+      const session = { ...newDefaultSession(folder), title: "Scheduled prompt" };
+      const nextSessions = [...sessionsRef.current, session];
+      sessionsRef.current = nextSessions;
+      setSessions(nextSessions);
+      appendTab(newTab(session.id), folder);
+      return session.id;
+    },
+    submit: (sessionId, prompt) =>
+      submitWithSettlement({
+        submit: (onSettled) => submitSession(sessionId, prompt, [], { onSettled }),
+        rejectionMessage: "The chat did not take the prompt.",
+        onSettled: () => undefined,
+      }),
+  });
 
   const onInboxAppeared = useCallback(
     (items: Parameters<typeof claimInboxAutomationRuns>[0]) => {
@@ -13119,6 +13161,9 @@ function Workspace({
     openSession: openReminderSession,
   });
   const onStopFromUser = delegationTree.stopFromUser;
+  // WP-219: a project chat or a sub-chat on the Agents board uses the Stop its own chat's button uses: on a chat with
+  // work out that is the tree Stop, so its workers stop too and their reports don't wake it again.
+  useEffect(() => setAgentsBoardSessionStop((sessionId) => onStopFromUser(sessionId)), [onStopFromUser]);
 
   // The real-Claude test bench (scripts/hub-realtest.mjs): a dev copy whose verify plan names a driver folder takes Ash's
   // scripted actions through the same handlers his composer, Stop button and rail use. No plan reaches the daily app.
@@ -14429,7 +14474,8 @@ function Workspace({
               return;
             }
             if (gateDue(result)) {
-              const checkout = gateCheckout(sessionsRef.current.find((session) => session.id === sessionId));
+              const session = sessionsRef.current.find((session) => session.id === sessionId);
+              const checkout = gateCheckout(session);
               const projectId = delegation?.project ?? hubProjectIdFor(project);
               // WP-40: a brief with gates is checked in code; one without keeps the routes check below.
               // No copy on hand is not a pass when a plan was stored: the id is not a checkout, so those gates
@@ -14442,6 +14488,8 @@ function Workspace({
                     signedOff: signedOffFor(workerStarted, monoId, delegation?.project ?? hubProjectIdFor(project) ?? project, delegationsRef.current?.known() ?? []),
                     report: result.result ?? "",
                     failures: gateFailures,
+                    // WP-145: this turn's checks, edits and to-dos.
+                    blocks: session?.blocks,
                   })
                 : null;
               if (briefGates?.action === "resend") {
@@ -15211,11 +15259,17 @@ function Workspace({
                     `No Lead "${lead}" among the ones you can brief (a Lead of a project you and it are both members of).`,
                   );
                 // WP-141 LOW 7: a Lead on Never use is not briefed, read from the Lead's own project, whatever the brief says.
-                await refuseNeverUseLead(
-                  { ...target, cli: sessionsRef.current.find((session) => session.id === findMono(target.leadId)?.sessionId)?.harness },
-                  mono.id,
-                  crewPolicyInForce,
-                );
+                // The CLI is the one the brief will run: the open chat, else the saved chat, else the chat a new session starts.
+                const cli = await cliForLeadBrief({
+                  mono: findMono(target.leadId),
+                  openSessions: sessionsRef.current,
+                  load: (id) => ensureOpenSessionRef.current(id),
+                  createDefault: async () => {
+                    const folder = leadWorkingFolder(target.leadId) ?? (await homeDir());
+                    return newDefaultSession(folder);
+                  },
+                });
+                await refuseNeverUseLead({ ...target, cli }, mono.id, crewPolicyInForce);
               },
               crewPolicy: (monoId, folder) => crewPolicyInForce(monoId, folder),
               // WP-141: the one gate every worker and session launch passes before its process starts.
@@ -15614,7 +15668,6 @@ function Workspace({
     sameSessionSummaries,
   );
   const {
-    unseen: inboxUnseen,
     linkedSessionUpdateIds,
     linkedSessionUpdates,
   } = useInboxActivity(recents, sidebarCwd, sidebarHistory, {
@@ -18269,7 +18322,8 @@ function Workspace({
       inset={insetLayout}
       onToggleProjectRail={onToggleProjectRail}
       unseenFinishedIds={unseenFinishedIds}
-      inboxUnseen={inboxUnseen}
+      // WP-210: the Inbox mark is the Needs you count, read in the sidebar. The tracker still plays its sound.
+      inboxUnseen={false}
       linkedSessionUpdateIds={linkedSessionUpdateIds}
       settingsOpen={settingsOpen}
       settingsSection={settingsSection}
@@ -18837,6 +18891,10 @@ function Workspace({
                         cwd={projectCwd}
                         scopeProject={appViewScope}
                         recents={recents}
+                        chats={sessions.map((session) => ({
+                          id: session.id,
+                          title: session.title,
+                        }))}
                         onClose={onLeaveAutomations}
                         onToggleSidebar={onToggleSidebar}
                         onLaunch={(automation, run) =>
@@ -19049,6 +19107,8 @@ function Workspace({
           />
           {/* WP-123: fork a chat from one message. */}
           <ThreadForkHost sessionsRef={sessionsRef} onOpen={openForkedSession} />
+          {/* WP-128: a run the closed app missed. */}
+          <MissedScheduleNotice notices={oneTimeSchedules.notices} onDone={oneTimeSchedules.note} />
           {whatsNewVersion ? (
             <WhatsNewDialog
               version={whatsNewVersion}

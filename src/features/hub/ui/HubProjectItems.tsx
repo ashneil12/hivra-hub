@@ -5,6 +5,7 @@ import { confirmDelete } from "../../../shared/ui/ConfirmDelete";
 import { deleteChat } from "../model/hubChats";
 import { MoreHorizontal, Plus, Trash2, DashboardSquare as Layers, MessageMultiple as MessagesSquare, Terminal as Code2, type IconComponent } from "../../../shared/ui/icons";
 import { hubData, useHubDataVersion } from "../model/hubData";
+import { useNeedsYou } from "../../needs/model/needsLive";
 import { useHubChatsVersion } from "../model/hubChats";
 import { useTemplatesVersion } from "../model/templates";
 import { setHubSelection, type HubSelection } from "../model/hubNav";
@@ -58,6 +59,8 @@ export function HubProjectItems({
 }) {
   useHubDataVersion();
   useHubChatsVersion();
+  // WP-210: the header count and the sidebar total are the one Needs you list.
+  const needs = useNeedsYou();
   // The project's sections come from its template, so switching it changes this list too.
   useTemplatesVersion();
   const [menu, setMenu] = useState<PopoverAnchor>();
@@ -68,12 +71,25 @@ export function HubProjectItems({
   if (selection.item === "new-project") return null;
   // WP-06: Being built, Builds and the project's Decisions row are gone. Settings → Decisions still lists them.
   const items = hubData().listProjectItems(project.id).filter((item) => keptNavItem(item));
+  const projectNeeds = needs.filter((item) => item.projectId === project.id).length;
   return (
     <div className="mb-2 shrink-0" data-hub-items>
-      <div className="group/head flex items-center gap-1 px-3 pb-1.5 pt-1" data-hub-project-header
+      <div className="group/head flex items-center gap-1 px-3 pb-1.5 pt-1" data-hub-project-header data-project-id={project.id}
         onContextMenu={(e) => { e.preventDefault(); setMenu({ x: e.clientX, y: e.clientY }); }}>
         <span className="grid size-4 shrink-0 place-items-center"><ProjectGlyph project={project} size={11} /></span>
         <span className="min-w-0 flex-1 truncate px-1 text-xs leading-5 text-content/60">{project.name}</span>
+        {projectNeeds > 0 ? (
+          <span
+            data-project-needs={projectNeeds}
+            className="shrink-0 rounded-full px-1 text-[10px] leading-4 text-white"
+            style={{ background: "#e5484d" }}
+          >
+            {projectNeeds}
+          </span>
+        ) : null}
+        <span data-sidebar-needs-count={needs.length} className="sr-only">
+          {needs.length > 0 ? `${needs.length} Needs you` : "Needs you"}
+        </span>
         <button type="button" title={`${project.name} options`} aria-label={`${project.name} options`} data-project-more
           onClick={(e) => setMenu(e.currentTarget)}
           className="grid size-5 shrink-0 place-items-center rounded-md text-content/60 opacity-0 hover:bg-content/8 hover:text-content focus:opacity-100 group-hover/head:opacity-100">

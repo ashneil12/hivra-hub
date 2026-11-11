@@ -335,6 +335,7 @@ fn a_code_briefs_delivery_runs_the_checks_exactly_once_and_records_the_layer() {
             report: "Named it.",
             now: 4,
             gate_owns_checks: owns,
+            facts: None,
         },
         &counter,
     );

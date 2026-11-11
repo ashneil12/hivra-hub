@@ -39,6 +39,16 @@ export type FirstMateItem = {
   recommended: string | null;
   /** WP-92: a line that sits under the answer buttons (a secret card's warning about "Always"). */
   note?: string | null;
+  /** A short kind, such as "Passed up". Absent on a row that has none. */
+  chip?: string;
+  /** Where the row came from, such as the project and who passed it up. */
+  sourceLine?: string;
+  /** Words in front of the body, so the reason can name who said it. */
+  reasonLead?: string;
+  /** Actions on the right. The first primary one is the suggestion. */
+  actions?: readonly { label: string; primary?: boolean; onClick?: () => void }[];
+  /** Small chips beside the title, such as "Can wait". */
+  marks?: readonly string[];
   project: string;
   key: string | null;
   /** The decision version this card was drawn from. Absent on a row that is not a decision. */
@@ -149,9 +159,23 @@ export function failureWords(notice?: string | null, error?: string | null): str
   return firstPlainLine(`${notice ?? ""}\n${error ?? ""}`) ?? "This work failed.";
 }
 
+/** A line the gate wrote. It quotes the worker's command, so "sign-in" in it is not a sign-in to do. */
+function sentBackLine(line: string): boolean {
+  return line.trim().toLowerCase().startsWith("sent back:");
+}
+
+function withoutSentBack(value: string | null | undefined): string {
+  return (value ?? "")
+    .replace(/\r\n/g, "\n")
+    .split("\n")
+    .filter((line) => !sentBackLine(line))
+    .join("\n");
+}
+
 function credential(row: CrewWorkerInput): boolean {
   if (CREDENTIAL_CLASS.has((row.errorClass ?? "").trim())) return true;
-  const text = `${row.statusNotice ?? ""}\n${row.error ?? ""}`.toLowerCase();
+  // A send-back quotes the worker's own command, in the notice or the error. A real line above it still counts.
+  const text = `${withoutSentBack(row.statusNotice)}\n${withoutSentBack(row.error)}`.toLowerCase();
   if (knownStatus(row.status) === "paused" && /usage limit|quota/.test(text)) return true;
   return /sign[- ]in|not signed in|missing cli|isn't installed|is not installed/.test(text);
 }

@@ -38,6 +38,8 @@ export type LocalProject = {
   shortName: string;
   iconShape: string;
   folder: string | null;
+  /** Shared with the team (WP-80): set only by Ash's "Share with my team" click, never by a rename. */
+  shared?: boolean;
   oneLine?: string;
   archived?: boolean;
   status?: string;
@@ -292,6 +294,7 @@ export class LocalHub {
         p.iconShape = String(v.icon_shape);
       }
       if (v.folder !== undefined) p.folder = typeof v.folder === "string" && v.folder.trim() ? v.folder.trim() : null;
+      if (v.shared != null) p.shared = Boolean(v.shared);
       if (JSON.stringify(p) === before) throw new Error("nothing to change");
       return clone(p);
     });
@@ -359,9 +362,9 @@ export class LocalHub {
   // ---- the strip -------------------------------------------------------------------------------------------------------
 
   /** The project strip in order. The Today board's sections were Ash OS's and are retired (WP-06 removes Today). */
-  async layout(): Promise<{ strip: Array<Pick<LocalProject, "id" | "name" | "shortName" | "iconShape">> }> {
+  async layout(): Promise<{ strip: Array<Pick<LocalProject, "id" | "name" | "shortName" | "iconShape" | "shared">> }> {
     await this.load();
-    return { strip: this.visible().map((p) => ({ id: p.id, name: p.name, shortName: p.shortName, iconShape: p.iconShape })) };
+    return { strip: this.visible().map((p) => ({ id: p.id, name: p.name, shortName: p.shortName, iconShape: p.iconShape, ...(p.shared ? { shared: true } : {}) })) };
   }
 
   // ---- Pages -----------------------------------------------------------------------------------------------------------

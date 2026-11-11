@@ -32,6 +32,9 @@ import { setChatPreviewShown, settleChatPreview, useChatPagePreview } from "../.
 import { OPEN_EDIT_TODAY, todayPreviewWaiting } from "../../selfBuild/model/todayChat";
 import { FLOW_LABEL, type ChangeFlow } from "../../hubChange/model/hubChange";
 import { CalendarBlock, monthOf } from "./CalendarBlock";
+import { IS_HUB_BUNDLE } from "../../hub/model/hubBundle";
+import { agentsPageUsesBoard, isAgentsPage } from "../../agents-board/model/place";
+import { AgentsBoardScreen } from "../../agents-board/ui/AgentsBoardScreen";
 
 /*
  * Pages: one list of every page (by project), each with a pin. New page is a prompt to a seated Mono; it shows a
@@ -186,6 +189,8 @@ export function Block({ block }: { block: PageBlock }) {
 }
 
 export function PageBody({ page, live }: { page: Page; live?: boolean }) {
+  // WP-219: the ready-made Agents page is the one board, not its own tree.
+  if (agentsPageUsesBoard(IS_HUB_BUNDLE) && isAgentsPage(page)) return <AgentsBoardScreen />;
   if (page.spec.kind === "bespoke") return <BespokeFrame key={`${page.id}:${specKey(page.spec)}`} pageId={page.id} spec={page.spec} live={live} title={page.title} />;
   return (
     <div className="grid grid-cols-2 gap-3">

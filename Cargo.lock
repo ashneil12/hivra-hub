@@ -2838,6 +2838,7 @@ dependencies = [
  "arboard",
  "base64 0.22.1",
  "block2",
+ "core-foundation 0.10.1",
  "dirs",
  "dunce",
  "flate2",
@@ -2862,6 +2863,7 @@ dependencies = [
  "raw-window-handle",
  "regex",
  "rusqlite",
+ "security-framework 3.7.0",
  "semver",
  "serde",
  "serde_json",
@@ -2888,6 +2890,18 @@ dependencies = [
  "windows-sys 0.61.2",
  "zeroize",
  "zstd",
+]
+
+[[package]]
+name = "monocode-dictation"
+version = "0.16.16"
+dependencies = [
+ "block2",
+ "libc",
+ "objc2",
+ "objc2-foundation",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

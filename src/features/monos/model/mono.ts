@@ -89,8 +89,18 @@ export type Mono = {
   crewRules?: CrewRule[];
   /** WP-88: may read every project on this copy. Only a real true counts. */
   everyProject?: boolean;
+  /** WP-215: the starter template this Mono was added from. The Mono's own id is never that template id. */
+  templateId?: string;
+  /** WP-215: the captain. Set by the coordinator starter, so a renamed chief still hands work on. */
+  captain?: boolean;
   /** WP-89: the CLI, model and effort its workers use, when this Mono sets one. */
   workerDefault?: WorkerPick;
+  /** WP-182: fast mode for its own chat, when the chosen model offers it. Only a real boolean counts. */
+  engineFast?: boolean;
+  /** WP-182: skill names it is offered. Absent or empty means everything installed. */
+  skills?: string[];
+  /** WP-182: slash command names it is offered. Absent or empty means everything installed. */
+  commands?: string[];
 };
 
 /** No id carries a built-in role. A Mono shows the role it was given, or none. */
@@ -245,6 +255,25 @@ function newMonoId(): string {
     : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
+const CARD_NAME = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$/;
+
+/** Skill or command names from a roster or an import. Paths, blanks and duplicates are dropped. */
+export function cardNames(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const seen = new Set<string>();
+  const names: string[] = [];
+  for (const item of value) {
+    if (typeof item !== "string") continue;
+    const name = item.trim();
+    if (!CARD_NAME.test(name) || name.includes("..")) continue;
+    if (seen.has(name)) continue;
+    seen.add(name);
+    names.push(name);
+    if (names.length >= 64) break;
+  }
+  return names.length ? names : undefined;
+}
+
 function parseMono(value: unknown): Mono | undefined {
   const entry = record(value);
   if (typeof entry.id !== "string" || !/^[A-Za-z0-9-]+$/.test(entry.id))
@@ -260,6 +289,8 @@ function parseMono(value: unknown): Mono | undefined {
   const role = text("role");
   const crewRules = parseCrewRules(entry.crewRules);
   const workerDefault = parseWorkerDefault(entry.workerDefault);
+  const skills = cardNames(entry.skills);
+  const commands = cardNames(entry.commands);
   const roomSessions = Object.fromEntries(
     Object.entries(record(entry.roomSessions)).filter(
       (pair): pair is [string, string] => typeof pair[1] === "string" && /^[A-Za-z0-9_-]+$/.test(pair[1]) && pair[1] !== sessionId,
@@ -288,6 +319,10 @@ function parseMono(value: unknown): Mono | undefined {
     ...(entry.muted === true ? { muted: true } : {}),
     // WP-88: a string or 1 from a hand-edited roster is not a grant to read every project.
     ...(entry.everyProject === true ? { everyProject: true } : {}),
+    ...(typeof entry.templateId === "string" && /^[A-Za-z0-9-]+$/.test(entry.templateId)
+      ? { templateId: entry.templateId }
+      : {}),
+    ...(entry.captain === true ? { captain: true } : {}),
     ...(crewRules ? { crewRules } : {}),
     ...(workerDefault ? { workerDefault } : {}),
     ...(instructions ? { instructions } : {}),
@@ -295,6 +330,10 @@ function parseMono(value: unknown): Mono | undefined {
     ...(engine && engineModel ? { engineModel } : {}),
     ...(legacyProject ? { legacyProject } : {}),
     ...(role !== undefined ? { role: role.slice(0, 40) } : {}),
+    // WP-182: a string or 1 is not fast mode. Empty name lists mean today's offer.
+    ...(typeof entry.engineFast === "boolean" ? { engineFast: entry.engineFast } : {}),
+    ...(skills ? { skills } : {}),
+    ...(commands ? { commands } : {}),
   };
 }
 
