@@ -7,6 +7,8 @@ export interface CommitGuardRefusalView {
   file: string;
   line: number;
   commit: string;
+  /** WP-248: the refusal is for a whole tracked approvals file, not one line. */
+  wholeFile?: boolean;
 }
 
 /** The app's record of a refusal, or null when it holds none. */
