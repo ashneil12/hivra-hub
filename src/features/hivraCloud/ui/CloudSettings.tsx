@@ -91,10 +91,11 @@ export function CloudSettings({ api = cloudApi }: { api?: CloudApi }) {
         const next = asAccount(value);
         setAccount(next);
         if (next.notice) setNotice(next.notice);
+        if (next.noticeError) setFormError(next.noticeError);
       })
       .catch(() => {
         if (cancel || !alive.current || mine !== epoch.current) return;
-        setAccount({ status: "unavailable", plan: null, machineLimit: null, notice: ACCOUNT_NOTICE });
+        setAccount({ status: "unavailable", plan: null, machineLimit: null, notice: ACCOUNT_NOTICE, noticeError: null });
         setNotice(ACCOUNT_NOTICE);
       })
       .finally(() => {
@@ -115,16 +116,18 @@ export function CloudSettings({ api = cloudApi }: { api?: CloudApi }) {
   }
 
   async function commit(enabled: boolean, endpoint: string) {
-    const turningOff = !enabled;
-    if (turningOff) epoch.current += 1;
+    const turningOff = status.enabled && !enabled;
+    const addressChanged = endpoint.trim() !== status.endpoint.trim();
+    const signingOut = turningOff || (status.signedIn && addressChanged);
+    if (signingOut) epoch.current += 1;
     setSaving(true);
     setFormError("");
     try {
       await enqueue(async () => {
         try {
-          const next = asStatus(await api.save(enabled, endpoint.trim(), revision.current));
+          let next = asStatus(await api.save(enabled, endpoint.trim(), revision.current));
           if (!alive.current) return;
-          if (!next.enabled) {
+          if (signingOut) {
             setMachines([]);
             setNotice(null);
             setHanded("");
@@ -133,8 +136,9 @@ export function CloudSettings({ api = cloudApi }: { api?: CloudApi }) {
             try {
               await api.signOut();
             } catch {
-              // The switch is already off. Sign-out only drops the in-memory token.
+              // Sign-out only drops the in-memory token. The switch or the new address is already saved.
             }
+            next = { ...next, signedIn: false };
           }
           if (!alive.current) return;
           apply(next);

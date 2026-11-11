@@ -29,6 +29,7 @@ export type AccountView = {
   plan: string | null;
   machineLimit: number | null;
   notice: string | null;
+  noticeError: string | null;
 };
 
 export class CloudSaveConflict extends Error {
@@ -105,7 +106,7 @@ function cleanText(value: unknown, max: number): string | null {
 
 export function asAccount(value: unknown): AccountView {
   if (!value || typeof value !== "object") {
-    return { status: "unavailable", plan: null, machineLimit: null, notice: null };
+    return { status: "unavailable", plan: null, machineLimit: null, notice: null, noticeError: null };
   }
   const row = value as Record<string, unknown>;
   const machineLimit =
@@ -117,6 +118,7 @@ export function asAccount(value: unknown): AccountView {
     plan: cleanText(row.plan, 80),
     machineLimit,
     notice: cleanText(row.notice, 300),
+    noticeError: cleanText(row.noticeError, 300),
   };
 }
 

@@ -17,6 +17,16 @@ describe("Hivra Cloud address", () => {
     expect(endpointProblem("http://[::1]:9")).toBeNull();
   });
 
+  it("refuses plain http to this Mac when loopback is off, as on the daily app", () => {
+    expect(endpointProblem("http://127.0.0.1:9", false)).toBe("The Hivra Cloud address must be https.");
+    expect(endpointProblem("http://localhost", false)).toBe("The Hivra Cloud address must be https.");
+    expect(endpointProblem("http://[::1]:9", false)).toBe("The Hivra Cloud address must be https.");
+    expect(endpointProblem("https://cloud.example", false)).toBeNull();
+    expect(endpointProblem("http://cloud.example", false)).toBe(
+      "The Hivra Cloud address must be https, or http to this Mac.",
+    );
+  });
+
   it("rejects the same addresses the app refuses", () => {
     expect(endpointProblem("not a url")).toBe("The Hivra Cloud address isn't a valid URL.");
     expect(endpointProblem("http://cloud.example")).toBe(

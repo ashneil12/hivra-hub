@@ -167,6 +167,24 @@ describe("Hivra Cloud settings", () => {
     stop();
   });
 
+  it("says when the failure notice could not be saved", async () => {
+    const signedIn: CloudStatus = { ...ready, signedIn: true };
+    const cloud = api({
+      status: vi.fn(async () => signedIn),
+      account: vi.fn(async () => ({
+        status: "unavailable",
+        plan: null,
+        machineLimit: null,
+        notice: "Hivra Cloud can't be reached right now. Your own machines still work.",
+        noticeError: "Hivra Cloud couldn't save that this notice was shown.",
+      })),
+    });
+    await render(cloud);
+    await settle();
+    expect(container.textContent).toContain("couldn't save that this notice was shown");
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain("Your own machines still work.");
+  });
+
   it("shows the account failure once and still lets the person pair", async () => {
     const signedIn: CloudStatus = { ...ready, signedIn: true };
     const cloud = api({
@@ -223,6 +241,50 @@ describe("Hivra Cloud settings", () => {
     expect(container.querySelector('[data-screen="machines"]')).toBeNull();
     expect(switchButton().getAttribute("aria-checked")).toBe("false");
     expect(cloud.signOut).toHaveBeenCalled();
+  });
+
+  it("saves a valid address while off, and only the switch turns Cloud on", async () => {
+    let revision = 0;
+    const cloud = api({
+      save: vi.fn(async (enabled: boolean, endpoint: string) => {
+        revision += 1;
+        const state = !enabled ? "off" : endpoint === "" ? "no_endpoint" : "ready";
+        return { state, enabled, endpoint, revision, signedIn: false, message: null };
+      }),
+    });
+    await render(cloud);
+    await settle();
+    await typeInto(field(), "https://cloud.example");
+    await act(async () => {
+      field().dispatchEvent(new FocusEvent("focusout", { bubbles: true }));
+    });
+    await settle();
+    expect(cloud.save).toHaveBeenCalledWith(false, "https://cloud.example", 0);
+    expect(cloud.signIn).not.toHaveBeenCalled();
+    expect(cloud.account).not.toHaveBeenCalled();
+    await act(async () => switchButton().click());
+    await settle();
+    expect(cloud.save).toHaveBeenLastCalledWith(true, "https://cloud.example", 1);
+    expect(container.querySelector('[data-screen="sign-in"]')).not.toBeNull();
+  });
+
+  it("signs out when the address changes while signed in", async () => {
+    const signedIn: CloudStatus = { ...ready, signedIn: true };
+    const saved: CloudStatus = { ...ready, endpoint: "https://other.example", revision: 3, signedIn: true };
+    const cloud = api({
+      status: vi.fn(async () => signedIn),
+      save: vi.fn(async () => saved),
+    });
+    await render(cloud);
+    await settle();
+    await typeInto(field(), "https://other.example");
+    await act(async () => {
+      field().dispatchEvent(new FocusEvent("focusout", { bubbles: true }));
+    });
+    await settle();
+    expect(cloud.save).toHaveBeenCalledWith(true, "https://other.example", 2);
+    expect(cloud.signOut).toHaveBeenCalled();
+    expect(container.querySelector('[data-screen="machines"]')).toBeNull();
   });
 
   it("reloads when another window saved first", async () => {
