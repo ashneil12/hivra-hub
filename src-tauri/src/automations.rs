@@ -766,7 +766,7 @@ fn recover_stored_runs(
 
     let mut due = Vec::new();
     let mut changed = false;
-    let noted = false;
+    let mut noted = false;
     let mut changed_automation_ids = Vec::new();
     for mut run in runs {
         if run.status != "pending" && run.status != "running" {
@@ -792,12 +792,16 @@ fn recover_stored_runs(
                 .as_deref()
                 .is_none_or(|prompt| prompt.trim().is_empty())
         {
+            let previous_status = run.status.clone();
             run.status = "failed".into();
             run.completed_at = Some(now);
             run.error = Some("The Inbox event prompt was not available after restart.".into());
             apply_run_summary(&mut automation, &run);
             write_run(&tx, &run)?;
             write_automation(&tx, &automation)?;
+            if note_run_activity(&tx, &automation, &previous_status, &run, None, now) {
+                noted = true;
+            }
             changed_automation_ids.push(run.automation_id.clone());
             changed = true;
             continue;
@@ -1035,13 +1039,16 @@ pub(crate) fn failure_line(error: Option<&str>, error_class: Option<&str>) -> St
     if let Some(sentence) = failure_sentence(&class) {
         return sentence.to_string();
     }
-    let first = first_line(error.unwrap_or(""));
-    let scrubbed = crate::portable::scrubber().redact_text(first.trim()).0;
-    let scrubbed = scrubbed.trim();
-    if scrubbed.is_empty() {
+    // Scrub the whole error first, so a key that spans a line break cannot
+    // leave its header on the line that is kept.
+    let scrubbed = crate::portable::scrubber()
+        .redact_text(error.unwrap_or(""))
+        .0;
+    let first = first_line(&scrubbed).trim();
+    if first.is_empty() {
         "the run failed".to_string()
     } else {
-        crate::activity::bounded_text(scrubbed, 240)
+        crate::activity::bounded_text(first, 240)
     }
 }
 
@@ -1064,7 +1071,9 @@ fn failure_sentence(class: &str) -> Option<&'static str> {
 }
 
 fn first_line(text: &str) -> &str {
-    text.split(['\n', '\r']).next().unwrap_or("")
+    text.split(['\n', '\r', '\u{2028}', '\u{2029}', '\u{0085}'])
+        .next()
+        .unwrap_or("")
 }
 
 fn clock_phrase(time: &str) -> Option<String> {
@@ -1085,24 +1094,50 @@ fn started_by(automation: &Automation, run: &AutomationRun) -> String {
     if run.trigger == "event" {
         return event_cause(automation, run);
     }
-    schedule_cause(automation)
+    schedule_cause(automation, run)
 }
 
-fn schedule_cause(automation: &Automation) -> String {
-    let trigger = automation
-        .triggers
-        .as_deref()
-        .unwrap_or(&[])
-        .iter()
-        .find(|trigger| trigger.kind == "time");
-    match trigger {
-        Some(trigger) if trigger.schedule_kind == "hourly" => "the hourly schedule".to_string(),
-        Some(trigger) => match clock_phrase(&trigger.time) {
+/// The time trigger whose clock is the local time of `scheduled_for`. An hourly
+/// trigger matches its minute only when no exact clock does. No match is just
+/// "the schedule".
+fn schedule_cause(automation: &Automation, run: &AutomationRun) -> String {
+    let triggers = automation.triggers.as_deref().unwrap_or(&[]);
+    let (hour, minute) = local_clock(run.scheduled_for);
+    if let Some(trigger) = triggers.iter().find(|trigger| {
+        trigger.kind == "time"
+            && trigger.schedule_kind != "hourly"
+            && trigger_clock(trigger) == Some((hour, minute))
+    }) {
+        return match clock_phrase(&trigger.time) {
             Some(clock) => format!("the {clock} schedule"),
             None => "the schedule".to_string(),
-        },
-        None => "the schedule".to_string(),
+        };
     }
+    if triggers.iter().any(|trigger| {
+        trigger.kind == "time"
+            && trigger.schedule_kind == "hourly"
+            && trigger.minute == i64::from(minute)
+    }) {
+        return "the hourly schedule".to_string();
+    }
+    "the schedule".to_string()
+}
+
+fn local_clock(scheduled_for_ms: i64) -> (u8, u8) {
+    let secs = scheduled_for_ms.div_euclid(1000);
+    let offset = i64::from(crate::work_log::local_offset_seconds(secs));
+    let day = (secs + offset).rem_euclid(86_400);
+    let hour = u8::try_from(day / 3600).unwrap_or(0);
+    let minute = u8::try_from((day % 3600) / 60).unwrap_or(0);
+    (hour, minute)
+}
+
+fn trigger_clock(trigger: &AutomationTrigger) -> Option<(u8, u8)> {
+    if !valid_time(&trigger.time) {
+        return None;
+    }
+    let (hour, minute) = trigger.time.split_once(':')?;
+    Some((hour.parse().ok()?, minute.parse().ok()?))
 }
 
 fn event_cause(automation: &Automation, run: &AutomationRun) -> String {
@@ -1121,6 +1156,9 @@ fn event_cause(automation: &Automation, run: &AutomationRun) -> String {
 }
 
 fn event_repo(automation: &Automation, run: &AutomationRun) -> Option<String> {
+    if let Some(repo) = repo_from_event_key(run.event_key.as_deref().unwrap_or("")) {
+        return Some(repo);
+    }
     let kind = run.event_kind.as_deref().unwrap_or("");
     let event = run.event.as_deref().unwrap_or("");
     if let Some(triggers) = automation.triggers.as_ref() {
@@ -1142,7 +1180,7 @@ fn event_repo(automation: &Automation, run: &AutomationRun) -> Option<String> {
             }
         }
     }
-    repo_from_event_key(run.event_key.as_deref().unwrap_or(""))
+    None
 }
 
 /// `github:issue:owner/repo:12`. A key with no `owner/name` has no repo.
@@ -1651,7 +1689,7 @@ mod tests {
             id: id.into(),
             automation_id: automation_id.into(),
             trigger: "scheduled".into(),
-            scheduled_for: 1,
+            scheduled_for: at_local_clock(9, 0),
             created_at: 1,
             started_at: None,
             completed_at: None,
@@ -2120,7 +2158,13 @@ mod tests {
         }
     }
 
-    fn event_trigger(id: &str, kind: &str, event: &str, repo: &str, repos: &[&str]) -> AutomationTrigger {
+    fn event_trigger(
+        id: &str,
+        kind: &str,
+        event: &str,
+        repo: &str,
+        repos: &[&str],
+    ) -> AutomationTrigger {
         AutomationTrigger {
             id: id.into(),
             kind: kind.into(),
@@ -2188,11 +2232,7 @@ mod tests {
             "{}",
             rows[0].summary
         );
-        assert!(
-            !rows[0].summary.contains("acme/web"),
-            "{}",
-            rows[0].summary
-        );
+        assert!(!rows[0].summary.contains("acme/web"), "{}", rows[0].summary);
         assert!(rows[1].summary.contains("a new issue in team/board"));
         assert!(rows[2].summary.contains("a new issue in jira-project"));
         for row in &rows {
@@ -2206,7 +2246,10 @@ mod tests {
     fn a_schedule_run_names_the_clock_that_fired() {
         let store = crate::session_store::SessionStore::open_in_memory().unwrap();
         let mut automation = stored_automation("bells", "Bells", "PROMPT_SHOULD_NOT_LEAK");
-        automation.triggers = Some(vec![time_trigger("nine", "09:00"), time_trigger("six", "18:00")]);
+        automation.triggers = Some(vec![
+            time_trigger("nine", "09:00"),
+            time_trigger("six", "18:00"),
+        ]);
         let mut conn = store.lock_conn().unwrap();
         write_automation(&conn, &automation).unwrap();
 
@@ -2230,21 +2273,13 @@ mod tests {
             "{}",
             rows[0].summary
         );
-        assert!(
-            !rows[0].summary.contains("18:00"),
-            "{}",
-            rows[0].summary
-        );
+        assert!(!rows[0].summary.contains("18:00"), "{}", rows[0].summary);
         assert!(
             rows[1].summary.contains("the 18:00 schedule"),
             "{}",
             rows[1].summary
         );
-        assert!(
-            !rows[1].summary.contains("9:00"),
-            "{}",
-            rows[1].summary
-        );
+        assert!(!rows[1].summary.contains("9:00"), "{}", rows[1].summary);
         assert!(
             rows[2].summary.contains("the schedule"),
             "{}",
@@ -2295,7 +2330,11 @@ mod tests {
         assert_eq!(stored.status, "failed");
 
         let rows = activity_rows(&conn);
-        assert_eq!(rows.len(), 1, "the restart writes one line and a repeat writes no second");
+        assert_eq!(
+            rows.len(),
+            1,
+            "the restart writes one line and a repeat writes no second"
+        );
         assert_eq!(rows[0].kind, "automation.failed");
         assert!(rows[0]
             .summary
