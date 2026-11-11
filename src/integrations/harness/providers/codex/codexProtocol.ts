@@ -181,6 +181,19 @@ export function codexSkipsOuterSandbox(input: {
   return input.runtimeMode !== "full-access";
 }
 
+/**
+ * Whether Hivra's sandbox is on. Outside the app it stays off, so a test does not ask. Inside the app, a missing
+ * status or a value that is not true or false is on: a failed read must not start the chat unsandboxed.
+ */
+export function hivraSandboxEnabled(
+  inApp: boolean,
+  status: { enabled?: unknown } | null | undefined,
+): boolean {
+  if (!inApp) return false;
+  if (status == null || typeof status.enabled !== "boolean") return true;
+  return status.enabled;
+}
+
 function baseCodexConfig(mode: RuntimeMode): CodexThreadConfig {
   switch (mode) {
     case "supervised":

@@ -488,7 +488,8 @@ describe("worktree explorer visibility", () => {
 
 describe.each([false, true])("Mono rail selection (compact: %s)", (compact) => {
   it.each([
-    ["Needs you", "inboxActive", "onOpenInbox"],
+    // Dropwave: the project rail says Inbox; the compact rail keeps Needs you.
+    [compact ? "Needs you" : "Inbox", "inboxActive", "onOpenInbox"],
     ["Notes", "notesActive", "onOpenNotes"],
     ["Automations", "automationsActive", "onOpenAutomations"],
     ["Search", "searchActive", "onSearch"],

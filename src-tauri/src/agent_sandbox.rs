@@ -1904,8 +1904,12 @@ fn normalize_lexical(path: &Path) -> PathBuf {
 
 /// Starts `/usr/bin/true` under `profile` through `sandbox_exec`. Fails unless it exits 0, so a profile or launcher that
 /// cannot start is caught before an agent is started.
-pub fn preflight_with(sandbox_exec: &Path, profile: &str) -> Result<(), String> {
-    let args = sandbox_exec_profile_args(profile)?;
+pub fn preflight_with(
+    sandbox_exec: &Path,
+    profile: &str,
+    data_dir: Option<&Path>,
+) -> Result<(), String> {
+    let args = sandbox_exec_profile_args(profile, data_dir)?;
     let output = Command::new(sandbox_exec)
         .args(&args)
         .arg("/usr/bin/true")
@@ -2089,44 +2093,180 @@ pub fn sandboxed_launch(
     let checkouts = with_project_folders(data_dir, checkouts)?;
     let profile = profile_with_checkouts(home, data_dir, &checkouts)?;
     self_check(sandbox_exec)?;
-    preflight_with(sandbox_exec, &profile)?;
-    let mut args = sandbox_exec_profile_args(&profile)?;
+    preflight_with(sandbox_exec, &profile, data_dir)?;
+    let mut args = sandbox_exec_profile_args(&profile, data_dir)?;
     args.push(cli.to_os_string());
     Ok((sandbox_exec.as_os_str().to_os_string(), args))
 }
 
-/// `-p` while the profile is small enough for one argument. `-f` and a private file once it is not, so a long
-/// project list still starts. The file is swept an hour after it was written.
-fn sandbox_exec_profile_args(profile: &str) -> Result<Vec<OsString>, String> {
+/// `-p` while the profile is small enough for one argument. Above that, `-f` and a private file inside the data
+/// folder, which the profile write-denies. `$TMPDIR` is not denied, so the file is never written there. No data
+/// folder, or a file that cannot be kept inside it, refuses the start. The file is swept an hour after it was written.
+pub(crate) fn sandbox_exec_profile_args(
+    profile: &str,
+    data_dir: Option<&Path>,
+) -> Result<Vec<OsString>, String> {
     if profile.len() <= PROFILE_INLINE_LIMIT {
         return Ok(vec![OsString::from("-p"), OsString::from(profile)]);
     }
-    let path = write_sandbox_profile(profile)?;
+    let Some(data_dir) = data_dir else {
+        return Err(profile_needs_folder());
+    };
+    let path = write_sandbox_profile(data_dir, profile)?;
     Ok(vec![OsString::from("-f"), path.into_os_string()])
 }
 
-fn write_sandbox_profile(profile: &str) -> Result<PathBuf, String> {
-    let dir = std::env::temp_dir();
-    sweep_sandbox_profiles(&dir);
+fn profile_not_written() -> String {
+    "The sandbox profile could not be written, so nothing starts.".to_string()
+}
+
+fn profile_needs_folder() -> String {
+    "The sandbox profile is too large to pass inline, and there is no data folder to keep it in, so nothing starts."
+        .to_string()
+}
+
+/// `data/sandbox-profiles`, only when that directory is a real directory directly inside the canonical data folder.
+/// A link is refused before anything is written through it.
+fn profile_dir(data_dir: &Path) -> Result<PathBuf, String> {
+    let data = crate::fs::canonical(data_dir).map_err(|_| profile_not_written())?;
+    let candidate = data.join("sandbox-profiles");
+    match std::fs::symlink_metadata(&candidate) {
+        Ok(meta) if meta.file_type().is_symlink() => return Err(profile_not_written()),
+        Ok(meta) if meta.is_dir() => {}
+        Ok(_) => return Err(profile_not_written()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            std::fs::create_dir(&candidate).map_err(|_| profile_not_written())?;
+        }
+        Err(_) => return Err(profile_not_written()),
+    }
+    let real = crate::fs::canonical(&candidate).map_err(|_| profile_not_written())?;
+    if real.parent() != Some(data.as_path())
+        || real.file_name() != Some(std::ffi::OsStr::new("sandbox-profiles"))
+    {
+        return Err(profile_not_written());
+    }
+    let meta = std::fs::symlink_metadata(&real).map_err(|_| profile_not_written())?;
+    if meta.file_type().is_symlink() || !meta.is_dir() {
+        return Err(profile_not_written());
+    }
+    Ok(real)
+}
+
+fn write_sandbox_profile(data_dir: &Path, profile: &str) -> Result<PathBuf, String> {
+    let dir = profile_dir(data_dir)?;
+    let data = dir.parent().ok_or_else(profile_not_written)?.to_path_buf();
+    sweep_sandbox_profiles(&dir, &data);
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_nanos())
         .unwrap_or(0);
-    let path = dir.join(format!(
-        "hivra-sandbox-profile-{}-{nanos}",
-        std::process::id()
-    ));
-    std::fs::write(&path, profile)
-        .map_err(|e| format!("The sandbox profile could not be written, so nothing starts. {e}"))?;
+    let name = format!("hivra-sandbox-profile-{}-{nanos}", std::process::id());
+    let path = write_profile_file(&dir, &name, profile)?;
+    let written = crate::fs::canonical(&path).map_err(|_| profile_not_written())?;
+    if written.parent() != Some(dir.as_path()) || !written.starts_with(&data) {
+        return Err(profile_not_written());
+    }
+    Ok(written)
+}
+
+/// Create `dir/name` as a new private file. A link swapped in for the directory or the name is not followed.
+fn write_profile_file(dir: &Path, name: &str, profile: &str) -> Result<PathBuf, String> {
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+        write_profile_file_unix(dir, name, profile)
+    }
+    #[cfg(not(unix))]
+    {
+        write_profile_file_plain(dir, name, profile)
+    }
+}
+
+#[cfg(unix)]
+fn write_profile_file_unix(dir: &Path, name: &str, profile: &str) -> Result<PathBuf, String> {
+    use std::io::Write;
+    use std::os::fd::{AsRawFd, FromRawFd};
+    use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+    let dir_file = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW)
+        .open(dir)
+        .map_err(|_| profile_not_written())?;
+    let c_name = std::ffi::CString::new(name).map_err(|_| profile_not_written())?;
+    let flags = libc::O_CREAT | libc::O_EXCL | libc::O_WRONLY | libc::O_NOFOLLOW | libc::O_CLOEXEC;
+    // Safety: `dir_file` is an open directory fd, `c_name` is a single path component, and the flags
+    // refuse a link and an existing name. The fd is owned by the `File` below.
+    let fd = unsafe { libc::openat(dir_file.as_raw_fd(), c_name.as_ptr(), flags, 0o600) };
+    if fd < 0 {
+        return Err(profile_not_written());
+    }
+    let mut file = unsafe { std::fs::File::from_raw_fd(fd) };
+    // Safety: `fd` is the file just created, still open.
+    if unsafe { libc::fchmod(file.as_raw_fd(), 0o600) } != 0 {
+        drop(file);
+        remove_profile_file(dir, name);
+        return Err(profile_not_written());
+    }
+    if file.write_all(profile.as_bytes()).is_err() {
+        drop(file);
+        remove_profile_file(dir, name);
+        return Err(profile_not_written());
+    }
+    let path = dir.join(name);
+    let opened = file.metadata().map_err(|_| profile_not_written())?;
+    let named = std::fs::symlink_metadata(&path).map_err(|_| profile_not_written())?;
+    if named.file_type().is_symlink()
+        || !named.is_file()
+        || opened.ino() != named.ino()
+        || opened.dev() != named.dev()
+    {
+        drop(file);
+        remove_profile_file(dir, name);
+        return Err(profile_not_written());
     }
     Ok(path)
 }
 
-fn sweep_sandbox_profiles(dir: &Path) {
+#[cfg(not(unix))]
+fn write_profile_file_plain(dir: &Path, name: &str, profile: &str) -> Result<PathBuf, String> {
+    use std::io::Write;
+    let path = dir.join(name);
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&path)
+        .map_err(|_| profile_not_written())?;
+    if file.write_all(profile.as_bytes()).is_err() {
+        drop(file);
+        remove_profile_file(dir, name);
+        return Err(profile_not_written());
+    }
+    Ok(path)
+}
+
+/// Remove `dir/name` only when the canonical file is that exact child. A link is left alone.
+fn remove_profile_file(dir: &Path, name: &str) {
+    if name.contains('/') || name.contains('\\') || name == ".." {
+        return;
+    }
+    let path = dir.join(name);
+    if path.parent() != Some(dir) {
+        return;
+    }
+    let Ok(meta) = std::fs::symlink_metadata(&path) else {
+        return;
+    };
+    if meta.file_type().is_symlink() || !meta.is_file() {
+        return;
+    }
+    let Ok(real) = crate::fs::canonical(&path) else {
+        return;
+    };
+    if real.parent() == Some(dir) {
+        let _ = std::fs::remove_file(&real);
+    }
+}
+
+fn sweep_sandbox_profiles(dir: &Path, data: &Path) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
     };
@@ -2141,14 +2281,26 @@ fn sweep_sandbox_profiles(dir: &Path) {
         if path.parent() != Some(dir) {
             continue;
         }
-        let Ok(modified) = entry.metadata().and_then(|meta| meta.modified()) else {
+        let Ok(meta) = std::fs::symlink_metadata(&path) else {
+            continue;
+        };
+        if meta.file_type().is_symlink() || !meta.is_file() {
+            continue;
+        }
+        let Ok(real) = crate::fs::canonical(&path) else {
+            continue;
+        };
+        if real.parent() != Some(dir) || !real.starts_with(data) {
+            continue;
+        }
+        let Ok(modified) = meta.modified() else {
             continue;
         };
         let Ok(age) = now.duration_since(modified) else {
             continue;
         };
         if age > std::time::Duration::from_secs(3600) {
-            let _ = std::fs::remove_file(&path);
+            let _ = std::fs::remove_file(&real);
         }
     }
 }
@@ -2174,9 +2326,10 @@ pub fn agent_stack_refused(sandbox_on: bool, trigger: &str, has_stack: bool) -> 
 
 /// `extra` plus every project folder and every session folder in `data_dir/monocode.db` that is on disk. A session or
 /// project folder that is gone is not locked: a long chat history of removed worktrees would otherwise make every
-/// profile too big to start. `extra` is kept even when it does not exist yet. No data folder, or no database file, is
-/// just `extra` (a launch with no store yet still wraps). A database that is there but cannot be read is an error:
-/// starting would lock only the caller's own folder.
+/// profile too big to start. `extra` is kept even when it does not exist yet. No database file is just `extra` (a
+/// launch with no store yet still wraps). No data folder agrees with the switch: when the sandbox is on, the project
+/// list cannot be read, so this is an error, the same as a database that is there but cannot be read. When the sandbox
+/// is off, it is just `extra`. Starting with the list unread would lock only the caller's own folder.
 fn with_project_folders(
     data_dir: Option<&Path>,
     extra: &[PathBuf],
@@ -2191,6 +2344,9 @@ fn with_project_folders(
         push(path.clone());
     }
     let Some(data) = data_dir else {
+        if enabled(None) {
+            return Err(project_list_unreadable());
+        }
         return Ok(out);
     };
     let db = data.join("monocode.db");
@@ -2276,9 +2432,9 @@ pub fn action_wrap(
     let checkouts = with_project_folders(data_dir, checkouts)?;
     let profile = profile_with_checkouts(&home, data_dir, &checkouts)?;
     self_check(Path::new(SANDBOX_EXEC))?;
-    preflight_with(Path::new(SANDBOX_EXEC), &profile)?;
+    preflight_with(Path::new(SANDBOX_EXEC), &profile, data_dir)?;
     let mut prefix = vec![OsString::from(SANDBOX_EXEC)];
-    prefix.extend(sandbox_exec_profile_args(&profile)?);
+    prefix.extend(sandbox_exec_profile_args(&profile, data_dir)?);
     Ok(Some(prefix))
 }
 
@@ -2306,9 +2462,9 @@ pub fn more_agent_wrap(
         }
     }
     self_check(Path::new(SANDBOX_EXEC))?;
-    preflight_with(Path::new(SANDBOX_EXEC), &profile)?;
+    preflight_with(Path::new(SANDBOX_EXEC), &profile, data_dir)?;
     let mut prefix = vec![OsString::from(SANDBOX_EXEC)];
-    prefix.extend(sandbox_exec_profile_args(&profile)?);
+    prefix.extend(sandbox_exec_profile_args(&profile, data_dir)?);
     Ok(Some(prefix))
 }
 
@@ -2773,10 +2929,14 @@ mod tests {
     #[test]
     fn a_sandboxed_launch_wraps_the_cli_in_sandbox_exec_with_the_profile() {
         let home = temp_home("wrap");
+        // An empty data folder has no database, so only the caller's folders are locked. None would refuse: the
+        // sandbox is on, and the project list cannot be read.
+        let data = home.join("data");
+        std::fs::create_dir_all(&data).unwrap();
         let (program, prefix) = sandboxed_launch(
             OsStr::new("claude"),
             &home,
-            None,
+            Some(&data),
             &[],
             Path::new(SANDBOX_EXEC),
         )
@@ -5084,3 +5244,7 @@ mod review_r6_repro {
 #[cfg(all(test, unix))]
 #[path = "agent_sandbox_review_r7_repro.rs"]
 mod review_r7_repro;
+
+#[cfg(test)]
+#[path = "agent_sandbox_review_178b.rs"]
+mod review_178b;

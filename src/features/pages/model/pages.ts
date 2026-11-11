@@ -471,6 +471,26 @@ export function takeOpenRequest(): string | undefined {
   openRequest = undefined;
   return id;
 }
+// Dropwave: the sidebar's Pages row always lands on the list, even when a pinned page is the one open.
+let listRequests = 0;
+export function requestPagesList(): void {
+  openRequest = undefined;
+  listRequests += 1;
+  changed();
+}
+export function pagesListRequests(): number {
+  return listRequests;
+}
+// Dropwave: the page Pages shows now, so the sidebar can mark a pinned page as the open one.
+let shownPage: string | undefined;
+export function noteShownPage(id: string | undefined): void {
+  if (shownPage === id) return;
+  shownPage = id;
+  changed();
+}
+export function shownPageId(): string | undefined {
+  return shownPage;
+}
 /** Tests only: this Mac's storage, empty. */
 export function resetPagesForTest(): void {
   local = [];

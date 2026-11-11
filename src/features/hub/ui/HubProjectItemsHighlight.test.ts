@@ -41,7 +41,10 @@ async function highlighted(item: string, monoOpen: boolean) {
 }
 
 it("with no 1:1 open, the item Ash is on is the one highlighted", async () => {
-  expect(await highlighted("coding-team", false)).toEqual(["Coding team"]);
+  // Dropwave (Ash, 11 Nov): the Coding team row is gone, so it is never the highlighted one.
+  expect(await highlighted("coding-team", false)).toEqual([]);
+  act(() => root?.unmount());
+  expect(await highlighted("leadership", false)).toEqual(["Leadership team"]);
 });
 
 it("with a Mono's 1:1 open, neither Coding team nor Leadership team stays highlighted", async () => {

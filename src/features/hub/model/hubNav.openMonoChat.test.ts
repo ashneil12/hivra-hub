@@ -31,7 +31,10 @@ it("opening a Mono on its own leaves that Mono's team selected, and nothing else
 
 it("the app's opener leaves Settings when the Mono's chat arrives", () => {
   const app = readFileSync(join(__dirname, "../../../app/App.tsx"), "utf8");
-  expect(app).toMatch(/setMonoChatOpener\(\(monoId\) => void onOpenMono\(monoId, \{ inTeam: true, leaveSettings: true \}\)\)/);
+  // Dropwave: a first mate opens in its own chat list, the Chief of Staff's project chat in the project's. Both leave Settings.
+  const opener = app.slice(app.indexOf("setMonoChatOpener((monoId, target) => {"), app.indexOf("[onOpenMono],", app.indexOf("setMonoChatOpener((monoId, target) => {")));
+  expect(opener).toContain("onOpenMono(monoId, { project: target.project, leaveSettings: true })");
+  expect(opener).toContain("onOpenMono(monoId, { inTeam: true, leaveSettings: true })");
   const body = app.slice(app.indexOf("const onOpenMono = useCallback("), app.indexOf("// A Mono open when the app last closed opens again"));
   // After the await (so no frame shows the workspace between the views), next to the other views closing.
   expect(body.indexOf("if (options.leaveSettings) setSettingsOpen(false);")).toBeGreaterThan(body.indexOf("await ensureMonoSession("));

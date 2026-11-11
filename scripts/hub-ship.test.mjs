@@ -337,6 +337,15 @@ function bundleAt(app, { sha, branch = "hub/test", dirty = false, identifier = H
 <plist version="1.0"><dict><key>com.apple.security.device.audio-input</key><true/></dict></plist>
 `,
   );
+  // The launch agent names the helper bundle. hub:ship requires it while the kill switch allows dictation.
+  const agents = path.join(app, "Contents/Library/LaunchAgents");
+  fs.mkdirSync(agents, { recursive: true });
+  fs.writeFileSync(
+    path.join(agents, "com.ash.monocode-hub.dictation.plist"),
+    `<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0"><dict><key>Label</key><string>com.ash.monocode-hub.dictation</string><key>BundleProgram</key><string>Contents/Helpers/MonoCode Dictation.app/Contents/MacOS/monocode-dictation</string></dict></plist>
+`,
+  );
   const stamp = JSON.stringify({ sha, branch, dirty, builtAt: "2026-10-19T21:04:05Z" });
   const binary = path.join(app, "Contents/MacOS/monocode");
   fs.writeFileSync(
@@ -1015,15 +1024,23 @@ test("refusals change nothing: dirty tree, commit mismatch, wrong identity, ad-h
   }
 });
 
-// WP-131b: dictation is off in this build, so hub:build puts no helper into the bundle. A bundle without one is a
-// normal build and ships. (The helper check runs on macOS only; elsewhere this passes trivially.)
-test("a bundle without the dictation helper ships while dictation is off", () => {
+// WP-131c: the kill switch lets the setting decide, so a Mac bundle without the helper does not ship. Elsewhere the
+// helper check does not apply.
+test("a bundle without the dictation helper does not ship on macOS", () => {
   const w = world();
   fs.rmSync(path.join(w.bundle, "Contents/Helpers"), { recursive: true, force: true });
   const { code, answer } = ship(w, ["--dry-run"]);
-  assert.equal(code, 0, JSON.stringify(answer));
-  assert.equal(answer.ok, true, JSON.stringify(answer));
-  assert.ok(!(answer.refusals ?? []).some((refusal) => /Dictation helper/.test(refusal)), JSON.stringify(answer));
+  if (process.platform === "darwin") {
+    assert.equal(code, 1, JSON.stringify(answer));
+    assert.equal(answer.ok, false, JSON.stringify(answer));
+    assert.ok(
+      (answer.refusals ?? []).some((refusal) => /dictation helper is missing/.test(refusal)),
+      JSON.stringify(answer),
+    );
+  } else {
+    assert.equal(code, 0, JSON.stringify(answer));
+    assert.equal(answer.ok, true, JSON.stringify(answer));
+  }
 });
 
 test("r59: compareVersions and versionProblem", () => {

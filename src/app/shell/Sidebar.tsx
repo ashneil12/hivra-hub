@@ -1,3 +1,4 @@
+import { useShowCodeTools } from "../../features/settings/model/codeTools";
 import { NO_BRANCH_LABEL } from "../../features/source-control/model/worktrees";
 import { formatGitLabel } from "./gitLabel";
 import {
@@ -94,6 +95,7 @@ import {
 import { MOD, SHIFT } from "../../platform/tauri/platform";
 import { useTrafficLightsVisible } from "../../platform/tauri/useTrafficLightsVisible";
 import { copyText } from "../../platform/tauri/clipboard";
+import { chatLink } from "../../features/sessions/model/threadLinks";
 import { resolveModel } from "../../features/sessions/model/models";
 import type { OpenFileFn } from "../../features/search/model/search";
 import { sessionDisplayTitle } from "../../features/sessions/model/session";
@@ -257,6 +259,7 @@ import { GitHistoryGraph } from "../../features/source-control/ui/GitHistoryGrap
 import { GithubStarPrompt } from "./GithubStarPrompt";
 import {
   isMonoSession,
+  isMonoSideChat,
   listMonos,
   monoForSession,
   MONO_STATUS_LABEL,
@@ -476,6 +479,8 @@ type Props = {
   monos?: MonoRailProps;
   /** Hub mode: project items shown in the rail instead of Projects. */
   hubItems?: ReactNode;
+  /** Dropwave: Home and the Chief of Staff, above everything else in the hub's sidebar. */
+  hubTopNav?: ReactNode;
   /** Hub mode: a hub view fills the main area. */
   hubSurfaceActive?: boolean;
   /** A Mono fills the main area, which has no project sidebar. */
@@ -627,6 +632,7 @@ function SidebarComponent({
   onDismissUpdate,
   monos,
   hubItems,
+  hubTopNav,
   hubSurfaceActive = false,
   monoViewActive = false,
   codingTeam,
@@ -904,7 +910,8 @@ function SidebarComponent({
     sessionFolders,
   ).filter(
     (session) =>
-      !isMonoSession(session.id) &&
+      // A first mate's main chat is its pinned row. Its further chats (Dropwave: "New chat" beside it) are listed.
+      (!isMonoSession(session.id) || isMonoSideChat(session.id)) &&
       !("ephemeral" in session && session.ephemeral) &&
       !isHabitRun(session.id) &&
       !session.orchestrationLeadId &&
@@ -1102,7 +1109,17 @@ function SidebarComponent({
   const sessionListKey = `${cwd}\0${sessionFilters.showArchived}\0${sessionFilters.time}\0${sessionFilters.hiddenHarnesses.join(",")}\0${sessionFilters.status.working}\0${sessionFilters.status.needsApproval}\0${sessionFilters.status.done}\0${searchQuery}`;
   const sessionHarnesses = harnessesInSessions(projectSessions);
   const narrowedByUser = searchNarrowed || filtersActive;
-  const visibleTabs = tabOrder.filter((itemId) => itemId !== "inbox");
+  // Dropwave: Explorer and Changes only when Settings > Advanced shows code tools.
+  const codeTools = useShowCodeTools();
+  // Dropwave (Ash, 11 Nov): Crew goes with them. A chat's own "N working" line already says who is on it, so the list
+  // is just the chats, the same for every first mate.
+  const visibleTabs = tabOrder.filter(
+    (itemId) => itemId !== "inbox" && (codeTools || (itemId !== "files" && itemId !== "changes" && itemId !== "crew")),
+  );
+  const tabHidden = tab !== "sessions" && tab !== "inbox" && !visibleTabs.includes(tab);
+  useEffect(() => {
+    if (tabHidden) onTabChange("sessions");
+  }, [tabHidden, onTabChange]);
   const onReorderTabs = (ids: SidebarTab[]) => {
     const reordered = new Set(ids);
     let index = 0;
@@ -1692,6 +1709,16 @@ function SidebarComponent({
           },
         ]
       : []),
+    // WP-125: a link that opens this chat on this computer. In the hub it lives here, not as a button over the chat.
+    ...(!multipleMenuSessions && menuSessions[0] && chatLink(menuSessions[0].id)
+      ? [
+          {
+            kind: "item" as const,
+            id: "copy-chat-link",
+            label: "Copy chat link",
+          },
+        ]
+      : []),
     ...(!multipleMenuSessions
       ? [
           {
@@ -1876,6 +1903,11 @@ function SidebarComponent({
     }
     if (id === "rename") {
       setRenamingSessionId(sessionId);
+      return;
+    }
+    if (id === "copy-chat-link") {
+      const link = sessionIds[0] ? chatLink(sessionIds[0]) : null;
+      if (link) void copyText(link).catch(() => {});
       return;
     }
     if (id === "copy-harness-session-id" || id === "copy-monocode-session-id") {
@@ -2291,6 +2323,8 @@ function SidebarComponent({
         startedOpen={startedOpen}
         startedInView={startedInView}
         badge={badge ?? (session.terminal ? <TerminalMark /> : undefined)}
+        // Dropwave: a first mate's further chat wears its mascot and name, so the list says who each chat is with.
+        {...sideChatMark(session.id)}
         // WP-85: a terminal session shows its state and folder instead of the clock.
         {...(session.terminal ? { statusLabel: terminalStatusText(session.terminal) } : {})}
         subChatsBelow={subChatsBelow}
@@ -2903,10 +2937,28 @@ function SidebarComponent({
           switches projects. */}
       {railVisible || inset ? (
         <>
-          {workspaceHeader}
+          {/* Dropwave: the worktree picker is a code tool (Settings > Advanced). */}
+          {codeTools ? (
+            workspaceHeader
+          ) : !inset && onNew ? (
+            // With the code tools off there is still a way to start a new chat here.
+            <div className="flex h-10 shrink-0 select-none items-center gap-1 border-b border-stroke pl-3 pr-1.5" data-sidebar-chats-header>
+              <span className="min-w-0 flex-1 truncate text-sm font-medium leading-tight">Chats</span>
+              <button
+                type="button"
+                onClick={onNew}
+                aria-label="New chat"
+                className="flex h-7 shrink-0 items-center gap-1 rounded-md px-2 text-[12px] font-medium text-content/70 hover:bg-content/8 hover:text-content"
+              >
+                <Plus className="size-3.5" strokeWidth={1.75} />
+                New chat
+              </button>
+            </div>
+          ) : null}
           {/* The inset sidebar has no tabs: the project tools live in the
               right panel. */}
-          {inset ? null : (
+          {/* One tab is no choice: with only the chats left there is no tab row. */}
+          {inset || visibleTabs.length < 2 ? null : (
             <div
               role="tablist"
               aria-label="Workspace"
@@ -2961,7 +3013,7 @@ function SidebarComponent({
               needsMark={needsMark}
             />
           ) : null}
-          {!compactRailVisible ? (
+          {!compactRailVisible && visibleTabs.length > 1 ? (
             <div
               role="tablist"
               aria-label="Workspace"
@@ -3687,6 +3739,7 @@ function SidebarComponent({
           onDismissUpdate={onDismissUpdate}
           monos={railMonos}
           hubItems={hubItems}
+          hubTopNav={hubTopNav}
         />
       ) : null}
     </>
@@ -4753,6 +4806,18 @@ export function groupStartedSessions<T extends { id: string }>(
 
 const NO_MODIFIERS = { shiftKey: false, ctrlKey: false, metaKey: false };
 
+/** The mascot and name of the first mate a further chat is with (monos/model/mono.ts `chats`); nothing for any other chat. */
+function sideChatMark(sessionId: string): { mark?: ReactNode; markLabel?: string } {
+  if (!isMonoSideChat(sessionId)) return {};
+  const mono = monoForSession(sessionId);
+  if (!mono) return {};
+  const look = monoLook(mono);
+  return {
+    mark: <MonoRailMascot name={look.mascot} color={look.color} status="idle" className="size-3.5 shrink-0" />,
+    markLabel: look.name,
+  };
+}
+
 /** The Mono a team chat's workers answer to, by name ("EXO lead"), for "2 with EXO lead" (r30b). */
 function teamLeadName(session: string): string {
   const mono = monoForSession(session);
@@ -5345,6 +5410,7 @@ export const SessionCard = memo(function SessionCard({
   modelInFooter = false,
   statusLabel,
   mark,
+  markLabel,
   badge,
   subChatsBelow = false,
   project,
@@ -5390,6 +5456,8 @@ export const SessionCard = memo(function SessionCard({
   statusLabel?: string;
   /** In the provider mark's place (a coding team's Lead shows its mascot). */
   mark?: ReactNode;
+  /** In the model name's place beside the mark: who the chat is with (a first mate's further chat). */
+  markLabel?: string;
   /** Beside its status: a coding team's chat is marked when one of its sub-chats is stuck. */
   badge?: ReactNode;
   /** Its sub-chats' fold sits right under it, as under a coding team's Lead: a footer line with nothing in it but
@@ -6020,8 +6088,8 @@ export const SessionCard = memo(function SessionCard({
                       className="size-3.5 shrink-0"
                     />
                   )}
-                  <span title={model ?? undefined} className="min-w-0 truncate text-[11px] text-content/50">
-                    {model}
+                  <span title={markLabel ?? model ?? undefined} className="min-w-0 truncate text-[11px] text-content/50">
+                    {markLabel ?? model}
                   </span>
                 </span>
                 <span className="flex shrink-0 items-center gap-1.5">

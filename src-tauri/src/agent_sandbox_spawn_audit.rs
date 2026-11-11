@@ -739,11 +739,6 @@ const ALLOW: &[(&str, &str, &str)] = &[
         "git_cmd::git() after ensure_contained, then extend_readonly. The container profile while the sandbox is on, hooks off.",
     ),
     (
-        "dictation.rs",
-        "start",
-        "The app's own bundled dictation helper, started (disclaimed, so it holds its own microphone permission) when Ash presses dictate. Off in this build: dictation::ENABLED is false. Never started by an agent, so not inside the agent sandbox.",
-    ),
-    (
         "commit_guard.rs",
         "push_url",
         "Spawns fs::git_cmd(), which is git_cmd::git(): the container profile while the sandbox is on, no hooks. Arguments are remote get-url --push.",

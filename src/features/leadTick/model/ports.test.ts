@@ -199,8 +199,35 @@ describe("lead lease and branch check answers (WP-162)", () => {
     expect(await ports.leadLease?.()).toEqual({ kind: "acquired" });
     expect(await ports.considerConflict?.("r1", "wp/1-x")).toEqual({ kind: "reported", message: "m" });
     expect(calls).toEqual([
-      ["programme_lead_acquire", { project: "/code/app", holder: "s1" }],
+      ["programme_lead_acquire", { project: "/code/app", holder: "s1", leaseMs: 2 * 15 * 60_000 }],
       ["programme_consider_conflict", { project: "/code/app", packageId: "r1", branch: "wp/1-x" }],
     ]);
+  });
+
+  it("asks for a lease that follows the tick interval, not a fixed 15 minutes", async () => {
+    const calls: Array<[string, Record<string, unknown> | undefined]> = [];
+    const host: PortHost = {
+      invoke: async (command, args) => {
+        calls.push([command, args]);
+        return { kind: "acquired" };
+      },
+      slot: () => ({ ok: true }),
+      delegate: async () => ({}),
+    };
+    const context = {
+      projectId: "app",
+      lead: { monoId: "m", name: "Lead", sessionId: "s1" },
+      look: { busy: false, asking: false, queued: 0, limited: false, resumeStopped: false },
+    } as never;
+    await appPorts(host, "/code/app", context, 60).leadLease?.();
+    expect(calls).toEqual([
+      ["programme_lead_acquire", { project: "/code/app", holder: "s1", leaseMs: 2 * 60 * 60_000 }],
+    ]);
+    expect(calls[0]?.[1]?.leaseMs).not.toBe(15 * 60 * 1000);
+
+    calls.length = 0;
+    await appPorts(host, "/code/app", context, 5).leadLease?.();
+    expect(calls[0]?.[1]?.leaseMs).toBe(2 * 5 * 60_000);
+    expect(calls[0]?.[1]?.leaseMs).not.toBe(15 * 60 * 1000);
   });
 });

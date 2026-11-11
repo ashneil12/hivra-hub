@@ -5,6 +5,7 @@ import { availableCouncilEngines, councilModelInUse, installCouncilModel, noteCo
 import { bundledPersonas, combinePersonas } from "../model/personas";
 import { blankProposal, type CouncilRecord } from "../model/record";
 import { CouncilView } from "./CouncilView";
+import { listMonos } from "../../monos/model/mono";
 
 export function CouncilRoom({ chatId, onClose }: { chatId: string; onClose: () => void }) {
   useHubChatsVersion();
@@ -48,6 +49,9 @@ export function CouncilRoom({ chatId, onClose }: { chatId: string; onClose: () =
         if (current) postCouncilBrief(chatId, current);
       }}
       onClose={onClose}
+      // Dropwave: the council is a mode of this team's chat, and its seats speak as the team's members.
+      asMode
+      seatNames={chat.memberIds.map((id) => listMonos().find((mono) => mono.id === id)?.name).filter((name): name is string => !!name)}
     />
   );
 }

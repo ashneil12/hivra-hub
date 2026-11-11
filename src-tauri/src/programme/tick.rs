@@ -32,7 +32,7 @@ pub enum Tick {
 /// What the command does next. Git runs outside the database lock.
 pub(crate) enum Next {
     Done(Tick),
-    /// No worktree is recorded yet: find the one with the branch checked out.
+    /// No worktree is recorded, or the recorded folder is gone: find the one with the branch checked out.
     Find {
         branch: String,
     },
@@ -61,6 +61,9 @@ pub(crate) fn next(
                 .into(),
         }));
     }
+    if !Path::new(&recorded.worktree).is_dir() {
+        return Ok(Next::Find { branch });
+    }
     match super::update::load(conn, package_id)? {
         Some(plan) => Ok(Next::Update(plan)),
         None => Ok(Next::Done(Tick::Reported {
@@ -78,6 +81,7 @@ pub(crate) fn record(
     branch: &str,
     now: i64,
 ) -> Result<(), String> {
+    let expected = checkout::get(conn, package_id)?.map(|row| row.updated_at);
     checkout::bind(
         conn,
         checkout::Bind {
@@ -87,7 +91,7 @@ pub(crate) fn record(
             branch,
             base: "main",
             remote: "origin",
-            expected_updated_at: None,
+            expected_updated_at: expected,
             now,
         },
     )

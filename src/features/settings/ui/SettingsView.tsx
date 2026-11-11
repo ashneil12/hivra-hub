@@ -1,3 +1,4 @@
+import { setShowCodeTools, useShowCodeTools } from "../model/codeTools";
 import { activeThemeOf, allSchemes, loadActiveSchemeId, removeCustomScheme, saveActiveSchemeId, saveCustomScheme, themesOf, type SchemeTheme, type ThemeScheme } from "../model/themeSchemes";
 import { activeThemeChoice, applyOffer, discardOffer, endPreview, offeredPreviewLook, pickTheme, previewOffer, scanMonoThemes, themeOffers, themePreview, themeRefusals, useThemesVersion } from "../model/themeFiles";
 import { UserNameField } from "../../hub/ui/UserNameField";
@@ -343,6 +344,13 @@ import {
   useShowRemainingUsage,
 } from "../model/displayPrefs";
 import {
+  DICTATION_SETTING_DESCRIPTION,
+  DICTATION_SETTING_LABEL,
+  dictationSettingIsShown,
+  loadDictationSetting,
+  saveDictationSetting,
+} from "../model/dictationSetting";
+import {
   accountStatus,
   accountUsageKey,
   useProviderAccountUsage,
@@ -404,6 +412,7 @@ import {
   monoLook,
   monoProjectsPhrase,
   monosSnapshot,
+  saveMonoName,
   subscribeMonos,
   updateMono,
   type Mono,
@@ -559,6 +568,29 @@ type Props = {
   collapsedProjectRailMode?: CollapsedProjectRailMode;
   onCollapsedProjectRailModeChange?: (mode: CollapsedProjectRailMode) => void;
 };
+
+/** Dropwave: the switch that brings Explorer and Changes back to a project's sidebar. */
+function CodeToolsSetting() {
+  const on = useShowCodeTools();
+  return (
+    <div data-setting-id="show-code-tools" className="mb-6 flex items-center gap-4 rounded-lg border border-stroke px-4 py-3">
+      <div className="min-w-0 flex-1">
+        <p className="text-[13px] font-medium text-content">Show code tools</p>
+        <p className="text-[12px] text-content/60">Explorer, Changes and the worktree picker in each project's sidebar. Off keeps projects simple.</p>
+      </div>
+      <button
+        type="button"
+        role="switch"
+        aria-checked={on}
+        aria-label="Show code tools"
+        onClick={() => setShowCodeTools(!on)}
+        className={`relative h-5 w-9 shrink-0 rounded-full transition-colors ${on ? "bg-accent" : "bg-content/20"}`}
+      >
+        <span className={`absolute top-0.5 size-4 rounded-full bg-white transition-[left] ${on ? "left-4.5" : "left-0.5"}`} />
+      </button>
+    </div>
+  );
+}
 
 export function SettingsView({
   section,
@@ -804,6 +836,7 @@ export function SettingsView({
                   <ProvidersPage cwd={cwd} recents={recents} />
                 </>
               ) : null}
+              {section === "worktrees" ? <CodeToolsSetting /> : null}
               {section === "worktrees" ? (
                 <WorktreesPage
                   cwd={cwd}
@@ -1259,6 +1292,17 @@ function ChatPage() {
   const [formatOnSave, setFormatOnSave] = useState(loadFormatOnSave);
   const [composerRunner, setComposerRunner] = useState(loadComposerRunner);
   const composerAutocorrect = useComposerAutocorrect();
+  // WP-131c: dictation is off until this is turned on. The app keeps the file.
+  const [dictationOn, setDictationOn] = useState(false);
+  useEffect(() => {
+    let dead = false;
+    void loadDictationSetting().then((on) => {
+      if (!dead) setDictationOn(on);
+    });
+    return () => {
+      dead = true;
+    };
+  }, []);
   // WP-113: optional settle, snooze and re-sort. Off keeps today's list.
   const chatListInbox = useChatListInbox();
   const [gridArcadeEnabled, setGridArcadeEnabled] = useState(
@@ -1429,6 +1473,22 @@ function ChatPage() {
             onChange={saveComposerAutocorrect}
           />
         </Row>
+        {dictationSettingIsShown() ? (
+          <Row
+            id="composer-dictation"
+            label={DICTATION_SETTING_LABEL}
+            description={DICTATION_SETTING_DESCRIPTION}
+          >
+            <Toggle
+              label={DICTATION_SETTING_LABEL}
+              on={dictationOn}
+              onChange={(on) => {
+                setDictationOn(on);
+                void saveDictationSetting(on).then(setDictationOn);
+              }}
+            />
+          </Row>
+        ) : null}
       </Group>
 
       <Group
@@ -4988,21 +5048,34 @@ function MonosPage() {
 
   return (
     <>
-      <Group title="Monos">
+      <Group
+        id="mono-list"
+        title="Your first mates"
+        description="Click a name to change it. The Chief of Staff can be renamed too. Add a first mate with the plus next to First mates in a project's sidebar."
+      >
+        {monos.length ? (
+          monos.map((mono) => <MonoRow key={mono.id} mono={mono} />)
+        ) : (
+          <p className="px-4 py-3.5 text-[12px] text-content/45">
+            No first mates yet.
+          </p>
+        )}
+      </Group>
+      <Group title="In the sidebar">
         <Row
           id="monos-enabled"
-          label="Show monos"
-          description="Agents of your own on the project rail. Each works on the projects you give it, remembers what matters and picks up habits it runs on its own. Turn this off to hide them."
+          label="Show first mates"
+          description="Your Chief of Staff and first mates in the sidebar. Each works on the projects you give it and remembers what matters. Turn this off to hide them."
         >
-          <Toggle label="Show monos" on={enabled} onChange={saveMonosEnabled} />
+          <Toggle label="Show first mates" on={enabled} onChange={saveMonosEnabled} />
         </Row>
         <Row
           id="rail-monos-pinned"
-          label="Pin monos to the icon rail"
-          description="When the project rail is collapsed to icons, show each Mono at the top of the rail, above a divider, instead of inside the project picker."
+          label="Pin first mates to the icon rail"
+          description="When the sidebar is collapsed to icons, show each first mate at the top of it instead of inside the project picker."
         >
           <Toggle
-            label="Pin monos to the icon rail"
+            label="Pin first mates to the icon rail"
             on={railPinned}
             onChange={saveRailMonosPinned}
             disabled={!enabled}
@@ -5012,7 +5085,7 @@ function MonosPage() {
           <Row
             id="mono-menu-bar-icon"
             label="Menu bar icon"
-            description="Chat with a Mono or open the quick composer from the macOS menu bar. Turn this off to hide the icon."
+            description="Chat with a first mate or open the quick composer from the macOS menu bar. Turn this off to hide the icon."
           >
             <Toggle
               label="Menu bar icon"
@@ -5022,46 +5095,76 @@ function MonosPage() {
           </Row>
         )}
       </Group>
-      <Group
-        id="mono-list"
-        title="Your monos"
-        description="Choose whether new sessions started by each Mono appear in the sidebar. Hidden sessions remain saved and can be opened from the Mono's chat. Add a Mono with the plus on the rail and choose its projects from its details."
-      >
-        {monos.length ? (
-          monos.map((mono) => <MonoRow key={mono.id} mono={mono} />)
-        ) : (
-          <p className="px-4 py-3.5 text-[12px] text-content/45">
-            No monos yet.
-          </p>
-        )}
-      </Group>
     </>
   );
 }
 
 function MonoRow({ mono }: { mono: Mono }) {
   const look = monoLook(mono);
+  // Rename where it is listed (Ash, 11 Nov: "somewhere to go and rename your chief of staff").
+  const [renaming, setRenaming] = useState(false);
+  const cancelled = useRef(false);
   return (
     <Row
       label={
-        <span className="flex min-w-0 items-center gap-2">
+        <span className="flex min-w-0 items-center gap-2" data-settings-mono={mono.id}>
           <PixelMascot
             name={look.mascot}
             color={look.color}
             still
             className="size-4 shrink-0"
           />
-          <span className="truncate">{look.name}</span>
+          {renaming ? (
+            <input
+              autoFocus
+              data-settings-mono-name-input
+              aria-label={`Name for ${look.name}`}
+              maxLength={40}
+              defaultValue={look.name}
+              onFocus={(event) => event.currentTarget.select()}
+              onBlur={(event) => {
+                const name = event.currentTarget.value.trim();
+                if (!cancelled.current && name && name !== look.name) saveMonoName(mono.id, name);
+                cancelled.current = false;
+                setRenaming(false);
+              }}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") event.currentTarget.blur();
+                if (event.key === "Escape") {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  cancelled.current = true;
+                  event.currentTarget.blur();
+                }
+              }}
+              className="h-6 w-[220px] min-w-0 rounded bg-content/8 px-1.5 text-[13px] text-content outline-none ring-1 ring-content/25"
+            />
+          ) : (
+            <button
+              type="button"
+              data-settings-mono-rename
+              title="Rename"
+              aria-label={`Rename ${look.name}`}
+              onClick={() => setRenaming(true)}
+              className="group/name -mx-1 flex min-w-0 items-center gap-1.5 rounded px-1 hover:bg-content/8"
+            >
+              <span className="truncate">{look.name}</span>
+              <Pencil className="size-3 shrink-0 text-content/40 group-hover/name:text-content" strokeWidth={1.75} />
+            </button>
+          )}
+          {mono.captain && look.name !== "Chief of Staff" ? <span className="shrink-0 rounded bg-content/8 px-1.5 py-0.5 text-[11px] text-content/60">Chief of Staff</span> : null}
         </span>
       }
       description={
-        look.projects.length
-          ? `Works on ${monoProjectsPhrase(look.projects)}`
-          : "No projects yet"
+        mono.captain
+          ? "Runs things for you across every project"
+          : look.projects.length
+            ? `Works on ${monoProjectsPhrase(look.projects)}`
+            : "No projects yet"
       }
     >
       <span className="text-[12px] leading-5 text-content/50">
-        Show Mono spawned session on the sidebar
+        Show the chats it starts in the sidebar
       </span>
       <Toggle
         label={`Show sessions started by ${look.name} in sidebar`}
@@ -5074,11 +5177,11 @@ function MonoRow({ mono }: { mono: Mono }) {
         }
       />
       <ConfirmReset
-        label="Reset Mono"
+        label="Reset first mate"
         title={`Reset ${look.name} to its defaults?`}
         body={`Its soul goes back to the default and its name to ${defaultMonoName(look.mascot)}. Changes to its soul can't be recovered.`}
         kept="Its conversation, projects, memory and habits will be kept."
-        failure="Could not reset the Mono."
+        failure="Could not reset this first mate."
         onConfirm={() => resetMonoDefaults(mono.id)}
       >
         {(open, ref) => (

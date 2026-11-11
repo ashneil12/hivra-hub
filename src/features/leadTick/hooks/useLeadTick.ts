@@ -75,7 +75,7 @@ export function useLeadTick(host: LeadTickHost): void {
       quiet: loadQuietHours,
       allowed: () => appPolicy().automations,
       resolve: (folder) => resolveLead(latest.current, folder),
-      ports: (folder, context) =>
+      ports: (folder, context, intervalMinutes) =>
         appPorts(
           {
             invoke: (command, args) => invoke(command, args),
@@ -93,6 +93,7 @@ export function useLeadTick(host: LeadTickHost): void {
           },
           folder,
           context,
+          intervalMinutes,
         ),
       run: runLeadTick,
       // Inside quiet hours the ping is kept as a held notice, which leaves when the window ends (notableEvents.ts).

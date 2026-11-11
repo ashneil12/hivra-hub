@@ -1,7 +1,9 @@
 import { createRoot } from "react-dom/client";
 import { createChat, getChat, setGroupChatRunner, setRoomDecider } from "../../src/features/hub/model/hubChats";
-import { addMono } from "../../src/features/monos/model/mono";
+import { addMono, listMonos } from "../../src/features/monos/model/mono";
 import { GroupChatView } from "../../src/features/hub/ui/GroupChatView";
+import { RoomResponder } from "../../src/features/hub/ui/RoomResponder";
+import { useHubChatsVersion } from "../../src/features/hub/model/hubChats";
 import "../../src/styles/index.css";
 
 // WP-22 proof fixture (browser preview, not Ash's Mac; made-up data labelled Example:): the real room view with a
@@ -37,10 +39,21 @@ setGroupChatRunner({
 });
 Object.assign(window, { __wp22Room: () => getChat(room.id) });
 
+/** The team's settings as Settings, Teams shows them (they left the chat's side panel on 11 Nov), beside the room. */
+function TeamSettings() {
+  useHubChatsVersion();
+  const chat = getChat(room.id);
+  if (!chat) return null;
+  return <RoomResponder chat={chat} members={listMonos().filter((m) => chat.memberIds.includes(m.id))} />;
+}
+
 createRoot(document.getElementById("root")!).render(
   <div className="flex h-full" data-proof-room>
     <main className="flex h-full min-w-0 flex-1 flex-col">
       <GroupChatView chatId={room.id} projectId="hub" />
     </main>
+    <aside className="w-72 shrink-0 border-l border-stroke p-3" data-proof-team-settings>
+      <TeamSettings />
+    </aside>
   </div>,
 );
