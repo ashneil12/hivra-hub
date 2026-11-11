@@ -8,6 +8,7 @@ import { ProjectGlyph, ProjectMenu, ProjectMonogramTile, RemovedUndoToast } from
 import { moveLocalNamesToAshOs } from "../model/projectActions";
 import { hubData, useHubDataVersion } from "../model/hubData";
 import { useNeedsYou } from "../../needs/model/needsLive";
+import { homeInView } from "../model/homeScope";
 import { appItemInView, showAppItem, showProjectToday, type HubSelection } from "../model/hubNav";
 import type { HubProject } from "../model/types";
 import { readStripGroups, stripLayout, useStripGroupsVersion } from "../model/stripGroups";
@@ -86,7 +87,8 @@ export function ProjectStrip({
         <StripButton
           label="Home"
           title="Home"
-          selected={selection.item === "home"}
+          // The Chief of Staff's chat opened from Home is still Home.
+          selected={homeInView(selection)}
           onClick={() => { onLeaveCovers?.(); showAppItem("home"); }}
           glyph={<span className="text-[13px] font-medium">H</span>}
         />

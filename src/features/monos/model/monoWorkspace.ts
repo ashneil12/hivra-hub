@@ -18,6 +18,7 @@ import {
   saveMonoProjectSession,
   saveMonoRoomSession,
   saveMonoSessionId,
+  saveMonoSideChat,
 } from "./mono";
 import { stampFirstMate } from "./monoMate";
 import { withMonoFast } from "./monoRun";
@@ -173,6 +174,30 @@ async function loadMonoProjectSession(
   const own = engine && (engine !== created.harness || (mono.engineModel && mono.engineModel !== created.model));
   const session: Session = stampFirstMate({ ...(own ? newSession(engine, folder, mono.engineModel) : created), runtimeMode: "auto" });
   if (!saveMonoProjectSession(monoId, project.id, session.id)) return undefined;
+  host.add(session);
+  return session;
+}
+
+/**
+ * Dropwave (Ash, 11 Nov: "a first mate can have multiple chats"): a further chat with the same first mate, started
+ * from "New chat" beside its chat. Its own conversation on the first mate's engine, in the folder given (the list it
+ * was started from), else where its main chat works. The first mate's memory files reach it as they reach every chat
+ * of its own; the main chat's history does not.
+ */
+export async function startMonoSideChat(
+  monoId: string,
+  host: Parameters<typeof ensureMonoSession>[1],
+  folder?: string | null,
+): Promise<Session | undefined> {
+  const mono = findMono(monoId);
+  if (!mono) return undefined;
+  const cwd = folder?.trim() || leadWorkingFolder(monoId) || (await host.home());
+  if (!findMono(monoId)) return undefined;
+  const engine = mono.engine && Object.prototype.hasOwnProperty.call(HARNESS_LABEL, mono.engine) ? (mono.engine as HarnessId) : undefined;
+  const created = host.create(cwd);
+  const own = engine && (engine !== created.harness || (mono.engineModel && mono.engineModel !== created.model));
+  const session: Session = stampFirstMate({ ...withEngineFast(own ? newSession(engine, cwd, mono.engineModel) : created, mono.engineFast), runtimeMode: "auto" });
+  if (!saveMonoSideChat(monoId, session.id)) return undefined;
   host.add(session);
   return session;
 }

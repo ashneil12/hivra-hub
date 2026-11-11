@@ -1,12 +1,5 @@
 import { HOME_MONOS } from "./shell/MonoRailSection";
-import { monoTeamInView as homeMonoTeam } from "../features/hub/model/hubNav";
-import { findMono as findHomeMono } from "../features/monos/model/mono";
-
-/** Dropwave: a Mono on no project (the Chief of Staff) open in its own chat belongs to Home's sidebar. */
-function homeMonoInView(sel: { project: string; item: string }): boolean {
-  const id = homeMonoTeam(sel);
-  return !!id && (findHomeMono(id)?.projects.length ?? 1) === 0;
-}
+import { homeInView } from "../features/hub/model/homeScope";
 import { subscribeMoreAgentsChanges } from "../features/providers/model/moreAgents";
 import { setTurnTextDecorator } from "../integrations/harness/core/registry";
 // WP-85: terminal Claude sessions in the chat list.
@@ -972,6 +965,8 @@ import {
   findMono,
   monoWorksOn,
   isMonoSession,
+  isMonoSideChat,
+  forgetMonoSideChat,
   isProjectLeadId,
   listMonos,
   loadOpenMono,
@@ -1075,6 +1070,7 @@ import {
 import {
   detachMonoTabs,
   ensureMonoProjectSession,
+  startMonoSideChat,
   ensureMonoRoomSession,
   ensureMonoSession,
   resetMonoSession,
@@ -7024,7 +7020,12 @@ function Workspace({
   );
 
   const onDeleteHistorySession = useCallback(
-    (sessionId: string) => onRemoveHistorySession(sessionId, "delete"),
+    async (sessionId: string) => {
+      const removed = await onRemoveHistorySession(sessionId, "delete");
+      // A first mate's further chat that is gone is no longer one of its chats (a cancelled delete keeps it).
+      if (removed) forgetMonoSideChat(sessionId);
+      return removed;
+    },
     [onRemoveHistorySession],
   );
 
@@ -18038,9 +18039,9 @@ function Workspace({
     }
   }, [hubSel.project, hubSel.item, hubFolder, openCodingTeam]);
   // Dropwave (Ash, 11 Nov): on Home there is only the Chief of Staff, so its sidebar lists no first mates.
-  const hubOnHome = hubSel.item === "home" || homeMonoInView(hubSel);
+  const hubOnHome = homeInView(hubSel);
   const hubMonos = sidebarMonos && !hubOnHome
-    ? { ...sidebarMonos, rank: hubMonoRank, projectFilter: hubSel.item === "home" || homeMonoInView(hubSel) ? HOME_MONOS : hubSel.project === NO_PROJECT ? undefined : (hubProject?.folder ?? `hub-project:${hubSel.project}`) }
+    ? { ...sidebarMonos, rank: hubMonoRank, projectFilter: hubOnHome ? HOME_MONOS : hubSel.project === NO_PROJECT ? undefined : (hubProject?.folder ?? `hub-project:${hubSel.project}`) }
     : undefined;
 
   const chromeSurfaceOpen =
@@ -18287,7 +18288,13 @@ function Workspace({
   const teamLeadLook = teamLeadMono ? monoLook(teamLeadMono) : undefined;
   const teamLeadStatus = teamLeadMono ? (monoRail.states.get(teamLeadMono.id)?.status ?? "idle") : "idle";
   const teamLeadActive =
-    !!teamLeadMono && monoCovers && (teamCaptain ? monoViewId === teamLeadSessionId : monoViewMono?.id === teamLeadMono.id);
+    !!teamLeadMono &&
+    monoCovers &&
+    (teamCaptain
+      ? monoViewId === teamLeadSessionId
+      : monoViewMono?.id === teamLeadMono.id && !(monoViewId && isMonoSideChat(monoViewId)));
+  // One of the first mate's further chats is the open one: its own row is lit, not the pinned one.
+  const sideChatOpen = monoCovers && !!monoViewId && isMonoSideChat(monoViewId);
   const teamLeadBusy =
     !!teamLeadSession?.busy ||
     !!(teamLeadSessionId && liveBusySessionIds.has(teamLeadSessionId));
@@ -18360,7 +18367,7 @@ function Workspace({
   // From the coding team's list: another chat takes over from the Lead, and the coding team opens on it next time.
   const openTerminalSession = terminalMirror.openSession;
   const closeTerminalSession = terminalMirror.close;
-  const onSelectSessionFromList = useCallback(
+  const selectPlainSessionFromList = useCallback(
     (sessionId: string) => {
       // WP-85: a terminal session opens here, and does not start a harness chat.
       if (openTerminalSession(sessionId)) return;
@@ -18373,11 +18380,62 @@ function Workspace({
     },
     [teamProjectId, closeMonoView, onSelectHistorySession, openTerminalSession, closeTerminalSession],
   );
+  // Dropwave (Ash, 11 Nov): one of a first mate's further chats opens as that first mate's chat: its name on the tab,
+  // its row lit in the sidebar, the same list beside it.
+  const openMonoSideChat = useCallback(
+    async (sessionId: string) => {
+      const mono = monoForSession(sessionId);
+      if (!mono) return;
+      const request = ++monoViewRequest.current;
+      const session = await ensureOpenSession(sessionId);
+      if (!session || request !== monoViewRequest.current) return;
+      setMonoShownSession(null);
+      setMonoShownSessionFocused(false);
+      setMonoOverviewDocument(null);
+      setMonoActivity(null);
+      lastMonoIdRef.current = mono.id;
+      monoViewIdRef.current = session.id;
+      setMonoViewId(session.id);
+      setProjectTerminalFocused(false);
+      setComposerFocused(true);
+      setComposerFocusToken((token) => token + 1);
+    },
+    [ensureOpenSession],
+  );
+  const onSelectSessionFromList = useCallback(
+    (sessionId: string) => {
+      if (isMonoSideChat(sessionId)) return void openMonoSideChat(sessionId);
+      return selectPlainSessionFromList(sessionId);
+    },
+    [openMonoSideChat, selectPlainSessionFromList],
+  );
   const onNewFromList = useCallback(() => {
+    // "New chat" beside a first mate's chat is a new chat with that first mate, not a plain one (Ash: "it's not clear
+    // what first mate you're talking to when you're on a first mate and you create a new chat").
+    const open = monoViewIdRef.current ? monoForSession(monoViewIdRef.current) : undefined;
+    if (open && ONE_CHAT_LOOK) {
+      const folder = sidebarCwdRef.current;
+      void startMonoSideChat(
+        open.id,
+        {
+          home: homeDir,
+          load: ensureOpenSession,
+          create: (path: string) => newDefaultSession(path),
+          add: (created: Session) => {
+            sessionsRef.current = [...sessionsRef.current, created];
+            setSessions(sessionsRef.current);
+          },
+        },
+        folder && folder !== "~" ? folder : undefined,
+      ).then((session) => {
+        if (session) void openMonoSideChat(session.id);
+      });
+      return;
+    }
     if (teamProjectId) noteCodingTeamView(teamProjectId, "chat");
     if (monoViewIdRef.current) closeMonoView();
     return onNew();
-  }, [teamProjectId, closeMonoView, onNew]);
+  }, [teamProjectId, closeMonoView, onNew, openMonoSideChat, ensureOpenSession]);
 
   const projectStrip = (
     <ProjectStrip
@@ -18456,7 +18514,7 @@ function Workspace({
       approvalElsewhereSessionIds={approvalElsewhereSessionIds}
       chatAttention={chatListAttention}
       // The coding team's Lead in view is its pinned row's; no other chat reads as the current one meanwhile.
-      activeSessionId={codingTeamList?.lead?.active ? undefined : activeSessionId}
+      activeSessionId={codingTeamList?.lead?.active ? undefined : sideChatOpen ? (monoViewId ?? undefined) : activeSessionId}
       status={historyFailed ? "error" : "idle"}
       pending={historyPending}
       onSelectSession={onSelectSessionFromList}
@@ -18512,7 +18570,7 @@ function Workspace({
       onRemoveProject={onRemoveProject}
       monos={hubMonos}
       // The coding team's Lead opens beside its Sessions list, which stays.
-      monoViewActive={monoCovers && !codingTeamList?.lead?.active}
+      monoViewActive={monoCovers && !codingTeamList?.lead?.active && !sideChatOpen}
       onNew={onNewFromList}
       openSessions={openProjectSessions}
       onNewTerminal={onNewTerminal}

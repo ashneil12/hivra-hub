@@ -6,6 +6,7 @@ import { deleteChat } from "../model/hubChats";
 import { MoreHorizontal, Plus, Trash2, DashboardSquare as Layers, MessageMultiple as MessagesSquare, Terminal as Code2, type IconComponent } from "../../../shared/ui/icons";
 import { hubData, useHubDataVersion } from "../model/hubData";
 import { useNeedsYou } from "../../needs/model/needsLive";
+import { homeInView } from "../model/homeScope";
 import { useHubChatsVersion } from "../model/hubChats";
 import { useTemplatesVersion } from "../model/templates";
 import { setHubSelection, type HubSelection } from "../model/hubNav";
@@ -69,6 +70,9 @@ export function HubProjectItems({
   // A new project's draft is no project's page (PM's r60 G2): the project Ash was last in stays underneath, so leaving
   // the draft comes back to it, but its name and items aren't shown as if the draft were one of its pages.
   if (selection.item === "new-project") return null;
+  // Home is no project's page either (Dropwave): the last project's teams don't show under Home or under the Chief of
+  // Staff's chat opened from it.
+  if (homeInView(selection)) return null;
   // WP-06: Being built, Builds and the project's Decisions row are gone. Settings → Decisions still lists them.
   // Dropwave (Ash, 11 Nov): no Coding team row (and no Tasks under it). Chats happen with the Chief of Staff and the
   // first mates above; what is listed here are the project's teams (group chats) and its sections.

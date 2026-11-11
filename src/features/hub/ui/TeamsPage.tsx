@@ -25,6 +25,10 @@ import {
   type Team,
 } from "../model/hubTeams";
 import { dismissTeamDraft, useWaitingTeamDrafts, type TeamDraft } from "../../selfBuild/model/teamMake";
+import { responderOf } from "../model/roomModes";
+import type { ResponderMode } from "../model/types";
+import { hostOf } from "../model/roomTurns";
+import { RoomResponder } from "./RoomResponder";
 
 const buttonClass =
   "shrink-0 rounded-md bg-content/8 px-2.5 py-1 text-xs text-content/85 hover:bg-content/12 disabled:opacity-50";
@@ -114,9 +118,21 @@ export function TeamsPage() {
   );
 }
 
-/** Every project's team chats with their members, so Settings shows which teams exist where. */
+/** A team row's summary of who answers, in a few words. */
+const ANSWERS: Record<ResponderMode, string> = {
+  lead: "The lead answers",
+  mentions: "Only who you @mention answers",
+  everyone: "Everyone answers",
+  auto: "Picked for each message",
+};
+
+/**
+ * Every project's team chats with their members, so Settings shows which teams exist where. A row opens to the team's
+ * own settings (Ash, 11 Nov): who answers and who leads, which used to sit in the chat's side panel.
+ */
 function ProjectTeams({ monos }: { monos: Mono[] }) {
   useHubChatsVersion();
+  const [open, setOpen] = useState<string>();
   const projects = hubData().listProjects();
   const rows = projects.flatMap((project) => listChats(project.id).map((chat) => ({ project, chat })));
   if (!rows.length) return null;
@@ -126,15 +142,38 @@ function ProjectTeams({ monos }: { monos: Mono[] }) {
       <div className="flex flex-col rounded-lg border border-stroke">
         {rows.map(({ project, chat }, index) => {
           const members = chat.memberIds.map((id) => monos.find((mono) => mono.id === id)).filter((mono): mono is Mono => !!mono);
+          const shown = open === chat.id;
+          const lead = hostOf(members.map((m) => ({ id: m.id, name: monoLook(m).name })), chat.leadId);
+          const summary = members.length
+            ? `${ANSWERS[responderOf(chat)]}${lead && members.length > 1 ? ` · ${lead.name} leads` : ""}`
+            : undefined;
           return (
-            <div key={chat.id} className={`flex items-center gap-3 px-3 py-2.5 ${index ? "border-t border-stroke" : ""}`} data-hub-project-team={chat.id}>
-              <MessageMultiple className="size-3.5 shrink-0 text-content/60" strokeWidth={1.75} />
-              <span className="flex min-w-0 flex-1 flex-col">
-                <span className="truncate text-[13px] text-content">{project.name} · {chat.name}</span>
-                <span className="truncate text-[12px] text-content/60">
-                  {members.length ? `You, ${members.map((mono) => monoLook(mono).name).join(", ")}` : "Only you so far"}
+            <div key={chat.id} className={index ? "border-t border-stroke" : ""} data-hub-project-team={chat.id}>
+              <button
+                type="button"
+                disabled={!members.length}
+                aria-expanded={members.length ? shown : undefined}
+                onClick={() => setOpen(shown ? undefined : chat.id)}
+                className="flex w-full items-center gap-3 px-3 py-2.5 text-left enabled:hover:bg-content/4"
+                data-hub-project-team-toggle
+              >
+                <MessageMultiple className="size-3.5 shrink-0 text-content/60" strokeWidth={1.75} />
+                <span className="flex min-w-0 flex-1 flex-col">
+                  <span className="truncate text-[13px] text-content">{project.name} · {chat.name}</span>
+                  <span className="truncate text-[12px] text-content/60">
+                    {members.length ? `You, ${members.map((mono) => monoLook(mono).name).join(", ")}` : "Only you so far"}
+                  </span>
                 </span>
-              </span>
+                {summary ? <span className="shrink-0 text-[12px] text-content/55" data-hub-project-team-summary>{summary}</span> : null}
+                {members.length ? (
+                  shown ? <ChevronDown className="size-3.5 shrink-0 text-content/50" /> : <ChevronRight className="size-3.5 shrink-0 text-content/50" />
+                ) : null}
+              </button>
+              {shown && members.length ? (
+                <div className="px-3 pb-3 pl-9.5">
+                  <RoomResponder chat={chat} members={members} />
+                </div>
+              ) : null}
             </div>
           );
         })}

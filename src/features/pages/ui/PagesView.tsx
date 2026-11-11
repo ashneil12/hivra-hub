@@ -4,6 +4,7 @@ import { WindowControls } from "../../../app/shell/WindowControls";
 import { IS_MAC } from "../../../platform/tauri/platform";
 import { ArrowUp, Book, DashboardSquare, MoreHorizontal, Pin, Plus, Undo2 } from "../../../shared/ui/icons";
 import { useHubSelection } from "../../hub/model/hubNav";
+import { homeInView } from "../../hub/model/homeScope";
 import { leadFor } from "../../hub/model/hubLeads";
 import { listMonos, monoWorksOn } from "../../monos/model/mono";
 import { hubData, useHubDataVersion } from "../../hub/model/hubData";
@@ -567,13 +568,23 @@ function ReadyMade({ offers, onAdd, compact }: { offers: readonly ReadyPage[]; o
   );
 }
 
+/** The project tab the list opens on: the project in view, or "all" on Home, outside the hub, or for an unknown project. */
+export function pagesScope(sel: { project: string; item: string }, projectIds: readonly string[], hub: boolean): string {
+  if (!hub || !sel.project || homeInView(sel) || sel.item === "agents") return "all";
+  return projectIds.includes(sel.project) ? sel.project : "all";
+}
+
 export function PagesContent() {
   usePagesVersion();
   useHubDataVersion();
-  const selected = useHubSelection().project;
+  const selection = useHubSelection();
+  const selected = selection.project;
   const projects = hubData().listProjects();
   const nameOf = (id: string) => (id === "today" ? NOT_TIED : projects.find((p) => p.id === id)?.name ?? id);
-  const [filter, setFilter] = useState<string>("all");
+  // Dropwave (Ash, 11 Nov): opened inside a project, the list starts on that project's pages; from Home, on all.
+  const scope = pagesScope(selection, projects.map((p) => p.id), IS_HUB_BUNDLE);
+  const [filter, setFilter] = useState<string>(scope);
+  useEffect(() => setFilter(scope), [scope]);
   const [build, setBuild] = useState<Build>();
   const [open, setOpen] = useState<string>();
   const [newPage, setNewPage] = useState(false);
@@ -591,8 +602,8 @@ export function PagesContent() {
   useEffect(() => {
     if (listSeen.current === listAsked) return;
     listSeen.current = listAsked;
-    setOpen(undefined); setBuild(undefined); setNewPage(false);
-  }, [listAsked]);
+    setOpen(undefined); setBuild(undefined); setNewPage(false); setFilter(scope);
+  }, [listAsked, scope]);
   // Dropwave: the sidebar marks a pinned page as open while it is the one shown here.
   useEffect(() => {
     noteShownPage(open);

@@ -18,6 +18,7 @@ import {
 } from "../../shared/ui/icons";
 import { IS_HUB_BUNDLE } from "../../features/hub/model/hubBundle";
 import { useHubSelection } from "../../features/hub/model/hubNav";
+import { homeInView } from "../../features/hub/model/homeScope";
 import { pinnedPages, requestOpenPage, requestPagesList, shownPageId, usePagesVersion } from "../../features/pages/model/pages";
 import {
   useEffect,
@@ -1327,7 +1328,7 @@ function PinnedPages({ onOpen, active = false }: { onOpen: () => void; active?: 
   usePagesVersion();
   // Dropwave: inside a project, only that project's pinned pages; Home lists them all.
   const sel = useHubSelection();
-  const inProject = IS_HUB_BUNDLE && !!sel.project && sel.item !== "home" && sel.item !== "agents";
+  const inProject = IS_HUB_BUNDLE && !!sel.project && !homeInView(sel) && sel.item !== "agents";
   const pinned = pinnedPages().filter((page) => !inProject || page.projectId === sel.project);
   if (!pinned.length) return null;
   const open = (id: string) => {

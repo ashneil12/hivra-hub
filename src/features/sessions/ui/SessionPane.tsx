@@ -1055,7 +1055,9 @@ const LocalSessionPane = memo(function LocalSessionPane({
           <PrivateMark on />
           {copyChatLink}
         </div>
-      ) : copyChatLink ? (
+      ) : copyChatLink && !ONE_CHAT_LOOK ? (
+        // Dropwave (Ash, 11 Nov: "I don't see the point of that copy chat link button"): in the hub the link is in the
+        // chat's right-click menu in the chat list, not a button over the first message.
         <div
           className={`pointer-events-none absolute top-2 z-10 ${splitButtons ? "right-16" : "right-2"}`}
         >

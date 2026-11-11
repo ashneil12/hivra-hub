@@ -40,6 +40,8 @@ import { InboxConnectMenu } from "./InboxConnectMenu";
 import { InboxProviderMark } from "./InboxProviderMark";
 import { PluginApprovals } from "../../plugins/ui/PluginApprovals";
 import { FirstMateInboxPanel } from "../../crew/ui/FirstMateInboxPanel";
+import { IS_HUB_BUNDLE } from "../../hub/model/hubBundle";
+import { InboxNeeds } from "../../needs/ui/InboxNeeds";
 import { ProjectLogoIcon } from "../../projects/ui/ProjectLogoIcon";
 import { ProjectMascot } from "../../projects/ui/ProjectMascot";
 import { Popover } from "../../../shared/ui/Popover";
@@ -1046,6 +1048,8 @@ export function InboxView({
         ref={setListScrollRef}
         className="min-h-0 flex-1 overflow-y-auto overscroll-none"
       >
+        {/* Dropwave: the one Needs you list leads the Inbox, so asks and decisions sit with the work items. */}
+        {IS_HUB_BUNDLE ? <InboxNeeds /> : null}
         {/* WP-31: plugin installs that need a yes sit with the rest of the Inbox. */}
         <PluginApprovals />
         {/* WP-15: first-mate decisions, results, failures and credential needs. */}
