@@ -494,7 +494,14 @@ test("the real script fails when one half fails, and the other half still finish
 
 test("macOS stays one check job and runs the two halves together", () => {
   const check = jobBlock("check");
-  assert.equal((check.match(/macos-latest/g) || []).length, 1);
+  // The matrix is chosen by the repository variable HUB_CROSS_PLATFORM_CI: macOS only by default, every OS when "true".
+  const include = /include: \$\{\{ fromJSON\(vars\.HUB_CROSS_PLATFORM_CI == 'true' && '(\[.*?\])' \|\| '(\[.*?\])'\) \}\}/.exec(check);
+  assert.ok(include, "the check matrix is not chosen by HUB_CROSS_PLATFORM_CI");
+  const full = JSON.parse(include[1]);
+  const macOnly = JSON.parse(include[2]);
+  assert.deepEqual(macOnly, [{ os: "macos-latest", part: "all" }]);
+  assert.equal(full.filter((entry) => entry.os === "macos-latest").length, 1);
+  assert.deepEqual(full.find((entry) => entry.os === "macos-latest"), { os: "macos-latest", part: "all" });
   assert.match(check, /node scripts\/ci-check-parallel\.mjs/);
   assert.match(check, /if: matrix\.part == 'all'/);
   assert.match(check, /run: npm test[\s\S]*?\n {8}if: matrix\.part == 'web'/);

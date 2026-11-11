@@ -171,7 +171,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        # Windows and Linux are off while the app is Mac-only (Ash, 11 Nov 2026). Set the repository variable
+        # HUB_CROSS_PLATFORM_CI to true to run them again.
+        os: ${{ fromJSON(vars.HUB_CROSS_PLATFORM_CI == 'true' && '["ubuntu-latest","macos-latest","windows-latest"]' || '["macos-latest"]') }}
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -200,13 +202,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - { os: macos-latest, part: all }
-          - { os: ubuntu-latest, part: web }
-          - { os: ubuntu-latest, part: rust }
-          - { os: windows-latest, part: web, shard: 1/2 }
-          - { os: windows-latest, part: web, shard: 2/2 }
-          - { os: windows-latest, part: rust }
+        # Windows and Linux are off while the app is Mac-only (Ash, 11 Nov 2026). Set the repository variable
+        # HUB_CROSS_PLATFORM_CI to true to run them again.
+        include: ${{ fromJSON(vars.HUB_CROSS_PLATFORM_CI == 'true' && '[{"os":"macos-latest","part":"all"},{"os":"ubuntu-latest","part":"web"},{"os":"ubuntu-latest","part":"rust"},{"os":"windows-latest","part":"web","shard":"1/2"},{"os":"windows-latest","part":"web","shard":"2/2"},{"os":"windows-latest","part":"rust"}]' || '[{"os":"macos-latest","part":"all"}]') }}
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -274,7 +272,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-latest, ubuntu-latest, windows-latest]
+        # Windows and Linux are off while the app is Mac-only; HUB_CROSS_PLATFORM_CI=true runs them again.
+        os: ${{ fromJSON(vars.HUB_CROSS_PLATFORM_CI == 'true' && '["macos-latest","ubuntu-latest","windows-latest"]' || '["macos-latest"]') }}
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -292,7 +291,8 @@ jobs:
         run: node --disable-warning=ExperimentalWarning --test scripts/hub-ship.test.mjs scripts/ship-platform.test.mjs
 
   appimage:
-    if: github.event_name != 'schedule' && (github.event_name != 'pull_request' || !github.event.pull_request.draft)
+    # Linux packaging is off while the app is Mac-only; HUB_CROSS_PLATFORM_CI=true runs it again.
+    if: vars.HUB_CROSS_PLATFORM_CI == 'true' && github.event_name != 'schedule' && (github.event_name != 'pull_request' || !github.event.pull_request.draft)
     name: AppImage host libraries
     runs-on: ubuntu-22.04
     permissions:
@@ -362,7 +362,9 @@ jobs:
   # and every pull request whose base-sha diff touches an RPM input, the same idea as the AppImage job. The script
   # prints full=true or full=false. A missing event, a missing base or a git failure prints full=true.
   rpm-changes:
-    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
+    # Linux packaging is off while the app is Mac-only; HUB_CROSS_PLATFORM_CI=true runs it again. The rpm build and
+    # the clean install need this job, so they skip with it.
+    if: vars.HUB_CROSS_PLATFORM_CI == 'true' && (github.event_name != 'pull_request' || !github.event.pull_request.draft)
     name: RPM packaging changes
     runs-on: ubuntu-latest
     permissions:
