@@ -345,3 +345,57 @@ fn an_emptied_registration_does_not_drop_the_project_in_a_working_worktree() {
     );
     assert!(err.contains("Never use"), "{err}");
 }
+
+/// MED (MED-B's fix bypassed): `known_checkout` decides "registered" with `registered_names_entry`, which canonicalizes
+/// the whole named path, while `registered_worktree_tops` takes the top from the named path's parent as written. A
+/// worker in worktree `b` makes `b/link` a symlink to `a/.git` and rewrites `<repo>/.git/worktrees/a/gitdir` to name
+/// `b/link`. `a` now counts as a registered checkout (no Undecided), but its top is `b`, not `a`, so the project's top
+/// falls back to the main checkout, the project measures as `.worktrees/a`, and worktree `b` gets a plain No.
+#[cfg(unix)]
+#[test]
+fn a_registration_through_a_symlink_does_not_move_a_nested_worktree_project_to_the_main_checkout() {
+    let root = temp_root("symlink-registration");
+    let repo = root.join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    git(&repo, &["init", "-q"]);
+    git(&repo, &["commit", "-q", "--allow-empty", "-m", "init"]);
+    let first = repo.join(".worktrees").join("a");
+    let second = repo.join(".worktrees").join("b");
+    for (path, branch) in [(&first, "a"), (&second, "b")] {
+        let branch = format!("r247review-symlink-{branch}");
+        git(
+            &repo,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "-b",
+                &branch,
+                path.to_str().unwrap(),
+            ],
+        );
+    }
+    let store = SessionStore::open_in_memory().unwrap();
+    let mut conn = store.lock_conn().unwrap();
+    ban_codex(&mut conn, &first);
+    let before = codex_in(&conn, &second);
+    let link = second.join("link");
+    std::os::unix::fs::symlink(first.join(".git"), &link).unwrap();
+    std::fs::write(
+        repo.join(".git").join("worktrees").join("a").join("gitdir"),
+        format!("{}\n", link.display()),
+    )
+    .unwrap();
+    git(
+        &first,
+        &["rev-parse", "--git-common-dir", "--show-toplevel"],
+    );
+    let after = codex_in(&conn, &second);
+    let _ = std::fs::remove_dir_all(&root);
+    let err = before.expect_err("the project at worktree a owns worktree b");
+    assert!(err.contains("Never use"), "{err}");
+    let err = after.expect_err(
+        "a registration that names the project's .git through a link does not move its top to the main checkout",
+    );
+    assert!(err.contains("Never use"), "{err}");
+}
