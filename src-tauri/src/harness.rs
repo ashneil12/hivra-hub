@@ -24,13 +24,16 @@ const MAX_STDOUT_LINE: usize = 8 * 1024 * 1024;
 const MAX_STDERR_LINE: usize = 64 * 1024;
 
 /// Reads stdout line by line and hands each line on until `on_line` says stop or the stream ends. With a cap, a line
-/// past it ends the read; without one, every line is read whole.
+/// past it is dropped and `on_dropped` is called then, before the next line is read. Without a cap, every line is read
+/// whole.
 pub(crate) fn read_stdout_lines<R: BufRead>(
     mut reader: R,
     cap: Option<usize>,
     mut on_line: impl FnMut(String) -> bool,
-) {
+    mut on_dropped: impl FnMut(usize),
+) -> usize {
     let mut raw = Vec::new();
+    let mut dropped = 0;
     loop {
         raw.clear();
         let read = match cap {
@@ -42,8 +45,12 @@ pub(crate) fn read_stdout_lines<R: BufRead>(
         if !matches!(read, Ok(n) if n > 0) {
             break;
         }
-        if cap.is_some_and(|max| raw.len() > max) {
-            break;
+        // A line past the cap is dropped to its end, and the read goes on with the next line.
+        if cap.is_some_and(|max| raw.len() > max && raw.last() != Some(&b'\n')) {
+            skip_to_newline(&mut reader);
+            dropped += 1;
+            on_dropped(dropped);
+            continue;
         }
         let line = String::from_utf8_lossy(&raw)
             .trim_end_matches(['\n', '\r'])
@@ -52,41 +59,118 @@ pub(crate) fn read_stdout_lines<R: BufRead>(
             break;
         }
     }
+    dropped
+}
+
+/// Discards bytes up to and including the next newline, without holding them.
+fn skip_to_newline<R: BufRead>(reader: &mut R) {
+    loop {
+        let (done, used) = match reader.fill_buf() {
+            Ok([]) | Err(_) => return,
+            Ok(buf) => match buf.iter().position(|&b| b == b'\n') {
+                Some(at) => (true, at + 1),
+                None => (false, buf.len()),
+            },
+        };
+        reader.consume(used);
+        if done {
+            return;
+        }
+    }
 }
 
 #[cfg(test)]
 mod stdout_cap_tests {
     use super::read_stdout_lines;
+    use std::cell::RefCell;
     use std::io::Cursor;
+
+    // Review r5 repro (LOW): a stderr line past the cap ends the stderr read, so the pipe closes and the child's next
+    // stderr write fails (EPIPE or SIGPIPE: Node throws, Rust's eprintln! panics, Go exits). One long log line ends the
+    // agent. A stderr reader should drop the rest of that line and read on.
+    #[test]
+    fn review_r5_a_long_stderr_line_does_not_end_the_read() {
+        let big = "x".repeat(65 * 1024);
+        let input = format!("{big}\nnext\n");
+        let mut got = Vec::new();
+        read_stdout_lines(
+            Cursor::new(input.into_bytes()),
+            Some(64 * 1024),
+            |line| {
+                got.push(line);
+                true
+            },
+            |_| {},
+        );
+        assert!(
+            got.iter().any(|line| line == "next"),
+            "the read ended at the long line"
+        );
+    }
 
     #[test]
     fn a_claude_line_of_nine_mebibytes_is_delivered_whole_and_the_session_goes_on() {
         let big = "x".repeat(9 * 1024 * 1024);
         let input = format!("{big}\nnext\n");
         let mut got = Vec::new();
-        read_stdout_lines(Cursor::new(input.into_bytes()), None, |line| {
-            got.push(line);
-            true
-        });
+        read_stdout_lines(
+            Cursor::new(input.into_bytes()),
+            None,
+            |line| {
+                got.push(line);
+                true
+            },
+            |_| {},
+        );
         assert_eq!(got.len(), 2);
         assert_eq!(got[0].len(), 9 * 1024 * 1024);
         assert_eq!(got[1], "next");
     }
 
     #[test]
-    fn a_more_agents_line_past_the_cap_ends_the_read() {
+    fn a_more_agents_line_past_the_cap_is_dropped_counted_and_the_read_goes_on() {
         let big = "x".repeat(9 * 1024 * 1024);
         let input = format!("first\n{big}\nnext\n");
-        let mut got = Vec::new();
-        read_stdout_lines(
+        // Both callbacks record into one sequence. A RefCell lets each push when it runs, so the drop
+        // note is checked against the line before it and the line after it.
+        let order = RefCell::new(Vec::new());
+        let dropped = read_stdout_lines(
             Cursor::new(input.into_bytes()),
             Some(8 * 1024 * 1024),
+            |line| {
+                order.borrow_mut().push(line);
+                true
+            },
+            |count| order.borrow_mut().push(format!("dropped {count}")),
+        );
+        // The over-cap line is not delivered. The drop is reported when it happens, not when the stream ends.
+        assert_eq!(
+            order.into_inner(),
+            vec![
+                "first".to_string(),
+                "dropped 1".to_string(),
+                "next".to_string()
+            ]
+        );
+        assert_eq!(dropped, 1);
+    }
+
+    #[test]
+    fn a_claude_path_with_no_cap_drops_nothing_and_delivers_the_big_line() {
+        let big = "x".repeat(9 * 1024 * 1024);
+        let input = format!("{big}\n");
+        let mut got = Vec::new();
+        let dropped = read_stdout_lines(
+            Cursor::new(input.into_bytes()),
+            None,
             |line| {
                 got.push(line);
                 true
             },
+            |_| {},
         );
-        assert_eq!(got, vec!["first".to_string()]);
+        assert_eq!(dropped, 0);
+        assert_eq!(got.len(), 1);
     }
 }
 const STDOUT_EVENT: &str = "harness-stdout";
@@ -1005,6 +1089,19 @@ pub fn harness_resolve_antigravity() -> Result<AntigravityBinary, String> {
 }
 
 /// Bind an ephemeral loopback port for `opencode serve`.
+/// The env every Claude Code session is launched with (round 11). Claude Code keeps its Bash shell in the launch folder after
+/// each call, so a `cd` can't move the folder a relative search, or a relative shell word, is judged in. The launch folder
+/// is the chat folder the autopilot checks (worktree or chat folder).
+pub(crate) const CLAUDE_LAUNCH_ENV: (&str, &str) =
+    ("CLAUDE_BASH_MAINTAIN_PROJECT_WORKING_DIR", "1");
+
+/// The env a launch gets for its provider (round 11): Claude's only, decided by the account the app launches with.
+pub(crate) fn launch_env_for(
+    account: Option<&HarnessAccount>,
+) -> Option<(&'static str, &'static str)> {
+    (account?.provider == "claude").then_some(CLAUDE_LAUNCH_ENV)
+}
+
 #[tauri::command]
 pub fn harness_free_port() -> Result<u16, String> {
     TcpListener::bind("127.0.0.1:0")
@@ -1164,6 +1261,9 @@ pub fn harness_spawn(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     prepare_child(&mut cmd, &command);
+    if let Some((key, value)) = launch_env_for(account.as_ref()) {
+        cmd.env(key, value);
+    }
     apply_provider_account(&app, &mut cmd, account.as_ref())?;
     // "Other models": a Claude Code session on a non-Claude model goes through the hub's local router with the
     // model's own key. Claude models (and Ash's subscription login) are never routed: may_route refuses them.
@@ -1227,8 +1327,13 @@ pub fn harness_spawn(
     if more_run {
         crate::more_agents::restrict_env(&mut cmd, &gui_search_path());
     }
-    let mut child =
-        spawn_managed(&mut cmd).map_err(|e| format!("Failed to start {command}: {e}"))?;
+    let mut child = child_or_reap(
+        spawn_managed(&mut cmd),
+        more_run,
+        || app.path().app_data_dir().ok(),
+        &spawn_dir,
+        &command,
+    )?;
     let pid = child.id();
 
     let stdin = child
@@ -1255,6 +1360,7 @@ pub fn harness_spawn(
         account,
         run: Some(run.clone()),
     });
+    let more_run_cleanup = more_run.then(|| (app.path().app_data_dir().ok(), spawn_dir.clone()));
     if let Some(rejected) = host.install_spawn(session_id.clone(), epoch, kill_all, live) {
         run.lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -1268,8 +1374,10 @@ pub fn harness_spawn(
         let note_id = session_id.clone();
         let note_dir = workdir.clone();
         let note_before = journal_before;
+        let note_cleanup = more_run_cleanup.clone();
         thread::spawn(move || {
             let _ = child.wait();
+            reap_more_agent_run(note_cleanup);
             // WP-86: journal the lines this cancelled crew left behind.
             if let Some(before) = note_before.wait() {
                 let _ = crate::attribution::note_run(&note_app, &note_id, &note_dir, &before);
@@ -1295,25 +1403,42 @@ pub fn harness_spawn(
     // Only a More agents child is capped. A Claude or Codex line can carry a large base64 payload (a PDF or an image),
     // and cutting it would end the session, so those lines are read whole, as they always were.
     let stdout_cap = more_run.then_some(MAX_STDOUT_LINE);
+    let status_app = app.clone();
+    let status_id = session_id.clone();
     thread::spawn(move || {
         let _routed_session = routed_session;
-        read_stdout_lines(BufReader::new(stdout), stdout_cap, |line| {
-            if crate::harness_runs::ends_turn(&line) {
-                stdout_run
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .output(&line, crate::harness_runs::now_ms());
-            }
-            if let Some(store) = &stdout_store {
-                if line.contains("\"turn/completed\"")
-                    || line.contains("\"item/started\"")
-                    || line.contains("\"account/updated\"")
-                {
-                    store.sync_auth();
+        let _dropped = read_stdout_lines(
+            BufReader::new(stdout),
+            stdout_cap,
+            |line| {
+                if crate::harness_runs::ends_turn(&line) {
+                    stdout_run
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .output(&line, crate::harness_runs::now_ms());
                 }
-            }
-            stdout_tx.send(line).is_ok()
-        });
+                if let Some(store) = &stdout_store {
+                    if line.contains("\"turn/completed\"")
+                        || line.contains("\"item/started\"")
+                        || line.contains("\"account/updated\"")
+                    {
+                        store.sync_auth();
+                    }
+                }
+                stdout_tx.send(line).is_ok()
+            },
+            |dropped| {
+                // On the stderr channel so the ACP reader never sees it, and when the line is dropped,
+                // not when stdout closes.
+                let _ = status_app.emit(
+                    STDERR_EVENT,
+                    HarnessLine {
+                        session_id: status_id.clone(),
+                        line: format!("A line over the length limit was dropped ({dropped})."),
+                    },
+                );
+            },
+        );
     });
 
     let stderr_app = app.clone();
@@ -1321,16 +1446,21 @@ pub fn harness_spawn(
     // A More agents child's stderr is capped too, so a child that writes forever cannot grow the app's memory.
     let stderr_cap = more_run.then_some(MAX_STDERR_LINE);
     thread::spawn(move || {
-        read_stdout_lines(BufReader::new(stderr), stderr_cap, |line| {
-            let _ = stderr_app.emit(
-                STDERR_EVENT,
-                HarnessLine {
-                    session_id: stderr_id.clone(),
-                    line,
-                },
-            );
-            true
-        });
+        read_stdout_lines(
+            BufReader::new(stderr),
+            stderr_cap,
+            |line| {
+                let _ = stderr_app.emit(
+                    STDERR_EVENT,
+                    HarnessLine {
+                        session_id: stderr_id.clone(),
+                        line,
+                    },
+                );
+                true
+            },
+            |_| {},
+        );
     });
 
     let wait_app = app.clone();
@@ -1340,6 +1470,7 @@ pub fn harness_spawn(
     let note_dir = workdir.clone();
     thread::spawn(move || {
         let code = child.wait().ok().and_then(|status| status.code());
+        reap_more_agent_run(more_run_cleanup);
         // WP-86: journal the lines this crew left behind. A failure leaves the journal as it was.
         if let Some(before) = note_before.wait() {
             let _ = crate::attribution::note_run(&wait_app, &wait_id, &note_dir, &before);
@@ -1368,6 +1499,122 @@ pub fn harness_spawn(
     });
 
     Ok(pid)
+}
+
+/// The child from a start, or the error the caller sees when the start failed. A More agents run folder
+/// was made before the spawn, so a failed start removes it. The data folder is read only then. An ordinary
+/// spawn has no run folder, so its working folder is left alone, and a missing data folder leaves the run
+/// folder where it is.
+fn child_or_reap(
+    spawned: std::io::Result<std::process::Child>,
+    more_run: bool,
+    data_dir: impl FnOnce() -> Option<PathBuf>,
+    spawn_dir: &Path,
+    command: &str,
+) -> Result<std::process::Child, String> {
+    match spawned {
+        Ok(child) => Ok(child),
+        Err(error) => {
+            if more_run {
+                if let Some(data_dir) = data_dir() {
+                    let _ = crate::more_agents::remove_run_folder(&data_dir, spawn_dir);
+                }
+            }
+            Err(format!("Failed to start {command}: {error}"))
+        }
+    }
+}
+
+#[cfg(test)]
+mod failed_spawn_tests {
+    use super::{child_or_reap, spawn_managed};
+    use std::path::PathBuf;
+    use std::process::Command;
+
+    struct Scratch(PathBuf);
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn scratch() -> Scratch {
+        let path = std::env::temp_dir().join(format!(
+            "wp134-failed-spawn-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|elapsed| elapsed.as_nanos())
+                .unwrap_or(0)
+        ));
+        std::fs::create_dir_all(&path).expect("scratch");
+        Scratch(path)
+    }
+
+    #[test]
+    fn a_failed_more_agents_spawn_does_not_leave_its_run_folder() {
+        let data = scratch();
+        let run = crate::more_agents::run_folder(&data.0).expect("run folder");
+        let missing = data.0.join("missing-agent");
+        let mut cmd = Command::new(&missing);
+        cmd.current_dir(&run)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
+
+        // Not a More agents start: this failure has no run folder of its own, so the working folder stays.
+        let ordinary = child_or_reap(
+            spawn_managed(&mut cmd),
+            false,
+            || Some(data.0.clone()),
+            &run,
+            "missing-agent",
+        );
+        assert!(ordinary.is_err(), "the missing program started");
+        assert!(
+            run.is_dir(),
+            "a failed ordinary spawn removed the working folder"
+        );
+
+        let failed = child_or_reap(
+            spawn_managed(&mut cmd),
+            true,
+            || Some(data.0.clone()),
+            &run,
+            "missing-agent",
+        );
+        let message = failed.expect_err("the missing program did not fail to start");
+        assert!(
+            message.starts_with("Failed to start missing-agent:"),
+            "unexpected error: {message}"
+        );
+        assert!(!run.exists(), "a failed spawn left its run folder behind");
+
+        // The data folder could not be read. The run folder stays, and the failure is still reported.
+        let kept = crate::more_agents::run_folder(&data.0).expect("second run");
+        let no_data = child_or_reap(
+            Err(std::io::Error::new(std::io::ErrorKind::NotFound, "missing")),
+            true,
+            || None,
+            &kept,
+            "missing-agent",
+        );
+        assert!(no_data.is_err());
+        assert!(
+            kept.is_dir(),
+            "a missing data folder was treated as a removed run folder"
+        );
+        crate::more_agents::remove_run_folder(&data.0, &kept).expect("reap leftover");
+    }
+}
+
+/// A More agents run folder goes when its child exits. Anything else has no folder to remove.
+fn reap_more_agent_run(cleanup: Option<(Option<PathBuf>, PathBuf)>) {
+    let Some((Some(data), dir)) = cleanup else {
+        return;
+    };
+    let _ = crate::more_agents::remove_run_folder(&data, &dir);
 }
 
 pub(crate) fn provider_account_dir(
@@ -3438,6 +3685,8 @@ fn apply_gui_path(cmd: &mut Command) {
 pub(crate) fn apply_gui_env(cmd: &mut Command) {
     apply_gui_path(cmd);
     crate::hide_window_console(cmd);
+    // Round 8 (LOW): an agent's git, and any git a launched tool runs, reads a bare repository only when it is named.
+    crate::fs::git_safe_env(cmd);
     if let Some(id) = passwd_identity() {
         if std::env::var_os("HOME").is_none() {
             cmd.env("HOME", &id.home);
@@ -3614,6 +3863,30 @@ fn command_basename(command: &str) -> &str {
         .file_stem()
         .and_then(|name| name.to_str())
         .unwrap_or(command)
+}
+
+#[cfg(test)]
+mod launch_env_tests {
+    use super::*;
+
+    /// WP-101 round 11: a Claude launch carries the Bash-folder variable; another provider's launch does not.
+    #[test]
+    fn a_claude_launch_carries_the_bash_folder_variable_and_others_do_not() {
+        let claude = HarnessAccount {
+            provider: "claude".into(),
+            id: "default".into(),
+        };
+        let codex = HarnessAccount {
+            provider: "codex".into(),
+            id: "default".into(),
+        };
+        assert_eq!(
+            launch_env_for(Some(&claude)),
+            Some(("CLAUDE_BASH_MAINTAIN_PROJECT_WORKING_DIR", "1"))
+        );
+        assert_eq!(launch_env_for(Some(&codex)), None);
+        assert_eq!(launch_env_for(None), None);
+    }
 }
 
 #[cfg(unix)]

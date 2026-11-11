@@ -26,6 +26,7 @@ use super::manifest::{load_plugin, LoadedPlugin, Report};
 use super::registry::{
     self, Contribution, Enablement, Entry, Host, Outcome, Registry, Snapshot, Source,
 };
+use super::scan;
 use super::source::{self, InstallSource, Tools};
 use super::wiring::passed_env;
 
@@ -124,6 +125,10 @@ pub struct PendingRequest {
     pub skills: Vec<String>,
     pub mcp_servers: Vec<String>,
     pub reports: Vec<Report>,
+    /// WP-101: what the scan of the staged copy found. Blocks never reach this (they refuse the install); warnings
+    /// are shown on the pending card. Defaulted so a request saved by an earlier build still reads.
+    #[serde(default)]
+    pub scan: scan::ScanResult,
     pub created_at_ms: u64,
     /// The project folder to turn this plugin on for, once the install lands. None leaves it off.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -279,7 +284,10 @@ fn restage(dir: &Path, request: &PendingRequest, tools: &Tools) -> Result<(), St
             ));
         }
         manifest_declared(&checked)?.check(&tools.target)?;
-        fsutil::copy_plugin_tree(&fetched.root, &staged)
+        // WP-101: a re-fetched copy is scanned again; the pinned source could have changed under it. The re-fetched
+        // copy is the one the person approves, so a warning the card never showed also stops it.
+        refuse_changed(&new_scan(&fetched.root, &staged)?, request)?;
+        Ok(())
     })();
     let _ = fsutil::remove_tree(&work);
     if outcome.is_err() {
@@ -335,7 +343,16 @@ fn prepare(
             None => None,
         };
         let staged = dir.join("plugin");
-        fsutil::copy_plugin_tree(&fetched.root, &staged)?;
+        // WP-101: read the fetched folder before the copy, so a link that points outside the plugin is refused with a
+        // reason rather than silently left out, then read the copy for everything else. A block refuses now, with
+        // nothing placed and the pending folder dropped by the caller; warnings travel on the request for the card.
+        let scanned = new_scan(&fetched.root, &staged)?;
+        if scanned.blocked {
+            return Err(format!(
+                "\"{name}\" didn't pass the install check: {}",
+                scan::blocking_reason(&scanned)
+            ));
+        }
         let _ = fsutil::remove_tree(&work);
         let loaded = load_plugin(&staged).map_err(|e| e.0)?;
         let steps = script_steps(&loaded)?;
@@ -358,6 +375,7 @@ fn prepare(
             skills: loaded.skills.iter().map(|s| s.name.clone()).collect(),
             mcp_servers: loaded.mcp_servers.iter().map(|s| s.name.clone()).collect(),
             reports: loaded.reports,
+            scan: scanned,
             created_at_ms: registry::now_ms(),
             project,
         })
@@ -371,12 +389,148 @@ fn prepare(
     }
 }
 
+/// Copy `fetched` into `staged`, then read it: first the fetched folder for links and paths that would be dropped, then
+/// the copy for everything else. The result carries the copy's content hash.
+fn new_scan(fetched: &Path, staged: &Path) -> Result<scan::ScanResult, String> {
+    let runway = scan::scan_source(fetched, staged);
+    if runway.iter().any(|f| f.severity == scan::Severity::Block) {
+        return Ok(scan::ScanResult {
+            blocked: true,
+            findings: runway,
+            ..scan::ScanResult::default()
+        });
+    }
+    fsutil::copy_plugin_tree(fetched, staged)?;
+    let mut result = scan::scan_untrusted(staged);
+    result.findings.extend(runway);
+    result.blocked = result
+        .findings
+        .iter()
+        .any(|f| f.severity == scan::Severity::Block);
+    Ok(result)
+}
+
+/// The copy fetched again has to be the copy the person was shown: same content, same findings. Anything else stops,
+/// because they approved a card that no longer describes what would land.
+fn refuse_changed(fresh: &scan::ScanResult, request: &PendingRequest) -> Result<(), String> {
+    if fresh.blocked {
+        return Err(scan::blocking_reason(fresh));
+    }
+    let shown = &request.scan;
+    // WP-101 fix round 2, item H(c): a request written without a hash (an older build, a hand-edited one) cannot
+    // prove the copy is the one that was read, so it stops rather than skipping the check.
+    if shown.digest.is_empty() {
+        return Err(
+            "That request was saved before the install check kept a hash, so the copy can't be proved. Start the install again."
+                .into(),
+        );
+    }
+    let same_digest = fresh.digest == shown.digest;
+    if same_digest && fresh.findings.len() == shown.findings.len() {
+        let mut had: Vec<(&str, &str, &str)> = fresh
+            .findings
+            .iter()
+            .map(|f| (f.code.as_str(), f.path.as_str(), f.message.as_str()))
+            .collect();
+        let mut seen: Vec<(&str, &str, &str)> = shown
+            .findings
+            .iter()
+            .map(|f| (f.code.as_str(), f.path.as_str(), f.message.as_str()))
+            .collect();
+        had.sort_unstable();
+        seen.sort_unstable();
+        if had == seen {
+            return Ok(());
+        }
+    }
+    Err("The copy fetched again isn't the one you were shown, so nothing was installed. Ask for it again to see what changed.".into())
+}
+
 fn manifest_declared(loaded: &LoadedPlugin) -> Result<Declared, String> {
     let value = serde_json::json!({ "extensions": loaded.manifest.extensions });
     Declared::from_manifest(&value)
 }
 
-/// Run what the request asked to (it was approved, or asked for nothing), validate again, then put it in place.
+/// Whether the staged copy, or a folder anywhere inside it, is now a link (WP-101 fix round 2, item H(d)). The scan
+/// that recorded the digest walked real folders; a link in their place reads whatever it points to, so it is a change
+/// however the files behind it look. A top-level link is refused by `scan`'s own walk ("it isn't a folder"); this
+/// catches the ones deeper in, which the walk follows silently.
+fn staged_swapped_for_link(staged: &Path) -> Option<String> {
+    fn visit(dir: &Path) -> bool {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return false;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            // A link is a link whatever it points at: `symlink_metadata` reports the link itself, so this checks the
+            // link before looking at whether a real folder would have been walked. Reading through the link's target
+            // would hide exactly the change this looks for.
+            if fsutil::link_target(&path).is_some() {
+                return true;
+            }
+            let Ok(meta) = std::fs::symlink_metadata(&path) else {
+                continue;
+            };
+            if meta.is_dir() && visit(&path) {
+                return true;
+            }
+        }
+        false
+    }
+    if fsutil::link_target(staged).is_some() {
+        return Some(
+            "The downloaded copy was replaced by a link after it was read, so nothing was installed. Ask for it again."
+                .into(),
+        );
+    }
+    if visit(staged) {
+        return Some(
+            "A folder in the downloaded copy was replaced by a link after it was read, so nothing was installed. Ask for it again."
+                .into(),
+        );
+    }
+    None
+}
+
+/// Read the staged copy again. A link, a scan that blocks, or (when `expected` is set) a different hash is a change,
+/// and the same sentences the earlier check uses are returned. With no expected hash, the hash of this read is
+/// returned so a later read can be compared with it: an approved script is allowed to write, and that result is what
+/// gets installed.
+fn read_staged(staged: &Path, expected: Option<&str>) -> Result<String, String> {
+    if let Some(why) = staged_swapped_for_link(staged) {
+        return Err(why);
+    }
+    let now = scan::scan_untrusted(staged);
+    if now.blocked {
+        return Err(format!(
+            "The copy changed after it was read: {} Ask for it again.",
+            scan::blocking_reason(&now)
+        ));
+    }
+    if expected.is_some_and(|expected| expected != now.digest) || now.digest.is_empty() {
+        return Err(
+            "The copy changed after it was read, so nothing was installed. Ask for it again to see what changed."
+                .into(),
+        );
+    }
+    Ok(now.digest)
+}
+
+/// After the approved steps. Their writes are part of the copy; a link or a blocked scan is not.
+fn seal_after_steps(staged: &Path, sealed: &mut String) -> Result<(), String> {
+    *sealed = read_staged(staged, None)?;
+    Ok(())
+}
+
+/// Inside the registry lock, immediately before the copy is moved. A test may write one file first; either way a
+/// difference from `sealed` stops the install.
+fn prove_unchanged(staged: &Path, sealed: &str) -> Result<(), String> {
+    tamper_before_install(staged);
+    read_staged(staged, Some(sealed))?;
+    Ok(())
+}
+
+/// Run what the request asked for (it was approved, or asked for nothing), validate again, then put it in place.
 fn commit(
     host: &Host,
     tools: &Tools,
@@ -403,6 +557,28 @@ fn commit(
             ));
         }
     }
+    // The hash of the copy last read. An approved script may write into the staged folder, and then this
+    // becomes the hash of that result. With no script it is the hash matched to the card.
+    let mut sealed = String::new();
+    if already.is_none() && staged.is_dir() {
+        // WP-101: the copy that lands is the copy that was read. Anything changed since the scan (a retry, a moved
+        // tag, something writing in the data folder) stops the install rather than installing what nobody saw.
+        // WP-101 fix round 2, item H(c): a request with no hash can't prove anything, so it stops too.
+        if request.scan.digest.is_empty() {
+            drop_pending(host, dir);
+            return Err(
+                "That request was saved before the install check kept a hash, so the copy can't be proved. Start the install again."
+                    .into(),
+            );
+        }
+        match read_staged(&staged, Some(request.scan.digest.as_str())) {
+            Ok(digest) => sealed = digest,
+            Err(why) => {
+                drop_pending(host, dir);
+                return Err(why);
+            }
+        }
+    }
     if already.is_none() && !request.steps.is_empty() {
         if !approved {
             return Err("It needs the person's OK before anything runs.".into());
@@ -410,6 +586,12 @@ fn commit(
         if let Err(why) = run_steps(&staged, &request.steps, tools) {
             drop_pending(host, dir);
             return Err(format!("{why} Nothing was installed."));
+        }
+        // The steps ran in the staged copy. Read that copy before it is trusted: a link, or a scan that blocks,
+        // is not what was approved. The hash of this read is what must still be there when the copy is put in place.
+        if let Err(why) = seal_after_steps(&staged, &mut sealed) {
+            drop_pending(host, dir);
+            return Err(why);
         }
     }
     let mut placed = false;
@@ -421,10 +603,18 @@ fn commit(
                 reports: Vec::new(),
             })
         } else {
-            placed = true;
-            match request.op.as_str() {
-                "update" => update_staged(host, &request.name, &staged, request.resolved.clone()),
-                _ => registry::install_staged(host, &staged, request.resolved.clone()),
+            // Immediately before the copy is moved. A change since the last read, including one a test writes here,
+            // stops the install. The pending folder is removed by the caller once this lock is released.
+            if let Err(why) = prove_unchanged(&staged, &sealed) {
+                Err(why)
+            } else {
+                placed = true;
+                match request.op.as_str() {
+                    "update" => {
+                        update_staged(host, &request.name, &staged, request.resolved.clone())
+                    }
+                    _ => registry::install_staged(host, &staged, request.resolved.clone()),
+                }
             }
         }
     };
@@ -648,6 +838,19 @@ fn run_steps(root: &Path, steps: &[ScriptStep], tools: &Tools) -> Result<(), Str
 thread_local! {
     /// Tests: fail an update or rollback right after its swap, to prove the way back.
     pub(super) static FAIL_AFTER_SWAP: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// Tests: write one file into the staged copy after it was last read and before it is put in place.
+    pub(super) static TAMPER_BEFORE_INSTALL: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// A test writes one file here, once, and the flag is cleared as it is read so a later install on this thread is
+/// left alone. A real install never sets the flag.
+fn tamper_before_install(staged: &Path) {
+    #[cfg(test)]
+    if TAMPER_BEFORE_INSTALL.with(|flag| flag.replace(false)) {
+        let _ = std::fs::write(staged.join("tamper.txt"), b"tampered");
+    }
+    #[cfg(not(test))]
+    let _ = staged;
 }
 
 fn failed_after_swap() -> Result<(), String> {

@@ -18,6 +18,7 @@ import { begin, counter } from "../../phases/model/machine";
 import { deliverPhaseResult } from "../../phases/model/phaseBridge";
 import { loadPhaseSettings, savePhaseSettings, seedWork, taskForCrew, workFor } from "../../phases/model/store";
 import { handleAgentApp as handleRaw, type AgentAppHost } from "./agentApp";
+import { redoLinkRefusal } from "./agentAppTasks";
 import { handleWithBriefParts as handleAgentApp, TEST_GOAL, TEST_INTENT } from "../../firstmate/testing/briefParts";
 import { renderBrief, type BriefIsolation } from "../../firstmate/model/brief";
 import { classifyBriefTask } from "../../firstmate/model/briefSkills";
@@ -62,6 +63,18 @@ import {
   resolveClaudeApiModelId,
 } from "../../../integrations/harness/providers/claude/claudeProtocol";
 import { parseCliArgs } from "../../../../scripts/fake-claude.mjs";
+import { dayKey } from "../../usage/model/history";
+import {
+  admitSpendTurn,
+  resetSpendGate,
+  saveTaskCeiling,
+  setSpendClock,
+  setSpendLoader,
+  setSpendMonotonicClock,
+  setSpendProjectLookup,
+  setSpendRedoLinks,
+  spendSnapshot,
+} from "../../usage/model/spendGate";
 import { isFanoutAgainDecisionKey } from "../../hub/model/decisionKey";
 
 // `onlyClaude` is a bench plan (src-tauri/src/verify_live.rs): no CLI but the run's own Claude wrapper resolves.
@@ -2172,6 +2185,7 @@ describe("parallel workers per project, with throttling (H8)", () => {
         skipped: [],
       },
       scopes: { mono: null, project: null, system: null },
+      spend: null,
     });
     expect(workerLimits("vg-game")).toEqual({ workers: 20, heavy: 4 });
     await expect(handleAgentApp(source, "w2", "tasks.workers", { workers: 40 }, host)).rejects.toThrow("from 1 to 30");
@@ -2357,6 +2371,84 @@ describe("parallel workers per project, with throttling (H8)", () => {
         handleAgentApp(source, "proj", "tasks.workers", { scope: "project", project: "/tmp/other", model: "opus" }, host),
       ).rejects.toThrow("This Mono doesn't work on that project.");
       expect(findMono("vg-game-lead")?.workerDefault).toBeUndefined();
+    });
+
+    it("sets a spend limit from the first mate's own chat, and nobody else", async () => {
+      const { source, host } = lead();
+      const read = (await handleAgentApp(source, "r", "tasks.workers", {}, host)) as { spend: unknown; line: string };
+      expect(read.spend).toBeNull();
+      expect(read.line).not.toContain("Spend limit");
+      const saved = (await handleAgentApp(
+        source,
+        "s",
+        "tasks.workers",
+        { scope: "project", amountUsd: 50, period: "month" },
+        host,
+      )) as { spend: { scope: string; amountUsd: number; period: string; warnAt: number }[]; line: string };
+      expect(saved.spend).toEqual([
+        expect.objectContaining({ scope: "project", project: "vg-game", period: "month", amountUsd: 50, warnAt: 0.8 }),
+      ]);
+      expect(saved.line).toContain("Spend limit for vg-game is $50 this month.");
+      expect(saved.line).toContain("runs up to");
+      // A first mate may lower its limit, and may not raise, clear or set the whole-app one (Settings only).
+      await expect(
+        handleAgentApp(source, "raise", "tasks.workers", { scope: "project", amountUsd: 900, period: "month" }, host),
+      ).rejects.toThrow("Raising a spend limit needs your tap in Settings.");
+      await expect(
+        handleAgentApp(source, "clear", "tasks.workers", { scope: "project", spendClear: true, period: "month" }, host),
+      ).rejects.toThrow("Clearing a spend limit needs your tap in Settings.");
+      await expect(
+        handleAgentApp(source, "system", "tasks.workers", { scope: "system", amountUsd: 10, period: "month" }, host),
+      ).rejects.toThrow("The whole-app spend limit is set in Settings.");
+      const lowered = (await handleAgentApp(
+        source,
+        "lower",
+        "tasks.workers",
+        { scope: "project", amountUsd: 20, period: "month" },
+        host,
+      )) as { line: string };
+      expect(lowered.line).toContain("Spend limit for vg-game is $20 this month.");
+      for (const who of ["worker", "habit"] as const) {
+        const refused = lead(who);
+        await expect(
+          handleAgentApp(refused.source, who, "tasks.workers", { scope: "project", amountUsd: 10, period: "month" }, refused.host),
+        ).rejects.toThrow("Only a first mate sets a spend limit, from its own chat.");
+      }
+      const checker = lead("checker");
+      await expect(
+        handleAgentApp(checker.source, "checker", "tasks.workers", { scope: "project", amountUsd: 10, period: "month" }, checker.host),
+      ).rejects.toThrow(/checker only reads|Only a first mate sets a spend limit/);
+      await expect(
+        handleAgentApp(source, "mono", "tasks.workers", { scope: "mono", amountUsd: 10, period: "month" }, host),
+      ).rejects.toThrow("not one Mono");
+      await expect(
+        handleAgentApp(source, "noscope", "tasks.workers", { amountUsd: 10, period: "month" }, host),
+      ).rejects.toThrow("Say whether this is just this Mono, this project, or everything.");
+      await expect(
+        handleAgentApp(source, "bad", "tasks.workers", { scope: "project", amountUsd: 0, period: "month" }, host),
+      ).rejects.toThrow("amountUsd must be a positive number.");
+      await expect(
+        handleAgentApp(source, "week", "tasks.workers", { scope: "project", amountUsd: 10, period: "week" }, host),
+      ).rejects.toThrow('period must be "day" or "month".');
+      await expect(
+        handleAgentApp(source, "other", "tasks.workers", { scope: "project", project: "/tmp/other", amountUsd: 10, period: "month" }, host),
+      ).rejects.toThrow("This Mono doesn't work on that project.");
+      const cleared = (await handleAgentApp(
+        source,
+        "clear",
+        "tasks.workers",
+        { scope: "project", period: "month", spendClear: true },
+        host,
+      )) as { spend: unknown; line: string };
+      expect(cleared.spend).toBeNull();
+      // The reset above left no limit to clear, so the line says so. It never says "cleared" for a limit that is gone
+      // (WP-176 round 3: this line used to read "cleared" here).
+      expect(cleared.line).toContain("There is no spend limit to clear for vg-game.");
+      expect(cleared.line).not.toContain("Spend limit cleared");
+      // The whole-app limit is Settings only: a first mate's chat is refused, and the limit stays as it was.
+      await expect(
+        handleAgentApp(source, "app", "tasks.workers", { scope: "system", amountUsd: 5, period: "day" }, host),
+      ).rejects.toThrow("The whole-app spend limit is set in Settings.");
     });
 
     it("posts a card with the previous setting, and a line in the activity log", async () => {
@@ -2681,11 +2773,49 @@ describe("Hivra WP-14: tasks.message and tasks.ask", () => {
       source,
       "r-ask",
       "tasks.ask",
-      { key: "retention", question: "Keep 30 days?", options: ["Yes", "No"], recommended: "Yes", taskIds: ["t-1"] },
+      {
+        key: "retention",
+        question: "Keep 30 days?",
+        options: ["Yes", "No"],
+        recommended: "Yes",
+        taskIds: ["t-1"],
+        keys: ["sessions"],
+        force: true,
+        reason: "The old one is about staging.",
+      },
       host,
     );
     expect(fm.asked).toEqual([
-      expect.objectContaining({ askedBy: "mono-exo", askedByMono: "vg-game-lead", project: "vg-game", key: "retention", taskIds: ["t-1"] }),
+      expect.objectContaining({
+        askedBy: "mono-exo",
+        askedByMono: "vg-game-lead",
+        project: "vg-game",
+        key: "retention",
+        taskIds: ["t-1"],
+        keys: ["sessions"],
+        force: true,
+        reason: "The old one is about staging.",
+      }),
+    ]);
+    await expect(
+      handleAgentApp(source, "r-extra", "tasks.ask", { key: "k", question: "q", options: ["a", "b"], recommended: "a", extra: 1 }, host),
+    ).rejects.toThrow("Unknown tasks.ask fields");
+    await expect(
+      handleAgentApp(source, "r-stand", "tasks.ask", { key: "k", question: "q", options: ["a", "b"], recommended: "a", standing: true }, host),
+    ).rejects.toThrow("Unknown tasks.ask fields");
+    const other = fixture([row({ id: "t-1", project: "other-app" })]);
+    other.api.firstMate = fm.host;
+    await expect(
+      handleAgentApp(
+        other.source,
+        "r-other",
+        "tasks.ask",
+        { key: "retention", question: "Keep 30 days?", options: ["Yes", "No"], recommended: "Yes", taskIds: ["t-1"] },
+        other.host,
+      ),
+    ).rejects.toThrow("another project");
+    expect(fm.asked).toEqual([
+      expect.objectContaining({ project: "vg-game", taskIds: ["t-1"] }),
     ]);
     const worker = fixture([], "worker");
     worker.api.firstMate = fm.host;
@@ -3128,6 +3258,79 @@ describe("a brief quotes the person's own request (WP-171)", () => {
   });
 });
 
+describe("review r4: a redo's very first turn counts its parent's spend", () => {
+  afterEach(() => resetSpendGate());
+
+  it("a redo of a task held at its ceiling is held on its first turn too", async () => {
+    resetSpendGate();
+    importCustomModels([
+      { id: "acme", name: "Acme", provider: "deepseek", baseUrl: "https://api.example.test/v1", modelId: "acme-1" },
+    ]);
+    const now = Date.parse("2026-11-10T15:00:00");
+    setSpendClock(() => now);
+    // Every check reads the ledger again, so the record TTL plays no part: only the order of the writes does.
+    let tick = 0;
+    setSpendMonotonicClock(() => (tick += 60_000));
+    setSpendProjectLookup({
+      idOf: (folder) => (folder === PROJECT ? "vg-game" : undefined),
+      folderOf: (id) => (id === "vg-game" ? PROJECT : undefined),
+    });
+    // The app's database as spendWiring reads it: the ledger rows and the redo links, read together.
+    const db = {
+      ledger: [{ projectKey: "vg-game", sessionId: "app-mono-exo-t-stuck", day: dayKey(now), micros: 9_500_000, priced: 1, unpriced: 0 }],
+      links: [] as { child: string; parent: string }[],
+    };
+    setSpendLoader(async () => {
+      setSpendRedoLinks(db.links);
+      return db.ledger;
+    });
+    saveTaskCeiling("vg-game", { hardUsd: 9 }, spendSnapshot().book.revision);
+    // Control: the stuck task itself is held at its ceiling.
+    expect(
+      await admitSpendTurn({ sessionId: "app-mono-exo-t-stuck", cwd: PROJECT, harness: "claude", model: "custom:acme", origin: "automated" }),
+    ).toMatchObject({ ok: false });
+
+    const stuck = row({ id: "t-stuck", childSession: "app-mono-exo-t-stuck", stallKind: "blocked", stallReason: "Task ceiling reached" });
+    const rows = [stuck];
+    const { source, host, api } = fixture(rows);
+    // delegations.rs note_redo + redo_links: the new task's chat is linked to the one it redoes.
+    api.redo = vi.fn(async (_owner, entry, task) => {
+      const made = rows.find((candidate) => candidate.id === task);
+      if (made) db.links.push({ child: made.childSession, parent: entry.childSession });
+    });
+    // As the app's start does: the worker's first turn goes out through sendHarnessTurn, which asks admitSpendTurn.
+    const firstTurn: Array<{ ok: boolean }> = [];
+    const start = host.start as (...args: unknown[]) => Promise<void>;
+    host.start = vi.fn(async (...args: unknown[]) => {
+      await start(...args);
+      const [launch, id] = args as [{ cwd?: string; model?: string }, string];
+      firstTurn.push(
+        await admitSpendTurn({ sessionId: id, cwd: launch.cwd ?? PROJECT, harness: "claude", model: launch.model, origin: "automated" }),
+      );
+    }) as unknown as AgentAppHost["start"];
+
+    await handleAgentApp(source, "r-redo-spend", "tasks.delegate", { brief: "Same job, smaller.", redoes: "t-stuck", model: "custom:acme" }, host);
+
+    expect(api.redo).toHaveBeenCalledTimes(1);
+    expect(db.links).toEqual([{ child: "app-mono-exo-r-redo-spend", parent: "app-mono-exo-t-stuck" }]);
+    expect(firstTurn).toHaveLength(1);
+    // Control: once delegate_task has noted the redo, the redo's next turn is held, so the link itself works.
+    expect(
+      await admitSpendTurn({ sessionId: "app-mono-exo-r-redo-spend", cwd: PROJECT, harness: "claude", model: "custom:acme", origin: "automated" }),
+    ).toMatchObject({ ok: false });
+    // Fails today: the first turn is admitted with the redo's own $0, because the link is written after it starts.
+    expect(firstTurn[0]).toMatchObject({ ok: false });
+  });
+});
+
+describe("round 5 gap: a redo whose record failed does not start", () => {
+  it("the start is refused when the redo's link was not recorded, and allowed otherwise", () => {
+    const redo = { title: "Same job", askIds: [], redoes: { id: "t-stuck", childSession: "app-mono-exo-t-stuck" } };
+    expect(redoLinkRefusal(redo, null)).toMatch(/could not be recorded/);
+    expect(redoLinkRefusal(redo, { id: "t-new" } as unknown as Delegation)).toBeNull();
+    expect(redoLinkRefusal({ title: "Fresh", askIds: [] }, null)).toBeNull();
+  });
+});
 
 // WP-172: a fan-out checkpoints as it sends its tasks, and a resume sends only what never started (the same request ids,
 // so a task that already has a row is never started twice).

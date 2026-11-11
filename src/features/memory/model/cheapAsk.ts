@@ -5,6 +5,7 @@
 // will not pass is final. Never a crash and never a retry loop of its own.
 
 import { invoke } from "@tauri-apps/api/core";
+import { admitSpendTurn, noteUnpricedTurn, spendGateActive } from "../../usage/model/spendGate";
 import { listCustomModels, type CustomModel } from "../../sessions/model/customModels";
 import { parseCuratorReply, type CuratorAsk } from "./curator";
 
@@ -59,8 +60,23 @@ export function cheapAsk(modelId: string | undefined, call: (route: CheapRoute, 
   };
 }
 
-export function realCall(route: CheapRoute, prompt: string): Promise<CheapOutcome> {
-  return invoke<CheapOutcome>("plugin:hub|memory_cheap_ask", { route, prompt });
+let cheapSeq = 0;
+
+/**
+ * The cheap memory call, through the spend gate (WP-176 round 3): an automated turn on the person's own model. It has no
+ * project, so only the whole app's limit applies to it; the call is noted in the ledger as unpriced.
+ */
+export async function realCall(route: CheapRoute, prompt: string): Promise<CheapOutcome> {
+  const sessionId = `memory-cheap-${(cheapSeq += 1)}`;
+  if (spendGateActive()) {
+    const admitted = await admitSpendTurn({ sessionId, cwd: "", harness: "claude", model: route.customModelId, origin: "automated" });
+    if (!admitted.ok) return { ok: false, text: "", kind: "refused", reason: admitted.reason };
+  }
+  try {
+    return await invoke<CheapOutcome>("plugin:hub|memory_cheap_ask", { route, prompt });
+  } finally {
+    noteUnpricedTurn({ sessionId, cwd: "" });
+  }
 }
 
 export type CheapTest = { ok: boolean; message: string };

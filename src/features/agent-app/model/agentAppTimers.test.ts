@@ -73,27 +73,40 @@ describe("timers.*", () => {
     await expect(handleAgentApp(source, "r1", "timers.check", { command: "rm -rf build", note: "no" }, host)).rejects.toThrow(/doesn't run by itself/);
     expect(api.checkSet).not.toHaveBeenCalled();
     await expect(handleAgentApp(source, "r2", "timers.check", { command: "git status; rm -rf ~/data", note: "no" }, host)).rejects.toThrow(/doesn't run by itself/);
-    const set = (await handleAgentApp(source, "r3", "timers.check", { command: "npm test", note: "the build" }, host)) as { id: string; note: string };
+    // A test or build runs code an allowed edit may have just written, so a timer never watches one (review C1).
+    await expect(handleAgentApp(source, "r4", "timers.check", { command: "npm test", note: "the build" }, host)).rejects.toThrow(/doesn't run by itself/);
+    const set = (await handleAgentApp(source, "r3", "timers.check", { command: "git status", note: "the status" }, host)) as { id: string; note: string };
     expect(api.checkSet).toHaveBeenCalledOnce();
-    expect(api.checkSet).toHaveBeenCalledWith({ ownerSession: source.id, command: "npm test", pattern: "", note: "the build", intervalMs: 60_000, cwd: "/code/hivra" });
+    expect(api.checkSet).toHaveBeenCalledWith({ ownerSession: source.id, command: "git status", pattern: "", note: "the status", intervalMs: 60_000, cwd: "/code/hivra" });
     expect(set.id).toBe("check-1");
     expect(set.note).toContain("[MonoCode watcher]");
     expect(set.note).toContain("don't poll");
-    expect(set.note).not.toContain("npm test");
+    expect(set.note).not.toContain("git status");
     expect(set.note).toContain("in /code/hivra,");
+  });
+
+  // PR #201 round 2 (low): a check the safe table allows still waits when its words name a login store or a folder walk
+  // that leaves the chat's own (the same credential check autopilot's approvals make).
+  it("a check holds a read that names a login store or a glob over hidden files (round 2)", async () => {
+    const { source, host, api } = fixture("mono");
+    await expect(handleAgentApp(source, "r1", "timers.check", { command: "cat ~/.netrc", note: "x" }, host)).rejects.toThrow(/doesn't run by itself/);
+    await expect(handleAgentApp(source, "r2", "timers.check", { command: "rg -g '.env*' TOKEN", note: "x" }, host)).rejects.toThrow(/doesn't run by itself/);
+    expect(api.checkSet).not.toHaveBeenCalled();
   });
 
   it("a check runs in the folder the chat works in: its working copy when it has one, else its project", async () => {
     const { source, host, api } = fixture("mono");
-    await handleAgentApp(source, "r1", "timers.check", { command: "npm test", note: "project" }, host);
+    await handleAgentApp(source, "r1", "timers.check", { command: "git status", note: "project" }, host);
     expect(api.checkSet).toHaveBeenLastCalledWith(expect.objectContaining({ cwd: "/code/hivra" }));
     const inTree = { ...source, worktreeCwd: "/code/hivra-wt/fix one" };
-    await handleAgentApp(inTree, "r2", "timers.check", { command: "npm test", note: "worktree" }, host);
+    await handleAgentApp(inTree, "r2", "timers.check", { command: "git status", note: "worktree" }, host);
     expect(api.checkSet).toHaveBeenLastCalledWith(expect.objectContaining({ cwd: "/code/hivra-wt/fix one" }));
   });
 
   it("takes a pattern and an interval, and refuses one outside a minute to a day", async () => {
-    const { source, host, api } = fixture("mono");
+    const { source: mono, host, api } = fixture("mono");
+    // Round 6, MED-2: a walk (rg) runs only from a project folder deep enough to be one, so this check uses one.
+    const source = { ...mono, cwd: "/Users/example/Projects/hivra" };
     await handleAgentApp(source, "r1", "timers.check", { command: "rg -n ready src", pattern: "ready", note: "the word", everyMinutes: 5 }, host);
     expect(api.checkSet).toHaveBeenCalledWith(expect.objectContaining({ pattern: "ready", intervalMs: 5 * 60_000 }));
     await expect(handleAgentApp(source, "r2", "timers.check", { command: "pwd", note: "x", everyMinutes: 0 }, host)).rejects.toThrow(/from 1/);
@@ -109,5 +122,31 @@ describe("timers.*", () => {
     expect(() => dueAt({ inMinutes: 5, at: "2026-11-04T09:00:00Z" }, 0)).toThrow(/not both/);
     expect(() => dueAt({ inMinutes: 0 }, 0)).toThrow(/from 1/);
     expect(() => dueAt({ at: "tomorrow" }, 0)).toThrow(/ISO time/);
+  });
+});
+
+// WP-101 review round 6, MED-2: a timer's check runs in the chat's folder, so a walk from a folder that is home or
+// shallower, or inside a credential place, is held like an approval's walk (a Mono starts at home, and a walk from there
+// reaches every login store under it, a yes-or-no oracle for a key).
+describe("timers.check walks only from a project folder", () => {
+  const checkFrom = (cwd: string, command: string) => {
+    const { host } = fixture("mono");
+    const source: Session = { ...newSession("claude", cwd, "claude:opus-5-5"), id: "chat-mono" };
+    return handleAgentApp(source, "r1", "timers.check", { command, pattern: "", note: "look", everyMinutes: 5 }, host);
+  };
+
+  it("holds a search from a Mono whose folder is home, with or without a path", async () => {
+    for (const command of ["rg -c -e sk-ant-api03-A .", "rg -c sk-ant-api03-A", "ls -R ."]) {
+      await expect(checkFrom("/Users/example", command), command).rejects.toThrow(/doesn't run by itself/);
+    }
+  });
+
+  it("holds a search from a folder at or inside a credential place", async () => {
+    await expect(checkFrom("/Users/example/Library/Application Support/tool", "rg -c sk-ant-api03-A .")).rejects.toThrow(/doesn't run by itself/);
+    await expect(checkFrom("/Users/example/.ssh/work", "rg -c sk-ant-api03-A .")).rejects.toThrow(/doesn't run by itself/);
+  });
+
+  it("still sets a plain search from a project folder", async () => {
+    await expect(checkFrom("/Users/example/Projects/hivra", "rg -c -e fetchUser src")).resolves.toMatchObject({ id: "check-1" });
   });
 });

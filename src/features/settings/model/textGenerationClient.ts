@@ -3,6 +3,7 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import { hasSecretText } from "../../portable/model/secrets";
+import { admitSpendTurn, noteUnpricedTurn, spendGateActive, type TurnOrigin } from "../../usage/model/spendGate";
 import { readTextGeneration, type TextGenerationSetting } from "./textGeneration";
 
 /** Same ceiling as the Rust call, in characters. */
@@ -172,12 +173,16 @@ export function useTextGenerationPort(port: TextGenerationPort | null): void {
  * `refused` means this ask will not be sent. `empty` means the reply was not usable text.
  * An aborted signal is not turned into either: it rejects as AbortError, and a late reply is dropped.
  */
+let shortTextSeq = 0;
+
 export async function askShortText(input: {
   setting: TextGenerationSetting;
   prompt: string;
   models: readonly SavedTextModel[];
   port: TextGenerationPort;
   signal?: AbortSignal;
+  /** Who asked: a commit message Ash asks for is his turn (warned, not refused); otherwise automated (round 6). */
+  origin?: TurnOrigin;
 }): Promise<string> {
   const setting = readTextGeneration(input.setting);
   if (!setting) throw new TextGenerationError("No text model is set.", "refused");
@@ -196,6 +201,12 @@ export async function askShortText(input: {
     throw new TextGenerationError("No key is saved for that model. Add it under Other models.", "refused");
   }
   input.signal?.throwIfAborted();
+  // The saved text model is a billed call: it passes the spend gate, and what it ran is noted as unpriced.
+  const sessionId = `short-text-${(shortTextSeq += 1)}`;
+  if (spendGateActive()) {
+    const admitted = await admitSpendTurn({ sessionId, cwd: "", harness: "claude", model: keyId ?? undefined, origin: input.origin ?? "automated" });
+    if (!admitted.ok) throw new TextGenerationError(admitted.reason, "refused");
+  }
   const request: TextGenerationRequest = {
     provider: setting.provider,
     model: setting.model,
@@ -206,6 +217,7 @@ export async function askShortText(input: {
   let text: string;
   try {
     text = await input.port.complete(request, input.signal);
+    noteUnpricedTurn({ sessionId, cwd: "" });
   } catch (error) {
     if (isAbort(error) || error instanceof TextGenerationError) throw error;
     const reason = error instanceof Error ? error.message : typeof error === "string" ? error : "";

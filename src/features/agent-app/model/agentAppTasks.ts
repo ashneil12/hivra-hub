@@ -40,6 +40,8 @@ import {
   type DelegationState,
 } from "../../monos/model/delegations";
 import { CHECKER_MONO_ID } from "../../hub/model/hubMcp";
+import { formatMeasuredUsd, sanitizeSpendLimit, type SpendLimit } from "../../usage/model/spend";
+import { addSpendRedoLink, clearSpendLimit, NO_SPEND_LIMIT_TO_CLEAR, saveSpendLimit, spendFor, spendSnapshot } from "../../usage/model/spendGate";
 import { SELF_REVIEW_SHAPE, storedReview } from "../../monos/model/workerReview";
 import { waitingOnAshLine } from "../../hub/model/chatQuestions";
 import { answeredJobRefusal } from "../../monos/model/ashAnswersWorker";
@@ -181,7 +183,24 @@ export const TASK_FIELDS: ReadonlyArray<readonly [string, readonly string[]]> = 
   // WP-171: one call for a multi-part ask whose tasks name what they own, provide, require and check.
   ["tasks.fanout", ["intent", "tasks", "resume", "confirm"]],
   ["tasks.accept", ["taskId", "accept", "reason"]],
-  ["tasks.workers", ["project", "workers", "heavy", "scope", "cli", "model", "effort", "clear"]],
+  [
+    "tasks.workers",
+    [
+      "project",
+      "workers",
+      "heavy",
+      "scope",
+      "cli",
+      "model",
+      "effort",
+      "clear",
+      // WP-176: a measured-cost limit. scope project or system, never mono.
+      "amountUsd",
+      "period",
+      "warnAt",
+      "spendClear",
+    ],
+  ],
   ["tasks.status", ["taskIds"]],
   ["tasks.wait", ["taskIds", "timeoutSeconds"]],
   ["tasks.cancel", ["taskId", "reason"]],
@@ -189,7 +208,7 @@ export const TASK_FIELDS: ReadonlyArray<readonly [string, readonly string[]]> = 
   ["tasks.answer", ["taskId", "requestId", "answers", "skip"]],
   // Hivra WP-14 (firstmate/model/steering.ts).
   ["tasks.message", ["taskId", "text", "whenBusy"]],
-  ["tasks.ask", ["key", "question", "options", "recommended", "taskIds", "answer"]],
+  ["tasks.ask", ["key", "question", "options", "recommended", "taskIds", "answer", "keys", "force", "reason"]],
 ];
 
 /**
@@ -215,12 +234,22 @@ export function isAppDelegate(input: object): boolean {
 export type DelegationMeta = {
   title: string;
   askIds: string[];
+  /** WP-176 round 5: the owner's row this one redoes (its id, and its chat, which the spend gate follows). */
+  redoes?: { id: string; childSession: string };
   goal?: string;
   /** The hub project id (what Ash OS resolves), when the folder is one of the hub's projects. */
   project?: string;
   /** WP-70: the shared task this work moves. */
   taskId?: string;
 };
+
+/**
+ * Why a delegation's start is refused, when it is a redo whose link was not recorded (round 5). A redo that is not
+ * recorded with its parent must not run: its first turn would be judged without the parent's spend. Null when it may start.
+ */
+export function redoLinkRefusal(delegation: DelegationMeta | undefined, recorded: unknown): string | null {
+  return delegation?.redoes && !recorded ? "The redo could not be recorded, so this run is not started." : null;
+}
 
 /** A worker chat as this window has it. */
 export type TaskChild = Pick<Session, "busy" | "pendingQuestion"> & {
@@ -300,6 +329,11 @@ export type AgentAppTasksHost = {
    */
   memoryBrief?(ownerSession: string, harness: HarnessId): Promise<string | undefined>;
   /**
+   * WP-156: active standing answers for the project a Lead is briefed on. Empty, or a failure, leaves the brief as it
+   * was. The text is guidance, not permission.
+   */
+  standingBrief?(project: string): Promise<string | undefined>;
+  /**
    * WP-13: which CLI, model and effort this task uses. Absent, or a failure, keeps the model already chosen.
    * Labels are areas such as `ui`, not `area:ui`.
    */
@@ -335,6 +369,12 @@ export type AgentAppTasksHost = {
   }): Promise<{ hold: boolean; why: string }>;
   /** The Lead a brief names exists and this Mono may brief it. Throws when it does not. Checked before a review. */
   checkLead?(source: Session, mono: { id: string; name?: string }, lead: string): void | Promise<void>;
+  /** WP-156: the project the named Lead keeps, so the brief carries that project's standing answers. */
+  leadProject?(
+    source: Session,
+    mono: { id: string; name?: string },
+    lead: string,
+  ): string | undefined | Promise<string | undefined>;
   /** WP-144: the chat's briefs waiting on a fresh-eyes review, each named by the chat it will be. */
   freshEyesWaiting?(ownerSession: string): Promise<{ childSessionId: string; title: string; line: string }[]>;
   /** WP-144: the chat took back a brief waiting on a review (task_cancel). True when one matched. */
@@ -916,6 +956,8 @@ async function delegate(
     // Every refusal this brief can meet comes before the review: what it names, and whether that Lead exists.
     const request = leadRequest(input, tasks);
     await tasks.checkLead?.(source, owner.mono, request.lead);
+    // WP-156: the target Lead's project, not the chat that writes the brief.
+    const leadHome = (await tasks.leadProject?.(source, owner.mono, request.lead))?.trim();
     const held = await heldForReview();
     if (held) return held;
     // A Lead is a first mate: its brief comes from the same template, read-only on the project.
@@ -932,6 +974,8 @@ async function delegate(
       title,
       asks,
       goal,
+      // WP-156: the same project key the decision gate stores answers under (see firstMateTool).
+      standingProject: leadHome || owner.team?.project || tasks.hubProjectId?.(source.cwd) || source.cwd,
       ...(sharedTask ? { taskId: sharedTask } : {}),
       input,
       gates,
@@ -1117,6 +1161,12 @@ async function delegate(
   const [already] = await tasks.owned(source.id, { requestIds: [id] }).catch(() => [] as Delegation[]);
   if (already && already.state !== "cancelled") {
     if (sharedTask) bindCrew(already.id, sharedTask);
+    // A redo's link is kept on the retry too (round 5): the gate has it at once, and the row keeps it. A refused link
+    // refuses the call.
+    if (redoes) {
+      addSpendRedoLink(id, redoes.childSession);
+      await tasks.redo?.(source.id, redoes, already.id);
+    }
     tasks.pool?.started({ id, heavy, files });
     // A retry after a save that didn't land keeps the same plan. A save that fails still returns the task.
     await keepGates(tasks, already.id, gates, folder);
@@ -1250,9 +1300,12 @@ async function delegate(
       };
     }
   }
+  // A redo's link is known to the spend gate before the worker's first turn (round 5): its chat sums its parent's spend.
+  if (redoes) addSpendRedoLink(id, redoes.childSession);
   const meta = {
     title,
     askIds: asks,
+    ...(redoes ? { redoes: { id: redoes.id, childSession: redoes.childSession } } : {}),
     ...(goal ? { goal } : {}),
     ...(hubProject ? { project: hubProject } : {}),
     ...(sharedTask ? { taskId: sharedTask } : {}),
@@ -1805,15 +1858,26 @@ async function briefLead(
     input: Record<string, unknown>;
     gates?: GateRequest;
     gateFolder?: string;
+    standingProject: string;
   },
 ) {
   const { lead, whenBusy } = leadRequest(job.input, tasks);
   if (!tasks.briefLead) throw new Error("This build can't brief a Lead");
+  // WP-156: standing answers ride on the Lead's brief. Off, empty, or unreachable: the brief is unchanged.
+  let brief = job.brief;
+  if (tasks.standingBrief) {
+    try {
+      const block = (await tasks.standingBrief(job.standingProject))?.trim() ?? "";
+      if (block) brief = `${job.brief}\n\n${block}`;
+    } catch {
+      brief = job.brief;
+    }
+  }
   const out = await tasks.briefLead(source, mono, {
     lead,
     // The brief's id in the Lead's chat and the row's request, in the app's namespace (sessions.send's too).
     requestId: `app-${source.id}-${job.requestId}`,
-    brief: job.brief,
+    brief,
     title: job.title,
     ...(job.goal ? { goal: job.goal } : {}),
     ...(job.taskId ? { taskId: job.taskId } : {}),
@@ -2114,6 +2178,19 @@ function modelCaller(source: Session, host: AgentAppHost) {
   return mono;
 }
 
+/**
+ * WP-176: a first mate's own chat may set a spend limit, and the gate decides what it may do: a first limit or a lower
+ * one only. Raising or clearing needs the person's tap in Settings. The whole-app limit is Settings only. A habit run,
+ * a worker and the checker may not write at all.
+ */
+function spendCaller(source: Session, host: AgentAppHost) {
+  const mono =
+    host.isMono(source.id) && !host.isHabitRun?.(source.id) ? host.monoOf?.(source.id) : undefined;
+  if (!mono || mono.id === CHECKER_MONO_ID)
+    throw new Error("Only a first mate sets a spend limit, from its own chat.");
+  return mono;
+}
+
 function worksOn(projects: readonly string[], folder: string, projectId: string): boolean {
   return projects.some(
     (entry) =>
@@ -2149,12 +2226,20 @@ function saveMonoDefault(
  * WP-89: scope, cli, model, effort and clear set what those workers run on.
  */
 async function workers(source: Session, input: Record<string, unknown>, host: AgentAppHost) {
-  const choosing =
-    input.scope !== undefined ||
+  const settingSpend =
+    input.amountUsd !== undefined ||
+    input.period !== undefined ||
+    input.warnAt !== undefined ||
+    input.spendClear !== undefined;
+  const choosingModel =
     input.cli !== undefined ||
     input.model !== undefined ||
     input.effort !== undefined ||
     input.clear !== undefined;
+  // A scope on its own still means "set the model". A spend limit uses scope too, and must not ask for a model.
+  const choosing = choosingModel || (input.scope !== undefined && !settingSpend);
+  // WP-176: reading a limit needs no special caller. Setting one does, before the project is resolved.
+  const spendMono = settingSpend ? spendCaller(source, host) : undefined;
   const setter = choosing ? modelCaller(source, host) : undefined;
   const { owner, tasks } = taskOwner(source, host);
   if (!tasks.pool) throw new Error("This build starts every worker at once; it has no per-project limit.");
@@ -2216,7 +2301,55 @@ async function workers(source: Session, input: Record<string, unknown>, host: Ag
     rules,
   });
   const rulesLine = crewRuleSentence(rules, catalog);
-  const line = [limitsLine(projectName(folder), limits), changed, force.sentence, rulesLine].filter(Boolean).join(" ");
+  let spendNote = "";
+  if (settingSpend && spendMono) {
+    if (input.scope === undefined)
+      throw new Error("Say whether this is just this Mono, this project, or everything.");
+    if (input.scope !== "mono" && input.scope !== "project" && input.scope !== "system")
+      throw new Error('scope must be "mono", "project" or "system".');
+    if (input.scope === "mono")
+      throw new Error("A spend limit covers this project or everything, not one Mono.");
+    const period = input.period === "day" || input.period === "month" ? input.period : null;
+    if (!period) throw new Error('period must be "day" or "month".');
+    if (input.spendClear !== undefined && input.spendClear !== true) throw new Error("spendClear must be true");
+    if (input.scope === "system")
+      throw new Error("The whole-app spend limit is set in Settings.");
+    const scope = "project";
+    if (!worksOn(spendMono.projects, folder, project))
+      throw new Error("This Mono doesn't work on that project.");
+    const who = project;
+    const label = project;
+    const here = spendSnapshot().book;
+    if (input.spendClear === true) {
+      // The gate matches a limit by its project's id or folder, so the clear asks it directly (a name match here missed
+      // a limit saved under its id). What it reports decides the line: cleared, nothing there, or refused.
+      const dropped = clearSpendLimit(scope, who, period, here.revision, { by: "first-mate" });
+      if (dropped.written) spendNote = `Spend limit cleared for ${label}.`;
+      else if (dropped.reason === NO_SPEND_LIMIT_TO_CLEAR) spendNote = `There is no spend limit to clear for ${label}.`;
+      else throw new Error(dropped.reason ?? "That change didn't stick. Try again.");
+    } else {
+      const warnAt = input.warnAt === undefined ? 0.8 : input.warnAt;
+      if (typeof input.amountUsd !== "number" || !Number.isFinite(input.amountUsd) || input.amountUsd <= 0)
+        throw new Error("amountUsd must be a positive number.");
+      if (typeof warnAt !== "number" || !Number.isFinite(warnAt) || warnAt < 0.5 || warnAt > 1)
+        throw new Error("warnAt must be from 0.5 to 1.");
+      const clean = sanitizeSpendLimit({
+        scope,
+        project: who,
+        period,
+        amountUsd: input.amountUsd,
+        warnAt,
+      });
+      if (!clean) throw new Error("amountUsd must be a positive number.");
+      const saved = saveSpendLimit(clean, spendSnapshot().book.revision, { by: "first-mate" });
+      if (!saved.written) throw new Error(saved.reason ?? "That change didn't stick. Try again.");
+      const when = clean.period === "day" ? "today" : "this month";
+      spendNote = `Spend limit for ${label} is ${formatMeasuredUsd(clean.amountUsd)} ${when}.`;
+    }
+  }
+  const spendRows = spendFor(project);
+  const spend: SpendLimit[] | null = spendRows.length ? spendRows : null;
+  const line = [limitsLine(projectName(folder), limits), spendNote, changed, force.sentence, rulesLine].filter(Boolean).join(" ");
   if (planned && setter) {
     const previous = current?.cli || current?.model || current?.effort ? current : undefined;
     host.postCard?.(source.id, {
@@ -2255,6 +2388,7 @@ async function workers(source: Session, input: Record<string, unknown>, host: Ag
       project: projectPick ?? null,
       system: systemPick ?? null,
     },
+    spend,
   };
 }
 
@@ -2313,8 +2447,11 @@ async function firstMateTool(
     throw new Error("Only the app asks whether a stopped task starts again. Name the task in a resume instead; the person answers it in Needs.");
   const ids = taskIds(input.taskIds) ?? [];
   const rows = ids.length ? await ownRows(source, tasks, ids) : [];
-  // The project the Needs row sits under: the coding team's, else the waiting tasks', else the chat's folder's.
-  const project = owner.team?.project ?? rows.find((row) => row.project)?.project ?? tasks.hubProjectId?.(source.cwd) ?? source.cwd;
+  // The project's home is the coding team's, else the chat's folder. A task's own project is not a way to pick another.
+  const project = owner.team?.project || tasks.hubProjectId?.(source.cwd) || source.cwd;
+  if (rows.some((row) => row.project && row.project !== project)) {
+    throw new Error("That task is in another project. Ask from the chat that owns it.");
+  }
   return askPerson(source, input, { mono: owner.mono?.id, project }, rows, tasks.firstMate);
 }
 

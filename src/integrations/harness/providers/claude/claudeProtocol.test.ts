@@ -150,9 +150,14 @@ describe("buildClaudeSpawnArgs", () => {
     const args = buildClaudeSpawnArgs({ settings: { disableAllHooks: true } });
     expect(args).toContain(`--setting-sources=${CLAUDE_SETTING_SOURCES}`);
     const settings = JSON.parse(args[args.indexOf("--settings") + 1]);
-    expect(settings).toEqual({ disableAllHooks: true });
+    expect(settings).toEqual({
+      disableAllHooks: true,
+      env: { CLAUDE_BASH_MAINTAIN_PROJECT_WORKING_DIR: "1" },
+    });
     const bare = buildClaudeSpawnArgs({});
-    expect(JSON.parse(bare[bare.indexOf("--settings") + 1])).toEqual({});
+    expect(JSON.parse(bare[bare.indexOf("--settings") + 1])).toEqual({
+      env: { CLAUDE_BASH_MAINTAIN_PROJECT_WORKING_DIR: "1" },
+    });
     // The app's own background calls don't load ~/.claude at all.
     const isolated = buildClaudeSpawnArgs({ isolated: true });
     expect(JSON.parse(isolated[isolated.indexOf("--settings") + 1])).toMatchObject({ disableAllHooks: true });
