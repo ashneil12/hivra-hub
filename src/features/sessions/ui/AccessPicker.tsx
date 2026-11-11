@@ -11,16 +11,18 @@ import {
   useState,
   type KeyboardEvent as ReactKeyboardEvent,
 } from "react";
+import type { RuntimeMode } from "../model/session";
 import {
-  RUNTIME_MODE_HINT,
-  RUNTIME_MODE_LABEL,
-  RUNTIME_MODES,
-  type RuntimeMode,
-} from "../model/session";
+  offeredRuntimeModes,
+  permissionCliForHarness,
+  runtimeModeCopy,
+} from "../../../integrations/harness/core/permissionMatrix";
 import { Popover } from "../../../shared/ui/Popover";
 
 type Props = {
   value: RuntimeMode;
+  /** The chat's harness: names and offers the modes as its CLI means them (WP-175). */
+  harness?: string | null;
   onChange: (mode: RuntimeMode) => void;
   onClose?: () => void;
   busy?: boolean;
@@ -39,16 +41,19 @@ const ICONS: Record<RuntimeMode, typeof Lock> = {
 
 export function AccessPicker({
   value,
+  harness,
   onChange,
   onClose,
   busy = false,
   side = "top",
   variant = "pill",
 }: Props) {
+  const cli = permissionCliForHarness(harness);
+  const modes = offeredRuntimeModes(cli);
+  const current = runtimeModeCopy(value, cli);
   const [open, setOpen] = useState(false);
-  const [active, setActive] = useState(() =>
-    Math.max(0, RUNTIME_MODES.indexOf(value)),
-  );
+  // -1 when the chat's mode is not offered here (fx's Supervised): Enter then picks nothing.
+  const [active, setActive] = useState(() => modes.indexOf(value));
   const root = useRef<HTMLDivElement>(null);
   const onCloseRef = useRef(onClose);
   onCloseRef.current = onClose;
@@ -61,7 +66,7 @@ export function AccessPicker({
 
   useEffect(() => {
     if (!open) return;
-    setActive(Math.max(0, RUNTIME_MODES.indexOf(value)));
+    setActive(modes.indexOf(value));
   }, [open, value]);
 
   const pick = (mode: RuntimeMode) => {
@@ -72,7 +77,7 @@ export function AccessPicker({
   const onMenuKey = (e: ReactKeyboardEvent<HTMLDivElement>) => {
     if (e.key === "ArrowDown") {
       e.preventDefault();
-      setActive((i) => Math.min(RUNTIME_MODES.length - 1, i + 1));
+      setActive((i) => Math.min(modes.length - 1, i + 1));
       return;
     }
     if (e.key === "ArrowUp") {
@@ -82,7 +87,7 @@ export function AccessPicker({
     }
     if (e.key === "Enter") {
       e.preventDefault();
-      const mode = RUNTIME_MODES[active];
+      const mode = modes[active];
       if (mode) pick(mode);
     }
   };
@@ -92,8 +97,8 @@ export function AccessPicker({
       <button
         type="button"
         data-access-picker-trigger
-        title={`${RUNTIME_MODE_HINT[value]}${busy ? " Changes apply to the next turn." : ""}`}
-        aria-label={RUNTIME_MODE_LABEL[value]}
+        title={`${current.hint}${busy ? " Changes apply to the next turn." : ""}`}
+        aria-label={current.label}
         aria-expanded={open}
         aria-haspopup="listbox"
         onMouseDown={(e) => e.preventDefault()}
@@ -123,7 +128,7 @@ export function AccessPicker({
         <span
           className={`min-w-0 truncate ${variant === "plain" ? "" : "text-[11px]"}`}
         >
-          {RUNTIME_MODE_LABEL[value]}
+          {current.label}
         </span>
         <ChevronDown
           className={`size-3 shrink-0 text-content/50 ${open ? "rotate-180" : ""}`}
@@ -144,10 +149,11 @@ export function AccessPicker({
           onKeyDown={onMenuKey}
           className="p-1"
         >
-          {RUNTIME_MODES.map((mode, index) => {
+          {modes.map((mode, index) => {
             const ModeIcon = ICONS[mode];
             const selected = mode === value;
             const highlighted = index === active;
+            const copy = runtimeModeCopy(mode, cli);
             return (
               <button
                 key={mode}
@@ -169,10 +175,10 @@ export function AccessPicker({
                 />
                 <span className="min-w-0">
                   <span className="block text-[13px] font-medium leading-5">
-                    {RUNTIME_MODE_LABEL[mode]}
+                    {copy.label}
                   </span>
                   <span className="mt-0.5 block text-[11px] leading-4 text-content/50">
-                    {RUNTIME_MODE_HINT[mode]}
+                    {copy.hint}
                   </span>
                 </span>
               </button>

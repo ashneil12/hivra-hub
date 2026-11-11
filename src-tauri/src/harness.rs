@@ -15,6 +15,164 @@ use crate::dirs_home;
 use crate::fs::expand_home;
 use crate::passwd_identity;
 
+// WP-134b: the More agents start. A child module so it shares this host's private pieces without widening them.
+
+/// The longest stdout line a More agents child may send. A longer line stops that child's read, so a child that never
+/// ends a line cannot grow the app's memory without bound.
+const MAX_STDOUT_LINE: usize = 8 * 1024 * 1024;
+/// The longest stderr line a More agents child may send.
+const MAX_STDERR_LINE: usize = 64 * 1024;
+
+/// Reads stdout line by line and hands each line on until `on_line` says stop or the stream ends. With a cap, a line
+/// past it is dropped and `on_dropped` is called then, before the next line is read. Without a cap, every line is read
+/// whole.
+pub(crate) fn read_stdout_lines<R: BufRead>(
+    mut reader: R,
+    cap: Option<usize>,
+    mut on_line: impl FnMut(String) -> bool,
+    mut on_dropped: impl FnMut(usize),
+) -> usize {
+    let mut raw = Vec::new();
+    let mut dropped = 0;
+    loop {
+        raw.clear();
+        let read = match cap {
+            Some(max) => (&mut reader)
+                .take((max + 1) as u64)
+                .read_until(b'\n', &mut raw),
+            None => reader.read_until(b'\n', &mut raw),
+        };
+        if !matches!(read, Ok(n) if n > 0) {
+            break;
+        }
+        // A line past the cap is dropped to its end, and the read goes on with the next line.
+        if cap.is_some_and(|max| raw.len() > max && raw.last() != Some(&b'\n')) {
+            skip_to_newline(&mut reader);
+            dropped += 1;
+            on_dropped(dropped);
+            continue;
+        }
+        let line = String::from_utf8_lossy(&raw)
+            .trim_end_matches(['\n', '\r'])
+            .to_string();
+        if !on_line(line) {
+            break;
+        }
+    }
+    dropped
+}
+
+/// Discards bytes up to and including the next newline, without holding them.
+fn skip_to_newline<R: BufRead>(reader: &mut R) {
+    loop {
+        let (done, used) = match reader.fill_buf() {
+            Ok([]) | Err(_) => return,
+            Ok(buf) => match buf.iter().position(|&b| b == b'\n') {
+                Some(at) => (true, at + 1),
+                None => (false, buf.len()),
+            },
+        };
+        reader.consume(used);
+        if done {
+            return;
+        }
+    }
+}
+
+#[cfg(test)]
+mod stdout_cap_tests {
+    use super::read_stdout_lines;
+    use std::cell::RefCell;
+    use std::io::Cursor;
+
+    // Review r5 repro (LOW): a stderr line past the cap ends the stderr read, so the pipe closes and the child's next
+    // stderr write fails (EPIPE or SIGPIPE: Node throws, Rust's eprintln! panics, Go exits). One long log line ends the
+    // agent. A stderr reader should drop the rest of that line and read on.
+    #[test]
+    fn review_r5_a_long_stderr_line_does_not_end_the_read() {
+        let big = "x".repeat(65 * 1024);
+        let input = format!("{big}\nnext\n");
+        let mut got = Vec::new();
+        read_stdout_lines(
+            Cursor::new(input.into_bytes()),
+            Some(64 * 1024),
+            |line| {
+                got.push(line);
+                true
+            },
+            |_| {},
+        );
+        assert!(
+            got.iter().any(|line| line == "next"),
+            "the read ended at the long line"
+        );
+    }
+
+    #[test]
+    fn a_claude_line_of_nine_mebibytes_is_delivered_whole_and_the_session_goes_on() {
+        let big = "x".repeat(9 * 1024 * 1024);
+        let input = format!("{big}\nnext\n");
+        let mut got = Vec::new();
+        read_stdout_lines(
+            Cursor::new(input.into_bytes()),
+            None,
+            |line| {
+                got.push(line);
+                true
+            },
+            |_| {},
+        );
+        assert_eq!(got.len(), 2);
+        assert_eq!(got[0].len(), 9 * 1024 * 1024);
+        assert_eq!(got[1], "next");
+    }
+
+    #[test]
+    fn a_more_agents_line_past_the_cap_is_dropped_counted_and_the_read_goes_on() {
+        let big = "x".repeat(9 * 1024 * 1024);
+        let input = format!("first\n{big}\nnext\n");
+        // Both callbacks record into one sequence. A RefCell lets each push when it runs, so the drop
+        // note is checked against the line before it and the line after it.
+        let order = RefCell::new(Vec::new());
+        let dropped = read_stdout_lines(
+            Cursor::new(input.into_bytes()),
+            Some(8 * 1024 * 1024),
+            |line| {
+                order.borrow_mut().push(line);
+                true
+            },
+            |count| order.borrow_mut().push(format!("dropped {count}")),
+        );
+        // The over-cap line is not delivered. The drop is reported when it happens, not when the stream ends.
+        assert_eq!(
+            order.into_inner(),
+            vec![
+                "first".to_string(),
+                "dropped 1".to_string(),
+                "next".to_string()
+            ]
+        );
+        assert_eq!(dropped, 1);
+    }
+
+    #[test]
+    fn a_claude_path_with_no_cap_drops_nothing_and_delivers_the_big_line() {
+        let big = "x".repeat(9 * 1024 * 1024);
+        let input = format!("{big}\n");
+        let mut got = Vec::new();
+        let dropped = read_stdout_lines(
+            Cursor::new(input.into_bytes()),
+            None,
+            |line| {
+                got.push(line);
+                true
+            },
+            |_| {},
+        );
+        assert_eq!(dropped, 0);
+        assert_eq!(got.len(), 1);
+    }
+}
 const STDOUT_EVENT: &str = "harness-stdout";
 const STDERR_EVENT: &str = "harness-stderr";
 const EXIT_EVENT: &str = "harness-exit";
@@ -931,6 +1089,19 @@ pub fn harness_resolve_antigravity() -> Result<AntigravityBinary, String> {
 }
 
 /// Bind an ephemeral loopback port for `opencode serve`.
+/// The env every Claude Code session is launched with (round 11). Claude Code keeps its Bash shell in the launch folder after
+/// each call, so a `cd` can't move the folder a relative search, or a relative shell word, is judged in. The launch folder
+/// is the chat folder the autopilot checks (worktree or chat folder).
+pub(crate) const CLAUDE_LAUNCH_ENV: (&str, &str) =
+    ("CLAUDE_BASH_MAINTAIN_PROJECT_WORKING_DIR", "1");
+
+/// The env a launch gets for its provider (round 11): Claude's only, decided by the account the app launches with.
+pub(crate) fn launch_env_for(
+    account: Option<&HarnessAccount>,
+) -> Option<(&'static str, &'static str)> {
+    (account?.provider == "claude").then_some(CLAUDE_LAUNCH_ENV)
+}
+
 #[tauri::command]
 pub fn harness_free_port() -> Result<u16, String> {
     TcpListener::bind("127.0.0.1:0")
@@ -979,13 +1150,70 @@ pub fn harness_spawn(
     codex_store: Option<String>,
     devin_ask_edits: Option<bool>,
     custom_route: Option<crate::model_router::CustomRoute>,
+    crew_ticket: Option<String>,
+    store: State<'_, crate::session_store::SessionStore>,
+    crew_folder: Option<String>,
+    // WP-134: a More agents entry. Its command and arguments come from the saved list, and only once the person has
+    // approved that command (src-tauri/src/more_agents.rs). The webview sends no command for it.
+    more_agent: Option<String>,
 ) -> Result<u32, String> {
-    let workdir = launch_preflight(
-        &command,
+    // WP-141: an agent session's process needs the one-time ticket its crew gate issued for this session, CLI and folder.
+    // Ash's own chats (no `app-` id) pass without one. The default CLI of a spawn with no provider is Claude Code.
+    // Round 6: judged for every session, Ash's and the Monos' chats included: Never use for this CLI in the policy the
+    // session's grant or its folder's project puts in force, and under the lock an `app-` session must be granted.
+    // A More agents entry (WP-134) is judged under its own entry id, so a lock or Never use can name it.
+    let judged_cli = match more_agent.as_deref() {
+        Some(agent) => agent.to_string(),
+        None => binary_provider.as_deref().unwrap_or("claude").to_string(),
+    };
+    crate::crew::gate::judge_spawn_in(
+        &*store.lock_conn()?,
+        &session_id,
+        &judged_cli,
+        crew_folder.as_deref().unwrap_or(&cwd),
         &cwd,
-        binary_provider.as_deref(),
-        binary_path.as_deref(),
+        crew_ticket.as_deref(),
     )?;
+    let more = match more_agent.as_deref() {
+        None => None,
+        Some(agent) => {
+            let other_fields_sent = binary_provider.is_some()
+                || binary_path.is_some()
+                || account.is_some()
+                || custom_route.is_some()
+                || codex_store.is_some()
+                || devin_ask_edits.is_some();
+            let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+            Some(crate::more_agents::approved_start(
+                &data_dir,
+                agent,
+                &command,
+                &args,
+                other_fields_sent,
+                &gui_search_path(),
+            )?)
+        }
+    };
+    let more_id = more.as_ref().map(|run| run.id.clone());
+    let more_argv0 = more.as_ref().and_then(|run| run.argv0.clone());
+    let more_sha = more.as_ref().map(|run| run.sha256.clone());
+    let more_run = more.is_some();
+    let (command, args) = match more {
+        Some(run) => (run.command, run.args),
+        None => (command, args),
+    };
+    let workdir = if more_run {
+        // WP-134: the command was approved above. The bench gate and the chat folder still apply; the binary check does not.
+        crate::verify_live::provider_start_allowed(crate::verify_live::plan(), None, &command)?;
+        crate::chat_folder::require(&cwd)?
+    } else {
+        launch_preflight(
+            &command,
+            &cwd,
+            binary_provider.as_deref(),
+            binary_path.as_deref(),
+        )?
+    };
 
     // `--config` is a global option, so it precedes the `acp` subcommand.
     let devin_config = match devin_ask_edits {
@@ -1035,8 +1263,18 @@ pub fn harness_spawn(
         std::ffi::OsStr::new(&command),
         app.path().app_data_dir().ok().as_deref(),
     );
-    let mut cmd =
-        crate::disclaim::command(std::ffi::OsStr::new(&command), disclaim_launcher.as_deref());
+    let mut cmd = crate::disclaim::command(
+        std::ffi::OsStr::new(&command),
+        disclaim_launcher.as_deref(),
+        more_argv0.as_deref().map(std::ffi::OsStr::new),
+        more_sha.as_deref(),
+    );
+    // A More agents child runs in its own empty folder, never the chat folder: nothing a chat holds is a relative input.
+    let spawn_dir = if more_run {
+        crate::more_agents::run_folder(&app.path().app_data_dir().map_err(|e| e.to_string())?)?
+    } else {
+        workdir.clone()
+    };
     if dev_claude {
         if let Some(config_dir) = crate::instance::dev_claude_config_dir()? {
             cmd.env("CLAUDE_CONFIG_DIR", &config_dir)
@@ -1045,15 +1283,21 @@ pub fn harness_spawn(
     }
     cmd.args(&devin_config)
         .args(&args)
-        .current_dir(&workdir)
+        .current_dir(&spawn_dir)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     prepare_child(&mut cmd, &command);
+    if let Some((key, value)) = launch_env_for(account.as_ref()) {
+        cmd.env(key, value);
+    }
     apply_provider_account(&app, &mut cmd, account.as_ref())?;
     // "Other models": a Claude Code session on a non-Claude model goes through the hub's local router with the
     // model's own key. Claude models (and Ash's subscription login) are never routed: may_route refuses them.
-    if let Some((set, remove)) = routed {
+    // The routed session's router token (WP-129 L2) is held by the stdout reader below, so it ends with the session.
+    let mut routed_session = None;
+    if let Some(((set, remove), session)) = routed {
+        routed_session = Some(session);
         for key in remove {
             cmd.env_remove(key);
         }
@@ -1084,6 +1328,19 @@ pub fn harness_spawn(
     };
 
     crate::control::configure_child(&app, &session_id, &mut cmd);
+    // WP-92: a worker's approved secrets go into this one child's environment, read in Rust from the Keychain. This runs
+    // after configure_child, so the app's MONOCODE_* variables it just set are stripped again for an armed worker (M3).
+    // The Keychain is read before the store's lock is taken (secrets::worker::apply_to_child locks it itself, briefly).
+    {
+        let store = app.state::<crate::session_store::SessionStore>();
+        crate::secrets::worker::apply_to_child(
+            &session_id,
+            crate::secrets::store::active(),
+            &mut cmd,
+            &store,
+            crate::session_store::now_millis(),
+        )?;
+    }
     // WP-04: no Ash OS env any more (the ash-os entry is gone; every chat denies `mcp__ash-os`, hubMcp.ts).
     // WP-86: stamp this crew's commits. A failure here must not stop the crew.
     // The before-run snapshot starts here and is read only after the child
@@ -1106,8 +1363,38 @@ pub fn harness_spawn(
             task.as_deref(),
         );
     }
-    let mut child =
-        spawn_managed(&mut cmd).map_err(|e| format!("Failed to start {command}: {e}"))?;
+    // WP-134: a More agents child gets no app environment (keys, the control endpoint): only the allow-list.
+    // The last hash in this process is here, after the run folder exists and immediately before the spawn.
+    // A text-file-busy retry hashes again before the next spawn. On macOS the disclaim launcher hashes once more,
+    // immediately before exec.
+    let more_recheck = if more_run {
+        crate::more_agents::restrict_env(&mut cmd, &gui_search_path());
+        let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+        let id = more_id.as_deref().unwrap_or("").to_string();
+        if let Err(error) = crate::more_agents::confirm_before_spawn(&data_dir, &id, &command) {
+            let _ = crate::more_agents::remove_run_folder(&data_dir, &spawn_dir);
+            return Err(error);
+        }
+        Some((data_dir, id, command.clone()))
+    } else {
+        None
+    };
+    let recheck = || match more_recheck.as_ref() {
+        Some((data_dir, id, command)) => {
+            crate::more_agents::confirm_before_spawn(data_dir, id, command)
+        }
+        None => Ok(()),
+    };
+    let recheck_ref = more_recheck
+        .is_some()
+        .then_some(&recheck as &dyn Fn() -> Result<(), String>);
+    let mut child = child_or_reap(
+        spawn_managed(&mut cmd, recheck_ref),
+        more_run,
+        || app.path().app_data_dir().ok(),
+        &spawn_dir,
+        &command,
+    )?;
     let pid = child.id();
 
     let stdin = child
@@ -1134,6 +1421,7 @@ pub fn harness_spawn(
         account,
         run: Some(run.clone()),
     });
+    let more_run_cleanup = more_run.then(|| (app.path().app_data_dir().ok(), spawn_dir.clone()));
     if let Some(rejected) = host.install_spawn(session_id.clone(), epoch, kill_all, live) {
         run.lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -1147,8 +1435,10 @@ pub fn harness_spawn(
         let note_id = session_id.clone();
         let note_dir = workdir.clone();
         let note_before = journal_before;
+        let note_cleanup = more_run_cleanup.clone();
         thread::spawn(move || {
             let _ = child.wait();
+            reap_more_agent_run(note_cleanup);
             // WP-86: journal the lines this cancelled crew left behind.
             if let Some(before) = note_before.wait() {
                 let _ = crate::attribution::note_run(&note_app, &note_id, &note_dir, &before);
@@ -1171,42 +1461,73 @@ pub fn harness_spawn(
     let wait_store = codex_store.clone();
     let stdout_store = codex_store;
     let stdout_run = run.clone();
+    // WP-92: a worker given a secret has every line of its output scrubbed before the app stores or shows it.
+    let scrub_stdout = session_id.clone();
+    // Only a More agents child is capped. A Claude or Codex line can carry a large base64 payload (a PDF or an image),
+    // and cutting it would end the session, so those lines are read whole, as they always were.
+    let stdout_cap = more_run.then_some(MAX_STDOUT_LINE);
+    let status_app = app.clone();
+    let status_id = session_id.clone();
     thread::spawn(move || {
-        for line in BufReader::new(stdout).lines() {
-            let Ok(line) = line else { break };
-            if crate::harness_runs::ends_turn(&line) {
-                stdout_run
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .output(&line, crate::harness_runs::now_ms());
-            }
-            if let Some(store) = &stdout_store {
-                if line.contains("\"turn/completed\"")
-                    || line.contains("\"item/started\"")
-                    || line.contains("\"account/updated\"")
-                {
-                    store.sync_auth();
+        let _routed_session = routed_session;
+        let _dropped = read_stdout_lines(
+            BufReader::new(stdout),
+            stdout_cap,
+            |line| {
+                // WP-92: scrub before the line is stored, shown, or read for a turn boundary.
+                let line = crate::secrets::worker::scrub_line(&scrub_stdout, line);
+                if crate::harness_runs::ends_turn(&line) {
+                    stdout_run
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .output(&line, crate::harness_runs::now_ms());
                 }
-            }
-            if stdout_tx.send(line).is_err() {
-                break;
-            }
-        }
+                if let Some(store) = &stdout_store {
+                    if line.contains("\"turn/completed\"")
+                        || line.contains("\"item/started\"")
+                        || line.contains("\"account/updated\"")
+                    {
+                        store.sync_auth();
+                    }
+                }
+                stdout_tx.send(line).is_ok()
+            },
+            |dropped| {
+                // On the stderr channel so the ACP reader never sees it, and when the line is dropped,
+                // not when stdout closes.
+                let _ = status_app.emit(
+                    STDERR_EVENT,
+                    HarnessLine {
+                        session_id: status_id.clone(),
+                        line: format!("A line over the length limit was dropped ({dropped})."),
+                    },
+                );
+            },
+        );
     });
 
     let stderr_app = app.clone();
     let stderr_id = session_id.clone();
+    // A More agents child's stderr is capped too, so a child that writes forever cannot grow the app's memory.
+    let stderr_cap = more_run.then_some(MAX_STDERR_LINE);
     thread::spawn(move || {
-        for line in BufReader::new(stderr).lines() {
-            let Ok(line) = line else { break };
-            let _ = stderr_app.emit(
-                STDERR_EVENT,
-                HarnessLine {
-                    session_id: stderr_id.clone(),
-                    line,
-                },
-            );
-        }
+        read_stdout_lines(
+            BufReader::new(stderr),
+            stderr_cap,
+            |line| {
+                // WP-92: scrub before the line is shown.
+                let line = crate::secrets::worker::scrub_line(&stderr_id, line);
+                let _ = stderr_app.emit(
+                    STDERR_EVENT,
+                    HarnessLine {
+                        session_id: stderr_id.clone(),
+                        line,
+                    },
+                );
+                true
+            },
+            |_| {},
+        );
     });
 
     let wait_app = app.clone();
@@ -1216,6 +1537,7 @@ pub fn harness_spawn(
     let note_dir = workdir.clone();
     thread::spawn(move || {
         let code = child.wait().ok().and_then(|status| status.code());
+        reap_more_agent_run(more_run_cleanup);
         // WP-86: journal the lines this crew left behind. A failure leaves the journal as it was.
         if let Some(before) = note_before.wait() {
             let _ = crate::attribution::note_run(&wait_app, &wait_id, &note_dir, &before);
@@ -1236,14 +1558,171 @@ pub fn harness_spawn(
         let _ = wait_app.emit(
             EXIT_EVENT,
             HarnessExit {
-                session_id: wait_id,
+                session_id: wait_id.clone(),
                 code,
                 pid: wait_pid,
             },
         );
+        // The scrub values stay for the session's life: a respawn (idle reclaim, crash, resume) still scrubs its output
+        // (M4). They go when the app quits.
     });
 
     Ok(pid)
+}
+
+/// The child from a start, or the error the caller sees when the start failed. A More agents run folder
+/// was made before the spawn, so a failed start removes it. The data folder is read only then. An ordinary
+/// spawn has no run folder, so its working folder is left alone, and a missing data folder leaves the run
+/// folder where it is.
+fn child_or_reap(
+    spawned: std::io::Result<std::process::Child>,
+    more_run: bool,
+    data_dir: impl FnOnce() -> Option<PathBuf>,
+    spawn_dir: &Path,
+    command: &str,
+) -> Result<std::process::Child, String> {
+    match spawned {
+        Ok(child) => Ok(child),
+        Err(error) => {
+            if more_run {
+                if let Some(data_dir) = data_dir() {
+                    let _ = crate::more_agents::remove_run_folder(&data_dir, spawn_dir);
+                }
+            }
+            Err(format!("Failed to start {command}: {error}"))
+        }
+    }
+}
+
+#[cfg(test)]
+mod failed_spawn_tests {
+    #[cfg(unix)]
+    use super::retry_text_file_busy;
+    use super::{child_or_reap, spawn_managed};
+    use std::path::PathBuf;
+    use std::process::Command;
+
+    struct Scratch(PathBuf);
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn scratch() -> Scratch {
+        let path = std::env::temp_dir().join(format!(
+            "wp134-failed-spawn-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|elapsed| elapsed.as_nanos())
+                .unwrap_or(0)
+        ));
+        std::fs::create_dir_all(&path).expect("scratch");
+        Scratch(path)
+    }
+
+    #[test]
+    fn a_failed_more_agents_spawn_does_not_leave_its_run_folder() {
+        let data = scratch();
+        let run = crate::more_agents::run_folder(&data.0).expect("run folder");
+        let missing = data.0.join("missing-agent");
+        let mut cmd = Command::new(&missing);
+        cmd.current_dir(&run)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
+
+        // Not a More agents start: this failure has no run folder of its own, so the working folder stays.
+        let ordinary = child_or_reap(
+            spawn_managed(&mut cmd, None),
+            false,
+            || Some(data.0.clone()),
+            &run,
+            "missing-agent",
+        );
+        assert!(ordinary.is_err(), "the missing program started");
+        assert!(
+            run.is_dir(),
+            "a failed ordinary spawn removed the working folder"
+        );
+
+        let failed = child_or_reap(
+            spawn_managed(&mut cmd, None),
+            true,
+            || Some(data.0.clone()),
+            &run,
+            "missing-agent",
+        );
+        let message = failed.expect_err("the missing program did not fail to start");
+        assert!(
+            message.starts_with("Failed to start missing-agent:"),
+            "unexpected error: {message}"
+        );
+        assert!(!run.exists(), "a failed spawn left its run folder behind");
+
+        // The data folder could not be read. The run folder stays, and the failure is still reported.
+        let kept = crate::more_agents::run_folder(&data.0).expect("second run");
+        let no_data = child_or_reap(
+            Err(std::io::Error::new(std::io::ErrorKind::NotFound, "missing")),
+            true,
+            || None,
+            &kept,
+            "missing-agent",
+        );
+        assert!(no_data.is_err());
+        assert!(
+            kept.is_dir(),
+            "a missing data folder was treated as a removed run folder"
+        );
+        crate::more_agents::remove_run_folder(&data.0, &kept).expect("reap leftover");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_text_file_busy_retry_checks_again_before_the_next_spawn() {
+        let checks = std::cell::Cell::new(0);
+        let spawns = std::cell::Cell::new(0);
+        let recheck = || {
+            checks.set(checks.get() + 1);
+            Ok(())
+        };
+        let result = retry_text_file_busy(Some(&recheck), || {
+            let n = spawns.get();
+            spawns.set(n + 1);
+            if n < 2 {
+                Err(std::io::Error::from_raw_os_error(libc::ETXTBSY))
+            } else {
+                Err(std::io::Error::new(std::io::ErrorKind::NotFound, "stop"))
+            }
+        });
+        assert!(result.is_err());
+        assert_eq!(spawns.get(), 3);
+        assert_eq!(checks.get(), 2);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_failed_recheck_stops_the_text_file_busy_retry() {
+        let spawns = std::cell::Cell::new(0);
+        let recheck = || Err("changed".to_string());
+        let result = retry_text_file_busy(Some(&recheck), || {
+            spawns.set(spawns.get() + 1);
+            Err(std::io::Error::from_raw_os_error(libc::ETXTBSY))
+        });
+        let error = result.expect_err("the retry stopped");
+        assert_eq!(spawns.get(), 1);
+        assert_eq!(error.to_string(), "changed");
+    }
+}
+
+/// A More agents run folder goes when its child exits. Anything else has no folder to remove.
+fn reap_more_agent_run(cleanup: Option<(Option<PathBuf>, PathBuf)>) {
+    let Some((Some(data), dir)) = cleanup else {
+        return;
+    };
+    let _ = crate::more_agents::remove_run_folder(&data, &dir);
 }
 
 pub(crate) fn provider_account_dir(
@@ -1713,7 +2192,8 @@ pub(crate) fn exec_output(
         }
     }
 
-    let child = spawn_managed(&mut cmd).map_err(|e| format!("Failed to run {command}: {e}"))?;
+    let child =
+        spawn_managed(&mut cmd, None).map_err(|e| format!("Failed to run {command}: {e}"))?;
     let pid = child.id();
     let (tx, rx) = mpsc::channel();
     thread::spawn(move || {
@@ -1773,17 +2253,22 @@ fn isolate_child(cmd: &mut Command) {
     }
 }
 
-fn spawn_managed(cmd: &mut Command) -> std::io::Result<std::process::Child> {
+fn spawn_managed(
+    cmd: &mut Command,
+    recheck: Option<&dyn Fn() -> Result<(), String>>,
+) -> std::io::Result<std::process::Child> {
     #[cfg(windows)]
     {
+        let _ = recheck;
         crate::windows::spawn_managed(cmd)
     }
     #[cfg(unix)]
     {
-        spawn_retrying_text_file_busy(cmd)
+        spawn_retrying_text_file_busy(cmd, recheck)
     }
     #[cfg(not(any(unix, windows)))]
     {
+        let _ = recheck;
         cmd.spawn()
     }
 }
@@ -1794,16 +2279,36 @@ fn spawn_managed(cmd: &mut Command) -> std::io::Result<std::process::Child> {
 /// So a binary written seconds ago — a CLI mid-upgrade, or a `--version` probe
 /// of a path the user just pointed us at — can be briefly unrunnable rather
 /// than wrong, and reporting it as invalid is the wrong answer.
+/// `recheck` runs after the wait and before the next spawn, so a More agents start hashes the
+/// program again. A failed recheck stops the retry.
 #[cfg(unix)]
-fn spawn_retrying_text_file_busy(cmd: &mut Command) -> std::io::Result<std::process::Child> {
+fn spawn_retrying_text_file_busy(
+    cmd: &mut Command,
+    recheck: Option<&dyn Fn() -> Result<(), String>>,
+) -> std::io::Result<std::process::Child> {
+    retry_text_file_busy(recheck, || cmd.spawn())
+}
+
+#[cfg(unix)]
+fn retry_text_file_busy(
+    recheck: Option<&dyn Fn() -> Result<(), String>>,
+    mut attempt_spawn: impl FnMut() -> std::io::Result<std::process::Child>,
+) -> std::io::Result<std::process::Child> {
     const ATTEMPTS: u32 = 4;
     for attempt in 1..ATTEMPTS {
-        match cmd.spawn() {
-            Err(e) if is_text_file_busy(&e) => thread::sleep(Duration::from_millis(20) * attempt),
+        match attempt_spawn() {
+            Err(error) if is_text_file_busy(&error) => {
+                thread::sleep(Duration::from_millis(20) * attempt);
+                if let Some(check) = recheck {
+                    if let Err(error) = check() {
+                        return Err(std::io::Error::other(error));
+                    }
+                }
+            }
             settled => return settled,
         }
     }
-    cmd.spawn()
+    attempt_spawn()
 }
 
 #[cfg(unix)]
@@ -2899,7 +3404,7 @@ fn help_mentions_rpc_mode(path: &Path) -> bool {
     // fails outright without a PATH that has node on it.
     apply_gui_env(&mut cmd);
     isolate_child(&mut cmd);
-    let Ok(child) = spawn_managed(&mut cmd) else {
+    let Ok(child) = spawn_managed(&mut cmd, None) else {
         return false;
     };
     let pid = child.id();
@@ -2993,7 +3498,7 @@ fn fx_help_mentions_acp(path: &Path) -> bool {
     // fails outright without a PATH that has node on it.
     apply_gui_env(&mut cmd);
     isolate_child(&mut cmd);
-    let Ok(child) = spawn_managed(&mut cmd) else {
+    let Ok(child) = spawn_managed(&mut cmd, None) else {
         return false;
     };
     let pid = child.id();
@@ -3057,7 +3562,7 @@ fn grok_help_mentions_agent(path: &Path) -> bool {
         .stderr(Stdio::piped());
     apply_gui_env(&mut cmd);
     isolate_child(&mut cmd);
-    let Ok(child) = spawn_managed(&mut cmd) else {
+    let Ok(child) = spawn_managed(&mut cmd, None) else {
         return false;
     };
     let pid = child.id();
@@ -3314,6 +3819,8 @@ fn apply_gui_path(cmd: &mut Command) {
 pub(crate) fn apply_gui_env(cmd: &mut Command) {
     apply_gui_path(cmd);
     crate::hide_window_console(cmd);
+    // Round 8 (LOW): an agent's git, and any git a launched tool runs, reads a bare repository only when it is named.
+    crate::fs::git_safe_env(cmd);
     if let Some(id) = passwd_identity() {
         if std::env::var_os("HOME").is_none() {
             cmd.env("HOME", &id.home);
@@ -3490,6 +3997,30 @@ fn command_basename(command: &str) -> &str {
         .file_stem()
         .and_then(|name| name.to_str())
         .unwrap_or(command)
+}
+
+#[cfg(test)]
+mod launch_env_tests {
+    use super::*;
+
+    /// WP-101 round 11: a Claude launch carries the Bash-folder variable; another provider's launch does not.
+    #[test]
+    fn a_claude_launch_carries_the_bash_folder_variable_and_others_do_not() {
+        let claude = HarnessAccount {
+            provider: "claude".into(),
+            id: "default".into(),
+        };
+        let codex = HarnessAccount {
+            provider: "codex".into(),
+            id: "default".into(),
+        };
+        assert_eq!(
+            launch_env_for(Some(&claude)),
+            Some(("CLAUDE_BASH_MAINTAIN_PROJECT_WORKING_DIR", "1"))
+        );
+        assert_eq!(launch_env_for(Some(&codex)), None);
+        assert_eq!(launch_env_for(None), None);
+    }
 }
 
 #[cfg(unix)]

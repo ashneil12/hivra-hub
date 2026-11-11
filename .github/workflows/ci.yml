@@ -231,6 +231,13 @@ jobs:
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
+      # WP-173: pinned installer, pinned nextest. No new permissions and no secrets.
+      - name: Install cargo-nextest
+        if: matrix.part != 'web'
+        uses: taiki-e/install-action@0fd46367812ee04360509b4169d9f659d6892bb2 # v2.79.15
+        with:
+          tool: cargo-nextest@0.9.151
+
       - run: npm ci
       - run: npm test ${{ matrix.shard && format('-- --shard={0}', matrix.shard) || '' }}
         if: matrix.part == 'web'
@@ -240,13 +247,25 @@ jobs:
         if: matrix.part == 'rust'
       - run: cargo clippy --workspace --all-targets -- -D warnings
         if: matrix.part == 'rust'
-      - run: cargo check
-        if: matrix.part == 'rust'
-      - run: cargo test
+      - run: cargo nextest run --workspace --profile ci
         if: matrix.part == 'rust'
       - name: Web and Rust checks together
         if: matrix.part == 'all'
         run: node scripts/ci-check-parallel.mjs
+
+      # WP-173: list flaky and twice-failed tests. The script exits 0, so it does not change the job result.
+      - name: Rust flaky tests in the job summary
+        if: always() && matrix.part != 'web'
+        run: node scripts/ci-rust-flaky-summary.mjs
+
+      - name: Upload Rust test results
+        if: always() && matrix.part != 'web'
+        uses: actions/upload-artifact@v4
+        with:
+          name: rust-junit-${{ matrix.os }}-${{ matrix.part }}
+          path: target/nextest/ci/junit.xml
+          retention-days: 7
+          if-no-files-found: ignore
 
   ship:
     if: github.event_name != 'schedule' && (github.event_name != 'pull_request' || !github.event.pull_request.draft)
@@ -385,6 +404,14 @@ jobs:
         # catch packages that are missing from EPEL 10. fedora:43 joins it when the gate says full.
         image: ${{ fromJSON(needs.rpm-changes.outputs.full == 'true' && '["almalinux:10","fedora:43"]' || '["almalinux:10"]') }}
     steps:
+      # 11 Nov 2026: an AlmaLinux mirror sent packages at a few KB/s and several runs hit the 25 minute limit
+      # in "Install git". dnf only drops a mirror slower than 1 KB/s; this drops one under 100 KB/s for 15 seconds and
+      # tries the next, and fetches in parallel. It changes no package, only where they come from.
+      - name: Skip slow package mirrors
+        run: |
+          grep -q '^\[main\]' /etc/dnf/dnf.conf || echo '[main]' >> /etc/dnf/dnf.conf
+          printf 'minrate=100k\ntimeout=15\nmax_parallel_downloads=10\n' >> /etc/dnf/dnf.conf
+
       # Neither fedora:43 nor almalinux:10 ships git, which actions/checkout
       # otherwise has to work around with a REST API tarball download.
       - name: Install git
@@ -457,6 +484,14 @@ jobs:
     # binary can resolve against EL 10's glibc and runtime libraries.
     container: almalinux:10
     steps:
+      # 11 Nov 2026: an AlmaLinux mirror sent packages at a few KB/s and several runs hit the 25 minute limit
+      # in "Install git". dnf only drops a mirror slower than 1 KB/s; this drops one under 100 KB/s for 15 seconds and
+      # tries the next, and fetches in parallel. It changes no package, only where they come from.
+      - name: Skip slow package mirrors
+        run: |
+          grep -q '^\[main\]' /etc/dnf/dnf.conf || echo '[main]' >> /etc/dnf/dnf.conf
+          printf 'minrate=100k\ntimeout=15\nmax_parallel_downloads=10\n' >> /etc/dnf/dnf.conf
+
       - name: Install git
         run: dnf install -y git
 

@@ -55,6 +55,12 @@ Third-party components Hivra adds:
   Used in: src-tauri/plugins/pstack
   pstack 0.15.36 copied unchanged from cursor/plugins at commit 6ea74587, less its Cursor-only parts (agents, automations, .cursor-plugin), images and a test corpus; embedded in the app and installed once per data folder as Hivra's default plugin, with its LICENSE (WP-41).
 
+- tstack's babysit-pr (pr-wait)
+  Source: https://github.com/t3dotgg/tstack
+  License: MIT. No code is copied, so tstack's copyright line is not reproduced here.
+  Used in: src-tauri/src/pr_watch/base.rs
+  skills/babysit-pr/scripts/pr-wait read for the logic only (WP-202): main moving under a pull request, the BEHIND and DIRTY states and the rate-limit fallback. Written fresh in Rust.
+
 - pstack (test fixture)
   Source: https://github.com/cursor/plugins/tree/main/pstack
   License: MIT
@@ -308,6 +314,13 @@ Third-party components Hivra adds:
   Used in: src/features/memory/model/orderScan.ts, src/features/memory/model/LICENSE.row-bot
   external_content.py's injection scan translated to TypeScript, with its cases ported (WP-111). The fence and the warning sentence are not used. A match refuses a proposed memory and is noted on recall. It never deletes one. Licence text in src/features/memory/model/LICENSE.row-bot.
 
+- tasklane's protected paths
+  Source: https://github.com/kunci115/tasklane
+  License: Apache-2.0
+  tasklane's LICENSE has no separate copyright line and the repo has no NOTICE file
+  Used in: src-tauri/src/delivery/protected.rs
+  crates/tasklane-core/src/paths.rs (protected_hits) rewritten in Rust for WP-158. Directory patterns match anywhere, secret extensions match, and a glob matches nothing. Hivra adds .hivra/, the hub tauri config files and the rule files, and compares built-in names without case. Rewritten from the work package because the upstream file was not in this worktree. The keyword floor in floor.rs is not included.
+
 - MiniMax Code's subagent-split-check, independent-review and taste-to-checks
   Source: https://github.com/MiniMax-AI/mcode-stack
   License: MIT
@@ -329,12 +342,47 @@ Third-party components Hivra adds:
   Used in: package.json, src/features/source-control/ui/pierreDiff.tsx
   Pinned npm package for the optional split diff view (WP-116).
 
+- Row-Bot's MCP tool effects
+  Source: https://github.com/siddsachar/row-bot
+  License: Apache-2.0
+  Copyright 2026 Row-Bot Contributors
+  Used in: src/features/autopilot/model/mcpEffect.ts, src/features/autopilot/model/LICENSE.row-bot
+  mcp_client/safety.py translated to TypeScript with test_mcp_safety.py's cases ported (WP-101). The verb patterns are written out as word lists; Row-Bot's interaction class is folded into a change so nothing but a read passes; and a name-only read counts only for a server the person installed through Hivra's plugin flow.
+
+- Row-Bot's approval reviewer
+  Source: https://github.com/siddsachar/row-bot
+  License: Apache-2.0
+  Copyright 2026 Row-Bot Contributors
+  Used in: src/features/autopilot/model/reviewerRules.ts, src/features/autopilot/model/LICENSE.row-bot
+  The rules of approval_review.py and its answer reading, with test_approval_reviewer.py's cases ported (WP-101). Hivra asks no model to judge an approval, so the checks a fixed rule can make are code, as a veto the decision path calls that can only hold an action; the judgement rules are kept as REVIEWER_RULES for a judged step. Row-Bot's four levels are kept for narrowing.
+
+- Row-Bot's install scanner
+  Source: https://github.com/siddsachar/row-bot
+  License: Apache-2.0
+  Copyright 2026 Row-Bot Contributors
+  Used in: src-tauri/src/plugins/scan.rs, src-tauri/src/plugins/LICENSE.row-bot
+  skills_hub/scanner.py translated to Rust with test_skills_hub.py's cases ported (WP-101). The thing scanned is a Hivra plugin: no skills is fine, an unloadable skill only warns, a setup step the person already approves does not block, and the file list comes from the staged folder.
+
+- Row-Bot's proposal guard
+  Source: https://github.com/siddsachar/row-bot
+  License: Apache-2.0
+  Copyright 2026 Row-Bot Contributors
+  Used in: src/features/memory/backpass/proposalGuard.ts, src/features/memory/backpass/LICENSE.row-bot
+  evolution.py's injection_problems translated to TypeScript with its E9 cases ported (WP-101). It checks what an edit adds rather than a whole draft, names each kind with a plain reason, and uses Hivra's own secret check.
 - Atomic Agent's fan-out contract
   Source: https://github.com/AtomicBot-ai/atomic-agent
   License: MIT
   Copyright (c) 2026 Atomic Bot
   Used in: src/features/firstmate/model/fanoutContract.ts, src/features/firstmate/model/fanoutWaves.ts, src/features/firstmate/model/fanoutChecks.ts, src/features/firstmate/model/originalRequest.ts
   The contract's kinds of provide, its description and search-path rules, the contract block and per-task lines, and the requires-cycle walk (contract.ts); the wave planner and its cycle fallback (contract-waves.ts); the presence check of a provide in a file (contract-checks.ts); and the bounded quote of the person's request with its follow-up rule (worker-prompt.ts), translated to TypeScript at commit 1b4e641525c5b1427b48ff6b8d9932dc26bd8256 (WP-171). Hivra reads the contract from each task of one delegate_tasks call, refuses a requirement nothing provides and a provide nobody could check before anything starts, holds a task whose provider failed or did not deliver instead of running it anyway, fails a check that could not run, runs a declared check as the task's WP-40 checks gate, reads the request from the first mate's chat (the person's own messages only), and quotes it behind a mark on every line.
+
+- Cloudflare security-audit-skill (validators and reference notes)
+  Source: https://github.com/cloudflare/security-audit-skill
+  License: MIT
+  Copyright (c) 2025-2026 Cloudflare, Inc.
+  Used in: scripts/security-review/validate-findings.cjs, scripts/security-review/validate-coverage-ledger.cjs,
+  scripts/security-review/report-schema.json, scripts/security-review/reference, scripts/security-review/LICENSE.cloudflare-security-audit
+  Vendored from commit c1c8a8c1471069fb0e188eeaff69b8e8db6564a8 with a source header on each file; no code changed.
 
 MonoCode
 ========

@@ -40,6 +40,17 @@ export function providerName(id: CustomProvider): string {
 export function defaultBaseUrl(id: CustomProvider): string {
   return CUSTOM_PROVIDERS.find((p) => p.id === id)?.baseUrl ?? "";
 }
+/**
+ * The address to show beside a stored key, or undefined when the key goes only to the provider's own default address.
+ * A custom model always shows its address. A named provider shows one only when it is a stored proxy, not the default.
+ */
+export function addressShownFor(provider: string, storedAddress: string | null | undefined): string | undefined {
+  const url = (storedAddress ?? "").trim().replace(/\/+$/, "");
+  if (!url) return undefined;
+  if (provider === "custom") return url;
+  const fallback = defaultBaseUrl(provider as CustomProvider).replace(/\/+$/, "");
+  return url === fallback ? undefined : url;
+}
 /** Ollama runs on this Mac and needs no key. */
 export function needsKey(id: CustomProvider): boolean {
   return id !== "ollama";
@@ -108,6 +119,18 @@ export function findCustomModel(model: string | undefined): CustomModel | undefi
   if (!isCustomModelId(model)) return undefined;
   const id = model!.slice(CUSTOM_MODEL_PREFIX.length);
   return listCustomModels().find((m) => m.id === id);
+}
+
+/**
+ * WP-176: a per-task ceiling applies only to a model a provider bills per token.
+ * A subscription CLI is not one. An unknown custom model is treated as billed.
+ * A model served by Ollama on this machine is not.
+ */
+export function isBilledModel(model: string | undefined): boolean {
+  if (!isCustomModelId(model)) return false;
+  const found = findCustomModel(model);
+  if (!found) return true;
+  return found.provider !== "ollama";
 }
 
 let version = 0;
@@ -202,9 +225,36 @@ export function isClaudeKeyError(e: unknown): boolean {
   return r.code === CLAUDE_KEY_ERROR || r.kind === CLAUDE_KEY_ERROR || (typeof r.message === "string" && r.message.includes(CLAUDE_KEY_ERROR));
 }
 
+/** The address Rust stored with each model's key, by model id. Undefined until it has been read. */
+const savedAddresses = new Map<string, string | null>();
+export function savedAddressOf(customModelId: string): string | null | undefined {
+  return savedAddresses.get(customModelId);
+}
+/** Reads the stored address of every custom model's key from Rust (addresses are not secrets; keys never come back). */
+export async function refreshSavedAddresses(): Promise<void> {
+  await Promise.all(
+    listCustomModels().map(async (m) => {
+      try {
+        const address = await store.keyAddress(m.id);
+        savedAddresses.set(m.id, typeof address === "string" ? address : null);
+      } catch {
+        savedAddresses.set(m.id, null);
+      }
+    }),
+  );
+  version++;
+  window.dispatchEvent(new CustomEvent(CHANGED));
+}
+
 export interface ModelKeyStore {
-  /** Keep the key for this custom model somewhere safe (the macOS Keychain). Never in settings or a file. */
-  saveModelKey(customModelId: string, key: string): Promise<void>;
+  /** Keep the key for this custom model somewhere safe (the macOS Keychain). Never in settings or a file.
+   * When the provider, model and address are passed, Rust stores that address with the key. Short text
+   * may send the key only to that host. */
+  saveModelKey(
+    customModelId: string,
+    key: string,
+    binding?: { provider: string; modelId: string; baseUrl: string },
+  ): Promise<void>;
   /**
    * One tiny request to the model with this key. For Ollama there is no key: it checks Ollama answers at baseUrl.
    * Resolve with { ok: true } and the model's name when it replied.
@@ -213,6 +263,8 @@ export interface ModelKeyStore {
   /** Forget this custom model's key. True when it's gone, including when there was no key to begin with; false or a
    * thrown error only for a real Keychain failure. */
   deleteModelKey(customModelId: string): Promise<boolean>;
+  /** The address the key was saved with, or null when it was saved with none (the key is then never sent). */
+  keyAddress(customModelId: string): Promise<string | null>;
   /**
    * The provider's own context window for this route, or null when the provider publishes no such field.
    *
@@ -226,14 +278,21 @@ export interface ModelKeyStore {
 /** Dev and test stand-in: keys stay in memory only. A key containing "bad" fails; Ollama is up unless its URL says "down". */
 export function createDevModelKeyStore(): ModelKeyStore & { keys: Map<string, string> } {
   const keys = new Map<string, string>();
+  const addresses = new Map<string, string>();
   return {
     keys,
-    async saveModelKey(id, key) {
+    async saveModelKey(id, key, binding) {
       keys.set(id, key);
+      if (binding) addresses.set(id, binding.baseUrl);
+      else addresses.delete(id);
     },
     async deleteModelKey(id) {
       keys.delete(id);
+      addresses.delete(id);
       return true; // a missing key counts as removed, like the backend
+    },
+    async keyAddress(id) {
+      return addresses.get(id) ?? null;
     },
     async testModelKey(provider, baseUrl, modelId, key) {
       if (provider === "ollama")
@@ -257,10 +316,18 @@ export function replied(model: string): string {
 /** The real store: the hub plugin keeps the key in the macOS Keychain (service `monocode-hub:model-key`) and asks the
  * model to call one tool. The key goes in and never comes back to the webview. */
 export const tauriModelKeyStore: ModelKeyStore = {
-  saveModelKey: (customModelId, key) => invoke("plugin:hub|model_key_save", { customModelId, key }),
+  saveModelKey: (customModelId, key, binding) =>
+    invoke("plugin:hub|model_key_save", {
+      customModelId,
+      key,
+      ...(binding
+        ? { provider: binding.provider, modelId: binding.modelId, baseUrl: binding.baseUrl }
+        : {}),
+    }),
   testModelKey: (provider, baseUrl, modelId, key) =>
     invoke<KeyTestResult>("plugin:hub|model_key_test", { provider, baseUrl, modelId, key }),
   deleteModelKey: (customModelId) => invoke<boolean>("plugin:hub|model_key_delete", { customModelId }),
+  keyAddress: (customModelId) => invoke<string | null>("plugin:hub|model_key_address", { customModelId }),
   contextWindow: (provider, baseUrl, modelId, customModelId) =>
     invoke<number | null>("plugin:hub|model_context_window", { provider, baseUrl, modelId, customModelId }),
 };
@@ -288,7 +355,13 @@ export async function testCustomModel(form: CustomModelForm): Promise<KeyTestRes
 /** Save after a passing test: the key to the key store, the rest to settings. Returns the new model. */
 export async function addCustomModel(form: CustomModelForm): Promise<CustomModel> {
   const id = `${form.provider}-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
-  if (needsKey(form.provider)) await store.saveModelKey(id, form.key);
+  if (needsKey(form.provider)) {
+    await store.saveModelKey(id, form.key, {
+      provider: form.provider,
+      modelId: form.modelId.trim(),
+      baseUrl: form.baseUrl.trim() || defaultBaseUrl(form.provider),
+    });
+  }
   const model: CustomModel = {
     id,
     name: form.name.trim(),
@@ -298,6 +371,7 @@ export async function addCustomModel(form: CustomModelForm): Promise<CustomModel
     ...savedEfforts(form.reasoningEfforts),
   };
   writeModels([...listCustomModels(), model]);
+  void refreshSavedAddresses();
   return model;
 }
 

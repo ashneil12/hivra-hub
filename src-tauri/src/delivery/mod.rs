@@ -22,6 +22,8 @@ pub mod deliver;
 pub mod events;
 pub mod github;
 pub mod merge;
+pub mod protected;
+pub mod review;
 pub mod settings;
 pub mod teardown;
 
@@ -152,6 +154,37 @@ pub(crate) fn ensure_tables(conn: &Connection) -> rusqlite::Result<()> {
             [],
         )?;
     }
+    // WP-158: the protected-path floor is off until the project turns it on. Extra paths only add.
+    let has_floor: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM pragma_table_info('delivery_settings') WHERE name = 'protect_paths')",
+        [],
+        |row| row.get(0),
+    )?;
+    if !has_floor {
+        conn.execute(
+            "ALTER TABLE delivery_settings ADD COLUMN protect_paths INTEGER NOT NULL DEFAULT 0",
+            [],
+        )?;
+    }
+    let has_extra: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM pragma_table_info('delivery_settings') WHERE name = 'protected_extra')",
+        [],
+        |row| row.get(0),
+    )?;
+    if !has_extra {
+        conn.execute(
+            "ALTER TABLE delivery_settings ADD COLUMN protected_extra TEXT NOT NULL DEFAULT '[]'",
+            [],
+        )?;
+    }
+    // WP-203: the builder that did the work, recorded by the app at delivery. The security review's author.
+    let has_author = conn
+        .prepare("SELECT 1 FROM pragma_table_info('work_deliveries') WHERE name = 'author'")?
+        .exists([])?;
+    if !has_author {
+        conn.execute("ALTER TABLE work_deliveries ADD COLUMN author TEXT", [])?;
+    }
+    review::ensure_table(conn)?;
     Ok(())
 }
 
@@ -182,6 +215,41 @@ pub fn delivery_settings_set(
         &project,
         mode,
         merge_without_asking,
+        expected_updated_at,
+        now_millis(),
+    )
+}
+
+/// Turns the protected-path floor on or off for one project. It stays off until then.
+/// The built-in list is not stored, so this cannot shrink it.
+#[tauri::command(async)]
+pub fn delivery_protect_paths_set(
+    store: State<'_, SessionStore>,
+    project: String,
+    on: bool,
+    expected_updated_at: Option<i64>,
+) -> Result<settings::Stored, String> {
+    settings::set_protect_paths(
+        &*store.lock_conn()?,
+        &project,
+        on,
+        expected_updated_at,
+        now_millis(),
+    )
+}
+
+/// Adds paths under "Also protect these paths". A path already there stays, and none are removed.
+#[tauri::command(async)]
+pub fn delivery_protected_paths_add(
+    store: State<'_, SessionStore>,
+    project: String,
+    paths: Vec<String>,
+    expected_updated_at: Option<i64>,
+) -> Result<settings::Stored, String> {
+    settings::add_protected_paths(
+        &*store.lock_conn()?,
+        &project,
+        &paths,
         expected_updated_at,
         now_millis(),
     )
@@ -282,10 +350,13 @@ pub fn delivery_merge_approve(
 
 #[tauri::command(async)]
 pub fn delivery_merge(
+    app: tauri::AppHandle,
     store: State<'_, SessionStore>,
     input: merge::MergeRequest,
 ) -> Result<merge::MergeOutcome, String> {
-    merge::merge(&store, &github::CliGithub, input, now_millis())
+    // The installed and signed-in CLIs, so a security review can be started to a builder other than the author.
+    let present = crate::crew::live_presence(&app);
+    merge::merge_with(&store, &github::CliGithub, input, now_millis(), &present)
 }
 
 #[tauri::command(async)]

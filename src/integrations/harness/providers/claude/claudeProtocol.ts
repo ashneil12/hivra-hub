@@ -38,6 +38,7 @@ import {
 } from "./claudeFailure";
 import { claudeBridgeKind } from "./claudeDeepseekBridge";
 import { bridgeLaunchModel } from "../../../../features/sessions/model/deepseekBridge";
+import { cliPermissionSetting } from "../../core/permissionMatrix";
 
 /** Claude Code versions that first ship Opus 5.5 / Opus 5 / Sonnet 5 / Fable 5 / Opus 4.8 / 4.7. */
 export const MINIMUM_CLAUDE_OPUS_5_5_VERSION = "2.1.280";
@@ -159,16 +160,8 @@ export function compareSemver(left: string, right: string): number {
 export function runtimeModeToPermission(
   mode: RuntimeMode,
 ): ClaudePermissionMode {
-  switch (mode) {
-    case "auto-accept-edits":
-      return "acceptEdits";
-    case "auto":
-      return "auto";
-    case "full-access":
-      return "bypassPermissions";
-    default:
-      return "default";
-  }
+  // The table in core/permissionMatrix.ts holds every CLI's setting for each mode.
+  return cliPermissionSetting("claude", mode) as ClaudePermissionMode;
 }
 
 /** Older model ids that reject `xhigh` and want `max` instead. */
@@ -356,6 +349,13 @@ export function buildClaudeSpawnArgs(input: {
   const model = bridge ? bridgeLaunchModel(input.model, bridge) : input.model;
   const ownSubagents = subagentModelEnv(bridge ? model : input.routedModel);
   if (ownSubagents) settings.env = { ...settings.env, ...ownSubagents };
+  // Round 12: flag settings outrank user, project and local settings. A project's env can set
+  // CLAUDE_BASH_MAINTAIN_PROJECT_WORKING_DIR to "0" and move the shell out of the chat folder while every approval
+  // is still marked pinned. "1" here wins. The process env stays set too (harness.rs). An isolated helper has no
+  // chat folder, so it is left alone.
+  if (!input.isolated) {
+    settings.env = { ...settings.env, CLAUDE_BASH_MAINTAIN_PROJECT_WORKING_DIR: "1" };
+  }
   if (input.isolated) {
     args.push("--no-session-persistence");
     args.push("--strict-mcp-config");
@@ -1243,6 +1243,9 @@ export function previewFromTool(
   );
 }
 
+/** The MCP resource tools (round 2): their arguments are read the way an MCP tool's are. */
+const RESOURCE_TOOLS: ReadonlySet<string> = new Set(["ListMcpResourcesTool", "ReadMcpResourceTool"]);
+
 /**
  * What a permission request would run, for policy checks (autopilot): the tool's name, a shell command in full (never
  * cut), and the files an edit or write touches.
@@ -1250,16 +1253,54 @@ export function previewFromTool(
 export function approvalCall(
   toolName: string,
   input: Record<string, unknown>,
+  /**
+   * Whether this launch still keeps its shell in the chat folder. Claude's builder passes true until EnterWorktree,
+   * ExitWorktree, or an init folder that is not the launch folder (round 12). Never read from `input`.
+   */
+  pinned = true,
 ): ApprovalCall {
   const command = typeof input.command === "string" ? input.command : undefined;
-  const paths = ["file_path", "notebook_path"]
-    .map((key) => input[key])
-    .filter((value): value is string => typeof value === "string");
+  // A search names where it starts in `path` (Grep, Glob, LS), and a Glob also names it in `pattern` (review H1).
+  const keys = toolName === "Glob" ? ["file_path", "notebook_path", "path", "pattern"] : ["file_path", "notebook_path", "path"];
+  const paths = keys.map((key) => input[key]).filter((value): value is string => typeof value === "string");
+  const server = typeof input.server === "string" ? input.server : undefined;
+  // A Grep's glob matches files by name, hidden ones too (ripgrep's --glob overrides its ignore rules). It is kept
+  // whenever it is given, even when it isn't text, so the search is held rather than read as a plain search (round 2).
+  const glob = toolName === "Grep" && input.glob !== undefined ? (typeof input.glob === "string" ? input.glob : "") : undefined;
+  // An MCP call's arguments are read by autopilot for paths, addresses and red-list words (review M1). A resource read's
+  // uri is one of those arguments too (round 2), so the resource tools are read the same way.
+  const args = toolName.startsWith("mcp__") || RESOURCE_TOOLS.has(toolName) ? textLeaves(input) : undefined;
   return {
     tool: toolName,
+    // Round 11: this builder is Claude's only. Claude's launch keeps the shell and the file tools in the chat folder
+    // (CLAUDE_BASH_MAINTAIN_PROJECT_WORKING_DIR, harness.rs), so a relative search or shell word is judged in it. The flag
+    // is set here by the provider, never read from the tool input. Round 12: it is false once that launch folder was left.
+    folderPinned: pinned,
     ...(command !== undefined ? { command } : {}),
     ...(paths.length ? { paths } : {}),
+    ...(server !== undefined ? { server } : {}),
+    ...(args !== undefined ? { args } : {}),
+    ...(glob !== undefined ? { glob } : {}),
   };
+}
+
+/**
+ * Every text value and key in a request's arguments, however deep. Past the depth or the count it stops, and says so
+ * with a "/" so the check holds rather than reads a cut-off argument as harmless.
+ */
+function textLeaves(value: unknown, depth = 0, out: string[] = []): string[] {
+  if (out.length >= 200 || depth > 6) {
+    out.push("/");
+    return out;
+  }
+  if (typeof value === "string") out.push(value);
+  else if (Array.isArray(value)) for (const item of value) textLeaves(item, depth + 1, out);
+  else if (value && typeof value === "object")
+    for (const [key, item] of Object.entries(value)) {
+      out.push(key);
+      textLeaves(item, depth + 1, out);
+    }
+  return out;
 }
 
 /** The Bash input keys the phone shows: the command it runs, its description and its timeout. */

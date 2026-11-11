@@ -92,6 +92,27 @@ function dailyFixture(root, { schema = 19 } = {}) {
     INSERT INTO hub_local_docs VALUES ('fan-out-compares', '[{"id":"compare-1"}]', 1, 3), ('fresh-eyes', '{"settings":{},"reviews":[{"requestId":"r1"}]}', 1, 3), ('home', '{"recent":[]}', 1, 2);
     CREATE TABLE notes (id TEXT PRIMARY KEY, body TEXT);
     INSERT INTO notes VALUES ('n1', 'kept');
+    -- Hivra WP-92: the vault's index (never a value: values live in the keychain).
+    CREATE TABLE secrets (scope TEXT NOT NULL, name TEXT NOT NULL, label TEXT NOT NULL, last4 TEXT,
+      created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, last_used_at INTEGER,
+      version INTEGER NOT NULL DEFAULT 1, PRIMARY KEY (scope, name));
+    INSERT INTO secrets VALUES ('global', 'stripe-api-key', 'Stripe', 'cd12', 1, 2, NULL, 3),
+      ('project./p/a', 'resend-key', 'Resend', NULL, 1, 2, NULL, 1);
+    CREATE TABLE secret_grants (scope TEXT NOT NULL, name TEXT NOT NULL, subject_kind TEXT NOT NULL,
+      subject_id TEXT NOT NULL, executable TEXT NOT NULL, mode TEXT NOT NULL, created_at INTEGER NOT NULL,
+      PRIMARY KEY (scope, name, subject_kind, subject_id, executable));
+    INSERT INTO secret_grants VALUES ('global', 'stripe-api-key', 'mono', 'tally', 'curl', 'always', 1),
+      ('global', 'stripe-api-key', 'project', '/p/a', '*', 'once', 2);
+    CREATE TABLE secret_requests (id TEXT PRIMARY KEY, chat TEXT NOT NULL, mono TEXT, project TEXT,
+      scope TEXT NOT NULL, name TEXT NOT NULL, why TEXT NOT NULL, state TEXT NOT NULL, answer_token TEXT,
+      created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);
+    INSERT INTO secret_requests VALUES ('req-1', 's1', 'Tally', NULL, 'global', 'resend-key', 'to send', 'open', NULL, 1, 1);
+    CREATE TABLE secret_env_writes (scope TEXT NOT NULL, name TEXT NOT NULL, worktree TEXT NOT NULL,
+      env_name TEXT NOT NULL, written_at INTEGER NOT NULL, PRIMARY KEY (scope, name, worktree));
+    INSERT INTO secret_env_writes VALUES ('project./p/a', 'resend-key', '/p/a', 'RESEND_API_KEY', 1);
+    -- The person's choice about "Always" for programs that can run any code: a dev copy starts with it off.
+    CREATE TABLE secret_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+    INSERT INTO secret_settings VALUES ('always_for_any_code', '1');
   `);
   // Leave the last writes in the WAL, as a running daily app would.
   db.exec("PRAGMA wal_autocheckpoint = 0; UPDATE sessions SET title = 'Chat one (latest)' WHERE id = 's1';");
@@ -154,6 +175,13 @@ test("a seed copies every chat, clears what would act on Ash's behalf, and never
     queuedMessages: 1,
     goals: 1,
     providerSessionIds: 2,
+    // WP-92: the vault's index, grants, requests and .env records stay with the daily app; only the chats come over,
+    // and the keychain names (and so the values) are the daily app's own and never read here.
+    secrets: 2,
+    secretGrants: 2,
+    secretRequests: 1,
+    secretEnvWrites: 1,
+    secretSettings: 1,
   });
   assert.deepEqual(rows(path.join(to, "monocode.db"), "SELECT count(*) AS n FROM sessions WHERE goal_json IS NOT NULL"), [{ n: 0 }], "no chat's /goal comes along");
   const copy = path.join(to, "monocode.db");
@@ -163,7 +191,7 @@ test("a seed copies every chat, clears what would act on Ash's behalf, and never
     { id: "s2", title: "Chat two", blocks_json: '[{"role":"user","text":"yo"}]', provider_session_id: null, queued_messages_json: "[]", queue_status: null },
     { id: "s3", title: "Chat three", blocks_json: "[]", provider_session_id: null, queued_messages_json: "[]", queue_status: null },
   ]);
-  for (const table of ["in_flight_sessions", "workspace_snapshot", "worktree_removals", "imported_chat_folders", "automations", "automation_runs", "automation_event_claims", "session_reminders", "orchestration_runs", "orchestration_sidebar", "orchestration_workers", "delegations", "delegation_chat_binds", "steer_messages", "decisions", "autopilot_switches", "autopilot_resumes", "pr_watches", "pr_watch_wakes"])
+  for (const table of ["in_flight_sessions", "workspace_snapshot", "worktree_removals", "imported_chat_folders", "automations", "automation_runs", "automation_event_claims", "session_reminders", "orchestration_runs", "orchestration_sidebar", "orchestration_workers", "delegations", "delegation_chat_binds", "steer_messages", "decisions", "autopilot_switches", "autopilot_resumes", "pr_watches", "pr_watch_wakes", "secrets", "secret_grants", "secret_requests", "secret_env_writes", "secret_settings"])
     assert.deepEqual(rows(copy, `SELECT count(*) AS n FROM ${table}`), [{ n: 0 }], table);
   assert.deepEqual(
     rows(copy, "SELECT key FROM hub_local_docs ORDER BY key"),
@@ -182,6 +210,23 @@ test("a seed copies every chat, clears what would act on Ash's behalf, and never
   assert.deepEqual(fs.readdirSync(path.dirname(daily.file)).sort(), ["monocode.db", "monocode.db-shm", "monocode.db-wal"], "nothing new beside the source");
   const seeded = JSON.parse(fs.readFileSync(path.join(to, "seeded.json"), "utf8"));
   assert.equal(seeded.from, daily.file);
+});
+
+test("a seed clears the fan-out checkpoints and leases of the daily app, so a resume in a dev copy starts nothing of Ash's", async () => {
+  const { scrub } = await load();
+  const db = new DatabaseSync(":memory:");
+  db.exec(`
+    CREATE TABLE fanout_checkpoints (owner TEXT NOT NULL, id TEXT NOT NULL, revision INTEGER NOT NULL, updated_at INTEGER NOT NULL, body TEXT NOT NULL, PRIMARY KEY (owner, id));
+    CREATE TABLE fanout_leases (owner TEXT NOT NULL, id TEXT NOT NULL, holder TEXT NOT NULL, until INTEGER NOT NULL, PRIMARY KEY (owner, id));
+    INSERT INTO fanout_checkpoints VALUES ('mono-ash', 'plan-a', 2, 1, '{"tasks":[]}');
+    INSERT INTO fanout_leases VALUES ('mono-ash', 'plan-a', 'window-a', 1);
+  `);
+  const cleared = scrub(db);
+  assert.equal(cleared.fanoutCheckpoints, 1);
+  assert.equal(cleared.fanoutLeases, 1);
+  assert.equal(db.prepare("SELECT count(*) AS n FROM fanout_checkpoints").get().n, 0);
+  assert.equal(db.prepare("SELECT count(*) AS n FROM fanout_leases").get().n, 0);
+  db.close();
 });
 
 test("refuses the daily data folder, a link to it, and anything that isn't a dev slot's folder", async (t) => {

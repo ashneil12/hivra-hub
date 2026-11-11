@@ -80,6 +80,7 @@ function hostFor(cwd: string): { source: Session; host: AgentAppHost; started: u
     isMono: () => false,
     codingTeamOf: () => ({ project: "App", name: "App coding team", folder: cwd }),
     tasks: {
+      crewGate: vi.fn(async () => undefined),
       owned: vi.fn(async () => rows),
     },
   } as unknown as AgentAppHost;

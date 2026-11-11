@@ -29,6 +29,8 @@ import {
   type MonoState,
 } from "../model/mono";
 import { closeTree, openTree } from "../model/monoTreeStore";
+import { CaptainPersonality } from "../../chief/ui/CaptainPersonality";
+import { hasCaptainCharter } from "../../chief/model/charter";
 import { ensureMorningHabit } from "../../chief/model/habit";
 import { soulAsks } from "../../chief/model/scope";
 import { loadHabits, updateHabits } from "../model/monoHabits";
@@ -205,6 +207,8 @@ function GeneralSection({
             onSettingsChange={onModelSettingsChange}
           />
         </SettingRow>
+        {/* WP-215: the personality sits beside the engine. The charter is not edited here. */}
+        {soul && hasCaptainCharter(soul) ? <CaptainPersonality monoId={monoId} soul={soul} /> : null}
         <ModelSettingRows
           harness={harness}
           model={model}
@@ -221,6 +225,7 @@ function GeneralSection({
         >
           <AccessPicker
             value={runtimeMode}
+            harness={harness}
             onChange={onRuntimeModeChange}
             busy={busy}
             side="bottom"

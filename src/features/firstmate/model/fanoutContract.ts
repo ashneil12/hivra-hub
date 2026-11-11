@@ -123,10 +123,11 @@ const MAX_PATHS = 30;
 const MAX_NAME_CHARS = 200;
 const TASK_KEYS = new Set([
   "name", "brief", "goal", "title", "intent", "owns", "provides", "requires", "checks", "files",
-  "project", "model", "effort", "heavy", "hard", "scope", "asks", "gates", "code",
+  "project", "model", "effort", "heavy", "hard", "scope", "asks", "gates", "code", "role",
 ]);
 const PROVIDE_KEYS = new Set(["kind", "name", "in", "shape"]);
-const PASSTHROUGH = ["project", "model", "effort", "heavy", "hard", "scope", "asks"] as const;
+/** WP-141 LOW 8: a task's role goes to tasks.delegate with the rest, so a role row applies to a wave too. */
+const PASSTHROUGH = ["project", "model", "effort", "heavy", "hard", "scope", "asks", "role"] as const;
 
 /** Globs are patterns, not paths: never somewhere a provide can be looked for. */
 const GLOB_CHARS = /[*?[\]{}]/;

@@ -245,6 +245,28 @@ pub fn check_build(identity: &Identity, debug: bool) -> Result<(), Refusal> {
     }
 }
 
+/// Fix round 3 (H4): a subcommand that reads the Keychain (`secret-run`, `connector-run`) runs only from where the daily
+/// app runs, the rule `run()` applies. `Some(why)` refuses it; a dev copy passes as it does in `run()`.
+pub fn keychain_location_refusal(
+    identity: &Identity,
+    debug: bool,
+    exe: &Path,
+    home: &Path,
+) -> Option<String> {
+    check_location(identity, debug, exe, home)
+        .err()
+        .map(|refusal| refusal.detail())
+}
+
+/// The same check for this process, before a Keychain-reading subcommand reads anything.
+pub fn keychain_subcommand_refusal() -> Option<String> {
+    let Some(home) = real_home() else {
+        return Some("There is no home folder.".into());
+    };
+    let exe = std::env::current_exe().ok()?;
+    keychain_location_refusal(current(), cfg!(debug_assertions), &exe, &home)
+}
+
 /// Rule 3: the daily app runs only from `~/Applications/MonoCode Hub.app`.
 pub fn check_location(
     identity: &Identity,
@@ -1506,5 +1528,26 @@ mod tests {
         assert_eq!(dir, home.0.join(".monocode-hub-dev/claude-config"));
         assert!(dir.is_dir(), "created on first use");
         assert!(dev_claude_config_dir_in(Kind::Dev, None).is_err());
+    }
+}
+
+#[cfg(test)]
+mod keychain_location_tests {
+    use super::*;
+
+    // Fix round 3, H4: a subcommand that reads the Keychain runs only from where the daily app lives, as `run()` does.
+    #[test]
+    fn a_keychain_subcommand_refuses_the_daily_identity_outside_applications() {
+        let home = std::env::temp_dir().join(format!("mc-kc-{}", uuid::Uuid::new_v4()));
+        let installed = home.join(DAILY_BUNDLE).join("Contents/MacOS/monocode");
+        let elsewhere = home.join("Worktrees/wt/target/release/monocode");
+        for exe in [&installed, &elsewhere] {
+            std::fs::create_dir_all(exe.parent().unwrap()).unwrap();
+            std::fs::write(exe, b"binary").unwrap();
+        }
+        let daily = Identity::classify(DAILY_IDENTIFIER).unwrap();
+        assert!(keychain_location_refusal(&daily, false, &installed, &home).is_none());
+        assert!(keychain_location_refusal(&daily, false, &elsewhere, &home).is_some());
+        let _ = std::fs::remove_dir_all(&home);
     }
 }

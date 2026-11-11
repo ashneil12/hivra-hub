@@ -3,6 +3,7 @@ import {
   modelContextWindow,
   nativeModelId,
 } from "../../../../features/sessions/model/models";
+import { reviewReportedTurn } from "../../../../features/usage/model/spendGate";
 import type {
   RuntimeMode,
   TurnMetrics,
@@ -52,6 +53,7 @@ import {
   type OpenCodePart,
 } from "./opencodeProtocol";
 import { resolveOpenCodeV2Service } from "./opencodeService";
+import { judgeV2Session } from "../../../../features/crew/model/host";
 import {
   OpenCodeV2InboxTracker,
   type OpenCodeV2InboxOutcome,
@@ -93,6 +95,14 @@ type PendingQuestion = {
 
 type Live = {
   client: OpenCodeClient;
+  /** MonoCode session id, not OpenCode's. */
+  threadId: string;
+  /** The model this turn was sent with. The ceiling applies only when it is billed. */
+  model?: string;
+  /** The finished turn's cost is judged once, not on every message. */
+  ceilingNoted: boolean;
+  /** Who started the turn, for the spend gate. */
+  origin?: "person" | "automated";
   openCodeSessionId: string;
   cwd: string;
   runtimeMode: RuntimeMode;
@@ -105,6 +115,10 @@ type Live = {
   sessionParentById: Map<string, string | undefined>;
   /** Child session id -> the agent tool row that spawned it. */
   subagentSessions: Map<string, string>;
+  /** Child sessions still running. A parent idle does not clear these. */
+  runningChildren: Set<string>;
+  /** Children that already went idle or errored, including before they were bound. */
+  settledChildren: Set<string>;
   subagentModels: Map<string, string>;
   /** Child parts that arrived before their row was known. */
   pendingSubagent: Map<string, OpenCodePart[]>;
@@ -333,11 +347,16 @@ export async function cancelOpenCodeTurn(sessionId: string): Promise<void> {
   for (const [, pending] of live.questions)
     pending.resolve({ kind: "skipped" });
   live.questions.clear();
+  // The cancelled turn's children are no longer work the chat waits on. Late child events are muted anyway.
+  live.runningChildren.clear();
   await live.client.abortSession(live.openCodeSessionId);
-  finishActiveTurn(live, [
-    { type: "message.completed" },
-    { type: "reasoning.completed" },
-  ]);
+  // A turn that already settled must not arm the next one.
+  if (live.activeTurn || live.turnDone) {
+    finishActiveTurn(live, [
+      { type: "message.completed" },
+      { type: "reasoning.completed" },
+    ]);
+  }
 }
 
 export async function stopOpenCodeSession(sessionId: string): Promise<void> {
@@ -364,6 +383,18 @@ export async function stopOpenCodeSession(sessionId: string): Promise<void> {
   }
   unwatchChild(sessionId);
   await killChild(sessionId).catch(() => undefined);
+}
+
+/**
+ * OpenCode has no backgrounded shell: a bash tool is part of the session that
+ * goes idle. Busy while a child session has not gone idle or errored, or while
+ * a v2 prompt is still awaited. The awaited prompt is usually cleared before
+ * the turn promise resolves, so the idle park mostly sees the children.
+ */
+export function openCodeHasBackgroundWork(sessionId: string): boolean {
+  const live = liveByThread.get(sessionId);
+  if (!live) return false;
+  return live.runningChildren.size > 0 || live.awaitedInbox !== null;
 }
 
 export async function forgetOpenCodeSession(sessionId: string): Promise<void> {
@@ -406,6 +437,8 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
 
   const { path } = await resolveOpenCodeBinaryImpl();
   const generation = await assertOpenCodeVersion(path, input.cwd);
+  // WP-141 round 6: an OpenCode 2.x service starts through harness_exec, not harness_spawn, so its crew judgment is asked here.
+  if (generation === "v2") await judgeV2Session({ sessionId: input.sessionId, folder: input.cwd });
 
   const liveRef: { current: Live | null } = { current: null };
   const service =
@@ -482,6 +515,9 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
 
     const live: Live = {
       client,
+      threadId: input.sessionId,
+      model: input.model,
+      ceilingNoted: false,
       openCodeSessionId: openCodeSession.id,
       cwd: input.cwd,
       runtimeMode: input.runtimeMode,
@@ -493,6 +529,8 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
       nextApprovalUiId: 1,
       sessionParentById: new Map(),
       subagentSessions: new Map(),
+      runningChildren: new Set(),
+      settledChildren: new Set(),
       subagentModels: new Map(),
       pendingSubagent: new Map(),
       partById: new Map(),
@@ -633,10 +671,14 @@ async function runTurn(live: Live, input: SendTurnInput): Promise<void> {
     live.turnFailed = reject;
   });
   live.activeTurn = true;
+  live.model = input.model;
   live.turnMetricsByMessageId.clear();
   const v2 = live.client.generation === "v2";
   live.awaitedInbox = v2 ? { kind: "turn" } : null;
   settlePendingTurn(live);
+  // After any finish that was waiting, this turn's cost has not been judged yet.
+  live.ceilingNoted = false;
+  live.origin = input.origin;
 
   try {
     const inboxID = await live.client.promptAsync({
@@ -834,6 +876,14 @@ async function handleEvent(
   }
 
   const payloadSessionId = eventSessionId(event);
+  if (
+    payloadSessionId &&
+    payloadSessionId !== live.openCodeSessionId &&
+    childSessionEnded(type, properties)
+  ) {
+    settleChild(live, payloadSessionId);
+    return;
+  }
   if (payloadSessionId && payloadSessionId !== live.openCodeSessionId) {
     if (
       type === "message.updated" ||
@@ -1218,6 +1268,27 @@ function trackSubagentRow(
   }
 }
 
+/** A child idle or error. A retry, and any other status, is still working. */
+function childSessionEnded(
+  type: string,
+  properties: Record<string, unknown>,
+): boolean {
+  if (type === "session.idle" || type === "session.error") return true;
+  if (type !== "session.status") return false;
+  return asRecord(properties.status)?.type === "idle";
+}
+
+const SETTLED_CHILD_CAP = 256;
+
+function settleChild(live: Live, sessionId: string): void {
+  live.runningChildren.delete(sessionId);
+  if (live.settledChildren.has(sessionId)) return;
+  live.settledChildren.add(sessionId);
+  if (live.settledChildren.size <= SETTLED_CHILD_CAP) return;
+  const oldest = live.settledChildren.keys().next().value;
+  if (oldest !== undefined) live.settledChildren.delete(oldest);
+}
+
 function bindSubagentSession(
   live: Live,
   sessionId: string,
@@ -1225,6 +1296,7 @@ function bindSubagentSession(
 ): void {
   if (live.subagentSessions.get(sessionId) === callId) return;
   live.subagentSessions.set(sessionId, callId);
+  if (!live.settledChildren.has(sessionId)) live.runningChildren.add(sessionId);
   const model = live.subagentModels.get(sessionId);
   if (model)
     live.onEvent({
@@ -1457,6 +1529,8 @@ function showNextQuestion(live: Live): void {
 }
 
 function finishActiveTurn(live: Live, extraEvents: HarnessEvent[] = []): void {
+  // WP-176: one look at the whole turn. A project limit never reaches this.
+  noteOpenCodeCeiling(live);
   live.turnEndPending = false;
   live.activeTurn = false;
   for (const event of extraEvents) live.onEvent(event);
@@ -1474,6 +1548,35 @@ function finishActiveTurn(live: Live, extraEvents: HarnessEvent[] = []): void {
 function settlePendingTurn(live: Live): void {
   if (!live.turnEndPending || !live.turnDone) return;
   finishActiveTurn(live);
+}
+
+/** Ask once near a billed ceiling. A hard cap stops this run and no other. */
+function noteOpenCodeCeiling(live: Live): void {
+  if (live.ceilingNoted) return;
+  live.ceilingNoted = true;
+  let cost: number | undefined;
+  for (const row of live.turnMetricsByMessageId.values()) {
+    if (typeof row.costUsd !== "number") continue;
+    cost = (cost ?? 0) + row.costUsd;
+  }
+  const verdict = reviewReportedTurn({
+    sessionId: live.threadId,
+    cwd: live.cwd,
+    model: live.model,
+    origin: live.origin,
+    harness: "opencode",
+    metrics: cost == null ? null : { costUsd: cost },
+  });
+  if (verdict.ask && verdict.reason.trim()) {
+    live.onEvent({ type: "status", text: verdict.reason.trim() });
+  }
+  if (!verdict.stopRun || live.cancelled) return;
+  const reason = verdict.reason.trim();
+  if (reason) live.onEvent({ type: "session.error", message: reason });
+  const sessionId = live.threadId;
+  queueMicrotask(() => {
+    void cancelOpenCodeTurn(sessionId);
+  });
 }
 
 function parsePart(value: unknown): OpenCodePart | null {

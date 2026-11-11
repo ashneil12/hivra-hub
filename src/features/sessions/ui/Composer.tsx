@@ -13,6 +13,8 @@ import {
   X,
 } from "../../../shared/ui/icons";
 import { ModelLineRow, TurnStopButton, showsStop } from "../../monos/ui/TurnStop";
+// WP-92: a pasted key is never sent as a chat message; the person is pointed at the secret card instead.
+import { hasSecretText } from "../../portable/model/secrets";
 import {
   useCallback,
   useEffect,
@@ -43,6 +45,12 @@ import {
   DictationWaiting,
 } from "./DictationControl";
 import { useDictation, writeDraftKeepingUndo } from "./useDictation";
+import {
+  COMPOSER_PREFILL_EVENT,
+  readComposerPrefill,
+} from "../model/threadLinkOpen";
+import { THREAD_LINK_MESSAGE, promptLink } from "../model/threadLinks";
+import { CopyThreadLinkButton } from "./ThreadLinkActions";
 import {
   isFileReferenceText,
   messageFilesFromClipboard,
@@ -1042,6 +1050,29 @@ export function Composer({
     syncHasValue("", attachmentsRef.current);
   }, [draftResetToken, onDraftChange, syncHasValue]);
 
+  // WP-125: a prompt link fills a composer that is already open. The draft cache
+  // covers one that mounts after the link.
+  useEffect(() => {
+    if (!sessionId) return;
+    const onPrefill = (event: Event) => {
+      const text = readComposerPrefill(
+        (event as CustomEvent<unknown>).detail,
+        sessionId,
+      );
+      if (text == null) return;
+      const el = ref.current;
+      if (el) {
+        el.value = text;
+        resizeComposer(el);
+      }
+      setDraft(text);
+      onDraftChange?.(text);
+      syncHasValue(text, attachmentsRef.current);
+    };
+    window.addEventListener(COMPOSER_PREFILL_EVENT, onPrefill);
+    return () => window.removeEventListener(COMPOSER_PREFILL_EVENT, onPrefill);
+  }, [sessionId, onDraftChange, syncHasValue]);
+
   const syncHighlightScroll = useCallback((el: HTMLTextAreaElement) => {
     const highlight = highlightRef.current;
     if (!highlight) return;
@@ -1388,6 +1419,13 @@ export function Composer({
       return;
     }
     if (disabled || worktreeRemoved || submitLockRef.current) return;
+    // WP-92: a key typed into the chat would land in the transcript, the store and every backup. Nothing is sent.
+    if (hasSecretText(value)) {
+      setPasteError(
+        "That looks like a key, so it was not sent. Put it in the secret card instead: it goes straight to your keychain.",
+      );
+      return;
+    }
     submitLockRef.current = true;
     void completeSubmit(value).finally(() => {
       submitLockRef.current = false;
@@ -1991,6 +2029,23 @@ export function Composer({
     : shell
       ? "py-4"
       : "py-3";
+  // WP-125: copy a link that opens this project with the current prompt.
+  const preparePromptLink = useCallback(async () => {
+    const text = ref.current?.value ?? draft;
+    const { hubProjectIdFor } = await import("../../hub/model/hubData");
+    const projectId = hubProjectIdFor(cwd ?? "");
+    if (!projectId) return { error: THREAD_LINK_MESSAGE.notInProject };
+    const built = promptLink(projectId, text);
+    if (!built) return { error: THREAD_LINK_MESSAGE.cannotCopy };
+    return { url: built };
+  }, [cwd, draft]);
+  const promptCopy = (
+    <CopyThreadLinkButton
+      kind="prompt"
+      label="Copy prompt link"
+      prepare={preparePromptLink}
+    />
+  );
   const workspaceBar = hideTopBar ? null : (
     <div
       data-composer-workspace-bar={workspaceBarOutside ? "" : undefined}
@@ -2062,6 +2117,7 @@ export function Composer({
         </>
       )}
       <div className="ml-auto flex shrink-0 items-center">
+        {promptCopy}
         <ContextMeter
           usage={context}
           onCompact={
@@ -2097,6 +2153,9 @@ export function Composer({
         />
       ) : null}
       {children}
+      {hideTopBar ? (
+        <div className="flex justify-end px-3 pt-2">{promptCopy}</div>
+      ) : null}
       {usageLimit ? (
         <UsageLimitNotice
           limit={usageLimit}
@@ -2748,9 +2807,10 @@ export function Composer({
                   />
                 ) : null}
                 </>)}
-                {!compact && harness !== "fx" ? (
+                {!compact ? (
                   <AccessPicker
                     value={runtimeMode}
+                    harness={harness}
                     busy={busy}
                     onChange={onRuntimeModeChange}
                     onClose={() => ref.current?.focus()}
