@@ -277,9 +277,14 @@ test("I8: --clean plans a stale slot, an old config and a finished worktree, the
   const roots = [path.join(home, "Worktrees")];
   const report = () => collect({ home, repo, worktreeRoots: roots, sizes: false, isAlive: alive });
 
-  // Three more worktrees: one its main checkout already has, one with work in it, one not merged yet.
+  // Three more worktrees: one its main checkout already has (merged, as a pull request lands), one with work in it, one
+  // not merged yet.
   const merged = path.join(home, "Worktrees/feat-b");
   git(repo, "worktree", "add", "-q", "-b", "feat/b", merged);
+  fs.writeFileSync(path.join(merged, "b.txt"), "finished work");
+  git(merged, "add", ".");
+  git(merged, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "b");
+  git(repo, "-c", "user.name=t", "-c", "user.email=t@t", "merge", "-q", "--no-ff", "-m", "Merge feat/b", "feat/b");
   const dirty = path.join(home, "Worktrees/feat-c");
   git(repo, "worktree", "add", "-q", "-b", "feat/c", dirty);
   fs.writeFileSync(path.join(dirty, "unfinished.txt"), "work in progress");
@@ -323,7 +328,7 @@ test("I8: --clean plans a stale slot, an old config and a finished worktree, the
   assert.ok(fs.existsSync(path.join(worktree, "target/hub-dev/old-name.conf.json")));
   assert.ok(fs.existsSync(merged));
 
-  const result = applyClean(plan);
+  const result = applyClean(plan, { busy: [] });
   assert.deepEqual(result.problems, []);
   assert.deepEqual(result.removed, { slots: 2, configs: 1, worktrees: 1, bundles: 0, pruned: 1 });
   assert.match(renderClean(plan, { removed: result.removed }), /^Cleaned: 2 slots, 1 config, 1 worktree, git pruned in 1 checkout/);
@@ -335,7 +340,7 @@ test("I8: --clean plans a stale slot, an old config and a finished worktree, the
   assert.ok(!fs.existsSync(merged), "the finished worktree is gone");
   assert.ok(fs.existsSync(path.join(dirty, "unfinished.txt")), "the dirty worktree is untouched");
   assert.ok(fs.existsSync(path.join(unmerged, "done.txt")), "the unmerged worktree is untouched");
-  assert.equal(git(repo, "rev-parse", "--verify", "feat/b"), git(repo, "rev-parse", "main"), "its branch is kept");
+  assert.equal(git(repo, "rev-parse", "--verify", "feat/b"), git(repo, "rev-parse", "main^2"), "its branch is kept");
   assert.ok(!git(repo, "worktree", "list").includes("feat-x"), "git's record of the vanished worktree is pruned");
 
   const registry = JSON.parse(fs.readFileSync(path.join(home, ".monocode-hub-dev/slots.json"), "utf8"));
@@ -471,7 +476,7 @@ test("disk: --clean clears the build output of a pushed, clean worktree, and kee
   );
   assert.match(renderClean(plan), /build output .*feat-e \(target, src-tauri\/target/);
 
-  const result = applyClean(plan);
+  const result = applyClean(plan, { busy: [] });
   assert.deepEqual(result.problems, []);
   assert.equal(result.removed.buildOutputs, 6);
   for (const name of ["target", "src-tauri/target", "test-results", "playwright-report", "node_modules"])
@@ -483,4 +488,71 @@ test("disk: --clean clears the build output of a pushed, clean worktree, and kee
   assert.ok(fs.existsSync(path.join(unpushed, "target/deps/blob")), "unpushed work keeps its build output");
   assert.ok(fs.existsSync(path.join(dirty, "target/deps/blob")), "a dirty worktree keeps its build output");
   assert.ok(fs.existsSync(path.join(repo, "target/deps/blob")), "the main checkout keeps its build output");
+});
+
+// 11 Nov 2026: hub:clean listed a brand-new branch (made from main, a builder about to start in it) and a worktree a
+// Grok round was working in as finished, because their commit was already on main. `git worktree remove --force` would
+// have taken both. Plain git, no bundles, so this runs off the Mac too (not on Windows: the clean reads pgrep and lsof).
+test("clean: a branch just made from main is not finished, a worktree something runs in is kept, --output-only removes no worktree", { skip: process.platform === "win32" && "hub:clean is a Mac tool (pgrep, lsof)" }, async (t) => {
+  const { cleanPlan, applyClean, renderClean } = await load();
+  const home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "hub-clean-")));
+  t.after(() => fs.rmSync(home, { recursive: true, force: true }));
+  const repo = path.join(home, "Projects/monocode-hub");
+  fs.mkdirSync(repo, { recursive: true });
+  git(repo, "init", "-q", "-b", "main");
+  const commit = (dir, name) => {
+    fs.writeFileSync(path.join(dir, name), name);
+    git(dir, "add", name);
+    git(dir, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", name);
+  };
+  const tree = (name, branch) => {
+    const dir = path.join(home, "Worktrees", name);
+    git(repo, "worktree", "add", "-q", "-b", branch, dir);
+    return dir;
+  };
+  const land = (branch) => git(repo, "-c", "user.name=t", "-c", "user.email=t@t", "merge", "-q", "--no-ff", "-m", `Merge ${branch}`, branch);
+  commit(repo, "init.txt");
+  const fresh = tree("fresh", "wp/fresh");
+  commit(repo, "later.txt");
+  const freshAtTip = tree("fresh-tip", "wp/fresh-tip");
+  const merged = tree("merged", "wp/merged");
+  commit(merged, "m.txt");
+  land("wp/merged");
+  const busy = tree("busy", "wp/busy");
+  commit(busy, "b.txt");
+  land("wp/busy");
+  commit(repo, "after.txt");
+  const row = (dir, branch) => ({ path: dir, branch, commit: git(dir, "rev-parse", "--short=7", "HEAD"), kind: "worktree", target: null, slot: null });
+  const report = {
+    home,
+    slots: [],
+    worktrees: [
+      { path: repo, branch: "main", commit: git(repo, "rev-parse", "--short=7", "HEAD"), kind: "main checkout (this one)", target: null, slot: null },
+      row(fresh, "wp/fresh"),
+      row(freshAtTip, "wp/fresh-tip"),
+      row(merged, "wp/merged"),
+      row(busy, "wp/busy"),
+    ],
+  };
+
+  const plan = cleanPlan(report, { current: repo });
+  assert.deepEqual(plan.worktrees.map((row) => path.basename(row.path)).sort(), ["busy", "merged"]);
+  const kept = Object.fromEntries(plan.kept.map((keep) => [path.basename(keep.path), keep.why]));
+  assert.match(kept.fresh, /nothing of its own yet/, "a branch made from an older main is not finished");
+  assert.match(kept["fresh-tip"], /nothing of its own yet/, "nor one made from main's tip");
+  assert.match(renderClean(plan), /kept .*fresh-tip {2}it has nothing of its own yet/);
+
+  // A build (or an agent) working inside `busy` keeps it, whatever the plan said.
+  const result = applyClean(plan, { busy: [path.join(busy, "src-tauri")] });
+  assert.equal(result.removed.worktrees, 1);
+  assert.equal(result.problems.length, 1, result.problems.join("\n"));
+  assert.match(result.problems[0], /busy: something is running in it, worktree kept/);
+  assert.ok(fs.existsSync(path.join(busy, "b.txt")), "the busy worktree stays");
+  assert.ok(!fs.existsSync(merged), "the finished, idle worktree goes");
+  assert.ok(fs.existsSync(fresh) && fs.existsSync(freshAtTip), "the fresh worktrees stay");
+
+  // --output-only: the same finished worktree is kept; nothing but build output is ever listed.
+  const only = cleanPlan({ ...report, worktrees: report.worktrees.filter((row) => row.path !== merged) }, { current: repo, outputOnly: true });
+  assert.deepEqual([only.worktrees, only.slots, only.configs, only.prunes], [[], [], [], []]);
+  assert.match(Object.fromEntries(only.kept.map((keep) => [path.basename(keep.path), keep.why])).busy, /only its build output goes \(--output-only\)/);
 });

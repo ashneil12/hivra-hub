@@ -170,7 +170,10 @@ export type FreshEyesAnswer = { hold: boolean; why: string; settled?: Promise<vo
 export function backendFrom(backend: FirstMateBackend): FreshEyesBackend {
   return {
     ask: (input) => backend.ask(input),
-    answer: (project, key, answer, by) => backend.answer(project, key, answer, by),
+    answer: (project, key, answer, by) => {
+      if (!by) return Promise.reject(new Error("Say who is answering."));
+      return backend.answer(project, key, answer, by);
+    },
     decisions: async () =>
       (await backend.decisions(DECISIONS_READ)).map((row) => ({
         project: row.project,
@@ -431,7 +434,7 @@ async function settleReview(
   const limit = afterMs(deps.reviewTimeoutMs ?? REVIEW_TIMEOUT_MS, TIMED_OUT);
   try {
     const run = await Promise.race([
-      runReview({ plan: job.plan, reading: job.reading, count: job.count, choice: job.choice, port: job.port }),
+      runReview({ plan: job.plan, reading: job.reading, count: job.count, choice: job.choice, port: job.port, folder: start.project }),
       limit.promise,
     ]);
     const accept = job.actor === "first-mate" && firstMateMayAccept(settingFor(start.project, storage), run);

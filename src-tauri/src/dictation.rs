@@ -591,7 +591,7 @@ mod platform {
     pub async fn start(app: AppHandle, owner: String) -> Result<u64, &'static str> {
         let (helper, launcher) = launch_plan(&app)?;
         let id = sessions().begin(&owner, Instant::now())?;
-        let mut cmd = disclaim::command(helper.as_os_str(), Some(&launcher));
+        let mut cmd = disclaim::command(helper.as_os_str(), Some(&launcher), None, None);
         cmd.stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null());
@@ -1143,6 +1143,8 @@ mod tests {
         let cmd = crate::disclaim::command(
             std::ffi::OsStr::new("/x/MonoCode Dictation.app/Contents/MacOS/monocode-dictation"),
             Some(std::path::Path::new("/x/monocode")),
+            None,
+            None,
         );
         let args: Vec<_> = cmd.get_args().collect();
         assert_eq!(args.first().and_then(|a| a.to_str()), Some("disclaim-exec"));

@@ -110,6 +110,8 @@ function fixture() {
   const source = newSession("codex", "/tmp/project", "codex:test");
   source.id = "lead";
   const host: AgentAppHost = {
+    // WP-141 round 5: a session start is gated; a permissive gate lets these tests reach the start.
+    tasks: { crewGate: vi.fn(async () => undefined) } as unknown as AgentAppHost["tasks"],
     start: vi.fn(async () => {}),
     sessions: vi.fn(async () => [
       {

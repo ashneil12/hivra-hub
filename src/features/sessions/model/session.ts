@@ -407,12 +407,24 @@ export type TurnMetrics = {
 
 /**
  * What a tool approval would run, from the provider's own permission request: the tool's name as the provider calls
- * it (Bash, Read, Edit, mcp__x__y), a shell tool's command in full, and the files an edit writes.
+ * it (Bash, Read, Edit, mcp__x__y), a shell tool's command in full, and the files an edit writes. A search's `paths`
+ * are where it starts; `server` names the server a resource tool goes to; `args` are the text values an MCP call
+ * carries, which autopilot reads for paths, addresses and red-list words (review M1).
  */
 export type ApprovalCall = {
   tool: string;
   command?: string;
   paths?: string[];
+  server?: string;
+  args?: string[];
+  /** A Grep's glob, as given. Present (even empty or not text) means the search names files by a glob. */
+  glob?: string;
+  /**
+   * Set by the provider that launched the chat, and only by it (never from the tool input): its Bash shell and file tools
+   * stay in the chat folder (Claude Code with CLAUDE_BASH_MAINTAIN_PROJECT_WORKING_DIR, round 11). A relative search path,
+   * or a relative shell word, is judged in that folder only when this is set.
+   */
+  folderPinned?: boolean;
 };
 
 export type Block = {
@@ -629,6 +641,11 @@ export type Session = {
   inboxAsk?: InboxAskContext;
   id: string;
   harness: HarnessId;
+  /**
+   * WP-134b: this chat belongs to a More agents entry. It is not a CLI id, and
+   * `harness` stays one of the eleven so an unknown id cannot become Cursor.
+   */
+  registryAgentId?: string;
   model: string;
   modelSettings: Record<string, string>;
   runtimeMode: RuntimeMode;

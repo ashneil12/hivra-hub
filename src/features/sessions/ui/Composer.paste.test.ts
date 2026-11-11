@@ -145,3 +145,44 @@ it("leaves a pasted GitHub pull request URL as editable text", async () => {
     vi.unstubAllGlobals();
   }
 });
+
+it("does not send a message that holds a key, and points at the secret card", async () => {
+  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+  const container = document.createElement("div");
+  document.body.append(container);
+  const root = createRoot(container);
+  const submit = vi.fn();
+  const draft = "here is the key ghp_abcdefghijklmnopqrstuvwxyz0123456789";
+  const props = {
+    focused: false,
+    harness: "codex" as const,
+    model: "",
+    runtimeMode: "supervised" as const,
+    executionCwd: "/repo",
+    initialDraft: draft,
+    hideTopBar: true,
+    onFocus: vi.fn(),
+    onCwdChange: vi.fn(),
+    onModelChange: vi.fn(),
+    onRuntimeModeChange: vi.fn(),
+    onSubmit: submit,
+  };
+  try {
+    await act(async () => root.render(createElement(Composer, props)));
+    await act(async () =>
+      container
+        .querySelector<HTMLButtonElement>('button[aria-label="Send"]')!
+        .click(),
+    );
+    expect(submit).not.toHaveBeenCalled();
+    expect(container.textContent).toContain(
+      "That looks like a key, so it was not sent.",
+    );
+    expect(container.textContent).toContain("secret card");
+  } finally {
+    act(() => root.unmount());
+    container.remove();
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  }
+});

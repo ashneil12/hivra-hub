@@ -1064,6 +1064,11 @@ pub struct GitStagedContext {
 pub struct GitFileLocation {
     pub root: String,
     pub relative: String,
+    /// Whether the path's last part is a link (round 6, MED-1). The place is then where the link points, so a read or an
+    /// edit through it is judged by its target, and a read of a link out of the chat's folder waits.
+    pub linked: bool,
+    /// Whether the checkout's root holds a `.git` folder or file (round 7). A git command whose folder has none waits.
+    pub dot_git: bool,
 }
 
 /// Locate each file's own checkout, including files whose parents were deleted.
@@ -1077,6 +1082,114 @@ pub async fn git_locate_files(paths: Vec<String>) -> Result<Vec<Option<GitFileLo
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+/// Each path's canonical place, every link followed (round 7). A path that doesn't exist yet is placed by its nearest
+/// existing parent. None when it can't be placed: a relative path, a link to nothing, or a name with a climb left in it.
+#[tauri::command]
+pub async fn git_canonical_paths(paths: Vec<String>) -> Result<Vec<Option<String>>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        paths
+            .iter()
+            .map(|path| canonical_place(&expand_home(path)))
+            .collect()
+    })
+    .await
+    .map_err(|e| e.to_string())
+}
+
+/// Round 9: a path that climbs (`..`) is refused by the lookup and the canonical place. The file tools take their `..` by
+/// words before they open the file (Claude Code normalizes the path), and the approval side holds any path or word that
+/// still carries one. So a climb that reaches here is never one the tool opens, and the lookup never reads a `..` the
+/// kernel would follow through a link (round 8, HIGH-B and MED).
+/// Round 11 (HIGH, Windows): a colon after the drive letter names an NTFS stream (`name::$DATA`, `name:x`), a different
+/// file from the name a protected-config check sees, so a path with one is refused. `windows` says which reading applies.
+/// Round 13: `std::fs::canonicalize` returns a verbatim `\\?\C:\...` (also `\\?\UNC\...` and `\\.\...`). Strip that prefix
+/// first. A drive colon is then allowed only at index 1 of what remains, and a UNC path has no drive colon at all.
+pub(crate) fn has_stream_suffix(text: &str, windows: bool) -> bool {
+    if !windows {
+        return false;
+    }
+    let (rest, unc) = strip_verbatim(text);
+    if unc || !drive_prefix(rest) {
+        return rest.contains(':');
+    }
+    rest[2..].contains(':')
+}
+
+/// The path after a verbatim prefix, and whether what remains is a UNC path (no drive colon). `\\?\UNC\` is stripped to
+/// the share; `\\?\` and `\\.\` are stripped to the drive path; a plain `\\server\share` is already UNC.
+fn strip_verbatim(text: &str) -> (&str, bool) {
+    let bytes = text.as_bytes();
+    let unc_verbatim = bytes.len() >= 8
+        && bytes[0] == b'\\'
+        && bytes[1] == b'\\'
+        && bytes[2] == b'?'
+        && bytes[3] == b'\\'
+        && bytes[4].eq_ignore_ascii_case(&b'u')
+        && bytes[5].eq_ignore_ascii_case(&b'n')
+        && bytes[6].eq_ignore_ascii_case(&b'c')
+        && bytes[7] == b'\\';
+    if unc_verbatim {
+        return (&text[8..], true);
+    }
+    let device = bytes.len() >= 4
+        && bytes[0] == b'\\'
+        && bytes[1] == b'\\'
+        && (bytes[2] == b'?' || bytes[2] == b'.')
+        && bytes[3] == b'\\';
+    if device {
+        return (&text[4..], false);
+    }
+    if bytes.len() >= 2 && bytes[0] == b'\\' && bytes[1] == b'\\' {
+        return (text, true);
+    }
+    (text, false)
+}
+
+fn drive_prefix(text: &str) -> bool {
+    let bytes = text.as_bytes();
+    bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':'
+}
+
+fn has_climb(path: &Path) -> bool {
+    path.components()
+        .any(|part| matches!(part, std::path::Component::ParentDir))
+}
+
+fn canonical_place(path: &Path) -> Option<String> {
+    if !path.is_absolute() || path.as_os_str().to_string_lossy().contains('\0') || has_climb(path) {
+        return None;
+    }
+    if has_stream_suffix(&path.to_string_lossy(), cfg!(windows)) {
+        return None;
+    }
+    let mut existing = path.to_path_buf();
+    let mut missing: Vec<std::ffi::OsString> = Vec::new();
+    while std::fs::symlink_metadata(&existing).is_err() {
+        missing.push(existing.file_name()?.to_os_string());
+        existing.pop();
+    }
+    // dunce drops the verbatim `\\?\` prefix Windows gives a canonical path, so it compares as the path the user sees.
+    let mut real = dunce::canonicalize(&existing).ok()?;
+    for part in missing.iter().rev() {
+        real.push(part);
+    }
+    Some(path_to_js(&real))
+}
+
+/// Sets the git environment the app's own lookups run under (round 7, HIGH-A, part b). `safe.bareRepository=explicit`
+/// makes git use a bare repository only when it is named, so a folder planted with HEAD, config and refs beside a checkout
+/// is never taken for a repository, and its core.fsmonitor or diff.external never runs. Command-line config only.
+/// Round 9: the pair is appended after any GIT_CONFIG_* the process inherited, so an inherited setting is kept.
+pub(crate) fn git_safe_env(cmd: &mut Command) {
+    let inherited = std::env::var("GIT_CONFIG_COUNT")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(0);
+    cmd.env("GIT_CONFIG_COUNT", (inherited + 1).to_string())
+        .env(format!("GIT_CONFIG_KEY_{inherited}"), "safe.bareRepository")
+        .env(format!("GIT_CONFIG_VALUE_{inherited}"), "explicit");
 }
 
 /// Staged diff (or unstaged vs HEAD if nothing is staged) for commit text generation.
@@ -2688,19 +2801,56 @@ fn git_staged_context_for(root: &Path) -> Result<GitStagedContext, String> {
     })
 }
 
+/// Where a path really is in its checkout. A path that exists is followed to its target, every link on the way and a link
+/// as its last part too (round 6, MED-1), so a link to a file in another place is placed there, and a link to a file
+/// outside git is in no checkout at all. A path that doesn't exist (a new file, a deleted one) is placed by its parent.
 fn git_locate_file(path: &Path) -> Result<Option<GitFileLocation>, String> {
+    locate_path(path, true)
+}
+
+/// Where a named entry is in its checkout, without following its last part: a selection names the link itself, which
+/// is what git stores (git_selected_paths).
+fn git_locate_entry(path: &Path) -> Result<Option<GitFileLocation>, String> {
+    locate_path(path, false)
+}
+
+fn locate_path(path: &Path, follow_last: bool) -> Result<Option<GitFileLocation>, String> {
     if !path.is_absolute() || path.as_os_str().to_string_lossy().contains('\0') {
         return Err("Invalid file path".into());
     }
-    let mut parent = path.parent().ok_or("Invalid file path")?;
-    while !parent.is_dir() {
-        parent = parent.parent().ok_or("File has no existing parent")?;
+    // Round 11: an NTFS stream suffix is not placed (the stream is not the file the protected check names).
+    if has_stream_suffix(&path.to_string_lossy(), cfg!(windows)) {
+        return Err("A path with an NTFS stream suffix isn't placed here".into());
     }
-    // Canonicalize parents rather than the file: deleted files still have a
-    // location, and a tracked symlink belongs to the checkout holding the link.
-    let directory = std::fs::canonicalize(parent).map_err(|e| e.to_string())?;
-    let actual = directory.join(path.strip_prefix(parent).map_err(|e| e.to_string())?);
-    let output = git_cmd()
+    // Round 9: a path with a climb is not placed; the tools take the climb by words before they open the file.
+    if has_climb(path) {
+        return Err("A path with .. isn't placed here".into());
+    }
+    let entry = std::fs::symlink_metadata(path);
+    let linked = follow_last
+        && entry
+            .as_ref()
+            .is_ok_and(|meta| meta.file_type().is_symlink());
+    let (directory, actual) = if follow_last && entry.is_ok() {
+        // A link whose target is missing is refused: a write through it would reach a place nothing has checked.
+        let actual = std::fs::canonicalize(path)
+            .map_err(|_| "A link points to a place that isn't there".to_string())?;
+        let directory = actual.parent().ok_or("Invalid file path")?.to_path_buf();
+        (directory, actual)
+    } else {
+        let mut parent = path.parent().ok_or("Invalid file path")?;
+        while !parent.is_dir() {
+            parent = parent.parent().ok_or("File has no existing parent")?;
+        }
+        // Canonicalize parents rather than the file: deleted files still have a
+        // location, and a tracked symlink belongs to the checkout holding the link.
+        let directory = std::fs::canonicalize(parent).map_err(|e| e.to_string())?;
+        let actual = directory.join(path.strip_prefix(parent).map_err(|e| e.to_string())?);
+        (directory, actual)
+    };
+    let mut lookup = git_cmd();
+    git_safe_env(&mut lookup);
+    let output = lookup
         .args(["-C"])
         .arg(&directory)
         .args(["rev-parse", "--show-toplevel"])
@@ -2722,6 +2872,8 @@ fn git_locate_file(path: &Path) -> Result<Option<GitFileLocation>, String> {
         // Git supplies a usable Windows path without canonicalize's verbatim prefix.
         root: path_to_js(top),
         relative: path_to_js(relative),
+        linked,
+        dot_git: top.join(".git").exists(),
     }))
 }
 
@@ -2755,7 +2907,7 @@ fn git_selected_paths(root: &Path, paths: &[String]) -> Result<Vec<String>, Stri
             Err(error) if error.kind() == ErrorKind::NotFound => false,
             Err(error) => return Err(error.to_string()),
         };
-        let location = git_locate_file(&canonical_root.join(&relative))?
+        let location = git_locate_entry(&canonical_root.join(&relative))?
             .ok_or("Selected file is outside Git")?;
         if std::fs::canonicalize(&location.root).map_err(|e| e.to_string())? != canonical_root {
             return Err("Selected files must belong to this repository".into());
@@ -4595,6 +4747,8 @@ pub(crate) fn git_cmd() -> Command {
     crate::background_work::configure_child(&mut cmd);
     crate::hide_window_console(&mut cmd);
     cmd.env("PATH", crate::harness::cached_gui_search_path());
+    // Round 8 (LOW): every git the app runs reads a bare repository only when it is named (see git_safe_env).
+    git_safe_env(&mut cmd);
     cmd
 }
 
@@ -5434,6 +5588,7 @@ fn already_exists(label: &str) -> String {
 pub fn create_path(parent: String, name: String, is_dir: bool) -> Result<String, String> {
     let parent_dir = expand_home(&parent);
     let dest = resolve_under(&parent_dir, &name)?;
+    guard_app_data(&dest)?;
     let label = file_label(&dest, &name);
 
     if dest.exists() {
@@ -6777,6 +6932,61 @@ pub async fn mobile_read_text_file(root: String, relative: String) -> Result<Str
     .map_err(|e| e.to_string())?
 }
 
+/// This copy's own data folder: the app's chats, its keys' records and its saved routes. The generic file commands
+/// never write, move, copy or remove anything inside it (WP-129), the same way they never touch the instance lock.
+fn app_data_folder() -> Option<PathBuf> {
+    let identifier = crate::instance::current().identifier.clone();
+    crate::instance::data_dir(&identifier)
+}
+
+pub(crate) fn guard_app_data(path: &Path) -> Result<(), String> {
+    match app_data_folder() {
+        None => Ok(()),
+        Some(data) => guard_app_data_in(&data, path),
+    }
+}
+
+/// `path` with its real location. The longest leading part that exists is resolved the way the OS resolves it
+/// (symlinks included); the parts after it are read in turn, `..` stepping back and each level that now exists
+/// resolved too, so a symlink or `..` cannot step out of (or into) the folder even through missing levels (WP-129).
+fn resolved_location(path: &Path) -> PathBuf {
+    use std::path::Component;
+    let parts: Vec<Component> = path.components().collect();
+    for cut in (1..=parts.len()).rev() {
+        let head: PathBuf = parts[..cut].iter().map(|part| part.as_os_str()).collect();
+        let Ok(real) = std::fs::canonicalize(&head) else {
+            continue;
+        };
+        let mut resolved = real;
+        for part in &parts[cut..] {
+            match part {
+                Component::ParentDir => {
+                    resolved.pop();
+                }
+                Component::CurDir => {}
+                other => resolved.push(other.as_os_str()),
+            }
+            if let Ok(real) = std::fs::canonicalize(&resolved) {
+                resolved = real;
+            }
+        }
+        return resolved;
+    }
+    path.to_path_buf()
+}
+
+/// The check behind `guard_app_data`, with the folder given. Refuses any path at or under `data`.
+pub(crate) fn guard_app_data_in(data: &Path, path: &Path) -> Result<(), String> {
+    let data = std::fs::canonicalize(data).unwrap_or_else(|_| data.to_path_buf());
+    if resolved_location(path).starts_with(&data) {
+        return Err(format!(
+            "{} is inside MonoCode Hub's own data folder. The app keeps that folder itself.",
+            path.display()
+        ));
+    }
+    Ok(())
+}
+
 /// Atomically replace a text file from a temporary file in the same directory.
 #[tauri::command]
 pub async fn write_text_file(path: String, content: String) -> Result<(), String> {
@@ -6795,6 +7005,7 @@ fn write_text_file_sync(path: &str, content: &str) -> Result<(), String> {
 
     let requested = expand_home(path);
     crate::instance::guard_lock_file(&requested)?;
+    guard_app_data(&requested)?;
     let destination = if requested.exists() {
         std::fs::canonicalize(&requested).map_err(|e| format!("{}: {e}", requested.display()))?
     } else {
@@ -6932,8 +7143,17 @@ fn copy_recursive(from: &Path, to: &Path) -> Result<(), String> {
 }
 
 fn rename_path_sync(path: &str, name: &str) -> Result<String, String> {
+    rename_path_in(app_data_folder(), path, name)
+}
+
+/// The rename with the app's data folder given (None: there is none to keep). The source and the destination are both
+/// checked against it, so a name that reaches into the folder through a link is refused (WP-129).
+fn rename_path_in(data: Option<PathBuf>, path: &str, name: &str) -> Result<String, String> {
     let from = expand_home(path);
     crate::instance::guard_lock_file(&from)?;
+    if let Some(data) = &data {
+        guard_app_data_in(data, &from)?;
+    }
     if !from.exists() {
         return Err(format!("{}: No such file or directory", from.display()));
     }
@@ -6941,6 +7161,9 @@ fn rename_path_sync(path: &str, name: &str) -> Result<String, String> {
         .parent()
         .ok_or_else(|| "File has no parent directory.".to_string())?;
     let dest = resolve_under(parent, name)?;
+    if let Some(data) = &data {
+        guard_app_data_in(data, &dest)?;
+    }
     if same_entry(&from, &dest) {
         if from == dest {
             return Ok(from.to_string_lossy().into_owned());
@@ -6984,6 +7207,7 @@ pub async fn rename_path(path: String, name: String) -> Result<String, String> {
 fn delete_path_sync(path: &str) -> Result<(), String> {
     let path = expand_home(path);
     crate::instance::guard_lock_file(&path)?;
+    guard_app_data(&path)?;
     if !path.exists() {
         return Err(format!("{}: No such file or directory", path.display()));
     }
@@ -7011,10 +7235,12 @@ fn dir_contains(dir: &Path, dest_parent: &Path) -> bool {
 fn copy_path_sync(from: &str, dest_parent: &str) -> Result<String, String> {
     let from = expand_home(from);
     crate::instance::guard_lock_file(&from)?;
+    guard_app_data(&from)?;
     if !from.exists() {
         return Err(format!("{}: No such file or directory", from.display()));
     }
     let dest_parent = expand_home(dest_parent);
+    guard_app_data(&dest_parent)?;
     if !dest_parent.is_dir() {
         return Err(format!("{} is not a folder", dest_parent.display()));
     }
@@ -7040,10 +7266,12 @@ pub async fn copy_path(from: String, dest_parent: String) -> Result<String, Stri
 fn move_path_sync(from: &str, dest_parent: &str) -> Result<String, String> {
     let from = expand_home(from);
     crate::instance::guard_lock_file(&from)?;
+    guard_app_data(&from)?;
     if !from.exists() {
         return Err(format!("{}: No such file or directory", from.display()));
     }
     let dest_parent = expand_home(dest_parent);
+    guard_app_data(&dest_parent)?;
     if !dest_parent.is_dir() {
         return Err(format!("{} is not a folder", dest_parent.display()));
     }
@@ -9679,6 +9907,214 @@ mod tests {
         );
     }
 
+    /// WP-101 review round 6, MED-1: a link as the last part of the path is placed where it really points, so a read or an
+    /// edit through it is judged by its target. A real symlink, in a temporary checkout (never the user's files).
+    #[cfg(unix)]
+    #[test]
+    fn locate_follows_a_link_named_as_the_last_part() {
+        use std::os::unix::fs::symlink;
+        let home = tmp("locate-links");
+        let repo = home.0.join("repo");
+        let other = home.0.join("other");
+        let outside = home.0.join("outside");
+        std::fs::create_dir(&repo).unwrap();
+        std::fs::create_dir(&other).unwrap();
+        std::fs::create_dir(&outside).unwrap();
+        assert!(init_git_commit(&repo, &[("inside.txt", "a\n")]));
+        assert!(init_git_commit(&other, &[("theirs.txt", "b\n")]));
+        std::fs::write(outside.join("secret.txt"), "OUTSIDE_SECRET\n").unwrap();
+        symlink(outside.join("secret.txt"), repo.join("to-outside")).unwrap();
+        symlink(repo.join("inside.txt"), repo.join("to-inside")).unwrap();
+        symlink(other.join("theirs.txt"), repo.join("to-other")).unwrap();
+        symlink(outside.join("missing.txt"), repo.join("dangling")).unwrap();
+
+        // A link to a file outside git is not placed in the chat's checkout.
+        assert_eq!(git_locate_file(&repo.join("to-outside")).unwrap(), None);
+        // A link into the same checkout is placed at its target.
+        let inside = git_locate_file(&repo.join("to-inside")).unwrap().unwrap();
+        assert_eq!(
+            std::fs::canonicalize(&inside.root).unwrap(),
+            std::fs::canonicalize(&repo).unwrap()
+        );
+        assert_eq!(inside.relative, "inside.txt");
+        // A link into another checkout is placed in that checkout.
+        let theirs = git_locate_file(&repo.join("to-other")).unwrap().unwrap();
+        assert_eq!(
+            std::fs::canonicalize(&theirs.root).unwrap(),
+            std::fs::canonicalize(&other).unwrap()
+        );
+        assert_eq!(theirs.relative, "theirs.txt");
+        // A dangling link is refused: a write would go through it to a place nothing has checked.
+        assert!(git_locate_file(&repo.join("dangling")).is_err());
+    }
+
+    /// WP-101 review round 7, HIGH-A (b): a folder planted with HEAD, config and refs beside a checkout is not taken for a
+    /// repository by the app's lookup. Without the app's git environment git takes it for one (the chat's own folder becomes
+    /// the repository); with it, git refuses the planted folder and the lookup never places the chat there.
+    #[cfg(unix)]
+    #[test]
+    fn locate_does_not_take_a_planted_folder_for_a_repository() {
+        let home = tmp("locate-planted");
+        let repo = home.0.join("mono");
+        let chat = repo.join("packages").join("app");
+        std::fs::create_dir_all(chat.join("src")).unwrap();
+        assert!(init_git_commit(&repo, &[("root.txt", "a\n")]));
+        std::fs::write(chat.join("src").join("app.ts"), "x\n").unwrap();
+        std::fs::create_dir_all(chat.join("objects")).unwrap();
+        std::fs::create_dir_all(chat.join("refs")).unwrap();
+        std::fs::write(chat.join("objects").join("readme"), "x\n").unwrap();
+        std::fs::write(chat.join("refs").join("readme"), "x\n").unwrap();
+        std::fs::write(chat.join("HEAD"), "ref: refs/heads/main\n").unwrap();
+        std::fs::write(
+            chat.join("config"),
+            "[core]\n\trepositoryformatversion = 0\n\tbare = false\n\tworktree = .\n",
+        )
+        .unwrap();
+        let place = git_locate_file(&chat.join("src").join("app.ts"));
+        match place {
+            Ok(Some(place)) => assert_eq!(
+                std::fs::canonicalize(&place.root).unwrap(),
+                std::fs::canonicalize(&repo).unwrap(),
+                "the chat was placed in the planted folder"
+            ),
+            Ok(None) => panic!("the chat's checkout was not found"),
+            Err(_) => {}
+        }
+    }
+
+    /// WP-101 review round 7, usability: a path's canonical place follows every link, a file that doesn't exist yet is
+    /// placed by its nearest existing parent, and a link to nothing is not placed at all.
+    #[cfg(unix)]
+    #[test]
+    fn canonical_places_follow_every_link_and_place_new_files_by_parent() {
+        use std::os::unix::fs::symlink;
+        let home = tmp("canonical-places");
+        let chat = home.0.join("chat");
+        let outside = home.0.join("outside");
+        std::fs::create_dir_all(chat.join("src")).unwrap();
+        std::fs::create_dir(&outside).unwrap();
+        std::fs::write(outside.join("secret.txt"), "x\n").unwrap();
+        symlink(
+            outside.join("secret.txt"),
+            chat.join("src").join("linked.ts"),
+        )
+        .unwrap();
+        symlink(&outside, chat.join("vendor")).unwrap();
+        symlink(outside.join("missing.txt"), chat.join("dangling")).unwrap();
+        let root = std::fs::canonicalize(&chat).unwrap();
+        let outside = std::fs::canonicalize(&outside).unwrap();
+        assert_eq!(
+            canonical_place(&chat.join("src").join("new.ts")),
+            Some(path_to_js(&root.join("src").join("new.ts")))
+        );
+        assert_eq!(
+            canonical_place(&chat.join("src").join("linked.ts")),
+            Some(path_to_js(&outside.join("secret.txt")))
+        );
+        assert_eq!(
+            canonical_place(&chat.join("vendor").join("secret.txt")),
+            Some(path_to_js(&outside.join("secret.txt")))
+        );
+        assert_eq!(canonical_place(&chat.join("dangling")), None);
+        assert_eq!(canonical_place(Path::new("relative/x")), None);
+        // Round 9: a climb is not placed (the tools take it by words before they open the file, so it never arrives here).
+        assert_eq!(
+            canonical_place(&chat.join("src").join("missing").join("..").join("new.ts")),
+            None
+        );
+        // Round 8, HIGH: on a Mac or Linux a backslash is a letter of a name, so a path that climbs with one is refused.
+        assert_eq!(
+            canonical_place(&chat.join("a\\b\\c").join("..").join("..").join("x")),
+            None
+        );
+        assert!(git_locate_file(&chat.join("a\\b\\c").join("..").join("..").join("x")).is_err());
+    }
+
+    /// Review of PR #201 round 8 (head f09194d45), HIGH-B, red first. Claude Code's Write opens `p4(file_path)`, which is
+    /// path.normalize: `<chat>/L/../S/x` is written at `<chat>/S/x`, and the kernel then follows S. The lookup follows L
+    /// first and then climbs (the kernel's reading of the raw words), so it places the Write at `<chat>/deep/S/x`, inside.
+    #[cfg(unix)]
+    #[test]
+    fn review_r8_locate_places_a_write_where_the_write_tool_opens_it() {
+        use std::os::unix::fs::symlink;
+        let home = tmp("review-r8-locate");
+        let chat = home.0.join("app");
+        let other = home.0.join("other");
+        std::fs::create_dir_all(chat.join("deep").join("d")).unwrap();
+        std::fs::create_dir_all(chat.join("deep").join("S")).unwrap();
+        std::fs::create_dir(&other).unwrap();
+        std::fs::write(other.join("package.json"), "{}\n").unwrap();
+        symlink("deep/d", chat.join("L")).unwrap();
+        symlink("../other", chat.join("S")).unwrap();
+        assert!(init_git_commit(
+            &chat,
+            &[("deep/S/package.json", "{}\n"), ("deep/d/keep", "\n")]
+        ));
+        let words = chat.join("L").join("..").join("S").join("package.json");
+        // Where the Write lands: the words normalized (Node's path.normalize), then the kernel.
+        let lands = std::fs::canonicalize(chat.join("S").join("package.json")).unwrap();
+        assert_eq!(
+            lands,
+            std::fs::canonicalize(other.join("package.json")).unwrap()
+        );
+        let root = std::fs::canonicalize(&chat).unwrap();
+        if let Ok(Some(place)) = git_locate_file(&words) {
+            assert_ne!(
+                std::fs::canonicalize(&place.root).unwrap(),
+                root,
+                "placed in the chat at {}, but the Write lands at {}",
+                place.relative,
+                lands.display()
+            );
+        }
+    }
+
+    /// Review of PR #201 round 8 (head f09194d45), MED (regression of round 8's lexical_place), red first. Outside git a
+    /// shell word is placed by canonical_place; `cat cache/../config` is opened by the kernel as written, through the link.
+    #[cfg(unix)]
+    #[test]
+    fn review_r8_canonical_place_of_a_word_follows_a_link_before_its_climb() {
+        use std::os::unix::fs::symlink;
+        let home = tmp("review-r8-canonical");
+        let chat = home.0.join("Notes").join("research");
+        let kube = home.0.join(".kube");
+        std::fs::create_dir_all(&chat).unwrap();
+        std::fs::create_dir_all(kube.join("cache")).unwrap();
+        std::fs::write(kube.join("config"), "token: x\n").unwrap();
+        symlink(kube.join("cache"), chat.join("cache")).unwrap();
+        let word = chat.join("cache").join("..").join("config");
+        let read = std::fs::canonicalize(&word).unwrap();
+        assert_eq!(read, std::fs::canonicalize(kube.join("config")).unwrap());
+        let placed = canonical_place(&word);
+        assert!(
+            placed.is_none() || placed == Some(path_to_js(&read)),
+            "placed at {placed:?}, but cat reads {}",
+            read.display()
+        );
+    }
+
+    /// WP-101 round 11 (HIGH, Windows): a colon after the drive names an NTFS stream, so it is refused. Pure, so it runs on
+    /// every OS with the platform passed.
+    #[test]
+    fn a_colon_after_the_drive_is_a_stream_and_refused_on_windows() {
+        assert!(has_stream_suffix("C:\\app\\opencode.json::$DATA", true));
+        assert!(has_stream_suffix("C:\\app\\AGENTS.md:x", true));
+        assert!(!has_stream_suffix("C:\\app\\src\\a.ts", true));
+        assert!(!has_stream_suffix("/app/a:b", false));
+    }
+
+    /// WP-101 round 13: canonicalize on Windows returns a verbatim `\\?\C:\...`. That prefix's drive colon is not a stream.
+    /// A stream after the prefix still is, and a UNC path has no drive colon to allow. Pure, so it runs on every OS.
+    #[test]
+    fn a_verbatim_prefix_is_not_a_stream_but_a_stream_after_it_is() {
+        assert!(!has_stream_suffix("\\\\?\\C:\\x\\a.txt", true));
+        assert!(has_stream_suffix("\\\\?\\C:\\x\\a.txt::$DATA", true));
+        assert!(has_stream_suffix("\\\\?\\UNC\\srv\\share\\a:b", true));
+        assert!(!has_stream_suffix("C:\\x\\a.txt", true));
+        assert!(!has_stream_suffix("\\\\.\\C:\\x\\a.txt", true));
+        assert!(has_stream_suffix("\\\\?\\unc\\srv\\share\\a:b", true));
+    }
+
     #[test]
     fn locate_files_distinguishes_repos_worktrees_and_deleted_parents() {
         let home = tmp("locate-files");
@@ -12006,5 +12442,81 @@ mod tests {
         assert!(git_diff_index_for(blank).files.is_empty());
         assert!(git_commit_selected_for(blank, "message", &["a.txt".into()]).is_err());
         assert!(git_push_for(blank).is_err());
+    }
+}
+
+#[cfg(test)]
+mod app_data_guard_tests {
+    use super::*;
+
+    #[test]
+    fn the_generic_file_commands_refuse_paths_inside_the_app_data_folder() {
+        let data = std::env::temp_dir().join(format!("wp129-fs-data-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&data);
+        std::fs::create_dir_all(data.join("model-key-hosts")).unwrap();
+        for inside in [
+            data.join("model-key-hosts"),
+            data.join("model-key-hosts").join("custom-1"),
+            data.join("monocode.db"),
+            data.join("new-file.json"),
+        ] {
+            assert!(
+                guard_app_data_in(&data, &inside).is_err(),
+                "{}",
+                inside.display()
+            );
+        }
+        // Outside the folder, and a sibling that only shares its name's start, are not refused.
+        let sibling = data.with_file_name(format!(
+            "{}-other",
+            data.file_name().unwrap().to_string_lossy()
+        ));
+        assert!(guard_app_data_in(&data, &sibling.join("x")).is_ok());
+        assert!(guard_app_data_in(&data, &std::env::temp_dir().join("x")).is_ok());
+        let _ = std::fs::remove_dir_all(&data);
+    }
+
+    /// WP-129 L4 (lead review, 11 Nov): a path whose missing levels run through a symlink into the data folder is
+    /// refused. The check used to resolve only one missing level, so `link/new/deeper/file` was taken as outside.
+    #[test]
+    #[cfg(unix)]
+    fn a_path_through_a_link_with_missing_levels_is_refused() {
+        let base = std::env::temp_dir().join(format!("wp129-l4-link-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let data = base.join("data");
+        let outside = base.join("outside");
+        std::fs::create_dir_all(&data).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        std::os::unix::fs::symlink(&data, outside.join("link")).unwrap();
+        assert!(guard_app_data_in(&data, &outside.join("link/new/deeper/file.json")).is_err());
+        // A `..` after a missing level does not step out of the folder either.
+        assert!(guard_app_data_in(&data, &outside.join("missing/../link/new/x")).is_err());
+        // Missing levels outside the folder stay allowed.
+        assert!(guard_app_data_in(&data, &outside.join("new/deeper/file.json")).is_ok());
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// WP-129 L4: a rename's destination is checked as well as its source. A folder that is a symlink into the
+    /// data folder must not take a file in from outside.
+    #[test]
+    #[cfg(unix)]
+    fn a_rename_into_a_link_to_the_app_data_folder_is_refused() {
+        let base = std::env::temp_dir().join(format!("wp129-l4-rename-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let data = base.join("data");
+        let work = base.join("work");
+        std::fs::create_dir_all(&data).unwrap();
+        std::fs::create_dir_all(&work).unwrap();
+        std::os::unix::fs::symlink(&data, work.join("into-data")).unwrap();
+        let note = work.join("note.txt");
+        std::fs::write(&note, "x").unwrap();
+        let note_path = note.to_string_lossy().into_owned();
+        assert!(rename_path_in(Some(data.clone()), &note_path, "into-data/moved.txt").is_err());
+        assert!(note.exists(), "the refused rename moved the file anyway");
+        assert!(!data.join("moved.txt").exists());
+        // A rename that stays outside the folder still works.
+        assert!(rename_path_in(Some(data.clone()), &note_path, "renamed.txt").is_ok());
+        assert!(work.join("renamed.txt").exists());
+        let _ = std::fs::remove_dir_all(&base);
     }
 }

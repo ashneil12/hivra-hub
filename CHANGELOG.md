@@ -18,6 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Short text (titles, commit messages, pull request text, branch names) can be written by a model you pick under Settings > Providers instead of the coding agent. Its key is the one saved under Other models with the same provider, model and address. Keys saved before this change must be re-saved under Other models before quick pick, memory, the context window and routed sessions use them. Other models and the memory model picker now show the address each saved key was saved with.
 - A finished worktree now gives its build output back by itself. When a worktree's pull request merged or closed, or its task was accepted and its branch pushed, and it has no uncommitted changes and nothing running in it, the app deletes its `target/`, `src-tauri/target/`, `test-results/`, `playwright-report/` and real `node_modules/` folders (a linked `node_modules` stays; code, branches and chats are never touched). The switch is Settings > Worktrees > "Clear build output of finished worktrees", on by default. A dev copy never runs it.
 - Settings > Worktrees > Clean up now shows how much build output each worktree holds, and the total.
 

@@ -203,9 +203,25 @@ pub fn claude_plugin_name(name: &str) -> String {
     name.replace('.', "-")
 }
 
-/// A digest of everything in an installed plugin folder (WP-31's lock file): each path, its kind, and each file's
-/// bytes or link's target, in sorted order, as `sha256-<hex>`. Two copies of the same plugin give the same digest
-/// wherever they sit.
+/// The mode bits that decide what a file is (WP-101 fix round 2, item H(a)): a script that can be run is not the same
+/// file as one that cannot. Any executable bit counts, for the owner, its group or anyone else, since each of them is
+/// a way to run the file; they survive a copy the way the bytes do, so two copies of the same plugin still hash the
+/// same wherever they sit. On Windows there is no executable bit, and nothing to read.
+#[cfg(unix)]
+fn mode_bits(meta: &std::fs::Metadata) -> u8 {
+    use std::os::unix::fs::PermissionsExt;
+    (meta.permissions().mode() & 0o111) as u8
+}
+
+#[cfg(windows)]
+fn mode_bits(_meta: &std::fs::Metadata) -> u8 {
+    0
+}
+
+/// A digest of everything in an installed plugin folder (WP-31's lock file): each path, its kind, each file's
+/// executable bits and bytes (or a link's target), in sorted order, as `sha256-<hex>`. Two copies of the same plugin
+/// give the same digest wherever they sit. A file that can't be read is hashed as unreadable, never as empty, so a
+/// copy that hides a file behind a permission can't pass for one that holds nothing there (item H(b)).
 pub fn tree_digest(dir: &Path) -> String {
     use sha2::{Digest, Sha256};
     fn walk(base: &Path, dir: &Path, out: &mut Vec<(String, PathBuf)>) {
@@ -241,7 +257,18 @@ pub fn tree_digest(dir: &Path) -> String {
             hash.update(b"d");
         } else {
             hash.update(b"f");
-            hash.update(std::fs::read(&path).unwrap_or_default());
+            match std::fs::symlink_metadata(&path) {
+                Ok(meta) => hash.update([mode_bits(&meta)]),
+                Err(_) => hash.update([0]),
+            }
+            match std::fs::read(&path) {
+                Ok(bytes) => {
+                    hash.update(b"r");
+                    hash.update(bytes);
+                }
+                // Unreadable is its own case, not the empty file it would otherwise look like.
+                Err(_) => hash.update(b"u"),
+            }
         }
         hash.update([0]);
     }

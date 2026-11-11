@@ -20,6 +20,8 @@ import type { ProjectIconChoice } from "../../hub/model/projectPrefs";
 import { findSecrets, isSecretKey, redactText, redactValue } from "./secrets";
 import { forYou } from "../../hub/model/userName";
 import { savedWorkerLimits, systemWorkerDefault, type WorkerLimits } from "../../monos/model/workerPool";
+import { SPEND_LIMITS_KEY } from "../../usage/model/spend";
+import { spendLimitsSetting } from "../../usage/model/spendGate";
 import { cleanStoredDefault } from "../../crew/model/workerDefault";
 import type { Pick as WorkerPick } from "../../crew/model/resolve";
 
@@ -187,6 +189,8 @@ export const PORTABLE_SETTINGS: readonly string[] = [
   // WP-89: the app-wide worker default. It lives in the app database, like the limits, so an export writes it from
   // the worker pool and an import puts it back through the pool. It is not part of the limits JSON.
   WORKER_DEFAULT_KEY,
+  // WP-176: measured-cost limits. They live beside the worker limits, and an import never raises one.
+  SPEND_LIMITS_KEY,
   MONO_TEAMS_KEY,
 ];
 const PORTABLE = new Set(PORTABLE_SETTINGS);
@@ -262,10 +266,12 @@ export function workerDefaultSetting(stored: WorkerPick | null | undefined = sys
 function withWorkerLimits(settings: Record<string, string>): Record<string, string> {
   const limits = workerLimitsSetting();
   const workerDefault = workerDefaultSetting();
+  const spend = spendLimitsSetting();
   return {
     ...settings,
     ...(limits ? { [WORKER_LIMITS_KEY]: limits } : {}),
     ...(workerDefault ? { [WORKER_DEFAULT_KEY]: workerDefault } : {}),
+    ...(spend ? { [SPEND_LIMITS_KEY]: spend } : {}),
   };
 }
 

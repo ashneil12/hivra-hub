@@ -1,6 +1,8 @@
 use tauri::Manager;
 
 mod account_identity;
+// WP-61: Hivra Cloud. Off by default; no socket is opened until Ash turns it on.
+mod hivra_cloud;
 // WP-78: the activity log.
 mod activity;
 // WP-157: the work log. Not a numbered migration.
@@ -47,12 +49,16 @@ mod pinned_tool;
 mod crew;
 mod devin_config;
 mod devin_usage;
+mod spend_ledger;
 // WP-131b: desktop dictation into the composer draft; the microphone is held by a helper app, never sends.
+// Off in this build (dictation::ENABLED is false): the helper is never found, checked or started.
 mod dictation;
 pub mod disclaim;
 mod explore_agent; // WP-143: read-only check for an Explore agent the person already defined.
 mod external_editor;
 mod firstmate;
+// Hivra WP-172: the checkpoint of a First Mate fan-out, kept so a crash mid-plan can resume.
+mod fanout_checkpoint;
 mod fs;
 mod gates;
 mod gitlab;
@@ -62,12 +68,18 @@ mod harness_updates;
 // WP-50: read past chats, with a person's OK, into a proposal.
 mod history_import;
 mod hub_keychain;
+// Hivra WP-92: the secret vault. A value exists in the keychain and one place the person chose.
+pub mod secrets;
 // WP-85: Claude sessions started in a terminal.
 mod terminal_mirror;
 // WP-51: memory the person reviews.
 mod memory_review;
 // WP-103: the cheap memory tier asks a model the person added, on its own key.
 mod memory_cheap;
+// WP-129: the address each saved model key belongs to, so a command sends a key only there.
+mod key_binding;
+// WP-129: one short completion for titles, commits, pull requests and branch names.
+mod text_generation;
 // WP-83: learn from past chats. Readers, and the write after an accept.
 mod learn_stores;
 // WP-04: the hub plugin (local store, import, connectors, keys); the Ash OS bridge (hub.rs) is retired.
@@ -104,6 +116,8 @@ mod mono;
 mod mono_chat;
 mod mono_home;
 mod mono_transcript;
+// WP-134: the More agents list, its approvals and the environment its child gets.
+mod more_agents;
 mod notes;
 // WP-72: docs are notes, with blocks, versions and a tree.
 pub(crate) mod docs;
@@ -403,6 +417,9 @@ pub fn run() {
     }
     // Rule 3, then one app per data folder: the lock is held until this process ends.
     let claim = instance::claim(&identity, &version);
+    // WP-92: a secret run that crashed can leave its old home under the temporary folder. Clear those. The sealed
+    // home a run uses now is not in that folder, and this never deletes it.
+    secrets::run::remove_leftover_run_homes();
     // WP-104: daily log and crash records, before the rest of startup.
     diagnostics::install(&claim.data_dir, &version);
     // Before the database opens: finish whatever a ship's runner left (a trial, a restore), or call it off
@@ -564,6 +581,13 @@ pub fn run() {
             dictation::dictation_support,
             dictation::dictation_start,
             dictation::dictation_stop,
+            // WP-61: Hivra Cloud (off by default).
+            hivra_cloud::hivra_cloud_status,
+            hivra_cloud::hivra_cloud_save,
+            hivra_cloud::hivra_cloud_sign_in,
+            hivra_cloud::hivra_cloud_sign_out,
+            hivra_cloud::hivra_cloud_account,
+            hivra_cloud::hivra_cloud_pair,
             mobile_access::mobile_status,
             mobile_access::mobile_configure,
             mobile_access::mobile_invite,
@@ -695,8 +719,23 @@ pub fn run() {
             watcher::watcher_check_cancel,
             // Hivra WP-13: crew rules, routing and reroute.
             crew::crew_rules_get,
+            spend_ledger::spend_ledger_append,
+            spend_ledger::spend_ledger_totals,
+            spend_ledger::spend_project_folder,
+            spend_ledger::spend_book_read,
+            spend_ledger::spend_book_write,
+            spend_ledger::spend_redo_links,
+            spend_ledger::spend_set_project_folders,
             crew::crew_rules_set,
+            // WP-141: the person's lock, never-use list and fallback order.
+            crew::crew_policy_set,
             crew::crew_route,
+            crew::crew_launch_check,
+            crew::crew_spawn_ticket,
+            crew::crew_bind_v2_session,
+            crew::crew_projects_owning,
+            crew::crew_any_lock,
+            crew::crew_pick,
             crew::crew_on_failure,
             crew::crew_note_pause,
             steering::steering_record,
@@ -705,7 +744,17 @@ pub fn run() {
             steering::steering_settle,
             decisions::decisions_ask,
             decisions::decisions_answer,
+            // WP-215: a first mate notes a call it settled.
+            decisions::decisions_note,
             decisions::decisions_list,
+            // WP-156: standing answers stay off until this setting is on.
+            decisions::decisions_standing_enabled,
+            decisions::decisions_standing_brief,
+            decisions::decisions_standing_list,
+            decisions::decisions_reuse_list,
+            decisions::decisions_set_standing_enabled,
+            decisions::decisions_retire,
+            decisions::decisions_set_standing,
             // WP-91: the goal graph's rules, its finish-line check and a worker's handoff.
             goal_graph::goal_graph_check_plan,
             goal_graph::goal_graph_check_repair,
@@ -749,6 +798,13 @@ pub fn run() {
             worker_queue::worker_queue_import_local,
             worker_queue::worker_queue_claim,
             worker_queue::worker_queue_finish,
+            // Hivra WP-172: a fan-out's checkpoint (save, list for resume, remove when settled).
+            fanout_checkpoint::fanout_checkpoint_save,
+            fanout_checkpoint::fanout_checkpoint_list,
+            fanout_checkpoint::fanout_checkpoint_remove,
+            fanout_checkpoint::fanout_lease_acquire,
+            fanout_checkpoint::fanout_lease_renew,
+            fanout_checkpoint::fanout_lease_release,
             worker_queue::worker_settings,
             worker_queue::worker_limits_set,
             worker_queue::worker_model_set,
@@ -825,6 +881,7 @@ pub fn run() {
             fs::git_unstage_all,
             fs::git_commit,
             fs::git_locate_files,
+            fs::git_canonical_paths,
             fs::git_head_message,
             fs::git_staged_context,
             fs::git_push,
@@ -1031,6 +1088,12 @@ pub fn run() {
             harness::harness_resolve_antigravity,
             harness::harness_free_port,
             harness::harness_spawn,
+            // WP-134: the More agents list, its approvals (src-tauri/src/more_agents.rs).
+            more_agents::more_agents_read,
+            more_agents::more_agents_write,
+            more_agents::more_agents_approve,
+            more_agents::more_agents_set_enabled,
+            more_agents::more_agents_check,
             codex_mono_store::codex_mono_store_prepare,
             codex_mono_store::codex_mono_store_copy,
             codex_mono_store::codex_mono_store_restore_agent_state,
@@ -1080,6 +1143,8 @@ pub fn run() {
             session_store::session_set_pinned,
             // WP-111: the private flag, written on its own so a transcript save cannot clear it.
             session_store::session_set_private,
+            // WP-134: one browser link copied onto the session row, and only while the row has none.
+            session_store::session_adopt_registry_agent,
             session_store::session_set_linked_work_item,
             session_store::session_set_in_flight,
             session_store::session_list_in_flight,
