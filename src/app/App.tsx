@@ -18326,6 +18326,22 @@ function Workspace({
   const teamLeadBusy =
     !!teamLeadSession?.busy ||
     !!(teamLeadSessionId && liveBusySessionIds.has(teamLeadSessionId));
+  // The project's chats are shared by two: the Chief of Staff (its own chat for the project) and the project's Lead.
+  // The one not on top is offered in the list's "Everyone" view (Ash, 11 Nov), and opening it puts it on top.
+  const teamOtherCaptain = teamProject && !teamCaptain ? pickCaptain(listMonos()) : undefined;
+  const teamOtherFound = teamProject ? (teamCaptain ? leadMono(leadSpecFor(teamProject)) : teamOtherCaptain) : undefined;
+  const teamOtherMono = teamOtherFound && teamOtherFound.id !== teamLeadMono?.id ? teamOtherFound : undefined;
+  const teamOtherSessionId =
+    teamOtherMono && teamProject
+      ? teamOtherCaptain
+        ? teamOtherMono.projectSessions?.[teamProject.id]
+        : teamOtherMono.sessionId
+      : undefined;
+  const teamOtherLook = teamOtherMono ? monoLook(teamOtherMono) : undefined;
+  const teamOtherStatus = teamOtherMono ? (monoRail.states.get(teamOtherMono.id)?.status ?? "idle") : "idle";
+  const teamOtherBusy =
+    !!teamOtherSessionId &&
+    (liveBusySessionIds.has(teamOtherSessionId) || !!sessions.find((session) => session.id === teamOtherSessionId)?.busy);
   // Kept by identity while nothing it shows changes: the Sidebar is memoized.
   const codingTeamList = useMemo<CodingTeamList | undefined>(
     () =>
@@ -18335,6 +18351,9 @@ function Workspace({
             ...(teamLeadMono && teamLeadLook
               ? {
                   lead: {
+                    monoId: teamLeadMono.id,
+                    // The project's own chats (no first mate behind them) are its Lead's, not the Chief of Staff's.
+                    plainChats: !teamCaptain,
                     session: {
                       id: teamLeadSessionId ?? `lead:${teamLeadMono.id}`,
                       cwd: teamFolder,
@@ -18344,7 +18363,6 @@ function Workspace({
                       title: teamLeadLook.name,
                       createdAt: 0,
                       updatedAt: 0,
-                      pinned: true,
                     },
                     mark: (
                       <MonoRailMascot
@@ -18368,6 +18386,37 @@ function Workspace({
                   },
                 }
               : {}),
+            ...(teamProject && teamOtherMono && teamOtherLook
+              ? {
+                  other: {
+                    monoId: teamOtherMono.id,
+                    plainChats: !teamOtherCaptain,
+                    session: {
+                      id: teamOtherSessionId ?? `lead:${teamOtherMono.id}`,
+                      cwd: teamFolder,
+                      harness: "claude" as const,
+                      model: "",
+                      runtimeMode: "supervised" as const,
+                      title: teamOtherLook.name,
+                      createdAt: 0,
+                      updatedAt: 0,
+                    },
+                    mark: (
+                      <MonoRailMascot
+                        name={teamOtherLook.mascot}
+                        color={teamOtherLook.color}
+                        status={teamOtherStatus}
+                        className="size-3.5 shrink-0"
+                      />
+                    ),
+                    active: false,
+                    busy: teamOtherBusy,
+                    statusLabel: teamOtherCaptain ? "Captain" : "Lead",
+                    onOpen: () =>
+                      void onOpenMono(teamOtherMono.id, teamOtherCaptain ? { project: teamProject.id } : { inTeam: true }),
+                  },
+                }
+              : {}),
           }
         : undefined,
     [
@@ -18387,6 +18436,14 @@ function Workspace({
       teamLeadSession?.model,
       teamLeadSession?.runtimeMode,
       teamLeadSession?.title,
+      teamOtherMono?.id,
+      !!teamOtherCaptain,
+      teamOtherSessionId,
+      teamOtherLook?.name,
+      teamOtherLook?.mascot,
+      teamOtherLook?.color,
+      teamOtherStatus,
+      teamOtherBusy,
       onOpenMono,
     ],
   );

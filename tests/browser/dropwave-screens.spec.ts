@@ -105,6 +105,49 @@ test("New chat beside a first mate is another chat with that first mate", async 
   await expect(page.locator('[data-mono-rail-list] [aria-current="true"]')).toContainText("Hivra lead");
 });
 
+test("a first mate's chat list is its own: no chats with anyone else until Everyone is picked", async ({ page }) => {
+  await home(page);
+  await project(page, "Hivra").click();
+  await firstMate(page, "Hivra lead").click();
+  // The row on top is the first mate's main chat, dressed like its other chats: no pin, its name on the top line.
+  const top = page.locator("[data-coding-team-lead]:visible").first();
+  await expect(top).toContainText("Hivra lead");
+  await expect(top).toContainText("Main chat");
+  await expect(top.locator("svg.lucide-pin")).toHaveCount(0);
+
+  // A second chat with the Hivra lead.
+  await page.getByRole("button", { name: "New chat" }).first().click();
+  const box = page.locator("textarea:visible, [contenteditable='true']:visible").last();
+  await box.click();
+  await page.keyboard.type("Example: can you look at the waitlist page copy?");
+  await page.keyboard.press("Enter");
+  await expect(page.getByText("Example reply from Hivra lead").first()).toBeVisible({ timeout: 30_000 });
+  const leadRows = page.locator("[data-session-card]:visible").filter({ hasText: "Hivra lead" });
+  await expect(leadRows).toHaveCount(2);
+
+  // The Chief of Staff's chat for this project: only the Chief of Staff's chats, none with the Hivra lead.
+  await page.locator("[data-hub-top-nav] button").nth(1).click();
+  await expect(top).toContainText("Chief of Staff");
+  const scope = page.locator("[data-chat-scope]:visible").first();
+  await expect(scope).toHaveAttribute("data-chat-scope", "own");
+  await expect(scope.locator('[data-chat-scope-option="own"]')).toHaveAttribute("aria-pressed", "true");
+  await expect(leadRows).toHaveCount(0);
+
+  // Everyone: the Hivra lead's main chat and its second chat are listed too.
+  await scope.locator('[data-chat-scope-option="all"]').click();
+  await expect(scope).toHaveAttribute("data-chat-scope", "all");
+  await expect(leadRows).toHaveCount(2);
+  await expect(page.locator("[data-coding-team-other]:visible")).toContainText("Hivra lead");
+
+  // Back to the Chief of Staff's own chats, and the same holds on the Hivra lead's side.
+  await scope.locator('[data-chat-scope-option="own"]').click();
+  await expect(leadRows).toHaveCount(0);
+  await firstMate(page, "Hivra lead").click();
+  await expect(top).toContainText("Hivra lead");
+  await expect(leadRows).toHaveCount(2);
+  await expect(page.locator("[data-session-card]:visible").filter({ hasText: "Chief of Staff" })).toHaveCount(0);
+});
+
 test("Compare models closes on a click away and shows a tick box on every row", async ({ page }) => {
   await home(page);
   await project(page, "Hivra").click();
