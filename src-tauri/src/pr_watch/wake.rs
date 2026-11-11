@@ -349,6 +349,65 @@ fn change_lines(change: &Change, about: &About, frame: &Frame) -> Vec<String> {
             "- The branch now conflicts with {}.",
             frame.wrap(about.base_ref)
         )],
+        Change::BaseMoved {
+            to,
+            files,
+            cut_short,
+            pull_cut,
+        } => {
+            if files.is_empty() && (*cut_short || *pull_cut) {
+                let merge = format!(
+                    "Merge {} into the branch, push, and wait for green again.",
+                    frame.wrap(about.base_ref)
+                );
+                vec![format!(
+                    "- {}",
+                    match (*cut_short, *pull_cut) {
+                        (true, true) => format!(
+                            "{} (now {}) changed more files than GitHub lists, and this pull request's changed-file list was cut short, so it may touch this pull request. {merge}",
+                            frame.wrap(about.base_ref),
+                            short(to)
+                        ),
+                        (false, true) => format!(
+                            "This pull request's changed-file list was cut short, so {} (now {}) may touch it. {merge}",
+                            frame.wrap(about.base_ref),
+                            short(to)
+                        ),
+                        _ => format!(
+                            "{} (now {}) changed more files than GitHub lists since the watch last saw it, so it may touch this pull request. {merge}",
+                            frame.wrap(about.base_ref),
+                            short(to)
+                        ),
+                    }
+                )]
+            } else {
+                let mut lines = vec![format!(
+                    "- {} (now {}) changed files this pull request touches since the watch last saw it:",
+                    frame.wrap(about.base_ref),
+                    short(to)
+                )];
+                lines.extend(listed(files, |file| format!("  - {}", frame.wrap(file))));
+                lines.push(format!(
+                    "  Merge {} into the branch, push, and wait for green again.",
+                    frame.wrap(about.base_ref)
+                ));
+                lines
+            }
+        }
+        Change::Behind { commits } => vec![match commits {
+            Some(1) => format!(
+                "- The branch is 1 commit behind {}: merge main into it before merging.",
+                frame.wrap(about.base_ref)
+            ),
+            Some(n) if *n > 1 => format!(
+                "- The branch is {n} commits behind {}: merge main into it before merging.",
+                frame.wrap(about.base_ref)
+            ),
+            _ => format!(
+                "- The branch is behind {}: merge main into it before merging.",
+                frame.wrap(about.base_ref)
+            ),
+        }],
     }
 }
 
@@ -420,6 +479,8 @@ fn summary(change: &Change) -> &'static str {
         Change::ChecksPassed { .. } => "checks passed",
         Change::Remarks(_) => "new comments",
         Change::Conflicting => "merge conflict",
+        Change::BaseMoved { .. } => "main moved",
+        Change::Behind { .. } => "behind main",
     }
 }
 
