@@ -173,25 +173,26 @@ function isInterpreter(command: string): boolean {
 
 /** Where a flag's value starts. A colon before `=` (`-javaagent:jar=opts`) yields both sides. Otherwise the value is
  *  the text after `=` or after the colon. `eq` is -1 when there is no second side. A Windows drive colon is not a
- *  flag colon. */
-function flagParts(arg: string): { at: number; eq: number } | null {
+ *  flag colon, and only on Windows. */
+function flagParts(arg: string, platform: string): { at: number; eq: number } | null {
   if (!arg.startsWith("-")) return null;
-  const colon = firstNondriveColon(arg);
+  const colon = firstNondriveColon(arg, platform);
   const eq = arg.indexOf("=");
   if (colon >= 0 && (eq < 0 || colon < eq)) return { at: colon, eq };
   if (eq >= 0) return { at: eq, eq: -1 };
   return null;
 }
 
-function firstNondriveColon(arg: string): number {
+function firstNondriveColon(arg: string, platform: string): number {
   for (let at = 0; at < arg.length; at++) {
-    if (arg[at] === ":" && !isDriveColon(arg, at)) return at;
+    if (arg[at] === ":" && !isDriveColon(arg, at, platform)) return at;
   }
   return -1;
 }
 
-/** `C:\foo` after `=`, after another colon, or as an attached short flag (`-IC:\foo`). */
-function isDriveColon(arg: string, at: number): boolean {
+/** `C:\foo` after `=`, after another colon, or as an attached short flag (`-IC:\foo`). Only Windows has drive letters. */
+function isDriveColon(arg: string, at: number, platform: string): boolean {
+  if (platform !== "win32") return false;
   if (at === 0 || at + 1 >= arg.length) return false;
   const letter = arg[at - 1];
   const next = arg[at + 1];
@@ -211,13 +212,13 @@ function plainValue(arg: string): string | null {
   return rest.slice(eq + 1);
 }
 
-function valuesOf(arg: string): string[] {
+function valuesOf(arg: string, platform: string): string[] {
   if (!arg.startsWith("-")) {
     const value = plainValue(arg);
     return value === null ? [arg] : [value];
   }
   const out: string[] = [];
-  const parts = flagParts(arg);
+  const parts = flagParts(arg, platform);
   if (parts) {
     if (parts.eq >= 0) {
       out.push(arg.slice(parts.at + 1, parts.eq));
@@ -324,7 +325,7 @@ export function argumentProblem(command: string, args: string[], platform = runn
     });
     if (inline) return "An agent cannot be started with an inline program (-c, -e, --eval or -p). Point at its program file.";
   }
-  if (args.some((arg) => valuesOf(arg).some((value) => isRelativeFile(value, platform)))) {
+  if (args.some((arg) => valuesOf(arg, platform).some((value) => isRelativeFile(value, platform)))) {
     return "An argument that names a file must give its full absolute path. A relative path is not pinned, so it is refused.";
   }
   if (interpreter) {

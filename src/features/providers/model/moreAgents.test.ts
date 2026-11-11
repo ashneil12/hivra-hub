@@ -285,3 +285,11 @@ describe("review #241 r2: a relative file inside a flag with options or a key=va
     expect(argumentProblem("/opt/codex-acp", ["-c", "instructions_file=../x"])).not.toBeNull();
   });
 });
+
+describe("a drive colon is only a drive on Windows", () => {
+  it("refuses -IC:\\secret off Windows and allows -IC:\\foo on Windows", async () => {
+    const { argumentProblem } = await import("./moreAgents");
+    expect(argumentProblem("/opt/node", ["-IC:\\secret"], "other")).not.toBeNull();
+    expect(argumentProblem("/opt/node", ["-IC:\\foo"], "win32")).toBeNull();
+  });
+});

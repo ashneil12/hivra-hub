@@ -399,20 +399,28 @@ fn first_nondrive_colon(arg: &str) -> Option<usize> {
 }
 
 /// A colon that is a Windows drive letter (`C:\foo`), including after `=` , after another colon, or as the value of
-/// an attached short flag (`-IC:\foo`).
+/// an attached short flag (`-IC:\foo`). Only Windows has drive letters. Elsewhere that colon separates a flag.
 fn is_drive_colon(bytes: &[u8], at: usize) -> bool {
-    if at == 0 || at + 1 >= bytes.len() {
+    #[cfg(not(windows))]
+    {
+        let _ = (bytes, at);
         return false;
     }
-    let letter = bytes[at - 1];
-    let next = bytes[at + 1];
-    if !letter.is_ascii_alphabetic() || (next != b'/' && next != b'\\') {
-        return false;
+    #[cfg(windows)]
+    {
+        if at == 0 || at + 1 >= bytes.len() {
+            return false;
+        }
+        let letter = bytes[at - 1];
+        let next = bytes[at + 1];
+        if !letter.is_ascii_alphabetic() || (next != b'/' && next != b'\\') {
+            return false;
+        }
+        if at == 1 || bytes[at - 2] == b'=' || bytes[at - 2] == b':' {
+            return true;
+        }
+        at == 3 && bytes[0] == b'-' && bytes[1] != b'-'
     }
-    if at == 1 || bytes[at - 2] == b'=' || bytes[at - 2] == b':' {
-        return true;
-    }
-    at == 3 && bytes[0] == b'-' && bytes[1] != b'-'
 }
 
 /// The programs that run code named by an argument: a loader flag, an inline program or an eval is only a risk for
@@ -3867,5 +3875,24 @@ mod tests {
             "the hash cache took the writer's file for the approved one: {swapped_runs} of 5 later starts then \
              passed every check and ran its bytes"
         );
+    }
+
+    /// A drive colon is only a drive on Windows. Elsewhere `-IC:\secret` is a flag colon, and `\secret` is a root
+    /// with no drive.
+    #[cfg(not(windows))]
+    #[test]
+    fn a_drive_colon_is_a_flag_separator_off_windows() {
+        assert_eq!(
+            checked_fields(&entry("wp134", "/opt/node", &["-IC:\\secret"]))
+                .expect_err("was allowed"),
+            RELATIVE_REFUSED
+        );
+    }
+
+    /// On Windows `-IC:\foo` is a drive path, not a flag colon, so it is not a relative file.
+    #[cfg(windows)]
+    #[test]
+    fn a_drive_colon_is_a_drive_on_windows() {
+        assert!(!relative_file_arg("-IC:\\foo"));
     }
 }
