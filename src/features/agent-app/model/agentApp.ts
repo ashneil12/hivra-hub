@@ -147,29 +147,50 @@ import type { DocCreateInput, DocRecord, DocUpdateInput, DocWriteResult } from "
 /** Hivra WP-10: the definition of done for a hub change's worker (its brief says what to build and check). */
 export const SELF_BUILD_GOAL = "The change is made in the preview copy, the checks its brief names pass, and the report says how to see it.";
 
-/** A handoff that filed and then failed to delegate, keyed by the host so a retry on that host reuses the task. */
-const handoffOrphans = new WeakMap<object, Map<string, string>>();
+/**
+ * A handoff that filed and then failed to delegate.
+ * Keyed by the calling session, not the host: App.tsx builds a new host object on every call.
+ */
+const handoffOrphans = new Map<string, Map<string, string>>();
 
-function handoffMemory(host: object): {
+function handoffMemory(sessionId: string): {
   recall(key: string): string | undefined;
   remember(key: string, taskId: string): void;
   forget(key: string): void;
 } {
-  let kept = handoffOrphans.get(host);
+  const id = sessionId.trim();
+  let kept = handoffOrphans.get(id);
   if (!kept) {
     kept = new Map();
-    handoffOrphans.set(host, kept);
+    handoffOrphans.set(id, kept);
   }
   const box = kept;
   return {
     recall: (key) => box.get(key),
-    remember: (key, id) => {
-      box.set(key, id);
+    remember: (key, taskId) => {
+      box.set(key, taskId);
     },
     forget: (key) => {
       box.delete(key);
+      if (box.size === 0) handoffOrphans.delete(id);
     },
   };
+}
+
+/** The flag or the starter template, or a soul that already carries the charter. The display name does not count. */
+async function captainOfThisChat(
+  mono: { id?: string; captain?: boolean; templateId?: string } | null | undefined,
+  host: AgentAppHost,
+): Promise<boolean> {
+  if (isCaptainMono(mono)) return true;
+  const id = mono?.id?.trim();
+  if (!id || !host.agentFiles) return false;
+  try {
+    const files = await host.agentFiles(id);
+    return hasCaptainCharter(files?.soul);
+  } catch {
+    return false;
+  }
 }
 
 export const MONO_ONE_WAY = "There is one way to make a Mono: mono_create, in your chat with Ash. Draft it with him, he says yes, and it is made. Nothing is filed on Settings > Teams any more.";
@@ -1709,7 +1730,7 @@ export async function handleAgentApp(
   // WP-215: file the task, then hand it to the project's first mate.
   if (action === "captain.handoff") {
     const mono = host.monoOf?.(source.id);
-    if (!host.isMono(source.id) || !isCaptainMono(mono)) {
+    if (!host.isMono(source.id) || !(await captainOfThisChat(mono, host))) {
       throw new Error("Only the Chief of Staff hands work on.");
     }
     const project = requiredString(input.project, "project", 4096);
@@ -1738,7 +1759,7 @@ export async function handleAgentApp(
               return undefined;
             }
           }),
-        ...handoffMemory(host),
+        ...handoffMemory(source.id),
         createTask: async (task) => {
           const created = await handleTaskStore(source, "tasks.create", {
             title: task.title,
