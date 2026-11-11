@@ -198,7 +198,15 @@ fn a_finished_task_is_not_released_and_bad_asks_are_refused() {
         4,
     )
     .unwrap();
-    let out = answer(&mut conn, "hivra", "k", "Keep 30 days", None, 5).unwrap();
+    let out = answer(
+        &mut conn,
+        "hivra",
+        "k",
+        "Keep 30 days",
+        Some("user".into()),
+        5,
+    )
+    .unwrap();
     assert!(out.applied);
     assert!(out.released_tasks.is_empty());
     // Only the asker hears it.
@@ -1106,25 +1114,27 @@ fn only_the_person_answers_a_fresh_eyes_review_and_the_app_may_close_it() {
             "{key}"
         );
     }
-    // The person, in either of the app's own answer paths, goes through.
+    // The person, named, in either of the app's own answer paths, goes through.
     for (key, by) in [
-        ("fresh-eyes/r1/00112233aabbccdd", Some("user")),
-        ("fresh-eyes-start/r1/00112233aabbccdd", None),
+        ("fresh-eyes/r1/00112233aabbccdd", "user"),
+        ("fresh-eyes-start/r1/00112233aabbccdd", "person"),
     ] {
         assert!(
-            answer(
-                &mut conn,
-                "hivra",
-                key,
-                "Approve",
-                by.map(str::to_string),
-                4
-            )
-            .unwrap()
-            .applied,
+            answer(&mut conn, "hivra", key, "Approve", Some(by.into()), 4)
+                .unwrap()
+                .applied,
             "{key}"
         );
     }
+    // An unnamed answer is not stored as the person.
+    let unnamed = "fresh-eyes/r9/00112233aabbccdd";
+    ask(&mut conn, ask_input("lead", unnamed, &[]), 4).unwrap();
+    let unnamed_err = answer(&mut conn, "hivra", unnamed, "Approve", None, 4).unwrap_err();
+    assert!(
+        unnamed_err.contains("Say who is answering"),
+        "{unnamed_err}"
+    );
+    assert_eq!(get(&conn, "hivra", unnamed).unwrap().unwrap().state, OPEN);
     // The app closes its own question when a brief is taken back, and tells the chat that asked nothing: it did it.
     let key = "fresh-eyes/r2/ffeeddccbbaa0011";
     ask(&mut conn, ask_input("lead", key, &[]), 5).unwrap();
@@ -1165,8 +1175,8 @@ fn only_the_person_answers_a_fresh_eyes_review_and_the_app_may_close_it() {
     );
 }
 
-// Fix round 3, H1: a secret run's card is answered by the person on the card alone. A page or the Needs sheet
-// (answered as "user") and a chat's own answer are refused; the card's own answer (no answerer) still applies.
+// A secret card is answered only as `person` (what the Inbox sends). A page, the captain, autopilot,
+// the Needs sheet (`user`), a chat and nobody named are refused, and the card stays open.
 #[test]
 fn a_secret_card_takes_no_answer_from_a_page_or_needs() {
     let store = store();
@@ -1177,34 +1187,54 @@ fn a_secret_card_takes_no_answer_from_a_page_or_needs() {
         1,
     )
     .unwrap();
-    for by in ["user", "page:pg_1", "chat:abc"] {
+    for by in [
+        None,
+        Some("user"),
+        Some("page:pg_1"),
+        Some("captain:c1"),
+        Some("autopilot"),
+        Some("chat:abc"),
+    ] {
         let err = answer(
             &mut conn,
             "hivra",
             "secret/stripe-api-key/9f",
             "Once",
-            Some(by.into()),
+            by.map(str::to_string),
             2,
         )
         .unwrap_err();
         assert!(
             err.contains("Only the person can approve a secret run"),
-            "{by} must not answer a secret card: {err}"
+            "{by:?} must not answer a secret card: {err}"
         );
     }
-    // The person's own answer names the version they read. Without it, the card stays open.
-    assert!(
-        answer_seen(
-            &mut conn,
-            "hivra",
-            "secret/stripe-api-key/9f",
-            "Once",
-            None,
-            Some(asked.decision.version),
-            3,
-        )
-        .unwrap()
-        .applied
+    assert_eq!(
+        get(&conn, "hivra", "secret/stripe-api-key/9f")
+            .unwrap()
+            .unwrap()
+            .state,
+        OPEN
+    );
+    // The Inbox's approval names the version on screen and is stored as the person.
+    let done = answer_seen(
+        &mut conn,
+        "hivra",
+        "secret/stripe-api-key/9f",
+        "Once",
+        Some("person".into()),
+        Some(asked.decision.version),
+        3,
+    )
+    .unwrap();
+    assert!(done.applied);
+    assert_eq!(
+        get(&conn, "hivra", "secret/stripe-api-key/9f")
+            .unwrap()
+            .unwrap()
+            .answered_by
+            .as_deref(),
+        Some("person")
     );
 }
 
@@ -1307,7 +1337,7 @@ fn a_gate_secret_or_irreversible_key_never_reuses_or_shows_a_standing_answer() {
                 "hivra",
                 key,
                 options[0],
-                None,
+                Some("person".into()),
                 Some(asked.decision.version),
                 10 + n as i64,
             )
@@ -1602,7 +1632,7 @@ fn a_standing_answer_never_answers_a_secret_card() {
         "hivra",
         key,
         "Keep 30 days",
-        None,
+        Some("person".into()),
         Some(asked.decision.version),
         3,
     )
@@ -1740,6 +1770,73 @@ fn only_the_person_answers_a_restart_decision_of_a_stopped_task() {
     );
 }
 
+/// A chat answer is refused for both prefixes when the key's case differs from the stored spelling. person_only reads
+/// every prefix on the folded key, so neither FANOUT-AGAIN/ nor Security-Review/ is a way round.
+#[test]
+fn a_chat_answer_to_a_folded_restart_or_security_key_is_refused() {
+    let store = store();
+    let mut conn = store.lock_conn().unwrap();
+    let again = "FANOUT-AGAIN/plan/api/req1";
+    let security = "Security-Review/abc123";
+    ask(&mut conn, ask_input("lead", again, &[]), 2).unwrap();
+    // A chat cannot open a security review, in any spelling. The gate can, and a chat still cannot answer it.
+    let refused_ask = ask(
+        &mut conn,
+        AskInput {
+            question: "Accept this security review?".into(),
+            options: vec!["Approve".into(), "Reject".into()],
+            recommended: Some("Reject".into()),
+            ..ask_input("lead", security, &[])
+        },
+        3,
+    )
+    .unwrap_err();
+    assert!(refused_ask.contains("Only the gate"), "{refused_ask}");
+    // "gate" is the delivery check. It must not be able to open a security review under that name.
+    let delivery_name = ask(
+        &mut conn,
+        AskInput {
+            question: "Accept this security review?".into(),
+            options: vec!["Approve".into(), "Reject".into()],
+            recommended: Some("Reject".into()),
+            ..ask_input("gate", security, &[])
+        },
+        3,
+    )
+    .unwrap_err();
+    assert!(delivery_name.contains("Only the gate"), "{delivery_name}");
+    ask(
+        &mut conn,
+        AskInput {
+            question: "Accept this security review?".into(),
+            options: vec!["Approve".into(), "Reject".into()],
+            recommended: Some("Reject".into()),
+            ..ask_input("security-gate", security, &[])
+        },
+        3,
+    )
+    .unwrap();
+    for (key, wording) in [
+        (
+            again,
+            "Only the person answers whether a stopped task starts again",
+        ),
+        (security, "Only the person answers a security review"),
+    ] {
+        let refusal = answer(
+            &mut conn,
+            "hivra",
+            key,
+            "Yes",
+            Some("chat:author-lead".into()),
+            4,
+        )
+        .unwrap_err();
+        assert!(refusal.contains(wording), "{key}: {refusal}");
+        assert_eq!(get(&conn, "hivra", key).unwrap().unwrap().state, OPEN);
+    }
+}
+
 /// WP-172: a restart decision names a plan, a task and a request id, each up to its own length, so its key can be longer
 /// than an ordinary decision's; the longer limit is for that prefix only.
 #[test]
@@ -1755,6 +1852,314 @@ fn a_restart_decision_key_names_a_whole_plan_task_and_request() {
     assert_eq!(key_like(&key).unwrap(), key);
     assert!(key_like(&"k".repeat(KEY_MAX + 1)).is_err());
     assert!(key_like(&format!("other/{}", "x".repeat(KEY_MAX))).is_err());
+}
+
+/// Round 6: an answer with nobody named used to be stored as the person. It is refused, and the question stays open.
+#[test]
+fn repro_220_r5_an_unnamed_answer_is_not_stored_as_the_person() {
+    let store = store();
+    let mut conn = store.lock_conn().unwrap();
+    ask(&mut conn, ask_input("fm", "retention", &[]), 2).unwrap();
+    let err = answer(&mut conn, "hivra", "retention", "Keep 30 days", None, 3).unwrap_err();
+    assert!(err.contains("Say who is answering"), "{err}");
+    let open = get(&conn, "hivra", "retention").unwrap().unwrap();
+    assert_eq!(open.state, OPEN);
+    assert!(open.answered_by.is_none());
+    assert!(open.answer.is_none());
+    // A missing decision still changes nothing when nobody is named.
+    assert!(
+        !answer(&mut conn, "hivra", "missing", "x", None, 4)
+            .unwrap()
+            .applied
+    );
+}
+
+/// A standing answer must not answer a security review, and a security review must not become one.
+/// The gate's re-ask of a tainted row comes back not standing. Turning the flag off does not stop the key,
+/// or the next ask would drop the person's own answer.
+#[test]
+fn a_standing_answer_never_answers_a_security_review() {
+    let store = store();
+    let mut conn = store.lock_conn().unwrap();
+    set_standing_enabled(&conn, true).unwrap();
+    ask(&mut conn, ask_input("fm", "retention", &[]), 2).unwrap();
+    answer(
+        &mut conn,
+        "hivra",
+        "retention",
+        "Keep 30 days",
+        Some("user".into()),
+        3,
+    )
+    .unwrap();
+    tick(&mut conn, "retention", 4);
+
+    let security = "security-review/acme/web#7@abc";
+    let asked = ask(&mut conn, ask_input("security-gate", security, &[]), 5).unwrap();
+    assert!(
+        !asked.matched && asked.created,
+        "a standing answer answered the security review: {asked:?}"
+    );
+    assert_eq!(asked.decision.state, OPEN);
+    assert!(!asked.decision.standing);
+    assert!(
+        asked.decision.standing_id.starts_with("S-"),
+        "the re-read did not fill the standing id: {}",
+        asked.decision.standing_id
+    );
+
+    // A row forced standing, retired and stopped is replaced by the gate. None of that survives the re-read.
+    conn.execute(
+        "UPDATE decisions SET standing = 1, keys = '[\"merge\",\"approve\"]', retired_at = 9, \
+         retired_reason = 'old', reuse_stopped = 1, force_reason = 'because' \
+         WHERE project = 'hivra' AND decision_key = ?1",
+        [security],
+    )
+    .unwrap();
+    let mut refreshed = ask_input("security-gate", security, &[]);
+    refreshed.question = "Accept the security review for this head now?".into();
+    refreshed.options = vec!["Approve".into(), "Ask again".into()];
+    refreshed.recommended = None;
+    let again = ask(&mut conn, refreshed, 6).unwrap();
+    assert!(!again.matched && !again.created, "{again:?}");
+    assert_eq!(again.decision.state, OPEN);
+    assert!(again.decision.answer.is_none());
+    assert!(!again.decision.standing);
+    let stored = get(&conn, "hivra", security).unwrap().unwrap();
+    assert_eq!(
+        stored.question,
+        "Accept the security review for this head now?"
+    );
+    assert!(
+        !stored.standing,
+        "a refreshed security question was still standing"
+    );
+    assert!(stored.keys.is_empty(), "{:?}", stored.keys);
+    assert!(stored.retired_at.is_none());
+    assert!(stored.retired_reason.is_none());
+    assert!(!stored.reuse_stopped);
+    assert!(stored.force_reason.is_none());
+    assert_eq!(stored.standing_id, again.decision.standing_id);
+
+    answer(
+        &mut conn,
+        "hivra",
+        security,
+        "Approve",
+        Some("user".into()),
+        7,
+    )
+    .unwrap();
+    let answered = get(&conn, "hivra", security).unwrap().unwrap();
+    assert!(
+        !answered.standing,
+        "answering a security review turned reuse on"
+    );
+    let refused = set_standing(&mut conn, "hivra", security, true, 8).unwrap_err();
+    assert!(refused.to_lowercase().contains("never reused"), "{refused}");
+
+    // The flag can be forced on in the database. Turning it off must not mark the answer stopped.
+    conn.execute(
+        "UPDATE decisions SET standing = 1, reuse_stopped = 1 WHERE decision_key = ?1",
+        [security],
+    )
+    .unwrap();
+    let cleared = set_standing(&mut conn, "hivra", security, false, 9)
+        .unwrap()
+        .unwrap();
+    assert!(!cleared.standing && !cleared.reuse_stopped, "{cleared:?}");
+    let kept = ask(
+        &mut conn,
+        AskInput {
+            question: "Accept the security review for this head now?".into(),
+            options: vec!["Approve".into(), "Ask again".into()],
+            recommended: None,
+            ..ask_input("security-gate", security, &[])
+        },
+        10,
+    )
+    .unwrap();
+    assert_eq!(kept.decision.state, ANSWERED);
+    assert_eq!(kept.decision.answer.as_deref(), Some("Approve"));
+    assert!(!kept.matched);
+
+    // A standing security row must not answer a later ordinary question, and it must not be listed.
+    conn.execute(
+        "UPDATE decisions SET standing = 1 WHERE decision_key = ?1",
+        [security],
+    )
+    .unwrap();
+    let mut ordinary = ask_input("fm", "security-wording", &[]);
+    ordinary.question = "Accept the security review for this head now?".into();
+    ordinary.options = vec!["Approve".into(), "Ask again".into()];
+    ordinary.recommended = None;
+    let leaked = ask(&mut conn, ordinary, 11).unwrap();
+    assert!(
+        !leaked.matched && leaked.created,
+        "a standing security answer was reused: {leaked:?}"
+    );
+    let block = standing_block(&conn, "hivra").unwrap();
+    assert!(
+        !block.contains("security review for this head"),
+        "a security review is in the brief:\n{block}"
+    );
+    assert!(
+        !reuse_rows(&conn, "hivra")
+            .unwrap()
+            .iter()
+            .any(|row| row.decision_key == security),
+        "a security review is in the reuse list"
+    );
+    assert!(!standing_rows(&conn, "hivra")
+        .unwrap()
+        .iter()
+        .any(|row| row.decision_key == security));
+}
+
+/// set_standing, the reuse list and the brief refuse every person-only key, including a folded spelling.
+#[test]
+fn a_person_only_key_is_never_marked_listed_or_reused() {
+    let store = store();
+    let mut conn = store.lock_conn().unwrap();
+    set_standing_enabled(&conn, true).unwrap();
+    let keys = [
+        ("security-gate", "security-review/head-1"),
+        ("security-gate", "Security-Review/head-2"),
+        ("lead", "gate/run-2"),
+        ("lead", "irreversible/run/b"),
+        ("lead", "fresh-eyes/r9/0011"),
+        ("lead", "fresh-eyes-start/r9/0011"),
+        ("lead", "fanout-again/r9/t/req"),
+        ("lead", "secret/token-2"),
+    ];
+    for (n, (asker, key)) in keys.iter().enumerate() {
+        let asked = ask(&mut conn, ask_input(asker, key, &[]), 2 + n as i64).unwrap();
+        // A secret card accepts only `person`, and only for the version that was read. The other
+        // person-only keys still take the Needs sheet's `user`.
+        if is_secret_key(key) {
+            answer_seen(
+                &mut conn,
+                "hivra",
+                key,
+                "Keep 30 days",
+                Some("person".into()),
+                Some(asked.decision.version),
+                20 + n as i64,
+            )
+            .unwrap();
+        } else {
+            answer(
+                &mut conn,
+                "hivra",
+                key,
+                "Keep 30 days",
+                Some("user".into()),
+                20 + n as i64,
+            )
+            .unwrap();
+        }
+        let refused = set_standing(&mut conn, "hivra", key, true, 40 + n as i64).unwrap_err();
+        assert!(
+            refused.to_lowercase().contains("never reused"),
+            "{key}: {refused}"
+        );
+        assert!(
+            !reuse_rows(&conn, "hivra")
+                .unwrap()
+                .iter()
+                .any(|row| row.decision_key == *key),
+            "{key} is in the reuse list"
+        );
+    }
+    let block = standing_block(&conn, "hivra").unwrap();
+    for leaked in [
+        "security-review/",
+        "gate/",
+        "irreversible/",
+        "fresh-eyes",
+        "fanout-again/",
+        "secret/",
+    ] {
+        assert!(!block.contains(leaked), "{leaked} leaked:\n{block}");
+    }
+
+    // Spellings ask() would reject still come off disk. They are the same keys.
+    let folded = [
+        (
+            "security\u{200B}-review/abc",
+            "Which badge colour should the header use?",
+        ),
+        (
+            "ｇａｔｅ/run-3",
+            "Which badge colour should the footer use?",
+        ),
+        (
+            "ｓｅｃｒｅｔ/token-3",
+            "Which badge colour should the sidebar use?",
+        ),
+        (
+            "fanout\u{200B}-again/r/t/q",
+            "Which badge colour should the nav use?",
+        ),
+        (
+            "fresh\u{200B}-eyes/r/0011",
+            "Which badge colour should the title use?",
+        ),
+        (
+            "irreversible\u{200B}/x/y",
+            "Which badge colour should the button use?",
+        ),
+    ];
+    for (n, (key, question)) in folded.iter().enumerate() {
+        assert!(!standing_eligible(key), "{key:?} is eligible");
+        insert_answered(&conn, "hivra", key, question, "Blue", 100 + n as i64);
+        let refused = set_standing(&mut conn, "hivra", key, true, 200 + n as i64).unwrap_err();
+        assert!(
+            refused.to_lowercase().contains("never reused"),
+            "{key:?}: {refused}"
+        );
+        assert!(
+            !reuse_rows(&conn, "hivra")
+                .unwrap()
+                .iter()
+                .any(|row| row.decision_key == *key),
+            "{key:?} is in the reuse list"
+        );
+        let shown = standing_block(&conn, "hivra").unwrap();
+        assert!(
+            !shown.contains(question),
+            "{key:?} is in the brief:\n{shown}"
+        );
+        let mut probe = ask_input("fm", &format!("folded-probe-{n}"), &[]);
+        probe.question = question.to_string();
+        probe.options = vec!["Blue".into(), "Green".into()];
+        probe.recommended = None;
+        let out = ask(&mut conn, probe, 300 + n as i64).unwrap();
+        assert!(
+            !out.matched && out.created,
+            "{key:?} answered a new question: {out:?}"
+        );
+    }
+    for key in [
+        "security-review/abc",
+        "Security-Review/ABC",
+        " security-review/abc ",
+        "security\u{200B}-review/abc",
+        "ｓｅｃｕｒｉｔｙ-ｒｅｖｉｅｗ/abc",
+        "gate/run-1",
+        "ｇａｔｅ/run-9",
+        "secret/token-1",
+        "ｓｅｃｒｅｔ/token-9",
+        "fanout-again/r1/t/req",
+        "fanout\u{200B}-again/r/t/q",
+        "fresh-eyes/r1",
+        "fresh\u{200B}-eyes/r/0011",
+        "irreversible/run/a",
+        "irreversible\u{200B}/x/y",
+    ] {
+        assert!(!standing_eligible(key), "{key:?}");
+    }
+    assert!(standing_eligible("retention-policy"));
 }
 
 fn tick(conn: &mut Connection, key: &str, now: i64) {

@@ -154,6 +154,7 @@ import {
   handleAutopilotApp,
 } from "../../autopilot/model/autopilotApp";
 import { forUser } from "../../hub/model/userName";
+import { isReviewSession, REVIEW_REQUEST_PREFIX } from "../../security-review/model/launch";
 
 export type AppSessionListing = {
   id: string;
@@ -1561,6 +1562,11 @@ export async function handleAgentApp(
   input: Record<string, unknown>,
   host: AgentAppHost,
 ): Promise<unknown> {
+  // WP-203: a security review's request id and the review owner belong to the app's launcher. A caller can't name either.
+  if (requestId.startsWith(REVIEW_REQUEST_PREFIX)) {
+    throw new Error("Security review request IDs belong to the app's review launcher; pick another request ID.");
+  }
+  if (isReviewSession(source.id)) throw new Error("This session is reserved for the app's security review.");
   fields(action, input);
   checkerLane(source, action, host);
   // WP-70: the shared task list. Not the delegation tools below.

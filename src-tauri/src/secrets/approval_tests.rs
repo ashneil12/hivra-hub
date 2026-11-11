@@ -81,7 +81,16 @@ fn person_answers_in(bench: &Bench, project: &str, key: &str, answer: &str, at: 
         .unwrap()
         .unwrap()
         .version;
-    crate::decisions::answer_seen(&mut conn, project, key, answer, None, Some(seen), at).unwrap();
+    crate::decisions::answer_seen(
+        &mut conn,
+        project,
+        key,
+        answer,
+        Some("person".into()),
+        Some(seen),
+        at,
+    )
+    .unwrap();
 }
 
 // ---- which programs can run any code --------------------------------------------------------------------------------
@@ -1453,8 +1462,15 @@ fn an_answer_for_a_card_the_person_did_not_read_is_refused() {
     );
     {
         let mut conn = bench.store.lock_conn().unwrap();
-        let refused =
-            crate::decisions::answer_seen(&mut conn, "", &key, "Once", None, Some(seen), NOW + 2);
+        let refused = crate::decisions::answer_seen(
+            &mut conn,
+            "",
+            &key,
+            "Once",
+            Some("person".into()),
+            Some(seen),
+            NOW + 2,
+        );
         let why =
             refused.expect_err("an answer for the card the person did not read must not land");
         assert!(why.contains("changed after you read it"), "{why}");
@@ -1467,7 +1483,7 @@ fn an_answer_for_a_card_the_person_did_not_read_is_refused() {
             "",
             &key,
             "Once",
-            None,
+            Some("person".into()),
             Some(now_version),
             NOW + 3,
         )

@@ -4,7 +4,8 @@
 //! - **One question, one key.** A first mate asks through one tool, `ask_person(key, question, options, recommended)`.
 //!   The decision is stored once under `(project, decision_key)`; asking again with the same key changes nothing about
 //!   it (not the question, not the options), it only adds the asker's tasks that wait on it, and an answered key gives
-//!   back the answer at once.
+//!   back the answer at once. A security review is the exception: the gate replaces a question that is not its current
+//!   one, and clears an answer that is no longer one of the options.
 //! - **Questions go up one level.** Only the chat the person talks to (a first mate at the top of its work) may ask the
 //!   person. A worker, or a first mate working for another first mate, is turned back with a plain reason: its question
 //!   goes to its own first mate (`task_cannot` or its report), which answers it or asks the person itself.
@@ -133,22 +134,28 @@ fn ensure_decision_columns(conn: &Connection) -> rusqlite::Result<()> {
 }
 
 /// WP-156: keys that never take part in standing answers, neither as a match nor as guidance. The person alone answers
-/// an irreversible step, a fresh-eyes review and a stopped fan-out's restart; a delivery gate's approval belongs to the
-/// gate, not to an old answer; a secret card (`secret/<name>/<program>`) is never marked standing, listed for reuse, or
-/// answered by an old answer. The same fold as the other person-only checks, so a capital or fullwidth spelling is the
-/// same key. A key that is not listed here is an ordinary question.
+/// an irreversible step, a fresh-eyes review, a security review and a stopped fan-out's restart; a delivery gate's
+/// approval belongs to the gate, not to an old answer; a secret card (`secret/<name>/<program>`) is never marked
+/// standing, listed for reuse, or answered by an old answer. Case, width and hidden characters fold to the same key,
+/// so none of those spellings stand either. A key that is not listed here is an ordinary question.
 pub fn standing_eligible(key: &str) -> bool {
     // Keys keep the case they were typed in (`key_like`). Fold before the prefix check, as `is_secret_key` does.
-    let key = fold_key(key);
-    ![
+    let folded = fold_key(key);
+    if [
         "irreversible/",
         "fresh-eyes",
         "gate/",
         "secret/",
         "fanout-again/",
+        "security-review/",
     ]
     .iter()
-    .any(|prefix| key.starts_with(prefix))
+    .any(|prefix| folded.starts_with(prefix))
+    {
+        return false;
+    }
+    // person_only refuses a chat on a review, a security review, a restart, a gate or an irreversible step.
+    person_only(key, Some("chat:standing")).is_none()
 }
 
 /// The settings key for WP-156. Only the exact value `on` enables standing answers. Anything else, including a missing
@@ -336,12 +343,65 @@ fn save(conn: &Connection, d: &Decision) -> Result<(), String> {
     Ok(())
 }
 
+/// A security review the gate is asking again. The ordinary ask leaves a question alone. This one does not: a chat's
+/// question is replaced, an open question that no longer matches the record is replaced, and an answer that is not one
+/// of the new options is cleared. An answer that is still one of the options stays, including "Hold the merge".
+fn security_stale(existing: &Decision, question: &str, options: &[String]) -> bool {
+    if fold_key(&existing.asked_by) != "security-gate" {
+        return true;
+    }
+    if existing.question == question && existing.options == options {
+        return false;
+    }
+    if existing.state == OPEN {
+        return true;
+    }
+    !existing
+        .answer
+        .as_deref()
+        .is_some_and(|word| options.iter().any(|option| option == word))
+}
+
+/// `save` does not change the question, the options or who asked. A security review the gate takes over needs all of it.
+fn replace_asked(conn: &Connection, d: &Decision) -> Result<(), String> {
+    conn.execute(
+        "UPDATE decisions SET question = ?1, options = ?2, recommended = ?3, asked_by = ?4, asked_by_mono = ?5, \
+         waiting = ?6, state = ?7, answer = ?8, answered_by = ?9, answered_at = ?10, updated_at = ?11, version = ?12, \
+         standing = ?13, keys = ?14, retired_at = ?15, retired_reason = ?16, reuse_stopped = ?17, force_reason = ?18 \
+         WHERE project = ?19 AND decision_key = ?20",
+        params![
+            d.question,
+            json!(d.options).to_string(),
+            d.recommended,
+            d.asked_by,
+            d.asked_by_mono,
+            json!(d.waiting).to_string(),
+            d.state,
+            d.answer,
+            d.answered_by,
+            d.answered_at,
+            d.updated_at,
+            d.version,
+            if d.standing { 1 } else { 0 },
+            json!(d.keys).to_string(),
+            d.retired_at,
+            d.retired_reason,
+            if d.reuse_stopped { 1 } else { 0 },
+            d.force_reason,
+            d.project,
+            d.decision_key,
+        ],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 /// WP-172: a restart decision of a fan-out names its plan, its task and the request id that was stopped (up to 100,
 /// 40 and 100 characters), then a 16-character owner tag, with the prefix and separators: 272 at most.
 const FANOUT_AGAIN_KEY_MAX: usize = 300;
 
 fn key_max(value: &str) -> usize {
-    if is_again_key(value) {
+    if is_again_key(value) || is_security_key(&fold_key(value)) {
         FANOUT_AGAIN_KEY_MAX
     } else {
         KEY_MAX
@@ -350,19 +410,27 @@ fn key_max(value: &str) -> usize {
 
 fn key_like(value: &str) -> Result<String, String> {
     let value = value.trim();
+    let security = is_security_key(&fold_key(value));
     let max = key_max(value);
-    if value.is_empty()
-        || value.len() > max
-        || !value
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b':' | b'/'))
-    {
+    let allowed = |b: u8| {
+        b.is_ascii_alphanumeric()
+            || matches!(b, b'-' | b'_' | b'.' | b':' | b'/')
+            || (security && matches!(b, b'#' | b'@'))
+    };
+    if value.is_empty() || value.len() > max || !value.bytes().all(allowed) {
+        let extra = if security { " # @" } else { "" };
         return Err(format!(
-            "key must be a stable name for the question, like \"retention-policy\": letters, digits, - _ . : / and at \
-             most {max} characters"
+            "key must be a stable name for the question, like \"retention-policy\": letters, digits, - _ . : /{extra} \
+             and at most {max} characters"
         ));
     }
     Ok(value.to_string())
+}
+
+/// The Inbox key of one security review: the repo, the pull request and the head. An answer for one pull request does
+/// not apply to another at the same head.
+pub fn security_decision_key(repo: &str, number: u64, head: &str) -> String {
+    format!("security-review/{repo}#{number}@{head}")
 }
 
 fn plain(value: &str, label: &str, max: usize) -> Result<String, String> {
@@ -432,7 +500,8 @@ fn skip_false(value: &bool) -> bool {
 #[serde(rename_all = "camelCase")]
 pub struct AskOutcome {
     pub decision: Decision,
-    /// False when the key was already asked: nothing about the question changed.
+    /// False when the key was already asked. An ordinary question is left as it was. A security review the gate asks
+    /// again may replace the question.
     pub created: bool,
     /// Tasks that joined this time.
     pub added: Vec<String>,
@@ -912,6 +981,13 @@ pub fn ask(conn: &mut Connection, input: AskInput, now: i64) -> Result<AskOutcom
     check_may_ask(conn, &asked_by)?;
     let project = input.project.unwrap_or_default().trim().to_string();
     let key = key_like(&input.key)?;
+    // A chat that asks security-review/... first would put its own question under the gate's key. Only the gate asks one.
+    let security = is_security_key(&fold_key(&key));
+    if security && fold_key(&asked_by) != "security-gate" {
+        return Err(
+            "Only the gate asks a security review. A chat cannot open that question.".into(),
+        );
+    }
     let question = plain(&input.question, "The question", QUESTION_MAX)?;
     let mut options = Vec::new();
     for option in &input.options {
@@ -1071,9 +1147,9 @@ pub fn ask(conn: &mut Connection, input: AskInput, now: i64) -> Result<AskOutcom
     let mut decision = existing.unwrap_or_else(|| Decision {
         project: project.clone(),
         decision_key: key.clone(),
-        question,
-        options,
-        recommended,
+        question: question.clone(),
+        options: options.clone(),
+        recommended: recommended.clone(),
         asked_by: asked_by.clone(),
         asked_by_mono: input.asked_by_mono.clone(),
         waiting: Vec::new(),
@@ -1092,6 +1168,27 @@ pub fn ask(conn: &mut Connection, input: AskInput, now: i64) -> Result<AskOutcom
         force_reason: forced_reason,
         standing_id: String::new(),
     });
+    // The gate replaces a security question that is not its current one. save() cannot change the question.
+    let refresh = !created && security && security_stale(&decision, &question, &options);
+    if refresh {
+        decision.question = question;
+        decision.options = options;
+        decision.recommended = recommended;
+        decision.asked_by = asked_by.clone();
+        decision.asked_by_mono = input.asked_by_mono.clone();
+        decision.state = OPEN.into();
+        decision.answer = None;
+        decision.answered_by = None;
+        decision.answered_at = None;
+        // A refreshed security question is never standing. The old answer's reuse, retirement and match words go too,
+        // or a later read would still treat the new question as the old standing answer.
+        decision.standing = false;
+        decision.keys.clear();
+        decision.retired_at = None;
+        decision.retired_reason = None;
+        decision.reuse_stopped = false;
+        decision.force_reason = None;
+    }
     let added: Vec<String> = task_ids
         .into_iter()
         .filter(|id| !decision.waiting.contains(id))
@@ -1112,7 +1209,7 @@ pub fn ask(conn: &mut Connection, input: AskInput, now: i64) -> Result<AskOutcom
             }
         }
     }
-    if created || !added.is_empty() {
+    if created || !added.is_empty() || refresh {
         decision.waiting.extend(added.iter().cloned());
         decision.updated_at = now;
         // A secret card's version comes from a counter that outlives the card, so a spent card's version is never
@@ -1122,8 +1219,14 @@ pub fn ask(conn: &mut Connection, input: AskInput, now: i64) -> Result<AskOutcom
         } else {
             decision.version += 1;
         }
-        save(&tx, &decision)?;
+        // A security question the gate replaces is written over the stale row, not as a second one.
+        if refresh {
+            replace_asked(&tx, &decision)?;
+        } else {
+            save(&tx, &decision)?;
+        }
         // Re-read so the standing id is the stored row, not a guess, and a lost race is visible.
+        // The re-read follows whichever write ran, including a security question the gate replaced.
         decision =
             get(&tx, &project, &key)?.ok_or_else(|| "The decision was not stored".to_string())?;
     }
@@ -1154,9 +1257,9 @@ pub struct AnswerOutcome {
     pub released_tasks: Vec<String>,
 }
 
-/// WP-92: a secret's approval card is answered by the person alone. The person's own paths are the Inbox (which sends
-/// no answerer), the Needs sheet (`user`) and the check cards (`person`). An agent's `ask_person` forwards `chat:<id>`,
-/// and a Monos or a worker that names itself never counts.
+/// Whether a recorded answerer is one of the person's own names, or nobody was named. A secret card does not use
+/// this: only the exact word `person` counts there (`secret_answer_by_person`). Nobody named still counts here, so an
+/// older row that is not a secret and has no answerer stays the person's.
 fn is_person(by: Option<&str>) -> bool {
     match by.map(str::trim).filter(|b| !b.is_empty()) {
         None => true,
@@ -1164,13 +1267,11 @@ fn is_person(by: Option<&str>) -> bool {
     }
 }
 
-/// A secret run's card is answered by the person on the card: no answerer (the Inbox) or "person". Not "user" (the Needs
-/// sheet), not a page, not a chat (fix round 3, H1).
+/// A secret run's card is answered only by the exact word `person` (trimmed). The Inbox sends that. Nobody named,
+/// `user` (the Needs sheet), a page, the captain and autopilot are refused.
 fn secret_answer_by_person(by: Option<&str>) -> bool {
-    match by.map(str::trim).filter(|b| !b.is_empty()) {
-        None => true,
-        Some(by) => by == "person",
-    }
+    // Nobody named is not the person on a secret card. Only the card's own answer (`person`) is.
+    matches!(by.map(str::trim).filter(|b| !b.is_empty()), Some("person"))
 }
 
 /// Whether a decision's recorded answerer is the person's own path. WP-92's grant check reads it: an answer recorded
@@ -1305,6 +1406,13 @@ fn is_review_key(key: &str) -> bool {
     key.starts_with("fresh-eyes/") || key.starts_with("fresh-eyes-start/")
 }
 
+/// WP-203: a security review's question (`security-review/<head>`) is the person's to answer. A pass on a security path
+/// needs their word, so no chat or machine may answer it, not even the app. Read through `fold_key`, like the other
+/// person-only prefixes.
+fn is_security_key(key: &str) -> bool {
+    fold_key(key).starts_with("security-review/")
+}
+
 /// WP-91: the decision keys only the person may answer, whatever path asked.
 ///
 /// An irreversible step of an orchestration run is parked under `irreversible/<lead>/<task>`. A person answers it in
@@ -1319,31 +1427,45 @@ fn is_review_key(key: &str) -> bool {
 /// A stopped worker runs again only on Ash's yes, so an agent's `ask_person` answer (a chat, whatever the words) is refused
 /// here, and the app's own closers are not a way round it.
 ///
+/// WP-203: so is a security review (`security-review/<head>`). A pass on a security path needs the person's word, so no
+/// chat or machine may answer it, not even the app.
+///
 /// WP-81: so is a delivery check (`gate/<run>`). Approving it tells the check to send the work on, so a chat that knows
 /// the run id must not answer it, whatever the spelling. The app's own closers are not a way round it either.
 ///
+/// Every prefix is read on the folded key, so a change of case or a hidden character does not let a machine through.
+///
 /// WP-92: so is a secret's approval card (`secret/<name>/<program>`). A chat that spells it another way (`SECRET/...`)
-/// must not approve the run. Only the card's own answer (nobody named, or `person`) counts; the Needs sheet (`user`)
-/// does not, and the app's own closers are not a way round it.
+/// must not approve the run. Only `person` counts. Nobody named, the Needs sheet (`user`), and the app's own closers
+/// are not a way round it.
 pub fn person_only(key: &str, by: Option<&str>) -> Option<String> {
     let review = is_review_key(key);
+    let security = is_security_key(key);
     let again = is_again_key(key);
     let gate = is_gate_key(key);
     let secret = is_secret_key(key);
-    if !fold_key(key).starts_with("irreversible/") && !review && !again && !gate && !secret {
+    if !fold_key(key).starts_with("irreversible/")
+        && !review
+        && !security
+        && !again
+        && !gate
+        && !secret
+    {
         return None;
     }
-    // A secret card is stricter than the other person-only keys: `user` (the Needs sheet) is not the person on the card.
+    // A secret card is stricter than the other person-only keys: nobody named, and `user` (the Needs sheet), are not
+    // the person on the card. Only `person` is.
     if secret {
         return match by.map(str::trim).filter(|word| !word.is_empty()) {
-            None | Some("person") => None,
-            Some(_) => {
-                Some("Only the person can approve a secret run. Ask them on their card.".into())
-            }
+            Some("person") => None,
+            _ => Some("Only the person can approve a secret run. Ask them on their card.".into()),
         };
     }
     match by.map(str::trim).filter(|word| !word.is_empty()) {
         None | Some("user") | Some("person") => None,
+        Some(other) if security => Some(format!(
+            "Only the person answers a security review; {other} cannot. It holds the merge until they do."
+        )),
         Some(APP_CLOSER) if review => None,
         Some(other) if review => Some(format!(
             "Only the person answers a fresh-eyes review; {other} cannot. It waits in the Inbox until they do."
@@ -1371,11 +1493,11 @@ pub fn is_secret_key(key: &str) -> bool {
     fold_key(key).starts_with("secret/")
 }
 
-/// The person, as an answer is recorded: nobody named, or the words the app uses for them.
+/// The person, as an answer is recorded: the words the app uses for them. Nobody named is not the person.
 fn from_person(by: Option<&str>) -> bool {
     matches!(
         by.map(str::trim).filter(|word| !word.is_empty()),
-        None | Some("user") | Some("person")
+        Some("user") | Some("person")
     )
 }
 
@@ -1461,21 +1583,36 @@ pub fn answer_seen(
             });
         }
     }
+    // Nobody named is not the person. It used to be stored as "person", so a caller that forgot `by` answered as Ash.
+    let who = by
+        .as_deref()
+        .map(str::trim)
+        .filter(|word| !word.is_empty())
+        .map(|word| word.chars().take(120).collect::<String>());
+    let Some(who) = who else {
+        return Err("Say who is answering.".into());
+    };
     // WP-91: an irreversible step is the person's to answer, and nobody else's. The webview puts it on its red list
     // so autopilot holds it, but that is a screen away; this refuses it at the store, whatever path asked. It reads the
     // stored key, so a decision stored in any case is checked as the person-only key it is.
-    if let Some(refusal) = person_only(&decision.decision_key, by.as_deref()) {
+    if let Some(refusal) = person_only(&decision.decision_key, Some(&who)) {
         return Err(refusal);
+    }
+    // Words that are not on this card used to be stored, and the gate then held that head forever.
+    if is_security_key(&fold_key(decision.decision_key.trim()))
+        && !decision.options.iter().any(|option| option == &answer)
+    {
+        return Err(format!(
+            "Pick one of this card's options: {}.",
+            decision.options.join(", ")
+        ));
     }
     decision.state = ANSWERED.into();
     decision.answer = Some(answer);
     // An answer does not stand until the person ticks it. A chat's answer never can.
+    // `who` is the identity already checked above. Nobody named never reaches here, and is not stored as the person.
     decision.standing = false;
-    decision.answered_by = Some(
-        by.map(|b| b.trim().chars().take(120).collect::<String>())
-            .filter(|b| !b.is_empty())
-            .unwrap_or_else(|| "person".into()),
-    );
+    decision.answered_by = Some(who);
     decision.answered_at = Some(now);
     decision.updated_at = now;
     if is_secret_key(&decision.decision_key) {
@@ -1500,7 +1637,11 @@ pub fn answer_seen(
         decision.answered_by.as_deref() == Some(format!("chat:{}", decision.asked_by).as_str());
     // The app closing a review's question (a brief taken back, replaced, or accepted as clean) has nothing to tell.
     let from_app = decision.answered_by.as_deref() == Some(APP_CLOSER);
-    if !from_asker && !from_app {
+    // Neither gate is a chat. A steering message to one would wait forever for a session that does not exist.
+    // The delivery check still asks as "gate". The security review asks as "security-gate".
+    let asked = fold_key(&decision.asked_by);
+    let from_gate = asked == "gate" || asked == "security-gate";
+    if !from_asker && !from_app && !from_gate {
         released.push(steering::record(
             &tx,
             SteerInput {
@@ -1646,9 +1787,10 @@ pub fn retire(
 }
 
 /// Turn reuse on or off for one answer. Only the person's own answer can be turned on, and never a red line, a protected
-/// key, or a retired row. Turning it off after it was on stops the same key from being handed out again. Missing key:
-/// nothing to change. A row already in the requested state is left as it is, but turning on still checks the rules, so a
-/// flag forced on in the database cannot be confirmed.
+/// key, or a retired row. Turning it off after it was on stops the same key from being handed out again. A protected
+/// key is never marked stopped: that would reopen it and drop the person's own answer. Missing key: nothing to change.
+/// A row already in the requested state is left as it is, but turning on still checks the rules, so a flag forced on
+/// in the database cannot be confirmed.
 pub fn set_standing(
     conn: &mut Connection,
     project: &str,
@@ -1664,6 +1806,10 @@ pub fn set_standing(
     let Some(mut decision) = get(&tx, project, key)? else {
         return Ok(None);
     };
+    let eligible = standing_eligible(&decision.decision_key);
+    if standing && !eligible {
+        return Err("This kind of question is never reused.".into());
+    }
     if standing {
         if decision.retired_at.is_some() {
             return Err("A retired answer is not reused. Ask the question again.".into());
@@ -1675,9 +1821,6 @@ pub fn set_standing(
         if !person_answered(decision.answered_by.as_deref()) {
             return Err("Only an answer from the person can be reused.".into());
         }
-        if !standing_eligible(&decision.decision_key) {
-            return Err("This kind of question is never reused.".into());
-        }
         if looks_red_line_parts(&decision.question, &decision.options)
             || looks_red_line(decision.answer.as_deref().unwrap_or(""))
         {
@@ -1686,13 +1829,16 @@ pub fn set_standing(
             );
         }
     }
-    if decision.standing == standing {
+    // Already in the requested state, unless an ineligible key was marked stopped. Stopping one of those would
+    // reopen it and drop the person's own answer (a security review's approve, a gate's check) the next time it is asked.
+    if decision.standing == standing && (eligible || !decision.reuse_stopped) {
         return Ok(Some(decision));
     }
     let version = decision.version;
-    decision.standing = standing;
+    decision.standing = standing && eligible;
     // Off after it was on: the same key is asked again. On: a previous stop is cleared.
-    decision.reuse_stopped = !standing;
+    // A key that never stands is not marked stopped. Clearing the flag leaves the real answer in place.
+    decision.reuse_stopped = !standing && eligible;
     decision.updated_at = now;
     decision.version += 1;
     let changed = tx
@@ -1700,7 +1846,7 @@ pub fn set_standing(
             "UPDATE decisions SET standing = ?1, reuse_stopped = ?2, updated_at = ?3, version = ?4
              WHERE project = ?5 AND decision_key = ?6 AND version = ?7",
             params![
-                if standing { 1 } else { 0 },
+                if decision.standing { 1 } else { 0 },
                 if decision.reuse_stopped { 1 } else { 0 },
                 decision.updated_at,
                 decision.version,
@@ -2056,3 +2202,87 @@ pub fn decisions_set_standing(
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod person_only_fold_tests {
+    use super::*;
+
+    #[test]
+    fn a_security_review_key_is_person_only_in_any_spelling() {
+        for key in [
+            "security-review/abc",
+            "Security-Review/abc",
+            "\u{FF33}ecurity-review/abc",
+            "security\u{200B}-review/abc",
+            "  security-review/abc\u{FEFF}",
+            "SECURITY\u{00AD}-REVIEW/ABC",
+        ] {
+            assert!(
+                person_only(key, Some("chat:author-lead")).is_some(),
+                "{key:?} was answerable by a chat"
+            );
+            assert!(
+                person_only(key, Some("person")).is_none(),
+                "{key:?} refused the person"
+            );
+            assert!(
+                person_only(key, None).is_none(),
+                "{key:?} refused the person with no by"
+            );
+        }
+    }
+
+    #[test]
+    fn fold_key_matches_the_rules_it_states() {
+        assert_eq!(fold_key("Security-Review/A"), "security-review/a");
+        assert_eq!(
+            fold_key("\u{FF33}ecurity\u{200B}-review"),
+            "security-review"
+        );
+        assert_eq!(fold_key("\u{3000}key\u{00A0}"), "key");
+    }
+
+    /// Round 6: NFKC, then drop the larger default-ignorable set (Cf and the extra ignorables), then trim, then lower case.
+    /// U+070F is Syriac Abbreviation Mark. The smaller fold keeps it, so the prefix check can miss the key.
+    #[test]
+    fn repro_220_r5_fold() {
+        assert_eq!(fold_key("security\u{070F}-review/x"), "security-review/x");
+        assert_eq!(fold_key("security\u{06DD}-review/x"), "security-review/x");
+        assert_eq!(fold_key("security\u{110BD}-review/x"), "security-review/x");
+        assert_eq!(
+            fold_key("\u{FEFF}Security-Review/A\u{200B}"),
+            "security-review/a"
+        );
+    }
+
+    #[test]
+    fn an_ordinary_key_is_not_person_only() {
+        assert!(person_only("ask/ordinary", Some("chat:x")).is_none());
+    }
+}
+
+// review/220-r5 repro (red at 348326363): this fold trims before it drops invisible characters, so an invisible
+// character next to white space survives as a leading space; PR #230's fold_key (NFKC, drop invisibles, then trim, then
+// lower case) reads the same key as `security-review/...`. The two folds disagree once both land, and this one is not
+// idempotent. #230 also drops U+0600..U+0605, U+06DD, U+070F, U+08E2, U+FFF0..U+FFFB and others this list keeps.
+#[cfg(test)]
+mod repro_220_r5_fold {
+    use super::*;
+
+    #[test]
+    fn repro_220_r5_fold_key_agrees_with_pr_230_and_is_idempotent() {
+        for key in [
+            "\u{200B} security-review/abc",
+            "security-review/abc \u{FEFF}",
+            "\u{0600}security-review/abc",
+        ] {
+            let once = fold_key(key);
+            assert_eq!(once, "security-review/abc", "{key:?} folds to {once:?}");
+            assert_eq!(fold_key(&once), once, "{key:?}: the fold is not idempotent");
+            assert!(
+                person_only(key, Some("chat:author-lead")).is_some(),
+                "{key:?} was answerable by a chat"
+            );
+        }
+    }
+}
