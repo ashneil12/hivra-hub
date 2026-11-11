@@ -1587,3 +1587,67 @@ fn review225_the_block_does_not_carry_a_closing_fence() {
         "the block carries a closing fence from the question:\n{block}"
     );
 }
+
+/// The Inbox list (and the brief) stop at 20 rows, but matching reads every active row: an older answer Ash cannot
+/// see or retire from the Inbox still answers.
+#[test]
+fn review225_an_answer_past_the_list_cap_cannot_answer_unseen() {
+    let store = store();
+    let mut conn = store.lock_conn().unwrap();
+    set_standing_enabled(&conn, true).unwrap();
+    insert_answered(
+        &conn,
+        "hivra",
+        "old-host",
+        "Which host runs the nightly billing export?",
+        "the old box",
+        1,
+    );
+    for n in 0..20 {
+        insert_answered(
+            &conn,
+            "hivra",
+            &format!("filler-{n}"),
+            &format!("Filler question number {n} about colours?"),
+            "blue",
+            10 + n,
+        );
+    }
+    let listed = standing_rows(&conn, "hivra").unwrap();
+    assert_eq!(listed.len(), 20);
+    let visible = listed.iter().any(|row| row.decision_key == "old-host");
+    let mut again = ask_input("fm", "billing-host", &[]);
+    again.question = "Which host should run the nightly billing export now?".into();
+    let out = ask(&mut conn, again, 100).unwrap();
+    assert!(
+        visible || !out.matched,
+        "S for old-host is not in the Inbox list (Ash cannot retire it there) but still answered: {:?}",
+        out.decision.answer
+    );
+}
+
+/// Pre-existing on main (not introduced by #225): a chat records an answer on a delivery gate's key through
+/// ask_person's `answer` field. person_only does not cover `gate/`, and decisions_answer forwards any `gate/` answer to
+/// the gate without looking at who gave it.
+#[test]
+fn review225_main_a_chat_cannot_answer_a_gate_key() {
+    let store = store();
+    let mut conn = store.lock_conn().unwrap();
+    let mut gate = ask_input("gate", "gate/run-9", &[]);
+    gate.options = vec!["Approve".into(), "Fix".into(), "Skip".into()];
+    gate.recommended = None;
+    ask(&mut conn, gate, 1).unwrap();
+    let out = answer(
+        &mut conn,
+        "hivra",
+        "gate/run-9",
+        "Approve",
+        Some("chat:fm".into()),
+        2,
+    );
+    assert!(
+        out.is_err(),
+        "a chat answered a delivery gate: {:?}",
+        out.map(|o| o.applied)
+    );
+}
