@@ -1008,6 +1008,23 @@ pub fn harness_spawn(
             Some(crate::model_router::prepare_routed_session(route)?)
         }
     };
+    // WP-178 item 3.1: with the agent sandbox setting on, the CLI starts under the macOS sandbox profile. Fail closed:
+    // a sandbox that cannot start refuses the start here, before anything is reserved or stopped, and never falls back
+    // to a plain start (agent_sandbox::sandboxed_launch).
+    let data_dir = app.path().app_data_dir().ok();
+    let (launch_program, launch_lead) = if crate::agent_sandbox::enabled(data_dir.as_deref()) {
+        let home = std::env::var_os("HOME").map(PathBuf::from).ok_or_else(|| {
+            "The agent did not start: HOME is not set, so the macOS sandbox cannot be built."
+                .to_string()
+        })?;
+        crate::agent_sandbox::sandboxed_launch(
+            std::ffi::OsStr::new(&command),
+            &home,
+            std::path::Path::new(crate::agent_sandbox::SANDBOX_EXEC),
+        )?
+    } else {
+        (std::ffi::OsString::from(&command), Vec::new())
+    };
     let _reservation = crate::worktree_lifecycle::reserve_spawn(&workdir)?;
     let (epoch, kill_all, prev) = host.begin_spawn(&session_id);
     if let Some(prev) = prev {
@@ -1032,18 +1049,19 @@ pub fn harness_spawn(
     // macOS: start the CLI as its own responsible process, so a privacy prompt names the CLI and not the Hub
     // (src/disclaim.rs). Same pid, pipes, cwd and process group; a plain spawn when it can't or is switched off.
     let disclaim_launcher = crate::disclaim::launcher_for(
-        std::ffi::OsStr::new(&command),
+        launch_program.as_os_str(),
         app.path().app_data_dir().ok().as_deref(),
     );
     let mut cmd =
-        crate::disclaim::command(std::ffi::OsStr::new(&command), disclaim_launcher.as_deref());
+        crate::disclaim::command(launch_program.as_os_str(), disclaim_launcher.as_deref());
     if dev_claude {
         if let Some(config_dir) = crate::instance::dev_claude_config_dir()? {
             cmd.env("CLAUDE_CONFIG_DIR", &config_dir)
                 .env("CLAUDE_SECURESTORAGE_CONFIG_DIR", &config_dir);
         }
     }
-    cmd.args(&devin_config)
+    cmd.args(&launch_lead)
+        .args(&devin_config)
         .args(&args)
         .current_dir(&workdir)
         .stdin(Stdio::piped())

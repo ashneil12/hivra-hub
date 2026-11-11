@@ -38,6 +38,10 @@ export function useFirstMateCheckoutGuard(
       void guard.end(id).then((turn) => {
         if (turn) console.warn(`First mate edited its project: ${turn.flag.summary}`);
       });
+      // WP-178 3.3/3.4: report only, never blocks or reverts.
+      void guard.endProtected(id).then((report) => {
+        if (report) console.warn(`First mate turn touched protected paths: ${report.summary}`);
+      });
     }
   }, [key, guard]);
 }

@@ -5,6 +5,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { isMonoSession } from "../../monos/model/mono";
 import type { Session } from "../../sessions/model/session";
+import { checkTurnForProtectedPaths, type ProtectedTouchReport } from "../../../integrations/harness/core/protectedPaths";
 
 export type CheckoutSnapshot = {
   dir: string;
@@ -29,12 +30,15 @@ export type CheckoutGuardBackend = {
   snapshot(cwd: string): Promise<CheckoutSnapshot>;
   check(before: CheckoutSnapshot): Promise<CheckoutFlag | null>;
   revert(before: CheckoutSnapshot, flag: CheckoutFlag, paths: string[]): Promise<RevertOutcome>;
+  /** WP-178 3.3/3.4: fingerprints of .git/hooks, .git/config and the secret places (report only). Optional. */
+  protectedSnapshot?(cwd: string): Promise<Record<string, string>>;
 };
 
 export const tauriCheckoutGuard: CheckoutGuardBackend = {
   snapshot: (cwd) => invoke("firstmate_checkout_snapshot", { cwd }),
   check: (before) => invoke("firstmate_checkout_check", { before }),
   revert: (before, flag, paths) => invoke("firstmate_checkout_revert", { before, flag, paths }),
+  protectedSnapshot: (cwd) => invoke("firstmate_protected_fingerprints", { cwd }),
 };
 
 /** A flagged first-mate turn: which chat, what changed, and the snapshot a revert needs. */
@@ -68,6 +72,10 @@ function keepTurnFingerprints(fresh: CheckoutFlag, turn: CheckoutFlag): Checkout
 
 export class FirstMateTurnGuard {
   private readonly open = new Map<string, Promise<CheckoutSnapshot | undefined>>();
+  private readonly openProtected = new Map<
+    string,
+    { dir: string; before: Promise<Record<string, string> | undefined> }
+  >();
   private flags: FlaggedTurn[] = [];
   private readonly listeners = new Set<() => void>();
 
@@ -83,6 +91,29 @@ export class FirstMateTurnGuard {
       sessionId,
       this.backend.snapshot(cwd).catch(() => undefined),
     );
+    if (this.backend.protectedSnapshot) {
+      const protectedSnapshot = this.backend.protectedSnapshot.bind(this.backend);
+      this.openProtected.set(sessionId, {
+        dir: cwd,
+        before: protectedSnapshot(cwd).catch(() => undefined),
+      });
+    }
+  }
+
+  /**
+   * The after-turn protected-file report for a turn: what under .git/hooks, .git/config or the secret places changed.
+   * Report only: nothing is blocked or reverted. Undefined when nothing changed or the turn was never seen starting.
+   */
+  async endProtected(sessionId: string): Promise<ProtectedTouchReport | undefined> {
+    const pending = this.openProtected.get(sessionId);
+    this.openProtected.delete(sessionId);
+    if (!pending || !this.backend.protectedSnapshot) return undefined;
+    const before = await pending.before;
+    if (!before) return undefined;
+    const after = await this.backend.protectedSnapshot(pending.dir).catch(() => undefined);
+    if (!after) return undefined;
+    const report = checkTurnForProtectedPaths(before, after);
+    return report.touched.length > 0 ? report : undefined;
   }
 
   /** The turn ended: the flag, if the checkout changed in a way no landing explains. */

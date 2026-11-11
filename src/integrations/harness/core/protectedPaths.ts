@@ -1,7 +1,10 @@
 // WP-178: the protected-paths file. Files that decide what runs next (git hooks and config, shell profiles, and each
 // CLI's settings, hooks, commands and skills) and that an agent must not change silently. Paths are checkout-relative
 // (".git/hooks/**") or home-relative ("~/.zshrc"). The after-turn report names what a turn touched; it never blocks a
-// write and never reverts a file. Blocking needs the sandbox mechanism Ash picks (docs/hivra/work/WP-178-agent-os-sandbox.md).
+// write and never reverts a file. Blocking is the macOS sandbox profile (src-tauri/src/agent_sandbox.rs), on by setting.
+// The secret places (SSH keys, cloud logins, keychains) are a second list in the same report, read from the shared JSON
+// src/shared/security/agentSecretPaths.json that the sandbox profile also reads.
+import secretList from "../../../shared/security/agentSecretPaths.json";
 
 export type ProtectedRule = {
   /** A glob: `**` any depth, `*` one segment. Checkout paths are root-relative; home paths start with `~/`. */
@@ -96,10 +99,30 @@ export function diffFingerprints(before: Record<string, string>, after: Record<s
   return [...keys].filter((k) => before[k] !== after[k]).sort();
 }
 
-export type ProtectedTouch = { path: string; pattern: string; why: string };
+/** `protected`: a file that decides what runs next. `secret`: a place of logins or keys. */
+export type ProtectedKind = "protected" | "secret";
+
+export type ProtectedTouch = { path: string; pattern: string; why: string; kind: ProtectedKind };
 
 /** What the after-turn check reports. It names what changed and never blocks or reverts anything. */
 export type ProtectedTouchReport = { touched: ProtectedTouch[]; summary: string };
+
+/** The secret places, home-relative, from the shared JSON list. Read-only for the check: nothing is blocked here. */
+export const SECRET_PATHS: readonly ProtectedRule[] = [
+  ...secretList.secretDirs.map((dir) => ({ pattern: `~/${dir}/**`, why: "a folder of logins or keys" })),
+  ...secretList.secretFiles.map((file) => ({ pattern: `~/${file}`, why: "a file of logins" })),
+  ...secretList.cliLoginFiles.map((file) => ({ pattern: `~/${file}`, why: "a coding CLI's own login file" })),
+];
+
+const SECRET_COMPILED = SECRET_PATHS.map((rule) => ({ rule, re: globToRegExp(rule.pattern) }));
+
+/** The first secret place a home path names, or null. Only `~/` paths can be secret places. */
+export function matchSecret(path: string): ProtectedRule | null {
+  const p = normalize(path);
+  if (!p.startsWith("~/")) return null;
+  const hit = SECRET_COMPILED.find(({ re }) => re.test(p));
+  return hit ? hit.rule : null;
+}
 
 export function reportProtectedTouches(changedPaths: readonly string[]): ProtectedTouchReport {
   const seen = new Set<string>();
@@ -109,7 +132,12 @@ export function reportProtectedTouches(changedPaths: readonly string[]): Protect
     if (seen.has(path)) continue;
     seen.add(path);
     const rule = matchProtected(path);
-    if (rule) touched.push({ path, pattern: rule.pattern, why: rule.why });
+    if (rule) {
+      touched.push({ path, pattern: rule.pattern, why: rule.why, kind: "protected" });
+      continue;
+    }
+    const secret = matchSecret(path);
+    if (secret) touched.push({ path, pattern: secret.pattern, why: secret.why, kind: "secret" });
   }
   const summary =
     touched.length === 0

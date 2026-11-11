@@ -81,20 +81,49 @@ everything outside its list. The deny-default profile is what would close that g
 
 ### What is built, and what is not
 
-- Built: the probe and its test (`scripts/agent-sandbox-probe.mjs`), the protected-paths list with 31 tests in
-  `protectedPaths.ts`, and `checkTurnForProtectedPaths`, the report-only after-turn check.
-- Not built, on purpose: the check is not wired into a turn (the fingerprint snapshot needs a Rust command in
-  `lib.rs`, a shared hotspot, and waits on the mechanism). No confinement of any runtime. The secret-paths list (item 3),
-  fail-closed startup (item 4) and refusal logging (item 5) are not built in this round.
+- Built: the probe and its test (`scripts/agent-sandbox-probe.mjs`), the protected-paths list in `protectedPaths.ts`,
+  the secret-paths list, `checkTurnForProtectedPaths` (the report-only after-turn check), its wiring into first-mate
+  turns, the macOS sandbox profile behind a setting (`agent_sandbox.rs`), and fail-closed startup.
+- Not built: refusal logging (item 5 above) and a Linux or Windows boundary.
 
-### Decisions for Ash
+### Decisions (Ash's picks, built in this round)
 
-1. macOS: keep the denylist as the first boundary (measured, cheap, leaks outside its list), or hold until the
-   deny-default profile starts a binary and its cost is measured?
-2. Linux and Windows: measure on a real machine before picking, or pick now and measure later?
-3. After-turn check: wire it into every turn (needs a Rust fingerprint command in `lib.rs`), or keep it on first-mate
-   turns only, as WP-10 does?
-4. Secret-paths list: build it in the next round, with the same report-only first step?
+Ash approved the lead's picks. Each one below is what the code does now.
+
+1. **macOS: the denylist is the first boundary, off by default.** It is on only when the setting is on. The setting is
+   `<app data>/settings/agent-sandbox` containing `on`, or the environment switch `MONOCODE_AGENT_SANDBOX=1`, which
+   wins over the file. When it is on, `harness_spawn` starts each agent CLI as
+   `/usr/bin/sandbox-exec -p <profile> <cli> <args>` (src-tauri/src/agent_sandbox.rs). The profile denies reads and
+   writes of the secret places and shell profiles, and writes to `.git/hooks` and `.git/config` in any checkout. The
+   denylist leaks everything it does not list (measured above), and that stays a known limit. The deny-default profile
+   is not built: it has not started a binary in this measurement.
+2. **Fail closed.** Before a sandboxed start, `sandbox-exec` runs `/usr/bin/true` under the same profile. If that does
+   not start, the agent does not start, and the chat gets a plain line. The app never falls back to an unsandboxed
+   start while the setting is on.
+3. **Linux and Windows: measured later, hidden for now.** Neither boundary is measured on a real machine yet (see the
+   matrix), so there is no setting for either. The setting reads as off and is not offered off macOS
+   (`agent_sandbox::enabled` returns false outside macOS). Measure Landlock and AppContainer on a real machine before a
+   pick.
+4. **After-turn check: first-mate turns only, report only.** `FirstMateTurnGuard.endProtected` compares the fingerprints
+   taken at the turn's start and end (`firstmate_protected_fingerprints`, src-tauri/src/firstmate/protected_paths.rs).
+   It names what changed in `.git/hooks`, `.git/config` and the secret places, and never blocks or reverts anything.
+   The fingerprints for `.git/hooks` and `.git/config` are content hashes. The secret places are size and modified time
+   only, never content, so the check does not read keys.
+5. **Secret-paths list: report only, in the same after-turn check.** The list lives in one shared file,
+   `src/shared/security/agentSecretPaths.json`. The TypeScript check and the Rust sandbox profile both read it, so they
+   cannot drift. The CLI's own login files (`~/.claude.json`, `~/.claude/.credentials.json`, `~/.codex/auth.json`) are
+   reported but not denied by the sandbox, because the CLI reads them to log in, and a denial would stop it from
+   starting. That is a gap Ash should decide on.
+
+Not built in this round, on purpose:
+- A settings toggle in the app UI. The setting is a file and an environment switch, as `disclaim` is. A toggle needs
+  SettingsView, which this package keeps hook-only.
+- Refusal entries in the activity log (WP-78). A refusal shows as the process error; the log row is not wired.
+- The shared list from PR #201 (`src/shared/security/agentConfigPaths.json`). It is on that PR's branch and not on
+  main, so it is not imported here. The sandbox's secret list is its own file until #201 merges; then the two should
+  be reconciled.
+- Confinement for the user's own terminal (WP-44 and the terminal module). Only the agent CLI process is started under
+  the profile, not every shell the terminal opens.
 
 ### Done when, status
 

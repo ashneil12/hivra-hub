@@ -48,6 +48,7 @@ mod crew;
 mod devin_config;
 mod devin_usage;
 // WP-131: desktop dictation into the composer draft. Off in this build (see dictation.rs); never sends.
+mod agent_sandbox;
 mod dictation;
 pub mod disclaim;
 mod explore_agent; // WP-143: read-only check for an Explore agent the person already defined.
@@ -638,6 +639,7 @@ pub fn run() {
             firstmate::firstmate_set_question_owner,
             firstmate::firstmate_parse_report,
             firstmate::firstmate_checkout_snapshot,
+            firstmate::protected_paths::firstmate_protected_fingerprints,
             firstmate::firstmate_checkout_check,
             firstmate::firstmate_checkout_revert,
             // Hivra WP-40: completion and verdict gates.
