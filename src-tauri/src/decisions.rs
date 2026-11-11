@@ -1838,7 +1838,9 @@ fn answer_both(
     }
     // A captain answer that is not exactly one of the options on this card is not written. Exact, so a
     // shorter or differently cased word is not an option. An empty list refuses every answer.
-    if captain::is_captain(by.as_deref()) && !decision.options.iter().any(|option| option == &answer) {
+    if captain::is_captain(by.as_deref())
+        && !decision.options.iter().any(|option| option == &answer)
+    {
         return Err(format!(
             "Pick one of this card's options: {}.",
             decision.options.join(", ")

@@ -1441,9 +1441,6 @@ mod tests {
             Some("fm"),
             NOW,
         );
-        assert!(
-            taken.as_ref().is_ok_and(|out| out.applied),
-            "{taken:?}"
-        );
+        assert!(taken.as_ref().is_ok_and(|out| out.applied), "{taken:?}");
     }
 }
