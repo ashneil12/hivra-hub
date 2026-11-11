@@ -24,7 +24,7 @@ Open question for the brief: the Paseo study states that an idle chat keeps its 
 
 Result: an idle chat does hold its agent CLI process, but only for about three minutes after its turn settles. The app
 already reclaims it. Reclaim is not built, because the proposed collector, closed state and load path would duplicate
-what exists. Evidence is from reading the code and its tests; no live dev-copy run was made (see PR.md, "could not check").
+what exists. Evidence is from reading the code and its tests; no live dev-copy run was made.
 
 - Claude runs as a persistent child: `--output-format stream-json --input-format stream-json`
   (`src/integrations/harness/providers/claude/claudeProtocol.ts`, `buildClaudeSpawnArgs`). It waits on stdin between turns.
@@ -48,6 +48,18 @@ turn on its way and subagents that have not completed (`claudeHasBackgroundWork`
 every 30 seconds and keeps the chat. Once the work ends, the chat gets a full idle time before it is parked. The warm
 limit skips busy chats too. A provider that throws counts as busy. Tests: `registry.test.ts` ("idle park with background
 work") and `claudeFakeCli.test.ts` (a real background shell and a real subagent through the Claude adapter).
+
+Follow-up, done: every other harness adapter implements `hasBackgroundWork`. Codex reports an open agent row until
+the turn closes it (Codex force-closes leftover rows because a closing state is often missing; a command execution
+is not background work). OpenCode reports child sessions until they go idle or error (no backgrounded shell; an idle
+that arrives before the child is bound is not revived; a retry status stays busy). Cursor reports a background agent
+tool, including a `cursor/task` that arrives after `session/prompt` returns and settles the ones already seen.
+Hermes reports its background map while the session is live (the turn usually waits for the manifest, and a prompt
+error still stops the process). Devin reports a subagent that started with an agent id until `subagent_completed`
+(a spawn with no agent id does not count). Pi and omp report a subagent whose `details.async.state` is `running`
+after the launch tool returns, including a completion that arrives on the next turn. Grok, fx and antigravity report
+none: `session/prompt` is awaited for the whole turn, and their ACP handling has no signal for work that outlives it. Build steps
+2 to 6 of full hibernation were not built. This follow-up is only the other adapters' checks.
 
 ## What to take (ideas only, written from the designs)
 

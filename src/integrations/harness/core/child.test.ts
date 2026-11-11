@@ -360,4 +360,71 @@ describe("child bridge", () => {
     expect(lines).toEqual([]);
     release();
   });
+
+  // WP-134b: a More agents child is started through the one More agents path (harness_spawn with the entry id). The
+  // webview sends no command, no arguments and no environment; the app reads the saved entry and runs only an approved one.
+  it("starts a More agents child with harness_spawn and the entry id only", async () => {
+    installResolvedListeners();
+    mocks.invoke.mockResolvedValue(77);
+    const child = await loadChild();
+    await child.spawnMoreAgentChild("agent-chat", "my-agent", "/repo");
+    expect(mocks.invoke).toHaveBeenCalledTimes(1);
+    expect(mocks.invoke).toHaveBeenCalledWith("harness_spawn", {
+      sessionId: "agent-chat",
+      command: "",
+      args: [],
+      cwd: "/repo",
+      moreAgent: "my-agent",
+    });
+    expect(mocks.invoke.mock.calls.map((call) => call[0])).not.toContain("registry_agent_spawn");
+  });
+
+  it("reaches the exit handler of a More agents child, even when the exit beats the pid", async () => {
+    installResolvedListeners();
+    const spawned = deferred<number>();
+    mocks.invoke.mockImplementation((command: string) =>
+      command === "harness_spawn" ? spawned.promise : Promise.resolve(),
+    );
+    const child = await loadChild();
+    const release = await child.acquireHarnessBridge();
+    const onExit = vi.fn();
+    child.watchChild("agent-chat", vi.fn(), onExit);
+
+    const spawning = child.spawnMoreAgentChild("agent-chat", "my-agent", "/repo");
+    mocks.handlers.get("harness-exit")?.({
+      payload: { sessionId: "agent-chat", code: 3, pid: 77 } as never,
+    });
+    expect(onExit).not.toHaveBeenCalled();
+    spawned.resolve(77);
+    await spawning;
+    expect(onExit).toHaveBeenCalledWith(3);
+
+    // A later exit of the same live child reaches the handler too.
+    const second = vi.fn();
+    child.watchChild("agent-chat", vi.fn(), second);
+    mocks.invoke.mockResolvedValue(78);
+    await child.spawnMoreAgentChild("agent-chat", "my-agent", "/repo");
+    mocks.handlers.get("harness-exit")?.({
+      payload: { sessionId: "agent-chat", code: 0, pid: 78 } as never,
+    });
+    expect(second).toHaveBeenCalledWith(0);
+    release();
+  });
+
+  it("does not hold output for a More agents child whose start failed", async () => {
+    installResolvedListeners();
+    mocks.invoke.mockRejectedValue(new Error("This agent was not found. Check the command in More agents."));
+    const child = await loadChild();
+    const release = await child.acquireHarnessBridge();
+    await expect(child.spawnMoreAgentChild("agent-chat", "my-agent", "/repo")).rejects.toThrow("not found");
+    for (let i = 0; i < 5; i += 1) {
+      mocks.handlers.get("harness-stdout")?.({
+        payload: { sessionId: "agent-chat", line: `late ${i}` } as never,
+      });
+    }
+    const lines: string[] = [];
+    child.watchChild("agent-chat", (line) => lines.push(line), vi.fn());
+    expect(lines).toEqual([]);
+    release();
+  });
 });
