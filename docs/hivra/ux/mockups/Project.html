@@ -1,0 +1,153 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Hivra project</title>
+<!-- Mockup with example data (WP-210..214, docs/hivra/UX.md). Not app code. -->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0;background:#161616}
+a{color:#8ab8f5;text-decoration:none}a:hover{color:#b5d3fa}
+.app{width:100%;min-height:900px;display:flex;flex-wrap:wrap;background:#161616;color:#ececec;font-family:Inter,system-ui,sans-serif;font-size:13px;line-height:1.45}
+.nav{display:flex;flex:0 0 332px;min-height:900px}
+.strip{width:72px;background:#111111;border-right:1px solid #262626;display:flex;flex-direction:column;align-items:center;padding:14px 0;gap:6px;box-sizing:border-box}
+.tile{position:relative;display:flex;flex-direction:column;align-items:center;gap:4px;width:60px;padding:6px 0;border-radius:10px;color:#bdbdbd;font-size:10px}
+.tile.on{background:#262626;color:#ffffff}
+.sq{width:36px;height:36px;border-radius:9px;display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:600;color:#ffffff}
+.badge{position:absolute;top:2px;right:6px;min-width:16px;height:16px;padding:0 4px;box-sizing:border-box;border-radius:8px;background:#e5484d;color:#ffffff;font-size:10px;font-weight:600;display:flex;align-items:center;justify-content:center}
+.busy{position:absolute;top:34px;right:10px;width:8px;height:8px;border-radius:4px;background:#4a9ff5;border:2px solid #111111}
+.side{flex:1 1 auto;background:#1b1b1b;border-right:1px solid #262626;padding:16px 10px;box-sizing:border-box;display:flex;flex-direction:column;gap:2px}
+.ph{padding:0 10px 12px}
+.ph h1{margin:0;font-size:18px;font-weight:600}
+.item{display:flex;align-items:center;gap:10px;min-height:34px;padding:4px 10px;border-radius:7px;color:#d6d6d6}
+.item.on{background:#262626;color:#ffffff}
+.label{font-size:11px;font-weight:600;letter-spacing:.04em;text-transform:uppercase;color:#8f8f8f;padding:16px 10px 6px}
+.av{width:28px;height:28px;border-radius:14px;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:600;color:#111111;flex:0 0 28px}
+.who{display:flex;flex-direction:column;min-width:0}
+.who b{font-weight:500;color:#ececec}
+.who span{font-size:12px;color:#9a9a9a;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.chatrow{display:flex;align-items:center;gap:8px;padding:6px 10px;border-radius:7px;color:#d6d6d6}
+.chatrow span{margin-left:auto;font-size:11px;color:#8f8f8f}
+.main{flex:999 1 480px;min-width:0;display:flex;flex-direction:column;border-right:1px solid #262626}
+.mhead{display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:14px 24px;border-bottom:1px solid #262626}
+.mhead h2{margin:0;font-size:16px;font-weight:600}
+.chip{font-size:12px;font-weight:500;border-radius:12px;padding:3px 10px}
+.toggle{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:12px;color:#bdbdbd;background:transparent;border:1px solid #2c2c2c;border-radius:7px;padding:5px 10px;font-family:inherit}
+.knob{width:26px;height:14px;border-radius:7px;background:#3a3a3a;position:relative;display:inline-block}
+.knob i{position:absolute;left:2px;top:2px;width:10px;height:10px;border-radius:5px;background:#9a9a9a}
+.thread{flex:1;padding:22px 24px;display:flex;flex-direction:column;gap:16px;max-width:760px;width:100%;box-sizing:border-box}
+.you{align-self:flex-end;background:#2a2a2a;border-radius:12px;padding:8px 12px;max-width:75%}
+.lead{display:flex;gap:10px;align-items:flex-start}
+.lead p{margin:0 0 6px}
+.muted{color:#9a9a9a}
+.card{border:1px solid #2a2a2a;border-radius:10px;background:#1b1b1b;margin-top:6px}
+.crow{display:flex;align-items:center;gap:10px;padding:8px 12px;border-top:1px solid #262626;flex-wrap:wrap}
+.crow:first-child{border-top:0}
+.need{border:1px solid #6b2a2c;background:#241718;border-radius:10px;padding:12px 14px;margin-top:6px}
+.btns{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
+.btn{font-family:inherit;font-size:12px;font-weight:500;border-radius:7px;padding:6px 12px;border:1px solid #333333;background:#232323;color:#ececec;min-height:30px}
+.btn.primary{background:#4a9ff5;border-color:#4a9ff5;color:#0b1a2b}
+.compose{margin:0 24px 18px;border:1px solid #2c2c2c;border-radius:12px;background:#1b1b1b;max-width:712px}
+.compose input{width:100%;box-sizing:border-box;background:transparent;border:0;color:#ececec;font-family:inherit;font-size:14px;outline:none;padding:12px 14px}
+.cbar{display:flex;align-items:center;gap:8px;padding:0 10px 10px 14px;font-size:12px;color:#9a9a9a}
+.send{margin-left:auto;width:30px;height:30px;border-radius:8px;background:#4a9ff5;border:0;display:flex;align-items:center;justify-content:center}
+.crew{flex:1 1 300px;max-width:380px;min-width:0;display:flex;flex-direction:column;background:#181818}
+.tabs{display:flex;gap:4px;padding:10px 12px;border-bottom:1px solid #262626}
+.tab{font-size:12px;font-weight:500;padding:5px 10px;border-radius:6px;color:#bdbdbd}
+.tab.on{background:#262626;color:#ffffff}
+.worker{padding:12px 14px;border-bottom:1px solid #262626;display:flex;flex-direction:column;gap:4px}
+.wtop{display:flex;align-items:center;gap:8px}
+.wtop b{font-weight:500;flex:1;min-width:0}
+.pill{font-size:11px;font-weight:600;border-radius:10px;padding:2px 8px}
+.meta{font-size:12px;color:#9a9a9a}
+</style>
+</head>
+<body>
+<div class="app">
+  <div class="nav">
+    <nav class="strip" aria-label="Places">
+      <a class="tile" href="Main.html"><span class="sq" style="background:#3a3a3a">H</span>Home</a>
+      <div style="width:32px;height:1px;background:#2c2c2c;margin:4px 0"></div>
+      <a class="tile" href="Project.html"><span class="sq" style="background:#5b4bd6">EX</span>EXO<span class="badge">1</span><span class="busy"></span></a>
+      <a class="tile on" href="Project.html"><span class="sq" style="background:#d9822b">Hi</span>Hivra<span class="badge">2</span><span class="busy"></span></a>
+      <a class="tile" href="Project.html"><span class="sq" style="background:#2f9e74">Ni</span>Nibbii<span class="badge">1</span><span class="busy"></span></a>
+      <a class="tile" href="Project.html"><span class="sq" style="background:#4a6fa5">MH</span>MonoCode Hub</a>
+      <a class="tile" href="Project.html"><span class="sq" style="background:#b54a6b">RC</span>Recall Checker</a>
+      <a class="tile" href="Project.html"><span class="sq" style="background:#8a6d3b">BD</span>Bark Desk</a>
+      <a class="tile" href="Project.html"><span class="sq" style="background:#c0453a">ST</span>SafeTube<span class="badge">1</span></a>
+      <button class="tile" style="background:transparent;border:0;font-family:inherit" aria-label="Add a project"><span class="sq" style="background:transparent;border:1px dashed #444444;color:#9a9a9a">+</span>Add</button>
+      <a class="tile" style="margin-top:auto" href="Model.html" aria-label="Settings"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#9a9a9a" stroke-width="1.8" aria-hidden="true"><circle cx="12" cy="12" r="3"></circle><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M4.9 19.1 7 17M17 7l2.1-2.1"></path></svg>Settings</a>
+    </nav>
+    <aside class="side" aria-label="Hivra">
+      <div class="ph"><h1>Hivra</h1><div class="muted" style="font-size:12px">~/Projects/monocode-hub</div></div>
+      <div class="item on"><span class="av" style="background:#d9822b;color:#ffffff">Hi</span><span class="who"><b>Coding team</b><span style="color:#ff8a8d">2 need you · 4 working</span></span></div>
+      <div class="item"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#bdbdbd" stroke-width="1.8" aria-hidden="true"><path d="M9 6h11M9 12h11M9 18h11M4 6h.01M4 12h.01M4 18h.01"></path></svg>Tasks<span class="muted" style="margin-left:auto;font-size:12px">12 open</span></div>
+      <div class="item"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#bdbdbd" stroke-width="1.8" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"></rect><path d="M3 9h18M9 9v11"></path></svg>Pages</div>
+      <div class="label">Monos on Hivra</div>
+      <div class="item"><span class="av" style="background:#d8b4fe">Cr</span><span class="who"><b>Critiquito</b><span>Reviewing the new screens</span></span></div>
+      <div class="label">Chats</div>
+      <div class="chatrow">Fix the Windows build<span>12m</span></div>
+      <div class="chatrow">Spend limits review<span>1h</span></div>
+      <div class="chatrow">Phone app plan<span>Tue</span></div>
+      <div class="chatrow" style="color:#8ab8f5">+ New chat</div>
+      <div class="label">Groups</div>
+      <div class="item"><span class="av" style="background:#3a3a3a;color:#ececec">LT</span><span class="who"><b>Leadership team</b><span>3 Monos</span></span></div>
+    </aside>
+  </div>
+
+  <main class="main">
+    <div class="mhead">
+      <h2>Coding team</h2>
+      <span class="muted">Hivra's lead plans the work and runs the workers</span>
+      <a class="chip" style="background:#3a1c1e;color:#ff8a8d" href="NeedsYou.html">2 need you</a>
+      <span class="chip" style="background:#16283d;color:#8ab8f5">4 working</span>
+      <button class="toggle" aria-label="Autopilot is off">Autopilot <span class="knob"><i></i></span> Off</button>
+    </div>
+    <div class="thread">
+      <div class="you">Fix the Windows build on #201, and keep the commit guard work going.</div>
+      <div class="lead">
+        <span class="av" style="background:#d9822b;color:#ffffff">Hi</span>
+        <div style="flex:1;min-width:0">
+          <p>On it. I've split this into two jobs and started a worker on each.</p>
+          <div class="card">
+            <div class="crow"><span class="pill" style="background:#16283d;color:#8ab8f5">Working</span>Windows build fix<span class="muted" style="margin-left:auto">#201 · Grok</span></div>
+            <div class="crow"><span class="pill" style="background:#16283d;color:#8ab8f5">Working</span>Commit guard, round 6<span class="muted" style="margin-left:auto">#227 · Grok</span></div>
+          </div>
+        </div>
+      </div>
+      <div class="lead">
+        <span class="av" style="background:#d9822b;color:#ffffff">Hi</span>
+        <div style="flex:1;min-width:0">
+          <div class="need">
+            <b style="font-weight:600;color:#ff8a8d">Needs you.</b> The Windows build fix stopped after 3 tries. The test that keeps failing reads a short folder name, RUNNER~1, that only Windows uses. Should I try a new plan, or stop for now?
+            <div class="btns"><button class="btn primary">Try a new plan</button><button class="btn">Stop for now</button><button class="btn">Open the worker's chat</button></div>
+          </div>
+        </div>
+      </div>
+      <div class="lead">
+        <span class="av" style="background:#d9822b;color:#ffffff">Hi</span>
+        <div style="flex:1;min-width:0">
+          <p>#217 Spend limits is green and the review passed. Merge it?</p>
+          <div class="btns" style="margin-top:4px"><button class="btn primary">Merge</button><button class="btn">Not yet</button></div>
+        </div>
+      </div>
+    </div>
+    <div class="compose">
+      <input aria-label="Message the coding team" placeholder="Tell the coding team what to do">
+      <div class="cbar">Lead: Claude<span>·</span>Workers: Grok<button class="send" aria-label="Send"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#0b1a2b" stroke-width="2.4" aria-hidden="true"><path d="M12 19V5M5 12l7-7 7 7"></path></svg></button></div>
+    </div>
+  </main>
+
+  <aside class="crew" aria-label="Crew">
+    <div class="tabs"><span class="tab on">Crew</span><span class="tab">Changes</span><span class="tab">Files</span></div>
+    <div class="worker"><div class="wtop"><span class="pill" style="background:#3a1c1e;color:#ff8a8d">Stopped</span><b>Windows build fix</b></div><div class="meta">#201 · 3 checks failing · 3 tries</div></div>
+    <div class="worker"><div class="wtop"><span class="pill" style="background:#16283d;color:#8ab8f5">Working</span><b>Commit guard, round 6</b></div><div class="meta">#227 · checks running · 22 min</div></div>
+    <div class="worker"><div class="wtop"><span class="pill" style="background:#16283d;color:#8ab8f5">Working</span><b>PR watch, round 4</b></div><div class="meta">#228 · writing tests · 31 min</div></div>
+    <div class="worker"><div class="wtop"><span class="pill" style="background:#16283d;color:#8ab8f5">Working</span><b>Chat move fixes</b></div><div class="meta">#214 · round 2 · 28 min</div></div>
+    <div class="worker"><div class="wtop"><span class="pill" style="background:#1d2a22;color:#7fd1a4">Done</span><b>Spend limits</b></div><div class="meta">#217 · checks green · waiting for your merge</div></div>
+    <div class="meta" style="padding:12px 14px">Workers run on Grok. Change it in Crew rules.</div>
+  </aside>
+</div>
+</body>
+</html>

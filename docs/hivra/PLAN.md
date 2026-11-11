@@ -1,6 +1,6 @@
 # Hivra: the build plan
 
-Work packages in thirteen waves, A to M. A wave's packages run in parallel; a package starts when everything it depends on
+Work packages in fourteen waves, A to N. A wave's packages run in parallel; a package starts when everything it depends on
 has merged. Sizes are agent time: S is under two hours, M is half a day, L is about a day.
 
 ## How to take a package
@@ -256,6 +256,23 @@ Per-run and per-period dollar caps are WP-176 (PR #217, spend limits). They are 
 | [201](work/WP-201-pin-github-actions-to-shas.md) | Pin GitHub Actions to commit SHAs, and keep them current | S | WP-153, WP-154, WP-173 | no |
 | [202](work/WP-202-pr-watch-base-moved.md) | PR watch knows when main moved under a pull request | M | WP-155, WP-160, WP-158 | no |
 | [203](work/WP-203-structured-security-review.md) | A structured hard review for security-sensitive packages | M | WP-81, WP-160 | no |
+
+
+### Wave N: one model for every screen (Ash, 11 Nov 2026)
+
+Ash, 11 Nov, on 0.16.15: "visually nothing makes sense" and "home doesnt even work". [UX.md](UX.md) is the model
+every screen follows from now on (three places, one Needs-you list, one name for each thing), with mockups in
+[ux/mockups/](ux/mockups/). Every package here carries before and after screenshots, and the integrating Claude checks
+them by eye against UX.md before merging. Order: 210 and 212 first, then 213, then 211 once PRs #213, #220 and #225 have
+merged (they touch the Inbox panel), then 214 last.
+
+| WP | Title | Size | Depends on | Grok OK |
+| --- | --- | --- | --- | --- |
+| [210](work/WP-210-one-needs-you-list.md) | One Needs-you list that every count reads | L | none | yes |
+| [212](work/WP-212-home-chief-of-staff.md) | Home with the real Chief of Staff | L | 210 | yes |
+| [213](work/WP-213-rail-sidebar-project-screen.md) | Rail, sidebar and the project screen | L | 210 | yes |
+| [211](work/WP-211-needs-you-screen.md) | The Needs you screen replaces the Inbox | M | 210, 213 | yes |
+| [214](work/WP-214-words-and-leftovers.md) | Words, Settings and leftovers | L | 210 to 213 | yes |
 
 ## Running it
 
