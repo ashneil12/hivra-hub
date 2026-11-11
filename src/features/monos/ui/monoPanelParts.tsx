@@ -345,6 +345,7 @@ export function FileField({
   author,
   placeholder,
   autoFocus = false,
+  compose,
 }: {
   monoId: string;
   file: MonoFile;
@@ -355,6 +356,8 @@ export function FileField({
   author: string;
   placeholder: string;
   autoFocus?: boolean;
+  /** The text that is saved. The draft stays what the field shows. */
+  compose?: (draft: string) => string;
 }) {
   const [draft, setDraft] = useState(value);
   const [conflict, setConflict] = useState(false);
@@ -365,7 +368,7 @@ export function FileField({
     setDraft(value);
   }
   const save = async (overwrite = false) => {
-    const text = draft;
+    const text = compose ? compose(draft) : draft;
     try {
       const next = await saveMonoFile(
         monoId,
@@ -373,7 +376,7 @@ export function FileField({
         text,
         overwrite ? undefined : base.current.hash,
       );
-      base.current = { value: text, hash: next };
+      base.current = { value: draft, hash: next };
       setConflict(false);
     } catch (error) {
       if (error instanceof MonoFileConflict) setConflict(true);

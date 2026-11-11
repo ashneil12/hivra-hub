@@ -1,6 +1,8 @@
 use tauri::Manager;
 
 mod account_identity;
+// WP-61: Hivra Cloud. Off by default; no socket is opened until Ash turns it on.
+mod hivra_cloud;
 // WP-78: the activity log.
 mod activity;
 // WP-157: the work log. Not a numbered migration.
@@ -572,6 +574,13 @@ pub fn run() {
             dictation::dictation_support,
             dictation::dictation_start,
             dictation::dictation_stop,
+            // WP-61: Hivra Cloud (off by default).
+            hivra_cloud::hivra_cloud_status,
+            hivra_cloud::hivra_cloud_save,
+            hivra_cloud::hivra_cloud_sign_in,
+            hivra_cloud::hivra_cloud_sign_out,
+            hivra_cloud::hivra_cloud_account,
+            hivra_cloud::hivra_cloud_pair,
             mobile_access::mobile_status,
             mobile_access::mobile_configure,
             mobile_access::mobile_invite,
@@ -728,6 +737,8 @@ pub fn run() {
             steering::steering_settle,
             decisions::decisions_ask,
             decisions::decisions_answer,
+            // WP-215: a first mate notes a call it settled.
+            decisions::decisions_note,
             decisions::decisions_list,
             // WP-156: standing answers stay off until this setting is on.
             decisions::decisions_standing_enabled,

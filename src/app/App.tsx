@@ -75,7 +75,7 @@ import {
 import { delegationTasksHost } from "../features/monos/model/delegationTasks";
 import { withCrewAdvice } from "../features/crew/model/advice";
 import { crewAnyLock, crewLaunchCheck, crewPickFor, crewPolicyForLead, crewPolicyInForce, crewRouteFor, pickMonosFrom, recordCrewFailure, recordCrewPause } from "../features/crew/model/host";
-import { refuseNeverUseLead } from "../features/crew/model/lead";
+import { cliForLeadBrief, refuseBriefedLeadHarness, refuseNeverUseLead } from "../features/crew/model/lead";
 import {
   briefCancelled,
   briefSentAt,
@@ -124,7 +124,7 @@ import { compactionCount } from "../features/memory/model/shownMemory";
 import { profileNote } from "../features/memory/ui/profileForTurn";
 import { ensureMorningHabit } from "../features/chief/model/habit";
 import { readsEveryProject, turnRecallWide } from "../features/chief/model/scope";
-import { leadFor, leadMono, leadSpecFor } from "../features/hub/model/hubLeads";
+import { leadFor, leadMono, leadSpecFor, leadWorkingFolder } from "../features/hub/model/hubLeads";
 import type { HubProject } from "../features/hub/model/types";
 import { useDelegations } from "../features/monos/hooks/useDelegations";
 import { useFollowedBriefs } from "../features/monos/hooks/useFollowedBriefs";
@@ -10894,6 +10894,8 @@ function Workspace({
           },
         });
         if (!lead) throw new Error(`${input.target.leadName}'s chat isn't available.`);
+        // The chat exists now, so judge the CLI it will run before the brief is launched.
+        await refuseBriefedLeadHarness(lead, input.target, input.fromMonoId, crewPolicyInForce);
         const fromName = monoLook(from).name;
         const text =
           typeof input.brief === "string"
@@ -15200,11 +15202,17 @@ function Workspace({
                     `No Lead "${lead}" among the ones you can brief (a Lead of a project you and it are both members of).`,
                   );
                 // WP-141 LOW 7: a Lead on Never use is not briefed, read from the Lead's own project, whatever the brief says.
-                await refuseNeverUseLead(
-                  { ...target, cli: sessionsRef.current.find((session) => session.id === findMono(target.leadId)?.sessionId)?.harness },
-                  mono.id,
-                  crewPolicyInForce,
-                );
+                // The CLI is the one the brief will run: the open chat, else the saved chat, else the chat a new session starts.
+                const cli = await cliForLeadBrief({
+                  mono: findMono(target.leadId),
+                  openSessions: sessionsRef.current,
+                  load: (id) => ensureOpenSessionRef.current(id),
+                  createDefault: async () => {
+                    const folder = leadWorkingFolder(target.leadId) ?? (await homeDir());
+                    return newDefaultSession(folder);
+                  },
+                });
+                await refuseNeverUseLead({ ...target, cli }, mono.id, crewPolicyInForce);
               },
               crewPolicy: (monoId, folder) => crewPolicyInForce(monoId, folder),
               // WP-141: the one gate every worker and session launch passes before its process starts.
