@@ -559,6 +559,20 @@ thread_local! {
     static PROFILE_BUILD_OUTER: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
+/// Runs the login-shell read. It holds the login cache's lock while its shell runs, and with the sandbox on that shell's
+/// container profile is built on this same thread, so that build must not read the login PATH again (the lock is held).
+pub(crate) fn during_login_read<T>(read: impl FnOnce() -> T) -> T {
+    struct Restore(bool);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            let before = self.0;
+            PROFILE_BUILD_OUTER.with(|flag| flag.set(before));
+        }
+    }
+    let _restore = Restore(PROFILE_BUILD_OUTER.with(|flag| flag.replace(true)));
+    read()
+}
+
 fn profile_scoped(
     home: &Path,
     data_dir: Option<&Path>,

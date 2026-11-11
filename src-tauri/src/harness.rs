@@ -4441,7 +4441,9 @@ fn peek_login_shell_path(cache: &Mutex<Option<HashMap<String, String>>>) -> Opti
 fn login_shell_env(name: &str) -> Option<String> {
     let mut cache = LOGIN_SHELL_ENV.lock().ok()?;
     if cache.is_none() {
-        *cache = Some(load_login_shell_env());
+        *cache = Some(crate::agent_sandbox::during_login_read(
+            load_login_shell_env,
+        ));
     }
     cache
         .as_ref()
@@ -6303,3 +6305,33 @@ mod review_r6_repro {
 #[cfg(all(test, unix))]
 #[path = "harness_review_r7_repro.rs"]
 mod review_r7_repro;
+
+#[cfg(all(test, unix))]
+mod login_read_reentry_tests {
+    use super::*;
+
+    /// The login read holds `LOGIN_SHELL_ENV` while its shell runs. With the sandbox on, `contained_command` builds the
+    /// shell's container profile on this same thread, and a profile build reads the login PATH first. That inner build
+    /// must not wait for the lock its own thread holds, or the first read at launch never returns.
+    #[test]
+    fn a_profile_built_inside_the_login_read_does_not_wait_for_it() {
+        let home = std::env::temp_dir().join(format!("hx-reentry-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&home).unwrap();
+        let (tx, rx) = mpsc::channel();
+        let inner_home = home.clone();
+        thread::spawn(move || {
+            let _held = LOGIN_SHELL_ENV.lock().unwrap_or_else(|p| p.into_inner());
+            let built = crate::agent_sandbox::during_login_read(|| {
+                crate::agent_sandbox::container_profile(&inner_home, None)
+            });
+            let _ = tx.send(built.is_ok());
+        });
+        let got = rx.recv_timeout(Duration::from_secs(30));
+        let _ = std::fs::remove_dir_all(&home);
+        assert_eq!(
+            got,
+            Ok(true),
+            "a profile built inside the login read waited for its own lock"
+        );
+    }
+}
