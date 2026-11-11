@@ -986,7 +986,7 @@ import {
   type HeldSeen,
   type QueuedWorker,
 } from "../features/monos/model/workerPool";
-import { subscribeSpend } from "../features/usage/model/spendGate";
+import { subscribeSpend, type TurnOrigin } from "../features/usage/model/spendGate";
 import { noteMonoFailures, setMonoFailuresHost } from "../features/monos/model/monoFailures";
 import { failedTurnMessage } from "../features/monos/model/turnFailure";
 import {
@@ -1293,6 +1293,11 @@ type LinkedWorkItemPanelState = {
 };
 
 type SubmitOptions = ComposerTurnOptions & {
+  /**
+   * Who started the turn, for the spend gate. Only the composer and the quick composer say "person". Every other caller
+   * (habits, automations, agent apps, wakes, continue prompts, first-mate steers) leaves it out, so it is automated.
+   */
+  origin?: TurnOrigin;
   ciRepair?: CiRepairRequest;
   /** Saved alongside the user turn; does not replace the submitted prompt. */
   ciContext?: string;
@@ -8608,6 +8613,7 @@ function Workspace({
           },
           steer: (prepared) =>
             steerHarnessTurn({
+              origin: options?.origin,
               harness: current.harness,
               sessionId,
               cwd: initialWorkCwd,
@@ -8790,6 +8796,7 @@ function Workspace({
               cwd: initialWorkCwd,
             });
             await steerHarnessTurn({
+              origin: options?.origin,
               harness: current.harness,
               sessionId,
               cwd: initialWorkCwd,
@@ -9610,8 +9617,8 @@ function Workspace({
           }
           const sendTurn = (text: string, turnAttachments = prepared) =>
             sendHarnessTurn({
-              // WP-176: the composer is the only person's origin; every other turn is automated for the spend gate.
-              origin: "person",
+              // WP-176: the caller's origin. Only the composer sets "person"; an omitted origin is automated.
+              origin: options?.origin,
               harness: current.harness,
               sessionId,
               cwd: workCwd,
@@ -10126,6 +10133,13 @@ function Workspace({
       return true;
     },
     [submitSession],
+  );
+
+  // The composer's own send is the person's turn for the spend gate. Other callers of onSubmit are automated.
+  const onComposerSubmit = useCallback(
+    (sessionId: string, text: string, attachments: Attachment[] = [], options?: ComposerTurnOptions): boolean =>
+      onSubmit(sessionId, text, attachments, { ...options, origin: "person" }),
+    [onSubmit],
   );
 
   /**
@@ -10845,13 +10859,14 @@ function Workspace({
                   submit: (settle) =>
                     submitSession(id, text, attachments, {
                       ...options,
+                      origin: "person",
                       appRequestId: deliveryId,
                       onSettled: settle,
                     }),
                   onSettled,
                   rejectionMessage: "The monitored session could not start.",
                 })
-              : submitSession(id, text, attachments, options),
+              : submitSession(id, text, attachments, { ...options, origin: "person" }),
           saveDraft: (id, prompt, attachments, requestId) =>
             flushSync(() => onSaveDraft(id, prompt, attachments, requestId)),
         },
@@ -16894,7 +16909,7 @@ function Workspace({
           setSessions(sessionsRef.current);
         },
       }),
-    submit: onSubmit,
+    submit: onComposerSubmit,
     stop: onStopFromUser,
     approval: onApproval,
     question: onQuestionReply,
@@ -17022,7 +17037,7 @@ function Workspace({
     onRuntimeModeChange,
     onSaveDraft,
     onRemoveDraft,
-    onSubmit,
+    onSubmit: onComposerSubmit,
     onCompareModels,
     fanOutForSession,
     onStop: onStopFromUser,

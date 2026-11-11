@@ -5,7 +5,7 @@ import type {
   TaskListMeta,
   TurnIntent,
 } from "../../../features/sessions/model/session";
-import { admitSpendTurn, spendGateActive } from "../../../features/usage/model/spendGate";
+import { admitSpendTurn, noteUnpricedTurn, spendGateActive } from "../../../features/usage/model/spendGate";
 import { requireChatFolder } from "./chatFolder";
 import { credentialBlock } from "./credentialGuard";
 import { invoke, isTauri } from "@tauri-apps/api/core";
@@ -749,7 +749,28 @@ function cancelledTextPrompt(): Error {
   return new Error("By-the-way request cancelled");
 }
 
+let textPromptSeq = 0;
+
+/**
+ * A text prompt (a title, a commit message, a memory or verdict pass) is automated work. It passes the spend gate's
+ * admission like any other automated turn, and what it ran is noted in the ledger as unpriced.
+ */
 export async function runHarnessTextPrompt(
+  input: TextPromptInput & { harness: HarnessId },
+): Promise<string> {
+  const sessionId = input.threadId ?? `text-prompt-${(textPromptSeq += 1)}`;
+  if (spendGateActive()) {
+    const admitted = await admitSpendTurn({ sessionId, cwd: input.cwd, harness: input.harness, model: input.model, origin: "automated" });
+    if (!admitted.ok) throw new Error(admitted.reason);
+  }
+  try {
+    return await runTextPromptUngated(input);
+  } finally {
+    noteUnpricedTurn({ sessionId, cwd: input.cwd });
+  }
+}
+
+async function runTextPromptUngated(
   input: TextPromptInput & { harness: HarnessId },
 ): Promise<string> {
   const adapter = requireHarness(input.harness);
