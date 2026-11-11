@@ -37,4 +37,18 @@ describe("standing answers on a Lead brief", () => {
     });
     expect(off.standingBrief).toBeUndefined();
   });
+
+  it("uses the named Lead's project, and leaves it out when the app has none", async () => {
+    const leadProject = vi.fn(async () => "billing-app");
+    const tasks = delegationTasksHost({
+      backend: {} as DelegationsBackend,
+      tracker: () => null,
+      session: () => undefined,
+      stop: async () => undefined,
+      dropReport: () => undefined,
+      leadProject,
+    });
+    expect(await tasks.leadProject?.({} as never, { id: "ada" }, "hub")).toBe("billing-app");
+    expect(host(async () => "").leadProject).toBeUndefined();
+  });
 });

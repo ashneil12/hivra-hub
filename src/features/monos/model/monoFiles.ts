@@ -464,7 +464,29 @@ export function codingTeamContext(
  */
 export function appendStandingAnswers(text: string, standingAnswers: string | undefined): string {
   const block = standingAnswers?.trim();
-  return block ? `${text}\n\n<standing_answers>\n${block}\n</standing_answers>` : text;
+  if (!block) return text;
+  // A question can contain markup. Escape it so it cannot close the fence. Escaping twice is a no-op.
+  const safe = block.replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  return `${text}\n\n<standing_answers>\n${safe}\n</standing_answers>`;
+}
+
+/** A short token for the standing block, so a running chat's note refreshes when the block changes. */
+export function standingNoteToken(block: string): string {
+  let hash = 5381;
+  for (let i = 0; i < block.length; i += 1) hash = Math.imul(hash, 33) + block.charCodeAt(i);
+  return (hash >>> 0).toString(16);
+}
+
+/**
+ * `undefined` is a failed read: keep the token already on the note, so a blip does not rebuild it.
+ * A successful read, including "" when standing answers are off, hashes that text.
+ */
+export function standingKeyPart(block: string | undefined, previousKey: string | undefined): string {
+  if (block === undefined) {
+    const match = previousKey?.match(/(?:^|\n)standing:([0-9a-f]*)/);
+    return match?.[1] ?? "";
+  }
+  return standingNoteToken(block);
 }
 
 /**

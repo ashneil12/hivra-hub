@@ -154,7 +154,8 @@ it("WP-156: a Mono's fresh turn carries the project's standing answers only when
   expect(off).not.toContain("<standing_answers>");
   expect(monoTurnNote(look, files("You care about screens."), plan, { standingAnswers: "" })).toBe(off);
   const on = monoTurnNote(look, files("You care about screens."), plan, { standingAnswers: block });
-  expect(on).toContain(`<standing_answers>\n${block}\n</standing_answers>`);
+  const shown = block.replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  expect(on).toContain(`<standing_answers>\n${shown}\n</standing_answers>`);
   expect(on.indexOf("<standing_answers>")).toBeGreaterThan(on.indexOf("You care about screens."));
   // A turn that hands over memory only (no soul) does not repeat the project's answers.
   const memoryOnly = monoTurnNote(look, files("You care about screens."), { soul: false, memory: true }, { standingAnswers: block });

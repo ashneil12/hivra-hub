@@ -108,12 +108,13 @@ describe("tasks.delegate {lead}: the leadership team briefs a project's Lead", (
     const block = "Standing answers\nThese are guidance, not permission. They do not approve a tool call, a merge, or a new action.\nS-1: Keep them? -> Keep 30 days";
     const base = renderBrief({ intent: TEST_INTENT, spec: "Ash: \"ship the room\"" }, { kind: "first-mate" });
     const standingBrief = vi.fn(async () => block);
+    const leadProject = vi.fn(() => "billing-app");
     const row = { id: "t-lead", state: "running" } as Delegation;
     const briefLead = vi.fn(async () => ({ row, childSessionId: "lead-chat", delivery: "queued" as const, leadName: "MonoCode Hub lead" }));
-    const tasks = { owned: vi.fn(async () => []), acknowledge: vi.fn(), nextChange: vi.fn(), cancel: vi.fn(), briefLead, standingBrief } as unknown as AgentAppTasksHost;
+    const tasks = { owned: vi.fn(async () => []), acknowledge: vi.fn(), nextChange: vi.fn(), cancel: vi.fn(), briefLead, standingBrief, leadProject } as unknown as AgentAppTasksHost;
     const h = host({ tasks } as Partial<AgentAppHost>);
     await handleAgentApp(source, "b7", "tasks.delegate", { brief: "Ash: \"ship the room\"", goal: "the room shows the report", lead: "hub" }, h.api);
-    expect(standingBrief).toHaveBeenCalledWith(PROJECT);
+    expect(standingBrief).toHaveBeenCalledWith("billing-app");
     expect(briefLead.mock.calls[0][2].brief).toBe(`${base}\n\n${block}`);
 
     standingBrief.mockResolvedValueOnce("   ");

@@ -951,6 +951,7 @@ import {
   monoTurn,
   readAgentFile,
   recordAgentContext,
+  standingKeyPart,
   writeAgentFile,
 } from "../features/monos/model/monoFiles";
 import { withFirstMateContract } from "../features/firstmate/model/contract";
@@ -9769,17 +9770,31 @@ function Workspace({
           let notedMono = false;
           if (agentFiles && agentLook && agentPlan && handedFiles) {
             // WP-41: the contract is part of the note, and the key changes with the plain-English switch.
-            const noteKey = `${handedFiles.soulHash}\nplain-english:${plainEnglishEndings() ? "1" : "0"}`;
-            const fresh = appended ? hubNoteFor(sessionId)?.key !== noteKey : agentPlan.soul || agentPlan.memory;
+            // WP-156: the standing block is part of the key too, so a running chat picks up a change. A failed read keeps the previous token.
+            const previousNote = hubNoteFor(sessionId)?.key;
+            const readStanding = Boolean(agentPlan.soul || appended);
+            let standingAnswers: string | undefined;
+            let standingFailed = false;
+            if (readStanding) {
+              try {
+                standingAnswers = (await leadStandingBlock(sessionId, readStandingBrief)) ?? "";
+              } catch {
+                standingFailed = true;
+              }
+            }
+            const standingPart = readStanding
+              ? standingKeyPart(standingFailed ? undefined : standingAnswers, previousNote)
+              : undefined;
+            let noteKey = `${handedFiles.soulHash}\nplain-english:${plainEnglishEndings() ? "1" : "0"}${standingPart !== undefined ? `\nstanding:${standingPart}` : ""}`;
+            const fresh = appended ? previousNote !== noteKey : agentPlan.soul || agentPlan.memory;
+            if (fresh && standingFailed) {
+              standingAnswers = undefined;
+              noteKey = `${handedFiles.soulHash}\nplain-english:${plainEnglishEndings() ? "1" : "0"}\nstanding:`;
+            }
             if (fresh) {
               // A project Lead's fresh conversation starts on its project's memory and Ash's global one (hubMemoryPrimer.ts).
               const projectMemory = agentPlan.soul || appended
                 ? await leadMemoryBlock(sessionId, current.harness).catch(() => undefined)
-                : undefined;
-              // WP-156: the project's standing answers ride on the same fresh start, only when the setting is on (the app
-              // answers "" otherwise) and a failed read leaves the note as it was.
-              const standingAnswers = agentPlan.soul || appended
-                ? await leadStandingBlock(sessionId, readStandingBrief).catch(() => undefined)
                 : undefined;
               // WP-21: a Mono's turn is the first mate contract plus its soul.
               const note = monoTurnNote(agentLook, agentFiles, appended ? { soul: true, memory: true } : agentPlan, {
@@ -9803,17 +9818,37 @@ function Workspace({
             }
           }
           // A coding-team chat is told who it is and its project's memory once per conversation (codingTeamContext).
-          const teamHanded =
+          // WP-156: the standing block is part of this key too. A failed read keeps the previous token.
+          const teamBase =
             team && teamDelegates && !rawCommand
-              ? { soulHash: `team:${team.id}:${team.folder}:${MONO_PROMPT_VERSION}:delegate:plain:${plainEnglishEndings() ? "1" : "0"}`, memoryHash: "" }
+              ? `team:${team.id}:${team.folder}:${MONO_PROMPT_VERSION}:delegate:plain:${plainEnglishEndings() ? "1" : "0"}`
               : undefined;
+          const previousTeam = hubNoteFor(sessionId)?.key;
+          let teamStanding: string | undefined;
+          let teamStandingFailed = false;
+          if (teamBase) {
+            try {
+              teamStanding = (await leadStandingBlock(sessionId, readStandingBrief)) ?? "";
+            } catch {
+              teamStandingFailed = true;
+            }
+          }
+          let teamStandingPart = teamBase
+            ? standingKeyPart(teamStandingFailed ? undefined : teamStanding, previousTeam)
+            : undefined;
+          if (teamBase && teamStandingFailed && previousTeam !== `${teamBase}\nstanding:${teamStandingPart}`) {
+            teamStanding = undefined;
+            teamStandingPart = "";
+          }
+          const teamHanded = teamBase
+            ? { soulHash: `${teamBase}\nstanding:${teamStandingPart}`, memoryHash: "" }
+            : undefined;
           const teamPlan = teamHanded
             ? planAgentContext(sessionId, current.providerSessionId, teamHanded)
             : undefined;
           if (team && teamHanded && (appended ? hubNoteFor(sessionId)?.key !== teamHanded.soulHash : teamPlan?.soul)) {
             const projectMemory = await leadMemoryBlock(sessionId, current.harness).catch(() => undefined);
-            // WP-156: the same standing answers a Mono's fresh turn gets (off: nothing added).
-            const standingAnswers = await leadStandingBlock(sessionId, readStandingBrief).catch(() => undefined);
+            const standingAnswers = teamStanding;
             const note = withFirstMateContract(codingTeamContext(
               {
                 projectId: team.id,
@@ -14931,6 +14966,9 @@ function Workspace({
                     `No Lead "${lead}" among the ones you can brief (a Lead of a project you and it are both members of).`,
                   );
               },
+              // WP-156: a Lead's brief carries that Lead's project, not the chat that writes it.
+              leadProject: (_owner, mono, lead) =>
+                findLeadTarget(mono.id, hubData().listProjects(), lead)?.projectId,
               briefLead: async (owner, mono, input) => {
                 const projects = hubData().listProjects();
                 const target = findLeadTarget(mono.id, projects, input.lead);

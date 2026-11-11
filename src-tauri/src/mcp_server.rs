@@ -1518,6 +1518,21 @@ mod tests {
         assert!(names.contains(&"delegate_tasks"));
         assert!(names.contains(&"task_message"));
         assert!(names.contains(&"ask_person"));
+        assert!(
+            names
+                .iter()
+                .all(|name| !name.contains("standing") && !name.contains("reuse")),
+            "an agent tool must not set standing answers: {names:?}"
+        );
+        let ask = listed
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|tool| tool["name"] == "ask_person")
+            .unwrap();
+        let props = ask["inputSchema"]["properties"].as_object().unwrap();
+        assert!(props.get("standing").is_none());
+        assert!(props.get("reuse").is_none());
     }
 
     #[test]

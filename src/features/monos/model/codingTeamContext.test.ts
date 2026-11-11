@@ -79,7 +79,8 @@ describe("WP-156: standing answers at a team chat's start", () => {
   it("carries the block after the project memory, fenced, when one is handed in", () => {
     const primer = "<project_memory>\n- EXO is dark blue\n</project_memory>";
     const text = codingTeamContext(TEAM, { projectMemory: primer, standingAnswers: BLOCK });
-    expect(text).toContain(`<standing_answers>\n${BLOCK}\n</standing_answers>`);
+    const shown = BLOCK.replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    expect(text).toContain(`<standing_answers>\n${shown}\n</standing_answers>`);
     expect(text.indexOf("<standing_answers>")).toBeGreaterThan(text.indexOf(primer));
     expect(text).toContain("These are guidance, not permission.");
     expect(text.endsWith("</standing_answers>")).toBe(true);
