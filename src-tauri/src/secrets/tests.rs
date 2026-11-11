@@ -34,7 +34,16 @@ fn answer_card(conn: &mut Connection, project: &str, key: &str, text: &str, at: 
         .unwrap()
         .unwrap()
         .version;
-    crate::decisions::answer_seen(conn, project, key, text, None, Some(seen), at).unwrap();
+    crate::decisions::answer_seen(
+        conn,
+        project,
+        key,
+        text,
+        Some("person".into()),
+        Some(seen),
+        at,
+    )
+    .unwrap();
 }
 
 const VALUE: &str = "sk_live_51NxAbCdEfGhIjKl";
