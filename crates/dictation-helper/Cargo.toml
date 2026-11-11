@@ -10,11 +10,18 @@ publish = false
 name = "monocode-dictation"
 path = "src/main.rs"
 
+[features]
+# Smoke test only (tests/smoke.rs): recognises a recorded file, with no parent check and no microphone. Never shipped.
+smoke = []
+
 [dependencies]
 serde.workspace = true
 serde_json.workspace = true
 
 [target.'cfg(target_os = "macos")'.dependencies]
 block2 = "0.6.2"
+core-foundation = "0.10"
+libc = "0.2"
 objc2 = { version = "0.6", features = ["exception"] }
 objc2-foundation = { version = "0.3", features = ["NSException", "NSString"] }
+security-framework = "3"
