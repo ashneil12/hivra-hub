@@ -469,21 +469,27 @@ assumed one.
   that the caller is a Mono. A Mono can build a copy of the app signed with the daily identity, install it under
   `~/Applications/MonoCode Hub.app/Contents/MacOS`, and pass the keychain-subcommand check (`instance.rs`, the refusal
   for `secret-run` and `connector-run` outside the app's own folder). That copy then reads the vault without a card. The
-  check does not stop it, so this is a known limit until ship refuses agent callers. Open for Ash to decide.
+  check does not stop it, so this is a known limit until ship refuses agent callers. Open for Ash to decide (Scenario C).
+  The vault should not hold real keys until Ash decides that.
 - **A setsid or daemonized child outlives the run (round 4, H4).** The command's process group is ended when the command
   ends. A child that calls `setsid`, or daemonizes, is in another group and is not reached by that kill. It keeps the
   value in its environment after the run ends, until it exits by itself.
-- **The child has no account config (round 4, N2).** Each run gets an empty home folder for its own life, and
-  `HOME`, `CURL_HOME` and `XDG_CONFIG_HOME` point at it, so the account's `~/.curlrc`, `~/.gitconfig` and similar files
-  never reach the child. A run that needs the account's config is not offered that choice on the card yet.
-- **The child's PATH holds only folders the account cannot write (round 4, N3).** The app still resolves a bare program
-  name on the full search path, so a program under a folder the account owns (Homebrew's, when that folder is the
-  account's) is found and the card warns about it, but it is not on the child's PATH, and Always is not offered for it.
-  The search order puts the system folders first.
-- **Always is offered only for a short list (round 4, N4, N7).** The list is `ALWAYS_OFFERED_FOR` in `secrets/mod.rs`
-  (programs that run no code: `true`, `echo`, `cat`, `curl`, `wget`, and similar). Any other program asks every time,
-  and a program that runs code (or any script with a `#!` line) is offered Always only when the person has turned that
-  choice on. A program in a folder the account can write is never offered Always.
+- **The child has no account config (round 5).** `HOME`, `CURL_HOME` and `XDG_CONFIG_HOME` point at a folder the account
+  cannot write (`/var/empty` when that folder is sealed). `WGETRC` is `/dev/null`. The run does not make a home under the
+  temporary directory, and it does not delete `/var/empty`. If no sealed folder exists, the run is refused. "Use my own
+  config" is not offered. Windows keeps a private temporary home. Folder rules do not apply there.
+- **The child's PATH is system folders first (round 5).** A secret run's PATH starts with `/usr/bin`, `/bin`, `/usr/sbin`
+  and `/sbin`, then other folders the account cannot write. Connector launches are unchanged and still look in Homebrew
+  first, so a local connector finds Homebrew `python3` and `git`.
+- **Always is not offered (round 5).** A secret card offers Once and No only. A stored Always grant does not skip the card.
+  curl and wget can read config files and run helpers the card does not show, so they are not a special case. An app-built
+  curl that forces `-q` and allows only `--variable %ENV`, `--expand-header`, `-X`, `-H` and `-d` as literals plus one https
+  URL, and refuses `-K`, `--config`, `@file`, `--engine`, `--trace*`, `--libcurl`, `-o`, `-D`, `--stderr` and `--proxy`, is
+  how Always could return later. That form is not built. A card for curl, wget, or a program under Homebrew says the program
+  can read config files and run helpers.
+- **The writable-path check does not walk libraries (round 5).** It sees a folder on the way to the program after links are
+  resolved. It sees a Homebrew library beside the program only when the program itself is under Homebrew. A program in a
+  system folder can still load a Homebrew library this check never walks.
 - **Other platforms have no per-app store ACL (round 4, LOW).** On Windows and Linux the saved values have no per-app
   access control like the Mac Keychain's. The folder rules in this list judge Unix permissions; on Windows they do not
   apply.
