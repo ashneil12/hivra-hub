@@ -7,7 +7,7 @@ import { MAX_INTERVAL_MINUTES, MIN_INTERVAL_MINUTES, readLeadTickSetting } from 
 export const LEAD_TICK_HELP =
   "The Lead looks at the programme on a timer: it starts the next package when a builder is free and checks CI on open pull requests.";
 export const SHIP_ON_GREEN_HELP =
-  "When a programme pull request is green, the tick asks this project's merge rules to merge it. Without Merge without asking, you are asked first. Packages parked for a security check are never merged. A path list cannot catch a backdoor in unrelated code, so with Merge without asking on, a Lead can still merge a change that is not on the security list without a security review. That switch is off until you turn it on.";
+  "When a programme pull request is green, the tick asks this project's merge rules to merge it. Without Merge without asking, you are asked first. Packages parked for a security check are never merged. A path list cannot catch a backdoor in unrelated code, so with Merge without asking on, a Lead can still merge a change that is not on the security list without a security review. Three lanes stay outside this check: a Mono's app.ship of its own worktree, an agent's shell running gh pr merge, and writes to the data folder. That switch is off until you turn it on.";
 export const SHIP_ON_GREEN_OFF = "Off: green pull requests wait for you.";
 
 function Switch(props: { label: string; on: boolean; onToggle: () => void; disabled?: boolean }) {
