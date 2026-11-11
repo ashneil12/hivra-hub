@@ -77,10 +77,10 @@ it("offers the starter Monos, none of them ticked, and adds none unless one is t
 });
 
 it("a ticked starter Mono is an ordinary Mono, not the template id", () => {
-  finish("Coordinator");
+  finish("Chief of Staff");
   const added = listMonos();
   expect(added).toHaveLength(1);
-  expect(added[0]?.name).toBe("Coordinator");
+  expect(added[0]?.name).toBe("Chief of Staff");
   expect(added[0]?.id).not.toBe("coordinator");
 });
 

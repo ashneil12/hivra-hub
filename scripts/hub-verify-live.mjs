@@ -138,9 +138,9 @@ export const CONTINUE = "Continue from where you left off";
 /**
  * The starter Monos the room speaks as, in rule order: host, reviewer, planner, keeper. WP-05 gives every fresh Mono a
  * new id, so the walk seats these templates (teamPack) and talks to them by the id that came back. The names are the
- * template names (starterOffers, name order's first four: Coordinator, Design review, Planner, Record keeper).
+ * template names (starterOffers, name order's first four: Chief of Staff, Design review, Planner, Record keeper).
  */
-export const ROOM_SEATS = ["Coordinator", "Design review", "Planner", "Record keeper"];
+export const ROOM_SEATS = ["Chief of Staff", "Design review", "Planner", "Record keeper"];
 /** Their template ids, same order as ROOM_SEATS, so a seat is picked from teamPack's specId and never from its name. */
 export const ROOM_SPEC = ["coordinator", "design-review", "planner", "record-keeper"];
 export const TREE_PROJECT = { id: "verify", name: "Verify", shortName: "Verify", iconShape: "rocket" };
