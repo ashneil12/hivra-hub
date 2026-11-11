@@ -274,6 +274,9 @@ const PGP_BLOCK = /-----BEGIN PGP PRIVATE KEY BLOCK-----[\s\S]*?(?:-----END PGP 
 const PUTTY_PRIVATE_LINE = /(Private-Lines:[ \t]*\d+[ \t]*\r?\n)([^\r\n]*)/g;
 const AGE_SECRET = /AGE-SECRET-KEY-1[0-9A-Z]+/g;
 const BASE64_PEM = /LS0tLS1CRUdJTi[A-Za-z0-9+/=]{16,}/g;
+// base64("-----BEGIN"). A wrapped encoding (openssl at 64 columns, GNU base64 at 76) splits this across lines, and
+// "PRIVATE" is only the letters UFJJVkFURS when it starts on a 3-byte boundary. PKCS#8, EC and OpenSSH headers do not.
+const PEM_MARKER = "LS0tLS1CRUdJTi";
 // No `g` flag: privateKeyPresent uses test(), which is stateful on a global expression.
 // OpenSSH bodies start with base64("openssh-key-v1\0") even when the armor lines were cut off. SSH2 (RFC 4716) armor
 // uses four dashes and spaces, which "PRIVATE KEY-----" does not match.
@@ -311,10 +314,9 @@ function redactExtra(text: string): { text: string; count: number } {
     count += 1;
     return "[secret removed]";
   });
-  out = out.replace(BASE64_PEM, () => {
-    count += 1;
-    return "[secret removed]";
-  });
+  const pem = redactBase64Pem(out);
+  count += pem.count;
+  out = pem.text;
   out = out.replace(COOKIE_SESSION, () => {
     count += 1;
     return "Cookie: session=[secret removed]";
@@ -353,9 +355,88 @@ function redactString(text: string): { text: string; count: number } {
   return { text: extra.text, count: shared.count + strict.count + extra.count };
 }
 
+function pureBase64Line(line: string): boolean {
+  const trimmed = line.trim();
+  return trimmed.length >= 4 && /^[A-Za-z0-9+/=]+$/.test(trimmed);
+}
+
+/** Consecutive base64 lines, whitespace removed, when the joined text contains a PEM begin marker. */
+function wrappedBase64Runs(text: string): string[] {
+  const lines = text.split(/\r?\n/);
+  const runs: string[] = [];
+  let index = 0;
+  while (index < lines.length) {
+    if (!pureBase64Line(lines[index] ?? "")) {
+      index += 1;
+      continue;
+    }
+    const chunk: string[] = [];
+    while (index < lines.length && pureBase64Line(lines[index] ?? "")) {
+      chunk.push((lines[index] ?? "").trim());
+      index += 1;
+    }
+    const compact = chunk.join("").replace(/\s/g, "");
+    if (compact.includes(PEM_MARKER)) runs.push(compact);
+  }
+  return runs;
+}
+
+function decodeBase64Text(compact: string): string | null {
+  if (!/^[A-Za-z0-9+/]*={0,2}$/.test(compact) || compact.length < PEM_MARKER.length) return null;
+  if (compact.length % 4 === 1) return null;
+  const padded = compact.length % 4 === 0 ? compact : `${compact}${"=".repeat(4 - (compact.length % 4))}`;
+  try {
+    return globalThis.atob(padded);
+  } catch {
+    return null;
+  }
+}
+
+/** A base64 run that decodes to a private-key header, including one wrapped across lines. */
+function decodedPemMatchesHeader(text: string): boolean {
+  const tokens = [...wrappedBase64Runs(text), ...(text.match(/LS0tLS1CRUdJTi[A-Za-z0-9+/=]{16,}/g) ?? [])];
+  return tokens.some((token) => {
+    const decoded = decodeBase64Text(token);
+    return decoded !== null && PRIVATE_KEY_HEADER.test(decoded);
+  });
+}
+
+/**
+ * Replaces a base64 PEM, including one wrapped at 64 or 76 columns. A one-line match still covers a key written
+ * inline. A run of pure base64 lines is one value, so the lines after the first do not travel.
+ */
+function redactBase64Pem(text: string): { text: string; count: number } {
+  const lines = text.split("\n");
+  let count = 0;
+  const out: string[] = [];
+  let index = 0;
+  while (index < lines.length) {
+    if (pureBase64Line(lines[index] ?? "")) {
+      let end = index;
+      while (end < lines.length && pureBase64Line(lines[end] ?? "")) end += 1;
+      const compact = lines.slice(index, end).map((line) => line.trim()).join("").replace(/\s/g, "");
+      if (compact.includes(PEM_MARKER) && compact.length >= PEM_MARKER.length + 16) {
+        out.push("[secret removed]");
+        count += 1;
+        index = end;
+        continue;
+      }
+    }
+    out.push(
+      (lines[index] ?? "").replace(BASE64_PEM, () => {
+        count += 1;
+        return "[secret removed]";
+      }),
+    );
+    index += 1;
+  }
+  return { text: out.join("\n"), count };
+}
+
 /** The text a move would carry, joined: a private key split across blocks shows up here, not in any one block. */
 function privateKeyPresent(strings: string[]): boolean {
-  return PRIVATE_KEY_HEADER.test(strings.join("\n"));
+  const joined = strings.join("\n");
+  return PRIVATE_KEY_HEADER.test(joined) || decodedPemMatchesHeader(joined);
 }
 
 /** Which part of the chat holds a private key, named so a person can find it. The key itself is never included. */
