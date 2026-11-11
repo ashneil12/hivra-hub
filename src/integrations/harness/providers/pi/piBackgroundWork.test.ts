@@ -89,6 +89,67 @@ describe("pi and omp background work", () => {
     expect(ompHasBackgroundWork("")).toBe(false);
   });
 
+  it("keeps a later progress update on the launch call's own rows, even for a one-task batch", async () => {
+    const turn = sendPiTurn({
+      sessionId: "pi-bg",
+      cwd: "/repo",
+      model: "pi:default",
+      runtimeMode: "supervised",
+      text: "delegate",
+      attachments: [],
+      onEvent: () => undefined,
+    });
+    await waitFor(() => prompts() >= 1, "prompt");
+    const running = {
+      details: {
+        async: { state: "running" },
+        progress: [{ index: 0, agent: "scout", task: "Explore", status: "running" }],
+      },
+    };
+    const launch = mocks.frames.at(-1)!;
+    launch({
+      type: "tool_execution_start",
+      toolCallId: "batch_1",
+      toolName: "subagent",
+      args: { tasks: [{ agent: "scout", task: "Explore" }] },
+    });
+    launch({ type: "tool_execution_end", toolCallId: "batch_1", toolName: "subagent", result: running });
+    launch({ type: "agent_end" });
+    await turn;
+
+    // The next turn clears the tool map, so this update arrives with no tool in flight.
+    const events: Array<{ type: string; callId?: string; kind?: string; title?: string }> = [];
+    const promptsBefore = prompts();
+    const next = sendPiTurn({
+      sessionId: "pi-bg",
+      cwd: "/repo",
+      model: "pi:default",
+      runtimeMode: "supervised",
+      text: "continue",
+      attachments: [],
+      onEvent: (event) => events.push(event),
+    });
+    await waitFor(() => prompts() > promptsBefore, "next prompt");
+    mocks.frames.at(-1)!({
+      type: "tool_execution_update",
+      toolCallId: "batch_1",
+      toolName: "subagent",
+      partialResult: running,
+    });
+    mocks.frames.at(-1)!({ type: "agent_end" });
+    await next;
+
+    // Same rows as the launch: the batch's own child row, not a bare call-id row titled after the task.
+    const bareAgentRows = events.filter(
+      (event) => event.type === "tool.updated" && event.callId === "batch_1" && event.kind === "agent",
+    );
+    expect(bareAgentRows).toEqual([]);
+    expect(events).toContainEqual(
+      expect.objectContaining({ type: "tool.updated", callId: "batch_1:agent:0", kind: "agent", title: "Explore" }),
+    );
+    await stopPiSession("pi-bg");
+  });
+
   it.each([
     ["pi", "subagent", "pi-bg", sendPiTurn, piHasBackgroundWork, stopPiSession],
     ["omp", "task", "omp-bg", sendOmpTurn, ompHasBackgroundWork, stopOmpSession],

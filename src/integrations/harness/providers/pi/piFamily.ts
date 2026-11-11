@@ -107,6 +107,8 @@ type Live = {
   toolsById: Map<string, InFlightTool>;
   /** Subagent rows still running after their launch tool returned. */
   backgroundAgents: Set<string>;
+  /** Launch input of each agent tool, kept while a background row runs, so a later update gets the same row shape. */
+  agentInputs: Map<string, Record<string, unknown>>;
   cancelled: boolean;
   muteUpdates: boolean;
   compacting: boolean;
@@ -381,6 +383,7 @@ export async function cancelTurn(
   live.muteUpdates = true;
   // Updates stop here, so a later completion cannot clear the set.
   live.backgroundAgents.clear();
+  live.agentInputs.clear();
   live.settleToken += 1;
   for (const [, pending] of live.approvals) pending.resolve("deny");
   live.approvals.clear();
@@ -532,6 +535,7 @@ async function startLive(
     toolsByIndex: new Map(),
     toolsById: new Map(),
     backgroundAgents: new Set(),
+    agentInputs: new Map(),
     cancelled: false,
     muteUpdates: false,
     compacting: false,
@@ -1311,6 +1315,7 @@ function noteAgentProgress(
   completed: boolean,
   isError = false,
 ): void {
+  live.agentInputs.set(tool.id, tool.input);
   for (const event of piSubagentEvents(
     tool.id,
     tool.input,
@@ -1333,7 +1338,9 @@ function noteOrphanAgentProgress(
     (id) => id === callId || id.startsWith(`${callId}:agent:`),
   );
   if (!related) return;
-  for (const event of piSubagentEvents(callId, {}, result, false)) {
+  // The launch input decides whether this was a batch, so the rows match the ones the launch made.
+  const input = live.agentInputs.get(callId) ?? {};
+  for (const event of piSubagentEvents(callId, input, result, false)) {
     live.onEvent(event);
     noteBackgroundAgent(live, event);
   }
@@ -1350,6 +1357,7 @@ function noteBackgroundAgent(live: Live, event: HarnessEvent): void {
   if (event.status === "completed" || event.status === "failed") {
     live.backgroundAgents.delete(event.callId);
   }
+  if (live.backgroundAgents.size === 0) live.agentInputs.clear();
 }
 
 function finishActiveTurn(live: Live, extraEvents: HarnessEvent[] = []): void {
