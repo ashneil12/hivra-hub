@@ -109,13 +109,19 @@ pub(crate) mod fake {
         pub fail: Mutex<Vec<String>>,
         pub failed_log: String,
         /// `gh api <path>` answers (WP-202): the first key the path contains answers, every time.
+        /// A `--jq` call is not one of these. That call is the changed-file list, and a compare body is JSON.
         pub apis: Vec<(String, String)>,
-        /// `gh api` answer for the changed-file list. None falls through to an empty success.
+        /// `gh api --jq` answer for the changed-file list. None falls through to an empty success.
         pub files: Mutex<Option<Result<String, String>>>,
     }
 
     impl FakeGithub {
-        pub fn new(reads: Vec<PrRead>) -> Self {
+        pub fn new(mut reads: Vec<PrRead>) -> Self {
+            // A pull request with one harmless changed file, unless a test sets its own list: the security gate and
+            // the floor refuse to merge a list they cannot read.
+            for read in &mut reads {
+                read.changed_files.get_or_insert(1);
+            }
             Self {
                 reads: Mutex::new(reads),
                 runs: Mutex::new(Vec::new()),
@@ -125,7 +131,7 @@ pub(crate) mod fake {
                 fail: Mutex::new(Vec::new()),
                 failed_log: "build\tRun tests\terror: expected 2, got 3".into(),
                 apis: Vec::new(),
-                files: Mutex::new(None),
+                files: Mutex::new(Some(Ok("README.md\n".into()))),
             }
         }
 
@@ -183,11 +189,18 @@ pub(crate) mod fake {
             }
             if args.first().map(String::as_str) == Some("api") {
                 let path = args.get(1).map(String::as_str).unwrap_or("");
-                if let Some((_, json)) = self
-                    .apis
-                    .iter()
-                    .find(|(key, _)| path.contains(key.as_str()))
-                {
+                // The security gate lists files with `--jq`, which prints paths. A compare stub is JSON for the
+                // base hold (its path is the same compare with a query string). The first matching key must not
+                // answer the file list: the gate rejects a JSON body, and a harmless pull request would be held.
+                let file_list = args.iter().any(|arg| arg == "--jq");
+                let stub = if file_list {
+                    None
+                } else {
+                    self.apis
+                        .iter()
+                        .find(|(key, _)| path.contains(key.as_str()))
+                };
+                if let Some((_, json)) = stub {
                     return Ok(json.clone());
                 }
                 if let Some(result) = self.files.lock().unwrap().clone() {

@@ -376,6 +376,14 @@ Third-party components Hivra adds:
   Used in: src/features/firstmate/model/fanoutContract.ts, src/features/firstmate/model/fanoutWaves.ts, src/features/firstmate/model/fanoutChecks.ts, src/features/firstmate/model/originalRequest.ts
   The contract's kinds of provide, its description and search-path rules, the contract block and per-task lines, and the requires-cycle walk (contract.ts); the wave planner and its cycle fallback (contract-waves.ts); the presence check of a provide in a file (contract-checks.ts); and the bounded quote of the person's request with its follow-up rule (worker-prompt.ts), translated to TypeScript at commit 1b4e641525c5b1427b48ff6b8d9932dc26bd8256 (WP-171). Hivra reads the contract from each task of one delegate_tasks call, refuses a requirement nothing provides and a provide nobody could check before anything starts, holds a task whose provider failed or did not deliver instead of running it anyway, fails a check that could not run, runs a declared check as the task's WP-40 checks gate, reads the request from the first mate's chat (the person's own messages only), and quotes it behind a mark on every line.
 
+- Cloudflare security-audit-skill (validators and reference notes)
+  Source: https://github.com/cloudflare/security-audit-skill
+  License: MIT
+  Copyright (c) 2025-2026 Cloudflare, Inc.
+  Used in: scripts/security-review/validate-findings.cjs, scripts/security-review/validate-coverage-ledger.cjs,
+  scripts/security-review/report-schema.json, scripts/security-review/reference, scripts/security-review/LICENSE.cloudflare-security-audit
+  Vendored from commit c1c8a8c1471069fb0e188eeaff69b8e8db6564a8 with a source header on each file; no code changed.
+
 MonoCode
 ========
 MonoCode is not affiliated with, endorsed by, or sponsored by the makers of the

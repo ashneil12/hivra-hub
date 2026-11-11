@@ -93,6 +93,53 @@ describe("first mate inbox panel", () => {
     expect(selected[0]?.getAttribute("aria-current")).toBe("true");
   });
 
+  it("sends person for a secret card and user for any other", async () => {
+    const sent: unknown[] = [];
+    vi.mocked(invoke).mockImplementation(async (cmd: string, args?: unknown) => {
+      if (cmd === "decisions_list") {
+        return [
+          {
+            ...openDecision(),
+            decisionKey: "secret/stripe-api-key/curl",
+            question: "Let Tally run curl with the stripe key?",
+            options: ["Once", "No"],
+            recommended: "Once",
+            version: 4,
+          },
+          openDecision(),
+        ];
+      }
+      if (cmd === "decisions_answer") {
+        sent.push(args ?? {});
+        return { applied: true, decision: null, released: [], releasedTasks: [] };
+      }
+      return [];
+    });
+    await act(async () => {
+      root.render(createElement(FirstMateInboxPanel, { cwd: PROJECT }));
+    });
+    const button = (label: string) =>
+      [...container.querySelectorAll("button")].find((item) => item.textContent?.startsWith(label));
+    await vi.waitFor(() => expect(button("Once")).toBeTruthy());
+    await act(async () => {
+      button("Once")?.click();
+    });
+    const calls = () => sent.filter((args): args is Record<string, unknown> => !!args && typeof args === "object");
+    await vi.waitFor(() => expect(calls().some((args) => args.key === "secret/stripe-api-key/curl")).toBe(true));
+    expect(calls().find((args) => args.key === "secret/stripe-api-key/curl")).toEqual({
+      project: PROJECT,
+      key: "secret/stripe-api-key/curl",
+      answer: "Once",
+      by: "person",
+      seenVersion: 4,
+    });
+    await act(async () => {
+      button("Ship it")?.click();
+    });
+    await vi.waitFor(() => expect(calls().some((args) => args.key === "ship")).toBe(true));
+    expect(calls().find((args) => args.key === "ship")).toMatchObject({ by: "user", answer: "Ship it", seenVersion: 1 });
+  });
+
   it("keeps a timed-out decision open and tries the answer again", async () => {
     let answers = 0;
     vi.mocked(invoke).mockImplementation(async (cmd: string) => {
