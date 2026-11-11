@@ -232,10 +232,23 @@ pub(crate) fn rebase_args(remote: &str, base: &str) -> Vec<String> {
     vec!["rebase".into(), format!("refs/remotes/{remote}/{base}")]
 }
 
-/// What follows `git push`: the remote, then the commit the commit guard checked, sent to the package branch. No force
-/// and no `--no-verify`. Only `push` adds the verb, right after the guard has passed.
-pub(crate) fn push_target_args(remote: &str, sha: &str, branch: &str) -> Vec<String> {
-    vec![remote.into(), format!("{sha}:refs/heads/{branch}")]
+/// Config before the push subcommand, then the flags and destination after it. The subcommand name is written in
+/// `push`, beside the gate: a helper that named it would be a push the guard does not see.
+pub(crate) fn push_transport_args(url: &str, refspec: &str) -> (Vec<String>, Vec<String>) {
+    (
+        vec![
+            "-c".into(),
+            "core.commitGraph=false".into(),
+            "-c".into(),
+            "pack.useBitmaps=false".into(),
+        ],
+        vec![
+            "--no-follow-tags".into(),
+            "--recurse-submodules=no".into(),
+            url.into(),
+            refspec.into(),
+        ],
+    )
 }
 
 fn fetch(worktree: &Path, remote: &str, base: &str) -> Result<(), Outcome> {
@@ -314,27 +327,57 @@ fn push(worktree: &Path, remote: &str, branch: &str, base: &str) -> Result<(), O
     if names::is_protected(branch, base) {
         return Err(refused("That branch is main. It was not updated."));
     }
-    // WP-200: the commit guard reads what this push would send (approval files, transcripts, secrets) before anything
-    // leaves, and the push names the commit it checked, so a HEAD that moves in between is not what goes out. The
-    // commit-graph and pack bitmaps stay off, as in the delivery push: either can name a tree the guard did not read.
-    let checked = crate::commit_guard::gate_outgoing_to(worktree, remote)
-        .map_err(|reason| refused(format!("The commit guard stopped the push: {reason}")))?;
-    let target = push_target_args(remote, &checked, branch);
-    let mut args = vec![
-        "-c",
-        "core.commitGraph=false",
-        "-c",
-        "pack.useBitmaps=false",
-        "push",
-    ];
-    args.extend(target.iter().map(String::as_str));
-    let ran = git(worktree, &args, FETCH_TIMEOUT)?;
-    if ran.code == 0 {
-        return Ok(());
+    // The gate returns the URLs it checked. The push names those URLs, not the remote: a pushurl written after
+    // the check would otherwise send the commit somewhere the check never read.
+    let checked =
+        crate::commit_guard::gate_outgoing_to(worktree, remote).map_err(outcome_from_gate)?;
+    if checked.urls.is_empty() {
+        return Err(outcome_from_gate(format!(
+            "the remote {remote} has no push URL."
+        )));
     }
-    Err(not_finished(
-        "A normal push was refused, so the branch was put back. Nothing was force-pushed.",
+    let refspec = format!("{}:refs/heads/{branch}", checked.sha);
+    for url in &checked.urls {
+        let (before, after) = push_transport_args(url, &refspec);
+        let mut args = before;
+        args.push("push".to_string());
+        args.extend(after);
+        let borrowed: Vec<&str> = args.iter().map(String::as_str).collect();
+        let ran = git(worktree, &borrowed, FETCH_TIMEOUT)?;
+        if ran.code != 0 {
+            return Err(not_finished(
+                "A normal push was refused, so the branch was put back. Nothing was force-pushed.",
+            ));
+        }
+    }
+    record_pushed_refs(worktree, remote, branch, &checked.sha);
+    Ok(())
+}
+
+/// A secret or an agent file is a final refusal. Anything else (the remote could not be read, a timeout) is not:
+/// the caller puts the branch back and the update can be tried again.
+fn outcome_from_gate(error: String) -> Outcome {
+    if error.starts_with("Possible secret") || error.starts_with("Refused to push") {
+        return refused(format!("The commit guard stopped the push: {error}"));
+    }
+    not_finished(format!(
+        "The commit guard could not check the push: {error} The branch was put back. Nothing was force-pushed."
     ))
+}
+
+/// A push of a raw URL does not move `refs/remotes/`. Write the refs the remote's fetch refspec maps. The objects
+/// have already landed, so a missing refspec is not a failed push. Upstream is not set: this push never did.
+fn record_pushed_refs(worktree: &Path, remote: &str, branch: &str, sha: &str) {
+    let key = format!("remote.{remote}.fetch");
+    let Ok(ran) = git(worktree, &["config", "--get-all", &key], LOCAL_TIMEOUT) else {
+        return;
+    };
+    if ran.code != 0 {
+        return;
+    }
+    for dst in crate::commit_guard::remote_tracking_refs(&ran.stdout, branch) {
+        let _ = git(worktree, &["update-ref", &dst, sha], LOCAL_TIMEOUT);
+    }
 }
 
 fn cancel_merge(worktree: &Path, old: &str, branch: &str) -> Result<(), Outcome> {
