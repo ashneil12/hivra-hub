@@ -1007,6 +1007,24 @@ describe("tasks.delegate", () => {
     expect(missing.started[0][0]).toMatchObject({ harness: "claude", model: "claude:sonnet-5" });
   });
 
+  // A route error that is already the crew sentence must not be wrapped into a second copy of it.
+  it("says a crew read failure once when the route error is already that sentence", async () => {
+    const already = fixture();
+    const line =
+      "The crew policy could not be read, so nothing was started (a folder's place in its git checkout could not be decided).";
+    already.api.crewRoute = vi.fn(async () => {
+      throw new Error(line);
+    });
+    let doubled = "";
+    try {
+      await handleAgentApp(already.source, "r-once", "tasks.delegate", { brief: "Tidy the title." }, already.host);
+    } catch (error) {
+      doubled = error instanceof Error ? error.message : String(error);
+    }
+    expect(doubled.split("The crew policy could not be read").length - 1).toBe(1);
+    expect(already.started).toEqual([]);
+  });
+
   it("WP-141: keeps why the crew picked this CLI on the row and tells the lead, skips first", async () => {
     setHarnessModels("codex", [{ id: "codex:gpt-5", harness: "codex", name: "GPT-5", settings: [] }]);
     const { source, host, started, api } = fixture();

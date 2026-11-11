@@ -59,7 +59,12 @@ fn never_listed(policy: &Value) -> Vec<String> {
 }
 
 fn unreadable(error: String) -> String {
-    format!("The crew policy could not be read, so nothing was started ({error}).")
+    // The store already returns this sentence when a place cannot be decided. Wrapping it again shows it twice.
+    const LEAD: &str = "The crew policy could not be read, so nothing was started";
+    if error.starts_with(LEAD) {
+        return error;
+    }
+    format!("{LEAD} ({error}).")
 }
 
 /// Ok when the launch may start. The reason is one plain line, shown to the person and the Lead.
