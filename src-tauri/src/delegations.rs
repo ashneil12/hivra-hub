@@ -2625,7 +2625,7 @@ mod tests {
         let store = store();
         let mut conn = store.lock_conn().unwrap();
         let first = record(&mut conn, launch("mono", "req-x", "child-x"), 10).unwrap();
-        cancel(&mut conn, &[first.id.clone()], None, None, 11).unwrap();
+        cancel(&mut conn, std::slice::from_ref(&first.id), None, None, 11).unwrap();
         let again = record(&mut conn, launch("mono", "req-x", "child-x"), 12).unwrap();
         assert_eq!(
             (again.id.as_str(), again.state.as_str()),
