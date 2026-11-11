@@ -512,3 +512,68 @@ fn a_chat_cannot_settle_a_person_only_key_by_changing_its_case_or_width() {
         .applied
     );
 }
+
+#[test]
+fn invisible_format_characters_and_unicode_space_do_not_change_a_person_only_key() {
+    let store = store();
+    let mut conn = store.lock_conn().unwrap();
+    ask(
+        &mut conn,
+        ask_input("lead", "irreversible/lead/task-6", &[]),
+        2,
+    )
+    .unwrap();
+    // Zero-width and other format characters (Unicode Cf and default-ignorable) are invisible: they are dropped before the
+    // prefix check, and so is any Unicode space that trim removes.
+    let spellings = [
+        "irre\u{200B}versible/lead/task-6",
+        "\u{200B}irreversible/lead/task-6",
+        "irreversible\u{200C}/lead/task-6",
+        "irreversible/lead\u{200D}/task-6",
+        "irreversible\u{FEFF}/lead/task-6",
+        "\u{00AD}irreversible/lead/task-6",
+        "irre\u{2060}versible/lead/task-6",
+        "\u{FE0F}irreversible/lead/task-6",
+        "\u{200B} \u{200B}irreversible/lead/task-6",
+        "\u{00A0}irreversible/lead/task-6",
+        "\u{3000}irreversible/lead/task-6",
+        "\u{2028}irreversible/lead/task-6",
+        "\u{0085}irreversible/lead/task-6",
+        "fresh\u{00AD}-eyes/r9/00112233aabbccdd",
+    ];
+    for key in spellings {
+        assert_eq!(
+            fold_key(key),
+            fold_key(key).trim(),
+            "{key:?} folds to a padded key"
+        );
+        assert!(
+            person_only(key, Some("chat:lead")).is_some(),
+            "{key:?} is not person-only"
+        );
+    }
+    assert_eq!(fold_key("irre\u{200B}versible/x"), "irreversible/x");
+    // A chat answer in any of these spellings is refused, and the decision stays open.
+    for key in &spellings[..spellings.len() - 1] {
+        let refusal = answer(
+            &mut conn,
+            "hivra",
+            key,
+            "Approve",
+            Some("chat:lead".into()),
+            3,
+        )
+        .unwrap_err();
+        assert!(
+            refusal.contains("Only the person answers"),
+            "{key:?}: {refusal}"
+        );
+    }
+    assert_eq!(
+        get(&conn, "hivra", "irreversible/lead/task-6")
+            .unwrap()
+            .unwrap()
+            .state,
+        OPEN
+    );
+}

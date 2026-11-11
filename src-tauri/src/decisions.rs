@@ -484,12 +484,46 @@ pub struct AnswerOutcome {
 /// clean review). It tells no one: the chat that asked did the thing, or the person allowed it.
 pub const APP_CLOSER: &str = "app:fresh-eyes";
 
+/// Invisible characters: Unicode general category Cf (format) and the other default-ignorable code points. A spelling
+/// that differs only by them looks the same on screen, so the fold drops them. Mirrored in TS by the `\p{Cf}` and
+/// `\p{Default_Ignorable_Code_Point}` classes in `foldDecisionKey`.
+fn is_ignorable(c: char) -> bool {
+    matches!(
+        c as u32,
+        0x00AD
+            | 0x034F
+            | 0x0600..=0x0605
+            | 0x061C
+            | 0x06DD
+            | 0x070F
+            | 0x08E2
+            | 0x115F..=0x1160
+            | 0x17B4..=0x17B5
+            | 0x180B..=0x180F
+            | 0x200B..=0x200F
+            | 0x202A..=0x202E
+            | 0x2060..=0x206F
+            | 0x3164
+            | 0xFE00..=0xFE0F
+            | 0xFEFF
+            | 0xFFA0
+            | 0xFFF0..=0xFFFB
+            | 0x110BD
+            | 0x110CD
+            | 0x13430..=0x1343F
+            | 0x1BCA0..=0x1BCA3
+            | 0x1D173..=0x1D17A
+            | 0xE0000..=0xE0FFF
+    )
+}
+
 /// The one form every decision-key prefix check reads: NFKC (so fullwidth and other compatibility spellings become
-/// their plain form), trimmed, lower-case. A chat can ask or answer under any spelling, so a check on the raw key is
-/// a check on the wrong string. Mirrored in TS by `foldDecisionKey` (src/features/hub/model/decisionKey.ts).
+/// their plain form), invisible characters dropped, trimmed (any Unicode white space, as `str::trim` takes it),
+/// lower-case. A chat can ask or answer under any spelling, so a check on the raw key is a check on the wrong string.
+/// Mirrored in TS by `foldDecisionKey` (src/features/hub/model/decisionKey.ts).
 pub fn fold_key(key: &str) -> String {
     use unicode_normalization::UnicodeNormalization;
-    let folded: String = key.nfkc().collect();
+    let folded: String = key.nfkc().filter(|c| !is_ignorable(*c)).collect();
     folded.trim().to_lowercase()
 }
 

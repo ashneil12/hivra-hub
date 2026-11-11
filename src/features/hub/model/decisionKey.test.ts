@@ -9,6 +9,21 @@ describe("foldDecisionKey", () => {
     expect(foldDecisionKey("ｉｒｒｅｖｅｒｓｉｂｌｅ/lead")).toBe("irreversible/lead");
     expect(foldDecisionKey("fresh-eyes／r1")).toBe("fresh-eyes/r1");
   });
+
+  it("drops invisible format characters, so they cannot change the prefix", () => {
+    expect(foldDecisionKey("irre\u200Bversible/x")).toBe("irreversible/x");
+    expect(foldDecisionKey("\u200Birreversible/x")).toBe("irreversible/x");
+    expect(foldDecisionKey("irreversible\u200C/x\u200D")).toBe("irreversible/x");
+    expect(foldDecisionKey("irreversible\uFEFF/x\u00AD")).toBe("irreversible/x");
+    expect(foldDecisionKey("irre\u2060versible/x")).toBe("irreversible/x");
+    expect(foldDecisionKey("\uFE0Firreversible/x")).toBe("irreversible/x");
+  });
+
+  it("trims any Unicode white space the way str::trim does", () => {
+    for (const space of ["\u00A0", "\u3000", "\u2028", "\u0085", "\u2003", " \t"]) {
+      expect(foldDecisionKey(`${space}irreversible/x${space}`)).toBe("irreversible/x");
+    }
+  });
 });
 
 describe("person-only key checks", () => {
@@ -18,6 +33,9 @@ describe("person-only key checks", () => {
     "IRREVERSIBLE/lead/task-1",
     " irreversible/lead/task-1",
     "ｉｒｒｅｖｅｒｓｉｂｌｅ/lead/task-1",
+    "irre\u200Bversible/lead/task-1",
+    "\u200Birreversible/lead/task-1",
+    "\u00A0irreversible/lead/task-1",
   ])("treats %j as an irreversible step", (key) => {
     expect(isIrreversibleDecisionKey(key)).toBe(true);
   });
