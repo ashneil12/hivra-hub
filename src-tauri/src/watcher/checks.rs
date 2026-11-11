@@ -1193,6 +1193,10 @@ mod review_r5_repro {
     /// (or plants a LaunchAgent, or reads ~/.ssh) outside the sandbox. Verify runs and goal checks are wrapped
     /// (`action_wrap`); this runner is not. The seam is `agent_sandbox::action_wrap` / `under_wrap`; a unit test cannot
     /// turn the sandbox on off macOS, so this reads the live runner.
+    ///
+    /// At 1f0314dec main's WP-101 table allows only reads plus `cargo fmt --check`. That one still runs code the agent
+    /// chose: rustup's `cargo` proxy honours `[toolchain] path = "<folder>"` in the chat folder's `rust-toolchain.toml`
+    /// and runs `<folder>/bin/cargo`, outside the sandbox, every minute. The runner must still be wrapped.
     #[test]
     fn a_check_an_agent_armed_runs_under_the_agent_sandbox() {
         let source = include_str!("checks.rs");
