@@ -110,6 +110,8 @@ mod mono;
 mod mono_chat;
 mod mono_home;
 mod mono_transcript;
+// WP-134: the More agents list, its approvals and the environment its child gets.
+mod more_agents;
 mod notes;
 // WP-72: docs are notes, with blocks, versions and a tree.
 pub(crate) mod docs;
@@ -1038,6 +1040,11 @@ pub fn run() {
             harness::harness_resolve_antigravity,
             harness::harness_free_port,
             harness::harness_spawn,
+            // WP-134: the More agents list, its approvals (src-tauri/src/more_agents.rs).
+            more_agents::more_agents_read,
+            more_agents::more_agents_write,
+            more_agents::more_agents_approve,
+            more_agents::more_agents_check,
             codex_mono_store::codex_mono_store_prepare,
             codex_mono_store::codex_mono_store_copy,
             codex_mono_store::codex_mono_store_restore_agent_state,

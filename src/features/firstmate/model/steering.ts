@@ -279,7 +279,8 @@ export type DeliveryDeps = {
   backend: FirstMateBackend;
   /** The worker's chat, loaded if it has to be; undefined when it is gone. */
   chat(id: string): Promise<Pick<Session, "id" | "busy" | "blocks" | "queuedMessages" | "harness"> | undefined>;
-  canSteer(chat: Pick<Session, "harness">): boolean;
+  // WP-134b: registryAgentId is set on a More agents chat, which cannot be steered.
+  canSteer(chat: Pick<Session, "harness" | "registryAgentId">): boolean;
   /** Put the text into the chat: into the running turn (`steer`) or as a new turn. False: it didn't take it. */
   submit(id: string, text: string, options: { appRequestId: string; steer: boolean }): Promise<boolean>;
   now?(): number;

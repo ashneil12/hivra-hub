@@ -18,8 +18,10 @@ import {
   isLiveHarness,
   listHarnesses,
   refreshHarnessCatalogs,
+  canSteerHarnessSession,
   registerHarness,
   resetHarnessIdlePark,
+  routeHarnessSession,
   sendHarnessTurn,
   type HarnessAdapter,
 } from "./registry";
@@ -692,5 +694,90 @@ describe("harness registry", () => {
     bindHarnessSession("claude", "s2", "sess_2", "/repo");
     expect(restoreGoal).toHaveBeenCalledTimes(1);
     expect(restoreGoal).toHaveBeenCalledWith("s1", goal);
+  });
+});
+
+describe("More agents session route", () => {
+  it("sends a routed chat's turn to its route, never to the harness it was saved with", async () => {
+    const cursorTurns: string[] = [];
+    registerHarness(stub("cursor", { async sendTurn(input) { cursorTurns.push(input.text); } }));
+    const routed: string[] = [];
+    routeHarnessSession("chat-routed", {
+      ...stub("cursor"),
+      id: "more-agents",
+      canSteer: false,
+      async sendTurn(input: SendTurnInput) {
+        routed.push(input.text);
+      },
+    });
+    try {
+      const input = {
+        sessionId: "chat-routed",
+        cwd: "/tmp",
+        model: "",
+        runtimeMode: "default",
+        text: "hello",
+        onEvent: () => undefined,
+        harness: "cursor" as HarnessId,
+      } as unknown as SendTurnInput & { harness: HarnessId };
+      await sendHarnessTurn(input);
+      expect(routed).toEqual(["hello"]);
+      expect(cursorTurns).toEqual([]);
+      expect(canSteerHarnessSession("cursor", "chat-routed")).toBe(false);
+    } finally {
+      routeHarnessSession("chat-routed", null);
+    }
+  });
+
+  it("binds a restored routed chat's ACP session to its route, never to the harness it was saved with", () => {
+    const claudeBinds: string[] = [];
+    registerHarness(stub("claude", { bindSession: (threadId) => { claudeBinds.push(threadId); } }));
+    const routedBinds: string[] = [];
+    routeHarnessSession("chat-restored", {
+      ...stub("claude"),
+      id: "more-agents",
+      canSteer: false,
+      bindSession: (threadId, providerSessionId) => {
+        routedBinds.push(`${threadId}:${providerSessionId}`);
+      },
+    });
+    try {
+      bindHarnessSession("claude", "chat-restored", "acp-42", "/tmp");
+      expect(routedBinds).toEqual(["chat-restored:acp-42"]);
+      expect(claudeBinds).toEqual([]);
+    } finally {
+      routeHarnessSession("chat-restored", null);
+    }
+  });
+
+  it("does not idle-park a routed chat whose route still runs background work", async () => {
+    vi.useFakeTimers();
+    const cursorStop = vi.fn(async () => undefined);
+    registerHarness(stub("cursor", { stopSession: cursorStop }));
+    const routedStop = vi.fn(async () => undefined);
+    routeHarnessSession("chat-routed-bg", {
+      ...stub("cursor"),
+      id: "more-agents",
+      canSteer: false,
+      hasBackgroundWork: () => true,
+      stopSession: routedStop,
+    });
+    configureHarnessIdlePark({ limit: () => Number.POSITIVE_INFINITY, keep: () => false });
+    try {
+      await sendHarnessTurn({
+        sessionId: "chat-routed-bg",
+        cwd: "/tmp",
+        model: "",
+        runtimeMode: "default",
+        text: "hello",
+        onEvent: () => undefined,
+        harness: "cursor" as HarnessId,
+      } as unknown as SendTurnInput & { harness: HarnessId });
+      await vi.advanceTimersByTimeAsync(HARNESS_IDLE_PARK_MS + 5 * 60_000);
+      expect(routedStop).not.toHaveBeenCalled();
+      expect(cursorStop).not.toHaveBeenCalled();
+    } finally {
+      routeHarnessSession("chat-routed-bg", null);
+    }
   });
 });
