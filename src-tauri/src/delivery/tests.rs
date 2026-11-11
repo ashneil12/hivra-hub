@@ -4184,16 +4184,20 @@ fn a_base_move_over_the_pull_requests_files_holds_the_merge_with_no_watch_at_all
     );
 }
 
+/// Forty hex digits. The security gate lists files only between full commit ids, and a short id is not one.
+const HEAD_A1: &str = "a1b2c3d4a1b2c3d4a1b2c3d4a1b2c3d4a1b2c3d4";
+const TIP_B2: &str = "b2b2b2b4b2b2b2b4b2b2b2b4b2b2b2b4b2b2b2b4";
+
 #[test]
 fn a_base_move_that_misses_the_pull_request_still_merges() {
     let s = store();
     let moved = PrRead {
-        base_tip: Some("b2b2b2b".into()),
-        ..green("a1b2c3d")
+        base_tip: Some(TIP_B2.into()),
+        ..green(HEAD_A1)
     };
     let gh = FakeGithub::new(vec![moved.clone(), moved])
-        .with_api("compare/b2b2b2b...a1b2c3d", MERGE_BASE_B1)
-        .with_api("compare/b1b1b1b...b2b2b2b", MOVED_BY_DOCS)
+        .with_api(&format!("compare/{TIP_B2}...{HEAD_A1}"), MERGE_BASE_B1)
+        .with_api(&format!("compare/b1b1b1b...{TIP_B2}"), MOVED_BY_DOCS)
         .with_api("pulls/7/files", PR_FILES);
     assert!(
         matches!(
@@ -4222,10 +4226,10 @@ fn a_branch_whose_merge_base_cannot_be_read_is_held() {
 #[test]
 fn a_move_that_lands_between_the_read_and_the_merge_refuses() {
     let s = store();
-    let first = green("a1b2c3d");
+    let first = green(HEAD_A1);
     let second = PrRead {
         merge_state: Some("DIRTY".into()),
-        ..green("a1b2c3d")
+        ..green(HEAD_A1)
     };
     let gh = FakeGithub::new(vec![first, second]).steady();
     let out = merge::merge(&s, &gh, person_merge("acme/web"), 10).unwrap();
@@ -4289,12 +4293,12 @@ fn the_base_hold_runs_after_the_store_lock_is_released() {
 fn r2_a_person_merges_a_pull_request_with_no_checks_when_main_has_not_moved() {
     let s = store();
     let base = "ba5e".repeat(10);
-    let no_checks = pr(PrState::Open, "a1b2c3d", Vec::new());
+    let no_checks = pr(PrState::Open, HEAD_A1, Vec::new());
     let gh = FakeGithub::new(vec![no_checks.clone(), no_checks])
         .with_api("check-runs", r#"{"total_count":0,"check_runs":[]}"#)
         .with_api("pulls/7/files", PR_FILES)
         .with_api(
-            &format!("compare/{base}...a1b2c3d"),
+            &format!("compare/{base}...{HEAD_A1}"),
             &format!(
                 r#"{{"status":"ahead","ahead_by":1,"behind_by":0,"merge_base_commit":{{"sha":"{base}"}},"files":[{{"filename":"src/lib.rs"}}]}}"#
             ),
@@ -4329,7 +4333,7 @@ fn r3_a_held_pull_request_is_refused_and_never_asked_about() {
 #[test]
 fn r3_a_fork_pull_request_with_an_unmoved_main_merges_on_the_persons_tap() {
     let s = store();
-    let fork = pr(PrState::Open, "a1b2c3d", Vec::new());
+    let fork = pr(PrState::Open, HEAD_A1, Vec::new());
     let gh = FakeGithub::new(vec![fork.clone(), fork])
         .with_api(
             "check-runs",
