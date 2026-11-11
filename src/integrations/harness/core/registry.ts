@@ -115,6 +115,8 @@ export type HarnessAdapter = {
   restoreTaskLists?(threadId: string, lists: TaskListMeta[]): void;
   /** Carry on with a restored session's saved goal (Claude Code's /goal). */
   restoreGoal?(threadId: string, goal: SessionGoal): void;
+  /** Round 12: a restored transcript already left the launch folder, so relative paths wait again. */
+  restoreMovedFolder?(threadId: string, blocks: Block[]): void;
   /** Refresh the model catalog overlay when supported. */
   refreshCatalog?(): Promise<void>;
   /** Optional LLM tab title for the first turn. */
@@ -615,6 +617,8 @@ export function bindHarnessSession(
   const adapter = getHarness(harness);
   adapter?.bindSession(threadId, providerSessionId, cwd, providerAccountId);
   if (goal) adapter?.restoreGoal?.(threadId, goal);
+  // Round 12: before the task-list return, so a transcript with no task panel still drops the folder pin.
+  if (blocks?.length) adapter?.restoreMovedFolder?.(threadId, blocks);
   if (!blocks || !adapter?.restoreTaskLists) return;
   const lists = blocks.flatMap((block) =>
     block.role === "tasks" && block.taskList ? [block.taskList] : [],

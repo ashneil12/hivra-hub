@@ -98,6 +98,7 @@ import { withDevCopiesOff } from "./devCopies";
 import { withWorkerNotificationsOff } from "./quietWorkers";
 import { workerCheckoutsArgs } from "./workerCheckouts";
 import { addDirsOf, cheapExploreLaunch } from "./explorePin";
+import { blocksLeftLaunchFolder, initLeftLaunchFolder, toolMovesLaunchFolder } from "./folderPin";
 import { appIdentity, isDevCopy } from "../../../../app/model/appIdentity";
 import {
   GOAL_CHECK_CAP,
@@ -311,12 +312,19 @@ type Live = {
   quietCompaction: boolean;
   /** Latest main-thread context level, for the prompt-cache record. */
   contextUsed?: number;
+  /**
+   * Round 12: EnterWorktree, ExitWorktree, or an init folder other than this launch folder. Relative paths wait again.
+   * Kept on the resume record too, so a new process of the same chat does not pin them once more.
+   */
+  folderMoved?: boolean;
 };
 
 type Resume = {
   sessionId: string;
   cwd: string;
   providerAccountId?: string;
+  /** Round 12: the launch folder was left. A later process of this chat does not pin relative paths again. */
+  folderMoved?: boolean;
 };
 
 const INIT_TIMEOUT_MS = 8_000;
@@ -976,7 +984,14 @@ export function bindClaudeSession(
 ): void {
   const sessionId = providerSessionId.trim();
   if (!threadId || !sessionId || !cwd.trim()) return;
-  resumeByThread.set(threadId, { sessionId, cwd, providerAccountId });
+  const previous = resumeByThread.get(threadId);
+  resumeByThread.set(threadId, {
+    sessionId,
+    cwd,
+    providerAccountId,
+    // A fresh conversation starts pinned. The same one keeps a move already recorded (round 12).
+    ...(previous?.sessionId === sessionId && previous.folderMoved ? { folderMoved: true } : {}),
+  });
   // Task ids from another conversation mean nothing in this one.
   if (tasksByThread.get(threadId)?.providerSessionId !== sessionId) {
     tasksByThread.delete(threadId);
@@ -988,6 +1003,41 @@ export function bindClaudeSession(
  * in Claude Code, so nothing is sent and its checks go on from the saved count; a fresh one (the transcript was gone,
  * a rotation) gets `/goal` once with its next turn (goalToSet). A goal this process already follows wins.
  */
+/**
+ * A restored transcript already left the launch folder (EnterWorktree or ExitWorktree). Relative paths wait again,
+ * including after this process starts. Called after bindSession, which is what creates the resume record.
+ */
+export function restoreClaudeMovedFolder(
+  threadId: string,
+  blocks: readonly {
+    tool?: { kind?: string; title?: string };
+    approval?: { call?: { tool?: string } };
+  }[],
+): void {
+  if (!threadId || !blocksLeftLaunchFolder(blocks)) return;
+  const resume = resumeByThread.get(threadId);
+  if (resume) resume.folderMoved = true;
+  const live = liveByThread.get(threadId);
+  if (live) live.folderMoved = true;
+}
+
+/** The launch folder was left. Later approvals in this process, and a resumed process, do not pin relative paths. */
+function noteFolderMoved(live: Live): void {
+  live.folderMoved = true;
+  const resume = resumeByThread.get(live.threadId);
+  if (resume) {
+    resume.folderMoved = true;
+    return;
+  }
+  if (!live.claudeSessionId || !live.cwd) return;
+  resumeByThread.set(live.threadId, {
+    sessionId: live.claudeSessionId,
+    cwd: live.cwd,
+    providerAccountId: live.providerAccountId,
+    folderMoved: true,
+  });
+}
+
 export function restoreClaudeGoal(threadId: string, goal: SessionGoal): void {
   if (!threadId || goalByThread.has(threadId) || liveByThread.get(threadId)?.goal) return;
   const restored = restoredGoal(goal);
@@ -1157,6 +1207,8 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
     manualCompaction: false,
     compactionConfirmed: false,
     quietCompaction: false,
+    // Round 12: a resumed chat that already left its launch folder does not pin relative paths again.
+    folderMoved: canResume && resume?.folderMoved === true,
   };
   liveRef.current = live;
 
@@ -1230,6 +1282,7 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
     sessionId: claudeSessionId,
     cwd: input.cwd,
     providerAccountId: input.providerAccountId,
+    ...(live.folderMoved ? { folderMoved: true } : {}),
   });
 
   // The meter needs the window before the turn ends: mid-turn Claude Code sends only the level, and it sends
@@ -1424,6 +1477,7 @@ function handleLine(sessionId: string, live: Live, line: string): void {
       sessionId: sessionIdFromLine,
       cwd: live.cwd,
       providerAccountId: live.providerAccountId,
+      ...(live.folderMoved ? { folderMoved: true } : {}),
     });
     live.onEvent({
       type: "session.providerBound",
@@ -1436,6 +1490,8 @@ function handleLine(sessionId: string, live: Live, line: string): void {
     (stringField(rec, "subtype") === "init" ||
       stringField(rec, "subtype") === "initialized")
   ) {
+    // Round 12: init cwd or original_cwd other than the launch folder means the pin no longer holds.
+    if (stringField(rec, "subtype") === "init" && initLeftLaunchFolder(live.cwd, rec)) noteFolderMoved(live);
     markInitialized(live);
     if (stringField(rec, "subtype") === "init") noteClaudeTurnStarted(live);
   }
@@ -1515,6 +1571,8 @@ function handleStreamEvent(live: Live, rec: Record<string, unknown>): void {
       noteSubagentTool(live, rec, started.id, started.name, started.input);
       return;
     }
+    // Round 12: EnterWorktree moves the folder with no permission request. A subagent's call is not the parent's.
+    if (toolMovesLaunchFolder(started.name)) noteFolderMoved(live);
     const tool: InFlightTool = {
       id: started.id,
       name: started.name,
@@ -1622,6 +1680,8 @@ function handleAssistant(live: Live, rec: Record<string, unknown>): void {
   }
 
   for (const use of assistantToolUses(rec)) {
+    // Round 12: the assistant snapshot is enough. The tool can run without a permission request.
+    if (toolMovesLaunchFolder(use.name)) noteFolderMoved(live);
     const streamed = live.toolsById.get(use.id);
     if (streamed) {
       // content_block_start often has an empty input. The input JSON delta may
@@ -1932,7 +1992,10 @@ async function handleControlRequest(
 
   // r65 (#13): a keychain or credential read is refused in code before any mode can allow it, with a message that sends
   // the agent to ask Ash instead of retrying.
-  const blocked = credentialBlock(approvalCall(toolName, input), live.cwd);
+  // Round 12: a move drops the pin before this call is judged, so a relative path in the same request waits too.
+  if (toolMovesLaunchFolder(toolName)) noteFolderMoved(live);
+  const pinned = live.folderMoved !== true;
+  const blocked = credentialBlock(approvalCall(toolName, input, pinned), live.cwd);
   if (blocked) {
     await writeJson(sessionId, buildControlResponse(control.requestId, { behavior: "deny", message: blocked }));
     return;
@@ -1966,7 +2029,7 @@ async function handleControlRequest(
   // WP-122: a child's ask is answered on the parent, and the answer goes to the child port only.
   const child = childForAsk(live, control);
   if (child) {
-    await answerChildClaudeApproval(live, uiId, control.requestId, control.toolUseId, toolName, input, child);
+    await answerChildClaudeApproval(live, uiId, control.requestId, control.toolUseId, toolName, input, child, pinned);
     return;
   }
   const pending = waitApproval(live, uiId, control.requestId, input);
@@ -1977,7 +2040,7 @@ async function handleControlRequest(
     kind: toolKindFromName(toolName),
     callId: control.toolUseId,
     preview: previewFromTool(toolName, input),
-    call: approvalCall(toolName, input),
+    call: approvalCall(toolName, input, pinned),
     callComplete: approvalCallComplete(toolName, input),
   });
   const decision = await pending;
@@ -2095,6 +2158,7 @@ async function answerChildClaudeApproval(
   toolName: string,
   input: Record<string, unknown>,
   child: { name: string; sessionPort: string },
+  pinned: boolean,
 ): Promise<void> {
   live.childInputs.set(requestId, input);
   const title = toolTitle(toolName, input);
@@ -2106,7 +2170,7 @@ async function answerChildClaudeApproval(
     kind: toolKindFromName(toolName),
     callId: toolUseId,
     preview: previewFromTool(toolName, input),
-    call: approvalCall(toolName, input),
+    call: approvalCall(toolName, input, pinned),
     callComplete: approvalCallComplete(toolName, input),
     child: { name: child.name, sessionPort: child.sessionPort, detail: title },
   });
