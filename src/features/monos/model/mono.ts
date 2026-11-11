@@ -339,28 +339,40 @@ function parseMono(value: unknown): Mono | undefined {
   };
 }
 
+/** Set only after a read-back shows the flag write stuck, or the roster needed nothing. */
+let captainFlagsMigrated = false;
+/** saveRoster tells the window, and that can list Monos again. This stops that listing from migrating again. */
+let captainFlagsMigrating = false;
+
 /**
  * One pass over the stored roster: a Mono whose instructions already carry the charter is flagged.
+ * The write goes through the roster save, so MONOS.json and the change event happen too.
  * A write that does not stick is tried again on the next read. Nothing else in the row is rewritten.
  */
 function migrateCaptainFlags(): void {
-  const raw = readJson(ROSTER_KEY);
-  if (!Array.isArray(raw)) return;
-  let changed = false;
-  const next = raw.map((entry) => {
-    if (!entry || typeof entry !== "object" || Array.isArray(entry)) return entry;
-    const row = entry as Record<string, unknown>;
-    if (row.captain === true) return entry;
-    const instructions = typeof row.instructions === "string" ? row.instructions : "";
-    if (!hasCaptainCharter(instructions)) return entry;
-    changed = true;
-    return { ...row, captain: true };
-  });
-  if (!changed) return;
+  if (captainFlagsMigrated || captainFlagsMigrating) return;
+  captainFlagsMigrating = true;
   try {
-    localStorage.setItem(ROSTER_KEY, JSON.stringify(next));
-  } catch {
-    // The read still flags it in memory. The next read tries the write again.
+    const raw = readJson(ROSTER_KEY);
+    if (!Array.isArray(raw)) return;
+    let changed = false;
+    const next = raw.map((entry) => {
+      if (!entry || typeof entry !== "object" || Array.isArray(entry)) return entry;
+      const row = entry as Record<string, unknown>;
+      if (row.captain === true) return entry;
+      const instructions = typeof row.instructions === "string" ? row.instructions : "";
+      if (!hasCaptainCharter(instructions)) return entry;
+      changed = true;
+      return { ...row, captain: true };
+    });
+    if (!changed) {
+      captainFlagsMigrated = true;
+      return;
+    }
+    saveRoster(next as Mono[]);
+    if (JSON.stringify(readJson(ROSTER_KEY)) === JSON.stringify(next)) captainFlagsMigrated = true;
+  } finally {
+    captainFlagsMigrating = false;
   }
 }
 
