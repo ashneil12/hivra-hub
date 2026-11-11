@@ -74,3 +74,33 @@ test("draws the seeded map and a node opens the editor", async ({ page, browserN
     "Morning audit",
   );
 });
+
+test("a tab only names a panel that is on screen", async ({ page }) => {
+  await page.goto(pageUrl);
+  for (const name of ["Automations", "Runs", "Map"]) {
+    await page.getByRole("tab", { name }).click();
+    const tabs = page.getByRole("tab");
+    const count = await tabs.count();
+    expect(count).toBeGreaterThan(0);
+    for (let index = 0; index < count; index += 1) {
+      const tab = tabs.nth(index);
+      const controls = await tab.getAttribute("aria-controls");
+      const selected = await tab.getAttribute("aria-selected");
+      if (selected === "true") {
+        expect(controls).toBeTruthy();
+        await expect(page.locator(`[id="${controls}"]`)).toHaveAttribute("role", "tabpanel");
+      } else if (controls) {
+        await expect(page.locator(`[id="${controls}"]`)).toHaveCount(1);
+      }
+    }
+  }
+});
+
+test("a switched-off map node does not open the editor", async ({ page }) => {
+  await page.goto(pageUrl);
+  await page.getByRole("tab", { name: "Map" }).click();
+  // aria-disabled does not stop a real click. Playwright will not send one unless forced.
+  await page.getByRole("button", { name: "Inbox watch, off" }).click({ force: true });
+  await expect(page.getByRole("tab", { name: "Map" })).toHaveAttribute("aria-selected", "true");
+  await expect(page.getByRole("textbox", { name: "Automation name" })).toHaveCount(0);
+});

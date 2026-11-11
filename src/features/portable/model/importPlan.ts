@@ -495,6 +495,9 @@ function soulFor(mono: PortableMono, folders: string[], withMemory: boolean): Se
     ...(typeof mono.engineFast === "boolean" ? { engineFast: mono.engineFast } : {}),
     ...(mono.offeredSkills?.length ? { offeredSkills: mono.offeredSkills } : {}),
     ...(mono.commands?.length ? { commands: mono.commands } : {}),
+    // G1: its further chats and project chats; the workspace brings the chats themselves under the same ids.
+    ...(mono.chats?.length ? { chats: mono.chats } : {}),
+    ...(mono.projectSessions && Object.keys(mono.projectSessions).length ? { projectSessions: mono.projectSessions } : {}),
   };
 }
 

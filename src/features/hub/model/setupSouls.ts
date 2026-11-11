@@ -2,7 +2,7 @@
 // skills and engine. A Mono that isn't seated waits for Ash's OK and is never seated automatically.
 import { useSyncExternalStore } from "react";
 import { readAgentFile, writeAgentFile, type AgentFilePath } from "../../monos/model/monoFiles";
-import { addMono, cardNames, engineFieldsOf, findMono, listMonos, updateMono, type MonoEngine } from "../../monos/model/mono";
+import { addMono, adoptMonoChats, cardNames, engineFieldsOf, findMono, listMonos, updateMono, type MonoEngine } from "../../monos/model/mono";
 import { cleanStoredDefault } from "../../crew/model/workerDefault";
 import type { Pick as WorkerPick } from "../../crew/model/resolve";
 import { ROLE_NAMES } from "./roleNames";
@@ -40,6 +40,10 @@ export type SetupSoul = {
   offeredSkills?: string[];
   /** WP-182: slash command names it is offered. Import only adds names. */
   commands?: string[];
+  /** G1: its further chats, by chat id. Import only adds: a chat another Mono here holds is never taken. */
+  chats?: string[];
+  /** G1: its own chat in each project, by project id. A project that has its chat here already keeps it. */
+  projectSessions?: Record<string, string>;
 };
 
 function roster(): { id: string; name?: string; mascot?: string }[] {
@@ -208,6 +212,7 @@ export async function seatWaitingSoul(monoId: string, write: Writer = writeAgent
       }));
     }
   }
+  adoptMonoChats(monoId, soul);
   const { problems } = await writeSoulFiles(monoId, soulFiles(soul), { write, read });
   if (!problems.length) saveWaiting(readWaiting().filter((s) => s.monoId !== monoId));
   return problems;
@@ -248,6 +253,7 @@ export async function mergeIntoSeated(
       ...(commands ? { commands } : {}),
     };
   });
+  adoptMonoChats(mono.id, soul);
   return writeSoulFiles(mono.id, soulFiles(soul), { replace, ...(write ? { write } : {}), ...(read ? { read } : {}), ...(stale ? { stale } : {}) });
 }
 /** Not now: drops the waiting soul; nothing was seated or written. */

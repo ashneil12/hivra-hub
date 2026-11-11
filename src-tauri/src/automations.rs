@@ -1157,30 +1157,78 @@ fn event_cause(automation: &Automation, run: &AutomationRun) -> String {
 
 fn event_repo(automation: &Automation, run: &AutomationRun) -> Option<String> {
     if let Some(repo) = repo_from_event_key(run.event_key.as_deref().unwrap_or("")) {
-        return Some(repo);
+        // The key lowercases the repo. The map draws the trigger's spelling.
+        return Some(repo_spelling(automation, run, &repo));
+    }
+    trigger_repo(automation, run)
+}
+
+/// The trigger repo for a run whose key names no repo (Linear, Jira). The
+/// first non-empty repo, in the same order the map draws them.
+fn trigger_repo(automation: &Automation, run: &AutomationRun) -> Option<String> {
+    let kind = run.event_kind.as_deref().unwrap_or("");
+    let event = run.event.as_deref().unwrap_or("");
+    let triggers = automation.triggers.as_ref()?;
+    let trigger = triggers
+        .iter()
+        .find(|trigger| trigger.kind == kind && (event.is_empty() || trigger.event == event))?;
+    map_repo_spellings(trigger).into_iter().next()
+}
+
+/// `automationEventKey` lowercases the repo and turns every other character
+/// into `_`. Use the matching trigger's spelling, which is what the map draws.
+/// A repo that is not on that trigger stays as the key wrote it. A different
+/// trigger's spelling is not borrowed.
+fn repo_spelling(automation: &Automation, run: &AutomationRun, key_repo: &str) -> String {
+    let want = event_key_repo_token(key_repo);
+    if want.is_empty() {
+        return key_repo.to_string();
     }
     let kind = run.event_kind.as_deref().unwrap_or("");
     let event = run.event.as_deref().unwrap_or("");
-    if let Some(triggers) = automation.triggers.as_ref() {
-        if let Some(trigger) = triggers
-            .iter()
-            .find(|trigger| trigger.kind == kind && (event.is_empty() || trigger.event == event))
-        {
-            let repo = trigger.repo.trim();
-            if !repo.is_empty() {
-                return Some(repo.to_string());
-            }
-            if let Some(repo) = trigger
-                .repos
-                .iter()
-                .map(|repo| repo.trim())
-                .find(|repo| !repo.is_empty())
-            {
-                return Some(repo.to_string());
+    let Some(triggers) = automation.triggers.as_ref() else {
+        return key_repo.to_string();
+    };
+    for trigger in triggers {
+        if trigger.kind != kind || (!event.is_empty() && trigger.event != event) {
+            continue;
+        }
+        for repo in map_repo_spellings(trigger) {
+            if event_key_repo_token(&repo) == want {
+                return repo;
             }
         }
     }
-    None
+    key_repo.to_string()
+}
+
+/// `repo` first, then `repos`. The map uses this order and keeps the first spelling.
+fn map_repo_spellings(trigger: &AutomationTrigger) -> Vec<String> {
+    let mut out = Vec::new();
+    for value in
+        std::iter::once(trigger.repo.as_str()).chain(trigger.repos.iter().map(String::as_str))
+    {
+        let repo = value.trim();
+        if repo.is_empty() || out.iter().any(|seen| seen == repo) {
+            continue;
+        }
+        out.push(repo.to_string());
+    }
+    out
+}
+
+/// Same folding as `automationEventKey`: lower case, then any character outside
+/// the key's set becomes `_`.
+fn event_key_repo_token(repo: &str) -> String {
+    let mut out = String::new();
+    for c in repo.trim().to_lowercase().chars() {
+        if c.is_ascii_alphanumeric() || matches!(c, ':' | '_' | '-' | '.' | '/') {
+            out.push(c);
+        } else {
+            out.push('_');
+        }
+    }
+    out
 }
 
 /// `github:issue:owner/repo:12`. A key with no `owner/name` has no repo.
@@ -2235,6 +2283,98 @@ mod tests {
         assert!(!rows[0].summary.contains("acme/web"), "{}", rows[0].summary);
         assert!(rows[1].summary.contains("a new issue in team/board"));
         assert!(rows[2].summary.contains("a new issue in jira-project"));
+        for row in &rows {
+            assert!(!row.summary.contains("PROMPT_SHOULD_NOT_LEAK"));
+        }
+    }
+
+    /// The event key lowercases the repo and turns a space into `_`. The line
+    /// uses the spelling the map draws from the trigger, and does not borrow a
+    /// spelling from a different trigger.
+    #[test]
+    fn an_event_run_keeps_the_map_repo_spelling() {
+        let store = crate::session_store::SessionStore::open_in_memory().unwrap();
+        let mut automation = stored_automation("inbox", "Inbox watch", "PROMPT_SHOULD_NOT_LEAK");
+        automation.triggers = Some(vec![
+            event_trigger(
+                "issues",
+                "github",
+                "issue_opened",
+                "Acme/API",
+                &["acme/api"],
+            ),
+            event_trigger(
+                "spaced",
+                "github",
+                "pull_request_opened",
+                "",
+                &["Acme/Web App"],
+            ),
+            event_trigger(
+                "other-kind",
+                "gitlab",
+                "merge_request_opened",
+                "Other/Repo",
+                &[],
+            ),
+        ]);
+        let mut conn = store.lock_conn().unwrap();
+        write_automation(&conn, &automation).unwrap();
+
+        let mut issue = stored_run("run-api", "inbox");
+        issue.trigger = "event".into();
+        issue.event_kind = Some("github".into());
+        issue.event = Some("issue_opened".into());
+        issue.event_key = Some("github:issue:acme/api:12".into());
+        write_run(&conn, &issue).unwrap();
+
+        let mut request = stored_run("run-pr", "inbox");
+        request.trigger = "event".into();
+        request.event_kind = Some("github".into());
+        request.event = Some("pull_request_opened".into());
+        request.event_key = Some("github:pr:acme/web_app:9".into());
+        write_run(&conn, &request).unwrap();
+
+        let mut unmatched = stored_run("run-other", "inbox");
+        unmatched.trigger = "event".into();
+        unmatched.event_kind = Some("github".into());
+        unmatched.event = Some("issue_opened".into());
+        unmatched.event_key = Some("github:issue:other/repo:1".into());
+        write_run(&conn, &unmatched).unwrap();
+
+        finish(&mut conn, "run-api", "running", None, None);
+        finish(&mut conn, "run-pr", "running", None, None);
+        finish(&mut conn, "run-other", "running", None, None);
+        let rows = activity_rows(&conn);
+        assert_eq!(rows.len(), 3);
+        assert!(
+            rows[0].summary.contains("a new issue in Acme/API"),
+            "{}",
+            rows[0].summary
+        );
+        assert!(!rows[0].summary.contains("acme/api"), "{}", rows[0].summary);
+        assert!(
+            rows[1]
+                .summary
+                .contains("a new pull request in Acme/Web App"),
+            "{}",
+            rows[1].summary
+        );
+        assert!(
+            !rows[1].summary.contains("acme/web_app"),
+            "{}",
+            rows[1].summary
+        );
+        assert!(
+            rows[2].summary.contains("a new issue in other/repo"),
+            "{}",
+            rows[2].summary
+        );
+        assert!(
+            !rows[2].summary.contains("Other/Repo"),
+            "{}",
+            rows[2].summary
+        );
         for row in &rows {
             assert!(!row.summary.contains("PROMPT_SHOULD_NOT_LEAK"));
         }

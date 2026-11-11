@@ -142,9 +142,9 @@ Not built in this round, on purpose:
 
 ## Limits
 
-- The seatbelt profile grows by about 9.4 KB for each known project. It is refused, and nothing starts, once the
-  profile is 900,000 bytes (under the about 1 MiB argument limit). That is around 110 to 220 projects. The error is
-  "The sandbox profile is too large to apply, so nothing starts."
+- A profile of 100,000 bytes or less is passed with `-p`. Above 100,000 bytes it is written into the app data folder,
+  which the profile write-denies, and passed with `-f`. It is refused, and nothing starts, at 4,000,000 bytes. The
+  error is "The sandbox profile is too large to apply, so nothing starts."
 - `project_folders` keeps an absolute path with no `..` and no null. Anything else is skipped, not expanded, so a
   folder written as `~/Projects/name` is not locked.
 - Ash's own commit, push, pull and fetch run with git hooks on, and not inside the container. An in-tree hook such as

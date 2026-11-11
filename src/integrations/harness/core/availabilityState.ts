@@ -62,3 +62,22 @@ export function harnessAvailabilityProbedAt(): number {
 export function markHarnessAvailabilityProbed(): void {
   probedAt = Date.now();
 }
+
+/** Puts the probe back to "not run yet" and every CLI to not installed. */
+export function resetHarnessAvailabilityForTests(): void {
+  availability = {
+    claude: false,
+    codex: false,
+    cursor: false,
+    grok: false,
+    opencode: false,
+    pi: false,
+    omp: false,
+    fx: false,
+    hermes: false,
+    antigravity: false,
+    devin: false,
+  };
+  probedAt = 0;
+  emitHarnessAvailability();
+}
