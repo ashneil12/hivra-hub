@@ -172,3 +172,27 @@ it("clears the notice when a chat tap goes through", async () => {
   await flush();
   expect(oneTapRefusal()).toBeUndefined();
 });
+
+it("shows a thrown error only when it is a sentence for a person, never a raw error", async () => {
+  const MISSED = "That didn't go through. Try again.";
+  const answer = vi.spyOn(tauriFirstMate, "answer");
+  const raw = [
+    new Error("ENOENT: no such file or directory, open '/Users/ash/Library/Application Support/x.db'"),
+    "database is locked",
+    new Error("invalid args `decisionKey` for command `first_mate_answer`: missing field"),
+    "Error: SQLITE_BUSY",
+    new TypeError("Cannot read properties of undefined (reading 'applied')"),
+    "{\"code\":500}",
+  ];
+  for (const error of raw) {
+    answer.mockRejectedValueOnce(error);
+    tap().run();
+    await flush();
+    expect(oneTapRefusal(), String(error)).toBe(MISSED);
+  }
+
+  answer.mockRejectedValueOnce(new Error("That decision was already answered on your phone."));
+  tap().run();
+  await flush();
+  expect(oneTapRefusal()).toBe("That decision was already answered on your phone.");
+});
