@@ -1095,6 +1095,7 @@ import {
   type Automation,
   type AutomationRun,
 } from "../features/automations/model/automations";
+import { automationRunErrorClass } from "../features/automations/model/runFailure";
 import { useQuickComposerLaunches } from "../features/quick-composer/hooks/useQuickComposerLaunches";
 import type { QuickLaunch } from "../features/quick-composer/model/quickComposer";
 import { claimInboxAutomationRuns } from "../features/automations/model/automationEvents";
@@ -10715,19 +10716,31 @@ function Workspace({
                 : outcome.status === "cancelled"
                   ? "cancelled"
                   : "failed";
+            const errorClass = automationRunErrorClass({
+              message: outcome.error,
+              providerClass: outcome.errorClass,
+              harness: automation.harness,
+            });
             void updateAutomationRun(run.id, status, {
               sessionId: session.id,
               ...(outcome.error ? { error: outcome.error } : {}),
-              // WP-180a: the activity line maps this class to a sentence.
-              ...(outcome.errorClass ? { errorClass: outcome.errorClass } : {}),
+              // WP-180a: a missing CLI becomes the crew class. Any other class stays.
+              ...(errorClass ? { errorClass } : {}),
             })
               .catch(() => undefined)
               .finally(releaseReservation);
           },
         });
       } catch (reason: unknown) {
+        const message = reason instanceof Error ? reason.message : String(reason);
+        // WP-180a: a launch that fails before a turn still classes a missing CLI.
+        const errorClass = automationRunErrorClass({
+          message,
+          harness: automation.harness,
+        });
         await updateAutomationRun(run.id, "failed", {
-          error: reason instanceof Error ? reason.message : String(reason),
+          error: message,
+          ...(errorClass ? { errorClass } : {}),
         }).catch(() => undefined);
         throw reason;
       } finally {
