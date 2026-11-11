@@ -3035,6 +3035,58 @@ mod review_r5_repro {
         );
     }
 
+    /// Probe on the Mac; HIGH if red (H-F partly open). `hdiutil` is refused by path only. `DENIED_PROGRAMS` says a
+    /// copy under another name is covered by `job-creation` and `lsopen`, which is true for launchctl and open but not
+    /// for hdiutil: a copy keeps Apple's signature, and the attach is done by the disk image service, not by the
+    /// sandboxed process, so the data folder's write deny is never asked. An image mounted over `<data>/settings`
+    /// makes the next spawn read `off` from the switch file (or one over `~/Library/LaunchAgents` adds a login job).
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn under_the_real_profile_a_copied_hdiutil_cannot_mount_over_the_data_folder() {
+        let root = scratch("hdi");
+        let home = root.join("home");
+        let data = root.join("data");
+        let settings = data.join("settings");
+        let src = root.join("src");
+        for dir in [&home, &settings, &src] {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+        std::fs::write(settings.join(SETTING_FILE), "on\n").unwrap();
+        std::fs::write(src.join(SETTING_FILE), "off\n").unwrap();
+        let image = root.join("img.dmg");
+        // Made outside the sandbox to keep the probe short; the agent can make it inside with the same copy.
+        let made = std::process::Command::new("/usr/sbin/hdiutil")
+            .args(["create", "-quiet", "-fs", "HFS+", "-srcfolder"])
+            .arg(&src)
+            .arg(&image)
+            .status()
+            .unwrap();
+        assert!(made.success(), "hdiutil create");
+        let copy = home.join("h");
+        std::fs::copy("/usr/sbin/hdiutil", &copy).unwrap();
+        let profile = profile_text_for(&home, Some(&data)).unwrap();
+        let _ = std::process::Command::new(SANDBOX_EXEC)
+            .args(["-p", &profile])
+            .arg(&copy)
+            .args(["attach", "-quiet", "-nobrowse", "-mountpoint"])
+            .arg(&settings)
+            .arg(&image)
+            .env("HOME", &home)
+            .status()
+            .unwrap();
+        let seen = std::fs::read_to_string(settings.join(SETTING_FILE)).unwrap_or_default();
+        let _ = std::process::Command::new("/usr/sbin/hdiutil")
+            .args(["detach", "-quiet", "-force"])
+            .arg(&settings)
+            .status();
+        let _ = std::fs::remove_dir_all(&root);
+        assert_eq!(
+            seen.trim(),
+            "on",
+            "a copied hdiutil mounted an image over the data folder's settings, so the switch reads off"
+        );
+    }
+
     /// macOS probe of the first test: the move, the write and the move back, under the real profile.
     #[cfg(target_os = "macos")]
     #[test]
