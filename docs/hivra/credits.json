@@ -941,6 +941,14 @@
       "copyright": "Copyright (c) 2026 CopilotKit",
       "where": "src/features/firstmate/model/askTest.ts, src/features/firstmate/contract.md, src/features/firstmate/vendor/LICENSE.openbot",
       "how": "ASK_TEST_LINES and ASKING_GUIDANCE_LINES from shared/bot-prompt.ts copied at commit 558cba6 and adapted (WP-247): OpenBot reads the app, and the list of what the app already asks names Hivra's own gates. The first-mate contract's Asking section and the crew brief carry it, so an agent asks only when a wrong guess is hard to undo, the readings differ, or only the person knows, and never asks first about what the app's own card asks."
+    },
+    {
+      "name": "Nod's owner-words check",
+      "url": "https://github.com/n8n-io/nod",
+      "licence": "Apache-2.0",
+      "copyright": "Copyright 2026 n8n GmbH",
+      "where": "src/features/autopilot/model/ownerWords.ts, src/features/autopilot/model/LICENSE.nod",
+      "how": "trustDecision, trustBasis and the plain normaliser from src/server/trust-basis.ts adapted at commit d82e06e (WP-243): a cheap check names which of Ash's own words cover an exact action and quotes them, and the app finds the quote in that source before an allow; anything else asks Ash."
     }
   ]
 }

@@ -103,7 +103,8 @@ export function useAutopilot(options: {
   sessions: Session[];
   sessionsRef: MutableRefObject<Session[]>;
   updateSession: (id: string, change: (session: Session) => Session) => void;
-  approve: (sessionId: string, requestId: number, decision: ApprovalDecision) => void;
+  /** WP-243: an allow names the frozen action (the card's actionHash) it was judged on. */
+  approve: (sessionId: string, requestId: number, decision: ApprovalDecision, actionHash?: string) => void;
   /** Open a stored chat in this window, for a resume armed before a restart. */
   openSession: (id: string) => Promise<Session | null>;
   /** A session someone delegated (an open delegation row). */
@@ -293,7 +294,7 @@ export function useAutopilot(options: {
               return placeStaysInside(block.approval!.call, folder, latest.current.locate ?? gitLocateFiles, latest.current.canonical ?? gitCanonicalPaths).then((why) => {
                 if (why) return hold(null, why);
                 return log({ ...base, kind: "approval", outcome: "taken", what: verdict.what, recommendation: "Allowed", dedupe: `${key}:${block.id}` }).then(
-                  () => latest.current.approve(session.id, requestId, "allow"),
+                  () => latest.current.approve(session.id, requestId, "allow", block.approval?.actionHash),
                 );
               });
             })

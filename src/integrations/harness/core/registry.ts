@@ -9,6 +9,7 @@ import { admitSpendTurn, noteUnpricedTurn, spendGateActive, type TurnOrigin } fr
 import { requireChatFolder } from "./chatFolder";
 import { credentialBlock } from "./credentialGuard";
 import { goalToolRefusal, goalTurnRefusal } from "../../../features/sessions/model/goalIntegrity";
+import { checkAllow, forgetAsked, noteAsked, shownActionHash } from "../../../features/sessions/model/approvalAction";
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { transferProviderSession } from "./child";
 import type { GeneratedSessionTitle } from "../../../features/sessions/model/sessionTitle";
@@ -492,6 +493,15 @@ export function sendHarnessTurn(input: SendTurnInput & { harness: HarnessId }) {
           if (event.type === "workflow.progress") {
             noteWorkflowRun(input.sessionId, event.run);
           }
+          // WP-243: freeze the action. A CLI that hashed its raw arguments says so; any other is hashed from what it
+          // showed. The card carries the hash and an allow must name it (respondHarnessApproval).
+          if (event.type === "approval.requested") {
+            const hash = event.actionHash || shownActionHash(event);
+            noteAsked(input.sessionId, event.requestId, hash);
+            input.onEvent({ ...event, actionHash: hash });
+            return;
+          }
+          if (event.type === "approval.resolved") forgetAsked(input.sessionId, event.requestId);
           input.onEvent(event);
         },
         onAccepted: () => {
@@ -645,14 +655,31 @@ export async function cancelHarnessTurn(
   scheduleIdlePark(harness, sessionId);
 }
 
-/** True only when the harness confirmed it had a live call waiting for this decision. */
+/**
+ * True only when the harness confirmed it had a live call waiting for this decision.
+ *
+ * WP-243: an allow must name the frozen action it is for (`actionHash`, from the card). It goes to the CLI only when
+ * that is the action still waiting under this id; a missing, stale or different one is refused and the card stays.
+ * Once an allow is sent the ask is forgotten, so the same yes can't run anything a second time. A deny needs no hash:
+ * refusing never runs anything.
+ */
 export function respondHarnessApproval(
   harness: HarnessId,
   sessionId: string,
   requestId: number,
   decision: ApprovalDecision,
+  actionHash?: string,
 ): boolean {
-  return adapterFor(harness, sessionId)?.respondApproval(sessionId, requestId, decision) === true;
+  if (decision === "allow") {
+    const bound = checkAllow(sessionId, requestId, actionHash);
+    if (!bound.ok) {
+      console.warn(`Approval not sent (${bound.reason}): the action it named is not the one waiting.`);
+      return false;
+    }
+  }
+  const sent = adapterFor(harness, sessionId)?.respondApproval(sessionId, requestId, decision) === true;
+  if (sent) forgetAsked(sessionId, requestId);
+  return sent;
 }
 
 export function respondHarnessQuestion(

@@ -1324,6 +1324,8 @@ function sanitizeBlock(
   if (block.role === "user" && block.internal) next.internal = true;
   // WP-243: Ash typed it himself. Only exactly `true`, and never on a hidden turn.
   if (block.role === "user" && block.byOwner === true && !block.internal) next.byOwner = true;
+  // WP-243: a withdrawn turn stays withdrawn after a restart.
+  if (block.role === "user" && (block.withdrawn === "stopped" || block.withdrawn === "failed")) next.withdrawn = block.withdrawn;
   const completion = sanitizeMonoSessionCompletion(block.monoSessionCompletion);
   if (block.role === "user" && block.internal && completion)
     next.monoSessionCompletion = completion;
@@ -1338,9 +1340,18 @@ function sanitizeBlock(
   if (block.role === "user" && turnMetrics) next.turnMetrics = turnMetrics;
   if (block.tool) next.tool = block.tool;
   if (block.approval?.decided) {
+    const covered = block.approval.coveredBy;
     next.approval = {
       requestId: block.approval.requestId,
       decided: block.approval.decided,
+      // WP-243: the words that allowed it, kept so "Because you said" survives a restart.
+      ...(block.approval.decided === "allow" &&
+      covered &&
+      (covered.source === "message" || covered.source === "rule" || covered.source === "routine") &&
+      typeof covered.quote === "string" &&
+      covered.quote.trim()
+        ? { coveredBy: { source: covered.source, quote: covered.quote.slice(0, 300) } }
+        : {}),
     };
   } else if (block.approval && !block.approval.decided) {
     // Drop stale live approval prompts; request ids don't survive restarts.

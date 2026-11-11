@@ -23,6 +23,7 @@ import { installCodingTeamDefault } from "../features/hub/model/codingTeamModel"
 import { noteSessionRuns, RUN_HEARTBEAT_MS, setProcessRunSource } from "../features/monos/model/sessionRuns";
 import { noteToolCalls, setRunToolTextSource } from "../features/hub/model/soulTamper";
 import { parksForApproval } from "../features/sessions/model/approvalCarry";
+import { openActionHash } from "../features/sessions/model/approvalAction";
 import { stripHiddenCharacters } from "../features/sessions/model/hiddenText";
 import { heldLineForSend } from "../features/sessions/model/approvalWait";
 import { listHarnessRuns } from "../integrations/harness/core/child";
@@ -175,6 +176,7 @@ import {
 import { useHubChecks } from "./hooks/useHubChecks";
 import { inCheckTurn, withoutQuietTurns } from "../features/hub/model/hubChecks";
 import { useAutopilot } from "../features/autopilot/hooks/useAutopilot";
+import { useOwnerWords } from "../features/autopilot/hooks/useOwnerWords";
 import { acceptQuickLaunch } from "./model/quickLaunchSession";
 import { useWorkspaceNavigation } from "./hooks/useWorkspaceNavigation";
 import { useIdleSessionDetach } from "./hooks/useIdleSessionDetach";
@@ -10761,7 +10763,13 @@ function Workspace({
         role: "approval",
         text: block.text,
         ...(block.tool ? { tool: block.tool } : {}),
-        approval: { requestId, at: Date.now() },
+        // WP-243: the run's frozen action travels with the card, so Ash's allow is bound to what the run asked.
+        approval: {
+          requestId,
+          at: Date.now(),
+          ...(block.approval?.actionHash ? { actionHash: block.approval.actionHash } : {}),
+          ...(block.approval?.call ? { call: block.approval.call } : {}),
+        },
         monoHabit: { id: habit.id, name: habit.name, at: Date.now() },
       });
     },
@@ -13465,9 +13473,13 @@ function Workspace({
   // Returns false when the decision was not sent (the call is gone), so the phone is
   // told the truth and the call stays answerable.
   const onApproval = useCallback(
-    (sessionId: string, requestId: number, decision: ApprovalDecision): boolean => {
+    (sessionId: string, requestId: number, decision: ApprovalDecision, boundHash?: string): boolean => {
       const session = sessionsRef.current.find((s) => s.id === sessionId);
       if (!session || session.worktreeRemoved) return false;
+      // WP-243: an allow is bound to the frozen action the card shows. A caller that judged a card names its hash;
+      // a tap on the card names the card that is open under this id. The registry sends it only if that is the action
+      // still waiting.
+      const shown = boundHash ?? openActionHash(session.blocks, requestId);
       // An approval a habit's hidden run asked for, put to the user in the
       // Mono's chat: answer the run, and settle the question in the chat.
       if (isMonoSession(sessionId)) {
@@ -13479,24 +13491,23 @@ function Workspace({
           const run = relay
             ? sessionsRef.current.find((s) => s.id === relay.runId)
             : undefined;
-          if (relay && run)
+          // WP-243: the allow names the run's frozen action the card carried; the run refuses any other.
+          const sent =
+            !!(relay && run) &&
             respondHarnessApproval(
-              run.harness,
-              run.id,
-              relay.requestId,
+              run!.harness,
+              run!.id,
+              relay!.requestId,
               decision,
+              boundHash ?? asked.approval?.actionHash,
             );
           decideMonoBlockRef.current(
             sessionId,
             asked.id,
-            relay && run
-              ? decision === "deny"
-                ? "deny"
-                : "allow"
-              : "cancelled",
+            sent ? (decision === "deny" ? "deny" : "allow") : "cancelled",
           );
-          // No relay waiting: the block was settled as cancelled, the tool did not run.
-          return !!(relay && run);
+          // Nothing sent (no relay waiting, or not the action the run asked): settled as cancelled, the tool did not run.
+          return sent;
         }
       }
       if (remoteProjectFor(session.cwd)) {
@@ -13504,7 +13515,7 @@ function Workspace({
         if (!actions) return false;
         return actions.approve(requestId, decision);
       }
-      return respondHarnessApproval(session.harness, sessionId, requestId, decision);
+      return respondHarnessApproval(session.harness, sessionId, requestId, decision, shown);
     },
     [],
   );
@@ -13592,6 +13603,17 @@ function Workspace({
       if (mono) void onOpenMono(mono.id);
       else if (!focusOpenSession(id)) void onSelectHistorySession(id);
     },
+  });
+  // WP-243: a card Ash's own words already cover is allowed, bound to its frozen action, with his words shown.
+  useOwnerWords({
+    sessions,
+    sessionsRef,
+    updateSession: (id, change) =>
+      updateSessionState(sessionsRef, setSessions, (all) =>
+        all.map((entry) => (entry.id === id ? change(entry) : entry)),
+      ),
+    approve: onApproval,
+    isDelegated: (id) => !!delegationsRef.current?.openRowFor(id),
   });
 
   const onQuestionInteraction = useCallback(
@@ -14110,8 +14132,9 @@ function Workspace({
       },
       respondApproval: (id, requestId, decision) => {
         const session = sessionsRef.current.find((entry) => entry.id === id);
+        // WP-243: the lead's allow is bound to the worker's card it read.
         if (session)
-          respondHarnessApproval(session.harness, id, requestId, decision);
+          respondHarnessApproval(session.harness, id, requestId, decision, openActionHash(session.blocks, requestId));
       },
       answerQuestion: (id, requestId, reply) => {
         const session = sessionsRef.current.find((entry) => entry.id === id);

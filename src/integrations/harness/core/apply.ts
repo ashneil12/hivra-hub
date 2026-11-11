@@ -968,6 +968,7 @@ function attachApproval(
     ...(event.call ? { call: event.call } : {}),
     ...(event.call && event.callComplete ? { callComplete: true } : {}),
     ...(child ? { child } : {}),
+    ...(typeof event.actionHash === "string" && event.actionHash ? { actionHash: event.actionHash } : {}),
   };
   const index = findToolForApproval(session, event);
   if (index >= 0) {

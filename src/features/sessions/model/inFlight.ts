@@ -390,7 +390,9 @@ export function resumePrompt(
   const askNote = asks.length
     ? `Note: MonoCode Hub quit while your question to Ash was open, so its card closed unanswered. Before anything else, ask it again (AskUserQuestion), the same question and options: ${asks.map((a) => a.label).join(" ; ")}`
     : null;
-  return [askNote, note, base].filter(Boolean).join("\n\n");
+  // WP-243: a call the cut may have caught mid-run is named, and never run again by the app.
+  const uncertain = uncertainNote(session.blocks);
+  return [askNote, uncertain, note, base].filter(Boolean).join("\n\n");
 }
 
 /**
@@ -470,13 +472,58 @@ function sealOpenWork(session: Session): Session {
           ...rest,
           streaming: false,
           tool: block.tool
-            ? { ...block.tool, status: "cancelled" }
+            ? { ...block.tool, status: "cancelled", ...(mayHaveRun(block) ? { uncertain: true as const } : {}) }
             : block.tool,
           ...(approval?.decided ? { approval } : {}),
         },
       ];
     }),
   };
+}
+
+/**
+ * WP-243: a call the cut may have caught mid-run. Only a card still waiting on Ash, or one he refused, proves it never
+ * started; anything else that was pending or running is unknown, so it is marked uncertain and never run again.
+ */
+function mayHaveRun(block: Block): boolean {
+  if (!block.tool) return false;
+  if (block.approval && block.approval.decided !== "allow") return false;
+  return true;
+}
+
+/** The calls the last cut left uncertain: after Ash's last message, newest last. */
+export function uncertainCalls(blocks: readonly Block[]): Block[] {
+  let start = 0;
+  for (let i = blocks.length - 1; i >= 0; i--) {
+    const block = blocks[i];
+    if (block.role === "user" && !block.draft) {
+      start = i + 1;
+      break;
+    }
+  }
+  return blocks.slice(start).filter((block) => block.tool?.uncertain === true);
+}
+
+/** What one uncertain call was, as the resume note names it: its title or command, and its id. */
+function uncertainLabel(block: Block): string {
+  const what = block.tool?.command || block.approval?.call?.command || block.tool?.title || block.text || "a tool call";
+  const id = block.tool?.callId ? ` (id ${clipText(block.tool.callId, 80)})` : "";
+  return `${clipText(what, CUT_NOTE_MAX_LABEL)}${id}`;
+}
+
+/**
+ * The resume note for calls a restart cut while they may have been running. The app never runs them again, and the
+ * agent is told not to either until it has checked what they did.
+ */
+export function uncertainNote(blocks: readonly Block[]): string | null {
+  const calls = uncertainCalls(blocks);
+  if (!calls.length) return null;
+  const lines = calls.slice(0, CUT_NOTE_MAX_ENTRIES).map((block) => `- ${uncertainLabel(block)}`);
+  if (calls.length > CUT_NOTE_MAX_ENTRIES) lines.push(`- and ${calls.length - CUT_NOTE_MAX_ENTRIES} more`);
+  return [
+    "Note: MonoCode Hub restarted while these tool calls may have been running, so whether they finished is unknown. They were not run again. Do not repeat one as it was: first check what it did (the files, git status, the service it touched). If it still needs to run, say why; in a supervised chat Ash is asked again.",
+    ...lines,
+  ].join("\n");
 }
 
 function shouldCancelTool(block: Session["blocks"][number]): boolean {

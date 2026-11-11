@@ -178,6 +178,8 @@ export type HarnessEvent =
       callComplete?: boolean;
       /** WP-122: the child that asked, so the answer is sent to its port. */
       child?: { name: string; sessionPort: string; detail?: string };
+      /** WP-243: the frozen action (tool name + full arguments, hashed; approvalAction.ts). Filled for a CLI that doesn't. */
+      actionHash?: string;
     }
   | {
       type: "approval.resolved";
