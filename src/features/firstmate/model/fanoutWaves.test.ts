@@ -6,6 +6,7 @@ import {
   parseFanoutLink,
   planFanout,
   planWaves,
+  restartRequestId,
   taskRequestId,
   type DependencyLookup,
   type FanoutLink,
@@ -88,6 +89,20 @@ describe("a task's link to its fan-out (WP-171)", () => {
     expect(id).toMatch(/^[A-Za-z0-9_-]+$/);
     expect(taskRequestId(long, "a")).not.toBe(taskRequestId(long, "b"));
     expect(taskRequestId("req1", "a")).toBe("f4_req1-a");
+  });
+
+  // WP-172 review round 2 (LOW): a start again never takes the id of a sibling task's first start.
+  it("gives a start again an id no task's first start has, even a sibling named like the restart", () => {
+    // The old restart id was taskRequestId(plan, `${name}-r1`): exactly the first start of a sibling named api-r1.
+    expect(restartRequestId("r1", "api", 1)).not.toBe(taskRequestId("r1", "api-r1"));
+    expect(restartRequestId("r1", "api", 1)).not.toBe(taskRequestId("r1", "api"));
+    // Each generation of a resume has an id of its own, and each stays within 100 characters.
+    expect(restartRequestId("r1", "api", 1)).not.toBe(restartRequestId("r1", "api", 2));
+    const long = "r".repeat(100);
+    const id = restartRequestId(long, "x".repeat(40), 12);
+    expect(id.length).toBeLessThanOrEqual(100);
+    expect(id).toMatch(/^[A-Za-z0-9_-]+$/);
+    expect(restartRequestId("req1", "api", 1)).toBe("r1f4_req1-api");
   });
 
   it("does not share an id with a plain delegate, or with another split of the same characters", () => {
