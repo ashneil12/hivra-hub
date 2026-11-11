@@ -368,8 +368,8 @@ fn a_utf16_tag_message_is_read_as_text() {
 fn the_push_gate_returns_the_commit_it_checked() {
     let (local, _remote) = pushed_repo("pinned");
     let head = local.git(&["rev-parse", "HEAD"]);
-    let sha = gate_outgoing_to(local.path(), "origin").expect("a clean push is checked");
-    assert_eq!(sha, head.trim());
+    let checked = gate_outgoing_to(local.path(), "origin").expect("a clean push is checked");
+    assert_eq!(checked.sha, head.trim());
 }
 
 #[test]

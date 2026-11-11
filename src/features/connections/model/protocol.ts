@@ -54,6 +54,8 @@ export type HostSession = {
   updatedAt: number;
   archived?: boolean;
   pinned?: boolean;
+  /** WP-177: set while this host copy is frozen for a move, or after it was released. The engine then refuses turns. */
+  teleportHeld?: boolean;
   /** Temporary branch created by the composer for automatic first-turn naming. */
   autoWorktreeBranch?: string;
   /** Host-only: the revision at which each block last changed. */

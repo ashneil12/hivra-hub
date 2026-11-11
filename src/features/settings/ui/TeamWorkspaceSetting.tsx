@@ -117,6 +117,10 @@ export function TeamWorkspaceSetting() {
     }
   };
 
+  const conflicts = (status?.conflicts ?? []).filter(
+    (item) => typeof item === "string" && /^[a-z0-9_-]{1,64}\.[A-Za-z0-9]{1,32}$/.test(item),
+  );
+
   const canJoin =
     !busy &&
     !!status?.enabled &&
@@ -143,6 +147,9 @@ export function TeamWorkspaceSetting() {
       <p className="pl-6 text-[12px] text-content/50">
         {status ? describeTeamWorkspace(status) : "Checking the setting."}
       </p>
+      {conflicts.length > 0 && (
+        <p className="pl-6 text-[12px] text-content/65">Kept your copy of {conflicts.join(", ")}.</p>
+      )}
       {people.length > 0 && (
         <p className="pl-6 text-[12px] text-content/65">Here now: {people.join(", ")}</p>
       )}

@@ -660,9 +660,16 @@ pub fn push_remote(root: &Path) -> String {
     "origin".to_string()
 }
 
-/// The gate before a push to `remote`. The returned sha is the commit that was checked; the push sends that sha,
-/// not a second read of HEAD.
-pub fn gate_outgoing_to(root: &Path, remote: &str) -> Result<String, String> {
+/// The commit a push gate checked, and every push URL it checked. The push sends `sha` to those URLs.
+/// It does not name the remote again: a `pushurl` written after this returns must not move the push.
+pub struct CheckedPush {
+    pub sha: String,
+    pub urls: Vec<String>,
+}
+
+/// The gate before a push to `remote`. `sha` is the commit that was checked. `urls` are the push URLs
+/// resolved for that check. The push sends that sha to those URLs, not a second read of HEAD or of the remote.
+pub fn gate_outgoing_to(root: &Path, remote: &str) -> Result<CheckedPush, String> {
     let repo = objects::open_repo(root)?;
     let urls = objects::push_destinations(&repo, remote)?;
     let head = git_out_repo(&repo, &["rev-parse", "HEAD"])?;
@@ -671,7 +678,47 @@ pub fn gate_outgoing_to(root: &Path, remote: &str) -> Result<String, String> {
         return Err(objects::UNREADABLE.into());
     }
     gate_shas(root, &repo, &urls, std::slice::from_ref(&sha))?;
-    Ok(sha)
+    Ok(CheckedPush { sha, urls })
+}
+
+/// Remote-tracking refs a push of `refs/heads/<branch>` updates, from the remote's fetch refspecs (one
+/// `git config --get-all remote.<name>.fetch` line each). Only destinations under `refs/remotes/` are
+/// returned. A push of a raw URL does not update these, so the caller writes them after the objects land.
+pub fn remote_tracking_refs(fetch_specs: &str, branch: &str) -> Vec<String> {
+    let src = format!("refs/heads/{branch}");
+    let mut out = Vec::new();
+    for line in fetch_specs.lines() {
+        let Some(dst) = map_fetch_refspec(line.trim(), &src) else {
+            continue;
+        };
+        if dst.starts_with("refs/remotes/") && !out.iter().any(|have| have == &dst) {
+            out.push(dst);
+        }
+    }
+    out
+}
+
+fn map_fetch_refspec(spec: &str, src: &str) -> Option<String> {
+    if spec.is_empty() || spec.starts_with('#') || spec.starts_with('^') {
+        return None;
+    }
+    let spec = spec.strip_prefix('+').unwrap_or(spec);
+    let (from, to) = spec.split_once(':')?;
+    if from.is_empty() || to.is_empty() || to.contains('\0') {
+        return None;
+    }
+    if let Some(prefix) = from.strip_suffix('*') {
+        let to_prefix = to.strip_suffix('*')?;
+        let rest = src.strip_prefix(prefix)?;
+        if rest.is_empty() {
+            return None;
+        }
+        Some(format!("{to_prefix}{rest}"))
+    } else if from == src {
+        Some(to.to_string())
+    } else {
+        None
+    }
 }
 /// The gate before the app's own push, a pull request or a checked delivery from this checkout.
 pub fn gate_outgoing(root: &Path) -> Result<(), String> {
@@ -825,6 +872,10 @@ pub fn scan_landing_index(
 ) -> Result<Vec<String>, String> {
     let repo = objects::open_repo(checkout)?;
     let scan = objects::scan_index(&repo, index, base)?;
+    refuse_landing_scan(project, &scan)
+}
+
+fn refuse_landing_scan(project: &Path, scan: &objects::Scan) -> Result<Vec<String>, String> {
     for path in &scan.added {
         if let Some(kind) = agent_file_kind(path)? {
             if !tracked_at_head(project, path) {
@@ -836,7 +887,27 @@ pub fn scan_landing_index(
     scan_names(&names)?;
     let added: Vec<Added> = scan.lines.iter().map(added_from).collect();
     refuse_lines(project, &added)?;
-    Ok(scan.files)
+    Ok(scan.files.clone())
+}
+
+/// Files the landing changes, the patch, and the staged blob for each of those files.
+type LandingRead = (Vec<String>, Vec<u8>, Vec<objects::StagedBlob>);
+
+/// One `write-tree` of `index`. The file list, the patch and the staged blobs all come from that tree id,
+/// so a change to the index afterwards cannot make them disagree.
+pub fn read_landing_index(
+    checkout: &Path,
+    index: &Path,
+    base: &str,
+    project: &Path,
+) -> Result<LandingRead, String> {
+    let repo = objects::open_repo(checkout)?;
+    let tree = objects::index_tree(&repo, index)?;
+    let scan = objects::scan_tree(&repo, &tree, base)?;
+    let files = refuse_landing_scan(project, &scan)?;
+    let patch = objects::tree_patch(&repo, &tree, base)?;
+    let staged = objects::tree_blobs(&repo, &tree, &files)?;
+    Ok((files, patch, staged))
 }
 
 /// The patch that lands, read through the guard's git command with textconv off.
@@ -853,6 +924,12 @@ pub fn staged_blobs(
 ) -> Result<Vec<objects::StagedBlob>, String> {
     let repo = objects::open_repo(checkout)?;
     objects::index_blobs(&repo, index, paths)
+}
+
+/// Test-only. See `objects::note_index_read`.
+#[cfg(test)]
+pub fn set_landing_index_hook(hook: Option<objects::IndexHook>) {
+    objects::set_landing_index_hook(hook);
 }
 
 // ---- person-approved allows ------------------------------------------------------------------------------------------
@@ -1199,5 +1276,7 @@ mod review_tests_r4;
 mod review_tests_r6;
 #[cfg(test)]
 mod review_tests_r8;
+#[cfg(test)]
+mod review_tests_wp200b;
 #[cfg(test)]
 mod tests;
