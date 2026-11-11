@@ -148,6 +148,8 @@ import { useLeadTick } from "../features/leadTick/hooks/useLeadTick";
 import { DrivingBar } from "../features/browser/ui/DrivingBar";
 // Hivra WP-60: a remote project's report, shown in the chat that started it.
 import { bindRemoteReports, placeRemoteReport } from "../features/firstmate/host/remoteReport";
+// Hivra WP-172: the fan-out checkpoint store (src-tauri/src/fanout_checkpoint.rs).
+import { tauriFanoutCheckpoints } from "../features/firstmate/host/fanoutCheckpointStore";
 import { OPEN_CREW, openCrew } from "../features/crew/model/focus";
 import { registerCrewCancel } from "../features/crew/model/cancel";
 import { registerCrewDelegate } from "../features/crew/model/retry";
@@ -567,8 +569,9 @@ import {
   compactHarnessContext,
   rewindHarnessLastTurn,
   forgetHarnessSession,
-  generateHarnessTitle,
-  generateHarnessBranchName,
+  // WP-129: titles and branch names try the short text model first.
+  generateTitleWithTextModel,
+  generateBranchWithTextModel,
   migrateMonoCodexSession,
   isLiveHarness,
   latestTurnNeedsHarnessLogin,
@@ -9138,7 +9141,7 @@ function Workspace({
         }
         const titleMessage =
           harnessText || attachments.map((file) => file.name).join(", ");
-        void generateHarnessTitle(current.harness, {
+        void generateTitleWithTextModel(current.harness, {
           sessionId,
           cwd: workCwd,
           message: titleMessage,
@@ -9287,7 +9290,7 @@ function Workspace({
 
           const branchMessage =
             harnessText || attachments.map((file) => file.name).join(", ");
-          void generateHarnessBranchName(
+          void generateBranchWithTextModel(
             pickTextHarness(current.harness),
             workCwd,
             branchMessage,
@@ -14861,6 +14864,8 @@ function Workspace({
             tasks: delegationTasksHost({
               backend: tauriDelegations,
               firstMate: steering,
+              // WP-172: the fan-out checkpoint store (a plan cut short by a crash can be resumed).
+              fanoutCheckpoints: tauriFanoutCheckpoints,
               tracker: () => delegationsRef.current,
               session: (id) =>
                 sessionsRef.current.find((session) => session.id === id),

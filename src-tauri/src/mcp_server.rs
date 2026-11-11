@@ -801,6 +801,19 @@ pub(crate) fn call_tool(call: &mut Call, name: &str, args: &Value) -> Result<Val
         "ask_person" => {
             let fields = ["key", "question", "options", "recommended", "taskIds", "answer", "keys", "force", "reason"];
             let object = arguments(args, &fields)?;
+            // WP-172: the question that starts a stopped task again is the app's alone: an agent may neither create it
+            // (with or without an answer) nor answer it. The key is trimmed first, so a leading space does not get past.
+            let restart = object
+                .get("key")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .is_some_and(crate::decisions::is_again_key);
+            if restart {
+                return Err(
+                    "Only the app asks whether a stopped task starts again, and only the person answers it in Needs. Name the task in a resume instead."
+                        .into(),
+                );
+            }
             call.app
                 .call("tasks.ask", &pick(object, &fields), &new_request_id())
         }
@@ -1357,6 +1370,44 @@ mod tests {
             &args,
         );
         (outcome, seen)
+    }
+
+    /// WP-172: an agent may not create a stopped task's restart decision, with or without an answer, nor answer one.
+    /// The key is trimmed before the check, so a leading space does not get past it. An ordinary decision still works.
+    #[test]
+    fn an_agent_neither_creates_nor_answers_a_restart_decision() {
+        let clock = Arc::new(FakeClock::default());
+        let app = FakeApp::new(clock, |_, _, _| Ok(json!({ "state": "open" })));
+        let ask = |key: &str, answer: Option<&str>| {
+            let mut args = json!({
+                "key": key,
+                "question": "Start api again?",
+                "options": ["Start it again", "Leave it stopped"],
+                "recommended": "Leave it stopped",
+            });
+            if let Some(answer) = answer {
+                args["answer"] = json!(answer);
+            }
+            run_tool(&app, "ask_person", args).0
+        };
+        let restart = "fanout-again/r1/api/f2_r1-api/0123456789abcdef";
+        for key in [restart.to_string(), format!("  {restart}")] {
+            let refused = ask(&key, None).unwrap_err();
+            assert!(
+                refused.contains("Only the app asks whether a stopped task starts again"),
+                "{refused}"
+            );
+            let refused = ask(&key, Some("Start it again")).unwrap_err();
+            assert!(
+                refused.contains("Only the app asks whether a stopped task starts again"),
+                "{refused}"
+            );
+        }
+        // Nothing reached the app.
+        assert!(app.actions().is_empty());
+        // An ordinary decision keeps its answer as before.
+        assert!(ask("retention-policy", Some("Keep 30 days")).is_ok());
+        assert_eq!(app.actions(), vec!["tasks.ask".to_string()]);
     }
 
     #[test]

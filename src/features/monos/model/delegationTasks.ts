@@ -4,6 +4,7 @@
 // stops the whole tree beneath the task (stopTree.ts), a wait marks the chat as waiting (so its workers' questions come
 // back through the wait, not a wake), and an answer is noted for the question router before it reaches the worker.
 import type { AgentAppTasksHost } from "../../agent-app/model/agentAppTasks";
+import type { FanoutCheckpointStore } from "../../firstmate/host/fanoutCheckpointStore";
 import { backendFrom, cancelHeld, heldWaiting, reviewBeforeCrew } from "../../fresh-eyes/model/gate";
 import { decideGateVerdict, saveGatePlan } from "../../firstmate/model/completionGates";
 import type { Session } from "../../sessions/model/session";
@@ -53,6 +54,8 @@ export type DelegationTasksDeps = {
   crewRoute?: AgentAppTasksHost["crewRoute"];
   /** Hivra WP-14: steering messages and decisions (firstmate/hooks/useSteering.ts). */
   firstMate?: AgentAppTasksHost["firstMate"];
+  /** Hivra WP-172: a fan-out's checkpoint, so a plan cut short can be resumed (fanoutCheckpointStore.ts). */
+  fanoutCheckpoints?: FanoutCheckpointStore;
 };
 
 export function delegationTasksHost(deps: DelegationTasksDeps): AgentAppTasksHost {
@@ -151,6 +154,8 @@ export function delegationTasksHost(deps: DelegationTasksDeps): AgentAppTasksHos
           },
         }
       : {}),
+    // Hivra WP-172: a fan-out writes its plan here as it sends, and a resume reads it back.
+    ...(deps.fanoutCheckpoints ? { fanoutCheckpoints: deps.fanoutCheckpoints } : {}),
     // Hivra WP-10: the depth cap, checked by the store before anything starts.
     ...(deps.backend.checkDepth
       ? { checkDepth: (owner: string) => deps.backend.checkDepth!(owner) }

@@ -223,6 +223,20 @@ export async function askPerson(
   ownTasks: Delegation[],
   host: FirstMateTasksHost,
 ): Promise<Record<string, unknown>> {
+  return (await askPersonRecorded(source, input, where, ownTasks, host)).result;
+}
+
+/**
+ * WP-172: askPerson, plus who the store recorded the answer from (`answeredBy`, null while it is open). A caller that
+ * acts only on the person's own answer reads it here: a chat answering for the model is not the person.
+ */
+export async function askPersonRecorded(
+  source: Pick<Session, "id">,
+  input: Record<string, unknown>,
+  where: { mono?: string; project?: string },
+  ownTasks: Delegation[],
+  host: FirstMateTasksHost,
+): Promise<{ result: Record<string, unknown>; answeredBy: string | null; question: string; options: string[] }> {
   const outcome = await host.backend.ask({
     askedBy: source.id,
     ...(where.mono ? { askedByMono: where.mono } : {}),
@@ -255,28 +269,43 @@ export async function askPerson(
     if (answered.decision) d = answered.decision;
     if (answered.applied)
       return {
-        key: d.decisionKey,
-        state: d.state,
-        answer: d.answer,
-        released: answered.releasedTasks,
-        note: answered.releasedTasks.length
-          ? `Recorded their answer; ${answered.releasedTasks.length} waiting task(s) have it and carry on.`
-          : "Recorded their answer.",
+        result: {
+          key: d.decisionKey,
+          state: d.state,
+          answer: d.answer,
+          released: answered.releasedTasks,
+          note: answered.releasedTasks.length
+            ? `Recorded their answer; ${answered.releasedTasks.length} waiting task(s) have it and carry on.`
+            : "Recorded their answer.",
+        },
+        answeredBy: d.answeredBy,
+        question: d.question,
+        options: d.options,
       };
   }
   const base = { key: d.decisionKey, state: d.state, waiting: d.waiting };
   if (d.state === "answered")
     return {
-      ...base,
-      answer: d.answer,
-      note: `Already answered: ${d.answer}. Carry on from it; don't ask again.${outcome.released.length ? " The tasks you named have it too." : ""}`,
+      result: {
+        ...base,
+        answer: d.answer,
+        note: `Already answered: ${d.answer}. Carry on from it; don't ask again.${outcome.released.length ? " The tasks you named have it too." : ""}`,
+      },
+      answeredBy: d.answeredBy,
+      question: d.question,
+      options: d.options,
     };
   return {
-    ...base,
-    created: outcome.created,
-    note: outcome.created
-      ? "Asked. It waits in the person's Inbox; their answer comes back to you and to the tasks waiting on it as a new turn. Tell them in one line what you asked, then end your turn."
-      : "Already asked under this key; nothing changed. Their answer comes back to you as a new turn.",
+    result: {
+      ...base,
+      created: outcome.created,
+      note: outcome.created
+        ? "Asked. It waits in the person's Inbox; their answer comes back to you and to the tasks waiting on it as a new turn. Tell them in one line what you asked, then end your turn."
+        : "Already asked under this key; nothing changed. Their answer comes back to you as a new turn.",
+    },
+    answeredBy: d.answeredBy,
+    question: d.question,
+    options: d.options,
   };
 }
 
