@@ -217,3 +217,16 @@ describe("review #231 r2: a provider/model name is not a path", () => {
     expect(argumentProblem("/opt/agent", ["--model", "Qwen/Qwen2.5-Coder-32B-Instruct"])).toBeNull();
   });
 });
+
+// Review #231 r3 repro (MEDIUM, Windows; mirror of review_231_r3_a_rooted_or_drive_relative_windows_path_is_refused_or_pinned
+// in more_agents.rs): a path with a root and no drive, or a drive-relative parent, is not absolute on Windows, so Rust
+// neither refuses nor pins it. The entry check here lets it through as well. (A leading `/` is absolute on macOS, so
+// the forward-slash form is left to the Rust check, review_231_r3_a_forward_slash_rooted_path_on_windows_is_refused_or_pinned.)
+describe("review #231 r3: a Windows path that is not absolute is not a model name", () => {
+  it("refuses a rooted path without a drive and a drive-relative parent", async () => {
+    const { argumentProblem } = await import("./moreAgents");
+    expect(argumentProblem("/opt/node", ["\\Users\\ash\\agent"])).not.toBeNull();
+    expect(argumentProblem("/opt/node", ["--config=\\Users\\ash\\cfg"])).not.toBeNull();
+    expect(argumentProblem("/opt/node", ["C:..\\agent"])).not.toBeNull();
+  });
+});
