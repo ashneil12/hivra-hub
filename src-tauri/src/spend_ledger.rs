@@ -1068,7 +1068,7 @@ mod tests {
                 .success()
         );
         // git reports the real path (macOS resolves /var to /private/var), so compare against that.
-        let real = std::fs::canonicalize(&main).unwrap();
+        let real = dunce::canonicalize(&main).unwrap();
         let main_text = real.to_str().unwrap();
         let main_key = spend_path_key(main_text);
         assert_eq!(project_folder_for(main.to_str().unwrap()), main_key);
