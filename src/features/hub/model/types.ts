@@ -129,7 +129,13 @@ export type HubQuestion = {
 export type OlderDismissed = { dismissed: number; receipt: string };
 
 /** Ash's answer: an option's index and/or his words, or one quick answer alone. */
-export type HubAnswer = { choice?: number; text?: string; quick?: "agree" | "drop" | "park" };
+export type HubAnswer = {
+  choice?: number;
+  text?: string;
+  quick?: "agree" | "drop" | "park";
+  /** The Page that sent it. Its answer is stored as `page:<id>`, never as the person's (decisions.rs `person_only`). */
+  from?: string;
+};
 
 /** An answer on its way or back: "Sending…" in the row, then the receipt; the row ticks off only if it closed. */
 export type AnswerState = { sending: boolean; receipt?: string; problem?: string; closed?: boolean };

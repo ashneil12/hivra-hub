@@ -77,7 +77,7 @@ it("an Ash OS question goes through Ash's own answer call", async () => {
   const { d, calls } = deps();
   await runPageAction("agents.answer", { needId: "q:7", text: "Headline B" }, ctx, d);
   await runPageAction("agents.pick", { needId: "q:7" }, ctx, d);
-  expect(calls).toEqual([["answerNeed", "q:7", { text: "Headline B" }], ["answerNeed", "q:7", { quick: "agree" }]]);
+  expect(calls).toEqual([["answerNeed", "q:7", { text: "Headline B", from: "pg_1" }], ["answerNeed", "q:7", { quick: "agree", from: "pg_1" }]]);
 });
 
 it("messages a Mono in its own chat, and refuses one with no chat yet", async () => {
