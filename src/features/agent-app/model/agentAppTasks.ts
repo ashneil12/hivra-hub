@@ -65,7 +65,7 @@ import {
 } from "../../crew/model/taskRoute";
 import { routeReason } from "../../crew/model/pick";
 import { CLI_ORDER, cliLabel, isCli } from "../../crew/model/clis";
-import { projectDefaultForFolder } from "../../crew/model/host";
+import { crewReadRefusal, projectDefaultForFolder } from "../../crew/model/host";
 import { routeDefaults } from "../../crew/model/workerDefault";
 import { isFanoutAgainDecisionKey } from "../../hub/model/decisionKey";
 import {
@@ -792,10 +792,6 @@ function fallbackRefusal(answer: CrewRouteAnswer | null | undefined, baseline: s
   return undefined;
 }
 
-function errorText(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
-
 /**
  * WP-141: the one gate a launch passes before its process starts. Without a gate (a build with none) the route alone
  * decides; the app always wires one. The locked default is the route's CLI when the route is known.
@@ -852,7 +848,7 @@ export async function gateSessionStart(
         }),
       });
     } catch (error) {
-      throw new Error(`The crew policy could not be read, so nothing was started (${errorText(error)}).`);
+      throw new Error(crewReadRefusal(error, "The crew policy could not be read, so nothing was started"));
     }
   }
   await gateCrewStart(tasks, { cli, folder, mono: mono?.id, route, sessionId, parentSession: source.id });
@@ -1329,7 +1325,7 @@ async function delegate(
         ...(Object.keys(catalog).length ? { catalog } : {}),
       });
     } catch (error) {
-      throw new Error(`The crew policy could not be read, so no worker was started (${errorText(error)}).`);
+      throw new Error(crewReadRefusal(error, "The crew policy could not be read, so no worker was started"));
     }
     try {
       const answer = crewAnswer;

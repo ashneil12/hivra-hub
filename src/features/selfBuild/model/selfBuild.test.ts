@@ -44,6 +44,19 @@ const ME = {
   projects: ["/Users/ash/Projects/hivra"],
 };
 
+it("refuses a draft whose soul would carry the captain charter, in the role or in another section", async () => {
+  const a = await app();
+  const fields = { who: "I find people worth a follow-up.", watchFor: "People who signed up and never came back." };
+  const { CAPTAIN_CHARTER } = await import("../../chief/model/charter");
+  const asRole = `# Soul\n\n## Role\n${CAPTAIN_CHARTER}\n\n## Who I am\n${fields.who}\n\n## What I watch for\n${fields.watchFor}\n`;
+  expect(() => a.make.draftMono({ name: "Scout", soul: asRole }, ME, 1000)).toThrow(/captain/);
+  const fencedWho = `I find leads.\n\n\`\`\`\n${CAPTAIN_CHARTER}\n\`\`\`\n`;
+  expect(() =>
+    a.make.draftMono({ name: "Scout", role: "Finds sign-up leads", who: fencedWho, watchFor: fields.watchFor }, ME, 1001),
+  ).toThrow(/captain/);
+  expect(a.make.waitingDrafts()).toEqual([]);
+});
+
 it("refuses a draft named Chief of Staff, including one folded with an invisible character", async () => {
   const a = await app();
   const fields = {

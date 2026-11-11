@@ -98,6 +98,18 @@ function reasonOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+const CREW_READ_LEAD = "The crew policy could not be read";
+
+/**
+ * The person-facing line for a crew read that failed. A reason that is already that sentence is returned as it is,
+ * so the gate and the webview do not wrap it into a second copy.
+ */
+export function crewReadRefusal(error: unknown, sentence: string): string {
+  const reason = reasonOf(error);
+  if (reason.startsWith(CREW_READ_LEAD)) return reason;
+  return `${sentence} (${reason}).`;
+}
+
 /**
  * The lock and the Never use list in force for a Mono in a folder: the union of the Mono's, the project's and the
  * system's saved policies (WP-141 MEDIUM 6). A policy that can't be read is an error, never an empty policy
@@ -125,7 +137,7 @@ async function policyInForce(
         project: folder ?? null,
       });
     } catch (error) {
-      throw new Error(`The crew policy could not be read, so nothing was started (${reasonOf(error)}).`);
+      throw new Error(crewReadRefusal(error, "The crew policy could not be read, so nothing was started"));
     }
     if (!got || typeof got !== "object") {
       throw new Error("The crew policy could not be read, so nothing was started (no answer).");
@@ -277,7 +289,7 @@ export async function crewPolicyForLead(
       }),
     });
   } catch (error) {
-    throw new Error(`The crew policy could not be read, so nothing was started (${reasonOf(error)}).`);
+    throw new Error(crewReadRefusal(error, "The crew policy could not be read, so nothing was started"));
   }
   return { neverUse, lock: true, ...(route.cli ? { lockedDefault: route.cli } : {}) };
 }
@@ -294,7 +306,7 @@ async function owningProjects(folder: string, roots?: readonly string[]): Promis
       ...(roots && roots.length > 0 ? { roots: [...roots] } : {}),
     });
   } catch (error) {
-    throw new Error(`The crew policy could not be read, so nothing was started (${reasonOf(error)}).`);
+    throw new Error(crewReadRefusal(error, "The crew policy could not be read, so nothing was started"));
   }
   if (Array.isArray(got) && got.every((owner) => typeof owner === "string")) return got as string[];
   return [folder];

@@ -14,9 +14,8 @@
 //! live editing with Yjs (documents use revision checks instead), and task and doc stores. See
 //! docs/hivra/work/WP-80-team-workspaces.md.
 //!
-//! The functions the rest of the app will call are only reached by tests until that wiring lands, so they are allowed
-//! to be unused outside tests for now.
-#![cfg_attr(not(test), allow(dead_code))]
+//! Roles and invitations are checked in this file. They are not wired to a control-port action; the settings screen
+//! joins through `team_workspace_accept` only.
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -35,6 +34,7 @@ use uuid::Uuid;
 mod tests;
 
 /// How long an invitation link works after it is made.
+#[cfg_attr(not(test), allow(dead_code))]
 pub const INVITE_TTL_SECS: u64 = 7 * 24 * 60 * 60;
 
 /// The settings file in the app data folder. Missing keys read as off and empty.
@@ -50,6 +50,7 @@ pub enum Role {
 }
 
 impl Role {
+    #[cfg_attr(not(test), allow(dead_code))]
     fn rank(self) -> u8 {
         match self {
             Role::Owner => 3,
@@ -61,6 +62,7 @@ impl Role {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(not(test), allow(dead_code))]
 pub enum Action {
     ReadBoard,
     EditProject,
@@ -70,6 +72,7 @@ pub enum Action {
 }
 
 /// What each role may do. Guests read; members edit; admins also invite and manage members; only the owner deletes.
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn allowed(role: Role, action: Action) -> bool {
     match action {
         Action::ReadBoard => true,
@@ -80,6 +83,7 @@ pub fn allowed(role: Role, action: Action) -> bool {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(not(test), allow(dead_code))]
 pub enum TeamError {
     NotMember,
     Forbidden,
@@ -87,6 +91,8 @@ pub enum TeamError {
     AlreadyMember,
     /// Unknown, used or expired. One message for all three, so a guess reveals nothing.
     InvalidInvitation,
+    /// The joined name is empty, too long, or not a name.
+    BadName,
 }
 
 impl std::fmt::Display for TeamError {
@@ -97,11 +103,15 @@ impl std::fmt::Display for TeamError {
             TeamError::NoSuchMember => "no such member",
             TeamError::AlreadyMember => "already a member",
             TeamError::InvalidInvitation => "this invitation is invalid or has expired",
+            TeamError::BadName => {
+                "Use a name up to 40 letters, digits, spaces, apostrophes, periods or hyphens."
+            }
         })
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(not(test), allow(dead_code))]
 pub struct Member {
     pub account: String,
     pub role: Role,
@@ -109,6 +119,7 @@ pub struct Member {
 
 /// Only a hash of the link's token is kept. The token itself is shown once, when the link is made.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(not(test), allow(dead_code))]
 pub struct Invitation {
     pub token_hash: String,
     pub role: Role,
@@ -118,12 +129,14 @@ pub struct Invitation {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(not(test), allow(dead_code))]
 pub struct Workspace {
     pub id: String,
     pub members: Vec<Member>,
     pub invitations: Vec<Invitation>,
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn new_workspace(id: &str, owner: &str) -> Workspace {
     Workspace {
         id: id.to_string(),
@@ -135,15 +148,18 @@ pub fn new_workspace(id: &str, owner: &str) -> Workspace {
     }
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 fn hash_token(token: &str) -> String {
     let digest = Sha256::digest(token.as_bytes());
     digest.iter().map(|b| format!("{b:02x}")).collect()
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 fn member<'a>(ws: &'a Workspace, account: &str) -> Option<&'a Member> {
     ws.members.iter().find(|m| m.account == account)
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 fn member_index(ws: &Workspace, account: &str) -> Result<usize, TeamError> {
     ws.members
         .iter()
@@ -152,6 +168,7 @@ fn member_index(ws: &Workspace, account: &str) -> Result<usize, TeamError> {
 }
 
 /// The actor's role if they are a member and the role allows the action.
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn authorize(ws: &Workspace, actor: &str, action: Action) -> Result<Role, TeamError> {
     let m = member(ws, actor).ok_or(TeamError::NotMember)?;
     if allowed(m.role, action) {
@@ -163,6 +180,7 @@ pub fn authorize(ws: &Workspace, actor: &str, action: Action) -> Result<Role, Te
 
 /// Makes an invitation link and returns its token (shown once). The role must be strictly below the inviter's, so an
 /// admin can invite members and guests, and nobody can invite an owner or someone at their own level.
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn create_invitation(
     ws: &mut Workspace,
     actor: &str,
@@ -185,14 +203,33 @@ pub fn create_invitation(
     Ok(token)
 }
 
-/// Joins `account` with the invitation's role and spends the link. An existing member is refused before the link is
-/// checked, so trying a link again never uses it up.
+/// A joined name: 1 to 40 letters, digits, spaces, apostrophes, periods or hyphens, after trimming.
+pub fn check_joined_name(name: &str) -> Result<(), String> {
+    let name = name.trim();
+    let ok = (1..=40).contains(&name.chars().count())
+        && name
+            .chars()
+            .all(|c| c.is_alphanumeric() || matches!(c, ' ' | '\'' | '.' | '-'));
+    if ok {
+        Ok(())
+    } else {
+        Err("Use a name up to 40 letters, digits, spaces, apostrophes, periods or hyphens.".into())
+    }
+}
+
+/// Joins `account` with the invitation's role and spends the link. A name that is not a name, and an existing member,
+/// are refused before the link is checked, so trying a link again never uses it up.
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn accept_invitation(
     ws: &mut Workspace,
     token: &str,
     account: &str,
     now: u64,
 ) -> Result<Role, TeamError> {
+    let account = account.trim();
+    if check_joined_name(account).is_err() {
+        return Err(TeamError::BadName);
+    }
     if member(ws, account).is_some() {
         return Err(TeamError::AlreadyMember);
     }
@@ -212,6 +249,7 @@ pub fn accept_invitation(
 }
 
 /// Changes a member's role. The actor must outrank the member now and the new role, and nobody becomes an owner here.
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn set_role(
     ws: &mut Workspace,
     actor: &str,
@@ -229,6 +267,7 @@ pub fn set_role(
 }
 
 /// Removes a member the actor outranks. Nobody removes an owner, or someone at their own level.
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn remove_member(ws: &mut Workspace, actor: &str, target: &str) -> Result<(), TeamError> {
     let actor_role = authorize(ws, actor, Action::ManageMembers)?;
     let index = member_index(ws, target)?;
@@ -261,12 +300,37 @@ pub fn load_config(path: &Path) -> Config {
         .unwrap_or_default()
 }
 
-fn write_config(path: &Path, config: &Config) -> Result<(), String> {
-    let account = load_account(path);
-    write_config_with(path, config, (!account.is_empty()).then_some(account))
+fn address_changed_of(path: &Path) -> bool {
+    std::fs::read(path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+        .and_then(|raw| raw["addressChanged"].as_bool())
+        .unwrap_or(false)
 }
 
-fn write_config_with(path: &Path, config: &Config, account: Option<String>) -> Result<(), String> {
+/// The same server: equal after trim, or the same scheme, host, port and path. A trailing slash does not make a new one.
+fn same_server(a: &str, b: &str) -> bool {
+    let a = a.trim();
+    let b = b.trim();
+    if a == b {
+        return true;
+    }
+    let (Ok(left), Ok(right)) = (Url::parse(a), Url::parse(b)) else {
+        return false;
+    };
+    left.scheme() == right.scheme()
+        && left.host() == right.host()
+        && left.port_or_known_default() == right.port_or_known_default()
+        && left.path().trim_end_matches('/') == right.path().trim_end_matches('/')
+        && left.query() == right.query()
+}
+
+fn write_config_with(
+    path: &Path,
+    config: &Config,
+    account: Option<String>,
+    address_changed: bool,
+) -> Result<(), String> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     }
@@ -274,28 +338,47 @@ fn write_config_with(path: &Path, config: &Config, account: Option<String>) -> R
     if let Some(account) = account {
         body["account"] = json!(account);
     }
+    if address_changed {
+        body["addressChanged"] = json!(true);
+    }
     let body = serde_json::to_vec_pretty(&body).map_err(|e| e.to_string())?;
     let tmp = path.with_extension("json.tmp");
     std::fs::write(&tmp, &body).map_err(|e| e.to_string())?;
     std::fs::rename(&tmp, path).map_err(|e| e.to_string())
 }
 
-/// Saves the switch and the endpoint. The endpoint is checked first, so a bad address writes nothing. The token stays.
+/// Saves the switch and the endpoint. The endpoint is checked first, so a bad address writes nothing. Changing the
+/// address marks the saved token as belonging to the previous server; it is dropped the next time sharing is on.
 pub fn save_config(path: &Path, enabled: bool, endpoint: &str) -> Result<Config, String> {
     let endpoint = endpoint.trim().to_string();
     if !endpoint.is_empty() {
         validate_endpoint(&endpoint)?;
     }
     let mut config = load_config(path);
+    let previous = config.endpoint.clone();
     config.enabled = enabled;
     config.endpoint = endpoint;
-    write_config(path, &config)?;
+    let changed = address_changed_of(path)
+        || (!previous.trim().is_empty() && !same_server(&previous, &config.endpoint));
+    let account = load_account(path);
+    write_config_with(
+        path,
+        &config,
+        (!account.is_empty()).then_some(account),
+        changed,
+    )?;
     Ok(config)
 }
 
 /// The name this device joined with, kept beside the switch. It is not a secret, and the presence list shows it.
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn remember_account(path: &Path, account: &str) -> Result<(), String> {
-    write_config_with(path, &load_config(path), Some(account.to_string()))
+    write_config_with(
+        path,
+        &load_config(path),
+        Some(account.to_string()),
+        address_changed_of(path),
+    )
 }
 
 /// The joined name, or empty when none was kept.
@@ -311,6 +394,10 @@ pub fn load_account(path: &Path) -> String {
 pub trait TokenStore {
     fn read(&self) -> Result<Option<String>, String>;
     fn write(&self, token: &str) -> Result<(), String>;
+    /// Drops the token. A store that only exists to prove it is never touched can leave this as a no-op.
+    fn clear(&self) -> Result<(), String> {
+        Ok(())
+    }
 }
 
 /// The macOS Keychain (or the platform store). A dev copy's service is scoped to `monocode-hub-dev:` by hub_keychain.
@@ -326,26 +413,102 @@ impl TokenStore for Keychain {
     fn write(&self, token: &str) -> Result<(), String> {
         crate::hub_keychain::store(TOKEN_SERVICE, TOKEN_ACCOUNT, token)
     }
+    fn clear(&self) -> Result<(), String> {
+        crate::hub_keychain::delete(TOKEN_SERVICE, TOKEN_ACCOUNT).map(|_| ())
+    }
 }
 
 /// Keeps the token the shared machine issued at accept time, in the store and never in the settings file.
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn remember_token(store: &dyn TokenStore, token: &str) -> Result<(), String> {
     store.write(token)
 }
 
-/// The token this device holds, or empty. A store that cannot be read counts as signed out, never as signed in.
-pub fn recall_token(store: &dyn TokenStore) -> String {
-    store.read().ok().flatten().unwrap_or_default()
+/// The token and the server address it was issued for, kept together in the store and never in the settings file.
+#[derive(Serialize, Deserialize)]
+struct StoredToken {
+    token: String,
+    endpoint: String,
 }
 
-/// The settings with the device token filled in from the store.
+/// Keeps the token for the server address it was issued for. The address is stored with the token.
+pub fn remember_token_for(
+    store: &dyn TokenStore,
+    endpoint: &str,
+    token: &str,
+) -> Result<(), String> {
+    let endpoint = endpoint.trim();
+    if endpoint.is_empty() || token.is_empty() {
+        return Err("a token needs the server address it was issued for".into());
+    }
+    let raw = serde_json::to_string(&StoredToken {
+        token: token.to_string(),
+        endpoint: endpoint.to_string(),
+    })
+    .map_err(|e| e.to_string())?;
+    store.write(&raw)
+}
+
+/// A stored secret: a bound token and its address, or a raw token from before addresses were stored.
+fn stored_token(raw: &str) -> (String, Option<String>) {
+    if let Ok(stored) = serde_json::from_str::<StoredToken>(raw) {
+        if !stored.token.is_empty() && !stored.endpoint.trim().is_empty() {
+            return (stored.token, Some(stored.endpoint));
+        }
+    }
+    (raw.to_string(), None)
+}
+
+/// The token this device holds, or empty. A store that cannot be read counts as signed out, never as signed in.
+#[cfg_attr(not(test), allow(dead_code))]
+pub fn recall_token(store: &dyn TokenStore) -> String {
+    store
+        .read()
+        .ok()
+        .flatten()
+        .map(|raw| stored_token(&raw).0)
+        .unwrap_or_default()
+}
+
+/// The settings with the device token filled in from the store. While sharing is on, a token for a different address
+/// is dropped, so an edited address is not sent the previous server's Bearer token.
 pub fn load_signed_in_config(path: &Path, store: &dyn TokenStore) -> Config {
     let mut config = load_config(path);
-    config.token = recall_token(store);
+    config.token = token_for_config(path, store, &config);
     config
 }
 
+fn token_for_config(path: &Path, store: &dyn TokenStore, config: &Config) -> String {
+    let raw = match store.read() {
+        Ok(Some(raw)) if !raw.is_empty() => raw,
+        _ => {
+            if config.enabled && address_changed_of(path) {
+                let _ = write_config_with(path, config, account_of(path), false);
+            }
+            return String::new();
+        }
+    };
+    let (token, bound) = stored_token(&raw);
+    let mismatch = bound
+        .as_ref()
+        .is_some_and(|endpoint| !same_server(endpoint, &config.endpoint));
+    if config.enabled && (address_changed_of(path) || mismatch) {
+        let _ = store.clear();
+        if address_changed_of(path) {
+            let _ = write_config_with(path, config, account_of(path), false);
+        }
+        return String::new();
+    }
+    token
+}
+
+fn account_of(path: &Path) -> Option<String> {
+    let account = load_account(path);
+    (!account.is_empty()).then_some(account)
+}
+
 /// One local project. Only `shared` projects are ever sent; `payload` is whatever the project holds.
+#[cfg_attr(not(test), allow(dead_code))]
 #[derive(Debug, Clone, PartialEq)]
 pub struct LocalProject {
     pub id: String,
@@ -354,6 +517,7 @@ pub struct LocalProject {
 }
 
 /// The shared projects a member may see on the board. Private projects are never on it, for anyone.
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn shared_board<'a>(
     ws: &Workspace,
     actor: &str,
@@ -365,17 +529,20 @@ pub fn shared_board<'a>(
 
 /// An agent acts for one member and inherits that member's role. It never sees a private project.
 #[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(not(test), allow(dead_code))]
 pub struct AgentScope {
     pub account: String,
     pub role: Role,
 }
 
 impl AgentScope {
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn can_edit(&self) -> bool {
         allowed(self.role, Action::EditProject)
     }
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn agent_for(ws: &Workspace, member_account: &str) -> Result<AgentScope, TeamError> {
     let m = member(ws, member_account).ok_or(TeamError::NotMember)?;
     Ok(AgentScope {
@@ -385,6 +552,7 @@ pub fn agent_for(ws: &Workspace, member_account: &str) -> Result<AgentScope, Tea
 }
 
 /// What an agent may read on the board: the shared projects only.
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn agent_board<'a>(scope: &AgentScope, projects: &'a [LocalProject]) -> Vec<&'a LocalProject> {
     let _ = scope;
     projects.iter().filter(|p| p.shared).collect()
@@ -420,6 +588,7 @@ fn is_this_machine(url: &Url) -> bool {
 
 /// How a sync attempt ended. `Disabled` and `NoEndpoint` mean nothing was sent.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(not(test), allow(dead_code))]
 pub enum SyncOutcome {
     Disabled,
     NoEndpoint,
@@ -501,8 +670,11 @@ impl Client {
         }
     }
 
-    /// Accepts an invitation and returns this device's workspace token and role.
+    /// Accepts an invitation and returns this device's workspace token and role. A name that is not a name is refused
+    /// before any request, so a bad name never reaches the server and never spends the invitation.
     pub fn accept(&self, invitation: &str, account: &str) -> Result<Grant, String> {
+        let account = account.trim();
+        check_joined_name(account)?;
         let (status, body) = self.call(
             "POST",
             "/v1/accept",
@@ -514,6 +686,7 @@ impl Client {
     }
 
     /// Pushes the shared projects and nothing else.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn push_projects(&self, projects: &[LocalProject]) -> Result<usize, String> {
         let shared: Vec<Value> = projects
             .iter()
@@ -595,6 +768,7 @@ impl Client {
 
 /// Sends the shared projects, and nothing else, when the feature is on, an endpoint is set and this device has a token.
 /// Any other state returns before a request is made.
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn sync_outbound(config: &Config, projects: &[LocalProject]) -> Result<SyncOutcome, String> {
     if !config.enabled {
         return Ok(SyncOutcome::Disabled);
@@ -613,6 +787,7 @@ pub fn sync_outbound(config: &Config, projects: &[LocalProject]) -> Result<SyncO
 
 /// The shared projects in the app's stored `projects` document, ready for an outbound payload. Only a record with
 /// `shared: true` goes out, and its local `folder` (a path on this machine) and the `shared` flag are left out.
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn shared_projects_from_doc(doc: &Value) -> Vec<LocalProject> {
     doc["projects"]
         .as_array()
@@ -639,6 +814,7 @@ pub fn shared_projects_from_doc(doc: &Value) -> Vec<LocalProject> {
 
 /// What a change to the stored projects does. The switch is read first: with it off this returns before the token store
 /// is touched, so the Keychain is never read for nothing. With it on, the token is read and the shared projects go out.
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn sync_on_write(
     path: &Path,
     store: &dyn TokenStore,
@@ -648,10 +824,7 @@ pub fn sync_on_write(
     if !config.enabled {
         return Ok(SyncOutcome::Disabled);
     }
-    let config = Config {
-        token: recall_token(store),
-        ..config
-    };
+    let config = load_signed_in_config(path, store);
     sync_outbound(&config, &shared_projects_from_doc(doc))
 }
 
@@ -678,6 +851,8 @@ pub struct SyncState {
     pub projects: BTreeMap<String, BTreeMap<String, FieldBase>>,
     /// Fields where this device's edit replaced another member's edit, as "project.field" (the newest last).
     pub conflicts: Vec<String>,
+    /// Shared projects this device had, then deleted. A later pull does not add them back.
+    pub removed: BTreeSet<String>,
 }
 
 /// The shared machine as the project sync sees it. `Client` is the real one; the tests use the same trait.
@@ -724,6 +899,124 @@ fn safe_project_id(id: &str) -> bool {
         && id
             .chars()
             .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_')
+}
+
+/// Icon shapes the local hub accepts (`ICON_SHAPES` in the web model). Anything else is not a pulled icon.
+const ICON_SHAPES: &[&str] = &[
+    "gamepad",
+    "sparkles",
+    "palette",
+    "gauge",
+    "folder",
+    "code",
+    "rocket",
+    "chart",
+    "briefcase",
+    "megaphone",
+    "book",
+    "heart",
+    "globe",
+    "bolt",
+];
+
+fn name_ok(name: &str) -> bool {
+    let mut chars = name.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    if !first.is_ascii_alphanumeric() {
+        return false;
+    }
+    let mut len = 1usize;
+    for c in chars {
+        len += 1;
+        if len > 60 {
+            return false;
+        }
+        if !(c.is_ascii_alphanumeric()
+            || matches!(c, ' ' | '.' | ',' | '&' | '\'' | '(' | ')' | '+' | '-'))
+        {
+            return false;
+        }
+    }
+    true
+}
+
+fn words_of(value: &str) -> String {
+    value
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase()
+}
+
+fn slug_of(name: &str) -> String {
+    let mut out = String::new();
+    let mut dash = false;
+    for c in name.to_lowercase().chars() {
+        if c.is_ascii_alphanumeric() {
+            out.push(c);
+            dash = false;
+        } else if !out.is_empty() && !dash {
+            out.push('-');
+            dash = true;
+        }
+    }
+    while out.ends_with('-') {
+        out.pop();
+    }
+    if out.is_empty() {
+        "project".into()
+    } else {
+        out
+    }
+}
+
+fn name_clash(doc: &Value, own_id: &str, name: &str) -> bool {
+    let wanted = words_of(name);
+    let id = slug_of(name);
+    doc["projects"].as_array().is_some_and(|list| {
+        list.iter().any(|project| {
+            let pid = project["id"].as_str().unwrap_or("");
+            pid != own_id
+                && (words_of(project["name"].as_str().unwrap_or("")) == wanted || pid == id)
+        })
+    })
+}
+
+fn short_ok(value: &str) -> bool {
+    let count = value.chars().count();
+    (1..=16).contains(&count) && value.trim() == value
+}
+
+fn icon_ok(value: &str) -> bool {
+    ICON_SHAPES.contains(&value)
+}
+
+/// A pulled field the local hub would keep. `archived` is never taken, so another member cannot archive this copy.
+fn pulled_ok(name: &str, value: &Option<Value>, doc: &Value, id: &str) -> bool {
+    match name {
+        "name" => value
+            .as_ref()
+            .and_then(|v| v.as_str())
+            .is_some_and(|text| name_ok(text) && !name_clash(doc, id, text)),
+        "shortName" => value
+            .as_ref()
+            .and_then(|v| v.as_str())
+            .is_some_and(short_ok),
+        "iconShape" => value.as_ref().and_then(|v| v.as_str()).is_some_and(icon_ok),
+        "archived" => false,
+        "status" => value.as_ref().and_then(|v| v.as_str()) == Some("active"),
+        _ => true,
+    }
+}
+
+fn note_conflict(state: &mut SyncState, item: String) {
+    if !state.conflicts.contains(&item) {
+        state.conflicts.push(item);
+    }
+    let extra = state.conflicts.len().saturating_sub(CONFLICT_LIMIT);
+    state.conflicts.drain(0..extra);
 }
 
 /// A field's text as the server keeps it (JSON). "null" is a removed field.
@@ -785,7 +1078,7 @@ pub fn sync_round(
     let mut pushed = 0;
     let mut pulled = 0;
 
-    let have: BTreeSet<String> = doc["projects"]
+    let mut have: BTreeSet<String> = doc["projects"]
         .as_array()
         .map(|list| {
             list.iter()
@@ -793,26 +1086,94 @@ pub fn sync_round(
                 .collect()
         })
         .unwrap_or_default();
+    // A shared project this device had, and no longer has, stays gone. Unshared projects are still in the document.
+    let known: Vec<String> = state.projects.keys().cloned().collect();
+    for id in known {
+        if !have.contains(&id) {
+            state.removed.insert(id.clone());
+            state.projects.remove(&id);
+        }
+    }
+    for id in &have {
+        state.removed.remove(id);
+    }
     for id in remote.list_projects()? {
-        if !safe_project_id(&id) || have.contains(&id) {
+        if !safe_project_id(&id) || have.contains(&id) || state.removed.contains(&id) {
             continue;
         }
         let fields = remote.read_fields(&format!("{PROJECT_DOC_PREFIX}{id}"))?;
         let mut record = json!({ "id": id, "shared": true });
-        let base = state.projects.entry(id.clone()).or_default();
-        for (name, (rev, body)) in fields {
-            if !synced_field(&name) {
+        let mut accepted: Vec<(String, u64, Option<Value>)> = Vec::new();
+        let mut name: Option<String> = None;
+        let mut bad_icon = false;
+        for (field_name, (rev, body)) in fields {
+            if !synced_field(&field_name) {
                 continue;
             }
             let value = parse_body(&body);
-            if let Some(value) = &value {
-                record[name.as_str()] = value.clone();
+            match field_name.as_str() {
+                "name" => {
+                    if let Some(text) = value.as_ref().and_then(|v| v.as_str()) {
+                        if name_ok(text) {
+                            name = Some(text.to_string());
+                            accepted.push((field_name, rev, value));
+                        }
+                    }
+                }
+                "shortName" => {
+                    if value
+                        .as_ref()
+                        .and_then(|v| v.as_str())
+                        .is_some_and(short_ok)
+                    {
+                        accepted.push((field_name, rev, value));
+                    }
+                }
+                "iconShape" => {
+                    if value.as_ref().and_then(|v| v.as_str()).is_some_and(icon_ok) {
+                        accepted.push((field_name, rev, value));
+                    } else if value.is_some() {
+                        bad_icon = true;
+                    }
+                }
+                "archived" => {}
+                "status" => {
+                    if value.as_ref().and_then(|v| v.as_str()) == Some("active") {
+                        accepted.push((field_name, rev, value));
+                    }
+                }
+                _ => accepted.push((field_name, rev, value)),
             }
-            base.insert(name, FieldBase { rev, value });
+        }
+        let Some(name) = name else { continue };
+        if name_clash(&doc, &id, &name) {
+            continue;
+        }
+        for (field_name, _, value) in &accepted {
+            if let Some(value) = value {
+                record[field_name.as_str()] = value.clone();
+            }
+        }
+        if bad_icon {
+            record["iconShape"] = json!("folder");
+        }
+        let base = state.projects.entry(id.clone()).or_default();
+        for (field_name, rev, value) in accepted {
+            base.insert(field_name, FieldBase { rev, value });
+        }
+        if bad_icon {
+            base.insert(
+                "iconShape".into(),
+                FieldBase {
+                    rev: 0,
+                    value: Some(json!("folder")),
+                },
+            );
         }
         if let Some(list) = doc["projects"].as_array_mut() {
             list.push(record);
         }
+        have.insert(id);
         pulled += 1;
     }
 
@@ -865,7 +1226,16 @@ pub fn sync_round(
                     writes.push((name, 0, mine, false))
                 }
                 (false, false) => {}
-                (false, true) => takes.push((name, server_value, server_rev)),
+                (false, true) => {
+                    if pulled_ok(&name, &server_value, &doc, &id) {
+                        takes.push((name, server_value, server_rev));
+                    } else if name != "archived" && name != "status" {
+                        // Keep the local value and send it back, so a bad pull does not stick on the server.
+                        writes.push((name, server_rev, mine, true));
+                    } else {
+                        note_conflict(&mut state, format!("{id}.{name}"));
+                    }
+                }
                 (true, moved) => {
                     let base_rev = if !on_server {
                         0
@@ -948,12 +1318,8 @@ pub fn sync_round(
             pushed += 1;
         }
         for item in replaced {
-            if !state.conflicts.contains(&item) {
-                state.conflicts.push(item);
-            }
+            note_conflict(&mut state, item);
         }
-        let extra = state.conflicts.len().saturating_sub(CONFLICT_LIMIT);
-        state.conflicts.drain(0..extra);
     }
 
     Ok(Round {
@@ -961,6 +1327,48 @@ pub fn sync_round(
         state,
         pushed,
         pulled,
+    })
+}
+
+/// What a round wrote back. `projects_rev` is set only when the projects document itself was written.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Kept {
+    pub projects_rev: Option<i64>,
+    pub state_written: bool,
+}
+
+/// Writes a round into the local store. The projects document is written only when the round changed it, and only if
+/// it is still at `rev`. The sync state is written whenever the round changed it, including when the projects write
+/// was refused.
+pub fn keep_round(
+    conn: &rusqlite::Connection,
+    doc: &Value,
+    rev: i64,
+    state: &SyncState,
+    round: &Round,
+) -> Result<Kept, String> {
+    let doc_changed = &round.doc != doc;
+    let state_changed = &round.state != state;
+    if !doc_changed && !state_changed {
+        return Ok(Kept {
+            projects_rev: None,
+            state_written: false,
+        });
+    }
+    let projects_rev = if doc_changed {
+        crate::local_hub::write_if(conn, "projects", &round.doc, Some(rev))?
+    } else {
+        None
+    };
+    let state_written = if state_changed {
+        let state_json = serde_json::to_value(&round.state).map_err(|e| e.to_string())?;
+        crate::local_hub::write_if(conn, SYNC_STATE_KEY, &state_json, None)?.is_some()
+    } else {
+        false
+    };
+    Ok(Kept {
+        projects_rev,
+        state_written,
     })
 }
 
@@ -1004,23 +1412,17 @@ pub fn run_round<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Result<(), Str
         .and_then(|value| serde_json::from_value(value).ok())
         .unwrap_or_default();
     let round = sync_round(&client, &doc, &state)?;
-    if round.doc == doc && round.state == state {
-        return Ok(());
-    }
-
-    let conn = store.lock_conn()?;
-    let state_json = serde_json::to_value(&round.state).map_err(|e| e.to_string())?;
-    let Some(new_rev) = crate::local_hub::write_if(&conn, "projects", &round.doc, Some(rev))?
-    else {
-        return Ok(());
+    let kept = {
+        let conn = store.lock_conn()?;
+        keep_round(&conn, &doc, rev, &state, &round)?
     };
-    crate::local_hub::write_if(&conn, SYNC_STATE_KEY, &state_json, None)?;
-    drop(conn);
-    if round.pulled > 0 {
-        let _ = app.emit(
-            crate::local_hub::CHANGED_EVENT,
-            json!({ "key": "projects", "rev": new_rev }),
-        );
+    if let Some(new_rev) = kept.projects_rev {
+        if round.pulled > 0 {
+            let _ = app.emit(
+                crate::local_hub::CHANGED_EVENT,
+                json!({ "key": "projects", "rev": new_rev }),
+            );
+        }
     }
     Ok(())
 }
@@ -1069,6 +1471,9 @@ pub struct Status {
     pub signed_in: bool,
     /// On, the endpoint passes the address rules, and a token is held. Nothing is sent unless this is true.
     pub active: bool,
+    /// Fields where this device kept its own copy, as "project.field". Empty when there are none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub conflicts: Vec<String>,
 }
 
 pub fn status_for(config: &Config) -> Status {
@@ -1083,7 +1488,49 @@ pub fn status_for(config: &Config) -> Status {
             && endpoint_configured
             && signed_in
             && validate_endpoint(&config.endpoint).is_ok(),
+        conflicts: Vec::new(),
     }
+}
+
+fn conflict_label(item: &str) -> bool {
+    let mut parts = item.split('.');
+    match (parts.next(), parts.next(), parts.next()) {
+        (Some(id), Some(field), None) => {
+            safe_project_id(id)
+                && !field.is_empty()
+                && field.len() <= 32
+                && field.chars().all(|c| c.is_ascii_alphanumeric())
+        }
+        _ => false,
+    }
+}
+
+fn conflicts_in(value: &Value) -> Vec<String> {
+    value
+        .get("conflicts")
+        .and_then(|v| v.as_array())
+        .map(|list| {
+            list.iter()
+                .filter_map(|item| item.as_str())
+                .filter(|item| conflict_label(item))
+                .take(CONFLICT_LIMIT)
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn read_conflicts<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Vec<String> {
+    let Some(store) = app.try_state::<crate::session_store::SessionStore>() else {
+        return Vec::new();
+    };
+    let Ok(conn) = store.lock_conn() else {
+        return Vec::new();
+    };
+    let Ok(doc) = crate::local_hub::read_doc(&conn, SYNC_STATE_KEY) else {
+        return Vec::new();
+    };
+    doc.value.as_ref().map(conflicts_in).unwrap_or_default()
 }
 
 fn config_path<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Result<std::path::PathBuf, String> {
@@ -1106,7 +1553,9 @@ pub fn status_at(path: &Path, store: &dyn TokenStore) -> Status {
 
 #[tauri::command]
 pub fn team_workspace_status(app: tauri::AppHandle) -> Result<Status, String> {
-    Ok(status_at(&config_path(&app)?, &Keychain))
+    let mut status = status_at(&config_path(&app)?, &Keychain);
+    status.conflicts = read_conflicts(&app);
+    Ok(status)
 }
 
 /// Saves the switch and endpoint that Ash sets in Settings. Off writes no network call.
@@ -1134,7 +1583,8 @@ pub fn team_workspace_accept(
     let client =
         Client::from_config(&config)?.ok_or("team workspaces are off; turn them on first")?;
     let grant = client.accept(invitation.trim(), account.trim())?;
-    remember_token(&Keychain, &grant.token)?;
-    remember_account(&path, account.trim())?;
+    remember_token_for(&Keychain, &config.endpoint, &grant.token)?;
+    let fresh = load_config(&path);
+    write_config_with(&path, &fresh, Some(account.trim().to_string()), false)?;
     Ok(status_for(&load_signed_in_config(&path, &Keychain)))
 }
