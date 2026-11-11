@@ -265,7 +265,49 @@ function foldPath(value: string): string {
   return value;
 }
 
-/** `file:` that is not a local file is refused. A local `file://` or `file:/` URL is pinned by the app, so it is allowed here. */
+function hexValue(ch: string): number | null {
+  const code = ch.charCodeAt(0);
+  if (code >= 48 && code <= 57) return code - 48;
+  if (code >= 97 && code <= 102) return code - 97 + 10;
+  if (code >= 65 && code <= 70) return code - 65 + 10;
+  return null;
+}
+
+/** Percent-decode the way the app does. A truncated escape, a bad hex digit, or bytes that are not UTF-8 is null. */
+function percentDecode(input: string): string | null {
+  const bytes: number[] = [];
+  const encoder = new TextEncoder();
+  for (let i = 0; i < input.length; ) {
+    if (input[i] === "%") {
+      if (i + 2 >= input.length) return null;
+      const hi = hexValue(input[i + 1]);
+      const lo = hexValue(input[i + 2]);
+      if (hi === null || lo === null) return null;
+      bytes.push((hi << 4) | lo);
+      i += 3;
+    } else {
+      const cp = input.codePointAt(i);
+      if (cp === undefined) return null;
+      for (const byte of encoder.encode(String.fromCodePoint(cp))) bytes.push(byte);
+      i += cp > 0xffff ? 2 : 1;
+    }
+  }
+  try {
+    return new TextDecoder("utf-8", { fatal: true }).decode(new Uint8Array(bytes));
+  } catch {
+    return null;
+  }
+}
+
+/** A decoded file path the app will pin, or a refusal. Empty and `/` are refused. A decoded `/../x` stays local. */
+function classifyFilePath(path: string): "local" | "refuse" {
+  const decoded = percentDecode(path);
+  if (decoded === null || decoded === "" || decoded === "/") return "refuse";
+  return "local";
+}
+
+/** `file:` that is not a local file is refused. A local `file://` or `file:/` URL is pinned by the app, so it is allowed
+ *  here. The path is percent-decoded, the same way the app decodes it. */
 function fileUrlClass(value: string): "not-file" | "local" | "refuse" {
   if (value.length < 5 || value.slice(0, 5).toLowerCase() !== "file:") return "not-file";
   const rest = value.slice(5);
@@ -275,11 +317,9 @@ function fileUrlClass(value: string): "not-file" | "local" | "refuse" {
     if (slash < 0) return "refuse";
     const host = after.slice(0, slash);
     if (host !== "" && host.toLowerCase() !== "localhost") return "refuse";
-    const path = after.slice(slash);
-    if (path === "" || path === "/") return "refuse";
-    return "local";
+    return classifyFilePath(after.slice(slash));
   }
-  if (rest.startsWith("/")) return rest === "/" ? "refuse" : "local";
+  if (rest.startsWith("/")) return classifyFilePath(rest);
   return "refuse";
 }
 

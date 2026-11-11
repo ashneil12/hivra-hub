@@ -308,3 +308,14 @@ describe("fullwidth separators and Windows best-fit slashes", () => {
     expect(argumentProblem("/opt/node", [`key${String.fromCharCode(0xff1d)}hello`])).toBeNull();
   });
 });
+
+describe("a file URL is percent-decoded the way the app decodes it", () => {
+  it("refuses a broken escape and allows a decoded local path, including one that decodes to ..", async () => {
+    const { argumentProblem } = await import("./moreAgents");
+    expect(argumentProblem("/opt/deno", ["file:///tmp/%zz"])).not.toBeNull();
+    expect(argumentProblem("/opt/deno", ["file:///tmp/%"])).not.toBeNull();
+    expect(argumentProblem("/opt/deno", ["file:///tmp/%ff"])).not.toBeNull();
+    expect(argumentProblem("/opt/deno", ["file:///tmp/my%20agent.ts"])).toBeNull();
+    expect(argumentProblem("/opt/deno", ["file:///%2e%2e/x"])).toBeNull();
+  });
+});
