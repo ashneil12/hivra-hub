@@ -6,7 +6,7 @@
 //! account files the CLIs already wrote.
 
 mod budget;
-mod failure;
+pub(crate) mod failure; // WP-180a: automations maps a run's error class through sanitize_class.
 pub(crate) mod gate;
 mod pick;
 mod policy;

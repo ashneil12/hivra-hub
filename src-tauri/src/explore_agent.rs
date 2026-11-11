@@ -587,7 +587,7 @@ mod tests {
     fn a_check_changes_nothing_and_a_repository_stays_clean() {
         let scratch = Scratch::new();
         let (project, config) = scratch.pair();
-        let init = std::process::Command::new("git")
+        let init = crate::git_cmd::git()
             .args(["init", "-q"])
             .current_dir(&project)
             .status()
@@ -609,7 +609,7 @@ mod tests {
         assert_eq!(tree(&config), before_config);
         assert!(!project.join(".claude").exists());
         if init {
-            let status = std::process::Command::new("git")
+            let status = crate::git_cmd::git()
                 .args(["status", "--porcelain"])
                 .current_dir(&project)
                 .output()

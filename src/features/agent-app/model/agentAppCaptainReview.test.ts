@@ -80,7 +80,7 @@ describe("captain.handoff (review of PR #244, round 3)", () => {
     const filed: unknown[] = [];
     const host = {
       isMono: (id: string) => id === "chief",
-      monoOf: () => ({ id: "ada", name: "Chief of Staff", projects: [PROJECT] }),
+      monoOf: () => ({ id: "ada", name: "Chief of Staff", captain: true, projects: [PROJECT] }),
       taskStore: vi.fn(async (command: string, args: unknown) => {
         filed.push([command, args]);
         return { task: { id: `T-${filed.length}` } };
@@ -103,6 +103,14 @@ describe("captain.handoff (review of PR #244, round 3)", () => {
     const host = {
       isMono: (id: string) => id === "chief",
       monoOf: () => ({ id: "coordinator", name: "Coordinator", projects: [PROJECT] }),
+      agentFiles: async () => ({
+        id: "coordinator",
+        soul: `# Soul\n\n## Role\n${CAPTAIN_CHARTER}\n`,
+        soulHash: "s",
+        memory: "",
+        memoryHash: "m",
+        topics: [],
+      }),
       taskStore: vi.fn(async (command: string, args: unknown) => {
         filed.push([command, args]);
         return { task: { id: "T-1" } };

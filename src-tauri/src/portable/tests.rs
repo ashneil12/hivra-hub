@@ -35,7 +35,7 @@ const PLANTED: [&str; 4] = [
 
 /// What git prints for `args` in `dir` (trimmed of its trailing newline).
 fn git_stdout(dir: &Path, args: &[&str]) -> String {
-    let out = Command::new("git")
+    let out = crate::git_cmd::git()
         .arg("-C")
         .arg(dir)
         .args(args)
@@ -45,7 +45,7 @@ fn git_stdout(dir: &Path, args: &[&str]) -> String {
 }
 
 fn git(dir: &Path, args: &[&str]) {
-    let out = Command::new("git")
+    let out = crate::git_cmd::git()
         .arg("-C")
         .arg(dir)
         .args([
@@ -596,7 +596,7 @@ fn a_round_trip_into_an_empty_data_folder_brings_everything_back_minus_secrets()
                     "{name}/{relative}"
                 );
             }
-            let log = Command::new("git")
+            let log = crate::git_cmd::git()
                 .arg("-C")
                 .arg(target.memory_root.join(name))
                 .args(["log", "--oneline"])
@@ -613,7 +613,7 @@ fn a_round_trip_into_an_empty_data_folder_brings_everything_back_minus_secrets()
                 !target.memory_root.join(name).join(".gitignore").exists(),
                 "{name}/.gitignore was restored"
             );
-            let status = Command::new("git")
+            let status = crate::git_cmd::git()
                 .arg("-C")
                 .arg(target.memory_root.join(name))
                 .args(["status", "--porcelain"])
@@ -627,7 +627,7 @@ fn a_round_trip_into_an_empty_data_folder_brings_everything_back_minus_secrets()
                 "{name}: the restored history is intact: {}",
                 String::from_utf8_lossy(&status.stdout)
             );
-            let remotes = Command::new("git")
+            let remotes = crate::git_cmd::git()
                 .arg("-C")
                 .arg(target.memory_root.join(name))
                 .arg("remote")
@@ -3359,7 +3359,7 @@ fn history_import(dest: &Path) -> ImportRequest {
 
 /// The subjects of the commits in the memory folder this import made.
 fn history_subjects(target: &Env, name: &str) -> Vec<String> {
-    let out = Command::new("git")
+    let out = crate::git_cmd::git()
         .arg("-C")
         .arg(target.memory_root.join(name))
         .args(["log", "--format=%s"])
@@ -6634,7 +6634,7 @@ fn restoring_a_history_runs_no_filter_and_drops_the_files_that_name_one() {
 /// defines the filters a hostile history names), hooks and attributes as git finds them.
 #[cfg(unix)]
 fn git_as_ash(folder: &Path, global: &Path, args: &[&str]) -> std::process::Output {
-    Command::new("git")
+    crate::git_cmd::git()
         .arg("-C")
         .arg(folder)
         .args(args)

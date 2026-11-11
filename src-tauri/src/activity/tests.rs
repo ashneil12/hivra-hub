@@ -839,3 +839,39 @@ fn a_mono_records_its_own_note_and_a_blank_or_huge_one_is_refused() {
     let page = list(&conn, &ListQuery::default(), NOW).unwrap();
     assert_eq!(page.entries.len(), 1);
 }
+
+#[test]
+fn a_first_mate_report_drops_control_characters_before_it_is_stored() {
+    let store = memory();
+    let conn = store.lock_conn().unwrap();
+    let err = record_first_mate_note(
+        &conn,
+        "protected.report",
+        "\n\t",
+        "project",
+        "target",
+        "lead-1",
+        "Ada",
+        NOW,
+    )
+    .unwrap_err();
+    assert!(err.contains("summary"), "{err}");
+    record_first_mate_note(
+        &conn,
+        "protected.report",
+        "Touched\n ~/.ssh",
+        "pro\u{0007}ject",
+        "tar\rget",
+        "lead-1",
+        "Ada",
+        NOW,
+    )
+    .unwrap();
+    let page = list(&conn, &ListQuery::default(), NOW).unwrap();
+    assert_eq!(page.entries.len(), 1);
+    let row = &page.entries[0];
+    assert_eq!(row.summary, "Touched ~/.ssh");
+    assert_eq!(row.project, "project");
+    assert_eq!(row.target, "target");
+    assert_eq!(row.kind, "protected.report");
+}

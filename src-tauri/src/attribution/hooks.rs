@@ -621,7 +621,7 @@ fn git(
     env: &[(String, String)],
     args: &[&str],
 ) -> Result<String, super::git::GitFail> {
-    let mut cmd = crate::delivery::child("git");
+    let mut cmd = crate::git_cmd::child_keep_hooks();
     cmd.arg("--no-pager").arg("-C").arg(workdir).args(args);
     cmd.env("GIT_TERMINAL_PROMPT", "0");
     cmd.env("GIT_OPTIONAL_LOCKS", "0");

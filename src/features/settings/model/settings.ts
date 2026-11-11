@@ -462,6 +462,16 @@ export const SETTINGS_INDEX: SettingsEntry[] = [
         },
       ]
     : []),
+  ...(IS_MAC
+    ? [
+        {
+          id: "agent-sandbox",
+          section: "general" as const,
+          label: "Run agents in the macOS sandbox",
+          keywords: "sandbox security isolate protect ssh keys keychain git hooks agents confine",
+        },
+      ]
+    : []),
   {
     id: "working-agents",
     section: "general",

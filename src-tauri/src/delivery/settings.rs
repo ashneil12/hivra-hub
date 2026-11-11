@@ -357,7 +357,7 @@ fn clean_extra(raw: &str) -> Option<String> {
 }
 
 fn git(dir: &Path, args: &[&str]) -> Option<String> {
-    let out = super::child("git")
+    let out = crate::git_cmd::child()
         .arg("-C")
         .arg(dir)
         .args(args)

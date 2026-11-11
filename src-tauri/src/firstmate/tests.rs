@@ -660,7 +660,7 @@ impl Drop for Repo {
 }
 
 fn run(dir: &Path, args: &[&str]) {
-    let ok = Command::new("git")
+    let ok = crate::git_cmd::git()
         .arg("-C")
         .arg(dir)
         .args([

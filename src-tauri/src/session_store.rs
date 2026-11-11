@@ -4565,7 +4565,7 @@ mod tests {
                 .as_nanos()
         ));
         std::fs::create_dir_all(&dir).unwrap();
-        let init = std::process::Command::new("git")
+        let init = crate::git_cmd::git()
             .args(["init"])
             .current_dir(&dir)
             .output();
@@ -4577,7 +4577,7 @@ mod tests {
             let _ = std::fs::remove_dir_all(&dir);
             return;
         }
-        let head = std::process::Command::new("git")
+        let head = crate::git_cmd::git()
             .args(["symbolic-ref", "HEAD", "refs/heads/fix-sidebar"])
             .current_dir(&dir)
             .status();
@@ -4585,7 +4585,7 @@ mod tests {
             let _ = std::fs::remove_dir_all(&dir);
             return;
         }
-        let origin = std::process::Command::new("git")
+        let origin = crate::git_cmd::git()
             .args([
                 "remote",
                 "add",
