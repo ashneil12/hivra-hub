@@ -68,6 +68,11 @@ export function delegationJobGroups(rows: readonly Delegation[]): { groups: Arra
 export const decisionNeedId = (d: Pick<Decision, "project" | "decisionKey">) =>
   `decision:${encodeURIComponent(d.project)}:${encodeURIComponent(d.decisionKey)}`;
 
+/** The decision key a Needs row id names, or undefined when it names none. */
+export function needKeyOf(id: unknown): string | undefined {
+  return parseNeedId(id)?.key;
+}
+
 function parseNeedId(id: unknown): { project: string; key: string } | undefined {
   if (typeof id !== "string") return undefined;
   const match = /^decision:([^:]*):([^:]+)$/.exec(id);
@@ -142,7 +147,9 @@ async function answerDecision(backend: Pick<FirstMateBackend, "decisions" | "ans
   const words = typeof payload.text === "string" ? payload.text.trim() : "";
   const answer = choice ?? words;
   if (!answer) throw new HubCallError("refused", "Pick an option or write your answer.");
-  const out = await backend.answer(d.project, d.decisionKey, answer, "user");
+  // A Page's tap is the Page's answer, not the person's: decisions.rs refuses it on a key only the person answers.
+  const from = typeof payload.from === "string" ? payload.from.trim() : "";
+  const out = await backend.answer(d.project, d.decisionKey, answer, from ? `page:${from}` : "user");
   if (!out.applied) return { receipt: `Already answered: ${out.decision?.answer ?? ""}`, rowDone: true };
   const n = out.releasedTasks.length;
   return { receipt: n ? `Sent. ${n === 1 ? "The waiting task carries on" : `${n} waiting tasks carry on`}.` : "Sent.", rowDone: true };

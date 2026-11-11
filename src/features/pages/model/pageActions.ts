@@ -10,7 +10,9 @@
 // page sends into a chat ends with "(sent from the <page> page)", and every action is logged for the page to show.
 import { useSyncExternalStore } from "react";
 import { pickMessage, pickReply, wordsReply } from "../../hub/model/chatQuestions";
+import { isPersonOnlyDecisionKey } from "../../hub/model/decisionKey";
 import { hubData } from "../../hub/model/hubData";
+import { needKeyOf } from "../../hub/model/localHub/decisions";
 import type { HubAnswer } from "../../hub/model/types";
 import { answerInWords, findWaitingChat, openWaitingChat, takePick, type TakeResult, type WaitingChat } from "../../hub/model/waitingChats";
 import { delegationActions, delegationRows, type DelegationActions } from "../../monos/model/delegationStore";
@@ -167,6 +169,15 @@ function chatName(chatId: string, d: PageActionDeps): string {
   const r = rowForChat(chatId, d);
   return r?.title ? quoteOf(r.title) : "that chat";
 }
+// A Page answers as itself, never as the person (review 220-r6, HIGH-1). A key only the person answers (a delivery
+// check, an irreversible step, a fresh-eyes review, a fan-out restart) is refused here with a plain reason, and
+// decisions.rs refuses the `page:<id>` answer again if a spelling slips past this check.
+const ONLY_YOU = "Only you can answer that one. Open Needs you to answer it.";
+function refusePersonOnly(needId: string): void {
+  const key = needKeyOf(needId);
+  if (key !== undefined && isPersonOnlyDecisionKey(key)) throw new Error(ONLY_YOU);
+}
+
 function took(result: TakeResult): void {
   if (!result.ok) throw new Error(result.reason);
 }
@@ -176,7 +187,8 @@ async function answer(args: Record<string, unknown>, ctx: ActionContext, d: Page
   if (!text) throw new Error("Type an answer first.");
   const needId = str(args.needId);
   if (needId) {
-    d.answerNeed(needId, { text });
+    refusePersonOnly(needId);
+    d.answerNeed(needId, { text, from: ctx.pageId });
     return `Answered ${quoteOf(text)}`;
   }
   const chatId = str(args.chatId);
@@ -198,7 +210,8 @@ async function answer(args: Record<string, unknown>, ctx: ActionContext, d: Page
 async function pick(args: Record<string, unknown>, ctx: ActionContext, d: PageActionDeps): Promise<string> {
   const needId = str(args.needId);
   if (needId) {
-    d.answerNeed(needId, { quick: "agree" });
+    refusePersonOnly(needId);
+    d.answerNeed(needId, { quick: "agree", from: ctx.pageId });
     return "Took the suggested answer";
   }
   const chatId = str(args.chatId);

@@ -765,3 +765,23 @@ fn review225_main_a_chat_cannot_answer_a_gate_key() {
         out.map(|o| o.applied)
     );
 }
+
+/// Review 220-r6, HIGH-1: a Page's tap answers as `page:<id>`, never as the person. Every key only the person answers
+/// refuses it, whatever its case.
+#[test]
+fn a_page_never_answers_a_person_only_key() {
+    for key in [
+        "gate/run-7",
+        "Gate/run-7",
+        "irreversible/lead/task-6",
+        "fresh-eyes/r9/00112233aabbccdd",
+        "fanout-again/fm/task-2",
+    ] {
+        assert!(
+            person_only(key, Some("page:pg_made_by_a_mono")).is_some(),
+            "{key:?} took a Page's answer as the person's"
+        );
+    }
+    assert!(person_only("copy/headline", Some("page:pg_made_by_a_mono")).is_none());
+    assert!(person_only("gate/run-7", Some("user")).is_none());
+}
