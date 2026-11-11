@@ -160,16 +160,24 @@ const FIRST_MATE_CONFIG: CodexThreadConfig = {
 };
 
 /**
- * macOS refuses a sandbox inside a sandbox. Skip Hivra's outer wrap when Codex is already sandboxed: a first mate
- * is always read-only, and every mode except full access runs Codex's own sandbox. A chat with no mode, and a full
- * access chat, keep the outer wrap.
+ * macOS refuses a sandbox inside a sandbox. A first mate and a supervised chat skip Hivra's outer wrap.
+ * While Hivra's sandbox is on, auto and auto-accept-edits keep the outer wrap. A chat with no mode, and a full
+ * access chat, keep it too. Callers that omit `hivraSandbox` keep the old skip, so a test that does not pass it
+ * still describes Codex's own sandbox.
  */
 export function codexSkipsOuterSandbox(input: {
   runtimeMode?: RuntimeMode;
   firstMate?: boolean;
+  hivraSandbox?: boolean;
 }): boolean {
   if (input.firstMate === true) return true;
   if (input.runtimeMode === undefined) return false;
+  if (
+    input.hivraSandbox === true &&
+    (input.runtimeMode === "auto" || input.runtimeMode === "auto-accept-edits")
+  ) {
+    return false;
+  }
   return input.runtimeMode !== "full-access";
 }
 

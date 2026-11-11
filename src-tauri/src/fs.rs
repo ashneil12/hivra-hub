@@ -4809,6 +4809,59 @@ pub(crate) fn resolve_existing_place(input: &str, base: &str) -> Result<String, 
     Err("The path could not be resolved.".into())
 }
 
+/// The webview's `resolvedPathInside`: a resolved path is inside a resolved root, or it is the root.
+/// A path that only shares a prefix is not inside. Drive letters and UNC shares compare without case.
+/// The native command's review test is the caller, and that test is Unix (it plants a link).
+#[cfg(all(test, unix))]
+pub(crate) fn resolved_place_inside(file: &str, root: &str) -> bool {
+    let Some(left) = fold_resolved(file) else {
+        return false;
+    };
+    let Some(right) = fold_resolved(root) else {
+        return false;
+    };
+    if left == right {
+        return true;
+    }
+    let boundary = if right.ends_with('/') {
+        right
+    } else {
+        format!("{right}/")
+    };
+    left.starts_with(&boundary)
+}
+
+#[cfg(all(test, unix))]
+fn fold_resolved(path: &str) -> Option<String> {
+    if path.is_empty() {
+        return None;
+    }
+    let mut slash = path.replace('\\', "/");
+    if let Some(rest) = slash.strip_prefix("//?/UNC/") {
+        slash = format!("//{rest}");
+    } else if let Some(rest) = slash.strip_prefix("//?/") {
+        slash = rest.to_string();
+    }
+    let drive = slash.len() >= 2
+        && slash.as_bytes()[0].is_ascii_alphabetic()
+        && slash.as_bytes()[1] == b':';
+    let unc = slash.starts_with("//");
+    let mut trimmed = slash.clone();
+    let keep_slash = (drive && slash.len() <= 3) || slash == "/" || slash == "//";
+    if !keep_slash {
+        while trimmed.ends_with('/') && trimmed.len() > 1 {
+            trimmed.pop();
+        }
+    }
+    if drive && trimmed.len() == 2 {
+        trimmed.push('/');
+    }
+    if drive || unc {
+        trimmed.make_ascii_lowercase();
+    }
+    Some(trimmed)
+}
+
 /// Resolve `path` against `base` for a file-change approval. The webview has no filesystem of its own.
 #[tauri::command]
 pub async fn resolve_existing_path(path: String, base: String) -> Result<String, String> {
@@ -5137,6 +5190,49 @@ mod resolve_existing_tests {
         .unwrap();
         let inside = resolve_existing_place(&path_to_js(&work.join("inside.txt")), "/").unwrap();
         assert_eq!(stayed, inside);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    fn resolve_command(path: &str, base: &str) -> Result<String, String> {
+        tauri::async_runtime::block_on(super::resolve_existing_path(
+            path.to_string(),
+            base.to_string(),
+        ))
+    }
+
+    /// The same two cases as the webview review: a `..` segment, and a link inside the workspace that points out.
+    /// Both go through the native command and `resolved_place_inside`, including a grant root outside the workspace.
+    #[cfg(unix)]
+    #[test]
+    fn a_dotdot_segment_and_an_in_workspace_link_are_not_inside() {
+        let root = scratch("codex-r5");
+        let work = root.join("work");
+        let outside = root.join("outside");
+        std::fs::create_dir_all(&work).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        let work_js = path_to_js(&work);
+        let base = resolve_command(&work_js, "/").unwrap();
+        let climbed = format!("{work_js}/../outside/secret");
+        let climbed = resolve_command(&climbed, &work_js).unwrap();
+        assert!(
+            !super::resolved_place_inside(&climbed, &base),
+            "{climbed} was inside {base}"
+        );
+        std::os::unix::fs::symlink(&outside, work.join("link")).unwrap();
+        let linked = resolve_command(
+            &path_to_js(&work.join("link").join("agent-sandbox")),
+            &work_js,
+        )
+        .unwrap();
+        assert!(
+            !super::resolved_place_inside(&linked, &base),
+            "{linked} was inside {base}"
+        );
+        let grant = resolve_command(&path_to_js(&outside), "/").unwrap();
+        assert!(
+            !super::resolved_place_inside(&grant, &base),
+            "a grant root outside the workspace was inside {base}"
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 }

@@ -1,4 +1,5 @@
 import { isTauri } from "@tauri-apps/api/core";
+import { loadAgentSandbox } from "../../../../features/settings/model/agentSandbox";
 import { TurnNotReadyError } from "../../core/types";
 import { nativeModelId } from "../../../../features/sessions/model/models";
 import { sameProviderAccountId } from "../../../../features/providers/model/providerAccounts";
@@ -57,7 +58,6 @@ import {
   codexQuestionResponse,
 } from "./codexQuestions";
 import { codexMcpConfirmation } from "./codexElicitation";
-import { loadAgentSandbox } from "../../../../features/settings/model/agentSandbox";
 import { snapshotRemainder } from "../../core/streamText";
 import { prepareCodexMonoContext } from "./codexStore";
 import { codexDeveloperInstructions, codexExtraConfig, mergeCodexConfig } from "./codexExtraConfig";
@@ -707,6 +707,7 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
     codexSkipsOuterSandbox({
       runtimeMode: input.runtimeMode,
       firstMate: input.firstMate,
+      hivraSandbox: (await loadAgentSandbox().catch(() => null))?.enabled === true,
     }),
   );
 

@@ -27,10 +27,10 @@ export const AGENT_SANDBOX_DESCRIPTION =
   "running crontab, at and hdiutil. It blocks the Docker, Colima, OrbStack and Podman sockets. It blocks writes to " +
   "oh-my-zsh, p10k and nvm, which a login shell reads. It does not block a copy of a tool under another " +
   "name. It does not cover other files, the network or other programs, so it is a list of known places, not a full " +
-  "cage. Every project the app knows has its .git locked, not only the chat's folder. Keychain items the security tool can read are not covered. Codex " +
-  "chats that use Codex's own sandbox are not wrapped, because macOS refuses a sandbox inside a sandbox, and those " +
-  "chats can read secrets and widen their own sandbox. While this sandbox is on, those chats ask before a permission " +
-  "or a file change outside the workspace. A full access Codex chat is wrapped. Expect these to fail under it: git " +
+  "cage. Every project the app knows has its .git locked, not only the chat's folder. Keychain items the security tool can read are not covered. A supervised " +
+  "Codex chat and a first mate are not wrapped, because macOS refuses a sandbox inside a sandbox. While this sandbox " +
+  "is on, an auto Codex chat is wrapped too. A full access Codex chat is wrapped. While this sandbox is on, a Codex " +
+  "chat asks before a permission or a file change outside the workspace. Expect these to fail under it: git " +
   "push -u and other commands that write the named checkout's .git/config, git worktree add inside that checkout, " +
   "git over SSH, gh, docker, and npm with a private registry. Changes apply to agents and actions started after the " +
   "change. A start the sandbox refuses is written to the activity log.";

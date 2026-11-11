@@ -35,6 +35,18 @@ describe("codexSkipsOuterSandbox", () => {
     expect(codexSkipsOuterSandbox({ runtimeMode: "full-access" })).toBe(false);
     expect(codexSkipsOuterSandbox({})).toBe(false);
   });
+
+  it("keeps the outer wrap for auto modes while Hivra's sandbox is on", () => {
+    expect(codexSkipsOuterSandbox({ runtimeMode: "auto", hivraSandbox: true })).toBe(false);
+    expect(
+      codexSkipsOuterSandbox({ runtimeMode: "auto-accept-edits", hivraSandbox: true }),
+    ).toBe(false);
+    expect(codexSkipsOuterSandbox({ runtimeMode: "supervised", hivraSandbox: true })).toBe(true);
+    expect(
+      codexSkipsOuterSandbox({ firstMate: true, runtimeMode: "auto", hivraSandbox: true }),
+    ).toBe(true);
+    expect(codexSkipsOuterSandbox({ runtimeMode: "full-access", hivraSandbox: true })).toBe(false);
+  });
 });
 
 describe("runtimeModeToCodexConfig", () => {
