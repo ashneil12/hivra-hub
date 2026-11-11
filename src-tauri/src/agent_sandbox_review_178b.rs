@@ -156,6 +156,40 @@ fn a_missing_data_folder_agrees_with_the_sandbox_switch() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
+/// The spec's Limits section names the cap the code enforces, and the point where the profile becomes a file.
+#[test]
+fn the_spec_limits_name_the_file_cutoff_and_the_byte_cap() {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../docs/hivra/work/WP-178-agent-os-sandbox.md");
+    let text = std::fs::read_to_string(&path).unwrap_or_else(|error| {
+        panic!(
+            "the sandbox spec could not be read at {}: {error}",
+            path.display()
+        )
+    });
+    let limits = text
+        .split("## Limits")
+        .nth(1)
+        .and_then(|rest| rest.split("\n## ").next())
+        .unwrap_or("");
+    assert!(
+        limits.contains("4,000,000"),
+        "the Limits section does not name the 4,000,000 byte cap"
+    );
+    assert!(
+        limits.contains("100,000"),
+        "the Limits section does not name the 100,000 byte cutoff"
+    );
+    assert!(
+        limits.contains("-f"),
+        "the Limits section does not say a larger profile is passed with -f"
+    );
+    assert!(
+        !limits.contains("900,000"),
+        "the Limits section still names the old 900,000 byte cap"
+    );
+}
+
 fn temp_profile_names() -> Vec<String> {
     let mut names = Vec::new();
     let Ok(entries) = std::fs::read_dir(std::env::temp_dir()) else {
