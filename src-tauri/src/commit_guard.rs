@@ -970,4 +970,6 @@ mod review_tests;
 #[cfg(test)]
 mod review_tests_r3;
 #[cfg(test)]
+mod review_tests_r4;
+#[cfg(test)]
 mod tests;
