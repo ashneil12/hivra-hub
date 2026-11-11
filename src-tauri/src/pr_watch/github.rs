@@ -144,6 +144,16 @@ pub struct CliGh;
 
 const GH_TIMEOUT: Duration = Duration::from_secs(60);
 
+/// A REST path the installed `gh` may read. Under `repos/`, no spaces or flags, and no `.` or `..` segment.
+/// `compare/a...b` is a real GitHub path: the three dots sit inside one segment, and that is allowed.
+pub(crate) fn rest_path_allowed(path: &str) -> bool {
+    path.starts_with("repos/")
+        && path
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"/._-?=&%,".contains(&b))
+        && path.split('/').all(|segment| segment != "." && segment != "..")
+}
+
 impl CliGh {
     fn program() -> Option<PathBuf> {
         if crate::instance::kind() == crate::instance::Kind::Dev {
@@ -158,12 +168,7 @@ impl CliGh {
 impl Gh for CliGh {
     fn rest(&self, path: &str) -> Result<String, String> {
         // A path is never a free command: under repos/, no traversal, no spaces, no flags.
-        let allowed = path.starts_with("repos/")
-            && !path.contains("..")
-            && path
-                .bytes()
-                .all(|b| b.is_ascii_alphanumeric() || b"/._-?=&%,".contains(&b));
-        if !allowed {
+        if !rest_path_allowed(path) {
             return Err("not a repository path".into());
         }
         let program = Self::program().ok_or_else(|| {
@@ -900,6 +905,9 @@ pub(crate) mod tests {
 
     impl Gh for FakeGh {
         fn rest(&self, path: &str) -> Result<String, String> {
+            if !rest_path_allowed(path) {
+                return Err("not a repository path".into());
+            }
             self.rest
                 .iter()
                 .find(|(key, _)| path.contains(key.as_str()))
@@ -1199,6 +1207,52 @@ pub(crate) mod tests {
         assert_eq!(
             read(&gh, "acme/web", 7),
             Err(ReadError::RateLimited { until: None })
+        );
+    }
+
+    /// r3 review HIGH: the sweep reads the base move and the behind count through paths
+    /// `compare/{a}...{b}`. Those are repository paths. A segment that is `.` or `..` is not.
+    /// The check is the pure function, not `CliGh::rest`: an allowed path would start `gh`.
+    #[test]
+    fn r3_review_the_installed_gh_lets_the_paths_the_base_reads_build_through() {
+        let asked = Mutex::new(Vec::<String>::new());
+        let record = |path: &str| -> Result<String, String> {
+            asked.lock().unwrap().push(path.to_string());
+            Err("recorded only".into())
+        };
+        let mut read = parse(RECORDED_REQUIRED).unwrap();
+        read.base_tip = Some("b2b2b2b".into());
+        assert!(read.detail.head_sha.is_some());
+        let memo = crate::pr_watch::eval::Memo {
+            base_sha: Some("b1b1b1b".into()),
+            ..Default::default()
+        };
+        let _ = crate::pr_watch::base::facts(&record, "acme/web", 7, &memo, &read, false);
+        let _ = crate::pr_watch::base::merge_base(&record, "acme/web", "b2b2b2b", "a1a1a1a");
+        let paths = asked.into_inner().unwrap();
+        assert!(paths.iter().any(|p| p.contains("/compare/")), "{paths:?}");
+        for path in &paths {
+            assert!(
+                rest_path_allowed(path),
+                "a path base.rs reads is not a repository path: {path}"
+            );
+        }
+        assert!(!rest_path_allowed("repos/acme/web/../../user"));
+        assert!(!rest_path_allowed("repos/./web/pulls/7"));
+        assert!(!rest_path_allowed("user/keys"));
+    }
+
+    /// The same filter the installed `gh` uses. A compare path is allowed; a `..` segment is not.
+    #[test]
+    fn fake_gh_refuses_the_same_paths_the_installed_gh_refuses() {
+        let gh = FakeGh::new(vec![]);
+        assert_eq!(
+            gh.rest("repos/acme/web/../../user"),
+            Err("not a repository path".into())
+        );
+        assert_ne!(
+            gh.rest("repos/acme/web/compare/b1b1b1b...b2b2b2b"),
+            Err("not a repository path".into())
         );
     }
 

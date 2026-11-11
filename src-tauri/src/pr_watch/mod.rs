@@ -2814,6 +2814,42 @@ mod tests {
         );
     }
 
+    /// A behind count that GitHub doesn't answer is informational. The move is still told, and the watch
+    /// does not drop to the 10 minute retry.
+    #[test]
+    fn a_failed_behind_count_still_wakes_and_does_not_wait_out_the_retry() {
+        let store = store();
+        let added = add(
+            &store,
+            &FakeGh::new(vec![Ok(based(B1))]),
+            input("mono-hivra"),
+            T0,
+        )
+        .unwrap();
+        let mut paused = 0;
+        let t1 = T0 + QUIET_EVERY;
+        let gh = FakeGh::new(vec![Ok(based(B2))])
+            .with_rest(
+                &format!("compare/{B1}...{B2}"),
+                &compare_of(&["src/lib.rs"], 0),
+            )
+            .with_rest(
+                "pulls/14716/files",
+                &json!([{ "filename": "src/lib.rs" }, { "filename": "README.md" }]).to_string(),
+            );
+        let swept = run(&store, &gh, t1, &mut paused);
+        assert_eq!(swept.wakes.len(), 1, "{swept:?}");
+        let stored = get(&store.lock_conn().unwrap(), &added.watch.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored.memo.base_sha.as_deref(), Some(B2));
+        assert!(
+            stored.next_read_at < t1 + base::RETRY_AFTER,
+            "{}",
+            stored.next_read_at
+        );
+    }
+
     #[test]
     fn a_base_read_that_fails_waits_before_it_asks_again() {
         let store = store();

@@ -210,7 +210,9 @@ pub fn facts(get: Get, repo: &str, number: u64, memo: &Memo, read: &PrRead, stal
                 facts.behind = Some(c.ahead_by);
                 facts.cache_behind = Some((head.into(), base.into(), c.ahead_by));
             }
-            Err(_) => facts.unread = true,
+            // The behind count is informational. A miss must not mark the whole read unread:
+            // that waits RETRY_AFTER and drops the base-moved wake.
+            Err(_) => {}
         },
     }
     let Some(old) = memo.base_sha.as_deref() else {
