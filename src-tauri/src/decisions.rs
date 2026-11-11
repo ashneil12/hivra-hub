@@ -18,6 +18,10 @@
 //! `force_reason`. An answer stands only after Ash ticks it in the Inbox. A chat's own answer never stands. The feature
 //! itself stays off (`decision_settings`) until it is turned on, and while it is off, asking and answering keep the
 //! exact-key behaviour above.
+//!
+//! WP-215: `answer_reason` is nullable and `answer` stores it (null when the caller has none). An answer whose
+//! `answered_by` starts with `captain:` is refused here on an owner's key, a red-list item, a project whose switch is
+//! off, money past the limit, and past the turn cap.
 
 use std::sync::OnceLock;
 
@@ -99,6 +103,8 @@ fn ensure_decision_columns(conn: &Connection) -> rusqlite::Result<()> {
         ("retired_reason", "TEXT"),
         ("reuse_stopped", "INTEGER NOT NULL DEFAULT 0"),
         ("force_reason", "TEXT"),
+        // WP-215: why this answer was given. Null when the caller has none. Not a numbered migration.
+        ("answer_reason", "TEXT"),
     ] {
         if column_missing(conn, "decisions", name)? {
             conn.execute(
@@ -205,6 +211,8 @@ pub struct Decision {
     pub reuse_stopped: bool,
     /// Why a later question was opened anyway, when a standing answer matched and force was set.
     pub force_reason: Option<String>,
+    /// WP-215: which step gave this answer. Null when the caller stored none.
+    pub answer_reason: Option<String>,
     /// Stable label, `S-<rowid>`. Guidance, not a permission.
     pub standing_id: String,
 }
@@ -212,12 +220,12 @@ pub struct Decision {
 const COLUMNS: &str =
     "project, decision_key, question, options, recommended, asked_by, asked_by_mono, waiting, \
      state, answer, answered_by, answered_at, created_at, updated_at, version, \
-     standing, keys, retired_at, retired_reason, reuse_stopped, force_reason";
+     standing, keys, retired_at, retired_reason, reuse_stopped, force_reason, answer_reason";
 /// `rowid` is not written; it only names the standing answer.
 const READ_COLUMNS: &str =
     "project, decision_key, question, options, recommended, asked_by, asked_by_mono, waiting, \
      state, answer, answered_by, answered_at, created_at, updated_at, version, \
-     standing, keys, retired_at, retired_reason, reuse_stopped, force_reason, rowid";
+     standing, keys, retired_at, retired_reason, reuse_stopped, force_reason, answer_reason, rowid";
 
 fn json_list(text: String) -> Vec<String> {
     serde_json::from_str(&text).unwrap_or_default()
@@ -246,7 +254,8 @@ fn from_row(row: &Row) -> rusqlite::Result<Decision> {
         retired_reason: row.get(18)?,
         reuse_stopped: row.get::<_, i64>(19)? != 0,
         force_reason: row.get(20)?,
-        standing_id: format!("S-{}", row.get::<_, i64>(21)?),
+        answer_reason: row.get(21)?,
+        standing_id: format!("S-{}", row.get::<_, i64>(22)?),
     })
 }
 
@@ -301,9 +310,10 @@ pub fn list(conn: &Connection, answered: usize) -> Result<Vec<Decision>, String>
 fn save(conn: &Connection, d: &Decision) -> Result<(), String> {
     conn.execute(
         &format!(
-            "INSERT INTO decisions ({COLUMNS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21)
+            "INSERT INTO decisions ({COLUMNS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22)
              ON CONFLICT (project, decision_key) DO UPDATE SET waiting = excluded.waiting, state = excluded.state,
                answer = excluded.answer, answered_by = excluded.answered_by, answered_at = excluded.answered_at,
+               answer_reason = excluded.answer_reason,
                standing = excluded.standing, updated_at = excluded.updated_at, version = excluded.version"
         ),
         params![
@@ -328,6 +338,7 @@ fn save(conn: &Connection, d: &Decision) -> Result<(), String> {
             d.retired_reason,
             if d.reuse_stopped { 1 } else { 0 },
             d.force_reason,
+            d.answer_reason,
         ],
     )
     .map_err(|e| e.to_string())?;
@@ -876,7 +887,7 @@ fn reopen_row(
             "UPDATE decisions SET question = ?1, options = ?2, recommended = ?3, waiting = ?4,
                 state = ?5, answer = NULL, answered_by = NULL, answered_at = NULL,
                 standing = 0, reuse_stopped = 0, retired_at = NULL, retired_reason = NULL,
-                keys = ?6, force_reason = NULL, updated_at = ?7, version = ?8
+                keys = ?6, force_reason = NULL, answer_reason = NULL, updated_at = ?7, version = ?8
              WHERE project = ?9 AND decision_key = ?10 AND version = ?11
                AND state = ?12 AND (retired_at IS NOT NULL OR reuse_stopped != 0)",
             params![
@@ -1088,6 +1099,7 @@ pub fn ask(conn: &mut Connection, input: AskInput, now: i64) -> Result<AskOutcom
         retired_reason: None,
         reuse_stopped: false,
         force_reason: forced_reason,
+        answer_reason: None,
         standing_id: String::new(),
     });
     let added: Vec<String> = task_ids
@@ -1266,12 +1278,30 @@ pub fn answer(
     by: Option<String>,
     now: i64,
 ) -> Result<AnswerOutcome, String> {
+    answer_with(conn, project, key, answer, by, None, now)
+}
+
+/// `answer`, plus the reason the caller gives. The reason is stored and clipped. Callers with none pass `None`.
+pub fn answer_with(
+    conn: &mut Connection,
+    project: &str,
+    key: &str,
+    answer: &str,
+    by: Option<String>,
+    reason: Option<&str>,
+    now: i64,
+) -> Result<AnswerOutcome, String> {
     let answer = plain(answer, "The answer", ANSWER_MAX)?;
     // The key as asked, before any lookup: a chat's spelling of a person-only key is refused even when no such
     // decision exists, so nothing about the lookup can turn a refusal into a quiet no-op or a bypass.
     if let Some(refusal) = person_only(key, by.as_deref()) {
         return Err(refusal);
     }
+    // WP-215: the same, for a captain answer on an owner's key, including one that has no row yet.
+    if let Some(refusal) = captain::refuse_key(key, by.as_deref()) {
+        return Err(refusal);
+    }
+    let reason = captain::clip_reason(reason);
     let tx = conn
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(|e| e.to_string())?;
@@ -1297,8 +1327,20 @@ pub fn answer(
     if let Some(refusal) = person_only(&decision.decision_key, by.as_deref()) {
         return Err(refusal);
     }
+    // WP-215: inside the write, so two windows cannot both pass the turn cap or skip the switch.
+    if let Some(refusal) = captain::refuse_stored(
+        &tx,
+        &decision,
+        by.as_deref(),
+        &answer,
+        reason.as_deref(),
+        now,
+    )? {
+        return Err(refusal);
+    }
     decision.state = ANSWERED.into();
     decision.answer = Some(answer);
+    decision.answer_reason = reason;
     // An answer does not stand until the person ticks it. A chat's answer never can.
     decision.standing = false;
     decision.answered_by = Some(
@@ -1714,19 +1756,42 @@ pub fn decisions_answer(
     key: String,
     answer: String,
     by: Option<String>,
+    reason: Option<String>,
 ) -> Result<AnswerOutcome, String> {
-    let outcome = answer_and_relay(
-        &store,
-        project.as_deref().unwrap_or(""),
-        &key,
-        &answer,
-        by,
-        now_millis(),
-    )?;
+    let project = project.as_deref().unwrap_or("");
+    let now = now_millis();
+    // No reason keeps the path that existed before WP-215. A reason is stored beside the answer.
+    let outcome = if reason.is_none() {
+        answer_and_relay(&store, project, &key, &answer, by, now)?
+    } else {
+        answer_and_relay_with(&store, project, &key, &answer, by, reason.as_deref(), now)?
+    };
     if outcome.applied {
         announce(&app, outcome.decision.as_ref(), &outcome.released);
     }
     Ok(outcome)
+}
+
+/// WP-215: a first mate notes a call it settled. The chat id is the caller's.
+#[tauri::command(async)]
+pub fn decisions_note(
+    app: AppHandle,
+    store: State<'_, SessionStore>,
+    project: String,
+    session: String,
+    what: String,
+    reason: String,
+) -> Result<Decision, String> {
+    let saved = captain::note(
+        &mut *store.lock_conn()?,
+        &project,
+        &session,
+        &what,
+        &reason,
+        now_millis(),
+    )?;
+    announce(&app, Some(&saved), &[]);
+    Ok(saved)
 }
 
 /// What `decisions_answer` does with the store, without the window announce, so a test can run the same path.
@@ -1738,7 +1803,27 @@ pub(crate) fn answer_and_relay(
     by: Option<String>,
     now: i64,
 ) -> Result<AnswerOutcome, String> {
-    let outcome = answer(&mut *store.lock_conn()?, project, key, answer_text, by, now)?;
+    answer_and_relay_with(store, project, key, answer_text, by, None, now)
+}
+
+pub(crate) fn answer_and_relay_with(
+    store: &SessionStore,
+    project: &str,
+    key: &str,
+    answer_text: &str,
+    by: Option<String>,
+    reason: Option<&str>,
+    now: i64,
+) -> Result<AnswerOutcome, String> {
+    let outcome = answer_with(
+        &mut *store.lock_conn()?,
+        project,
+        key,
+        answer_text,
+        by,
+        reason,
+        now,
+    )?;
     relay_gate_answer(store, &outcome, answer_text);
     Ok(outcome)
 }
@@ -1856,6 +1941,8 @@ pub fn decisions_set_standing(
     }
     Ok(outcome)
 }
+
+mod captain;
 
 #[cfg(test)]
 mod tests;
