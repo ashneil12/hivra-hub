@@ -229,6 +229,14 @@ export function settingLooksSecret(key: string, value: string): boolean {
   return SECRET_SETTING_NAME.test(key) || SECRET_SETTING_VALUE.test(value);
 }
 
+/** Settings a move may carry. Anything else stays on the machine that saved it, including names the secret list misses. */
+const CARRIED_SETTING_KEYS = new Set(["effort", "reasoningEffort"]);
+
+/** True when this setting is on the carry list and is not a secret. */
+export function settingMayTravel(key: string, value: string): boolean {
+  return CARRIED_SETTING_KEYS.has(key) && !settingLooksSecret(key, value);
+}
+
 /** Why a chat that is running or waiting cannot move yet. Null when it can move now. */
 export function freezeRefusal(chat: Pick<ChatSnapshot, "turnRunning" | "approvalPending">): FreezeRefusal | null {
   if (chat.turnRunning) return { reason: "turn-running", message: FREEZE_COPY["turn-running"], offer: "finish-then-move" };
@@ -267,11 +275,19 @@ const PUTTY_PRIVATE_LINE = /(Private-Lines:[ \t]*\d+[ \t]*\r?\n)([^\r\n]*)/g;
 const AGE_SECRET = /AGE-SECRET-KEY-1[0-9A-Z]+/g;
 const BASE64_PEM = /LS0tLS1CRUdJTi[A-Za-z0-9+/=]{16,}/g;
 // No `g` flag: privateKeyPresent uses test(), which is stateful on a global expression.
-const PRIVATE_KEY_HEADER = /PRIVATE KEY(?: BLOCK)?-----|PuTTY-User-Key-File|Private-Lines:[ \t]*[0-9]|AGE-SECRET-KEY-1|LS0tLS1CRUdJTi[A-Za-z0-9+/=]*UFJJVkFURS/;
+// OpenSSH bodies start with base64("openssh-key-v1\0") even when the armor lines were cut off. SSH2 (RFC 4716) armor
+// uses four dashes and spaces, which "PRIVATE KEY-----" does not match.
+const PRIVATE_KEY_HEADER = /PRIVATE KEY(?: BLOCK)?-----|PuTTY-User-Key-File|Private-Lines:[ \t]*[0-9]|AGE-SECRET-KEY-1|LS0tLS1CRUdJTi[A-Za-z0-9+/=]*UFJJVkFURS|b3BlbnNzaC1rZXktdjE|---- BEGIN SSH2 (?:ENCRYPTED )?PRIVATE KEY ----/;
 const COOKIE_SESSION = /Cookie\s*:\s*session=([^\s;]{6,})/gi;
 const NETRC_PASSWORD = /(^|[\n\r])([ \t]*password[ \t]+)([^\s]{6,})/gi;
 const MYSQL_PASSWORD = /(mysql\s+-p)(\S{4,})/gi;
 const AUTH_TOKEN = /Authorization\s*:\s*token\s+[A-Fa-f0-9]{8,}/gi;
+// A comma-separated row (`aws_secret_access_key,VALUE`) is not an assignment, so the shared list misses it.
+const AWS_SECRET_CSV = /((?:aws[_-]?secret[_-]?access[_-]?key)(?:\\)?["']?\s*,\s*(?:\\)?["']?)([^\s"',}\\]{8,})/gi;
+// OPENAI_API_KEY matches api_key. OPENAI_KEY does not.
+const OPENAI_KEY_ASSIGN = /((?:openai[_-]?key)(?:\\)?["']?\s*[:=]\s*(?:\\)?["']?)([^\s"',}\\]{6,})/gi;
+// A Discord user or MFA token. Bot tokens (xoxb-) are already on the shared list.
+const DISCORD_TOKEN = /\b(?:mfa\.[A-Za-z0-9_-]{20,}|[A-Za-z0-9_-]{24}\.[A-Za-z0-9_-]{6}\.[A-Za-z0-9_-]{27,})\b/g;
 
 function redactExtra(text: string): { text: string; count: number } {
   let count = 0;
@@ -315,6 +331,18 @@ function redactExtra(text: string): { text: string; count: number } {
     count += 1;
     return "Authorization: token [secret removed]";
   });
+  out = out.replace(AWS_SECRET_CSV, (_match, head: string) => {
+    count += 1;
+    return `${head}[secret removed]`;
+  });
+  out = out.replace(OPENAI_KEY_ASSIGN, (_match, head: string) => {
+    count += 1;
+    return `${head}[secret removed]`;
+  });
+  out = out.replace(DISCORD_TOKEN, () => {
+    count += 1;
+    return "[secret removed]";
+  });
   return { text: out, count };
 }
 
@@ -328,6 +356,40 @@ function redactString(text: string): { text: string; count: number } {
 /** The text a move would carry, joined: a private key split across blocks shows up here, not in any one block. */
 function privateKeyPresent(strings: string[]): boolean {
   return PRIVATE_KEY_HEADER.test(strings.join("\n"));
+}
+
+/** Which part of the chat holds a private key, named so a person can find it. The key itself is never included. */
+function keyHoldWhere(chat: ChatSnapshot): string | null {
+  const safe = (value: string) => value.length > 0 && value.length <= 80 && !privateKeyPresent([value]);
+  if (privateKeyPresent([chat.title])) return "the title";
+  for (let index = 0; index < chat.queued.length; index += 1) {
+    if (privateKeyPresent([chat.queued[index] ?? ""])) return `queued message ${index + 1}`;
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(chat.transcript) as unknown;
+  } catch {
+    return privateKeyPresent([chat.transcript]) ? "the transcript" : null;
+  }
+  if (!Array.isArray(parsed)) return privateKeyPresent([chat.transcript]) ? "the transcript" : null;
+  for (const raw of parsed) {
+    if (!raw || typeof raw !== "object") continue;
+    const block = raw as Record<string, unknown>;
+    if (!privateKeyPresent(collectStrings(block))) continue;
+    const id = typeof block.id === "string" && safe(block.id) ? block.id : "";
+    const tool = block.tool && typeof block.tool === "object" ? (block.tool as { title?: unknown }).title : undefined;
+    const role = typeof block.role === "string" && safe(block.role) ? block.role : "message";
+    const toolTitle = typeof tool === "string" && safe(tool.trim()) ? tool.trim() : "";
+    const label = toolTitle || role;
+    return id ? `the ${label} message ${id}` : `a ${label} message`;
+  }
+  return null;
+}
+
+function keyHoldMessage(chat: ChatSnapshot): string {
+  const where = keyHoldWhere(chat);
+  if (!where) return "A private key is in this chat, so the move is held. Nothing was sent.";
+  return `A private key is in ${where}, so the move is held. Nothing was sent.`;
 }
 
 /** Every string in a parsed value, mapped; keys are kept. Redaction runs on the strings, not on their JSON text. */
@@ -368,7 +430,7 @@ export function redactChat(chat: ChatSnapshot): { chat: ChatSnapshot; redactions
   const keptSettings: Record<string, string> = {};
   for (const [key, value] of Object.entries(chat.modelSettings ?? {})) {
     if (typeof value !== "string") continue;
-    if (settingLooksSecret(key, value)) {
+    if (!settingMayTravel(key, value)) {
       redactions += 1;
       continue;
     }
@@ -475,7 +537,7 @@ export async function planMove(
   if (frozen) return { ok: false, refusal: { reason: frozen.reason, message: frozen.message } };
   const strings = [chat.title, ...chat.queued, ...transcriptStrings(chat.transcript)];
   if (privateKeyPresent(strings)) {
-    return { ok: false, refusal: { reason: "private-key-held", message: "A private key is in this chat, so the move is held. Nothing was sent." } };
+    return { ok: false, refusal: { reason: "private-key-held", message: keyHoldMessage(chat) } };
   }
   if (chat.providerSessionId && !SESSION_ID.test(chat.providerSessionId)) {
     return { ok: false, refusal: { reason: "invalid-session-id", message: "This chat's session id is not in a form a move accepts." } };
@@ -548,6 +610,7 @@ async function refuseOnTarget(from: MoveEndpoint, to: MoveEndpoint, chatId: stri
       // The chat stays frozen here, which is safe: recovery thaws it later.
       return "unknown";
     }
+    await to.clearFreezeAsk?.(chatId, moveId).catch(noop);
   }
   return answer;
 }
@@ -601,7 +664,8 @@ export async function moveChat(input: MoveInput): Promise<MoveResult> {
     );
   }
 
-  // The note is written before the freeze, on the machine that will recover. A lost reply still names the move.
+  // The note is written before the freeze, on the machine that will recover. It stays until the incoming copy
+  // replaces it, or until a thaw is confirmed. Clearing it on the freeze reply left nothing to thaw after a drop.
   try {
     await to.noteFreezeAsk?.(chatId, moveId, from.id);
   } catch (error) {
@@ -622,14 +686,21 @@ export async function moveChat(input: MoveInput): Promise<MoveResult> {
     if (thawed) await to.clearFreezeAsk?.(chatId, moveId).catch(noop);
     return failed("freeze", from.id, error);
   }
-  await to.clearFreezeAsk?.(chatId, moveId).catch(noop);
   if (!frozen) {
     const again = await from.read(chatId).catch(() => null);
     const why = again?.live ? freezeRefusal(again.live) : null;
     if (why) return refuse(why.reason, why.message);
     return refuse("held-elsewhere", "Another move or a resume already holds this chat. Its result shows when it finishes.");
   }
-  const undoFreeze = () => from.thaw(chatId, moveId).catch(noop);
+  const undoFreeze = async () => {
+    try {
+      await from.thaw(chatId, moveId);
+    } catch {
+      // The thaw did not land. The freeze-ask note stays, and recovery thaws this move id later.
+      return;
+    }
+    await to.clearFreezeAsk?.(chatId, moveId).catch(noop);
+  };
 
   let payload: MovePayload;
   try {

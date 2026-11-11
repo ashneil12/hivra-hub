@@ -86,6 +86,45 @@ describe("WP-177 redaction before a move (shared secret list)", () => {
     expect(out.redactions).toBeGreaterThan(0);
   });
 
+  it("an AWS secret in a comma-separated row is redacted", () => {
+    const secret = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY";
+    const out = redactChat(chat({ transcript: JSON.stringify([{ id: "b", role: "assistant", text: `name,aws_secret_access_key,${secret}` }]) }));
+    expect(out.chat.transcript).not.toContain(secret);
+    expect(out.redactions).toBeGreaterThan(0);
+  });
+
+  it("OPENAI_KEY= is redacted", () => {
+    const secret = "plainopenai";
+    const out = redactChat(chat({ transcript: JSON.stringify([{ id: "b", role: "assistant", text: `OPENAI_KEY=${secret}` }]) }));
+    expect(out.chat.transcript).not.toContain(secret);
+  });
+
+  it("a Discord user token is redacted", () => {
+    const secret = `${"N".repeat(24)}.${"a".repeat(6)}.${"b".repeat(27)}`;
+    const out = redactChat(chat({ transcript: JSON.stringify([{ id: "b", role: "user", text: `token ${secret} here` }]) }));
+    expect(out.chat.transcript).not.toContain(secret);
+  });
+
+  it("a held move names the message and does not print the key", async () => {
+    const secret = "b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQ";
+    const planned = await planMove(
+      chat({
+        transcript: JSON.stringify([
+          { id: "u1", role: "user", text: "show the key" },
+          { id: "t1", role: "tool", text: "", tool: { title: "Bash", detail: secret } },
+        ]),
+      }),
+      "this-mac",
+      "host-a",
+    );
+    expect(planned.ok).toBe(false);
+    if (!planned.ok) {
+      expect(planned.refusal.reason).toBe("private-key-held");
+      expect(planned.refusal.message).toContain("t1");
+      expect(planned.refusal.message).not.toContain(secret);
+    }
+  });
+
   it("a plan with nothing secret reports zero redactions", async () => {
     const planned = await planMove(chat({}), "this-mac", "host-a");
     if (!planned.ok) throw new Error("plan");

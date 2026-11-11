@@ -136,9 +136,17 @@ export async function recoverSavedMoves(input: {
         continue;
       }
       try {
-        await input.remoteFor(ask.peer).thaw(chatId, ask.moveId);
-        await input.local.clearFreezeAsk?.(chatId, ask.moveId);
-        lines.push({ chatId, moveId: ask.moveId, status: "recovered" });
+        // The Mac answers for this move id first. The other machine is thawed only when that answer is "aborted".
+        const result = await recoverMove({
+          chatId,
+          moveId: ask.moveId,
+          from: input.remoteFor(ask.peer),
+          to: input.local,
+        });
+        if (result.status === "recovered" || result.status === "moved") {
+          await input.local.clearFreezeAsk?.(chatId, ask.moveId);
+        }
+        lines.push({ chatId, moveId: ask.moveId, status: result.status });
       } catch {
         lines.push({ chatId, moveId: ask.moveId, status: "failed" });
       }

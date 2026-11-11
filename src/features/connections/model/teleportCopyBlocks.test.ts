@@ -9,6 +9,16 @@ describe("WP-177 host-supplied copies are validated (LOW)", () => {
     expect(copyBlocks(JSON.stringify([{ id: "u1", role: "user", text: "hi" }]))).toHaveLength(1);
   });
 
+  it("replaces a note-shaped id, so a copied message cannot hide a move note", () => {
+    const copied = copyBlocks(JSON.stringify([{ id: "teleported-back-m1", role: "user", text: "hi" }]));
+    expect(copied[0]?.id).not.toBe("teleported-back-m1");
+    expect(copied[0]?.text).toBe("hi");
+    const again = copyBlocks(JSON.stringify([{ id: "teleported-back-m1", role: "user", text: "hi" }]));
+    expect(again[0]?.id).not.toBe(copied[0]?.id);
+    const kept = copyBlocks(JSON.stringify([{ id: "u1", role: "user", text: "hi" }]));
+    expect(kept[0]?.id).toBe("u1");
+  });
+
   it("refuses a transcript that is not a list, a message without an id, and text that is not JSON", () => {
     expect(() => copyBlocks(JSON.stringify({ id: "u1", role: "user" }))).toThrow(/not a list/);
     expect(() => copyBlocks(JSON.stringify([{ role: "user", text: "no id" }]))).toThrow(/not in the saved form/);

@@ -6,7 +6,7 @@
 
 import { hasPendingApproval, type Block, type Session } from "../../sessions/model/session";
 import {
-  settingLooksSecret,
+  settingMayTravel,
   sha256Hex,
   type CanResume,
   type ChatRecord,
@@ -28,6 +28,7 @@ import {
   incomingBlock,
   movedBlocks,
   movedPeer,
+  savedFreezeAsks,
   savedIncoming,
   teleportStateOf,
 } from "./teleportState";
@@ -36,7 +37,17 @@ import { forgetHarnessSession } from "../../../integrations/harness/core/registr
 import { releaseOwedBlock } from "./teleportState";
 
 /** The move steps the store checks. Each one may make only its own change to the row. */
-export type MoveStepOp = "freeze" | "thaw" | "release" | "incoming" | "discard" | "activate" | "abort";
+export type MoveStepOp =
+  | "freeze"
+  | "thaw"
+  | "release"
+  | "incoming"
+  | "discard"
+  | "activate"
+  | "abort"
+  | "freeze-ask"
+  | "clear-freeze-ask"
+  | "settle";
 
 export type StepResult = { ok: true } | { ok: false; message: string };
 
@@ -66,7 +77,7 @@ function carriedSettings(settings: Session["modelSettings"] | undefined): Record
   for (const [key, value] of Object.entries(settings)) {
     if (typeof value !== "string" || !value.trim() || value.length > 64) continue;
     if (!/^[A-Za-z][A-Za-z0-9_-]{0,40}$/.test(key)) continue;
-    if (settingLooksSecret(key, value)) continue;
+    if (!settingMayTravel(key, value)) continue;
     out[key] = value;
   }
   return Object.keys(out).length > 0 ? out : undefined;
@@ -138,6 +149,14 @@ function withBlocks(session: Session, blocks: Block[]): Session {
 
 const COPY_ROLES = new Set(["user", "assistant", "image", "reasoning", "tool", "approval", "tasks", "plan", "system", "handoff"]);
 const COPY_NOTICES = new Set(["error", "interrupt", "recovered", "teleported", "teleported-back"]);
+/** An id this Mac uses for a move note. A copy that arrives with one is given a new id, so it cannot hide that note. */
+const RESERVED_COPY_ID = /^(?:teleport-|teleported(?:@|-))/;
+
+function copiedBlockId(sourceId: string): string {
+  const id = sourceId.slice(0, 200);
+  if (RESERVED_COPY_ID.test(id)) return unpredictableId("copied-");
+  return id;
+}
 
 function copyString(value: unknown, max: number): string | undefined {
   if (typeof value !== "string") return undefined;
@@ -160,7 +179,9 @@ function copyBlock(raw: unknown): Block {
   if (!COPY_ROLES.has(candidate.role)) throw new Error("A message in the copy is not in the saved form, so nothing was opened");
   const source = raw as Record<string, unknown>;
   const block = {
-    id: candidate.id.slice(0, 200),
+    // Keep the other machine's id unless it is one this Mac uses for a move note. A note-shaped id is replaced, so the
+    // copy cannot hide that note or be dropped as one.
+    id: copiedBlockId(candidate.id),
     role: candidate.role,
     text: typeof candidate.text === "string" ? candidate.text : "",
   } as Block;
@@ -312,7 +333,10 @@ export function localMoveEndpoint(options: {
       if (movedPeer(session) !== payload.manifest.from) throw new Error("This chat went to another machine, so its copy is refused");
       if (abortedMoves(session.blocks).includes(moveId)) throw new Error("This move was refused here, so its copy is turned away");
       copyChat(JSON.stringify(payload.chat));
-      const kept = session.blocks.filter((b) => b.id !== `teleport-incoming-${moveId}`);
+      // The incoming copy replaces the freeze-ask note for this move: the copy is stored, so the ask is done.
+      const kept = session.blocks.filter(
+        (b) => b.id !== `teleport-incoming-${moveId}` && b.id !== `teleport-freeze-asked-${moveId}`,
+      );
       const next = withBlocks(session, [...kept, incomingBlock(moveId, payload.manifest.from, JSON.stringify(payload.chat))]);
       const result = await saveStep(port, next, moveId, "incoming");
       if (!result.ok) return { ok: false, reason: "held" };
@@ -328,9 +352,13 @@ export function localMoveEndpoint(options: {
       if (!session) return "aborted";
       if (hasBlock(session.blocks, `teleported-back-${moveId}`)) return "live";
       if (hasBlock(session.blocks, `teleport-aborted-${moveId}`)) return "aborted";
-      // The refusal keeps the peer, so recovery can still tell that machine to thaw if it could not be told now.
-      const peer = savedIncoming(session).find((copy) => copy.moveId === moveId)?.peer ?? "";
-      const blocks = [...session.blocks.filter((b) => b.id !== `teleport-incoming-${moveId}`), abortedBlock(moveId, peer)];
+      // The refusal keeps the peer, from the copy or from the freeze ask, so recovery can still thaw that machine.
+      const peer =
+        savedIncoming(session).find((copy) => copy.moveId === moveId)?.peer ??
+        savedFreezeAsks(session).find((ask) => ask.moveId === moveId)?.peer ??
+        "";
+      const drop = new Set([`teleport-incoming-${moveId}`, `teleport-freeze-asked-${moveId}`]);
+      const blocks = [...session.blocks.filter((b) => !drop.has(b.id)), abortedBlock(moveId, peer)];
       const result = await saveStep(port, withBlocks(session, blocks), moveId, "abort");
       if (!result.ok) {
         // The store refused the abort: the copy was opened in the meantime. Only the stored row can say which.
@@ -397,22 +425,22 @@ export function localMoveEndpoint(options: {
       const session = await port.get(chatId);
       const id = `teleport-release-owed-${moveId}`;
       if (!session || !hasBlock(session.blocks, id)) return;
-      // A plain save: the chat is already back, and dropping this note does not change who holds it.
-      await port.put(withBlocks(session, session.blocks.filter((block) => block.id !== id)));
+      // Its own step: an ordinary save is refused when it would drop this note.
+      await mustStep(port, withBlocks(session, session.blocks.filter((block) => block.id !== id)), moveId, "settle");
     },
     async noteFreezeAsk(chatId, moveId, sourceId) {
       const session = await port.get(chatId);
       if (!session) return;
       const id = `teleport-freeze-asked-${moveId}`;
       if (hasBlock(session.blocks, id)) return;
-      // A plain save: the chat stays where it is. The note only remembers which move asked the other machine to freeze.
-      await port.put(withBlocks(session, [...session.blocks, freezeAskedBlock(moveId, sourceId)]));
+      // Its own step, so the row change is announced and a later ordinary save cannot drop the note.
+      await mustStep(port, withBlocks(session, [...session.blocks, freezeAskedBlock(moveId, sourceId)]), moveId, "freeze-ask");
     },
     async clearFreezeAsk(chatId, moveId) {
       const session = await port.get(chatId);
       const id = `teleport-freeze-asked-${moveId}`;
       if (!session || !hasBlock(session.blocks, id)) return;
-      await port.put(withBlocks(session, session.blocks.filter((block) => block.id !== id)));
+      await mustStep(port, withBlocks(session, session.blocks.filter((block) => block.id !== id)), moveId, "clear-freeze-ask");
     },
     async holds(chatId, moveId): Promise<Holds> {
       const session = await port.get(chatId);
