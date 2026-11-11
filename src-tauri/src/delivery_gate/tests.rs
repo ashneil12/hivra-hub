@@ -1212,7 +1212,7 @@ fn the_checks_answer_refuses_a_key_that_is_not_a_check() {
     crate::decisions::ask(
         &mut store.lock_conn().unwrap(),
         crate::decisions::AskInput {
-            asked_by: "fm".into(),
+            asked_by: "security-gate".into(),
             asked_by_mono: None,
             project: Some(project.into()),
             key: "security-review/abc".into(),
