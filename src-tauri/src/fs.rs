@@ -1104,8 +1104,52 @@ pub async fn git_canonical_paths(paths: Vec<String>) -> Result<Vec<Option<String
 /// kernel would follow through a link (round 8, HIGH-B and MED).
 /// Round 11 (HIGH, Windows): a colon after the drive letter names an NTFS stream (`name::$DATA`, `name:x`), a different
 /// file from the name a protected-config check sees, so a path with one is refused. `windows` says which reading applies.
+/// Round 13: `std::fs::canonicalize` returns a verbatim `\\?\C:\...` (also `\\?\UNC\...` and `\\.\...`). Strip that prefix
+/// first. A drive colon is then allowed only at index 1 of what remains, and a UNC path has no drive colon at all.
 pub(crate) fn has_stream_suffix(text: &str, windows: bool) -> bool {
-    windows && text.chars().skip(2).any(|c| c == ':')
+    if !windows {
+        return false;
+    }
+    let (rest, unc) = strip_verbatim(text);
+    if unc || !drive_prefix(rest) {
+        return rest.contains(':');
+    }
+    rest[2..].contains(':')
+}
+
+/// The path after a verbatim prefix, and whether what remains is a UNC path (no drive colon). `\\?\UNC\` is stripped to
+/// the share; `\\?\` and `\\.\` are stripped to the drive path; a plain `\\server\share` is already UNC.
+fn strip_verbatim(text: &str) -> (&str, bool) {
+    let bytes = text.as_bytes();
+    let unc_verbatim = bytes.len() >= 8
+        && bytes[0] == b'\\'
+        && bytes[1] == b'\\'
+        && bytes[2] == b'?'
+        && bytes[3] == b'\\'
+        && bytes[4].eq_ignore_ascii_case(&b'u')
+        && bytes[5].eq_ignore_ascii_case(&b'n')
+        && bytes[6].eq_ignore_ascii_case(&b'c')
+        && bytes[7] == b'\\';
+    if unc_verbatim {
+        return (&text[8..], true);
+    }
+    let device = bytes.len() >= 4
+        && bytes[0] == b'\\'
+        && bytes[1] == b'\\'
+        && (bytes[2] == b'?' || bytes[2] == b'.')
+        && bytes[3] == b'\\';
+    if device {
+        return (&text[4..], false);
+    }
+    if bytes.len() >= 2 && bytes[0] == b'\\' && bytes[1] == b'\\' {
+        return (text, true);
+    }
+    (text, false)
+}
+
+fn drive_prefix(text: &str) -> bool {
+    let bytes = text.as_bytes();
+    bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':'
 }
 
 fn has_climb(path: &Path) -> bool {
@@ -10057,6 +10101,18 @@ mod tests {
         assert!(has_stream_suffix("C:\\app\\AGENTS.md:x", true));
         assert!(!has_stream_suffix("C:\\app\\src\\a.ts", true));
         assert!(!has_stream_suffix("/app/a:b", false));
+    }
+
+    /// WP-101 round 13: canonicalize on Windows returns a verbatim `\\?\C:\...`. That prefix's drive colon is not a stream.
+    /// A stream after the prefix still is, and a UNC path has no drive colon to allow. Pure, so it runs on every OS.
+    #[test]
+    fn a_verbatim_prefix_is_not_a_stream_but_a_stream_after_it_is() {
+        assert!(!has_stream_suffix("\\\\?\\C:\\x\\a.txt", true));
+        assert!(has_stream_suffix("\\\\?\\C:\\x\\a.txt::$DATA", true));
+        assert!(has_stream_suffix("\\\\?\\UNC\\srv\\share\\a:b", true));
+        assert!(!has_stream_suffix("C:\\x\\a.txt", true));
+        assert!(!has_stream_suffix("\\\\.\\C:\\x\\a.txt", true));
+        assert!(has_stream_suffix("\\\\?\\unc\\srv\\share\\a:b", true));
     }
 
     #[test]
