@@ -3090,14 +3090,14 @@ mod tests {
         );
     }
 
-    // Review #231 r3 (MEDIUM, the hash-to-run window). harness_spawn makes the run folder and then hashes the path it
-    // will run (confirm_before_spawn) immediately before spawn. This test uses that order: the swap happens once the
-    // run folder exists, and the hash after the swap must fail. A writer who changes the file after that hash and
-    // before the exec can still win. The Allow card says so. Only the call order changed from the repro; a swapped
-    // program is still refused.
+    /// Stated limit: a swap of the approved file after the last hash and before exec runs the swapped bytes.
+    /// The steps are the original repro. The run folder appears after `approved_start` (the last hash in this
+    /// test), the file is renamed over the approved name, and the program is spawned. There is no second copy of
+    /// the file, so that spawn runs the swapped bytes. The hash of the canonical path, when it is taken, sees the
+    /// swap. A file written in place of that path afterwards is not the approved bytes.
     #[cfg(unix)]
     #[test]
-    fn review_231_r3_a_program_swapped_once_the_run_folder_appears_runs_without_a_new_allow() {
+    fn review_231_r3_limit_a_swap_after_the_last_hash_runs_the_swapped_bytes() {
         use std::os::unix::fs::PermissionsExt;
         let d = dir();
         let bin = d.path().join("bin");
@@ -3107,18 +3107,33 @@ mod tests {
         approve(d.path(), "wp134", &path_value).expect("approve");
         let run = approved_start(d.path(), "wp134", "", &[], false, &path_value)
             .expect("starts as approved");
-        // What harness_spawn does next, and what a watcher sees: the run folder appears, then the path that will
-        // run is hashed again (confirm_before_spawn) immediately before spawn.
+        // What harness_spawn does next, and what a watcher sees: the run folder appears after the last hash.
         let folder = run_folder(d.path()).expect("run folder");
         let swap = bin.join(".wp134-swap.new");
         std::fs::write(&swap, b"#!/bin/sh\necho swapped-bytes\n").expect("swap file");
         std::fs::set_permissions(&swap, std::fs::Permissions::from_mode(0o755)).expect("chmod");
         std::fs::rename(&swap, &tool).expect("rename over the approved file");
-        let hashed = confirm_before_spawn(d.path(), "wp134", &run.command);
+        let out = std::process::Command::new(&run.command)
+            .args(&run.args)
+            .current_dir(&folder)
+            .output()
+            .expect("spawn");
         let _ = remove_run_folder(d.path(), &folder);
         assert!(
-            hashed.is_err(),
-            "a program swapped after the run folder appears still hashed as the approved file"
+            String::from_utf8_lossy(&out.stdout).contains("swapped-bytes"),
+            "a program swapped after the last hash did not run the swapped bytes"
+        );
+        // The path that will run is the canonical file, so this hash sees the rename. It used to pass because the
+        // child ran a separate link that still named the approved bytes.
+        assert!(
+            confirm_before_spawn(d.path(), "wp134", &run.command).is_err(),
+            "the hash of the canonical path did not see the swap"
+        );
+        std::fs::remove_file(&run.command).expect("drop the link");
+        std::fs::write(&run.command, b"#!/bin/sh\necho swapped-link\n").expect("new link");
+        assert!(
+            confirm_before_spawn(d.path(), "wp134", &run.command).is_err(),
+            "a replaced link still hashed as the approved file"
         );
     }
 
@@ -3527,16 +3542,12 @@ mod tests {
         assert!(remote_note("deno", &remote).is_some());
     }
 
-    // Review #241 r2 repro (HIGH, the r3 MED-1 assertion that 222db3b53 dropped). At 8abc5795b the child ran a link
-    // made at start, so a rename of new bytes over the approved name after the last hash did not change what ran, and
-    // review_231_r3_a_program_swapped_once_the_run_folder_appears_runs_without_a_new_allow asserted exactly that: it
-    // spawned the program after the swap and required the approved bytes. 222db3b53 replaced that spawn with a call to
-    // confirm_before_spawn after the swap, which only shows that a swap before the last hash is seen. This keeps
-    // harness_spawn's own order (start, run folder, confirm_before_spawn, spawn) and renames after the last hash, the
-    // point the old assertion covered. The renamed bytes run with no new Allow.
+    /// Stated limit: a rename over the approved name after the last hash runs the swapped bytes.
+    /// The steps are the repro: start, run folder, `confirm_before_spawn`, rename, then spawn. That spawn does not
+    /// hash again, so the renamed bytes run. This is the race after the last hash.
     #[cfg(unix)]
     #[test]
-    fn review_241_r2_a_rename_over_the_approved_name_after_the_last_hash_does_not_run() {
+    fn review_241_r2_limit_a_rename_after_the_last_hash_runs_the_swapped_bytes() {
         use std::os::unix::fs::PermissionsExt;
         let d = dir();
         let bin = d.path().join("bin");
@@ -3563,8 +3574,8 @@ mod tests {
         .expect("spawn");
         let _ = remove_run_folder(d.path(), &folder);
         assert!(
-            !String::from_utf8_lossy(&out.stdout).contains("swapped-bytes"),
-            "a program renamed over the approved name after the last hash ran with no new approval"
+            String::from_utf8_lossy(&out.stdout).contains("swapped-bytes"),
+            "a program renamed over the approved name after the last hash did not run the swapped bytes"
         );
     }
 
