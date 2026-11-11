@@ -1,50 +1,33 @@
-//! The macOS side of the helper: the parent check, the microphone and speech permissions, the on-device recogniser
-//! and the audio tap.
+//! The macOS side of the helper: the gate, the microphone and speech permissions, the on-device recogniser and the
+//! audio tap.
 //!
 //! The recogniser delivers its results on the main dispatch queue. So the main thread runs that queue (`park_main`),
 //! and the dictation runs on a worker thread (main.rs). The worker never blocks the main thread.
 
 use std::cell::Cell;
-use std::ffi::{c_void, CString};
+use std::ffi::CString;
 use std::panic::AssertUnwindSafe;
 use std::ptr;
-use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use block2::RcBlock;
-use core_foundation::base::TCFType;
-use core_foundation::string::{CFString, CFStringRef};
 use objc2::exception;
 use objc2::msg_send;
 use objc2::rc::{Allocated, Retained};
 use objc2::runtime::{AnyClass, AnyObject, Bool};
 use objc2_foundation::NSString;
-use security_framework::os::macos::code_signing::{
-    Flags, GuestAttributes, SecCode, SecRequirement,
-};
 
-use crate::protocol::{self, cap, emit, over_limit, Command, Event, Input, HUB_IDENTIFIER};
+use crate::protocol::{self, cap, emit, over_limit, Command, Event, Input};
 
 // The Speech and AVFoundation frameworks provide the recogniser, the audio engine and the microphone prompt.
 #[link(name = "Speech", kind = "framework")]
 extern "C" {}
 #[link(name = "AVFoundation", kind = "framework")]
 extern "C" {}
-#[link(name = "Security", kind = "framework")]
 extern "C" {
-    static kSecCodeInfoTeamIdentifier: CFStringRef;
-    fn SecCodeCopySigningInformation(
-        code: *const c_void,
-        flags: u32,
-        information: *mut *const c_void,
-    ) -> i32;
-}
-extern "C" {
-    fn CFDictionaryGetValue(dict: *const c_void, key: *const c_void) -> *const c_void;
-    fn CFRelease(value: *const c_void);
     /// libdispatch: runs the main queue on the calling thread, which must be the main thread. Never returns.
     fn dispatch_main() -> !;
 }
@@ -62,58 +45,29 @@ const PROMPT_WAIT: Duration = Duration::from_secs(600);
 const FINISH_WAIT: Duration = Duration::from_secs(5);
 /// How often the worker checks the limits while it waits for the Hub.
 const POLL: Duration = Duration::from_millis(250);
-/// `kSecCSSigningInformation`: the flag that asks for the signing details (the Team ID among them).
-const SEC_CS_SIGNING_INFORMATION: u32 = 1 << 1;
 
 /// Parks the main thread on the main dispatch queue, where the recogniser delivers its results. Never returns.
 pub fn park_main() -> ! {
     unsafe { dispatch_main() }
 }
 
-/// The parent check. The helper acts only for the Hub: its parent must be the Hub (signed with the Hub's identifier
-/// and this helper's own Team ID), and that parent must be its own responsible process. A shell, launchd or a
-/// home-made launcher fails either test, so an agent cannot start the microphone through this helper.
-pub fn parent_is_hub() -> Result<(), &'static str> {
-    let parent = unsafe { libc::getppid() };
-    if responsible_pid(parent) != Some(parent) {
+/// What the helper checks before any permission is asked for or the microphone opens. Dictation is off in this build
+/// (protocol::DICTATION_ENABLED), so this refuses every start. Once it is on, the helper must also be its own
+/// responsible process: started without disclaim, macOS names the launcher, and the helper refuses (LOW 4).
+fn gate() -> Result<(), &'static str> {
+    if !protocol::DICTATION_ENABLED {
         return Err("not_here");
     }
-    let team = own_team().ok_or("not_here")?;
-    let requirement = SecRequirement::from_str(&protocol::requirement_for(HUB_IDENTIFIER, &team)?)
-        .map_err(|_| "not_here")?;
-    let mut attrs = GuestAttributes::new();
-    attrs.set_pid(parent);
-    let guest =
-        SecCode::copy_guest_with_attribues(None, &attrs, Flags::NONE).map_err(|_| "not_here")?;
-    guest
-        .check_validity(Flags::NONE, &requirement)
-        .map_err(|_| "not_here")
-}
-
-/// The Team ID of this helper's own signature, read from the signing information. None when it can't be read.
-fn own_team() -> Option<String> {
-    let code = SecCode::for_self(Flags::NONE).ok()?;
-    let mut info: *const c_void = ptr::null();
-    let status = unsafe {
-        SecCodeCopySigningInformation(
-            code.as_concrete_TypeRef() as *const c_void,
-            SEC_CS_SIGNING_INFORMATION,
-            &mut info,
-        )
-    };
-    if status != 0 || info.is_null() {
-        return None;
+    let me = unsafe { libc::getpid() };
+    if protocol::is_own_responsible(me, responsible_pid(me)) {
+        Ok(())
+    } else {
+        Err("not_here")
     }
-    let key = unsafe { kSecCodeInfoTeamIdentifier };
-    let value = unsafe { CFDictionaryGetValue(info, key as *const c_void) };
-    let team = (!value.is_null())
-        .then(|| unsafe { CFString::wrap_under_get_rule(value as CFStringRef) }.to_string());
-    unsafe { CFRelease(info) };
-    team
 }
 
 /// The Mac's responsible process for `pid`, from the same private symbol the Hub's launcher uses (disclaim.rs).
-/// None when the symbol is missing, which makes the parent check refuse.
+/// None when the symbol is missing, which makes the gate refuse.
 fn responsible_pid(pid: libc::pid_t) -> Option<libc::pid_t> {
     type ResponsibleFor = unsafe extern "C" fn(libc::pid_t) -> libc::pid_t;
     let name = CString::new("responsibility_get_pid_responsible_for_pid").ok()?;
@@ -132,16 +86,28 @@ pub fn run(tx: Sender<Input>, rx: Receiver<Input>) {
         smoke_file(&path, tx);
         return;
     }
+    // LOW 3: the smoke build never opens the microphone. Without a recording to read, it refuses.
+    if cfg!(feature = "smoke") {
+        emit(&Event::Refused { reason: "not_here" });
+        return;
+    }
+    if let Err(reason) = gate() {
+        emit(&Event::Refused { reason });
+        return;
+    }
     match rx.recv() {
         Ok(Input::Cmd(Command::Start)) => {}
         _ => return,
     }
-    if let Err(reason) = parent_gate() {
+    if let Err(reason) = authorize() {
         emit(&Event::Refused { reason });
         return;
     }
-    if let Err(reason) = authorize() {
-        emit(&Event::Refused { reason });
+    // M1: the Hub may stop, or close stdin, while a permission prompt is up. Then the microphone stays closed.
+    if matches!(
+        rx.try_recv(),
+        Ok(Input::Closed) | Ok(Input::Cmd(Command::Stop))
+    ) {
         return;
     }
     let started = Instant::now();
@@ -166,17 +132,6 @@ fn smoke_path() -> Option<std::ffi::OsString> {
 #[cfg(not(feature = "smoke"))]
 fn smoke_path() -> Option<std::ffi::OsString> {
     None
-}
-
-/// The parent check, except in the smoke build (which is never shipped and only reads a recorded file).
-#[cfg(feature = "smoke")]
-fn parent_gate() -> Result<(), &'static str> {
-    Ok(())
-}
-
-#[cfg(not(feature = "smoke"))]
-fn parent_gate() -> Result<(), &'static str> {
-    parent_is_hub()
 }
 
 /// Smoke test (feature `smoke`): recognises a recorded file with SFSpeechURLRecognitionRequest. No microphone is
@@ -541,9 +496,26 @@ mod tests {
         assert_eq!(guard(|| 7u8), Ok(7));
     }
 
-    // HIGH 1: the test runner is not the Hub, so the parent check refuses, before any permission is asked for.
+    // HIGH 1 (round 3): the helper does not trust its parent. While dictation is off in this build, the gate refuses
+    // before any permission is asked for, whoever started the helper.
     #[test]
-    fn a_helper_started_by_the_test_runner_is_refused_before_any_prompt() {
-        assert_eq!(parent_is_hub(), Err("not_here"));
+    fn the_gate_refuses_before_any_prompt_while_dictation_is_off() {
+        assert_eq!(gate(), Err("not_here"));
+    }
+
+    // LOW 4 (round 3): a plain child is not its own responsible process, so the gate would refuse it. The test
+    // process stands in for a helper started without disclaim.
+    #[test]
+    fn a_plain_child_is_not_its_own_responsible_process() {
+        let mut child = std::process::Command::new("/bin/sleep")
+            .arg("1")
+            .spawn()
+            .expect("sleep starts");
+        let pid = child.id() as libc::pid_t;
+        std::thread::sleep(Duration::from_millis(200));
+        let responsible = responsible_pid(pid);
+        let _ = child.kill();
+        let _ = child.wait();
+        assert!(!protocol::is_own_responsible(pid, responsible));
     }
 }

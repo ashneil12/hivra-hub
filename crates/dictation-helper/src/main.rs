@@ -1,11 +1,13 @@
 //! MonoCode Dictation: the helper app that holds the microphone for the Hub's composer dictation (WP-131b).
 //!
 //! The Hub starts this binary with responsibility disclaimed, so macOS charges the microphone and speech requests to
-//! this app, not to the Hub or to anything the Hub starts. It acts only for the Hub: its parent must be the Hub and its
-//! own responsible process (mac.rs). It recognises speech on the device only (`requiresOnDeviceRecognition`), enforces
-//! its own 300 s and 30 s-silence limits, and talks to the Hub over stdin and stdout (see protocol.rs). It opens no
-//! socket. One dictation per process: it exits when the recogniser finishes, when the Hub says stop or closes stdin,
-//! or when a limit is reached.
+//! this app, not to the Hub or to anything the Hub starts. Dictation is switched off in this build
+//! (protocol::DICTATION_ENABLED), so the helper refuses every start before it asks for a permission or opens the
+//! microphone. The check that will let the Hub's requests through is an XPC service with a per-message peer
+//! requirement (not built yet; see protocol.rs). When it is on, the helper recognises speech on the device only
+//! (`requiresOnDeviceRecognition`), enforces its own 300 s and 30 s-silence limits, and talks to the Hub over stdin
+//! and stdout (see protocol.rs). It opens no socket. One dictation per process: it exits when the recogniser
+//! finishes, when the Hub says stop or closes stdin, or when a limit is reached.
 
 mod protocol;
 

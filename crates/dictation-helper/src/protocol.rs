@@ -22,8 +22,11 @@ pub const MAX_LINE_BYTES: usize = 64 * 1024;
 pub const MAX_SESSION: Duration = Duration::from_secs(300);
 /// No recognised words for this long ends the dictation, enforced here as well as by the Hub.
 pub const SILENCE_LIMIT: Duration = Duration::from_secs(30);
-/// The Hub's bundle identifier. The helper accepts only a parent signed with it.
-pub const HUB_IDENTIFIER: &str = "com.ash.monocode-hub";
+/// Whether this build may open the microphone at all. It is off: the helper cannot yet tell which process is asking
+/// (round-3 review, HIGH 1). A process-ID check is not a sender check, and a same-user process can pass it. The
+/// helper refuses every start until a launchd-run XPC service with a per-message peer requirement replaces it. There
+/// is no setting, environment variable or flag that turns this on.
+pub const DICTATION_ENABLED: bool = false;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(tag = "op", rename_all = "lowercase")]
@@ -105,22 +108,10 @@ pub fn over_limit(started: Instant, last_words: Instant, now: Instant) -> bool {
         || now.saturating_duration_since(last_words) >= SILENCE_LIMIT
 }
 
-/// The code requirement the parent must meet: the Hub's identifier, Apple-anchored, under this Team ID.
-pub fn requirement_for(identifier: &str, team: &str) -> Result<String, &'static str> {
-    let identifier_ok = !identifier.is_empty()
-        && identifier
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-');
-    let team_ok = team.len() == 10
-        && team
-            .chars()
-            .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit());
-    if !identifier_ok || !team_ok {
-        return Err("not_here");
-    }
-    Ok(format!(
-        "identifier \"{identifier}\" and anchor apple generic and certificate leaf[subject.OU] = \"{team}\""
-    ))
+/// Whether macOS names `pid` as its own responsible process. A helper started without disclaim has its launcher
+/// (or the Hub) responsible for it, and that refuses (LOW 4). An unknown answer refuses too.
+pub fn is_own_responsible(pid: i32, responsible: Option<i32>) -> bool {
+    responsible == Some(pid)
 }
 
 pub fn emit(event: &Event) {
@@ -222,22 +213,16 @@ mod tests {
         assert_eq!(SILENCE_LIMIT, Duration::from_secs(30));
     }
 
-    // HIGH 1: the parent's requirement is built from the Hub's identifier and a validated Team ID.
+    // LOW 4 (round 3): a helper is its own responsible process only when macOS names its own pid. A helper started
+    // without disclaim names the process that started it, and refuses.
 
     #[test]
-    fn the_parent_requirement_names_the_hub_and_the_team() {
-        let req = requirement_for(HUB_IDENTIFIER, "9SB4XNH8C5").unwrap();
-        assert_eq!(
-            req,
-            "identifier \"com.ash.monocode-hub\" and anchor apple generic and certificate leaf[subject.OU] = \"9SB4XNH8C5\""
+    fn a_helper_is_its_own_responsible_process_only_when_macos_names_it() {
+        assert!(is_own_responsible(42, Some(42)));
+        assert!(
+            !is_own_responsible(42, Some(7)),
+            "started without disclaim, another process is responsible"
         );
-    }
-
-    #[test]
-    fn a_requirement_cannot_be_widened_by_its_inputs() {
-        assert!(requirement_for(HUB_IDENTIFIER, "9SB4XNH8C5\" or true").is_err());
-        assert!(requirement_for("com.ash\" or true", "9SB4XNH8C5").is_err());
-        assert!(requirement_for(HUB_IDENTIFIER, "short").is_err());
-        assert!(requirement_for("", "9SB4XNH8C5").is_err());
+        assert!(!is_own_responsible(42, None), "an unknown answer refuses");
     }
 }

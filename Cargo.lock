@@ -2891,14 +2891,12 @@ dependencies = [
 
 [[package]]
 name = "monocode-dictation"
-version = "0.16.14"
+version = "0.16.15"
 dependencies = [
  "block2",
- "core-foundation 0.10.1",
  "libc",
  "objc2",
  "objc2-foundation",
- "security-framework 3.7.0",
  "serde",
  "serde_json",
 ]
