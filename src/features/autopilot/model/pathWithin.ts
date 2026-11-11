@@ -6,6 +6,15 @@
 export const DRIVE = /^[a-z]:[\\/]/i;
 
 /**
+ * A Windows drive-relative word (`D:notes.txt`, `D:Users`, or a bare `D:`). It names that drive's current folder, which
+ * is outside the chat on another drive and unknown even on the chat folder's own drive. An absolute `D:\` or `D:/` is
+ * a drive path, not this.
+ */
+export function driveRelative(word: string): boolean {
+  return /^[a-z]:(?![\\/])/i.test(word);
+}
+
+/**
  * Whether a folder's file system ignores case: Windows (a drive or a UNC share) and the Mac's own folders (/Users, /Volumes,
  * /private). Elsewhere names are compared as written (round 7, Windows CI).
  */

@@ -1,7 +1,7 @@
 // Where a login lives (WP-101 fix round 2, item B): a credential folder the command was never told the name of, and the
 // files that hold one under names the red list's patterns don't list. Both lists are here, held and passing.
 import { describe, expect, it } from "vitest";
-import { credentialInPaths, credentialInText, credentialInWords, credentialName, credentialPath, walkHeld } from "./credentialPaths";
+import { credentialInPaths, credentialInText, credentialInWords, credentialName, credentialPath, walkHeld, wordOutside } from "./credentialPaths";
 
 describe("a credential file, by name", () => {
   it.each([
@@ -778,5 +778,25 @@ describe("a read that walks folders", () => {
     expect(walkHeld(["grep", "-r", "x", "src"], undefined)).toBe(true);
     expect(walkHeld(["grep", "-r", "x", "src"], "/Users/someone")).toBe(true);
     expect(walkHeld(["rg", "-uuu", "foo", "src"], undefined)).toBe(true);
+  });
+});
+
+describe("a drive-relative word on Windows", () => {
+  const WIN = "C:\\Users\\dev\\Projects\\app";
+  const MAC = "/Users/someone/Worktrees/hub-x";
+
+  it("holds another drive and the chat folder's own drive, and leaves a Mac name alone", () => {
+    expect(wordOutside("D:notes.txt", WIN)).toBe(true);
+    expect(wordOutside("C:notes.txt", WIN)).toBe(true);
+    expect(wordOutside("D:", WIN)).toBe(true);
+    expect(walkHeld(["find", "D:Users"], WIN)).toBe(true);
+    expect(walkHeld(["rg", "TODO", "D:Users"], WIN)).toBe(true);
+    expect(walkHeld(["find", "C:Users"], WIN)).toBe(true);
+    expect(wordOutside("C:\\Users\\dev\\Projects\\app\\src\\a.ts", WIN)).toBe(false);
+    expect(walkHeld(["find", "C:\\Users\\dev\\Projects\\app\\src"], WIN)).toBe(false);
+    expect(wordOutside("D:notes.txt", MAC)).toBe(false);
+    expect(walkHeld(["find", "D:Users"], MAC)).toBe(false);
+    expect(wordOutside("HEAD:src/app.ts", WIN)).toBe(false);
+    expect(wordOutside("a:b/keep.txt", MAC)).toBe(false);
   });
 });

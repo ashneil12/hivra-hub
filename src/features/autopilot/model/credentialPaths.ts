@@ -1,3 +1,5 @@
+import { driveRelative } from "./pathWithin";
+
 // Where logins live, and the files that hold one (WP-101 fix round 2, item B). A name is not enough: `cat ~/.aws`
 // lists a folder full of keys without ever saying "credentials", and `grep -r . ~` reads every file the person has.
 // Two questions are answered here, both on the real words a command runs with (shellWords.ts):
@@ -807,6 +809,9 @@ export function walkHeld(words: readonly string[], folder: string | undefined, t
     if (arg.startsWith("~") || credentialPath(arg, shortNamesRead(head, args, arg), folder) || dotOutside(arg, folder)) return true;
     // Round 5, H2: a walk that starts at a parent of a credential place (Library, AppData, /etc, /) reaches the place.
     if (startsAtPlaceParent(startOf(arg, timer ? null : base))) return true;
+    // A drive-relative start (`D:Users`, `D:notes.txt`) names that drive's current folder, not a path under the chat.
+    // Another drive is outside. The chat's own drive is unknown, so a word on it is held too.
+    if (windows && driveRelative(arg)) return true;
     if (!root) {
       // No folder known: only a relative place below the working folder can be shown to stay inside it.
       // A drive or UNC path is absolute too (round 12): it used to be read as a relative name, so a search of
@@ -836,9 +841,13 @@ export function walkHeld(words: readonly string[], folder: string | undefined, t
  */
 export function wordOutside(word: string, folder: string | undefined): boolean {
   const base = foldedFolder(folder);
+  const windows = windowsFolder(folder);
   return pieces(word).some((piece) => {
     const folded = fold(piece);
     if (!folded) return false;
+    // A drive-relative word (`D:notes.txt`) opens that drive's current folder. On another drive that is outside the
+    // chat. On the chat's own drive the current folder is unknown, so the word is held too.
+    if (windows && driveRelative(folded)) return true;
     const anchored = folded.startsWith("/") || folded === "~" || folded.startsWith("~/") || /^[a-z]:(?=\/|$)/.test(folded);
     if (!base) return anchored || folded.split("/").includes("..");
     const resolved = resolvePath(anchored ? folded : `/${base.join("/")}/${folded}`);

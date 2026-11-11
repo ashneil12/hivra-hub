@@ -262,18 +262,26 @@ Per-run and per-period dollar caps are WP-176 (PR #217, spend limits). They are 
 ### Wave N: one model for every screen (Ash, 11 Nov 2026)
 
 Ash, 11 Nov, on 0.16.15: "visually nothing makes sense" and "home doesnt even work". [UX.md](UX.md) is the model
-every screen follows from now on (three places, one Needs-you list, one name for each thing), with mockups in
-[ux/mockups/](ux/mockups/). Every package here carries before and after screenshots, and the integrating Claude checks
-them by eye against UX.md before merging. Order: 210 and 212 first, then 213, then 211 once PRs #213, #220 and #225 have
-merged (they touch the Inbox panel), then 214 last.
+every screen follows from now on (the chain of command, the places, one Needs-you list, one name for each thing), with
+mockups in [ux/mockups/](ux/mockups/). The same morning (05:33) Ash set the captain model: he owns the ship, the Chief
+of Staff is its captain and the default chat on Home and every project, first mates run departments, crew work under
+them, and about one decision in a thousand reaches him. Packages 215 to 219 build that. Every package here carries
+before and after screenshots, and the integrating Claude checks them by eye against UX.md before merging. Order: 210 and
+212 first, then 213, then 215, then 211 once PRs #213, #220 and #225 have merged (they touch the Inbox panel), then 216
+to 219, then 214 last.
 
 | WP | Title | Size | Depends on | Grok OK |
 | --- | --- | --- | --- | --- |
 | [210](work/WP-210-one-needs-you-list.md) | One Needs-you list that every count reads | L | none | yes |
 | [212](work/WP-212-home-chief-of-staff.md) | Home with the real Chief of Staff | L | 210 | yes |
-| [213](work/WP-213-rail-sidebar-project-screen.md) | Rail, sidebar and the project screen | L | 210 | yes |
-| [211](work/WP-211-needs-you-screen.md) | The Needs you screen replaces the Inbox | M | 210, 213 | yes |
-| [214](work/WP-214-words-and-leftovers.md) | Words, Settings and leftovers | L | 210 to 213 | yes |
+| [213](work/WP-213-rail-sidebar-project-screen.md) | The rail and a project's home, captain first | L | 210, 212 | yes |
+| [215](work/WP-215-captain.md) | The captain decides at its level | L | 212, 213, 156 | yes |
+| [211](work/WP-211-needs-you-screen.md) | The Decisions place: Needs you, Decided for you, Overturn | L | 210, 213 | yes |
+| [216](work/WP-216-owner-batch-calibration.md) | First launch, the owner batch and what it knows about you | L | 215, 211, 156 | yes |
+| [217](work/WP-217-captains-rounds-routines.md) | The captain's rounds, the morning brief and routines | M | 215, 216, 160 | yes |
+| [218](work/WP-218-departments.md) | Departments beyond coding | M | 213, 215, 176 | yes |
+| [219](work/WP-219-agents-board.md) | The Agents board, the whole tree | M | 213 | yes |
+| [214](work/WP-214-words-and-leftovers.md) | Words, Settings and leftovers | L | 210 to 213, after 215 to 219 | yes |
 
 ## Running it
 
