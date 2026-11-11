@@ -108,6 +108,8 @@ pub(crate) mod fake {
         pub signed_in: bool,
         pub fail: Mutex<Vec<String>>,
         pub failed_log: String,
+        /// `gh api` answer for the changed-file list. None falls through to an empty success.
+        pub files: Mutex<Option<Result<String, String>>>,
     }
 
     impl FakeGithub {
@@ -120,6 +122,7 @@ pub(crate) mod fake {
                 signed_in: true,
                 fail: Mutex::new(Vec::new()),
                 failed_log: "build\tRun tests\terror: expected 2, got 3".into(),
+                files: Mutex::new(None),
             }
         }
 
@@ -157,6 +160,11 @@ pub(crate) mod fake {
                 .any(|f| args.first() == Some(f) || args.get(1) == Some(f))
             {
                 return Err(format!("gh {} failed", args.join(" ")));
+            }
+            if args.first().map(String::as_str) == Some("api") {
+                if let Some(result) = self.files.lock().unwrap().clone() {
+                    return result;
+                }
             }
             match (
                 args.first().map(String::as_str),
