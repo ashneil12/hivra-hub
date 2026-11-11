@@ -44,6 +44,7 @@ import {
   mobileQuestionReply,
 } from "../features/mobile/model/mobileWorkspace";
 import { readMonoConversation } from "../features/monos/model/monoConversation";
+import { useApplyMonoCardRun } from "../features/monos/hooks/useApplyMonoCardRun";
 import {
   resumeMonoUsageLimit,
   switchMonoUsageLimitAccount,
@@ -8186,6 +8187,9 @@ function Workspace({
     },
     [],
   );
+
+  // WP-182: a card edit during a turn waits until that turn is idle.
+  useApplyMonoCardRun(sessions, onModelChange, onModelSettingsChange);
 
   const onRuntimeModeChange = useCallback(
     (sessionId: string, runtimeMode: RuntimeMode) => {

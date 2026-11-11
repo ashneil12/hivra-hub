@@ -666,7 +666,12 @@ export function Composer({
   const skillLimit = hasNativeCommands(harness)
     ? Number.POSITIVE_INFINITY
     : undefined;
-  const rankedSkills = rankSkills(slashItems, slash?.query ?? "", skillLimit);
+  // WP-182: this Mono's skills and commands lead the slash list. Nothing is hidden.
+  const cardFirst = sessionId ? monoForSession(sessionId) : undefined;
+  const rankedSkills = rankSkills(slashItems, slash?.query ?? "", skillLimit, [
+    ...(cardFirst?.skills ?? []),
+    ...(cardFirst?.commands ?? []),
+  ]);
   const attachmentsSupported =
     (!remote || !!remoteFeatures?.attachments) &&
     harnessSupportsAttachments(harness);
