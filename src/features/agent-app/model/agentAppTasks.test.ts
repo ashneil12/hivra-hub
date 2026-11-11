@@ -75,6 +75,7 @@ import {
   setSpendRedoLinks,
   spendSnapshot,
 } from "../../usage/model/spendGate";
+import { isFanoutAgainDecisionKey } from "../../hub/model/decisionKey";
 
 // `onlyClaude` is a bench plan (src-tauri/src/verify_live.rs): no CLI but the run's own Claude wrapper resolves.
 // `codexOff` is a Mac without the Codex CLI: the setting is in force, the binary simply isn't installed.
@@ -3668,7 +3669,7 @@ describe("tasks.fanout: checkpoint and resume (WP-172)", () => {
       }),
       // `by` is who answers: absent is the person (the app's own answer), a chat or autopilot is a machine.
       answer: vi.fn(async (_project: string, key: string, answer: string, by?: string) => {
-        if (enforce && key.startsWith("fanout-again/") && by !== undefined && by !== "user" && by !== "person")
+        if (enforce && isFanoutAgainDecisionKey(key) && by !== undefined && by !== "user" && by !== "person")
           throw new Error(`Only the person answers whether a stopped task starts again; ${by} cannot. It waits in Needs until they do.`);
         const decision = store.get(key)!;
         Object.assign(decision, { state: "answered", answer, answeredBy: by ?? "person" });
@@ -4075,7 +4076,7 @@ describe("tasks.fanout: checkpoint and resume (WP-172)", () => {
         return { decision, created: true, added: [], released: [] };
       }),
       answer: vi.fn(async (project: string, key: string, answer: string, by?: string) => {
-        if (key.startsWith("fanout-again/") && by !== undefined && by !== "user" && by !== "person") throw new Error("person only");
+        if (isFanoutAgainDecisionKey(key) && by !== undefined && by !== "user" && by !== "person") throw new Error("person only");
         const decision = shared.get(`${project}|${key}`)!;
         Object.assign(decision, { state: "answered", answer, answeredBy: by ?? "person" });
         return { applied: true, decision, released: [], releasedTasks: [] };
