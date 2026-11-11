@@ -418,6 +418,34 @@ describe("autopilot.decide", () => {
     expect(written[1]?.[4]).toBeUndefined();
   });
 
+  it("says a held captain answer is held, not that it waits", async () => {
+    const s = setup();
+    await on(s, ["*"]);
+    s.deps.captainContext = () => ({
+      monoId: "ada",
+      standing: { answer: "Keep it", label: "merge on green" },
+    });
+    const other = (await call(
+      chat("worker-1", [], "/Users/someone/Projects/hivra"),
+      "autopilot.decide",
+      { question: "Which font?", recommendation: "Keep it", project: "EXO", key: "font", options: ["Keep it"] },
+      s,
+      "other-project",
+    )) as Record<string, unknown>;
+    expect(other.decision).toBe("held");
+    expect(other.note).toBe("This call names another project's question, so it is held.");
+
+    const unwritten = (await call(
+      chat("hivra-chat"),
+      "autopilot.decide",
+      { question: "Which font?", recommendation: "Keep it", project: "Hivra", key: "font", options: ["Keep it"] },
+      s,
+      "unwritten",
+    )) as Record<string, unknown>;
+    expect(unwritten.decision).toBe("held");
+    expect(unwritten.note).toBe("The decision store did not keep the captain's answer, so it is held.");
+  });
+
   it("status says what is on, for whom", async () => {
     const s = setup();
     await on(s, ["hivra"]);

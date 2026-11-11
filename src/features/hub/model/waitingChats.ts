@@ -533,10 +533,10 @@ export async function takePick(
       pendingSince: extra.pendingSince,
     });
     if (decided.kind === "ask-owner") {
-      return { ok: false, reason: forYou(decided.line ?? "This one waits for the owner.") };
+      return { ok: false, reason: forYou(decided.line ?? decided.reason) };
     }
     if (decided.kind === "waiting") {
-      return { ok: false, reason: forYou("The captain has not answered yet. It passes up if it is still open in 10 minutes.") };
+      return { ok: false, reason: forYou(decided.reason) };
     }
     const who = decided.answeredBy === `captain:${monoId}` ? decided.answeredBy : `captain:${monoId}`;
     if (decided.answer !== chat.pick) {

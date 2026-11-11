@@ -217,10 +217,10 @@ export function passUpDue(pending: readonly { id: string; since: number }[], now
 
 /**
  * A captain pass-up waits for the owner. A delivery that failed (the chat is busy or gone) does not:
- * that one is tried again.
+ * that one is tried again. So is a captain that is still waiting (the engine is down, or its turn did not finish).
  */
 export function captainAnswerHeld(reason: string): boolean {
-  return /red line|waits for the owner|chief of staff suggests|passed up|out of turns|owner's limit|only the owner|on the red list|has not answered yet|switch is off/i.test(
+  return /red line|waits for the owner|chief of staff suggests|passed up|out of turns|owner's limit|only the owner|on the red list|did not answer within|not one of the options|switch is off/i.test(
     reason,
   );
 }

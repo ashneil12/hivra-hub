@@ -434,7 +434,10 @@ describe("hooks for Autopilot and H4", () => {
     host();
     setCaptainDoor(() => ({ monoId: "ada" }));
     noteChats([markerChat("same", "Needs Ash: Rename the file?\nMy pick: yes")]);
-    expect((await takePick("same", { by: "autopilot" })).ok).toBe(false);
+    expect(await takePick("same", { by: "autopilot" })).toEqual({
+      ok: false,
+      reason: "The engine is down. It passes up if it is still open in 10 minutes.",
+    });
     expect(gateLog().find((row) => row.sessionId === "same")?.answer?.who ?? "").not.toMatch(/^captain:/);
 
     setCaptainDoor(() => ({ monoId: "ada", confident: false }));

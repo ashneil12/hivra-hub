@@ -637,7 +637,7 @@ export async function handleAutopilotApp(
       }
       // A keyed call outside this chat's project never takes, and a captain answer that is not written never takes.
       if (key && project && !inProject) {
-        const heldNote = "This call names another project's question, so it waits.";
+        const heldNote = "This call names another project's question, so it is held.";
         const logged = await backend.log({ ...base, kind: "decision", outcome: "held", red: null });
         return {
           autopilot: "on",
@@ -653,7 +653,7 @@ export async function handleAutopilotApp(
       }
       const answer = captain.kind === "answer" ? captain.answer : verdict.answer;
       if (captain.kind === "answer" && key && project && !(deps.answerDecision && inProject)) {
-        const heldNote = "The decision store did not keep the captain's answer, so it waits.";
+        const heldNote = "The decision store did not keep the captain's answer, so it is held.";
         const logged = await backend.log({ ...base, kind: "decision", outcome: "held", red: null });
         return {
           autopilot: "on",
@@ -668,7 +668,7 @@ export async function handleAutopilotApp(
         };
       }
       if (captain.kind === "answer" && deps.answerDecision && key && project && inProject) {
-        const heldNote = "The decision store did not keep the captain's answer, so it waits.";
+        const heldNote = "The decision store did not keep the captain's answer, so it is held.";
         const seenVersion =
           fromCard && typeof card?.version === "number" && Number.isInteger(card.version) ? card.version : undefined;
         // A card was read, but it named no version: do not write an answer onto whatever the row is now.
