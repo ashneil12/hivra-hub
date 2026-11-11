@@ -10,13 +10,17 @@
 //!
 //! The one network read (`ls-remote`) runs in a fresh empty folder under a scratch directory, with the discovery
 //! ceiling set to that scratch directory's parent. Git stops only at a proper ancestor, so a ceiling equal to the
-//! current folder would still use a repository above it. The push URL is resolved with the same global config `git
-//! push` reads. `ls-remote` then keeps credential helpers from that config, from its includes, and from the system
-//! config, and drops `url.*` and `protocol.*`. The system file itself is not given to git, so a rewrite there cannot
-//! point the base at a decoy. A commit is treated as already on the remote only when every push destination advertises it.
+//! current folder would still use a repository above it. The push URL is resolved with the same config `git push`
+//! reads, system file included: hiding that file lets a system `url.insteadOf` send the push somewhere this check never
+//! asked. `ls-remote` keeps credential keys from the global and system config as `GIT_CONFIG_KEY_<n>` pairs and points
+//! both files at `/dev/null`, so a swapped scratch file or a `url.*` rewrite cannot steer the read. A commit is already
+//! on the remote only when every push destination advertises it.
 //!
-//! A commit-graph and a pack bitmap are unverified caches. Guard reads turn both off. A blob those caches name and the
-//! raw objects do not is scanned and then refused. A blob the diff skipped but the raw objects do contain is scanned in full.
+//! A commit-graph and a pack bitmap are unverified caches. Guard reads turn both off. `git commit-graph verify` has to
+//! accept a local graph, and an alternate object store that has a graph of its own is not trusted: a graph `git push`
+//! walks with `pack.useSparse` can count a blob as already upstream that the push still sends. A blob a cache names and
+//! the raw objects do not is scanned and then refused. A blob the diff skipped but the raw objects do contain is scanned
+//! in full.
 
 use std::collections::{HashMap, HashSet};
 use std::io::{Read, Write};
@@ -967,12 +971,102 @@ fn is_oid(text: &str) -> bool {
     (text.len() == 40 || text.len() == 64) && text.chars().all(|c| c.is_ascii_hexdigit())
 }
 
+fn git_path(repo: &Repo, name: &str) -> Result<PathBuf, String> {
+    let mut cmd = command(repo);
+    cmd.args(["rev-parse", "--git-path", name]);
+    let out = read_capped(cmd, None, CHECK_TIMEOUT, MAX_CHECKED_BYTES)?;
+    if colour_wrapped(&out) {
+        return Err(COLOUR_REFUSED.into());
+    }
+    let text = String::from_utf8_lossy(&out).trim().to_string();
+    if text.is_empty() {
+        return Err(UNREADABLE.into());
+    }
+    let path = PathBuf::from(text);
+    if path.is_absolute() {
+        Ok(path)
+    } else {
+        Ok(repo.work_tree.join(path))
+    }
+}
+
+/// A commit-graph file git would read from this object store: the single file, or a split chain.
+fn commit_graph_file(objects: &Path) -> bool {
+    let info = objects.join("info");
+    if info.join("commit-graph").is_file() {
+        return true;
+    }
+    let graphs = info.join("commit-graphs");
+    if graphs.join("commit-graph-chain").is_file() {
+        return true;
+    }
+    let Ok(entries) = std::fs::read_dir(&graphs) else {
+        return false;
+    };
+    entries
+        .flatten()
+        .any(|entry| entry.path().extension().and_then(|ext| ext.to_str()) == Some("graph"))
+}
+
+/// An alternate object store with a commit-graph is untrusted. `git commit-graph verify` reads the repository's own
+/// graph, not one reached through `objects/info/alternates`, and `git push` would still walk that graph.
+fn alternate_has_commit_graph(repo: &Repo) -> Result<bool, String> {
+    let path = git_path(repo, "objects/info/alternates")?;
+    if !path.is_file() {
+        return Ok(false);
+    }
+    let text = match std::fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(_) => return Ok(true),
+    };
+    let Some(objects) = path.parent().and_then(|info| info.parent()) else {
+        return Ok(true);
+    };
+    for line in text.lines() {
+        let line = line.trim().trim_end_matches('\r');
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let raw = Path::new(line);
+        let store = if raw.is_absolute() {
+            raw.to_path_buf()
+        } else {
+            objects.join(raw)
+        };
+        if commit_graph_file(&store) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+/// `true` when a local graph fails `git commit-graph verify`, or an alternate store has a graph. No graph is trusted.
+/// The command carries the guard's usual `-c` flags. Any failure, including a timeout, is untrusted.
+fn commit_graph_untrusted(repo: &Repo) -> Result<bool, String> {
+    if alternate_has_commit_graph(repo)? {
+        return Ok(true);
+    }
+    let single = git_path(repo, "objects/info/commit-graph")?;
+    let chain = git_path(repo, "objects/info/commit-graphs/commit-graph-chain")?;
+    if !single.is_file() && !chain.is_file() {
+        return Ok(false);
+    }
+    let mut cmd = command(repo);
+    cmd.args(["commit-graph", "verify"]);
+    match read_capped(cmd, None, CHECK_TIMEOUT, MAX_CHECKED_BYTES) {
+        Ok(_) => Ok(false),
+        Err(_) => Ok(true),
+    }
+}
+
 /// Blobs a push of `revs` would send that `read` did not already scan.
 ///
 /// The honest walk turns the commit-graph and pack bitmaps off, which is what the app's own push does. A second
 /// walk turns each cache back on, because a pre-push hook cannot pass those flags to the parent `git push`. A blob
 /// only the cache names is scanned and then refused. A blob the honest walk names and the diff skipped is scanned
-/// and allowed when it is clean.
+/// and allowed when it is clean. A graph `git commit-graph verify` rejects, or a graph in an alternate object store,
+/// is untrusted even when the two walks name the same blobs: the parent's push walks trees sparsely and can still send
+/// a blob both walks counted as already upstream.
 pub(super) struct Reach {
     pub added: Vec<String>,
     pub lines: Vec<LineHit>,
@@ -1012,10 +1106,11 @@ pub(super) fn reachable_extra(
             }
         }
     };
-    let untrusted = graphed
-        .keys()
-        .chain(bitmapped.keys())
-        .any(|oid| !honest.contains_key(oid));
+    let untrusted = commit_graph_untrusted(repo)?
+        || graphed
+            .keys()
+            .chain(bitmapped.keys())
+            .any(|oid| !honest.contains_key(oid));
     let mut wanted: HashMap<String, String> = HashMap::new();
     for map in [&honest, &graphed, &bitmapped] {
         for (oid, path) in map {
@@ -1198,25 +1293,14 @@ fn push_unique(urls: &mut Vec<String>, url: String) {
 }
 
 /// Every URL `git push` uses for `remote`. `get-url --push` already applies `pushInsteadOf`, or `insteadOf` when no
-/// push rewrite matches, which is the same URL the push itself contacts. This call keeps the global config, because
-/// the push does too. It does not keep the system config: a system `url.insteadOf` must not point the check at a
-/// decoy, and `GIT_CONFIG_NOSYSTEM` does not hide a file named by `GIT_CONFIG_SYSTEM`. The configured string is not
-/// added as well: a checkout may rewrite a public name onto a local stand-in, and asking that public name would
-/// refuse a push that never goes there. The caller then reads each of these URLs from outside the repository, with
-/// `url.*` hidden, so a second `insteadOf` cannot point the check at a decoy.
+/// push rewrite matches, which is the same URL the push itself contacts. This call keeps the global and the system
+/// config, because the push does too. Hiding the system file would let a system `url.insteadOf` send the push to a
+/// remote this check never asked. The configured string is not added as well: a checkout may rewrite a public name
+/// onto a local stand-in, and asking that public name would refuse a push that never goes there. The caller then reads
+/// each of these URLs from outside the repository, with `url.*` hidden, so a second `insteadOf` cannot point the check
+/// at a decoy.
 pub(super) fn push_destinations(repo: &Repo, remote: &str) -> Result<Vec<String>, String> {
-    let scratch = exclusive_scratch("cg-url")?;
-    let result = push_destinations_in(repo, remote, &scratch);
-    let _ = std::fs::remove_dir_all(&scratch);
-    result
-}
-
-fn push_destinations_in(repo: &Repo, remote: &str, scratch: &Path) -> Result<Vec<String>, String> {
-    let blank = scratch.join("blank-system.gitconfig");
-    std::fs::write(&blank, "").map_err(|error| error.to_string())?;
     let mut cmd = command_with(repo, true);
-    cmd.env("GIT_CONFIG_NOSYSTEM", "1")
-        .env("GIT_CONFIG_SYSTEM", &blank);
     cmd.args(["remote", "get-url", "--push", "--all", remote]);
     let output = match read_capped(cmd, None, CHECK_TIMEOUT, MAX_CHECKED_BYTES) {
         Ok(output) => output,
@@ -1281,29 +1365,8 @@ fn exclusive_scratch(prefix: &str) -> Result<PathBuf, String> {
 }
 
 fn advertised_in(scratch: &Path, url: &str) -> Result<Vec<String>, String> {
-    let empty = scratch.join("empty");
-    std::fs::create_dir_all(&empty).map_err(|error| error.to_string())?;
-    // Git ignores a ceiling equal to the current directory. The ceiling has to be a proper ancestor, and the
-    // command has to run somewhere that ancestor actually contains.
-    let ceiling = match scratch.parent() {
-        Some(parent) => crate::fs::canonical(parent).unwrap_or_else(|_| parent.to_path_buf()),
-        None => scratch.to_path_buf(),
-    };
-    let global = sanitized_global(scratch)?;
-    // `GIT_CONFIG_NOSYSTEM` does not hide a file named by `GIT_CONFIG_SYSTEM` on this git. Credential lines from that
-    // file are already in the sanitized global. Point the variable at an empty file so `url.*` in the real one cannot
-    // steer `ls-remote`. Removing the variable is not enough: git still reads the inherited path.
-    let blank_system = scratch.join("blank-system.gitconfig");
-    std::fs::write(&blank_system, "").map_err(|error| error.to_string())?;
-    let mut cmd = crate::fs::git_cmd();
-    strip_repo_env(&mut cmd, true);
-    cmd.current_dir(&empty)
-        .env("GIT_CONFIG_SYSTEM", &blank_system)
-        .env("GIT_CEILING_DIRECTORIES", &ceiling)
-        .env("GIT_CONFIG_NOSYSTEM", "1")
-        .env("GIT_CONFIG_GLOBAL", &global)
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .args(["--no-pager", "-c", "color.ui=never", "ls-remote", url]);
+    let mut cmd = ls_remote_cmd(scratch)?;
+    cmd.args(["--no-pager", "-c", "color.ui=never", "ls-remote", url]);
     let out = read_capped(cmd, None, CHECK_TIMEOUT, MAX_CHECKED_BYTES)?;
     if colour_wrapped(&out) {
         return Err(COLOUR_REFUSED.into());
@@ -1444,249 +1507,139 @@ pub(super) fn read_capped(
     Ok(out)
 }
 
-/// A copy of the global git config with `url.*` and includes removed, so `ls-remote` cannot be steered onto a decoy
-/// and an include cannot put a rewrite back. Credential helpers stay, including ones behind `include` / `includeIf`
-/// and ones in the system config. `protocol.*` does not. The real config files are only read.
-fn sanitized_global(scratch: &Path) -> Result<PathBuf, String> {
-    let mut combined = String::new();
-    let mut sources = Vec::new();
-    for path in global_config_files() {
-        let Ok(text) = std::fs::read_to_string(&path) else {
-            continue;
-        };
-        combined.push_str(&text);
-        if !combined.ends_with('\n') {
-            combined.push('\n');
-        }
-        sources.push((path, text));
-    }
-    let mut out = strip_url_config(&combined);
-    let mut seen = HashSet::new();
-    for (path, text) in &sources {
-        let base = path.parent().unwrap_or_else(|| Path::new("."));
-        out.push_str(&included_credentials(text, base, 0, &mut seen));
-    }
-    if let Some(system) = read_system_config() {
-        out.push_str(&credential_sections(&system.text));
-        let base = system.path.parent().unwrap_or_else(|| Path::new("."));
-        out.push_str(&included_credentials(&system.text, base, 0, &mut seen));
-    }
-    if !out.is_empty() && !out.ends_with('\n') {
-        out.push('\n');
-    }
-    let file = scratch.join("global.gitconfig");
-    std::fs::write(&file, out).map_err(|error| error.to_string())?;
-    Ok(file)
-}
-
-struct SystemConfig {
-    path: PathBuf,
-    text: String,
-}
-
-/// The system git config, read only. A missing file or a failed lookup means no extra credentials, not a failed push.
-fn read_system_config() -> Option<SystemConfig> {
-    let path = system_config_file()?;
-    let text = std::fs::read_to_string(&path).ok()?;
-    Some(SystemConfig { path, text })
-}
-
-fn system_config_file() -> Option<PathBuf> {
-    if let Some(path) = std::env::var_os("GIT_CONFIG_SYSTEM") {
-        if !path.is_empty() {
-            return Some(PathBuf::from(path));
-        }
-    }
+/// `ls-remote` outside the repository. Credential keys from the global and system config are passed as
+/// `GIT_CONFIG_KEY_<n>` pairs. Both config files are `/dev/null`, so a file planted in the scratch folder cannot
+/// replace them and a `url.*` rewrite cannot steer the read. A missing config or a failed lookup is no extra
+/// credentials, not a failed push.
+fn ls_remote_cmd(scratch: &Path) -> Result<Command, String> {
+    let empty = scratch.join("empty");
+    std::fs::create_dir_all(&empty).map_err(|error| error.to_string())?;
+    // Git ignores a ceiling equal to the current directory. The ceiling has to be a proper ancestor, and the
+    // command has to run somewhere that ancestor actually contains.
+    let ceiling = match scratch.parent() {
+        Some(parent) => crate::fs::canonical(parent).unwrap_or_else(|_| parent.to_path_buf()),
+        None => scratch.to_path_buf(),
+    };
+    let pairs = kept_credential_pairs();
     let mut cmd = crate::fs::git_cmd();
-    cmd.env_remove("GIT_CONFIG_NOSYSTEM");
-    cmd.args(["config", "--system", "--show-origin", "--list"]);
-    let out = read_capped(cmd, None, CHECK_TIMEOUT, MAX_CHECKED_BYTES).ok()?;
-    let text = String::from_utf8_lossy(&out);
-    for line in text.lines() {
-        let origin = line.split('\t').next().unwrap_or("");
-        let Some(path) = origin.strip_prefix("file:") else {
-            continue;
-        };
-        if !path.is_empty() {
-            return Some(PathBuf::from(path));
-        }
-    }
-    None
+    strip_repo_env(&mut cmd, true);
+    cmd.current_dir(&empty)
+        .env("GIT_CONFIG_SYSTEM", "/dev/null")
+        .env("GIT_CEILING_DIRECTORIES", &ceiling)
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_TERMINAL_PROMPT", "0");
+    apply_config_pairs(&mut cmd, &pairs);
+    Ok(cmd)
 }
 
-/// `[credential]` and `[credential "..."]` only. `url`, `include`, `protocol` and `includeIf` sections are dropped.
-fn credential_sections(text: &str) -> String {
-    let mut out = String::new();
-    let mut keeping = false;
-    let mut in_section = false;
-    for line in text.split_inclusive('\n') {
-        let trimmed = line.trim().trim_end_matches('\r');
-        if trimmed.starts_with('[') && trimmed.contains(']') {
-            in_section = true;
-            keeping = section_name(trimmed) == "credential";
-            if keeping {
-                out.push_str(line);
-            }
-            continue;
-        }
-        if keeping {
-            out.push_str(line);
-            continue;
-        }
-        if !in_section {
-            let key = trimmed
-                .split(['=', ' ', '\t'])
-                .next()
-                .unwrap_or("")
-                .to_ascii_lowercase();
-            if key.starts_with("credential.") {
-                out.push_str(line);
-            }
-        }
-    }
-    out
+/// System credentials, then global ones. Git applies the later value for a single key and keeps every
+/// `credential.helper`. `GIT_CONFIG_SYSTEM` and `GIT_CONFIG_GLOBAL`, when set, name the files. Otherwise git reads
+/// its usual ones. Nothing from a repository config is copied: this read runs outside the repository.
+fn kept_credential_pairs() -> Vec<(String, String)> {
+    let system = std::env::var_os("GIT_CONFIG_SYSTEM").filter(|value| !value.is_empty());
+    let global = std::env::var_os("GIT_CONFIG_GLOBAL").filter(|value| !value.is_empty());
+    let mut pairs = scoped_credentials("--system", system.as_deref().map(Path::new));
+    pairs.extend(scoped_credentials(
+        "--global",
+        global.as_deref().map(Path::new),
+    ));
+    pairs
 }
 
-/// Credential sections reached through `include` and `includeIf`, without asking git to apply the condition.
-/// `ls-remote` runs outside a repository, so git itself would skip `gitdir:` includes. Depth stops at 4.
-fn included_credentials(
-    text: &str,
-    base_dir: &Path,
-    depth: usize,
-    seen: &mut HashSet<PathBuf>,
-) -> String {
-    if depth >= 4 {
-        return String::new();
-    }
-    let mut out = String::new();
-    for include in include_paths(text) {
-        let path = resolve_include(&include, base_dir);
-        let key = crate::fs::canonical(&path).unwrap_or_else(|_| path.clone());
-        if !seen.insert(key) {
-            continue;
-        }
-        let Ok(inner) = std::fs::read_to_string(&path) else {
-            continue;
-        };
-        out.push_str(&credential_sections(&inner));
-        if !out.is_empty() && !out.ends_with('\n') {
-            out.push('\n');
-        }
-        let base = path.parent().unwrap_or(base_dir);
-        out.push_str(&included_credentials(&inner, base, depth + 1, seen));
-    }
-    out
-}
-
-fn include_paths(text: &str) -> Vec<String> {
-    let mut paths = Vec::new();
-    let mut in_include = false;
-    for line in text.lines() {
-        let trimmed = line.trim().trim_end_matches('\r');
-        if trimmed.starts_with('[') && trimmed.contains(']') {
-            let name = section_name(trimmed);
-            in_include = name == "include" || name == "includeif";
-            continue;
-        }
-        if trimmed.is_empty() || trimmed.starts_with('#') || trimmed.starts_with(';') {
-            continue;
-        }
-        let Some((key, value)) = split_key_value(trimmed) else {
-            continue;
-        };
-        let take = (in_include && key == "path")
-            || key == "include.path"
-            || (key.starts_with("includeif.") && key.ends_with(".path"));
-        if take {
-            let value = value.trim().trim_matches('"').trim();
-            if !value.is_empty() {
-                paths.push(value.to_string());
-            }
-        }
-    }
-    paths
-}
-
-fn split_key_value(line: &str) -> Option<(String, &str)> {
-    let (key, value) = line.split_once('=')?;
-    let key = key.trim().to_ascii_lowercase();
-    if key.is_empty() {
-        return None;
-    }
-    Some((key, value.trim()))
-}
-
-fn resolve_include(value: &str, base_dir: &Path) -> PathBuf {
-    let value = value.trim();
-    if let Some(rest) = value
-        .strip_prefix("~/")
-        .or_else(|| value.strip_prefix("~\\"))
-    {
-        if let Some(home) = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")) {
-            return PathBuf::from(home).join(rest);
-        }
-    }
-    let path = Path::new(value);
-    if path.is_absolute() {
-        path.to_path_buf()
-    } else {
-        base_dir.join(path)
-    }
-}
-
-fn global_config_files() -> Vec<PathBuf> {
-    if let Some(path) = std::env::var_os("GIT_CONFIG_GLOBAL") {
-        if !path.is_empty() {
-            return vec![PathBuf::from(path)];
-        }
-    }
-    let Some(home) = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")) else {
+fn scoped_credentials(scope: &str, file: Option<&Path>) -> Vec<(String, String)> {
+    let Ok(scratch) = exclusive_scratch("cg-cred") else {
         return Vec::new();
     };
-    let home = PathBuf::from(home);
-    let xdg = std::env::var_os("XDG_CONFIG_HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| home.join(".config"));
-    vec![home.join(".gitconfig"), xdg.join("git").join("config")]
+    let pairs = credentials_in(&scratch, scope, file);
+    let _ = std::fs::remove_dir_all(&scratch);
+    pairs
 }
 
-fn strip_url_config(text: &str) -> String {
-    let mut out = String::new();
-    let mut skipping = false;
-    for line in text.split_inclusive('\n') {
-        let trimmed = line.trim().trim_end_matches('\r');
-        if trimmed.starts_with('[') && trimmed.contains(']') {
-            skipping = url_or_include_section(trimmed);
-        }
-        if skipping {
-            continue;
-        }
-        let key = trimmed
-            .split(['=', ' ', '\t'])
-            .next()
-            .unwrap_or("")
-            .to_ascii_lowercase();
-        if key.starts_with("url.") || key == "include.path" || key.starts_with("includeif.") {
-            continue;
-        }
-        out.push_str(line);
+/// `scope` is `--system` or `--global`. `file`, when set, is the config git reads for that scope. The command runs
+/// in an empty folder whose parent is the discovery ceiling, so a repository `includeIf gitdir:` cannot match.
+/// `--includes` is required: without it, `git config --system` and `--global` do not open included files, so a system
+/// file that starts with an include would lose that helper and keep only its own. Git then evaluates `includeIf`.
+/// A missing file, no match, or any other failure is no credentials.
+fn credentials_in(scratch: &Path, scope: &str, file: Option<&Path>) -> Vec<(String, String)> {
+    let empty = scratch.join("empty");
+    if std::fs::create_dir_all(&empty).is_err() {
+        return Vec::new();
     }
-    out
+    let ceiling = match scratch.parent() {
+        Some(parent) => crate::fs::canonical(parent).unwrap_or_else(|_| parent.to_path_buf()),
+        None => scratch.to_path_buf(),
+    };
+    let var = match scope {
+        "--system" => "GIT_CONFIG_SYSTEM",
+        "--global" => "GIT_CONFIG_GLOBAL",
+        _ => return Vec::new(),
+    };
+    let mut cmd = crate::fs::git_cmd();
+    strip_repo_env(&mut cmd, true);
+    cmd.current_dir(&empty)
+        .env("GIT_CEILING_DIRECTORIES", &ceiling)
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env_remove("GIT_CONFIG_NOSYSTEM");
+    if let Some(path) = file {
+        cmd.env(var, path);
+    }
+    apply_config_pairs(&mut cmd, &[]);
+    cmd.args([
+        "--no-pager",
+        "-c",
+        "color.ui=never",
+        "config",
+        scope,
+        "--includes",
+        "--show-origin",
+        "--get-regexp",
+        r"^credential\.",
+    ]);
+    let out = match read_capped(cmd, None, CHECK_TIMEOUT, MAX_CHECKED_BYTES) {
+        Ok(out) => out,
+        Err(_) => return Vec::new(),
+    };
+    if colour_wrapped(&out) {
+        return Vec::new();
+    }
+    parse_credential_lines(&String::from_utf8_lossy(&out))
 }
 
-fn section_name(header: &str) -> String {
-    let inner = header.trim().trim_start_matches('[');
-    let inner = inner.split(']').next().unwrap_or("");
-    inner
-        .split(|c: char| c.is_whitespace() || c == '"')
-        .next()
-        .unwrap_or("")
-        .to_ascii_lowercase()
+/// `file:<path><TAB>key value` lines from `git config --show-origin --get-regexp`. Only `credential.*` keys from a
+/// file origin are kept, so a command-line pair or a `url.*` line cannot come back through.
+fn parse_credential_lines(text: &str) -> Vec<(String, String)> {
+    let mut pairs = Vec::new();
+    for line in text.lines() {
+        let line = line.trim_end_matches('\r');
+        let Some((origin, rest)) = line.split_once('\t') else {
+            continue;
+        };
+        if !origin.starts_with("file:") {
+            continue;
+        }
+        let (key, value) = match rest.split_once(' ') {
+            Some((key, value)) => (key, value),
+            None => (rest, ""),
+        };
+        if key.starts_with("credential.") && !key.is_empty() {
+            pairs.push((key.to_string(), value.to_string()));
+        }
+    }
+    pairs
 }
 
-fn url_or_include_section(header: &str) -> bool {
-    let name = section_name(header);
-    name == "url" || name == "include" || name == "includeif"
+/// Puts `pairs` on the command, then `safe.bareRepository=explicit`. `strip_repo_env` has already dropped the pair
+/// `git_cmd` added, so this is the only copy, and it stays last.
+fn apply_config_pairs(cmd: &mut Command, pairs: &[(String, String)]) {
+    let bare = pairs.len();
+    cmd.env("GIT_CONFIG_COUNT", (bare + 1).to_string());
+    for (index, (key, value)) in pairs.iter().enumerate() {
+        cmd.env(format!("GIT_CONFIG_KEY_{index}"), key);
+        cmd.env(format!("GIT_CONFIG_VALUE_{index}"), value);
+    }
+    cmd.env(format!("GIT_CONFIG_KEY_{bare}"), "safe.bareRepository");
+    cmd.env(format!("GIT_CONFIG_VALUE_{bare}"), "explicit");
 }
 
 #[cfg(test)]
@@ -1753,53 +1706,143 @@ mod tests {
     }
 
     #[test]
-    fn system_credential_sections_drop_url_and_protocol() {
+    fn credential_lines_keep_file_helpers_and_drop_other_origins() {
         let text = "\
-[credential]\n\thelper = !'/tmp/helper.sh'\n\
-[url \"http://127.0.0.1:1/decoy/\"]\n\tinsteadOf = http://127.0.0.1:\n\
-[protocol]\n\tversion = 0\n\
+file:/etc/gitconfig\tcredential.helper osxkeychain\n\
+file:/etc/gitconfig\tcredential.helper !'/tmp/helper.sh'\n\
+command line:\tcredential.helper planted\n\
+file:/etc/gitconfig\turl.http://example.test/.insteadof http://decoy/\n\
+file:/etc/gitconfig\tprotocol.version 0\n\
 ";
-        let kept = credential_sections(text);
-        assert!(kept.contains("helper"));
-        assert!(!kept.contains("insteadOf"));
-        assert!(!kept.contains("version"));
+        let pairs = parse_credential_lines(text);
+        let helpers: Vec<&str> = pairs
+            .iter()
+            .filter(|(key, _)| key == "credential.helper")
+            .map(|(_, value)| value.as_str())
+            .collect();
+        assert_eq!(helpers, ["osxkeychain", "!'/tmp/helper.sh'"]);
+        assert!(pairs.iter().all(|(key, _)| key.starts_with("credential.")));
     }
 
     #[test]
-    fn an_include_if_credential_helper_is_copied_and_its_url_rewrite_is_not() {
-        let dir = std::env::temp_dir().join(format!(
-            "cg-include-{}-{}",
-            std::process::id(),
-            uuid::Uuid::new_v4().simple()
-        ));
-        std::fs::create_dir(&dir).unwrap();
+    fn a_system_file_keeps_its_own_helper_when_it_starts_with_an_include() {
+        let dir = exclusive_scratch("cg-include").unwrap();
         let included = dir.join("included.gitconfig");
         std::fs::write(
             &included,
-            "[credential]\n\thelper = !'/tmp/from-include.sh'\n[url \"http://127.0.0.1:1/\"]\n\tinsteadOf = https://\n",
+            "[credential]\n\thelper = included-helper\n[url \"http://127.0.0.1:1/\"]\n\tinsteadOf = https://\n",
         )
         .unwrap();
-        let text = format!(
-            "[includeIf \"gitdir:**\"]\n\tpath = {}\n",
-            included.display()
-        );
-        let mut seen = std::collections::HashSet::new();
-        let kept = included_credentials(&text, &dir, 0, &mut seen);
+        let conditional = dir.join("conditional.gitconfig");
+        std::fs::write(
+            &conditional,
+            "[credential]\n\thelper = conditional-helper\n",
+        )
+        .unwrap();
+        let system = dir.join("system.gitconfig");
+        let included_path = included.to_string_lossy().replace('\\', "/");
+        let conditional_path = conditional.to_string_lossy().replace('\\', "/");
+        std::fs::write(
+            &system,
+            format!(
+                "[include]\n\tpath = {included_path}\n\
+                 [includeIf \"gitdir:/no/such/cg-includeif/**\"]\n\tpath = {conditional_path}\n\
+                 [credential]\n\thelper = own-helper\n\
+                 [url \"http://127.0.0.1:1/decoy/\"]\n\tinsteadOf = http://127.0.0.1:\n\
+                 [protocol]\n\tversion = 0\n"
+            ),
+        )
+        .unwrap();
+        let pairs = credentials_in(&dir, "--system", Some(&system));
         let _ = std::fs::remove_dir_all(&dir);
-        assert!(kept.contains("from-include.sh"), "{kept}");
-        assert!(!kept.contains("insteadOf"), "{kept}");
+        let helpers: Vec<&str> = pairs
+            .iter()
+            .filter(|(key, _)| key == "credential.helper")
+            .map(|(_, value)| value.as_str())
+            .collect();
+        assert!(
+            helpers.contains(&"included-helper"),
+            "the included helper was dropped: {helpers:?}"
+        );
+        assert!(
+            helpers.contains(&"own-helper"),
+            "the system file's own helper was dropped: {helpers:?}"
+        );
+        assert!(
+            !helpers.contains(&"conditional-helper"),
+            "an includeIf that does not match was copied: {helpers:?}"
+        );
+        assert!(pairs.iter().all(|(key, value)| {
+            key.starts_with("credential.") && !value.contains("insteadOf") && value != "0"
+        }));
     }
 
     #[test]
-    fn url_sections_are_dropped_and_the_credential_helper_stays() {
-        let text = "\
-[credential]\n\thelper = !'/tmp/helper.sh'\n\
-[url \"file:///decoy\"]\n\tinsteadOf = https://example.test/\n\
-[include]\n\tpath = /tmp/more\n\
-";
-        let kept = strip_url_config(text);
-        assert!(kept.contains("helper"));
-        assert!(!kept.contains("insteadOf"));
-        assert!(!kept.contains("include"));
+    fn repeated_credential_helpers_round_trip_through_the_environment() {
+        let pairs = vec![
+            ("credential.helper".to_string(), "alpha".to_string()),
+            ("credential.helper".to_string(), "beta".to_string()),
+        ];
+        let mut cmd = crate::fs::git_cmd();
+        strip_repo_env(&mut cmd, false);
+        cmd.env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_CONFIG_SYSTEM", "/dev/null")
+            .env("GIT_CONFIG_GLOBAL", "/dev/null");
+        apply_config_pairs(&mut cmd, &pairs);
+        cmd.args(["config", "--get-all", "credential.helper"]);
+        let out = read_capped(cmd, None, CHECK_TIMEOUT, MAX_CHECKED_BYTES).unwrap();
+        let text = String::from_utf8_lossy(&out);
+        assert!(text.contains("alpha"), "{text}");
+        assert!(text.contains("beta"), "{text}");
+    }
+
+    #[test]
+    fn ls_remote_does_not_read_a_config_file_in_the_scratch_folder() {
+        let scratch = exclusive_scratch("cg-ls").unwrap();
+        let planted = scratch.join("global.gitconfig");
+        std::fs::write(
+            &planted,
+            "[url \"http://127.0.0.1:1/\"]\n\tinsteadOf = https://\n",
+        )
+        .unwrap();
+        std::fs::write(scratch.join("blank-system.gitconfig"), "planted").unwrap();
+        let cmd = ls_remote_cmd(&scratch).unwrap();
+        let mut global = None;
+        let mut system = None;
+        let mut count = None;
+        let mut keys = Vec::new();
+        for (name, value) in cmd.get_envs() {
+            let name = name.to_string_lossy();
+            let value = value.map(|item| item.to_string_lossy().into_owned());
+            if name == "GIT_CONFIG_GLOBAL" {
+                global = value.clone();
+            } else if name == "GIT_CONFIG_SYSTEM" {
+                system = value.clone();
+            } else if name == "GIT_CONFIG_COUNT" {
+                count = value.clone();
+            } else if name.starts_with("GIT_CONFIG_KEY_") {
+                keys.push(value.clone().unwrap_or_default());
+            }
+            if let Some(value) = value.as_deref() {
+                assert!(
+                    !value.contains("global.gitconfig") && !value.contains("blank-system"),
+                    "the scratch config is on the command"
+                );
+            }
+        }
+        let _ = std::fs::remove_dir_all(&scratch);
+        assert_eq!(global.as_deref(), Some("/dev/null"));
+        assert_eq!(system.as_deref(), Some("/dev/null"));
+        assert!(
+            count.is_some(),
+            "credential keys were not passed in the environment"
+        );
+        assert!(
+            keys.iter().any(|key| key == "safe.bareRepository"),
+            "safe.bareRepository was dropped"
+        );
+        assert!(keys
+            .iter()
+            .all(|key| key.starts_with("credential.") || key == "safe.bareRepository"));
     }
 }

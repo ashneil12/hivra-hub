@@ -282,7 +282,12 @@ pub(crate) fn push_sha(
             &refspec,
         ],
     )?;
-    git(checkout, &["branch", &tracking, branch]).map(|_| ())
+    // The push has already landed. Recording the upstream fails when the remote's fetch refspec does not map
+    // the branch. That is not a failed push.
+    if let Err(error) = git(checkout, &["branch", &tracking, branch]) {
+        eprintln!("git push landed, but the upstream was not recorded: {error}");
+    }
+    Ok(())
 }
 
 fn git(dir: &Path, args: &[&str]) -> Result<String, String> {

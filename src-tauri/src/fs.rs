@@ -3098,7 +3098,11 @@ pub(crate) fn git_push_for(root: &Path) -> Result<(), String> {
     git_checked(root, &args)?;
     if !upstream {
         let tracking = format!("--set-upstream-to={remote}/{branch}");
-        git_checked(root, &["branch", &tracking, &branch])?;
+        // The push has already landed. A detached checkout, or a remote whose fetch refspec does not map this
+        // branch, cannot record the upstream. That must not be reported as a failed push.
+        if let Err(error) = git_checked(root, &["branch", &tracking, &branch]) {
+            eprintln!("git push landed, but the upstream was not recorded: {error}");
+        }
     }
     Ok(())
 }

@@ -279,6 +279,128 @@ fn r8_a_refspec_push_sets_the_upstream() {
     );
 }
 
+/// The push lands. The remote's fetch refspec maps only `main`, so `topic` cannot be recorded as the upstream.
+#[test]
+fn r8_a_push_lands_when_the_fetch_refspec_cannot_record_the_upstream() {
+    let remote = temp("nomap-remote");
+    git(&remote.0, &["init", "-q", "--bare", "-b", "main"]);
+    let local = temp("nomap");
+    git(&local.0, &["init", "-q", "-b", "main"]);
+    for (key, value) in [
+        ("user.email", "guard@example.test"),
+        ("user.name", "Guard Test"),
+        ("commit.gpgsign", "false"),
+        ("core.autocrlf", "false"),
+    ] {
+        git(&local.0, &["config", key, value]);
+    }
+    git(
+        &local.0,
+        &["remote", "add", "origin", remote.0.to_str().unwrap()],
+    );
+    git(
+        &local.0,
+        &[
+            "config",
+            "remote.origin.fetch",
+            "+refs/heads/main:refs/remotes/origin/main",
+        ],
+    );
+    fs::write(local.0.join("README.md"), b"hello\n").unwrap();
+    git(&local.0, &["add", "-A"]);
+    git(&local.0, &["commit", "-q", "-m", "base"]);
+    git(&local.0, &["push", "-q", "origin", "HEAD:refs/heads/main"]);
+    git(&local.0, &["checkout", "-q", "-b", "topic"]);
+    fs::write(local.0.join("README.md"), b"topic\n").unwrap();
+    git(&local.0, &["commit", "-q", "-am", "topic"]);
+
+    crate::fs::git_push_for(&local.0).expect("the push landed");
+    let remote_tip = Command::new("git")
+        .arg("-C")
+        .arg(&remote.0)
+        .args(["rev-parse", "--verify", "refs/heads/topic"])
+        .output()
+        .unwrap();
+    assert!(
+        remote_tip.status.success(),
+        "the remote did not receive the branch: {}",
+        String::from_utf8_lossy(&remote_tip.stderr)
+    );
+    let upstream = Command::new("git")
+        .arg("-C")
+        .arg(&local.0)
+        .args(["rev-parse", "--abbrev-ref", "@{upstream}"])
+        .output()
+        .unwrap();
+    assert!(
+        !upstream.status.success(),
+        "a fetch refspec that does not map the branch still recorded an upstream"
+    );
+}
+
+/// A commit-graph git itself accepts is not a reason to refuse a clean push.
+#[test]
+fn r8_a_valid_commit_graph_does_not_refuse_a_clean_push() {
+    let (local, _remote) = pushed("valid-graph");
+    git(&local.0, &["commit-graph", "write", "--reachable"]);
+    fs::write(local.0.join("README.md"), b"hello\nmore\n").unwrap();
+    git(&local.0, &["commit", "-q", "-am", "more"]);
+    let tip = git(&local.0, &["rev-parse", "HEAD"]);
+    let base = git(&local.0, &["rev-parse", "HEAD~1"]);
+    let stdin = format!(
+        "refs/heads/main {} refs/heads/main {}\n",
+        tip.trim(),
+        base.trim()
+    );
+    super::pre_push_stdin_check(&local.0, "origin", &stdin)
+        .expect("a valid commit-graph still allows a clean push");
+}
+
+/// `git commit-graph verify` does not read a graph in an alternate object store, and a push still would.
+#[test]
+fn r8_an_alternate_object_store_with_a_commit_graph_is_not_trusted() {
+    let (local, _remote) = pushed("alt-graph");
+    let other = temp("alt-store");
+    git(&other.0, &["init", "-q", "-b", "main"]);
+    for (key, value) in [
+        ("user.email", "guard@example.test"),
+        ("user.name", "Guard Test"),
+        ("commit.gpgsign", "false"),
+        ("core.autocrlf", "false"),
+    ] {
+        git(&other.0, &["config", key, value]);
+    }
+    fs::write(other.0.join("README.md"), b"hello\n").unwrap();
+    git(&other.0, &["add", "-A"]);
+    git(&other.0, &["commit", "-q", "-m", "other"]);
+    git(&other.0, &["commit-graph", "write", "--reachable"]);
+    let git_dir = git(&other.0, &["rev-parse", "--absolute-git-dir"]);
+    let objects = PathBuf::from(git_dir.trim()).join("objects");
+    let info = local.0.join(".git").join("objects").join("info");
+    fs::create_dir_all(&info).unwrap();
+    fs::write(
+        info.join("alternates"),
+        format!("# note\n\n{}\n", objects.display()),
+    )
+    .unwrap();
+    fs::write(local.0.join("README.md"), b"hello\nclean\n").unwrap();
+    git(&local.0, &["commit", "-q", "-am", "clean"]);
+    let tip = git(&local.0, &["rev-parse", "HEAD"]);
+    let base = git(&local.0, &["rev-parse", "HEAD~1"]);
+    let stdin = format!(
+        "refs/heads/main {} refs/heads/main {}\n",
+        tip.trim(),
+        base.trim()
+    );
+    let checked = super::pre_push_stdin_check(&local.0, "origin", &stdin);
+    let message = checked.as_ref().err().map(String::as_str).unwrap_or("");
+    assert!(
+        checked.is_err() && message.contains("commit graph"),
+        "an alternate commit-graph was trusted: {checked:?}"
+    );
+}
+
+#[cfg(unix)]
 fn pkt(payload: &str) -> Vec<u8> {
     let mut out = format!("{:04x}", payload.len() + 4).into_bytes();
     out.extend(payload.as_bytes());
@@ -378,12 +500,15 @@ fn advertise_base(
     }
 }
 
+#[cfg(unix)]
 fn in_child() -> bool {
     std::env::var_os("CG_R8_CHILD").is_some()
 }
 
 /// No global helper, a system helper, and a `url.insteadOf` that must not be copied. `gh`'s
-/// `hosts.yml` has to stay visible. A second half keeps auth that lives behind `includeIf`.
+/// `hosts.yml` has to stay visible. The second half points that system file at a decoy. The guard
+/// resolves the push URL with the same file `git push` reads, so the push is refused. The includeIf
+/// helper is still written; a refused push does not authenticate through it.
 #[cfg(unix)]
 #[test]
 fn r8_n3_system_credential_helper_reaches_ls_remote_without_a_global_helper() {
@@ -545,7 +670,7 @@ fn r8_n3_inner_system_credential_helper() {
     let _ = server.join();
     let marked = fs::read_to_string(&marker).unwrap_or_default();
     assert!(
-        included_result.is_ok() && marked.contains("included") && !marked.contains("system"),
-        "includeIf auth was dropped or the system url rewrite was applied (marker {marked:?}): {included_result:?}"
+        included_result.is_err(),
+        "a system url rewrite must refuse the push (marker {marked:?}): {included_result:?}"
     );
 }
