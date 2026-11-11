@@ -37,6 +37,9 @@ function noteLine(note: HomeNote): HomeLine {
 
 const ROW_ACTIONS = 3;
 
+// Blue primary (bg-accent, black text). Not the white primary-action fill.
+const PRIMARY_BUTTON = "shrink-0 rounded-md bg-accent px-2.5 py-1 text-[12px] font-medium text-black";
+
 function NeedActions({ actions }: { actions: readonly { label: string; run: () => void }[] }) {
   return actions.slice(0, ROW_ACTIONS).map((action, index) => {
     const run = (event: { stopPropagation: () => void }) => {
@@ -50,7 +53,7 @@ function NeedActions({ actions }: { actions: readonly { label: string; run: () =
           key={action.label}
           type="button"
           data-needs-answer=""
-          className="primary-action shrink-0 rounded-md border border-transparent px-2.5 py-1 text-[12px] font-medium focus-visible:outline-2 focus-visible:outline-accent"
+          className={PRIMARY_BUTTON}
           onClick={run}
         >
           {action.label}

@@ -232,6 +232,7 @@ it("shows a stopped worker as a chip, a red Stopped, the reason and a bordered O
   expect(button.className).toMatch(/\bborder\b/);
   expect(button.className).not.toMatch(/underline/);
   expect(button.className).not.toMatch(/primary-action/);
+  expect(button.className).not.toMatch(/\bbg-accent\b/);
   act(() => button.click());
   expect(opened).toBe(1);
 });
@@ -255,10 +256,14 @@ it("draws row actions as buttons, the first filled and the rest bordered, at mos
     ["Allow", "Deny", "Later", "Skip"].includes(item.textContent ?? ""),
   );
   expect(buttons.map((item) => item.textContent)).toEqual(["Allow", "Deny", "Later"]);
-  expect(buttons[0]?.className).toMatch(/primary-action/);
+  // The same blue primary Home uses for a chief reply. Not the white primary-action fill.
+  expect(buttons[0]?.className).toMatch(/\bbg-accent\b/);
+  expect(buttons[0]?.className).toMatch(/\btext-black\b/);
+  expect(buttons[0]?.className).not.toMatch(/primary-action/);
   expect(buttons[0]?.className).not.toMatch(/underline/);
   expect(buttons[1]?.className).toMatch(/\bborder\b/);
   expect(buttons[1]?.className).not.toMatch(/primary-action/);
+  expect(buttons[1]?.className).not.toMatch(/\bbg-accent\b/);
   expect(buttons[2]?.className).toMatch(/\bborder\b/);
   act(() => buttons[1]?.click());
   expect(ran).toEqual(["Deny"]);

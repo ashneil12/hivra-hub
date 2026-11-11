@@ -147,7 +147,7 @@ test("rail, home, header, mono line and inbox share one Needs you list", async (
     localStorage.setItem("monocode:ready-pages-seeded-v2", "1");
     localStorage.setItem("monocode:dev-decisions", JSON.stringify(decisions));
   }, [
-    decision("hivra", "windows-build", "The Windows build stopped after 3 tries.", NOW - 50_000),
+    decision("hivra", "windows-build", "Which Windows build should ship?", NOW - 50_000),
     decision("hivra", "merge-217", "Ready to merge #217.", NOW - 40_000),
     decision("nibbii", "npm-publish", "frank wants to run npm publish in nibbii-web.", NOW - 20_000),
     decision("safetube", "weekly-views", "The Weekly views page asks to read YouTube stats.", NOW - 10_000),
@@ -189,14 +189,36 @@ test("rail, home, header, mono line and inbox share one Needs you list", async (
   const title = needs.locator("h2");
   expect(await title.evaluate((el) => el.nextElementSibling?.getAttribute("data-home-needs-count") ?? "")).toBe("5");
   const stopped = needs.locator("[data-home-line='stopped']");
+  await expect(stopped).toHaveCount(1);
+  await expect(needs.locator("[data-home-line]").first()).toHaveAttribute("data-home-line", "stopped");
+  const order = (await needs.innerText()).replace(/\s+/g, " ");
+  const stoppedAt = order.indexOf("Stopped.");
+  const mergeAt = order.indexOf("Ready to merge");
+  const askAt = order.indexOf("Which Windows build should ship?");
+  expect(stoppedAt).toBeGreaterThanOrEqual(0);
+  expect(mergeAt).toBeGreaterThan(stoppedAt);
+  expect(askAt).toBeGreaterThan(mergeAt);
   await expect(stopped.locator("[data-needs-chip]")).toHaveText("EXO");
   await expect(stopped.locator("[data-needs-stopped]")).toHaveText("Stopped.");
   await expect(stopped.locator("[data-needs-stopped]")).toHaveClass(/text-red-400/);
   const openChat = stopped.getByRole("button", { name: "Open chat" });
   expect(Number.parseFloat(await openChat.evaluate((el) => getComputedStyle(el).borderTopWidth))).toBeGreaterThan(0);
-  const answer = needs.locator("[data-needs-answer]").first();
-  await expect(answer).toHaveClass(/primary-action/);
+  await expect(openChat).not.toHaveClass(/bg-accent/);
+  const answer = needs.getByRole("button", { name: "Answer" });
+  await expect(answer).toHaveClass(/bg-accent/);
+  await expect(answer).not.toHaveClass(/primary-action/);
+  const paint = await answer.evaluate((el) => {
+    const probe = document.createElement("div");
+    probe.style.background = "var(--color-accent)";
+    document.body.append(probe);
+    const expected = getComputedStyle(probe).backgroundColor;
+    probe.remove();
+    return { got: getComputedStyle(el).backgroundColor, expected };
+  });
+  expect(paint.got).toBe(paint.expected);
+  expect(paint.got).not.toBe("rgb(255, 255, 255)");
   const deny = needs.getByRole("button", { name: "Deny" }).first();
+  await expect(deny).not.toHaveClass(/bg-accent/);
   await expect(deny).not.toHaveClass(/primary-action/);
   expect(Number.parseFloat(await deny.evaluate((el) => getComputedStyle(el).borderTopWidth))).toBeGreaterThan(0);
   const rowCount = await needs.locator("[data-home-line]").count();
@@ -241,9 +263,9 @@ test("rail, home, header, mono line and inbox share one Needs you list", async (
 
   await page.locator("[data-hub-home]").getByRole("button", { name: "Home" }).click({ force: true });
   await expect(page.locator("[data-home]")).toBeVisible();
-  await page.locator("[data-needs-project='hivra'] [data-needs-answer]").first().click();
+  await page.locator("[data-needs-project='hivra']").filter({ hasText: "Which Windows build should ship?" }).locator("[data-needs-answer]").click();
   await agree("4", "1");
-  await expect(page.locator("[data-home-section='needs-you']")).not.toContainText("The Windows build stopped after 3 tries.");
+  await expect(page.locator("[data-home-section='needs-you']")).not.toContainText("Which Windows build should ship?");
   await expect(page.locator("[data-home-section='projects']")).toContainText("Hivra · 1 needs you");
   await expect(page.locator("[data-home-section='projects']")).not.toContainText("Hivra · 2 need you");
   if (shoot) await page.screenshot({ path: `${AFTER}/answered.png` });
