@@ -15880,6 +15880,7 @@ function Workspace({
     sameSessionSummaries,
   );
   const {
+    unseen: inboxUnseen,
     linkedSessionUpdateIds,
     linkedSessionUpdates,
   } = useInboxActivity(recents, sidebarCwd, sidebarHistory, {
@@ -18625,8 +18626,8 @@ function Workspace({
       inset={insetLayout}
       onToggleProjectRail={onToggleProjectRail}
       unseenFinishedIds={unseenFinishedIds}
-      // WP-210: the Inbox mark is the Needs you count, read in the sidebar. The tracker still plays its sound.
-      inboxUnseen={false}
+      // The red count is how many items need Ash. The tracker dot shows when that count is empty.
+      inboxUnseen={inboxUnseen}
       linkedSessionUpdateIds={linkedSessionUpdateIds}
       settingsOpen={settingsOpen}
       settingsSection={settingsSection}
@@ -19410,8 +19411,12 @@ function Workspace({
           />
           {/* WP-123: fork a chat from one message. */}
           <ThreadForkHost sessionsRef={sessionsRef} onOpen={openForkedSession} />
-          {/* WP-128: a run the closed app missed. */}
-          <MissedScheduleNotice notices={oneTimeSchedules.notices} onDone={oneTimeSchedules.note} />
+          {/* WP-128: a run the closed app missed, stacked with the other notices. */}
+          <MissedScheduleNotice
+            notices={oneTimeSchedules.notices}
+            onDone={oneTimeSchedules.note}
+            top={toastStackTop([reminderNoticesHeight, harnessUpdateHeight, newLayoutNoticeHeight])}
+          />
           {whatsNewVersion ? (
             <WhatsNewDialog
               version={whatsNewVersion}

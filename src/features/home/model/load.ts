@@ -20,7 +20,7 @@ import {
   sanitizeProjects,
   taskReadKeys,
 } from "./lines";
-import { browserStorage, readHome, type HomeStorage } from "./store";
+import { adoptOldCardOrder, browserStorage, readHome, type HomeStorage } from "./store";
 import { factsFromHome, readQuietRemote } from "../../needs/model/needsLive";
 import { needsYouQuiet } from "../../needs/model/needsYou";
 
@@ -78,7 +78,8 @@ export async function fetchHome(source: HomeSource, now: () => number = Date.now
     source.decisions(),
     source.docs(),
     source.catalog(),
-    readHome(source.disk, source.storage, now),
+    // G5: the card order one window kept goes into the hub document once, before Home reads it.
+    adoptOldCardOrder(source.disk, source.storage, now).catch(() => false).then(() => readHome(source.disk, source.storage, now)),
     ...keys.map((key) => source.tasks(key)),
   ]);
   return {

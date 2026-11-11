@@ -26,6 +26,14 @@ use tauri::AppHandle;
 
 /// Event carrying [`Chunk`] payloads to every window. The webview filters by session.
 pub const EVENT: &str = "monocode:dictation";
+/// The start token, known before the helper is ready. A separate event so a chunk cannot be read as a token.
+pub const DICTATION_TOKEN_EVENT: &str = "monocode:dictation-token";
+
+/// The session id a cancel can use while the permission prompt is still up.
+#[derive(Debug, Clone, Serialize)]
+pub struct StartToken {
+    pub token: u64,
+}
 
 // The texts below are the notes the webview shows (src/features/sessions/model/dictation.ts). The webview matches
 // them by ending, so these must not be reworded on one side only.
@@ -299,6 +307,18 @@ impl<L: Clone> Sessions<L> {
         Ok(id)
     }
 
+    /// Remembers the helper link before it is ready, so a cancel during the prompt can tell it to stop.
+    /// A different id, or a session that is already stopping, does not take the link.
+    fn stage(&mut self, id: u64, live: L) -> Result<(), L> {
+        match self.current.as_mut() {
+            Some(slot) if slot.id == id && !slot.ending => {
+                slot.live = Some(live);
+                Ok(())
+            }
+            _ => Err(live),
+        }
+    }
+
     /// A start that failed before it went live frees the slot.
     fn abort(&mut self, id: u64) {
         if self.current.as_ref().is_some_and(|slot| slot.id == id) {
@@ -336,6 +356,14 @@ impl<L: Clone> Sessions<L> {
             }
             _ => false,
         }
+    }
+
+    /// The session id a cancel can use before ready. None once a stop has started.
+    fn start_token(&self) -> Option<u64> {
+        self.current
+            .as_ref()
+            .filter(|slot| !slot.ending)
+            .map(|slot| slot.id)
     }
 
     /// The session that is still listening, if any. One that is already stopping is not stopped again.
@@ -455,6 +483,13 @@ fn sessions() -> std::sync::MutexGuard<'static, Sessions<platform::Live>> {
 fn emit(app: &AppHandle, owner: &str, chunk: Chunk) {
     use tauri::Emitter;
     let _ = app.emit_to(owner, EVENT, chunk);
+}
+
+/// Tells that window the start token before the helper is ready, so a cancel can reach the prompt.
+#[cfg(all(target_os = "macos", not(test)))]
+fn emit_token(app: &AppHandle, owner: &str, token: u64) {
+    use tauri::Emitter;
+    let _ = app.emit_to(owner, DICTATION_TOKEN_EVENT, StartToken { token });
 }
 
 #[tauri::command]
@@ -578,6 +613,104 @@ pub fn follow_switch(enabled: bool, agent: &mut impl AgentControl) {
     }
 }
 
+/// One worker applies the dictation switch off the caller's thread. A second request for the same value does
+/// nothing. A change while a register is in flight is applied after it, not dropped.
+struct RegistrarQueue {
+    state: std::sync::Mutex<RegistrarState>,
+    idle: std::sync::Condvar,
+    apply: Box<dyn Fn(bool) + Send + Sync>,
+}
+
+struct RegistrarState {
+    desired: Option<bool>,
+    applied: Option<bool>,
+    running: bool,
+}
+
+impl RegistrarQueue {
+    fn new(apply: impl Fn(bool) + Send + Sync + 'static) -> std::sync::Arc<Self> {
+        std::sync::Arc::new(Self {
+            state: std::sync::Mutex::new(RegistrarState {
+                desired: None,
+                applied: None,
+                running: false,
+            }),
+            idle: std::sync::Condvar::new(),
+            apply: Box::new(apply),
+        })
+    }
+
+    fn request(self: &std::sync::Arc<Self>, on: bool) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if state.desired == Some(on) && (state.running || state.applied == Some(on)) {
+            return;
+        }
+        state.desired = Some(on);
+        if state.running {
+            return;
+        }
+        if state.applied == Some(on) {
+            return;
+        }
+        state.running = true;
+        let queue = std::sync::Arc::clone(self);
+        drop(state);
+        std::thread::spawn(move || queue.work());
+    }
+
+    fn work(&self) {
+        loop {
+            let on = {
+                let mut state = self
+                    .state
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                if state.desired == state.applied {
+                    state.running = false;
+                    self.idle.notify_all();
+                    return;
+                }
+                let Some(on) = state.desired else {
+                    state.running = false;
+                    self.idle.notify_all();
+                    return;
+                };
+                state.applied = Some(on);
+                on
+            };
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| (self.apply)(on)));
+        }
+    }
+
+    #[cfg(test)]
+    fn wait_until_idle(&self) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        while state.running {
+            state = self
+                .idle
+                .wait(state)
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+        }
+    }
+}
+
+/// Applies the switch on the registrar's thread, and only when it changed. Not compiled into a test, so a test
+/// never calls SMAppService.
+#[cfg(all(target_os = "macos", not(test)))]
+fn queue_registrar(on: bool) {
+    use std::sync::OnceLock;
+    static QUEUE: OnceLock<std::sync::Arc<RegistrarQueue>> = OnceLock::new();
+    QUEUE
+        .get_or_init(|| RegistrarQueue::new(xpc::apply_switch))
+        .request(on);
+}
+
 /// The requirement a helper must meet to be launched: its identifier (the Hub's, plus `.dictation`), Apple-anchored,
 /// under the Hub's Team ID. None when either input is not a plain identifier or a Team ID.
 pub fn helper_requirement(hub_identifier: &str, team: &str) -> Option<String> {
@@ -613,7 +746,9 @@ mod platform {
 
     use super::{emit, sessions, Heard, Support, FINISH_GRACE, HUB_IDENTIFIER, NOT_HERE};
     #[cfg(not(test))]
-    use super::{note_for_reason, HelperEvent, DENIED, READY_WAIT, STOPPED, WATCH_EVERY};
+    use super::{
+        emit_token, note_for_reason, HelperEvent, DENIED, READY_WAIT, STOPPED, WATCH_EVERY,
+    };
 
     /// The helper inside the bundle this Hub runs from, or None when this copy has none (a dev copy, or a bundle
     /// built without it).
@@ -755,8 +890,8 @@ mod platform {
         }
         #[cfg(not(test))]
         match plan.agent {
-            super::AgentChange::Register => super::xpc::apply_switch(true),
-            super::AgentChange::Unregister => super::xpc::apply_switch(false),
+            super::AgentChange::Register => super::queue_registrar(true),
+            super::AgentChange::Unregister => super::queue_registrar(false),
             super::AgentChange::Leave => {}
         }
         dir.as_deref()
@@ -768,7 +903,7 @@ mod platform {
         // A dev copy is not the host, so it does not register or unregister either.
         #[cfg(not(test))]
         if host_may_register(app) {
-            super::xpc::apply_switch(setting_on(app));
+            super::queue_registrar(setting_on(app));
         }
         match launch_plan(app) {
             Ok(()) => Support {
@@ -848,6 +983,19 @@ mod platform {
             }
         };
         let live = Live(Arc::new(Helper { link }));
+        // The link is staged, and the window hears the token, before start. A cancel during the prompt can then
+        // send stop while authorize is still blocked.
+        if sessions().stage(id, live.clone()).is_err() {
+            live.stop_child();
+            sessions().abort(id);
+            return Err(NOT_HERE);
+        }
+        let Some(token) = sessions().start_token() else {
+            live.stop_child();
+            sessions().abort(id);
+            return Err(NOT_HERE);
+        };
+        emit_token(&app, &owner, token);
         if !live.0.link.send_line("{\"op\":\"start\"}") {
             live.stop_child();
             sessions().abort(id);
@@ -1195,6 +1343,55 @@ mod tests {
     }
 
     #[test]
+    fn a_cancel_before_ready_reaches_the_staged_helper() {
+        let mut s: Sessions<u8> = Sessions::new();
+        let id = s.begin("main", t0()).unwrap();
+        assert_eq!(
+            s.start_token(),
+            Some(id),
+            "the start token is the reserved session, known before ready"
+        );
+        assert!(
+            s.live(id).is_none(),
+            "before staging, a stop has no helper to tell"
+        );
+        s.stage(id, 4).unwrap();
+        assert_eq!(
+            s.live(id),
+            Some(4),
+            "the staged link is how a cancel sends stop during the prompt"
+        );
+        assert_eq!(s.start_token(), Some(id));
+        assert!(
+            s.stage(id + 3, 1).is_err(),
+            "another id cannot take the link"
+        );
+        assert_eq!(s.live(id), Some(4));
+        assert!(s.begin_stop(id));
+        assert_eq!(
+            s.install(id, 4, t0()),
+            Err(4),
+            "ready after a cancel still hands the helper back"
+        );
+        assert!(
+            s.start_token().is_none(),
+            "a session that is stopping has no token"
+        );
+    }
+
+    #[test]
+    fn the_start_token_uses_its_own_event() {
+        assert_eq!(DICTATION_TOKEN_EVENT, "monocode:dictation-token");
+        assert_ne!(DICTATION_TOKEN_EVENT, EVENT);
+        let json = serde_json::to_string(&StartToken { token: 3 }).unwrap();
+        assert_eq!(json, "{\"token\":3}");
+        assert_eq!(
+            serde_json::to_string(&StartToken { token: 0 }).unwrap(),
+            "{\"token\":0}"
+        );
+    }
+
+    #[test]
     fn the_grace_period_releases_what_was_heard() {
         let mut s: Sessions<()> = Sessions::new();
         let id = s.begin("main", t0()).unwrap();
@@ -1483,6 +1680,139 @@ mod tests {
 
     // The helper is an SMAppService agent. The switch registers it; switching off unregisters it. A fake registrar
     // stands in, so this test never calls SMAppService or launchd.
+
+    #[test]
+    fn the_registrar_runs_off_the_caller_and_only_when_the_switch_changes() {
+        use std::sync::{Arc, Mutex};
+        let log = Arc::new(Mutex::new(Vec::<bool>::new()));
+        let seen = Arc::clone(&log);
+        let caller = std::thread::current().id();
+        let threads = Arc::new(Mutex::new(Vec::new()));
+        let threads_seen = Arc::clone(&threads);
+        let queue = RegistrarQueue::new(move |on| {
+            threads_seen
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .push(std::thread::current().id());
+            seen.lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .push(on);
+        });
+        queue.request(true);
+        queue.request(true);
+        queue.wait_until_idle();
+        assert_eq!(
+            *log.lock().unwrap_or_else(|poisoned| poisoned.into_inner()),
+            vec![true],
+            "a second mount with the same switch does not register again"
+        );
+        assert!(
+            threads
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .iter()
+                .all(|id| *id != caller),
+            "the registrar does not run on the caller's thread"
+        );
+        queue.request(false);
+        queue.wait_until_idle();
+        assert_eq!(
+            *log.lock().unwrap_or_else(|poisoned| poisoned.into_inner()),
+            vec![true, false],
+            "turning the switch off applies once"
+        );
+        queue.request(false);
+        queue.wait_until_idle();
+        assert_eq!(
+            *log.lock().unwrap_or_else(|poisoned| poisoned.into_inner()),
+            vec![true, false]
+        );
+    }
+
+    #[test]
+    fn a_launch_that_is_off_unregisters_once() {
+        use std::sync::{Arc, Mutex};
+        let log = Arc::new(Mutex::new(Vec::<bool>::new()));
+        let seen = Arc::clone(&log);
+        let queue = RegistrarQueue::new(move |on| {
+            seen.lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .push(on);
+        });
+        queue.request(false);
+        queue.request(false);
+        queue.wait_until_idle();
+        assert_eq!(
+            *log.lock().unwrap_or_else(|poisoned| poisoned.into_inner()),
+            vec![false],
+            "off once per launch, not on every mount"
+        );
+    }
+
+    #[test]
+    fn two_windows_mounting_together_register_once() {
+        use std::sync::{Arc, Mutex};
+        let log = Arc::new(Mutex::new(Vec::<bool>::new()));
+        let seen = Arc::clone(&log);
+        let queue = RegistrarQueue::new(move |on| {
+            seen.lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .push(on);
+        });
+        let queue = Arc::clone(&queue);
+        std::thread::scope(|scope| {
+            for _ in 0..8 {
+                let queue = Arc::clone(&queue);
+                scope.spawn(move || queue.request(true));
+            }
+        });
+        queue.wait_until_idle();
+        assert_eq!(
+            *log.lock().unwrap_or_else(|poisoned| poisoned.into_inner()),
+            vec![true]
+        );
+    }
+
+    #[test]
+    fn a_switch_change_during_register_is_not_lost() {
+        use std::sync::mpsc;
+        use std::sync::{Arc, Mutex};
+        let (entered_tx, entered_rx) = mpsc::channel::<bool>();
+        let (release_tx, release_rx) = mpsc::channel::<()>();
+        let release_rx = Arc::new(Mutex::new(release_rx));
+        let entered_tx = Arc::new(Mutex::new(Some(entered_tx)));
+        let log = Arc::new(Mutex::new(Vec::<bool>::new()));
+        let seen = Arc::clone(&log);
+        let gate = Arc::clone(&release_rx);
+        let entered = Arc::clone(&entered_tx);
+        let queue = RegistrarQueue::new(move |on| {
+            if let Some(tx) = entered
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .take()
+            {
+                let _ = tx.send(on);
+            }
+            let _ = gate
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .recv();
+            seen.lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .push(on);
+        });
+        queue.request(true);
+        assert_eq!(entered_rx.recv().ok(), Some(true));
+        queue.request(false);
+        let _ = release_tx.send(());
+        let _ = release_tx.send(());
+        queue.wait_until_idle();
+        assert_eq!(
+            *log.lock().unwrap_or_else(|poisoned| poisoned.into_inner()),
+            vec![true, false],
+            "a switch change while register is in flight still applies"
+        );
+    }
 
     #[test]
     fn register_and_unregister_follow_the_switch() {

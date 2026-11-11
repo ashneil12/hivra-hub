@@ -13,6 +13,7 @@ import {
 } from "./dictation";
 
 export const DICTATION_EVENT = "monocode:dictation";
+export const DICTATION_TOKEN_EVENT = "monocode:dictation-token";
 
 function inDesktopApp(): boolean {
   try {
@@ -93,6 +94,32 @@ export const tauriDictationPort: DictationPort = {
         error: payload.error === true,
       });
     })
+      .then((fn) => {
+        if (dead) fn();
+        else unlisten = fn;
+      })
+      .catch(() => {});
+    return () => {
+      dead = true;
+      unlisten?.();
+    };
+  },
+  watchStart(onToken) {
+    let unlisten: UnlistenFn | null = null;
+    let dead = false;
+    if (!inDesktopApp()) return () => {};
+    let current: ReturnType<typeof getCurrentWebviewWindow>;
+    try {
+      current = getCurrentWebviewWindow();
+    } catch {
+      return () => {};
+    }
+    void current
+      .listen<{ token?: unknown }>(DICTATION_TOKEN_EVENT, (event) => {
+        const token = event.payload?.token;
+        if (typeof token !== "number" || !Number.isFinite(token) || token <= 0) return;
+        onToken(token);
+      })
       .then((fn) => {
         if (dead) fn();
         else unlisten = fn;

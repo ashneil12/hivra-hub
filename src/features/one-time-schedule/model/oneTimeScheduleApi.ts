@@ -114,6 +114,30 @@ export function createTauriOneTimeStore(): OneTimeScheduleStore {
       if (saved) poke();
       return saved ? kept(saved) : null;
     },
+    async markHandedOff(id, token, now) {
+      void now;
+      const saved = await call<OneTimeSchedule | null>("one_time_schedules_mark_handed_off", {
+        id,
+        token,
+      });
+      if (saved) poke();
+      return saved ? kept(saved) : null;
+    },
+    async markUndeliverable(id, token, now) {
+      void now;
+      const saved = await call<OneTimeSchedule | null>("one_time_schedules_mark_undeliverable", {
+        id,
+        token,
+      });
+      if (saved) poke();
+      return saved ? kept(saved) : null;
+    },
+    async markLate(id, now) {
+      void now;
+      const saved = await call<OneTimeSchedule | null>("one_time_schedules_mark_late", { id });
+      if (saved) poke();
+      return saved ? kept(saved) : null;
+    },
     async note(id, now) {
       void now;
       await call("one_time_schedules_note", { id });

@@ -445,6 +445,84 @@ it("text added elsewhere while listening is kept, and the next partial does not 
   expect(box.engine.stops).toEqual([1]);
 });
 
+it("cancel during the permission prompt stops the start token before the prompt ends", async () => {
+  const stops: number[] = [];
+  let onToken: ((token: number) => void) | null = null;
+  let release: (() => void) | null = null;
+  const port: DictationPort = {
+    support: async () => ({ available: true, reason: "" }),
+    start: () =>
+      new Promise((resolve) => {
+        onToken?.(1);
+        release = () => resolve(1);
+      }),
+    stop: async (session) => {
+      stops.push(session);
+    },
+    subscribe: () => () => {},
+    watchStart(fn) {
+      onToken = fn;
+      return () => {
+        onToken = null;
+      };
+    },
+  };
+  const controller = createDictationController({
+    port,
+    getText: () => "",
+    getSelection: () => ({ start: 0, end: 0 }),
+    write: () => {},
+    storage: markedStore(),
+  });
+  controller.ask();
+  expect(controller.view.phase).toBe("authorizing");
+  controller.cancel();
+  expect(stops).toEqual([1]);
+  expect(controller.view.phase).toBe("idle");
+  release?.();
+  await Promise.resolve();
+  await Promise.resolve();
+  expect(stops[0]).toBe(1);
+  expect(controller.view.phase).toBe("idle");
+  expect(controller.view.session).toBeNull();
+  onToken?.(0);
+  onToken?.(Number.NaN);
+  expect(stops.filter((id) => id <= 0)).toEqual([]);
+});
+
+it("a start token that arrives after cancel still stops that start", async () => {
+  const stops: number[] = [];
+  let onToken: ((token: number) => void) | null = null;
+  const port: DictationPort = {
+    support: async () => ({ available: true, reason: "" }),
+    start: () => new Promise(() => {}),
+    stop: async (session) => {
+      stops.push(session);
+    },
+    subscribe: () => () => {},
+    watchStart(fn) {
+      onToken = fn;
+      return () => {
+        onToken = null;
+      };
+    },
+  };
+  const controller = createDictationController({
+    port,
+    getText: () => "",
+    getSelection: () => ({ start: 0, end: 0 }),
+    write: () => {},
+    storage: markedStore(),
+  });
+  controller.ask();
+  controller.cancel();
+  expect(stops).toEqual([]);
+  onToken?.(6);
+  expect(stops).toEqual([6]);
+  onToken?.(-1);
+  expect(stops).toEqual([6]);
+});
+
 it("cancel while the permission prompt is up stops the start that comes back", async () => {
   const box = harness(memory());
   box.engine.holdStart();

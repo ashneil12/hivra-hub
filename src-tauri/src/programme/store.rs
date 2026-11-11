@@ -613,8 +613,9 @@ fn branch_released(conn: &Connection, project: &str, branch: &str) -> Result<boo
 }
 
 /// The branch is this package's worktree branch: it starts with `wp/` and either a
-/// path segment is the package id (`wp/WP-162`, `wp/WP-A`) or a token is the
-/// package's trailing number (`wp/162` for `WP-162`). `wp/162b-update` is not `WP-162`,
+/// path segment is the package id (`wp/WP-162`, `wp/WP-A`) or a token is the id
+/// without its `WP-` prefix (`wp/162` for `WP-162`, `wp/153b-quarantine-rewrite`
+/// for `WP-153b`), compared ignoring case. `wp/162b-update` is not `WP-162`,
 /// and `wp/90` is not `WP-9`.
 pub(crate) fn branch_for_package(branch: &str, wp: &str) -> bool {
     let branch = branch.trim();
@@ -634,26 +635,25 @@ pub(crate) fn branch_for_package(branch: &str, wp: &str) -> bool {
     {
         return true;
     }
-    let Some(number) = trailing_digits(wp) else {
+    let Some(token) = package_token(wp) else {
         return false;
     };
     branch
         .split(|c: char| !c.is_ascii_alphanumeric())
-        .any(|token| token == number)
+        .any(|part| part.eq_ignore_ascii_case(token))
 }
 
-fn trailing_digits(wp: &str) -> Option<&str> {
-    let start = wp
-        .char_indices()
-        .rev()
-        .take_while(|(_, c)| c.is_ascii_digit())
-        .last()
-        .map(|(index, _)| index)?;
-    let number = &wp[start..];
-    if number.is_empty() {
+/// The package id with a leading `WP-` removed. `WP-153b` is `153b`.
+fn package_token(wp: &str) -> Option<&str> {
+    let rest = if wp.len() >= 3 && wp.as_bytes()[..3].eq_ignore_ascii_case(b"wp-") {
+        &wp[3..]
+    } else {
+        wp
+    };
+    if rest.is_empty() {
         None
     } else {
-        Some(number)
+        Some(rest)
     }
 }
 

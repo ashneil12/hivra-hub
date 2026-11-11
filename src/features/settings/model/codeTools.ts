@@ -1,39 +1,21 @@
 // Dropwave (11 Nov): Git, files, changes and worktrees are for developers, so a project's sidebar hides them until
-// Settings > Advanced > Worktrees turns "Show code tools" on. Kept with this window's other preferences.
+// Settings > Advanced > Worktrees turns "Show code tools" on. G6: kept in the app settings (settings.ts), with the
+// app's other preferences, and carried by an export.
 import { useSyncExternalStore } from "react";
 import { IS_HUB_BUNDLE } from "../../hub/model/hubBundle";
+import { loadShowCodeTools, saveShowCodeTools, subscribeShowCodeTools } from "./settings";
 
-const KEY = "monocode:show-code-tools";
-const listeners = new Set<() => void>();
+/** Upstream MonoCode keeps its tools; the hub hides them until asked. */
+const SHOWN_BY_DEFAULT = !IS_HUB_BUNDLE;
 
 export function showCodeTools(): boolean {
-  try {
-    const saved = localStorage.getItem(KEY);
-    if (saved === "1") return true;
-    if (saved === "0") return false;
-  } catch {
-    /* fall through to the default */
-  }
-  // Upstream MonoCode keeps its tools; the hub hides them until asked.
-  return !IS_HUB_BUNDLE;
+  return loadShowCodeTools(SHOWN_BY_DEFAULT);
 }
 
 export function setShowCodeTools(on: boolean): void {
-  try {
-    localStorage.setItem(KEY, on ? "1" : "0");
-  } catch {
-    /* best effort */
-  }
-  listeners.forEach((listener) => listener());
+  saveShowCodeTools(on);
 }
 
 export function useShowCodeTools(): boolean {
-  return useSyncExternalStore(
-    (listener) => {
-      listeners.add(listener);
-      return () => listeners.delete(listener);
-    },
-    showCodeTools,
-    showCodeTools,
-  );
+  return useSyncExternalStore(subscribeShowCodeTools, showCodeTools, showCodeTools);
 }

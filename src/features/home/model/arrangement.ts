@@ -12,7 +12,34 @@ export type HomeArrangement = {
   order: SectionRef[];
   hidden: string[];
   savedAt: number;
+  /**
+   * G5: the order the cards on the page were dragged into, by key (a section's key, or an extra card's such as
+   * "pinned-pages"). A card that was never dragged keeps its own place after these. Absent until a card is dragged.
+   */
+  cards?: string[];
 };
+
+/** At most this many dragged card keys are kept. */
+const CARDS_MAX = 64;
+
+/** The dragged card order as kept: strings only, trimmed, no empty, duplicate or path-like key. */
+function parseCards(raw: unknown): string[] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  const cards: string[] = [];
+  for (const item of raw) {
+    if (typeof item !== "string") continue;
+    const key = item.trim();
+    if (!key || BAD.test(key) || cards.includes(key)) continue;
+    cards.push(key);
+    if (cards.length >= CARDS_MAX) break;
+  }
+  return cards;
+}
+
+/** The arrangement with the cards in this dragged order. */
+export function withCardOrder(arr: HomeArrangement, keys: readonly string[]): HomeArrangement {
+  return { ...arr, cards: parseCards(keys) ?? [] };
+}
 
 const BAD = /[\\/\0]|\.\./;
 
@@ -86,7 +113,8 @@ export function parseArrangement(raw: unknown): HomeArrangement {
     }
   }
   const savedAt = typeof rec.savedAt === "number" && Number.isFinite(rec.savedAt) ? rec.savedAt : 0;
-  return { order, hidden, savedAt };
+  const cards = parseCards(rec.cards);
+  return { order, hidden, savedAt, ...(cards ? { cards } : {}) };
 }
 
 /** Swap with the next visible neighbour. Hidden sections stay where they are. The ends do nothing. */
