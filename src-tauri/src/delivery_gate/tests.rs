@@ -1172,8 +1172,7 @@ fn the_persons_answer_still_forwards_and_another_projects_run_does_not() {
     // Nobody named is not the person. The word "person" still is.
     ask_gate(&store, alpha, "gate/r2");
     park(&store, "r-none", alpha, "r-none", "gate/r2", 40);
-    let unnamed =
-        crate::decisions::answer_and_relay(&store, alpha, "gate/r2", "fix", None, 41);
+    let unnamed = crate::decisions::answer_and_relay(&store, alpha, "gate/r2", "fix", None, 41);
     assert!(
         unnamed.is_err(),
         "an unnamed answer was treated as the person"
