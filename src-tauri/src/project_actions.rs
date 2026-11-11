@@ -598,14 +598,27 @@ pub(crate) fn run_action(
     })?;
     // WP-87: only a long-running action with a declared stack prepares ports and Compose.
     // Check and ship pass an empty env and do not start Docker.
-    // WP-178: while the sandbox is on, an action an agent or Setup starts runs under the profile. Ship and Run dev
-    // slot are Ash's own actions and are not wrapped (Ship runs launchctl).
-    let wrap = if crate::agent_sandbox::skips_agent_sandbox(&action.id, &action.name) {
+    // WP-178: while the sandbox is on, an action an agent starts runs under the profile. Only Ash's own tap
+    // (`trigger == "app"`) skips the wrap for Ship and Run dev slot.
+    let wrap = if crate::agent_sandbox::skip_action_sandbox(&action.id, &action.name, trigger) {
         None
     } else {
         crate::agent_sandbox::action_wrap(Some(&data), std::slice::from_ref(&checkout))?
     };
-    let stack_env = if action.long_running && file.stack.is_some() {
+    // Only a long-running action starts Compose. Refusing every action in a project that declares a stack would
+    // also refuse Check, which never calls Compose.
+    let starts_stack = action.long_running && file.stack.is_some();
+    if crate::agent_sandbox::agent_stack_refused(
+        crate::agent_sandbox::enabled(Some(&data)),
+        trigger,
+        starts_stack,
+    ) {
+        return Err(
+            "This action starts a stack, and the agent sandbox is on. Start it from the app, not from an agent."
+                .into(),
+        );
+    }
+    let stack_env = if starts_stack {
         let started = crate::stacks::maybe_start(
             &crate::stacks::env_from_app(app)?,
             &main,
