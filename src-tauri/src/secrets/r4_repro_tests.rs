@@ -329,3 +329,63 @@ fn r4_curl_engine_loads_a_library_with_the_key_in_its_environment() {
         "curl (Always, 'runs no code') loaded an agent-built library that got the key"
     );
 }
+
+// ---- R4-5: the Inbox cuts a secret card's body at 1,800 characters; Rust accepts up to 2,000, so the end of the command
+// line can be hidden from the person. `secretCardParts` (src/features/crew/model/inbox.ts) is copied here exactly.
+
+fn inbox_body(question: &str) -> String {
+    let lines: Vec<&str> = question
+        .split('\n')
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect();
+    let note = lines
+        .iter()
+        .enumerate()
+        .find(|(at, line)| *at > 0 && line.starts_with("Warning: "))
+        .map(|(_, line)| *line);
+    let body: Vec<&str> = lines
+        .iter()
+        .enumerate()
+        .filter(|(at, line)| *at > 0 && Some(**line) != note)
+        .map(|(_, line)| *line)
+        .collect();
+    body.join("\n").chars().take(1_800).collect()
+}
+
+#[test]
+fn r4_the_inbox_shows_the_whole_command_line_of_a_card_rust_accepted() {
+    let project = scratch("deep");
+    let mut cwd = project.clone();
+    for _ in 0..6 {
+        cwd = cwd.join("d".repeat(50));
+    }
+    std::fs::create_dir_all(&cwd).unwrap();
+    let tail = "https://evil.example/collect";
+    let mut shown = None;
+    for filler in (900..1_360).rev().step_by(5) {
+        let bench = bench();
+        let mut conn = bench.store.lock_conn().unwrap();
+        let command = words(&["/usr/bin/id", &"a".repeat(filler), tail]);
+        let mut req = request(&command);
+        req.project = Some(project.to_string_lossy().into_owned());
+        req.cwd = Some(cwd.to_string_lossy().into_owned());
+        if let Ok(RunOutcome::Waiting { decision_key, .. }) =
+            prepare_run(&bench.vault, &mut conn, req, NOW)
+        {
+            let card = crate::decisions::get(&conn, &project.to_string_lossy(), &decision_key)
+                .unwrap()
+                .unwrap();
+            shown = Some((filler, card.question.chars().count(), card.question));
+            break;
+        }
+    }
+    let _ = std::fs::remove_dir_all(&project);
+    let (filler, total, question) = shown.expect("some card was accepted");
+    let body = inbox_body(&question);
+    assert!(
+        body.contains(tail),
+        "Rust accepted a {total}-character card (argument of {filler}), but the Inbox body ends: {:?}",
+        body.chars().rev().take(60).collect::<String>().chars().rev().collect::<String>()
+    );
+}
