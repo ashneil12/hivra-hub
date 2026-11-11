@@ -2835,3 +2835,25 @@ fn the_base_hold_runs_after_the_store_lock_is_released() {
         "a GitHub read ran while the store lock was held: {held:?}"
     );
 }
+
+/// r2 HIGH: the person's own Inbox merge of a pull request on a repo with no CI, with main exactly where the branch
+/// left it, is refused for good ("checks don't say which main they ran on"). Before WP-202 it merged, and the spec
+/// keeps "no change to who may merge" and does not block pull requests that miss the moved files.
+#[test]
+fn r2_a_person_merges_a_pull_request_with_no_checks_when_main_has_not_moved() {
+    let s = store();
+    let base = "ba5e".repeat(10);
+    let no_checks = pr(PrState::Open, "a1b2c3d", Vec::new());
+    let gh = FakeGithub::new(vec![no_checks.clone(), no_checks])
+        .with_api("check-runs", r#"{"total_count":0,"check_runs":[]}"#)
+        .with_api("pulls/7/files", PR_FILES)
+        .with_api(
+            &format!("compare/{base}...a1b2c3d"),
+            &format!(
+                r#"{{"status":"ahead","ahead_by":1,"behind_by":0,"merge_base_commit":{{"sha":"{base}"}},"files":[{{"filename":"src/lib.rs"}}]}}"#
+            ),
+        )
+        .with_api("pulls/7", &format!(r#"{{"base":{{"sha":"{base}"}}}}"#));
+    let out = merge::merge(&s, &gh, person_merge("acme/web"), 10).unwrap();
+    assert!(matches!(out, MergeOutcome::Merged { .. }), "{out:?}");
+}

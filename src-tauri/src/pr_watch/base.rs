@@ -836,4 +836,41 @@ mod tests {
         assert!(compare(&get, "acme/web", "../../user", B2).is_err());
         assert!(checks_base(&get, "acme/web", "../../user").is_err());
     }
+
+    /// r2 HIGH: GitHub leaves a check run's `pull_requests` empty for a fork's pull request, and a repo with no CI or a
+    /// status-only CI has no check runs at all. The hold then says "waits for a run on the current main", but no run
+    /// will ever carry the base, so it holds for good, with main exactly where the branch left it (its merge base, and
+    /// GitHub's recorded `pulls/7` base, are main's tip). WP-202 is out of scope for "blocking pull requests that do not
+    /// touch the moved files", and nothing moved here.
+    #[test]
+    fn r2_an_unmoved_main_holds_nothing_when_no_check_run_carries_a_pull_request_base() {
+        let unmoved = |checks: &str| {
+            canned(vec![
+                (checks_key(), checks.to_string()),
+                ("pulls/7/files".into(), files_json(&["src/lib.rs"])),
+                (
+                    format!("compare/{B2}...{H1}"),
+                    serde_json::json!({ "status": "ahead", "ahead_by": 1, "behind_by": 0,
+                        "merge_base_commit": { "sha": B2 }, "files": [{ "filename": "src/lib.rs" }] })
+                    .to_string(),
+                ),
+                (behind_key(), compare_json(&[], 0)),
+                ("pulls/7".into(), serde_json::json!({ "base": { "sha": B2 } }).to_string()),
+            ])
+        };
+        let no_ci = unmoved(r#"{"total_count":0,"check_runs":[]}"#);
+        assert_eq!(
+            hold(&no_ci, "acme/web", 7, H1, &open(H1, B2, None)),
+            None,
+            "no CI and main unmoved: nothing to hold"
+        );
+        let fork = unmoved(
+            r#"{"total_count":1,"check_runs":[{"name":"build","status":"completed","conclusion":"success","pull_requests":[]}]}"#,
+        );
+        assert_eq!(
+            hold(&fork, "acme/web", 7, H1, &open(H1, B2, None)),
+            None,
+            "a fork's green run on the current main: nothing to hold"
+        );
+    }
 }
