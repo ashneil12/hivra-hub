@@ -118,6 +118,18 @@ pub fn needles(value: &str) -> Vec<String> {
             list.push(URL_SAFE_NO_PAD.encode(tail));
         }
     }
+    // Fix round 4 (N5): whatever comes before the value fixes where its 3-byte groups start, and whatever comes after it
+    // (`:`, `:x`, `:x-oauth-basic`, a line break) only changes the last partial group. So at each alignment the complete
+    // groups of the value always appear in the encoded text, and they are needles of their own, whatever follows.
+    for skip in 0..3 {
+        if bytes.len() > skip {
+            let whole = (bytes.len() - skip) / 3 * 3;
+            if whole > 0 {
+                list.push(STANDARD.encode(&bytes[skip..skip + whole]));
+                list.push(URL_SAFE.encode(&bytes[skip..skip + whole]));
+            }
+        }
+    }
     if value.contains('\n') {
         for line in value.split('\n') {
             let line = line.trim_end_matches('\r');
@@ -375,5 +387,52 @@ mod tests {
         assert!(list.iter().all(|n| n.chars().count() >= MIN_NEEDLE));
         assert!(list.iter().any(|n| n == "123456789"));
         assert!(!list.iter().any(|n| n == "xy"));
+    }
+
+    // ---- fix round 4, N5: a Basic header (`KEY:`, `user:KEY:x-oauth-basic`) must not leave the value readable ----------
+
+    /// Whether `token` decodes to text that holds any eight-character window of `key`. A token the scrub masked does not
+    /// decode, and that is the outcome the test wants.
+    fn decodes_to_part_of(token: &str, key: &str) -> bool {
+        let Ok(bytes) = STANDARD.decode(token) else {
+            return false;
+        };
+        let text = String::from_utf8_lossy(&bytes).into_owned();
+        let chars: Vec<char> = key.chars().collect();
+        chars
+            .windows(MIN_NEEDLE)
+            .any(|window| text.contains(&window.iter().collect::<String>()))
+    }
+
+    #[test]
+    fn a_basic_auth_header_holding_the_value_is_masked_whatever_follows_it() {
+        // 24, 25 and 26 characters, and a 40-character GitHub token: each one's groups fall at a different place.
+        let keys = [
+            "sk_live_51NxAbCdEfGhIjKl",
+            "sk_live_51NxAbCdEfGhIjKlM",
+            "sk_live_51NxAbCdEfGhIjKlMn",
+            "ghp_0123456789abcdefghijklmnopqrstuvwxyz",
+        ];
+        let prefixes = ["", "u", "user", "user:"];
+        let suffixes = [":", ":x", ":x-oauth-basic", "\n", ""];
+        for key in keys {
+            let list = needles(key);
+            for prefix in prefixes {
+                for suffix in suffixes {
+                    let encoded = STANDARD.encode(format!("{prefix}{key}{suffix}"));
+                    let line = format!("> Authorization: Basic {encoded}\n");
+                    let out = mask(&line, &list);
+                    let token = out
+                        .trim()
+                        .trim_start_matches("> Authorization: Basic ")
+                        .trim();
+                    assert!(
+                        !decodes_to_part_of(token, key),
+                        "key {key:?} with prefix {prefix:?} and suffix {suffix:?} is readable in {out:?}"
+                    );
+                    assert!(!out.contains(key), "{out}");
+                }
+            }
+        }
     }
 }

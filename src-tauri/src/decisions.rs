@@ -492,6 +492,12 @@ pub fn answered_by_person(answered_by: Option<&str>) -> bool {
     is_person(answered_by)
 }
 
+/// Whether a secret card's recorded answer is the person's own: the card's answer (the Inbox records `person`), never the
+/// Needs sheet's `user`, which `is_person` accepts for other decisions (fix round 4, LOW).
+pub fn secret_answered_by_person(answered_by: Option<&str>) -> bool {
+    secret_answer_by_person(answered_by)
+}
+
 /// WP-92: a secret's approval card (`secret/<name>/<program>`) is made by the app alone, with the app's own words about
 /// the exact command. An agent's `ask_person` reaches the store through `decisions_ask`, and it may not pick a key that
 /// would put its own words on a card the person approves a secret run on.
@@ -594,6 +600,25 @@ pub fn answer(
     by: Option<String>,
     now: i64,
 ) -> Result<AnswerOutcome, String> {
+    answer_seen(conn, project, key, answer, by, None, now)
+}
+
+/// The words a refused answer says when the card changed after the person read it.
+pub const CARD_CHANGED: &str =
+    "That card changed after you read it, so the answer was not recorded. Read it again and answer.";
+
+/// [`answer`] for the card the person read: `seen_version` is the card's version on their screen. A secret card whose
+/// version has moved on (another command, folder or variable was put on it) is not answered, so an answer is only ever
+/// for the words the person read (fix round 4, N6). Checked inside the transaction that writes the answer.
+pub fn answer_seen(
+    conn: &mut Connection,
+    project: &str,
+    key: &str,
+    answer: &str,
+    by: Option<String>,
+    seen_version: Option<i64>,
+    now: i64,
+) -> Result<AnswerOutcome, String> {
     if key.trim().starts_with("secret/") && !secret_answer_by_person(by.as_deref()) {
         return Err("Only the person can approve a secret run. Ask them on their card.".into());
     }
@@ -609,10 +634,16 @@ pub fn answer(
             released_tasks: Vec::new(),
         });
     };
+    if let Some(seen) = seen_version {
+        if decision.decision_key.starts_with("secret/") && seen != decision.version {
+            return Err(CARD_CHANGED.into());
+        }
+    }
     if decision.state != OPEN {
         // WP-92: a secret row an agent's answer had settled is still the person's to settle. Their own answer replaces
-        // it; anything else leaves it as it is.
-        let person_settles_an_agents_answer = is_person(by.as_deref())
+        // it; anything else leaves it as it is. Fix round 4 (LOW): "the person" here is the card's own answer, not the
+        // Needs sheet's (`user`).
+        let person_settles_an_agents_answer = secret_answer_by_person(by.as_deref())
             && decision.decision_key.starts_with("secret/")
             && decision.state == ANSWERED
             && !answered_by_person(decision.answered_by.as_deref());
@@ -661,7 +692,9 @@ pub fn answer(
                 owner_session: decision.asked_by.clone(),
                 child_session: decision.asked_by.clone(),
                 delegation_id: None,
-                request_id: release_request(&decision.decision_key, "asker"),
+                // Fix round 4: one request id per answer. A card for the same key (the same program, another command) is
+                // answered again later, and the id from the first answer would refuse the second with another message.
+                request_id: release_request(&format!("{}-{now}", decision.decision_key), "asker"),
                 text: owner_text(&decision, released_tasks.len()),
                 mode: Some("queue".into()),
                 source: Some("decision".into()),
@@ -723,13 +756,22 @@ pub fn decisions_answer(
     key: String,
     answer: String,
     by: Option<String>,
+    seen_version: Option<i64>,
 ) -> Result<AnswerOutcome, String> {
-    let outcome = self::answer(
+    // Fix round 4 (N6): a secret card's answer names the version of the card the person read. Without it, nothing is
+    // recorded: the Inbox always sends it.
+    if key.trim().starts_with("secret/") && seen_version.is_none() {
+        return Err(
+            "Read the card again and answer it, so the answer is for what you read.".into(),
+        );
+    }
+    let outcome = answer_seen(
         &mut *store.lock_conn()?,
         project.as_deref().unwrap_or(""),
         &key,
         &answer,
         by,
+        seen_version,
         now_millis(),
     )?;
     // WP-81: an answer on a check's question goes back to the check. Nothing is answered for the person.

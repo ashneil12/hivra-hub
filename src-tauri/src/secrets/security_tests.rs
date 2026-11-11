@@ -1150,3 +1150,11 @@ fn a_worker_card_says_its_transcript_keeps_what_it_prints() {
     let text = worker::worker_card_question("Tally", "Stripe API key", "your global keys");
     assert!(text.contains("transcript"), "{text}");
 }
+
+#[test]
+fn a_worker_card_says_its_ai_can_read_the_key_and_send_it_anywhere() {
+    // Round 4 (N8): the card names what the worker's AI can do with the key, before the person answers.
+    let text = worker::worker_card_question("Tally", "Stripe API key", "your global keys");
+    assert!(text.contains("can read the key"), "{text}");
+    assert!(text.contains("send it anywhere"), "{text}");
+}

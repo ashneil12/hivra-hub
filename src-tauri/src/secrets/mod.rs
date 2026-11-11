@@ -244,6 +244,48 @@ pub fn valid_env_name(name: &str) -> bool {
             .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || *b == b'_')
 }
 
+/// Why a name cannot carry a key, or `None` when it can (fix round 4, N1). A name the program reads for its own behaviour (a
+/// loader, a proxy, a key log, a home or config folder, a start-up file, a runtime's options) changes what runs with the
+/// key, so only a credential-shaped name is accepted: one that ends like a credential (`_KEY`, `_TOKEN`, `_SECRET`,
+/// `_PASSWORD`, `_PAT`, `_PASSPHRASE`, `_CREDENTIALS`) and is none of the behaviour names.
+pub fn env_name_refusal(name: &str) -> Option<String> {
+    if !valid_env_name(name) {
+        return Some(
+            "The environment variable's name is capital letters, digits and underscores, like STRIPE_API_KEY.".into(),
+        );
+    }
+    const CREDENTIAL_ENDINGS: [&str; 7] = [
+        "_KEY",
+        "_TOKEN",
+        "_SECRET",
+        "_PASSWORD",
+        "_PAT",
+        "_PASSPHRASE",
+        "_CREDENTIALS",
+    ];
+    const BEHAVIOUR_PREFIXES: [&str; 8] = [
+        "DYLD_", "LD_", "NODE_", "PYTHON", "GIT_", "XDG_", "CURL_", "BASH_",
+    ];
+    const BEHAVIOUR_PARTS: [&str; 7] = [
+        "PRELOAD", "PROXY", "OPTIONS", "_HOME", "_DIR", "_PATH", "_FILE",
+    ];
+    let credential_shaped = CREDENTIAL_ENDINGS
+        .iter()
+        .any(|ending| name.ends_with(ending));
+    let changes_behaviour = BEHAVIOUR_PREFIXES
+        .iter()
+        .any(|prefix| name.starts_with(prefix))
+        || BEHAVIOUR_PARTS.iter().any(|part| name.contains(part))
+        || name == "SSLKEYLOGFILE";
+    if credential_shaped && !changes_behaviour {
+        return None;
+    }
+    Some(
+        "That name changes how the command runs, so it can't carry a key. Name the key the way a credential is named, like STRIPE_API_KEY."
+            .into(),
+    )
+}
+
 // ---- the tables ----------------------------------------------------------------------------------------------------
 
 pub(crate) fn ensure_tables(conn: &Connection) -> rusqlite::Result<()> {
@@ -269,6 +311,43 @@ pub(crate) fn ensure_tables(conn: &Connection) -> rusqlite::Result<()> {
             "ALTER TABLE secret_grants ADD COLUMN fingerprint TEXT NOT NULL DEFAULT '';
              DELETE FROM secret_grants;",
         )?;
+    }
+    // Fix round 4 (LOW): a grant is one row per exact command. A table keyed by the program alone let a Once answer for one
+    // command overwrite an Always for another, so it is rebuilt with the command in its key and its rows kept.
+    let keyed_by_program: bool = conn
+        .query_row(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'secret_grants'",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .map(|sql| sql.contains("PRIMARY KEY (scope, name, subject_kind, subject_id, executable)"))
+        .unwrap_or(false);
+    if keyed_by_program {
+        let rebuilt = conn.execute_batch(
+            "BEGIN;
+             ALTER TABLE secret_grants RENAME TO secret_grants_before_round4;
+             CREATE TABLE secret_grants (
+               scope TEXT NOT NULL,
+               name TEXT NOT NULL,
+               subject_kind TEXT NOT NULL,
+               subject_id TEXT NOT NULL,
+               executable TEXT NOT NULL,
+               mode TEXT NOT NULL,
+               created_at INTEGER NOT NULL,
+               identity TEXT NOT NULL DEFAULT '',
+               fingerprint TEXT NOT NULL DEFAULT '',
+               PRIMARY KEY (scope, name, subject_kind, subject_id, executable, fingerprint)
+             );
+             INSERT INTO secret_grants (scope, name, subject_kind, subject_id, executable, mode, created_at, identity, fingerprint)
+               SELECT scope, name, subject_kind, subject_id, executable, mode, created_at, identity, fingerprint
+               FROM secret_grants_before_round4;
+             DROP TABLE secret_grants_before_round4;
+             COMMIT;",
+        );
+        if let Err(why) = rebuilt {
+            let _ = conn.execute_batch("ROLLBACK;");
+            return Err(why);
+        }
     }
     Ok(())
 }
@@ -296,7 +375,7 @@ fn ensure_tables_batch(conn: &Connection) -> rusqlite::Result<()> {
            created_at INTEGER NOT NULL,
            identity TEXT NOT NULL DEFAULT '',
            fingerprint TEXT NOT NULL DEFAULT '',
-           PRIMARY KEY (scope, name, subject_kind, subject_id, executable)
+           PRIMARY KEY (scope, name, subject_kind, subject_id, executable, fingerprint)
          );
          CREATE TABLE IF NOT EXISTS secret_requests (
            id TEXT PRIMARY KEY,
@@ -1221,12 +1300,20 @@ pub fn put_grant(
     if mode == "always" && runs_any_for(executable) && !always_for_any_code(conn) {
         return Err(ALWAYS_REFUSED.into());
     }
+    // Fix round 4 (N4, N7): Always only for a program on the short list, and never from a folder the account writes.
+    // A worker's entry (`worker:<cli>`) is not a program path, and the worker card offers no Always, so the program rule
+    // does not apply to it.
+    if mode == "always"
+        && !executable.starts_with("worker:")
+        && !always_allowed_for(conn, executable)
+    {
+        return Err(ALWAYS_NOT_OFFERED.into());
+    }
     conn.execute(
         "INSERT INTO secret_grants (scope, name, subject_kind, subject_id, executable, mode, created_at, identity, fingerprint)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
-         ON CONFLICT (scope, name, subject_kind, subject_id, executable)
-         DO UPDATE SET mode = excluded.mode, created_at = excluded.created_at, identity = excluded.identity,
-           fingerprint = excluded.fingerprint",
+         ON CONFLICT (scope, name, subject_kind, subject_id, executable, fingerprint)
+         DO UPDATE SET mode = excluded.mode, created_at = excluded.created_at, identity = excluded.identity",
         params![scope, name, subject_kind, subject_id, executable, mode, now, identity, fingerprint],
     )
     .map_err(|e| e.to_string())?;
@@ -1612,10 +1699,31 @@ pub fn approval_options(has_project: bool, always_allowed: bool) -> Vec<String> 
     options
 }
 
-/// Whether the card may offer "Always" for this program: any program, unless it can run any code and the person has not
-/// turned the choice on.
+/// Programs that run no code of their own (fix round 4, N4): "Always" is offered for these, and for a program that runs
+/// code only when the person has chosen it for this install. Matched by basename, `.exe` ignored; a program not on this
+/// list is asked every time unless it runs code and the person chose "Always" for those.
+pub const ALWAYS_OFFERED_FOR: &[&str] = &[
+    "true", "false", "echo", "printf", "cat", "ls", "head", "tail", "wc", "grep", "diff", "cmp",
+    "stat", "date", "sleep", "curl", "wget", "whoami", "uname", "pwd",
+];
+
+/// What a refused "Always" says for a program that is not on the short list.
+pub const ALWAYS_NOT_OFFERED: &str =
+    "Always is only offered for the programs the app knows run no code of their own. This one asks every time.";
+
+/// Whether the card may offer "Always" for this program (its path). Three things must hold: no folder on the way to the
+/// program is one the account can write (the agent could replace a file there), and then either the program is on the
+/// short list of programs that run no code, or it runs code (a script with a `#!` line, or a program that runs code) and
+/// the person has turned that choice on.
 pub fn always_allowed_for(conn: &Connection, executable: &str) -> bool {
-    !runs_any_for(executable) || always_for_any_code(conn)
+    if run::has_user_writable_component(std::path::Path::new(executable)) {
+        return false;
+    }
+    if runs_any_for(executable) {
+        return always_for_any_code(conn);
+    }
+    let base = program_base(executable).to_ascii_lowercase();
+    ALWAYS_OFFERED_FOR.contains(&base.as_str())
 }
 
 // ---- programs that can run any code, and the person's choice about them ------------------------------------------------
@@ -1744,6 +1852,75 @@ pub const RUN_ANYTHING: &[&str] = &[
     "fish",
     "csh",
     "tcsh",
+    // Fix round 4 (N4): the programs the probe found judged as plain programs. Each one runs code it is handed or a file
+    // it names. Matched in lower case, so the R interpreter is `r`.
+    "tclsh",
+    "expect",
+    "wish",
+    "dc",
+    "zip",
+    "sandbox-exec",
+    "taskpolicy",
+    "ssh-agent",
+    "screen",
+    "tmux",
+    "ex",
+    "view",
+    "erb",
+    "irb",
+    "pydoc3",
+    "r",
+    "gmake",
+    "gawk",
+    "nawk",
+    "just",
+    "task",
+    "tofu",
+    "pulumi",
+    "helm",
+    "hyperfine",
+    "watch",
+    "watchexec",
+    "parallel",
+    "mise",
+    "direnv",
+    "julia",
+    "elixir",
+    "racket",
+    "sbcl",
+    "mysql",
+    "elvish",
+    "yash",
+    "sftp",
+    "launchctl",
+    "automator",
+    "gdb",
+    "nix",
+    "nix-shell",
+    "volta",
+    "corepack",
+    "pdm",
+    "hatch",
+    "tox",
+    "nox",
+    "runghc",
+    "ocaml",
+    "scala",
+    "kotlin",
+    "groovy",
+    "erl",
+    "escript",
+    "guile",
+    "clojure",
+    "lein",
+    "sbt",
+    "flock",
+    "chroot",
+    "su",
+    "watchman",
+    "turbo",
+    "nx",
+    "zx",
 ];
 
 /// The line the card carries for such a program while "Always" is not allowed.
@@ -1762,24 +1939,19 @@ pub fn runs_any_for(executable: &str) -> bool {
     if runs_any_code(executable) {
         return true;
     }
-    shebang_interpreter(std::path::Path::new(executable)).is_some_and(|word| runs_any_code(&word))
+    // Fix round 4 (N4): every script with a `#!` line runs code. Reading its interpreter line was not enough: `env` takes
+    // options and assignments (`-S`, `-u X`, `A=1`), and a `#!` may name another script. A script is run-anything.
+    has_shebang(std::path::Path::new(executable))
 }
 
-/// The interpreter a script names on its first line: `#!/usr/bin/env node` gives `node`, `#!/bin/sh` gives `sh`.
-fn shebang_interpreter(path: &std::path::Path) -> Option<String> {
+/// Whether the file starts with `#!`, read from its first two bytes. A file that cannot be read is not a script.
+fn has_shebang(path: &std::path::Path) -> bool {
     use std::io::Read;
-    let mut head = [0u8; 256];
-    let read = std::fs::File::open(path).ok()?.read(&mut head).ok()?;
-    let text = std::str::from_utf8(&head[..read]).ok()?;
-    let line = text.strip_prefix("#!")?.lines().next()?.trim();
-    let mut words = line.split_whitespace();
-    let first = program_base(words.next()?);
-    if first.eq_ignore_ascii_case("env") {
-        return words
-            .find(|word| !word.starts_with('-'))
-            .map(|word| program_base(word).to_string());
-    }
-    Some(first.to_string())
+    let mut head = [0u8; 2];
+    std::fs::File::open(path)
+        .and_then(|mut file| file.read_exact(&mut head))
+        .is_ok()
+        && &head == b"#!"
 }
 
 /// The program a path names: the part after the last `/` or `\`.
@@ -1791,7 +1963,15 @@ pub fn program_base(executable: &str) -> &str {
 /// Windows `.cmd` and `.bat` wrappers) and a trailing version (`python3.12`) taken off.
 pub fn runs_any_code(executable: &str) -> bool {
     let mut name = program_base(executable.trim()).to_ascii_lowercase();
-    for ext in [".exe", ".cmd", ".bat"] {
+    // Fix round 4 (LOW): a Windows batch file or PowerShell script is run by its interpreter, so it runs code whatever it is
+    // called. Judged here, not by a list.
+    if [".cmd", ".bat", ".ps1"]
+        .iter()
+        .any(|ext| name.ends_with(ext))
+    {
+        return true;
+    }
+    for ext in [".exe"] {
         if let Some(stripped) = name.strip_suffix(ext) {
             name = stripped.to_string();
             break;
@@ -1850,7 +2030,8 @@ pub fn set_always_for_any_code(conn: &Connection, on: bool) -> Result<usize, Str
         .map_err(|e| e.to_string())?;
     let mut removed = 0;
     for (scope, name, kind, subject, executable) in always {
-        if !runs_any_code(&executable) {
+        // Fix round 4 (LOW): judged as the grant writer judges it, so a script's Always is taken back too.
+        if !runs_any_for(&executable) {
             continue;
         }
         removed += conn
@@ -1963,6 +2144,7 @@ pub fn display_command(command: &[String]) -> String {
 /// The words on a secret run's card: who asks to run what, the exact command, and (for a program that can run any code)
 /// why it is asked every time or what "Always" would mean. The first line is the title the Inbox shows; the others sit
 /// under it. Never the value.
+#[allow(clippy::too_many_arguments)]
 pub fn run_question(
     mono: &str,
     label: &str,
@@ -1970,6 +2152,8 @@ pub fn run_question(
     command: &[String],
     always_allowed: bool,
     runs_any: bool,
+    env: &str,
+    folder: Option<&str>,
 ) -> Result<String, String> {
     let executable = command.first().map(String::as_str).unwrap_or("");
     // Every name that goes on a line of the card is written out first: a program, a label or a Mono's name with a line
@@ -1981,6 +2165,13 @@ pub fn run_question(
         escape_controls(label),
         escape_controls(whose),
     );
+    // Fix round 4 (N1): the environment name and the folder are on the card, so the person sees what the key is put under
+    // and where the command runs.
+    let env = escape_controls(env);
+    let folder = match folder {
+        Some(folder) => escape_controls(folder),
+        None => "none (the command gets an empty home folder of its own)".to_string(),
+    };
     let line = display_command(command);
     if line.chars().count() > COMMAND_LINE_MAX {
         return Err(
@@ -1989,7 +2180,7 @@ pub fn run_question(
         );
     }
     let mut text = format!(
-        "Let {mono} run `{program}` with {label}?\nThe program is {program}.\nKey: {label}, saved for {whose}\nCommand: {line}"
+        "Let {mono} run `{program}` with {label}?\nThe program is {program}.\nFolder: {folder}\nEnvironment variable: {env}\nKey: {label}, saved for {whose}\nCommand: {line}\nWhile it runs, any program running as you can read this command's environment, so the key is visible to it."
     );
     if always_allowed {
         // Fix round 3 (H3): "Always" is for this exact command, not the program at large.
@@ -2072,7 +2263,8 @@ pub fn ensure_grant(
         .ok_or_else(|| "Which Mono is asking?".to_string())?;
     let answered_by_person_for_this_mono = decision.as_ref().is_some_and(|decision| {
         decision.state == crate::decisions::ANSWERED
-            && crate::decisions::answered_by_person(decision.answered_by.as_deref())
+            // Fix round 4 (LOW): a secret card's answer is the person's own (the Inbox or the card), never the Needs sheet's.
+            && crate::decisions::secret_answered_by_person(decision.answered_by.as_deref())
             && match decision.asked_by_mono.as_deref() {
                 Some(mono) => mono == asked_for,
                 None => true,
@@ -2153,7 +2345,7 @@ pub fn ensure_grant(
                 Ok(true) => {}
                 Ok(false) => return Ok(ApprovalOutcome::Waiting { decision_key: key }),
                 Err(why) => {
-                    if why == ALWAYS_REFUSED {
+                    if why == ALWAYS_REFUSED || why == ALWAYS_NOT_OFFERED {
                         // An "Always" the person's setting does not allow grants nothing and is not kept: the next run
                         // is asked again, on the card that offers what is allowed.
                         let _ = conn.execute(
@@ -2201,6 +2393,13 @@ pub fn ensure_grant(
                 },
                 now,
             )?;
+            // Fix round 4 (LOW): a card another Mono asked is not this run's to rewrite or rebind. Its words and its binding
+            // stay as they are, so that Mono's answer still covers its own command.
+            if !outcome.created
+                && outcome.decision.asked_by_mono.as_deref() != input.mono.as_deref()
+            {
+                return Ok(ApprovalOutcome::Waiting { decision_key: key });
+            }
             if !outcome.created {
                 // Still waiting on the person: the card shows what is being asked now, not an older command line.
                 crate::decisions::refresh_open(
@@ -2232,6 +2431,15 @@ fn binding_of(conn: &Connection, project: &str, key: &str) -> Result<Option<Stri
 }
 
 fn bind_card(conn: &Connection, project: &str, key: &str, fingerprint: &str) -> Result<(), String> {
+    // Fix round 4 (N1): a card bound to another command is a new version of that card. An answer given on the words the
+    // person read carries that version, so it cannot be spent on a command they did not read.
+    if binding_of(conn, project, key)?.as_deref() != Some(fingerprint) {
+        conn.execute(
+            "UPDATE decisions SET version = version + 1 WHERE project = ?1 AND decision_key = ?2",
+            params![project, key],
+        )
+        .map_err(|e| e.to_string())?;
+    }
     conn.execute(
         "INSERT INTO secret_card_bindings (project, decision_key, fingerprint) VALUES (?1, ?2, ?3)
          ON CONFLICT (project, decision_key) DO UPDATE SET fingerprint = excluded.fingerprint",
@@ -2288,11 +2496,8 @@ pub fn prepare_run(
                 .into(),
         );
     }
-    if !valid_env_name(&request.env) {
-        return Err(
-            "The environment variable's name is capital letters, digits and underscores, like STRIPE_API_KEY."
-                .into(),
-        );
+    if let Some(why) = env_name_refusal(&request.env) {
+        return Err(why);
     }
     if run::is_allowlisted_env(&request.env) {
         return Err(format!(
@@ -2336,7 +2541,9 @@ pub fn prepare_run(
     // 3. a live grant for this Mono (then its project), or ask the person first, on a card that shows the whole command.
     // Judged by the typed word as well as the canonical path: a name that runs code is that program, wherever it resolves.
     let runs_any = runs_any_code(&executable) || runs_any_for(&program);
-    let always_allowed = !runs_any || always_for_any_code(conn);
+    // Fix round 4 (N4, N7): Always comes from the short list, or from the person's choice for a program that runs code, and
+    // never for a program in a folder the account can write.
+    let always_allowed = always_allowed_for(conn, &program);
     // Which copy this run uses, in plain words: where the key lives, and that a project's copy beats the global one.
     let whose = if has_global_twin(conn, &row) {
         format!("{}. {PROJECT_COPY_USED}", scope_words(&row.scope))
@@ -2350,6 +2557,8 @@ pub fn prepare_run(
         &command,
         always_allowed,
         runs_any,
+        &request.env,
+        cwd.as_deref(),
     )?;
     // A program in a folder the person writes to can be replaced by anything running as them: the card says so.
     let question = match crate::secrets::run::program_folder_warning(std::path::Path::new(&program))
@@ -2367,7 +2576,8 @@ pub fn prepare_run(
             name: row.name.clone(),
             executable: program.clone(),
             identity: identity.clone(),
-            key_source: format!("{program}\u{0}{identity}"),
+            // Fix round 4 (N1): the environment name is part of the card's key, so another name is another approval.
+            key_source: format!("{program}\u{0}{identity}\u{0}{}", request.env),
             fingerprint,
             question,
             options: approval_options(project.is_some(), always_allowed),

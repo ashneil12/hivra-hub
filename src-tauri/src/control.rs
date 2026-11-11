@@ -233,7 +233,8 @@ fn serve(mut stream: TcpStream, app: &AppHandle, inner: &Arc<Mutex<Inner>>) {
         if raw.len() > 262_144 {
             return Err("Request exceeds 256 KiB".into());
         }
-        let request: Request = serde_json::from_str(&raw).map_err(|_| "Invalid control request")?;
+        let mut request: Request =
+            serde_json::from_str(&raw).map_err(|_| "Invalid control request")?;
         if !request.input.is_object()
             || request.request_id.is_empty()
             || request.request_id.len() > 128
@@ -261,6 +262,14 @@ fn serve(mut stream: TcpStream, app: &AppHandle, inner: &Arc<Mutex<Inner>>) {
             );
             grant
         };
+        // Fix round 4 (N8): a worker's memory, note, room or doc write is scrubbed of the values armed for it first.
+        if request.namespace == "app" {
+            crate::secrets::worker::scrub_app_input(
+                &grant.session,
+                &request.action,
+                &mut request.input,
+            );
+        }
         let reply_wait = crate::control_cli::reply_seconds(&request.action, &request.input);
         let event = Event {
             id: id.clone(),

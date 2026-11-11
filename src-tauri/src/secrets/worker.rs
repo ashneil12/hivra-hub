@@ -89,9 +89,45 @@ pub enum WorkerOutcome {
 /// The worker card's words. The whole worker session holds the value, and the CLI keeps a transcript of what it prints on
 /// disk, so a value it prints stays there (fix round 3, M3).
 pub fn worker_card_question(mono: &str, label: &str, whose: &str) -> String {
+    // Fix round 4 (N8): the worker's AI reads its own environment, so it can read the key and send it anywhere it can
+    // reach (a web address, a memory, a room). The card says so, before the person answers.
     format!(
-        "Let {mono} start a worker with {label} ({whose}) in its environment? The whole worker session will hold the value, including anything it starts, and the CLI keeps a transcript of what it prints on disk, so a value it prints stays there. Running one command with it is narrower: ask for that instead."
+        "Let {mono} start a worker with {label} ({whose}) in its environment? The worker's AI can read the key and send it anywhere it can reach: a web address, a memory, a note or a room. The whole worker session will hold the value, including anything it starts, and the CLI keeps a transcript of what it prints on disk, so a value it prints stays there. Running one command with it is narrower: ask for that instead."
     )
+}
+
+/// The app actions that keep what they are given (a memory, a note, a room post, a doc). A worker's copy of one is scrubbed
+/// of its armed values before the app stores it (fix round 4, N8). Reads are left as they are.
+fn keeps_what_it_is_given(action: &str) -> bool {
+    matches!(action, "memory.add" | "notes.write" | "rooms.post") || action.starts_with("docs.")
+}
+
+/// Scrub a worker's app action before it reaches the app: every string in its input is masked with the session's needles,
+/// for the actions that keep what they are given. A session without armed values is left unchanged.
+pub fn scrub_app_input(session_id: &str, action: &str, input: &mut serde_json::Value) {
+    if !keeps_what_it_is_given(action) {
+        return;
+    }
+    let Ok(map) = session_values().lock() else {
+        return;
+    };
+    let Some(values) = map.get(session_id) else {
+        return;
+    };
+    mask_strings(input, &values.needles);
+}
+
+fn mask_strings(value: &mut serde_json::Value, needles: &[String]) {
+    match value {
+        serde_json::Value::String(text) => *text = scrub::mask(text, needles),
+        serde_json::Value::Array(items) => items
+            .iter_mut()
+            .for_each(|item| mask_strings(item, needles)),
+        serde_json::Value::Object(map) => map
+            .values_mut()
+            .for_each(|item| mask_strings(item, needles)),
+        _ => {}
+    }
 }
 
 /// Resolve every name, asking the person where there is no grant. Nothing is armed unless all names are ready.
@@ -479,6 +515,28 @@ mod tests {
             }],
         );
         (store, vault)
+    }
+
+    // fix round 4 (N8): a worker's memory, note, room and doc writes keep no armed value; a read is left as it is.
+    #[test]
+    fn a_workers_memory_note_room_and_doc_writes_keep_no_armed_value() {
+        let (store, vault) = armed_worker("worker-8");
+        let mut cmd = Command::new("/usr/bin/true");
+        apply_to_child("worker-8", &vault, &mut cmd, &store, NOW).unwrap();
+        for action in ["memory.add", "notes.write", "rooms.post", "docs.create"] {
+            let mut input = serde_json::json!({
+                "title": "t",
+                "body": format!("the key is {VALUE} done"),
+                "nested": [format!("{VALUE}")],
+            });
+            scrub_app_input("worker-8", action, &mut input);
+            let text = input.to_string();
+            assert!(!text.contains(VALUE), "{action} kept the value: {text}");
+            assert!(text.contains(scrub::MARKER), "{action}: {text}");
+        }
+        let mut read = serde_json::json!({ "q": VALUE });
+        scrub_app_input("worker-8", "rooms.read", &mut read);
+        assert_eq!(read["q"], VALUE, "a read is not a write");
     }
 
     // fix round 2 (M3): an armed worker's final environment holds no MONOCODE_* variable, even one configure_child set.

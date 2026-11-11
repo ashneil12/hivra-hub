@@ -14,6 +14,7 @@
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
@@ -59,15 +60,13 @@ pub fn is_allowlisted_env(name: &str) -> bool {
     })
 }
 
-/// The child's environment. `PATH` is the fixed search path and `HOME` is the account's own home from the user database;
-/// neither comes from the caller, and `SHELL` is never passed on (a login shell would read the caller's files). What is
-/// left of the allow-list (locale, temporary folder, terminal) is copied from this process. Never `MONOCODE_*`, never the
-/// app token, never a model key, never another secret.
+/// The child's environment. `PATH` is [`child_path`], never the caller's, and `SHELL` is never passed on (a login shell would
+/// read the caller's files). `HOME` is not here: [`execute`] gives each run its own empty home (fix round 4, N2), so the
+/// account's own config files (`~/.curlrc`, `~/.gitconfig`) never reach the child. What is left of the allow-list (locale,
+/// temporary folder, terminal) is copied from this process. Never `MONOCODE_*`, never the app token, never a model key,
+/// never another secret.
 pub fn allow_env(secret_env: &str, secret_value: &str) -> Vec<(String, String)> {
-    let mut out = vec![("PATH".to_string(), search_path())];
-    if let Some(home) = crate::instance::real_home() {
-        out.push(("HOME".to_string(), home.to_string_lossy().into_owned()));
-    }
+    let mut out = vec![("PATH".to_string(), child_path())];
     for key in ALLOWED {
         if matches!(*key, "PATH" | "HOME" | "SHELL") {
             continue;
@@ -83,6 +82,66 @@ pub fn allow_env(secret_env: &str, secret_value: &str) -> Vec<(String, String)> 
 /// The search path a command is looked up on and runs with: fixed, never read from the caller or from `$SHELL`.
 pub fn search_path() -> String {
     crate::connectors::launch::safe_path()
+}
+
+/// The PATH the child runs with (fix round 4, N3): the search path without any folder the account can write, or that
+/// other accounts can. A program there could be started by name by the approved command, with the key in its environment.
+pub fn child_path() -> String {
+    let kept: Vec<PathBuf> = std::env::split_paths(&search_path())
+        .filter(|folder| !has_user_writable_component(folder))
+        .collect();
+    std::env::join_paths(kept)
+        .map(|joined| joined.to_string_lossy().into_owned())
+        .unwrap_or_default()
+}
+
+/// Whether a folder on the way to `path` (the file itself included) is one the account can write, or one with a group or
+/// other write bit: a program there could be replaced by anything running as the account, or by another account (fix
+/// round 4, N3 and N7). Unix only. Windows judges by its own permissions, so this is false there.
+#[cfg(unix)]
+pub fn has_user_writable_component(path: &Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    // SAFETY: getuid has no preconditions and cannot fail.
+    let uid = unsafe { libc::getuid() };
+    path.ancestors()
+        .filter(|folder| !folder.as_os_str().is_empty())
+        .any(|folder| {
+            std::fs::metadata(folder)
+                .map(|meta| meta.uid() == uid || meta.mode() & 0o022 != 0)
+                .unwrap_or(false)
+        })
+}
+
+#[cfg(not(unix))]
+pub fn has_user_writable_component(_path: &Path) -> bool {
+    false
+}
+
+/// The child's own empty home, made for one run with mode 0700 and removed when the run ends (fix round 4, N2).
+struct RunHome(PathBuf);
+
+impl RunHome {
+    fn new() -> Result<Self, String> {
+        let path = std::env::temp_dir().join(format!(
+            "monocode-run-home-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        std::fs::create_dir(&path)
+            .map_err(|_| "Couldn't make an empty home for the command.".to_string())?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700))
+                .map_err(|_| "Couldn't make an empty home for the command.".to_string())?;
+        }
+        Ok(Self(path))
+    }
+}
+
+impl Drop for RunHome {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
 }
 
 /// The program's identity: device, inode, size and modification time (Unix), or size and modification time elsewhere. A
@@ -163,25 +222,15 @@ pub fn refuse_shell_program(program: &Path) -> bool {
 /// The card's warning for a program in a folder the person owns: anything running as them can replace it, after the
 /// approval, under the same name. `None` for a folder the account does not own (a system folder). Fix round 3, M1.
 pub fn program_folder_warning(program: &Path) -> Option<String> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::MetadataExt;
-        let folder = program.parent()?;
-        let meta = std::fs::metadata(folder).ok()?;
-        // SAFETY: getuid has no preconditions and cannot fail.
-        if meta.uid() == unsafe { libc::getuid() } {
-            return Some(format!(
-                "{} is in a folder you can write to, so anything that runs as you can replace it.",
-                folder.display()
-            ));
-        }
-        None
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = program;
-        None
-    }
+    // Fix round 4 (N7): any folder on the way to the program counts, not only the parent's owner: a folder above it can
+    // be the one the account writes (a parent folder swapped for another).
+    let folder = program.parent()?;
+    has_user_writable_component(program).then(|| {
+        format!(
+            "{} is in a folder you can write to, so anything that runs as you can replace it.",
+            folder.display()
+        )
+    })
 }
 
 /// Where a program may never come from: the project, the run's own folder, a temporary folder, a worktree. The agent can
@@ -445,13 +494,31 @@ pub fn execute_with_grace(
     data: &Path,
     grace: Duration,
 ) -> Result<Outcome, String> {
+    let budget = Duration::from_secs(payload.timeout_seconds.clamp(1, super::TIMEOUT_MAX));
+    execute_controlled(payload, value, data, grace, budget, &AtomicBool::new(false))
+}
+
+/// [`execute_with_grace`] with the budget and a stop given by the caller. Setting `stop` ends the command's group as if its
+/// budget had run out, and the answer says `timedOut`. The tests use it, so the timeout no longer races the wall clock
+/// (fix round 4).
+pub fn execute_controlled(
+    payload: &super::grant::Payload,
+    value: &str,
+    data: &Path,
+    grace: Duration,
+    budget: Duration,
+    stop: &AtomicBool,
+) -> Result<Outcome, String> {
     if payload.command.iter().any(|arg| arg.contains(value)) {
         return Err(
             "That command already holds the key in its own words, so it wasn't run. Name the key through the environment instead."
                 .to_string(),
         );
     }
-    if !super::valid_env_name(&payload.env) || is_allowlisted_env(&payload.env) {
+    if let Some(why) = super::env_name_refusal(&payload.env) {
+        return Err(why);
+    }
+    if is_allowlisted_env(&payload.env) {
         return Err("That run asked for a name the command already has.".to_string());
     }
     // The program was pinned when it was approved: an absolute path and its file identity, both inside the signed payload.
@@ -468,7 +535,13 @@ pub fn execute_with_grace(
             "The program changed since it was approved, so it wasn't run. Ask again.".into(),
         );
     }
-    let env = allow_env(&payload.env, value);
+    // Fix round 4 (N2): the child's home is its own empty folder, and so are the two names that point config at it.
+    let run_home = RunHome::new()?;
+    let home = run_home.0.to_string_lossy().into_owned();
+    let mut env = allow_env(&payload.env, value);
+    env.push(("HOME".to_string(), home.clone()));
+    env.push(("CURL_HOME".to_string(), home.clone()));
+    env.push(("XDG_CONFIG_HOME".to_string(), home));
     let needles = scrub::needles(value);
     let mut command = Command::new(program);
     command
@@ -505,13 +578,12 @@ pub fn execute_with_grace(
     let stdout = read_stream(child.stdout.take().expect("stdout is piped"));
     let stderr = read_stream(child.stderr.take().expect("stderr is piped"));
     let started = Instant::now();
-    // The budget travels inside the signed grant; the cap is applied again here as a backstop.
-    let budget = Duration::from_secs(payload.timeout_seconds.clamp(1, super::TIMEOUT_MAX));
+    // The budget travels inside the signed grant; the cap is applied again in the caller as a backstop.
     let mut timed_out = false;
     let status = loop {
         match child.try_wait() {
             Ok(Some(status)) => break Some(status),
-            Ok(None) if started.elapsed() >= budget => {
+            Ok(None) if stop.load(Ordering::SeqCst) || started.elapsed() >= budget => {
                 timed_out = true;
                 kill_group(child.id());
                 break child.wait().ok();
@@ -784,18 +856,63 @@ mod tests {
     fn a_timeout_kills_the_group_and_reports_timed_out() {
         let tmp = std::env::temp_dir().join(format!("mc-exec-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&tmp).unwrap();
+        // Fix round 4 (test rewrite): no wall-clock race. The command prints, starts a background sleep and writes its pid,
+        // then says READY. The test ends the run by the stop (the same as a budget running out) once READY is there, so
+        // the outcome does not depend on how fast the machine is.
+        let ready = tmp.join("READY");
+        let pidfile = tmp.join("pid");
         let script = fixture(
             &tmp,
             "slow",
-            "#!/bin/sh\necho before-sleep\nsleep 30\necho after-sleep\n",
+            &format!(
+                "#!/bin/sh\necho before-sleep\nsleep 30 &\necho $! > '{}'\n: > '{}'\nwait\necho after-sleep\n",
+                pidfile.display(),
+                ready.display()
+            ),
         );
-        let mut payload = run_payload(vec![crate::fs::path_to_js(&script)]);
-        // Long enough that a loaded machine still gets the shell to print its first line before the budget ends.
-        payload.timeout_seconds = 3;
-        let outcome = execute(&payload, "sk_live_abcdefgh", &tmp).unwrap();
+        let payload = run_payload(vec![crate::fs::path_to_js(&script)]);
+        let stop = std::sync::Arc::new(AtomicBool::new(false));
+        let stop_for_run = std::sync::Arc::clone(&stop);
+        let folder = tmp.clone();
+        let handle = std::thread::spawn(move || {
+            execute_controlled(
+                &payload,
+                "sk_live_abcdefgh",
+                &folder,
+                READER_GRACE,
+                Duration::from_secs(600),
+                &stop_for_run,
+            )
+        });
+        let waited = Instant::now();
+        while !ready.exists() {
+            assert!(
+                waited.elapsed() < Duration::from_secs(20),
+                "the command never started"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        stop.store(true, Ordering::SeqCst);
+        let outcome = handle.join().unwrap().unwrap();
         assert!(outcome.timed_out);
         assert!(outcome.stdout.text.contains("before-sleep"));
         assert!(!outcome.stdout.text.contains("after-sleep"));
+        let pid: i32 = std::fs::read_to_string(&pidfile)
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        // The background child is ended with its group. A reaper may take a moment, so poll briefly.
+        let mut gone = false;
+        for _ in 0..100 {
+            // SAFETY: signal 0 only checks that the pid exists; nothing is sent.
+            if unsafe { libc::kill(pid, 0) } != 0 {
+                gone = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(gone, "the background child {pid} survived the group kill");
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
@@ -890,13 +1007,20 @@ mod tests {
     #[test]
     fn a_stream_that_stays_open_after_the_command_exits_is_reported_as_unread() {
         let data = std::env::temp_dir();
-        // `sh` exits at once, but the `sleep` it started keeps the output pipe open past the reader's grace.
-        // The pipe is held by a child in its own session, which the command's group kill does not reach.
-        let payload = payload_for(&[
-            "/bin/sh",
-            "-c",
-            "/usr/bin/python3 -c 'import os,time; os.setsid(); time.sleep(4)' & echo started",
-        ]);
+        // Fix round 4 (test rewrite): the old test raced the shell's exit against the child's setsid. Here a FIFO makes the
+        // order fixed: the background perl moves itself into its own session and writes its pid into the FIFO before the
+        // shell reads it and exits. So the group kill cannot reach it, and it holds the output pipe past the grace.
+        let tmp = std::env::temp_dir().join(format!("mc-unread-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        let fifo = tmp.join("handshake");
+        let pidfile = tmp.join("pid");
+        let fifo_c = std::ffi::CString::new(fifo.to_string_lossy().as_bytes()).unwrap();
+        // SAFETY: a FIFO at a path this test made; the pointer lives only for the call.
+        assert_eq!(unsafe { libc::mkfifo(fifo_c.as_ptr(), 0o600) }, 0);
+        let fifo_s = fifo.to_string_lossy().into_owned();
+        let pid_s = pidfile.to_string_lossy().into_owned();
+        let script = "/usr/bin/perl -e 'use POSIX; setsid(); open(my $h, \">\", $ARGV[0]) or die; print $h $$; close $h; sleep 30' \"$1\" & read pid < \"$1\"; echo \"$pid\" > \"$2\"; echo started";
+        let payload = payload_for(&["/bin/sh", "-c", script, "sh", &fifo_s, &pid_s]);
         let outcome = execute_with_grace(
             &payload,
             "sk_live_abcdefgh",
@@ -913,6 +1037,15 @@ mod tests {
         let printed = outcome.to_json();
         assert_eq!(printed["outputUnread"], true);
         assert_eq!(printed["note"], "The output could not be read in time.");
+        // Stop the session the test left running, then clear its folder.
+        if let Ok(text) = std::fs::read_to_string(&pidfile) {
+            if let Ok(pid) = text.trim().parse::<i32>() {
+                unsafe {
+                    libc::kill(pid, libc::SIGKILL);
+                }
+            }
+        }
+        let _ = std::fs::remove_dir_all(&tmp);
         // A silent run is a different thing: no output, and nothing unread.
         let silent = execute_with_grace(
             &payload_for(&["/bin/sh", "-c", "exit 0"]),
@@ -940,11 +1073,12 @@ mod tests {
                 .find(|(name, _)| name == key)
                 .map(|(_, value)| value.clone())
         };
-        assert_eq!(get("PATH").as_deref(), Some(search_path().as_str()));
+        assert_eq!(get("PATH").as_deref(), Some(child_path().as_str()));
         assert!(get("SHELL").is_none(), "SHELL is never passed on");
-        assert_eq!(
-            get("HOME"),
-            crate::instance::real_home().map(|home| home.to_string_lossy().into_owned())
+        // Fix round 4 (N2): the account's home is never passed on. The run gives its own empty home (execute).
+        assert!(
+            get("HOME").is_none(),
+            "HOME is the run's own, not the account's"
         );
     }
 
@@ -1122,5 +1256,89 @@ mod tests {
             "the background child kept the key after the command exited"
         );
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    // ---- fix round 4, N2: the child never reads the account's own home. A planted `~/.curlrc` in the real home reached
+    // the child and sent the key to a second listener. The child now gets a fresh empty home, removed after the run.
+
+    #[cfg(unix)]
+    #[test]
+    fn the_child_runs_in_a_fresh_empty_home_that_is_removed_after_the_run() {
+        let tmp = std::env::temp_dir().join(format!("mc-home-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        let script = fixture(
+            &tmp,
+            "where-home",
+            "#!/bin/sh\necho \"home=$HOME\"\necho \"curl=$CURL_HOME\"\necho \"xdg=$XDG_CONFIG_HOME\"\necho \"entries=$(ls -A \"$HOME\" | wc -l | tr -d ' ')\"\n",
+        );
+        let payload = run_payload(vec![crate::fs::path_to_js(&script)]);
+        let outcome = execute(&payload, "sk_live_abcdefgh", &tmp).unwrap();
+        let line = |key: &str| {
+            outcome
+                .stdout
+                .text
+                .lines()
+                .find_map(|text| text.strip_prefix(&format!("{key}=")))
+                .unwrap_or("")
+                .to_string()
+        };
+        let home = line("home");
+        assert!(!home.is_empty(), "{}", outcome.stdout.text);
+        if let Some(real) = crate::instance::real_home() {
+            assert_ne!(
+                home,
+                real.to_string_lossy(),
+                "the child must not get the account's home"
+            );
+        }
+        assert_eq!(line("curl"), home, "CURL_HOME must name the run's own home");
+        assert_eq!(
+            line("xdg"),
+            home,
+            "XDG_CONFIG_HOME must name the run's own home"
+        );
+        assert_eq!(line("entries"), "0", "the run's home starts empty");
+        assert!(
+            !Path::new(&home).exists(),
+            "the run's home is removed after the run"
+        );
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    // ---- fix round 4, N3: a folder the account can write is never on the child's PATH, so a planted helper there
+    // cannot be started by name with the key in its environment.
+
+    /// Whether a folder on the way to `path` (the path itself included) is one the account can write, or one with a group
+    /// or other write bit. Written here, from the file system, not taken from the code under test.
+    #[cfg(unix)]
+    fn writable_on_the_way(path: &Path) -> bool {
+        use std::os::unix::fs::MetadataExt;
+        // SAFETY: getuid has no preconditions and cannot fail.
+        let uid = unsafe { libc::getuid() };
+        path.ancestors()
+            .filter(|folder| !folder.as_os_str().is_empty())
+            .any(|folder| {
+                std::fs::metadata(folder)
+                    .map(|meta| meta.uid() == uid || meta.mode() & 0o022 != 0)
+                    .unwrap_or(false)
+            })
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn no_folder_the_account_can_write_is_on_the_childs_path() {
+        let env = allow_env("STRIPE_API_KEY", "sk_live_abcdefgh");
+        let path = env
+            .iter()
+            .find(|(name, _)| name == "PATH")
+            .map(|(_, value)| value.clone())
+            .expect("the child has a PATH");
+        for folder in std::env::split_paths(&path) {
+            assert!(
+                !writable_on_the_way(&folder),
+                "{} is on the child's PATH and the account can write to it",
+                folder.display()
+            );
+        }
     }
 }

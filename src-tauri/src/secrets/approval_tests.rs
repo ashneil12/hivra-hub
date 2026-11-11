@@ -909,6 +909,8 @@ fn a_card_shows_the_full_path_and_writes_out_invisible_characters() {
         &[program.to_string(), "customers".into(), "list".into()],
         false,
         false,
+        "STRIPE_API_KEY",
+        None,
     )
     .unwrap();
     // The bidi override is written out, not sent: the card carries no U+202E at all.
@@ -924,6 +926,8 @@ fn a_card_shows_the_full_path_and_writes_out_invisible_characters() {
         &["/opt/homebrew/bin/str\u{430}ipe".to_string()],
         false,
         false,
+        "STRIPE_API_KEY",
+        None,
     )
     .unwrap();
     assert!(!lookalike.contains('\u{430}'), "{lookalike}");
@@ -939,7 +943,7 @@ fn a_grant_names_the_file_it_was_given_for() {
         "stripe-api-key",
         "mono",
         "m1",
-        "/opt/homebrew/bin/stripe",
+        "/usr/bin/curl",
         "1:2:3:4",
         "",
         "always",
@@ -953,7 +957,7 @@ fn a_grant_names_the_file_it_was_given_for() {
             "stripe-api-key",
             Some("m1"),
             None,
-            "/opt/homebrew/bin/stripe",
+            "/usr/bin/curl",
             identity,
             "",
         )
@@ -1024,7 +1028,11 @@ fn a_script_is_judged_by_the_interpreter_on_its_shebang_line() {
     );
     let plain = dir.join("plain");
     std::fs::write(&plain, "#!/usr/bin/env stripe\n").unwrap();
-    assert!(!runs_any_for(&plain.to_string_lossy()));
+    // Round 4 (N4): every script with a `#!` line runs code, whatever its interpreter line names.
+    assert!(
+        runs_any_for(&plain.to_string_lossy()),
+        "a script with a shebang runs code"
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -1102,7 +1110,411 @@ fn an_always_card_says_it_covers_the_exact_command() {
         &["/usr/bin/true".to_string(), "x".to_string()],
         true,
         false,
+        "STRIPE_API_KEY",
+        None,
     )
     .unwrap();
     assert!(text.contains("exact command"), "{text}");
+}
+
+// ---- fix round 4 (review of round 4): what a card says, which names and programs are allowed, and who may answer ----
+
+#[test]
+fn a_secret_cannot_take_a_name_that_changes_how_a_program_runs() {
+    // N1: these names change what the program loads, reads or runs. Only a credential-shaped name may carry a key.
+    for env in [
+        "SSLKEYLOGFILE",
+        "DYLD_INSERT_LIBRARIES",
+        "LD_PRELOAD",
+        "NODE_OPTIONS",
+        "BASH_ENV",
+        "PYTHONSTARTUP",
+        "GIT_SSH_COMMAND",
+        "CURL_HOME",
+        "HTTPS_PROXY",
+        "XDG_CONFIG_HOME",
+    ] {
+        let bench = Bench::new();
+        let mut conn = bench.store.lock_conn().unwrap();
+        let mut req = request("mono-1", &["/usr/bin/true", "--version"]);
+        req.env = env.into();
+        let refused = prepare_run(&bench.vault, &mut conn, req, NOW);
+        assert!(
+            refused.is_err(),
+            "{env} is not a credential name and must be refused, got {refused:?}"
+        );
+    }
+    // A credential-shaped name still gets its card.
+    for env in ["STRIPE_API_KEY", "GITHUB_TOKEN", "DB_PASSWORD", "GH_PAT"] {
+        let bench = Bench::new();
+        let mut conn = bench.store.lock_conn().unwrap();
+        let mut req = request("mono-1", &["/usr/bin/true", "--version"]);
+        req.env = env.into();
+        let asked = prepare_run(&bench.vault, &mut conn, req, NOW).unwrap();
+        assert!(
+            matches!(asked, RunOutcome::Waiting { .. }),
+            "{env}: {asked:?}"
+        );
+    }
+}
+
+#[test]
+fn a_different_environment_name_is_a_different_card() {
+    // N1 (P1b): the same program with another name is another approval, not the first card silently moved.
+    let bench = Bench::new();
+    let (_, first) = ask(&bench, "mono-1", &["/usr/bin/true", "x"], NOW);
+    let mut req = request("mono-1", &["/usr/bin/true", "x"]);
+    req.env = "GITHUB_TOKEN".into();
+    let mut conn = bench.store.lock_conn().unwrap();
+    let second = match prepare_run(&bench.vault, &mut conn, req, NOW + 1).unwrap() {
+        RunOutcome::Waiting { decision_key, .. } => decision_key,
+        other => panic!("{other:?}"),
+    };
+    assert_ne!(first, second, "a second name must not reuse the first card");
+}
+
+#[test]
+fn a_windows_batch_file_or_powershell_script_runs_code_so_it_is_judged_so() {
+    // Round 4 (LOW): a .cmd, .bat or .ps1 is a script, and the name is judged with its extension.
+    assert!(runs_any_code("C:\\tools\\deploy.cmd"));
+    assert!(runs_any_code("deploy.bat"));
+    assert!(runs_any_code("deploy.ps1"));
+}
+
+#[test]
+fn programs_that_run_other_code_are_judged_so_whatever_their_path() {
+    // N4: the list the probe found missing, by basename and with a version or a full path.
+    for program in [
+        "tclsh",
+        "expect",
+        "wish",
+        "dc",
+        "zip",
+        "sandbox-exec",
+        "taskpolicy",
+        "ssh-agent",
+        "screen",
+        "tmux",
+        "ex",
+        "view",
+        "erb",
+        "irb",
+        "pydoc3",
+        "R",
+        "gmake",
+        "gawk",
+        "nawk",
+        "just",
+        "task",
+        "tofu",
+        "pulumi",
+        "helm",
+        "hyperfine",
+        "watchexec",
+        "mise",
+        "direnv",
+        "julia",
+        "elixir",
+        "racket",
+        "sbcl",
+        "mysql",
+        "parallel",
+        "watch",
+        "gdb",
+        "nix",
+        "volta",
+        "corepack",
+        "runghc",
+        "guile",
+        "lein",
+        "sbt",
+        "flock",
+        "chroot",
+        "su",
+        "/usr/local/bin/tclsh8.6",
+    ] {
+        assert!(
+            runs_any_code(program),
+            "{program} runs other code and must be judged so"
+        );
+    }
+}
+
+#[test]
+fn a_script_with_a_shebang_line_runs_code_whatever_its_interpreter_line_says() {
+    // N4: `env` with options, `env -S` with assignments, and a `#!` naming another script all run code.
+    let dir = std::env::temp_dir().join(format!("mc-shebang-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&dir).unwrap();
+    for (i, line) in [
+        "#!/usr/bin/env -S A=1 node",
+        "#!/usr/bin/env -u X node",
+        "#!/usr/bin/env -S -i PATH=/usr/bin python3",
+        "#!/opt/scripts/other-script",
+        "#!/bin/sh",
+    ]
+    .iter()
+    .enumerate()
+    {
+        let script = dir.join(format!("script-{i}"));
+        std::fs::write(&script, format!("{line}\necho hi\n")).unwrap();
+        assert!(
+            runs_any_for(&script.to_string_lossy()),
+            "{line} must be judged as running code"
+        );
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn always_is_offered_only_for_a_listed_program_in_a_folder_only_the_owner_writes() {
+    // N4/N7: Always comes from a short list of programs that run no code, and never from a folder the account can write.
+    let bench = Bench::new();
+    let conn = bench.store.lock_conn().unwrap();
+    assert!(always_allowed_for(&conn, "/usr/bin/true"));
+    assert!(
+        !always_allowed_for(&conn, "/usr/bin/nc"),
+        "a program not on the list is asked every time"
+    );
+    let dir = std::env::temp_dir().join(format!("mc-always-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let copy = dir.join("curl");
+    std::fs::write(&copy, b"not really curl").unwrap();
+    assert!(
+        !always_allowed_for(&conn, &copy.to_string_lossy()),
+        "a copy in a folder the account writes is never offered Always"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn turning_the_setting_off_takes_back_an_always_for_a_script() {
+    // Round 4 (LOW): "off" must take back the Always of a script too, which is judged by its first line.
+    let dir = std::env::temp_dir().join(format!("mc-revoke-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let script = dir.join("tool");
+    std::fs::write(&script, "#!/bin/sh\necho hi\n").unwrap();
+    let bench = Bench::new();
+    let conn = bench.store.lock_conn().unwrap();
+    set_always_for_any_code(&conn, true).unwrap();
+    conn.execute(
+        "INSERT INTO secret_grants (scope, name, subject_kind, subject_id, executable, mode, created_at, identity, fingerprint)
+         VALUES ('global', 'stripe-api-key', 'mono', 'mono-1', ?1, 'always', ?2, 'id', 'fp')",
+        rusqlite::params![script.to_string_lossy(), NOW],
+    )
+    .unwrap();
+    let removed = set_always_for_any_code(&conn, false).unwrap();
+    assert_eq!(removed, 1, "the script's Always is taken back");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn an_answer_recorded_as_the_user_does_not_grant_a_secret() {
+    // Round 4 (LOW): the Needs sheet's answer ("user") is not the person's answer on a secret card.
+    let bench = Bench::new();
+    let (_, key) = ask(&bench, "mono-1", &["/usr/bin/true", "x"], NOW);
+    {
+        let conn = bench.store.lock_conn().unwrap();
+        conn.execute(
+            "UPDATE decisions SET state = 'answered', answer = 'Once', answered_by = 'user', answered_at = ?1
+             WHERE decision_key = ?2",
+            rusqlite::params![NOW + 1, key],
+        )
+        .unwrap();
+    }
+    let mut conn = bench.store.lock_conn().unwrap();
+    let outcome = prepare_run(
+        &bench.vault,
+        &mut conn,
+        request("mono-1", &["/usr/bin/true", "x"]),
+        NOW + 2,
+    )
+    .unwrap();
+    assert!(
+        !matches!(outcome, RunOutcome::Granted { .. }),
+        "an answer by the user must not grant: {outcome:?}"
+    );
+}
+
+#[test]
+fn a_once_answer_for_another_command_does_not_drop_an_always_grant() {
+    // Round 4 (LOW): one row per program per Mono let a Once overwrite an Always for another command.
+    let bench = Bench::new();
+    let (_, key) = ask(&bench, "mono-1", &["/usr/bin/true", "a"], NOW);
+    person_answers(&bench, &key, "Always for this Mono", NOW + 1);
+    {
+        let mut conn = bench.store.lock_conn().unwrap();
+        let first = prepare_run(
+            &bench.vault,
+            &mut conn,
+            request("mono-1", &["/usr/bin/true", "a"]),
+            NOW + 2,
+        )
+        .unwrap();
+        assert!(matches!(first, RunOutcome::Granted { .. }), "{first:?}");
+    }
+    let (_, other) = ask(&bench, "mono-1", &["/usr/bin/true", "b"], NOW + 3);
+    person_answers(&bench, &other, "Once", NOW + 4);
+    let mut conn = bench.store.lock_conn().unwrap();
+    let spent = prepare_run(
+        &bench.vault,
+        &mut conn,
+        request("mono-1", &["/usr/bin/true", "b"]),
+        NOW + 5,
+    )
+    .unwrap();
+    assert!(matches!(spent, RunOutcome::Granted { .. }), "{spent:?}");
+    let again = prepare_run(
+        &bench.vault,
+        &mut conn,
+        request("mono-1", &["/usr/bin/true", "a"]),
+        NOW + 6,
+    )
+    .unwrap();
+    assert!(
+        matches!(again, RunOutcome::Granted { .. }),
+        "the Always for command a survived the Once for command b: {again:?}"
+    );
+}
+
+#[test]
+fn a_second_mono_asking_the_same_program_does_not_cancel_the_first_monos_card() {
+    // Round 4 (LOW): a second Mono's ask must not move the card's binding away from the first Mono's command.
+    let bench = Bench::new();
+    let (_, key) = ask(&bench, "mono-1", &["/usr/bin/true", "first"], NOW);
+    let other = {
+        let mut conn = bench.store.lock_conn().unwrap();
+        match prepare_run(
+            &bench.vault,
+            &mut conn,
+            request("mono-2", &["/usr/bin/true", "second"]),
+            NOW + 1,
+        )
+        .unwrap()
+        {
+            RunOutcome::Waiting { decision_key, .. } => decision_key,
+            other => panic!("{other:?}"),
+        }
+    };
+    assert_eq!(other, key, "the same program is one card");
+    person_answers(&bench, &key, "Once", NOW + 2);
+    let mut conn = bench.store.lock_conn().unwrap();
+    let granted = prepare_run(
+        &bench.vault,
+        &mut conn,
+        request("mono-1", &["/usr/bin/true", "first"]),
+        NOW + 3,
+    )
+    .unwrap();
+    assert!(
+        matches!(granted, RunOutcome::Granted { .. }),
+        "mono-1's answer must still cover its own command: {granted:?}"
+    );
+}
+
+#[test]
+fn an_answer_for_a_card_the_person_did_not_read_is_refused() {
+    // Round 4 (N6): the Inbox sends the version it rendered. A card rewritten for another command since then is refused,
+    // and the answer that does land is for the command on the card now.
+    let bench = Bench::new();
+    let (_, key) = ask(
+        &bench,
+        "mono-1",
+        &["/usr/bin/true", "https://api.stripe.com/v1/balance"],
+        NOW,
+    );
+    let seen = card(&bench, &key).version;
+    let _ = ask(
+        &bench,
+        "mono-1",
+        &["/usr/bin/true", "https://evil.example/collect"],
+        NOW + 1,
+    );
+    {
+        let mut conn = bench.store.lock_conn().unwrap();
+        let refused =
+            crate::decisions::answer_seen(&mut conn, "", &key, "Once", None, Some(seen), NOW + 2);
+        let why =
+            refused.expect_err("an answer for the card the person did not read must not land");
+        assert!(why.contains("changed after you read it"), "{why}");
+    }
+    let now_version = card(&bench, &key).version;
+    {
+        let mut conn = bench.store.lock_conn().unwrap();
+        let landed = crate::decisions::answer_seen(
+            &mut conn,
+            "",
+            &key,
+            "Once",
+            None,
+            Some(now_version),
+            NOW + 3,
+        )
+        .unwrap();
+        assert!(landed.applied);
+    }
+    let mut conn = bench.store.lock_conn().unwrap();
+    let evil = prepare_run(
+        &bench.vault,
+        &mut conn,
+        request("mono-1", &["/usr/bin/true", "https://evil.example/collect"]),
+        NOW + 4,
+    )
+    .unwrap();
+    assert!(
+        matches!(evil, RunOutcome::Granted { .. }),
+        "the card on screen is the one answered: {evil:?}"
+    );
+    let balance = prepare_run(
+        &bench.vault,
+        &mut conn,
+        request(
+            "mono-1",
+            &["/usr/bin/true", "https://api.stripe.com/v1/balance"],
+        ),
+        NOW + 5,
+    )
+    .unwrap();
+    assert!(
+        !matches!(balance, RunOutcome::Granted { .. }),
+        "the command the person read was not answered: {balance:?}"
+    );
+}
+
+#[test]
+fn the_card_names_the_environment_variable_the_folder_and_who_can_read_it() {
+    // Round 4 (N1): the card shows the name the key goes under and the folder the command runs in, and says that other
+    // programs running as the person can read the command's environment while it runs.
+    let text = run_question(
+        "Tally",
+        "Stripe key",
+        "your global keys",
+        &["/usr/bin/true".to_string(), "x".to_string()],
+        false,
+        false,
+        "GITHUB_TOKEN",
+        Some("/p/sub"),
+    )
+    .unwrap();
+    assert!(
+        text.lines()
+            .any(|line| line == "Environment variable: GITHUB_TOKEN"),
+        "{text}"
+    );
+    assert!(text.lines().any(|line| line == "Folder: /p/sub"), "{text}");
+    assert!(
+        text.contains("can read this command's environment"),
+        "{text}"
+    );
+    let no_folder = run_question(
+        "Tally",
+        "Stripe key",
+        "your global keys",
+        &["/usr/bin/true".to_string()],
+        false,
+        false,
+        "STRIPE_API_KEY",
+        None,
+    )
+    .unwrap();
+    assert!(no_folder.contains("Folder: none"), "{no_folder}");
 }
