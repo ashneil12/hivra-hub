@@ -189,6 +189,20 @@ export function withLockedRole(soul: string): string {
   return insertCanonical(removeRoleSections(cutSpans(text, hiding)));
 }
 
+/**
+ * A soul write that would add the charter where it is not already.
+ * Only a Mono that is already the captain may gain it. A soul that already has it may keep it.
+ * Throws before the caller writes, so the file stays as it was.
+ */
+export function refuseAddedCharter(
+  mono: { captain?: boolean; templateId?: string } | null | undefined,
+  current: string | null | undefined,
+  next: string | null | undefined,
+): void {
+  if (!hasCaptainCharter(next) || hasCaptainCharter(current) || isCaptainMono(mono)) return;
+  throw new Error("Only the captain carries the charter. This soul was not saved.");
+}
+
 /** The coordinator starter, or a Mono flagged as the captain. The id and the display name do not count. */
 export function isCaptainMono(
   mono: { id?: string; name?: string; captain?: boolean; templateId?: string } | null | undefined,

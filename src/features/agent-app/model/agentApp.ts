@@ -138,7 +138,8 @@ import { handleSelfBuild, SELF_BUILD_FIELDS } from "./agentAppSelfBuild";
 import { DOC_FIELDS, handleDocs } from "./agentDocs";
 import { handleActivity, handleMemoryRecall } from "../../chief/model/tools";
 import { captainCanRead, captainHandoff, delegationId, filedTaskId, handoffGoal } from "../../chief/model/handoff";
-import { hasCaptainCharter, isCaptainMono, withLockedRole } from "../../chief/model/charter";
+import { hasCaptainCharter, isCaptainMono, refuseAddedCharter, withLockedRole } from "../../chief/model/charter";
+import { findMono } from "../../monos/model/mono";
 import { recordNote } from "../../chief/model/notes";
 import { checkBrief } from "../../firstmate/model/brief";
 import type { DocCreateInput, DocRecord, DocUpdateInput, DocWriteResult } from "../../docs/gateway";
@@ -1008,9 +1009,8 @@ async function handleSoul(
   input: Record<string, unknown>,
   host: AgentAppHost,
 ): Promise<unknown> {
-  const monoId = host.isMono(source.id)
-    ? host.monoOf?.(source.id)?.id
-    : undefined;
+  const mono = host.isMono(source.id) ? host.monoOf?.(source.id) : undefined;
+  const monoId = mono?.id;
   if (!monoId)
     throw new Error("A soul can only be changed from that Mono's own chat");
   if (action === "soul.read") {
@@ -1022,6 +1022,7 @@ async function handleSoul(
   const expectedHash = requiredString(input.expectedHash, "expectedHash", 128);
   // The file as this write found it, so its Bot changes row can put it back (D1).
   const before = await host.readAgentFile(monoId, "SOUL.md");
+  refuseAddedCharter(mono, before.text, input.text);
   if (hasCaptainCharter(before.text) && !hasCaptainCharter(input.text)) {
     throw new Error("The captain charter is fixed. Edit the personality beside it.");
   }
@@ -1715,6 +1716,7 @@ export async function handleAgentApp(
     if (typeof input.text !== "string" || input.text.length > 240_000)
       throw new Error("text must be a string under 240000 characters");
     const current = await host.readAgentFile(mono, "SOUL.md");
+    refuseAddedCharter(findMono(mono), current.text, input.text);
     const nextSoul = hasCaptainCharter(input.text) ? withLockedRole(input.text) : input.text;
     if (hasCaptainCharter(current.text) && !hasCaptainCharter(nextSoul)) {
       throw new Error("The captain charter is fixed. Edit the personality beside it.");
