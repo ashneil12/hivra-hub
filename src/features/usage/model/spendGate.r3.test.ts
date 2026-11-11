@@ -257,3 +257,16 @@ describe("R4-M3: a failed startup read says to restart, and does not claim there
     await setSpendBookStore(null as unknown as SpendBookStore);
   });
 });
+
+describe("R4-M5b: a Claude-priced spend warning says its cost is an estimate, in the activity line", () => {
+  it("the activity line for a warning ends with the price-table label", async () => {
+    const lines: string[] = [];
+    setSpendWarnSink({ wake: async () => ({ fresh: true }), activity: (input) => input.kind === "spend.warn" && lines.push(input.summary) });
+    setSpendRecords([{ projectKey: HUB.folder, sessionId: "chat", day: "2026-11-10", micros: 9_000_000, priced: 1, unpriced: 0 }]);
+    saveSpendLimit({ scope: "app", period: "month", amountUsd: 10, warnAt: 0.8 }, 0, { by: "person" });
+    judgeLaunch({ project: HUB.id, harness: "claude", ownerSession: "first-mate" });
+    await flush();
+    expect(lines.length).toBe(1);
+    expect(lines[0]).toMatch(/Estimated from Claude Code's price table\.$/);
+  });
+});

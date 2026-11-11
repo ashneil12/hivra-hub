@@ -263,6 +263,8 @@ export async function warnOnce(input: {
   ownerSession: string;
   sink: WarnSink;
   label: string;
+  /** The measured cost is Claude Code's price table's estimate, so the activity line says so. */
+  estimated?: boolean;
 }): Promise<boolean> {
   const key = warnKey(input.limit, input.now);
   if (!key || warned.has(key)) return false;
@@ -275,7 +277,7 @@ export async function warnOnce(input: {
     }
     input.sink.activity({
       kind: "spend.warn",
-      summary: text,
+      summary: input.estimated ? `${text} Estimated from Claude Code's price table.` : text,
       project: input.limit.scope === "app" ? "app" : input.limit.project,
       target: key,
     });

@@ -950,7 +950,7 @@ export function judgeLaunch(input: { project: string; harness: string; ownerSess
   if (over) return over.verdict;
   const warn = verdicts.find((row) => row.verdict.status === "warn");
   if (warn) {
-    if (input.warn !== false) warnFirstMate(warn.limit, key, input.ownerSession);
+    if (input.warn !== false) warnFirstMate(warn.limit, key, input.ownerSession, input.harness);
     return warn.verdict;
   }
   if (!reportsCost) return UNMEASURED;
@@ -958,7 +958,7 @@ export function judgeLaunch(input: { project: string; harness: string; ownerSess
   return unmeasured ? unmeasured.verdict : OK;
 }
 
-function warnFirstMate(limit: SpendLimit, key: string, fallback: string | undefined): void {
+function warnFirstMate(limit: SpendLimit, key: string, fallback: string | undefined, harness: string): void {
   if (!sink) return;
   const owner = lookup.firstMateOf?.(key) ?? fallback ?? "";
   if (!owner) return;
@@ -968,6 +968,8 @@ function warnFirstMate(limit: SpendLimit, key: string, fallback: string | undefi
     ownerSession: owner,
     sink,
     label: limit.scope === "app" ? "the whole app" : key,
+    // Claude's cost figure is its price table's estimate (the same rule as the limit line).
+    estimated: harness.trim().toLowerCase() === "claude",
   });
 }
 
@@ -1067,7 +1069,7 @@ export async function admitSpendTurn(input: {
   for (const limit of limits) {
     const verdict = spendAllowed(readingFor(limit, reportsCost), limit);
     if (verdict.status === "over" && isAutomated) return { ok: false, reason: verdict.reason };
-    if (verdict.status === "over" || verdict.status === "warn") warnFirstMate(limit, key, input.sessionId);
+    if (verdict.status === "over" || verdict.status === "warn") warnFirstMate(limit, key, input.sessionId, input.harness);
   }
   return { ok: true };
 }
