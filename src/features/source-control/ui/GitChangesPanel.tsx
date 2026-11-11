@@ -32,6 +32,7 @@ import {
 import { Popover } from "../../../shared/ui/Popover";
 import { CommitGuardRefusal } from "../../commit-guard/ui/CommitGuardRefusal";
 import { isGuardRefusal } from "../../commit-guard/model/refusal";
+import { onGuardFindingOpen, takePendingGuardFinding } from "../../commit-guard/model/openFinding";
 import { PaneHeader } from "../../../shared/ui/PaneHeader";
 import { FileTypeIcon } from "../../files/ui/FileTypeIcon";
 import { WorkingTreeDiffSurface } from "./workingTreeDiffSurface";
@@ -375,6 +376,15 @@ function ChangedFiles({
   const generateAbortRef = useRef<AbortController | null>(null);
   const [message, setMessage] = useState("");
   const [guardRefusal, setGuardRefusal] = useState<string | null>(null);
+  // WP-200: a refusal asked to be shown from a card or status line appears here, with its allow button.
+  useEffect(() => {
+    const show = () => {
+      const next = takePendingGuardFinding();
+      if (next) setGuardRefusal(next);
+    };
+    show();
+    return onGuardFindingOpen(show);
+  }, []);
   const [amendTarget, setAmendTarget] = useState<AmendTarget | null>(null);
   const amend = amendTarget !== null;
   const [menuOpen, setMenuOpen] = useState(false);

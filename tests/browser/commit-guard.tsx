@@ -3,7 +3,17 @@ import { createRoot } from "react-dom/client";
 import type { CommitGuardAllow } from "../../src/features/commit-guard/model/allows";
 import { CommitGuardRefusal } from "../../src/features/commit-guard/ui/CommitGuardRefusal";
 import { CommitGuardAllowsPanel } from "../../src/features/commit-guard/ui/CommitGuardAllowsPanel";
+import { OpenInSourceControlLink } from "../../src/features/commit-guard/ui/OpenInSourceControlLink";
+import { onGuardFindingOpen, takePendingGuardFinding } from "../../src/features/commit-guard/model/openFinding";
 import "../../src/styles/index.css";
+
+// What the app does when a card's link asks to show a refusal: here the finding is recorded instead of a panel opening.
+const opened: string[] = [];
+(window as unknown as { __opened: string[] }).__opened = opened;
+onGuardFindingOpen(() => {
+  const next = takePendingGuardFinding();
+  if (next) opened.push(next);
+});
 
 const calls: Array<{ repo: string; file: string; line: number }> = [];
 (window as unknown as { __allowCalls: typeof calls }).__allowCalls = calls;
@@ -28,6 +38,7 @@ function Page() {
         message="Possible secret in a commit message:2. The value is not shown."
         repo="/srv/project"
       />
+      <OpenInSourceControlLink message="Possible secret in src/config.rs:12. The value is not shown." />
       <CommitGuardAllowsPanel
         list={async () => [...store]}
         remove={async (allow) => {

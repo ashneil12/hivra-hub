@@ -27,3 +27,22 @@ describe("the commit guard's allow is wired into the screens", () => {
     expect(panel.match(/await remove\(allow\)/g)?.length ?? 0).toBe(1);
   });
 });
+
+describe("a guard refusal on a card or status line opens in the source-control panel", () => {
+  it("a delivery card with a guard refusal offers the link", () => {
+    const cards = read("../delivery-gate/ui/GateCards.tsx");
+    expect(cards).toContain("OpenInSourceControlLink");
+    expect(cards).toContain("isGuardRefusal(finding)");
+  });
+
+  it("the source-control panel shows the asked-for refusal with its allow button", () => {
+    const panel = read("../source-control/ui/GitChangesPanel.tsx");
+    expect(panel).toContain("takePendingGuardFinding()");
+    expect(panel).toContain("onGuardFindingOpen(show)");
+  });
+
+  it("the app switches to the Changes tab when a refusal is asked to be shown", () => {
+    const app = read("../../app/App.tsx");
+    expect(app).toContain('onGuardFindingOpen(() => setSidebarTab("changes"))');
+  });
+});

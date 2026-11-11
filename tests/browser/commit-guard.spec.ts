@@ -30,3 +30,10 @@ test("the guard's words use no em or en dashes", async ({ page }) => {
   const text = await page.locator("main").innerText();
   expect(text).not.toMatch(/[\u2013\u2014]/);
 });
+
+test("a card's link hands the refusal to the source-control panel", async ({ page }) => {
+  await page.goto("/tests/browser/commit-guard.html");
+  await page.getByRole("button", { name: "Open in source control" }).click();
+  const opened = await page.evaluate(() => (window as unknown as { __opened: string[] }).__opened);
+  expect(opened).toEqual(["Possible secret in src/config.rs:12. The value is not shown."]);
+});
