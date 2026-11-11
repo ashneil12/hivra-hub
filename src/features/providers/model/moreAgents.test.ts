@@ -293,3 +293,18 @@ describe("a drive colon is only a drive on Windows", () => {
     expect(argumentProblem("/opt/node", ["-IC:\\foo"], "win32")).toBeNull();
   });
 });
+
+describe("fullwidth separators and Windows best-fit slashes", () => {
+  it("folds a fullwidth equals or colon before the split, and refuses yen and the division slash", async () => {
+    const { argumentProblem } = await import("./moreAgents");
+    const eq = `key${String.fromCharCode(0xff1d)}../x`;
+    const colon = `--config${String.fromCharCode(0xff1a)}../x`;
+    const yen = `${String.fromCharCode(0x00a5)}Users${String.fromCharCode(0x00a5)}ash`;
+    const slash = `/tmp${String.fromCharCode(0x2215)}secret`;
+    expect(argumentProblem("/opt/node", [eq])).not.toBeNull();
+    expect(argumentProblem("/opt/node", [colon])).not.toBeNull();
+    expect(argumentProblem("/opt/node", [yen])).not.toBeNull();
+    expect(argumentProblem("/opt/node", [slash])).not.toBeNull();
+    expect(argumentProblem("/opt/node", [`key${String.fromCharCode(0xff1d)}hello`])).toBeNull();
+  });
+});

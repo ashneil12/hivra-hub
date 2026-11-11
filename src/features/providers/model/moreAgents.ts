@@ -256,6 +256,8 @@ function isRootedWithoutDrive(value: string, platform: string): boolean {
   return platform === "win32" && value.startsWith("/");
 }
 
+/** NFKC, so a fullwidth reverse solidus, equals or colon is the ASCII character. Yen and the division slash are not
+ *  folded; a value that contains one is refused. */
 function foldPath(value: string): string {
   for (let i = 0; i < value.length; i++) {
     if (value.charCodeAt(i) > 0x7f) return value.normalize("NFKC");
@@ -293,6 +295,8 @@ function isRelativeFile(value: string, platform: string): boolean {
 
 function relativeFolded(value: string, platform: string): boolean {
   if (!value) return false;
+  // Windows best-fit turns yen into `\` and the division slash into `/`. NFKC leaves both, so refuse them.
+  if (value.includes("¥") || value.includes("∕")) return true;
   // A leading @ is not a free pass. `@../x` and `@~/x` are paths. `@scope/pkg` is not.
   if (value.startsWith("@")) return relativeFolded(value.slice(1), platform);
   const fileUrl = fileUrlClass(value);
@@ -325,7 +329,7 @@ export function argumentProblem(command: string, args: string[], platform = runn
     });
     if (inline) return "An agent cannot be started with an inline program (-c, -e, --eval or -p). Point at its program file.";
   }
-  if (args.some((arg) => valuesOf(arg, platform).some((value) => isRelativeFile(value, platform)))) {
+  if (args.some((arg) => valuesOf(foldPath(arg), platform).some((value) => isRelativeFile(value, platform)))) {
     return "An argument that names a file must give its full absolute path. A relative path is not pinned, so it is refused.";
   }
   if (interpreter) {

@@ -573,7 +573,9 @@ fn canonical_of_value(value: &str) -> Result<Option<String>, String> {
     Ok(None)
 }
 
-/// NFKC, so a fullwidth reverse solidus is a real `\`. ASCII is left as it is.
+/// NFKC, so a fullwidth reverse solidus, equals or colon is the ASCII character. ASCII is left as it is.
+/// Yen (`¥`) and the division slash (`∕`) are not folded: Windows best-fit maps them to `\` and `/`, and a value that
+/// contains one is refused instead.
 fn fold_path(value: &str) -> Cow<'_, str> {
     if value.is_ascii() {
         Cow::Borrowed(value)
@@ -586,8 +588,18 @@ fn fold_path(value: &str) -> Cow<'_, str> {
 /// One argument as the child will get it, and the absolute files it names (whole, after `=` in a plain `key=value`
 /// word, after `=` or a flag colon, both the file and the options when a colon flag has `=options`, a short flag's
 /// value, a leading `@`, or the file a `file:` URL names). The pin is the path without `@`. The child still sees
-/// the `@`.
+/// the `@`. Fullwidth `＝` and `：` are folded before the split. When nothing is pinned, the child gets the argument
+/// unchanged, not the folded form.
 fn pin_arg(arg: &str) -> Result<(String, Vec<String>), String> {
+    let folded = fold_path(arg);
+    let (text, pins) = pin_split(folded.as_ref())?;
+    if pins.is_empty() {
+        return Ok((arg.to_string(), Vec::new()));
+    }
+    Ok((text, pins))
+}
+
+fn pin_split(arg: &str) -> Result<(String, Vec<String>), String> {
     if !arg.starts_with('-') {
         if let Some((marks, key, value)) = plain_assignment(arg) {
             if let Some((body, pins)) = rewrite_pinned(value)? {
@@ -965,8 +977,12 @@ fn inline_flag(arg: &str) -> bool {
 /// The child runs in an empty folder, so a relative word cannot reach a chat file. Every value an argument can carry
 /// is checked, not only the argument. A leading `@` is not a free pass: the same rule applies to what follows it.
 /// A rooted path with no drive (`\Users\ash`) and a drive-relative path (`C:foo`, `C:..\agent`) are refused too.
+/// Fullwidth `＝` and `：` are folded before the split, so they cannot hide a path.
 fn relative_file_arg(arg: &str) -> bool {
-    candidates(arg).into_iter().any(refused_path_value)
+    let folded = fold_path(arg);
+    candidates(folded.as_ref())
+        .into_iter()
+        .any(refused_path_value)
 }
 
 /// One value an argument can carry. A leading `@` is stripped and the rest is checked the same way, so `@../x` and
@@ -979,6 +995,10 @@ fn refused_path_value(value: &str) -> bool {
 fn path_is_refused(value: &str) -> bool {
     if value.is_empty() {
         return false;
+    }
+    // Windows best-fit turns these into `\` and `/`. NFKC leaves them, so a value that contains one is refused.
+    if value.chars().any(|c| c == '\u{00A5}' || c == '\u{2215}') {
+        return true;
     }
     if let Some(rest) = value.strip_prefix('@') {
         return path_is_refused(rest);
@@ -3894,5 +3914,56 @@ mod tests {
     #[test]
     fn a_drive_colon_is_a_drive_on_windows() {
         assert!(!relative_file_arg("-IC:\\foo"));
+    }
+
+    /// Fullwidth `＝` and `：` are folded before the split, so they cannot hide a relative file. Yen and the division
+    /// slash are refused in a value. An argument that pins nothing is returned unchanged.
+    #[test]
+    fn a_fullwidth_separator_is_folded_and_a_best_fit_slash_is_refused() {
+        for arg in [
+            "key\u{FF1D}../x",
+            "--config\u{FF1A}../x",
+            "-javaagent\u{FF1A}../x.jar=opts",
+            "\u{00A5}Users\u{00A5}ash",
+            "/tmp\u{2215}secret",
+            "--config=\u{00A5}Users",
+        ] {
+            assert_eq!(
+                checked_fields(&entry("wp134", "/opt/node", &[arg])).expect_err("was allowed"),
+                RELATIVE_REFUSED,
+                "{arg} was allowed"
+            );
+        }
+        let plain = "key\u{FF1D}hello";
+        assert!(
+            checked_fields(&entry("wp134", "/opt/node", &[plain])).is_ok(),
+            "a fullwidth equals with no path was refused"
+        );
+        let (text, pins) = pin_arg(plain).expect("pin");
+        assert!(pins.is_empty());
+        assert_eq!(text, plain);
+    }
+
+    /// A fullwidth colon still pins the absolute file, and the child sees an ASCII colon.
+    #[test]
+    fn a_fullwidth_colon_pins_an_absolute_file() {
+        let d = dir();
+        let file = d.path().join("agent.jar");
+        std::fs::write(&file, b"jar").expect("jar");
+        let arg = format!("-javaagent\u{FF1A}{}", file.display());
+        let (text, pins) = pin_arg(&arg).expect("pin");
+        assert_eq!(pins.len(), 1);
+        assert!(
+            text.starts_with("-javaagent:"),
+            "the child did not see an ASCII colon: {text}"
+        );
+        assert!(
+            !text.contains('\u{FF1A}'),
+            "the folded colon was passed through: {text}"
+        );
+        assert!(
+            text.contains(&pins[0]),
+            "the pinned path is not what the child runs: {text}"
+        );
     }
 }
