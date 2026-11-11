@@ -90,6 +90,13 @@ pub(crate) fn ensure_tables(conn: &Connection) -> rusqlite::Result<()> {
     if !has_ceiling {
         conn.execute_batch("ALTER TABLE crew_rules ADD COLUMN task_ceiling_usd REAL;")?;
     }
+    // Projects in force when a grant was saved. An older grant has none; the launch reads its folder again.
+    let has_projects = conn
+        .prepare("SELECT 1 FROM pragma_table_info('crew_grants') WHERE name = 'projects'")?
+        .exists([])?;
+    if !has_projects {
+        conn.execute_batch("ALTER TABLE crew_grants ADD COLUMN projects TEXT;")?;
+    }
     Ok(())
 }
 
@@ -615,6 +622,8 @@ pub struct Grant {
     pub mono: Option<String>,
     pub project: Option<String>,
     pub locked_default: Option<String>,
+    /// Project ids in force when the grant was saved, plus any the parent session already held.
+    pub projects: Vec<String>,
 }
 
 /// How long a grant may go unused before it is pruned. Every judged start of the session refreshes it, so a worker
@@ -624,9 +633,10 @@ pub const GRANT_IDLE_MS: i64 = 30 * 24 * 60 * 60 * 1000;
 /// Saves the decision for a session. A later launch of that session replaces it. Grants idle past `GRANT_IDLE_MS` go.
 pub fn save_grant(conn: &Connection, session: &str, grant: &Grant, at: i64) -> Result<(), String> {
     prune_grants(conn, at)?;
+    let projects = serde_json::to_string(&grant.projects).unwrap_or_else(|_| "[]".to_string());
     conn.execute(
-        "INSERT OR REPLACE INTO crew_grants (session, mono, project, locked_default, granted_at, last_used) VALUES (?1, ?2, ?3, ?4, ?5, ?5)",
-        params![session, grant.mono, grant.project, grant.locked_default, at],
+        "INSERT OR REPLACE INTO crew_grants (session, mono, project, locked_default, granted_at, last_used, projects) VALUES (?1, ?2, ?3, ?4, ?5, ?5, ?6)",
+        params![session, grant.mono, grant.project, grant.locked_default, at, projects],
     )
     .map(|_| ())
     .map_err(|error| error.to_string())
@@ -681,15 +691,36 @@ pub(crate) fn never_use_scope(
     Ok(None)
 }
 
+/// Project ids saved on a grant. Missing, blank or not a list of strings is none: a grant is untrusted data.
+fn grant_projects(text: Option<String>) -> Vec<String> {
+    let Some(text) = text.filter(|text| !text.trim().is_empty()) else {
+        return Vec::new();
+    };
+    let Ok(value) = serde_json::from_str::<Value>(&text) else {
+        return Vec::new();
+    };
+    let Some(rows) = value.as_array() else {
+        return Vec::new();
+    };
+    rows.iter()
+        .filter_map(Value::as_str)
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+        .take(64)
+        .map(str::to_string)
+        .collect()
+}
+
 pub fn grant_of(conn: &Connection, session: &str) -> Result<Option<Grant>, String> {
     conn.query_row(
-        "SELECT mono, project, locked_default FROM crew_grants WHERE session = ?1",
+        "SELECT mono, project, locked_default, projects FROM crew_grants WHERE session = ?1",
         params![session],
         |row| {
             Ok(Grant {
                 mono: row.get(0)?,
                 project: row.get(1)?,
                 locked_default: row.get(2)?,
+                projects: grant_projects(row.get(3)?),
             })
         },
     )
@@ -784,22 +815,57 @@ fn git_entry(folder: &std::path::Path) -> Option<std::path::PathBuf> {
 /// Anything larger is not treated as one, and a fifo is never opened.
 const GIT_FILE_CAP: u64 = 8192;
 
-/// A regular file, or a symlink to one, no bigger than `GIT_FILE_CAP`. A fifo, a directory or a huge file is None, and
-/// nothing is opened that is not a regular file, so a fifo named `.git` cannot stall the judgment.
-fn read_git_file(path: &std::path::Path) -> Option<String> {
-    let listed = std::fs::symlink_metadata(path).ok()?;
-    let meta = if listed.file_type().is_symlink() {
-        std::fs::metadata(path).ok()?
-    } else {
-        listed
-    };
-    if !meta.is_file() || meta.len() > GIT_FILE_CAP {
-        return None;
+/// A regular file, or a symlink to one, no bigger than `GIT_FILE_CAP`. A fifo, a directory or a huge file is None.
+/// On Unix the name is opened with `O_NONBLOCK` and the handle is checked, so a fifo swapped in after a stat cannot
+/// stall the read. A symlink is followed: a git dir file may be a link to a regular file.
+pub(crate) fn read_git_file(path: &std::path::Path) -> Option<String> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        let mut file = std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NONBLOCK)
+            .open(path)
+            .ok()?;
+        let meta = file.metadata().ok()?;
+        if !meta.is_file() || meta.len() > GIT_FILE_CAP {
+            return None;
+        }
+        // A regular file does not wait for a writer. Clearing the flag lets a read wait for the disk.
+        if !clear_git_nonblocking(&file) {
+            return None;
+        }
+        let mut buf = vec![0u8; meta.len() as usize];
+        file.read_exact(&mut buf).ok()?;
+        String::from_utf8(buf).ok()
     }
-    let mut file = std::fs::File::open(path).ok()?;
-    let mut buf = vec![0u8; meta.len() as usize];
-    file.read_exact(&mut buf).ok()?;
-    String::from_utf8(buf).ok()
+    #[cfg(not(unix))]
+    {
+        let listed = std::fs::symlink_metadata(path).ok()?;
+        let meta = if listed.file_type().is_symlink() {
+            std::fs::metadata(path).ok()?
+        } else {
+            listed
+        };
+        if !meta.is_file() || meta.len() > GIT_FILE_CAP {
+            return None;
+        }
+        let mut file = std::fs::File::open(path).ok()?;
+        let mut buf = vec![0u8; meta.len() as usize];
+        file.read_exact(&mut buf).ok()?;
+        String::from_utf8(buf).ok()
+    }
+}
+
+/// Clears `O_NONBLOCK` on a descriptor this process just opened.
+#[cfg(unix)]
+fn clear_git_nonblocking(file: &std::fs::File) -> bool {
+    use std::os::fd::AsRawFd;
+    // SAFETY: F_GETFL and F_SETFL on a descriptor this process owns. Only O_NONBLOCK is cleared.
+    unsafe {
+        let flags = libc::fcntl(file.as_raw_fd(), libc::F_GETFL);
+        flags >= 0 && libc::fcntl(file.as_raw_fd(), libc::F_SETFL, flags & !libc::O_NONBLOCK) >= 0
+    }
 }
 
 fn meta_of(path: &std::path::Path) -> Option<std::fs::Metadata> {
@@ -1007,11 +1073,13 @@ enum Place {
 }
 
 /// What a caller wants from the owning-project read. `cli` None (or blank) fails closed when a place is undecided.
-/// `agent` is an `app-` session, or the launch gate, where the lock can change the answer.
+/// `agent` is an `app-` session, or the launch gate, where the lock can change the answer. `locked_default` is the CLI
+/// the lock already granted. That CLI is allowed even when a doubtful project's lock might apply.
 pub(crate) struct OwningQuery<'a> {
     pub roots: &'a [String],
     pub cli: Option<&'a str>,
     pub agent: bool,
+    pub locked_default: Option<&'a str>,
 }
 
 /// The folder's own `.git` cannot be read as a repository. A folder with no `.git` is not unreadable.
@@ -1025,17 +1093,33 @@ fn folder_unreadable(folder_key: &str) -> bool {
     !matches!(checkout_of(std::path::Path::new(folder_key)), Ok(Some(_)))
 }
 
+/// The root's git dir cannot be read. If the root sits inside the main checkout of the folder's own repo, membership is
+/// the relative path from that checkout. Otherwise the place is not known: never a plain No, which would drop the project.
+fn place_unreadable_root(folder_key: &str, root_key: &str) -> Place {
+    let mine = match checkout_of(std::path::Path::new(folder_key)) {
+        Ok(Some(checkout)) => checkout,
+        // No checkout here at all, so this project does not own the folder. A checkout that cannot be read is doubt.
+        Ok(None) => return Place::No,
+        Err(_) => return Place::Undecided,
+    };
+    let Some(main) = main_checkout_top(std::path::Path::new(&mine.common)) else {
+        return Place::Undecided;
+    };
+    if !key_within(root_key, &main) {
+        return Place::Undecided;
+    }
+    match owns_within_checkout(folder_key, &mine.top, root_key, &main) {
+        Ok(true) => Place::Yes,
+        Ok(false) => Place::No,
+        Err(_) => Place::Undecided,
+    }
+}
+
 /// Membership from git, used when the project's files do not name a common directory (a bare repo, or a broken one).
 fn place_by_git(folder_key: &str, root_key: &str) -> Place {
     let theirs = match checkout_of(std::path::Path::new(root_key)) {
         Ok(Some(checkout)) => checkout,
-        Ok(None) | Err(_) => {
-            return if folder_unreadable(folder_key) {
-                Place::Undecided
-            } else {
-                Place::No
-            };
-        }
+        Ok(None) | Err(_) => return place_unreadable_root(folder_key, root_key),
     };
     let mine = match checkout_of(std::path::Path::new(folder_key)) {
         Ok(Some(checkout)) => checkout,
@@ -1057,30 +1141,62 @@ fn place_by_git(folder_key: &str, root_key: &str) -> Place {
     }
 }
 
-/// Membership from the project's side: the main checkout and every linked worktree it has registered. A folder that
-/// sits in none of those tops is not owned. Git is not asked about the folder's own `.git`.
-fn place_inside_common(folder_key: &str, root_id: &str, common: &std::path::Path) -> Place {
-    let root_key = path_key(root_id);
-    let Some(main) = main_checkout_top(common) else {
-        return place_by_git(folder_key, &root_key);
-    };
-    let mut tops = vec![main.clone()];
-    tops.extend(registered_worktree_tops(common));
-    let mut saw_error = false;
-    for top in &tops {
-        if !key_within(folder_key, top) {
-            continue;
-        }
-        match owns_within_checkout(folder_key, top, &root_key, &main) {
-            Ok(true) => return Place::Yes,
-            Ok(false) => {}
-            Err(_) => saw_error = true,
+/// Checkouts registered on this common dir. The main checkout when its git dir is named `.git`. Otherwise the project's
+/// own checkout, and only when git names this same common dir. Then every linked worktree. Git is not asked about the
+/// folder being judged.
+fn checkout_tops(common: &std::path::Path, root_key: &str) -> Vec<String> {
+    let mut tops = Vec::new();
+    if let Some(main) = main_checkout_top(common) {
+        tops.push(main);
+    } else if let Ok(Some(found)) = checkout_of(std::path::Path::new(root_key)) {
+        if path_key(&common.to_string_lossy()) == found.common {
+            tops.push(found.top);
         }
     }
-    if saw_error {
-        Place::Undecided
-    } else {
-        Place::No
+    for top in registered_worktree_tops(common) {
+        if !tops.iter().any(|have| have == &top) {
+            tops.push(top);
+        }
+    }
+    tops
+}
+
+/// The longest top that contains `path`. A worktree nested inside the main checkout beats the main checkout.
+fn longest_containing<'a>(path: &str, tops: &'a [String]) -> Option<&'a str> {
+    let mut best: Option<&str> = None;
+    for top in tops {
+        if !key_within(path, top) {
+            continue;
+        }
+        let replace = match best {
+            None => true,
+            Some(have) => {
+                top.len() > have.len() || (top.len() == have.len() && top.as_str() > have)
+            }
+        };
+        if replace {
+            best = Some(top.as_str());
+        }
+    }
+    best
+}
+
+/// Membership from the project's side. The project's top is the longest registered checkout that contains the project,
+/// never assumed to be the main checkout. A folder in none of those tops is not owned. Git is not asked about the
+/// folder's own `.git`.
+fn place_inside_common(folder_key: &str, root_id: &str, common: &std::path::Path) -> Place {
+    let root_key = path_key(root_id);
+    let tops = checkout_tops(common, &root_key);
+    let Some(project_top) = longest_containing(&root_key, &tops) else {
+        return Place::Undecided;
+    };
+    let Some(folder_top) = longest_containing(folder_key, &tops) else {
+        return Place::No;
+    };
+    match owns_within_checkout(folder_key, folder_top, &root_key, project_top) {
+        Ok(true) => Place::Yes,
+        Ok(false) => Place::No,
+        Err(_) => Place::Undecided,
     }
 }
 
@@ -1145,7 +1261,14 @@ fn doubtful_refuses(
             return Ok(true);
         }
         if query.agent && policy.get("lockDefault").and_then(Value::as_bool) == Some(true) {
-            return Ok(true);
+            // The CLI this launch was already granted is allowed either way. Any other CLI is still refused.
+            let granted = query
+                .locked_default
+                .map(str::trim)
+                .filter(|id| !id.is_empty());
+            if granted != Some(cli) {
+                return Ok(true);
+            }
         }
     }
     Ok(false)
@@ -1180,7 +1303,7 @@ pub(crate) fn projects_owning_for(
     let mut doubtful = Vec::new();
     for id in candidate_ids(conn, query.roots)? {
         match place_project(&here, &id) {
-            Place::Yes => owners.push(id),
+            Place::Yes => owners.push(owner_spelling(query.roots, id)),
             Place::No => {}
             Place::Undecided => doubtful.push(id),
         }
@@ -1195,6 +1318,17 @@ pub(crate) fn projects_owning_for(
     Ok(owners)
 }
 
+/// When the caller passed a hub root for this project, the owner comes back in that root's spelling. The webview maps
+/// an owner to its hub project by the text it sent.
+fn owner_spelling(roots: &[String], id: String) -> String {
+    let key = path_key(&id);
+    roots
+        .iter()
+        .find(|root| path_key(root.trim()) == key)
+        .map(|root| root.trim().to_string())
+        .unwrap_or(id)
+}
+
 pub(crate) fn projects_owning(conn: &Connection, folder: &str) -> Result<Vec<String>, String> {
     projects_owning_for(
         conn,
@@ -1203,6 +1337,7 @@ pub(crate) fn projects_owning(conn: &Connection, folder: &str) -> Result<Vec<Str
             roots: &[],
             cli: None,
             agent: false,
+            locked_default: None,
         },
     )
 }
@@ -1240,6 +1375,7 @@ pub(crate) fn projects_owning_all(
             roots: &[],
             cli: None,
             agent: false,
+            locked_default: None,
         },
     )
 }

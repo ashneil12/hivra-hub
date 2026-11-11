@@ -22,6 +22,8 @@ mod review_r10_tests;
 #[cfg(test)]
 mod review_r11_tests;
 #[cfg(test)]
+mod review_r12_tests;
+#[cfg(test)]
 mod tests;
 
 use std::path::PathBuf;
@@ -259,15 +261,27 @@ pub fn crew_launch_check(
     store: State<'_, SessionStore>,
     input: gate::LaunchCheck,
     session_id: Option<String>,
+    parent_session: Option<String>,
 ) -> Result<(), String> {
     let conn = store.lock_conn()?;
-    gate::check_launch(&conn, &input)?;
+    let parent = parent_session
+        .as_deref()
+        .map(str::trim)
+        .filter(|id| !id.is_empty());
+    if let Some(parent) = parent {
+        gate::check_launch_with(&conn, &input, Some(parent))?;
+    } else {
+        gate::check_launch(&conn, &input)?;
+    }
     match session_id
         .as_deref()
         .map(str::trim)
         .filter(|id| !id.is_empty())
     {
-        Some(session) => gate::record_grant(&conn, session, &input),
+        Some(session) => match parent {
+            Some(parent) => gate::record_grant_with(&conn, session, &input, Some(parent)),
+            None => gate::record_grant(&conn, session, &input),
+        },
         None => Ok(()),
     }
 }
@@ -347,6 +361,7 @@ pub fn crew_projects_owning(
             roots: &roots,
             cli: None,
             agent: false,
+            locked_default: None,
         },
     )
 }

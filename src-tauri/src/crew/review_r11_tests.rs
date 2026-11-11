@@ -250,6 +250,7 @@ fn a_hub_project_at_a_linked_worktree_does_not_refuse_the_default_read_elsewhere
             roots: &roots,
             cli: None,
             agent: false,
+            locked_default: None,
         },
     );
     let _ = std::fs::remove_dir_all(&root);
@@ -376,6 +377,7 @@ fn an_owner_found_through_a_hub_root_comes_back_in_the_roots_spelling() {
             roots: &roots,
             cli: None,
             agent: false,
+            locked_default: None,
         },
     );
     let _ = std::fs::remove_dir_all(&root);

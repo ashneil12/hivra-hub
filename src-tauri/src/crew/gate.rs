@@ -64,18 +64,29 @@ fn unreadable(error: String) -> String {
 
 /// Ok when the launch may start. The reason is one plain line, shown to the person and the Lead.
 pub fn check_launch(conn: &Connection, input: &LaunchCheck) -> Result<(), String> {
+    check_launch_with(conn, input, None)
+}
+
+/// `check_launch`, plus the session this launch was started from. Its saved projects stay in force for the child.
+pub fn check_launch_with(
+    conn: &Connection,
+    input: &LaunchCheck,
+    parent_session: Option<&str>,
+) -> Result<(), String> {
     let folders: Vec<String> = input.project.iter().cloned().collect();
     let cli = input.cli.trim();
-    let projects = store::projects_owning_all_for(
+    let mut projects = store::projects_owning_all_for(
         conn,
         &folders,
         &store::OwningQuery {
             roots: &[],
             cli: Some(cli),
             agent: true,
+            locked_default: input.locked_default.as_deref(),
         },
     )
     .map_err(unreadable)?;
+    add_projects(&mut projects, inherited_projects(conn, parent_session)?);
     let policy =
         store::policy_for_all(conn, input.mono.as_deref(), &projects).map_err(unreadable)?;
     let name = label_of(cli);
@@ -140,14 +151,44 @@ fn poisoned() -> String {
 /// `check_launch`, so a restart, a resumed worker or Ash typing into a worker is judged against the same default.
 /// The folder is stored as the project that owns it, when one does, so the grant names the project, not a worktree.
 pub fn record_grant(conn: &Connection, session: &str, input: &LaunchCheck) -> Result<(), String> {
-    // Round 8: the folder is stored as given. Every project that owns it is read again at each judgment, so a grant
-    // made in a nested package keeps that package's Never use next to its enclosing project's.
+    record_grant_with(conn, session, input, None)
+}
+
+/// `record_grant`, plus the session this launch was started from. The child's grant keeps that session's projects.
+pub fn record_grant_with(
+    conn: &Connection,
+    session: &str,
+    input: &LaunchCheck,
+    parent_session: Option<&str>,
+) -> Result<(), String> {
+    // Round 8: the folder is stored as given. The projects that own it are snapshotted too, so a later judgment still
+    // has them when the worktree that named them is gone. A child keeps its parent's snapshot.
     let project = input
         .project
         .as_deref()
         .map(str::trim)
         .filter(|id| !id.is_empty())
         .map(str::to_string);
+    let locked_default = input
+        .locked_default
+        .as_deref()
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+        .map(str::to_string);
+    let mut projects = match project.as_deref() {
+        Some(folder) => store::projects_owning_for(
+            conn,
+            folder,
+            &store::OwningQuery {
+                roots: &[],
+                cli: Some(input.cli.trim()),
+                agent: is_agent_session(session),
+                locked_default: locked_default.as_deref(),
+            },
+        )?,
+        None => Vec::new(),
+    };
+    add_projects(&mut projects, inherited_projects(conn, parent_session)?);
     let grant = Grant {
         mono: input
             .mono
@@ -156,12 +197,8 @@ pub fn record_grant(conn: &Connection, session: &str, input: &LaunchCheck) -> Re
             .filter(|id| !id.is_empty())
             .map(str::to_string),
         project,
-        locked_default: input
-            .locked_default
-            .as_deref()
-            .map(str::trim)
-            .filter(|id| !id.is_empty())
-            .map(str::to_string),
+        locked_default,
+        projects,
     };
     store::save_grant(
         conn,
@@ -185,16 +222,62 @@ fn projects_in_force(
         folders.push(project);
     }
     folders.push(folder.to_string());
-    store::projects_owning_all_for(
+    let locked = grant.and_then(|grant| grant.locked_default.as_deref());
+    let mut projects = store::projects_owning_all_for(
         conn,
         &folders,
         &store::OwningQuery {
             roots: &[],
             cli: Some(cli),
             agent,
+            locked_default: locked,
         },
     )
-    .map_err(unreadable)
+    .map_err(unreadable)?;
+    if let Some(grant) = grant {
+        add_projects(&mut projects, grant.projects.clone());
+    }
+    Ok(projects)
+}
+
+/// Project ids the parent session's grant still holds. A grant saved before that list existed is read from its folder.
+fn inherited_projects(conn: &Connection, parent: Option<&str>) -> Result<Vec<String>, String> {
+    let Some(parent) = parent.map(str::trim).filter(|id| !id.is_empty()) else {
+        return Ok(Vec::new());
+    };
+    let Some(grant) = store::grant_of(conn, session_of(parent))? else {
+        return Ok(Vec::new());
+    };
+    if !grant.projects.is_empty() {
+        return Ok(grant.projects);
+    }
+    match grant.project.as_deref() {
+        Some(folder) => store::projects_owning_for(
+            conn,
+            folder,
+            &store::OwningQuery {
+                roots: &[],
+                cli: None,
+                agent: false,
+                locked_default: None,
+            },
+        ),
+        None => Ok(Vec::new()),
+    }
+}
+
+fn add_projects(projects: &mut Vec<String>, more: Vec<String>) {
+    for id in more {
+        let id = id.trim();
+        if id.is_empty()
+            || projects
+                .iter()
+                .any(|have| store::path_key(have) == store::path_key(id))
+        {
+            continue;
+        }
+        projects.push(id.to_string());
+    }
 }
 
 fn policy_of(

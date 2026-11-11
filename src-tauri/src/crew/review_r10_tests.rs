@@ -220,15 +220,17 @@ fn an_unreadable_folder_is_refused_only_when_a_doubtful_project_would_change_the
     let chat_claude = judge_start(&conn, "7d3e5c2a-lead-chat", "claude", folder);
     let chat_codex = judge_start(&conn, "7d3e5c2a-lead-chat", "codex", folder);
     let worker_claude = judge_start(&conn, "app-r11-doubt", "claude", folder);
+    let worker_other = judge_start(&conn, "app-r11-doubt", "grok", folder);
     let _ = std::fs::remove_dir_all(&root);
     chat_claude.expect("a CLI the doubtful project does not ban is allowed");
     assert!(
         chat_codex.is_err(),
         "codex is on the doubtful project's Never use"
     );
+    worker_claude.expect("the granted locked default is allowed either way");
     assert!(
-        worker_claude.is_err(),
-        "the lock on a doubtful project refuses an agent session"
+        worker_other.is_err(),
+        "a CLI other than the locked default is refused when the lock might apply"
     );
 }
 
