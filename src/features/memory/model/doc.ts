@@ -55,7 +55,7 @@ export type MemoryItem = {
   validTo?: string;
   /** WP-240: why and when this item was let go. Only set on items in `MemoryDoc.archived`. */
   letGo?: LetGo;
-  /** WP-241: the person marked this fact to be sent in every chat. Absent means not marked. */
+  /** WP-241: the person said to send this fact in every chat (true) or never as part of that set (false). Absent: unmarked. */
   essential?: boolean;
   /** WP-241: how many times a first mate read this fact through its own memory tool. Absent on old data, read as 0. */
   uses?: number;
@@ -306,7 +306,7 @@ function loadDetails(item: MemoryItem): void {
   if (item.occurredOn !== undefined && !isDay(item.occurredOn)) delete item.occurredOn;
   if (item.validFrom !== undefined && !isDay(item.validFrom)) delete item.validFrom;
   if (item.validTo !== undefined && !isDay(item.validTo)) delete item.validTo;
-  if (item.essential !== undefined && item.essential !== true) delete item.essential;
+  if (item.essential !== undefined && typeof item.essential !== "boolean") delete item.essential;
   if (item.uses !== undefined && !(finite(item.uses) && Number.isInteger(item.uses))) delete item.uses;
   // Only the archive's own reader keeps a let-go mark; a kept item never carries one.
   delete item.letGo;

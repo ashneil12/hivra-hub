@@ -178,7 +178,8 @@ export function markLived(doc: MemoryDoc, at: number): MemoryDoc {
  */
 export function markUsed(doc: MemoryDoc, ids: readonly string[], at: number): MemoryDoc {
   const wanted = new Set(ids);
-  const items = doc.items.map((item) => (wanted.has(item.id) ? touch(item, at) : item));
+  // WP-241: each read is counted, so a fact read often joins the essential set (essential.ts).
+  const items = doc.items.map((item) => (wanted.has(item.id) ? { ...touch(item, at), uses: (item.uses ?? 0) + 1 } : item));
   const changed = items.some((item, i) => item !== doc.items[i]);
   const days = daysWith(doc.livedDays, dayOf(new Date(at)));
   if (!changed && sameDays(doc.livedDays, days)) return doc;

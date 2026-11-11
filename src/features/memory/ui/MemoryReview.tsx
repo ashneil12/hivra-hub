@@ -10,6 +10,7 @@ import { healthOf } from "../model/health";
 import { importOrderRefusal } from "../model/orderScan";
 import { pausedNow } from "../model/memoryBudget";
 import { bringBack, forgetLetGo, LET_GO_LABEL, letGoItem, memoryStatus } from "../model/letGo";
+import { isEssential, markEssential } from "../model/essential";
 import { MemoryAsk } from "./MemoryAsk";
 import { MemoryHealthCard } from "./MemoryHealthCard";
 import { MemoryProvenance } from "./MemoryProvenance";
@@ -274,6 +275,7 @@ export function MemoryReview({ ports }: { ports: MemoryPorts }) {
             <p data-state>{item.action === "skill" && item.state === "confirmed" ? "Kept as a skill" : memoryStatus(item)}</p>
             <p data-source>{item.source.label}</p>
             {item.by ? <p data-by>{`Written by ${engineName(item.by)}`}</p> : null}
+            {isEssential(item) ? <p data-essential>Sent in every chat</p> : null}
             <MemoryProvenance item={item} now={now} />
             {editing?.id === item.id ? (
               <div className="flex flex-col gap-1">
@@ -347,6 +349,18 @@ export function MemoryReview({ ports }: { ports: MemoryPorts }) {
                 {item.action === "add" ? (
                   <button type="button" className={BTN} disabled={busy} onClick={() => setEditing({ id: item.id, text: item.text })}>
                     {`Edit ${item.text}`}
+                  </button>
+                ) : null}
+                {item.action === "add" && item.state !== "unreviewed" ? (
+                  <button
+                    type="button"
+                    className={BTN}
+                    disabled={busy}
+                    data-essential-button
+                    aria-pressed={isEssential(item)}
+                    onClick={() => void change((current) => markEssential(current, item.id, !isEssential(item)))}
+                  >
+                    {isEssential(item) ? `Stop sending in every chat: ${item.text}` : `Send in every chat: ${item.text}`}
                   </button>
                 ) : null}
                 {item.action === "add" ? (

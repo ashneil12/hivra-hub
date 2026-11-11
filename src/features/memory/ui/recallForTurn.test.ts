@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { memoryId, type MemoryDoc, type MemoryItem } from "../model/doc";
 import { forgetShown } from "../model/shownMemory";
+import { forgetEssentialSent } from "../model/essential";
 import { forgetRecall, lastRecallFor } from "../model/lastRecall";
 
 const state = vi.hoisted(() => ({ doc: null as unknown }));
@@ -189,5 +190,37 @@ describe("the same fact saved under several Monos, turn after turn", () => {
     const after = await recalledFence("notes-lead", MESSAGE, { ...wide("s-copies"), compacted: 1 });
     expect(lines(after).filter((line) => line.includes(SAME))).toHaveLength(1);
     expect(lines(after)).toHaveLength(3);
+  });
+});
+
+describe("WP-241: two tiers in a turn", () => {
+  beforeEach(() => {
+    forgetEssentialSent();
+    state.doc = {
+      revision: 1,
+      generation: 1,
+      items: [{ ...fact("Likes small commits"), essential: true }, fact("Branches are renamed before review")],
+      doneTurns: [],
+      imports: {},
+    } as MemoryDoc;
+  });
+
+  it("puts the essential set in once, and leaves it out of the turn's recall", async () => {
+    const first = (await recalledFence("notes-lead", MESSAGE, { sessionId: "s-e" }, undefined, null)) ?? "";
+    expect(first).toContain("Facts the person keeps for every chat.");
+    expect(first.match(/Likes small commits/g)).toHaveLength(1);
+    const second = await recalledFence("notes-lead", MESSAGE, { sessionId: "s-e" }, undefined, null);
+    expect(second ?? "").not.toContain("Likes small commits");
+  });
+
+  it("takes the model's pick when it answers, and the lexical one when it does not", async () => {
+    state.doc = { ...(state.doc as MemoryDoc), items: [fact("Likes small commits"), fact("Branches are renamed before review")] };
+    const renamed = fact("Branches are renamed before review").id;
+    const ranked = await recalledFence("notes-lead", MESSAGE, { sessionId: "s-r1" }, undefined, async () => ({ ok: true, text: JSON.stringify([renamed]) }));
+    expect(lines(ranked)).toHaveLength(1);
+    expect(ranked).toContain("Branches are renamed before review");
+    const lexical = await recalledFence("notes-lead", MESSAGE, { sessionId: "s-r2" }, undefined, null);
+    const failed = await recalledFence("notes-lead", MESSAGE, { sessionId: "s-r3" }, undefined, async () => ({ ok: false, kind: "timeout", reason: "late" }));
+    expect(lines(failed)).toEqual(lines(lexical));
   });
 });
