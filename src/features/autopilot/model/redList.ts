@@ -72,7 +72,7 @@ const PATTERNS: Record<RedCategory, readonly RegExp[]> = {
     /\b(sudo\s+)?(reboot|poweroff)\b|\bshutdown\s+-[hr]\b/,
     /\bsystemctl\s+(restart|stop|disable|reboot|poweroff)\b/,
     /\bvercel\b.{0,40}(--prod\b|\bpromote\b|\brollback\b)/,
-    /\b(fly|flyctl|heroku|railway|render)\b.{0,40}\b(deploy|scale|restart|destroy)\b/,
+    /\b(fly|flyctl|[h]eroku|heroku|railway|render)\b.{0,40}\b(deploy|scale|restart|destroy)\b/,
     /\bmigrat(e|ion|ions)\b.{0,40}\b(prod|production|moltbot|live database|live db)\b/,
     /\bpromote (it |this |the build |canary )?to (prod|production|main)\b/,
   ],

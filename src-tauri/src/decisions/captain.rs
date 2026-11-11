@@ -19,7 +19,8 @@ const SELF: &str =
     "The captain cannot raise its own turn cap or a budget, and it cannot edit its charter.";
 
 pub fn is_captain(by: Option<&str>) -> bool {
-    by.unwrap_or("").trim().starts_with("captain:")
+    // The same fold as a decision key: case, fullwidth letters and invisible characters are still a captain.
+    super::fold_key(by.unwrap_or("")).starts_with("captain:")
 }
 
 /// A key only the owner answers, after the same fold as `person_only`. `charterboard` is not the charter.
@@ -36,6 +37,7 @@ pub fn owner_key(key: &str) -> bool {
         "gate/",
         "secret/",
         "security/",
+        "security-review/",
         "charter/",
         "captain-cap/",
         "budget/",
@@ -90,10 +92,14 @@ pub fn refuse_stored(
             .to_string(),
         ));
     }
-    // The question and the answer are judged. The reason is not: it can name the red line it is passing up.
-    let text = format!("{}\n{proposed}", decision.question);
+    // The question, the recommendation, every option and the answer are judged. The reason is not: it can name the
+    // red line it is passing up.
+    let text = judged_text(decision, proposed);
     if red_category(&text).is_some() {
         return Ok(Some(RED.to_string()));
+    }
+    if let Some(why) = super::captain_text::question_veto(decision, proposed) {
+        return Ok(Some(why.to_string()));
     }
     if !switch_on(conn, &decision.project, now)? {
         return Ok(Some(OFF.to_string()));
@@ -101,11 +107,25 @@ pub fn refuse_stored(
     if spend_blocked(conn, &decision.project, now) {
         return Ok(Some(MONEY.to_string()));
     }
-    let counted = clip_reason(reason).is_some_and(|text| text.starts_with("captain turn:"));
-    if counted && turns_full(conn, &decision.project, now)? {
+    // Every captain answer counts. The reason is the captain's own words, so it cannot pick which answers count.
+    let _ = reason;
+    if turns_full(conn, &decision.project, now)? {
         return Ok(Some(TURNS.to_string()));
     }
     Ok(None)
+}
+
+fn judged_text(decision: &super::Decision, proposed: &str) -> String {
+    let mut parts = Vec::with_capacity(decision.options.len() + 3);
+    parts.push(decision.question.as_str());
+    if let Some(recommended) = decision.recommended.as_deref() {
+        parts.push(recommended);
+    }
+    for option in &decision.options {
+        parts.push(option.as_str());
+    }
+    parts.push(proposed);
+    parts.join("\n")
 }
 
 fn switch_on(conn: &Connection, project: &str, now: i64) -> Result<bool, String> {
@@ -120,6 +140,26 @@ fn spend_blocked(conn: &Connection, project: &str, now: i64) -> bool {
     crate::spend_ledger::admit_automated(conn, Some(project), now).is_err()
 }
 
+/// The person's cap. A missing, unreadable or out-of-range value is the default. The captain has no argument for it.
+fn turn_cap(conn: &Connection) -> i64 {
+    let value: Option<String> = conn
+        .query_row(
+            "SELECT value FROM decision_settings WHERE key = 'captain_turn_cap'",
+            [],
+            |row| row.get(0),
+        )
+        .ok();
+    match value
+        .as_deref()
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+        .and_then(|text| text.parse::<i64>().ok())
+    {
+        Some(cap) if (1..=100).contains(&cap) => cap,
+        _ => TURN_CAP,
+    }
+}
+
 fn turns_full(conn: &Connection, project: &str, now: i64) -> Result<bool, String> {
     let since = now.saturating_sub(HOUR_MS);
     let count: i64 = conn
@@ -127,7 +167,6 @@ fn turns_full(conn: &Connection, project: &str, now: i64) -> Result<bool, String
             "SELECT COUNT(*) FROM decisions
               WHERE project = ?1
                 AND answered_by LIKE 'captain:%'
-                AND answer_reason LIKE 'captain turn:%'
                 AND answered_at > ?2",
             params![project, since],
             |row| row.get(0),
@@ -135,7 +174,42 @@ fn turns_full(conn: &Connection, project: &str, now: i64) -> Result<bool, String
         .map_err(|_| {
             "The captain could not count its turns, so it waits for the owner.".to_string()
         })?;
-    Ok(count >= TURN_CAP)
+    Ok(count >= turn_cap(conn))
+}
+
+fn note_cap(conn: &Connection) -> i64 {
+    let value: Option<String> = conn
+        .query_row(
+            "SELECT value FROM decision_settings WHERE key = 'captain_note_cap'",
+            [],
+            |row| row.get(0),
+        )
+        .ok();
+    match value
+        .as_deref()
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+        .and_then(|text| text.parse::<i64>().ok())
+    {
+        Some(cap) if (1..=60).contains(&cap) => cap,
+        _ => 30,
+    }
+}
+
+fn notes_full(conn: &Connection, project: &str, by: &str, now: i64) -> Result<bool, String> {
+    let since = now.saturating_sub(HOUR_MS);
+    let count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM decisions
+              WHERE project = ?1
+                AND decision_key LIKE 'noted/%'
+                AND answered_by = ?2
+                AND answered_at > ?3",
+            params![project, by, since],
+            |row| row.get(0),
+        )
+        .map_err(|_| "The note could not be counted, so it was not written.".to_string())?;
+    Ok(count >= note_cap(conn))
 }
 
 /// A first mate's note: already answered, in its own chat. Not a captain answer, and not gated by the switch.
@@ -157,11 +231,17 @@ pub fn note(
     }
     let what = super::plain(what, "What was decided", super::ANSWER_MAX)?;
     let reason = super::plain(reason, "The reason", REASON_MAX)?;
-    if owner_key(&what) {
-        return Err(OWNER.to_string());
+    // The words are a note, not a decision key. A key check on free text refuses an ordinary sentence and
+    // does not protect an owner key, whose key is `noted/...` either way.
+    if red_category(&format!("{what}\n{reason}")).is_some() {
+        return Err(RED.to_string());
     }
-    let by = format!("chat:{session}");
+    let by = format!("note:{session}");
     let by: String = by.chars().take(120).collect();
+    // A count that cannot be read refuses the note. The captain has no argument that raises this cap.
+    if notes_full(conn, project, &by, now)? {
+        return Err("Too many notes from this chat this hour, so this one was not written.".into());
+    }
     let asked_by: String = session.chars().take(120).collect();
     let tag = session_tag(session);
     let tx = conn
@@ -271,7 +351,7 @@ const PATTERNS: &[(&str, &[&str])] = &[
             r"\b(sudo\s+)?(reboot|poweroff)\b|\bshutdown\s+-[hr]\b",
             r"\bsystemctl\s+(restart|stop|disable|reboot|poweroff)\b",
             r"\bvercel\b.{0,40}(--prod\b|\bpromote\b|\brollback\b)",
-            r"\b(fly|flyctl| heroku|railway|render)\b.{0,40}\b(deploy|scale|restart|destroy)\b",
+            r"\b(fly|flyctl|[h]eroku|heroku|railway|render)\b.{0,40}\b(deploy|scale|restart|destroy)\b",
             r"\bmigrat(e|ion|ions)\b.{0,40}\b(prod|production|moltbot|live database|live db)\b",
             r"\bpromote (it |this |the build |canary )?to (prod|production|main)\b",
         ],
@@ -320,7 +400,7 @@ const PATTERNS: &[(&str, &[&str])] = &[
             r"\.gnupg\b|\.ssh\b|\.docker[/]config\.json|\.kube[/]config\b|\.aws[/]credentials\b",
             r"(^|[\s/])\.config[/]gh\b|gh[/]hosts\.yml\b",
             r"\bseed phrase\b|\bmnemonic\b|\bwallet (key|seed)\b",
-            r"(^|[\s/'`])\.env(\.[a-z]+)?\b",
+            r#"(^|[\s/'"`])\.env(\.[a-z]+)?\b"#,
             r"\b(2fa|mfa|otp|one[- ]time (code|password)|recovery codes?)\b",
             r"\b(rotate|revoke|regenerate|share|print|paste|leak)\b.{0,30}\b(keys|secret|secrets|token|tokens|credential|credentials)\b",
         ],
@@ -389,6 +469,10 @@ pub fn red_category(text: &str) -> Option<&'static str> {
                 .iter()
                 .any(|pattern| pattern.is_match(&normalized))
         {
+            return Some(category.name);
+        }
+        // The same extra check as redList.ts: a path is judged segment by segment, after this category's patterns.
+        if category.name == "credentials" && super::captain_text::credential_in_text(&normalized) {
             return Some(category.name);
         }
     }
@@ -697,7 +781,7 @@ mod tests {
             [],
         )
         .unwrap();
-        // A standing answer is not a turn, so the cap does not hold it.
+        // Every captain answer counts, whatever reason it gives itself. A standing label does not slip past the cap.
         let standing = captain_answers(
             &mut conn,
             "hivra",
@@ -705,8 +789,8 @@ mod tests {
             "Keep it",
             "standing answer: merge on green",
         )
-        .unwrap();
-        assert!(standing.applied);
+        .unwrap_err();
+        assert!(standing.contains("turns"), "{standing}");
     }
 
     #[test]
@@ -722,7 +806,7 @@ mod tests {
             NOW,
         )
         .unwrap();
-        assert_eq!(saved.answered_by.as_deref(), Some("chat:lead-1"));
+        assert_eq!(saved.answered_by.as_deref(), Some("note:lead-1"));
         assert_eq!(saved.answer_reason.as_deref(), Some("the checks passed"));
         assert_eq!(saved.state, ANSWERED);
         assert!(saved.decision_key.starts_with("noted/"));
@@ -737,8 +821,25 @@ mod tests {
         )
         .unwrap();
         assert_ne!(again.decision_key, saved.decision_key);
-        let err = note(&mut conn, "hivra", "lead-1", "secret/token", "because", NOW).unwrap_err();
-        assert!(err.contains("owner") || err.contains("captain"), "{err}");
+        // Free text is not a decision key. A sentence that looks like an owner key is still a note.
+        let named = note(&mut conn, "hivra", "lead-1", "charter/name", "because", NOW).unwrap();
+        assert!(named.decision_key.starts_with("noted/"));
+        // A credential path in the words is the red list, not an owner-key check, and the error does not repeat it.
+        let secret =
+            note(&mut conn, "hivra", "lead-1", "secret/token", "because", NOW).unwrap_err();
+        assert!(secret.contains("red list"), "{secret}");
+        assert!(!secret.contains("token"), "{secret}");
+        let err = note(
+            &mut conn,
+            "hivra",
+            "lead-1",
+            "Refund the second charge",
+            "because",
+            NOW,
+        )
+        .unwrap_err();
+        assert!(err.contains("red list"), "{err}");
+        assert!(!err.contains("second"), "{err}");
         assert!(note(
             &mut conn,
             "hivra",
@@ -855,5 +956,147 @@ mod tests {
         assert!(owner_key("charter"));
         assert!(owner_key("CHARTER"));
         assert!(owner_key("budget/raise"));
+        assert!(owner_key("security-review/run"));
+        assert!(!standing_eligible("charter"));
+        assert!(!standing_eligible("captain-cap"));
+        assert!(standing_eligible("charterboard"));
+        assert!(!standing_eligible("\u{FF22}udget/raise"));
+        assert!(!standing_eligible("security-review/run"));
+    }
+
+    #[test]
+    fn a_captain_id_is_stored_folded_and_the_cap_comes_from_settings() {
+        let store = store();
+        let mut conn = store.lock_conn().unwrap();
+        mate(&mut conn);
+        cover(&conn, "*");
+        conn.execute(
+            "INSERT INTO decision_settings (key, value) VALUES ('captain_turn_cap', '1')",
+            [],
+        )
+        .unwrap();
+        open(&mut conn, "hivra", "font", "Example: which name?");
+        let first = answer_with(
+            &mut conn,
+            "hivra",
+            "font",
+            "Keep it",
+            Some("CAPTAIN:Ada".into()),
+            Some("hello"),
+            NOW,
+        )
+        .unwrap();
+        assert!(first.applied);
+        assert_eq!(
+            first.decision.unwrap().answered_by.as_deref(),
+            Some("captain:ada")
+        );
+        open(&mut conn, "hivra", "font-2", "Example: which name?");
+        let second = answer_with(
+            &mut conn,
+            "hivra",
+            "font-2",
+            "Keep it",
+            Some("captain:ada".into()),
+            Some("hello"),
+            NOW,
+        )
+        .unwrap_err();
+        assert!(second.contains("turns"), "{second}");
+    }
+
+    #[test]
+    fn a_chat_or_a_page_cannot_answer_an_owner_key() {
+        let store = store();
+        let mut conn = store.lock_conn().unwrap();
+        mate(&mut conn);
+        for (key, by) in [
+            ("budget/raise", "chat:lead"),
+            ("budget/raise", "page:home"),
+            ("security-review/run", "chat:lead"),
+            ("captain-cap", "page:home"),
+        ] {
+            open(&mut conn, "hivra", key, "Example: which name?");
+            let err = answer(&mut conn, "hivra", key, "Keep it", Some(by.into()), NOW).unwrap_err();
+            assert!(err.contains("person"), "{key} {by}: {err}");
+        }
+        open(&mut conn, "hivra", "budget/ok", "Example: which name?");
+        let person = answer(
+            &mut conn,
+            "hivra",
+            "budget/ok",
+            "Keep it",
+            Some("person".into()),
+            NOW,
+        )
+        .unwrap();
+        assert!(person.applied);
+    }
+
+    #[test]
+    fn a_question_that_sends_is_not_the_captains_even_when_it_is_not_on_the_red_list() {
+        let store = store();
+        let mut conn = store.lock_conn().unwrap();
+        mate(&mut conn);
+        cover(&conn, "*");
+        open(&mut conn, "hivra", "mail", "Should I email Priya?");
+        let err = captain_answers(&mut conn, "hivra", "mail", "Keep it", "rule: name").unwrap_err();
+        assert!(err.contains("sends a message"), "{err}");
+        assert!(!err.contains("red list"), "{err}");
+    }
+
+    #[test]
+    fn a_note_is_not_in_the_answered_window_and_a_chat_cannot_flood_them() {
+        let store = store();
+        let mut conn = store.lock_conn().unwrap();
+        conn.execute(
+            "INSERT INTO decision_settings (key, value) VALUES ('captain_note_cap', '1')",
+            [],
+        )
+        .unwrap();
+        let saved = note(
+            &mut conn,
+            "hivra",
+            "lead-1",
+            "Example: retry once",
+            "because",
+            NOW,
+        )
+        .unwrap();
+        let rows = list(&conn, 20).unwrap();
+        assert!(rows
+            .iter()
+            .all(|row| row.decision_key != saved.decision_key));
+        let err = note(
+            &mut conn,
+            "hivra",
+            "lead-1",
+            "Example: retry twice",
+            "because",
+            NOW,
+        )
+        .unwrap_err();
+        assert!(err.contains("notes"), "{err}");
+        let other = note(
+            &mut conn,
+            "hivra",
+            "lead-2",
+            "Example: retry once",
+            "because",
+            NOW,
+        )
+        .unwrap();
+        assert!(other.decision_key.starts_with("noted/"));
+    }
+
+    #[test]
+    fn the_red_list_matches_the_shared_cases() {
+        let raw = include_str!("../../../src/features/autopilot/model/redListCases.json");
+        let cases: Vec<serde_json::Value> = serde_json::from_str(raw).unwrap();
+        for case in cases {
+            let text = case["text"].as_str().unwrap();
+            let want = case["category"].as_str();
+            assert_eq!(red_category(text), want, "{text}");
+        }
     }
 }

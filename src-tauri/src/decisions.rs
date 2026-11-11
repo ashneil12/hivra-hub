@@ -146,12 +146,20 @@ fn ensure_decision_columns(conn: &Connection) -> rusqlite::Result<()> {
 pub fn standing_eligible(key: &str) -> bool {
     // Keys keep the case they were typed in (`key_like`). Fold before the prefix check, as `is_secret_key` does.
     let key = fold_key(key);
+    if key == "charter" || key == "captain-cap" {
+        return false;
+    }
     ![
         "irreversible/",
         "fresh-eyes",
         "gate/",
         "secret/",
         "fanout-again/",
+        "security/",
+        "security-review/",
+        "budget/",
+        "charter/",
+        "captain-cap/",
     ]
     .iter()
     .any(|prefix| key.starts_with(prefix))
@@ -290,7 +298,7 @@ pub fn list(conn: &Connection, answered: usize) -> Result<Vec<Decision>, String>
     for (filter, limit) in [
         ("state = 'open' ORDER BY created_at, rowid LIMIT 200", 200),
         (
-            "state = 'answered' ORDER BY answered_at DESC, rowid DESC LIMIT ?1",
+            "state = 'answered' AND decision_key NOT LIKE 'noted/%' ORDER BY answered_at DESC, rowid DESC LIMIT ?1",
             answered.min(100),
         ),
     ] {
@@ -471,12 +479,32 @@ pub fn check_may_ask(conn: &Connection, session: &str) -> Result<(), String> {
 }
 
 /// What a waiting task is told when the person answers the same question.
+/// A captain's answer names the Chief of Staff and does not outrank the brief. Only the person's own answer does.
 fn release_text(d: &Decision) -> String {
+    let answer = d.answer.as_deref().unwrap_or("");
+    if captain::is_captain(d.answered_by.as_deref()) {
+        let why = reason_aside(d);
+        return format!(
+            "The Chief of Staff answered{why} \"{}\": {}\nCarry on from this answer.",
+            d.question, answer
+        );
+    }
     format!(
         "The person answered \"{}\": {}\nCarry on from this answer; it outranks anything in your brief that disagrees.",
-        d.question,
-        d.answer.as_deref().unwrap_or("")
+        d.question, answer
     )
+}
+
+fn reason_aside(d: &Decision) -> String {
+    match d
+        .answer_reason
+        .as_deref()
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+    {
+        Some(reason) => format!(" ({reason})"),
+        None => String::new(),
+    }
 }
 
 /// What a waiting task is told when a different question reused a standing answer. Guidance, not permission.
@@ -495,11 +523,17 @@ fn owner_text(d: &Decision, released: usize) -> String {
         1 => " One waiting task has it and carries on.".into(),
         n => format!(" {n} waiting tasks have it and carry on."),
     };
+    let answer = d.answer.as_deref().unwrap_or("");
+    if captain::is_captain(d.answered_by.as_deref()) {
+        let why = reason_aside(d);
+        return format!(
+            "The Chief of Staff answered{why} your question \"{}\" (key {}): {}.{tasks} This is the app's note, not a new message.",
+            d.question, d.decision_key, answer
+        );
+    }
     format!(
         "The person answered your question \"{}\" (key {}): {}.{tasks} This is the app's note, not a new message.",
-        d.question,
-        d.decision_key,
-        d.answer.as_deref().unwrap_or("")
+        d.question, d.decision_key, answer
     )
 }
 
@@ -1271,7 +1305,7 @@ pub const APP_CLOSER: &str = "app:fresh-eyes";
 /// Invisible characters: Unicode general category Cf (format) and the other default-ignorable code points. A spelling
 /// that differs only by them looks the same on screen, so the fold drops them. Mirrored in TS by the `\p{Cf}` and
 /// `\p{Default_Ignorable_Code_Point}` classes in `foldDecisionKey`.
-fn is_ignorable(c: char) -> bool {
+pub(crate) fn is_ignorable(c: char) -> bool {
     matches!(
         c as u32,
         0x00AD
@@ -1342,7 +1376,12 @@ pub fn person_only(key: &str, by: Option<&str>) -> Option<String> {
     let again = is_again_key(key);
     let gate = is_gate_key(key);
     let secret = is_secret_key(key);
-    if !fold_key(key).starts_with("irreversible/") && !review && !again && !gate && !secret {
+    let irreversible = fold_key(key).starts_with("irreversible/");
+    // The rest of the captain's owner keys (a budget, the charter, a security review) are the person's too,
+    // including when a chat or a page answers. A secret stays on its own stricter rule below.
+    let owner_rest =
+        captain::owner_key(key) && !irreversible && !review && !again && !gate && !secret;
+    if !irreversible && !review && !again && !gate && !secret && !owner_rest {
         return None;
     }
     // A secret card is stricter than the other person-only keys: `user` (the Needs sheet) is not the person on the card.
@@ -1352,6 +1391,14 @@ pub fn person_only(key: &str, by: Option<&str>) -> Option<String> {
             Some(_) => {
                 Some("Only the person can approve a secret run. Ask them on their card.".into())
             }
+        };
+    }
+    if owner_rest {
+        return match by.map(str::trim).filter(|word| !word.is_empty()) {
+            None | Some("user") | Some("person") => None,
+            Some(other) => Some(format!(
+                "Only the person answers this; {other} cannot. It waits until they do."
+            )),
         };
     }
     match by.map(str::trim).filter(|word| !word.is_empty()) {
@@ -1391,6 +1438,22 @@ fn from_person(by: Option<&str>) -> bool {
     )
 }
 
+/// Who an answer is stored as. A captain id is folded, so `CAPTAIN:Ada` and an invisible character are the same captain.
+fn stored_answerer(by: Option<&str>) -> String {
+    let raw = by.map(str::trim).filter(|word| !word.is_empty());
+    let text = if captain::is_captain(raw) {
+        fold_key(raw.unwrap_or(""))
+    } else {
+        raw.unwrap_or("person").to_string()
+    };
+    let clipped: String = text.chars().take(120).collect();
+    if clipped.is_empty() {
+        "person".into()
+    } else {
+        clipped
+    }
+}
+
 /// WP-172: the decision keys that start a stopped fan-out task again.
 pub fn is_again_key(key: &str) -> bool {
     fold_key(key).starts_with("fanout-again/")
@@ -1412,7 +1475,7 @@ pub const CARD_CHANGED: &str =
     "That card changed after you read it, so the answer was not recorded. Read it again and answer.";
 
 /// `answer`, plus the reason the caller gives. The reason is stored and clipped. Callers with none pass `None`.
-/// A secret card still needs the version the person read; this path passes none, so [`answer_seen`] is the one for it.
+/// A secret card still needs the version the person read; this path passes none, so it is not the one for a secret card.
 pub fn answer_with(
     conn: &mut Connection,
     project: &str,
@@ -1428,6 +1491,9 @@ pub fn answer_with(
 /// [`answer`] for the card the person read: `seen_version` is the card's version on their screen. A secret card whose
 /// version has moved on (another command, folder or variable was put on it) is not answered, so an answer is only ever
 /// for the words the person read (fix round 4, N6). Checked inside the transaction that writes the answer.
+/// The app's command goes through [`answer_and_relay_with`], which carries a reason as well. Tests that have no reason
+/// use this.
+#[cfg(test)]
 pub fn answer_seen(
     conn: &mut Connection,
     project: &str,
@@ -1441,6 +1507,7 @@ pub fn answer_seen(
 }
 
 /// Both optional parts of an answer: the captain's reason (WP-215) and the card version the person read (WP-92).
+#[allow(clippy::too_many_arguments)]
 fn answer_both(
     conn: &mut Connection,
     project: &str,
@@ -1528,11 +1595,7 @@ fn answer_both(
     decision.answer_reason = reason;
     // An answer does not stand until the person ticks it. A chat's answer never can.
     decision.standing = false;
-    decision.answered_by = Some(
-        by.map(|b| b.trim().chars().take(120).collect::<String>())
-            .filter(|b| !b.is_empty())
-            .unwrap_or_else(|| "person".into()),
-    );
+    decision.answered_by = Some(stored_answerer(by.as_deref()));
     decision.answered_at = Some(now);
     decision.updated_at = now;
     if is_secret_key(&decision.decision_key) {
@@ -1942,6 +2005,7 @@ pub fn decisions_ask(
 }
 
 #[tauri::command(async)]
+#[allow(clippy::too_many_arguments)]
 pub fn decisions_answer(
     app: AppHandle,
     store: State<'_, SessionStore>,
@@ -1993,6 +2057,7 @@ pub fn decisions_note(
 }
 
 /// What `decisions_answer` does with the store, without the window announce, so a test can run the same path.
+#[cfg(test)]
 pub(crate) fn answer_and_relay(
     store: &SessionStore,
     project: &str,
@@ -2002,9 +2067,19 @@ pub(crate) fn answer_and_relay(
     seen_version: Option<i64>,
     now: i64,
 ) -> Result<AnswerOutcome, String> {
-    answer_and_relay_with(store, project, key, answer_text, by, None, seen_version, now)
+    answer_and_relay_with(
+        store,
+        project,
+        key,
+        answer_text,
+        by,
+        None,
+        seen_version,
+        now,
+    )
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn answer_and_relay_with(
     store: &SessionStore,
     project: &str,
@@ -2144,6 +2219,7 @@ pub fn decisions_set_standing(
 }
 
 mod captain;
+mod captain_text;
 
 #[cfg(test)]
 mod tests;
