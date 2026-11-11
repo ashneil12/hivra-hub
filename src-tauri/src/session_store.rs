@@ -1965,9 +1965,10 @@ fn moved_away(blocks: &Value) -> Option<String> {
 }
 
 /// WP-177: the guard on every write of a chat's blocks. An ordinary save (an autosave, a quit, a stale window's copy) may
-/// not drop a freeze and may not change whether the chat is away, so an old copy cannot bring a moved chat back and a
-/// window cannot send from a chat another window froze. A move's own step is checked against the stored state: it may
-/// make only the change that step makes. A refusal names its reason with a prefix the webview reads.
+/// not drop a freeze, may not change whether the chat is away, and may not drop a move note (a freeze ask, an incoming
+/// copy, a release still owed, or a refused move), so an old copy cannot bring a moved chat back and a quit cannot erase
+/// the note recovery needs. A move's own step is checked against the stored state: it may make only the change that step
+/// makes. A refusal names its reason with a prefix the webview reads.
 pub(crate) fn teleport_guard(
     previous: &Value,
     next: &Value,
@@ -1977,6 +1978,17 @@ pub(crate) fn teleport_guard(
     let next_frozen = ids_with_notice(next, "teleport-frozen");
     let stored_away = moved_away(previous);
     let next_away = moved_away(next);
+    let notes_same = |except: &str| {
+        [
+            "teleport-freeze-asked",
+            "teleport-incoming",
+            "teleport-release-owed",
+            "teleport-aborted",
+        ]
+        .into_iter()
+        .filter(|notice| *notice != except)
+        .all(|notice| ids_with_notice(previous, notice) == ids_with_notice(next, notice))
+    };
     let Some(write) = write else {
         if stored_frozen.iter().any(|id| !next_frozen.contains(id)) {
             return Err(format!(
@@ -1987,6 +1999,26 @@ pub(crate) fn teleport_guard(
             return Err(format!(
                 "{TELEPORT_REFUSED}: this save would change whether the chat is on another machine, so it was refused"
             ));
+        }
+        if !notes_same("") {
+            let dropped = [
+                "teleport-freeze-asked",
+                "teleport-incoming",
+                "teleport-release-owed",
+                "teleport-aborted",
+            ]
+            .into_iter()
+            .any(|notice| {
+                let next_ids = ids_with_notice(next, notice);
+                ids_with_notice(previous, notice)
+                    .iter()
+                    .any(|id| !next_ids.contains(id))
+            });
+            if dropped {
+                return Err(format!(
+                    "{TELEPORT_REFUSED}: this save would drop a chat move's note, so it was refused"
+                ));
+            }
         }
         return Ok(());
     };
@@ -2084,6 +2116,51 @@ pub(crate) fn teleport_guard(
                 || next_away != stored_away
             {
                 return refused("an abort must refuse its own move and drop its own copy");
+            }
+            Ok(())
+        }
+        "freeze-ask" => {
+            let ask_id = format!("teleport-freeze-asked-{}", write.move_id);
+            let mut expected = ids_with_notice(previous, "teleport-freeze-asked");
+            if !expected.iter().any(|id| id == &ask_id) {
+                expected.push(ask_id);
+            }
+            if ids_with_notice(next, "teleport-freeze-asked") != expected
+                || !notes_same("teleport-freeze-asked")
+                || !same_frozen
+                || next_away != stored_away
+            {
+                return refused("a freeze ask must only add its own note");
+            }
+            Ok(())
+        }
+        "clear-freeze-ask" => {
+            let ask_id = format!("teleport-freeze-asked-{}", write.move_id);
+            let expected: Vec<String> = ids_with_notice(previous, "teleport-freeze-asked")
+                .into_iter()
+                .filter(|id| id != &ask_id)
+                .collect();
+            if ids_with_notice(next, "teleport-freeze-asked") != expected
+                || !notes_same("teleport-freeze-asked")
+                || !same_frozen
+                || next_away != stored_away
+            {
+                return refused("clearing a freeze ask must only remove its own note");
+            }
+            Ok(())
+        }
+        "settle" => {
+            let owed_id = format!("teleport-release-owed-{}", write.move_id);
+            let expected: Vec<String> = ids_with_notice(previous, "teleport-release-owed")
+                .into_iter()
+                .filter(|id| id != &owed_id)
+                .collect();
+            if ids_with_notice(next, "teleport-release-owed") != expected
+                || !notes_same("teleport-release-owed")
+                || !same_frozen
+                || next_away != stored_away
+            {
+                return refused("settling a release must only remove its own note");
             }
             Ok(())
         }
@@ -5954,5 +6031,97 @@ mod teleport_guard_tests {
             )
             .unwrap_err()
         ));
+    }
+
+    fn ask(move_id: &str) -> Value {
+        json!({
+            "id": format!("teleport-freeze-asked-{move_id}"),
+            "role": "system",
+            "text": "{\"peer\":\"host-a\",\"at\":1}",
+            "notice": "teleport-freeze-asked"
+        })
+    }
+
+    fn owed(move_id: &str) -> Value {
+        json!({
+            "id": format!("teleport-release-owed-{move_id}"),
+            "role": "system",
+            "text": "{}",
+            "notice": "teleport-release-owed"
+        })
+    }
+
+    fn has_notice(conn: &Connection, notice: &str) -> bool {
+        let row = get_session(conn, "chat-1").unwrap().unwrap();
+        blocks_of(&row.blocks)
+            .iter()
+            .any(|block| notice_of(block) == notice)
+    }
+
+    #[test]
+    fn an_ordinary_save_cannot_drop_a_move_note() {
+        let store = SessionStore::open_in_memory().unwrap();
+        let conn = store.lock_conn().unwrap();
+        save(&conn, Value::Array(base())).unwrap();
+        // The freeze ask is its own step. A quit's copy from before the ask cannot erase it.
+        step(&conn, with(vec![ask("m2")]), "m2", "freeze-ask").unwrap();
+        assert!(refused(save(&conn, Value::Array(base())).unwrap_err()));
+        assert!(has_notice(&conn, "teleport-freeze-asked"));
+        step(&conn, Value::Array(base()), "m2", "clear-freeze-ask").unwrap();
+        assert!(!has_notice(&conn, "teleport-freeze-asked"));
+
+        step(&conn, with(vec![frozen("m1")]), "m1", "freeze").unwrap();
+        step(&conn, with(vec![moved_away(1000.0)]), "m1", "release").unwrap();
+        step(
+            &conn,
+            with(vec![moved_away(1000.0), incoming("m2")]),
+            "m2",
+            "incoming",
+        )
+        .unwrap();
+        assert!(refused(
+            save(&conn, with(vec![moved_away(1000.0)])).unwrap_err()
+        ));
+        assert!(has_notice(&conn, "teleport-incoming"));
+
+        let aborted = json!({
+            "id": "teleport-aborted-m2",
+            "role": "system",
+            "text": "{\"peer\":\"host-a\"}",
+            "notice": "teleport-aborted"
+        });
+        step(
+            &conn,
+            with(vec![moved_away(1000.0), aborted]),
+            "m2",
+            "abort",
+        )
+        .unwrap();
+        assert!(refused(
+            save(&conn, with(vec![moved_away(1000.0)])).unwrap_err()
+        ));
+        assert!(has_notice(&conn, "teleport-aborted"));
+
+        // A later move back owes a release. An ordinary save cannot drop that note either.
+        step(
+            &conn,
+            with(vec![moved_away(1000.0), incoming("m3")]),
+            "m3",
+            "incoming",
+        )
+        .unwrap();
+        step(
+            &conn,
+            with(vec![moved_back("m3", 2000.0), owed("m3")]),
+            "m3",
+            "activate",
+        )
+        .unwrap();
+        assert!(refused(
+            save(&conn, with(vec![moved_back("m3", 2000.0)])).unwrap_err()
+        ));
+        assert!(has_notice(&conn, "teleport-release-owed"));
+        step(&conn, with(vec![moved_back("m3", 2000.0)]), "m3", "settle").unwrap();
+        assert!(!has_notice(&conn, "teleport-release-owed"));
     }
 }
