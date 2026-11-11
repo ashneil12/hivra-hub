@@ -27,7 +27,6 @@ const src = Object.create(base) as HubDataSource;
 src.listProjects = () => projects;
 setHubDataSource(src);
 setHubSelection({ project: "hivra", item: "home" });
-wireSpendGate();
 
 setSpendClock(() => now);
 setSpendSessions([
@@ -56,6 +55,9 @@ installFakeTauri("home", (command) => {
   if (command === "builder_health") return { load1: 0.5, cores: 8, freeMemoryGb: 16, freeDiskGb: 100, readAt: now };
   return null;
 });
+
+// The app wires the spend gate after its native bridge is up. The fixture does the same, so the book is read through the fake.
+wireSpendGate();
 
 const room = () => ({ room: true as const });
 const host = workerPoolHost({ openRows: () => [], room });
