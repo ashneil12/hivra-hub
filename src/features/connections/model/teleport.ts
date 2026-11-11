@@ -274,8 +274,8 @@ const PGP_BLOCK = /-----BEGIN PGP PRIVATE KEY BLOCK-----[\s\S]*?(?:-----END PGP 
 const PUTTY_PRIVATE_LINE = /(Private-Lines:[ \t]*\d+[ \t]*\r?\n)([^\r\n]*)/g;
 const AGE_SECRET = /AGE-SECRET-KEY-1[0-9A-Z]+/g;
 // base64("-----BEGIN") when that text starts at byte offset 0, 1 or 2. A wrapped encoding splits it across lines.
-// The base64url form of each marker is the same string (none of them contains + or /). A marker alone is not a private
-// key: it decodes to "-----BEGIN". A marker that does not decode at all holds the move.
+// The base64url form of each marker is the same string (none of them contains + or /). A bare marker decodes to
+// "-----BEGIN" and is not a key. A marker that does not decode, or that decodes to a cut or unknown label, holds.
 const PEM_MARKERS = ["LS0tLS1CRUdJTi", "0tLS0tQkVHSU4", "tLS0tLUJFR0lO"] as const;
 // No `g` flag: privateKeyPresent uses test(), which is stateful on a global expression.
 // The base64 clause is bounded so a line of repeated markers cannot backtrack.
@@ -418,13 +418,186 @@ function tryDecodeBase64(compact: string): string | null {
 
 type KeyVerdict = "private" | "hold" | "clear";
 
+// A complete BEGIN line clears only when its label is one of these. A private key is not here, and neither is a cut
+// label: both hold. The bare BEGIN marker (no label at all) is not a key either; a long repeat of it is the timing case.
+const HARMLESS_BEGIN_LABELS = new Set([
+  "CERTIFICATE",
+  "TRUSTED CERTIFICATE",
+  "X509 CERTIFICATE",
+  "PUBLIC KEY",
+  "RSA PUBLIC KEY",
+  "DSA PUBLIC KEY",
+  "EC PUBLIC KEY",
+  "ECDSA PUBLIC KEY",
+  "CERTIFICATE REQUEST",
+  "NEW CERTIFICATE REQUEST",
+  "X509 CRL",
+  "PKCS7",
+  "CMS",
+  "DH PARAMETERS",
+  "EC PARAMETERS",
+  "DSA PARAMETERS",
+  "ECDSA PARAMETERS",
+]);
+const BEGIN_LINE = /-----BEGIN ([A-Z0-9]+(?: [A-Z0-9]+)*)-----/;
+
+// Whitespace that must not keep a wrapped encoding from being one run. The ASCII class misses U+2028 and no-break space.
+const KEY_WHITESPACE = new RegExp(
+  "[\\t\\n\\r \\f\\v\\u0085\\u00A0\\u1680\\u2000-\\u200A\\u2028\\u2029\\u202F\\u205F\\u3000\\uFEFF]+",
+  "g",
+);
+
+// A run up to this length is decoded whole. A longer one is decoded at both ends and searched for a header, so a
+// megabyte of base64 is not decoded four times.
+const WHOLE_DECODE_LIMIT = 32768;
+
+type WindowKind = "private" | "harmless" | "labeled" | "bare" | "none";
+
+function hasPemMarker(text: string): boolean {
+  return PEM_MARKERS.some((marker) => text.indexOf(marker) >= 0);
+}
+
+/** Percent-encoding, one level. A form body or a webhook log writes the key this way. Invalid sequences are left as they are. */
+function percentDecode(text: string): string {
+  if (text.indexOf("%") < 0) return text;
+  return text.replace(/%([0-9A-Fa-f]{2})/g, (_match, hex: string) => String.fromCharCode(parseInt(hex, 16)));
+}
+
+/** A quoted reply (`> ` at the start of a line) is not part of the encoding. */
+function stripQuotePrefixes(text: string): string {
+  if (text.indexOf(">") < 0) return text;
+  return text.replace(/(^|\r?\n)[ \t]*(?:>[ \t]?)+/g, "$1");
+}
+
+function classifyDecoded(text: string | null): WindowKind {
+  if (text === null) return "none";
+  if (PRIVATE_KEY_HEADER.test(text)) return "private";
+  const line = BEGIN_LINE.exec(text);
+  if (line && HARMLESS_BEGIN_LABELS.has(line[1] ?? "")) return "harmless";
+  if (/-----BEGIN [A-Z0-9]/.test(text)) return "labeled";
+  if (text.includes("-----BEGIN")) return "bare";
+  return "none";
+}
+
+/** The four alignments of one run. `nested` decodes one more level when the plaintext holds a BEGIN marker. */
+function decodeMatch(run: string, nested: boolean): boolean {
+  for (let offset = 0; offset < 4; offset += 1) {
+    if (offset >= run.length) break;
+    const text = tryDecodeBase64(offset === 0 ? run : run.slice(offset));
+    if (!text) continue;
+    if (PRIVATE_KEY_HEADER.test(text)) return true;
+    if (nested && nestedHolds(text)) return true;
+  }
+  return false;
+}
+
 /**
- * Split on internal `=` padding, then read each piece at the four alignments at or before a `-----BEGIN` marker.
- * A private-key header holds. A marker that never decodes holds. A decode that is not a private key (a bare marker,
- * a certificate, a public key) does not.
+ * One more level, and no further. A base64 Kubernetes secret is a key encoded twice: the outer decode is the manifest,
+ * and the inner base64 decodes to the PEM. A nested marker that is never proved harmless holds.
+ */
+function nestedHolds(decoded: string): boolean {
+  if (!hasPemMarker(decoded)) return false;
+  const find = markerFinder(decoded);
+  const seen = new Set<string>();
+  let from = 0;
+  while (from < decoded.length) {
+    const at = find(from);
+    if (at < 0) return false;
+    const word = base64WordAt(decoded, at);
+    const inner = decoded.slice(word.start, word.end);
+    const key = inner.length <= 160 ? inner : `${word.start}:${word.end}`;
+    if (!seen.has(key)) {
+      seen.add(key);
+      if (seen.size > 16) return true;
+      if (inner.length >= 8 && decodeMatch(inner, false)) return true;
+    }
+    from = Math.max(word.end, at + 1);
+  }
+  return false;
+}
+
+let headerNeedles: string[] | null = null;
+
+/** Base64 of each header phrase at the three byte alignments, with the lead quantum cut off so the bytes before it do not matter. */
+function headerNeedleList(): string[] {
+  if (headerNeedles) return headerNeedles;
+  const phrases = [
+    "PRIVATE KEY-----",
+    "PRIVATE KEY BLOCK-----",
+    "PuTTY-User-Key-File",
+    "AGE-SECRET-KEY-1",
+    "---- BEGIN SSH2 ENCRYPTED PRIVATE KEY ----",
+    "---- BEGIN SSH2 PRIVATE KEY ----",
+    "b3BlbnNzaC1rZXktdjE",
+  ];
+  const needles: string[] = [];
+  for (const phrase of phrases) {
+    for (let lead = 0; lead < 3; lead += 1) {
+      let encoded = "";
+      try {
+        encoded = globalThis.btoa(`${"\0".repeat(lead)}${phrase}`).replace(/=+$/, "");
+      } catch {
+        continue;
+      }
+      const start = lead === 0 ? 0 : 4;
+      const needle = encoded.slice(start, start + 20);
+      if (needle.length >= 12 && !needles.includes(needle)) needles.push(needle);
+    }
+  }
+  headerNeedles = needles;
+  return needles;
+}
+
+function uniformRun(run: string): boolean {
+  const first = run.charCodeAt(0);
+  for (let i = 1; i < run.length; i += 1) {
+    if (run.charCodeAt(i) !== first) return false;
+  }
+  return true;
+}
+
+/** A header anywhere in a long run, without decoding the whole run. */
+function encodedHeaderInRun(run: string): boolean {
+  if (uniformRun(run)) return false;
+  const normalized = run.indexOf("-") >= 0 || run.indexOf("_") >= 0 ? run.replace(/-/g, "+").replace(/_/g, "/") : run;
+  for (const needle of headerNeedleList()) {
+    if (normalized.indexOf(needle) >= 0) return true;
+  }
+  return false;
+}
+
+function alignmentsMatchHeader(run: string, nested: boolean): boolean {
+  if (run.length < 8) return false;
+  if (run.length <= WHOLE_DECODE_LIMIT) return decodeMatch(run, nested);
+  if (decodeMatch(run.slice(0, 8192), nested)) return true;
+  if (decodeMatch(run.slice(-8192), nested)) return true;
+  // Many BEGIN markers in a long run are judged by the marker windows (and held if they are not proved). Searching the
+  // whole run for a header as well would dominate a megabyte of markers.
+  if (hasPemMarker(run) && moreThan(run, 32)) return false;
+  return encodedHeaderInRun(run);
+}
+
+/** True when more than `limit` BEGIN markers occur. Overlapping alignments count separately, and the walk stops at the limit. */
+function moreThan(text: string, limit: number): boolean {
+  const find = markerFinder(text);
+  let from = 0;
+  let count = 0;
+  while (from < text.length) {
+    const at = find(from);
+    if (at < 0) return false;
+    count += 1;
+    if (count > limit) return true;
+    from = at + 1;
+  }
+  return false;
+}
+
+/**
+ * Split on internal `=` padding. Each run is decoded whole at every alignment and checked against the private-key rule.
+ * A run with no BEGIN marker is not cleared for that reason: a PuTTY key, an age identity, an SSH2 key and a PEM whose
+ * BEGIN line was cut off all decode to a header the marker windows never see.
  */
 function runVerdict(compact: string): KeyVerdict {
-  if (!PEM_MARKERS.some((marker) => compact.indexOf(marker) >= 0)) return "clear";
   let hold = false;
   let start = 0;
   for (let i = 0; i <= compact.length; i += 1) {
@@ -441,7 +614,7 @@ function runVerdict(compact: string): KeyVerdict {
       }
     }
     if (cut > start) {
-      const verdict = verdictOf(compact.slice(start, cut));
+      const verdict = segmentVerdict(compact.slice(start, cut));
       if (verdict === "private") return "private";
       if (verdict === "hold") hold = true;
     }
@@ -449,6 +622,15 @@ function runVerdict(compact: string): KeyVerdict {
     if (pad) i = cut - 1;
   }
   return hold ? "hold" : "clear";
+}
+
+function segmentVerdict(segment: string): KeyVerdict {
+  if (segment.length < 8) return "clear";
+  // A pure repeat of the bare BEGIN marker is not a key, and decoding it whole is the slow case.
+  if (repeatedRun(segment) > 0) return verdictOf(segment);
+  if (alignmentsMatchHeader(segment, true)) return "private";
+  if (!hasPemMarker(segment)) return "clear";
+  return verdictOf(segment);
 }
 
 /** Enough base64 for any PEM header line, and no more. A long run is not decoded whole. */
@@ -472,41 +654,67 @@ function repeatedRun(segment: string): number {
 }
 
 /**
- * A window at each of the four alignments at or before every marker. A private-key header holds. A marker whose windows
- * never decode holds. A decode that is not a private key (a bare marker, a certificate, a public key) does not. The
- * window is cached, so a line of the same marker is not decoded again. A pure repeat is sampled once: every copy has
- * the same windows.
+ * A window at each of the four alignments at or before every marker. A private-key header holds. A window clears only
+ * when it decodes to a complete BEGIN line on the allow-list, or to the bare BEGIN marker with no label. A cut label,
+ * an unknown label, or a marker that never decodes holds. The window is cached, so a line of the same marker is not
+ * decoded again. A pure repeat is sampled once: every copy has the same windows. A long run with many markers is held:
+ * the ones in the middle were not proved harmless.
  */
 function verdictOf(segment: string): KeyVerdict {
-  if (!PEM_MARKERS.some((marker) => segment.indexOf(marker) >= 0)) return "clear";
+  if (!hasPemMarker(segment)) return "clear";
   const period = repeatedRun(segment);
-  const body = period > 0 ? segment.slice(0, Math.min(segment.length, period + HEADER_WINDOW)) : segment;
+  if (period > 0) return classifyMarkerRegion(segment.slice(0, Math.min(segment.length, period + HEADER_WINDOW)));
+  if (segment.length > 8192 && moreThan(segment, 32)) {
+    // Ordinary chat text is joined in front of the run, so a pure marker repeat no longer starts at 0. The tail is
+    // still that repeat: sample it. Anything else in a long run was not proved, so it holds.
+    const at = markerFinder(segment)(0);
+    // The head of a long run is already decoded. A short prefix in front of a pure marker tail is covered by that. A
+    // longer prefix was not, so the run holds.
+    if (at > 0 && at <= 8192) {
+      const tail = segment.slice(at);
+      const tailPeriod = repeatedRun(tail);
+      if (tailPeriod > 0) return classifyMarkerRegion(tail.slice(0, Math.min(tail.length, tailPeriod + HEADER_WINDOW)));
+    }
+    return "hold";
+  }
+  return classifyMarkerRegion(segment);
+}
+
+function classifyMarkerRegion(body: string): KeyVerdict {
   const find = markerFinder(body);
-  const seen = new Map<string, KeyVerdict>();
+  const seen = new Map<string, WindowKind>();
   let from = 0;
-  let decoded = false;
+  let proved = false;
   while (from < body.length) {
     const at = find(from);
     if (at < 0) break;
-    let any = false;
+    let decoded = false;
+    let labeled = false;
+    let harmless = false;
     for (let offset = 0; offset < 4; offset += 1) {
       const start = at - offset;
       if (start < 0) continue;
       const window = body.slice(start, Math.min(body.length, start + HEADER_WINDOW));
       let kind = seen.get(window);
       if (!kind) {
-        const text = tryDecodeBase64(window);
-        kind = text === null ? "hold" : PRIVATE_KEY_HEADER.test(text) ? "private" : "clear";
+        kind = classifyDecoded(tryDecodeBase64(window));
         seen.set(window, kind);
       }
       if (kind === "private") return "private";
-      if (kind === "clear") any = true;
+      if (kind === "labeled") labeled = true;
+      else if (kind === "harmless" || kind === "bare") harmless = true;
+      if (kind === "bare" || kind === "harmless" || kind === "labeled") decoded = true;
     }
-    if (!any) return "hold";
-    decoded = true;
+    // The four offsets are one marker read four ways. A reading that is only the bare BEGIN marker, or a complete
+    // allow-listed line, is proof. A shifted reading that looks like a cut label does not throw that proof out. A
+    // private-key header already returned above. With no such proof, a cut or unknown label holds, and so does a
+    // marker that never decodes.
+    if (harmless) {
+      proved = true;
+    } else if (!decoded || labeled) return "hold";
     from = at + 1;
   }
-  return decoded ? "clear" : "hold";
+  return proved ? "clear" : "hold";
 }
 
 /**
@@ -573,11 +781,14 @@ function lineHoldsPrivateKey(line: string, verdict: (word: string) => KeyVerdict
  * a run that does not decode from its first character is still scanned, and a marker that does not decode holds.
  */
 function decodedPemMatchesHeader(text: string): boolean {
-  const compact = text.replace(/[ \t\r\n\f\v]+/g, "");
+  const prepared = stripQuotePrefixes(percentDecode(text));
+  if (PRIVATE_KEY_HEADER.test(prepared)) return true;
+  KEY_WHITESPACE.lastIndex = 0;
+  const compact = prepared.replace(KEY_WHITESPACE, "");
   const whole = runVerdict(compact);
   if (whole === "private" || whole === "hold") return true;
   const verdict = cachedVerdicts();
-  const lines = text.split(/\r?\n/);
+  const lines = prepared.split(/\r?\n/);
   for (let i = 0; i < lines.length; i += 1) {
     if (lineHoldsPrivateKey(lines[i] ?? "", verdict)) return true;
   }
@@ -650,8 +861,7 @@ function redactBase64Pem(text: string): { text: string; count: number } {
 
 /** The text a move would carry, joined: a private key split across blocks shows up here, not in any one block. */
 function privateKeyPresent(strings: string[]): boolean {
-  const joined = strings.join("\n");
-  return PRIVATE_KEY_HEADER.test(joined) || decodedPemMatchesHeader(joined);
+  return decodedPemMatchesHeader(strings.join("\n"));
 }
 
 /** Which part of the chat holds a private key, named so a person can find it. The key itself is never included. */
