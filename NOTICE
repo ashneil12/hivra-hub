@@ -57,7 +57,7 @@ Third-party components Hivra adds:
 
 - tstack's babysit-pr (pr-wait)
   Source: https://github.com/t3dotgg/tstack
-  License: MIT (the upstream LICENSE; its copyright line is not copied here)
+  License: MIT. No code is copied, so tstack's copyright line is not reproduced here.
   Used in: src-tauri/src/pr_watch/base.rs
   skills/babysit-pr/scripts/pr-wait read for the logic only (WP-202): main moving under a pull request, the BEHIND and DIRTY states and the rate-limit fallback. Written fresh in Rust.
 
