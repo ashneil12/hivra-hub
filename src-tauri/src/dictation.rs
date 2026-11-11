@@ -42,6 +42,10 @@ pub const MAX_SESSION: Duration = Duration::from_secs(300);
 pub const SILENCE_LIMIT: Duration = Duration::from_secs(30);
 /// The most text one utterance may add (the webview caps it at the same length).
 pub const MAX_UTTERANCE_CHARS: usize = 4000;
+/// Whether this build may start the helper at all. It is off (round-3 review, HIGH 1): the helper cannot yet tell which
+/// process is asking, and a same-user process can reach it. It turns on only with the XPC service and its per-message
+/// peer requirement, which is not built yet. Nothing reads a setting or an environment variable for it.
+pub const ENABLED: bool = false;
 /// After a stop, how long the helper gets to deliver its last result before it is killed. The helper waits 5 s itself.
 #[cfg(target_os = "macos")]
 const FINISH_GRACE: Duration = Duration::from_secs(7);
@@ -185,11 +189,14 @@ impl<L: Clone> Sessions<L> {
         }
     }
 
-    /// Hands back the helper when the session was stopped during the prompt, so the caller tears it down.
-    fn install(&mut self, id: u64, live: L) -> Result<(), L> {
+    /// Hands back the helper when the session was stopped during the prompt, so the caller tears it down. The limits
+    /// count from `now`, when the helper is ready (LOW 2): a permission prompt is not dictation time.
+    fn install(&mut self, id: u64, live: L, now: Instant) -> Result<(), L> {
         match self.current.as_mut() {
             Some(slot) if slot.id == id && !slot.ending => {
                 slot.live = Some(live);
+                slot.started = now;
+                slot.last_words = now;
                 Ok(())
             }
             _ => Err(live),
@@ -376,12 +383,6 @@ pub fn window_lost(app: &AppHandle, label: &str) {
     }
 }
 
-/// The arguments that check a requirement: `codesign --verify -R=<requirement>`. codesign reads the requirement only
-/// in this `-R=` form; the separate `-R <requirement>` form reads it as a path and fails.
-pub fn codesign_verify_args(requirement: &str) -> [String; 2] {
-    ["--verify".to_string(), format!("-R={requirement}")]
-}
-
 /// The daily Hub's identifier. Only this identity launches the helper (LOW 1).
 pub const HUB_IDENTIFIER: &str = "com.ash.monocode-hub";
 
@@ -439,6 +440,10 @@ mod platform {
     /// The helper to run and the launcher that starts it disclaimed. Without both, dictation is off: a helper the Hub
     /// started itself would be charged to the Hub.
     fn launch_plan(app: &AppHandle) -> Result<(PathBuf, PathBuf), &'static str> {
+        // HIGH 1 (round 3): dictation is off in this build. No helper is found, checked or started.
+        if !super::ENABLED {
+            return Err(NOT_HERE);
+        }
         let helper = helper_path().ok_or(NOT_HERE)?;
         // LOW 1: only the daily Hub launches a helper, and only one signed for this Hub (its identifier, and this
         // app's Team ID). A helper copied in from elsewhere is not run.
@@ -453,8 +458,8 @@ mod platform {
         Ok((helper, launcher))
     }
 
-    /// LOW 1: the helper is signed under this Hub's Team ID with the helper's identifier. `codesign --verify -R` checks
-    /// the requirement against the helper's bundle; the Team ID comes from this Hub's own signature.
+    /// LOW 1 / MED 1: the helper is signed under this Hub's Team ID with the helper's identifier. The Team ID comes from
+    /// this Hub's own code; the helper's bundle is checked against the requirement in process.
     fn helper_is_signed_for_hub(helper: &std::path::Path, hub_identifier: &str) -> bool {
         let Some(helper_bundle) = helper
             .parent()
@@ -463,41 +468,76 @@ mod platform {
         else {
             return false;
         };
-        let Some(hub_bundle) = std::env::current_exe().ok().and_then(|exe| {
-            exe.parent()
-                .and_then(|p| p.parent())
-                .and_then(|p| p.parent())
-                .map(PathBuf::from)
-        }) else {
-            return false;
-        };
-        let Some(team) = team_of(&hub_bundle) else {
+        let Some(team) = own_team_id() else {
             return false;
         };
         let Some(requirement) = super::helper_requirement(hub_identifier, &team) else {
             return false;
         };
-        std::process::Command::new("/usr/bin/codesign")
-            .args(super::codesign_verify_args(&requirement))
-            .arg(helper_bundle)
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .map(|status| status.success())
-            .unwrap_or(false)
+        signed_as(helper_bundle, &requirement)
     }
 
-    /// The Team ID a bundle is signed under, from codesign's signing details (written to stderr).
-    fn team_of(bundle: &std::path::Path) -> Option<String> {
-        let out = std::process::Command::new("/usr/bin/codesign")
-            .args(["-dv", "--verbose=4"])
-            .arg(bundle)
-            .output()
-            .ok()?;
-        let text = String::from_utf8_lossy(&out.stderr);
-        text.lines()
-            .find_map(|line| line.strip_prefix("TeamIdentifier="))
-            .map(|team| team.trim().to_string())
+    /// Whether the code at `path` meets `requirement`. Security.framework checks it in process: no tool runs and no
+    /// output is read. A missing, unsigned or differently signed path refuses.
+    pub fn signed_as(path: &std::path::Path, requirement: &str) -> bool {
+        use core_foundation::url::CFURL;
+        use security_framework::os::macos::code_signing::{Flags, SecRequirement, SecStaticCode};
+        let Ok(requirement) = requirement.parse::<SecRequirement>() else {
+            return false;
+        };
+        let Some(url) = CFURL::from_path(path, path.is_dir()) else {
+            return false;
+        };
+        SecStaticCode::from_path(&url, Flags::NONE)
+            .and_then(|code| code.check_validity(Flags::NONE, &requirement))
+            .is_ok()
+    }
+
+    /// `kSecCSSigningInformation`: the flag that asks for the signing details (the Team ID among them).
+    const SEC_CS_SIGNING_INFORMATION: u32 = 1 << 1;
+
+    #[link(name = "Security", kind = "framework")]
+    extern "C" {
+        static kSecCodeInfoTeamIdentifier: core_foundation::string::CFStringRef;
+        fn SecCodeCopySigningInformation(
+            code: *const std::ffi::c_void,
+            flags: u32,
+            information: *mut *const std::ffi::c_void,
+        ) -> i32;
+    }
+    extern "C" {
+        fn CFDictionaryGetValue(
+            dict: *const std::ffi::c_void,
+            key: *const std::ffi::c_void,
+        ) -> *const std::ffi::c_void;
+        fn CFRelease(value: *const std::ffi::c_void);
+    }
+
+    /// The Team ID the code making this call is signed under, from its own signing information. None when it can't
+    /// be read, as for an unsigned or ad-hoc build.
+    fn own_team_id() -> Option<String> {
+        use core_foundation::base::TCFType;
+        use core_foundation::string::{CFString, CFStringRef};
+        use security_framework::os::macos::code_signing::{Flags, SecCode};
+        use std::ffi::c_void;
+        let code = SecCode::for_self(Flags::NONE).ok()?;
+        let mut info: *const c_void = std::ptr::null();
+        let status = unsafe {
+            SecCodeCopySigningInformation(
+                code.as_concrete_TypeRef() as *const c_void,
+                SEC_CS_SIGNING_INFORMATION,
+                &mut info,
+            )
+        };
+        if status != 0 || info.is_null() {
+            return None;
+        }
+        let key = unsafe { kSecCodeInfoTeamIdentifier };
+        let value = unsafe { CFDictionaryGetValue(info, key as *const c_void) };
+        let team = (!value.is_null())
+            .then(|| unsafe { CFString::wrap_under_get_rule(value as CFStringRef) }.to_string());
+        unsafe { CFRelease(info) };
+        team
     }
 
     pub fn support(app: &AppHandle) -> Support {
@@ -596,7 +636,7 @@ mod platform {
                 .ok()
                 .flatten();
         match answer {
-            Some(Answer::Ready) => match sessions().install(id, live.clone()) {
+            Some(Answer::Ready) => match sessions().install(id, live.clone(), Instant::now()) {
                 Ok(()) => {
                     spawn_watch(app, id, owner);
                     Ok(id)
@@ -752,6 +792,26 @@ mod platform {
             // The test binary runs from target/..., never from a bundle with a Helpers folder.
             assert!(super::helper_path().is_none());
         }
+
+        // MED 1 (round 3): the helper's signature is checked in process with Security.framework, never through codesign.
+        // Apple's own ls is the positive case: a matching requirement passes, a mismatch and a missing file refuse.
+
+        #[test]
+        fn the_helper_signature_is_checked_in_process() {
+            let ls = std::path::Path::new("/bin/ls");
+            assert!(super::signed_as(
+                ls,
+                "identifier \"com.apple.ls\" and anchor apple"
+            ));
+            assert!(!super::signed_as(
+                ls,
+                "identifier \"com.ash.monocode-hub.dictation\" and anchor apple generic and certificate leaf[subject.OU] = \"9SB4XNH8C5\""
+            ));
+            assert!(!super::signed_as(
+                std::path::Path::new("/no/such/helper"),
+                "identifier \"com.apple.ls\" and anchor apple"
+            ));
+        }
     }
 }
 
@@ -794,7 +854,7 @@ mod tests {
     fn stale_results_and_stops_are_ignored() {
         let mut s: Sessions<()> = Sessions::new();
         let id = s.begin("main", t0()).unwrap();
-        s.install(id, ()).unwrap();
+        s.install(id, (), t0()).unwrap();
         assert!(
             s.heard(id + 7, "other", t0()).is_none(),
             "a result for another session is dropped"
@@ -810,11 +870,27 @@ mod tests {
         );
     }
 
+    // LOW 2 (round 3): a permission prompt can sit for minutes before the helper is ready. The 300 s and 30 s limits
+    // count from ready, not from the start of the request.
+    #[test]
+    fn the_limits_count_from_ready_not_from_the_start_of_the_prompt() {
+        let mut s: Sessions<()> = Sessions::new();
+        let begun = t0();
+        let id = s.begin("main", begun).unwrap();
+        let ready = begun + Duration::from_secs(400);
+        s.install(id, (), ready).unwrap();
+        assert!(
+            !s.due(ready + Duration::from_secs(10)),
+            "a prompt's wait is not dictation time"
+        );
+        assert!(s.due(ready + MAX_SESSION));
+    }
+
     #[test]
     fn partials_are_sent_and_empty_partials_are_not() {
         let mut s: Sessions<()> = Sessions::new();
         let id = s.begin("main", t0()).unwrap();
-        s.install(id, ()).unwrap();
+        s.install(id, (), t0()).unwrap();
         assert!(s.heard(id, "   ", t0()).is_none());
         let chunk = s.heard(id, "  buy milk  ", t0()).unwrap();
         assert_eq!(
@@ -832,7 +908,7 @@ mod tests {
     fn a_final_result_releases_the_session_and_a_late_one_is_dropped() {
         let mut s: Sessions<()> = Sessions::new();
         let id = s.begin("main", t0()).unwrap();
-        s.install(id, ()).unwrap();
+        s.install(id, (), t0()).unwrap();
         let done = s.finish(id, "Buy milk.", false).unwrap();
         assert_eq!(
             done.chunk,
@@ -855,7 +931,7 @@ mod tests {
     fn an_error_keeps_the_words_already_heard() {
         let mut s: Sessions<()> = Sessions::new();
         let id = s.begin("main", t0()).unwrap();
-        s.install(id, ()).unwrap();
+        s.install(id, (), t0()).unwrap();
         s.heard(id, "half a sentence", t0());
         let failed = s.finish(id, "", true).unwrap();
         assert_eq!(failed.chunk.text, "half a sentence");
@@ -868,7 +944,7 @@ mod tests {
         let id = s.begin("main", t0()).unwrap();
         assert!(s.begin_stop(id), "a stop during the prompt is accepted");
         assert_eq!(
-            s.install(id, 9),
+            s.install(id, 9, t0()),
             Err(9),
             "the helper that arrives late is handed back"
         );
@@ -878,7 +954,7 @@ mod tests {
     fn the_grace_period_releases_what_was_heard() {
         let mut s: Sessions<()> = Sessions::new();
         let id = s.begin("main", t0()).unwrap();
-        s.install(id, ()).unwrap();
+        s.install(id, (), t0()).unwrap();
         s.heard(id, "kept", t0());
         assert!(
             s.expire(id).is_none(),
@@ -916,7 +992,8 @@ mod tests {
         let mut s: Sessions<()> = Sessions::new();
         let start = t0();
         let id = s.begin("main", start).unwrap();
-        s.install(id, ()).unwrap();
+        // Ready at the start: the limits count from the same instant here.
+        s.install(id, (), start).unwrap();
         let mut now = start;
         // Keep the words coming, so only the length can end it.
         for _ in 0..(MAX_SESSION.as_secs() / 10 - 1) {
@@ -935,7 +1012,8 @@ mod tests {
         let mut s: Sessions<()> = Sessions::new();
         let start = t0();
         let id = s.begin("main", start).unwrap();
-        s.install(id, ()).unwrap();
+        // Ready at the start: the limits count from the same instant here.
+        s.install(id, (), start).unwrap();
         assert!(!s.due(start + SILENCE_LIMIT - Duration::from_secs(1)));
         assert!(
             s.due(start + SILENCE_LIMIT),
@@ -953,7 +1031,7 @@ mod tests {
         let mut s: Sessions<()> = Sessions::new();
         let start = t0();
         let id = s.begin("main", start).unwrap();
-        s.install(id, ()).unwrap();
+        s.install(id, (), t0()).unwrap();
         assert!(s.due(start + MAX_SESSION));
         s.begin_stop(id);
         assert!(
@@ -1070,15 +1148,12 @@ mod tests {
         assert_eq!(args.first().and_then(|a| a.to_str()), Some("disclaim-exec"));
     }
 
-    // LOW 1: the helper launched is one signed for the daily Hub: its identifier and the Hub's Team ID.
+    // HIGH 1 (round 3): dictation is switched off in this build. A tripwire: flipping ENABLED fails this test, so the
+    // change is deliberate and comes with the XPC service that makes it safe.
 
     #[test]
-    fn the_requirement_is_checked_in_the_form_codesign_reads() {
-        let req = "identifier \"com.ash.monocode-hub.dictation\"";
-        assert_eq!(
-            codesign_verify_args(req),
-            ["--verify".to_string(), format!("-R={req}")]
-        );
+    fn dictation_is_switched_off_in_this_build() {
+        assert!(!std::hint::black_box(ENABLED));
     }
 
     #[test]
@@ -1114,7 +1189,7 @@ mod tests {
     fn a_finished_session_reports_its_owner_so_its_words_go_only_there() {
         let mut s: Sessions<()> = Sessions::new();
         let id = s.begin("mono-2", t0()).unwrap();
-        s.install(id, ()).unwrap();
+        s.install(id, (), t0()).unwrap();
         assert_eq!(s.finish(id, "done", false).unwrap().owner, "mono-2");
     }
 }
