@@ -113,12 +113,14 @@ it("uses already loaded Inbox activity immediately even when the provider stops 
   }
   await act(async () => root.render(createElement(Harness)));
   vi.mocked(listInboxItems).mockClear().mockImplementation(() => new Promise(() => {}));
-  const inbox = container.querySelector<HTMLElement>('button[aria-label="Inbox, new items"]')!;
+  // WP-210: the tracker no longer paints the Inbox mark, so the button stays "Inbox".
+  const inbox = container.querySelector<HTMLElement>('button[aria-label="Inbox"]')!;
+  expect(inbox).not.toBeNull();
   act(() => inbox.dispatchEvent(new KeyboardEvent("keydown", { key: "ContextMenu", bubbles: true })));
   expect(button("Mark all as read").disabled).toBe(false);
   act(() => button("Mark all as read").click());
   expect(isInboxEntryUnseen(entry)).toBe(false);
-  expect(container.querySelector('button[aria-label="Inbox"]')).not.toBeNull();
+  expect(container.querySelector('button[aria-label="Inbox, new items"]')).toBeNull();
   expect(document.querySelector('[role="menu"][aria-label="Inbox actions"]')).toBeNull();
   expect(listInboxItems).not.toHaveBeenCalled();
 });

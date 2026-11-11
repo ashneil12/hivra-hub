@@ -117,6 +117,8 @@ type Props = {
   cwd: string;
   recents: RecentProject[];
   inboxUnseen?: boolean;
+  /** WP-210: how many items need Ash. This paints the Inbox mark. */
+  needsMark?: number;
   busyPaths?: Iterable<string>;
   canGoBack?: boolean;
   canGoForward?: boolean;
@@ -165,6 +167,7 @@ export function ProjectRail({
   cwd,
   recents,
   inboxUnseen = false,
+  needsMark = 0,
   busyPaths,
   canGoBack = false,
   canGoForward = false,
@@ -200,6 +203,8 @@ export function ProjectRail({
   monos,
   hubItems,
 }: Props) {
+  // WP-210: the tracker boolean no longer paints the Inbox mark.
+  void inboxUnseen;
   const trafficLightsVisible = useTrafficLightsVisible();
   const resize = useDragResize({
     min: sharedWidth?.min ?? PROJECT_RAIL_WIDTH_MIN,
@@ -447,8 +452,8 @@ export function ProjectRail({
                 setInboxMenu({ x, y });
               }}
               active={inboxActive}
-              dot={inboxUnseen}
-              ariaLabel={inboxUnseen ? "Inbox, new items" : "Inbox"}
+              needs={needsMark}
+              ariaLabel={needsMark > 0 ? `Inbox, ${needsMark} needs you` : "Inbox"}
             />
             {notesEnabled ? (
               <RailAction

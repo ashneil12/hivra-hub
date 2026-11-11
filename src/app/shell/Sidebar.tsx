@@ -17,6 +17,7 @@ import { OrchestrationSidebarAgents } from "../../features/orchestration/ui/Orch
 import { CrewPanel } from "../../features/crew/ui/CrewPanel";
 import { clearCrewFocus } from "../../features/crew/model/focus";
 import { useDelegationRows } from "../../features/monos/model/delegationStore";
+import { useNeedsYou } from "../../features/needs/model/needsLive";
 import type { ChildChat } from "../../features/monos/model/delegationView";
 import { subChatAttention, useSubChatFolds } from "../../features/monos/model/subChats";
 import { countWork, useStuckDismissalsVersion, workSplit } from "../../features/monos/model/workerStuck";
@@ -631,6 +632,8 @@ function SidebarComponent({
   codingTeam,
 }: Props) {
   const docsMode = useSyncExternalStore(subscribeDocsMode, getDocsMode, getDocsMode);
+  // WP-210: every Inbox mark on this sidebar is the one Needs you count.
+  const needsMark = useNeedsYou().length;
   const trafficLightsVisible = useTrafficLightsVisible();
   const remoteProject = isRemoteProjectPath(cwd);
   const tab: SidebarTabId = requestedTab;
@@ -2760,7 +2763,7 @@ function SidebarComponent({
           label: "Inbox",
           icon: Inbox,
           active: inboxActive,
-          dot: inboxUnseen,
+          needs: needsMark,
           onClick: onOpenInbox,
           onOpenContextMenu: (x, y) => {
             headerProjectMenu.close();
@@ -2954,6 +2957,7 @@ function SidebarComponent({
               notesActive={notesActive}
               automationsActive={automationsActive}
               inboxUnseen={inboxUnseen}
+              needsMark={needsMark}
             />
           ) : null}
           {!compactRailVisible ? (
@@ -3614,6 +3618,7 @@ function SidebarComponent({
           hasChanges={hasChanges}
           hasUnseenFinished={hasUnseenFinished}
           inboxUnseen={inboxUnseen}
+          needsMark={needsMark}
           onSelectProject={onSelectProject}
           onOpenProject={onOpenProject}
           onRemoveProject={onRemoveProject}
@@ -3646,6 +3651,7 @@ function SidebarComponent({
           cwd={cwd}
           recents={recents}
           inboxUnseen={inboxUnseen}
+          needsMark={needsMark}
           busyPaths={busyProjectPaths}
           liveAgents={liveAgents}
           activeSessionId={activeSessionId}
@@ -3821,6 +3827,7 @@ function SidebarProjectPicker({
   notesActive = false,
   automationsActive = false,
   inboxUnseen = false,
+  needsMark = 0,
 }: {
   cwd: string;
   recents: RecentProject[];
@@ -3841,7 +3848,10 @@ function SidebarProjectPicker({
   notesActive?: boolean;
   automationsActive?: boolean;
   inboxUnseen?: boolean;
+  needsMark?: number;
 }) {
+  // WP-210: the tracker boolean no longer paints this Inbox mark.
+  void inboxUnseen;
   const docsMode = useSyncExternalStore(subscribeDocsMode, getDocsMode, getDocsMode);
   const [inboxMenu, setInboxMenu] = useState<{ x: number; y: number } | null>(
     null,
@@ -3879,7 +3889,7 @@ function SidebarProjectPicker({
         ) : null}
         {onOpenInbox ? (
           <IconButton
-            label={inboxUnseen ? "Inbox, new items" : "Inbox"}
+            label={needsMark > 0 ? `Inbox, ${needsMark} needs you` : "Inbox"}
             active={inboxActive}
             onClick={onOpenInbox}
             onOpenContextMenu={(x, y) => {
@@ -3892,11 +3902,14 @@ function SidebarProjectPicker({
           >
             <span className="relative">
               <Inbox className="size-3.5" strokeWidth={1.75} />
-              {inboxUnseen ? (
+              {needsMark > 0 ? (
                 <span
-                  aria-hidden
-                  className="absolute -right-0.5 -top-0.5 size-1.5 rounded-full bg-accent"
-                />
+                  data-inbox-needs={needsMark}
+                  className="absolute -right-1 -top-1 grid h-3.5 min-w-3.5 place-items-center rounded-full px-0.5 text-[9px] leading-none text-white"
+                  style={{ background: "#e5484d" }}
+                >
+                  {needsMark > 99 ? "99+" : needsMark}
+                </span>
               ) : null}
             </span>
           </IconButton>
@@ -3962,6 +3975,7 @@ function CompactProjectRail({
   hasChanges,
   hasUnseenFinished,
   inboxUnseen,
+  needsMark = 0,
   onSelectProject,
   onOpenProject,
   onRemoveProject,
@@ -3997,6 +4011,7 @@ function CompactProjectRail({
   /** A session here finished a reply the user has not opened. */
   hasUnseenFinished: boolean;
   inboxUnseen: boolean;
+  needsMark?: number;
   onSelectProject?: (path: string) => void;
   onOpenProject?: () => void;
   onRemoveProject?: Props["onRemoveProject"];
@@ -4021,6 +4036,8 @@ function CompactProjectRail({
   /** A Mono fills the main area: no workspace tab is the current one. */
   monoViewActive?: boolean;
 }) {
+  // WP-210: the tracker boolean no longer paints this Inbox mark.
+  void inboxUnseen;
   const docsMode = useSyncExternalStore(subscribeDocsMode, getDocsMode, getDocsMode);
   const monosSnap = useSyncExternalStore(subscribeMonos, monosSnapshot);
   const monosPinned = useRailMonosPinned();
@@ -4178,10 +4195,10 @@ function CompactProjectRail({
           onClick={action(searchActive, onSearch)}
         />
         <CompactRailAction
-          label={inboxUnseen ? "Inbox, new items" : "Inbox"}
+          label={needsMark > 0 ? `Inbox, ${needsMark} needs you` : "Inbox"}
           icon={Inbox}
           active={inboxActive}
-          dot={inboxUnseen}
+          needs={needsMark}
           onClick={action(inboxActive, onOpenInbox)}
           onOpenContextMenu={(x, y) => {
             inboxTrigger.current =
@@ -4310,6 +4327,7 @@ function CompactRailAction({
   tab = false,
   active = false,
   dot = false,
+  needs,
   onClick,
   onOpenContextMenu,
 }: {
@@ -4324,6 +4342,8 @@ function CompactRailAction({
   tab?: boolean;
   active?: boolean;
   dot?: boolean;
+  /** WP-210: the Inbox mark, in place of the tracker dot. */
+  needs?: number;
   onClick?: () => void;
   onOpenContextMenu?: (x: number, y: number) => void;
 }) {
@@ -4380,7 +4400,15 @@ function CompactRailAction({
         className={`size-4 ${dot ? "compact-rail-icon-with-dot" : ""}`}
         strokeWidth={1.75}
       />
-      {dot ? (
+      {needs != null && needs > 0 ? (
+        <span
+          data-inbox-needs={needs}
+          className="absolute -right-0.5 -top-0.5 grid h-3.5 min-w-3.5 place-items-center rounded-full px-0.5 text-[9px] leading-none text-white"
+          style={{ background: "#e5484d" }}
+        >
+          {needs > 99 ? "99+" : needs}
+        </span>
+      ) : dot ? (
         <span
           aria-hidden
           className="absolute right-1.5 top-1.5 size-1.5 rounded-full bg-accent"
@@ -4796,6 +4824,7 @@ type SidebarNavItem = {
   shortcut?: string;
   active?: boolean;
   dot?: boolean;
+  needs?: number;
   onClick: () => void;
   onOpenContextMenu?: (x: number, y: number) => void;
 };
@@ -4832,15 +4861,16 @@ function SidebarNavList({
         </>
       ) : null}
       {shown.map(
-        ({ label, icon, shortcut, active, dot, onClick, onOpenContextMenu }) => (
+        ({ label, icon, shortcut, active, dot, needs, onClick, onOpenContextMenu }) => (
           <RailAction
             key={label}
             label={label}
             icon={icon}
             shortcut={shortcut}
             active={active}
-            dot={dot}
-            ariaLabel={dot ? `${label}, new items` : undefined}
+            dot={needs != null && needs > 0 ? false : dot}
+            needs={needs}
+            ariaLabel={needs != null && needs > 0 ? `${label}, ${needs} needs you` : dot ? `${label}, new items` : undefined}
             onClick={onClick}
             onOpenContextMenu={onOpenContextMenu}
           />
