@@ -89,9 +89,12 @@ describe("AgentSandboxSetting", () => {
     expect(host.querySelector("#setting-agent-sandbox")).toBeNull();
   });
 
-  it("describes the limit honestly: a known list, not every file", () => {
+  it("describes the limit honestly: a known list, not a full cage, with what is likely to break", () => {
     expect(AGENT_SANDBOX_DESCRIPTION).toContain("Off by default");
-    expect(AGENT_SANDBOX_DESCRIPTION).toContain("not every file");
+    expect(AGENT_SANDBOX_DESCRIPTION).toContain("does not cover other files");
+    expect(AGENT_SANDBOX_DESCRIPTION).toContain("not a full cage");
+    expect(AGENT_SANDBOX_DESCRIPTION).toContain("security");
+    expect(AGENT_SANDBOX_DESCRIPTION).toContain("git push -u");
     expect(AGENT_SANDBOX_DESCRIPTION).not.toMatch(/[—–]/);
   });
 });

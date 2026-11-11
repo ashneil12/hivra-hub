@@ -100,3 +100,28 @@ describe("checkTurnForProtectedPaths (the after-turn check)", () => {
     expect(report.touched).toEqual([]);
   });
 });
+
+// WP-178 review r2 (MED-3, L2): the protected places come from the shared list, and match case-insensitively.
+describe("the shared protected globs (review r2)", () => {
+  it.each([
+    ".GIT/Hooks/pre-commit",
+    ".git/modules/lib/hooks/pre-push",
+    ".git/modules/lib/config",
+    ".claude/hooks/on-stop.sh",
+    ".claude/skills/review/SKILL.md",
+    ".codex/config.toml",
+    "~/.gitconfig",
+    "~/.config/git/config",
+    "~/Library/LaunchAgents/com.example.plist",
+    "~/.claude/settings.local.json",
+    "~/.claude/commands/ship.md",
+    "~/.zshenv",
+  ])("protects %s", (path) => {
+    expect(matchProtected(path)).not.toBeNull();
+  });
+
+  it("names the places a denied write covers, with the reason from the list", () => {
+    const hit = matchProtected("~/.gitconfig");
+    expect(hit?.why).toMatch(/global git config/);
+  });
+});

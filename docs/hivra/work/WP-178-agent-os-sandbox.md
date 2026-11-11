@@ -83,8 +83,13 @@ everything outside its list. The deny-default profile is what would close that g
 
 - Built: the probe and its test (`scripts/agent-sandbox-probe.mjs`), the protected-paths list in `protectedPaths.ts`,
   the secret-paths list, `checkTurnForProtectedPaths` (the report-only after-turn check), its wiring into first-mate
-  turns, the macOS sandbox profile behind a setting (`agent_sandbox.rs`), and fail-closed startup.
-- Not built: refusal logging (item 5 above) and a Linux or Windows boundary.
+  turns, the macOS sandbox profile behind a setting (`agent_sandbox.rs`), fail-closed startup, a start-up self-check,
+  the Settings switch, and activity rows for a refused start and for a protected-path report.
+- Not built: a Linux or Windows boundary. A single refused read or write inside a running agent is not logged:
+  `sandbox-exec` does not report denials to the app.
+- The probe script still measures the earlier `subpath` and `literal` profile. The app ships the regex profile built by
+  `agent_sandbox.rs`: case-folded, with the review r2 denies (the switch folder, `monocode.db`, the git writes, the
+  denied programs, Apple events, file links). The probe results for the shipped profile are in the PR comments.
 
 ### Decisions (Ash's picks, built in this round)
 
@@ -130,7 +135,8 @@ Not built in this round, on purpose:
 - [ ] Design doc with the platform matrix, measured startup cost and what each boundary cannot stop. macOS measured;
   Linux and Windows not measured. A Claude agent that did not write it reviews it: pending.
 - [ ] Ash picks the mechanism per platform before any build: pending (decisions above).
-- [ ] Once built, on a dev copy: pending. Nothing is built that confines a runtime.
+- [ ] Once built, on a dev copy: pending. The macOS profile is built and was probed under a temporary home with
+  `sandbox-exec` (review r2). The native check on a dev copy is still open.
 - [ ] `npm run check` passes. Not run; scoped checks run instead (tsc, the two test files, node test). Native checks
   stay open until seen in a dev copy on Ash's Mac.
 

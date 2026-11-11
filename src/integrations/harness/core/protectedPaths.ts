@@ -15,50 +15,17 @@ export type ProtectedRule = {
 
 const HOME_SECRETS = sharedList.homeSecrets;
 
+/**
+ * Every protected place: the shared list's `protectedGlobs` (checkout paths such as `.git/hooks/**` and `.claude/**`, and
+ * home paths such as `~/.gitconfig`), then each shell profile from `homeSecrets`. The Rust side fingerprints the same
+ * globs (protected_paths.rs), and the sandbox denies the writes marked `denyWrite`.
+ */
 export const PROTECTED_PATHS: readonly ProtectedRule[] = [
-  // Git: a hook runs on the next commit, push or checkout; config can point hooks or fsmonitor at any command.
-  { pattern: ".git/hooks/**", why: "a git hook runs on the next commit, push or checkout" },
-  { pattern: ".git/config", why: "git config can point hooks or fsmonitor at any command" },
-
-  // Each CLI's project settings, hooks, commands and skills (the checkout's own copies).
-  { pattern: ".claude/settings.json", why: "Claude Code settings decide its permissions and hooks" },
-  { pattern: ".claude/settings.local.json", why: "Claude Code local settings decide its permissions and hooks" },
-  { pattern: ".claude/hooks/**", why: "Claude Code hooks run on its tool calls" },
-  { pattern: ".claude/commands/**", why: "Claude Code commands run when someone types them" },
-  { pattern: ".claude/skills/**", why: "Claude Code skills change what the agent is told to do" },
-  { pattern: ".claude/agents/**", why: "Claude Code subagent definitions change what workers run" },
-  { pattern: ".codex/config.toml", why: "Codex settings decide its sandbox and approvals" },
-  { pattern: ".codex/skills/**", why: "Codex skills change what the agent is told to do" },
-  { pattern: ".cursor/mcp.json", why: "Cursor MCP config starts commands on its own" },
-  { pattern: ".cursor/rules/**", why: "Cursor rules change what the agent is told to do" },
-  { pattern: ".cursor/skills/**", why: "Cursor skills change what the agent is told to do" },
-  { pattern: ".opencode/opencode.json", why: "OpenCode settings decide what it runs" },
-  { pattern: ".opencode/opencode.jsonc", why: "OpenCode settings decide what it runs" },
-  { pattern: ".opencode/skills/**", why: "OpenCode skills change what the agent is told to do" },
-  { pattern: ".agents/skills/**", why: "shared agent skills change what every CLI is told to do" },
-  { pattern: ".hermes/skills/**", why: "Hermes skills change what the agent is told to do" },
-  { pattern: ".devin/skills/**", why: "Devin skills change what the agent is told to do" },
-  { pattern: ".config/devin/skills/**", why: "Devin skills change what the agent is told to do" },
-  { pattern: ".gemini/antigravity/skills/**", why: "Antigravity skills change what the agent is told to do" },
-
-  // Shell profiles: run in every new terminal, including the ones Hivra opens (the shared list's shellProfiles).
+  ...sharedList.protectedGlobs.map(({ pattern, why }) => ({ pattern, why })),
   ...HOME_SECRETS.shellProfiles.map((file) => ({
     pattern: `~/${file}`,
     why: "a shell profile runs in every new terminal or shell",
   })),
-
-  // The person's own CLI settings, hooks, commands and skills.
-  { pattern: "~/.claude/settings.json", why: "Claude Code settings decide its permissions and hooks" },
-  { pattern: "~/.claude/settings.local.json", why: "Claude Code local settings decide its permissions and hooks" },
-  { pattern: "~/.claude/hooks/**", why: "Claude Code hooks run on its tool calls" },
-  { pattern: "~/.claude/commands/**", why: "Claude Code commands run when someone types them" },
-  { pattern: "~/.claude/skills/**", why: "Claude Code skills change what the agent is told to do" },
-  { pattern: "~/.claude/agents/**", why: "Claude Code subagent definitions change what workers run" },
-  { pattern: "~/.codex/config.toml", why: "Codex settings decide its sandbox and approvals" },
-  { pattern: "~/.codex/skills/**", why: "Codex skills change what the agent is told to do" },
-  { pattern: "~/.cursor/mcp.json", why: "Cursor MCP config starts commands on its own" },
-  { pattern: "~/.cursor/rules/**", why: "Cursor rules change what the agent is told to do" },
-  { pattern: "~/.config/opencode/**", why: "OpenCode settings decide what it runs" },
 ];
 
 /** A glob to an anchored regex: `**` crosses folders, `*` stays in one, everything else is literal. */
@@ -78,7 +45,15 @@ function globToRegExp(pattern: string): RegExp {
   return new RegExp(`^${re}$`);
 }
 
-const COMPILED = PROTECTED_PATHS.map((rule) => ({ rule, re: globToRegExp(rule.pattern) }));
+/** The fold applied to each name in a path and in a pattern, so `.GIT/Hooks` matches `.git/hooks/**`. `~` is kept. */
+function foldPath(path: string): string {
+  return path
+    .split("/")
+    .map((segment) => (segment === "~" ? segment : foldName(segment)))
+    .join("/");
+}
+
+const COMPILED = PROTECTED_PATHS.map((rule) => ({ rule, re: globToRegExp(foldPath(rule.pattern)) }));
 
 function normalize(path: string): string {
   return path.replace(/\\/g, "/").replace(/^\.\//, "");
@@ -86,7 +61,7 @@ function normalize(path: string): string {
 
 /** The first protected rule a path matches, or null. A path is checkout-relative or starts with `~/`. */
 export function matchProtected(path: string): ProtectedRule | null {
-  const p = normalize(path);
+  const p = foldPath(normalize(path));
   const hit = COMPILED.find(({ re }) => re.test(p));
   return hit ? hit.rule : null;
 }

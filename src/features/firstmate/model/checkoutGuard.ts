@@ -132,9 +132,16 @@ export class FirstMateTurnGuard {
     const pending = this.openProtected.get(sessionId);
     this.openProtected.delete(sessionId);
     if (!pending || !this.backend.protectedSnapshot) return undefined;
+    // A check that could not run is said, never silently taken for "nothing changed" (review r2 L3).
     const before = await pending.before;
-    if (!before) return undefined;
-    const after = await this.backend.protectedSnapshot(pending.dir).catch(() => undefined);
+    if (!before) {
+      console.warn(`Protected-path check did not run for ${pending.dir}: the checkout could not be read before the turn.`);
+      return undefined;
+    }
+    const after = await this.backend.protectedSnapshot(pending.dir).catch((reason: unknown) => {
+      console.warn(`Protected-path check did not run for ${pending.dir}: ${String(reason)}`);
+      return undefined;
+    });
     if (!after) return undefined;
     const report = checkTurnForProtectedPaths(before, after);
     return report.touched.length > 0 ? report : undefined;

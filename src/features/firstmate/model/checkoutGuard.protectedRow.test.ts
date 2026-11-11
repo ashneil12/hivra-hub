@@ -5,7 +5,7 @@ vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn(() => Promise.resolve(nul
 
 import { invoke } from "@tauri-apps/api/core";
 import { checkTurnForProtectedPaths } from "../../../integrations/harness/core/protectedPaths";
-import { noteProtectedReport, protectedActivityRow } from "./checkoutGuard";
+import { FirstMateTurnGuard, noteProtectedReport, protectedActivityRow } from "./checkoutGuard";
 import { ACTIVITY_PROTECTED_REPORT } from "../../activity/model/activity";
 import type { Session } from "../../sessions/model/session";
 
@@ -40,5 +40,27 @@ describe("the protected-path activity row", () => {
     await noteProtectedReport(session, report);
     expect(invoke).toHaveBeenCalledWith("activity_note_first_mate", protectedActivityRow(session, report));
     expect(invoke).not.toHaveBeenCalledWith("activity_note", expect.anything());
+  });
+});
+
+// WP-178 review r2 L3: a protected-path check that cannot run is said, not taken for "nothing changed".
+describe("a protected-path check that cannot run", () => {
+  it("warns instead of reporting nothing changed when the checkout cannot be read after the turn", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const backend = {
+      snapshot: async () => ({ dir: "/work/hub", head: null, dirty: {}, takenAt: 0 }),
+      check: async () => null,
+      revert: async () => ({ reverted: [], skipped: [] }),
+      protectedSnapshot: vi
+        .fn()
+        .mockResolvedValueOnce({ ".git/config": "1" })
+        .mockRejectedValueOnce(new Error("git could not run")),
+    };
+    const guard = new FirstMateTurnGuard(backend);
+    guard.begin("fm-1", "/work/hub");
+    const report = await guard.endProtected("fm-1");
+    expect(report).toBeUndefined();
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("did not run"));
+    warn.mockRestore();
   });
 });
