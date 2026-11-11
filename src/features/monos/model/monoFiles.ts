@@ -447,11 +447,24 @@ export type CodingTeamLook = { projectId: string; projectName: string; folder: s
  * What a chat in a project's coding team is told (Ash, 20 Oct: "I don't talk to workers. I only talk to
  * orchestrators."): the hub note, its project, the tools, and its project's memory primer.
  */
-export function codingTeamContext(team: CodingTeamLook, options: { projectMemory?: string } = {}): string {
+export function codingTeamContext(
+  team: CodingTeamLook,
+  options: { projectMemory?: string; standingAnswers?: string } = {},
+): string {
   const note = forUser`${hubNote()}\n\n- This chat is in ${team.projectName}'s coding team (project \`${team.projectId}\`), working in ${team.folder}.${team.leadName ? ` ${team.leadName} keeps the project's board.` : ""}`;
   const rules = forUser(TEAM_CHAT_RULES.split("PROJECT_FOLDER").join(team.folder));
   const withRules = `${note}\n\n${rules}`;
-  return options.projectMemory?.trim() ? `${withRules}\n\n${options.projectMemory.trim()}` : withRules;
+  const withMemory = options.projectMemory?.trim() ? `${withRules}\n\n${options.projectMemory.trim()}` : withRules;
+  return appendStandingAnswers(withMemory, options.standingAnswers);
+}
+
+/**
+ * WP-156: a project's standing answers at a fresh conversation's start, fenced after the memory. The block (from the app)
+ * says it is guidance, not permission. Empty or missing: nothing is added.
+ */
+export function appendStandingAnswers(text: string, standingAnswers: string | undefined): string {
+  const block = standingAnswers?.trim();
+  return block ? `${text}\n\n<standing_answers>\n${block}\n</standing_answers>` : text;
 }
 
 /**
@@ -470,6 +483,8 @@ export function monoContext(
     /** A Mono that isn't a project's Lead: its work goes to teams. */
     teams?: boolean;
     cli?: string;
+    /** WP-156: the project's standing answers (the app's block), after the memory primer. */
+    standingAnswers?: string;
   } = {},
 ): string {
   const parts: string[] = [];
@@ -493,6 +508,8 @@ export function monoContext(
       soul,
     );
     if (options.projectMemory?.trim()) parts.push(options.projectMemory.trim());
+    const standing = appendStandingAnswers("", options.standingAnswers).trim();
+    if (standing) parts.push(standing);
   }
   return withMemory(parts, files, plan);
 }

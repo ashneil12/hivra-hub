@@ -107,7 +107,7 @@ import {
   useMonoTeamsVersion,
 } from "../features/hub/model/monoTeams";
 import { isOrchestratorChat } from "../features/monos/model/orchestrators";
-import { leadMemoryBlock } from "../features/hub/model/hubMemoryPrimer";
+import { leadMemoryBlock, leadStandingBlock } from "../features/hub/model/hubMemoryPrimer";
 import { longChatOn, treeContext, treeDate, treeZoom } from "../features/monos/model/monoTreeStore";
 import { useMonoTrees } from "./hooks/useMonoTrees";
 import { useMemoryCurator } from "./hooks/useMemoryCurator";
@@ -1234,6 +1234,9 @@ import {
   setQuitWorkspace,
   type ResumedWorkspace,
 } from "./model/appLifecycle";
+
+/** WP-156: the project's standing answers as one block (the app answers "" while standing answers are off). */
+const readStandingBrief = (project: string): Promise<string> => invoke<string>("decisions_standing_brief", { project });
 
 const SearchView = lazySurface(
   async () => {
@@ -9770,11 +9773,17 @@ function Workspace({
               const projectMemory = agentPlan.soul || appended
                 ? await leadMemoryBlock(sessionId, current.harness).catch(() => undefined)
                 : undefined;
+              // WP-156: the project's standing answers ride on the same fresh start, only when the setting is on (the app
+              // answers "" otherwise) and a failed read leaves the note as it was.
+              const standingAnswers = agentPlan.soul || appended
+                ? await leadStandingBlock(sessionId, readStandingBrief).catch(() => undefined)
+                : undefined;
               // WP-21: a Mono's turn is the first mate contract plus its soul.
               const note = monoTurnNote(agentLook, agentFiles, appended ? { soul: true, memory: true } : agentPlan, {
                 delegate: delegateTool,
                 cli: appCliCommand(await invoke<string | null>("app_cli_path")),
                 ...(projectMemory ? { projectMemory } : {}),
+                ...(standingAnswers ? { standingAnswers } : {}),
                 // Every Mono but a Lead briefs project Leads (monoTeams.ts).
                 ...(delegateTool && briefsLeads(monoForSession(sessionId)?.id ?? "")
                   ? {
@@ -9800,6 +9809,8 @@ function Workspace({
             : undefined;
           if (team && teamHanded && (appended ? hubNoteFor(sessionId)?.key !== teamHanded.soulHash : teamPlan?.soul)) {
             const projectMemory = await leadMemoryBlock(sessionId, current.harness).catch(() => undefined);
+            // WP-156: the same standing answers a Mono's fresh turn gets (off: nothing added).
+            const standingAnswers = await leadStandingBlock(sessionId, readStandingBrief).catch(() => undefined);
             const note = withFirstMateContract(codingTeamContext(
               {
                 projectId: team.id,
@@ -9807,7 +9818,10 @@ function Workspace({
                 folder: team.folder!,
                 leadName: leadSpecFor(team).name,
               },
-              projectMemory ? { projectMemory } : {},
+              {
+                ...(projectMemory ? { projectMemory } : {}),
+                ...(standingAnswers ? { standingAnswers } : {}),
+              },
             ));
             if (appended) setHubNote(sessionId, { key: teamHanded.soulHash, text: note });
             else appContext.push(note);
