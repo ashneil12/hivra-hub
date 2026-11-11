@@ -159,11 +159,13 @@ export function FirstMateInboxPanel({
     };
   }, [noticeKey, clock]);
 
-  async function onAnswer(item: FirstMateItem, answerText: string, tries = 0) {
+  async function onAnswer(item: FirstMateItem, answerText: string, tries = 0, seenVersion?: number) {
     if (!item.key || !mounted.current) return;
     const snapshot = { rows: held.current.rows, decisions: held.current.decisions };
     const decision = snapshot.decisions.find((entry) => entry.decisionKey === item.key);
     if (tries > 0 && (!decision || decision.state === "answered")) return;
+    // The version from the tap. A retry must not read a card that changed while the answer was in flight (fix round 5, M1).
+    const version = tries === 0 ? decision?.version : seenVersion;
     const optimistic = afterAnswer(snapshot.rows, decision, answerText);
     if (!optimistic.applied) return;
     // The card stays open until the server confirms. The waiters can show as working.
@@ -172,22 +174,25 @@ export function FirstMateInboxPanel({
     setRows(optimistic.rows);
     answerFlight.current += 1;
     let applied = false;
-    let threw = false;
     try {
       // The version of the card on screen: a secret card is answered only for the words the person read (fix round 4, N6).
-      const outcome = await tauriFirstMate.answer(item.project, item.key, answerText, undefined, decision?.version);
+      const outcome = await tauriFirstMate.answer(item.project, item.key, answerText, undefined, version);
       applied = outcome.applied;
-    } catch {
-      // A timeout is not a final no. The decision stays open and is tried again.
-      threw = true;
-    }
-    answerFlight.current = Math.max(0, answerFlight.current - 1);
-    if (!mounted.current) return;
-    if (threw) {
-      if (tries < 2) {
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      answerFlight.current = Math.max(0, answerFlight.current - 1);
+      if (!mounted.current) return;
+      // The card changed after the tap. Do not send the answer again. The person reads the new card and taps again.
+      if (/changed after you read it/i.test(message)) {
+        pendingAnswer.current = null;
+        void load();
+        return;
+      }
+      // A timeout is not a final no. Try again with the version from the first tap, not whatever the card says now.
+      if (/timed out|timeout/i.test(message) && tries < 2) {
         window.setTimeout(() => {
           if (!mounted.current) return;
-          void onAnswer(item, answerText, tries + 1);
+          void onAnswer(item, answerText, tries + 1, version);
         }, 0);
         return;
       }
@@ -198,6 +203,8 @@ export function FirstMateInboxPanel({
       }
       return;
     }
+    answerFlight.current = Math.max(0, answerFlight.current - 1);
+    if (!mounted.current) return;
     if (!applied) {
       pendingAnswer.current = null;
       const skipped = skippedLoad.current;

@@ -1,9 +1,13 @@
 // Hivra WP-15: first-mate items in the Inbox. A new kind, beside the GitHub list, not inside it.
 
 import { sameProjectPath } from "../../projects/model/recents";
+import limits from "./decisionLimits.json";
 import type { Notice } from "./digest";
 import { firstPlainLine, type CrewDeliveryInput, type CrewWorkerInput } from "./rows";
 import { knownStatus, statusWord } from "./words";
+
+/** The same cap the decision store uses. A secret card is never cut to fit it; the store refuses a longer question. */
+export const QUESTION_MAX = limits.questionMax;
 
 export type FirstMateInboxKind = "decision" | "question" | "review" | "failure" | "credential";
 
@@ -76,7 +80,7 @@ function secretCardParts(question: string | null | undefined): { title: string; 
   const body = lines.filter((line, at) => at > 0 && line !== note);
   return {
     title: (lines[0] ?? "").slice(0, 160),
-    body: body.join("\n").slice(0, 1_800),
+    body: body.join("\n"),
     note: note ? note.slice(SECRET_WARNING.length) : null,
   };
 }

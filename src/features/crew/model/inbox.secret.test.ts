@@ -63,4 +63,12 @@ describe("a secret's approval card keeps the exact command (fix round 2, M2)", (
     const [item] = inboxItems({ project: PROJECT, decisions: [card(question, ["Once", "No"], "secret/stripe-api-key/x")] });
     expect(item.body).toContain("Command: /opt/homebrew/bin/stripe find 'a  b' \\u{2013}limit");
   });
+
+  it("does not cut a secret card body that fits the shared limit", () => {
+    const line = "y".repeat(1_900);
+    const question = [`Let Tally run \`/usr/bin/true\` with Stripe API key?`, line].join("\n");
+    const [item] = inboxItems({ project: PROJECT, decisions: [card(question, ["Once", "No"], "secret/stripe-api-key/long")] });
+    expect(item.body).toBe(line);
+    expect(item.body).not.toContain("cut");
+  });
 });
