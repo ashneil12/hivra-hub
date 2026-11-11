@@ -273,14 +273,15 @@ const PEM_TO_END = /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z ]
 const PGP_BLOCK = /-----BEGIN PGP PRIVATE KEY BLOCK-----[\s\S]*?(?:-----END PGP PRIVATE KEY BLOCK-----|$)/g;
 const PUTTY_PRIVATE_LINE = /(Private-Lines:[ \t]*\d+[ \t]*\r?\n)([^\r\n]*)/g;
 const AGE_SECRET = /AGE-SECRET-KEY-1[0-9A-Z]+/g;
-const BASE64_PEM = /LS0tLS1CRUdJTi[A-Za-z0-9+/=]{16,}/g;
-// base64("-----BEGIN"). A wrapped encoding (openssl at 64 columns, GNU base64 at 76) splits this across lines, and
-// "PRIVATE" is only the letters UFJJVkFURS when it starts on a 3-byte boundary. PKCS#8, EC and OpenSSH headers do not.
-const PEM_MARKER = "LS0tLS1CRUdJTi";
+// base64("-----BEGIN") when that text starts at byte offset 0, 1 or 2. A wrapped encoding splits it across lines.
+// The three strings only locate a one-line token. A run is decoded and checked, so a marker alone is not a private key.
+const PEM_MARKERS = ["LS0tLS1CRUdJTi", "0tLS0tQkVHSU4", "tLS0tLUJFR0lO"] as const;
+const MIN_BASE64_RUN = 40;
 // No `g` flag: privateKeyPresent uses test(), which is stateful on a global expression.
+// The base64 clause is bounded so a line of repeated markers cannot backtrack.
 // OpenSSH bodies start with base64("openssh-key-v1\0") even when the armor lines were cut off. SSH2 (RFC 4716) armor
 // uses four dashes and spaces, which "PRIVATE KEY-----" does not match.
-const PRIVATE_KEY_HEADER = /PRIVATE KEY(?: BLOCK)?-----|PuTTY-User-Key-File|Private-Lines:[ \t]*[0-9]|AGE-SECRET-KEY-1|LS0tLS1CRUdJTi[A-Za-z0-9+/=]*UFJJVkFURS|b3BlbnNzaC1rZXktdjE|---- BEGIN SSH2 (?:ENCRYPTED )?PRIVATE KEY ----/;
+const PRIVATE_KEY_HEADER = /PRIVATE KEY(?: BLOCK)?-----|PuTTY-User-Key-File|Private-Lines:[ \t]*[0-9]|AGE-SECRET-KEY-1|LS0tLS1CRUdJTi[A-Za-z0-9+/=]{0,24}UFJJVkFURS|b3BlbnNzaC1rZXktdjE|---- BEGIN SSH2 (?:ENCRYPTED )?PRIVATE KEY ----/;
 const COOKIE_SESSION = /Cookie\s*:\s*session=([^\s;]{6,})/gi;
 const NETRC_PASSWORD = /(^|[\n\r])([ \t]*password[ \t]+)([^\s]{6,})/gi;
 const MYSQL_PASSWORD = /(mysql\s+-p)(\S{4,})/gi;
@@ -355,36 +356,45 @@ function redactString(text: string): { text: string; count: number } {
   return { text: extra.text, count: shared.count + strict.count + extra.count };
 }
 
-function pureBase64Line(line: string): boolean {
+function pureBase64Line(line: string, min = 4): boolean {
   const trimmed = line.trim();
-  return trimmed.length >= 4 && /^[A-Za-z0-9+/=]+$/.test(trimmed);
+  return trimmed.length >= min && /^[A-Za-z0-9+/=]+$/.test(trimmed);
 }
 
-/** Consecutive base64 lines, whitespace removed, when the joined text contains a PEM begin marker. */
-function wrappedBase64Runs(text: string): string[] {
-  const lines = text.split(/\r?\n/);
-  const runs: string[] = [];
+/** A pure base64 run of at least 40 characters, including one short wrapped tail. */
+function collectBase64Runs(lines: string[]): Array<{ start: number; end: number; compact: string }> {
+  const runs: Array<{ start: number; end: number; compact: string }> = [];
   let index = 0;
   while (index < lines.length) {
     if (!pureBase64Line(lines[index] ?? "")) {
       index += 1;
       continue;
     }
-    const chunk: string[] = [];
-    while (index < lines.length && pureBase64Line(lines[index] ?? "")) {
-      chunk.push((lines[index] ?? "").trim());
+    const start = index;
+    while (index < lines.length && pureBase64Line(lines[index] ?? "")) index += 1;
+    // A wrap's last line can be 1 to 3 characters. Take it only when it does not start another long run.
+    if (
+      index < lines.length &&
+      pureBase64Line(lines[index] ?? "", 1) &&
+      !pureBase64Line(lines[index + 1] ?? "")
+    ) {
       index += 1;
     }
-    const compact = chunk.join("").replace(/\s/g, "");
-    if (compact.includes(PEM_MARKER)) runs.push(compact);
+    const compact = lines
+      .slice(start, index)
+      .map((line) => (line ?? "").trim())
+      .join("");
+    if (compact.length >= MIN_BASE64_RUN) runs.push({ start, end: index, compact });
   }
   return runs;
 }
 
 function decodeBase64Text(compact: string): string | null {
-  if (!/^[A-Za-z0-9+/]*={0,2}$/.test(compact) || compact.length < PEM_MARKER.length) return null;
-  if (compact.length % 4 === 1) return null;
-  const padded = compact.length % 4 === 0 ? compact : `${compact}${"=".repeat(4 - (compact.length % 4))}`;
+  if (!/^[A-Za-z0-9+/]*={0,2}$/.test(compact) || compact.length < MIN_BASE64_RUN) return null;
+  // One leftover character is a truncated quantum, not a reason to skip the key in front of it.
+  const body = compact.length % 4 === 1 ? compact.slice(0, -1) : compact;
+  if (body.length < MIN_BASE64_RUN) return null;
+  const padded = body.length % 4 === 0 ? body : `${body}${"=".repeat(4 - (body.length % 4))}`;
   try {
     return globalThis.atob(padded);
   } catch {
@@ -392,42 +402,130 @@ function decodeBase64Text(compact: string): string | null {
   }
 }
 
-/** A base64 run that decodes to a private-key header, including one wrapped across lines. */
-function decodedPemMatchesHeader(text: string): boolean {
-  const tokens = [...wrappedBase64Runs(text), ...(text.match(/LS0tLS1CRUdJTi[A-Za-z0-9+/=]{16,}/g) ?? [])];
-  return tokens.some((token) => {
-    const decoded = decodeBase64Text(token);
-    return decoded !== null && PRIVATE_KEY_HEADER.test(decoded);
-  });
+function decodedIsPrivateKey(compact: string): boolean {
+  const decoded = decodeBase64Text(compact);
+  return decoded !== null && PRIVATE_KEY_HEADER.test(decoded);
+}
+
+/** The earliest marker at or after `from`, or -1. */
+function markerIndex(text: string, from: number): number {
+  let found = -1;
+  for (const marker of PEM_MARKERS) {
+    const at = text.indexOf(marker, from);
+    if (at >= 0 && (found < 0 || at < found)) found = at;
+  }
+  return found;
 }
 
 /**
- * Replaces a base64 PEM, including one wrapped at 64 or 76 columns. A one-line match still covers a key written
- * inline. A run of pure base64 lines is one value, so the lines after the first do not travel.
+ * The base64 word that contains `at`. Scanning back stops at `=`, so a token like KEY= is not pulled into the word.
+ * The caller always continues from `end`, so repeated markers are one word.
+ */
+function isBase64Body(code: number): boolean {
+  return (
+    (code >= 48 && code <= 57) ||
+    (code >= 65 && code <= 90) ||
+    (code >= 97 && code <= 122) ||
+    code === 43 ||
+    code === 47
+  );
+}
+
+function base64WordAt(text: string, at: number): { start: number; end: number } {
+  let start = at;
+  while (start > 0 && isBase64Body(text.charCodeAt(start - 1))) start -= 1;
+  let end = at;
+  while (end < text.length && isBase64Body(text.charCodeAt(end))) end += 1;
+  let pads = 0;
+  while (pads < 2 && end < text.length && text.charCodeAt(end) === 61) {
+    end += 1;
+    pads += 1;
+  }
+  return { start, end };
+}
+
+function lineHoldsPrivateKey(line: string): boolean {
+  let from = 0;
+  while (from < line.length) {
+    const at = markerIndex(line, from);
+    if (at < 0) return false;
+    const word = base64WordAt(line, at);
+    if (decodedIsPrivateKey(line.slice(word.start, word.end))) return true;
+    from = Math.max(word.end, at + 1);
+  }
+  return false;
+}
+
+/** A base64 run that decodes to a private-key header, including one wrapped across lines or written on one line. */
+function decodedPemMatchesHeader(text: string): boolean {
+  const lines = text.split(/\r?\n/);
+  const inRun = new Set<number>();
+  for (const run of collectBase64Runs(lines)) {
+    if (decodedIsPrivateKey(run.compact)) return true;
+    for (let i = run.start; i < run.end; i += 1) inRun.add(i);
+  }
+  for (let i = 0; i < lines.length; i += 1) {
+    if (inRun.has(i)) continue;
+    if (lineHoldsPrivateKey(lines[i] ?? "")) return true;
+  }
+  return false;
+}
+
+/** Replaces a one-line base64 private key. A word that is not a key is copied through, and the scan jumps past it. */
+function redactBase64Words(line: string): { text: string; count: number } {
+  let count = 0;
+  let out = "";
+  let cursor = 0;
+  while (cursor < line.length) {
+    const at = markerIndex(line, cursor);
+    if (at < 0) {
+      out += line.slice(cursor);
+      break;
+    }
+    const word = base64WordAt(line, at);
+    const end = Math.max(word.end, at + 1);
+    if (decodedIsPrivateKey(line.slice(word.start, word.end))) {
+      out += `${line.slice(cursor, word.start)}[secret removed]`;
+      count += 1;
+    } else {
+      out += line.slice(cursor, end);
+    }
+    cursor = end;
+  }
+  return { text: out, count };
+}
+
+/**
+ * Replaces a base64 private key, including one wrapped across lines. A run that is not a key is copied once and the
+ * scan jumps to the run's end, so a long file of ordinary base64 is not read again from every line.
  */
 function redactBase64Pem(text: string): { text: string; count: number } {
   const lines = text.split("\n");
+  const runs = collectBase64Runs(lines);
   let count = 0;
   const out: string[] = [];
   let index = 0;
+  let runAt = 0;
   while (index < lines.length) {
-    if (pureBase64Line(lines[index] ?? "")) {
-      let end = index;
-      while (end < lines.length && pureBase64Line(lines[end] ?? "")) end += 1;
-      const compact = lines.slice(index, end).map((line) => line.trim()).join("").replace(/\s/g, "");
-      if (compact.includes(PEM_MARKER) && compact.length >= PEM_MARKER.length + 16) {
+    const run = runs[runAt];
+    if (run && run.start === index) {
+      if (decodedIsPrivateKey(run.compact)) {
         out.push("[secret removed]");
         count += 1;
-        index = end;
-        continue;
+      } else {
+        for (let line = run.start; line < run.end; line += 1) {
+          const redacted = redactBase64Words(lines[line] ?? "");
+          out.push(redacted.text);
+          count += redacted.count;
+        }
       }
+      index = run.end;
+      runAt += 1;
+      continue;
     }
-    out.push(
-      (lines[index] ?? "").replace(BASE64_PEM, () => {
-        count += 1;
-        return "[secret removed]";
-      }),
-    );
+    const redacted = redactBase64Words(lines[index] ?? "");
+    out.push(redacted.text);
+    count += redacted.count;
     index += 1;
   }
   return { text: out.join("\n"), count };
