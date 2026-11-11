@@ -2,13 +2,19 @@
 // Review of PR #243 (WP-210), round 7. The round 6 files stay as they are.
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 
-const ipc = vi.hoisted(() => ({ calls: [] as { cmd: string; args: Record<string, unknown> }[] }));
+const ipc = vi.hoisted(() => ({
+  calls: [] as { cmd: string; args: Record<string, unknown> }[],
+  cards: [] as unknown[],
+  watches: [] as unknown[],
+}));
 vi.mock("@tauri-apps/api/core", async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
   invoke: vi.fn(async (cmd: string, args: Record<string, unknown> = {}) => {
     ipc.calls.push({ cmd, args });
     if (cmd === "decisions_answer") return { applied: true, decision: null, released: [], releasedTasks: [] };
-    if (cmd === "decisions_list" || cmd === "pr_watch_list" || cmd === "gate_cards") return [];
+    if (cmd === "decisions_list") return [];
+    if (cmd === "pr_watch_list") return ipc.watches;
+    if (cmd === "gate_cards") return ipc.cards;
     return null;
   }),
 }));
@@ -30,7 +36,10 @@ import {
   takePick,
   waitingChats,
 } from "../../hub/model/waitingChats";
-import { keepPage, resetPagesForTest, type Page } from "../../pages/model/pages";
+import { allKeptPages, keepPage, resetPagesForTest, type Page } from "../../pages/model/pages";
+import { currentNeedsYouRows } from "../../hub/model/useNeedsYouRows";
+import type { Delegation } from "../../monos/model/delegations";
+import { delegationRows, resetDelegationStore, setDelegationRows } from "../../monos/model/delegationStore";
 import { factsFromParts, resetNeedsLiveForTest, type NeedsParts, type RemoteNeeds } from "./needsLive";
 import { needsYouQuiet } from "./needsYou";
 
@@ -98,6 +107,9 @@ function fresh() {
   sent.length = 0;
   decided.length = 0;
   ipc.calls.length = 0;
+  ipc.cards = [];
+  ipc.watches = [];
+  resetDelegationStore();
   setHubDataSource({ ...mockHubData, listProjects: () => HUB_PROJECTS });
   setWorkerQuestionRouter(undefined);
   setWaitingChatsHost({
@@ -113,6 +125,7 @@ beforeEach(fresh);
 afterEach(() => {
   resetPagesForTest();
   resetNeedsLiveForTest();
+  resetDelegationStore();
 });
 
 function lead(id: string, reply: string) {
@@ -255,4 +268,82 @@ it("the opening count includes a page that still asks for access", async () => {
   };
   expect(await keepPage(page, NOW, { allow: false })).toBe(true);
   expect(await loadNeedsYouCount(source)).toBe(1);
+});
+
+it("the quiet opening count matches the drawn list for a stopped worker, a check, a page and a review", async () => {
+  const settled = Date.now() - 60_000;
+  const row: Delegation = {
+    id: "t-stop",
+    ownerSession: "lead-chat",
+    ownerMono: "exo",
+    batchId: null,
+    parentId: null,
+    rootId: "t-stop",
+    childSession: "w-stop",
+    requestId: "r-stop",
+    generation: 1,
+    project: "hivra",
+    title: "Upload the playtest build",
+    brief: null,
+    goal: null,
+    askIds: [],
+    state: "failed",
+    errorClass: "billing",
+    error: "402 Payment Required",
+    retryable: null,
+    resetsAt: null,
+    result: null,
+    pendingQuestion: null,
+    delivery: "pending",
+    deliveryMessage: null,
+    createdAt: settled,
+    updatedAt: settled,
+    settledAt: settled,
+    log: [],
+    version: 1,
+    mirroredVersion: 0,
+    mirrorError: null,
+  };
+  setDelegationRows([row]);
+  const page: Page = {
+    id: "weekly",
+    projectId: "hivra",
+    title: "Weekly views",
+    request: "",
+    by: "lead",
+    spec: { kind: "bespoke", title: "Weekly views", html: "<p></p>", permissions: ["agents.answer"] },
+    permissions: [],
+  };
+  expect(await keepPage(page, NOW, { allow: false })).toBe(true);
+  ipc.cards = [{ id: "card-win", line: "The Windows tests are still red.", decisionKey: "gate/win", state: "parked" }];
+  ipc.watches = [{
+    id: "watch-land", state: "watching", repo: "", number: 4, title: "Review the landing page",
+    project: "hivra", ownerSession: "lead", ownerMono: null, ownerName: "Ada",
+    status: { reviewDecision: "REVIEW_REQUIRED" }, updatedAt: NOW,
+  }];
+  const source = {
+    decisions: async () => [],
+    tasks: async () => [],
+    docs: async () => [],
+    projects: () => [{ id: "hivra", name: "Hivra", folder: "/work/hivra" }],
+    catalog: async () => [],
+    disk: {},
+    storage: {},
+  } as HomeSource;
+  const opening = await loadNeedsYouCount(source);
+  const drawn = needsYouQuiet(factsFromParts({
+    remote: {
+      decisions: [],
+      cards: [{ projectId: "/work/hivra", id: "card-win", line: "The Windows tests are still red.", decisionKey: "gate/win", state: "parked" }],
+      watches: [watch("hivra", "")],
+    },
+    rows: currentNeedsYouRows(),
+    projects: [{ id: "hivra", name: "Hivra", folder: "/work/hivra" }],
+    chats: waitingChats(),
+    pages: allKeptPages(),
+    delegations: delegationRows().map((item) => ({ id: item.id, state: item.state, project: item.project })),
+    tasks: [],
+  }), Date.now());
+  expect(opening).toBe(drawn.length);
+  expect(drawn.map((item) => item.kind).sort()).toEqual(["approval", "check", "review", "stopped"]);
 });

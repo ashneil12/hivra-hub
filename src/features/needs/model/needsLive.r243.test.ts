@@ -30,6 +30,7 @@ import type { Page } from "../../pages/model/pages";
 import { describeCapability, type Capability } from "../../pages/model/pageSpec";
 import type { PrWatch } from "../../pr-watch/model/prWatches";
 import { loadNeedsYouCount, type HomeSource } from "../../home/model/load";
+import { parseTask } from "../../home/model/lines";
 import { factsFromChats, factsFromParts, type GateCard, type NeedsParts, type RemoteNeeds } from "./needsLive";
 import { needsYou, needsYouQuiet } from "./needsYou";
 
@@ -179,19 +180,18 @@ it("an answered check leaves the list, and answering it reads the store again", 
   expect(after.some((cmd) => cmd === "gate_cards" || cmd === "decisions_list")).toBe(true);
 });
 
-// MED 6. Home draws tracker tasks (needs you, In review) as Needs you rows beside the list, but the list does not
-// hold them, so Home's section count, the rail, the sidebar and the header leave them out. Home's opening count
-// (loadNeedsYouCount) counts them and leaves out stopped workers, checks, Pages and PR reviews.
+// MED 6. Home's opening count and the one list agree on a tracker task. The list is given that task through the
+// tasks field the screen passes (useNeedsYou), not a stash only the count can see.
 it("Home's opening count and the one list agree on a tracker task", async () => {
+  const raw = { id: "t1", projectId: "hivra", title: "Which font for the landing page?", status: "In progress", source: "agent", needsYou: true, createdAt: 1 };
   const source = {
     projects: () => [{ id: "hivra", name: "Hivra", folder: "/Users/ash/Projects/hivra" }],
     decisions: async () => [],
-    tasks: async (key: string) => (key === "hivra"
-      ? [{ id: "t1", projectId: "hivra", title: "Which font for the landing page?", status: "In progress", source: "agent", needsYou: true, createdAt: 1 }]
-      : []),
+    tasks: async (key: string) => (key === "hivra" ? [raw] : []),
   } as unknown as HomeSource;
   const opening = await loadNeedsYouCount(source);
-  const list = needsYouQuiet(factsFromParts(parts()), NOW);
+  const task = parseTask(raw);
+  const list = needsYouQuiet(factsFromParts(parts({}, { tasks: task ? [task] : [] })), NOW);
   expect(opening).toBe(list.length);
 });
 

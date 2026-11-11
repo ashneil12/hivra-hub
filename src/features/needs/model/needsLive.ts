@@ -29,7 +29,7 @@ import {
   waitingChats,
   type WaitingChat,
 } from "../../hub/model/waitingChats";
-import { useNeedsYouRows } from "../../hub/model/useNeedsYouRows";
+import { currentNeedsYouRows, useNeedsYouRows } from "../../hub/model/useNeedsYouRows";
 import type { NeedsYouRow } from "../../hub/model/needsYouRows";
 import {
   accessAsk,
@@ -556,31 +556,32 @@ function safePages(): Page[] {
   }
 }
 
-/**
- * Tasks Home just counted. The next factsFromParts that was not given its own tasks uses them once,
- * so the opening count and the list agree on the tasks that read just loaded.
- */
-let homeTasksOnce: readonly HomeTask[] | undefined;
 let liveTasks: readonly HomeTask[] = [];
 const repoByProject = new Map<string, string>();
 
-/** Home's decisions and tasks, plus the chats already waiting. A chat store that throws adds nothing. */
+/**
+ * Home's decisions and tasks, plus the chats, pages and stopped workers already waiting.
+ * `live` is a quiet read of gate cards and pull-request watches. Absent, the last published read stands.
+ * A chat store that throws adds nothing.
+ */
 export function factsFromHome(
   decisions: readonly HomeDecision[],
   tasks: readonly HomeTask[],
   homeProjects: readonly HomeProject[],
+  live?: { cards?: readonly GateCard[]; watches?: readonly PrWatch[] },
 ): NeedsSources {
-  homeTasksOnce = tasks;
   const list = homeProjects.map((project) => ({ id: project.id, name: project.name, folder: project.folder }));
   const fromDecisions = decisionFacts(decisions.map(homeDecision), list, new Set());
   const fromTasks = taskFacts(tasks, list);
   const chats = factsFromChats(safeChats());
+  const cards = live?.cards ?? remote.cards;
+  const watches = live?.watches ?? remote.watches;
   return {
-    stopped: [],
+    stopped: stoppedFacts(currentNeedsYouRows()),
     questions: [...fromDecisions.questions, ...fromTasks.questions, ...chats.questions],
     approvals: [...fromDecisions.approvals, ...chats.approvals, ...pageFacts(safePages(), list)],
-    reviews: [...fromTasks.reviews, ...watchFacts(remote.watches, list)],
-    checks: cardFacts(remote.cards, list, remote.decisions),
+    reviews: [...fromTasks.reviews, ...watchFacts(watches, list)],
+    checks: cardFacts(cards, list, decisions.map(homeDecision)),
     knownProjects: new Set(list.map((project) => project.id)),
     ownRepos: ownedRepos(list),
     ownRepoByProject: originsByProject(list),
@@ -594,18 +595,12 @@ export type NeedsParts = {
   chats: readonly WaitingChat[];
   pages: readonly Page[];
   delegations: readonly NeedsDelegation[];
-  /** Absent means the tasks the last Home count loaded, once, else the tasks the live list is holding. */
+  /** Absent means the tasks the live list is holding. */
   tasks?: readonly HomeTask[];
 };
 
 function tasksFor(parts: NeedsParts): readonly HomeTask[] {
-  if (parts.tasks !== undefined) return parts.tasks;
-  if (homeTasksOnce !== undefined) {
-    const tasks = homeTasksOnce;
-    homeTasksOnce = undefined;
-    return tasks;
-  }
-  return liveTasks;
+  return parts.tasks ?? liveTasks;
 }
 
 /** One read of every source. Callers pass what they already hold, so a test never needs the live stores. */
@@ -847,6 +842,23 @@ function applyOrigins(reads: readonly { id: string; repo: string | null | undefi
   return changed;
 }
 
+/**
+ * Gate cards and pull-request watches for a quiet count. A failed read keeps the last good one.
+ * This does not publish, so the list on screen stays as it is.
+ */
+export async function readQuietRemote(list: readonly ProjectRef[]): Promise<{ cards: GateCard[]; watches: PrWatch[] }> {
+  const [watchesRaw, ...cardReads] = await Promise.all([
+    orUndefined(tauriPrWatches.list()),
+    ...list.map(async (project) => {
+      const folder = project.folder?.trim() || project.id;
+      return { projectId: folder, got: await orUndefined(invoke("gate_cards", { project: folder })) };
+    }),
+  ]);
+  const cards = cardsAfter(remote.cards, cardReads) ?? [...remote.cards];
+  const watches = watchesRaw === undefined ? remote.watches : (Array.isArray(watchesRaw) ? watchesRaw.map(asWatch).filter((row): row is PrWatch => row != null) : []);
+  return { cards, watches };
+}
+
 /** Reload decisions, gate cards, pull-request watches, tasks and each project's origin. A timeout keeps the last good read. */
 export async function refreshNeedsRemote(): Promise<void> {
   const mine = ++remoteGen;
@@ -911,7 +923,6 @@ export function resetNeedsLiveForTest(): void {
   remote = EMPTY_REMOTE;
   remoteGen = 0;
   listeners.clear();
-  homeTasksOnce = undefined;
   liveTasks = [];
   repoByProject.clear();
   listenGeneration += 1;

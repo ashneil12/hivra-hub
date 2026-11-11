@@ -21,7 +21,7 @@ import {
   taskReadKeys,
 } from "./lines";
 import { browserStorage, readHome, type HomeStorage } from "./store";
-import { factsFromHome } from "../../needs/model/needsLive";
+import { factsFromHome, readQuietRemote } from "../../needs/model/needsLive";
 import { needsYouQuiet } from "../../needs/model/needsYou";
 
 export class LateHomeLoad extends Error {
@@ -120,13 +120,14 @@ export function mergeHomeLoad(prev: HomeSnapshot | null, next: HomeSnapshot): { 
 export async function loadNeedsYouCount(source: HomeSource): Promise<number> {
   const projects = sanitizeProjects(source.projects());
   const keys = taskReadKeys(projects);
-  const [decisionsRaw, ...taskLists] = await Promise.all([
+  const [decisionsRaw, quiet, ...taskLists] = await Promise.all([
     source.decisions(),
+    readQuietRemote(projects.map((project) => ({ id: project.id, name: project.name, folder: project.folder }))),
     ...keys.map((key) => source.tasks(key)),
   ]);
   const decisions = listOf(decisionsRaw).map(parseDecision).filter((item): item is HomeDecision => item != null);
   const tasks = dedupeTasks(taskLists.flatMap((list) => listOf(list).map(parseTask).filter((item): item is HomeTask => item != null)));
-  return needsYouQuiet(factsFromHome(decisions, tasks, projects), Date.now()).length;
+  return needsYouQuiet(factsFromHome(decisions, tasks, projects, quiet), Date.now()).length;
 }
 
 export function createHomeLoader(source: HomeSource, now: () => number = Date.now) {
