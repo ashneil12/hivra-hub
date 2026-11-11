@@ -9,7 +9,7 @@ use super::checkout::{self, Bind};
 use super::gitrun;
 use super::settings::{self, Strategy};
 use super::tick::{self, Next, Tick};
-use super::update::{self, fetch_args, merge_args, push_args, rebase_args, Outcome};
+use super::update::{self, fetch_args, merge_args, push_transport_args, rebase_args, Outcome};
 use super::UpdateReport;
 
 fn memory() -> Connection {
@@ -163,15 +163,32 @@ fn the_commands_never_force_push_skip_hooks_or_write_main() {
         rebase_args("origin", "main"),
         vec!["rebase", "refs/remotes/origin/main"]
     );
+    let (before, after) = push_transport_args(
+        "https://example.invalid/repo.git",
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:refs/heads/pkg",
+    );
+    let mut push = before;
+    push.push("push".into());
+    push.extend(after);
     assert_eq!(
-        push_args("origin", "pkg"),
-        vec!["push", "origin", "HEAD:refs/heads/pkg"]
+        push,
+        vec![
+            "-c",
+            "core.commitGraph=false",
+            "-c",
+            "pack.useBitmaps=false",
+            "push",
+            "--no-follow-tags",
+            "--recurse-submodules=no",
+            "https://example.invalid/repo.git",
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:refs/heads/pkg",
+        ]
     );
     for args in [
         fetch,
         merge_args("origin", "main"),
         rebase_args("origin", "main"),
-        push_args("origin", "pkg"),
+        push,
     ] {
         let borrowed: Vec<&str> = args.iter().map(String::as_str).collect();
         assert!(gitrun::ensure_safe(&borrowed).is_ok());
