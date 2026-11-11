@@ -57,5 +57,15 @@ describe("a Mono's session instruction", () => {
         commands: [],
       }),
     ).toBe(today);
+    expect(
+      monoSessionInstruction({
+        pstackRoot: "/plugins/installed/pstack",
+        mcodeRoot: "/plugins/installed/hivra-mcode",
+        plainEnglish: true,
+        commands: ["tdd"],
+        extra: CATALOG,
+        extraRoot: ROOT,
+      }),
+    ).toBe(today);
   });
 });
