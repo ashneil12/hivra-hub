@@ -3269,3 +3269,137 @@ fn the_launchers_settle_payload_passes_the_real_gate_and_writes_the_record() {
     let merged = merge::merge_with(&s, &gh, security_request(&f.project), 30, &present).unwrap();
     assert!(matches!(merged, MergeOutcome::Merged { .. }), "{merged:?}");
 }
+
+// ---- review/220-r4 repros (red at 2be26bc38) ---------------------------------------------------------------------------
+
+/// The needs-validation hold waits for "the person's answer", but any chat can answer that key: ask_person's `answer`
+/// field calls decisions::answer with `chat:<caller>`, and person_only() covers only irreversible/ and fresh-eyes/ keys.
+/// The author's Lead answers "Looked at it" for its own head and the candidates merge with no person.
+#[test]
+fn repro_220_r4_an_agent_answer_clears_the_needs_validation_hold() {
+    let pending = r#"[{"verdict":"needs_validation","title":"Token may leak to the phone","severity":{"overall_severity":"critical"}}]"#;
+    let key = format!("security-review/{H1_SEC}");
+    let f = fixture("r220r4-agent-answer");
+    let project = f.project.display().to_string();
+    let s = store();
+    record_review(&s, H1_SEC, pending, "claude", "codex", &[SECURITY_FILE]);
+    let gh = security_gh(H1_SEC, &[SECURITY_FILE]);
+    let first = merge::merge(&s, &gh, security_request(&f.project), 10).unwrap();
+    assert!(
+        matches!(&first, MergeOutcome::NeedsYou { .. }),
+        "{first:?}"
+    );
+    // What ask_person({key, answer}) sends for a chat (steering.ts askPerson): by = chat:<the caller's session>.
+    let answered = {
+        let mut conn = s.lock_conn().unwrap();
+        crate::decisions::answer(
+            &mut conn,
+            &project,
+            &key,
+            "Looked at it",
+            Some("chat:author-lead".into()),
+            11,
+        )
+    };
+    let second = merge::merge(&s, &gh, security_request(&f.project), 12).unwrap();
+    assert!(
+        answered.is_err() && !matches!(second, MergeOutcome::Merged { .. }),
+        "a chat answered the person's security question ({answered:?}) and the head merged: {second:?}"
+    );
+}
+
+/// The gate's own record code is not a security path: review.rs (judge, record_settled, OWNER), delegations.rs (the
+/// owner guard and the settle hook), the launcher and the author derivation all change with no review.
+#[test]
+fn repro_220_r4_the_review_record_code_is_a_security_path() {
+    let missing: Vec<&str> = [
+        "src-tauri/src/delivery/review.rs",
+        "src-tauri/src/delegations.rs",
+        "src-tauri/src/delivery/deliver.rs",
+        "src-tauri/src/delivery/mod.rs",
+        "src-tauri/src/decisions.rs",
+        "src/features/security-review/model/launch.ts",
+    ]
+    .into_iter()
+    .filter(|file| {
+        !merge::security_paths()
+            .iter()
+            .any(|pattern| merge::glob_match(pattern, file))
+    })
+    .collect();
+    assert!(missing.is_empty(), "not security paths: {missing:?}");
+}
+
+/// End to end: the lead tick's switch merges a change to the review record code with no security review. With the floor
+/// on, delivery/** is held for a person's tap (still no review); delegations.rs (the owner guard and the settle hook) and
+/// decisions.rs (person_only) are not held at all. With the floor off (the default), review.rs merges too.
+#[test]
+fn repro_220_r4_a_change_to_the_review_record_code_is_not_merged_by_the_switch() {
+    let mut merged = Vec::new();
+    for (tag, file, floor) in [
+        ("r220r4-deleg-on", "src-tauri/src/delegations.rs", true),
+        ("r220r4-decide-on", "src-tauri/src/decisions.rs", true),
+        ("r220r4-launch-on", "src/features/security-review/model/launch.ts", true),
+        ("r220r4-review-off", "src-tauri/src/delivery/review.rs", false),
+    ] {
+        let s = if floor {
+            floor_pr(tag, 7, None).0
+        } else {
+            let project = floor_project(tag);
+            let s = store();
+            set_mode(&s, &project, Some(Mode::Pr), true);
+            remember_delivery(&s, &project, None, 7);
+            s
+        };
+        let gh = files_of(Ok(&format!("{file}\n")));
+        let outcome = merge::merge(&s, &gh, agent_merge("acme/web"), 20).unwrap();
+        if matches!(outcome, MergeOutcome::Merged { .. }) {
+            merged.push(format!("{file} (floor {})", if floor { "on" } else { "off" }));
+        }
+    }
+    assert!(
+        merged.is_empty(),
+        "the switch merged the review record code with no security review: {merged:?}"
+    );
+}
+
+/// Boot recovery cancels every open row whose owner is not a Mono chat (delegations.ts bootStep: "Its owner is gone."),
+/// so a restart mid-review cancels the app's review row. The gate then calls start() again, record() hands back the
+/// cancelled row for the same owner and request id, and the gate says "running" forever: no session is started for it
+/// (startPendingReviews takes running rows only) and the 60-minute stuck line never shows.
+#[test]
+fn repro_220_r4_a_review_cancelled_at_boot_is_not_reported_as_running() {
+    let s = store();
+    let f = fixture("r220r4-boot");
+    seed_author(&s, "codex");
+    let present = [
+        presence("codex", true, true),
+        presence("claude", true, true),
+    ];
+    let gh = security_gh(H1_SEC, &[SECURITY_FILE]);
+    merge::merge_with(&s, &gh, security_request(&f.project), 10, &present).unwrap();
+    let (id, _, _) = review_rows(&s)[0].clone();
+    {
+        let mut conn = s.lock_conn().unwrap();
+        crate::delegations::cancel(
+            &mut conn,
+            &[id],
+            Some("Its owner is gone.".into()),
+            Some("boot".into()),
+            11,
+        )
+        .unwrap();
+    }
+    let later = 10 + 2 * 60 * 60 * 1000;
+    let outcome =
+        merge::merge_with(&s, &gh, security_request(&f.project), later, &present).unwrap();
+    let running = review_rows(&s)
+        .iter()
+        .any(|(_, _, state)| state == "running");
+    let says_running = matches!(&outcome, MergeOutcome::NeedsYou { question, .. } if question.contains("Security review running"));
+    assert!(
+        running || !says_running,
+        "the gate says a review is running, and none is: {outcome:?} rows {:?}",
+        review_rows(&s)
+    );
+}
