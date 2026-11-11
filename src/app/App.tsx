@@ -1,3 +1,4 @@
+import { subscribeMoreAgentsChanges } from "../features/providers/model/moreAgents";
 import { setTurnTextDecorator } from "../integrations/harness/core/registry";
 // WP-85: terminal Claude sessions in the chat list.
 import { mergeTerminalSessions } from "../features/terminalMirror/model/list";
@@ -107,7 +108,7 @@ import {
   useMonoTeamsVersion,
 } from "../features/hub/model/monoTeams";
 import { isOrchestratorChat } from "../features/monos/model/orchestrators";
-import { leadMemoryBlock } from "../features/hub/model/hubMemoryPrimer";
+import { leadMemoryBlock, leadStandingBlock } from "../features/hub/model/hubMemoryPrimer";
 import { longChatOn, treeContext, treeDate, treeZoom } from "../features/monos/model/monoTreeStore";
 import { useMonoTrees } from "./hooks/useMonoTrees";
 import { useMemoryCurator } from "./hooks/useMemoryCurator";
@@ -292,6 +293,8 @@ import { noteOpenedChat } from "../features/home/model/store";
 import { stampChat } from "../features/home/model/openedChat";
 import { useHomeOnOpen } from "../features/home/ui/useHomeOnOpen";
 import { useHomeOpener } from "../features/home/ui/useHomeOpener";
+import { placePrompt, rememberPromptSession } from "../features/sessions/model/threadLinkOpen";
+import { ThreadLinkNotice, useThreadLinkOpener } from "../features/sessions/ui/ThreadLinkActions";
 import {
   codingTeamView,
   noteCodingTeamView,
@@ -829,7 +832,6 @@ import {
 import { AGENT_GONE, WAITS } from "../features/registry/model/registryCopy";
 import {
   START_REGISTRY_CHAT_EVENT,
-  linkRegistryChat,
   loadRegistryDocument,
   refreshRegistry,
   reportRegistryChatRefused,
@@ -969,6 +971,7 @@ import {
   monoTurn,
   readAgentFile,
   recordAgentContext,
+  standingKeyPart,
   writeAgentFile,
 } from "../features/monos/model/monoFiles";
 import { withFirstMateContract } from "../features/firstmate/model/contract";
@@ -1198,8 +1201,7 @@ import {
   subscribeNotesEnabled,
   type CollapsedProjectRailMode,
   type SettingsSectionId,
-  type FollowUpBehavior,
-} from "../features/settings/model/settings";
+  type FollowUpBehavior, syncMoreAgentsSwitch } from "../features/settings/model/settings";
 import {
   handleEditorFindKey,
   openFindInActiveEditor,
@@ -1245,6 +1247,7 @@ import type { InstalledUpdate } from "./model/updateNotice";
 
 import {
   bindResumedSessions,
+  bindRestoredHarness,
   closeBusyWindow,
   closeCurrentWindow,
   confirmReload,
@@ -1258,6 +1261,9 @@ import {
   type ResumedWorkspace,
 } from "./model/appLifecycle";
 import { wireSpendGate } from "../features/usage/model/spendWiring";
+
+/** WP-156: the project's standing answers as one block (the app answers "" while standing answers are off). */
+const readStandingBrief = (project: string): Promise<string> => invoke<string>("decisions_standing_brief", { project });
 
 const SearchView = lazySurface(
   async () => {
@@ -3468,8 +3474,22 @@ function Workspace({
   // WP-134b: the More agents list the chat screens read is the app's own list. Read it at start, and again whenever
   // it changes in any window (Settings adds, allows, withdraws or removes an entry).
   useEffect(() => {
+    // The app's copy of the switch follows the saved setting from the start, so Rust agrees with what Settings shows.
+    void syncMoreAgentsSwitch(loadMoreAgentsEnabled());
     void refreshRegistry();
-    return subscribeRegistry(() => undefined);
+    const unsubscribe = subscribeRegistry(() => undefined);
+    // A change made in another window (a withdraw, a removal) re-reads the list here too, so this window stops runs.
+    let stopChanges: (() => void) | undefined;
+    let disposed = false;
+    void subscribeMoreAgentsChanges(() => void refreshRegistry()).then((stop) => {
+      if (disposed) stop();
+      else stopChanges = stop;
+    });
+    return () => {
+      disposed = true;
+      unsubscribe();
+      stopChanges?.();
+    };
   }, []);
 
   // WP-134b: Start a chat opens a More agents session. The harness stays one of the eleven.
@@ -3498,7 +3518,7 @@ function Workspace({
         ...newSession("claude", cwd),
         ...registrySessionFields(plan.agent, "claude"),
       };
-      if (!linkRegistryChat(session.id, plan.agent.id).ok) return;
+      // WP-134: the entry id is on the session and is saved with it. Browser storage is not the link.
       const tab = newTab(session.id);
       setSessions((prev) => [...prev, session]);
       appendTab(tab, cwd);
@@ -5934,15 +5954,16 @@ function Workspace({
   );
 
   const onSelectHistorySession = useCallback(
-    async (sessionId: string) => {
+    async (sessionId: string): Promise<boolean> => {
       const askedAt = Date.now();
       workspaceNavigation.cancel();
       let session = await ensureOpenSession(sessionId);
-      if (!session || session.inboxAsk) return;
+      // WP-125: false means no pane was shown (an inbox ask, or the chat is gone).
+      if (!session || session.inboxAsk) return false;
       const mono = monoForSession(session.id);
       if (mono) {
         await onOpenMono(mono.id);
-        return;
+        return true;
       }
       const parentId =
         session.orchestrationLeadId ??
@@ -5950,7 +5971,7 @@ function Workspace({
       if (parentId && parentId !== sessionId) {
         setInspectedWorkerId(sessionId);
         session = await ensureOpenSession(parentId);
-        if (!session) return;
+        if (!session) return false;
       }
       setSearchViewOpen(false);
       setSettingsOpen(false);
@@ -5965,17 +5986,18 @@ function Workspace({
       const linkedUpdate = linkedSessionUpdatesRef.current.get(session.id);
       if (focusOpenSession(session.id)) {
         if (linkedUpdate) revealLinkedSessionUpdate(session.id, linkedUpdate);
-        return;
+        return true;
       }
       if (replaceBlankPaneWithSession(session)) {
         if (linkedUpdate) revealLinkedSessionUpdate(session.id, linkedUpdate);
-        return;
+        return true;
       }
       const tab = newTab(session.id);
       appendTab(tab, session.cwd);
       setActiveTabId(tab.id);
       setComposerFocused(true);
       if (linkedUpdate) revealLinkedSessionUpdate(session.id, linkedUpdate);
+      return true;
     },
     [
       appendTab,
@@ -9898,8 +9920,27 @@ function Workspace({
           let notedMono = false;
           if (agentFiles && agentLook && agentPlan && handedFiles) {
             // WP-41: the contract is part of the note, and the key changes with the plain-English switch.
-            const noteKey = `${handedFiles.soulHash}\nplain-english:${plainEnglishEndings() ? "1" : "0"}`;
-            const fresh = appended ? hubNoteFor(sessionId)?.key !== noteKey : agentPlan.soul || agentPlan.memory;
+            // WP-156: the standing block is part of the key too, so a running chat picks up a change. A failed read keeps the previous token.
+            const previousNote = hubNoteFor(sessionId)?.key;
+            const readStanding = Boolean(agentPlan.soul || appended);
+            let standingAnswers: string | undefined;
+            let standingFailed = false;
+            if (readStanding) {
+              try {
+                standingAnswers = (await leadStandingBlock(sessionId, readStandingBrief)) ?? "";
+              } catch {
+                standingFailed = true;
+              }
+            }
+            const standingPart = readStanding
+              ? standingKeyPart(standingFailed ? undefined : standingAnswers, previousNote)
+              : undefined;
+            let noteKey = `${handedFiles.soulHash}\nplain-english:${plainEnglishEndings() ? "1" : "0"}${standingPart !== undefined ? `\nstanding:${standingPart}` : ""}`;
+            const fresh = appended ? previousNote !== noteKey : agentPlan.soul || agentPlan.memory;
+            if (fresh && standingFailed) {
+              standingAnswers = undefined;
+              noteKey = `${handedFiles.soulHash}\nplain-english:${plainEnglishEndings() ? "1" : "0"}\nstanding:`;
+            }
             if (fresh) {
               // A project Lead's fresh conversation starts on its project's memory and Ash's global one (hubMemoryPrimer.ts).
               const projectMemory = agentPlan.soul || appended
@@ -9910,6 +9951,7 @@ function Workspace({
                 delegate: delegateTool,
                 cli: appCliCommand(await invoke<string | null>("app_cli_path")),
                 ...(projectMemory ? { projectMemory } : {}),
+                ...(standingAnswers ? { standingAnswers } : {}),
                 // Every Mono but a Lead briefs project Leads (monoTeams.ts).
                 ...(delegateTool && briefsLeads(monoForSession(sessionId)?.id ?? "")
                   ? {
@@ -9926,15 +9968,37 @@ function Workspace({
             }
           }
           // A coding-team chat is told who it is and its project's memory once per conversation (codingTeamContext).
-          const teamHanded =
+          // WP-156: the standing block is part of this key too. A failed read keeps the previous token.
+          const teamBase =
             team && teamDelegates && !rawCommand
-              ? { soulHash: `team:${team.id}:${team.folder}:${MONO_PROMPT_VERSION}:delegate:plain:${plainEnglishEndings() ? "1" : "0"}`, memoryHash: "" }
+              ? `team:${team.id}:${team.folder}:${MONO_PROMPT_VERSION}:delegate:plain:${plainEnglishEndings() ? "1" : "0"}`
               : undefined;
+          const previousTeam = hubNoteFor(sessionId)?.key;
+          let teamStanding: string | undefined;
+          let teamStandingFailed = false;
+          if (teamBase) {
+            try {
+              teamStanding = (await leadStandingBlock(sessionId, readStandingBrief)) ?? "";
+            } catch {
+              teamStandingFailed = true;
+            }
+          }
+          let teamStandingPart = teamBase
+            ? standingKeyPart(teamStandingFailed ? undefined : teamStanding, previousTeam)
+            : undefined;
+          if (teamBase && teamStandingFailed && previousTeam !== `${teamBase}\nstanding:${teamStandingPart}`) {
+            teamStanding = undefined;
+            teamStandingPart = "";
+          }
+          const teamHanded = teamBase
+            ? { soulHash: `${teamBase}\nstanding:${teamStandingPart}`, memoryHash: "" }
+            : undefined;
           const teamPlan = teamHanded
             ? planAgentContext(sessionId, current.providerSessionId, teamHanded)
             : undefined;
           if (team && teamHanded && (appended ? hubNoteFor(sessionId)?.key !== teamHanded.soulHash : teamPlan?.soul)) {
             const projectMemory = await leadMemoryBlock(sessionId, current.harness).catch(() => undefined);
+            const standingAnswers = teamStanding;
             const note = withFirstMateContract(codingTeamContext(
               {
                 projectId: team.id,
@@ -9942,7 +10006,10 @@ function Workspace({
                 folder: team.folder!,
                 leadName: leadSpecFor(team).name,
               },
-              projectMemory ? { projectMemory } : {},
+              {
+                ...(projectMemory ? { projectMemory } : {}),
+                ...(standingAnswers ? { standingAnswers } : {}),
+              },
             ));
             if (appended) setHubNote(sessionId, { key: teamHanded.soulHash, text: note });
             else appContext.push(note);
@@ -13486,15 +13553,8 @@ function Workspace({
               title: task.title,
             };
         const worker = { ...base, orchestrationLeadId: run.leadId };
-        if (worker.providerSessionId)
-          bindHarnessSession(
-            worker.harness,
-            worker.id,
-            worker.providerSessionId,
-            sessionWorkCwd(worker),
-            worker.providerAccountId,
-            worker.blocks,
-          );
+        // WP-134: a More agents worker is routed from the row before its saved ACP session is bound.
+        bindRestoredHarness(worker);
         await upsertSession(worker);
         const next = [...sessionsRef.current, worker];
         sessionsRef.current = next;
@@ -15069,6 +15129,9 @@ function Workspace({
                     `No Lead "${lead}" among the ones you can brief (a Lead of a project you and it are both members of).`,
                   );
               },
+              // WP-156: a Lead's brief carries that Lead's project, not the chat that writes it.
+              leadProject: (_owner, mono, lead) =>
+                findLeadTarget(mono.id, hubData().listProjects(), lead)?.projectId,
               briefLead: async (owner, mono, input) => {
                 const projects = hubData().listProjects();
                 const target = findLeadTarget(mono.id, projects, input.lead);
@@ -17571,6 +17634,47 @@ function Workspace({
     openSettings: (section, anchor) => openSettings(section, anchor),
     projects: () => hubData().listProjects(),
   });
+  // WP-125: a local chat or prompt link opens in this window. A missing chat is a message, not a new window.
+  // openChat is false when no pane was shown, so the opener can say the chat is not on this computer.
+  useThreadLinkOpener({
+    hasChat: (id) =>
+      sessionsRef.current.some((session) => session.id === id) ||
+      getSession(id).then((session) => session != null),
+    hasProject: (id) => hubData().listProjects().some((project) => project.id === id),
+    openChat: (id) => onSelectHistorySession(id),
+    openPrompt: (projectId, text, ticket) => {
+      placePrompt(
+        projectId,
+        text,
+        ticket,
+        {
+          projects: () => hubData().listProjects(),
+          sessions: () => sessionsRef.current,
+        },
+        {
+          openProject: (id) => {
+            openCodingTeam(id, { lead: false });
+            noteCodingTeamView(id, "chat");
+          },
+          addSession: (session) => {
+            const next = rememberPromptSession(sessionsRef.current, session);
+            if (!next) return;
+            sessionsRef.current = next;
+            setSessions(next);
+            const tab = newTab(session.id);
+            appendTab(tab, session.cwd);
+            setActiveTabId(tab.id);
+            setComposerFocused(true);
+            // A new chat from a prompt link follows the same worktree setting as New session.
+            attachNewChatWorktree(session.id, session.cwd, setSessions);
+          },
+          focusSession: (id) => {
+            void onSelectHistorySession(id);
+          },
+        },
+      );
+    },
+  });
   // r63 (PM, 0.16.3): Pages (an automations-view mode) and Coding team were highlighted at once. Any view that covers
   // the main area (a Mono's 1:1, Search, Settings, Inbox, Notes, Automations or Pages) takes the highlight from the
   // project's items, so one nav row is ever active.
@@ -18832,6 +18936,8 @@ function Workspace({
             chipHost={pressureChipHost}
             insetChip={insetLayout}
           />
+          {/* WP-125: a local link that cannot be opened on this computer. */}
+          <ThreadLinkNotice />
           <ApprovalToasts
             notices={IS_HUB_BUNDLE ? hubToastNotices(hiddenApprovalToasts) : hiddenApprovalToasts}
             hubView={IS_HUB_BUNDLE ? hubToastView : undefined}

@@ -134,6 +134,7 @@ fn add_session(
             goal: None,
             private_chat: false,
             private_boundary_id: None,
+            registry_agent_id: None,
         },
     )
     .unwrap();
@@ -6897,4 +6898,65 @@ fn wp92_the_final_scan_refuses_a_planted_pattern() {
         "{refused}"
     );
     assert!(!refused.contains(GITHUB), "{refused}");
+}
+
+// Review #231 r2 repro (MEDIUM): an export does not carry a chat's More agents entry, and the import writes none. A More
+// agents chat is saved with the placeholder harness `claude` (App.tsx, registrySessionFields), so the imported chat is
+// a plain Claude chat: its next message starts Claude Code with the other agent's conversation as its brief, instead of
+// going to the entry or refusing with "That agent is no longer in your list". The import should keep the entry id (the
+// target's own list and approval still decide whether it runs) or mark the chat so it refuses.
+#[test]
+fn review_231_r2_an_imported_more_agents_chat_does_not_become_a_claude_chat() {
+    let source_dir = TestDir::new("registry-source");
+    let target_dir = TestDir::new("registry-target");
+    let out = TestDir::new("registry-out");
+    let source = env_for(&source_dir.0);
+    let store = open_store(&source);
+    let conn = store.lock_conn().unwrap();
+    add_session(
+        &conn,
+        "acp-chat",
+        "Copilot",
+        "claude",
+        json!([
+            block("b1", "user", "hello"),
+            block("b2", "assistant", "hi from copilot")
+        ]),
+        5_000,
+    );
+    assert!(session_store::adopt_registry_agent(&conn, "acp-chat", "my-copilot").unwrap());
+    drop(conn);
+    drop(store);
+
+    let dest = out.0.join("export");
+    let mut request = export_request(&dest, Form::Folder);
+    request.memory = None;
+    request.files.clear();
+    export(&source, &request).unwrap();
+
+    let target = env_for(&target_dir.0);
+    let target_store = open_store(&target);
+    let conn = target_store.lock_conn().unwrap();
+    import_held(
+        &target,
+        &conn,
+        &ImportRequest {
+            path: dest.to_string_lossy().into_owned(),
+            memory: None,
+            workspace: Some(WorkspaceImport {
+                sessions: vec!["acp-chat".into()],
+                ..Default::default()
+            }),
+        },
+    )
+    .unwrap();
+    let stored = session_store::get_session(&conn, "acp-chat")
+        .unwrap()
+        .unwrap();
+    assert_eq!(stored.harness, "claude");
+    assert_eq!(
+        stored.registry_agent_id.as_deref(),
+        Some("my-copilot"),
+        "the imported More agents chat lost its entry and runs as a Claude chat"
+    );
 }

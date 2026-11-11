@@ -974,6 +974,9 @@ fn ask_gate(store: &SessionStore, project: &str, key: &str) {
             options: vec!["Approve".into(), "Fix".into(), "Skip".into()],
             recommended: None,
             task_ids: Vec::new(),
+            keys: Vec::new(),
+            force: false,
+            reason: None,
         },
         2,
     )

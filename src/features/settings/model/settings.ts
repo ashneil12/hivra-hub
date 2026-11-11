@@ -1,3 +1,4 @@
+import { invoke } from "@tauri-apps/api/core";
 import {
   ALT,
   IS_MAC,
@@ -1349,8 +1350,17 @@ export function loadMoreAgentsEnabled(): boolean {
   return readFlag(MORE_AGENTS_ENABLED_KEY) ?? MORE_AGENTS_ENABLED_DEFAULT;
 }
 
+/** The app's own copy of the switch, which Rust checks before any More agents start. Failures are not shown here. */
+export function syncMoreAgentsSwitch(value: boolean): Promise<void> {
+  return invoke("more_agents_set_enabled", { on: value }).then(
+    () => undefined,
+    () => undefined,
+  );
+}
+
 export function saveMoreAgentsEnabled(value: boolean) {
   writeFlag(MORE_AGENTS_ENABLED_KEY, value);
+  void syncMoreAgentsSwitch(value);
   if (typeof window === "undefined") return;
   window.dispatchEvent(
     new CustomEvent<boolean>(MORE_AGENTS_ENABLED_CHANGE_EVENT, {

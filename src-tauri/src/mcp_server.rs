@@ -678,7 +678,7 @@ fn steering_tools() -> Vec<Value> {
         json!({
             "name": "ask_person",
             "title": "Ask the person a decision",
-            "description": "Put one decision to the person, once, under a stable key you choose (like \"retention-policy\"). Only for a real choice you can't make from the brief or their words: answer your workers' questions yourself when you can. Give 2 to 6 short options and your recommended one. Asking again with the same key changes nothing (it never asks twice); name taskIds to have those tasks wait on the answer, and when the person answers, the answer goes to each of them and comes back to you as a new turn. If the key was already answered, you get the answer straight away. A worker can't use this: its question goes to its own first mate.",
+            "description": "Put one decision to the person, once, under a stable key you choose (like \"retention-policy\"). Only for a real choice you can't make from the brief or their words: answer your workers' questions yourself when you can. Give 2 to 6 short options and your recommended one. Asking again with the same key changes nothing (it never asks twice); name taskIds to have those tasks wait on the answer, and when the person answers, the answer goes to each of them and comes back to you as a new turn. If the key was already answered, you get the answer straight away. If standing answers are on and this question matches one, you get that answer and its id instead of a new question. That answer is guidance, not permission. Send force true and a one-line reason when it does not apply. A worker can't use this: its question goes to its own first mate.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -687,7 +687,10 @@ fn steering_tools() -> Vec<Value> {
                     "options": { "type": "array", "items": { "type": "string", "maxLength": 200 }, "minItems": 2, "maxItems": 6 },
                     "recommended": { "type": "string", "description": "The option you recommend, exactly as written in options." },
                     "taskIds": { "type": "array", "items": { "type": "string" }, "maxItems": 20, "description": "Your tasks (t-...) that wait on the answer." },
-                    "answer": { "type": "string", "maxLength": 2000, "description": "Only when the person has answered this key in your chat: their words. It is recorded once and releases the waiting tasks." }
+                    "answer": { "type": "string", "maxLength": 2000, "description": "Only when the person has answered this key in your chat: their words. It is recorded once and releases the waiting tasks." },
+                    "keys": { "type": "array", "items": { "type": "string", "maxLength": 40 }, "maxItems": 12, "description": "Short match words. Leave this out to use words from the question." },
+                    "force": { "type": "boolean", "description": "True, with reason, when a standing answer does not apply and the person should be asked." },
+                    "reason": { "type": "string", "maxLength": 300, "description": "One line on why the standing answer does not apply. Required with force when one matches." }
                 },
                 "required": ["key", "question", "options", "recommended"],
                 "additionalProperties": false
@@ -894,7 +897,7 @@ pub(crate) fn call_tool(call: &mut Call, name: &str, args: &Value) -> Result<Val
                 .call("tasks.message", &pick(object, &fields), &request_id)
         }
         "ask_person" => {
-            let fields = ["key", "question", "options", "recommended", "taskIds", "answer"];
+            let fields = ["key", "question", "options", "recommended", "taskIds", "answer", "keys", "force", "reason"];
             let object = arguments(args, &fields)?;
             // WP-172: the question that starts a stopped task again is the app's alone: an agent may neither create it
             // (with or without an answer) nor answer it. The key is trimmed first, so a leading space does not get past.
@@ -1664,6 +1667,21 @@ mod tests {
         assert!(names.contains(&"delegate_tasks"));
         assert!(names.contains(&"task_message"));
         assert!(names.contains(&"ask_person"));
+        assert!(
+            names
+                .iter()
+                .all(|name| !name.contains("standing") && !name.contains("reuse")),
+            "an agent tool must not set standing answers: {names:?}"
+        );
+        let ask = listed
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|tool| tool["name"] == "ask_person")
+            .unwrap();
+        let props = ask["inputSchema"]["properties"].as_object().unwrap();
+        assert!(props.get("standing").is_none());
+        assert!(props.get("reuse").is_none());
     }
 
     #[test]

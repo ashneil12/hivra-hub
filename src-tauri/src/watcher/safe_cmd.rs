@@ -273,6 +273,16 @@ fn is_drive_path(word: &str) -> bool {
         && (bytes[2] == b'/' || bytes[2] == b'\\')
 }
 
+/// A drive-relative word (`D:notes.txt`, `D:Users`, a bare `D:`). It names that drive's current folder, not a path
+/// under the chat. An absolute `D:\` or `D:/` is `is_drive_path`, not this. Same rule as pathWithin's `driveRelative`.
+fn is_drive_relative(word: &str) -> bool {
+    let bytes = word.as_bytes();
+    if bytes.len() < 2 || !bytes[0].is_ascii_alphabetic() || bytes[1] != b':' {
+        return false;
+    }
+    bytes.len() == 2 || (bytes[2] != b'/' && bytes[2] != b'\\')
+}
+
 /// A Windows 8.3 short name in one segment (`ENV~1`, `CLAUDE~1.MD`), which hides the real name from a plain check (round 4,
 /// item 5). The same pattern as safeApproval's TypeScript side.
 fn short_name_segment(part: &str) -> bool {
@@ -799,6 +809,8 @@ fn names_login_or_outside(
     }
     let git = head == "git";
     let no_index = args.iter().any(|arg| arg == "--no-index");
+    // A Windows chat: a drive-relative word names that drive's current folder (unknown, and outside when the drive differs).
+    let windows = is_drive_path(folder) || folder.starts_with('\\');
     // A search's first bare word is its pattern, as grep reads it, unless an option names the pattern itself.
     let mut pattern_seen = search && head != "find" && args.iter().any(|arg| pattern_option(arg));
     for arg in args {
@@ -839,7 +851,9 @@ fn names_login_or_outside(
             let climbs_or_hides = segments
                 .iter()
                 .any(|part| *part == ".." || (part.len() > 1 && part.starts_with('.')));
-            let rooted = piece.starts_with(['~', '/', '\\']) || is_drive_path(piece);
+            let rooted = piece.starts_with(['~', '/', '\\'])
+                || is_drive_path(piece)
+                || (windows && is_drive_relative(piece));
             // Round 4, item 5: a git revision (`HEAD~1`) is not a file name, unless `--no-index` makes git compare files.
             let short_names_read = !(git && !no_index && !piece.contains(['/', '\\']));
             let short_name =
@@ -1151,6 +1165,20 @@ mod round3_tests {
     fn a_plain_read_still_runs() {
         assert!(verdict_here("cat README.md").is_none());
         assert!(verdict_here("rg -n 'foo' src").is_none());
+    }
+
+    /// A drive-relative word names that drive's current folder. On another drive that is outside the chat. On the chat's
+    /// own drive the current folder is unknown, so it is held too. A Mac name with a colon stays a file name.
+    #[test]
+    fn a_drive_relative_word_on_windows_is_held() {
+        let win = r"C:\Users\dev\Projects\app";
+        assert!(verdict("cat D:notes.txt", win).is_some());
+        assert!(verdict("rg TODO D:Users", win).is_some());
+        assert!(verdict("ls D:Users", win).is_some());
+        assert!(verdict("cat C:notes.txt", win).is_some());
+        assert!(verdict("cat README.md", win).is_none());
+        assert!(verdict("cat D:notes.txt", TEST_FOLDER).is_none());
+        assert!(verdict("rg TODO D:Users", TEST_FOLDER).is_none());
     }
 }
 

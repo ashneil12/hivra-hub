@@ -235,6 +235,12 @@
       "gave": "desktop dictation that writes into the draft and does not send, from its voice input note at commit e85e0094dd4617a1eada1ad7961f2132a79e67b2 (ideas only, no code copied)"
     },
     {
+      "name": "T3 Code prompt links",
+      "url": "https://github.com/pingdotgg/t3code/blob/e85e0094dd4617a1eada1ad7961f2132a79e67b2/docs/user/prompt-links.md",
+      "licence": "MIT",
+      "gave": "local links that open a chat or fill a prompt on this computer, with no public guest link (WP-125)"
+    },
+    {
       "name": "Aether",
       "url": "https://runaether.dev",
       "licence": "closed source",
@@ -257,6 +263,12 @@
       "url": "https://github.com/BarganConstantin/ccdeck",
       "licence": "AGPL-3.0",
       "gave": "ideas only: a live session tree (main agent at the root, subagents as nodes, inspectable tool calls) and a waiting-on-you list ordered questions first and longest wait first"
+    },
+    {
+      "name": "precedent-log",
+      "url": "https://github.com/quotumorg/precedent-log",
+      "licence": "MIT",
+      "gave": "standing answers: show past answers before a new question, match a reworded question to an old answer, and list who relied on an answer when it is retired (ideas only)"
     },
     {
       "name": "tasklane",

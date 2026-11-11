@@ -13,6 +13,7 @@ import { settleLoad } from "../model/rows";
 import { invoke } from "@tauri-apps/api/core";
 import { DigestBanner } from "./DigestBanner";
 import { FirstMateInbox } from "./FirstMateInbox";
+import { StandingAnswersPanel } from "./StandingAnswersPanel";
 
 type Load<T> = { ok: true; value: T } | { ok: false };
 
@@ -249,6 +250,8 @@ export function FirstMateInboxPanel({
           if (chat) onOpenSession?.(chat);
         }}
       />
+      {/* WP-156: standing answers, hidden until the setting is on. */}
+      <StandingAnswersPanel project={project} />
     </>
   );
 }

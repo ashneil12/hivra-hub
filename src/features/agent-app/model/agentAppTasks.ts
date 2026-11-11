@@ -210,7 +210,7 @@ export const TASK_FIELDS: ReadonlyArray<readonly [string, readonly string[]]> = 
   ["tasks.answer", ["taskId", "requestId", "answers", "skip"]],
   // Hivra WP-14 (firstmate/model/steering.ts).
   ["tasks.message", ["taskId", "text", "whenBusy"]],
-  ["tasks.ask", ["key", "question", "options", "recommended", "taskIds", "answer"]],
+  ["tasks.ask", ["key", "question", "options", "recommended", "taskIds", "answer", "keys", "force", "reason"]],
 ];
 
 /**
@@ -331,6 +331,11 @@ export type AgentAppTasksHost = {
    */
   memoryBrief?(ownerSession: string, harness: HarnessId): Promise<string | undefined>;
   /**
+   * WP-156: active standing answers for the project a Lead is briefed on. Empty, or a failure, leaves the brief as it
+   * was. The text is guidance, not permission.
+   */
+  standingBrief?(project: string): Promise<string | undefined>;
+  /**
    * WP-13: which CLI, model and effort this task uses. Absent, or a failure, keeps the model already chosen.
    * Labels are areas such as `ui`, not `area:ui`.
    */
@@ -366,6 +371,12 @@ export type AgentAppTasksHost = {
   }): Promise<{ hold: boolean; why: string }>;
   /** The Lead a brief names exists and this Mono may brief it. Throws when it does not. Checked before a review. */
   checkLead?(source: Session, mono: { id: string; name?: string }, lead: string): void | Promise<void>;
+  /** WP-156: the project the named Lead keeps, so the brief carries that project's standing answers. */
+  leadProject?(
+    source: Session,
+    mono: { id: string; name?: string },
+    lead: string,
+  ): string | undefined | Promise<string | undefined>;
   /** WP-144: the chat's briefs waiting on a fresh-eyes review, each named by the chat it will be. */
   freshEyesWaiting?(ownerSession: string): Promise<{ childSessionId: string; title: string; line: string }[]>;
   /** WP-144: the chat took back a brief waiting on a review (task_cancel). True when one matched. */
@@ -980,6 +991,8 @@ async function delegate(
     // Every refusal this brief can meet comes before the review: what it names, and whether that Lead exists.
     const request = leadRequest(input, tasks);
     await tasks.checkLead?.(source, owner.mono, request.lead);
+    // WP-156: the target Lead's project, not the chat that writes the brief.
+    const leadHome = (await tasks.leadProject?.(source, owner.mono, request.lead))?.trim();
     const held = await heldForReview();
     if (held) return held;
     // A Lead is a first mate: its brief comes from the same template, read-only on the project.
@@ -996,6 +1009,8 @@ async function delegate(
       title,
       asks,
       goal,
+      // WP-156: the same project key the decision gate stores answers under (see firstMateTool).
+      standingProject: leadHome || owner.team?.project || tasks.hubProjectId?.(source.cwd) || source.cwd,
       ...(sharedTask ? { taskId: sharedTask } : {}),
       input,
       gates,
@@ -1912,15 +1927,26 @@ async function briefLead(
     input: Record<string, unknown>;
     gates?: GateRequest;
     gateFolder?: string;
+    standingProject: string;
   },
 ) {
   const { lead, whenBusy } = leadRequest(job.input, tasks);
   if (!tasks.briefLead) throw new Error("This build can't brief a Lead");
+  // WP-156: standing answers ride on the Lead's brief. Off, empty, or unreachable: the brief is unchanged.
+  let brief = job.brief;
+  if (tasks.standingBrief) {
+    try {
+      const block = (await tasks.standingBrief(job.standingProject))?.trim() ?? "";
+      if (block) brief = `${job.brief}\n\n${block}`;
+    } catch {
+      brief = job.brief;
+    }
+  }
   const out = await tasks.briefLead(source, mono, {
     lead,
     // The brief's id in the Lead's chat and the row's request, in the app's namespace (sessions.send's too).
     requestId: `app-${source.id}-${job.requestId}`,
-    brief: job.brief,
+    brief,
     title: job.title,
     ...(job.goal ? { goal: job.goal } : {}),
     ...(job.taskId ? { taskId: job.taskId } : {}),
@@ -2490,8 +2516,11 @@ async function firstMateTool(
     throw new Error("Only the app asks whether a stopped task starts again. Name the task in a resume instead; the person answers it in Needs.");
   const ids = taskIds(input.taskIds) ?? [];
   const rows = ids.length ? await ownRows(source, tasks, ids) : [];
-  // The project the Needs row sits under: the coding team's, else the waiting tasks', else the chat's folder's.
-  const project = owner.team?.project ?? rows.find((row) => row.project)?.project ?? tasks.hubProjectId?.(source.cwd) ?? source.cwd;
+  // The project's home is the coding team's, else the chat's folder. A task's own project is not a way to pick another.
+  const project = owner.team?.project || tasks.hubProjectId?.(source.cwd) || source.cwd;
+  if (rows.some((row) => row.project && row.project !== project)) {
+    throw new Error("That task is in another project. Ask from the chat that owns it.");
+  }
   return askPerson(source, input, { mono: owner.mono?.id, project }, rows, tasks.firstMate);
 }
 
