@@ -3017,3 +3017,119 @@ fn a_question_opened_during_the_base_hold_stops_the_merge() {
 /// The merge base of the head and main, as GitHub's compare says it (the branch last took main there).
 const MERGE_BASE_B1: &str = r#"{"status":"ahead","ahead_by":1,"behind_by":1,"merge_base_commit":{"sha":"b1b1b1b"},"files":[]}"#;
 const MERGE_BASE_BASE: &str = r#"{"status":"ahead","ahead_by":1,"behind_by":0,"merge_base_commit":{"sha":"ba5eba5eba5eba5eba5eba5eba5eba5eba5eba5e"},"files":[]}"#;
+
+/// Opens a question on the second pull request read: the one `settle_again` makes after the first base hold, with the
+/// store lock released.
+struct OpensAQuestionOnTheSecondRead<'a> {
+    inner: &'a FakeGithub,
+    reads: std::sync::atomic::AtomicUsize,
+    on_second: Box<dyn Fn() + Send + Sync + 'a>,
+}
+
+impl Github for OpensAQuestionOnTheSecondRead<'_> {
+    fn read_pr(&self, repo: &str, number: u64) -> Result<PrRead, String> {
+        if self.reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 1 {
+            (self.on_second)();
+        }
+        self.inner.read_pr(repo, number)
+    }
+
+    fn run(&self, dir: Option<&Path>, args: &[String]) -> Result<String, String> {
+        self.inner.run(dir, args)
+    }
+}
+
+/// r4 review LOW (L1 residual): the L1 fix re-checks open questions after the first base hold, but `merge` then drops
+/// the lock again for `settle_again` (a second `read_pr` and a second base hold: up to 32 more `gh` calls of up to two
+/// minutes each) and runs `gh pr merge` without looking at the decisions again; `settle_again` judges the `open` read
+/// before the first hold. Before WP-202 nothing ran between the decision and the merge. A question a worker opens in
+/// that window (here: during the second read) is merged over.
+#[test]
+fn r4_review_a_question_opened_during_the_second_read_stops_the_merge() {
+    let s = store();
+    let delegation = task(
+        &mut s.lock_conn().unwrap(),
+        "lead-1",
+        "r4-settle",
+        "worker-1",
+    );
+    let question_on = delegation.clone();
+    let read = green("a1b2c3d");
+    let gh = FakeGithub::new(vec![read.clone(), read]).with_api(
+        "per_page=1",
+        &format!(
+            r#"{{"status":"identical","ahead_by":0,"behind_by":0,"merge_base_commit":{{"sha":"{}"}},"files":[]}}"#,
+            "ba5e".repeat(10)
+        ),
+    );
+    let wrapped = OpensAQuestionOnTheSecondRead {
+        inner: &gh,
+        reads: std::sync::atomic::AtomicUsize::new(0),
+        on_second: Box::new(|| {
+            delegations::set_question(
+                &mut s.lock_conn().unwrap(),
+                &question_on,
+                Some("Keep the old file format?".into()),
+                None,
+                3,
+            )
+            .unwrap();
+        }),
+    };
+    let mut request = person_merge("acme/web");
+    request.delegation_id = Some(delegation);
+    let out = merge::merge(&s, &wrapped, request, 10).unwrap();
+    assert!(
+        gh.ran("pr", "merge").is_empty(),
+        "a question opened before the merge ran stops it: {out:?}"
+    );
+    assert!(
+        matches!(&out, MergeOutcome::Refused { reason } if reason.contains("Keep the old file format?")),
+        "{out:?}"
+    );
+}
+
+/// r4 review LOW (L4 residual): a pull request into `develop` that conflicts is refused with "conflicts with main;
+/// merge main into it" (`decide`, added by WP-202). An agent following the words merges the wrong branch.
+#[test]
+fn r4_review_a_dirty_refusal_names_the_pull_request_s_base_branch() {
+    let read = PrRead {
+        base_ref: "develop".into(),
+        merge_state: Some("DIRTY".into()),
+        ..green("a1b2c3d")
+    };
+    let decision = merge::decide(
+        &read,
+        None,
+        &Allow::Person {
+            by: "person (inbox)".into(),
+        },
+    );
+    let Decision::Refuse(reason) = decision else {
+        panic!("a DIRTY pull request is refused: {decision:?}");
+    };
+    assert!(reason.contains("develop"), "{reason}");
+    assert!(!reason.contains("main"), "{reason}");
+}
+
+/// r4 review INFO (test seam): `steady()` keys on the substring "per_page=1", which every pull request file page
+/// ("pulls/7/files?per_page=100&page=1") also contains, and the recorded answers are checked before `files`. A test
+/// that uses `steady()` and reaches the file list gets a compare object back, so the hold says "changed files couldn't
+/// be read": a test that expects a hold passes whatever the overlap rule does.
+#[test]
+fn r4_review_steady_answers_only_the_merge_base_read() {
+    let gh = FakeGithub::new(vec![]).steady();
+    let body = gh
+        .run(
+            None,
+            &[
+                "api".into(),
+                "repos/acme/web/pulls/7/files?per_page=100&page=1".into(),
+            ],
+        )
+        .unwrap_or_default();
+    assert!(
+        !body.contains("merge_base_commit"),
+        "a file page is not a merge-base read: {body}"
+    );
+}

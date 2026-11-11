@@ -854,4 +854,33 @@ mod tests {
         assert_eq!(frame.wrap("\u{200b}\u{e0041}"), "");
         assert!(frame.note().is_none());
     }
+
+    /// r4 review LOW (L4 residual): the base-moved lines name the pull request's base, but the behind lines added by
+    /// WP-202 still say "merge main into it", and the title says "behind main" / "main moved", for a pull request into
+    /// `develop`. A Lead that follows the wake merges the wrong branch into it.
+    #[test]
+    fn r4_review_a_behind_wake_names_the_pull_request_s_base_branch() {
+        let about = About {
+            base_ref: "develop",
+            ..about()
+        };
+        let wake = update(
+            &about,
+            &[
+                Change::Behind { commits: Some(2) },
+                Change::BaseMoved {
+                    to: "b2b2b2b2b2".into(),
+                    files: vec!["src/lib.rs".into()],
+                    cut_short: false,
+                    pull_cut: false,
+                },
+            ],
+            &Outcome::Skipped("no checkout".into()),
+            false,
+            &Frame::with_id("x"),
+        );
+        assert!(wake.text.contains("develop"), "{}", wake.text);
+        assert!(!wake.text.contains("merge main"), "{}", wake.text);
+        assert!(!wake.title.contains("main"), "{}", wake.title);
+    }
 }
