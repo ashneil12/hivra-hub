@@ -1119,6 +1119,8 @@ import {
   type AutomationRun,
 } from "../features/automations/model/automations";
 import { automationRunErrorClass } from "../features/automations/model/runFailure";
+// WP-244: one run of an automation at a time, and a watched one skips the model when nothing changed.
+import { startAutomationRun } from "../features/automations/model/automationQuiet";
 import { MissedScheduleNotice } from "../features/one-time-schedule/ui/OneTimeSchedulePanel";
 import { useOneTimeScheduleRunner } from "../features/one-time-schedule/ui/useOneTimeScheduleRunner";
 import { useQuickComposerLaunches } from "../features/quick-composer/hooks/useQuickComposerLaunches";
@@ -10769,7 +10771,17 @@ function Workspace({
         automationSessionReservations.current.delete(reservationId);
         reservationId = undefined;
       };
+      // WP-244: what the watch saw is kept once the run settles; until then no second run of it starts.
+      let finishWatch: ((ok: boolean) => Promise<void>) | undefined;
       try {
+        const start = await startAutomationRun(automation, prompt, {}, run.trigger === "manual");
+        if (start.kind === "skip") {
+          // No session, no model call: the run's line says why.
+          await updateAutomationRun(run.id, "skipped", { error: start.reason });
+          return;
+        }
+        prompt = start.prompt;
+        finishWatch = start.finish;
         const eventRun = run.trigger === "event";
         const linkedWorkItem =
           sourceWorkItem ?? linkedWorkItemFromAutomationEvent(run);
@@ -10891,6 +10903,7 @@ function Workspace({
               providerClass: outcome.errorClass,
               harness: automation.harness,
             });
+            void finishWatch?.(outcome.status === "completed");
             void updateAutomationRun(run.id, status, {
               sessionId: session.id,
               ...(outcome.error ? { error: outcome.error } : {}),
@@ -10903,6 +10916,7 @@ function Workspace({
         });
       } catch (reason: unknown) {
         const message = reason instanceof Error ? reason.message : String(reason);
+        void finishWatch?.(false);
         // WP-180a: a launch that fails before a turn still classes a missing CLI.
         const errorClass = automationRunErrorClass({
           message,

@@ -50,7 +50,7 @@ never reads it, so "example data" is not a state any real screen is in.
 | Chief of Staff | On Home: `openChiefChat` → `ensureMonoSession`. In a project: `openProjectChief` → `ensureMonoProjectSession` | Works; G1, G3 |
 | Inbox, red count | `onOpenInbox`; count is `useNeedsYou().length` | Works |
 | Notes | `NotesView` (`notes_list`, `notes_get`, `notes_delete`, …) | Works |
-| Automations | automations view (`automations_*`, `automation_runs_*`) | Works (off in a dev copy by design) |
+| Automations | automations view (`automations_*`, `automation_runs_*`); WP-244's "Only run when this changes" is kept in the local store document `schedule-watches` (`plugin:hub|local_hub_read`/`_write`) and read through `page_http_fetch`, `git_github_work_items` or `read_text_file` | Works (off in a dev copy by design) |
 | Pages | `PagesView`; opens on the project in view (`pagesScope`) | Works; G8 |
 | Pinned page rows | `pinnedPages()`; all of them on Home, the project's own in a project | Works; G8 |
 

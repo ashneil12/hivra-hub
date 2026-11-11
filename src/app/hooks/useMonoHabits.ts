@@ -24,6 +24,7 @@ import {
   dueHabits,
   HABIT_APPROVAL_WAIT_MS,
   HABIT_RUN_TIMEOUT_MS,
+  habitFailedLine,
   habitFollowUp,
   habitReport,
   habitRunLaunches,
@@ -38,6 +39,17 @@ import {
   type Habit,
 } from "../../features/monos/model/monoHabits";
 import { appPolicy } from "../model/appIdentity";
+// WP-244: a habit that watches something skips the model when it hasn't changed; one run of a habit at a time.
+import {
+  appWatchReader,
+  beginScheduleRun,
+  checkWatch,
+  endScheduleRun,
+  seenAfterRun,
+  watchKey,
+  type WatchDecision,
+  type WatchReader,
+} from "../../features/automations/model/quietWatch";
 import { hubData, hubProjectIdFor } from "../../features/hub/model/hubData";
 import { morningWorkLogNote } from "../../features/workLog/model/morningLines";
 import { morningProgrammeNote } from "../../features/programme/model/morningProgramme";
@@ -88,6 +100,8 @@ export type MonoHabitHost = {
   ): void;
   /** Withdraws the run's unanswered approvals from the chat once it ends. */
   endApprovals(runId: string): void;
+  /** WP-244: reads a habit's watch. The app's own doors when left out (quietWatch.ts appWatchReader). */
+  readWatch?: WatchReader;
 };
 
 const POLL_MS = 2_000;
@@ -180,7 +194,22 @@ export function useMonoHabits(
     // A check asked for mid-run happens as soon as that run ends.
     let checkAgain = false;
 
+    // WP-244: never two runs of one habit at once, whichever path asked for it.
     const runHabit = async (
+      monoId: string,
+      monoSessionId: string,
+      habitId: string,
+    ) => {
+      const key = `habit:${habitId}`;
+      if (!beginScheduleRun(key)) return;
+      try {
+        await runHabitOnce(monoId, monoSessionId, habitId);
+      } finally {
+        endScheduleRun(key);
+      }
+    };
+
+    const runHabitOnce = async (
       monoId: string,
       monoSessionId: string,
       habitId: string,
@@ -213,6 +242,35 @@ export function useMonoHabits(
       const record = findMono(monoId);
       if (!habit || stopped || !record) return;
       const look = monoLook(record);
+      // WP-244: look at what it watches first. Unchanged since a run that went well: no session, no model call. A
+      // person's Run now still runs, with the before and after.
+      let watched: WatchDecision | undefined;
+      if (habit.watch) {
+        setHabitRunning(habit.id, now);
+        watched = await checkWatch({
+          watch: habit.watch,
+          previous: habit.watchSeen,
+          key: watchKey(habit.instructions, habit.watch),
+          read: host.readWatch ?? appWatchReader,
+          cwd: mono.cwd,
+          now,
+          force: !!habit.runRequested,
+        });
+        if (watched.kind === "quiet") {
+          setHabitRunning(habit.id);
+          await updateHabits(monoId, (habits) => ({
+            habits: habits.map((entry) =>
+              entry.id === habit.id ? afterRun(entry, Date.now(), { kind: "quiet", unchanged: true, startedAt: now }) : entry,
+            ),
+            result: undefined,
+          }));
+          return;
+        }
+        if (stopped) {
+          setHabitRunning(habit.id);
+          return;
+        }
+      }
       const run: Session = {
         // Nobody is watching a habit's run, so it cannot stop to ask before
         // each step. Anything the harness still asks goes to the user below.
@@ -237,7 +295,9 @@ export function useMonoHabits(
       try {
         // /operator gives the run the same app access the Mono has.
         // WP-157, WP-159 and WP-164: what finished yesterday, the programme, then the notable events still waiting.
-        const extra = [yesterday, programme, waiting.text].filter((part) => part?.trim()).join("\n\n");
+        const extra = [yesterday, programme, waiting.text, watched && watched.kind !== "quiet" ? watched.note : undefined]
+          .filter((part) => part?.trim())
+          .join("\n\n");
         const prompt = `/operator ${habitRunPrompt(look, files, habit, now, extra)}`;
         outcome = await watchRun(host, mono.id, habit, run.id, () =>
           host.run(run.id, prompt),
@@ -287,11 +347,14 @@ export function useMonoHabits(
       // run that started one posts even when it has nothing else to say.
       // A card held during the run goes out with the report. A quiet run drops it.
       const cards = takeRunCards(run.id);
-      if (report || launches.length)
+      // WP-244: a failed run says so in one line; it never fails without a word.
+      const failedLine = outcome.status === "failed" ? habitFailedLine(habit.name, outcome.error) : undefined;
+      if (report || launches.length || failedLine)
         host.post(
           monoSessionId,
           habit,
           report ??
+            failedLine ??
             (launches.length === 1
               ? "Started a session."
               : `Started ${launches.length} sessions.`),
@@ -325,6 +388,7 @@ export function useMonoHabits(
                 ...(report ? { report } : {}),
                 startedAt: now,
                 ...(notBefore != null ? { notBefore } : {}),
+                ...(watched ? { watchSeen: seenAfterRun(watched, habit.watchSeen, outcome.status === "completed") } : {}),
               })
             : entry,
         ),
