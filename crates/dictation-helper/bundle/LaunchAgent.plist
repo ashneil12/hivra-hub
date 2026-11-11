@@ -5,7 +5,7 @@
 	<key>Label</key>
 	<string>com.ash.monocode-hub.dictation</string>
 	<key>BundleProgram</key>
-	<string>Contents/Helpers/MonoCode Dictation.app</string>
+	<string>Contents/Helpers/MonoCode Dictation.app/Contents/MacOS/monocode-dictation</string>
 	<key>MachServices</key>
 	<dict>
 		<key>com.ash.monocode-hub.dictation</key>

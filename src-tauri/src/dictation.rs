@@ -545,9 +545,11 @@ pub const HUB_IDENTIFIER: &str = "com.ash.monocode-hub";
 /// The LaunchAgent plist inside the Hub bundle (`Contents/Library/LaunchAgents/<name>`). SMAppService registers
 /// that name. The plist names the helper bundle; the Hub does not spawn it.
 pub const AGENT_PLIST_NAME: &str = "com.ash.monocode-hub.dictation.plist";
-/// `BundleProgram` in that plist, relative to the app bundle. The path the brief requires.
+/// `BundleProgram` in that plist, relative to the app bundle. launchd executes it, so it is the helper's executable
+/// inside `Contents/Helpers/MonoCode Dictation.app`, not the bundle folder.
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
-pub const HELPER_BUNDLE_PROGRAM: &str = "Contents/Helpers/MonoCode Dictation.app";
+#[rustfmt::skip]
+pub const HELPER_BUNDLE_PROGRAM: &str = "Contents/Helpers/MonoCode Dictation.app/Contents/MacOS/monocode-dictation";
 /// Where the plist lives inside the bundle. The bundle script places the file; the tests pin this string.
 #[allow(dead_code)]
 pub const LAUNCH_AGENTS_DIR: &str = "Contents/Library/LaunchAgents";
@@ -622,9 +624,7 @@ mod platform {
             return None;
         }
         let bundle = macos.parent()?.parent()?;
-        let path = bundle
-            .join(super::HELPER_BUNDLE_PROGRAM)
-            .join("Contents/MacOS/monocode-dictation");
+        let path = bundle.join(super::HELPER_BUNDLE_PROGRAM);
         path.is_file().then_some(path)
     }
 
@@ -1515,7 +1515,8 @@ mod tests {
         );
         assert_eq!(
             HELPER_BUNDLE_PROGRAM,
-            "Contents/Helpers/MonoCode Dictation.app"
+            "Contents/Helpers/MonoCode Dictation.app/Contents/MacOS/monocode-dictation",
+            "launchd executes BundleProgram, so it names the helper's executable, not its bundle folder"
         );
         assert_eq!(LAUNCH_AGENTS_DIR, "Contents/Library/LaunchAgents");
     }

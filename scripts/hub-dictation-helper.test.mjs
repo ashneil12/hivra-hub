@@ -20,6 +20,8 @@ import {
   LAUNCH_AGENT_PLIST,
   LAUNCH_AGENT_DIR,
   HELPER_BUNDLE_PROGRAM,
+  HELPER_EXECUTABLE,
+  HELPER_RELATIVE,
   signingCommands,
 } from "./hub-dictation-helper.mjs";
 
@@ -276,9 +278,10 @@ test("hub:build's helper step does not change the bundle when cargo is missing",
 test("the launch agent plist names the helper bundle and is registered only with the switch", () => {
   assert.equal(LAUNCH_AGENT_PLIST, "com.ash.monocode-hub.dictation.plist");
   assert.equal(LAUNCH_AGENT_DIR, "Contents/Library/LaunchAgents");
-  assert.equal(HELPER_BUNDLE_PROGRAM, "Contents/Helpers/MonoCode Dictation.app");
+  assert.equal(HELPER_BUNDLE_PROGRAM, "Contents/Helpers/MonoCode Dictation.app/Contents/MacOS/monocode-dictation");
+  assert.equal(HELPER_BUNDLE_PROGRAM, path.posix.join(HELPER_RELATIVE.split(path.sep).join("/"), "Contents/MacOS", HELPER_EXECUTABLE));
   const plist = launchAgentPlist();
-  assert.match(plist, /<key>BundleProgram<\/key>\s*<string>Contents\/Helpers\/MonoCode Dictation\.app<\/string>/);
+  assert.match(plist, /<key>BundleProgram<\/key>\s*<string>Contents\/Helpers\/MonoCode Dictation\.app\/Contents\/MacOS\/monocode-dictation<\/string>/);
   assert.match(plist, /<key>Label<\/key>\s*<string>com\.ash\.monocode-hub\.dictation<\/string>/);
   assert.match(
     plist,

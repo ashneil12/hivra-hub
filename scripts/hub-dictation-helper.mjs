@@ -38,8 +38,11 @@ export const DICTATION_ENABLED = true;
 export const LAUNCH_AGENT_PLIST = "com.ash.monocode-hub.dictation.plist";
 /** Where that plist lives, relative to the app bundle. */
 export const LAUNCH_AGENT_DIR = "Contents/Library/LaunchAgents";
-/** `BundleProgram` in the plist: the helper bundle, relative to the app bundle. */
-export const HELPER_BUNDLE_PROGRAM = "Contents/Helpers/MonoCode Dictation.app";
+/**
+ * `BundleProgram` in the plist, relative to the app bundle. launchd executes this path, so it is the helper's executable
+ * inside its bundle, not the bundle folder (a folder cannot be exec'd, and the agent would never start).
+ */
+export const HELPER_BUNDLE_PROGRAM = "Contents/Helpers/MonoCode Dictation.app/Contents/MacOS/monocode-dictation";
 const INFO_TEMPLATE = path.join(ROOT, "crates/dictation-helper/bundle/Info.plist");
 const LAUNCH_AGENT_TEMPLATE = path.join(ROOT, "crates/dictation-helper/bundle/LaunchAgent.plist");
 const HELPER_ENTITLEMENTS = path.join(ROOT, "crates/dictation-helper/bundle/Entitlements.plist");

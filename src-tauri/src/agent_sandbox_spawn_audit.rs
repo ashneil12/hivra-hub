@@ -739,11 +739,6 @@ const ALLOW: &[(&str, &str, &str)] = &[
         "git_cmd::git() after ensure_contained, then extend_readonly. The container profile while the sandbox is on, hooks off.",
     ),
     (
-        "dictation.rs",
-        "start",
-        "The Hub does not spawn the helper. launchd runs it while the setting is on. Never started by an agent, so not inside the agent sandbox.",
-    ),
-    (
         "commit_guard.rs",
         "push_url",
         "Spawns fs::git_cmd(), which is git_cmd::git(): the container profile while the sandbox is on, no hooks. Arguments are remote get-url --push.",

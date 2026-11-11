@@ -343,7 +343,7 @@ function bundleAt(app, { sha, branch = "hub/test", dirty = false, identifier = H
   fs.writeFileSync(
     path.join(agents, "com.ash.monocode-hub.dictation.plist"),
     `<?xml version="1.0" encoding="UTF-8"?>
-<plist version="1.0"><dict><key>Label</key><string>com.ash.monocode-hub.dictation</string><key>BundleProgram</key><string>Contents/Helpers/MonoCode Dictation.app</string></dict></plist>
+<plist version="1.0"><dict><key>Label</key><string>com.ash.monocode-hub.dictation</string><key>BundleProgram</key><string>Contents/Helpers/MonoCode Dictation.app/Contents/MacOS/monocode-dictation</string></dict></plist>
 `,
   );
   const stamp = JSON.stringify({ sha, branch, dirty, builtAt: "2026-10-19T21:04:05Z" });
