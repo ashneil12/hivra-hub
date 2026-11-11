@@ -88,6 +88,25 @@ export function useDictation(input: {
     };
   }, [input.port]);
 
+  // The Composer setting turns dictation on and off. Ask again, and stop a session that is no longer allowed.
+  useEffect(() => {
+    let dead = false;
+    const onSetting = (event: Event) => {
+      if (event instanceof CustomEvent && event.detail === false) controllerRef.current?.seal();
+      void input.port.support().then((result) => {
+        if (dead) return;
+        const available = result.available === true;
+        setSupported(available);
+        if (!available) controllerRef.current?.seal();
+      });
+    };
+    window.addEventListener("monocode:dictationsetting", onSetting);
+    return () => {
+      dead = true;
+      window.removeEventListener("monocode:dictationsetting", onSetting);
+    };
+  }, [input.port]);
+
   useEffect(() => {
     if (!enabled) controllerRef.current?.seal();
   }, [enabled]);

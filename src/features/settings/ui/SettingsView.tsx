@@ -343,6 +343,13 @@ import {
   useShowRemainingUsage,
 } from "../model/displayPrefs";
 import {
+  DICTATION_SETTING_DESCRIPTION,
+  DICTATION_SETTING_LABEL,
+  dictationSettingIsShown,
+  loadDictationSetting,
+  saveDictationSetting,
+} from "../model/dictationSetting";
+import {
   accountStatus,
   accountUsageKey,
   useProviderAccountUsage,
@@ -1259,6 +1266,17 @@ function ChatPage() {
   const [formatOnSave, setFormatOnSave] = useState(loadFormatOnSave);
   const [composerRunner, setComposerRunner] = useState(loadComposerRunner);
   const composerAutocorrect = useComposerAutocorrect();
+  // WP-131c: dictation is off until this is turned on. The app keeps the file.
+  const [dictationOn, setDictationOn] = useState(false);
+  useEffect(() => {
+    let dead = false;
+    void loadDictationSetting().then((on) => {
+      if (!dead) setDictationOn(on);
+    });
+    return () => {
+      dead = true;
+    };
+  }, []);
   // WP-113: optional settle, snooze and re-sort. Off keeps today's list.
   const chatListInbox = useChatListInbox();
   const [gridArcadeEnabled, setGridArcadeEnabled] = useState(
@@ -1429,6 +1447,22 @@ function ChatPage() {
             onChange={saveComposerAutocorrect}
           />
         </Row>
+        {dictationSettingIsShown() ? (
+          <Row
+            id="composer-dictation"
+            label={DICTATION_SETTING_LABEL}
+            description={DICTATION_SETTING_DESCRIPTION}
+          >
+            <Toggle
+              label={DICTATION_SETTING_LABEL}
+              on={dictationOn}
+              onChange={(on) => {
+                setDictationOn(on);
+                void saveDictationSetting(on).then(setDictationOn);
+              }}
+            />
+          </Row>
+        ) : null}
       </Group>
 
       <Group
