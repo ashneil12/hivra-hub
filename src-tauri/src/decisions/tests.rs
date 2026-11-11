@@ -2673,7 +2673,16 @@ fn retire_refuses_a_secret_card() {
     let asked = ask(&mut conn, ask_input("fm", key, &[]), 2).unwrap();
     assert!(asked.created);
     let seen = asked.decision.version;
-    answer_seen(&mut conn, "hivra", key, "Once", None, Some(seen), 3).unwrap();
+    answer_seen(
+        &mut conn,
+        "hivra",
+        key,
+        "Once",
+        Some("person".into()),
+        Some(seen),
+        3,
+    )
+    .unwrap();
     let before = get(&conn, "hivra", key).unwrap().unwrap();
     assert!(!before.standing);
     assert!(!before.reuse_stopped);

@@ -133,7 +133,7 @@ fn once_grant_leaves_a_card_whose_version_moved() {
         "",
         &decision_key,
         "Once",
-        None,
+        Some("person".into()),
         Some(seen),
         NOW + 1,
     )
