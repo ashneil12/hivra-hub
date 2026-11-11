@@ -169,6 +169,21 @@ const ALLOW: &[(&str, &str, &str)] = &[
         "/usr/bin/open -a of an editor Ash picked, or that editor's own program, on a folder that exists.",
     ),
     (
+        "hivra_cloud/mod.rs",
+        "hivra_cloud_sign_in",
+        "open::that_detached of the Hivra Cloud sign-in address in the browser, after Ash taps Sign in. Not an agent shell.",
+    ),
+    (
+        "programme/gitrun.rs",
+        "command",
+        "Builds git_cmd::child() for git: scrubbed environment, hooks and fsmonitor off, the container profile while the sandbox is on. A non-git program is only a test's sleeper. Does not spawn.",
+    ),
+    (
+        "programme/gitrun.rs",
+        "run_program",
+        "Spawns command(), so git_cmd::child(). ensure_safe refuses force and --no-verify first.",
+    ),
+    (
         "fs.rs",
         "git_hash_object",
         "Spawns git_cmd(), which is git_cmd::git(): the container profile while the sandbox is on, no hooks. Arguments are hash-object.",

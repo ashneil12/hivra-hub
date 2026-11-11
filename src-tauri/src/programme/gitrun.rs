@@ -113,7 +113,13 @@ fn forbidden(arg: &str) -> bool {
 }
 
 fn command(program: &str, cwd: &Path, args: &[&str], git: bool) -> Command {
-    let mut cmd = delivery::child(program);
+    // Git comes from git_cmd::child(): the scrubbed environment, hooks and fsmonitor off, and the container profile
+    // while the agent sandbox is on. A rebase here must not run hooks an agent wrote.
+    let mut cmd = if git {
+        crate::git_cmd::child()
+    } else {
+        delivery::child(program)
+    };
     if git {
         cmd.arg("--no-pager").arg("-C").arg(cwd);
     } else {
