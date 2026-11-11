@@ -73,7 +73,8 @@ export function HubProjectItems({
       <div className="group/head flex items-center gap-1 px-3 pb-1.5 pt-1" data-hub-project-header
         onContextMenu={(e) => { e.preventDefault(); setMenu({ x: e.clientX, y: e.clientY }); }}>
         <span className="grid size-4 shrink-0 place-items-center"><ProjectGlyph project={project} size={11} /></span>
-        <span className="min-w-0 flex-1 truncate px-1 text-xs leading-5 text-content/60">{project.name}</span>
+        {/* Dropwave: the project's optional group chats. Its name heads the sidebar's Home row instead. */}
+        <span className="min-w-0 flex-1 truncate px-1 text-xs leading-5 text-content/60" title={project.name}>Teams</span>
         <button type="button" title={`${project.name} options`} aria-label={`${project.name} options`} data-project-more
           onClick={(e) => setMenu(e.currentTarget)}
           className="grid size-5 shrink-0 place-items-center rounded-md text-content/60 opacity-0 hover:bg-content/8 hover:text-content focus:opacity-100 group-hover/head:opacity-100">

@@ -18,6 +18,9 @@ import { localDay, readLines, type WorkLogLine } from "../../workLog/model/workL
 import { hideSection, pinPanel, showSection, unpin } from "../model/arrangement";
 import { moveHomeSection } from "../model/arrangeHome";
 import { addChiefOfStaff, chiefScopeLine, openChiefChat, pickChief } from "../model/chief";
+import { ensureCaptainChat, sendMessage } from "../../hub/model/hubChats";
+import { simulateReplies } from "../../hub/model/roomConductor";
+import { openProjectChief } from "../../hub/ui/HubTopNav";
 import { needActions } from "../model/needActions";
 import { homeDateLabel } from "../model/dateLabel";
 import { doneToday, projectTag } from "../model/doneToday";
@@ -340,7 +343,7 @@ export function HomeView({ projectId }: { projectId?: string } = {}) {
         streaming: scoped ? false : exchange.streaming,
         options: (scoped ? [] : question?.options ?? []).map((option) => ({ id: option.id, label: option.label })),
         onAdd: () => undefined,
-        onOpenChat: () => openChiefChat(chiefMono.id),
+        onOpenChat: () => (scoped ? void openProjectChief(scoped.id) : openChiefChat(chiefMono.id)),
         onOption: (optionId) => {
           if (!sessionId || !pending || !question) return;
           answerHomeQuestion(sessionId, pending.requestId, {
@@ -448,9 +451,18 @@ export function HomeView({ projectId }: { projectId?: string } = {}) {
       onUnpin={(key) => void update((doc) => ({ ...doc, arrangement: unpin(doc.arrangement, key) }))}
       onAsk={(text) => {
         if (!chiefMono) return;
-        // The box is a starting point: the conversation carries on in the Chief of Staff's own chat.
-        const words = scoped ? `[${scoped.name}] ${text}` : text;
-        void sendHomeTurn(chiefMono.id, words).then((result) => {
+        // The box is a starting point: the conversation carries on in the Chief of Staff's own chat. In a project that is
+        // the project's own Chief of Staff chat, geared to it; on Home, its chat with everything in view.
+        if (scoped) {
+          const room = ensureCaptainChat(scoped.id, chiefMono.id);
+          if (room) {
+            sendMessage(room.id, text);
+            simulateReplies(room.id);
+            openProjectChief(scoped.id);
+            return;
+          }
+        }
+        void sendHomeTurn(chiefMono.id, text).then((result) => {
           if (result.ok) setSessionId(result.sessionId);
         });
         openChiefChat(chiefMono.id);

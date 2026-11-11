@@ -147,10 +147,10 @@ describe("New project", () => {
     answered("Moonrise Farm");
     act(() => root.render(createElement("div", null, strip(), createElement(NewProjectView))));
     await until(() => q("[data-hub-new-project-preview]"), "preview card");
-    expect(stripLabels()).toEqual(["Home", "Autopilot", "Side", "Nibbii", "Draft"]);
+    expect(stripLabels()).toEqual(["Home", "Side", "Nibbii", "Draft"]);
     await act(async () => q("[data-hub-create-project]")!.click());
     await until(() => stripLabels().includes("Moonrise"), "on the strip");
-    expect(stripLabels()).toEqual(["Home", "Autopilot", "Side", "Nibbii", "Moonrise"]);
+    expect(stripLabels()).toEqual(["Home", "Side", "Nibbii", "Moonrise"]);
     expect(sessionStorage.getItem("hivra.stripGroupFilter")).toBe("g1");
     expect(JSON.parse(localStorage.getItem("monocode.projectGroupAssignments")!)).toEqual({
       "hub-project:nibbii": "g1",

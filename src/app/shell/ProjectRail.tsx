@@ -159,6 +159,8 @@ type Props = {
    * over it) and these items replace the Pinned, Groups and Projects lists.
    */
   hubItems?: ReactNode;
+  /** Dropwave: Home and the Chief of Staff, at the very top of the hub's sidebar. */
+  hubTopNav?: ReactNode;
 };
 
 export function ProjectRail({
@@ -202,6 +204,7 @@ export function ProjectRail({
   onDismissUpdate,
   monos,
   hubItems,
+  hubTopNav,
 }: Props) {
   const trafficLightsVisible = useTrafficLightsVisible();
   const resize = useDragResize({
@@ -268,6 +271,53 @@ export function ProjectRail({
   );
   const notificationProjects = useNotificationProjects([...allProjects.keys()]);
   const menuTrigger = useRef<HTMLElement | null>(null);
+  // The general places: on top in Monocode, under the agents and teams in the hub (Dropwave).
+  const placesNav = (
+    <>
+      <RailAction
+        label="Inbox"
+        icon={Inbox}
+        onClick={onOpenInbox}
+        onOpenContextMenu={(x, y) => {
+          menuTrigger.current =
+            document.activeElement instanceof HTMLElement
+              ? document.activeElement
+              : null;
+          projectMenu.close();
+          setInboxMenu({ x, y });
+        }}
+        active={inboxActive}
+        dot={inboxUnseen}
+        ariaLabel={inboxUnseen ? "Inbox, new items" : "Inbox"}
+      />
+      {notesEnabled ? (
+        <RailAction
+          label="Notes"
+          icon={File}
+          onClick={onOpenNotes}
+          active={notesActive}
+          ariaLabel="Notes"
+        />
+      ) : null}
+      <RailAction
+        label="Automations"
+        icon={Zap}
+        onClick={onOpenAutomations}
+        active={automationsActive}
+        ariaLabel="Automations"
+      />
+      {onOpenPages ? (
+        <RailAction
+          label="Pages"
+          icon={DashboardSquare}
+          onClick={onOpenPages}
+          active={pagesActive}
+          ariaLabel="Pages"
+        />
+      ) : null}
+      {onOpenPages ? <PinnedPages onOpen={onOpenPages} /> : null}
+    </>
+  );
   const lockOverscroll = useLockOverscroll<HTMLDivElement>();
   const scrollRef = useRef<HTMLDivElement>(null);
   const groupLogos = useTabGroupLogos();
@@ -437,48 +487,7 @@ export function ProjectRail({
               ariaLabel={`Search (${MOD}K)`}
             />
             <div className="mt-0.5" />
-            <RailAction
-              label="Inbox"
-              icon={Inbox}
-              onClick={onOpenInbox}
-              onOpenContextMenu={(x, y) => {
-                menuTrigger.current =
-                  document.activeElement instanceof HTMLElement
-                    ? document.activeElement
-                    : null;
-                projectMenu.close();
-                setInboxMenu({ x, y });
-              }}
-              active={inboxActive}
-              dot={inboxUnseen}
-              ariaLabel={inboxUnseen ? "Inbox, new items" : "Inbox"}
-            />
-            {notesEnabled ? (
-              <RailAction
-                label="Notes"
-                icon={File}
-                onClick={onOpenNotes}
-                active={notesActive}
-                ariaLabel="Notes"
-              />
-            ) : null}
-            <RailAction
-              label="Automations"
-              icon={Zap}
-              onClick={onOpenAutomations}
-              active={automationsActive}
-              ariaLabel="Automations"
-            />
-            {onOpenPages ? (
-              <RailAction
-                label="Pages"
-                icon={DashboardSquare}
-                onClick={onOpenPages}
-                active={pagesActive}
-                ariaLabel="Pages"
-              />
-            ) : null}
-            {onOpenPages ? <PinnedPages onOpen={onOpenPages} /> : null}
+            {hubItems && hubTopNav ? hubTopNav : placesNav}
           </div>
 
           <div
@@ -491,6 +500,13 @@ export function ProjectRail({
             {monos ? <MonoRailSection {...monos} /> : null}
 
             {hubItems ? hubItems : null}
+            {/* Dropwave: in the hub the general places sit under the agents and teams, not above the Chief of Staff. */}
+            {hubItems && hubTopNav ? (
+              <div className="mb-2 shrink-0" data-hub-places>
+                <div className="px-4 pb-1.5 pt-1 text-xs leading-5 text-content/50">Places</div>
+                <div className="flex flex-col gap-px px-2">{placesNav}</div>
+              </div>
+            ) : null}
             {hubItems ? null : <>
             {sections.pinned.length > 0 ? (
               <ProjectSection

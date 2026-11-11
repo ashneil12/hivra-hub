@@ -37,6 +37,7 @@ import {
   roomPick,
   roomWorking,
   useHubChatsVersion,
+  isCaptainChat,
 } from "../model/hubChats";
 import { openCodingTeam, setHubSelection, useHubSelection } from "../model/hubNav";
 import { findWaiting } from "../model/waiting";
@@ -67,6 +68,8 @@ function projectName(projectId: string): string {
 
 /** The chat's display name in sentences: "EXO game's leadership team". */
 function chatPhrase(chat: GroupChat): string {
+  // Dropwave: a project's own Chief of Staff chat (hubChats' captain room) is the Chief of Staff, not a team.
+  if (isCaptainChat(chat.id)) return `${projectName(chat.projectId)}'s Chief of Staff`;
   return chat.isDefault ? `${projectName(chat.projectId)}'s leadership team` : chat.name;
 }
 

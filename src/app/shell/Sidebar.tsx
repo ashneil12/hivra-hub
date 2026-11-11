@@ -476,6 +476,8 @@ type Props = {
   monos?: MonoRailProps;
   /** Hub mode: project items shown in the rail instead of Projects. */
   hubItems?: ReactNode;
+  /** Dropwave: Home and the Chief of Staff, above everything else in the hub's sidebar. */
+  hubTopNav?: ReactNode;
   /** Hub mode: a hub view fills the main area. */
   hubSurfaceActive?: boolean;
   /** A Mono fills the main area, which has no project sidebar. */
@@ -627,6 +629,7 @@ function SidebarComponent({
   onDismissUpdate,
   monos,
   hubItems,
+  hubTopNav,
   hubSurfaceActive = false,
   monoViewActive = false,
   codingTeam,
@@ -3686,6 +3689,7 @@ function SidebarComponent({
           onDismissUpdate={onDismissUpdate}
           monos={railMonos}
           hubItems={hubItems}
+          hubTopNav={hubTopNav}
         />
       ) : null}
     </>

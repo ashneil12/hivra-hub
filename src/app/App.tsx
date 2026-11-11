@@ -1,4 +1,12 @@
 import { HOME_MONOS } from "./shell/MonoRailSection";
+import { monoTeamInView as homeMonoTeam } from "../features/hub/model/hubNav";
+import { findMono as findHomeMono } from "../features/monos/model/mono";
+
+/** Dropwave: a Mono on no project (the Chief of Staff) open in its own chat belongs to Home's sidebar. */
+function homeMonoInView(sel: { project: string; item: string }): boolean {
+  const id = homeMonoTeam(sel);
+  return !!id && (findHomeMono(id)?.projects.length ?? 1) === 0;
+}
 import { subscribeMoreAgentsChanges } from "../features/providers/model/moreAgents";
 import { setTurnTextDecorator } from "../integrations/harness/core/registry";
 // WP-85: terminal Claude sessions in the chat list.
@@ -258,6 +266,7 @@ import {
 } from "react";
 import { ProjectStrip } from "../features/hub/ui/ProjectStrip";
 import { HubProjectItems } from "../features/hub/ui/HubProjectItems";
+import { HubTopNav } from "../features/hub/ui/HubTopNav";
 import { HubSurface } from "../features/hub/ui/HubSurface";
 import { ShipNotice } from "../features/hub/ui/ShipNotice";
 // WP-92: a Mono's request for a key appears as a form card above the chat.
@@ -17837,7 +17846,7 @@ function Workspace({
     }
   }, [hubSel.project, hubSel.item, hubFolder, openCodingTeam]);
   const hubMonos = sidebarMonos
-    ? { ...sidebarMonos, rank: hubMonoRank, projectFilter: hubSel.item === "home" ? HOME_MONOS : hubSel.project === NO_PROJECT ? undefined : (hubProject?.folder ?? `hub-project:${hubSel.project}`) }
+    ? { ...sidebarMonos, rank: hubMonoRank, projectFilter: hubSel.item === "home" || homeMonoInView(hubSel) ? HOME_MONOS : hubSel.project === NO_PROJECT ? undefined : (hubProject?.folder ?? `hub-project:${hubSel.project}`) }
     : undefined;
 
   const chromeSurfaceOpen =
@@ -18180,6 +18189,16 @@ function Workspace({
 
   const sessionSidebar = (
     <Sidebar
+      hubTopNav={
+        <HubTopNav
+          openMonoId={monoViewId}
+          covered={searchViewOpen || settingsOpen || inboxViewOpen || notesViewOpen || automationsViewOpen}
+          onLeaveCovers={() => {
+            closeChromeViews();
+            if (monoViewIdRef.current) closeMonoView();
+          }}
+        />
+      }
       hubItems={
         <HubProjectItems
           selection={hubSel}

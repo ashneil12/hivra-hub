@@ -34,6 +34,7 @@ import { MonoRailMascot } from "../../features/monos/ui/MonoRailMascot";
 import { MonoIntroCard } from "../../features/monos/ui/MonoIntro";
 import { ensureBuiltInMonos } from "../../features/hub/model/builtInMonos";
 import { RailAction } from "./RailAction";
+import { pickChief } from "../../features/home/model/chief";
 import {
   loadMonoRailCollapsed,
   saveMonoRailCollapsed,
@@ -228,7 +229,8 @@ export function MonoRailSection({
   const monos = useMemo(
     () =>
       railMonos(listMonos(), projectFilter, rank).filter(
-        (mono) => !!rank || !project || monoWorksOn(mono, project),
+        // Dropwave: the Chief of Staff has its own row at the very top of the hub's sidebar, so it isn't listed again.
+        (mono) => (rank ? mono.id !== pickChief(listMonos())?.id : !project || monoWorksOn(mono, project)),
       ),
     [snapshot, projectFilter, rank, project],
   );
@@ -332,7 +334,7 @@ export function MonoRailSection({
           <ChevronDown
             className={`size-3 shrink-0 transition-transform ${collapsed ? "-rotate-90" : ""}`}
           />
-          <span className="truncate">Monos</span>
+          <span className="truncate">{rank ? "First mates" : "Monos"}</span>
           {collapsed ? <span className="ml-1 text-content/35">{monos.length}</span> : null}
           {collapsed && busyText ? (
             <span className="ml-1.5 flex min-w-0 items-center gap-1 text-content/55" data-mono-rail-busy={busy.length}>
@@ -592,7 +594,8 @@ export function MonoRailSection({
                 onOpenStuck={(anchor) => toggleStuckPanel(anchor, mono.id)}
               />
             ) : null}
-            {(childChats.get(mono.id) ?? []).length ? (
+            {/* Dropwave: sub-chat chains show only on the Agents board, never in the hub's sidebar. */}
+            {!rank && (childChats.get(mono.id) ?? []).length ? (
               // r88 (Ash, B13): its workers' chats nest under it here too, folded under a count and opening by
               // themselves when one asks, is stuck or failed (subChats.ts); one click opens a worker's chat.
               <div data-mono-sub-chats={mono.id}>

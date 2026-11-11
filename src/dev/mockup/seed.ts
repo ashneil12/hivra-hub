@@ -55,6 +55,10 @@ Object.assign(window, { __MONOCODE_MOCKUP__: true });
 // typed gets a plain note that nothing here is wired.
 Object.assign(window, {
   __fakeClaudeReply: (prompt: string): string => {
+    // A message in a room (a project's own Chief of Staff chat, a team): an example answer from whoever hosts it.
+    const room = /\[MonoCode room\] You are ([^,]+), in the group chat "[^"]*" \(room [^)]*\) for project "([^"]+)"/.exec(prompt);
+    if (room)
+      return `Example reply from ${room[1]}: got it. I'll hand this to the ${room[2]} lead and tell you here when it's done. (This is the mockup, so nothing really runs.)`;
     if (/From the app, not Ash|\[MonoCode /.test(prompt)) return "\n\nRight: nothing new since your last message.";
     return "This is the mockup, so nothing is wired: I can't do the work here. The screens and buttons are the real app's; tell Claude in the thread what you'd change about them.";
   },
