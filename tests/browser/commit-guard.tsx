@@ -15,7 +15,7 @@ onGuardFindingOpen(() => {
   if (next) opened.push(next);
 });
 
-const calls: Array<{ repo: string; file: string; line: number }> = [];
+const calls: Array<{ id: string }> = [];
 (window as unknown as { __allowCalls: typeof calls }).__allowCalls = calls;
 
 // The fixture's list, read fresh each time as the real command is (a snapshot would go stale after a remove).
@@ -28,17 +28,13 @@ function Page() {
   return (
     <main className="flex flex-col gap-6 p-6 text-white">
       <CommitGuardRefusal
-        message="Possible secret in src/config.rs:12. The value is not shown. To go on, either remove it from the commit."
-        repo="/srv/project"
-        allowLine={async (repo, file, line) => {
-          calls.push({ repo, file, line });
+        message="Possible secret in src/config.rs:12 in /srv/project (commit 1a2b3c4d5e6f, refusal 0123456789ab). The value is not shown. To go on, either remove it from the commit."
+        allowLine={async (id) => {
+          calls.push({ id });
         }}
       />
-      <CommitGuardRefusal
-        message="Possible secret in a commit message:2. The value is not shown."
-        repo="/srv/project"
-      />
-      <OpenInSourceControlLink message="Possible secret in src/config.rs:12. The value is not shown." />
+      <CommitGuardRefusal message="Possible secret in a commit message:2. The value is not shown." />
+      <OpenInSourceControlLink message="Possible secret in src/config.rs:12 in /srv/project (commit 1a2b3c4d5e6f, refusal 0123456789ab). The value is not shown." />
       <CommitGuardAllowsPanel
         list={async () => [...store]}
         remove={async (allow) => {

@@ -1,7 +1,7 @@
 use super::*;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::time::Duration;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -515,13 +515,22 @@ fn the_pre_push_hook_runs_the_guard_then_the_repos_own_hook() {
             .status()
             .unwrap();
     }
-    let text = crate::attribution::hooks::pre_push_script(guard.to_str().unwrap(), real.to_str())
-        .expect("the hook script builds");
+    let store = dir.path().join("commit-guard-allows.json");
+    let text = crate::attribution::hooks::pre_push_script(
+        guard.to_str().unwrap(),
+        real.to_str(),
+        store.to_str().unwrap(),
+    )
+    .expect("the hook script builds");
     fs::write(&hook, text).unwrap();
     Command::new("chmod").arg("+x").arg(&hook).status().unwrap();
 
     fs::write(dir.path().join("fail"), "").unwrap();
-    let refused = Command::new(&hook).arg("origin").status().unwrap();
+    let refused = Command::new(&hook)
+        .arg("origin")
+        .stdin(Stdio::null())
+        .status()
+        .unwrap();
     assert!(
         !refused.success(),
         "the guard's refusal did not stop the push"
@@ -532,7 +541,11 @@ fn the_pre_push_hook_runs_the_guard_then_the_repos_own_hook() {
     );
 
     fs::remove_file(dir.path().join("fail")).unwrap();
-    let passed = Command::new(&hook).arg("origin").status().unwrap();
+    let passed = Command::new(&hook)
+        .arg("origin")
+        .stdin(Stdio::null())
+        .status()
+        .unwrap();
     assert!(
         passed.success(),
         "a passing guard did not let the push go on"
@@ -604,14 +617,33 @@ fn an_allow_store_that_does_not_parse_allows_nothing() {
         read_allows(&path).is_empty(),
         "a broken store allowed something"
     );
-    let allow = Allow {
-        repo: "repo-a".into(),
-        file: "src/config.rs".into(),
-        hash: line_hash("x"),
-        mac: String::new(),
-    };
+    let allow = signed(
+        TEST_KEY,
+        Allow {
+            repo: "repo-a".into(),
+            file: "src/config.rs".into(),
+            hash: line_hash("x"),
+            mac: String::new(),
+        },
+    );
     write_allows(&path, std::slice::from_ref(&allow)).unwrap();
-    assert_eq!(read_allows(&path), vec![allow]);
+    assert_eq!(read_allows_with(&path, TEST_KEY), vec![allow]);
+    assert!(
+        read_allows_with(&path, b"another-key").is_empty(),
+        "an entry signed with another key was honoured"
+    );
+}
+
+#[test]
+fn a_hand_written_allow_is_not_honoured() {
+    let dir = Repo::dir("allow-hand");
+    let path = dir.path().join("commit-guard-allows.json");
+    fs::write(
+        &path,
+        "[{\"repo\":\"r\",\"file\":\"src/a.rs\",\"hash\":\"h\"}]",
+    )
+    .unwrap();
+    assert!(read_allows_with(&path, TEST_KEY).is_empty());
 }
 
 #[test]
@@ -713,34 +745,108 @@ fn a_secret_in_a_branch_the_self_build_would_pick_is_refused_before_the_pick() {
     );
 }
 
+/// The key the tests sign with. The app's real key is in the Keychain; tests never reach it.
+const TEST_KEY: &[u8] = b"test-key-not-a-secret";
+
+fn refusal_id_of(message: &str) -> String {
+    message
+        .split("refusal ")
+        .nth(1)
+        .unwrap_or("")
+        .chars()
+        .take(12)
+        .collect()
+}
+
 #[test]
-fn an_allow_is_recorded_for_the_head_line_and_can_be_removed() {
+fn an_allow_is_recorded_for_the_refused_text_and_can_be_removed() {
     let (local, _remote) = pushed_repo("allow-round");
     let key = fake_key();
     local.write("src/config.rs", &format!("const KEY: &str = \"{key}\";\n"));
     local.commit("config");
+    let refused = gate_outgoing(local.path()).unwrap_err();
+    let id = refusal_id_of(&refused);
+    assert_eq!(id.len(), 12, "the refusal names its id: {refused}");
     let dir = Repo::dir("allow-store-file");
     let store = dir.path().join("commit-guard-allows.json");
-    allow_finding_in(&store, local.path(), "src/config.rs", 1).expect("the line is allowed");
-    let recorded = read_allows(&store);
-    let expected = Allow {
-        repo: repo_id(local.path()),
-        file: "src/config.rs".into(),
-        hash: line_hash(&format!("const KEY: &str = \"{key}\";")),
-        mac: String::new(),
-    };
-    assert_eq!(recorded, vec![expected.clone()]);
+    allow_refusal_with(&store, &id, TEST_KEY).expect("the refusal is allowed");
+    let expected = signed(
+        TEST_KEY,
+        Allow {
+            repo: repo_id(local.path()),
+            file: "src/config.rs".into(),
+            hash: line_hash(&format!("const KEY: &str = \"{key}\";")),
+            mac: String::new(),
+        },
+    );
+    assert_eq!(read_allows_with(&store, TEST_KEY), vec![expected.clone()]);
     assert!(
-        !err_text_has_value(&recorded),
-        "a stored allow must hold no value"
+        gate_outgoing(local.path()).is_err(),
+        "a file-level allow alone must not pass a refusal with no entry"
     );
     remove_allow_in(&store, &expected).expect("the allow is removed");
-    assert!(read_allows(&store).is_empty());
+    assert!(read_allows_with(&store, TEST_KEY).is_empty());
 }
 
-fn err_text_has_value(allows: &[Allow]) -> bool {
+// ---- review round 4 ---------------------------------------------------------------------------------------------------
+
+#[test]
+fn the_pre_push_stdin_check_covers_the_ref_git_is_pushing_whatever_head_is() {
+    let (local, _remote) = pushed_repo("stdin-ref");
+    local.git(&["checkout", "-q", "-b", "leak"]);
     let key = fake_key();
-    allows
-        .iter()
-        .any(|allow| allow.hash.contains(key_body(&key)) || allow.file.contains(key_body(&key)))
+    local.write("src/config.rs", &format!("const KEY: &str = \"{key}\";\n"));
+    local.commit("leak");
+    let leak_sha = local.git(&["rev-parse", "leak"]);
+    local.git(&["checkout", "-q", "main"]);
+    let zeros = "0".repeat(40);
+    let stdin = format!(
+        "refs/heads/leak {} refs/heads/leak {zeros}\n",
+        leak_sha.trim()
+    );
+    let err = pre_push_stdin_check(local.path(), "origin", &stdin).unwrap_err();
+    assert!(
+        err.starts_with("Possible secret in src/config.rs:1"),
+        "{err}"
+    );
+    let deletion = format!("(delete) {zeros} refs/heads/leak {}\n", leak_sha.trim());
+    pre_push_stdin_check(local.path(), "origin", &deletion).expect("a deletion sends no commit");
+}
+
+#[test]
+fn colour_codes_in_the_checked_output_stop_the_step_rather_than_hiding_a_line() {
+    let (local, _remote) = pushed_repo("escape");
+    local.write("src/app.txt", "shipped\n");
+    local.commit("add app");
+    local.git(&["commit", "-q", "--allow-empty", "-m", "\u{1b}[31mfix thing"]);
+    let err = gate_outgoing(local.path()).unwrap_err();
+    assert!(err.contains("colour codes"), "{err}");
+}
+
+#[test]
+fn a_secret_shape_in_a_file_name_stops_the_push_without_showing_the_name() {
+    let (local, _remote) = pushed_repo("file-name");
+    let key = fake_key();
+    local.write(&format!("notes/{key}.txt"), "clean\n");
+    local.commit("named");
+    let err = gate_outgoing(local.path()).unwrap_err();
+    assert!(err.starts_with("Possible secret in a file name"), "{err}");
+    assert!(!err.contains(key_body(&key)), "the name leaked: {err}");
+}
+
+#[test]
+fn an_allow_names_a_refusal_it_was_shown_and_nothing_else() {
+    let dir = Repo::dir("allow-id");
+    let store = dir.path().join("commit-guard-allows.json");
+    let err = allow_refusal_with(&store, "0123456789ab", TEST_KEY).unwrap_err();
+    assert!(err.contains("no longer on record"), "{err}");
+    assert!(!store.exists(), "an unknown id wrote an allow");
+}
+
+#[test]
+fn a_raw_escape_byte_inside_a_file_is_data_and_is_checked_as_text() {
+    let (local, _remote) = pushed_repo("escape-data");
+    local.write("src/ansi.txt", "red: \u{1b}[31m text\n");
+    local.commit("ansi fixture");
+    gate_outgoing(local.path()).expect("a file with an escape byte in it is checked, not refused");
 }

@@ -2,7 +2,7 @@ import { useState } from "react";
 import { allowCommitGuardLine } from "../model/allows";
 import { secretFinding } from "../model/refusal";
 
-export type AllowLine = (repo: string, file: string, line: number) => Promise<void>;
+export type AllowLine = (id: string) => Promise<void>;
 
 /**
  * A commit or push the guard refused. A possible secret on a file line gets "Allow this line": a person's click is the
@@ -10,11 +10,9 @@ export type AllowLine = (repo: string, file: string, line: number) => Promise<vo
  */
 export function CommitGuardRefusal({
   message,
-  repo,
   allowLine = allowCommitGuardLine,
 }: {
   message: string;
-  repo: string;
   allowLine?: AllowLine;
 }) {
   const finding = secretFinding(message);
@@ -32,7 +30,7 @@ export function CommitGuardRefusal({
   const allow = async () => {
     setState("busy");
     try {
-      await allowLine(repo, finding.file, finding.line);
+      await allowLine(finding.id);
       setState("allowed");
     } catch (failure) {
       setError(failure instanceof Error ? failure.message : String(failure));
@@ -43,7 +41,9 @@ export function CommitGuardRefusal({
   return (
     <div role="alert" data-guard-refusal className="flex flex-col gap-2 text-sm">
       <p>
-        Blocked: a possible secret is on line {finding.line} of {finding.file}. The value is not shown.
+        Blocked: a possible secret is on line {finding.line} of {finding.file}
+        {finding.folder ? ` in ${finding.folder}` : ""}
+        {finding.commit !== "none" ? ` (commit ${finding.commit})` : ""}. The value is not shown.
       </p>
       <p>If it is a test value, allow this line. Nothing else in the file is allowed.</p>
       {state === "allowed" ? (

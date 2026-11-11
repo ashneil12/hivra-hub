@@ -7,9 +7,9 @@ export interface CommitGuardAllow {
   hash: string;
 }
 
-/** Allows one flagged line. Called only from a direct click on "Allow this line". */
-export function allowCommitGuardLine(repo: string, file: string, line: number): Promise<void> {
-  return invoke<void>("commit_guard_allow", { repo, file, line });
+/** Allows the refusal with this id. Called only from a direct click on "Allow this line"; the app keeps what the id names. */
+export function allowCommitGuardLine(id: string): Promise<void> {
+  return invoke<void>("commit_guard_allow", { id });
 }
 
 /** The allows on record, for the Settings list. */

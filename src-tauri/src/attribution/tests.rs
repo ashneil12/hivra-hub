@@ -2195,7 +2195,11 @@ fn env_pairs(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
 /// this repository's folder, and return the environment that points git at it.
 fn arm(data: &Path, repo: &Path, env: &[(&str, &str)]) -> Armed {
     fs::create_dir_all(data).unwrap();
-    let hooks = super::hooks::install_for_repo(data, repo, &env_pairs(env)).unwrap();
+    // The pre-push guard is the app's own binary; a test runs a stand-in that passes, and tests the guard itself elsewhere.
+    let stand_in = data.join("guard-stand-in");
+    write_hook(&stand_in, "exit 0\n");
+    let hooks =
+        super::hooks::install_for_repo_with(data, repo, &env_pairs(env), &stand_in).unwrap();
     let hooks_path = hooks.to_str().unwrap().to_string();
     let (count, key, value_name) = super::logic::git_config_env(None, &hooks_path).unwrap();
     Armed {
@@ -2288,6 +2292,16 @@ fn every_executable_repo_hook_is_forwarded_and_three_are_never_written() {
             assert!(
                 text.contains(hook_test_line()),
                 "{name} has the wrong hook test: {text}"
+            );
+        } else if *name == "pre-push" {
+            // WP-200: the pre-push hook runs the commit guard first, then the repository's own hook.
+            assert!(
+                text.contains("pre-push-guard"),
+                "pre-push does not run the guard: {text}"
+            );
+            assert!(
+                text.contains("\"$real_hook\" \"$@\" < \"$refs\""),
+                "pre-push does not forward to the repository's hook with the ref list: {text}"
             );
         } else {
             assert!(

@@ -11,13 +11,9 @@ describe("commit guard allow commands", () => {
     invoke.mockResolvedValue(undefined);
   });
 
-  it("allows one line with the repository path, file and line, as the app's command expects", async () => {
-    await allowCommitGuardLine("/srv/project", "src/config.rs", 12);
-    expect(invoke).toHaveBeenCalledWith("commit_guard_allow", {
-      repo: "/srv/project",
-      file: "src/config.rs",
-      line: 12,
-    });
+  it("allows one refusal by its id, and nothing else, as the app's command expects", async () => {
+    await allowCommitGuardLine("0123456789ab");
+    expect(invoke).toHaveBeenCalledWith("commit_guard_allow", { id: "0123456789ab" });
   });
 
   it("lists the allows on record", async () => {

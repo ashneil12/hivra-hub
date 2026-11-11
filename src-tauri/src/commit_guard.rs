@@ -1,20 +1,22 @@
 //! The commit guard: keeps files an agent writes for itself, and secrets, out of what Hivra stages, commits, pushes,
-//! opens as a pull request or lands. The agent folders come from the shared list
-//! (`src/shared/security/agentConfigPaths.json`, read through the floor's loader), and the secret patterns from
-//! `src/features/portable/model/secretPatterns.json` (through `portable::scrubber`).
+//! opens as a pull request, lands, or self-builds. The agent folders come from the shared list
+//! (`src/shared/security/agentConfigPaths.json`, through the floor's loader); the secret patterns from the scrubber
+//! (`src/features/portable/model/secretPatterns.json`).
 //!
-//! - Staging leaves out an untracked agent file, so `git add -A` never takes it. A file the repo already tracks is
-//!   staged as usual.
-//! - Selecting or staging such a file by hand refuses the commit with one plain line.
-//! - Before a push, a pull request, a land or a checked delivery, the commits being sent are checked: merge commits
-//!   included, binary-marked files read as text, an agent file refused, and each added line scanned for a secret
-//!   by its token shape or a long assigned value. A check that is too large or too slow refuses the step.
+//! - Staging leaves out an untracked agent file, so `git add -A` never takes it.
+//! - A push is checked for the commits it sends: the pushed refs (the hook reads them from git's own stdin), each
+//!   checked back to the tips the remote advertises now (`git ls-remote`), never to local tracking refs. Merge
+//!   commits are included; binary-marked files are read as text; git's colour and encoding settings are overridden.
+//! - An added line is a finding by its token shape or a long assigned value, and a private key by its whole block.
+//! - A person may allow one finding from the app's UI. The allow is recorded under a refusal id, signed with a key in
+//!   the Keychain, and kept in the app's data folder. Nothing else can make one.
 //! - Nothing here edits an ignore file. A refusal names the choices in words and leaves the person to pick.
 
 use std::collections::BTreeMap;
 use std::io::Read;
-use std::path::Path;
-use std::process::Stdio;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use crate::delivery::protected::{folded_segments, shared_list};
@@ -32,6 +34,9 @@ const CHECK_TIMEOUT: Duration = Duration::from_secs(120);
 
 const TOO_LARGE: &str = "This change is too large for the secret check, so nothing was sent. Split it into smaller pushes, or ask Ash to check it.";
 const TIMED_OUT: &str = "The secret check did not finish in time, so nothing was sent. Try again, or ask Ash to check it.";
+const COLOUR_REFUSED: &str = "The secret check read output it cannot trust (terminal colour codes), so nothing was sent. Ask Ash to check this change.";
+const UNREADABLE_PUSH: &str =
+    "The push's list of refs could not be read, so nothing was sent. Ask Ash to check this push.";
 
 /// What kind of agent file a repo path is, or `None`. The folder must be one the shared list names (or `.hivra`).
 /// A list that does not load is an error: the guard refuses rather than letting an agent file through.
@@ -72,25 +77,51 @@ fn refused_to_land(path: &str, kind: &str) -> String {
     format!("Refused to land {path}: it is {kind}, and this project does not track it. {RECOVERY}")
 }
 
-fn secret_refusal(file: &str, line: usize) -> String {
+/// A secret in a commit message or a file name: there is no file line to allow, so no id is given.
+fn plain_secret_refusal(what: &str) -> String {
     format!(
-        "Possible secret in {file}:{line}. The value is not shown. To go on, either remove it from the commit, add the file to this project's ignore file (after you say yes), or say it is a test value. Hivra does not edit any ignore file itself."
+        "Possible secret in {what}. The value is not shown. To go on, either remove it from the commit, add the file to this project's ignore file (after you say yes), or say it is a test value. Hivra does not edit any ignore file itself."
     )
 }
 
-/// Small git answers (a name, a config value). Output that is not UTF-8 is read lossily, never an error.
-fn git_out(root: &Path, args: &[&str]) -> Result<String, String> {
-    let output = crate::fs::git_cmd()
-        .arg("--no-pager")
+/// Every guard git call: plain output whatever the repository's or the person's config says (N1). The colour and
+/// encoding settings are overridden on the command line, which wins over every config file.
+fn guard_git(root: &Path) -> Command {
+    let mut cmd = crate::fs::git_cmd();
+    cmd.arg("--no-pager")
+        .arg("-c")
+        .arg("color.ui=never")
+        .arg("-c")
+        .arg("color.diff=never")
+        .arg("-c")
+        .arg("i18n.logOutputEncoding=UTF-8")
         .arg("-C")
         .arg(root)
-        .args(args)
         .env("GIT_TERMINAL_PROMPT", "0")
-        .env("GIT_OPTIONAL_LOCKS", "0")
+        .env("GIT_OPTIONAL_LOCKS", "0");
+    cmd
+}
+
+/// Whether git wrapped a line in colour codes. Colour is off on every guard command, so this should never be true; if
+/// it is, the lines are not trusted. An escape byte inside a line is file content (a terminal test fixture, say) and is
+/// data, not colour: git's own colour codes always lead a line.
+fn colour_wrapped(bytes: &[u8]) -> bool {
+    bytes
+        .split(|byte| *byte == b'\n')
+        .any(|line| line.first() == Some(&0x1b))
+}
+
+/// Small git answers (a name, a config value). Output with an escape byte is refused, never read.
+fn git_out(root: &Path, args: &[&str]) -> Result<String, String> {
+    let output = guard_git(root)
+        .args(args)
         .output()
         .map_err(|e| e.to_string())?;
     if !output.status.success() {
         return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
+    }
+    if colour_wrapped(&output.stdout) {
+        return Err(COLOUR_REFUSED.into());
     }
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
@@ -102,13 +133,8 @@ pub(crate) fn checked_output_within(
     limit: Duration,
     max_bytes: usize,
 ) -> Result<String, String> {
-    let mut child = crate::fs::git_cmd()
-        .arg("--no-pager")
-        .arg("-C")
-        .arg(root)
+    let mut child = guard_git(root)
         .args(args)
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .env("GIT_OPTIONAL_LOCKS", "0")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -145,6 +171,9 @@ pub(crate) fn checked_output_within(
     }
     if out.len() > max_bytes {
         return Err(TOO_LARGE.into());
+    }
+    if colour_wrapped(&out) {
+        return Err(COLOUR_REFUSED.into());
     }
     Ok(String::from_utf8_lossy(&out).into_owned())
 }
@@ -213,6 +242,7 @@ pub fn refuse_staged_agent_files(root: &Path) -> Result<(), String> {
             "--name-only",
             "--diff-filter=A",
             "--no-renames",
+            "--no-color",
             "-z",
         ],
     )?;
@@ -224,8 +254,7 @@ pub fn refuse_staged_agent_files(root: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// Refuses a land whose changed files name an agent file the project does not track (a worker's own approvals file,
-/// committed or staged by the worker itself, never reaches the project).
+/// Refuses a land whose changed files name an agent file the project does not track.
 pub fn refuse_land_names(project: &Path, names: &[String]) -> Result<(), String> {
     for path in names {
         if let Some(kind) = agent_file_kind(path)? {
@@ -237,11 +266,12 @@ pub fn refuse_land_names(project: &Path, names: &[String]) -> Result<(), String>
     Ok(())
 }
 
-/// One added line of a patch: the file, its line number in the new file, and the text without its `+`.
+/// One added line of a patch: the file, its line number in the new file, its text without the `+`, and its commit.
 struct Added {
     file: String,
     line: usize,
     text: String,
+    commit: String,
 }
 
 /// The first new-file line number in a hunk header's text (`-1,0 +2 @@ ...`).
@@ -254,14 +284,20 @@ fn new_start(header: &str) -> usize {
         .unwrap_or(1)
 }
 
-/// The added lines of a unified diff. Only `+` lines count (never `-`, never a `+++` file header), and the `+` is
-/// removed before the text is scanned, so a generic assignment on an added line is read as the line it is.
+/// The added lines of a unified diff. Only `+` lines count (never `-`, never a `+++` file header). The `+` is removed
+/// before the text is checked, and a `hivra-commit <sha>` line (the log's own marker) names the commit they belong to.
 fn added_lines(patch: &str) -> Vec<Added> {
     let mut out = Vec::new();
     let mut file = String::new();
+    let mut commit = String::new();
     let mut line_no = 0usize;
     let mut in_hunk = false;
     for raw in patch.lines() {
+        if let Some(sha) = raw.strip_prefix("hivra-commit ") {
+            commit = sha.trim().to_string();
+            in_hunk = false;
+            continue;
+        }
         if raw.starts_with("diff --git ") {
             in_hunk = false;
             file.clear();
@@ -283,6 +319,7 @@ fn added_lines(patch: &str) -> Vec<Added> {
                 file: file.clone(),
                 line: line_no,
                 text: text.to_string(),
+                commit: commit.clone(),
             });
             line_no += 1;
         } else if raw.starts_with(' ') || raw.is_empty() {
@@ -292,19 +329,32 @@ fn added_lines(patch: &str) -> Vec<Added> {
     out
 }
 
-/// Scans the added lines of a unified diff for secrets. The gate uses the scrubber's token-shape patterns and its
-/// assigned-value pattern (a key name, then 16 or more letters and digits); it does not use the looser assignment
-/// fallback that the export scan uses, which refused ordinary code (`let token = home.join("token");`). A private key
-/// block spans lines, so the added lines of each file are also scanned together for one. A line a person allowed
-/// (`allows`, for this repo `repo`) is not a finding.
-pub fn scan_patch_with(patch: &str, allows: &[Allow], repo: &str) -> Result<(), String> {
+/// A secret the check found: its file and line, the hash of the text it found (one line, or a whole private key
+/// block), and the commit it came from (empty when the check had no commit).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Finding {
+    pub file: String,
+    pub line: usize,
+    pub hash: String,
+    pub commit: String,
+}
+
+/// The first finding a person has not allowed. A line is found by its token shape or long assigned value; a private
+/// key is found by its whole block, so an allow for one key does not allow another in the same file (N5).
+fn check_patch(patch: &str, allows: &[Allow], repo: &str) -> Result<(), Finding> {
     let scrubber = crate::portable::scrubber();
     let added = added_lines(patch);
     for line in &added {
-        if !scrubber.findings(&line.text).is_empty()
-            && !is_allowed(allows, repo, &line.file, &line.text)
-        {
-            return Err(secret_refusal(&line.file, line.line));
+        if !scrubber.findings(&line.text).is_empty() {
+            let hash = line_hash(&line.text);
+            if !is_allowed(allows, repo, &line.file, &hash) {
+                return Err(Finding {
+                    file: line.file.clone(),
+                    line: line.line,
+                    hash,
+                    commit: line.commit.clone(),
+                });
+            }
         }
     }
     let mut by_file: BTreeMap<&str, Vec<&Added>> = BTreeMap::new();
@@ -312,26 +362,45 @@ pub fn scan_patch_with(patch: &str, allows: &[Allow], repo: &str) -> Result<(), 
         by_file.entry(line.file.as_str()).or_default().push(line);
     }
     for (file, lines) in by_file {
-        let block = lines
-            .iter()
-            .map(|line| line.text.as_str())
-            .collect::<Vec<_>>()
-            .join("\n");
-        if scrubber
-            .findings(&block)
-            .iter()
-            .any(|name| name == "Private key")
-        {
-            let first = lines
+        for start in 0..lines.len() {
+            if !lines[start].text.contains("-----BEGIN") {
+                continue;
+            }
+            let end = (start..lines.len())
+                .find(|&index| lines[index].text.contains("-----END"))
+                .unwrap_or(lines.len() - 1);
+            let block = lines[start..=end]
                 .iter()
-                .find(|line| line.text.contains("-----BEGIN"))
-                .unwrap_or(&lines[0]);
-            if !is_allowed(allows, repo, file, &first.text) {
-                return Err(secret_refusal(file, first.line));
+                .map(|line| line.text.as_str())
+                .collect::<Vec<_>>()
+                .join("\n");
+            if scrubber
+                .findings(&block)
+                .iter()
+                .any(|name| name == "Private key")
+            {
+                let hash = line_hash(&block);
+                if !is_allowed(allows, repo, file, &hash) {
+                    return Err(Finding {
+                        file: file.to_string(),
+                        line: lines[start].line,
+                        hash,
+                        commit: lines[start].commit.clone(),
+                    });
+                }
             }
         }
     }
     Ok(())
+}
+
+/// Scans the added lines of a unified diff with the given allows (for this repository `repo`). A line a person allowed
+/// is not a finding. Tests and the land path use it; the gates record each refusal they raise.
+pub fn scan_patch_with(patch: &str, allows: &[Allow], repo: &str) -> Result<(), String> {
+    check_patch(patch, allows, repo).map_err(|finding| {
+        let id = record_refusal(repo, &finding);
+        refusal_text(&finding, None, &id)
+    })
 }
 
 /// The same scan with no allows: what a patch looks like before any person has allowed a line.
@@ -339,13 +408,32 @@ pub fn scan_patch(patch: &str) -> Result<(), String> {
     scan_patch_with(patch, &[], "")
 }
 
-/// Scans commit messages the way the diff is scanned: a secret pasted into a message is a finding too. The message
-/// text is never shown; the refusal names the message and its line.
+/// The refusal a person reads. Its id is what the person's one Allow button names; the folder and commit say where.
+fn refusal_text(finding: &Finding, folder: Option<&str>, id: &str) -> String {
+    let at = folder
+        .filter(|folder| !folder.is_empty())
+        .map(|folder| format!(" in {folder}"))
+        .unwrap_or_default();
+    let commit = if finding.commit.is_empty() {
+        "none".to_string()
+    } else {
+        finding.commit.chars().take(12).collect()
+    };
+    format!(
+        "Possible secret in {}:{}{at} (commit {commit}, refusal {id}). The value is not shown. To go on, either remove it from the commit, add the file to this project's ignore file (after you say yes), or say it is a test value. Hivra does not edit any ignore file itself.",
+        finding.file, finding.line
+    )
+}
+
+/// Scans commit messages the way the diff is scanned: a secret pasted into a message is a finding too.
 fn scan_message(message: &str) -> Result<(), String> {
     let scrubber = crate::portable::scrubber();
     for (index, line) in message.lines().enumerate() {
         if !scrubber.findings(line).is_empty() {
-            return Err(secret_refusal("a commit message", index + 1));
+            return Err(plain_secret_refusal(&format!(
+                "a commit message:{}",
+                index + 1
+            )));
         }
     }
     if scrubber
@@ -353,17 +441,29 @@ fn scan_message(message: &str) -> Result<(), String> {
         .iter()
         .any(|name| name == "Private key")
     {
-        return Err(secret_refusal("a commit message", 1));
+        return Err(plain_secret_refusal("a commit message:1"));
     }
     Ok(())
 }
 
-/// Gates the commits named by `revs` (for example `HEAD --not --remotes=origin`). Merge commits are included: a merge
-/// reads as the change it makes against its first parent, remerged so conflict resolutions show. Binary-marked files
-/// are read as text (`--text`), so an attribute cannot hide them. The agent-file names and the added lines are checked.
+/// The file names being sent: a secret shape in a name is refused too. The name is not shown.
+fn scan_names(names: &[&str]) -> Result<(), String> {
+    let scrubber = crate::portable::scrubber();
+    for name in names {
+        if !scrubber.findings(name).is_empty() {
+            return Err(plain_secret_refusal("a file name (the name is not shown)"));
+        }
+    }
+    Ok(())
+}
+
+/// Gates the commits named by `revs` (for example `sha --not <tips>`). Merge commits are included, as remerged diffs.
+/// Binary-marked files are read as text, and the output is plain. The agent-file names, the file names and the added
+/// lines are checked, and a refusal is recorded under its id for the person's one Allow.
 pub fn gate_range(root: &Path, revs: &[&str]) -> Result<(), String> {
     let mut name_args = vec![
         "log",
+        "--no-color",
         "--format=",
         "--name-only",
         "--diff-filter=A",
@@ -373,14 +473,17 @@ pub fn gate_range(root: &Path, revs: &[&str]) -> Result<(), String> {
     ];
     name_args.extend_from_slice(revs);
     let names = git_checked_output(root, &name_args)?;
-    for path in names.split('\0').filter(|path| !path.is_empty()) {
+    let names: Vec<&str> = names.split('\0').filter(|path| !path.is_empty()).collect();
+    for path in &names {
         if let Some(kind) = agent_file_kind(path)? {
             return Err(refused_to_push(path, kind));
         }
     }
+    scan_names(&names)?;
     let mut patch_args = vec![
         "log",
-        "--format=",
+        "--no-color",
+        "--format=hivra-commit %H",
         "-p",
         "-U0",
         "--text",
@@ -391,11 +494,54 @@ pub fn gate_range(root: &Path, revs: &[&str]) -> Result<(), String> {
     ];
     patch_args.extend_from_slice(revs);
     let patch = git_checked_output(root, &patch_args)?;
-    scan_patch_with(&patch, &load_allows(), &repo_id(root))?;
-    let mut message_args = vec!["log", "--format=%B"];
+    check_patch(&patch, &load_allows(), &repo_id(root)).map_err(|finding| {
+        let folder = root.to_string_lossy().into_owned();
+        let id = record_refusal(&repo_id(root), &finding);
+        refusal_text(&finding, Some(&folder), &id)
+    })?;
+    let mut message_args = vec!["log", "--no-color", "--format=%B"];
     message_args.extend_from_slice(revs);
     let messages = git_checked_output(root, &message_args)?;
     scan_message(&messages)
+}
+
+/// The remote's tips as it advertises them now (`git ls-remote`), limited to commits this checkout has. The gate's
+/// base comes from here and never from local remote-tracking refs, which a checkout can write (N3).
+fn advertised_tips(root: &Path, remote: &str) -> Result<Vec<String>, String> {
+    let listed = checked_output_within(
+        root,
+        &["ls-remote", remote],
+        CHECK_TIMEOUT,
+        MAX_CHECKED_BYTES,
+    )?;
+    let mut tips = Vec::new();
+    for line in listed.lines() {
+        let Some(sha) = line.split_whitespace().next() else {
+            continue;
+        };
+        let hex = sha.chars().all(|c| c.is_ascii_hexdigit());
+        if hex && (sha.len() == 40 || sha.len() == 64) && object_exists(root, sha) {
+            tips.push(sha.to_string());
+        }
+    }
+    Ok(tips)
+}
+
+fn object_exists(root: &Path, sha: &str) -> bool {
+    git_out(root, &["cat-file", "-e", &format!("{sha}^{{commit}}")]).is_ok()
+}
+
+fn is_zero_sha(sha: &str) -> bool {
+    !sha.is_empty() && sha.chars().all(|c| c == '0')
+}
+
+/// Gates the commits reachable from `shas` that the remote does not advertise, for a push to `remote`.
+fn gate_pushed(root: &Path, remote: &str, shas: &[String]) -> Result<(), String> {
+    let tips = advertised_tips(root, remote)?;
+    let mut revs: Vec<&str> = shas.iter().map(String::as_str).collect();
+    revs.push("--not");
+    revs.extend(tips.iter().map(String::as_str));
+    gate_range(root, &revs)
 }
 
 /// The remote a push from this checkout goes to: the current branch's configured remote, or `origin`.
@@ -417,33 +563,77 @@ pub fn push_remote(root: &Path) -> String {
     "origin".to_string()
 }
 
-/// The gate before a push to `remote`: every commit that remote does not have yet, whichever other remote holds it.
+/// The gate before a push to `remote` of the given commits (the app's own push, a PR, a checked delivery).
 pub fn gate_outgoing_to(root: &Path, remote: &str) -> Result<(), String> {
-    let remotes = format!("--remotes={remote}");
-    gate_range(root, &["HEAD", "--not", &remotes])
+    let head = git_out(root, &["rev-parse", "HEAD"])?;
+    gate_pushed(root, remote, &[head.trim().to_string()])
 }
 
-/// The gate before a push, a pull request or a checked delivery from this checkout.
+/// The gate before the app's own push, a pull request or a checked delivery from this checkout.
 pub fn gate_outgoing(root: &Path) -> Result<(), String> {
     gate_outgoing_to(root, &push_remote(root))
 }
 
-/// The gate for a patch that is about to land into a project (text of the same change, not the binary form).
-pub fn scan_landing_patch(project: &Path, patch: &str) -> Result<(), String> {
-    if patch.len() > MAX_CHECKED_BYTES {
-        return Err(TOO_LARGE.into());
-    }
-    scan_patch_with(patch, &load_allows(), &repo_id(project))
-}
-
-/// What the pre-push hook checks: the same gate as the app's own push, to the remote git is pushing to.
+/// The pre-push check when git gives no list of refs (a manual run): every local branch and HEAD, so nothing that
+/// might be pushed is left unchecked (N2).
 pub fn pre_push_check(root: &Path, remote: &str) -> Result<(), String> {
-    gate_outgoing_to(root, remote)
+    let heads = git_out(
+        root,
+        &["for-each-ref", "--format=%(objectname)", "refs/heads"],
+    )?;
+    let mut shas: Vec<String> = heads
+        .lines()
+        .map(str::trim)
+        .filter(|sha| !sha.is_empty())
+        .map(str::to_string)
+        .collect();
+    if let Ok(head) = git_out(root, &["rev-parse", "--verify", "-q", "HEAD"]) {
+        shas.push(head.trim().to_string());
+    }
+    if shas.is_empty() {
+        return Ok(());
+    }
+    gate_pushed(root, remote, &shas)
 }
 
-/// The `pre-push-guard` subcommand, run by a crew's pre-push hook in the repository (`$1` is the remote). Prints the
-/// refusal on stderr and exits 1; exits 0 when the push may go on. Reads nothing from stdin.
+/// The pre-push check of what git is really sending: each `<local ref> <local sha> <remote ref> <remote sha>` line
+/// on stdin is checked, so `git push origin leak`, `--all` and `<sha>:refs/heads/x` are covered whatever HEAD is (N2).
+pub fn pre_push_stdin_check(root: &Path, remote: &str, stdin: &str) -> Result<(), String> {
+    if stdin.trim().is_empty() {
+        return pre_push_check(root, remote);
+    }
+    let mut shas = Vec::new();
+    for line in stdin.lines().filter(|line| !line.trim().is_empty()) {
+        let parts: Vec<&str> = line.split_whitespace().collect();
+        if parts.len() != 4 {
+            return Err(UNREADABLE_PUSH.into());
+        }
+        if !is_zero_sha(parts[1]) {
+            shas.push(parts[1].to_string());
+        }
+    }
+    if shas.is_empty() {
+        return Ok(());
+    }
+    gate_pushed(root, remote, &shas)
+}
+
+/// The `pre-push-guard` subcommand, run by a crew's pre-push hook in the repository. Arguments: the remote, then
+/// `--store <path>` (the app's allow list). Reads git's ref lines from stdin. Prints the refusal on stderr and exits 1.
 pub fn pre_push_main(args: &[String]) -> i32 {
+    let mut remote: Option<String> = None;
+    let mut store: Option<String> = None;
+    let mut rest = args.iter();
+    while let Some(arg) = rest.next() {
+        if arg == "--store" {
+            store = rest.next().cloned();
+        } else if remote.is_none() {
+            remote = Some(arg.clone());
+        }
+    }
+    if let Some(path) = store {
+        set_allow_store(PathBuf::from(path));
+    }
     let cwd = match std::env::current_dir() {
         Ok(cwd) => cwd,
         Err(error) => {
@@ -451,11 +641,15 @@ pub fn pre_push_main(args: &[String]) -> i32 {
             return 1;
         }
     };
-    let remote = match args.first().filter(|remote| !remote.is_empty()) {
-        Some(remote) => remote.clone(),
-        None => push_remote(&cwd),
-    };
-    match pre_push_check(&cwd, &remote) {
+    let remote = remote
+        .filter(|remote| !remote.is_empty())
+        .unwrap_or_else(|| push_remote(&cwd));
+    let mut stdin = String::new();
+    if std::io::stdin().read_to_string(&mut stdin).is_err() {
+        eprintln!("{UNREADABLE_PUSH}");
+        return 1;
+    }
+    match pre_push_stdin_check(&cwd, &remote, &stdin) {
         Ok(()) => 0,
         Err(why) => {
             eprintln!("{why}");
@@ -464,30 +658,82 @@ pub fn pre_push_main(args: &[String]) -> i32 {
     }
 }
 
+/// The gate for a patch that is about to land into a project (the text of the same change, not the binary form).
+pub fn scan_landing_patch(project: &Path, patch: &str) -> Result<(), String> {
+    if patch.len() > MAX_CHECKED_BYTES {
+        return Err(TOO_LARGE.into());
+    }
+    check_patch(patch, &load_allows(), &repo_id(project)).map_err(|finding| {
+        let folder = project.to_string_lossy().into_owned();
+        let id = record_refusal(&repo_id(project), &finding);
+        refusal_text(&finding, Some(&folder), &id)
+    })
+}
+
 // ---- person-approved allows ------------------------------------------------------------------------------------------
 
-/// Where person-approved allows are kept: the app's own data folder, which no agent's repository reaches. The app
-/// sets it at startup; with no store, nothing is allowed.
-static ALLOW_STORE: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+/// Where person-approved allows are kept: the app's own data folder, which no agent's repository reaches. The app and
+/// the pre-push guard set it; with no store, nothing is allowed.
+static ALLOW_STORE: OnceLock<PathBuf> = OnceLock::new();
 
-pub fn set_allow_store(path: std::path::PathBuf) {
+pub fn set_allow_store(path: PathBuf) {
     let _ = ALLOW_STORE.set(path);
 }
 
-/// One line a person allowed: the repository (a hash of its path), the file, and a hash of the line's text.
+/// One line a person allowed: the repository (a hash of its canonical path), the file, the hash of the text, and a
+/// signature over those three (an HMAC with the app's Keychain key). An entry without a valid signature is not used.
 #[derive(serde::Serialize, serde::Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct Allow {
     pub repo: String,
     pub file: String,
     pub hash: String,
-    /// The entry's signature (HMAC with the app's Keychain key). An entry without a valid one is not honoured.
     #[serde(default)]
     pub mac: String,
 }
 
-/// Proof that a person chose the allow in the app's UI. Only this module builds one, in the Tauri command below; no
-/// MCP tool, CLI subcommand or agent path can, so an agent cannot set an allow.
+/// Proof that a person chose the allow in the app's UI. Only this module builds one, in the Tauri commands below.
 pub struct PersonChoice(());
+
+#[cfg(not(test))]
+const KEY_SERVICE: &str = "monocode-hub:commit-guard";
+#[cfg(not(test))]
+const KEY_ACCOUNT: &str = "allow-key";
+
+/// The app's allow key from the Keychain (a dev copy uses its own service name). None when it is missing or cannot be
+/// read, and then nothing is allowed. Tests never reach the Keychain: they pass their own key.
+#[cfg(not(test))]
+fn allow_key() -> Option<Vec<u8>> {
+    crate::hub_keychain::read(KEY_SERVICE, KEY_ACCOUNT)
+        .ok()
+        .flatten()
+        .filter(|key| !key.is_empty())
+        .map(String::into_bytes)
+}
+
+#[cfg(test)]
+fn allow_key() -> Option<Vec<u8>> {
+    None
+}
+
+/// The allow key, created on the first allow a person makes.
+#[cfg(not(test))]
+fn allow_key_or_create() -> Result<Vec<u8>, String> {
+    if let Some(key) = allow_key() {
+        return Ok(key);
+    }
+    let key = format!(
+        "{}{}",
+        uuid::Uuid::new_v4().simple(),
+        uuid::Uuid::new_v4().simple()
+    );
+    crate::hub_keychain::store(KEY_SERVICE, KEY_ACCOUNT, &key)?;
+    Ok(key.into_bytes())
+}
+
+#[cfg(test)]
+fn allow_key_or_create() -> Result<Vec<u8>, String> {
+    Err("tests pass their own key".into())
+}
 
 fn digest(text: &str) -> String {
     use sha2::{Digest, Sha256};
@@ -507,26 +753,79 @@ fn line_hash(text: &str) -> String {
     digest(text)
 }
 
-fn is_allowed(allows: &[Allow], repo: &str, file: &str, text: &str) -> bool {
-    let hash = line_hash(text);
+/// HMAC-SHA256 (RFC 2104) over sha2, in hex.
+fn hmac_hex(key: &[u8], message: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    let mut block = [0u8; 64];
+    if key.len() > 64 {
+        block[..32].copy_from_slice(&Sha256::digest(key));
+    } else {
+        block[..key.len()].copy_from_slice(key);
+    }
+    let ipad: Vec<u8> = block.iter().map(|byte| byte ^ 0x36).collect();
+    let opad: Vec<u8> = block.iter().map(|byte| byte ^ 0x5c).collect();
+    let inner = Sha256::new()
+        .chain_update(&ipad)
+        .chain_update(message)
+        .finalize();
+    let outer = Sha256::new()
+        .chain_update(&opad)
+        .chain_update(inner)
+        .finalize();
+    outer.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+fn signature(key: &[u8], allow: &Allow) -> String {
+    hmac_hex(
+        key,
+        format!("{}\n{}\n{}", allow.repo, allow.file, allow.hash).as_bytes(),
+    )
+}
+
+fn signed(key: &[u8], mut allow: Allow) -> Allow {
+    allow.mac = signature(key, &allow);
+    allow
+}
+
+fn is_allowed(allows: &[Allow], repo: &str, file: &str, hash: &str) -> bool {
     allows
         .iter()
         .any(|allow| allow.repo == repo && allow.file == file && allow.hash == hash)
 }
 
-/// The allows on disk. A store that is missing or does not parse allows nothing: every finding stays refused.
+/// The entries that carry a valid signature for `key`. Anything else (hand-written, changed, unsigned) is dropped.
+fn verified(entries: Vec<Allow>, key: &[u8]) -> Vec<Allow> {
+    entries
+        .into_iter()
+        .filter(|allow| !allow.mac.is_empty() && allow.mac == signature(key, allow))
+        .collect()
+}
+
+fn read_raw(path: &Path) -> Vec<Allow> {
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|text| serde_json::from_str(&text).ok())
+        .unwrap_or_default()
+}
+
+/// The allows in `path` that carry a valid signature for `key`.
+fn read_allows_with(path: &Path, key: &[u8]) -> Vec<Allow> {
+    verified(read_raw(path), key)
+}
+
+/// The allows on disk, verified with the app's key. With no key, nothing is allowed.
+fn read_allows(path: &Path) -> Vec<Allow> {
+    match allow_key() {
+        Some(key) => read_allows_with(path, &key),
+        None => Vec::new(),
+    }
+}
+
 fn load_allows() -> Vec<Allow> {
     match ALLOW_STORE.get() {
         Some(path) => read_allows(path),
         None => Vec::new(),
     }
-}
-
-fn read_allows(path: &Path) -> Vec<Allow> {
-    std::fs::read_to_string(path)
-        .ok()
-        .and_then(|text| serde_json::from_str(&text).ok())
-        .unwrap_or_default()
 }
 
 fn write_allows(path: &Path, allows: &[Allow]) -> Result<(), String> {
@@ -539,55 +838,100 @@ fn write_allows(path: &Path, allows: &[Allow]) -> Result<(), String> {
     std::fs::rename(&temp, path).map_err(|e| e.to_string())
 }
 
-/// The text of a line in the repository's HEAD: what a refusal's `file:line` points at now.
-fn head_line(root: &Path, file: &str, line: usize) -> Result<String, String> {
-    let text = git_out(root, &["show", &format!("HEAD:{file}")])?;
-    text.lines()
-        .nth(line.saturating_sub(1))
-        .map(str::to_string)
-        .ok_or_else(|| format!("{file} has no line {line} at HEAD"))
+/// A refusal the gates raised, kept in the app's memory under its id. The person's Allow names the id, and only that.
+#[derive(Clone, Debug)]
+struct Refusal {
+    id: String,
+    repo: String,
+    file: String,
+    hash: String,
 }
 
-/// Records a person's allow for one flagged line in `store`. The line's text is read from HEAD, so the allow matches
-/// only that exact line of that exact file in that repository.
-fn allow_finding_in(store: &Path, repo: &Path, file: &str, line: usize) -> Result<(), String> {
-    let text = head_line(repo, file, line)?;
-    let mut allows = read_allows(store);
-    let allow = Allow {
-        repo: repo_id(repo),
-        file: file.to_string(),
-        hash: line_hash(&text),
-        mac: String::new(),
-    };
-    if !allows.contains(&allow) {
-        allows.push(allow);
+static REFUSALS: Mutex<Vec<Refusal>> = Mutex::new(Vec::new());
+const MAX_REFUSALS: usize = 200;
+
+fn refusal_id(repo: &str, finding: &Finding) -> String {
+    digest(&format!(
+        "{repo}\n{}\n{}\n{}\n{}",
+        finding.file, finding.line, finding.hash, finding.commit
+    ))
+    .chars()
+    .take(12)
+    .collect()
+}
+
+/// Records a refusal and returns its id. The same finding gets the same id.
+fn record_refusal(repo: &str, finding: &Finding) -> String {
+    let id = refusal_id(repo, finding);
+    if let Ok(mut refusals) = REFUSALS.lock() {
+        if !refusals.iter().any(|known| known.id == id) {
+            refusals.push(Refusal {
+                id: id.clone(),
+                repo: repo.to_string(),
+                file: finding.file.clone(),
+                hash: finding.hash.clone(),
+            });
+            let excess = refusals.len().saturating_sub(MAX_REFUSALS);
+            refusals.drain(..excess);
+        }
     }
-    write_allows(store, &allows)
+    id
 }
 
-/// Removes one allow from `store`. Nothing else in the list changes.
-fn remove_allow_in(store: &Path, allow: &Allow) -> Result<(), String> {
-    let allows: Vec<Allow> = read_allows(store)
-        .into_iter()
-        .filter(|kept| kept != allow)
-        .collect();
-    write_allows(store, &allows)
+fn find_refusal(id: &str) -> Option<Refusal> {
+    REFUSALS
+        .lock()
+        .ok()?
+        .iter()
+        .find(|refusal| refusal.id == id)
+        .cloned()
 }
 
-fn store_path() -> Result<&'static std::path::PathBuf, String> {
+fn store_path() -> Result<&'static PathBuf, String> {
     ALLOW_STORE
         .get()
         .ok_or_else(|| "the allow list has no folder yet".to_string())
 }
 
-/// Records a person's allow for one flagged line (the app's UI, through `commit_guard_allow`).
-pub fn allow_finding(
-    _choice: PersonChoice,
-    repo: &Path,
-    file: &str,
-    line: usize,
-) -> Result<(), String> {
-    allow_finding_in(store_path()?, repo, file, line)
+/// Records a person's allow for the refusal `id`, signed with `key`. The entry is the refusal's own repository, file
+/// and text hash, so it allows exactly the text that was refused, not whatever the file says now.
+fn allow_refusal_with(store: &Path, id: &str, key: &[u8]) -> Result<(), String> {
+    let refusal = find_refusal(id)
+        .ok_or_else(|| "That refusal is no longer on record. Run the check again.".to_string())?;
+    if refusal.repo.is_empty() {
+        return Err("That refusal has no repository to allow it for.".into());
+    }
+    let entry = signed(
+        key,
+        Allow {
+            repo: refusal.repo,
+            file: refusal.file,
+            hash: refusal.hash,
+            mac: String::new(),
+        },
+    );
+    let mut allows = read_allows_with(store, key);
+    if !allows.contains(&entry) {
+        allows.push(entry);
+    }
+    write_allows(store, &allows)
+}
+
+/// Allows one refusal from the app's UI (the person's one Allow button, by id).
+pub fn allow_refusal(_choice: PersonChoice, id: &str) -> Result<(), String> {
+    let key = allow_key_or_create()?;
+    allow_refusal_with(store_path()?, id, &key)
+}
+
+/// Removes one allow. Removal reads the list as it is (it cannot grant anything), so an unsigned entry can be removed.
+fn remove_allow_in(store: &Path, allow: &Allow) -> Result<(), String> {
+    let kept: Vec<Allow> = read_raw(store)
+        .into_iter()
+        .filter(|entry| {
+            !(entry.repo == allow.repo && entry.file == allow.file && entry.hash == allow.hash)
+        })
+        .collect();
+    write_allows(store, &kept)
 }
 
 /// Removes an allow (the app's UI, through `commit_guard_remove`).
@@ -595,15 +939,12 @@ pub fn remove_allow(_choice: PersonChoice, allow: &Allow) -> Result<(), String> 
     remove_allow_in(store_path()?, allow)
 }
 
-/// Allows one flagged line from the app's UI (registered in lib.rs; the webview calls it from a direct click).
+/// Allows one refusal from the app's UI. The webview names the id it was shown and nothing else.
 #[tauri::command]
-pub async fn commit_guard_allow(repo: String, file: String, line: usize) -> Result<(), String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        let root = crate::fs::expand_home(&repo);
-        allow_finding(PersonChoice(()), &root, &file, line)
-    })
-    .await
-    .map_err(|e| e.to_string())?
+pub async fn commit_guard_allow(id: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || allow_refusal(PersonChoice(()), &id))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 /// The allows on record, for the Settings list. Holds a repository's id, not its path.

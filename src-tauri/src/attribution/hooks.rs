@@ -859,23 +859,37 @@ fn forwarder_script(real: &str) -> Result<String, String> {
 /// included) and refuses it with its own line; then the repository's own pre-push hook runs, if it has one. `guard` is
 /// this app's binary, so a crew's shell push meets the same rules as the app's own push. Git passes the remote name as
 /// `$1`; the stdin of a push is left for the repository's hook.
-pub(crate) fn pre_push_script(guard: &str, real: Option<&str>) -> Result<String, String> {
+pub(crate) fn pre_push_script(
+    guard: &str,
+    real: Option<&str>,
+    store: &str,
+) -> Result<String, String> {
     let guard = shell_quote(guard).ok_or_else(|| refuse("pre-push: guard path has a NUL"))?;
+    let store = shell_quote(store).ok_or_else(|| refuse("pre-push: allow list path has a NUL"))?;
     let real = match real {
         Some(path) => shell_quote(path).ok_or_else(|| refuse("pre-push: hook path has a NUL"))?,
         None => "''".to_string(),
     };
+    // WP-200 (N2): git's ref list is kept in a file, the guard reads it, and the repository's own hook gets the same
+    // list. The allow list is the app's own, passed on the command line.
     Ok(format!(
         "#!/bin/sh\n\
          # SPDX-License-Identifier: Apache-2.0\n\
-         # Hivra WP-200. Checks what this push sends before git sends it. Then runs the\n\
+         # Hivra WP-200. Checks what this push sends (the refs git gives on stdin) before git sends it. Then runs the\n\
          # repository's own pre-push hook, whose path was resolved when the crew started.\n\
          guard={guard}\n\
+         store={store}\n\
          real_hook={real}\n\
-         \"$guard\" pre-push-guard \"$1\" || exit 1\n\
+         refs=\"$(mktemp \"${{TMPDIR:-/tmp}}/hivra-pre-push.XXXXXX\")\" || exit 1\n\
+         cat > \"$refs\"\n\
+         \"$guard\" pre-push-guard \"$1\" --store \"$store\" < \"$refs\" || {{ rm -f \"$refs\"; exit 1; }}\n\
          if [ {test} \"$real_hook\" ]; then\n\
-         \texec \"$real_hook\" \"$@\"\n\
+         \t\"$real_hook\" \"$@\" < \"$refs\"\n\
+         \tstatus=$?\n\
+         \trm -f \"$refs\"\n\
+         \texit $status\n\
          fi\n\
+         rm -f \"$refs\"\n\
          exit 0\n",
         test = hook_test()
     ))
@@ -1026,11 +1040,15 @@ pub(crate) fn install_for_repo_with(
         .iter()
         .find(|hook| hook.name == PRE_PUSH)
         .map(|hook| hook.path.as_str());
+    let store = root.join("commit-guard-allows.json");
+    let store = store
+        .to_str()
+        .ok_or_else(|| refuse("commit guard: the allow list path is not text"))?;
     install_one(
         &root,
         &dir,
         PRE_PUSH,
-        &pre_push_script(guard, real_pre_push)?,
+        &pre_push_script(guard, real_pre_push, store)?,
     )?;
     let mut keep = BTreeSet::new();
     keep.insert(PREPARE.to_string());

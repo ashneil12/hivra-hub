@@ -718,7 +718,7 @@ function ChangedFiles({
     >
       {guardRefusal ? (
         <div className="shrink-0 border-b px-3 py-2">
-          <CommitGuardRefusal message={guardRefusal} repo={cwd} />
+          <CommitGuardRefusal message={guardRefusal} />
           <button
             type="button"
             className="mt-1 text-xs underline"

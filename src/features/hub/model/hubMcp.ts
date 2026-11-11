@@ -14,7 +14,7 @@
 //   --project <key>…` entry per connector its projects (and its own choices) allow. No login is in them: the launcher
 //   re-checks the rules and reads the login from the Keychain when Claude Code starts it.
 import { setClaudeGuardArgs } from "../../../integrations/harness/providers/claude/claudeExtraArgs";
-import { GIT_HOOK_DENY_RULES, HUB_DB_DENY_RULES, SECRET_ACTION_DENY_RULES } from "../../../integrations/harness/core/credentialGuard";
+import { GIT_HOOK_DENY_RULES, GUARD_STORE_DENY_RULES, HUB_DB_DENY_RULES, SECRET_ACTION_DENY_RULES } from "../../../integrations/harness/core/credentialGuard";
 import { canLead, codexLeadServer } from "../../firstmate/model/leadCli";
 
 /** The checker's Mono id (the studio's tests and lanes use it; hubChecker.ts makes the Mono). */
@@ -111,7 +111,7 @@ export const ASH_OS_DENIED_TOOLS = ["mcp__ash-os"];
 
 /** Everything every hub chat is denied: edits in the Monos' home, the old Mono copy, Ash's own Ash OS server (WP-04), reading a saved login by hand, the hub's database (r67), and any secret action (r69). */
 export function chatDeniedTools(): string[] {
-  return [...monoHomeDeniedTools(), ...OLD_MONO_COPY_DENIED_TOOLS, ...ASH_OS_DENIED_TOOLS, ...CREDENTIAL_DENIED_TOOLS, ...HUB_DB_DENY_RULES, ...SECRET_ACTION_DENY_RULES, ...GIT_HOOK_DENY_RULES];
+  return [...monoHomeDeniedTools(), ...OLD_MONO_COPY_DENIED_TOOLS, ...ASH_OS_DENIED_TOOLS, ...CREDENTIAL_DENIED_TOOLS, ...HUB_DB_DENY_RULES, ...SECRET_ACTION_DENY_RULES, ...GIT_HOOK_DENY_RULES, ...GUARD_STORE_DENY_RULES];
 }
 
 /** Where the Monos' homes are: the daily home as written (`~/...`) and this copy's own, absolute, once known. */

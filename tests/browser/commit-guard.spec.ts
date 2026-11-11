@@ -2,12 +2,12 @@ import { expect, test } from "@playwright/test";
 
 test("a refused secret names its line, and one click allows that line", async ({ page }) => {
   await page.goto("/tests/browser/commit-guard.html");
-  await expect(page.getByText("Blocked: a possible secret is on line 12 of src/config.rs.")).toBeVisible();
+  await expect(page.getByText("Blocked: a possible secret is on line 12 of src/config.rs in /srv/project (commit 1a2b3c4d5e6f).")).toBeVisible();
   await expect(page.getByText("The value is not shown.").first()).toBeVisible();
   await page.getByRole("button", { name: "Allow this line" }).first().click();
   await expect(page.getByText("Allowed. The next push checks this line again and lets it through.")).toBeVisible();
   const calls = await page.evaluate(() => (window as unknown as { __allowCalls: unknown[] }).__allowCalls);
-  expect(calls).toEqual([{ repo: "/srv/project", file: "src/config.rs", line: 12 }]);
+  expect(calls).toEqual([{ id: "0123456789ab" }]);
 });
 
 test("a commit message finding has no allow button, since it has no file line", async ({ page }) => {
@@ -35,5 +35,5 @@ test("a card's link hands the refusal to the source-control panel", async ({ pag
   await page.goto("/tests/browser/commit-guard.html");
   await page.getByRole("button", { name: "Open in source control" }).click();
   const opened = await page.evaluate(() => (window as unknown as { __opened: string[] }).__opened);
-  expect(opened).toEqual(["Possible secret in src/config.rs:12. The value is not shown."]);
+  expect(opened).toEqual(["Possible secret in src/config.rs:12 in /srv/project (commit 1a2b3c4d5e6f, refusal 0123456789ab). The value is not shown."]);
 });

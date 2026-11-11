@@ -42,15 +42,42 @@ const GIT_HOOK_SKIP: readonly RegExp[] = [
   /\bgit\b[^;&|\n]*--config-env\b/i,
 ];
 
-/** The reason a command skips a git hook, or undefined. */
+/**
+ * The reason a command skips a git hook, or undefined. The command is read twice: as typed, and with its quotes taken
+ * out, since the shell joins `--'no-verify'` and `core.hooks''Path` back into one word. A flag named through a variable
+ * (`V=--no-verify; git push $V`), a clean environment (`env -i`) and `git send-pack` are held as well (N4).
+ */
 export function gitHookSkipBlock(command?: string): string | undefined {
   if (!command) return undefined;
-  return GIT_HOOK_SKIP.some((pattern) => pattern.test(command)) ? GIT_HOOK_BLOCK_MESSAGE : undefined;
+  const plain = command.replace(/["'\\`]/g, "");
+  if (GIT_HOOK_SKIP.some((pattern) => pattern.test(command) || pattern.test(plain))) return GIT_HOOK_BLOCK_MESSAGE;
+  if (/\bgit\b/.test(plain) && /no-v[a-z]*/i.test(plain)) return GIT_HOOK_BLOCK_MESSAGE;
+  if (/\bgit\b/.test(plain) && /\benv\b[^;&|\n]*\s-[i-]\b/.test(plain)) return GIT_HOOK_BLOCK_MESSAGE;
+  if (/\bgit\b/.test(plain) && /\bsend-pack\b/.test(plain)) return GIT_HOOK_BLOCK_MESSAGE;
+  return undefined;
 }
+
+/** What an agent reads back when it tries to write the commit guard's allow list or the crew hooks. */
+export const GUARD_STORE_BLOCK_MESSAGE =
+  "Blocked by MonoCode: the commit guard's allow list and its crew hooks are the app's own, and agents never write them. Don't retry it or look for another way. If a check refuses, read its line and ask Ash on its own line: \"Needs Ash (provide): <what the check refused and why>\".";
+
+/** Deny rules for the allow list and the crew hooks folder, in the app's data folder (every Claude process carries them). */
+export const GUARD_STORE_DENY_RULES: readonly string[] = [
+  "Edit(~/Library/Application Support/com.ash.monocode-hub*/commit-guard-allows*)",
+  "Write(~/Library/Application Support/com.ash.monocode-hub*/commit-guard-allows*)",
+  "Edit(~/Library/Application Support/com.ash.monocode-hub*/attribution/**)",
+  "Write(~/Library/Application Support/com.ash.monocode-hub*/attribution/**)",
+  "Bash(*commit-guard-allows*)",
+  "Bash(*monocode-hub*attribution/*)",
+];
+
+/** A path or command that names the allow list or the crew hooks folder. */
+const GUARD_STORE = /commit-guard-allows|monocode-hub[^\s"'`;|&]*\/attribution(?:\/|\b)/i;
 
 /** Claude Code permission rules, passed as --disallowedTools; deny rules hold even in bypass mode. */
 export const CREDENTIAL_DENY_RULES: readonly string[] = [
   ...GIT_HOOK_DENY_RULES,
+  ...GUARD_STORE_DENY_RULES,
   "Bash(security find-generic-password:*)",
   "Bash(security find-internet-password:*)",
   "Bash(security find-certificate:*)",
@@ -128,6 +155,8 @@ export function credentialBlock(
   home ??= cwd?.match(/^\/(?:Users|home)\/[^/]+/)?.[0];
   const hookSkip = gitHookSkipBlock(call.command);
   if (hookSkip) return hookSkip;
+  const texts0 = [call.command ?? "", ...(call.paths ?? [])];
+  if (texts0.some((text) => GUARD_STORE.test(text))) return GUARD_STORE_BLOCK_MESSAGE;
   const secret = secretActionBlock(call.command);
   if (secret) return secret;
   const texts = [call.command ?? "", ...(call.paths ?? [])].filter(Boolean);
