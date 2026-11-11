@@ -484,6 +484,7 @@ pub fn profile_with_checkouts(
 
 /// The profile the app's own git runs under. It has the same denies except `.git`, so `git status` can write the index.
 /// A filter git still runs is inside this profile, and cannot reach the secret places or the data folder.
+#[cfg_attr(all(test, not(unix)), allow(dead_code))]
 pub fn container_profile(home: &Path, data_dir: Option<&Path>) -> Result<String, String> {
     profile_scoped(home, data_dir, &[], false)
 }
@@ -1368,6 +1369,7 @@ mod tests {
 
     /// The places named before the shared list held them (the old `agentSecretPaths.json`). Each must still be denied,
     /// so a drop from the shared list turns this red.
+    #[cfg(unix)]
     const PREVIOUSLY_LISTED_DIRS: &[&str] = &[
         ".ssh",
         ".gnupg",
@@ -1385,7 +1387,9 @@ mod tests {
         ".config/sops",
         "Library/Keychains",
     ];
+    #[cfg(unix)]
     const PREVIOUSLY_LISTED_FILES: &[&str] = &[".netrc", ".npmrc", ".pypirc", ".git-credentials"];
+    #[cfg(unix)]
     const PREVIOUSLY_LISTED_SHELL_PROFILES: &[&str] = &[
         ".zshrc",
         ".zprofile",
@@ -1396,6 +1400,7 @@ mod tests {
         ".profile",
         ".config/fish/config.fish",
     ];
+    #[cfg(unix)]
     const PREVIOUSLY_LISTED_CLI_LOGIN_FILES: &[&str] = &[
         ".claude.json",
         ".claude/.credentials.json",
@@ -1404,6 +1409,7 @@ mod tests {
 
     /// Whether the profile's deny lines refuse `op` on `path`, evaluated with the `regex` crate (the patterns use only
     /// `^ $ [] () | \.`, which mean the same in SBPL's regex engine).
+    #[cfg(unix)]
     fn denies(profile: &str, op: &str, path: &str) -> bool {
         profile.lines().any(|line| {
             let line = line.trim();
@@ -2776,7 +2782,7 @@ mod tests {
 /// Review r3 repro tests for PR #208. Each states a property the profile should hold and is red at 4417a9621. The
 /// evaluator reads `regex`, `literal` and `subpath` filters, and takes any `file-write…` operation (a rename is checked
 /// as a write on the source and the target, never on the files inside a renamed folder).
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod review_r3_repro {
     use super::*;
 
