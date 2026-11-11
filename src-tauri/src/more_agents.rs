@@ -305,15 +305,25 @@ pub(crate) fn set_enabled(data_dir: &Path, on: bool) -> Result<(), String> {
 pub(crate) const FILE_ARG_REFUSED: &str =
     "A file named in the arguments must exist and be a file, given by its absolute path. A folder is not pinned.";
 
-/// The text an argument may carry a path in: the argument itself, the part after `=` or a flag colon, or the rest of
-/// a short flag. A Windows drive colon (`C:\foo`) is not a flag colon.
+/// The text an argument may carry a path in: the argument itself, the part after `=` or a flag colon, both sides when
+/// a colon flag also has `=options` (`-javaagent:jar=opts`), or the rest of a short flag. A Windows drive colon
+/// (`C:\foo`) is not a flag colon.
 fn candidates(arg: &str) -> Vec<&str> {
     if !arg.starts_with('-') {
         return vec![arg];
     }
     let mut out = Vec::new();
-    if let Some(at) = value_separator(arg) {
-        out.push(&arg[at + 1..]);
+    if let Some(parts) = flag_parts(arg) {
+        if let Some(eq) = parts.eq {
+            if let Some(middle) = arg.get(parts.at + 1..eq) {
+                out.push(middle);
+            }
+            if let Some(tail) = arg.get(eq + 1..) {
+                out.push(tail);
+            }
+        } else if let Some(value) = arg.get(parts.at + 1..) {
+            out.push(value);
+        }
     }
     if arg.len() > 2 && !arg.starts_with("--") {
         if let Some(value) = arg.get(2..) {
@@ -323,14 +333,36 @@ fn candidates(arg: &str) -> Vec<&str> {
     out
 }
 
-/// Index of `=`, or of the colon that separates a flag from its value. A drive colon is skipped.
-fn value_separator(arg: &str) -> Option<usize> {
-    if let Some(at) = arg.find('=') {
-        return Some(at);
-    }
+/// Where a flag's value starts. A colon that comes before `=` splits the file from its options
+/// (`-javaagent:/file.jar=opts`): both the middle and the tail are values. Otherwise the value is the text after
+/// `=` or after the colon. A drive colon is skipped.
+struct FlagParts {
+    at: usize,
+    /// A later `=` when `at` is a colon. `None` when the only separator is `=` or a colon.
+    eq: Option<usize>,
+}
+
+fn flag_parts(arg: &str) -> Option<FlagParts> {
     if !arg.starts_with('-') {
         return None;
     }
+    let colon = first_nondrive_colon(arg);
+    let eq = arg.find('=');
+    match (colon, eq) {
+        (Some(colon), Some(eq)) if colon < eq => Some(FlagParts {
+            at: colon,
+            eq: Some(eq),
+        }),
+        (Some(colon), None) => Some(FlagParts {
+            at: colon,
+            eq: None,
+        }),
+        (_, Some(eq)) => Some(FlagParts { at: eq, eq: None }),
+        (None, None) => None,
+    }
+}
+
+fn first_nondrive_colon(arg: &str) -> Option<usize> {
     let bytes = arg.as_bytes();
     let mut from = 0;
     while let Some(rel) = bytes[from..].iter().position(|&byte| byte == b':') {
@@ -520,9 +552,9 @@ fn fold_path(value: &str) -> Cow<'_, str> {
     }
 }
 
-/// One argument as the child will get it, and the absolute files it names (whole, after `=` or a flag colon, a short
-/// flag's value, a leading `@`, or the file a `file:` URL names). The pin is the path without `@`. The child still
-/// sees the `@`.
+/// One argument as the child will get it, and the absolute files it names (whole, after `=` or a flag colon, both the
+/// file and the options when a colon flag has `=options`, a short flag's value, a leading `@`, or the file a `file:`
+/// URL names). The pin is the path without `@`. The child still sees the `@`.
 fn pin_arg(arg: &str) -> Result<(String, Vec<String>), String> {
     if !arg.starts_with('-') {
         if let Some((text, pins)) = rewrite_pinned(arg)? {
@@ -530,12 +562,22 @@ fn pin_arg(arg: &str) -> Result<(String, Vec<String>), String> {
         }
         return Ok((arg.to_string(), Vec::new()));
     }
-    if let Some(at) = value_separator(arg) {
-        let head = &arg[..at];
-        let sep = &arg[at..at + 1];
-        let value = &arg[at + 1..];
-        if let Some((body, pins)) = rewrite_pinned(value)? {
-            return Ok((format!("{head}{sep}{body}"), pins));
+    if let Some(parts) = flag_parts(arg) {
+        let head = &arg[..parts.at];
+        let sep = arg.get(parts.at..parts.at + 1).unwrap_or("");
+        if let Some(eq) = parts.eq {
+            let middle = arg.get(parts.at + 1..eq).unwrap_or("");
+            let tail = arg.get(eq + 1..).unwrap_or("");
+            let (middle_body, mut pins) = rewrite_or_same(middle)?;
+            let (tail_body, tail_pins) = rewrite_or_same(tail)?;
+            pins.extend(tail_pins);
+            if !pins.is_empty() {
+                return Ok((format!("{head}{sep}{middle_body}={tail_body}"), pins));
+            }
+        } else if let Some(value) = arg.get(parts.at + 1..) {
+            if let Some((body, pins)) = rewrite_pinned(value)? {
+                return Ok((format!("{head}{sep}{body}"), pins));
+            }
         }
     }
     if arg.len() > 2 && !arg.starts_with("--") {
@@ -546,6 +588,15 @@ fn pin_arg(arg: &str) -> Result<(String, Vec<String>), String> {
         }
     }
     Ok((arg.to_string(), Vec::new()))
+}
+
+/// `rewrite_pinned`, or the value unchanged when it names no absolute file.
+fn rewrite_or_same(value: &str) -> Result<(String, Vec<String>), String> {
+    if let Some((body, pins)) = rewrite_pinned(value)? {
+        Ok((body, pins))
+    } else {
+        Ok((value.to_string(), Vec::new()))
+    }
 }
 
 /// The canonical file `value` names, with any leading `@` kept in front. `None` when it is not an absolute file.

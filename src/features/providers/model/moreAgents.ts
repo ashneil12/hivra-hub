@@ -171,11 +171,19 @@ function isInterpreter(command: string): boolean {
   return INTERPRETERS.includes(name) || name.startsWith("python");
 }
 
-/** Index of `=`, or of the colon that separates a flag from its value. A Windows drive colon is not that colon. */
-function valueSeparator(arg: string): number {
+/** Where a flag's value starts. A colon before `=` (`-javaagent:jar=opts`) yields both sides. Otherwise the value is
+ *  the text after `=` or after the colon. `eq` is -1 when there is no second side. A Windows drive colon is not a
+ *  flag colon. */
+function flagParts(arg: string): { at: number; eq: number } | null {
+  if (!arg.startsWith("-")) return null;
+  const colon = firstNondriveColon(arg);
   const eq = arg.indexOf("=");
-  if (eq >= 0) return eq;
-  if (!arg.startsWith("-")) return -1;
+  if (colon >= 0 && (eq < 0 || colon < eq)) return { at: colon, eq };
+  if (eq >= 0) return { at: eq, eq: -1 };
+  return null;
+}
+
+function firstNondriveColon(arg: string): number {
   for (let at = 0; at < arg.length; at++) {
     if (arg[at] === ":" && !isDriveColon(arg, at)) return at;
   }
@@ -195,8 +203,15 @@ function isDriveColon(arg: string, at: number): boolean {
 function valuesOf(arg: string): string[] {
   if (!arg.startsWith("-")) return [arg];
   const out: string[] = [];
-  const at = valueSeparator(arg);
-  if (at >= 0) out.push(arg.slice(at + 1));
+  const parts = flagParts(arg);
+  if (parts) {
+    if (parts.eq >= 0) {
+      out.push(arg.slice(parts.at + 1, parts.eq));
+      out.push(arg.slice(parts.eq + 1));
+    } else {
+      out.push(arg.slice(parts.at + 1));
+    }
+  }
   if (arg.length > 2 && !arg.startsWith("--")) out.push(arg.slice(2));
   return out;
 }
