@@ -1749,6 +1749,141 @@ mod failed_spawn_tests {
     }
 }
 
+#[cfg(test)]
+mod more_agent_sandbox_tests {
+    use super::wrap_more_agent_at_spawn;
+    use std::path::PathBuf;
+    use std::process::Command;
+
+    struct Scratch(PathBuf);
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// Runs one shell script under the profile the wrap built. The script uses paths relative to `cwd`, so nothing
+    /// from this machine is written into the assertion text.
+    #[cfg(target_os = "macos")]
+    fn under_profile(
+        profile: &str,
+        cwd: &std::path::Path,
+        home: &std::path::Path,
+        script: &str,
+    ) -> bool {
+        Command::new(crate::agent_sandbox::SANDBOX_EXEC)
+            .args(["-p", profile, "/bin/sh", "-c", script])
+            .current_dir(cwd)
+            .env("HOME", home)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .expect("sandbox probe")
+            .success()
+    }
+
+    /// With the sandbox on, a More agents start is wrapped: the spawned program is the sandbox launcher and the
+    /// approved command is inside it. The working directory is the run folder on every platform. The launcher only
+    /// exists on macOS, so that assertion is gated. `skip_outer_sandbox` is set and must not stop the wrap.
+    #[test]
+    fn a_sandboxed_more_agents_start_is_wrapped_and_runs_in_its_run_folder() {
+        let scratch =
+            Scratch(std::env::temp_dir().join(format!("wp178-more-wrap-{}", uuid::Uuid::new_v4())));
+        std::fs::create_dir_all(&scratch.0).expect("scratch");
+        let home = scratch.0.join("home");
+        let chat = scratch.0.join("chat");
+        std::fs::create_dir_all(&home).expect("home");
+        std::fs::create_dir_all(&chat).expect("chat");
+        crate::agent_sandbox::write_setting(&scratch.0, true).expect("sandbox on");
+        let run = crate::more_agents::run_folder(&scratch.0).expect("run folder");
+        let approved = std::env::current_exe().expect("test binary");
+        let approved_text = approved
+            .to_str()
+            .expect("the test binary path is text")
+            .to_string();
+        let mut cmd = Command::new(&approved);
+        cmd.arg("--flag").current_dir(&run);
+
+        let wrapped = wrap_more_agent_at_spawn(
+            cmd,
+            &approved_text,
+            &run,
+            &chat,
+            Some(&scratch.0),
+            &home,
+            Some(true),
+        )
+        .expect("the start is built");
+
+        assert_eq!(
+            wrapped.get_current_dir(),
+            Some(run.as_path()),
+            "a More agents child runs in its run folder"
+        );
+
+        #[cfg(target_os = "macos")]
+        {
+            use std::ffi::OsStr;
+            assert_eq!(
+                wrapped.get_program(),
+                OsStr::new(crate::agent_sandbox::SANDBOX_EXEC),
+                "the spawned program is the sandbox launcher"
+            );
+            let args: Vec<String> = wrapped
+                .get_args()
+                .map(|arg| arg.to_string_lossy().into_owned())
+                .collect();
+            assert!(
+                args.iter().any(|arg| arg == &approved_text),
+                "the approved command is inside the sandbox launcher"
+            );
+            assert!(
+                args.iter().any(|arg| arg == "--flag"),
+                "the approved arguments stay on the command"
+            );
+            let profile = args
+                .iter()
+                .find(|arg| arg.contains("(version 1)"))
+                .expect("the profile is an argument");
+            let run_text = run.to_string_lossy();
+            assert!(
+                profile.contains(&format!(
+                    "(allow file-read* file-write* (subpath \"{run_text}\"))"
+                )),
+                "the run folder is not in the profile's allowed set"
+            );
+            // The run folder is `<data>/more-agents/run/<id>`, so three levels up is the data folder.
+            let in_run = run.join("ok.txt");
+            assert!(
+                under_profile(profile, &run, &home, "echo ok > ok.txt"),
+                "the run folder is not writable under the profile"
+            );
+            assert_eq!(std::fs::read_to_string(&in_run).unwrap_or_default(), "ok\n");
+            let planted = scratch.0.join("planted");
+            assert!(
+                !under_profile(profile, &run, &home, "echo x > ../../../planted"),
+                "a file in the data folder, outside the run folder, was writable"
+            );
+            assert!(
+                !planted.exists(),
+                "the denied write left a file in the data folder"
+            );
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            assert_eq!(
+                wrapped.get_program(),
+                approved.as_os_str(),
+                "off macOS the sandbox is off, so the approved command starts directly"
+            );
+        }
+
+        crate::more_agents::remove_run_folder(&scratch.0, &run).expect("reap run");
+    }
+}
+
 /// A More agents run folder goes when its child exits. Anything else has no folder to remove.
 fn reap_more_agent_run(cleanup: Option<(Option<PathBuf>, PathBuf)>) {
     let Some((Some(data), dir)) = cleanup else {
