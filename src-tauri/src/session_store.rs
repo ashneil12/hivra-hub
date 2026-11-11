@@ -6125,3 +6125,164 @@ mod teleport_guard_tests {
         assert!(!has_notice(&conn, "teleport-release-owed"));
     }
 }
+
+/// PR #214 review r4: H-B, red first. Each move note is written the way 9ca4b81c1 wrote it (a plain save, or a step that
+/// existed then), then a quit's ordinary save of a copy that never heard of the note lands. The store must refuse it and
+/// keep the note, or recovery has nothing left to finish or undo. Uses only steps both versions know, so it fails on
+/// 9ca4b81c1 at the refusal, not at an unknown step.
+#[cfg(test)]
+mod review214_r4_move_notes {
+    use super::*;
+
+    fn chat(blocks: Value) -> SessionUpsert {
+        serde_json::from_value(json!({
+            "id": "chat-r4",
+            "cwd": "/tmp/review214-r4",
+            "harness": "claude",
+            "model": "model",
+            "modelSettings": { "effort": "high" },
+            "runtimeMode": "default",
+            "title": "Notes",
+            "blocks": blocks,
+        }))
+        .unwrap()
+    }
+
+    fn base() -> Vec<Value> {
+        vec![
+            json!({ "id": "u1", "role": "user", "text": "keep this" }),
+            json!({ "id": "a1", "role": "assistant", "text": "kept" }),
+        ]
+    }
+
+    fn note(notice: &str, move_id: &str, text: &str) -> Value {
+        json!({ "id": format!("{notice}-{move_id}"), "role": "system", "text": text, "notice": notice })
+    }
+
+    fn marker() -> Value {
+        json!({ "id": "teleported@host-a@1000", "role": "system", "text": "Moved to Studio box", "notice": "teleported", "startedAt": 1000.0 })
+    }
+
+    fn back(move_id: &str) -> Value {
+        json!({ "id": format!("teleported-back-{move_id}"), "role": "system", "text": "Moved back to this Mac", "notice": "teleported-back", "startedAt": 2000.0 })
+    }
+
+    fn save(conn: &Connection, blocks: Vec<Value>) -> rusqlite::Result<SessionSummary> {
+        upsert_session(conn, &chat(Value::Array(blocks)))
+    }
+
+    fn step(conn: &Connection, blocks: Vec<Value>, move_id: &str, op: &str) {
+        let mut session = chat(Value::Array(blocks));
+        session.teleport = Some(TeleportWrite {
+            move_id: move_id.into(),
+            op: op.into(),
+        });
+        upsert_session(conn, &session).unwrap();
+    }
+
+    fn moved_away(conn: &Connection) {
+        save(conn, base()).unwrap();
+        let mut frozen = base();
+        frozen.push(note("teleport-frozen", "m1", "{}"));
+        step(conn, frozen, "m1", "freeze");
+        step(conn, vec![marker()], "m1", "release");
+    }
+
+    fn stored_has(conn: &Connection, id: &str) -> bool {
+        let row = get_session(conn, "chat-r4").unwrap().unwrap();
+        blocks_of(&row.blocks)
+            .iter()
+            .any(|block| id_of(block) == id)
+    }
+
+    fn quit_is_refused(conn: &Connection, copy: Vec<Value>, kept: &str) {
+        let result = save(conn, copy);
+        assert!(
+            result
+                .as_ref()
+                .is_err_and(|error| error.to_string().starts_with("teleport-refused")),
+            "a quit's ordinary save erased {kept}"
+        );
+        assert!(stored_has(conn, kept), "{kept} is gone from the stored row");
+    }
+
+    #[test]
+    fn a_quit_cannot_erase_a_freeze_ask() {
+        let store = SessionStore::open_in_memory().unwrap();
+        let conn = store.lock_conn().unwrap();
+        moved_away(&conn);
+        save(
+            &conn,
+            vec![
+                marker(),
+                note(
+                    "teleport-freeze-asked",
+                    "m2",
+                    "{\"peer\":\"host-a\",\"at\":1}",
+                ),
+            ],
+        )
+        .unwrap();
+        quit_is_refused(&conn, vec![marker()], "teleport-freeze-asked-m2");
+    }
+
+    #[test]
+    fn a_quit_cannot_erase_an_incoming_copy() {
+        let store = SessionStore::open_in_memory().unwrap();
+        let conn = store.lock_conn().unwrap();
+        moved_away(&conn);
+        step(
+            &conn,
+            vec![marker(), note("teleport-incoming", "m2", "{}")],
+            "m2",
+            "incoming",
+        );
+        quit_is_refused(&conn, vec![marker()], "teleport-incoming-m2");
+    }
+
+    #[test]
+    fn a_quit_cannot_erase_a_refused_move() {
+        let store = SessionStore::open_in_memory().unwrap();
+        let conn = store.lock_conn().unwrap();
+        moved_away(&conn);
+        step(
+            &conn,
+            vec![marker(), note("teleport-incoming", "m2", "{}")],
+            "m2",
+            "incoming",
+        );
+        step(
+            &conn,
+            vec![
+                marker(),
+                note("teleport-aborted", "m2", "{\"peer\":\"host-a\"}"),
+            ],
+            "m2",
+            "abort",
+        );
+        quit_is_refused(&conn, vec![marker()], "teleport-aborted-m2");
+    }
+
+    #[test]
+    fn a_quit_cannot_erase_a_release_still_owed() {
+        let store = SessionStore::open_in_memory().unwrap();
+        let conn = store.lock_conn().unwrap();
+        moved_away(&conn);
+        step(
+            &conn,
+            vec![marker(), note("teleport-incoming", "m2", "{}")],
+            "m2",
+            "incoming",
+        );
+        let mut opened = base();
+        opened.push(back("m2"));
+        let mut owed = opened.clone();
+        owed.push(note(
+            "teleport-release-owed",
+            "m2",
+            "{\"peer\":\"host-a\",\"at\":1}",
+        ));
+        step(&conn, owed, "m2", "activate");
+        quit_is_refused(&conn, opened, "teleport-release-owed-m2");
+    }
+}
