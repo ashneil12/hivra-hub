@@ -1253,11 +1253,22 @@ pub fn harness_spawn(
                     .to_string()
             })
             .and_then(|home| {
+                let mut checkouts = match crate::local_hub::project_folders(&*store.lock_conn()?) {
+                    Ok(folders) => folders,
+                    Err(error) => {
+                        return Err(format!(
+                            "The agent did not start. The project list could not be read, so other projects' git folders could not be locked. {error}"
+                        ));
+                    }
+                };
+                if !checkouts.iter().any(|folder| folder == &workdir) {
+                    checkouts.insert(0, workdir.clone());
+                }
                 crate::agent_sandbox::sandboxed_launch(
                     std::ffi::OsStr::new(&command),
                     &home,
                     data_dir.as_deref(),
-                    std::slice::from_ref(&workdir),
+                    &checkouts,
                     std::path::Path::new(crate::agent_sandbox::SANDBOX_EXEC),
                 )
             });
