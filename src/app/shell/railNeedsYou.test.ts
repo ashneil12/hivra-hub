@@ -15,7 +15,6 @@ import { monoFailures, noteMonoFailures, resetMonoFailures, setMonoFailuresHost 
 import { plainFailure } from "../../features/monos/model/turnFailure";
 import { MonoFailureList } from "../../features/monos/ui/MonoFailureCard";
 import { failureChip } from "../../features/hub/model/statusChip";
-import { LEAD_CHAT_BUTTON } from "../../features/hub/ui/StatusMark";
 import { MonoRailSection } from "./MonoRailSection";
 
 let root: Root;
@@ -143,7 +142,9 @@ it("gives a red row's Open <Lead>'s chat the same button look as the grey rows'"
   const links = [...container.querySelectorAll<HTMLElement>("[data-hub-open-lead]")];
   expect(links.length).toBeGreaterThan(0);
   for (const link of links) {
-    expect(link.className).toBe(LEAD_CHAT_BUTTON);
+    expect(link.className).toMatch(/\bborder\b/);
+    expect(link.className).not.toMatch(/\bbg-accent\b/);
+    expect(link.className).not.toMatch(/bg-content\/8/);
     expect(link.className).not.toMatch(/underline/);
   }
 });

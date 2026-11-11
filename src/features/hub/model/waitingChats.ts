@@ -489,9 +489,16 @@ function captainMonoId(raw: unknown): string {
  * "Take the pick": answer with the agent's recommended answer. Autopilot calls this with `by: "autopilot"` and a Page
  * with `by: "page"`; both are refused on a red line, which always waits for Ash.
  */
-export async function takePick(sessionId: string, options: { by?: "ash" | "autopilot" | "page" } = {}): Promise<TakeResult> {
+export async function takePick(
+  sessionId: string,
+  options: { by?: "ash" | "autopilot" | "page"; seen?: { requestId?: number; question: string; pick?: string | null } } = {},
+): Promise<TakeResult> {
   const chat = findWaitingChat(sessionId);
   if (!chat) return { ok: false, reason: "That chat isn't waiting any more." };
+  const seen = options.seen;
+  if (seen && (seen.requestId !== chat.requestId || seen.question !== chat.question || (seen.pick ?? null) !== (chat.pick ?? null))) {
+    return { ok: false, reason: "That changed while you were looking. Open the chat to see where it stands." };
+  }
   if (!chat.pick) return { ok: false, reason: "The agent didn't suggest an answer. Reply in your words or open the chat." };
   // A Page's tap is not Ash's either (PR #235 review): a red line waits for Ash whoever else asks.
   const notAsh = options.by === "autopilot" || options.by === "page";
@@ -631,9 +638,21 @@ export function rowAnswerNote(question: string, words: string): QueuedMessage {
 export const NOT_ANSWERED_YET =
   "Not answered yet: it stays on Ash's Inbox card. Don't guess or act on it; ask it again as a `Needs Ash:` line in your reply.";
 
-export async function answerRow(sessionId: string, row: AskRow, words: string, by: "words" | "pick" = "words"): Promise<TakeResult> {
+export async function answerRow(
+  sessionId: string,
+  row: AskRow,
+  words: string,
+  by: "words" | "pick" = "words",
+  seen?: { requestId?: number; question: string; pick?: string | null },
+): Promise<TakeResult> {
   const chat = findWaitingChat(sessionId);
   if (!chat?.rows?.some((r) => r.question === row.question)) return { ok: false, reason: "That chat isn't waiting any more." };
+  if (seen) {
+    const live = chat.rows?.find((r) => r.question === row.question);
+    if (seen.requestId !== chat.requestId || seen.question !== row.question || !live || (seen.pick ?? null) !== (live.pick ?? null)) {
+      return { ok: false, reason: "That changed while you were looking. Open the chat to see where it stands." };
+    }
+  }
   const text = words.trim();
   if (!text) return { ok: false, reason: "Type an answer first." };
   const h = host;
@@ -733,11 +752,18 @@ export async function answerApproval(
 }
 
 /** r77: Allow or Deny a chat's held tool call from the card, when it is still the one held. */
-export function answerPermission(sessionId: string, decision: "allow" | "deny"): TakeResult {
+export function answerPermission(
+  sessionId: string,
+  decision: "allow" | "deny",
+  seen?: { requestId?: number; question?: string },
+): TakeResult {
   const chat = findWaitingChat(sessionId);
   if (!chat || chat.source !== "permission" || chat.requestId === undefined) return { ok: false, reason: "That chat isn't waiting any more." };
+  if (seen && (seen.requestId !== chat.requestId || (seen.question !== undefined && seen.question !== chat.question))) {
+    return { ok: false, reason: "That changed while you were looking. Open the chat to see where it stands." };
+  }
   if (!host?.decide) return { ok: false, reason: "The app isn't ready to answer yet. Open the chat instead." };
-  host.decide(sessionId, chat.requestId, decision);
+  host.decide(sessionId, seen?.requestId ?? chat.requestId, decision);
   drop(sessionId);
   return { ok: true, sent: decision === "allow" ? "Allowed" : "Denied", chatName: chat.chatName };
 }

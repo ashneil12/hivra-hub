@@ -14,7 +14,10 @@ import {
   Settings,
   Zap,
   DashboardSquare,
+  Bot,
 } from "../../shared/ui/icons";
+import { IS_HUB_BUNDLE } from "../../features/hub/model/hubBundle";
+import { showAppItem } from "../../features/hub/model/hubNav";
 import { pinnedPages, requestOpenPage, usePagesVersion } from "../../features/pages/model/pages";
 import {
   useEffect,
@@ -117,6 +120,8 @@ type Props = {
   cwd: string;
   recents: RecentProject[];
   inboxUnseen?: boolean;
+  /** WP-210: how many items need Ash. This paints the Inbox mark. */
+  needsMark?: number;
   busyPaths?: Iterable<string>;
   canGoBack?: boolean;
   canGoForward?: boolean;
@@ -165,6 +170,7 @@ export function ProjectRail({
   cwd,
   recents,
   inboxUnseen = false,
+  needsMark = 0,
   busyPaths,
   canGoBack = false,
   canGoForward = false,
@@ -435,7 +441,7 @@ export function ProjectRail({
             />
             <div className="mt-0.5" />
             <RailAction
-              label="Inbox"
+              label="Needs you"
               icon={Inbox}
               onClick={onOpenInbox}
               onOpenContextMenu={(x, y) => {
@@ -447,8 +453,9 @@ export function ProjectRail({
                 setInboxMenu({ x, y });
               }}
               active={inboxActive}
+              needs={needsMark}
               dot={inboxUnseen}
-              ariaLabel={inboxUnseen ? "Inbox, new items" : "Inbox"}
+              ariaLabel={needsMark > 0 ? `Needs you, ${needsMark}` : inboxUnseen ? "Needs you, new items" : "Needs you"}
             />
             {notesEnabled ? (
               <RailAction
@@ -599,6 +606,10 @@ export function ProjectRail({
           />
           <div className="flex shrink-0 flex-col gap-px p-2">
             <GithubStarPrompt />
+            {IS_HUB_BUNDLE ? (
+              // WP-219: the rail's Agents tile, until WP-213 owns it.
+              <RailAction label="Agents" icon={Bot} onClick={() => showAppItem("agents")} ariaLabel="Agents" />
+            ) : null}
             <RailAction
               label="Settings"
               icon={Settings}

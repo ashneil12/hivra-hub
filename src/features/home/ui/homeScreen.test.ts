@@ -4,7 +4,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { defaultArrangement, hideSection, pinPanel } from "../model/arrangement";
 import type { HomeLine } from "../model/lines";
-import { HomeScreen } from "./HomeScreen";
+import { HomeScreen, needsAgo } from "./HomeScreen";
 
 const line = (over: Partial<HomeLine>): HomeLine => ({
   id: "n1",
@@ -220,4 +220,184 @@ it("says why there are no projects instead of all quiet, and offers the way back
   draw({ noProjects: { inAshOs: false }, onBringOver: () => brought++, onNewProject: () => made++ });
   expect(container.querySelector("[data-home-no-projects]")?.textContent).toContain("No projects yet.");
   expect(container.querySelector("[data-home-action='bring-over']")).toBeNull();
+});
+
+it("puts the Needs you count immediately after the title", () => {
+  draw({
+    needsYou: [line({})],
+    needsMark: 5,
+    moving: [line({ id: "m1", kind: "moving", text: "Crew · Write the notes" })],
+  });
+  const header = container.querySelector("[data-home-section='needs-you'] header")!;
+  const title = header.querySelector("h2")!;
+  const count = header.querySelector("[data-home-needs-count]")!;
+  expect(title.textContent).toBe("Needs you");
+  expect(count.textContent).toBe("5");
+  expect(title.nextElementSibling).toBe(count);
+  expect(title.className).not.toMatch(/\bflex-1\b/);
+  const dot = header.querySelector("[data-home-needs-dot]");
+  expect(dot).not.toBeNull();
+  expect(title.previousElementSibling).toBe(dot);
+  expect(count.className).not.toMatch(/text-red/);
+  expect(count.className).toMatch(/text-content\//);
+  expect(header.querySelector("[data-home-arrange]")?.className).toMatch(/\bml-auto\b/);
+  // Other sections keep their title filling the row. This change is only the Needs you header.
+  const movingTitle = container.querySelector("[data-home-section='moving-now'] h2");
+  expect(movingTitle?.className).toMatch(/\bflex-1\b/);
+});
+
+it("shows a stopped worker as a chip, a red Stopped, the reason and a bordered Open chat", () => {
+  let opened = 0;
+  draw({
+    needsYou: [line({
+      id: "stopped:upload",
+      kind: "stopped",
+      text: "Example: Out of credits",
+      projectId: "vg-game",
+      projectName: "EXO",
+      needsKind: "stopped",
+      who: "EXO lead",
+      at: Date.now() - 4 * 60_000,
+      actions: [{ label: "Open chat", run: () => opened++ }],
+    })],
+  });
+  const row = container.querySelector("[data-home-line='stopped']")!;
+  expect(row.querySelector("[data-needs-chip]")?.textContent).toBe("EXO");
+  const chip = row.querySelector("[data-needs-kind='stopped']")!;
+  expect(chip.textContent).toBe("Stopped");
+  expect(chip.className).toMatch(/text-red-400/);
+  // The chip already says Stopped. The reason does not say it again.
+  expect(row.querySelector("[data-needs-stopped]")).toBeNull();
+  expect(row.textContent).toContain("Example: Out of credits");
+  expect(row.textContent).not.toContain("Stopped.");
+  expect(row.querySelector("[data-needs-source]")?.textContent).toMatch(/^EXO lead · \d+ min ago$/);
+  expect(row.textContent).not.toMatch(/\bStuck\b/);
+  const button = [...row.querySelectorAll("button")].find((item) => item.textContent === "Open chat")!;
+  expect(button.className).toMatch(/\bborder\b/);
+  expect(button.className).not.toMatch(/underline/);
+  expect(button.className).not.toMatch(/primary-action/);
+  expect(button.className).not.toMatch(/\bbg-accent\b/);
+  act(() => button.click());
+  expect(opened).toBe(1);
+});
+
+it("says minutes, hours and days, and never months inside a day", () => {
+  const now = 1_700_000_000_000;
+  const min = 60_000;
+  expect(needsAgo(now, now)).toBe("just now");
+  expect(needsAgo(now - 20_000, now)).toBe("just now");
+  expect(needsAgo(now - 4 * min, now)).toBe("4 min ago");
+  expect(needsAgo(now - 59 * min, now)).toBe("59 min ago");
+  expect(needsAgo(now - 60 * min, now)).toBe("1 hr ago");
+  expect(needsAgo(now - 90 * min, now)).toBe("2 hr ago");
+  expect(needsAgo(now - 23 * 60 * min, now)).toBe("23 hr ago");
+  expect(needsAgo(now - 3 * 24 * 60 * min, now)).toBe("3 d ago");
+  expect(needsAgo(now - 90 * 24 * 60 * min, now)).toBe("3 mo ago");
+  expect(needsAgo(0, now)).toBeUndefined();
+  expect(needsAgo(Number.NaN, now)).toBeUndefined();
+  expect(needsAgo(now + min, now)).toBe("just now");
+  for (let mins = 0; mins <= 24 * 60; mins += 1) {
+    expect(needsAgo(now - mins * min, now) ?? "").not.toMatch(/mo/);
+  }
+});
+
+it("draws row actions as buttons, the first filled and the rest bordered, at most three", () => {
+  const ran: string[] = [];
+  draw({
+    needsYou: [line({
+      projectName: "Nibbii",
+      actions: [
+        { label: "Allow", run: () => ran.push("Allow") },
+        { label: "Deny", run: () => ran.push("Deny") },
+        { label: "Later", run: () => ran.push("Later") },
+        { label: "Skip", run: () => ran.push("Skip") },
+      ],
+    })],
+  });
+  const row = container.querySelector("[data-home-line='decision']")!;
+  expect(row.querySelector("[data-needs-chip]")?.textContent).toBe("Nibbii");
+  const buttons = [...row.querySelectorAll("button")].filter((item) =>
+    ["Allow", "Deny", "Later", "Skip"].includes(item.textContent ?? ""),
+  );
+  expect(buttons.map((item) => item.textContent)).toEqual(["Allow", "Deny", "Later"]);
+  // The same blue primary Home uses for a chief reply. Not the white primary-action fill.
+  expect(buttons[0]?.className).toMatch(/\bbg-accent\b/);
+  expect(buttons[0]?.className).toMatch(/\btext-black\b/);
+  expect(buttons[0]?.className).not.toMatch(/primary-action/);
+  expect(buttons[0]?.className).not.toMatch(/underline/);
+  expect(buttons[1]?.className).toMatch(/\bborder\b/);
+  expect(buttons[1]?.className).not.toMatch(/primary-action/);
+  expect(buttons[1]?.className).not.toMatch(/\bbg-accent\b/);
+  expect(buttons[2]?.className).toMatch(/\bborder\b/);
+  act(() => buttons[1]?.click());
+  expect(ran).toEqual(["Deny"]);
+});
+
+it("keeps a blue button on a safe one tap and borders Open on a risky row", () => {
+  draw({
+    needsYou: [
+      line({
+        id: "safe",
+        text: "frank wants to run npm test.",
+        actions: [
+          { label: "Yes", run: () => undefined },
+          { label: "Open", run: () => undefined },
+        ],
+      }),
+      line({
+        id: "risk",
+        text: "frank wants to run npm publish.",
+        actions: [{ label: "Open", run: () => undefined }],
+      }),
+    ],
+  });
+  const rows = [...container.querySelectorAll("[data-home-line]")];
+  const yes = [...rows[0]!.querySelectorAll("button")].find((item) => item.textContent === "Yes")!;
+  const safeOpen = [...rows[0]!.querySelectorAll("button")].find((item) => item.textContent === "Open")!;
+  const riskOpen = [...rows[1]!.querySelectorAll("button")].find((item) => item.textContent === "Open")!;
+  expect(yes.className).toMatch(/\bbg-accent\b/);
+  expect(yes.className).toMatch(/\btext-black\b/);
+  expect(safeOpen.className).not.toMatch(/\bbg-accent\b/);
+  expect(safeOpen.className).toMatch(/\bborder\b/);
+  expect(riskOpen.className).not.toMatch(/\bbg-accent\b/);
+  expect(riskOpen.className).toMatch(/\bborder\b/);
+});
+
+it("gives a page access ask one bordered Open", () => {
+  let opened = 0;
+  draw({
+    needsYou: [line({
+      text: "The Weekly views page asks to read YouTube stats.",
+      actions: [{ label: "Open", run: () => { opened += 1; } }],
+    })],
+  });
+  const row = container.querySelector("[data-home-line]")!;
+  const buttons = [...row.querySelectorAll("button")].filter((item) =>
+    item.textContent === "Open" || item.textContent === "Allow" || item.textContent === "Deny" || item.textContent === "Review",
+  );
+  expect(buttons.map((item) => item.textContent)).toEqual(["Open"]);
+  expect(buttons[0]?.className).toMatch(/\bborder\b/);
+  expect(buttons[0]?.className).not.toMatch(/\bbg-accent\b/);
+  act(() => buttons[0]?.click());
+  expect(opened).toBe(1);
+});
+
+it("names a decision sentence by its project while the words stay the sentence", () => {
+  let opened: HomeLine | undefined;
+  draw({
+    needsYou: [line({
+      text: "Should we ship?",
+      projectName: "Crew",
+      target: "ship",
+      actions: [{ label: "Answer", run: () => undefined }],
+    })],
+    onOpen: (item) => { opened = item; },
+  });
+  const row = container.querySelector("[data-home-line='decision']")!;
+  const sentence = [...row.querySelectorAll("button")].find((item) => !item.hasAttribute("data-needs-answer"))!;
+  expect(sentence.textContent).toBe("Should we ship?");
+  expect(sentence.getAttribute("aria-label")).toBe("Crew · Should we ship?");
+  act(() => sentence.click());
+  expect(opened?.kind).toBe("decision");
+  expect(opened?.target).toBe("ship");
 });

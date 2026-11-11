@@ -333,7 +333,7 @@ fn push(worktree: &Path, remote: &str, branch: &str, base: &str) -> Result<(), O
         crate::commit_guard::gate_outgoing_to(worktree, remote).map_err(outcome_from_gate)?;
     if checked.urls.is_empty() {
         return Err(outcome_from_gate(format!(
-            "the remote {remote} has no push URL"
+            "the remote {remote} has no push URL."
         )));
     }
     let refspec = format!("{}:refs/heads/{branch}", checked.sha);
@@ -358,10 +358,10 @@ fn push(worktree: &Path, remote: &str, branch: &str, base: &str) -> Result<(), O
 /// the caller puts the branch back and the update can be tried again.
 fn outcome_from_gate(error: String) -> Outcome {
     if error.starts_with("Possible secret") || error.starts_with("Refused to push") {
-        return refused(error);
+        return refused(format!("The commit guard stopped the push: {error}"));
     }
     not_finished(format!(
-        "{error} The branch was put back. Nothing was force-pushed."
+        "The commit guard could not check the push: {error} The branch was put back. Nothing was force-pushed."
     ))
 }
 

@@ -2,7 +2,7 @@
 // skills and engine. A Mono that isn't seated waits for Ash's OK and is never seated automatically.
 import { useSyncExternalStore } from "react";
 import { readAgentFile, writeAgentFile, type AgentFilePath } from "../../monos/model/monoFiles";
-import { addMono, engineFieldsOf, findMono, listMonos, updateMono, type MonoEngine } from "../../monos/model/mono";
+import { addMono, cardNames, engineFieldsOf, findMono, listMonos, updateMono, type MonoEngine } from "../../monos/model/mono";
 import { cleanStoredDefault } from "../../crew/model/workerDefault";
 import type { Pick as WorkerPick } from "../../crew/model/resolve";
 import { ROLE_NAMES } from "./roleNames";
@@ -34,6 +34,12 @@ export type SetupSoul = {
   topics?: Record<string, string>;
   /** WP-89: what its workers run on. Import only adds: a seated Mono that already has one keeps it. */
   workerDefault?: WorkerPick;
+  /** WP-182: fast mode for its own chat. Import only adds: a boolean already set here stays. */
+  engineFast?: boolean;
+  /** WP-182: skill names it is offered. Not the SOUL.md list. Import only adds names. */
+  offeredSkills?: string[];
+  /** WP-182: slash command names it is offered. Import only adds names. */
+  commands?: string[];
 };
 
 function roster(): { id: string; name?: string; mascot?: string }[] {
@@ -168,6 +174,8 @@ export async function seatWaitingSoul(monoId: string, write: Writer = writeAgent
   const soul = readWaiting().find((s) => s.monoId === monoId);
   if (!soul) return [];
   const workerDefault = cleanStoredDefault(soul.workerDefault);
+  const offeredSkills = cardNames(soul.offeredSkills);
+  const commands = cardNames(soul.commands);
   if (!isSeated(monoId)) {
     addMono({
       id: soul.monoId,
@@ -179,10 +187,26 @@ export async function seatWaitingSoul(monoId: string, write: Writer = writeAgent
       projects: folders ?? soul.projects ?? [],
       ...engineFieldsOf(soul.engine),
       ...(workerDefault ? { workerDefault } : {}),
+      ...(typeof soul.engineFast === "boolean" ? { engineFast: soul.engineFast } : {}),
+      ...(offeredSkills ? { skills: offeredSkills } : {}),
+      ...(commands ? { commands } : {}),
     });
-  } else if (workerDefault && !findMono(monoId)?.workerDefault) {
-    // Seated while this was waiting, with no default of its own: add the file's. One already set stays.
-    updateMono(monoId, (m) => (m.workerDefault ? m : { ...m, workerDefault }));
+  } else {
+    // Seated while this was waiting. Import only adds: a value already set here stays, and skill names are unioned.
+    const current = findMono(monoId);
+    const skills = cardNames([...(current?.skills ?? []), ...(offeredSkills ?? [])]);
+    const commandNames = cardNames([...(current?.commands ?? []), ...(commands ?? [])]);
+    const addWorker = Boolean(workerDefault && !current?.workerDefault);
+    const addFast = typeof current?.engineFast !== "boolean" && typeof soul.engineFast === "boolean";
+    if (addWorker || addFast || skills || commandNames) {
+      updateMono(monoId, (m) => ({
+        ...m,
+        ...(addWorker ? { workerDefault } : {}),
+        ...(addFast ? { engineFast: soul.engineFast } : {}),
+        ...(skills ? { skills } : {}),
+        ...(commandNames ? { commands: commandNames } : {}),
+      }));
+    }
   }
   const { problems } = await writeSoulFiles(monoId, soulFiles(soul), { write, read });
   if (!problems.length) saveWaiting(readWaiting().filter((s) => s.monoId !== monoId));
@@ -207,13 +231,23 @@ export async function mergeIntoSeated(
   if (!mono) return { written: [], kept: [], problems: [] };
   const engine = engineFieldsOf(soul.engine);
   const workerDefault = cleanStoredDefault(soul.workerDefault);
-  updateMono(mono.id, (m) => ({
-    ...m,
-    ...(projects ? { projects: [...m.projects, ...(soul.projects ?? [])] } : {}),
-    ...(engine.engine && (!m.engine || replace) ? engine : {}),
-    ...(soul.roleLabel !== undefined && (m.role === undefined || replace) ? { role: soul.roleLabel } : {}),
-    ...(workerDefault && (!m.workerDefault || replace) ? { workerDefault } : {}),
-  }));
+  const offeredSkills = cardNames(soul.offeredSkills);
+  const commandNames = cardNames(soul.commands);
+  updateMono(mono.id, (m) => {
+    const skills = cardNames([...(m.skills ?? []), ...(offeredSkills ?? [])]);
+    const commands = cardNames([...(m.commands ?? []), ...(commandNames ?? [])]);
+    return {
+      ...m,
+      ...(projects ? { projects: [...m.projects, ...(soul.projects ?? [])] } : {}),
+      ...(engine.engine && (!m.engine || replace) ? engine : {}),
+      ...(soul.roleLabel !== undefined && (m.role === undefined || replace) ? { role: soul.roleLabel } : {}),
+      ...(workerDefault && (!m.workerDefault || replace) ? { workerDefault } : {}),
+      // WP-182: import only adds. A fast flag or a name already here is not replaced.
+      ...(typeof m.engineFast !== "boolean" && typeof soul.engineFast === "boolean" ? { engineFast: soul.engineFast } : {}),
+      ...(skills ? { skills } : {}),
+      ...(commands ? { commands } : {}),
+    };
+  });
   return writeSoulFiles(mono.id, soulFiles(soul), { replace, ...(write ? { write } : {}), ...(read ? { read } : {}), ...(stale ? { stale } : {}) });
 }
 /** Not now: drops the waiting soul; nothing was seated or written. */

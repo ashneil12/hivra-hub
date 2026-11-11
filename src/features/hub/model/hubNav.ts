@@ -148,7 +148,8 @@ export function selectionLeavingOwnTeam(sel: HubSelection, monoId: string): HubS
 /** True while one of the app's own views (hubNav.showAppItem) is open: it belongs to no project, so no project tile is lit. */
 export function appItemInView(sel: HubSelection): boolean {
   // WP-73: Home is the app's own view. The project tile stays unlit, and the no-project redirect does not take it.
-  return sel.item === "home" || sel.item === "autopilot" || sel.item === "new-project" || sel.item === "restore" || !!monoTeamInView(sel);
+  // WP-219: Agents is an app view, so the no-project redirect does not take it.
+  return sel.item === "home" || sel.item === "agents" || sel.item === "autopilot" || sel.item === "new-project" || sel.item === "restore" || !!monoTeamInView(sel);
 }
 
 /** True when a hub view (not Monocode's own workspace) fills the main area: a coding team or a Mono's team is a workspace. */

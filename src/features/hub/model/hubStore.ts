@@ -95,7 +95,7 @@ export function mapProject(raw: unknown): HubProject | undefined {
   if (!id) return undefined;
   const name = str(r.name, id);
   const icon = toShape(r.iconShape);
-  return { id, name, shortName: str(r.shortName, name), iconShape: icon, folder: optStr(r.folder) ?? null, ...(r.status === "parked" ? { parked: true } : {}) };
+  return { id, name, shortName: str(r.shortName, name), iconShape: icon, folder: optStr(r.folder) ?? null, ...(r.status === "parked" ? { parked: true } : {}), ...(r.shared === true ? { shared: true } : {}) };
 }
 
 /**

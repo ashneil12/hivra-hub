@@ -52,7 +52,8 @@ mod crew;
 mod devin_config;
 mod devin_usage;
 mod spend_ledger;
-// WP-131: desktop dictation into the composer draft. Off in this build (see dictation.rs); never sends.
+// WP-131b: desktop dictation into the composer draft; the microphone is held by a helper app, never sends.
+// Off in this build (dictation::ENABLED is false): the helper is never found, checked or started.
 mod dictation;
 pub mod disclaim;
 mod explore_agent; // WP-143: read-only check for an Explore agent the person already defined.
@@ -129,6 +130,7 @@ mod page_http;
 mod pasteboard;
 mod pi_usage;
 // WP-76: one trash for chats, Monos, projects, notes, docs and tasks.
+mod team_workspace;
 mod trash;
 // WP-30: plugin format, registry and per-CLI wiring (src/plugins/).
 pub mod plugins;
@@ -473,6 +475,8 @@ pub fn run() {
         .manage(window_transfer::WindowTransferState::new())
         .manage(live_turns::LiveTurns::default())
         .setup(move |app| {
+            // WP-80: while the team switch is on, pick up other members' changes every few seconds (off costs a file read).
+            team_workspace::start_polling(app.handle().clone());
             // Windows: still here, so no running copy took over this launch (instance::claim).
             if !claim.owner {
                 instance::claim_after_handoff(&identity, &version, &claim.data_dir);
@@ -575,8 +579,14 @@ pub fn run() {
         .on_menu_event(|app, event| {
             menu::dispatch(app, event.id().as_ref());
         })
+        // WP-131b: a page that starts loading again (reload, navigation) loses its dictation session.
+        .on_page_load(|webview, payload| {
+            if matches!(payload.event(), tauri::webview::PageLoadEvent::Started) {
+                dictation::window_lost(webview.app_handle(), webview.label());
+            }
+        })
         .invoke_handler(tauri::generate_handler![
-            // WP-131: desktop dictation.
+            // WP-131b: desktop dictation (the helper in Contents/Helpers holds the microphone).
             dictation::dictation_support,
             dictation::dictation_start,
             dictation::dictation_stop,
@@ -588,6 +598,10 @@ pub fn run() {
             hivra_cloud::hivra_cloud_account,
             hivra_cloud::hivra_cloud_pair,
             mobile_access::mobile_status,
+            team_workspace::team_workspace_status,
+            team_workspace::team_workspace_save,
+            team_workspace::team_workspace_accept,
+            team_workspace::team_workspace_presence,
             mobile_access::mobile_configure,
             mobile_access::mobile_invite,
             mobile_access::mobile_cancel_invite,
@@ -1402,6 +1416,7 @@ pub fn run() {
             ..
         } => {
             window::forget_quit_window(handle, &label);
+            dictation::window_lost(handle, &label);
             let other_window = window::workspace_windows(handle)
                 .iter()
                 .any(|window| window.label() != label);

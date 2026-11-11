@@ -373,6 +373,24 @@ mockIPC(
     if (cmd === "decisions_list") return seededList("monocode:dev-decisions");
     if (cmd === "delivery_list") return seededList("monocode:dev-deliveries");
     if (cmd === "pr_watch_list") return seededList("monocode:dev-pr-watches");
+    // WP-210: answering a seeded decision clears it on the one Needs you list.
+    if (cmd === "decisions_answer") {
+      const input = (args ?? {}) as { project?: string; key?: string; answer?: string };
+      const stored = "monocode:dev-decisions";
+      const rows = seededList(stored);
+      const now = Date.now();
+      let decision: unknown = null;
+      const next = rows.map((row) => {
+        if (!row || typeof row !== "object") return row;
+        const item = row as { project?: string; decisionKey?: string };
+        if (item.project !== input.project || item.decisionKey !== input.key) return row;
+        decision = { ...item, state: "answered", answer: input.answer ?? null, answeredAt: now };
+        return decision;
+      });
+      localStorage.setItem(stored, JSON.stringify(next));
+      void emit("hivra:decisions-changed", {});
+      return { applied: decision != null, decision, released: [], releasedTasks: [] };
+    }
     // WP-06: a browser spec seeds a ship summary (`monocode:dev-ship`). Missing or bad JSON is no ship.
     if (cmd === "ship_status") {
       try {
