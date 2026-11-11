@@ -11,47 +11,40 @@
 
 use std::collections::BTreeMap;
 use std::path::Path;
-use std::sync::OnceLock;
 
-use serde::Deserialize;
+use crate::delivery::protected::{folded_segments, shared_list};
 
-const AGENT_PATHS: &str = include_str!("../../src/shared/security/agentConfigPaths.json");
+/// The shared list (`src/shared/security/agentConfigPaths.json`) names the folders an agent keeps its files in (`.claude`,
+/// `.monocode`, ...). A file under one of them is an agent file when it is the approvals file or a saved transcript.
+/// The approvals file name must be in the list's `files` too, and the transcript rule is its extension.
+const APPROVALS_FILE: &str = "settings.local.json";
+const TRANSCRIPT_EXT: &str = ".jsonl";
+const APPROVALS: &str = "an agent's local approvals";
+const TRANSCRIPT: &str = "an agent's saved transcript";
 
-#[derive(Deserialize)]
-struct AgentPaths {
-    exact: Vec<ExactRule>,
-    under: Vec<UnderRule>,
-}
-
-#[derive(Deserialize)]
-struct ExactRule {
-    path: String,
-    kind: String,
-}
-
-#[derive(Deserialize)]
-struct UnderRule {
-    dir: String,
-    ext: String,
-    kind: String,
-}
-
-fn agent_paths() -> &'static AgentPaths {
-    static PATHS: OnceLock<AgentPaths> = OnceLock::new();
-    PATHS.get_or_init(|| serde_json::from_str(AGENT_PATHS).expect("agentConfigPaths.json parses"))
-}
-
-/// What kind of agent file a repo path is, in the words the refusal uses, or `None` for any other file.
-fn agent_file_kind(path: &str) -> Option<&'static str> {
-    let paths = agent_paths();
-    if let Some(rule) = paths.exact.iter().find(|rule| rule.path == path) {
-        return Some(rule.kind.as_str());
-    }
-    paths
-        .under
+/// What kind of agent file a repo path is, or `None` for any other file. Reads the shared list with the floor's fold.
+/// A list that does not load is an error: the guard refuses rather than letting an agent file through.
+fn agent_file_kind(path: &str) -> Result<Option<&'static str>, String> {
+    let list = shared_list()?;
+    let Some(segments) = folded_segments(path) else {
+        return Ok(None);
+    };
+    let Some((name, folders)) = segments.split_last() else {
+        return Ok(None);
+    };
+    if !folders
         .iter()
-        .find(|rule| path.starts_with(&rule.dir) && path.ends_with(&rule.ext))
-        .map(|rule| rule.kind.as_str())
+        .any(|folder| list.folder_names().contains(folder))
+    {
+        return Ok(None);
+    }
+    if name == APPROVALS_FILE && list.file_names().iter().any(|file| file == APPROVALS_FILE) {
+        return Ok(Some(APPROVALS));
+    }
+    if name.ends_with(TRANSCRIPT_EXT) {
+        return Ok(Some(TRANSCRIPT));
+    }
+    Ok(None)
 }
 
 const RECOVERY: &str = "To go on, either untrack it, add it to this project's ignore file (after you say yes), or say it is a test value. Hivra does not edit any ignore file itself.";
@@ -94,11 +87,13 @@ fn tracked_at_head(root: &Path, path: &str) -> bool {
 /// Agent files git does not track yet: the ones staging must leave out.
 fn untracked_agent_paths(root: &Path) -> Result<Vec<String>, String> {
     let listed = git_out(root, &["ls-files", "--others", "--exclude-standard", "-z"])?;
-    Ok(listed
-        .split('\0')
-        .filter(|path| !path.is_empty() && agent_file_kind(path).is_some())
-        .map(str::to_string)
-        .collect())
+    let mut found = Vec::new();
+    for path in listed.split('\0').filter(|path| !path.is_empty()) {
+        if agent_file_kind(path)?.is_some() {
+            found.push(path.to_string());
+        }
+    }
+    Ok(found)
 }
 
 /// The arguments of `git add -A` that leave out every untracked agent file.
@@ -125,7 +120,7 @@ pub fn stage_all(root: &Path) -> Result<(), String> {
 /// Refuses a selection that names an untracked agent file.
 pub fn refuse_selected(root: &Path, paths: &[String]) -> Result<(), String> {
     for path in paths {
-        if let Some(kind) = agent_file_kind(path) {
+        if let Some(kind) = agent_file_kind(path)? {
             if !tracked_at_head(root, path) {
                 return Err(left_out(path, kind));
             }
@@ -148,7 +143,7 @@ pub fn refuse_staged_agent_files(root: &Path) -> Result<(), String> {
         ],
     )?;
     for path in names.split('\0').filter(|path| !path.is_empty()) {
-        if let Some(kind) = agent_file_kind(path) {
+        if let Some(kind) = agent_file_kind(path)? {
             return Err(left_out(path, kind));
         }
     }
@@ -260,7 +255,7 @@ pub fn gate_range(root: &Path, revs: &[&str]) -> Result<(), String> {
     name_args.extend_from_slice(revs);
     let names = git_out(root, &name_args)?;
     for path in names.split('\0').filter(|path| !path.is_empty()) {
-        if let Some(kind) = agent_file_kind(path) {
+        if let Some(kind) = agent_file_kind(path)? {
             return Err(refused_to_push(path, kind));
         }
     }
