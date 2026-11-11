@@ -454,7 +454,7 @@ async function applyPin(page: Page, pinned: boolean, pinnedBy: string | undefine
 }
 setPinHook(async (id, pinned) => {
   const page = pages().find((p) => p.id === id);
-  return page ? applyPin(page, pinned, page.pinnedBy) : "That page isn't there any more.";
+  return page ? applyPin(page, pinned, page.pinnedBy) : "That hub isn't there any more.";
 });
 
 // The sidebar asks Pages to open one page.

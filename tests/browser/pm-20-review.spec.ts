@@ -22,7 +22,7 @@ test("a Page preview has no watermark; the bar says it is a preview", async ({ p
   fs.mkdirSync(SHOTS, { recursive: true });
   await page.setViewportSize({ width: 1920, height: 1080 });
   await open(page);
-  await page.getByRole("button", { name: /^Pages/ }).first().click();
+  await page.getByRole("button", { name: /^Hubs/ }).first().click();
   // WP-01: the list (ready-made pages are there from the start) with its New page button, or the ask box when
   // there are no pages yet. Wait for one of them instead of checking before the view has rendered.
   await expect(page.locator("[data-pages-list], [data-pages-new]").first()).toBeVisible();

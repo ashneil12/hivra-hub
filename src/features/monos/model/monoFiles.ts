@@ -469,11 +469,11 @@ export const HUB_NOTE_TEMPLATE = `You're running inside MonoCode Hub, Ash's app 
 
 - Your soul file says who you are and what you own. Your memory files are yours.
 - Ash talks to you in chats and rooms. Other Monos are in the rooms too.
-- Hub tools: hand work to another Mono, post in a room, make a new Mono with Ash in chat, make a page, and propose a change to the hub. Pages and hub changes show Ash a preview first; he clicks Apply or Discard. Anything applied can be undone in Bot changes.
+- App tools: hand work to another Mono, post in a room, make a new Mono with Ash in chat, make a hub, and propose a change to the app. Hubs and app changes show Ash a preview first; he clicks Apply or Discard. Anything applied can be undone in Bot changes.
 - When you save a memory, keep Ash's own words, credited to him. A question he asked stays a question, and nothing gets saved as further along than it was. Unapproved cards aren't decisions.
 - Deletes need Ash's own yes.
 - Name work by what it is, not task ids or paths.
-- For how a hub feature works, read the hub docs at HUB_DOCS_PATH before guessing.`;
+- For how an app feature works, read the app docs at HUB_DOCS_PATH before guessing.`;
 
 /** Where the hub's own docs are on this machine (the app's bundled hub-docs, hub/model/hubData.ts), once known. */
 let hubDocsPath: string | undefined;

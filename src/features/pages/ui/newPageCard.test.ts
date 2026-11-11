@@ -74,12 +74,12 @@ async function render() {
 
 it("New page: the description goes to Ed's own chat, and Ed's page_build there fills the card's preview to keep", async () => {
   const host = await render();
-  await type(host.querySelector('[data-pages-new] input[aria-label="Describe the page"]') as HTMLInputElement, "a page of every agent");
+  await type(host.querySelector('[data-pages-new] input[aria-label="Describe the hub"]') as HTMLInputElement, "a page of every agent");
   await act(async () => (host.querySelector("[data-pages-new] form") as HTMLFormElement).requestSubmit());
   expect(await until(() => chat.sent.length)).toBe(1);
   expect(chat.sent[0].sessionId).toBe("chat-ed");
   expect(chat.sent[0].text).toContain("“a page of every agent”");
-  expect(host.querySelector("[data-pages-build-state]")!.textContent).toContain("Ed is building your page");
+  expect(host.querySelector("[data-pages-build-state]")!.textContent).toContain("Ed is building your hub");
 
   let previewId = "";
   await act(async () => { previewId = previewFromChat({ spec: SPEC, request: "a page of every agent" }, { monoId: "ed", name: "Ed" }).previewId; });
@@ -96,7 +96,7 @@ it("New page: the description goes to Ed's own chat, and Ed's page_build there f
 it("a busy first mate: nothing is sent, the card says so with Try again and Open its chat, and Try again sends it", async () => {
   chat.busy = true;
   const host = await render();
-  await type(host.querySelector('[data-pages-new] input[aria-label="Describe the page"]') as HTMLInputElement, "a page of every agent");
+  await type(host.querySelector('[data-pages-new] input[aria-label="Describe the hub"]') as HTMLInputElement, "a page of every agent");
   await act(async () => (host.querySelector("[data-pages-new] form") as HTMLFormElement).requestSubmit());
   expect(await until(() => host.querySelector('[data-pages-build-state="busy"]'))).toBeTruthy();
   expect(host.querySelector("[data-pages-build-problem]")!.textContent).toContain("Ed is in the middle of something else");

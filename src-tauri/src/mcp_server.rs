@@ -447,12 +447,12 @@ fn tools() -> Value {
         },
         {
             "name": "page_build",
-            "title": "Build a Page",
-            "description": "Build a Page for Ash from the hub's ready-made blocks, filled only with the project's real data you read first, from the hub and the project's own checkout (its local git log, task_status, files), never from gh or anything else that reaches GitHub: no example or made-up numbers. A block with nothing real yet goes in empty (rows or bars []) and shows Nothing here yet. Call with project and spec, a PageSpec {\"kind\":\"blocks\",\"title\",\"blocks\":[...]} where every block has kind and title: status {state,line,detail}, list {rows:[{text,state,label}]}, chart {bars:[{label,value}]}, barlist {rows:[{label,value}]}, note {text}, calendar {month,firstWeekday,days,marked:[{day,text}]}; state is ok, warn or bad. Ash sees a preview with Apply and Discard. After he says it looks good, call with previewId and keep true. Undo is in Bot changes.",
+            "title": "Build a hub",
+            "description": "Build a hub (a page of the app; Ash calls them hubs) for Ash from the app's ready-made blocks, filled only with the project's real data you read first, from the app and the project's own checkout (its local git log, task_status, files), never from gh or anything else that reaches GitHub: no example or made-up numbers. A block with nothing real yet goes in empty (rows or bars []) and shows Nothing here yet. Call with project and spec, a PageSpec {\"kind\":\"blocks\",\"title\",\"blocks\":[...]} where every block has kind and title: status {state,line,detail}, list {rows:[{text,state,label}]}, chart {bars:[{label,value}]}, barlist {rows:[{label,value}]}, note {text}, calendar {month,firstWeekday,days,marked:[{day,text}]}; state is ok, warn or bad. Ash sees a preview with Apply and Discard. After he says it looks good, call with previewId and keep true. Undo is in Bot changes.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "project": { "type": "string", "description": "The hub project's id or name. Omit for a page not tied to a project (it lists on Pages)." },
+                    "project": { "type": "string", "description": "The project's id or name. Omit for a hub not tied to a project (it lists on Hubs)." },
                     "spec": { "type": "object", "description": "The PageSpec." },
                     "request": { "type": "string", "maxLength": 2000, "description": "Ash's words for it." },
                     "previewId": { "type": "string" },
@@ -460,7 +460,7 @@ fn tools() -> Value {
                 },
                 "additionalProperties": false
             },
-            "annotations": { "title": "Build a Page", "destructiveHint": false, "openWorldHint": false }
+            "annotations": { "title": "Build a hub", "destructiveHint": false, "openWorldHint": false }
         },
         {
             "name": "hub_change",

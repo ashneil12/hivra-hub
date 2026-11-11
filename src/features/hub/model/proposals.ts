@@ -71,7 +71,7 @@ let proposals: Proposal[] = examples([
   {
     id: "p0", projectId: "hivra", by: "Monocode", status: "applied", appliedAt: "Yesterday 6:12pm",
     title: "Example: added a Dashboards section to Hivra",
-    why: "Example: the weekly numbers live in a page kept for Hivra.",
+    why: "Example: the weekly numbers live in a hub kept for Hivra.",
     checked: [RULES.nav], before: { heading: "", rows: [] }, after: { heading: "", rows: [] },
   },
   {

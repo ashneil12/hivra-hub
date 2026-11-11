@@ -149,7 +149,7 @@ export function ProjectMenu({ project, anchor, onClose }: { project: HubProject;
       {above ? item("Move up", () => { swapProjects(ids, project.id, above.id); onClose(); }) : null}
       {below ? item("Move down", () => { swapProjects(ids, project.id, below.id); onClose(); }) : null}
       <div role="separator" className="my-1 h-px bg-content/10" />
-      {item("Remove from hub", () => setMode({ kind: "remove" }), { danger: true })}
+      {item("Remove from the app", () => setMode({ kind: "remove" }), { danger: true })}
     </Popover>
   );
 }
@@ -335,7 +335,7 @@ export function RemoveFromHub({ project, anchor, onClose }: { project: HubProjec
     });
   };
   return (
-    <Popover anchor={anchor} side="right" align="start" width={300} constrainHeight={false} role="alertdialog" aria-label={`Remove ${project.name} from the hub`}
+    <Popover anchor={anchor} side="right" align="start" width={300} constrainHeight={false} role="alertdialog" aria-label={`Remove ${project.name} from the app`}
       onDismiss={onClose} className="flex flex-col gap-2.5 p-3" data-project-remove-confirm={removeLead ? "with-lead" : "keep-lead"}>
       <div className="text-[13px] text-content">Remove {project.name} from hub?</div>
       <p className="text-[12px] leading-5 text-content/60" data-remove-what>
@@ -405,8 +405,8 @@ export function RemovedUndoToast() {
   return (
     <div role="status" data-project-undo
       className="sidebar-glass fixed bottom-14 left-20 z-50 flex items-center gap-3 rounded-lg px-3 py-2 text-[12px] text-content/85 shadow-lg ring-1 ring-content/10">
-      <span>{pending.project.name} removed from the hub</span>
-      <button type="button" aria-label={`Undo: ${pending.project.name} removed from the hub`} onClick={() => void pending.undo()} className="rounded-md px-2 py-0.5 text-content hover:bg-content/10">Undo</button>
+      <span>{pending.project.name} removed from the app</span>
+      <button type="button" aria-label={`Undo: ${pending.project.name} removed from the app`} onClick={() => void pending.undo()} className="rounded-md px-2 py-0.5 text-content hover:bg-content/10">Undo</button>
     </div>
   );
 }

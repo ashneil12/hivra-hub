@@ -26,7 +26,7 @@ it("runs the import again after Start clean and shows what came over", async () 
     await new Promise((r) => setTimeout(r, 10));
   });
   expect(asked).toHaveLength(1);
-  expect(host.querySelector("[data-ash-os-import-outcome]")?.textContent).toBe("Brought over 1 project, 0 Monos' projects and 0 kept Pages.");
+  expect(host.querySelector("[data-ash-os-import-outcome]")?.textContent).toBe("Brought over 1 project, 0 Monos' projects and 0 kept Hubs.");
   expect((await hub.projects()).projects.map((p) => p.id)).toEqual(["exo"]);
   expect(await hub.disk.read(IMPORT_KEY)).toMatchObject({ decided: "imported" });
 });

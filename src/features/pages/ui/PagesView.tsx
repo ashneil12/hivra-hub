@@ -329,7 +329,7 @@ function PageActivity({ pageId, title }: { pageId: string; title: string }) {
   return (
     <div className="mt-3 flex flex-col gap-0.5 px-1 text-[12px] text-content/60" data-page-activity>
       {log.map((e) => (
-        <div key={`${e.at}-${e.line}`} className={`truncate ${e.ok === false ? "text-red-400/80" : ""}`}>{e.line} · from the {/\bpage$/i.test(title) ? title : `${title} page`} · {agoLabel(e.at, now)}</div>
+        <div key={`${e.at}-${e.line}`} className={`truncate ${e.ok === false ? "text-red-400/80" : ""}`}>{e.line} · from the {/\b(hub|page)$/i.test(title) ? title : `${title} hub`} · {agoLabel(e.at, now)}</div>
       ))}
     </div>
   );
@@ -345,7 +345,7 @@ function Permissions({ asks }: { asks: Capability[] }) {
   return (
     <div className="flex flex-col gap-2" data-page-permissions>
       <div className={`${card} px-4 py-3`}>
-        <div className="mb-1 text-[12px] text-content/70">This page asks to:</div>
+        <div className="mb-1 text-[12px] text-content/70">This hub asks to:</div>
         <ul className="flex flex-col gap-0.5 text-[13px] text-content/90">
           {asks.map((a) => <li key={a}>· {describeCapability(a)}</li>)}
         </ul>
@@ -449,8 +449,8 @@ function PageConnections({ page }: { page: Page }) {
         <span data-page-sources-count>{grants.length ? `${grants.length} connected` : "None connected"}</span>
       </div>
       <p className="mt-1 text-[12px] leading-5 text-content/60">
-        A page has no internet of its own. It reads the hub things you allowed above, and only the web sources you connect
-        here, through the app. If a source needs a token, the app keeps it and the page never sees it.
+        A hub has no internet of its own. It reads the things in the app you allowed above, and only the web sources you connect
+        here, through the app. If a source needs a token, the app keeps it and the hub never sees it.
       </p>
       {grants.length ? (
         <div className="mt-2 flex flex-col" data-page-sources>
@@ -484,7 +484,7 @@ function PageConnections({ page }: { page: Page }) {
 function AllowAgain({ page, asks }: { page: Page; asks: Capability[] }) {
   return (
     <div className="mb-4 flex flex-col gap-2" data-pages-allow-again>
-      <div className="text-[12px] text-content/70" data-pages-allow-note>{page.by === READY_BY ? "This page comes with the app." : "This page came from a setup file."} It can't do anything until you allow what it asks for. The page below is greyed out until then.</div>
+      <div className="text-[12px] text-content/70" data-pages-allow-note>{page.by === READY_BY ? "This hub comes with the app." : "This hub came from a setup file."} It can't do anything until you allow what it asks for. The hub below is greyed out until then.</div>
       <Permissions asks={asks} />
       <div className="flex justify-end">
         <button type="button" data-pages-allow className={`${primaryBtn} disabled:opacity-40`} onClick={() => allowPage(page.id)}>Allow</button>
@@ -493,7 +493,7 @@ function AllowAgain({ page, asks }: { page: Page; asks: Capability[] }) {
   );
 }
 
-function AskBox({ onAsk, monos, monoId, onPick, placeholder, label = "Describe the page" }: { onAsk: (text: string) => void; monos: { id: string; name: string }[]; monoId: string; onPick: (id: string) => void; placeholder: string; label?: string }) {
+function AskBox({ onAsk, monos, monoId, onPick, placeholder, label = "Describe the hub" }: { onAsk: (text: string) => void; monos: { id: string; name: string }[]; monoId: string; onPick: (id: string) => void; placeholder: string; label?: string }) {
   const [text, setText] = useState("");
   const send = () => { if (text.trim()) { onAsk(text.trim()); setText(""); } };
   return (
@@ -528,7 +528,7 @@ type NotReady = Exclude<BuildPageResult, { status: "ready" }>;
 
 /** The card's line when no page came back (G15): who has it and why, in plain words. */
 function BuildProblem({ result, by }: { result: NotReady; by: string }) {
-  const heading = { "turned-down": `Sent back to ${by}`, busy: `${by} is busy`, "no-page": "No page yet", error: "That didn't work" }[result.status];
+  const heading = { "turned-down": `Sent back to ${by}`, busy: `${by} is busy`, "no-page": "No hub yet", error: "That didn't work" }[result.status];
   return (
     <div className="rounded-lg px-3 py-2.5" role="status" data-pages-build-problem={result.status} {...(result.status === "turned-down" ? { "data-pages-turned-down": "" } : {})}>
       <div className="text-[13px] text-content">{heading}</div>
@@ -681,11 +681,11 @@ export function PagesContent() {
         ) : (
           <div className={`${card} flex items-center gap-3 p-5 text-[13px] text-content/80`} role="status">
             <span aria-hidden className="size-3.5 animate-spin rounded-full border-2 border-content/20 border-t-content/70" />
-            {asker} is building your page in its chat…
+            {asker} is building your hub in its chat…
           </div>
         )}
         <div className="mt-4 flex gap-2">
-          <button type="button" className={quietBtn} onClick={() => { setBuild(undefined); setNewPage(false); }}>Back to Pages</button>
+          <button type="button" className={quietBtn} onClick={() => { setBuild(undefined); setNewPage(false); }}>Back to Hubs</button>
           {!("status" in build) || build.status !== "turned-down" ? <OpenChat monoId={askerId} name={asker} /> : null}
           {"status" in build && build.status !== "turned-down" ? <button type="button" className={primaryBtn} data-pages-try-again onClick={() => ask(build.prompt)}>Try again</button> : null}
         </div>
@@ -698,7 +698,7 @@ export function PagesContent() {
     const keepLabel = asks.length ? "Apply and allow" : "Apply";
     return (
       <div className="w-full px-6 py-6 xl:px-8" data-pages-preview>
-        <div className="mb-1 text-[12px] text-content/60">{ready?.ready ? "Ready-made page · built on the same bridge a Mono's page uses, so you can ask for your own" : <>“{preview.request}” · {preview.by} built this preview</>}</div>
+        <div className="mb-1 text-[12px] text-content/60">{ready?.ready ? "Ready-made hub · built on the same bridge a Mono's hub uses, so you can ask for your own" : <>“{preview.request}” · {preview.by} built this preview</>}</div>
         <h1 className="text-[17px] font-medium text-content">{preview.title}</h1>
         <div className="mb-4 mt-1"><Limits /></div>
         {asks.length ? <div className="mb-3"><Permissions asks={asks} /></div> : null}
@@ -707,7 +707,7 @@ export function PagesContent() {
             {preview.warnings.map((w) => (
               <div key={w.rule} className="flex items-start gap-3 text-[13px]">
                 <span className="min-w-0 flex-1 leading-5 text-content/85">{w.plain}</span>
-                <button type="button" className={quietBtn} onClick={() => { if (ready?.chat) settleChatPreview(ready.chat.id); setSentBack(w.plain); ask(`${preview.request}\n\nFix this in the page: ${w.plain}`); }}>Fix it</button>
+                <button type="button" className={quietBtn} onClick={() => { if (ready?.chat) settleChatPreview(ready.chat.id); setSentBack(w.plain); ask(`${preview.request}\n\nFix this in the hub: ${w.plain}`); }}>Fix it</button>
               </div>
             ))}
             {sentBack ? <div className="text-[12px] text-content/70" role="status">Sent back to {asker}: “{sentBack}”</div> : null}
@@ -747,7 +747,7 @@ export function PagesContent() {
             <DotMenu label={`${shown.title} options`} items={[
               { id: "rebuild", label: rebuilding === shown.id ? "Never mind the change" : "Ask for a change", onPick: () => setRebuilding(rebuilding === shown.id ? undefined : shown.id) },
               { id: "pin", label: shown.pinned ? "Unpin from the sidebar" : "Pin to the sidebar", onPick: () => setPinned(shown.id, !shown.pinned) },
-              { id: "all", label: "All pages", onPick: () => setOpen(undefined) },
+              { id: "all", label: "All hubs", onPick: () => setOpen(undefined) },
             ]} />
           </div>
           {readyWhat(shown.request) ? <p className="mt-1 text-[13px] leading-5 text-content/70" data-pages-what>{readyWhat(shown.request)}</p> : null}
@@ -763,7 +763,7 @@ export function PagesContent() {
             </div>
           ) : null}
           {/* r63 (PM's blind C8): the Allow card and the page below once had the same key, so every live re-render added
-              another Allow card (4+ on the Agents page). Each sibling has its own key now; until Allow the page is shown
+              another Allow card (4+ on the Agents page). Each sibling has its own key now; until Allow the hub is shown
               greyed with a line that says why it can't be used yet. */}
           {gated ? <AllowAgain key={`allow:${shown.id}`} page={shown} asks={shown.spec.kind === "bespoke" ? shown.spec.permissions : []} /> : null}
           <PageRebuild key={`rebuild:${shown.id}`} page={shown} asking={rebuilding === shown.id} onDone={() => setRebuilding(undefined)} seated={seated} projectId={shown.projectId ?? "today"}>
@@ -787,12 +787,12 @@ export function PagesContent() {
     return (
       <div className="flex h-full flex-col items-center justify-center gap-4 px-8 text-center" data-pages-new>
         <div>
-          <div className="text-[20px] font-semibold leading-tight text-content">{pages.length ? "New page" : "No pages yet"}</div>
-          <div className="mt-1.5 text-[13px] text-content/50">Describe the page. {asker} builds it and shows you a preview first.</div>
+          <div className="text-[20px] font-semibold leading-tight text-content">{pages.length ? "New hub" : "No hubs yet"}</div>
+          <div className="mt-1.5 text-[13px] text-content/50">Describe the hub. {asker} builds it and shows you a preview first.</div>
           <div className="mt-2"><Limits /></div>
         </div>
-        <div className="w-full max-w-[640px]"><AskBox onAsk={ask} monos={seated} monoId={askerId} onPick={setPicked} placeholder="Describe the page…" /></div>
-        {pages.length ? <button type="button" className={quietBtn} onClick={() => setNewPage(false)}>Back to all pages</button> : null}
+        <div className="w-full max-w-[640px]"><AskBox onAsk={ask} monos={seated} monoId={askerId} onPick={setPicked} placeholder="Describe the hub…" /></div>
+        {pages.length ? <button type="button" className={quietBtn} onClick={() => setNewPage(false)}>Back to all hubs</button> : null}
         <ReadyMade offers={offers} onAdd={addReady} compact />
       </div>
     );
@@ -808,8 +808,8 @@ export function PagesContent() {
       {/* The app's own gallery look (New automation): a title, pill filters, then cards. */}
       <div className="w-full px-6 pt-5 pb-10 xl:px-8" data-pages-list>
         <PagesProblem />
-        <h1 className="text-[20px] font-semibold leading-tight text-content">Pages</h1>
-        <p className="mt-1.5 text-[13px] text-content/50">Pages your first mates built for you. Pin one to keep it in the sidebar.</p>
+        <h1 className="text-[20px] font-semibold leading-tight text-content">Hubs</h1>
+        <p className="mt-1.5 text-[13px] text-content/50">Hubs your first mates built for you. Pin one to keep it in the sidebar.</p>
         <div role="tablist" aria-label="Filter by project" className="mt-4 flex flex-wrap gap-1.5">
           {["all", ...withPages].map((id) => (
             <button key={id} type="button" role="tab" aria-selected={filter === id} onClick={() => setFilter(id)}
@@ -828,13 +828,13 @@ export function PagesContent() {
             <Plus className="size-4" strokeWidth={1.75} />
           </span>
           <span className="min-w-0">
-            <span className="block text-[13px] font-medium text-content">New page</span>
+            <span className="block text-[13px] font-medium text-content">New hub</span>
             <span className="mt-1 block text-[12px] leading-snug text-content/50">Describe it and a first mate builds it. You see a preview before anything is kept.</span>
           </span>
         </button>
         {!groups.length ? (
           <div className="mt-8 flex flex-col items-center gap-3 text-center" data-pages-filter-empty>
-            <div className="text-[14px] text-content">No pages yet</div>
+            <div className="text-[14px] text-content">No hubs yet</div>
             <div className="text-[13px] text-content/50">Nothing for {nameOf(filter)} so far.</div>
           </div>
         ) : null}
@@ -922,14 +922,14 @@ function PageRebuild({ page, asking, onDone, seated, projectId, children }: { pa
       <div data-pages-new-version>
         <div className="mb-1 text-[12px] text-content/60">“{viewing.request}” · {viewing.by} built a new version</div>
         <div className="mb-3 text-[12px] text-content/70" data-pages-new-version-keeps>
-          {keeps.length ? `It keeps what you allowed it (${allowedLabel(keeps.length).replace(/^Allowed: /, "")}).` : "The page stays as it is until you use this version."}
+          {keeps.length ? `It keeps what you allowed it (${allowedLabel(keeps.length).replace(/^Allowed: /, "")}).` : "The hub stays as it is until you use this version."}
         </div>
         {added.length ? <div className="mb-3"><div className="mb-1 text-[12px] text-content/70">The new version also asks:</div><Permissions asks={added} /></div> : null}
         <div className="relative rounded-xl border border-dashed border-content/30 p-4" data-pages-preview-frame>
           <div className="relative"><PageBody page={preview} /></div>
         </div>
         <div className="sticky bottom-0 mt-4 flex items-center gap-3 rounded-xl border border-dashed border-content/20 bg-background-base/90 px-5 py-3 backdrop-blur">
-          <span className="text-[12px] text-content/70">This is the new version. Your page stays as it is until you use it.</span>
+          <span className="text-[12px] text-content/70">This is the new version. Your hub stays as it is until you use it.</span>
           <span className="ml-auto" />
           <button type="button" className={quietBtn} disabled={busy} onClick={() => { if (viewing.id) void dropNewVersion(page, viewing.id); close(); }}>Discard</button>
           <button type="button" data-pages-use-version disabled={busy} className={`${primaryBtn} disabled:opacity-40`} onClick={() => use(added.length > 0)}>
@@ -946,7 +946,7 @@ function PageRebuild({ page, asking, onDone, seated, projectId, children }: { pa
     <>
       {asking && !run ? (
         <div className="mb-4" data-pages-rebuild-ask>
-          <div className="mb-1.5 text-[12px] text-content/70">Say what should change. {builder} changes the page in its chat and shows you the new version here first.</div>
+          <div className="mb-1.5 text-[12px] text-content/70">Say what should change. {builder} changes the hub in its chat and shows you the new version here first.</div>
           <AskBox onAsk={(text) => ask(text)} monos={seated} monoId={builderId} onPick={setPicked} placeholder="What should change? Like “add a column for stuck time”…" label="What should change" />
         </div>
       ) : null}
@@ -956,14 +956,14 @@ function PageRebuild({ page, asking, onDone, seated, projectId, children }: { pa
           {!("status" in run) ? (
             <div className={`${card} flex items-center gap-3 p-4 text-[13px] text-content/80`} role="status">
               <span aria-hidden className="size-3.5 animate-spin rounded-full border-2 border-content/20 border-t-content/70" />
-              <span className="min-w-0 flex-1 leading-5">{run.by} is changing the page in its chat…</span>
+              <span className="min-w-0 flex-1 leading-5">{run.by} is changing the hub in its chat…</span>
             </div>
           ) : run.status !== "ready" ? (
             <BuildProblem result={run} by={run.by} />
           ) : null}
           {!("status" in run) || run.status !== "ready" ? (
             <div className="mt-2 flex gap-2">
-              <button type="button" className={quietBtn} onClick={() => { runs.current++; setRun(undefined); }}>Back to the page</button>
+              <button type="button" className={quietBtn} onClick={() => { runs.current++; setRun(undefined); }}>Back to the hub</button>
               {!("status" in run) || run.status !== "turned-down" ? <OpenChat monoId={run.monoId} name={run.by} /> : null}
               {"status" in run && run.status !== "turned-down" ? <button type="button" className={primaryBtn} data-pages-try-again onClick={() => ask(run.prompt, run.monoId, run.by)}>Try again</button> : null}
             </div>
@@ -1041,7 +1041,7 @@ export function PagesView({ onClose, onToggleSidebar, besideRail = true, compact
   const pageShown = tab === "pages" && !!shownPageId() && allPages().some((p) => p.id === shownPageId());
   const flows: ChangeFlow[] = ["hub", "today", "connect"];
   return (
-    <div role="region" aria-label="Pages" data-app-pages className="flex min-h-0 min-w-0 flex-1 flex-col text-content">
+    <div role="region" aria-label="Hubs" data-app-pages className="flex min-h-0 min-w-0 flex-1 flex-col text-content">
       <div className="flex h-10 shrink-0 select-none items-center border-b border-stroke" data-tauri-drag-region="deep">
         {IS_MAC && compactRail ? <div className="w-4 shrink-0" /> : null}
         {IS_MAC && !besideRail ? <div className="w-[78px] shrink-0" /> : null}
@@ -1050,12 +1050,12 @@ export function PagesView({ onClose, onToggleSidebar, besideRail = true, compact
           {pageShown ? null : tab === "pages" ? (
             <>
               <DashboardSquare className="size-3.5 shrink-0 text-content/60" strokeWidth={1.75} />
-              <span className="min-w-0 flex-1 truncate text-content">Pages</span>
-              <DotMenu label="More for Pages" items={flows.map((flow) => ({ id: flow, label: FLOW_LABEL[flow], onPick: () => setTab(flow) }))} />
+              <span className="min-w-0 flex-1 truncate text-content">Hubs</span>
+              <DotMenu label="More for Hubs" items={flows.map((flow) => ({ id: flow, label: FLOW_LABEL[flow], onPick: () => setTab(flow) }))} />
             </>
           ) : (
             <>
-              <button type="button" data-pages-back className="rounded-md px-2 py-0.5 text-[12px] text-content/70 hover:bg-selection-hover hover:text-content" onClick={() => setTab("pages")}>← Pages</button>
+              <button type="button" data-pages-back className="rounded-md px-2 py-0.5 text-[12px] text-content/70 hover:bg-selection-hover hover:text-content" onClick={() => setTab("pages")}>← Hubs</button>
               <span className="min-w-0 truncate text-content">{FLOW_LABEL[tab]}</span>
             </>
           )}

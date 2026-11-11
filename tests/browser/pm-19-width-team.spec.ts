@@ -51,7 +51,7 @@ for (const size of SIZES) {
     await page.waitForTimeout(600);
     await page.screenshot({ path: `${SHOTS}/pm-19-coding-team-${size.name}.png` });
 
-    await page.getByRole("button", { name: /^Pages/ }).first().click();
+    await page.getByRole("button", { name: /^Hubs/ }).first().click();
     // WP-01: the list (ready-made pages are there from the start) with its New page button, or the ask box when
     // there are no pages yet. Wait for one of them instead of checking before the view has rendered.
     await expect(page.locator("[data-pages-list], [data-pages-new]").first()).toBeVisible();

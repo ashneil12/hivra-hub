@@ -46,14 +46,14 @@ function deps(over: Partial<PageActionDeps> = {}) {
 beforeEach(() => resetPageActionsForTest());
 
 it("says which page sent it, in the words that reach the chat", () => {
-  expect(fromPage("Agents")).toBe("(sent from the Agents page)");
+  expect(fromPage("Agents")).toBe("(sent from the Agents hub)");
   expect(fromPage("Release page")).toBe("(sent from the Release page)");
 });
 
 it("answers a waiting chat the way Waiting on you does, signed with the page", async () => {
   const { d, calls } = deps();
   const out = await runPageAction("agents.answer", { chatId: "s-lead", text: "Go with three" }, ctx, d);
-  expect(calls).toEqual([["answerInWords", "s-lead", "Go with three\n\n(sent from the Agents page)"]]);
+  expect(calls).toEqual([["answerInWords", "s-lead", "Go with three\n\n(sent from the Agents hub)"]]);
   expect(out).toEqual({ done: "Answered EXO lead" });
   expect(pageActionLog("pg_1").map((e) => e.line)).toEqual(["Answered EXO lead: “Go with three”"]);
 });
@@ -63,14 +63,14 @@ it("answers a worker's live question in its own chat (Ash's in-chat answer), and
   await runPageAction("agents.answer", { chatId: "w-d2", text: "Slot 3 please" }, ctx, d);
   expect(calls[0][0]).toBe("respond");
   expect(calls[0].slice(1, 3)).toEqual(["w-d2", 9]);
-  expect(JSON.stringify(calls[0][3])).toContain("Slot 3 please\\n\\n(sent from the Agents page)");
+  expect(JSON.stringify(calls[0][3])).toContain("Slot 3 please\\n\\n(sent from the Agents hub)");
   await runPageAction("agents.pick", { chatId: "w-d2" }, ctx, d);
   expect(calls[1]).toEqual(["respond", "w-d2", 9, { kind: "answered", answers: { q: ["a"] } }]);
   await runPageAction("agents.pick", { chatId: "s-lead" }, ctx, d);
   expect(calls[2]).toEqual(["takePick", "s-lead"]);
   // A "Needs Ash:" line is answered with Waiting on you's own words for the pick, signed.
   await runPageAction("agents.pick", { chatId: "s-hivra" }, ctx, d);
-  expect(calls[3]).toEqual(["answerInWords", "s-hivra", "Go with your pick: send it today\n\n(sent from the Agents page)"]);
+  expect(calls[3]).toEqual(["answerInWords", "s-hivra", "Go with your pick: send it today\n\n(sent from the Agents hub)"]);
 });
 
 it("an Ash OS question goes through Ash's own answer call", async () => {
@@ -83,7 +83,7 @@ it("an Ash OS question goes through Ash's own answer call", async () => {
 it("messages a Mono in its own chat, and refuses one with no chat yet", async () => {
   const { d, calls } = deps();
   await runPageAction("agents.message", { agentId: "ed", text: "Check the pricing page" }, ctx, d);
-  expect(calls).toEqual([["send", "s-ed", "Check the pricing page\n\n(sent from the Agents page)"]]);
+  expect(calls).toEqual([["send", "s-ed", "Check the pricing page\n\n(sent from the Agents hub)"]]);
   await expect(runPageAction("agents.message", { agentId: "cam", text: "hi" }, ctx, d)).rejects.toThrow("Alfred has no chat yet. Open it once first.");
   await expect(runPageAction("agents.message", { agentId: "ed", text: "  " }, ctx, d)).rejects.toThrow("Type a message first.");
 });
@@ -121,7 +121,7 @@ it("says plainly when the app can't do it yet, and never guesses", async () => {
 it("mono.run asks a Mono to run work, as a message from the page into its chat", async () => {
   const { d, calls } = deps();
   expect(await runPageAction("mono.run", { agentId: "ed", text: "Pull this week's signups" }, ctx, d)).toEqual({ done: "Asked ed to run" });
-  expect(calls).toEqual([["send", "s-ed", "Pull this week's signups\n\n(sent from the Agents page)"]]);
+  expect(calls).toEqual([["send", "s-ed", "Pull this week's signups\n\n(sent from the Agents hub)"]]);
   expect(pageActionLog("pg_1")[0].line).toBe("Asked ed to run: “Pull this week's signups”");
   await expect(runPageAction("mono.run", { text: "x" }, ctx, d)).rejects.toThrow("Say which Mono should run it (agentId).");
   await expect(runPageAction("mono.run", { agentId: "ed" }, ctx, d)).rejects.toThrow("Say what to run first.");
@@ -134,7 +134,7 @@ it("tasks.write answers, stops or hands out a task the way the taps do, and refu
   expect(await runPageAction("tasks.write", { op: "stop", workerId: "d1" }, ctx, d)).toEqual({ done: "Stopped “Example: d1”" });
   expect(await runPageAction("tasks.write", { op: "add", agentId: "ed", text: "Write the launch post" }, ctx, d)).toEqual({ done: "Asked ed to run" });
   expect(calls.map((c) => c[0])).toEqual(["answerInWords", "stopRow", "send"]);
-  await expect(runPageAction("tasks.write", { op: "delete", workerId: "d1" }, ctx, d)).rejects.toThrow("A page can answer, stop or add a task (op: answer, stop or add).");
+  await expect(runPageAction("tasks.write", { op: "delete", workerId: "d1" }, ctx, d)).rejects.toThrow("A hub can answer, stop or add a task (op: answer, stop or add).");
 });
 
 it("a page cannot answer a secret run's card, through its answer or its pick (fix round 3, H1)", async () => {

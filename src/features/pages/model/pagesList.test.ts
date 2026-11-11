@@ -47,4 +47,4 @@ it("Pages hides the workspace sidebar", () => {
   const src = readFileSync(`${process.cwd()}/src/app/shell/Sidebar.tsx`, "utf8");
   expect(src).toMatch(/automationsActive \|\|\n\s*pagesActive \|\|\n\s*hubSurfaceActive/);
 });
-it("New page placeholder", async () => { const s = (await import("node:fs")).readFileSync(`${process.cwd()}/src/features/pages/ui/PagesView.tsx`, "utf8"); expect(s).toContain(`placeholder="Describe the page…"`); });
+it("New page placeholder", async () => { const s = (await import("node:fs")).readFileSync(`${process.cwd()}/src/features/pages/ui/PagesView.tsx`, "utf8"); expect(s).toContain(`placeholder="Describe the hub…"`); });

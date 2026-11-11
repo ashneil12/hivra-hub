@@ -104,9 +104,9 @@ it("a Page with a blank id is still not the person", async () => {
   const d = { answerNeed: (id: string, a: Record<string, unknown>) => void pending.push(source.act("answer", { id, ...a }).catch((e: unknown) => e)) } as unknown as PageActionDeps;
 
   // The tap refuses before anything is sent; the store refuses a blank `from` too, whoever sends it.
-  await expect(runPageAction("agents.answer", { needId: decisionNeedId(open), text: "B" }, { pageId: "   ", pageTitle: "Blank" }, d)).rejects.toThrow("This page has no id");
-  await expect(source.act("answer", { id: decisionNeedId(open), text: "B", from: "   " })).rejects.toThrow("This page has no id");
-  await expect(source.act("answer", { id: decisionNeedId(open), text: "B", from: 7 })).rejects.toThrow("This page has no id");
+  await expect(runPageAction("agents.answer", { needId: decisionNeedId(open), text: "B" }, { pageId: "   ", pageTitle: "Blank" }, d)).rejects.toThrow("This hub has no id");
+  await expect(source.act("answer", { id: decisionNeedId(open), text: "B", from: "   " })).rejects.toThrow("This hub has no id");
+  await expect(source.act("answer", { id: decisionNeedId(open), text: "B", from: 7 })).rejects.toThrow("This hub has no id");
   await Promise.all(pending);
   expect(by).toEqual([]);
   // A real page id still answers, as the page.

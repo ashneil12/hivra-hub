@@ -204,14 +204,14 @@ export function HubOnboarding({ onClose }: { onClose: () => void }) {
                 <span className="text-xs text-content/60">Your first project</span>
                 <input data-hub-onboarding-project value={projectName} onChange={(e) => setProjectName(e.target.value)} placeholder="A name, like My app (optional)" maxLength={80}
                   className="rounded-md bg-content/6 px-3 py-1.5 text-[13px] text-content outline-none placeholder:text-content/40 focus:bg-content/10" />
-                <span className="text-xs leading-5 text-content/55">It gets its own home, first mates and pages. Add more projects with the + on the left.</span>
+                <span className="text-xs leading-5 text-content/55">It gets its own home, first mates and hubs. Add more projects with the + on the left.</span>
               </label>
               {projectError ? <p className="text-[13px] leading-5 text-content/75" data-hub-onboarding-error>{projectError}</p> : null}
               </>
             ) : null}
             {start === "restore" && restored ? <p className="text-[13px] text-content/75" data-hub-onboarding-restored>{restored}</p> : null}
             <p className="whitespace-nowrap text-[13px] leading-5 text-content/60" data-hub-onboarding-dashboards>
-              Comes with ready-made pages: Game studio, Product / SaaS, Org / ops.
+              Comes with ready-made hubs: Game studio, Product / SaaS, Org / ops.
             </p>
           </div>
         ) : null}

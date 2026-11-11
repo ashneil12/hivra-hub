@@ -58,7 +58,7 @@ export async function handleMonoRetire(input: Record<string, unknown>, caller: {
   const mono = onRoster(input.mono);
   if (!mono) throw new Error(forUser`No Mono called "${input.mono.trim()}" is on the team now (it may be retired already). Check the live list in <monos_now>, and tell Ash if it's already gone.`);
   if (mono.id === caller.monoId) throw new Error("You can't retire yourself.");
-  if (mono.id === "checker") throw new Error("The hub's checker isn't a team Mono; it can't be retired.");
+  if (mono.id === "checker") throw new Error("The app's checker isn't a team Mono; it can't be retired.");
   const name = monoLook(mono).name;
   const ask: RetireAsk = { id: `retire-${mono.id}-${now.toString(36)}`, monoId: mono.id, name, by: caller, at: now };
   save([...load().filter((a) => !(a.monoId === mono.id && !a.changeId)), ask]);

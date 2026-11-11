@@ -234,7 +234,7 @@ export function ImportPreview({ pending, onBack, onRestore, inline }: {
       ) : null}
 
       {plan.pages.length ? (
-        <Section title="Pages" testId="pages">
+        <Section title="Hubs" testId="pages">
           {plan.pages.map((x) => (
             <Row key={x.page.id} testId={`page-${x.page.id}`}
               tick={x.state === "new" ? <Tick on={choices.pages.has(x.page.id)} onClick={() => set((c) => ({ ...c, pages: toggle(c.pages, x.page.id) }))} label={x.page.title} /> : <Tick on disabled label={x.page.title} />}

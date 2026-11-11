@@ -46,7 +46,7 @@ export const BUILD_TOTAL_SECONDS = 240;
 /** The pause between two looks at the first mate's chat. */
 export const BUILD_RECHECK_MS = 2_000;
 
-export const SEATED_ONLY_PAGES = "Only one of your own Monos can build pages. Temporary workers can't.";
+export const SEATED_ONLY_PAGES = "Only one of your own Monos can build hubs. Temporary workers can't.";
 const DEV_STUB_KEY = "monocode:pages-dev-stub";
 
 /** Seated = on the Monos roster (CoS, PM, ed, Alfred, Leads, anything Ash added). Temporary workers never are. */
@@ -83,9 +83,9 @@ function projectName(projectId: string | undefined): string | undefined {
 export function newPageAsk(prompt: string, project?: string): string {
   const where = project ? `project "${project}"` : "no project (it isn't tied to one)";
   return [
-    `From Pages: build me a new page. “${prompt.trim()}”`,
+    `From Hubs: build me a new hub. “${prompt.trim()}”`,
     "",
-    `Use page_build with ${where}, request set to my words above, and a spec filled only with real data you read first. I'm waiting on the Pages card for the preview, so answer with page_build. If you can't build it, tell me why in one line.`,
+    `Use page_build with ${where}, request set to my words above, and a spec filled only with real data you read first. I'm waiting on the Hubs card for the preview, so answer with page_build. If you can't build it, tell me why in one line.`,
   ].join("\n");
 }
 
@@ -93,10 +93,10 @@ export function newPageAsk(prompt: string, project?: string): string {
 export function changePageAsk(prompt: string, title: string, current: PageSpec | undefined, project?: string): string {
   const where = project ? `project "${project}"` : "no project";
   return [
-    `From Pages: change my page “${title}”. “${prompt.trim()}”`,
-    ...(current ? ["", "Here is the page as it is now (its PageSpec):", "```json", JSON.stringify(current, null, 2), "```"] : []),
+    `From Hubs: change my hub “${title}”. “${prompt.trim()}”`,
+    ...(current ? ["", "Here is the hub as it is now (its PageSpec):", "```json", JSON.stringify(current, null, 2), "```"] : []),
     "",
-    `Use page_build with ${where}, request set to my words above, and the whole page with the change made: keep everything I didn't ask to change, real data only. It comes back to that page as a new version for me to use or discard, so don't call keep. If you can't make the change, tell me why in one line.`,
+    `Use page_build with ${where}, request set to my words above, and the whole hub with the change made: keep everything I didn't ask to change, real data only. It comes back to that hub as a new version for me to use or discard, so don't call keep. If you can't make the change, tell me why in one line.`,
   ].join("\n");
 }
 
@@ -107,7 +107,7 @@ export function changePageAsk(prompt: string, title: string, current: PageSpec |
  */
 export async function buildPage(req: BuildPageRequest, deps: BuildDeps = {}): Promise<BuildPageResult> {
   if (!isSeatedMono(req.monoId, deps.roster)) return { status: "turned-down", reason: SEATED_ONLY_PAGES };
-  if (!req.prompt.trim()) return { status: "turned-down", reason: "Say what the page should show." };
+  if (!req.prompt.trim()) return { status: "turned-down", reason: "Say what the hub should show." };
   if (deps.stub ?? devStubOn()) return checkBuiltSpec(stubPageSpec(req.prompt));
   const project = projectName(req.projectId);
   return askFirstMate(
@@ -123,9 +123,9 @@ export async function buildPage(req: BuildPageRequest, deps: BuildDeps = {}): Pr
  */
 export async function rebuildPage(req: RebuildPageRequest, deps: BuildDeps = {}): Promise<BuildPageResult> {
   if (!isSeatedMono(req.monoId, deps.roster)) return { status: "turned-down", reason: SEATED_ONLY_PAGES };
-  if (!req.prompt.trim()) return { status: "turned-down", reason: "Say what should change on the page." };
+  if (!req.prompt.trim()) return { status: "turned-down", reason: "Say what should change on the hub." };
   if (deps.stub ?? devStubOn()) return checkBuiltSpec(req.current ? stubRebuildSpec(req.current, req.prompt) : stubPageSpec(req.prompt));
-  const title = req.current?.title ?? "this page";
+  const title = req.current?.title ?? "this hub";
   const project = projectName(req.projectId);
   const result = await askFirstMate(
     { monoId: req.monoId, prompt: req.prompt, change: { pageId: req.pageId, title }, ...(project ? { projectId: req.projectId } : {}) },
@@ -140,9 +140,9 @@ async function askFirstMate(ask: Omit<PageAsk, "id" | "at">, text: string, deps:
   const now = deps.now ?? Date.now;
   const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
   const name = (deps.roster ?? listMonos()).find((m) => m.id === ask.monoId)?.name || ask.monoId;
-  const later = ask.change ? "the new version waits on this page" : "it shows up on Pages";
+  const later = ask.change ? "the new version waits on this hub" : "it shows up on Hubs";
   const chat = deps.chat === undefined ? monoChatHost() : deps.chat;
-  if (!chat) return { status: "error", reason: `Pages can't reach ${name}'s chat from this window. Try again, or ask ${name} in its chat.` };
+  if (!chat) return { status: "error", reason: `Hubs can't reach ${name}'s chat from this window. Try again, or ask ${name} in its chat.` };
   let session: { id: string } | undefined;
   try {
     session = await chat.ensure(ask.monoId);
@@ -182,10 +182,10 @@ async function askFirstMate(ask: Omit<PageAsk, "id" | "at">, text: string, deps:
     const s = chat.read(session.id);
     if (!s) {
       closePageAsk(id);
-      return { status: "error", reason: `${name}'s chat closed before a page came back. Try again.` };
+      return { status: "error", reason: `${name}'s chat closed before a hub came back. Try again.` };
     }
     if (s.busy) sawBusy = true;
-    if (s.pendingQuestion) return { status: "no-page", reason: `${name} asked you something in its chat. Answer it there; when the page is built, ${later}. Or Try again.` };
+    if (s.pendingQuestion) return { status: "no-page", reason: `${name} asked you something in its chat. Answer it there; when the hub is built, ${later}. Or Try again.` };
     const exchange = latestExchange(s.blocks, false);
     const replied = !!exchange.reply && !!exchange.you?.includes(ask.prompt.trim());
     if (!s.busy && (sawBusy || replied)) {
@@ -195,12 +195,12 @@ async function askFirstMate(ask: Omit<PageAsk, "id" | "at">, text: string, deps:
       closePageAsk(id);
       const said = (exchange.reply ?? "").trim().replace(/\s+/g, " ");
       const quote = said ? ` It said: “${said.length > 280 ? `${said.slice(0, 279)}…` : said}”` : "";
-      return { status: "no-page", reason: `${name} answered in its chat without a page.${quote} Try again, or open its chat.` };
+      return { status: "no-page", reason: `${name} answered in its chat without a hub.${quote} Try again, or open its chat.` };
     }
     if (now() + BUILD_RECHECK_MS > end) {
       return {
         status: "no-page",
-        reason: `No page from ${name} after ${Math.round(BUILD_TOTAL_SECONDS / 60)} minutes. If it's still at it, ${later} when it's done. Try again, or open its chat to see where it is.`,
+        reason: `No hub from ${name} after ${Math.round(BUILD_TOTAL_SECONDS / 60)} minutes. If it's still at it, ${later} when it's done. Try again, or open its chat to see where it is.`,
       };
     }
     await Promise.race([answered, sleep(BUILD_RECHECK_MS)]);

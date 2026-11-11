@@ -2865,7 +2865,7 @@ function SidebarComponent({
           onClick: onOpenAutomations,
         },
         onOpenPages && {
-          label: "Pages",
+          label: "Hubs",
           icon: DashboardSquare,
           active: pagesActive,
           onClick: onOpenPages,
@@ -4066,7 +4066,7 @@ function SidebarProjectPicker({
           </IconButton>
         ) : null}
         {onOpenPages ? (
-          <IconButton label="Pages" active={pagesActive} onClick={onOpenPages}>
+          <IconButton label="Hubs" active={pagesActive} onClick={onOpenPages}>
             <DashboardSquare className="size-3.5" strokeWidth={1.75} />
           </IconButton>
         ) : null}
@@ -4355,7 +4355,7 @@ function CompactProjectRail({
         />
         {onOpenPages ? (
           <CompactRailAction
-            label="Pages"
+            label="Hubs"
             icon={DashboardSquare}
             active={pagesActive}
             onClick={action(pagesActive, onOpenPages)}

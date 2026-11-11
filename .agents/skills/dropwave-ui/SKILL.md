@@ -1,6 +1,6 @@
 ---
 name: dropwave-ui
-description: Change one of the app's own screens (sidebar, Home, a chat, Pages, Settings, first run) so it still looks and behaves like the rest of Dropwave. Use before touching anything under src/ that a person sees, when asked to "move", "rename", "add a button", "fix how X looks", or when a first mate is asked to change the app it runs in.
+description: Change one of the app's own screens (sidebar, Home, a chat, Hubs, Settings, first run) so it still looks and behaves like the rest of Dropwave. Use before touching anything under src/ that a person sees, when asked to "move", "rename", "add a button", "fix how X looks", or when a first mate is asked to change the app it runs in.
 ---
 
 # Changing the app's own screens
@@ -9,7 +9,7 @@ The rules are in [docs/hivra/DESIGN.md](../../../docs/hivra/DESIGN.md). Read sec
 (rules) before you write anything. This skill is the order to work in.
 
 ## 0. Is it a screen change at all?
-If the ask is "show me X" or "I want a board for Y", it is a page, not an app change: use the `make-a-hub` skill. Only
+If the ask is "show me X" or "I want a board for Y", it is a hub, not an app change: use the `make-a-hub` skill. Only
 change the app's code when the thing must be part of every install.
 
 ## 1. See it before you change it

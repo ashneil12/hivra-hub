@@ -23,7 +23,7 @@ describe("toHubError", () => {
     for (const odd of ["boom", null, undefined, { kind: "weird", message: "x" }, { kind: "error", message: 3 }]) {
       const e = toHubError(odd);
       expect(e.kind).toBe("unreachable");
-      expect(e.message).toBe("The hub couldn't be read.");
+      expect(e.message).toBe("The app couldn't be read.");
     }
     // An Error keeps its own words.
     expect(toHubError(new TypeError("Cannot read properties of undefined (reading 'invoke')")).message).toBe(

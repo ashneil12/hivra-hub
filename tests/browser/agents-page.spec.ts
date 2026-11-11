@@ -70,7 +70,7 @@ test("the Agents page follows the agents live, and answers, takes a pick and sto
     setTimeout(() => void w.hub.call("agents.stop", { workerId: "d1" }).then(() => (w.byItself = "ran"), (e: Error) => (w.byItself = e.message)), 6000);
   });
   await page.waitForTimeout(6500);
-  expect(await inner.evaluate(() => (window as unknown as { byItself?: string }).byItself)).toBe("Pages act only when you tap something on them, so nothing was done.");
+  expect(await inner.evaluate(() => (window as unknown as { byItself?: string }).byItself)).toBe("Hubs act only when you tap something on them, so nothing was done.");
   expect((await proof(page)).stops).toEqual([]);
 
   // Answer the stuck worker's question in Ash's words: it goes into the worker's own chat as his answer, signed.

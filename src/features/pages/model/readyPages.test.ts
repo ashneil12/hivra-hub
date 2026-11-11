@@ -95,7 +95,7 @@ for (const ready of READY_CASES) {
     const add = host.querySelector(`[data-pages-ready-add="${ready.id}"]`) as HTMLButtonElement;
     expect(add).not.toBeNull();
     await act(async () => add.click());
-    expect(host.querySelector("[data-pages-preview]")!.textContent).toContain("Ready-made page");
+    expect(host.querySelector("[data-pages-preview]")!.textContent).toContain("Ready-made hub");
     const asks = host.querySelector("[data-page-permissions]")!.textContent!;
     for (const words of ready.words) expect(asks).toContain(words);
     const keep = host.querySelector("[data-pages-keep]") as HTMLButtonElement;

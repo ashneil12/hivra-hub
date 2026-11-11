@@ -773,7 +773,7 @@ fn pages(conn: &Connection, notes: &mut Vec<String>) -> Result<Vec<Value>, Strin
         .iter()
         .all(|c| cols.contains(*c))
     {
-        notes.push("Left out kept Pages: their table couldn't be read.".into());
+        notes.push("Left out kept Hubs: their table couldn't be read.".into());
         return Ok(Vec::new());
     }
     // Each value no longer than it may be (a longer one reads as missing); a column an older record lacks reads as NULL.
@@ -837,13 +837,13 @@ fn pages(conn: &Connection, notes: &mut Vec<String>) -> Result<Vec<Value>, Strin
         let [id, project, mono, by, title, request, spec, permissions, pin_asked, pinned, pinned_by, kept_at, version] =
             row.map_err(failed)?;
         if out.len() == MAX_PAGES {
-            notes.push(format!("Left out kept Pages past the first {MAX_PAGES}."));
+            notes.push(format!("Left out kept Hubs past the first {MAX_PAGES}."));
             break;
         }
         spec_bytes += spec.as_ref().and_then(Value::as_str).map_or(0, str::len);
         if spec_bytes > MAX_SPECS_TOTAL {
             notes.push(
-                "Left out the oldest kept Pages: together they were too big to bring over.".into(),
+                "Left out the oldest kept Hubs: together they were too big to bring over.".into(),
             );
             break;
         }
@@ -861,7 +861,7 @@ fn pages(conn: &Connection, notes: &mut Vec<String>) -> Result<Vec<Value>, Strin
             .filter(Value::is_object)
         else {
             notes.push(format!(
-                "Left out a kept Page ({id}): its contents couldn't be read."
+                "Left out a kept Hub ({id}): its contents couldn't be read."
             ));
             continue;
         };
@@ -1303,7 +1303,7 @@ pub(super) mod tests {
         assert!(found
             .message
             .unwrap()
-            .contains("Left out a kept Page (pg-old)"));
+            .contains("Left out a kept Hub (pg-old)"));
         let _ = std::fs::remove_dir_all(base);
     }
 

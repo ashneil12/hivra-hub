@@ -4,7 +4,7 @@ import { plainErrorText } from "./plainErrorText";
 describe("plainErrorText", () => {
   it("turns a locked database into a sentence with what to do", () => {
     expect(plainErrorText(new Error("database is locked"))).toBe(
-      "The hub's database is busy. Nothing was lost. Try again in a moment.",
+      "The app's database is busy. Nothing was lost. Try again in a moment.",
     );
     expect(plainErrorText("database table is locked: sessions")).toContain(
       "Try again in a moment",

@@ -188,7 +188,7 @@ export async function removeFromHub(project: HubProject, opts: { retireLead: boo
     try {
       retired = found ? await retireMono(found.id) : undefined;
     } catch (error) {
-      await how.unhide().catch((undoError: unknown) => console.error("Could not put the project back on the hub", undoError));
+      await how.unhide().catch((undoError: unknown) => console.error("Could not put the project back on the app", undoError));
       throw error;
     }
     if (retired) changeId = recordRetirement(retired, project.name);

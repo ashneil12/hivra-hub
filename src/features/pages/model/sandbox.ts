@@ -22,7 +22,7 @@ export function readTokens(root: Element = document.documentElement): Record<str
  */
 const HELPER = `(() => {
   const NONCE = "__NONCE__";
-  // Hidden from the page's own code, which must not learn the nonce: the host trusts only a document that knows it.
+  // Hidden from the hub's own code, which must not learn the nonce: the host trusts only a document that knows it.
   if (document.currentScript) document.currentScript.remove();
   const hello = () => parent.postMessage({ type: "hub:hello", nonce: NONCE }, "*");
   hello();
@@ -41,8 +41,8 @@ const HELPER = `(() => {
   let lastHeight = 0;
   const size = () => { const h = Math.ceil(document.body ? document.body.getBoundingClientRect().height : 0); if (h && Math.abs(h - lastHeight) > 1) { lastHeight = h; parent.postMessage({ type: "hub:size", height: h }, "*"); } };
   window.addEventListener("load", () => { size(); if (window.ResizeObserver && document.body) new ResizeObserver(size).observe(document.body); });
-  // The page kit, for every built page (Critiquito 22 Oct): the app's header already shows the page's title, so the
-  // page's own first h1 is not shown twice; and a section with only its heading gets one grey line instead of a bare
+  // The hub kit, for every built hub (Critiquito 22 Oct): the app's header already shows the hub's title, so the
+  // hub's own first h1 is not shown twice; and a section with only its heading gets one grey line instead of a bare
   // heading. A section can name its line with data-empty="..."; the line goes once real content arrives.
   const HEAD = "h2,h3,h4,h5,h6,.section-title,.hub-block-title,[class*=title],[class*=heading]";
   const emptyLine = (section, head) => {

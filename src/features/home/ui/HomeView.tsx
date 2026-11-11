@@ -386,9 +386,9 @@ export function HomeView({ projectId }: { projectId?: string } = {}) {
   const extras: HomeExtraSection[] = [
     {
       key: "pinned-pages",
-      title: "Pinned pages",
+      title: "Pinned hubs",
       layout: "tiles",
-      empty: "Pin a page to keep it here.",
+      empty: "Pin a hub to keep it here.",
       rows: pages.map((page) => ({
         key: page.id,
         text: page.title,
@@ -398,7 +398,7 @@ export function HomeView({ projectId }: { projectId?: string } = {}) {
           openPlace("pages");
         },
       })),
-      action: { label: "All pages", onClick: () => openPlace("pages") },
+      action: { label: "All hubs", onClick: () => openPlace("pages") },
     },
     {
       key: "automations",

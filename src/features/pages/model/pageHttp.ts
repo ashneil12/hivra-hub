@@ -53,7 +53,7 @@ export function fetchRefusal(raw: string): string {
     }
   })();
   if (!host) return "That isn't a web address. It should start with https://";
-  return `This page isn't connected to ${host}, so it can't read it. Connect the source on the page first (Pages → the page → Connected sources).`;
+  return `This hub isn't connected to ${host}, so it can't read it. Connect the source on the hub first (Hubs → the hub → Connected sources).`;
 }
 
 /**
@@ -62,12 +62,12 @@ export function fetchRefusal(raw: string): string {
  */
 export async function pageFetch(pageId: string, args: Record<string, unknown>): Promise<PageHttpReply> {
   const url = typeof args.url === "string" ? args.url.trim() : "";
-  if (!url) throw new Error("A page's web request needs an address.");
+  if (!url) throw new Error("A hub's web request needs an address.");
   if (!allowsUrl(pageId, url)) throw new Error(fetchRefusal(url));
   const method = (typeof args.method === "string" ? args.method : "GET").toUpperCase();
-  if (!METHODS.includes(method)) throw new Error(`A page can't send a “${method}” request.`);
+  if (!METHODS.includes(method)) throw new Error(`A hub can't send a “${method}” request.`);
   const body = typeof args.body === "string" ? args.body : undefined;
-  if (body !== undefined && body.length > MAX_BODY) throw new Error("That request's body is too long for a page.");
+  if (body !== undefined && body.length > MAX_BODY) throw new Error("That request's body is too long for a hub.");
   if (body !== undefined && (method === "GET" || method === "HEAD")) throw new Error(`A ${method} request can't have a body.`);
   const accept = typeof args.accept === "string" ? args.accept.slice(0, 200) : undefined;
   const contentType = typeof args.contentType === "string" ? args.contentType.slice(0, 200) : undefined;

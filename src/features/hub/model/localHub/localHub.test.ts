@@ -212,7 +212,7 @@ describe("the one-time Ash OS import", () => {
     const deps = { fetch: async () => found, ask: async (q: string) => (asked.push(q), "import" as const) };
     const decision = await runAshOsImport(hub, deps);
     expect(decision).toMatchObject({ decided: "imported", added: { projects: 1, memberships: 1, pages: 1 } });
-    expect(asked[0]).toMatch(/1 project and 1 kept Page/);
+    expect(asked[0]).toMatch(/1 project and 1 kept Hub/);
     expect(await runAshOsImport(hub, deps)).toMatchObject({ decided: "imported" });
     expect(asked).toHaveLength(1);
     const again = new LocalHub(disk);
@@ -256,7 +256,7 @@ describe("the one-time Ash OS import", () => {
     await runAshOsImport(hub, { fetch: async () => found, ask: async () => "clean" });
     const again = await importFromAshOsAgain(hub, { fetch: async () => found, ask: yes });
     expect(again).toMatchObject({ decided: "imported", added: { projects: 1 } });
-    expect(importOutcome(again)).toBe("Brought over 1 project, 1 Mono's project and 1 kept Page.");
+    expect(importOutcome(again)).toBe("Brought over 1 project, 1 Mono's project and 1 kept Hub.");
     const twice = await importFromAshOsAgain(hub, { fetch: async () => found, ask: yes });
     expect(importOutcome(twice)).toBe("Everything Ash OS held is already here.");
     expect(importOutcome(await importFromAshOsAgain(hub, { fetch: async () => ({ ...found, state: "unreachable", message: "Ash OS isn't running." }), ask: yes }))).toBe(

@@ -29,7 +29,7 @@ never reads it, so "example data" is not a state any real screen is in.
 | G11 | A new extra chat with a first mate is titled by the default auto-title, and its row shows the first mate's name where a model name normally sits. | `Sidebar.tsx` `sideChatMark` | Nothing blocking. Optional: title from the first message at once. |
 | G12 | Onboarding's first-run choices and "setup proved" are in `localStorage` (`onboarding.ts`, `setupProof.ts`). Clearing the webview's storage shows the welcome again. | `src/features/hub/model/onboarding.ts`, `setupProof.ts` | Mirror "onboarded" into the database (a settings row) and treat an existing roster or project as "not first launch". |
 | G13 | Browser specs still drive the old screens (Coding team row, Today, the floating Copy chat link, the old Compare panel markup). | `tests/browser/*.spec.ts` | Update with the screens: see "Browser specs to update" below. |
-| G15 | **Missing, found after the first cut.** "New page" on the Pages screen (and "Change" on a kept page) takes the description and answers "Not connected yet": the build call behind it went with Ash OS (WP-04), and `buildOnce` returns `not-connected` unless the dev stub is on. A first mate can still build a page when asked in its own chat (`page_build`, `src/features/selfBuild/model/pagesChat.ts`). | `src/features/pages/model/buildPage.ts` `buildOnce`; `PagesView.tsx` lines around `buildPage(` and `rebuildPage(` | Send the description to the chosen first mate's own session as a page build ask and collect its `page_build` preview (the chat path already checks the spec with `checkBuiltSpec(…, {real: true})` and shows the preview on Pages), so the card on Pages and the chat are one path. Same for Change with the page's current spec. |
+| G15 | **Missing, found after the first cut.** "New hub" on the Hubs screen (and "Change" on a kept hub) takes the description and answers "Not connected yet": the build call behind it went with Ash OS (WP-04), and `buildOnce` returns `not-connected` unless the dev stub is on. A first mate can still build a page when asked in its own chat (`page_build`, `src/features/selfBuild/model/pagesChat.ts`). | `src/features/pages/model/buildPage.ts` `buildOnce`; `PagesView.tsx` lines around `buildPage(` and `rebuildPage(` | Send the description to the chosen first mate's own session as a page build ask and collect its `page_build` preview (the chat path already checks the spec with `checkBuiltSpec(…, {real: true})` and shows the preview on Pages), so the card on Pages and the chat are one path. Same for Change with the page's current spec. |
 | G14 | Orbit-style docs (block documents, WP-72) exist (`src/features/docs/*`) but have no entry in the Dropwave sidebar. | `ProjectRail.tsx` `placesNav` | Product call, not a bug: Ash wants these to come back later as pages ("hubs") or mods. No work until he asks. |
 
 ## Screen by screen
@@ -51,7 +51,7 @@ never reads it, so "example data" is not a state any real screen is in.
 | Inbox, red count | `onOpenInbox`; count is `useNeedsYou().length` | Works |
 | Notes | `NotesView` (`notes_list`, `notes_get`, `notes_delete`, …) | Works |
 | Automations | automations view (`automations_*`, `automation_runs_*`) | Works (off in a dev copy by design) |
-| Pages | `PagesView`; opens on the project in view (`pagesScope`) | Works; G8 |
+| Hubs | `PagesView`; opens on the project in view (`pagesScope`) | Works; G8 |
 | Pinned page rows | `pinnedPages()`; all of them on Home, the project's own in a project | Works; G8 |
 
 ### Home
@@ -110,7 +110,7 @@ never reads it, so "example data" is not a state any real screen is in.
 | GitHub, GitLab, Linear, Jira, Azure DevOps items; filters; Add connection | upstream Inbox (`gh` on the Mac, tracker tokens) | Works when a connection exists; empty with a "connect" line otherwise |
 | Item detail (merge, checks, diff, comment, Ask) | upstream Inbox | Works |
 
-### Pages
+### Hubs (`PagesView`)
 | Control | Calls or reads | State |
 |---|---|---|
 | Project tabs (All, each project, Not tied to a project) | `pagesScope`, `allPages()` | Works |
@@ -141,4 +141,4 @@ never reads it, so "example data" is not a state any real screen is in.
 - `tests/browser/wp135-fan-out.spec.ts`: the Compare panel is now a shared Popover with `role="checkbox"` buttons, a "Review" step, then "Start chats". The `data-fan-out-*` hooks are kept.
 - Any spec that clicks `[data-hub-item="coding-team"]`, `[data-hub-tasks]` or the floating "Copy chat link" button: the Coding team row and Tasks row are gone from the sidebar and the link is in the chat row menu.
 - Any spec that expects the sidebar label "Needs you" in the full rail: it is "Inbox" with the red count (the compact rail keeps "Needs you").
-- New screens with no spec yet: Home as its own place with its Chief of Staff, the project Chief of Staff chat, extra chats per first mate, Pages opening on the project, Settings, Teams rows opening to their settings, Needs you at the top of the Inbox.
+- New screens with no spec yet: Home as its own place with its Chief of Staff, the project Chief of Staff chat, extra chats per first mate, Hubs opening on the project, Settings, Teams rows opening to their settings, Needs you at the top of the Inbox.

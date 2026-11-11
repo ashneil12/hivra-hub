@@ -7,7 +7,7 @@
 // - Stop: the delegation tree's own Stop for that work (and everything it handed out), or Stop on a Mono's chat;
 // - Open: the tree's Open for handed-out work, the Mono's own view, or the waiting chat's Open.
 // Nothing here is a new door: when the app hasn't lent a hand yet the page is told so, and nothing is guessed. What a
-// page sends into a chat ends with "(sent from the <page> page)", and every action is logged for the page to show.
+// page sends into a chat ends with "(sent from the <title> hub)", and every action is logged for the page to show.
 import { useSyncExternalStore } from "react";
 import { fromPrompt, pickMessage, pickReply, wordsReply } from "../../hub/model/chatQuestions";
 import { isPersonOnlyDecisionKey, isSecretDecisionKey } from "../../hub/model/decisionKey";
@@ -81,10 +81,10 @@ export const appActionDeps: PageActionDeps = {
 
 export type ActionContext = { pageId: string; pageTitle: string };
 
-/** "(sent from the Agents page)": what a page's words carry into a chat. */
+/** "(sent from the Agents hub)": what a page's words carry into a chat. */
 export function fromPage(title: string): string {
   const t = title.trim() || "a";
-  return `(sent from the ${/\bpage$/i.test(t) ? t : `${t} page`})`;
+  return `(sent from the ${/\b(hub|page)$/i.test(t) ? t : `${t} hub`})`;
 }
 const signed = (text: string, ctx: ActionContext) => `${text.trim()}\n\n${fromPage(ctx.pageTitle)}`;
 
@@ -177,12 +177,12 @@ const ONLY_YOU = "Only you can answer that one. Open Needs you to answer it.";
 const ONLY_YOU_CHAT = "Only you can answer that one. Open the chat to answer it.";
 function refusePersonOnly(needId: string, ctx: ActionContext): void {
   // A Page with no id has no name to answer under, and it is never the person (decisions.ts refuses it too).
-  if (!ctx.pageId.trim()) throw new Error("This page has no id, so it can't answer. Open Needs you to answer it.");
+  if (!ctx.pageId.trim()) throw new Error("This hub has no id, so it can't answer. Open Needs you to answer it.");
   const key = needKeyOf(needId);
   if (key !== undefined && isPersonOnlyDecisionKey(key)) {
     // A secret is person-only, and it is also named as a secret: the card is where it is approved.
     if (isSecretDecisionKey(key)) {
-      throw new Error(`${ONLY_YOU} A secret run is approved on its card in the Inbox. A page can't answer it.`);
+      throw new Error(`${ONLY_YOU} A secret run is approved on its card in the Inbox. A hub can't answer it.`);
     }
     throw new Error(ONLY_YOU);
   }
@@ -213,7 +213,7 @@ function isSecretNeed(needId: string): boolean {
 }
 
 function refuseSecretNeed(needId: string): void {
-  if (isSecretNeed(needId)) throw new Error("A secret run is approved on its card in the Inbox. A page can't answer it.");
+  if (isSecretNeed(needId)) throw new Error("A secret run is approved on its card in the Inbox. A hub can't answer it.");
 }
 
 async function answer(args: Record<string, unknown>, ctx: ActionContext, d: PageActionDeps): Promise<string> {
@@ -328,7 +328,7 @@ async function writeTask(args: Record<string, unknown>, ctx: ActionContext, d: P
   if (op === "answer") return answer(args, ctx, d);
   if (op === "stop") return stop(args, d);
   if (op === "add") return run(args, ctx, d);
-  throw new Error("A page can answer, stop or add a task (op: answer, stop or add).");
+  throw new Error("A hub can answer, stop or add a task (op: answer, stop or add).");
 }
 
 function open(args: Record<string, unknown>, d: PageActionDeps): string {
@@ -391,7 +391,7 @@ export async function runPageAction(call: PageAction | string, args: Record<stri
       // Opening is a tap too, but it changes nothing: not logged.
       return { done: open(args, d) };
     default:
-      throw new Error(`“${call}” isn't something a page can do.`);
+      throw new Error(`“${call}” isn't something a hub can do.`);
   }
   note(ctx.pageId, done);
   return { done: done.replace(/: “.*”$/, "") };

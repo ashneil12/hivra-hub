@@ -36,7 +36,7 @@ export function needChatId(item: Pick<NeedsItem, "open" | "monoId" | "projectId"
 export function needPlace(item: NeedsItem): { label: string; target: HomeOpenTarget } | undefined {
   const target = needTarget(item);
   if (target.kind === "chat") return { label: "Open chat", target };
-  if (target.kind === "page") return { label: "Open the page", target };
+  if (target.kind === "page") return { label: "Open the hub", target };
   if (target.kind === "task") return { label: "Open", target };
   return undefined;
 }

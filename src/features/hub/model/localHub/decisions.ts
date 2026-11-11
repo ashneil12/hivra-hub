@@ -146,7 +146,7 @@ async function answerDecision(backend: Pick<FirstMateBackend, "decisions" | "ans
   // A Page's tap is the Page's answer, not the person's: decisions.rs refuses it on a key only the person answers. A
   // `from` that is there but blank (or not a string) is refused rather than read as the person.
   const from = typeof payload.from === "string" ? payload.from.trim() : "";
-  if (payload.from !== undefined && !from) throw new HubCallError("refused", "This page has no id, so it can't answer.");
+  if (payload.from !== undefined && !from) throw new HubCallError("refused", "This hub has no id, so it can't answer.");
   // A Page (anything with `from`) is refused on a person-only key before the store is asked. The person's own answer
   // has no `from` and is still "user".
   const named = needKeyOf(payload.id);

@@ -52,7 +52,7 @@ export function ChangeBar() {
             data-change-page={page.previewId}
           >
             <span className="min-w-0 flex-1 truncate text-[13px] text-content/85">
-              {page.page.by} built a page: “{page.page.title}”. Nothing is saved
+              {page.page.by} built a hub: “{page.page.title}”. Nothing is saved
               until you keep it.
             </span>
             <button
@@ -92,8 +92,8 @@ export function ChangeBar() {
                   {o.busy
                     ? (o.workingText ?? "Working…")
                     : o.previewing
-                      ? (o.previewText ?? "Preview: showing in your hub now.")
-                      : (o.nowText ?? "Now: your hub as it is.")}
+                      ? (o.previewText ?? "Preview: showing in your app now.")
+                      : (o.nowText ?? "Now: your app as it is.")}
                 </div>
               </div>
               <div
