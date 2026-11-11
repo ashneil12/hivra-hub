@@ -204,7 +204,8 @@ test("rail, home, header, mono line and inbox share one Needs you list", async (
   const openChat = stopped.getByRole("button", { name: "Open chat" });
   expect(Number.parseFloat(await openChat.evaluate((el) => getComputedStyle(el).borderTopWidth))).toBeGreaterThan(0);
   await expect(openChat).not.toHaveClass(/bg-accent/);
-  const answer = needs.getByRole("button", { name: "Answer" });
+  const windows = needs.locator("[data-home-line]").filter({ hasText: "Which Windows build should ship?" });
+  const answer = windows.getByRole("button", { name: "Yes", exact: true });
   await expect(answer).toHaveClass(/bg-accent/);
   await expect(answer).not.toHaveClass(/primary-action/);
   const paint = await answer.evaluate((el) => {

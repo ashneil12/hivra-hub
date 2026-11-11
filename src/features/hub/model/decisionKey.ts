@@ -27,3 +27,22 @@ export function isIrreversibleDecisionKey(key: string): boolean {
 export function isFanoutAgainDecisionKey(key: string): boolean {
   return foldDecisionKey(key).startsWith("fanout-again/");
 }
+
+const PERSON_ONLY = [
+  "irreversible/",
+  "fresh-eyes/",
+  "fresh-eyes-start/",
+  "gate/",
+  "fanout-again/",
+  "security-review/",
+  "secret/",
+];
+
+/**
+ * A decision only the person may answer. Folded, so "GATE/..." and a fullwidth spelling count.
+ * One tap opens it. It is never answered with a guessed option.
+ */
+export function isPersonOnlyDecisionKey(key: string): boolean {
+  const folded = foldDecisionKey(key);
+  return PERSON_ONLY.some((prefix) => folded.startsWith(prefix));
+}

@@ -200,6 +200,16 @@ it("keeps the decision when a chat asks the same question in the same project", 
   expect(items[0]?.key).toBe("question:dec-1");
 });
 
+it("keeps two different asks that happen to use the same words", () => {
+  const items = needsYou(sources({
+    questions: [
+      { id: "one", projectId: "hivra", who: "Hivra lead", at: NOW, sentence: "Which font?" },
+      { id: "two", projectId: "hivra", who: "Hivra lead", at: NOW + 1, sentence: "Which font?" },
+    ],
+  }), NOW);
+  expect(items.map((item) => item.key)).toEqual(["question:one", "question:two"]);
+});
+
 it("drops a chat routed to its Lead and a grey waiting worker", () => {
   const items = needsYou(sources({
     questions: [{ id: "routed", projectId: "hivra", who: "frank", at: NOW, sentence: "Which font?", routedToLead: true }],

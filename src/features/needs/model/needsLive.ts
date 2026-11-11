@@ -7,15 +7,21 @@ import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
 import { projectKey } from "../../../shared/lib/paths";
 import { DECISIONS_CHANGED, tauriFirstMate, type Decision } from "../../firstmate/model/steering";
+import { foldDecisionKey, isPersonOnlyDecisionKey } from "../../hub/model/decisionKey";
 import { useDelegationRows } from "../../monos/model/delegationStore";
 import { findMono } from "../../monos/model/mono";
 import { openFromHome } from "../../home/model/opener";
+import { parseTask, taskReadKeys, type HomeDecision, type HomeProject, type HomeTask } from "../../home/model/lines";
+import type { AskRow } from "../../hub/model/chatQuestions";
+import { gitdirFromGitFile, joinRepoPath, originUrlFromGitConfig, repoFromOriginUrl } from "./projectRepos";
 import { allKeptPages, needsAllow, requestOpenPage, usePagesVersion, type Page } from "../../pages/model/pages";
 import { PR_WATCHES_CHANGED, tauriPrWatches, type PrWatch } from "../../pr-watch/model/prWatches";
 import { hubData, useHubDataVersion } from "../../hub/model/hubData";
 import {
   answerApproval,
   answerPermission,
+  answerRow,
+  approvalMessage,
   openRows,
   openWaitingChat,
   takePick,
@@ -25,7 +31,6 @@ import {
 } from "../../hub/model/waitingChats";
 import { useNeedsYouRows } from "../../hub/model/useNeedsYouRows";
 import type { NeedsYouRow } from "../../hub/model/needsYouRows";
-import type { HomeDecision, HomeProject, HomeTask } from "../../home/model/lines";
 import {
   accessAsk,
   needsYou,
@@ -58,7 +63,7 @@ export type RemoteNeeds = {
   watches: PrWatch[];
 };
 
-export type ProjectRef = { id: string; name: string; folder: string | null };
+export type ProjectRef = { id: string; name: string; folder: string | null; origin?: string | null };
 
 export type NeedsDelegation = { id: string; state: string; project: string | null };
 
@@ -119,6 +124,43 @@ function stoppedFacts(rows: readonly NeedsYouRow[]): StoppedFact[] {
   });
 }
 
+function isErrand(chat: WaitingChat): boolean {
+  return Boolean(chat.provide?.trim()) || chat.flag === "provide";
+}
+
+/** One row of a card. A red-line row and a pick answer that row, never the whole card. */
+function rowFact(chat: WaitingChat, row: AskRow, id: string): QuestionFact | ApprovalFact {
+  const base = {
+    id,
+    projectId: chat.projectId ?? undefined,
+    monoId: chat.monoId,
+    who: chat.chatName || "Coding team",
+    at: chat.askedAt,
+    sentence: row.question,
+    open: { where: "chat" as const, id: chat.sessionId },
+    onOpen: () => openWaitingChat(chat.sessionId),
+    routedToLead: chat.routedToLead,
+  };
+  if (isErrand(chat)) return base;
+  if (accessAsk(row.question)) return { ...base, reviewOnly: true };
+  if (row.redLine) {
+    return {
+      ...base,
+      risky: true,
+      allowLabel: "Approve once",
+      onAllow: () => { void answerRow(chat.sessionId, row, approvalMessage("approve-once", row)); },
+      onDeny: () => { void answerRow(chat.sessionId, row, approvalMessage("deny", row)); },
+    };
+  }
+  const pick = row.pick?.trim();
+  if (!pick) return base;
+  return {
+    ...base,
+    asMerge: MERGE_PHRASE.test(row.question),
+    onAnswer: () => { void answerRow(chat.sessionId, row, pick, "pick"); },
+  };
+}
+
 function rowFacts(chat: WaitingChat, question: string, id: string): QuestionFact | ApprovalFact {
   const base = {
     id,
@@ -131,6 +173,7 @@ function rowFacts(chat: WaitingChat, question: string, id: string): QuestionFact
     onOpen: () => openWaitingChat(chat.sessionId),
     routedToLead: chat.routedToLead,
   };
+  if (isErrand(chat)) return base;
   if (accessAsk(question)) return { ...base, reviewOnly: true };
   if (chat.source === "permission") {
     return {
@@ -155,37 +198,44 @@ function rowFacts(chat: WaitingChat, question: string, id: string): QuestionFact
   };
 }
 
+function keepFact(fact: QuestionFact | ApprovalFact, questions: QuestionFact[], approvals: ApprovalFact[]) {
+  if (("reviewOnly" in fact && fact.reviewOnly) || ("onAllow" in fact && fact.onAllow)) approvals.push(fact);
+  else questions.push(fact);
+}
+
 /** Chat questions and permission asks, one fact per open row. A merge stays a question so the decision wins. */
 export function factsFromChats(chats: readonly WaitingChat[]): { questions: QuestionFact[]; approvals: ApprovalFact[] } {
   const questions: QuestionFact[] = [];
   const approvals: ApprovalFact[] = [];
   for (const chat of chats) {
     const rows = openRows(chat);
-    const asks = rows.length
-      ? rows.map((row, index) => ({ question: row.question, id: `${chat.sessionId}:${row.questionId ?? index}` }))
-      : [{ question: chat.question, id: chat.sessionId }];
-    for (const ask of asks) {
-      if (!ask.question.trim()) continue;
-      const fact = rowFacts(chat, ask.question, ask.id);
-      if (("reviewOnly" in fact && fact.reviewOnly) || "onAllow" in fact) approvals.push(fact);
-      else questions.push(fact);
+    if (rows.length) {
+      for (const row of rows) {
+        if (!row.question.trim()) continue;
+        // The question id, or the question itself. Never the row's place, which moves as rows are answered.
+        keepFact(rowFact(chat, row, `${chat.sessionId}:${row.questionId ?? row.question}`), questions, approvals);
+      }
+      continue;
     }
+    if (!chat.question.trim()) continue;
+    keepFact(rowFacts(chat, chat.question, chat.sessionId), questions, approvals);
   }
   return { questions, approvals };
 }
 
-function yesAnswer(decision: Decision): () => void {
-  return () => {
-    void tauriFirstMate.answer(decision.project, decision.decisionKey, decision.recommended ?? decision.options[0] ?? "Yes");
-  };
+/** The recommended option, when it is one of the options. Never the first option, and never a guessed Yes. */
+function namedOption(decision: Decision): string | undefined {
+  const recommended = decision.recommended?.trim();
+  if (!recommended || !decision.options.includes(recommended)) return undefined;
+  return recommended;
 }
 
-function notYetAnswer(decision: Decision): () => void {
-  return () => {
-    const yes = decision.recommended ?? decision.options[0] ?? "Yes";
-    const other = decision.options.find((option) => option !== yes);
-    void tauriFirstMate.answer(decision.project, decision.decisionKey, other ?? "Not yet");
-  };
+function sendOption(decision: Decision, option: string): () => void {
+  return () => { void tauriFirstMate.answer(decision.project, decision.decisionKey, option); };
+}
+
+function openDecision(decision: Decision, projectId: string | undefined): () => void {
+  return () => openFromHome({ kind: "inbox", projectId: projectId ?? "", decisionKey: decision.decisionKey });
 }
 
 function decisionFacts(
@@ -206,38 +256,53 @@ function decisionFacts(
       sentence: decision.question,
       decisionKey: decision.decisionKey,
     };
+    const named = namedOption(decision);
+    const other = named ? decision.options.find((option) => option !== named) : undefined;
+    const open = openDecision(decision, base.projectId);
+    if (isPersonOnlyDecisionKey(decision.decisionKey)) {
+      questions.push(parked.has(decision.decisionKey)
+        ? { ...base, fromDecision: true, gateKey: decision.decisionKey, onOpen: open }
+        : { ...base, fromDecision: true, onOpen: open });
+      continue;
+    }
     if (parked.has(decision.decisionKey)) {
-      questions.push({ ...base, fromDecision: true, gateKey: decision.decisionKey, onAnswer: yesAnswer(decision) });
+      questions.push({
+        ...base,
+        fromDecision: true,
+        gateKey: decision.decisionKey,
+        ...(named ? { onAnswer: sendOption(decision, named) } : {}),
+      });
       continue;
     }
     if (accessAsk(decision.question)) {
-      approvals.push({
-        ...base,
-        reviewOnly: true,
-        onOpen: () => openFromHome({
-          kind: "inbox",
-          projectId: base.projectId ?? "",
-          decisionKey: decision.decisionKey,
-        }),
-      });
+      approvals.push({ ...base, reviewOnly: true, onOpen: open });
       continue;
     }
     if (APPROVAL_PHRASE.test(decision.question)) {
       approvals.push({
         ...base,
-        onAllow: yesAnswer(decision),
-        onDeny: () => { void tauriFirstMate.answer(decision.project, decision.decisionKey, "No"); },
+        ...(named ? { onAllow: sendOption(decision, named) } : {}),
+        ...(decision.options.includes("No") ? { onDeny: sendOption(decision, "No") } : {}),
+        ...(!named ? { onOpen: open } : {}),
       });
       continue;
     }
     const merge = MERGE_PHRASE.test(decision.question);
-    questions.push({
-      ...base,
-      fromDecision: true,
-      asMerge: merge,
-      onAnswer: yesAnswer(decision),
-      ...(merge ? { onNotYet: notYetAnswer(decision) } : {}),
-    });
+    if (merge) {
+      questions.push({
+        ...base,
+        fromDecision: true,
+        asMerge: true,
+        ...(named ? { onAnswer: sendOption(decision, named) } : { onOpen: open }),
+        ...(named && other ? { onNotYet: sendOption(decision, other) } : {}),
+      });
+      continue;
+    }
+    if (named) {
+      questions.push({ ...base, fromDecision: true, answerLabel: named, onAnswer: sendOption(decision, named) });
+      continue;
+    }
+    questions.push({ ...base, fromDecision: true, onOpen: open });
   }
   return { questions, approvals };
 }
@@ -263,10 +328,15 @@ function taskFacts(tasks: readonly HomeTask[], list: readonly ProjectRef[]): { q
   return { questions, reviews };
 }
 
-function cardFacts(cards: readonly GateCard[], list: readonly ProjectRef[]): CheckFact[] {
+function cardFacts(cards: readonly GateCard[], list: readonly ProjectRef[], decisions: readonly Decision[]): CheckFact[] {
+  const closed = new Set(decisions.filter((decision) => decision.state !== "open" && decision.decisionKey.trim()).map((decision) => foldDecisionKey(decision.decisionKey)));
   return cards.flatMap((card) => {
     if (card.state !== "parked" || !card.decisionKey || !card.line.trim()) return [];
     const key = card.decisionKey;
+    if (closed.has(foldDecisionKey(key))) return [];
+    const respond = (answer: "Approve" | "Fix") => {
+      void invoke("gate_respond", { decisionKey: key, answer, project: card.projectId }).finally(() => { void refreshNeedsRemote(); });
+    };
     return [{
       id: card.id,
       gateKey: key,
@@ -274,8 +344,8 @@ function cardFacts(cards: readonly GateCard[], list: readonly ProjectRef[]): Che
       who: "Coding team",
       at: 0,
       sentence: card.line,
-      onApprove: () => { void invoke("gate_respond", { decisionKey: key, answer: "Approve", project: card.projectId }); },
-      onFix: () => { void invoke("gate_respond", { decisionKey: key, answer: "Fix", project: card.projectId }); },
+      onApprove: () => respond("Approve"),
+      onFix: () => respond("Fix"),
     }];
   });
 }
@@ -327,11 +397,13 @@ function runningFacts(rows: readonly NeedsDelegation[], list: readonly ProjectRe
   }));
 }
 
-function ownedRepos(watches: readonly PrWatch[], list: readonly ProjectRef[]): Set<string> {
+function ownedRepos(list: readonly ProjectRef[]): Set<string> {
   const repos = new Set<string>();
-  for (const watch of watches) {
-    const repo = typeof watch.repo === "string" ? watch.repo.trim() : "";
-    if (repo && projectIdOf(watch.project, list)) repos.add(repo);
+  for (const project of list) {
+    const named = repoFromOriginUrl(project.origin);
+    if (named) repos.add(named);
+    const cached = repoByProject.get(project.id);
+    if (cached) repos.add(cached);
   }
   return repos;
 }
@@ -372,12 +444,21 @@ function safePages(): Page[] {
   }
 }
 
+/**
+ * Tasks Home just counted. The next factsFromParts that was not given its own tasks uses them once,
+ * so the opening count and the list agree on the tasks that read just loaded.
+ */
+let homeTasksOnce: readonly HomeTask[] | undefined;
+let liveTasks: readonly HomeTask[] = [];
+const repoByProject = new Map<string, string>();
+
 /** Home's decisions and tasks, plus the chats already waiting. A chat store that throws adds nothing. */
 export function factsFromHome(
   decisions: readonly HomeDecision[],
   tasks: readonly HomeTask[],
   homeProjects: readonly HomeProject[],
 ): NeedsSources {
+  homeTasksOnce = tasks;
   const list = homeProjects.map((project) => ({ id: project.id, name: project.name, folder: project.folder }));
   const fromDecisions = decisionFacts(decisions.map(homeDecision), list, new Set());
   const fromTasks = taskFacts(tasks, list);
@@ -398,7 +479,19 @@ export type NeedsParts = {
   chats: readonly WaitingChat[];
   pages: readonly Page[];
   delegations: readonly NeedsDelegation[];
+  /** Absent means the tasks the last Home count loaded, once, else the tasks the live list is holding. */
+  tasks?: readonly HomeTask[];
 };
+
+function tasksFor(parts: NeedsParts): readonly HomeTask[] {
+  if (parts.tasks !== undefined) return parts.tasks;
+  if (homeTasksOnce !== undefined) {
+    const tasks = homeTasksOnce;
+    homeTasksOnce = undefined;
+    return tasks;
+  }
+  return liveTasks;
+}
 
 /** One read of every source. Callers pass what they already hold, so a test never needs the live stores. */
 export function factsFromParts(parts: NeedsParts): NeedsSources {
@@ -406,14 +499,15 @@ export function factsFromParts(parts: NeedsParts): NeedsSources {
   const parked = new Set(parts.remote.cards.filter((card) => card.state === "parked" && card.decisionKey).map((card) => card.decisionKey as string));
   const decisions = decisionFacts(parts.remote.decisions, list, parked);
   const chats = factsFromChats(parts.chats);
+  const tasks = taskFacts(tasksFor(parts), list);
   return {
     stopped: stoppedFacts(parts.rows),
-    questions: [...decisions.questions, ...chats.questions],
+    questions: [...decisions.questions, ...tasks.questions, ...chats.questions],
     approvals: [...decisions.approvals, ...chats.approvals, ...pageFacts(parts.pages, list)],
-    reviews: watchFacts(parts.remote.watches, list),
-    checks: cardFacts(parts.remote.cards, list),
+    reviews: [...tasks.reviews, ...watchFacts(parts.remote.watches, list)],
+    checks: cardFacts(parts.remote.cards, list, parts.remote.decisions),
     running: runningFacts(parts.delegations, list),
-    ownRepos: ownedRepos(parts.remote.watches, list),
+    ownRepos: ownedRepos(list),
     knownProjects: new Set(list.map((project) => project.id)),
   };
 }
@@ -523,8 +617,8 @@ let remote: RemoteNeeds = EMPTY_REMOTE;
 let remoteGen = 0;
 const listeners = new Set<() => void>();
 
-function publishRemote(next: RemoteNeeds) {
-  if (next === remote) return;
+function publishRemote(next: RemoteNeeds, force = false) {
+  if (!force && next === remote) return;
   remote = next;
   for (const listener of listeners) listener();
 }
@@ -537,18 +631,116 @@ async function orUndefined<T>(work: Promise<T>): Promise<T | undefined> {
   }
 }
 
-/** Reload decisions, gate cards and pull-request watches. A timeout or a late reply keeps the previous facts. */
+function sameTasks(left: readonly HomeTask[], right: readonly HomeTask[]): boolean {
+  if (left.length !== right.length) return false;
+  return left.every((task, index) => {
+    const other = right[index];
+    return other != null
+      && task.id === other.id
+      && task.projectId === other.projectId
+      && task.title === other.title
+      && task.status === other.status
+      && task.needsYou === other.needsYou
+      && task.trashedAt === other.trashedAt;
+  });
+}
+
+async function readLiveTasks(list: readonly ProjectRef[]): Promise<readonly HomeTask[] | undefined> {
+  const keys = taskReadKeys(list.map((project) => ({ id: project.id, name: project.name, folder: project.folder })));
+  if (keys.length === 0) return [];
+  const reads = await Promise.all(keys.map((key) => orUndefined(invoke("tasks_list", { actor: { id: "person", project: key, kind: "person" } }))));
+  if (reads.every((row) => row === undefined)) return undefined;
+  const tasks: HomeTask[] = [];
+  const seen = new Set<string>();
+  for (const raw of reads) {
+    if (!Array.isArray(raw)) continue;
+    for (const row of raw) {
+      const task = parseTask(row);
+      if (!task || seen.has(task.id)) continue;
+      seen.add(task.id);
+      tasks.push(task);
+    }
+  }
+  return tasks;
+}
+
+async function readGitText(path: string): Promise<string | undefined> {
+  const chunks: string[] = [];
+  for (let start = 1; start <= 37; start += 12) {
+    let lines: unknown;
+    try {
+      lines = await invoke("read_file_preview", { path, maxLines: 12, startLine: start });
+    } catch {
+      return undefined;
+    }
+    if (!Array.isArray(lines)) return undefined;
+    const text = lines.filter((line): line is string => typeof line === "string");
+    chunks.push(...text);
+    if (text.length < 12) break;
+  }
+  return chunks.join("\n");
+}
+
+/** A repo name, null when the folder was read and has no origin, undefined when the read failed. */
+async function originOfFolder(folder: string): Promise<string | null | undefined> {
+  const config = await readGitText(joinRepoPath(folder, ".git/config"));
+  if (config !== undefined) return repoFromOriginUrl(originUrlFromGitConfig(config)) ?? null;
+  const pointer = await readGitText(joinRepoPath(folder, ".git"));
+  if (pointer === undefined) return undefined;
+  const gitdir = gitdirFromGitFile(pointer);
+  if (!gitdir) return null;
+  const linked = await readGitText(joinRepoPath(joinRepoPath(folder, gitdir), "config"));
+  if (linked === undefined) return undefined;
+  return repoFromOriginUrl(originUrlFromGitConfig(linked)) ?? null;
+}
+
+async function readOrigins(list: readonly ProjectRef[]): Promise<{ id: string; repo: string | null | undefined }[]> {
+  return Promise.all(list.map(async (project) => {
+    const folder = project.folder?.trim();
+    if (!folder) return { id: project.id, repo: null };
+    return { id: project.id, repo: await originOfFolder(folder) };
+  }));
+}
+
+function applyTasks(tasks: readonly HomeTask[] | undefined): boolean {
+  if (tasks === undefined || sameTasks(liveTasks, tasks)) return false;
+  liveTasks = tasks;
+  return true;
+}
+
+function applyOrigins(reads: readonly { id: string; repo: string | null | undefined }[]): boolean {
+  let changed = false;
+  for (const read of reads) {
+    if (read.repo === undefined) continue;
+    if (read.repo === null) {
+      if (repoByProject.delete(read.id)) changed = true;
+      continue;
+    }
+    if (repoByProject.get(read.id) !== read.repo) {
+      repoByProject.set(read.id, read.repo);
+      changed = true;
+    }
+  }
+  return changed;
+}
+
+/** Reload decisions, gate cards, pull-request watches, tasks and each project's origin. A timeout keeps the last good read. */
 export async function refreshNeedsRemote(): Promise<void> {
   const mine = ++remoteGen;
   const list = projects();
-  const [decisionsRaw, watchesRaw, ...cardReads] = await Promise.all([
+  const [decisionsRaw, watchesRaw, taskRead, originReads, ...cardReads] = await Promise.all([
     orUndefined(tauriFirstMate.decisions(0)),
     orUndefined(tauriPrWatches.list()),
+    readLiveTasks(list),
+    readOrigins(list),
     ...list.map(async (project) => {
       const folder = project.folder?.trim() || project.id;
       return { projectId: folder, got: await orUndefined(invoke("gate_cards", { project: folder })) };
     }),
   ]);
+  if (mine !== remoteGen) return;
+  const tasksChanged = applyTasks(taskRead);
+  const originsChanged = applyOrigins(originReads);
   const decisions = decisionsRaw === undefined ? undefined : (Array.isArray(decisionsRaw) ? decisionsRaw.map(asDecision).filter((row): row is Decision => row != null) : []);
   const watches = watchesRaw === undefined ? undefined : (Array.isArray(watchesRaw) ? watchesRaw.map(asWatch).filter((row): row is PrWatch => row != null) : []);
   const cards = cardsAfter(remote.cards, cardReads);
@@ -556,7 +748,7 @@ export async function refreshNeedsRemote(): Promise<void> {
     ? undefined
     : { decisions, watches, cards };
   const next = takeLatest(mine, remoteGen, patch === undefined ? undefined : mergeRemote(remote, patch), remote);
-  publishRemote(next);
+  publishRemote(next, tasksChanged || originsChanged);
 }
 
 function subscribeRemote(listener: () => void): () => void {
@@ -564,10 +756,45 @@ function subscribeRemote(listener: () => void): () => void {
   return () => { listeners.delete(listener); };
 }
 
+let subscribers = 0;
+let listenGeneration = 0;
+let stopListens: (() => void) | undefined;
+
+function startListens() {
+  const mine = ++listenGeneration;
+  const stops: Array<() => void> = [];
+  let cancelled = false;
+  const refresh = () => { void refreshNeedsRemote(); };
+  refresh();
+  const hear = (name: string) => {
+    void listen(name, refresh).then((un) => {
+      if (cancelled || mine !== listenGeneration) un();
+      else stops.push(un);
+    }, () => undefined);
+  };
+  hear(DECISIONS_CHANGED);
+  hear(PR_WATCHES_CHANGED);
+  hear("tasks://changed");
+  hear("local-hub://changed");
+  hear("monocode:delegations-changed");
+  stopListens = () => {
+    cancelled = true;
+    for (const un of stops) un();
+    stops.length = 0;
+  };
+}
+
 export function resetNeedsLiveForTest(): void {
   remote = EMPTY_REMOTE;
   remoteGen = 0;
   listeners.clear();
+  homeTasksOnce = undefined;
+  liveTasks = [];
+  repoByProject.clear();
+  listenGeneration += 1;
+  stopListens?.();
+  stopListens = undefined;
+  subscribers = 0;
 }
 
 export function useNeedsYou(): NeedsItem[] {
@@ -581,24 +808,17 @@ export function useNeedsYou(): NeedsItem[] {
     let stopped = false;
     const on = () => { if (!stopped) setTick((n) => n + 1); };
     const stop = subscribeRemote(on);
-    const refresh = () => { if (!stopped) void refreshNeedsRemote(); };
-    refresh();
-    const stops: (() => void)[] = [];
-    const hear = (name: string) => {
-      void listen(name, refresh).then((un) => {
-        if (stopped) un();
-        else stops.push(un);
-      }, () => undefined);
-    };
-    hear(DECISIONS_CHANGED);
-    hear(PR_WATCHES_CHANGED);
-    hear("tasks://changed");
-    hear("local-hub://changed");
-    hear("monocode:delegations-changed");
+    subscribers += 1;
+    if (subscribers === 1) startListens();
     return () => {
       stopped = true;
       stop();
-      for (const un of stops) un();
+      subscribers -= 1;
+      if (subscribers === 0) {
+        listenGeneration += 1;
+        stopListens?.();
+        stopListens = undefined;
+      }
     };
   }, []);
   return needsYou(factsFromParts({
@@ -608,5 +828,6 @@ export function useNeedsYou(): NeedsItem[] {
     chats: safeChats(),
     pages: safePages(),
     delegations,
+    tasks: liveTasks,
   }), Date.now());
 }

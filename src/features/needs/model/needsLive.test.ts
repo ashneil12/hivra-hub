@@ -210,6 +210,8 @@ it("collapses a parked gate and the decision that names it into one check", () =
 it("leaves out a review on a repo that is not one of the projects", () => {
   const list = needsYou(factsFromParts(parts({
     watches: [watch("hivra", "ash/hivra"), watch("upstream", "upstream/monocode")],
+  }, {
+    projects: PROJECTS.map((project) => project.id === "hivra" ? { ...project, origin: "https://github.com/ash/hivra.git" } : project),
   })), NOW);
   expect(list.map((item) => item.key)).toEqual(["review:watch-ash/hivra"]);
 });
@@ -283,5 +285,24 @@ it("keeps a decision key so Home can open the inbox", () => {
     decisions: [decision("hivra", "run", "Ada wants to run the tests")],
   })), NOW);
   expect(approval[0]?.kind).toBe("approval");
-  expect(approval[0]?.decisionKey).toBeUndefined();
+  expect(approval[0]?.decisionKey).toBe("run");
+});
+
+it("keeps a tracker task that was passed in with the other facts", () => {
+  const list = needsYouQuiet(factsFromParts(parts({}, {
+    tasks: [{ id: "t1", projectId: "hivra", title: "Which font?", status: "In progress", source: "agent", assignee: null, needsYou: true, trashedAt: null, createdAt: 2 }],
+  })), NOW);
+  expect(list.map((item) => item.sentence)).toEqual(["Which font?"]);
+});
+
+it("opens a question that has no recommended option instead of guessing one", () => {
+  const open = decision("hivra", "font", "Which font?");
+  open.recommended = null;
+  open.options = ["Serif", "Sans"];
+  const [item] = needsYouQuiet(factsFromParts(parts({ decisions: [open] })), NOW);
+  expect(item?.actions.map((action) => action.label)).toEqual(["Open"]);
+  const answer = vi.spyOn(tauriFirstMate, "answer").mockResolvedValue({ ok: true, version: 1 });
+  item?.actions[0]?.run();
+  expect(answer).not.toHaveBeenCalled();
+  answer.mockRestore();
 });

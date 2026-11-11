@@ -20,7 +20,7 @@ import { LOCAL_HUB_CHANGED, appHubTransport } from "../../hub/model/localHub/loc
 import { PanelFrame } from "../../panels/ui/PanelTabs";
 import { hideSection, moveSection, pinPanel, showSection, unpin } from "../model/arrangement";
 import { LateHomeLoad, createHomeLoader, mergeHomeLoad, realHomeSource, type HomeSnapshot } from "../model/load";
-import { builderHoldLine, hubProjectId, movingLines, namesFor, needsYouLines, projectLines, recentLines, type HomeLine } from "../model/lines";
+import { builderHoldLine, hubProjectId, movingLines, namesFor, projectLines, recentLines, type HomeLine } from "../model/lines";
 import { useNeedsYou } from "../../needs/model/needsLive";
 import type { NeedsItem } from "../../needs/model/needsYou";
 import { openFromHome, targetFor } from "../model/opener";
@@ -312,12 +312,8 @@ export function HomeView() {
   const hold = builderHold();
   const liveNeeds = useNeedsYou();
   const fromList = liveNeeds.map((item) => lineFromNeed(item, name));
-  // Tasks waiting on Ash are not in the published list. Draw them beside it, and skip one a live decision already covers.
-  const covered = new Set(fromList.filter((line) => line.kind === "decision").map((line) => `${line.projectId}\0${line.target}`));
-  const fromTasks = needsYouLines([], tasks, name).filter((line) => !covered.has(`${line.projectId}\0${line.target}`));
   const spend = spendHold();
-  const listed = [...(hold ? [builderHoldLine(hold)] : []), ...(spend ? [builderHoldLine(spend)] : []), ...fromList];
-  const needsYou = [...listed, ...fromTasks];
+  const needsYou = [...(hold ? [builderHoldLine(hold)] : []), ...(spend ? [builderHoldLine(spend)] : []), ...fromList];
   const moving = movingLines(tasks, name);
   // The app holds no project at all (not one hidden by the trash or Ash's own "Remove from hub"): say why.
   const noProjects = snap && registryProjects().length === 0
@@ -327,7 +323,7 @@ export function HomeView() {
     <HomeScreen
       needsYou={needsYou}
       needsMark={liveNeeds.length}
-      projects={projectLines(projects, listed, moving, tasks)}
+      projects={projectLines(projects, needsYou, moving, tasks)}
       noProjects={noProjects}
       onBringOver={() => void bringOver()}
       onNewProject={() => showAppItem("new-project")}

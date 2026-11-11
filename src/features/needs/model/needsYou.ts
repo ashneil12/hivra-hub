@@ -14,8 +14,8 @@
 // Order. A stopped or failed row leads, then a delivery check or work ready to merge (that holds a
 // ship), then questions, approvals and reviews. Older first inside a group.
 //
-// hubWork, hubBuilds and proposals are never read. A review whose repo is not one of Ash's
-// project repos is left out.
+// hubWork, hubBuilds and proposals are never read. A review that names a repo counts only when
+// that repo is one of the projects' own repos. A review with no repo counts for a known project.
 
 import { callText, redListCategory } from "../../autopilot/model/redList";
 import { ALWAYS_ASK_REASON, questionVeto } from "../../autopilot/model/reviewerRules";
@@ -73,6 +73,8 @@ export type QuestionFact = FactBase & {
   asMerge?: boolean;
   /** Set when this ask is a decision. Home opens that decision, not a task. */
   decisionKey?: string;
+  /** The one-tap button names this option, and that is the answer it sends. */
+  answerLabel?: string;
   onAnswer?: () => void;
   /** The other answer. A merge shows this as Not yet. */
   onNotYet?: () => void;
@@ -84,6 +86,10 @@ export type ApprovalFact = FactBase & {
   risky?: boolean;
   /** A page or plugin asking for access. One Review, never Allow or Deny. */
   reviewOnly?: boolean;
+  /** Button words for the yes choice. A red-line row of a card says Approve once. */
+  allowLabel?: string;
+  /** Set when this ask is a decision. Home opens the inbox on this key. */
+  decisionKey?: string;
   onAllow?: () => void;
   onDeny?: () => void;
 };
@@ -116,7 +122,7 @@ export type NeedsSources = {
   running?: readonly RunningFact[];
   /** Repos that belong to one of Ash's projects. */
   ownRepos?: ReadonlySet<string>;
-  /** Hub project ids. A review filed on one of these is that project's. */
+  /** Hub project ids. A review with no repo counts when its project is one of these. */
   knownProjects?: ReadonlySet<string>;
   /** Present only so a caller can prove they add nothing. Never read. */
   hubWork?: unknown;
@@ -273,7 +279,7 @@ function questionItem(fact: QuestionFact, now: number): Draft | undefined {
         ...openAction("Open", fact.onOpen),
       ]
       : [
-        ...(fact.onAnswer ? [{ label: "Answer", run: fact.onAnswer }] : []),
+        ...(fact.onAnswer ? [{ label: fact.answerLabel?.trim() || "Answer", run: fact.onAnswer }] : []),
         ...openAction("Open", fact.onOpen),
       ]),
     open: fact.open,
@@ -292,7 +298,7 @@ function approvalItem(fact: ApprovalFact, now: number): Draft | undefined {
   const sentence = plainSentence(fact.sentence);
   if (!sentence) return undefined;
   const review = fact.reviewOnly === true || accessAsk(sentence);
-  const allow = fact.risky === true || riskyStep(sentence) ? "Allow once" : "Allow";
+  const allow = fact.allowLabel?.trim() || (fact.risky === true || riskyStep(sentence) ? "Allow once" : "Allow");
   return {
     key: `approval:${id}`,
     kind: "approval",
@@ -309,6 +315,7 @@ function approvalItem(fact: ApprovalFact, now: number): Draft | undefined {
         ...openAction("Open", fact.onOpen),
       ]),
     open: fact.open,
+    ...(fact.decisionKey ? { decisionKey: fact.decisionKey } : {}),
   };
 }
 
@@ -338,7 +345,10 @@ function mergeItem(fact: MergeFact, now: number): Draft | undefined {
 function reviewItem(fact: ReviewFact, sources: NeedsSources, now: number): Draft | undefined {
   const repo = fact.repo.trim();
   const projectId = fact.projectId || undefined;
-  const owned = (repo && sources.ownRepos?.has(repo)) || (projectId != null && sources.knownProjects?.has(projectId));
+  // A named repo counts only when it is one of the projects' own repos. The project a watch was filed under is not enough.
+  const owned = repo
+    ? sources.ownRepos?.has(repo) === true
+    : projectId != null && sources.knownProjects?.has(projectId) === true;
   if (!owned) return undefined;
   const id = fact.id.trim();
   if (!id) return undefined;
