@@ -1,6 +1,7 @@
 import { subscribeMoreAgentsChanges } from "../features/providers/model/moreAgents";
 import { setTurnTextDecorator } from "../integrations/harness/core/registry";
 // WP-85: terminal Claude sessions in the chat list.
+import { startPendingReviews, type ReviewHooks } from "../features/security-review/model/launch";
 import { mergeTerminalSessions } from "../features/terminalMirror/model/list";
 import { TerminalMirrorPane } from "../features/terminalMirror/ui/TerminalMirrorPane";
 import { useTerminalMirror } from "../features/terminalMirror/ui/useTerminalMirror";
@@ -65,6 +66,7 @@ import { gateAsk, gateAskNote, gateCheckout, gateDue, gateFailedResult, gateVerd
 import { briefGatesFor } from "../features/firstmate/model/completionGates";
 import {
   isOpenDelegation,
+  DELEGATIONS_CHANGED,
   tauriDelegations,
   type Delegation,
   type DelegationTracker,
@@ -11315,6 +11317,29 @@ function Workspace({
       },
       cwd: () => folder,
     });
+  }, []);
+  useEffect(() => {
+    // WP-203: the reviewer session for each security review the app recorded a running row for. The finish settles the row.
+    const started = new Set<string>();
+    const hooks: ReviewHooks = {
+      add: (session) => {
+        sessionsRef.current = [...sessionsRef.current, session];
+        setSessions(sessionsRef.current);
+      },
+      submit: (sessionId, text, _history, options) => submitSessionRef.current(sessionId, text, [], options),
+      cwd: () => "~",
+    };
+    const run = () => {
+      void startPendingReviews(tauriDelegations, hooks, started).catch(() => undefined);
+    };
+    run();
+    let off: (() => void) | undefined;
+    void listen(DELEGATIONS_CHANGED, run)
+      .then((unlisten) => {
+        off = unlisten;
+      })
+      .catch(() => undefined);
+    return () => off?.();
   }, []);
   const roomsHost = useRoomRunner({
     sessions,

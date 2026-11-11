@@ -33,6 +33,19 @@ export function isGateDecisionKey(key: string): boolean {
   return foldDecisionKey(key).startsWith("gate/");
 }
 
+/** A security review parked for the person (`security-review/<head>`, decisions.rs `is_security_key`). */
+export function isSecurityReviewDecisionKey(key: string): boolean {
+  return foldDecisionKey(key).startsWith("security-review/");
+}
+
+/**
+ * A secret (`secret/`). decisions.rs `person_only` does not name it; standing answers already refuse to reuse one.
+ * A Page never answers one either, in any spelling.
+ */
+export function isSecretDecisionKey(key: string): boolean {
+  return foldDecisionKey(key).startsWith("secret/");
+}
+
 const PERSON_ONLY = [
   "irreversible/",
   "fresh-eyes/",
@@ -54,6 +67,8 @@ export function isPersonOnlyDecisionKey(key: string): boolean {
     isIrreversibleDecisionKey(key) ||
     isFanoutAgainDecisionKey(key) ||
     isGateDecisionKey(key) ||
+    isSecurityReviewDecisionKey(key) ||
+    isSecretDecisionKey(key) ||
     PERSON_ONLY.some((prefix) => folded.startsWith(prefix))
   );
 }
