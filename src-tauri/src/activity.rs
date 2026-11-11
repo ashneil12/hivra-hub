@@ -54,6 +54,8 @@ pub const SHIP: &str = "ship";
 pub const SHIP_TRIAL: &str = "ship.trial";
 pub const SHIP_ROLLBACK: &str = "ship.rollback";
 pub const PERMISSION_GRANT: &str = "permission.grant";
+/// WP-178: an agent did not start under the macOS sandbox (agent_sandbox::note_refusal).
+pub const SANDBOX_REFUSE: &str = "sandbox.refuse";
 
 /// Who did a thing, or who asked for it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -879,6 +881,55 @@ pub fn record_mono_note(
     actor_name: &str,
     at: i64,
 ) -> Result<(), String> {
+    if actor_id.trim().is_empty() {
+        return Err("Say who did this.".into());
+    }
+    record_actor_note(
+        conn,
+        kind,
+        summary,
+        project,
+        target,
+        &Who::mono(actor_id, actor_name),
+        at,
+    )
+}
+
+/// One row from a first mate's chat (WP-178: the after-turn protected-path report). The same checks as a Mono's row.
+#[allow(clippy::too_many_arguments)]
+pub fn record_first_mate_note(
+    conn: &Connection,
+    kind: &str,
+    summary: &str,
+    project: &str,
+    target: &str,
+    first_mate_id: &str,
+    first_mate_name: &str,
+    at: i64,
+) -> Result<(), String> {
+    if first_mate_id.trim().is_empty() {
+        return Err("Say who did this.".into());
+    }
+    record_actor_note(
+        conn,
+        kind,
+        summary,
+        project,
+        target,
+        &Who::first_mate(first_mate_id.trim(), first_mate_name.trim()),
+        at,
+    )
+}
+
+fn record_actor_note(
+    conn: &Connection,
+    kind: &str,
+    summary: &str,
+    project: &str,
+    target: &str,
+    actor: &Who,
+    at: i64,
+) -> Result<(), String> {
     if !valid_kind(kind) {
         return Err("The activity kind isn't one this log keeps.".into());
     }
@@ -889,13 +940,10 @@ pub fn record_mono_note(
     if project.chars().count() > MAX_FIELD_CHARS || target.chars().count() > MAX_FIELD_CHARS {
         return Err("That name is too long.".into());
     }
-    if actor_id.trim().is_empty() {
-        return Err("Say who did this.".into());
-    }
     note(
         conn,
         kind,
-        &Who::mono(actor_id, actor_name),
+        actor,
         &Who::person(),
         project,
         target,
@@ -904,6 +952,32 @@ pub fn record_mono_note(
         at,
     );
     Ok(())
+}
+
+/// WP-178: a first mate's chat records one activity row (the after-turn protected-path report). Same arguments as
+/// `activity_note`, but the actor is the first mate, not a Mono.
+#[tauri::command(async)]
+#[allow(clippy::too_many_arguments)]
+pub fn activity_note_first_mate(
+    store: State<'_, SessionStore>,
+    kind: String,
+    summary: String,
+    project: String,
+    target: String,
+    first_mate_id: String,
+    first_mate_name: String,
+) -> Result<(), String> {
+    let conn = store.lock_conn()?;
+    record_first_mate_note(
+        &conn,
+        &kind,
+        &summary,
+        &project,
+        &target,
+        &first_mate_id,
+        &first_mate_name,
+        now_millis(),
+    )
 }
 
 #[tauri::command(async)]

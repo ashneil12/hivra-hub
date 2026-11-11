@@ -1243,6 +1243,9 @@ pub fn run() {
             attribution::attribution_for_commits,
             // WP-89: a worker-default change, beside the activity list.
             activity::activity_note,
+            activity::activity_note_first_mate,
+            agent_sandbox::agent_sandbox_status,
+            agent_sandbox::agent_sandbox_set,
             // WP-50: past chats, only with a person's OK, drafted for review.
             history_import::history_import_roots,
             history_import::history_import_list,

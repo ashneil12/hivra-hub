@@ -126,6 +126,19 @@ struct SharedList {
     path_suffixes: Vec<String>,
     path_sequences: Vec<String>,
     hold_any_dot_segment: bool,
+    home_secrets: HomeSecrets,
+}
+
+/// The secret places, anchored at the home folder (`~/.ssh`, `~/.config/gh`). They are a separate section because the
+/// shared `dirs` and `files` match at any depth, and a sandbox that denied those would deny `<repo>/.git` and
+/// `~/.claude/.credentials.json`'s folder too. `cli_login_files` are reported but never denied: the CLI reads them to log in.
+#[derive(Clone, Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct HomeSecrets {
+    pub(crate) dirs: Vec<String>,
+    pub(crate) files: Vec<String>,
+    pub(crate) shell_profiles: Vec<String>,
+    pub(crate) cli_login_files: Vec<String>,
 }
 
 pub(crate) struct Shared {
@@ -134,6 +147,7 @@ pub(crate) struct Shared {
     suffixes: Vec<Vec<String>>,
     sequences: Vec<Vec<String>>,
     hold_any_dot_segment: bool,
+    home_secrets: HomeSecrets,
 }
 
 const SHARED_LIST_JSON: &str = include_str!("../../../src/shared/security/agentConfigPaths.json");
@@ -171,7 +185,14 @@ fn load_shared(json: &str) -> Result<Shared, String> {
             .map(|run| segments(run))
             .collect(),
         hold_any_dot_segment: list.hold_any_dot_segment,
+        home_secrets: list.home_secrets,
     })
+}
+
+/// The home-anchored secret places from the same shared list (`homeSecrets`). Read by the sandbox profile and by the
+/// after-turn fingerprints, so both name the same places. Fails with the list's own error, which holds every path.
+pub(crate) fn home_secrets() -> Result<&'static HomeSecrets, String> {
+    shared_list().map(|shared| &shared.home_secrets)
 }
 
 /// One name, compared the way Windows and macOS users read it: NFKC, then lower case, with the long s (U+017F, which
@@ -1257,8 +1278,13 @@ mod tests {
             r#"{"version":2,"files":[],"dirs":[],"pathSuffixes":[],"holdAnyDotSegment":false}"#
         )
         .is_err());
+        // The home-secrets section is part of the list: a list without it does not load, so every path is held.
         assert!(load_shared(
             r#"{"version":1,"files":[],"dirs":[],"pathSuffixes":[],"pathSequences":[],"holdAnyDotSegment":false}"#
+        )
+        .is_err());
+        assert!(load_shared(
+            r#"{"version":1,"files":[],"dirs":[],"pathSuffixes":[],"pathSequences":[],"holdAnyDotSegment":false,"homeSecrets":{"dirs":[],"files":[],"shellProfiles":[],"cliLoginFiles":[]}}"#
         )
         .is_ok());
         assert!(

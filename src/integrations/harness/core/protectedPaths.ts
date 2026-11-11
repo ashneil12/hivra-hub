@@ -2,9 +2,9 @@
 // CLI's settings, hooks, commands and skills) and that an agent must not change silently. Paths are checkout-relative
 // (".git/hooks/**") or home-relative ("~/.zshrc"). The after-turn report names what a turn touched; it never blocks a
 // write and never reverts a file. Blocking is the macOS sandbox profile (src-tauri/src/agent_sandbox.rs), on by setting.
-// The secret places (SSH keys, cloud logins, keychains) are a second list in the same report, read from the shared JSON
-// src/shared/security/agentSecretPaths.json that the sandbox profile also reads.
-import secretList from "../../../shared/security/agentSecretPaths.json";
+// The secret places (SSH keys, cloud logins, keychains) and the shell profiles come from the `homeSecrets` section of the
+// shared list src/shared/security/agentConfigPaths.json, the same file the sandbox profile reads (agent_sandbox.rs).
+import sharedList from "../../../shared/security/agentConfigPaths.json";
 
 export type ProtectedRule = {
   /** A glob: `**` any depth, `*` one segment. Checkout paths are root-relative; home paths start with `~/`. */
@@ -12,6 +12,8 @@ export type ProtectedRule = {
   /** Why a change matters, in plain words. Shown in the report. */
   why: string;
 };
+
+const HOME_SECRETS = sharedList.homeSecrets;
 
 export const PROTECTED_PATHS: readonly ProtectedRule[] = [
   // Git: a hook runs on the next commit, push or checkout; config can point hooks or fsmonitor at any command.
@@ -39,15 +41,11 @@ export const PROTECTED_PATHS: readonly ProtectedRule[] = [
   { pattern: ".config/devin/skills/**", why: "Devin skills change what the agent is told to do" },
   { pattern: ".gemini/antigravity/skills/**", why: "Antigravity skills change what the agent is told to do" },
 
-  // Shell profiles: run in every new terminal, including the ones Hivra opens.
-  { pattern: "~/.zshrc", why: "a shell profile runs in every new terminal" },
-  { pattern: "~/.zprofile", why: "a shell profile runs in every new terminal" },
-  { pattern: "~/.zshenv", why: "a shell profile runs in every new shell, even scripts" },
-  { pattern: "~/.zlogin", why: "a shell profile runs in every new terminal" },
-  { pattern: "~/.bashrc", why: "a shell profile runs in every new terminal" },
-  { pattern: "~/.bash_profile", why: "a shell profile runs in every new terminal" },
-  { pattern: "~/.profile", why: "a shell profile runs in every new login shell" },
-  { pattern: "~/.config/fish/config.fish", why: "a shell profile runs in every new terminal" },
+  // Shell profiles: run in every new terminal, including the ones Hivra opens (the shared list's shellProfiles).
+  ...HOME_SECRETS.shellProfiles.map((file) => ({
+    pattern: `~/${file}`,
+    why: "a shell profile runs in every new terminal or shell",
+  })),
 
   // The person's own CLI settings, hooks, commands and skills.
   { pattern: "~/.claude/settings.json", why: "Claude Code settings decide its permissions and hooks" },
@@ -107,21 +105,58 @@ export type ProtectedTouch = { path: string; pattern: string; why: string; kind:
 /** What the after-turn check reports. It names what changed and never blocks or reverts anything. */
 export type ProtectedTouchReport = { touched: ProtectedTouch[]; summary: string };
 
-/** The secret places, home-relative, from the shared JSON list. Read-only for the check: nothing is blocked here. */
-export const SECRET_PATHS: readonly ProtectedRule[] = [
-  ...secretList.secretDirs.map((dir) => ({ pattern: `~/${dir}/**`, why: "a folder of logins or keys" })),
-  ...secretList.secretFiles.map((file) => ({ pattern: `~/${file}`, why: "a file of logins" })),
-  ...secretList.cliLoginFiles.map((file) => ({ pattern: `~/${file}`, why: "a coding CLI's own login file" })),
+/**
+ * The fold the shared list's matcher uses on a name (src-tauri/src/delivery/protected.rs `fold`): NFKC, lower case, the
+ * long s (U+017F) to s, and trailing dots and spaces removed. `.ſSH.` and `.ssh` are the same folder on a Mac or Windows.
+ */
+export function foldName(segment: string): string {
+  return segment.normalize("NFKC").toLowerCase().replace(/\u017f/g, "s").replace(/[. ]+$/, "");
+}
+
+type SecretRule = ProtectedRule & { segments: string[]; folder: boolean };
+
+/**
+ * The secret places, home-relative, from the shared list's `homeSecrets`. A folder holds everything under it; a file is
+ * that file only. The CLIs' own login files are reported and never denied (the sandbox does not deny them either).
+ * Read-only for the check: nothing is blocked here.
+ */
+const SECRET_RULES: readonly SecretRule[] = [
+  ...HOME_SECRETS.dirs.map((dir) => ({
+    pattern: `~/${dir}/**`,
+    why: "a folder of logins or keys",
+    segments: dir.split("/").map(foldName),
+    folder: true,
+  })),
+  ...HOME_SECRETS.files.map((file) => ({
+    pattern: `~/${file}`,
+    why: "a file of logins",
+    segments: file.split("/").map(foldName),
+    folder: false,
+  })),
+  ...HOME_SECRETS.cliLoginFiles.map((file) => ({
+    pattern: `~/${file}`,
+    why: "a coding CLI's own login file",
+    segments: file.split("/").map(foldName),
+    folder: false,
+  })),
 ];
 
-const SECRET_COMPILED = SECRET_PATHS.map((rule) => ({ rule, re: globToRegExp(rule.pattern) }));
+export const SECRET_PATHS: readonly ProtectedRule[] = SECRET_RULES.map(({ pattern, why }) => ({ pattern, why }));
 
 /** The first secret place a home path names, or null. Only `~/` paths can be secret places. */
 export function matchSecret(path: string): ProtectedRule | null {
   const p = normalize(path);
   if (!p.startsWith("~/")) return null;
-  const hit = SECRET_COMPILED.find(({ re }) => re.test(p));
-  return hit ? hit.rule : null;
+  const segments = p
+    .slice(2)
+    .split("/")
+    .filter((segment) => segment !== "")
+    .map(foldName);
+  const hit = SECRET_RULES.find((rule) => {
+    const inside = rule.folder ? segments.length >= rule.segments.length : segments.length === rule.segments.length;
+    return inside && rule.segments.every((segment, i) => segments[i] === segment);
+  });
+  return hit ? { pattern: hit.pattern, why: hit.why } : null;
 }
 
 export function reportProtectedTouches(changedPaths: readonly string[]): ProtectedTouchReport {

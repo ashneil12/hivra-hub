@@ -1013,15 +1013,29 @@ pub fn harness_spawn(
     // to a plain start (agent_sandbox::sandboxed_launch).
     let data_dir = app.path().app_data_dir().ok();
     let (launch_program, launch_lead) = if crate::agent_sandbox::enabled(data_dir.as_deref()) {
-        let home = std::env::var_os("HOME").map(PathBuf::from).ok_or_else(|| {
-            "The agent did not start: HOME is not set, so the macOS sandbox cannot be built."
-                .to_string()
-        })?;
-        crate::agent_sandbox::sandboxed_launch(
-            std::ffi::OsStr::new(&command),
-            &home,
-            std::path::Path::new(crate::agent_sandbox::SANDBOX_EXEC),
-        )?
+        let started = std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .ok_or_else(|| {
+                "The agent did not start: HOME is not set, so the macOS sandbox cannot be built."
+                    .to_string()
+            })
+            .and_then(|home| {
+                crate::agent_sandbox::sandboxed_launch(
+                    std::ffi::OsStr::new(&command),
+                    &home,
+                    std::path::Path::new(crate::agent_sandbox::SANDBOX_EXEC),
+                )
+            });
+        match started {
+            Ok(launch) => launch,
+            Err(error) => {
+                // WP-78: a refused start is one activity row, naming the chat. Nothing was started or reserved yet.
+                if let Some(data) = data_dir.as_deref() {
+                    crate::agent_sandbox::note_refusal(data, &session_id, &error);
+                }
+                return Err(error);
+            }
+        }
     } else {
         (std::ffi::OsString::from(&command), Vec::new())
     };

@@ -1,8 +1,8 @@
 //! WP-178 items 3.3 and 3.4: fingerprints for the report-only after-turn check on first-mate turns.
 //!
 //! Git status cannot see `.git/hooks` or `.git/config` (checkout_guard.rs), so the check takes their fingerprints itself:
-//! a content hash for each hook and for the config. The secret places (SSH keys, cloud logins, keychains; the list in
-//! src/shared/security/agentSecretPaths.json) are fingerprinted by size and modified time only, never by content, so
+//! a content hash for each hook and for the config. The secret places (SSH keys, cloud logins, keychains; the `homeSecrets`
+//! section of src/shared/security/agentConfigPaths.json) are fingerprinted by size and modified time only, never by content, so
 //! the check never reads a key. The TypeScript side (protectedPaths.ts) names what changed. Nothing is blocked here.
 
 use std::collections::BTreeMap;

@@ -106,5 +106,45 @@
     "src-tauri/src/watcher/safe_cmd.rs",
     "src/integrations/harness/providers/claude/claudeProtocol.ts"
   ],
-  "holdAnyDotSegment": true
+  "holdAnyDotSegment": true,
+  "homeSecrets": {
+    "dirs": [
+      ".ssh",
+      ".gnupg",
+      ".aws",
+      ".kube",
+      ".docker",
+      ".password-store",
+      ".azure",
+      ".config/gh",
+      ".config/gcloud",
+      ".config/rclone",
+      ".config/wrangler",
+      ".config/doctl",
+      ".config/stripe",
+      ".config/sops",
+      "Library/Keychains"
+    ],
+    "files": [
+      ".netrc",
+      ".npmrc",
+      ".pypirc",
+      ".git-credentials"
+    ],
+    "shellProfiles": [
+      ".zshrc",
+      ".zprofile",
+      ".zshenv",
+      ".zlogin",
+      ".bashrc",
+      ".bash_profile",
+      ".profile",
+      ".config/fish/config.fish"
+    ],
+    "cliLoginFiles": [
+      ".claude.json",
+      ".claude/.credentials.json",
+      ".codex/auth.json"
+    ]
+  }
 }
