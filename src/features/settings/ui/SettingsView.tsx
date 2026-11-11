@@ -25,6 +25,8 @@ import { CrewRulesPage } from "../../crew/ui/CrewRulesPage";
 import { GateSetting } from "../../delivery-gate/ui/GateSetting";
 // WP-85: show Claude sessions started in a terminal.
 import { TerminalSessionsSetting } from "../../terminalMirror/ui/TerminalSessionsSetting";
+// WP-134b: More agents, off until the person switches it on.
+import { MoreAgentsSettings } from "../../registry/ui/MoreAgentsSettings";
 // WP-84: the project's default phase path.
 import { PhaseSettings } from "../../phases/ui/PhaseSettings";
 // WP-104: copy diagnostics, and the health list.
@@ -4208,6 +4210,9 @@ function ProvidersPage({
           );
         })}
       </Group>
+
+      {/* WP-134b: More agents, off until the person switches it on. */}
+      <MoreAgentsSettings cwd={cwd} />
 
       <Group title="Advanced">
         <Row

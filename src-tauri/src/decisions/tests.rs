@@ -2070,3 +2070,294 @@ fn review225_an_answer_past_the_list_cap_cannot_answer_unseen() {
         out.decision.answer
     );
 }
+
+#[test]
+fn a_chat_cannot_settle_a_person_only_key_by_changing_its_case_or_width() {
+    let store = store();
+    let mut conn = store.lock_conn().unwrap();
+    // A chat can ask under any spelling, so a person-only key can be stored in mixed case. The check reads the stored
+    // key folded (trimmed, NFKC, lower-case), so the stored key and the checked key cannot differ.
+    let stored = [
+        "FRESH-EYES/r3/00112233aabbccdd",
+        "irreversible/lead/task-4",
+        "Irreversible/lead/task-5",
+    ];
+    for key in stored {
+        ask(&mut conn, ask_input("lead", key, &[]), 2).unwrap();
+    }
+    let spellings = [
+        (
+            "Irreversible/lead/task-4",
+            "Only the person answers an irreversible step",
+        ),
+        (
+            " irreversible/lead/task-4",
+            "Only the person answers an irreversible step",
+        ),
+        (
+            "ｉｒｒｅｖｅｒｓｉｂｌｅ/lead/task-4",
+            "Only the person answers an irreversible step",
+        ),
+        (
+            "irreversible／lead/task-4",
+            "Only the person answers an irreversible step",
+        ),
+        (
+            "Irreversible/lead/task-5",
+            "Only the person answers an irreversible step",
+        ),
+        (
+            "IRREVERSIBLE/lead/task-5",
+            "Only the person answers an irreversible step",
+        ),
+        (
+            "FRESH-EYES/r3/00112233aabbccdd",
+            "Only the person answers a fresh-eyes review",
+        ),
+        (
+            "Fresh-Eyes/r3/00112233aabbccdd",
+            "Only the person answers a fresh-eyes review",
+        ),
+        (
+            "ｆｒｅｓｈ-ｅｙｅｓ/r3/00112233aabbccdd",
+            "Only the person answers a fresh-eyes review",
+        ),
+        (
+            "fresh-eyes／r3/00112233aabbccdd",
+            "Only the person answers a fresh-eyes review",
+        ),
+    ];
+    for (key, why) in spellings {
+        for machine in [Some("chat:lead"), Some("autopilot")] {
+            let refusal = answer(
+                &mut conn,
+                "hivra",
+                key,
+                "Approve",
+                machine.map(str::to_string),
+                3,
+            )
+            .unwrap_err();
+            assert!(refusal.contains(why), "{key}: {refusal}");
+        }
+    }
+    for key in stored {
+        assert_eq!(
+            get(&conn, "hivra", key).unwrap().unwrap().state,
+            OPEN,
+            "{key}"
+        );
+    }
+    // The person still answers a mixed-case decision as it is stored: rows written before this fix stay answerable.
+    let out = answer(
+        &mut conn,
+        "hivra",
+        "FRESH-EYES/r3/00112233aabbccdd",
+        "Approve",
+        Some("user".into()),
+        4,
+    )
+    .unwrap();
+    assert!(out.applied);
+    // An ordinary key is still answered by a chat on the first mate's behalf, whatever its case.
+    ask(&mut conn, ask_input("fm", "Retention-Policy", &[]), 5).unwrap();
+    assert!(
+        answer(
+            &mut conn,
+            "hivra",
+            "Retention-Policy",
+            "Keep 30 days",
+            Some("chat:fm".into()),
+            6
+        )
+        .unwrap()
+        .applied
+    );
+}
+
+#[test]
+fn invisible_format_characters_and_unicode_space_do_not_change_a_person_only_key() {
+    let store = store();
+    let mut conn = store.lock_conn().unwrap();
+    ask(
+        &mut conn,
+        ask_input("lead", "irreversible/lead/task-6", &[]),
+        2,
+    )
+    .unwrap();
+    // Zero-width and other format characters (Unicode Cf and default-ignorable) are invisible: they are dropped before the
+    // prefix check, and so is any Unicode space that trim removes.
+    let spellings = [
+        "irre\u{200B}versible/lead/task-6",
+        "\u{200B}irreversible/lead/task-6",
+        "irreversible\u{200C}/lead/task-6",
+        "irreversible/lead\u{200D}/task-6",
+        "irreversible\u{FEFF}/lead/task-6",
+        "\u{00AD}irreversible/lead/task-6",
+        "irre\u{2060}versible/lead/task-6",
+        "\u{FE0F}irreversible/lead/task-6",
+        "\u{200B} \u{200B}irreversible/lead/task-6",
+        "\u{00A0}irreversible/lead/task-6",
+        "\u{3000}irreversible/lead/task-6",
+        "\u{2028}irreversible/lead/task-6",
+        "\u{0085}irreversible/lead/task-6",
+        "fresh\u{00AD}-eyes/r9/00112233aabbccdd",
+    ];
+    for key in spellings {
+        assert_eq!(
+            fold_key(key),
+            fold_key(key).trim(),
+            "{key:?} folds to a padded key"
+        );
+        assert!(
+            person_only(key, Some("chat:lead")).is_some(),
+            "{key:?} is not person-only"
+        );
+    }
+    assert_eq!(fold_key("irre\u{200B}versible/x"), "irreversible/x");
+    // A chat answer in any of these spellings is refused, and the decision stays open.
+    for key in &spellings[..spellings.len() - 1] {
+        let refusal = answer(
+            &mut conn,
+            "hivra",
+            key,
+            "Approve",
+            Some("chat:lead".into()),
+            3,
+        )
+        .unwrap_err();
+        assert!(
+            refusal.contains("Only the person answers"),
+            "{key:?}: {refusal}"
+        );
+    }
+    assert_eq!(
+        get(&conn, "hivra", "irreversible/lead/task-6")
+            .unwrap()
+            .unwrap()
+            .state,
+        OPEN
+    );
+}
+
+#[test]
+fn a_chat_cannot_start_a_stopped_task_again_by_spelling_its_restart_key_another_way() {
+    let store = store();
+    let mut conn = store.lock_conn().unwrap();
+    // The chat asks the restart question itself under a mixed-case key, then tries to answer it.
+    let key = "FANOUT-AGAIN/r1/api/f2_r1-api/0123456789abcdef";
+    ask(&mut conn, ask_input("lead", key, &[]), 2).unwrap();
+    let spellings = [
+        key,
+        "fanout-again/r1/api/f2_r1-api/0123456789abcdef",
+        " fanout-again/r1/api/f2_r1-api/0123456789abcdef",
+        "ｆａｎｏｕｔ-ａｇａｉｎ/r1/api/f2_r1-api/0123456789abcdef",
+        "fanout\u{200B}-again/r1/api/f2_r1-api/0123456789abcdef",
+        "\u{200B}FANOUT-AGAIN/r1/api/f2_r1-api/0123456789abcdef",
+    ];
+    for spelling in spellings {
+        let refusal = answer(
+            &mut conn,
+            "hivra",
+            spelling,
+            "Start it again",
+            Some("chat:lead".into()),
+            3,
+        )
+        .unwrap_err();
+        assert!(
+            refusal.contains("Only the person answers whether a stopped task starts again"),
+            "{spelling:?}: {refusal}"
+        );
+    }
+    assert_eq!(get(&conn, "hivra", key).unwrap().unwrap().state, OPEN);
+}
+
+/// A delivery check is the person's. A chat that knows the run id must not approve `gate/<run>`, in any spelling
+/// (mixed case, fullwidth, or invisible characters). The decision stays open.
+#[test]
+fn review225_a_chat_cannot_answer_a_gate_key_in_any_spelling() {
+    let store = store();
+    let mut conn = store.lock_conn().unwrap();
+    ask(&mut conn, ask_input("fm", "gate/r1", &[]), 2).unwrap();
+    let spellings = [
+        "gate/r1",
+        "GATE/r1",
+        "Gate/r1",
+        " gate/r1",
+        "ｇａｔｅ/r1",
+        "gate／r1",
+        "g\u{200B}ate/r1",
+        "\u{200B}gate/r1",
+        "gate\u{200B}/r1",
+        "\u{FEFF}gate/r1",
+    ];
+    for key in spellings {
+        assert!(
+            person_only(key, Some("chat:s1")).is_some(),
+            "{key:?} is not person-only"
+        );
+        let refusal = answer(
+            &mut conn,
+            "hivra",
+            key,
+            "approve",
+            Some("chat:s1".into()),
+            3,
+        )
+        .unwrap_err();
+        assert!(
+            refusal.contains("Only the person answers the check"),
+            "{key:?}: {refusal}"
+        );
+    }
+    // A machine by another name, and the app's own closer, are not the person either.
+    for by in ["autopilot", "app:fresh-eyes", " chat:s1 "] {
+        let refusal =
+            answer(&mut conn, "hivra", "gate/r1", "approve", Some(by.into()), 3).unwrap_err();
+        assert!(
+            refusal.contains("Only the person answers the check"),
+            "{by}: {refusal}"
+        );
+    }
+    assert_eq!(get(&conn, "hivra", "gate/r1").unwrap().unwrap().state, OPEN);
+    // The person still answers it, including under another spelling of the same key.
+    assert!(
+        answer(
+            &mut conn,
+            "hivra",
+            "GATE/r1",
+            "approve",
+            Some("user".into()),
+            4,
+        )
+        .unwrap()
+        .applied
+    );
+}
+
+/// Pre-existing on main (not introduced by #225): a chat records an answer on a delivery gate's key through
+/// ask_person's `answer` field. person_only does not cover `gate/`, and decisions_answer forwards any `gate/` answer to
+/// the gate without looking at who gave it.
+#[test]
+fn review225_main_a_chat_cannot_answer_a_gate_key() {
+    let store = store();
+    let mut conn = store.lock_conn().unwrap();
+    let mut gate = ask_input("gate", "gate/run-9", &[]);
+    gate.options = vec!["Approve".into(), "Fix".into(), "Skip".into()];
+    gate.recommended = None;
+    ask(&mut conn, gate, 1).unwrap();
+    let out = answer(
+        &mut conn,
+        "hivra",
+        "gate/run-9",
+        "Approve",
+        Some("chat:fm".into()),
+        2,
+    );
+    assert!(
+        out.is_err(),
+        "a chat answered a delivery gate: {:?}",
+        out.map(|o| o.applied)
+    );
+}
