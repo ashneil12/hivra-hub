@@ -231,6 +231,13 @@ jobs:
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
+      # WP-173: pinned installer, pinned nextest. No new permissions and no secrets.
+      - name: Install cargo-nextest
+        if: matrix.part != 'web'
+        uses: taiki-e/install-action@0fd46367812ee04360509b4169d9f659d6892bb2 # v2.79.15
+        with:
+          tool: cargo-nextest@0.9.151
+
       - run: npm ci
       - run: npm test ${{ matrix.shard && format('-- --shard={0}', matrix.shard) || '' }}
         if: matrix.part == 'web'
@@ -240,13 +247,25 @@ jobs:
         if: matrix.part == 'rust'
       - run: cargo clippy --workspace --all-targets -- -D warnings
         if: matrix.part == 'rust'
-      - run: cargo check
-        if: matrix.part == 'rust'
-      - run: cargo test
+      - run: cargo nextest run --workspace --profile ci
         if: matrix.part == 'rust'
       - name: Web and Rust checks together
         if: matrix.part == 'all'
         run: node scripts/ci-check-parallel.mjs
+
+      # WP-173: list flaky and twice-failed tests. The script exits 0, so it does not change the job result.
+      - name: Rust flaky tests in the job summary
+        if: always() && matrix.part != 'web'
+        run: node scripts/ci-rust-flaky-summary.mjs
+
+      - name: Upload Rust test results
+        if: always() && matrix.part != 'web'
+        uses: actions/upload-artifact@v4
+        with:
+          name: rust-junit-${{ matrix.os }}-${{ matrix.part }}
+          path: target/nextest/ci/junit.xml
+          retention-days: 7
+          if-no-files-found: ignore
 
   ship:
     if: github.event_name != 'schedule' && (github.event_name != 'pull_request' || !github.event.pull_request.draft)

@@ -197,6 +197,22 @@ WP-40's gates; it adds no second run model. It starts when 40 and 82 merge, and 
 | [177](work/WP-177-teleport-chat-between-machines.md) | Teleport a chat between this Mac and a host, as a custody handover | L | 60, 61, 121, 133 | no |
 | Follow-up to [160](work/WP-160-lead-tick.md) | The lead tick opens the PR watch and the delivery row itself, so Ship on green can merge without asking | S | 160 | no |
 
+### Wave M: overnight suggestions and atomic-agent (10 Nov 2026)
+
+Four packages from the 10 Nov overnight scout and the atomic-agent study. Each has a brief and none is started. All
+four are Grok OK: no, because they touch commit or CI files, the merge gate or security code, so a Claude builder
+takes them when Ash says. The other overnight and atomic-agent ideas were dropped because Hivra already has them or
+they duplicate a package; the reasons are in the PR that added this wave.
+
+Per-run and per-period dollar caps are WP-176 (PR #217, spend limits). They are not a new brief here.
+
+| WP | Title | Size | Depends on | Grok OK |
+| --- | --- | --- | --- | --- |
+| [200](work/WP-200-agent-commit-secret-guard.md) | Keep agent approval files and transcripts out of commits, and scan what ships for secrets | M | WP-86, WP-158 | no |
+| [201](work/WP-201-pin-github-actions-to-shas.md) | Pin GitHub Actions to commit SHAs, and keep them current | S | WP-153, WP-154, WP-173 | no |
+| [202](work/WP-202-pr-watch-base-moved.md) | PR watch knows when main moved under a pull request | M | WP-155, WP-160, WP-158 | no |
+| [203](work/WP-203-structured-security-review.md) | A structured hard review for security-sensitive packages | M | WP-81, WP-160 | no |
+
 ## Running it
 
 - Each wave runs as one agent per package, in parallel (up to about ten at once). Wave A can start the moment this

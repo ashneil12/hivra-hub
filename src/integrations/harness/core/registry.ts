@@ -78,11 +78,12 @@ export type HarnessAdapter = {
   rewindLastTurn?(input: RewindLastTurnInput): Promise<RewindLastTurnResult>;
   steerTurn(input: SteerTurnInput): Promise<void>;
   cancelTurn(sessionId: string): Promise<void>;
+  /** Returns true only when a live call took the decision. Adapters that cannot confirm return nothing. */
   respondApproval(
     sessionId: string,
     requestId: number,
     decision: ApprovalDecision,
-  ): void;
+  ): boolean | void;
   respondQuestion?(
     sessionId: string,
     requestId: number,
@@ -539,13 +540,14 @@ export async function cancelHarnessTurn(
   scheduleIdlePark(harness, sessionId);
 }
 
+/** True only when the harness confirmed it had a live call waiting for this decision. */
 export function respondHarnessApproval(
   harness: HarnessId,
   sessionId: string,
   requestId: number,
   decision: ApprovalDecision,
-): void {
-  getHarness(harness)?.respondApproval(sessionId, requestId, decision);
+): boolean {
+  return getHarness(harness)?.respondApproval(sessionId, requestId, decision) === true;
 }
 
 export function respondHarnessQuestion(

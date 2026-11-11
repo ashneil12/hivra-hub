@@ -564,6 +564,7 @@ pub fn run() {
             mobile_access::mobile_cancel_invite,
             mobile_access::mobile_revoke,
             mobile_access::mobile_publish,
+            mobile_access::mobile_admits,
             mobile_access::mobile_reply,
             mobile_access::mobile_push,
             remote::remote_machines,
