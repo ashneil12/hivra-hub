@@ -37,15 +37,23 @@ export type HomeChat = {
   openedAt: number;
 };
 
-export type HomeLineKind = "decision" | "question" | "review" | "moving" | "doc" | "chat" | "builders" | "project";
+export type HomeLineKind = "decision" | "question" | "review" | "moving" | "doc" | "chat" | "page" | "builders" | "project" | "stopped";
 
 export type HomeLine = {
   id: string;
   kind: HomeLineKind;
   text: string;
   projectId: string;
+  /** Person-facing project name for a Needs you chip. Absent on other lines. */
+  projectName?: string;
+  /** Who asked, for the quiet line under a Needs you row. */
+  who?: string;
+  /** The Needs you kind, for its chip. The row's own kind still decides where a click goes. */
+  needsKind?: string;
   target: string;
   at: number;
+  /** At most two, primary first. A line with any is not itself a button. */
+  actions?: readonly { label: string; run: () => void; title?: string; ariaLabel?: string }[];
 };
 
 export type HomeProject = { id: string; name: string; folder: string | null };
@@ -309,8 +317,9 @@ export function recentLines(docs: readonly HomeDoc[], chats: readonly HomeChat[]
 }
 
 /**
- * One line per project, in the strip's order: its name, then what is happening there in a few words. "needs you" when
- * a Needs you line names it, else the first task moving in it, else just the name. No counts.
+ * One line per project, in the strip's order: its name, then what is happening there in a few words.
+ * Needs you items on that project become a count from the same list ("Hivra · 2 need you"). Otherwise the first
+ * task moving in it, or just the name. The builder hold is not one of the items.
  */
 export function projectLines(
   projects: readonly HomeProject[],
@@ -324,9 +333,10 @@ export function projectLines(
     if (seen.has(project.id)) continue;
     seen.add(project.id);
     const name = cleanLine(project.name) || project.id;
+    const count = needsYou.filter((line) => line.projectId === project.id && line.kind !== "builders").length;
     let what = "";
-    if (needsYou.some((line) => line.projectId === project.id)) {
-      what = "needs you";
+    if (count > 0) {
+      what = count === 1 ? "1 needs you" : `${count} need you`;
     } else {
       const line = moving.find((item) => item.projectId === project.id);
       const task = line ? tasks.find((item) => `task:${item.id}` === line.id) : undefined;

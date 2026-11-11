@@ -20,7 +20,9 @@ import { LOCAL_HUB_CHANGED, appHubTransport } from "../../hub/model/localHub/loc
 import { PanelFrame } from "../../panels/ui/PanelTabs";
 import { hideSection, moveSection, pinPanel, showSection, unpin } from "../model/arrangement";
 import { LateHomeLoad, createHomeLoader, mergeHomeLoad, realHomeSource, type HomeSnapshot } from "../model/load";
-import { builderHoldLine, hubProjectId, movingLines, namesFor, needsYouLines, projectLines, recentLines } from "../model/lines";
+import { builderHoldLine, hubProjectId, movingLines, namesFor, projectLines, recentLines, type HomeLine } from "../model/lines";
+import { useNeedsYou } from "../../needs/model/needsLive";
+import type { NeedsItem } from "../../needs/model/needsYou";
 import { openFromHome, targetFor } from "../model/opener";
 import { HOME_DOC_KEY, changeHome, type HomeDoc } from "../model/store";
 import { HomeScreen } from "./HomeScreen";
@@ -38,6 +40,50 @@ import {
 } from "../../programme/model/programme";
 
 const TASKS_CHANGED = "tasks://changed";
+
+function lineFromNeed(item: NeedsItem, projectName: (id: string) => string): HomeLine {
+  const decision = item.decisionKey?.trim();
+  const gate = item.gateKey?.trim();
+  const open = item.open;
+  const projectId = item.projectId ?? "";
+  let kind: HomeLine["kind"] = "decision";
+  let target = decision || open?.id || item.key;
+  if (item.kind === "stopped") {
+    kind = "stopped";
+    target = open?.id || item.key;
+  } else if (open?.where === "chat") {
+    kind = "chat";
+    target = open.id;
+  } else if (open?.where === "page") {
+    kind = "page";
+    target = open.id;
+  } else if (item.kind === "check" && gate) {
+    kind = "decision";
+    target = gate;
+  } else if (decision) {
+    kind = "decision";
+    target = decision;
+  } else if (open?.where === "task") {
+    kind = "question";
+    target = open.id;
+  } else if (item.kind === "review") {
+    kind = "review";
+  } else if (item.kind === "question") {
+    kind = "question";
+  }
+  return {
+    id: item.key,
+    kind,
+    text: item.sentence,
+    projectId,
+    who: item.who,
+    needsKind: item.kind,
+    ...(projectId ? { projectName: projectName(projectId) } : {}),
+    target,
+    at: item.at,
+    actions: item.actions.slice(0, 3),
+  };
+}
 const RETRY_MS = 2000;
 
 export function HomeView() {
@@ -291,12 +337,10 @@ export function HomeView() {
     }
   }
   const hold = builderHold();
+  const liveNeeds = useNeedsYou();
+  const fromList = liveNeeds.map((item) => lineFromNeed(item, name));
   const spend = spendHold();
-  const needsYou = [
-    ...(hold ? [builderHoldLine(hold)] : []),
-    ...(spend ? [builderHoldLine(spend)] : []),
-    ...needsYouLines(snap?.decisions ?? [], tasks, name),
-  ];
+  const needsYou = [...(hold ? [builderHoldLine(hold)] : []), ...(spend ? [builderHoldLine(spend)] : []), ...fromList];
   const moving = movingLines(tasks, name);
   // The app holds no project at all (not one hidden by the trash or Ash's own "Remove from hub"): say why.
   const noProjects = snap && registryProjects().length === 0
@@ -305,6 +349,7 @@ export function HomeView() {
   return (
     <HomeScreen
       needsYou={needsYou}
+      needsMark={liveNeeds.length}
       projects={projectLines(projects, needsYou, moving, tasks)}
       noProjects={noProjects}
       onBringOver={() => void bringOver()}

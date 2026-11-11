@@ -125,6 +125,12 @@ test("a stuck worker shows on the rail and in its Lead's chat", async ({ page })
   await expect(working).toHaveText(
     "1 working: Wire the dodge input · 1 waiting: Pick the dodge timing · 1 with EXO lead: Run the movement tests",
   );
-  await expect(page.locator("[data-delegation-needs-you]").first()).toContainText("1 needs you: Upload the playtest build");
+  // The stopped worker's card is on screen, so the red footer line is not drawn beside it.
+  const playtest = cards.filter({ hasText: "Upload the playtest build" });
+  await expect(playtest).toBeVisible();
+  await expect(playtest.getByRole("button", { name: /^Open / })).toBeVisible();
+  await expect(playtest.getByRole("button", { name: "Dismiss" })).toBeVisible();
+  await expect(page.locator("[data-delegation-needs-you]")).toHaveCount(0);
+  await expect(line.locator("[data-mono-work-split]")).toContainText("1 needs you");
   await expect(working).toHaveAttribute("title", "Delegated 6: 1 working, 1 waiting, 1 with its Lead, 1 failed, 2 done");
 });

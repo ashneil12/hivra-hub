@@ -15644,7 +15644,6 @@ function Workspace({
     sameSessionSummaries,
   );
   const {
-    unseen: inboxUnseen,
     linkedSessionUpdateIds,
     linkedSessionUpdates,
   } = useInboxActivity(recents, sidebarCwd, sidebarHistory, {
@@ -18299,7 +18298,8 @@ function Workspace({
       inset={insetLayout}
       onToggleProjectRail={onToggleProjectRail}
       unseenFinishedIds={unseenFinishedIds}
-      inboxUnseen={inboxUnseen}
+      // WP-210: the Inbox mark is the Needs you count, read in the sidebar. The tracker still plays its sound.
+      inboxUnseen={false}
       linkedSessionUpdateIds={linkedSessionUpdateIds}
       settingsOpen={settingsOpen}
       settingsSection={settingsSection}

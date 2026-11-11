@@ -32,7 +32,7 @@ export function askReason(need: Pick<Need, "title" | "why">): NeedsReason {
 
 /**
  * Whether a row reads red: an open ask that counts toward the project's badge (shown, not under Later, not ticked off).
- * The badge (waiting.ts waitingCount) counts exactly these rows, so the red rows and the number always agree.
+ * The rail reads the one Needs you list, so a red row and that number stay the same thing.
  */
 export function askNeedsAsh(need: Pick<Need, "actionTarget" | "state">, counted: boolean): boolean {
   return counted && isAskNeed(need) && need.state !== "done";
