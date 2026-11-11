@@ -1119,3 +1119,94 @@ fn only_the_person_answers_a_fresh_eyes_review_and_the_app_may_close_it() {
         "{refusal}"
     );
 }
+
+/// WP-156 security: a key the person alone answers, a delivery gate's approval, or a secret never reuses an old answer
+/// and never shows up as guidance. A reworded question on an ordinary key still gets the standing answer.
+#[test]
+fn a_gate_secret_or_irreversible_key_never_reuses_or_shows_a_standing_answer() {
+    let store = store();
+    let mut conn = store.lock_conn().unwrap();
+    set_standing_enabled(&conn, true).unwrap();
+    let kept = [
+        (
+            "gate/run-1",
+            "Merge the room branch into main?",
+            vec!["Approve", "Fix", "Skip"],
+        ),
+        (
+            "secret/token-1",
+            "Rotate the room token for the bot?",
+            vec!["Yes", "No"],
+        ),
+        (
+            "irreversible/run/a",
+            "Delete the room archive for good?",
+            vec!["Yes", "No"],
+        ),
+        (
+            "fresh-eyes/r1/00112233",
+            "Fresh-eyes review of the room plan?",
+            vec!["Approve", "Skip once"],
+        ),
+    ];
+    for (n, (key, question, options)) in kept.iter().enumerate() {
+        let asked = ask(
+            &mut conn,
+            AskInput {
+                asked_by: "fm".into(),
+                asked_by_mono: None,
+                project: Some("hivra".into()),
+                key: key.to_string(),
+                question: question.to_string(),
+                options: options.iter().map(|o| o.to_string()).collect(),
+                recommended: None,
+                task_ids: Vec::new(),
+                keys: Vec::new(),
+                force: false,
+                reason: None,
+            },
+            2 + n as i64,
+        )
+        .unwrap();
+        assert!(asked.created && !asked.matched);
+        assert!(
+            get(&conn, "hivra", key).unwrap().unwrap().keys.is_empty(),
+            "{key} stored match words"
+        );
+        let done = answer(
+            &mut conn,
+            "hivra",
+            key,
+            options[0],
+            Some("user".into()),
+            10 + n as i64,
+        )
+        .unwrap();
+        assert!(done.applied, "{key} was not answered");
+    }
+    assert!(standing_rows(&conn, "hivra").unwrap().is_empty());
+    assert_eq!(standing_block(&conn, "hivra").unwrap(), "");
+
+    let probes = [
+        "Merge the room branch into main, please?",
+        "Rotate the room token for the bot?",
+        "Delete the room archive for good?",
+        "Fresh-eyes review of the room plan?",
+    ];
+    for (n, question) in probes.iter().enumerate() {
+        let mut probe = ask_input("fm", &format!("probe-{n}"), &[]);
+        probe.question = question.to_string();
+        probe.options = vec!["Yes".into(), "No".into()];
+        probe.recommended = None;
+        let out = ask(&mut conn, probe, 20 + n as i64).unwrap();
+        assert!(!out.matched, "{question} reused a key it must not");
+        assert!(out.created, "{question} did not open a decision");
+        assert_eq!(out.decision.state, OPEN);
+    }
+
+    assert!(standing_eligible("retention-policy"));
+    assert!(!standing_eligible("gate/run-1"));
+    assert!(!standing_eligible("secret/token-1"));
+    assert!(!standing_eligible("irreversible/run/a"));
+    assert!(!standing_eligible("fresh-eyes-start/r1"));
+}

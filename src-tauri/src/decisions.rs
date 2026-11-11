@@ -99,6 +99,16 @@ fn ensure_decision_columns(conn: &Connection) -> rusqlite::Result<()> {
     Ok(())
 }
 
+/// WP-156: keys that never take part in standing answers, neither as a match nor as guidance. The person alone answers
+/// an irreversible step and a fresh-eyes review; a delivery gate's approval belongs to the gate, not to an old answer;
+/// a secret is never reused. A key that is not listed here is an ordinary question the first mate chose.
+pub fn standing_eligible(key: &str) -> bool {
+    let key = key.trim();
+    !["irreversible/", "fresh-eyes", "gate/", "secret/"]
+        .iter()
+        .any(|prefix| key.starts_with(prefix))
+}
+
 /// The settings key for WP-156. Only the exact value `on` enables standing answers. Anything else, including a missing
 /// row, leaves them off.
 const STANDING_SETTING: &str = "standing_answers";
@@ -625,6 +635,9 @@ fn best_match(
         .map_err(|e| e.to_string())?;
     let mut best: Option<(Decision, usize, usize)> = None;
     for row in rows {
+        if !standing_eligible(&row.decision_key) {
+            continue;
+        }
         let theirs = query_words(&row.question, &row.keys);
         let shared = query.iter().filter(|word| theirs.contains(word)).count();
         let shorter = query.len().min(theirs.len());
@@ -746,7 +759,7 @@ pub fn ask(conn: &mut Connection, input: AskInput, now: i64) -> Result<AskOutcom
     let existing = get(&tx, &project, &key)?;
     // The same key stays one decision, even when standing answers are on and even with force.
     // A different key can reuse an active answer while the setting is on.
-    if existing.is_none() && standing_enabled(&tx)? {
+    if existing.is_none() && standing_eligible(&key) && standing_enabled(&tx)? {
         if let Some(hit) = best_match(&tx, &project, &question, &input.keys)? {
             if !input.force {
                 let mut released = Vec::new();
@@ -778,7 +791,7 @@ pub fn ask(conn: &mut Connection, input: AskInput, now: i64) -> Result<AskOutcom
         }
     }
     let created = existing.is_none();
-    let store_keys = created && standing_enabled(&tx)?;
+    let store_keys = created && standing_eligible(&key) && standing_enabled(&tx)?;
     // Taken before `question` moves into the new row. A repeat of the same key keeps the stored words.
     let stored_keys = if store_keys {
         accept_keys(&input.keys, &question)
@@ -1153,8 +1166,7 @@ pub fn standing_rows(conn: &Connection, project: &str) -> Result<Vec<StandingRow
              FROM decisions
              WHERE project = ?1 AND state = ?2 AND standing != 0 AND retired_at IS NULL
                AND answer IS NOT NULL
-             ORDER BY answered_at DESC, rowid DESC
-             LIMIT 20",
+             ORDER BY answered_at DESC, rowid DESC",
         )
         .map_err(|e| e.to_string())?;
     let rows = stmt
@@ -1171,7 +1183,11 @@ pub fn standing_rows(conn: &Connection, project: &str) -> Result<Vec<StandingRow
         .map_err(|e| e.to_string())?
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| e.to_string())?;
-    Ok(rows)
+    Ok(rows
+        .into_iter()
+        .filter(|row| standing_eligible(&row.decision_key))
+        .take(STANDING_ROWS)
+        .collect())
 }
 
 /// Newest active answers for one project, for a first mate's brief. Empty when standing answers are off, the project
@@ -1212,6 +1228,9 @@ pub fn standing_block(conn: &Connection, project: &str) -> Result<String, String
     for row in rows {
         if body.len() >= STANDING_ROWS {
             break;
+        }
+        if !standing_eligible(&row.decision_key) {
+            continue;
         }
         let line = format!(
             "{}: {} -> {}",
