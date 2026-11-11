@@ -3822,6 +3822,60 @@ describe("round 5 gap: a redo whose record failed does not start", () => {
   });
 });
 
+// WP-203: the control socket (handleAgentApp) refuses a security review's request id, and the review owner, before any
+// task starts. The review launcher is the app's alone.
+import { REVIEW_OWNER, REVIEW_REQUEST_PREFIX } from "../../security-review/model/launch";
+
+describe("the control socket refuses a security review's request id and owner", () => {
+  const reviewRequest = `${REVIEW_REQUEST_PREFIX}6162`;
+
+  it("refuses a tasks.delegate whose request id names a security review, and starts nothing", async () => {
+    const { source, host, started } = fixture([]);
+    await expect(
+      handleAgentApp(source, reviewRequest, "tasks.delegate", { brief: "Build it" }, host),
+    ).rejects.toThrow(/Security review request IDs belong to the app/);
+    expect(started).toEqual([]);
+  });
+
+  it("refuses a tasks.fanout with a review request id too", async () => {
+    const { source, host, started } = fixture([]);
+    await expect(
+      handleAgentApp(source, reviewRequest, "tasks.fanout", { tasks: [{ name: "a", brief: "x" }] }, host),
+    ).rejects.toThrow(/Security review request IDs belong to the app/);
+    expect(started).toEqual([]);
+  });
+
+  it("refuses a call from the review owner's own session, whatever it asks", async () => {
+    const { source, host, started } = fixture([]);
+    const asOwner = { ...source, id: REVIEW_OWNER };
+    await expect(handleAgentApp(asOwner, "r-own", "tasks.delegate", { brief: "Build it" }, host)).rejects.toThrow(
+      /reserved for the app/,
+    );
+    expect(started).toEqual([]);
+  });
+
+  it("refuses a call from the reviewer's own chat, whose id is review-<hex>", async () => {
+    // The launcher names the reviewer's chat review-<hex> (the child session of a review), not the owner's id.
+    const { source, host, started } = fixture([]);
+    const asReviewer = { ...source, id: `review-${"6162".repeat(10)}` };
+    await expect(handleAgentApp(asReviewer, "r-chat", "tasks.delegate", { brief: "Build it" }, host)).rejects.toThrow(
+      /reserved for the app/,
+    );
+    expect(started).toEqual([]);
+  });
+
+  it("refuses an ownerSession or reviewLaunch field a caller adds to tasks.delegate", async () => {
+    const { source, host, started } = fixture([]);
+    await expect(
+      handleAgentApp(source, "r-field", "tasks.delegate", { brief: "Build it", ownerSession: REVIEW_OWNER }, host),
+    ).rejects.toThrow();
+    await expect(
+      handleAgentApp(source, "r-field2", "tasks.delegate", { brief: "Build it", reviewLaunch: true }, host),
+    ).rejects.toThrow();
+    expect(started).toEqual([]);
+  });
+});
+
 // WP-172: a fan-out checkpoints as it sends its tasks, and a resume sends only what never started (the same request ids,
 // so a task that already has a row is never started twice).
 describe("tasks.fanout: checkpoint and resume (WP-172)", () => {

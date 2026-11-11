@@ -17,6 +17,12 @@
 //! that exact head still merges it.
 //!
 //! Red is never merged (firstmate, `bin/fm-pr-merge.sh`).
+//!
+//! A pull request that touches a security path (neverMerge.json's `securityPaths`) or carries a park label merges only
+//! with a security review for its exact head (WP-203): the findings, run record and coverage ledger the review command
+//! writes under `<git common dir>/hivra-security-review/<head>/`. The gate reads those files; it refuses a missing,
+//! stale, uncovered or same-builder review, and any confirmed high or critical finding. A needs_validation record
+//! becomes one open decision in the Inbox and does not block.
 
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
@@ -124,6 +130,258 @@ const NEVER_MERGE_JSON: &str = include_str!("../../../src/features/leadTick/mode
 #[derive(Deserialize)]
 struct NeverMergeList {
     labels: Vec<String>,
+    #[serde(default, rename = "securityPaths")]
+    security_paths: Vec<String>,
+}
+
+/// The paths that make a change security-sensitive (the same list the ship helper reads).
+pub fn security_paths() -> Vec<String> {
+    let list: NeverMergeList =
+        serde_json::from_str(NEVER_MERGE_JSON).expect("neverMerge.json is valid JSON");
+    list.security_paths
+}
+
+/// A glob as the ship helper reads it: `**` any path, `*` within one folder name, `?` one character.
+pub fn glob_match(pattern: &str, path: &str) -> bool {
+    // Both sides fold the way the floor folds names (NFKC, lower case), so a case or width change can't slip past.
+    let pattern = super::protected::fold_path(pattern);
+    let path = super::protected::fold_path(path);
+    fn go(p: &[u8], s: &[u8]) -> bool {
+        match p.first() {
+            None => s.is_empty(),
+            Some(b'*') if p.get(1) == Some(&b'*') => {
+                let rest = &p[2..];
+                let rest = if rest.first() == Some(&b'/') {
+                    &rest[1..]
+                } else {
+                    rest
+                };
+                (0..=s.len()).any(|i| go(rest, &s[i..]))
+            }
+            Some(b'*') => {
+                let rest = &p[1..];
+                let mut i = 0;
+                loop {
+                    if go(rest, &s[i..]) {
+                        return true;
+                    }
+                    if i >= s.len() || s[i] == b'/' {
+                        return false;
+                    }
+                    i += 1;
+                }
+            }
+            Some(b'?') => !s.is_empty() && s[0] != b'/' && go(&p[1..], &s[1..]),
+            Some(&c) => s.first() == Some(&c) && go(&p[1..], &s[1..]),
+        }
+    }
+    go(pattern.as_bytes(), path.as_bytes())
+}
+
+/// The changed files the security gate judges: the floor's own reader (the compare answer between the base and head
+/// commits of the first read), judged against that read's file count. A short, capped, empty or unreadable list is
+/// unread, and the gate refuses.
+fn gate_files(gh: &dyn Github, repo: &str, read: &PrRead) -> super::protected::ChangedFiles {
+    let Some(base) = read.base_tip.clone() else {
+        return super::protected::ChangedFiles::Unread {
+            reason: "GitHub didn't say where the base branch is now.".into(),
+        };
+    };
+    let head = read.detail.head_sha.clone().unwrap_or_default();
+    let listed = super::protected::changed_files_between(gh, repo, &base, &head);
+    super::protected::judge(listed, read.changed_files)
+}
+
+/// The security gate's answer for one merge.
+#[derive(Debug, PartialEq, Eq)]
+enum SecurityGate {
+    /// Not security-sensitive, or reviewed and clean.
+    Pass,
+    Refuse(String),
+    /// The gate can't decide yet (the files can't be read, or a question about the review is open). The merge is held
+    /// for an answer and never merged: the gate runs before any approval, so a tap can't merge past it.
+    Hold(String),
+}
+
+/// The pull request and its head that the gate judges.
+struct GateTarget<'a> {
+    repo: &'a str,
+    number: u64,
+    head: &'a str,
+    project: Option<&'a str>,
+    labels: &'a [String],
+    /// The CLIs installed and signed in, for choosing a reviewer the app starts (empty: none can be chosen).
+    present: &'a [crate::crew::resolve::Presence],
+}
+
+/// No record for this head: the review is already running (hold), or it failed (refuse), or the app starts it now to a
+/// builder other than the author, and holds until it settles.
+fn launch_or_wait(
+    conn: &mut rusqlite::Connection,
+    repo: &str,
+    number: u64,
+    head: &str,
+    present: &[crate::crew::resolve::Presence],
+    now: i64,
+) -> Result<SecurityGate, String> {
+    let short = head.chars().take(12).collect::<String>();
+    if let Some(running) = super::review::running_for(conn, repo, number, head)? {
+        if now.saturating_sub(running.run_started_at) > super::review::STUCK_AFTER_MS {
+            return Ok(SecurityGate::Hold(format!(
+                "Security review stuck for PR #{number} (head {short}): it has run longer than an hour. The merge is held; it never passes on the clock."
+            )));
+        }
+        return Ok(SecurityGate::Hold(format!(
+            "Security review running for PR #{number} (head {short}). The merge waits for its answer."
+        )));
+    }
+    let Some(author) = super::review::author_of(conn, repo, number)? else {
+        return Ok(SecurityGate::Refuse(format!(
+            "{repo}#{number} is security-sensitive, and its author is not recorded, so no review can be started for head {short}."
+        )));
+    };
+    // Never use: the crew's "never use" list lands with PR #194, which is not in this tree yet. Until it does, only the
+    // author is excluded here, and the list passed in is empty.
+    let Some(reviewer) = super::review::pick_reviewer(&author, present, &[]) else {
+        return Ok(SecurityGate::Refuse(format!(
+            "{repo}#{number} is security-sensitive, and no builder other than its author ({author}) is signed in to review head {short}."
+        )));
+    };
+    let row = super::review::start(conn, repo, number, head, &author, &reviewer, now)?;
+    Ok(SecurityGate::Hold(format!(
+        "Security review running for PR #{number} ({reviewer}, head {short}). The merge waits for its answer. Review delegation {}.",
+        row.id
+    )))
+}
+
+/// The security gate (WP-203) for one head. The review is the app's record (delivery/review.rs), written from a
+/// review delegation the app ran: a checkout folder is never read. A change that needs a review and has none recorded
+/// for its head is refused; a recorded review must cover every changed file, have no confirmed high or critical
+/// finding, and, when it has candidates that need validation, wait for the person's answer to them.
+fn security_gate(
+    conn: &mut rusqlite::Connection,
+    changed: super::protected::ChangedFiles,
+    target: GateTarget<'_>,
+    now: i64,
+) -> Result<SecurityGate, String> {
+    let GateTarget {
+        repo,
+        number,
+        head,
+        project,
+        labels,
+        present,
+    } = target;
+    let files = match changed {
+        super::protected::ChangedFiles::Listed(files) => files,
+        super::protected::ChangedFiles::Unread { reason } => {
+            return Ok(SecurityGate::Hold(format!(
+                "{repo}#{number}'s changed files couldn't be read, so Hivra can't tell whether it needs a security review: {reason} Nothing was merged."
+            )))
+        }
+    };
+    let paths = security_paths();
+    let sensitive = park_label(labels).is_some()
+        || files
+            .iter()
+            .any(|file| paths.iter().any(|pattern| glob_match(pattern, file)));
+    if !sensitive {
+        return Ok(SecurityGate::Pass);
+    }
+    let short = head.chars().take(12).collect::<String>();
+    let Some(record) = super::review::lookup(conn, repo, number, head)? else {
+        return launch_or_wait(conn, repo, number, head, present, now);
+    };
+    if record.status != "recorded" {
+        return Ok(SecurityGate::Refuse(format!(
+            "The security review for head {short} doesn't count: {}",
+            record.reason.as_deref().unwrap_or("it was refused")
+        )));
+    }
+    let uncovered: Vec<&str> = files
+        .iter()
+        .map(String::as_str)
+        .filter(|file| !record.files.iter().any(|covered| covered == file))
+        .collect();
+    if !uncovered.is_empty() {
+        return Ok(SecurityGate::Refuse(format!(
+            "The security review for head {short} does not cover every changed file; not covered: {}.",
+            uncovered.join(", ")
+        )));
+    }
+    if let Some(blocking) = &record.blocking {
+        return Ok(SecurityGate::Refuse(format!(
+            "A confirmed {blocking} finding is open on head {short}."
+        )));
+    }
+    // Every recorded review waits for the person's word on this head, clean or not: a pass is never the only gate (round 4
+    // MED-3). The answer must come from the person (decisions::person_only refuses any other answerer, and the gate checks
+    // who answered before it passes).
+    let Some(project) = project else {
+        return Ok(SecurityGate::Refuse(format!(
+            "{repo}#{number} is security-sensitive, and no project is known to ask the person about head {short}."
+        )));
+    };
+    let key = crate::decisions::security_decision_key(repo, number, head);
+    // A clean record is one reviewer's own report. Approve is the only other check, and only when nothing is waiting.
+    // Candidates take a different option, so an Approve from a clean card cannot pass a head that still has them.
+    let (question, options, accept) = if record.pending.is_empty() {
+        (
+            format!(
+                "One reviewer reported PR #{number} (head {short}) as a pass. That report is the reviewer's own word. Your Approve is the only other check. Approve the merge, or hold it."
+            ),
+            vec!["Approve".to_string(), "Hold the merge".to_string()],
+            "Approve",
+        )
+    } else {
+        (
+            format!(
+                "Security review of PR #{number} (head {short}): {} candidate{} need validation: {}. \"Looked at it\" lets it merge; \"Hold the merge\" keeps it from merging.",
+                record.pending.len(),
+                if record.pending.len() == 1 { "" } else { "s" },
+                record.pending.join("; "),
+            ),
+            vec!["Looked at it".to_string(), "Hold the merge".to_string()],
+            "Looked at it",
+        )
+    };
+    // Ask every time. A chat's question under this key is replaced, and an answer that is no longer one of the options
+    // is cleared. save() would have left both in place.
+    crate::decisions::ask(
+        conn,
+        crate::decisions::AskInput {
+            asked_by: "security-gate".into(),
+            asked_by_mono: None,
+            project: Some(project.to_string()),
+            key: key.clone(),
+            question: question.clone(),
+            options,
+            recommended: None,
+            task_ids: Vec::new(),
+            keys: Vec::new(),
+            force: false,
+            reason: None,
+        },
+        now,
+    )?;
+    let Some(decision) = crate::decisions::get(conn, project, &key)? else {
+        return Ok(SecurityGate::Hold(question));
+    };
+    let by_person = matches!(
+        decision.answered_by.as_deref(),
+        Some("person") | Some("user")
+    );
+    let from_gate = crate::decisions::fold_key(&decision.asked_by) == "security-gate";
+    if decision.state != crate::decisions::ANSWERED || !by_person || !from_gate {
+        return Ok(SecurityGate::Hold(question));
+    }
+    match decision.answer.as_deref() {
+        Some(word) if word == accept => Ok(SecurityGate::Pass),
+        Some("Hold the merge") => Ok(SecurityGate::Refuse(format!(
+            "The person held the merge of head {short}."
+        ))),
+        _ => Ok(SecurityGate::Hold(question)),
+    }
 }
 
 /// The first park or never-merge label on the pull request, as the tick names it (trimmed, lower case, spaces and
@@ -552,6 +810,18 @@ pub fn merge(
     request: MergeRequest,
     now: i64,
 ) -> Result<MergeOutcome, String> {
+    merge_with(store, gh, request, now, &[])
+}
+
+/// The one merge path (module docs), with the CLIs installed and signed in, so the security gate can start a review to a
+/// builder other than the author. `present` empty means none can be chosen: a gate that needs a review then refuses.
+pub fn merge_with(
+    store: &SessionStore,
+    gh: &dyn Github,
+    request: MergeRequest,
+    now: i64,
+    present: &[crate::crew::resolve::Presence],
+) -> Result<MergeOutcome, String> {
     let repo = repo_key(&request.repo)?;
     let number = request.number;
     if number == 0 {
@@ -561,6 +831,13 @@ pub fn merge(
     // the floor turns into an ask, never a panic while the lock is held.
     let shared = super::protected::shared_list();
     let read = gh.read_pr(&repo, number);
+    // The changed files are read before the database is held (the same rule as the pull request read above).
+    let changed = match &read {
+        Ok(read) => gate_files(gh, &repo, read),
+        Err(error) => super::protected::ChangedFiles::Unread {
+            reason: error.clone(),
+        },
+    };
     let mut conn = store.lock_conn()?;
     let read = match read {
         Ok(read) => read,
@@ -638,6 +915,32 @@ pub fn merge(
             None => Allow::Nobody,
         },
     };
+    let target = GateTarget {
+        repo: &repo,
+        number,
+        head: &head,
+        project: project.as_deref(),
+        labels: &read.labels,
+        present,
+    };
+    let held = match security_gate(&mut conn, changed, target, now)? {
+        SecurityGate::Pass => None,
+        SecurityGate::Hold(question) => Some(question),
+        SecurityGate::Refuse(reason) => {
+            record(
+                &conn,
+                &repo,
+                number,
+                Some(&head),
+                "refused",
+                None,
+                &request.caller,
+                Some(&reason),
+                now,
+            )?;
+            return Ok(MergeOutcome::Refused { reason });
+        }
+    };
     // The pull request must still be on the branch the delivery pushed. A head pointed at another branch is not the
     // work the delivery judged, so it is refused. The delivery row is the only record of that branch.
     // The check is the floor's: with the floor off the project decides exactly as before.
@@ -714,12 +1017,13 @@ pub fn merge(
         decided
     };
     // WP-202 (L1): the base hold runs before any question is asked. A pull request that main has moved under is refused,
-    // never "is green. Merge it?" first. Its GitHub reads run with the store lock released.
+    // never "is green. Merge it?" first. Its GitHub reads run with the store lock released. A refusal already decided
+    // stands. A held security gate asks only when the base does not hold, and nothing merges on a hold.
     let decision = match decision {
         Decision::Refuse(reason) => Decision::Refuse(reason),
         other => {
             drop(conn);
-            let held = base_hold(gh, &repo, number, &head, &read);
+            let base_reason = base_hold(gh, &repo, number, &head, &read);
             conn = store.lock_conn()?;
             // A question opened while the base was read (the lock was down) stops the merge, as the floor's re-check does.
             let opened = match &delegation {
@@ -730,9 +1034,14 @@ pub fn merge(
                 Some(question) => Decision::Refuse(format!(
                     "A decision on this work is still open: {question}. It merges once that is answered."
                 )),
-                None => match held {
+                None => match base_reason {
                     Some(reason) => Decision::Refuse(reason),
-                    None => other,
+                    None => match (held, other) {
+                        (Some(question), Decision::Merge { .. } | Decision::Ask(_)) => {
+                            Decision::Ask(question)
+                        }
+                        (_, decision) => decision,
+                    },
                 },
             }
         }

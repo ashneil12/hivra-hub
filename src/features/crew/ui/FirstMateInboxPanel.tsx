@@ -6,6 +6,7 @@ import { DELEGATIONS_CHANGED, type Delegation } from "../../monos/model/delegati
 import { DECISIONS_CHANGED, tauriFirstMate, type Decision } from "../../firstmate/model/steering";
 import { readDigestStore, showDigest, writeDigestStore, type DigestPlan } from "../model/digest";
 import { afterAnswer, inboxItems, noticesFrom, preserveAnswer, refuseAnswer, type FirstMateItem } from "../model/inbox";
+import { isSecretDecisionKey } from "../../hub/model/decisionKey";
 import { takeHomeDecision } from "../../home/model/pending";
 import { loadCrewDelegations } from "../model/load";
 import type { CrewDeliveryInput, CrewWorkerInput } from "../model/rows";
@@ -178,7 +179,9 @@ export function FirstMateInboxPanel({
     let applied = false;
     try {
       // The version of the card on screen: a secret card is answered only for the words the person read (fix round 4, N6).
-      const outcome = await tauriFirstMate.answer(item.project, item.key, answerText, undefined, version);
+      // A secret card accepts only `person`. Every other card in this Inbox is the person's tap, recorded as user.
+      const by = isSecretDecisionKey(item.key) ? "person" : "user";
+      const outcome = await tauriFirstMate.answer(item.project, item.key, answerText, by, version);
       applied = outcome.applied;
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
