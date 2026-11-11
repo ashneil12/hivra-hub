@@ -845,6 +845,10 @@ fn parse_args_for(args: &[String], app_mode: bool) -> Result<Parsed, String> {
     if request_id.is_empty() || request_id.len() > 128 {
         return Err("Invalid request ID".into());
     }
+    // WP-203: a security review's request id is the app's launcher's alone. The CLI never sends one.
+    if request_id.starts_with(crate::delivery::review::REQUEST_PREFIX) {
+        return Err("Security review request IDs belong to the app's review launcher; pick another --request-id.".into());
+    }
     if app_mode
         && !request_id
             .bytes()
@@ -1074,6 +1078,15 @@ mod tests {
         assert!(
             parse_args_for(&args(&["sessions.start", "--request-id", "bad/id"]), true).is_err()
         );
+        // Entry: the app CLI and the control CLI. A review request id is refused before anything is sent.
+        let review_id = format!("{}6162", crate::delivery::review::REQUEST_PREFIX);
+        for app_mode in [true, false] {
+            assert!(parse_args_for(
+                &args(&["tasks.delegate", "--json", "{}", "--request-id", &review_id]),
+                app_mode
+            )
+            .is_err());
+        }
         assert!(app_help().contains("notes.read"));
         assert!(app_help().contains("notes.write"));
         assert!(app_help().contains("docs.list"));
