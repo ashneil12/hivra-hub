@@ -3059,4 +3059,168 @@ mod tests {
             );
         }
     }
+
+    // Review #241 r1 repro (HIGH, functional): the start runs a hard link named `.<file>.hivra-pin` instead of the
+    // approved file. npm installs an agent as <prefix>/bin/<name> -> ../lib/node_modules/<pkg>/dist/index.js in a
+    // package whose package.json says "type": "module" (gemini-cli, claude-code-acp, codex, qwen-code). Node picks ESM
+    // or CommonJS by the file extension, and `.hivra-pin` is not one it knows: ERR_UNKNOWN_FILE_EXTENSION, the agent
+    // never starts. On Apple Silicon /opt/homebrew is the user's own, so the link is made and every such agent breaks.
+    // The same rename breaks a .cjs/.mjs bin, a multi-call binary that reads its own name, and on Windows a .cmd shim
+    // (std runs a batch file through cmd.exe only by its .cmd/.bat extension).
+    #[cfg(unix)]
+    #[test]
+    fn review_241_r1_an_esm_agent_installed_by_npm_starts_through_its_approved_path() {
+        let d = dir();
+        let pkg = d.path().join("lib").join("node_modules").join("esm-agent");
+        std::fs::create_dir_all(pkg.join("dist")).expect("pkg");
+        std::fs::write(
+            pkg.join("package.json"),
+            br#"{"name":"esm-agent","type":"module"}"#,
+        )
+        .expect("package.json");
+        let main = make_tool(
+            &pkg.join("dist"),
+            "index.js",
+            b"#!/usr/bin/env node\nimport { argv } from 'node:process';\nconsole.log('esm agent started', argv.length);\n",
+        );
+        let bin = d.path().join("bin");
+        std::fs::create_dir_all(&bin).expect("bin");
+        std::os::unix::fs::symlink(&main, bin.join("esm-agent")).expect("npm bin link");
+        let path_value = bin.to_string_lossy().into_owned();
+        write_agents(d.path(), 0, vec![entry("wp134", "esm-agent", &["--acp"])]).expect("seed");
+        approve(d.path(), "wp134", &path_value).expect("approve");
+        let run = approved_spawn(d.path(), "wp134", &path_value).expect("approved");
+        let node_here = std::process::Command::new("node")
+            .arg("--version")
+            .output()
+            .is_ok_and(|out| out.status.success());
+        if node_here {
+            let out = std::process::Command::new(&run.command)
+                .args(&run.args)
+                .output()
+                .expect("spawn");
+            assert!(
+                String::from_utf8_lossy(&out.stdout).contains("esm agent started"),
+                "an npm-installed ESM agent did not start: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+        }
+        let canonical = std::fs::canonicalize(&main).expect("canonical");
+        assert_eq!(
+            Path::new(&run.command).file_name(),
+            canonical.file_name(),
+            "the approved program runs under another file name, so its extension and its own name change"
+        );
+    }
+
+    // Review #241 r1 repro (HIGH, same cause): a start, and every per-turn check (more_agents_check calls
+    // approved_spawn), writes `.<file>.hivra-pin` into the agent's install folder and never removes it. That is
+    // Ash's /opt/homebrew/lib/node_modules/<pkg>, ~/.local/bin, or an app bundle (a file added to a signed bundle
+    // breaks its seal; macOS App Management blocks or prompts on the write). The link also keeps an upgraded
+    // program's old bytes alive on disk. A start must not write into the folder it runs from.
+    #[cfg(unix)]
+    #[test]
+    fn review_241_r1_a_start_writes_nothing_into_the_install_folder() {
+        let d = dir();
+        let bin = d.path().join("bin");
+        make_tool(&bin, "wp134-quiet", b"#!/bin/sh\necho ok\n");
+        let before: Vec<_> = std::fs::read_dir(&bin)
+            .expect("list")
+            .flatten()
+            .map(|e| e.file_name())
+            .collect();
+        let path_value = bin.to_string_lossy().into_owned();
+        write_agents(d.path(), 0, vec![entry("wp134", "wp134-quiet", &[])]).expect("seed");
+        approve(d.path(), "wp134", &path_value).expect("approve");
+        approved_spawn(d.path(), "wp134", &path_value).expect("approved");
+        let after: Vec<_> = std::fs::read_dir(&bin)
+            .expect("list")
+            .flatten()
+            .map(|e| e.file_name())
+            .collect();
+        assert_eq!(after, before, "the start left a file in the install folder");
+    }
+
+    // Review #241 r1 repro (MEDIUM, reliability, same cause): every approved_spawn (a start, and the check before each
+    // turn of a running chat) deletes and re-creates the one shared link name. A second chat starting the same agent
+    // in that gap hashes or execs a path that is not there: confirm_before_spawn says the program changed on disk
+    // (asking Ash for a new Allow for nothing) or the spawn fails with "No such file or directory".
+    #[cfg(unix)]
+    #[test]
+    fn review_241_r1_two_chats_starting_the_same_agent_do_not_refuse_each_other() {
+        let d = dir();
+        let bin = d.path().join("bin");
+        make_tool(&bin, "wp134-shared", b"#!/bin/sh\necho ok\n");
+        let path_value = bin.to_string_lossy().into_owned();
+        write_agents(d.path(), 0, vec![entry("wp134", "wp134-shared", &[])]).expect("seed");
+        approve(d.path(), "wp134", &path_value).expect("approve");
+        let data = d.path().to_path_buf();
+        let generation = TEST_GEN.with(|g| g.borrow().clone());
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let other = {
+            let (data, path_value, stop) = (data.clone(), path_value.clone(), stop.clone());
+            std::thread::spawn(move || {
+                TEST_KEY.with(|key| *key.borrow_mut() = Some(vec![7u8; 32]));
+                TEST_GEN.with(|g| *g.borrow_mut() = generation);
+                while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                    let _ = approved_spawn(&data, "wp134", &path_value);
+                }
+            })
+        };
+        let mut failures = Vec::new();
+        for _ in 0..400 {
+            let run = approved_spawn(&data, "wp134", &path_value).expect("approved");
+            if let Err(error) = confirm_before_spawn(&data, "wp134", &run.command) {
+                failures.push(error);
+            }
+        }
+        stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        other.join().expect("other chat");
+        assert!(
+            failures.is_empty(),
+            "{} of 400 starts were refused while another chat used the same agent: {:?}",
+            failures.len(),
+            failures.first()
+        );
+    }
+
+    // Review #241 r1 repro (MEDIUM, pin bypass; the r3 LOW fixed only for relative paths): a value after `@` is now
+    // checked as a path, but an absolute one is passed through, and pin_arg does not strip the `@`, so the file is
+    // never hashed. `java @/abs/agent.args` (and javac, gcc, clang, any argparse fromfile_prefix_chars tool) reads
+    // its options from that file: adding `-jar /tmp/x.jar` or `--yolo` to it runs on the old approval.
+    #[cfg(unix)]
+    #[test]
+    fn review_241_r1_an_absolute_file_after_at_is_pinned_or_refused() {
+        let d = dir();
+        let bin = d.path().join("bin");
+        make_tool(&bin, "wp134-tool", b"#!/bin/sh\n");
+        let args_file = d.path().join("agent.args");
+        std::fs::write(&args_file, b"--model safe\n").expect("args");
+        let path_value = bin.to_string_lossy().into_owned();
+        let whole = format!("@{}", args_file.to_string_lossy());
+        let after_eq = format!("--opts=@{}", args_file.to_string_lossy());
+        let agents: Vec<Value> = [("at1", whole.as_str()), ("at2", after_eq.as_str())]
+            .into_iter()
+            .map(|(id, arg)| entry(id, "wp134-tool", &[arg]))
+            .filter(|agent| checked_fields(agent).is_ok())
+            .collect();
+        if agents.is_empty() {
+            return; // Refused when added: nothing unpinned can run.
+        }
+        let ids: Vec<String> = agents
+            .iter()
+            .map(|a| a["id"].as_str().unwrap_or("").to_string())
+            .collect();
+        write_agents(d.path(), 0, agents).expect("seed");
+        for id in &ids {
+            approve(d.path(), id, &path_value).expect("approve");
+        }
+        std::fs::write(&args_file, b"--model safe --yolo\n").expect("edit");
+        for id in &ids {
+            assert!(
+                approved_spawn(d.path(), id, &path_value).is_err(),
+                "{id}: an edited @file ran on the old approval"
+            );
+        }
+    }
 }
