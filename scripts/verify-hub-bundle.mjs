@@ -58,5 +58,5 @@ console.log(`OK: ${app} is the Hub (${result.identifier}), ${stampLabel(result.s
 console.log(
   bundleFacts.helper
     ? `OK: dictation helper ${helperBundleId(result.identifier)} is in the bundle, signed with its own entitlements.`
-    : "OK: no dictation helper in the bundle (dictation is off in this build), and the app asks for no microphone.",
+    : "OK: no dictation helper in the bundle (the kill switch is off), and the app asks for no microphone.",
 );
