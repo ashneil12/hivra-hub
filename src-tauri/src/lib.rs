@@ -55,7 +55,7 @@ mod devin_config;
 mod devin_usage;
 mod spend_ledger;
 // WP-131b: desktop dictation into the composer draft; the microphone is held by a helper app, never sends.
-// Off in this build (dictation::ENABLED is false): the helper is not registered and no connection is opened.
+// WP-131c: dictation follows the saved setting. The helper is registered only while that setting is on.
 mod dictation;
 pub mod disclaim;
 mod explore_agent; // WP-143: read-only check for an Explore agent the person already defined.
@@ -589,9 +589,12 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             // WP-131b: desktop dictation (the helper in Contents/Helpers holds the microphone).
+            // WP-131c: the setting that turns it on. Off until the file says on.
             dictation::dictation_support,
             dictation::dictation_start,
             dictation::dictation_stop,
+            dictation::dictation_setting,
+            dictation::dictation_set_setting,
             // WP-61: Hivra Cloud (off by default).
             hivra_cloud::hivra_cloud_status,
             hivra_cloud::hivra_cloud_save,

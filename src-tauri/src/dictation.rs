@@ -12,11 +12,13 @@
 //! recognised words. A stop tells the helper to finish, then cancels the connection.
 //!
 //! Only a shipped build has the helper. A dev copy, or a bundle without it, answers "not available", so the composer
-//! hides the control. Dictation is switched off in this build, so nothing is registered and no connection is opened.
+//! hides the control. The setting stays off until its file says on. Turning it on registers the helper; turning it
+//! off unregisters it and stops any session. A dev copy saves the setting and does not register.
 
 // Off macOS the platform part is compiled out, so the shared bookkeeping below has no caller there.
 #![cfg_attr(not(target_os = "macos"), allow(dead_code))]
 
+use std::path::{Component, Path};
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
@@ -42,14 +44,121 @@ pub const MAX_SESSION: Duration = Duration::from_secs(300);
 pub const SILENCE_LIMIT: Duration = Duration::from_secs(30);
 /// The most text one utterance may add (the webview caps it at the same length).
 pub const MAX_UTTERANCE_CHARS: usize = 4000;
-/// Whether this build may connect to the helper at all. The XPC service and its per-message peer requirement are in
-/// place, and this stays off until the one live check: the owner taps Allow once on a real build with dictation on.
-/// Nothing reads a setting or an environment variable for it.
-pub const ENABLED: bool = false;
+/// Kill switch for this build. True lets the saved setting decide. False keeps dictation off even when the file says
+/// on. The file itself is missing until someone turns dictation on, and a missing file is off.
+pub const ENABLED: bool = true;
+/// The file in the app's data folder. The helper reads the same name from the daily Hub's application-support folder.
+pub const SETTING_FILE: &str = "dictation-enabled";
 
-/// The same switch as [`ENABLED`], read at runtime so the connection code stays in the build to be checked.
-fn switched_on() -> bool {
-    ENABLED
+/// True only for the exact word `on`, after trimming. Anything else, including a missing file, is off.
+pub fn setting_word_on(text: Option<&str>) -> bool {
+    text.is_some_and(|text| text.trim() == "on")
+}
+
+/// The kill switch and the setting both have to allow it.
+pub fn allows_dictation(kill_switch: bool, text: Option<&str>) -> bool {
+    kill_switch && setting_word_on(text)
+}
+
+/// What turning the setting does to the helper agent. A copy that is not the daily Hub, or that has no helper, leaves
+/// the agent alone. It never registers, and it never unregisters an agent that belongs to the daily app.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AgentChange {
+    Register,
+    Unregister,
+    Leave,
+}
+
+pub fn agent_change(kill_switch: bool, setting_on: bool, host: bool) -> AgentChange {
+    if !host {
+        return AgentChange::Leave;
+    }
+    if allows_dictation(kill_switch, setting_on.then_some("on")) {
+        AgentChange::Register
+    } else {
+        AgentChange::Unregister
+    }
+}
+
+/// What applying a save does. `wrote` is whether the file landed. Turning off stops a session even when the write
+/// failed. Turning on does not register when the write failed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SettingPlan {
+    pub wrote: bool,
+    pub stop: bool,
+    pub agent: AgentChange,
+}
+
+pub fn plan_setting(kill_switch: bool, requested_on: bool, wrote: bool, host: bool) -> SettingPlan {
+    if !requested_on {
+        SettingPlan {
+            wrote,
+            stop: true,
+            agent: agent_change(kill_switch, false, host),
+        }
+    } else if !wrote {
+        SettingPlan {
+            wrote: false,
+            stop: false,
+            agent: AgentChange::Leave,
+        }
+    } else {
+        SettingPlan {
+            wrote: true,
+            stop: false,
+            agent: agent_change(kill_switch, true, host),
+        }
+    }
+}
+
+fn setting_dir_ok(data_dir: &Path) -> bool {
+    !data_dir.as_os_str().is_empty()
+        && data_dir.is_dir()
+        && !data_dir
+            .components()
+            .any(|component| matches!(component, Component::ParentDir))
+}
+
+/// The setting file, only when it stays inside `data_dir`.
+fn setting_path(data_dir: &Path) -> Option<std::path::PathBuf> {
+    if !setting_dir_ok(data_dir) {
+        return None;
+    }
+    let path = data_dir.join(SETTING_FILE);
+    (path.parent() == Some(data_dir)
+        && path.file_name().and_then(|name| name.to_str()) == Some(SETTING_FILE))
+    .then_some(path)
+}
+
+/// The file's text, when it can be read. None is off.
+pub fn read_setting_text(data_dir: &Path) -> Option<String> {
+    let path = setting_path(data_dir)?;
+    std::fs::read_to_string(path).ok()
+}
+
+pub fn read_setting_on(data_dir: &Path) -> bool {
+    setting_word_on(read_setting_text(data_dir).as_deref())
+}
+
+/// Writes `on` or `off` by renaming a temp file in the same folder, so a reader never sees a torn word.
+pub fn write_setting_file(data_dir: &Path, on: bool) -> bool {
+    let Some(path) = setting_path(data_dir) else {
+        return false;
+    };
+    let tmp = data_dir.join(format!(".{SETTING_FILE}.{}.tmp", std::process::id()));
+    if tmp.parent() != Some(data_dir) {
+        return false;
+    }
+    let word = if on { "on" } else { "off" };
+    if std::fs::write(&tmp, word).is_err() {
+        let _ = std::fs::remove_file(&tmp);
+        return false;
+    }
+    if std::fs::rename(&tmp, &path).is_err() {
+        let _ = std::fs::remove_file(&tmp);
+        return false;
+    }
+    true
 }
 /// After a stop, how long the helper gets to deliver its last result before it is killed. The helper waits 5 s itself.
 #[cfg(target_os = "macos")]
@@ -229,6 +338,14 @@ impl<L: Clone> Sessions<L> {
         }
     }
 
+    /// The session that is still listening, if any. One that is already stopping is not stopped again.
+    fn running_id(&self) -> Option<u64> {
+        self.current
+            .as_ref()
+            .filter(|slot| !slot.ending)
+            .map(|slot| slot.id)
+    }
+
     /// The id of the running session the window `owner` holds, if any.
     fn owned_by(&self, owner: &str) -> Option<u64> {
         self.current
@@ -372,6 +489,35 @@ pub async fn dictation_start(app: AppHandle, webview: tauri::Webview) -> Result<
     }
 }
 
+/// Whether dictation is on. Missing, unreadable and any word other than `on` are off. Off outside macOS.
+#[tauri::command]
+pub fn dictation_setting(app: AppHandle) -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        platform::setting_on(&app)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = app;
+        false
+    }
+}
+
+/// Saves the setting. Off stops a running session and, on the daily Hub, unregisters the helper. On registers it
+/// only after the file is written, and only on the daily Hub. A dev copy saves and does not register.
+#[tauri::command]
+pub fn dictation_set_setting(app: AppHandle, on: bool) -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        platform::set_setting(&app, on)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (app, on);
+        false
+    }
+}
+
 /// Stops listening for `session`. The last words are still delivered as a finished chunk.
 #[tauri::command]
 pub fn dictation_stop(app: AppHandle, session: u64) {
@@ -461,12 +607,9 @@ mod platform {
     use std::time::Instant;
 
     use tauri::AppHandle;
-    #[cfg(not(test))]
     use tauri::Manager;
 
-    use super::{
-        emit, sessions, switched_on, Heard, Support, FINISH_GRACE, HUB_IDENTIFIER, NOT_HERE,
-    };
+    use super::{emit, sessions, Heard, Support, FINISH_GRACE, HUB_IDENTIFIER, NOT_HERE};
     #[cfg(not(test))]
     use super::{note_for_reason, HelperEvent, DENIED, READY_WAIT, STOPPED, WATCH_EVERY};
 
@@ -488,8 +631,8 @@ mod platform {
     /// Whether this copy may connect to the helper. The Hub does not spawn it: launchd does, once the agent is
     /// registered. A dev copy, a bundle without the helper, or a helper signed for someone else is not available.
     fn launch_plan(app: &AppHandle) -> Result<(), &'static str> {
-        // Dictation is off in this build. No helper is found, checked or connected to.
-        if !switched_on() {
+        // Off until the setting file says on. No helper is found, checked or connected to while it is off.
+        if !setting_on(app) {
             return Err(NOT_HERE);
         }
         let helper = helper_path().ok_or(NOT_HERE)?;
@@ -585,10 +728,48 @@ mod platform {
         team
     }
 
+    /// The setting, from this copy's own data folder. A missing folder or file is off.
+    pub fn setting_on(app: &AppHandle) -> bool {
+        app.path()
+            .app_data_dir()
+            .ok()
+            .is_some_and(|dir| super::ENABLED && super::read_setting_on(&dir))
+    }
+
+    /// True only for the daily Hub when the helper is in the bundle. A dev copy and a test build are not.
+    fn host_may_register(app: &AppHandle) -> bool {
+        app.config().identifier == HUB_IDENTIFIER && helper_path().is_some()
+    }
+
+    /// Writes the setting, then follows [`super::plan_setting`]. The real registrar is not in the test build.
+    pub fn set_setting(app: &AppHandle, on: bool) -> bool {
+        let dir = app.path().app_data_dir().ok();
+        let wrote = dir
+            .as_deref()
+            .is_some_and(|dir| super::write_setting_file(dir, on));
+        let plan = super::plan_setting(super::ENABLED, on, wrote, host_may_register(app));
+        if plan.stop {
+            if let Some(id) = sessions().running_id() {
+                stop(app, id);
+            }
+        }
+        #[cfg(not(test))]
+        match plan.agent {
+            super::AgentChange::Register => super::xpc::apply_switch(true),
+            super::AgentChange::Unregister => super::xpc::apply_switch(false),
+            super::AgentChange::Leave => {}
+        }
+        dir.as_deref()
+            .is_some_and(|dir| super::ENABLED && super::read_setting_on(dir))
+    }
+
     pub fn support(app: &AppHandle) -> Support {
         // The real registrar. A test build does not call it, so a test never registers or unregisters an agent.
+        // A dev copy is not the host, so it does not register or unregister either.
         #[cfg(not(test))]
-        super::xpc::apply_switch(switched_on());
+        if host_may_register(app) {
+            super::xpc::apply_switch(setting_on(app));
+        }
         match launch_plan(app) {
             Ok(()) => Support {
                 available: true,
@@ -1218,12 +1399,86 @@ mod tests {
         );
     }
 
-    // HIGH 1 (round 3): dictation is switched off in this build. A tripwire: flipping ENABLED fails this test, so the
-    // change is deliberate and comes with the XPC service that makes it safe.
+    // The kill switch lets the setting decide. A missing file stays off. Flipping ENABLED off fails this test.
 
     #[test]
-    fn dictation_is_switched_off_in_this_build() {
-        assert!(!std::hint::black_box(ENABLED));
+    fn dictation_follows_the_setting_and_stays_off_until_the_file_says_on() {
+        assert!(
+            std::hint::black_box(ENABLED),
+            "the build lets the setting decide"
+        );
+        assert!(!allows_dictation(ENABLED, None));
+        assert!(!allows_dictation(ENABLED, Some("")));
+        assert!(!allows_dictation(ENABLED, Some("ON")));
+        assert!(!allows_dictation(ENABLED, Some("true")));
+        assert!(!allows_dictation(ENABLED, Some("on\nno")));
+        assert!(allows_dictation(ENABLED, Some("on")));
+        assert!(allows_dictation(ENABLED, Some("on\n")));
+        assert!(allows_dictation(ENABLED, Some("  on  ")));
+        assert!(!allows_dictation(false, Some("on")));
+        assert_eq!(agent_change(true, true, false), AgentChange::Leave);
+        assert_eq!(agent_change(true, false, true), AgentChange::Unregister);
+        assert_eq!(agent_change(false, true, true), AgentChange::Unregister);
+        assert_eq!(agent_change(true, true, true), AgentChange::Register);
+        let off = plan_setting(true, false, false, true);
+        assert!(
+            off.stop,
+            "turning off stops a session even when the write fails"
+        );
+        assert_eq!(off.agent, AgentChange::Unregister);
+        let failed_on = plan_setting(true, true, false, true);
+        assert!(!failed_on.stop);
+        assert_eq!(
+            failed_on.agent,
+            AgentChange::Leave,
+            "a failed write does not register"
+        );
+        let on = plan_setting(true, true, true, false);
+        assert_eq!(on.agent, AgentChange::Leave, "a dev copy does not register");
+
+        let mut sessions: Sessions<()> = Sessions::new();
+        assert!(sessions.running_id().is_none());
+        let id = sessions.begin("main", Instant::now()).expect("start");
+        assert_eq!(sessions.running_id(), Some(id));
+        assert!(sessions.begin_stop(id));
+        assert!(sessions.running_id().is_none());
+
+        let root =
+            std::env::temp_dir().join(format!("hub-dictation-setting-{}", std::process::id()));
+        let dir = root.join("data");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&dir).expect("setting dir");
+        assert!(!read_setting_on(&dir), "a missing file is off");
+        assert!(write_setting_file(&dir, true));
+        assert_eq!(
+            std::fs::read_to_string(dir.join(SETTING_FILE)).unwrap(),
+            "on"
+        );
+        assert!(read_setting_on(&dir));
+        assert!(write_setting_file(&dir, false));
+        assert_eq!(
+            std::fs::read_to_string(dir.join(SETTING_FILE)).unwrap(),
+            "off"
+        );
+        assert!(!read_setting_on(&dir));
+        let names: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(|entry| entry.ok())
+            .map(|entry| entry.file_name())
+            .collect();
+        assert_eq!(names, vec![std::ffi::OsString::from(SETTING_FILE)]);
+        std::fs::write(dir.join(SETTING_FILE), "on\nno").unwrap();
+        assert!(!read_setting_on(&dir));
+        std::fs::write(dir.join(SETTING_FILE), "  on  ").unwrap();
+        assert!(read_setting_on(&dir));
+        assert!(!write_setting_file(&dir.join(".."), true));
+        assert!(
+            !root.join(SETTING_FILE).exists(),
+            "a path that walks up is not written"
+        );
+        assert!(!write_setting_file(Path::new(""), true));
+        assert!(!write_setting_file(&root.join("missing"), true));
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     // The helper is an SMAppService agent. The switch registers it; switching off unregisters it. A fake registrar

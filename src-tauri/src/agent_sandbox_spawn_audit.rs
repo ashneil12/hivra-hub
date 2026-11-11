@@ -741,7 +741,7 @@ const ALLOW: &[(&str, &str, &str)] = &[
     (
         "dictation.rs",
         "start",
-        "The app's own bundled dictation helper, started (disclaimed, so it holds its own microphone permission) when Ash presses dictate. Off in this build: dictation::ENABLED is false. Never started by an agent, so not inside the agent sandbox.",
+        "The Hub does not spawn the helper. launchd runs it while the setting is on. Never started by an agent, so not inside the agent sandbox.",
     ),
     (
         "commit_guard.rs",

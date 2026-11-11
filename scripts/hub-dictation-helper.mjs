@@ -11,7 +11,8 @@
 //
 // Run by `npm run hub:build` after `tauri build`: it builds the helper binary, writes its Info.plist, signs the helper
 // with its own entitlements, then signs the app again (its seal covers the helper) with the app's entitlements.
-// While dictation is off (DICTATION_ENABLED below) it does none of that and leaves the bundle as tauri build made it.
+// DICTATION_ENABLED below is the kill switch. True means the bundle carries the helper and the setting decides.
+// False leaves the bundle as tauri build made it.
 // The pure functions below are what the tests pin; the CLI does the file and codesign work.
 
 import { execFileSync, spawnSync } from "node:child_process";
@@ -27,12 +28,12 @@ export const HELPER_EXECUTABLE = "monocode-dictation";
 export const HELPER_RELATIVE = path.join("Contents", "Helpers", HELPER_NAME);
 export const HELPER_ENTITLEMENT = "com.apple.security.device.audio-input";
 /**
- * Whether dictation is on in this build. It stays off until the one live check, and it moves together with
- * `dictation::ENABLED` (src-tauri/src/dictation.rs) and `protocol::DICTATION_ENABLED` (crates/dictation-helper); a test
- * fails if they differ. While it is off, hub:build puts no helper and no launch agent into the bundle, and hub:verify
- * and hub:ship accept a bundle without them. The main app's microphone keys are checked either way.
+ * Kill switch for this build. True lets the saved setting decide, so the bundle must carry the helper and its launch
+ * agent. False refuses dictation even when the setting says on, and hub:build puts no helper into the bundle. It moves
+ * together with `dictation::ENABLED` (src-tauri/src/dictation.rs) and `protocol::DICTATION_ENABLED`
+ * (crates/dictation-helper); a test fails if they differ. The main app's microphone keys are checked either way.
  */
-export const DICTATION_ENABLED = false;
+export const DICTATION_ENABLED = true;
 /** The LaunchAgent plist name inside `Contents/Library/LaunchAgents`. The same name the Hub registers. */
 export const LAUNCH_AGENT_PLIST = "com.ash.monocode-hub.dictation.plist";
 /** Where that plist lives, relative to the app bundle. */

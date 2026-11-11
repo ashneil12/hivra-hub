@@ -59,6 +59,7 @@ function problemsFor(overrides = {}) {
     hubEntitlements: goodHubEntitlements,
     hubTeam: TEAM,
     helper: { info: goodHelperInfo, entitlements: goodHelperEntitlements, signing: RUNTIME, team: TEAM },
+    launchAgent: launchAgentPlist(),
     ...overrides,
   });
 }
@@ -193,12 +194,14 @@ test("signing signs the helper with its own entitlements first, then the app, bo
   }
 });
 
-test("the check hub:verify and hub:ship share reads the bundle itself: no helper passes while dictation is off", () => {
+test("the check hub:verify and hub:ship share reads the bundle itself: no helper is refused while the kill switch allows dictation", () => {
   const app = fs.mkdtempSync(path.join(os.tmpdir(), "hub-helper-"));
   try {
     fs.mkdirSync(path.join(app, "Contents"), { recursive: true });
     fs.writeFileSync(path.join(app, "Contents/Info.plist"), goodHubInfo);
-    assert.deepEqual(helperProblemsFor(app, { identifier: HUB }), []);
+    const missing = helperProblemsFor(app, { identifier: HUB });
+    assert.ok(missing.some((p) => /helper is missing/.test(p)), JSON.stringify(missing));
+    assert.ok(missing.some((p) => /launch agent does not name/.test(p)), JSON.stringify(missing));
     // The main app's own microphone keys are still read from the bundle and refused.
     fs.writeFileSync(path.join(app, "Contents/Info.plist"), plist({ CFBundleIdentifier: HUB, NSMicrophoneUsageDescription: "x" }));
     const problems = helperProblemsFor(app, { identifier: HUB });
@@ -208,21 +211,22 @@ test("the check hub:verify and hub:ship share reads the bundle itself: no helper
   }
 });
 
-// Dictation is off in this PR: one switch in the Hub, one in the helper, one here. They must say the same thing, so
-// turning dictation on is one deliberate change to all three.
-test("dictation is off, and the Hub, the helper and the bundle scripts agree on it", () => {
+// The kill switch lets the setting decide. One switch in the Hub, one in the helper, one here. They must say the
+// same thing. The setting file still defaults to off: only the exact word "on" turns dictation on.
+test("the kill switch lets the setting decide, and the Hub, the helper and the bundle scripts agree", () => {
   const switchIn = (file, name) => {
     const match = new RegExp(`pub const ${name}: bool = (true|false);`).exec(readFileSync(path.join(root, file), "utf8"));
     assert.ok(match, `${name} in ${file}`);
     return match[1] === "true";
   };
-  assert.equal(DICTATION_ENABLED, false);
+  assert.equal(DICTATION_ENABLED, true);
   assert.equal(switchIn("src-tauri/src/dictation.rs", "ENABLED"), DICTATION_ENABLED);
   assert.equal(switchIn("crates/dictation-helper/src/protocol.rs", "DICTATION_ENABLED"), DICTATION_ENABLED);
 });
 
-test("while dictation is off, a bundle without the helper passes and the main app's microphone keys still refuse", () => {
-  assert.deepEqual(problemsFor({ helper: null }), []);
+test("the kill switch off allows a bundle without the helper, and the main app's microphone keys still refuse", () => {
+  assert.deepEqual(problemsFor({ helper: null, dictationEnabled: false }), []);
+  assert.ok(problemsFor({ helper: null }).some((p) => /helper is missing/.test(p)));
   const info = plist({ CFBundleIdentifier: HUB, NSMicrophoneUsageDescription: "x" });
   assert.ok(problemsFor({ helper: null, hubInfo: info }).some((p) => /main app carries NSMicrophoneUsageDescription/.test(p)));
   const ent = plist({ [HELPER_ENTITLEMENT]: true });
@@ -238,30 +242,29 @@ function stampedHub(dir) {
   return app;
 }
 
-test("hub:verify passes a stamped Hub bundle that has no dictation helper while dictation is off", () => {
+test("hub:verify refuses a stamped Hub bundle that has no dictation helper while the kill switch allows it", () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "hub-verify-"));
   try {
     const app = stampedHub(dir);
     const result = spawnSync(process.execPath, [path.join(root, "scripts/verify-hub-bundle.mjs"), app], { encoding: "utf8" });
-    assert.equal(result.status, 0, result.stdout + result.stderr);
-    assert.match(result.stdout, /no dictation helper in the bundle/);
+    assert.notEqual(result.status, 0, result.stdout + result.stderr);
+    assert.match(result.stderr, /dictation helper is missing/);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
 
-test("hub:build's helper step leaves the bundle as tauri signed it while dictation is off", () => {
+test("hub:build's helper step does not change the bundle when cargo is missing", () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "hub-build-helper-"));
   try {
     const app = stampedHub(dir);
     const before = fs.readFileSync(path.join(app, "Contents/MacOS/monocode"));
-    // No cargo and no codesign on PATH: the step must not need either while dictation is off.
+    // No cargo and no codesign on PATH. The step must fail before it writes a helper.
     const result = spawnSync(process.execPath, [path.join(root, "scripts/hub-dictation-helper.mjs"), app], {
       encoding: "utf8",
       env: { ...process.env, PATH: dir },
     });
-    assert.equal(result.status, 0, result.stdout + result.stderr);
-    assert.match(result.stdout, /dictation is off in this build/);
+    assert.notEqual(result.status, 0, result.stdout + result.stderr);
     assert.equal(fs.existsSync(path.join(app, "Contents/Helpers")), false, "no helper put into the bundle");
     assert.deepEqual(fs.readFileSync(path.join(app, "Contents/MacOS/monocode")), before);
   } finally {
