@@ -3666,4 +3666,105 @@ describe("tasks.fanout: checkpoint and resume (WP-172)", () => {
     ).rejects.toThrow(/leave out tasks/);
     expect(f.started).toEqual([]);
   });
+
+  // ---- REVIEW round 2 repros (local only) ----
+  it("REVIEW-A: the model cannot answer a stopped task's decision itself (ask_person answer) and restart it", async () => {
+    const rows = [row({ id: "t-api", ownerSession: "mono-exo", childSession: "app-mono-exo-f3_r11-api", requestId: "app-mono-exo-f3_r11-api", state: "cancelled" })];
+    const f = fixture(rows);
+    const store = memCheckpoints();
+    store.saved.set("mono-exo|r11", seededPlan("mono-exo", "r11", { api: { state: "stopped", taskId: "t-api", childSession: "app-mono-exo-f3_r11-api" } }));
+    f.api.fanoutCheckpoints = store;
+    decisionsOf(f.api);
+    // The first mate makes up the decision under the predictable key and "answers" it in one ask_person call.
+    await handleRaw(
+      f.source,
+      "ask-fab",
+      "tasks.ask",
+      { key: "fanout-again-r11-api", question: "Carry on?", options: [YES, NO], recommended: YES, answer: YES },
+      f.host,
+    );
+    await handleRaw(f.source, "resume-fab", "tasks.fanout", { resume: "r11", confirm: ["api"] }, f.host);
+    // Ash never saw or answered anything: nothing may start.
+    expect(f.started).toEqual([]);
+  });
+
+  function deliveredPlan() {
+    resetWorkerPool();
+    forgetVerifications();
+    const rows: Delegation[] = [];
+    const f = fixture(rows);
+    const files: Record<string, string> = {};
+    const time = { now: 1_000 };
+    const io = { exists: async (path: string) => path in files, read: async (path: string) => files[path] ?? null };
+    const lookup: DependencyLookup = {
+      row: (session) => rows.find((entry) => entry.childSession === session),
+      queued: (session) => queuedWorkers().some((entry) => entry.id === session),
+      verified: (session, current) => verificationOf(session, current),
+    };
+    const dependency = fanoutDependency(lookup);
+    const open = () => rows.filter(isOpenDelegation);
+    f.api.pool = workerPoolHost({ openRows: open, room: () => ({ room: true }), dependency, card: () => {} });
+    const pump = () =>
+      pumpWorkers({
+        openRows: open,
+        room: () => ({ room: true }),
+        dependency,
+        settle: (queue) => settleFanout(queue, { row: lookup.row, folder: () => PROJECT, io, now: () => time.now }),
+        start: (job) => handleRaw(f.source, job.requestId, "tasks.delegate", markAppDelegate(job.input), f.host),
+      });
+    return { ...f, rows, files, time, pump };
+  }
+
+  it("REVIEW-B control: the original provider delivering starts the task that waits for it", async () => {
+    const q = deliveredPlan();
+    q.api.fanoutCheckpoints = memCheckpoints();
+    await handleRaw(q.source, "h7c", "tasks.fanout", { intent: INTENT_172, tasks: [providing, waitingBoard] }, q.host);
+    expect(q.rows.map((entry) => entry.childSession)).toEqual(["app-mono-exo-f3_h7c-api"]);
+    Object.assign(q.rows[0], { state: "completed", status: "done", gateVerdict: "passed", version: 2 });
+    q.files[`${PROJECT}/src/api/score.ts`] = 'app.get("/api/score", handler)';
+    q.time.now += 120_000;
+    await q.pump();
+    expect(q.rows.some((entry) => entry.childSession === "app-mono-exo-f3_h7c-board")).toBe(true);
+  });
+
+  it("REVIEW-B: a provider started again on Ash's yes is the one its waiting task looks for", async () => {
+    const q = deliveredPlan();
+    q.api.fanoutCheckpoints = memCheckpoints();
+    const decisions = decisionsOf(q.api);
+    await handleRaw(q.source, "h7", "tasks.fanout", { intent: INTENT_172, tasks: [providing, waitingBoard] }, q.host);
+    expect(q.rows.map((entry) => entry.childSession)).toEqual(["app-mono-exo-f2_h7-api"]);
+    // Ash stops api, then says yes to starting it again, and the first mate resumes naming it.
+    Object.assign(q.rows[0], { state: "cancelled", version: 2 });
+    await decisions.backend.ask({ key: "fanout-again-h7-api", question: "Start api again?", options: [YES, NO], taskIds: [] });
+    await decisions.backend.answer(PROJECT, "fanout-again-h7-api", YES);
+    const out = (await handleRaw(q.source, "resume-h7", "tasks.fanout", { resume: "h7", confirm: ["api"] }, q.host)) as {
+      tasks: { name: string; status: string }[];
+    };
+    expect(out.tasks.find((task) => task.name === "api")).toMatchObject({ status: "started" });
+    const again = q.rows.find((entry) => entry.state === "running" && entry.childSession.includes("-api"));
+    expect(again).toBeDefined();
+    // The restarted api delivers: done, its checks passed, the route on disk.
+    Object.assign(again!, { state: "completed", status: "done", gateVerdict: "passed", version: 2 });
+    q.files[`${PROJECT}/src/api/score.ts`] = 'app.get("/api/score", handler)';
+    q.time.now += 120_000;
+    await q.pump();
+    expect(q.rows.some((entry) => entry.childSession === "app-mono-exo-f2_h7-board")).toBe(true);
+  });
+
+  it("REVIEW-C: one yes does not start a task again after Ash stops it a second time", async () => {
+    const q = deliveredPlan();
+    q.api.fanoutCheckpoints = memCheckpoints();
+    const decisions = decisionsOf(q.api);
+    await handleRaw(q.source, "h8", "tasks.fanout", { intent: INTENT_172, tasks: [providing, waitingBoard] }, q.host);
+    Object.assign(q.rows[0], { state: "cancelled", version: 2 });
+    await decisions.backend.ask({ key: "fanout-again-h8-api", question: "Start api again?", options: [YES, NO], taskIds: [] });
+    await decisions.backend.answer(PROJECT, "fanout-again-h8-api", YES);
+    await handleRaw(q.source, "resume-h8a", "tasks.fanout", { resume: "h8", confirm: ["api"] }, q.host);
+    const again = q.rows.find((entry) => entry.state === "running" && entry.childSession.includes("-api"))!;
+    // Ash stops the restarted worker too.
+    Object.assign(again, { state: "cancelled", version: 3 });
+    const before = q.rows.length;
+    await handleRaw(q.source, "resume-h8b", "tasks.fanout", { resume: "h8", confirm: ["api"] }, q.host);
+    expect(q.rows.length).toBe(before);
+  });
 });
