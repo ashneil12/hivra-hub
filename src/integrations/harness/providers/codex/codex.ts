@@ -468,6 +468,17 @@ export async function stopCodexSession(sessionId: string): Promise<void> {
   await killChild(sessionId).catch(() => undefined);
 }
 
+/**
+ * Codex force-closes leftover agent rows at turn end, because a closing
+ * agentsStates update is often missing. Command executions are not background
+ * work. While a turn is open, an agent row still in progress counts.
+ */
+export function codexHasBackgroundWork(sessionId: string): boolean {
+  const live = liveByThread.get(sessionId);
+  if (!live) return false;
+  return live.openAgentRows.size > 0;
+}
+
 export async function forgetCodexSession(sessionId: string): Promise<void> {
   resumeByThread.delete(sessionId);
   await stopCodexSession(sessionId);

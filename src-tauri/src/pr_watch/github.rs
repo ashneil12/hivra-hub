@@ -24,8 +24,8 @@ fn pull_request_query() -> String {
   viewer {{ login }} \
   rateLimit {{ remaining resetAt cost }} \
   repository(owner: $owner, name: $name) {{ nameWithOwner pullRequest(number: $number) {{ \
-    number url title state isDraft merged mergedAt closedAt mergeCommit {{ oid }} \
-    headRefOid headRefName baseRefName headRepository {{ nameWithOwner }} mergeable reviewDecision author {{ login }} \
+    number url title state isDraft merged mergedAt closedAt mergeCommit {{ oid }} changedFiles \
+    headRefOid headRefName baseRefName baseRef {{ target {{ oid }} }} headRepository {{ nameWithOwner }} mergeable reviewDecision author {{ login }} \
     labels(first: 100) {{ nodes {{ name }} }} \
     commits(last: 1) {{ nodes {{ commit {{ oid statusCheckRollup {{ state contexts(first: 100) {{ totalCount \
       pageInfo {{ hasNextPage endCursor }} nodes {{ {CHECK_FIELDS} }} }} }} }} }} }} \
@@ -69,6 +69,8 @@ pub struct PrRead {
     pub merged_at: Option<String>,
     pub head_ref: String,
     pub base_ref: String,
+    /// The base branch's current tip (`baseRef.target.oid`). `None` when GitHub shows no such branch.
+    pub base_tip: Option<String>,
     /// The repository the head branch is in (`headRepository`); `None` when GitHub shows none (a deleted fork).
     pub head_repo: Option<String>,
     pub review_decision: Option<String>,
@@ -78,6 +80,9 @@ pub struct PrRead {
     /// Comments, reviews and review comments, oldest first. `None` when the read could not see them all.
     pub remarks: Option<Vec<Remark>>,
     pub rate: Option<RateLimit>,
+    /// How many files GitHub says this pull request changes (`changedFiles`). `None` when the read
+    /// didn't say, which the merge floor treats as unread.
+    pub changed_files: Option<u64>,
 }
 
 impl PrRead {
@@ -589,6 +594,11 @@ pub fn parse(json: &str) -> Result<PrRead, ReadError> {
         },
         remarks: Some(remarks),
         rate,
+        changed_files: pr.get("changedFiles").and_then(Value::as_u64),
+        base_tip: pr
+            .pointer("/baseRef/target/oid")
+            .and_then(Value::as_str)
+            .map(str::to_string),
     })
 }
 
