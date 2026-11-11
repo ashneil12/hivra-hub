@@ -28,6 +28,8 @@ mod review_r12_tests;
 #[cfg(test)]
 mod review_r247_r1_tests;
 #[cfg(test)]
+mod review_r247_r2_tests;
+#[cfg(test)]
 mod tests;
 
 use std::path::PathBuf;
