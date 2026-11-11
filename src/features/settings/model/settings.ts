@@ -16,7 +16,6 @@ import {
 } from "../../quick-composer/model/quickComposerShortcut";
 import { readFlag, writeFlag } from "./storageFlags";
 import { HIVRA_LAYOUT_HIDDEN_SETTINGS } from "../../hub/model/hivraLayout";
-import { IS_HUB_BUNDLE } from "../../hub/model/hubBundle";
 
 const SECTION_KEY = "monocode.settingsSection";
 
@@ -1310,14 +1309,15 @@ const SHOW_CODE_TOOLS_LEGACY_KEY = "monocode:show-code-tools";
 /** Fired on `window` when code tools are shown or hidden. */
 export const SHOW_CODE_TOOLS_CHANGE_EVENT = "monocode:show-code-tools-change";
 
-/** Upstream MonoCode keeps its tools; the hub hides them until asked. */
-export const SHOW_CODE_TOOLS_DEFAULT = !IS_HUB_BUNDLE;
-
-export function loadShowCodeTools(): boolean {
+/**
+ * The saved choice, or `fallback` when there is none. The default (upstream keeps its tools, the hub hides them) comes
+ * from codeTools.ts: this file is also bundled into the host (host/build.mjs), where the hub flag can't be read.
+ */
+export function loadShowCodeTools(fallback: boolean): boolean {
   const saved = readFlag(SHOW_CODE_TOOLS_KEY);
   if (saved != null) return saved;
   const legacy = readFlag(SHOW_CODE_TOOLS_LEGACY_KEY);
-  if (legacy == null) return SHOW_CODE_TOOLS_DEFAULT;
+  if (legacy == null) return fallback;
   writeFlag(SHOW_CODE_TOOLS_KEY, legacy);
   try {
     if (readFlag(SHOW_CODE_TOOLS_KEY) === legacy) localStorage.removeItem(SHOW_CODE_TOOLS_LEGACY_KEY);

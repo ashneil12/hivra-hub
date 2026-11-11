@@ -21,7 +21,7 @@ it("is kept in the app settings, so a reload keeps it", async () => {
   vi.resetModules();
   const reloaded = await import("./codeTools");
   expect(reloaded.showCodeTools()).toBe(IS_HUB_BUNDLE);
-  expect((await import("./settings")).loadShowCodeTools()).toBe(IS_HUB_BUNDLE);
+  expect((await import("./settings")).loadShowCodeTools(!IS_HUB_BUNDLE)).toBe(IS_HUB_BUNDLE);
 });
 
 it("travels with an export like the other app settings", async () => {
@@ -34,13 +34,13 @@ it("reads the old key once, then lets it go", async () => {
   // The opposite of the default, so the value can only have come from the old key.
   localStorage.setItem(OLD_KEY, IS_HUB_BUNDLE ? "0" : "1");
   const settings = await import("./settings");
-  expect(settings.loadShowCodeTools()).toBe(IS_HUB_BUNDLE ? false : true);
+  expect(settings.loadShowCodeTools(!IS_HUB_BUNDLE)).toBe(IS_HUB_BUNDLE ? false : true);
   expect(localStorage.getItem(OLD_KEY)).toBeNull();
   expect(localStorage.getItem(settings.SHOW_CODE_TOOLS_KEY)).toBe(IS_HUB_BUNDLE ? "0" : "1");
   // A later change is the setting's alone; the old key is not read again.
   settings.saveShowCodeTools(IS_HUB_BUNDLE);
   localStorage.setItem(OLD_KEY, IS_HUB_BUNDLE ? "0" : "1");
-  expect(settings.loadShowCodeTools()).toBe(IS_HUB_BUNDLE);
+  expect(settings.loadShowCodeTools(!IS_HUB_BUNDLE)).toBe(IS_HUB_BUNDLE);
 });
 
 it("starts hidden in the hub and shown upstream, and every listener hears a change", async () => {
