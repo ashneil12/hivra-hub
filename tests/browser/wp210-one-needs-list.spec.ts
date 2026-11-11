@@ -221,6 +221,31 @@ test("rail, home, header, mono line and inbox share one Needs you list", async (
   await expect(deny).not.toHaveClass(/bg-accent/);
   await expect(deny).not.toHaveClass(/primary-action/);
   expect(Number.parseFloat(await deny.evaluate((el) => getComputedStyle(el).borderTopWidth))).toBeGreaterThan(0);
+  const bordered = async (button: Locator) => {
+    await expect(button).not.toHaveClass(/bg-accent/);
+    expect(Number.parseFloat(await button.evaluate((el) => getComputedStyle(el).borderTopWidth))).toBeGreaterThan(0);
+  };
+  const publish = needs.locator("[data-home-line]").filter({ hasText: "npm publish" });
+  const allowOnce = publish.getByRole("button", { name: "Allow once" });
+  await expect(allowOnce).toHaveCount(1);
+  await bordered(allowOnce);
+  await bordered(publish.getByRole("button", { name: "Deny" }));
+  const weekly = needs.locator("[data-home-line]").filter({ hasText: "Weekly views" });
+  const review = weekly.getByRole("button", { name: "Review" });
+  await expect(review).toHaveCount(1);
+  await expect(weekly.getByRole("button", { name: "Allow", exact: true })).toHaveCount(0);
+  await expect(weekly.getByRole("button", { name: "Deny" })).toHaveCount(0);
+  await bordered(review);
+  const mergeRow = needs.locator("[data-home-line]").filter({ hasText: "Ready to merge" });
+  await expect(mergeRow.getByRole("button", { name: "Merge", exact: true })).toHaveClass(/bg-accent/);
+  await bordered(mergeRow.getByRole("button", { name: "Not yet" }));
+  await expect(mergeRow.getByRole("button", { name: "Yes", exact: true })).toHaveCount(0);
+  const dot = needs.locator("[data-home-needs-dot]");
+  await expect(dot).toHaveCount(1);
+  await expect(dot).toHaveCSS("background-color", "rgb(229, 72, 77)");
+  const count = needs.locator("[data-home-needs-count]");
+  await expect(count).not.toHaveCSS("color", "rgb(229, 72, 77)");
+  await expect(count).not.toHaveClass(/text-red/);
   const rowCount = await needs.locator("[data-home-line]").count();
   for (let i = 0; i < rowCount; i++) {
     expect(await needs.locator("[data-home-line]").nth(i).innerText()).toContain("Example:");
@@ -259,6 +284,10 @@ test("rail, home, header, mono line and inbox share one Needs you list", async (
   const chipWord = panel.locator("[data-hub-chip]");
   await expect(chipWord).toHaveText("Needs you");
   await expect(chipWord).toHaveCSS("color", "rgb(255, 107, 107)");
+  const panelOpen = panel.getByRole("button", { name: "Open EXO lead's chat" });
+  const dismiss = panel.getByRole("button", { name: "Dismiss" });
+  await bordered(panelOpen);
+  await bordered(dismiss);
   if (shoot) await page.screenshot({ path: `${AFTER}/mono.png` });
 
   await page.locator("[data-hub-home]").getByRole("button", { name: "Home" }).click({ force: true });
