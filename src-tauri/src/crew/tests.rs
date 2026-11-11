@@ -3134,3 +3134,115 @@ fn an_idle_grant_is_pruned_and_a_used_one_is_kept() {
     assert!(store::grant_of(&conn, "app-r6-idle-1").unwrap().is_none());
     assert!(store::grant_of(&conn, "app-r6-used-1").unwrap().is_some());
 }
+
+/// Review repro (PR #194 round 6, HIGH-A): a grant never sheds the Never use of the project that owns the folder.
+/// `crew_launch_check` records the folder it was handed as the grant's project, unresolved, and `judge_start` then
+/// prefers that project over the one owning the spawn folder. A launch gated with a worktree's folder (sessions.start
+/// or a phase from a chat sitting in a worktree) or a project's subfolder gets only the system policy, so a CLI on the
+/// project's Never use passes the launch gate, gets a ticket and spawns. The same folder with no grant is refused.
+#[test]
+fn review_r6_a_grant_never_sheds_the_never_use_of_the_project_owning_the_folder() {
+    use super::gate::{check_launch, issue_ticket, judge_spawn, record_grant, LaunchCheck};
+    let store = memory();
+    let mut conn = store.lock_conn().unwrap();
+    // A project's subfolder (no git needed).
+    store::set_policy(
+        &mut conn,
+        "project",
+        "/tmp/review-r6-sub-project",
+        &json!({ "lockDefault": false, "neverUse": ["codex"], "fallback": [] }),
+        0,
+    )
+    .unwrap();
+    let sub = "/tmp/review-r6-sub-project/packages/app";
+    // Control: judged by the folder alone, the subfolder is the project's, so Codex is refused.
+    assert!(judge_spawn(&conn, "5e0c1d2b-ashs-chat", "codex", sub, None).is_err());
+    let gated = LaunchCheck {
+        cli: "codex".into(),
+        mono: None,
+        project: Some(sub.into()),
+        locked_default: None,
+    };
+    let launch = check_launch(&conn, &gated);
+    let session = "app-review-r6-sub-1";
+    let _ = record_grant(&conn, session, &gated);
+    let ticket = issue_ticket(&conn, session, "codex", sub);
+    let spawn = ticket
+        .as_ref()
+        .map_err(Clone::clone)
+        .and_then(|ticket| judge_spawn(&conn, session, "codex", sub, Some(ticket)));
+
+    // A linked worktree of a project (the realistic shape: a worker's own checkout).
+    let root = std::env::temp_dir().join(format!("review-r6-wt-{}", uuid::Uuid::new_v4()));
+    let repo = root.join("repo");
+    let worktree = root.join("worktree");
+    std::fs::create_dir_all(&repo).unwrap();
+    let git = |dir: &std::path::Path, args: &[&str]| {
+        let out = std::process::Command::new("git")
+            .current_dir(dir)
+            .args(["-c", "user.name=r6", "-c", "user.email=r6@example.invalid"])
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "git {args:?} failed");
+    };
+    git(&repo, &["init", "-q"]);
+    git(&repo, &["commit", "-q", "--allow-empty", "-m", "init"]);
+    git(
+        &repo,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "review-r6",
+            worktree.to_str().unwrap(),
+        ],
+    );
+    let key = |path: &std::path::Path| {
+        std::fs::canonicalize(path)
+            .unwrap()
+            .to_string_lossy()
+            .into_owned()
+    };
+    let (repo_key, worktree_key) = (key(&repo), key(&worktree));
+    store::set_policy(
+        &mut conn,
+        "project",
+        &repo_key,
+        &json!({ "lockDefault": false, "neverUse": ["codex"], "fallback": [] }),
+        0,
+    )
+    .unwrap();
+    let control = judge_spawn(&conn, "5e0c1d2b-ashs-chat", "codex", &worktree_key, None);
+    let in_worktree = LaunchCheck {
+        cli: "codex".into(),
+        mono: None,
+        project: Some(worktree_key.clone()),
+        locked_default: None,
+    };
+    let wt_launch = check_launch(&conn, &in_worktree);
+    let wt_session = "app-review-r6-wt-1";
+    let _ = record_grant(&conn, wt_session, &in_worktree);
+    let wt_spawn = issue_ticket(&conn, wt_session, "codex", &worktree_key)
+        .and_then(|ticket| judge_spawn(&conn, wt_session, "codex", &worktree_key, Some(&ticket)));
+    let _ = std::fs::remove_dir_all(&root);
+
+    assert!(
+        control.is_err(),
+        "control: the worktree with no grant is its project's"
+    );
+    let passed: Vec<&str> = [
+        ("subfolder launch gate", launch.is_ok()),
+        ("subfolder spawn", spawn.is_ok()),
+        ("worktree launch gate", wt_launch.is_ok()),
+        ("worktree spawn", wt_spawn.is_ok()),
+    ]
+    .into_iter()
+    .filter_map(|(what, ok)| ok.then_some(what))
+    .collect();
+    assert!(
+        passed.is_empty(),
+        "Codex is on the project's Never use, yet these passed: {passed:?}"
+    );
+}
