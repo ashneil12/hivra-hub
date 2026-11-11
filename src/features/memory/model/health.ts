@@ -8,7 +8,7 @@ import { dueForAsk } from "./ask";
 
 /** A health record with every count at zero. */
 export function emptyHealth(): MemoryHealth {
-  return { turns: 0, stored: 0, deferred: 0, dropped: { late: 0, secret: 0, ungrounded: 0, invalid: 0, orders: 0 } };
+  return { turns: 0, stored: 0, deferred: 0, dropped: { late: 0, secret: 0, ungrounded: 0, invalid: 0, orders: 0, forgotten: 0 } };
 }
 
 /**

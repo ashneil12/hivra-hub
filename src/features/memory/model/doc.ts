@@ -53,7 +53,7 @@ export type MemoryDispute = {
 };
 
 /** WP-100: why the curator dropped a turn's fact. */
-export type DropReason = "late" | "secret" | "ungrounded" | "invalid" | "orders";
+export type DropReason = "late" | "secret" | "ungrounded" | "invalid" | "orders" | "forgotten";
 
 /** WP-100: how memory has been going, for the Memory screen's health card. Absent on old data, which reads as zeros. */
 export type MemoryHealth = {
@@ -78,7 +78,43 @@ export type MemoryDoc = {
   askSession?: { id: string; at: number };
   /** WP-100: what the curator has done, since this build began counting. Absent on old data. */
   health?: MemoryHealth;
+  /**
+   * Facts the person deleted, as forgetKey digests (never the text), so the curator does not learn them again from a
+   * passing mention. Only the person saying "remember that ..." brings one back. Absent on old data. (Idea: OpenBot by
+   * CopilotKit, MIT, deleted-fact digests.)
+   */
+  forgotten?: string[];
 };
+
+const FORGET_KEY = /^fgt-[a-f0-9]{16}$/;
+const FORGOTTEN_CAP = 2000;
+
+/** The digest a deleted fact leaves behind: one mate, the fact's words, case and spacing ignored. */
+export function forgetKey(mateId: string, text: string): string {
+  return `fgt-${sha256Hex(`${mateId}\n${normalizeFact(text).toLowerCase()}`).slice(0, 16)}`;
+}
+
+export function isForgotten(doc: MemoryDoc, mateId: string, text: string): boolean {
+  return doc.forgotten?.includes(forgetKey(mateId, text)) ?? false;
+}
+
+/** Remembers that a fact was deleted. The oldest digests go first past the cap. */
+export function withForgotten(doc: MemoryDoc, mateId: string, text: string): MemoryDoc {
+  const key = forgetKey(mateId, text);
+  const have = doc.forgotten ?? [];
+  if (have.includes(key)) return doc;
+  return { ...doc, forgotten: [...have, key].slice(-FORGOTTEN_CAP) };
+}
+
+/** Takes a digest out again, when the person asks for the fact back in their own words. */
+export function withoutForgotten(doc: MemoryDoc, mateId: string, text: string): MemoryDoc {
+  const key = forgetKey(mateId, text);
+  if (!doc.forgotten?.includes(key)) return doc;
+  const forgotten = doc.forgotten.filter((have) => have !== key);
+  const next: MemoryDoc = { ...doc, forgotten };
+  if (!forgotten.length) delete next.forgotten;
+  return next;
+}
 
 const ITEM_ID = /^mem-[a-f0-9]{16}$/;
 const MATE_ID = /^[a-z0-9][a-z0-9-]{0,79}$/;
@@ -236,6 +272,7 @@ function loadedHealth(value: unknown): MemoryHealth | undefined {
       ungrounded: count(dropped.ungrounded),
       invalid: count(dropped.invalid),
       orders: count(dropped.orders),
+      forgotten: count(dropped.forgotten),
     },
   };
   if (finite(raw.lastRunAt)) health.lastRunAt = raw.lastRunAt;
@@ -265,6 +302,9 @@ export function parseDoc(value: unknown): MemoryDoc {
   const livedDays = loadedDays(raw.livedDays);
   const askSession = loadedSession(raw.askSession);
   const health = loadedHealth(raw.health);
+  const forgotten = (Array.isArray(raw.forgotten) ? raw.forgotten : [])
+    .filter((key): key is string => typeof key === "string" && FORGET_KEY.test(key))
+    .slice(-FORGOTTEN_CAP);
   return {
     revision: finite(raw.revision) ? Math.floor(raw.revision) : 0,
     generation: finite(raw.generation) ? Math.floor(raw.generation) : 0,
@@ -274,6 +314,7 @@ export function parseDoc(value: unknown): MemoryDoc {
     ...(livedDays ? { livedDays } : {}),
     ...(askSession ? { askSession } : {}),
     ...(health ? { health } : {}),
+    ...(forgotten.length ? { forgotten } : {}),
   };
 }
 

@@ -58,7 +58,13 @@
       "name": "OpenBot",
       "url": "https://github.com/CopilotKit/openbot",
       "licence": "MIT",
-      "gave": "approval gates that stop at an unapproved action, an audit trail, typed handoffs and quiet digests"
+      "gave": "approval gates that stop at an unapproved action, an audit trail, typed handoffs and quiet digests, and deleted facts that are never learned again"
+    },
+    {
+      "name": "Nod",
+      "url": "https://github.com/n8n-io/nod",
+      "licence": "Apache-2.0",
+      "gave": "memory that only keeps what the owner said in their own words"
     },
     {
       "name": "Rerun",
