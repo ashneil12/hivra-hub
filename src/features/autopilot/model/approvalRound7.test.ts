@@ -297,26 +297,28 @@ describe("containment compares whole path components, the same on every platform
 });
 
 describe("usability: a chat outside git is judged by where each path really lands", () => {
-  const chat = `${TMP}/outside/chat`;
-  fs.mkdirSync(`${chat}/src`, { recursive: true });
-  fs.writeFileSync(`${chat}/src/app.ts`, "x\n");
-  fs.writeFileSync(`${TMP}/outside/secret.txt`, "x\n");
-  fs.symlinkSync(`${TMP}/outside/secret.txt`, `${chat}/src/linked.ts`);
+  // path.join so a Windows temp (`C:\Users\RUNNER~1\...`) is not held for a forward slash. The folder's own short name is
+  // not a hold either (round 13): the check looks only at the part below the folder.
+  const chat = path.join(TMP, "outside", "chat");
+  fs.mkdirSync(path.join(chat, "src"), { recursive: true });
+  fs.writeFileSync(path.join(chat, "src", "app.ts"), "x\n");
+  fs.writeFileSync(path.join(TMP, "outside", "secret.txt"), "x\n");
+  fs.symlinkSync(path.join(TMP, "outside", "secret.txt"), path.join(chat, "src", "linked.ts"));
 
   it("allows a read and an edit that stay inside the folder", async () => {
     expect(await placeStaysInside({ tool: "Bash", command: "cat src/app.ts" } as any, chat, outsideGit, realCanonical)).toBeNull();
-    expect(await placeStaysInside({ tool: "Write", paths: [`${chat}/src/new.ts`] } as any, chat, outsideGit, realCanonical)).toBeNull();
+    expect(await placeStaysInside({ tool: "Write", paths: [path.join(chat, "src", "new.ts")] } as any, chat, outsideGit, realCanonical)).toBeNull();
   });
 
   it("holds a link that escapes the folder, and a read or edit that can't be placed", async () => {
-    expect(await placeStaysInside({ tool: "Read", paths: [`${chat}/src/linked.ts`] } as any, chat, outsideGit, realCanonical)).not.toBeNull();
+    expect(await placeStaysInside({ tool: "Read", paths: [path.join(chat, "src", "linked.ts")] } as any, chat, outsideGit, realCanonical)).not.toBeNull();
     expect(await placeStaysInside({ tool: "Bash", command: "cat src/linked.ts" } as any, chat, outsideGit, realCanonical)).not.toBeNull();
-    expect(await placeStaysInside({ tool: "Write", paths: [`${chat}/src/linked.ts`] } as any, chat, outsideGit, realCanonical)).not.toBeNull();
+    expect(await placeStaysInside({ tool: "Write", paths: [path.join(chat, "src", "linked.ts")] } as any, chat, outsideGit, realCanonical)).not.toBeNull();
     expect(await placeStaysInside({ tool: "Bash", command: "cat src/app.ts" } as any, chat, outsideGit)).not.toBeNull();
   });
 
   it("holds a git folder's own file and any git command, since git has no checkout here", async () => {
-    expect(await placeStaysInside({ tool: "Write", paths: [`${chat}/HEAD`] } as any, chat, outsideGit, realCanonical)).not.toBeNull();
+    expect(await placeStaysInside({ tool: "Write", paths: [path.join(chat, "HEAD")] } as any, chat, outsideGit, realCanonical)).not.toBeNull();
     expect(await placeStaysInside({ tool: "Bash", command: "git status" } as any, chat, outsideGit, realCanonical)).not.toBeNull();
   });
 });

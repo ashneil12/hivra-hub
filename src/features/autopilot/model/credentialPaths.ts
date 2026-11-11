@@ -316,15 +316,69 @@ function credentialSegments(parts: readonly string[]): boolean {
  * that only a climb leaves behind is still seen. `shortNames` is off only for a git revision (`HEAD~1`), which is not a
  * file name (see shortNamesRead).
  */
-export function credentialPath(path: string, shortNames = true): boolean {
+export function credentialPath(path: string, shortNames = true, folder?: string): boolean {
   const folded = fold(path);
   const written = folded.split("/").filter(Boolean);
   if (!written.length) return false;
   // Round 5, H1: a colon splits a name only for the names and places it may hold (`HEAD:.env`), never for a climb.
   const named = written.flatMap((part) => part.split(":")).filter(Boolean);
-  // A Windows 8.3 short name in any segment hides the real name: held (round 3, item 2; round 4, item 5).
-  if (shortNames && named.some((part) => SHORT_NAME.test(part))) return true;
+  // A Windows 8.3 short name hides the real name: held (round 3, item 2; round 4, item 5). Round 13: only below the
+  // chat folder. A temp folder is itself `RUNNER~1`, and that name is not a file the chat named.
+  if (shortNames && shortNameHeld(named, path, folder)) return true;
   return credentialSegments(named) || credentialSegments(resolvePath(folded).segments);
+}
+
+/**
+ * Whether a colon remains after a verbatim prefix and one drive colon (round 5 H1, round 13). `a:b/../../.zshrc` and
+ * `C:\proj\a:b\..\.zshrc` still have a colon. `\\?\C:\x\a.txt` does not. A UNC path has no drive colon to skip.
+ */
+function colonPastDrive(path: string): boolean {
+  let rest = path;
+  let unc = false;
+  if (/^\\\\\?\\unc\\/i.test(rest)) {
+    rest = rest.slice(8);
+    unc = true;
+  } else if (/^\\\\\?\\/.test(rest) || /^\\\\\.\\/.test(rest)) {
+    rest = rest.slice(4);
+  } else if (rest.startsWith("\\\\")) {
+    unc = true;
+  }
+  if (unc) return rest.includes(":");
+  return rest.replace(/^[a-zA-Z]:(?=[\\/]|$)/, "").includes(":");
+}
+
+/** A verbatim `\\?\UNC\`, `\\?\` or `\\.\` prefix, so a drive colon in it is not part of the name (round 13). */
+function stripVerbatim(text: string): string {
+  if (/^\\\\\?\\unc\\/i.test(text)) return `\\\\${text.slice(8)}`;
+  if (/^\\\\\?\\/.test(text) || /^\\\\\.\\/.test(text)) return text.slice(4);
+  return text;
+}
+
+/** The drive letter after a verbatim prefix, or "" for a UNC or POSIX path. */
+function driveOf(text: string): string {
+  const match = /^([a-z]):/i.exec(fold(stripVerbatim(text)));
+  return match ? match[1].toLowerCase() : "";
+}
+
+/**
+ * The segments of `path` strictly below `folder`, when `path` is that folder or inside it (same drive). Null when it is
+ * not inside, so the caller keeps the whole-path check. A verbatim prefix is stripped on both sides first.
+ */
+function belowFolder(path: string, folder: string): string[] | null {
+  if (driveOf(path) !== driveOf(folder)) return null;
+  const pathSegs = resolvePath(fold(stripVerbatim(path))).segments;
+  const folderSegs = resolvePath(fold(stripVerbatim(folder))).segments;
+  if (!folderSegs.length || !startsWith(pathSegs, folderSegs)) return null;
+  return pathSegs.slice(folderSegs.length);
+}
+
+/** Whether a short name is held: only below `folder` when the path is inside it, otherwise in any segment. */
+function shortNameHeld(named: readonly string[], path: string, folder?: string): boolean {
+  if (typeof folder === "string" && folder) {
+    const below = belowFolder(path, folder);
+    if (below) return below.some((part) => SHORT_NAME.test(part));
+  }
+  return named.some((part) => SHORT_NAME.test(part));
 }
 
 /**
@@ -508,7 +562,7 @@ export function credentialInWords(words: readonly string[], folder?: string): st
     }
     for (const piece of pieces(word)) {
       if (!piece) continue;
-      if (homeShellFile(piece, folder) || credentialPath(piece, shortNamesRead(words[0], words.slice(1), piece))) return piece;
+      if (homeShellFile(piece, folder) || credentialPath(piece, shortNamesRead(words[0], words.slice(1), piece), folder)) return piece;
       if (dotOutside(piece, folder)) return piece;
     }
   }
@@ -528,8 +582,9 @@ export function credentialInPaths(paths: unknown, folder?: string): string | nul
   for (const path of paths) {
     if (typeof path !== "string") return "(a file name that isn't text)";
     // Round 5, H1: a colon after the drive is not a Windows path; it can only be a name that climbs out, so it is held.
-    if (path.replace(/^[a-zA-Z]:(?=[\\/]|$)/, "").includes(":")) return path;
-    if (path.includes("\0") || homeShellFile(path, folder) || credentialPath(path) || dotOutside(path, folder)) return path;
+    // Round 13: a verbatim `\\?\C:\` prefix's colon is the drive, as in the stream check. A colon still in the name holds.
+    if (colonPastDrive(path)) return path;
+    if (path.includes("\0") || homeShellFile(path, folder) || credentialPath(path, true, folder) || dotOutside(path, folder)) return path;
   }
   return null;
 }
@@ -749,7 +804,7 @@ export function walkHeld(words: readonly string[], folder: string | undefined, t
       continue;
     }
     // Home-relative words and anything through a credential place are outside the chat's folder however they resolve.
-    if (arg.startsWith("~") || credentialPath(arg, shortNamesRead(head, args, arg)) || dotOutside(arg, folder)) return true;
+    if (arg.startsWith("~") || credentialPath(arg, shortNamesRead(head, args, arg), folder) || dotOutside(arg, folder)) return true;
     // Round 5, H2: a walk that starts at a parent of a credential place (Library, AppData, /etc, /) reaches the place.
     if (startsAtPlaceParent(startOf(arg, timer ? null : base))) return true;
     if (!root) {

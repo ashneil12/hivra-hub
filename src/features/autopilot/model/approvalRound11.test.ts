@@ -4,7 +4,8 @@ import { describe, expect, it } from "vitest";
 import { approvalCall } from "../../../integrations/harness/providers/claude/claudeProtocol";
 import { sessionWorkCwd } from "../../sessions/model/session";
 import { approvalVerdict } from "./decide";
-import { editInside, openedForm, openedSearchPath, safeCommand } from "./safeApproval";
+import { credentialInPaths } from "./credentialPaths";
+import { editInside, hasStreamSuffix, openedForm, openedSearchPath, safeCommand } from "./safeApproval";
 
 const CHAT = "/Users/example/Projects/app";
 const block = (call: unknown) => ({ text: "", tool: { title: "t", kind: "search" }, approval: { call } }) as any;
@@ -47,6 +48,25 @@ describe("round 11 (HIGH, Windows): a colon after the drive is an NTFS stream, s
   it("holds a read of a stream, and allows a plain Windows file", () => {
     expect(openedForm(`${WIN}\\src\\a.ts:x`, WIN)).toMatchObject({ why: expect.stringContaining("colon") });
     expect(openedForm(`${WIN}\\src\\a.ts`, WIN)).toEqual({ path: `${WIN}\\src\\a.ts` });
+  });
+
+  // Round 13: canonicalize returns `\\?\C:\...`. The colon in that prefix is the drive, not a stream. A stream after the
+  // prefix, and any colon on a UNC path, still waits. Pure path shapes, so this runs on every OS.
+  it("does not treat a verbatim drive path's own colon as a stream", () => {
+    expect(hasStreamSuffix("\\\\?\\C:\\x\\a.txt", true)).toBe(false);
+    expect(hasStreamSuffix("\\\\?\\C:\\x\\a.txt::$DATA", true)).toBe(true);
+    expect(hasStreamSuffix("\\\\?\\UNC\\srv\\share\\a:b", true)).toBe(true);
+    expect(hasStreamSuffix("C:\\x\\a.txt", true)).toBe(false);
+    expect(hasStreamSuffix("\\\\.\\C:\\x\\a.txt", true)).toBe(false);
+    const plain = openedForm("\\\\?\\C:\\x\\a.txt", WIN);
+    expect("why" in plain ? plain.why : "").not.toContain("colon");
+    expect(openedForm("\\\\?\\C:\\x\\a.txt::$DATA", WIN)).toMatchObject({ why: expect.stringContaining("colon") });
+    expect(openedForm("\\\\?\\UNC\\srv\\share\\a:b", WIN)).toMatchObject({ why: expect.stringContaining("colon") });
+    expect(openedForm("C:\\x\\a.txt", "C:\\x")).toEqual({ path: "C:\\x\\a.txt" });
+    expect(credentialInPaths(["\\\\?\\C:\\x\\a.txt"], "C:\\x")).toBeNull();
+    expect(credentialInPaths(["\\\\?\\C:\\x\\a.txt::$DATA"], "C:\\x")).not.toBeNull();
+    expect(credentialInPaths(["\\\\?\\UNC\\srv\\share\\a:b"], "C:\\x")).not.toBeNull();
+    expect(credentialInPaths(["a:b/../../.zshrc"], "C:\\x")).not.toBeNull();
   });
 });
 

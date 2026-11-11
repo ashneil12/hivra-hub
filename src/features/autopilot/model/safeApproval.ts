@@ -204,7 +204,7 @@ export function openedForm(raw: string, folder: string | undefined): { path: str
   const windows = !!folder && windowsShaped(folder);
   // Round 11 (HIGH, Windows): an NTFS stream or a second ":" names a stream of the file (name::$DATA, name:x), not the
   // file a protected name is checked against, so a colon after the drive letter waits.
-  if (windows && raw.slice(2).includes(":")) return { why: `it names ${raw}, which has a colon after the drive (an NTFS stream), so it waits for Ash` };
+  if (hasStreamSuffix(raw, windows)) return { why: `it names ${raw}, which has a colon after the drive (an NTFS stream), so it waits for Ash` };
   if (!windows && raw.includes("\\")) return { why: `it names ${raw}, which has a backslash in it (a folder separator only on Windows), so it waits for Ash` };
   if (windows && raw.includes("/")) return { why: `it names ${raw} with forward slashes, which the tool doesn't open as written, so it waits for Ash` };
   // A UNC share (\\server) is not absolute here: it is held, as a relative name that doesn't rebuild as written.
@@ -214,6 +214,28 @@ export function openedForm(raw: string, folder: string | undefined): { path: str
   if (!absolute) return { why: `it names ${raw}, a relative path, which the tool resolves against its own working folder (a cd can move it), so it waits for Ash` };
   if (!spelledAsOpened(raw, windows, true)) return { why: `it names ${raw}, which isn't in the form the tool opens (no . or .. and no doubled or trailing separator), so it waits for Ash` };
   return { path: raw };
+}
+
+/**
+ * Whether a Windows path names an NTFS stream (round 11, round 13). A verbatim `\\?\UNC\`, `\\?\` or `\\.\` prefix is
+ * stripped first: canonicalize returns `\\?\C:\...`, and that prefix's drive colon is not a stream. A drive colon is
+ * then allowed only at index 1 of what remains. A UNC path has no drive colon, so any colon in it is a stream.
+ */
+export function hasStreamSuffix(raw: string, windows = true): boolean {
+  if (!windows || typeof raw !== "string") return false;
+  let rest = raw;
+  let unc = false;
+  if (/^\\\\\?\\unc\\/i.test(rest)) {
+    rest = rest.slice(8);
+    unc = true;
+  } else if (/^\\\\\?\\/.test(rest) || /^\\\\\.\\/.test(rest)) {
+    rest = rest.slice(4);
+  } else if (rest.startsWith("\\\\")) {
+    unc = true;
+  }
+  if (unc) return rest.includes(":");
+  if (/^[a-z]:/i.test(rest)) return rest.slice(2).includes(":");
+  return rest.includes(":");
 }
 
 /** Whether a path is absolute on the chat's platform (round 10). */
@@ -878,7 +900,7 @@ export async function readStaysInside(
   // Round 7, usability: a chat outside git is judged by where each read really lands, every link followed.
   if (!home)
     return outsideGitStays(paths, targets, root, canonical, (real, realFolder) =>
-      credentialPath(real) || dotOutside(real, realFolder) ? `${real} is a login or config file` : null,
+      credentialPath(real, true, realFolder) || dotOutside(real, realFolder) ? `${real} is a login or config file` : null,
     );
   if (!home.relative.endsWith(PROBE)) return "the app couldn't place the chat's folder in a git checkout";
   const realFolder = realPath(home, home.relative.slice(0, -PROBE.length).replace(/\/+$/, ""));
@@ -886,7 +908,7 @@ export async function readStaysInside(
     const place = places[i + 1];
     if (!place) return `the app couldn't place ${paths[i]} in a git checkout, so it can't tell where it really reads`;
     const real = realPath(place);
-    if (credentialPath(real) || dotOutside(real, realFolder)) return `${paths[i]} really reads ${real}, a login or config file`;
+    if (credentialPath(real, true, realFolder) || dotOutside(real, realFolder)) return `${paths[i]} really reads ${real}, a login or config file`;
     // Round 6, MED-1: a link as the last part is held when it points outside the chat's folder, whatever it points at.
     if (place.linked && !insideFolder(real, realFolder)) return `${paths[i]} is a link to ${real}, outside the chat's folder`;
     // Round 7, MED-C: a link in the middle of the path that leads out of the folder waits too. A path that names a place
@@ -937,7 +959,7 @@ export async function bashStaysInside(
     return outsideGitStays(names, targets, root, canonical, (real, realFolder, i) => {
       // A word that is the chat's own name is judged by its words (a search's pattern is not a file).
       const own = names[i].startsWith("/") ? null : `${realFolder}/${names[i]}`;
-      return own !== real && (credentialPath(real) || dotOutside(real, realFolder))
+      return own !== real && (credentialPath(real, true, realFolder) || dotOutside(real, realFolder))
         ? `${names[i]} really reads ${real}, a login or config file`
         : null;
     });
@@ -957,7 +979,7 @@ export async function bashStaysInside(
     // A word that is the chat's own name is judged by its words (a search's pattern is not a file); one that reached its
     // place through a link is judged by where it really is.
     const own = names[i].startsWith("/") ? null : `${realFolder}/${names[i]}`;
-    if (own !== real && (credentialPath(real) || dotOutside(real, realFolder))) return `${names[i]} really reads ${real}, a login or config file`;
+    if (own !== real && (credentialPath(real, true, realFolder) || dotOutside(real, realFolder))) return `${names[i]} really reads ${real}, a login or config file`;
   }
   return null;
 }
