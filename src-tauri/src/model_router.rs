@@ -2394,13 +2394,23 @@ mod tests {
             println!("[real-window] set MONOCODE_REAL_BASE and MONOCODE_REAL_MODEL too");
             return;
         };
-        let Ok(key) = read_key_in(KEY_SERVICE, &custom_model_id) else {
-            println!("[real-window] no key saved for {custom_model_id}");
+        // The key goes through `bound_key`, like a routed session: the stored item is sealed JSON, never a Bearer.
+        let caller = CustomRoute {
+            provider: "custom".into(),
+            base_url,
+            model_id: model_id.clone(),
+            custom_model_id: custom_model_id.clone(),
+            reasoning_effort: None,
+        };
+        let Ok(Some((bound, key))) =
+            crate::key_binding::bound_key(&caller, &crate::key_binding::keychain_item)
+        else {
+            println!("[real-window] no key saved for {custom_model_id} at this address");
             return;
         };
         let window = context_window_from_models(
             "custom",
-            &base_url,
+            &bound.base_url,
             &model_id,
             key.as_deref().unwrap_or_default(),
         );
@@ -2892,11 +2902,23 @@ mod tests {
             println!("[live-route] set MONOCODE_REAL_BASE and MONOCODE_REAL_MODEL too");
             return;
         };
-        let r = route("custom", &base_url, &model_id);
-        let key = read_key_in(KEY_SERVICE, &custom_model_id).unwrap();
+        // Through `bound_key` and `ensure_router`, as a routed session does: the child gets a session token, never the key.
+        let caller = CustomRoute {
+            provider: "custom".into(),
+            base_url,
+            model_id: model_id.clone(),
+            custom_model_id: custom_model_id.clone(),
+            reasoning_effort: None,
+        };
+        let Some((r, key)) =
+            crate::key_binding::bound_key(&caller, &crate::key_binding::keychain_item).unwrap()
+        else {
+            println!("[live-route] no key saved for {custom_model_id} at this address");
+            return;
+        };
         let upstream = session_token("custom", key.as_deref()).unwrap();
-        let token = "child-token-123".to_string();
-        let port = start_router(r.clone(), upstream, token.clone()).unwrap();
+        let (port, session) = ensure_router(&r, &upstream).unwrap();
+        let token = session.value().to_string();
         let window = remembered_window(&r, key.as_deref());
         println!("[live-route] window from the provider: {window:?}");
         assert_eq!(window, Some(1048576));
