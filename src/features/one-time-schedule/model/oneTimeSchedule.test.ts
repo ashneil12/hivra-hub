@@ -4,6 +4,7 @@ import {
   CLOSED_APP_WARNING,
   RetryableScheduleError,
   createMemoryOneTimeStore,
+  decodeOneTimeSchedule,
   deliverOneTimeSchedule,
   instantFromLocalInput,
   missedScheduleNotice,
@@ -365,6 +366,216 @@ describe("one-time schedule", () => {
     });
     expect(submitted).toEqual([]);
     expect((await store.list())[0]?.status).toBe("scheduled");
+  });
+
+  it("ends an undeliverable run instead of retrying it forever", async () => {
+    const cases: Array<(schedule: OneTimeSchedule) => Promise<void>> = [
+      (schedule) =>
+        deliverOneTimeSchedule(schedule, {
+          findChat: () => null,
+          findProject: () => null,
+          createChat: async () => "nope",
+          rememberSession: async () => null,
+          submit: async () => true,
+        }),
+      (schedule) =>
+        deliverOneTimeSchedule(schedule, {
+          findChat: () => ({ id: "chat-1", busy: false }),
+          findProject: () => null,
+          createChat: async () => "nope",
+          rememberSession: async () => null,
+          submit: async () => false,
+        }),
+      async (schedule) => {
+        await deliverOneTimeSchedule(schedule, {
+          findChat: () => null,
+          findProject: () => null,
+          createChat: async () => {
+            throw new Error("must not start a chat");
+          },
+          rememberSession: async () => null,
+          submit: async () => true,
+        });
+      },
+    ];
+    for (const [index, sendOne] of cases.entries()) {
+      const store = createMemoryOneTimeStore();
+      const row = await store.create(
+        {
+          id: "sched-1",
+          target:
+            index === 2
+              ? { kind: "project", projectId: "/work/demo" }
+              : { kind: "chat", sessionId: "chat-1" },
+          prompt: "Check the build",
+          localText: LATER,
+        },
+        NOW,
+      );
+      const sent: string[] = [];
+      await tickOneTimeSchedules({
+        mode: "open",
+        now: row.runAt,
+        store,
+        send: async (schedule) => {
+          sent.push("first");
+          await sendOne(schedule);
+        },
+        tokens: ["token-a"],
+        endUndeliverable: true,
+      });
+      expect(sent).toEqual(["first"]);
+      expect((await store.list())[0]?.status).toBe("undeliverable");
+      await tickOneTimeSchedules({
+        mode: "open",
+        now: row.runAt + 20_000,
+        store,
+        send: async () => {
+          sent.push("again");
+        },
+        tokens: ["token-b"],
+        endUndeliverable: true,
+      });
+      expect(sent).toEqual(["first"]);
+      const restarted = createMemoryOneTimeStore(store.dump());
+      const launch = await tickOneTimeSchedules({
+        mode: "launch",
+        now: row.runAt + 60_000,
+        store: restarted,
+        send: async () => {
+          throw new Error("must not send");
+        },
+      });
+      const text = launch.notices.map((notice) => notice.text).join("\n");
+      expect(text).toContain("could not run");
+      expect(text).not.toContain("Hivra was closed");
+      expect((await restarted.list())[0]?.status).toBe("undeliverable");
+    }
+  });
+
+  it("does not fire a run that is days late while the app stayed open", async () => {
+    const store = createMemoryOneTimeStore();
+    const row = await scheduled(store);
+    const sent: string[] = [];
+    const soon = await tickOneTimeSchedules({
+      mode: "open",
+      now: row.runAt + 60_000,
+      store: createMemoryOneTimeStore(store.dump()),
+      send: async () => {
+        sent.push("soon");
+      },
+      tokens: ["token-soon"],
+    });
+    expect(sent).toEqual(["soon"]);
+    expect(soon.notices).toEqual([]);
+
+    const late = await tickOneTimeSchedules({
+      mode: "open",
+      now: row.runAt + 2 * 24 * 60 * 60 * 1000,
+      store,
+      send: async () => {
+        sent.push("late");
+      },
+      tokens: ["token-late"],
+    });
+    expect(sent).toEqual(["soon"]);
+    expect((await store.list())[0]?.status).toBe("missed");
+    const text = late.notices.map((notice) => notice.text).join("\n");
+    expect(text).toContain("too late");
+    expect(text).not.toContain("Hivra was closed");
+
+    const restarted = createMemoryOneTimeStore(store.dump());
+    const launch = await tickOneTimeSchedules({
+      mode: "launch",
+      now: row.runAt + 3 * 24 * 60 * 60 * 1000,
+      store: restarted,
+      send: async () => {
+        sent.push("launch");
+      },
+    });
+    const again = launch.notices.map((notice) => notice.text).join("\n");
+    expect(again).toContain("too late");
+    expect(again).not.toContain("Hivra was closed");
+    expect(sent).toEqual(["soon"]);
+    expect((await restarted.list())[0]?.status).toBe("missed");
+  });
+
+  it("does not cancel a run that is already being sent", async () => {
+    const store = createMemoryOneTimeStore();
+    const row = await scheduled(store);
+    const claimed = await store.claim(
+      "sched-1",
+      row.updatedAt,
+      "token-a",
+      row.runAt + 60_000,
+      row.runAt,
+    );
+    expect(claimed?.claim?.token).toBe("token-a");
+    const during = await store.cancel("sched-1", row.runAt + 1_000);
+    expect(during.status).toBe("scheduled");
+    expect(during.claim?.token).toBe("token-a");
+    const after = await store.cancel("sched-1", row.runAt + 60_000);
+    expect(after.status).toBe("cancelled");
+    expect(after.claim).toBeUndefined();
+  });
+
+  it("does not send again after a reload once the claim expires", async () => {
+    const store = createMemoryOneTimeStore();
+    const row = await scheduled(store);
+    let submitted = 0;
+    const send = (schedule: OneTimeSchedule) =>
+      deliverOneTimeSchedule(schedule, {
+        findChat: () => ({ id: "chat-1", busy: false }),
+        findProject: () => null,
+        createChat: async () => "nope",
+        rememberSession: async () => null,
+        markHandedOff: (current) =>
+          store.markHandedOff("sched-1", current.claim?.token ?? "", row.runAt),
+        submit: async () => {
+          submitted += 1;
+          return true;
+        },
+      }).then(() => {
+        throw new Error("reload");
+      });
+    await tickOneTimeSchedules({
+      mode: "open",
+      now: row.runAt,
+      store,
+      send,
+      tokens: ["token-a"],
+      claimHoldMs: 1_000,
+    });
+    expect(submitted).toBe(1);
+    expect((await store.list())[0]?.status).toBe("scheduled");
+    await tickOneTimeSchedules({
+      mode: "open",
+      now: row.runAt + 5_000,
+      store,
+      send,
+      tokens: ["token-b"],
+      claimHoldMs: 60_000,
+    });
+    expect(submitted).toBe(1);
+    expect((await store.list())[0]?.status).toBe("fired");
+  });
+
+  it("keeps a time when the saved wall clock no longer matches the instant", () => {
+    const runAt = NOW + 3_600_000;
+    const decoded = decodeOneTimeSchedule({
+      id: "sched-1",
+      target: { kind: "chat", sessionId: "chat-1" },
+      prompt: "Check the build",
+      runAt,
+      localText: "1999-01-01T00:00",
+      status: "scheduled",
+      createdAt: NOW,
+      updatedAt: NOW,
+    });
+    expect(decoded?.localText).toBeUndefined();
+    const text = missedScheduleNotice({ ...decoded!, status: "missed" });
+    expect(text).not.toContain("the chosen time");
+    expect(text).toMatch(/\d{4}-\d{2}-\d{2} \d{2}:\d{2}/);
   });
 
   it("tells the person a closed app will miss the run, and installs no background service", () => {
