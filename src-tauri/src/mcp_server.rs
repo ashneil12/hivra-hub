@@ -551,6 +551,12 @@ fn tools() -> Value {
     });
     // WP-144: the short reading list a fresh-eyes review sees with the plan. Added here, like gates, so the
     // literal above stays under json!'s recursion limit.
+    // WP-141: the crew role. Added here, like reading, so the literal above stays under json!'s recursion limit.
+    tools[0]["inputSchema"]["properties"]["role"] = json!({
+        "type": "string",
+        "maxLength": 40,
+        "description": "The crew role for this job: builder, reviewer or researcher. A saved role row picks the CLI, and Always use my default keeps that row."
+    });
     tools[0]["inputSchema"]["properties"]["reading"] = json!({
         "type": "array",
         "maxItems": 8,
@@ -756,7 +762,7 @@ fn secret_tools() -> Vec<Value> {
     ]
 }
 
-const DELEGATE_APP_FIELDS: [&str; 21] = [
+const DELEGATE_APP_FIELDS: [&str; 22] = [
     "intent",
     "brief",
     "title",
@@ -778,6 +784,7 @@ const DELEGATE_APP_FIELDS: [&str; 21] = [
     "checks",
     "code",
     "reading",
+    "role",
 ];
 
 /// The tools that make things with Ash (a room, a Mono, a Page, a change to the hub, a lesson for a skill): each is one
@@ -2448,6 +2455,36 @@ mod tests {
                 "code": true,
             })
         );
+    }
+
+    /// A role on delegate_task is part of the brief the app keeps. It is not an unknown field.
+    #[test]
+    fn delegate_task_role_is_forwarded() {
+        let clock = Arc::new(FakeClock::default());
+        let app = FakeApp::new(clock, |_, _, _| {
+            Ok(json!({ "taskId": "t-1", "childSessionId": "app-mono-r", "status": "running" }))
+        });
+        let listed = tools();
+        let delegate = listed
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|tool| tool["name"] == "delegate_task")
+            .unwrap();
+        assert!(delegate["inputSchema"]["properties"].get("role").is_some());
+        let (outcome, _) = run_tool(
+            &app,
+            "delegate_task",
+            json!({
+                "brief": "Fix the save bug",
+                "role": "Builder",
+                "clientRequestId": "r-role",
+            }),
+        );
+        assert!(outcome.is_ok(), "{outcome:?}");
+        let calls = app.calls.lock().unwrap();
+        assert_eq!(calls[0].0, "tasks.delegate");
+        assert_eq!(calls[0].1["role"], json!("Builder"));
     }
 
     /// WP-144: a fresh-eyes reading list is part of the brief the app keeps. It is not an unknown field.

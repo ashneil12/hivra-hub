@@ -5,8 +5,10 @@ import { importCustomModels } from "../../sessions/model/customModels";
 import {
   applyCrewLaunch,
   callerOverride,
+  crewForcesCli,
   crewLabels,
   crewPaths,
+  crewRefusal,
   type CrewLaunch,
 } from "./taskRoute";
 
@@ -169,5 +171,32 @@ describe("crew labels and paths", () => {
       "src/app/main.tsx",
       "README.md",
     ]);
+  });
+});
+
+// WP-141 HIGH 1: the route's CLI replaces the launch's own CLI when that CLI is on Never use, or the lock is on.
+describe("the route forces its CLI over a banned launch CLI", () => {
+  const codexChat: CrewLaunch = { harness: "codex" };
+  const routed = { cli: "claude", cliFrom: "default", never: ["codex"], lock: false };
+
+  it("a Codex chat with Codex on Never use runs on the route's Claude, though the route skipped nothing", () => {
+    expect(crewForcesCli(routed, codexChat)).toBe(true);
+    expect(applyCrewLaunch(routed, codexChat)).toMatchObject({ harness: "claude" });
+  });
+
+  it("a Grok chat with Grok on Never use runs on the route's CLI too", () => {
+    const grokChat: CrewLaunch = { harness: "grok" };
+    expect(applyCrewLaunch({ ...routed, never: ["grok"] }, grokChat)).toMatchObject({ harness: "claude" });
+  });
+
+  it("under the lock, a launch that is not the route's CLI runs on the route's CLI", () => {
+    const locked = { ...routed, never: [], lock: true };
+    expect(applyCrewLaunch(locked, codexChat)).toMatchObject({ harness: "claude" });
+    expect(applyCrewLaunch(locked, { harness: "claude" })).toMatchObject({ harness: "claude" });
+  });
+
+  it("refuses with the reason when a banned chat CLI has no route CLI to take its place", () => {
+    const none = { cli: null, cliFrom: "none", never: ["codex"], lock: false, skipped: [] };
+    expect(crewRefusal(none, codexChat)).toBe("No CLI can take this work. Codex is on Never use, so it was not used.");
   });
 });
