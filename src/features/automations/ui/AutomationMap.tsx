@@ -90,7 +90,8 @@ function MapNodeView({
         open ? (
           <button
             type="button"
-            aria-label={node.label}
+            aria-label={node.disabled ? `${node.label}, off` : node.label}
+            aria-disabled={node.disabled ? true : undefined}
             title={node.label}
             onClick={open}
             className="h-full w-full truncate rounded-md border border-stroke bg-content/5 px-2 text-left text-[12px] text-content"

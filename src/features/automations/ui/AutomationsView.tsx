@@ -77,6 +77,8 @@ import { AutomationMap } from "./AutomationMap";
 import { AutomationRuns } from "./AutomationRuns";
 import {
   AutomationScreenTabs,
+  automationPanelId,
+  automationTabId,
   type AutomationScreen,
 } from "./AutomationScreenTabs";
 import {
@@ -400,14 +402,33 @@ function AutomationsContent({
     <div className="flex min-h-0 min-w-0 flex-1 flex-col text-content">
       <AutomationScreenTabs screen={screen} onScreen={setScreen} />
       {screen === "runs" ? (
-        <AutomationRuns
-          automations={scoped}
-          onOpenSession={onOpenSession}
-        />
+        <div
+          id={automationPanelId("runs")}
+          role="tabpanel"
+          aria-labelledby={automationTabId("runs")}
+          className="flex min-h-0 min-w-0 flex-1 flex-col"
+        >
+          <AutomationRuns
+            automations={scoped}
+            onOpenSession={onOpenSession}
+          />
+        </div>
       ) : screen === "map" ? (
-        <AutomationMap automations={scoped} onOpen={openFromMap} />
+        <div
+          id={automationPanelId("map")}
+          role="tabpanel"
+          aria-labelledby={automationTabId("map")}
+          className="flex min-h-0 min-w-0 flex-1 flex-col"
+        >
+          <AutomationMap automations={scoped} onOpen={openFromMap} />
+        </div>
       ) : (
-    <div className="flex min-h-0 min-w-0 flex-1 text-content">
+    <div
+      id={automationPanelId("list")}
+      role="tabpanel"
+      aria-labelledby={automationTabId("list")}
+      className="flex min-h-0 min-w-0 flex-1 text-content"
+    >
       <aside className="flex w-[280px] shrink-0 flex-col border-r border-stroke">
         <div className="flex h-9 shrink-0 items-center gap-1 border-b border-stroke px-2">
           <label className="relative flex h-7 min-w-0 flex-1 items-center">
