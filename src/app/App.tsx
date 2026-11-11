@@ -8250,10 +8250,11 @@ function Workspace({
   }, []);
 
   const onModelChange = useCallback(
-    (sessionId: string, harness: HarnessId, model: string) => {
+    (sessionId: string, harness: HarnessId, model: string): boolean => {
       const current = sessionsRef.current.find((s) => s.id === sessionId);
-      if (!current) return;
-      if (isPreparingHandoff(current)) return;
+      // WP-182: false means this session did not take the model, so a card must not show it.
+      if (!current) return false;
+      if (isPreparingHandoff(current)) return false;
       const resolved = resolveModel(harness, model);
       // Leaving fx resets the mode: fx's Full access is its only offer and must not carry to another CLI (WP-175).
       const leavesFx = current.harness === "fx" && resolved.harness !== "fx";
@@ -8303,9 +8304,11 @@ function Workspace({
         sessionId,
         { harness, model: resolved.id, modelSettings },
       );
-      if (switched.kind === "ok" && switched.outcome.forget) {
+      if (switched.kind !== "ok") return false;
+      if (switched.outcome.forget) {
         void forgetHarnessSession(switched.outcome.forget, sessionId);
       }
+      return true;
     },
     [],
   );
