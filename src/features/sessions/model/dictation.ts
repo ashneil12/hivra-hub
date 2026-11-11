@@ -282,6 +282,11 @@ export interface DictationPort {
   start(): Promise<number>;
   stop(session: number): Promise<void>;
   subscribe(onChunk: (chunk: DictationChunk) => void): () => void;
+  /**
+   * The Hub's start token, known before the microphone is ready.
+   * Absent when the port cannot tell the controller that early.
+   */
+  watchStart?(onToken: (token: number) => void): () => void;
 }
 
 export type DictationController = {
@@ -315,6 +320,10 @@ export function createDictationController(deps: {
   let arming = false;
   const buffer: DictationChunk[] = [];
   let disposed = false;
+  /** The Hub's id for the start that is in flight, known before the microphone is ready. */
+  let startToken: number | null = null;
+  /** The generation whose start is still in flight. A token for any other generation is stopped. */
+  let inflight = 0;
   /** The draft as the controller last left it. Text that differs from this was written from outside dictation. */
   const draftChanged = () => deps.getText() !== view.text;
 
@@ -333,6 +342,19 @@ export function createDictationController(deps: {
       void deps.port.stop(prev.session).catch(() => {});
     }
   };
+
+  const unwatch =
+    deps.port.watchStart?.((token) => {
+      if (typeof token !== "number" || !Number.isFinite(token) || token <= 0) return;
+      const pending =
+        inflight === generation &&
+        (view.phase === "authorizing" || view.phase === "listening" || view.phase === "settling");
+      if (pending) {
+        startToken = token;
+        return;
+      }
+      void deps.port.stop(token).catch(() => {});
+    }) ?? (() => {});
 
   const unsubscribe = deps.port.subscribe((chunk) => {
     if (disposed) return;
@@ -360,6 +382,8 @@ export function createDictationController(deps: {
 
   const begin = () => {
     const attempt = ++generation;
+    inflight = attempt;
+    startToken = null;
     arming = true;
     buffer.length = 0;
     publish({ type: "continue" });
@@ -414,21 +438,28 @@ export function createDictationController(deps: {
     },
     seal() {
       if (view.phase === "idle" && view.session == null && !arming) return;
+      const token = view.session == null ? startToken : null;
+      startToken = null;
       generation += 1;
       arming = false;
       buffer.length = 0;
       publish({ type: "seal" });
+      if (token != null) void deps.port.stop(token).catch(() => {});
     },
     onTyped(text: string) {
       publish({ type: "typed", text });
     },
     cancel() {
       if (disposed || view.phase !== "authorizing") return;
-      // A start still in flight is stopped when it answers, because its attempt is no longer current.
+      // The token is known before the prompt ends, so the stop reaches the helper while it is still asking.
+      // A start that answers later is stopped again, because its attempt is no longer current.
+      const token = startToken;
+      startToken = null;
       generation += 1;
       arming = false;
       buffer.length = 0;
       publish({ type: "cancel" });
+      if (token != null) void deps.port.stop(token).catch(() => {});
     },
     get pending() {
       return buffer.length;
@@ -438,9 +469,13 @@ export function createDictationController(deps: {
       generation += 1;
       arming = false;
       const session = view.session;
+      const token = session == null ? startToken : null;
+      startToken = null;
       view = { ...view, phase: "idle", session: null, provisional: null };
       unsubscribe();
+      unwatch();
       if (session != null) void deps.port.stop(session).catch(() => {});
+      else if (token != null) void deps.port.stop(token).catch(() => {});
     },
   };
 }

@@ -112,6 +112,32 @@ describe("the desktop dictation port", () => {
 
   // MED (#216 follow-up): the composer subscribes on every mount. A window lookup that throws must not take the
   // composer down with it; dictation just hears nothing.
+  it("a start token reaches this window and a chunk does not", async () => {
+    const tokens: number[] = [];
+    bus.current = "main";
+    const stop = tauriDictationPort.watchStart((token) => tokens.push(token));
+    await flush();
+    bus.emitTo("other", { token: 9 });
+    bus.emitTo("main", { session: 1, text: "hello", finished: false, error: false });
+    bus.emitTo("main", { token: 4 });
+    bus.emitTo("main", { token: 0 });
+    bus.emitTo("main", { token: -2 });
+    bus.emitTo("main", {});
+    expect(tokens).toEqual([4]);
+    stop();
+    bus.emitTo("main", { token: 5 });
+    expect(tokens).toEqual([4]);
+  });
+
+  it("a window lookup that throws does not throw out of watchStart", () => {
+    bus.noWindow = true;
+    let stop: (() => void) | undefined;
+    expect(() => {
+      stop = tauriDictationPort.watchStart(() => {});
+    }).not.toThrow();
+    expect(() => stop?.()).not.toThrow();
+  });
+
   it("a window lookup that throws does not throw out of subscribe", () => {
     bus.noWindow = true;
     let stop: (() => void) | undefined;
