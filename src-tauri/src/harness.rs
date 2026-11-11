@@ -1005,6 +1005,19 @@ pub fn harness_resolve_antigravity() -> Result<AntigravityBinary, String> {
 }
 
 /// Bind an ephemeral loopback port for `opencode serve`.
+/// The env every Claude Code session is launched with (round 11). Claude Code keeps its Bash shell in the launch folder after
+/// each call, so a `cd` can't move the folder a relative search, or a relative shell word, is judged in. The launch folder
+/// is the chat folder the autopilot checks (worktree or chat folder).
+pub(crate) const CLAUDE_LAUNCH_ENV: (&str, &str) =
+    ("CLAUDE_BASH_MAINTAIN_PROJECT_WORKING_DIR", "1");
+
+/// The env a launch gets for its provider (round 11): Claude's only, decided by the account the app launches with.
+pub(crate) fn launch_env_for(
+    account: Option<&HarnessAccount>,
+) -> Option<(&'static str, &'static str)> {
+    (account?.provider == "claude").then_some(CLAUDE_LAUNCH_ENV)
+}
+
 #[tauri::command]
 pub fn harness_free_port() -> Result<u16, String> {
     TcpListener::bind("127.0.0.1:0")
@@ -1164,6 +1177,9 @@ pub fn harness_spawn(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     prepare_child(&mut cmd, &command);
+    if let Some((key, value)) = launch_env_for(account.as_ref()) {
+        cmd.env(key, value);
+    }
     apply_provider_account(&app, &mut cmd, account.as_ref())?;
     // "Other models": a Claude Code session on a non-Claude model goes through the hub's local router with the
     // model's own key. Claude models (and Ash's subscription login) are never routed: may_route refuses them.
@@ -3457,6 +3473,8 @@ fn apply_gui_path(cmd: &mut Command) {
 pub(crate) fn apply_gui_env(cmd: &mut Command) {
     apply_gui_path(cmd);
     crate::hide_window_console(cmd);
+    // Round 8 (LOW): an agent's git, and any git a launched tool runs, reads a bare repository only when it is named.
+    crate::fs::git_safe_env(cmd);
     if let Some(id) = passwd_identity() {
         if std::env::var_os("HOME").is_none() {
             cmd.env("HOME", &id.home);
@@ -3633,6 +3651,30 @@ fn command_basename(command: &str) -> &str {
         .file_stem()
         .and_then(|name| name.to_str())
         .unwrap_or(command)
+}
+
+#[cfg(test)]
+mod launch_env_tests {
+    use super::*;
+
+    /// WP-101 round 11: a Claude launch carries the Bash-folder variable; another provider's launch does not.
+    #[test]
+    fn a_claude_launch_carries_the_bash_folder_variable_and_others_do_not() {
+        let claude = HarnessAccount {
+            provider: "claude".into(),
+            id: "default".into(),
+        };
+        let codex = HarnessAccount {
+            provider: "codex".into(),
+            id: "default".into(),
+        };
+        assert_eq!(
+            launch_env_for(Some(&claude)),
+            Some(("CLAUDE_BASH_MAINTAIN_PROJECT_WORKING_DIR", "1"))
+        );
+        assert_eq!(launch_env_for(Some(&codex)), None);
+        assert_eq!(launch_env_for(None), None);
+    }
 }
 
 #[cfg(unix)]

@@ -87,3 +87,20 @@ it("the held-builders line opens Settings > Worktrees > Clean up, and nothing el
     label: "Clean up worktrees",
   });
 });
+
+it("a spend pause opens Settings > Crew on the spend limit, and does not open Clean up", () => {
+  const line = builderHoldLine({
+    id: "builders-spend",
+    text: "Spend limit reached for hivra: $50 of $50 this month. Raise it, or wait for the month to reset.",
+    action: "Raise limit",
+  });
+  expect(targetFor(line)).toEqual({ kind: "settings", section: "crew", anchor: "spend-limit" });
+  const used = hands();
+  applyHomeOpen(targetFor(line), used);
+  expect(used.openSettings).toHaveBeenCalledExactlyOnceWith("crew", "spend-limit");
+  expect(used.openTeam).not.toHaveBeenCalled();
+  expect(SETTINGS_INDEX.find((entry) => entry.id === "spend-limit")).toMatchObject({
+    section: "crew",
+    label: "Spend limit",
+  });
+});

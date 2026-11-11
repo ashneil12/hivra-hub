@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Hivra Home</title>
+<!-- Mockup with example data (WP-210..214, docs/hivra/UX.md). Not app code. -->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0;background:#161616}
+a{color:#8ab8f5;text-decoration:none}a:hover{color:#b5d3fa}
+.app{width:100%;min-height:900px;display:flex;flex-wrap:wrap;background:#161616;color:#ececec;font-family:Inter,system-ui,sans-serif;font-size:13px;line-height:1.45}
+.nav{display:flex;flex:0 0 332px;min-height:900px}
+.strip{width:72px;background:#111111;border-right:1px solid #262626;display:flex;flex-direction:column;align-items:center;padding:14px 0;gap:6px;box-sizing:border-box}
+.tile{position:relative;display:flex;flex-direction:column;align-items:center;gap:4px;width:60px;padding:6px 0;border-radius:10px;color:#bdbdbd;font-size:10px}
+.tile.on{background:#262626;color:#ffffff}
+.sq{width:36px;height:36px;border-radius:9px;display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:600;color:#ffffff}
+.badge{position:absolute;top:2px;right:6px;min-width:16px;height:16px;padding:0 4px;box-sizing:border-box;border-radius:8px;background:#e5484d;color:#ffffff;font-size:10px;font-weight:600;display:flex;align-items:center;justify-content:center}
+.busy{position:absolute;top:34px;right:10px;width:8px;height:8px;border-radius:4px;background:#4a9ff5;border:2px solid #111111}
+.side{flex:1 1 auto;background:#1b1b1b;border-right:1px solid #262626;padding:14px 10px;box-sizing:border-box;display:flex;flex-direction:column;gap:2px}
+.search{display:flex;align-items:center;gap:8px;height:34px;padding:0 10px;border:1px solid #2c2c2c;border-radius:8px;color:#8f8f8f;margin-bottom:10px}
+.item{display:flex;align-items:center;gap:10px;height:34px;padding:0 10px;border-radius:7px;color:#d6d6d6}
+.item.on{background:#262626;color:#ffffff}
+.count{margin-left:auto;min-width:20px;height:18px;padding:0 6px;box-sizing:border-box;border-radius:9px;background:#e5484d;color:#ffffff;font-size:11px;font-weight:600;display:flex;align-items:center;justify-content:center}
+.label{font-size:11px;font-weight:600;letter-spacing:.04em;text-transform:uppercase;color:#8f8f8f;padding:16px 10px 6px}
+.mono{display:flex;align-items:center;gap:10px;padding:6px 10px;border-radius:7px}
+.av{width:28px;height:28px;border-radius:14px;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:600;color:#111111;flex:0 0 28px}
+.who{display:flex;flex-direction:column;min-width:0}
+.who b{font-weight:500;color:#ececec}
+.who span{font-size:12px;color:#9a9a9a;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.main{flex:999 1 560px;min-width:0;display:flex;flex-direction:column}
+.wrap{max-width:860px;width:100%;margin:0 auto;padding:36px 32px 24px;box-sizing:border-box;display:flex;flex-direction:column;gap:22px}
+.head{display:flex;align-items:baseline;gap:12px}
+.head h1{margin:0;font-size:22px;font-weight:600}
+.muted{color:#9a9a9a}
+.ghost{margin-left:auto;font-size:12px;color:#9a9a9a;border:1px solid #2c2c2c;border-radius:7px;padding:5px 10px;background:transparent;font-family:inherit}
+.card{border:1px solid #2a2a2a;border-radius:12px;background:#1b1b1b}
+.chat{padding:16px 18px;display:flex;flex-direction:column;gap:12px}
+.you{align-self:flex-end;background:#2a2a2a;border-radius:12px;padding:8px 12px;max-width:70%}
+.cos{display:flex;gap:10px;align-items:flex-start}
+.cos p{margin:0;max-width:640px}
+.btns{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}
+.btn{font-family:inherit;font-size:12px;font-weight:500;border-radius:7px;padding:6px 12px;border:1px solid #333333;background:#232323;color:#ececec;min-height:30px}
+.btn.primary{background:#4a9ff5;border-color:#4a9ff5;color:#0b1a2b}
+.compose{display:flex;align-items:center;gap:10px;border-top:1px solid #2a2a2a;padding:10px 12px 10px 18px}
+.compose input{flex:1;min-width:0;background:transparent;border:0;color:#ececec;font-family:inherit;font-size:14px;outline:none}
+.send{width:30px;height:30px;border-radius:8px;background:#4a9ff5;border:0;display:flex;align-items:center;justify-content:center}
+.sec{display:flex;flex-direction:column}
+.sechead{display:flex;align-items:center;gap:8px;padding:12px 16px}
+.sechead h2{margin:0;font-size:13px;font-weight:600}
+.row{display:flex;align-items:center;gap:12px;padding:10px 16px;border-top:1px solid #262626;flex-wrap:wrap}
+.tag{font-size:11px;font-weight:500;color:#bdbdbd;background:#262626;border-radius:5px;padding:2px 7px;flex:0 0 auto}
+.txt{flex:1 1 260px;min-width:0}
+.dot{width:8px;height:8px;border-radius:4px;flex:0 0 8px}
+.time{font-size:12px;color:#8f8f8f;flex:0 0 auto}
+.foot{margin-top:auto;display:flex;align-items:center;gap:16px;border-top:1px solid #262626;padding:8px 16px;font-size:12px;color:#9a9a9a;flex-wrap:wrap}
+</style>
+</head>
+<body>
+<div class="app">
+  <div class="nav">
+    <nav class="strip" aria-label="Places">
+      <a class="tile on" href="Main.html"><span class="sq" style="background:#3a3a3a">H</span>Home</a>
+      <div style="width:32px;height:1px;background:#2c2c2c;margin:4px 0"></div>
+      <a class="tile" href="Project.html"><span class="sq" style="background:#5b4bd6">EX</span>EXO<span class="badge">1</span><span class="busy"></span></a>
+      <a class="tile" href="Project.html"><span class="sq" style="background:#d9822b">Hi</span>Hivra<span class="badge">2</span><span class="busy"></span></a>
+      <a class="tile" href="Project.html"><span class="sq" style="background:#2f9e74">Ni</span>Nibbii<span class="badge">1</span><span class="busy"></span></a>
+      <a class="tile" href="Project.html"><span class="sq" style="background:#4a6fa5">MH</span>MonoCode Hub</a>
+      <a class="tile" href="Project.html"><span class="sq" style="background:#b54a6b">RC</span>Recall Checker</a>
+      <a class="tile" href="Project.html"><span class="sq" style="background:#8a6d3b">BD</span>Bark Desk</a>
+      <a class="tile" href="Project.html"><span class="sq" style="background:#c0453a">ST</span>SafeTube<span class="badge">1</span></a>
+      <button class="tile" style="background:transparent;border:0;font-family:inherit" aria-label="Add a project"><span class="sq" style="background:transparent;border:1px dashed #444444;color:#9a9a9a">+</span>Add</button>
+      <a class="tile" style="margin-top:auto" href="Model.html" aria-label="Settings"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#9a9a9a" stroke-width="1.8" aria-hidden="true"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"></path></svg>Settings</a>
+    </nav>
+    <aside class="side" aria-label="Home">
+      <div class="search"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#8f8f8f" stroke-width="2" aria-hidden="true"><circle cx="11" cy="11" r="7"></circle><path d="m20 20-3.5-3.5"></path></svg>Search everything<span style="margin-left:auto;font-size:11px">⌘K</span></div>
+      <a class="item" href="NeedsYou.html"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#e5484d" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="9"></circle><path d="M12 7v6M12 16.5v.5"></path></svg>Needs you<span class="count">5</span></a>
+      <div class="item"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#bdbdbd" stroke-width="1.8" aria-hidden="true"><path d="M9 6h11M9 12h11M9 18h11M4 6h.01M4 12h.01M4 18h.01"></path></svg>Tasks</div>
+      <div class="item"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#bdbdbd" stroke-width="1.8" aria-hidden="true"><path d="M6 3h9l4 4v14H6z"></path><path d="M9 12h7M9 16h5"></path></svg>Notes</div>
+      <div class="item"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#bdbdbd" stroke-width="1.8" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"></rect><path d="M3 9h18M9 9v11"></path></svg>Pages</div>
+      <div class="item"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#bdbdbd" stroke-width="1.8" aria-hidden="true"><path d="M13 2 4 14h7l-1 8 9-12h-7z"></path></svg>Automations</div>
+      <div class="label">Monos</div>
+      <div class="mono"><span class="av" style="background:#f2c14e">CS</span><span class="who"><b>Chief of Staff</b><span>Answers you here on Home</span></span></div>
+      <div class="mono"><span class="av" style="background:#8bd3a8">PM</span><span class="who"><b>Projects Manager</b><span>Checking EXO's plan</span></span></div>
+      <div class="mono"><span class="av" style="background:#9fb7ff">fr</span><span class="who"><b>frank</b><span>Working in Nibbii</span></span></div>
+      <div class="mono"><span class="av" style="background:#d8b4fe">Cr</span><span class="who"><b>Critiquito</b><span>Reviewing Hivra's screens</span></span></div>
+      <div class="mono"><span class="av" style="background:#c9c9c9">Al</span><span class="who"><b>Alfred</b><span>Free</span></span></div>
+      <div class="label">Groups</div>
+      <div class="mono"><span class="av" style="background:#3a3a3a;color:#ececec">LT</span><span class="who"><b>Leadership team</b><span>Chief of Staff, Projects Manager, frank</span></span></div>
+    </aside>
+  </div>
+  <main class="main">
+    <div class="wrap">
+      <div class="head"><h1>Home</h1><span class="muted">Wednesday 11 November</span><button class="ghost">Customize</button></div>
+
+      <section class="card" aria-label="Chief of Staff">
+        <div class="chat">
+          <div class="you">what's blocking Hivra?</div>
+          <div class="cos">
+            <span class="av" style="background:#f2c14e">CS</span>
+            <div>
+              <p><b style="font-weight:600">Chief of Staff</b> <span class="muted" style="font-size:12px">· read all 7 projects</span></p>
+              <p>Two pull requests. #201 still fails the Windows build, and the chat move (#214) is in its second round of fixes. Everything else is moving. Want me to have Hivra's coding team put #201 first?</p>
+              <div class="btns"><button class="btn primary">Yes, do that</button><button class="btn">Not now</button><a class="btn" style="border-color:transparent;background:transparent" href="Project.html">Open full chat</a></div>
+            </div>
+          </div>
+        </div>
+        <div class="compose">
+          <input aria-label="Message your Chief of Staff" placeholder="Ask anything, or hand work to any project">
+          <button class="send" aria-label="Send"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#0b1a2b" stroke-width="2.4" aria-hidden="true"><path d="M12 19V5M5 12l7-7 7 7"></path></svg></button>
+        </div>
+      </section>
+
+      <section class="card sec" aria-label="Needs you">
+        <div class="sechead"><span class="dot" style="background:#e5484d"></span><h2>Needs you</h2><span class="muted">5</span><a href="NeedsYou.html" style="margin-left:auto;font-size:12px">See all</a></div>
+        <div class="row"><span class="tag">Hivra</span><span class="txt"><b style="font-weight:500;color:#ff8a8d">Stopped.</b> The coding team tried the Windows build 3 times and gave up.</span><a class="btn" href="Project.html">Open chat</a></div>
+        <div class="row"><span class="tag">EXO</span><span class="txt">Ship the new hit-flash effect to the test build?</span><button class="btn">Yes</button><button class="btn">Not yet</button></div>
+        <div class="row"><span class="tag">Hivra</span><span class="txt">#217 Spend limits is green and reviewed.</span><button class="btn primary">Merge</button></div>
+        <div class="row"><span class="tag">Nibbii</span><span class="txt">frank wants to run <code style="font-size:12px">npm publish</code>.</span><button class="btn">Allow</button><button class="btn">Deny</button></div>
+        <div class="row"><span class="tag">SafeTube</span><span class="txt">The page "Weekly views" asks to read your YouTube stats.</span><button class="btn">Review</button></div>
+      </section>
+
+      <section class="card sec" aria-label="Working now">
+        <div class="sechead"><span class="dot" style="background:#4a9ff5"></span><h2>Working now</h2><span class="muted">6 workers</span></div>
+        <div class="row"><span class="tag">Hivra</span><span class="txt">4 workers: chat move fixes, PR watch, commit guard, crew locks</span><span class="time">since 03:40</span></div>
+        <div class="row"><span class="tag">EXO</span><span class="txt">1 worker: hit-flash effect pass</span><span class="time">since 02:15</span></div>
+        <div class="row"><span class="tag">Nibbii</span><span class="txt">frank: onboarding copy, second draft</span><span class="time">since 04:05</span></div>
+      </section>
+
+      <section class="card sec" aria-label="Done today">
+        <div class="sechead"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#7fd1a4" stroke-width="2.4" aria-hidden="true"><path d="M5 12l5 5L20 7"></path></svg><h2>Done today</h2><span class="muted">3</span></div>
+        <div class="row"><span class="tag">Hivra</span><span class="txt">Merged #230 Delivery check answers</span><span class="time">04:30</span></div>
+        <div class="row"><span class="tag">Hivra</span><span class="txt">Merged #204 More agents</span><span class="time">03:55</span></div>
+        <div class="row"><span class="tag">Recall Checker</span><span class="txt">Finished: CSV import</span><span class="time">01:12</span></div>
+      </section>
+    </div>
+    <div class="foot"><span>Claude: 72% of this week · 39% of 5 hours</span><span>Grok: in use</span><span style="margin-left:auto">Terminal</span></div>
+  </main>
+</div>
+</body>
+</html>

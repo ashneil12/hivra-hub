@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Needs you</title>
+<!-- Mockup with example data (WP-210..214, docs/hivra/UX.md). Not app code. -->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0;background:#161616}
+a{color:#8ab8f5;text-decoration:none}a:hover{color:#b5d3fa}
+.app{width:100%;min-height:900px;display:flex;flex-wrap:wrap;background:#161616;color:#ececec;font-family:Inter,system-ui,sans-serif;font-size:13px;line-height:1.45}
+.nav{display:flex;flex:0 0 332px;min-height:900px}
+.strip{width:72px;background:#111111;border-right:1px solid #262626;display:flex;flex-direction:column;align-items:center;padding:14px 0;gap:6px;box-sizing:border-box}
+.tile{position:relative;display:flex;flex-direction:column;align-items:center;gap:4px;width:60px;padding:6px 0;border-radius:10px;color:#bdbdbd;font-size:10px}
+.tile.on{background:#262626;color:#ffffff}
+.sq{width:36px;height:36px;border-radius:9px;display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:600;color:#ffffff}
+.badge{position:absolute;top:2px;right:6px;min-width:16px;height:16px;padding:0 4px;box-sizing:border-box;border-radius:8px;background:#e5484d;color:#ffffff;font-size:10px;font-weight:600;display:flex;align-items:center;justify-content:center}
+.busy{position:absolute;top:34px;right:10px;width:8px;height:8px;border-radius:4px;background:#4a9ff5;border:2px solid #111111}
+.side{flex:1 1 auto;background:#1b1b1b;border-right:1px solid #262626;padding:14px 10px;box-sizing:border-box;display:flex;flex-direction:column;gap:2px}
+.search{display:flex;align-items:center;gap:8px;height:34px;padding:0 10px;border:1px solid #2c2c2c;border-radius:8px;color:#8f8f8f;margin-bottom:10px}
+.item{display:flex;align-items:center;gap:10px;height:34px;padding:0 10px;border-radius:7px;color:#d6d6d6}
+.item.on{background:#262626;color:#ffffff}
+.count{margin-left:auto;min-width:20px;height:18px;padding:0 6px;box-sizing:border-box;border-radius:9px;background:#e5484d;color:#ffffff;font-size:11px;font-weight:600;display:flex;align-items:center;justify-content:center}
+.label{font-size:11px;font-weight:600;letter-spacing:.04em;text-transform:uppercase;color:#8f8f8f;padding:16px 10px 6px}
+.mono{display:flex;align-items:center;gap:10px;padding:6px 10px;border-radius:7px}
+.av{width:28px;height:28px;border-radius:14px;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:600;color:#111111;flex:0 0 28px}
+.who{display:flex;flex-direction:column;min-width:0}
+.who b{font-weight:500;color:#ececec}
+.who span{font-size:12px;color:#9a9a9a;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.main{flex:999 1 560px;min-width:0}
+.wrap{max-width:900px;width:100%;margin:0 auto;padding:36px 32px;box-sizing:border-box;display:flex;flex-direction:column;gap:18px}
+.head{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap}
+.head h1{margin:0;font-size:22px;font-weight:600}
+.muted{color:#9a9a9a}
+.filters{display:flex;gap:6px;flex-wrap:wrap}
+.f{font-family:inherit;font-size:12px;font-weight:500;border-radius:14px;padding:5px 12px;border:1px solid #2c2c2c;background:transparent;color:#bdbdbd}
+.f.on{background:#ececec;color:#161616;border-color:#ececec}
+.group{border:1px solid #2a2a2a;border-radius:12px;background:#1b1b1b}
+.ghead{display:flex;align-items:center;gap:10px;padding:12px 16px}
+.ghead h2{margin:0;font-size:13px;font-weight:600}
+.row{display:flex;align-items:flex-start;gap:12px;padding:12px 16px;border-top:1px solid #262626;flex-wrap:wrap}
+.kind{font-size:11px;font-weight:600;border-radius:5px;padding:2px 7px;flex:0 0 auto;margin-top:1px}
+.body{flex:1 1 300px;min-width:0;display:flex;flex-direction:column;gap:2px}
+.small{font-size:12px;color:#9a9a9a}
+.btns{display:flex;gap:8px;flex-wrap:wrap}
+.btn{font-family:inherit;font-size:12px;font-weight:500;border-radius:7px;padding:6px 12px;border:1px solid #333333;background:#232323;color:#ececec;min-height:30px}
+.btn.primary{background:#4a9ff5;border-color:#4a9ff5;color:#0b1a2b}
+</style>
+</head>
+<body>
+<div class="app">
+  <div class="nav">
+    <nav class="strip" aria-label="Places">
+      <a class="tile on" href="Main.html"><span class="sq" style="background:#3a3a3a">H</span>Home</a>
+      <div style="width:32px;height:1px;background:#2c2c2c;margin:4px 0"></div>
+      <a class="tile" href="Project.html"><span class="sq" style="background:#5b4bd6">EX</span>EXO<span class="badge">1</span><span class="busy"></span></a>
+      <a class="tile" href="Project.html"><span class="sq" style="background:#d9822b">Hi</span>Hivra<span class="badge">2</span><span class="busy"></span></a>
+      <a class="tile" href="Project.html"><span class="sq" style="background:#2f9e74">Ni</span>Nibbii<span class="badge">1</span><span class="busy"></span></a>
+      <a class="tile" href="Project.html"><span class="sq" style="background:#4a6fa5">MH</span>MonoCode Hub</a>
+      <a class="tile" href="Project.html"><span class="sq" style="background:#b54a6b">RC</span>Recall Checker</a>
+      <a class="tile" href="Project.html"><span class="sq" style="background:#8a6d3b">BD</span>Bark Desk</a>
+      <a class="tile" href="Project.html"><span class="sq" style="background:#c0453a">ST</span>SafeTube<span class="badge">1</span></a>
+      <button class="tile" style="background:transparent;border:0;font-family:inherit" aria-label="Add a project"><span class="sq" style="background:transparent;border:1px dashed #444444;color:#9a9a9a">+</span>Add</button>
+      <a class="tile" style="margin-top:auto" href="Model.html" aria-label="Settings"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#9a9a9a" stroke-width="1.8" aria-hidden="true"><circle cx="12" cy="12" r="3"></circle><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M4.9 19.1 7 17M17 7l2.1-2.1"></path></svg>Settings</a>
+    </nav>
+    <aside class="side" aria-label="Home">
+      <div class="search"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#8f8f8f" stroke-width="2" aria-hidden="true"><circle cx="11" cy="11" r="7"></circle><path d="m20 20-3.5-3.5"></path></svg>Search everything<span style="margin-left:auto;font-size:11px">⌘K</span></div>
+      <a class="item on" href="NeedsYou.html"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#e5484d" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="9"></circle><path d="M12 7v6M12 16.5v.5"></path></svg>Needs you<span class="count">5</span></a>
+      <div class="item"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#bdbdbd" stroke-width="1.8" aria-hidden="true"><path d="M9 6h11M9 12h11M9 18h11M4 6h.01M4 12h.01M4 18h.01"></path></svg>Tasks</div>
+      <div class="item"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#bdbdbd" stroke-width="1.8" aria-hidden="true"><path d="M6 3h9l4 4v14H6z"></path><path d="M9 12h7M9 16h5"></path></svg>Notes</div>
+      <div class="item"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#bdbdbd" stroke-width="1.8" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"></rect><path d="M3 9h18M9 9v11"></path></svg>Pages</div>
+      <div class="item"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#bdbdbd" stroke-width="1.8" aria-hidden="true"><path d="M13 2 4 14h7l-1 8 9-12h-7z"></path></svg>Automations</div>
+      <div class="label">Monos</div>
+      <div class="mono"><span class="av" style="background:#f2c14e">CS</span><span class="who"><b>Chief of Staff</b><span>Answers you here on Home</span></span></div>
+      <div class="mono"><span class="av" style="background:#8bd3a8">PM</span><span class="who"><b>Projects Manager</b><span>Checking EXO's plan</span></span></div>
+      <div class="mono"><span class="av" style="background:#9fb7ff">fr</span><span class="who"><b>frank</b><span style="color:#ff8a8d">Needs you: wants to publish</span></span></div>
+      <div class="mono"><span class="av" style="background:#d8b4fe">Cr</span><span class="who"><b>Critiquito</b><span>Reviewing Hivra's screens</span></span></div>
+      <div class="mono"><span class="av" style="background:#c9c9c9">Al</span><span class="who"><b>Alfred</b><span>Free</span></span></div>
+    </aside>
+  </div>
+  <main class="main">
+    <div class="wrap">
+      <div class="head"><h1>Needs you</h1><span class="muted">5 things, from every project</span></div>
+      <p class="muted" style="margin:0">Every number you see on the rail, in the sidebar, on Home and in a project counts this same list. Answer here or in the chat it came from: it clears everywhere at once.</p>
+      <div class="filters"><button class="f on">All 5</button><button class="f">Stopped 1</button><button class="f">Questions 1</button><button class="f">Approvals 2</button><button class="f">Ready to merge 1</button></div>
+
+      <section class="group" aria-label="Hivra">
+        <div class="ghead"><span class="sq" style="background:#d9822b;width:22px;height:22px;border-radius:6px;font-size:10px">Hi</span><h2>Hivra</h2><span class="muted">2</span></div>
+        <div class="row"><span class="kind" style="background:#3a1c1e;color:#ff8a8d">Stopped</span><div class="body"><span>The Windows build fix stopped after 3 tries. The failing test reads a short Windows folder name.</span><span class="small">Coding team · 4 min ago</span></div><div class="btns"><a class="btn primary" href="Project.html">Open chat</a><button class="btn">Try a new plan</button></div></div>
+        <div class="row"><span class="kind" style="background:#1d2a22;color:#7fd1a4">Ready to merge</span><div class="body"><span>#217 Spend limits: checks green, review passed.</span><span class="small">Coding team · 9 min ago</span></div><div class="btns"><button class="btn primary">Merge</button><button class="btn">Not yet</button></div></div>
+      </section>
+
+      <section class="group" aria-label="EXO">
+        <div class="ghead"><span class="sq" style="background:#5b4bd6;width:22px;height:22px;border-radius:6px;font-size:10px">EX</span><h2>EXO</h2><span class="muted">1</span></div>
+        <div class="row"><span class="kind" style="background:#2b2540;color:#c4b5fd">Question</span><div class="body"><span>Ship the new hit-flash effect to the test build?</span><span class="small">Coding team · 20 min ago</span></div><div class="btns"><button class="btn primary">Yes</button><button class="btn">Not yet</button><button class="btn">Reply</button></div></div>
+      </section>
+
+      <section class="group" aria-label="Nibbii">
+        <div class="ghead"><span class="sq" style="background:#2f9e74;width:22px;height:22px;border-radius:6px;font-size:10px">Ni</span><h2>Nibbii</h2><span class="muted">1</span></div>
+        <div class="row"><span class="kind" style="background:#3a2f18;color:#f2c14e">Approval</span><div class="body"><span>frank wants to run <code style="font-size:12px">npm publish</code> in nibbii-web.</span><span class="small">frank · 2 min ago</span></div><div class="btns"><button class="btn">Allow once</button><button class="btn">Deny</button></div></div>
+      </section>
+
+      <section class="group" aria-label="SafeTube">
+        <div class="ghead"><span class="sq" style="background:#c0453a;width:22px;height:22px;border-radius:6px;font-size:10px">ST</span><h2>SafeTube</h2><span class="muted">1</span></div>
+        <div class="row"><span class="kind" style="background:#3a2f18;color:#f2c14e">Approval</span><div class="body"><span>The page "Weekly views" asks to read your YouTube stats.</span><span class="small">Pages · 1 h ago</span></div><div class="btns"><button class="btn">Review</button></div></div>
+      </section>
+    </div>
+  </main>
+</div>
+</body>
+</html>

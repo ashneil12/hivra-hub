@@ -80,7 +80,7 @@ import {
   queueBriefForIdle,
   withoutQueuedBrief,
 } from "../features/monos/model/followedBriefs";
-import { markAppDelegate, type DelegationMeta } from "../features/agent-app/model/agentAppTasks";
+import { markAppDelegate, redoLinkRefusal, type DelegationMeta } from "../features/agent-app/model/agentAppTasks";
 import { deliverPhaseResult, isPhaseSession, phaseFinish } from "../features/phases/model/phaseBridge";
 import { chatMonoOwner, hasDelegateTool } from "../features/hub/model/hubMcp";
 import { appendsHubNote, hubNoteFor, setHubNote } from "../features/hub/model/hubNote";
@@ -1007,6 +1007,7 @@ import {
   type HeldSeen,
   type QueuedWorker,
 } from "../features/monos/model/workerPool";
+import { subscribeSpend, type TurnOrigin } from "../features/usage/model/spendGate";
 import { noteMonoFailures, setMonoFailuresHost } from "../features/monos/model/monoFailures";
 import { failedTurnMessage } from "../features/monos/model/turnFailure";
 import {
@@ -1256,6 +1257,7 @@ import {
   setQuitWorkspace,
   type ResumedWorkspace,
 } from "./model/appLifecycle";
+import { wireSpendGate } from "../features/usage/model/spendWiring";
 
 const SearchView = lazySurface(
   async () => {
@@ -1313,6 +1315,11 @@ type LinkedWorkItemPanelState = {
 };
 
 type SubmitOptions = ComposerTurnOptions & {
+  /**
+   * Who started the turn, for the spend gate. Only the composer and the quick composer say "person". Every other caller
+   * (habits, automations, agent apps, wakes, continue prompts, first-mate steers) leaves it out, so it is automated.
+   */
+  origin?: TurnOrigin;
   ciRepair?: CiRepairRequest;
   /** Saved alongside the user turn; does not replace the submitted prompt. */
   ciContext?: string;
@@ -1519,6 +1526,9 @@ function leadCodingTeam(monoId: string): HubProject | undefined {
         .find((project) => project.id === lead.projectId && !!project.folder)
     : undefined;
 }
+
+// WP-176: the spend gate reads the hub ids and the Mono and habit registries. Wired once, at module load.
+wireSpendGate();
 
 export default function App(props: AppProps) {
   return (
@@ -8693,6 +8703,7 @@ function Workspace({
           },
           steer: (prepared) =>
             steerHarnessTurn({
+              origin: options?.origin,
               harness: current.harness,
               sessionId,
               cwd: initialWorkCwd,
@@ -8882,6 +8893,7 @@ function Workspace({
               cwd: initialWorkCwd,
             });
             await steerHarnessTurn({
+              origin: options?.origin,
               harness: current.harness,
               sessionId,
               cwd: initialWorkCwd,
@@ -9725,6 +9737,8 @@ function Workspace({
               openMoreAgentSession(sessionId, registryPlan.agent.id);
             }
             return sendHarnessTurn({
+              // WP-176: the caller's origin. Only the composer sets "person"; an omitted origin is automated.
+              origin: options?.origin,
               harness: current.harness,
               sessionId,
               cwd: workCwd,
@@ -10240,6 +10254,13 @@ function Workspace({
       return true;
     },
     [submitSession],
+  );
+
+  // The composer's own send is the person's turn for the spend gate. Other callers of onSubmit are automated.
+  const onComposerSubmit = useCallback(
+    (sessionId: string, text: string, attachments: Attachment[] = [], options?: ComposerTurnOptions): boolean =>
+      onSubmit(sessionId, text, attachments, { ...options, origin: "person" }),
+    [onSubmit],
   );
 
   /**
@@ -10959,13 +10980,14 @@ function Workspace({
                   submit: (settle) =>
                     submitSession(id, text, attachments, {
                       ...options,
+                      origin: "person",
                       appRequestId: deliveryId,
                       onSettled: settle,
                     }),
                   onSettled,
                   rejectionMessage: "The monitored session could not start.",
                 })
-              : submitSession(id, text, attachments, options),
+              : submitSession(id, text, attachments, { ...options, origin: "person" }),
           saveDraft: (id, prompt, attachments, requestId) =>
             flushSync(() => onSaveDraft(id, prompt, attachments, requestId)),
         },
@@ -13852,10 +13874,13 @@ function Workspace({
       window.clearTimeout(timer);
       arm();
     });
+    // WP-176: raising a spend limit starts a builder that was waiting on it, without waiting for the timer.
+    const offSpend = subscribeSpend(pumpWorkersNow);
     arm();
     return () => {
       offRows();
       offPool();
+      offSpend();
       window.clearTimeout(timer);
     };
   }, [pumpWorkersNow]);
@@ -14161,12 +14186,17 @@ function Workspace({
             ...(delegation?.askIds.length ? { askIds: delegation.askIds } : {}),
             ...(delegation?.goal ? { goal: delegation.goal } : {}),
             ...(delegation?.taskId ? { taskId: delegation.taskId } : {}),
+            // WP-176 round 5: the redo's link is written with its row, in the same transaction, before its first turn.
+            ...(delegation?.redoes ? { redoes: delegation.redoes.id } : {}),
             // A7: written on the row, not only in the worker's brief, so the store refuses a done settle without it even
             // when the turn settles through a restart's recovery path.
             ...(delegation ? { reviewRequired: true } : {}),
             by: `owner:${monoId}`,
           });
           const row = await launch?.row;
+          // A redo whose link could not be recorded does not start: its turn would be judged without its parent.
+          const refusal = redoLinkRefusal(delegation, row);
+          if (refusal) throw new Error(refusal);
           // Dev-only (D5 scripted test): a worker started while a tester armed dev-faults/fail-next-workers runs, then
           // reports a failure. Off by default; see devFault.ts and docs/DEV-FAULTS.md.
           const fault = await takeWorkerFault();
@@ -17014,7 +17044,7 @@ function Workspace({
           setSessions(sessionsRef.current);
         },
       }),
-    submit: onSubmit,
+    submit: onComposerSubmit,
     stop: onStopFromUser,
     approval: onApproval,
     question: onQuestionReply,
@@ -17142,7 +17172,7 @@ function Workspace({
     onRuntimeModeChange,
     onSaveDraft,
     onRemoveDraft,
-    onSubmit,
+    onSubmit: onComposerSubmit,
     onCompareModels,
     fanOutForSession,
     onStop: onStopFromUser,

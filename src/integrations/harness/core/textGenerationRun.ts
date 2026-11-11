@@ -3,6 +3,7 @@
 // The ask carries no path, so this cannot write the repo.
 
 import { listCustomModels } from "../../../features/sessions/model/customModels";
+import type { TurnOrigin } from "../../../features/usage/model/spendGate";
 import {
   buildThreadTitlePrompt,
   parseGeneratedSessionTitle,
@@ -70,9 +71,14 @@ function asRange(value: unknown): Range | null {
   };
 }
 
-async function ask(setting: TextGenerationSetting, prompt: string, signal?: AbortSignal): Promise<string | null> {
+async function ask(
+  setting: TextGenerationSetting,
+  prompt: string,
+  signal?: AbortSignal,
+  origin: TurnOrigin = "automated",
+): Promise<string | null> {
   try {
-    return await askShortText({ setting, prompt, models: savedModels(), port: textGenerationPort(), signal });
+    return await askShortText({ setting, prompt, models: savedModels(), port: textGenerationPort(), signal, origin });
   } catch (error) {
     if (isAbort(error)) throw error;
     return null;
@@ -101,6 +107,8 @@ export async function commitFromTextModel(
         stagedPatch: context.patch,
       }),
       signal,
+      // Every commit message is one Ash asked for from the app, so it is his turn.
+      "person",
     );
     signal?.throwIfAborted();
     if (!text) return null;
