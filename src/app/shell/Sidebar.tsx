@@ -1105,9 +1105,15 @@ function SidebarComponent({
   const narrowedByUser = searchNarrowed || filtersActive;
   // Dropwave: Explorer and Changes only when Settings > Advanced shows code tools.
   const codeTools = useShowCodeTools();
+  // Dropwave (Ash, 11 Nov): Crew goes with them. A chat's own "N working" line already says who is on it, so the list
+  // is just the chats, the same for every first mate.
   const visibleTabs = tabOrder.filter(
-    (itemId) => itemId !== "inbox" && (codeTools || (itemId !== "files" && itemId !== "changes")),
+    (itemId) => itemId !== "inbox" && (codeTools || (itemId !== "files" && itemId !== "changes" && itemId !== "crew")),
   );
+  const tabHidden = tab !== "sessions" && tab !== "inbox" && !visibleTabs.includes(tab);
+  useEffect(() => {
+    if (tabHidden) onTabChange("sessions");
+  }, [tabHidden, onTabChange]);
   const onReorderTabs = (ids: SidebarTab[]) => {
     const reordered = new Set(ids);
     let index = 0;
@@ -2908,10 +2914,27 @@ function SidebarComponent({
       {railVisible || inset ? (
         <>
           {/* Dropwave: the worktree picker is a code tool (Settings > Advanced). */}
-          {codeTools ? workspaceHeader : null}
+          {codeTools ? (
+            workspaceHeader
+          ) : !inset && onNew ? (
+            // With the code tools off there is still a way to start a new chat here.
+            <div className="flex h-10 shrink-0 select-none items-center gap-1 border-b border-stroke pl-3 pr-1.5" data-sidebar-chats-header>
+              <span className="min-w-0 flex-1 truncate text-sm font-medium leading-tight">Chats</span>
+              <button
+                type="button"
+                onClick={onNew}
+                aria-label="New chat"
+                className="flex h-7 shrink-0 items-center gap-1 rounded-md px-2 text-[12px] font-medium text-content/70 hover:bg-content/8 hover:text-content"
+              >
+                <Plus className="size-3.5" strokeWidth={1.75} />
+                New chat
+              </button>
+            </div>
+          ) : null}
           {/* The inset sidebar has no tabs: the project tools live in the
               right panel. */}
-          {inset ? null : (
+          {/* One tab is no choice: with only the chats left there is no tab row. */}
+          {inset || visibleTabs.length < 2 ? null : (
             <div
               role="tablist"
               aria-label="Workspace"
@@ -2965,7 +2988,7 @@ function SidebarComponent({
               inboxUnseen={inboxUnseen}
             />
           ) : null}
-          {!compactRailVisible ? (
+          {!compactRailVisible && visibleTabs.length > 1 ? (
             <div
               role="tablist"
               aria-label="Workspace"

@@ -408,34 +408,6 @@ export function seatDefaultTeam(projectId: string): GroupChat {
   return next ?? chat;
 }
 
-/** Dropwave: each project's own chat with the Chief of Staff, geared to that project (its own conversation). */
-export function captainChatId(projectId: string): string {
-  return `${projectId}:captain`;
-}
-
-export function isCaptainChat(chatId: string): boolean {
-  return chatId.endsWith(":captain");
-}
-
-/** The project's Chief of Staff chat, made once with the Chief of Staff in it. Undefined before the store is read. */
-export function ensureCaptainChat(projectId: string, chiefId: string): GroupChat | undefined {
-  const id = captainChatId(projectId);
-  const existing = getChat(id);
-  if (existing) {
-    if (existing.memberIds.includes(chiefId)) return existing;
-    const next = update(id, (c) => ({ ...c, memberIds: [chiefId, ...c.memberIds], leadId: chiefId }));
-    persistRoom(next);
-    changed();
-    return next;
-  }
-  if (!loaded) return undefined;
-  const chat: GroupChat = { id, projectId, name: "Chief of Staff", isDefault: true, memberIds: [chiefId], leadId: chiefId, conversations: [] };
-  chats = [...chats, chat];
-  persistRoom(chat);
-  changed();
-  return chat;
-}
-
 export function createChat(projectId: string, name: string, memberIds: string[]): GroupChat {
   const chat: GroupChat = {
     id: `${projectId}:chat-${crypto.randomUUID()}`,

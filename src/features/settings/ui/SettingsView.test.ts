@@ -695,7 +695,7 @@ describe("settings pages", () => {
 
   it("gives every section a rail group", () => {
     const groups = new Set(SETTINGS_SECTIONS.map((section) => section.group));
-    expect([...groups]).toEqual(["app", "agents", "workspace"]);
+    expect([...groups].sort()).toEqual(["agents", "app", "data", "record", "workspace"]);
   });
 
   it("asks what the team should call you, reading and writing the onboarding name", async () => {

@@ -67,7 +67,12 @@ export function HubProjectItems({
   // the draft comes back to it, but its name and items aren't shown as if the draft were one of its pages.
   if (selection.item === "new-project") return null;
   // WP-06: Being built, Builds and the project's Decisions row are gone. Settings → Decisions still lists them.
-  const items = hubData().listProjectItems(project.id).filter((item) => keptNavItem(item));
+  // Dropwave (Ash, 11 Nov): no Coding team row (and no Tasks under it). Chats happen with the Chief of Staff and the
+  // first mates above; what is listed here are the project's teams (group chats) and its sections.
+  // A project's own pages section ("Dashboards") is gone too: its pages are under Pages, and a pinned one has a row.
+  const items = hubData().listProjectItems(project.id).filter(
+    (item) => keptNavItem(item) && item.kind !== "coding-team" && item.sectionType !== "project-pages",
+  );
   return (
     <div className="mb-2 shrink-0" data-hub-items>
       <div className="group/head flex items-center gap-1 px-3 pb-1.5 pt-1" data-hub-project-header

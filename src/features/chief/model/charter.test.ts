@@ -3,7 +3,8 @@ import { starterOffers } from "../../hub/model/starterMonos";
 import { CAPTAIN_CHARTER, applyPersonality, editCharter, ensureCaptainCharter, hasCaptainCharter, personalityOf } from "./charter";
 
 function soul(): string {
-  const offer = starterOffers().find((item) => item.name === "Coordinator");
+  // By its template id: the template's display name is "Chief of Staff" once Home's rename (#237) is in.
+  const offer = starterOffers().find((item) => item.id === "coordinator");
   if (!offer) throw new Error("missing coordinator");
   return offer.soul;
 }

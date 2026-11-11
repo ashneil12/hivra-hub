@@ -46,5 +46,5 @@ it("still shows the project's teams header (named for the project) and items on 
   // Dropwave: the header reads Teams; the project's name heads the sidebar's Home row and stays on the header's title.
   expect(host.querySelector("[data-hub-project-header]")?.textContent).toContain("Teams");
   expect(host.querySelector("[data-hub-project-header] [title]")?.getAttribute("title")).toBe("Hivra");
-  expect([...host.querySelectorAll("[data-hub-item]")].map((b) => b.textContent)).toEqual(["Coding team", "Leadership team"]);
+  expect([...host.querySelectorAll("[data-hub-item]")].map((b) => b.textContent)).toEqual(["Leadership team"]);
 });

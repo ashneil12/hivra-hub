@@ -9,22 +9,21 @@ import { useDelegationRows } from "../../monos/model/delegationStore";
 import type { Delegation } from "../../monos/model/delegations";
 import { builderHold, spendHold, useWorkerPoolVersion } from "../../monos/model/workerPool";
 import { spendSnapshot, subscribeSpend } from "../../usage/model/spendGate";
-import { listMonos } from "../../monos/model/mono";
+import { listMonos, monoLook } from "../../monos/model/mono";
+import { PixelMascot } from "../../projects/ui/PixelMascot";
 import { useHubDataVersion, hubData } from "../../hub/model/hubData";
 import { LOCAL_HUB_CHANGED } from "../../hub/model/localHub/localTransport";
 import { PanelFrame } from "../../panels/ui/PanelTabs";
+import { attentionCount, useAttentionVersion } from "../../hub/model/todayCounts";
 import { needsCount, useNeedsYou, workingCount, type NeedsItem } from "../../needs/model/needsYou";
 import { localDay, readLines, type WorkLogLine } from "../../workLog/model/workLog";
 import { hideSection, pinPanel, showSection, unpin } from "../model/arrangement";
 import { moveHomeSection } from "../model/arrangeHome";
 import { addChiefOfStaff, chiefScopeLine, openChiefChat, pickChief } from "../model/chief";
-import { ensureCaptainChat, sendMessage } from "../../hub/model/hubChats";
-import { simulateReplies } from "../../hub/model/roomConductor";
 import { openProjectChief } from "../../hub/ui/HubTopNav";
 import { needActions } from "../model/needActions";
 import { homeDateLabel } from "../model/dateLabel";
 import { doneToday, projectTag } from "../model/doneToday";
-import { latestExchange } from "../model/exchange";
 import {
   answerHomeQuestion,
   ensureHomeChief,
@@ -285,6 +284,7 @@ export function HomeView({ projectId }: { projectId?: string } = {}) {
     });
   }
 
+  useAttentionVersion();
   const projects = snap?.projects ?? [];
   // On a project's home every row is this project's, so rows carry no project tag.
   const tagFor = labelFor(projects);
@@ -292,7 +292,6 @@ export function HomeView({ projectId }: { projectId?: string } = {}) {
   const now = new Date();
   const session = sessionId ? readHomeChiefSession(sessionId) : undefined;
   void chiefRev;
-  const exchange = latestExchange(session?.blocks ?? [], session?.busy === true);
   const pending = session?.pendingQuestion;
   const question = pending?.questions[0];
   const hold = builderHold();
@@ -331,17 +330,20 @@ export function HomeView({ projectId }: { projectId?: string } = {}) {
     label,
   }).filter((line) => inScope(line.projectId));
 
+  const chiefLook = chiefMono ? monoLook(chiefMono) : { mascot: "", color: "" };
   const chief: HomeChief = chiefMono
     ? {
         missing: false,
         name: (chiefMono.name ?? "").trim() || "Chief of Staff",
         scope: scoped ? `runs ${scoped.name} for you` : chiefScopeLine(chiefMono, hubData().listProjects().length),
         placeholder: scoped ? `Ask anything about ${scoped.name}, or hand over work` : undefined,
-        // On a project's home the box only starts a conversation; the last exchange may be about another project.
-        you: scoped ? undefined : exchange.you,
-        reply: scoped ? undefined : exchange.reply,
-        streaming: scoped ? false : exchange.streaming,
-        options: (scoped ? [] : question?.options ?? []).map((option) => ({ id: option.id, label: option.label })),
+        // Dropwave (Ash, 11 Nov): the box only starts a conversation, on Home and on a project's home. The conversation
+        // itself, and anything the Chief of Staff asks, is in its chat (and under Needs you).
+        options: [],
+        avatar: <PixelMascot name={chiefLook.mascot} color={chiefLook.color} status="idle" className="size-14 shrink-0" />,
+        starters: scoped
+          ? [`Where are we on ${scoped.name}?`, "What is blocked?", "What did you decide for me?"]
+          : ["What needs me today?", "Where is everything at?", "What did you decide for me?"],
         onAdd: () => undefined,
         onOpenChat: () => (scoped ? void openProjectChief(scoped.id) : openChiefChat(chiefMono.id)),
         onOption: (optionId) => {
@@ -398,6 +400,7 @@ export function HomeView({ projectId }: { projectId?: string } = {}) {
     {
       key: "pinned-pages",
       title: "Pinned pages",
+      layout: "tiles",
       empty: "Pin a page to keep it here.",
       rows: pages.map((page) => ({
         key: page.id,
@@ -434,6 +437,13 @@ export function HomeView({ projectId }: { projectId?: string } = {}) {
       chief={chief}
       needs={needRows}
       needsTotal={totalNeeds}
+      // The count at a glance agrees with the project rail's badges (todayCounts) until WP-210 makes them one list.
+      needsGlance={Math.max(
+        totalNeeds,
+        scoped
+          ? attentionCount(scoped.id, now.getTime())
+          : hubData().listProjects().reduce((sum, project) => sum + attentionCount(project.id, now.getTime()), 0),
+      )}
       builders={builderLines}
       working={workRows}
       workingTotal={running}
@@ -453,19 +463,11 @@ export function HomeView({ projectId }: { projectId?: string } = {}) {
         if (!chiefMono) return;
         // The box is a starting point: the conversation carries on in the Chief of Staff's own chat. In a project that is
         // the project's own Chief of Staff chat, geared to it; on Home, its chat with everything in view.
-        if (scoped) {
-          const room = ensureCaptainChat(scoped.id, chiefMono.id);
-          if (room) {
-            sendMessage(room.id, text);
-            simulateReplies(room.id);
-            openProjectChief(scoped.id);
-            return;
-          }
-        }
-        void sendHomeTurn(chiefMono.id, text).then((result) => {
-          if (result.ok) setSessionId(result.sessionId);
+        void sendHomeTurn(chiefMono.id, text, scoped?.id).then((result) => {
+          if (result.ok && !scoped) setSessionId(result.sessionId);
         });
-        openChiefChat(chiefMono.id);
+        if (scoped) openProjectChief(scoped.id);
+        else openChiefChat(chiefMono.id);
       }}
       title={scoped ? scoped.name : "Home"}
       headerExtra={<AutopilotSwitch projectId={scoped?.id} name={scoped ? scoped.name : "everything"} />}

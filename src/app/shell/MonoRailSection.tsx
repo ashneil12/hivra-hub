@@ -20,7 +20,7 @@ import { useNeedsYouRows } from "../../features/hub/model/useNeedsYouRows";
 import { countWork, shortSplit, useStuckDismissalsVersion, type StuckWorker, type WorkCounts } from "../../features/monos/model/workerStuck";
 import { subChatAttention, useSubChatFolds } from "../../features/monos/model/subChats";
 import { hubData, useHubDataVersion } from "../../features/hub/model/hubData";
-import { monoTeamInView, openCodingTeam, openMonoTeam, useHubSelection } from "../../features/hub/model/hubNav";
+import { monoTeamInView, openCodingTeam, openMonoChat, openMonoTeam, useHubSelection } from "../../features/hub/model/hubNav";
 import { teamFor, useMonoTeamsVersion, type TeamTarget } from "../../features/hub/model/monoTeams";
 import { useClock } from "../../features/monos/hooks/useStuckWorkers";
 import { failedMonoName, retryMonoFailure } from "../../features/monos/model/monoFailures";
@@ -475,7 +475,9 @@ export function MonoRailSection({
                 )
                   return;
                 if (sortable.consumeClick()) return;
-                onOpen(mono.id);
+                // Dropwave: in the hub every one-to-one chat opens in the same layout, the chat list beside the chat.
+                if (rank) openMonoChat(mono.id);
+                else onOpen(mono.id);
               }}
               onContextMenu={(event) => {
                 event.preventDefault();

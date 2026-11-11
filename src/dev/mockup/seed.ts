@@ -7,7 +7,7 @@
 
 import { EXAMPLE } from "./data";
 
-const SEED_VERSION = "mockup-v2";
+const SEED_VERSION = "mockup-v3";
 const SEEDED_KEY = "monocode:mockup-seeded";
 
 const url = new URL(location.href);
@@ -37,6 +37,7 @@ function seed(): void {
   set("monocode:dev-decisions", EXAMPLE.decisions(now));
   set("monocode:pages", EXAMPLE.pages(now));
   set("monocode:dev-automations", EXAMPLE.automations(now));
+  set("monocode:hub-chats", EXAMPLE.rooms());
   localStorage.setItem("monocode:hub-nav", JSON.stringify({ project: "", item: "home" }));
   localStorage.setItem(SEEDED_KEY, SEED_VERSION);
 }
@@ -51,6 +52,39 @@ if (reset || seeded !== SEED_VERSION) seed();
 
 Object.assign(window, { __MONOCODE_MOCKUP__: true });
 
+// A council in the mockup: every seat answers with an example, the third one disagrees, and the chair writes an example
+// verdict, so asking a question ends in a decision with a minority. Nothing is sent anywhere.
+// Loaded only after the example data is in place: the council's modules read the rooms as they load.
+const councilSeats = new Map<string, number>();
+void import("../../features/council/model/host").then(({ setCouncilModel }) => setCouncilModel(async ({ seatId, round, signal }) => {
+  await new Promise((resolve) => setTimeout(resolve, 600));
+  if (signal.aborted) throw new DOMException("The council was stopped.", "AbortError");
+  if (!councilSeats.has(seatId)) councilSeats.set(seatId, councilSeats.size);
+  const dissents = (councilSeats.get(seatId) ?? 0) % 3 === 2;
+  if (round === "verdict")
+    return {
+      text: [
+        "UNRESOLVED:",
+        "Example: nobody has checked the thank-you email on a real phone yet.",
+        "KILL CRITERIA:",
+        "Example: stop if the sign-up form fails on phones the day before.",
+        "NEXT STEP:",
+        "Example: go ahead, and test the sign-up form on two phones first.",
+        "MINORITY REPORT:",
+        "Example: one seat would wait a week for a tested thank-you email.",
+      ].join("\n"),
+    };
+  if (round === "stance")
+    return {
+      text: dissents
+        ? "Example: a week buys a tested thank-you email.\nSTANCE: wait a week | CONFIDENCE: med | DEALBREAKER: no"
+        : "Example: it is ready, and waiting costs sign-ups.\nSTANCE: go ahead | CONFIDENCE: high | DEALBREAKER: no",
+    };
+  if (round === "cross")
+    return { text: dissents ? "Example: I still think a short delay is cheaper than a broken first impression." : "Example: I disagree most with the seat that wants to wait: the email can follow a day later." };
+  return { text: dissents ? "Example: the risk is the thank-you email. I'd wait until it is tested." : "Example: the page works and the list is warm. I'd go ahead." };
+}));
+
 // Every chat's reply in the mockup. The app's own background turns (rounds, inbox counts) get a quiet line; anything
 // typed gets a plain note that nothing here is wired.
 Object.assign(window, {
@@ -59,6 +93,16 @@ Object.assign(window, {
     const room = /\[MonoCode room\] You are ([^,]+), in the group chat "[^"]*" \(room [^)]*\) for project "([^"]+)"/.exec(prompt);
     if (room)
       return `Example reply from ${room[1]}: got it. I'll hand this to the ${room[2]} lead and tell you here when it's done. (This is the mockup, so nothing really runs.)`;
+    // What Ash typed in a one-to-one chat: what is left once the app's own context and notes are taken out.
+    const typed = prompt
+      .replace(/<monocode_context>[\s\S]*?<\/monocode_context>/g, "")
+      .split(/\n{2,}/)
+      .map((part) => part.trim())
+      .filter((part) => part && !part.startsWith("[MonoCode ") && !part.startsWith("Note: MonoCode"))
+      .join(" ");
+    const me = /^- (.+?) \(you\)/m.exec(prompt)?.[1];
+    if (typed && me)
+      return `Example reply from ${me}: got it. I'll take it from here and tell you in this chat when it's done. (This is the mockup, so nothing really runs.)`;
     if (/From the app, not Ash|\[MonoCode /.test(prompt)) return "\n\nRight: nothing new since your last message.";
     return "This is the mockup, so nothing is wired: I can't do the work here. The screens and buttons are the real app's; tell Claude in the thread what you'd change about them.";
   },

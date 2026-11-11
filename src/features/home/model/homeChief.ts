@@ -15,7 +15,8 @@ export type HomeChiefSession = {
 };
 
 export type HomeChiefHost = {
-  ensure: (monoId: string) => Promise<{ id: string } | undefined>;
+  /** `projectId`: the Mono's own chat for that project (Dropwave), else its chat on Home. */
+  ensure: (monoId: string, projectId?: string) => Promise<{ id: string } | undefined>;
   submit: (sessionId: string, text: string) => boolean | Promise<boolean>;
   answer: (sessionId: string, requestId: number, reply: UserQuestionReply) => void;
   read: (sessionId: string) => HomeChiefSession | undefined;
@@ -63,14 +64,14 @@ export async function ensureHomeChief(monoId: string): Promise<string | undefine
   }
 }
 
-export async function sendHomeTurn(monoId: string, text: string): Promise<{ ok: true; sessionId: string } | { ok: false }> {
+export async function sendHomeTurn(monoId: string, text: string, projectId?: string): Promise<{ ok: true; sessionId: string } | { ok: false }> {
   const words = text.trim();
   const current = host;
   if (!words || !monoId.trim() || !current) return { ok: false };
   const mine = ++token;
   let session: { id: string } | undefined;
   try {
-    session = await current.ensure(monoId);
+    session = await current.ensure(monoId, projectId);
   } catch {
     return { ok: false };
   }

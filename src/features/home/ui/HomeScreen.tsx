@@ -8,10 +8,10 @@ import { HOME_ACTION_CAP } from "../model/needActions";
 import { FREE_UP_SPACE } from "../../monos/model/builderScale";
 import { NEEDS_YOU_RED } from "../../hub/ui/StatusMark";
 import { RAISE_LIMIT } from "../../usage/model/spendGate";
-import { Check, ChevronDown, ChevronUp, SendArrow } from "../../../shared/ui/icons";
+import { Book, Check, ChevronDown, ChevronUp, SendArrow, Sparkles, Zap } from "../../../shared/ui/icons";
 import type { CatalogPanel } from "../../panels/model/panelTabs";
 import { workersLabel } from "../model/workingNow";
-import { HOME_MAX_WIDTH, HOME_STAGGER_MS } from "../vendor/homeLayout";
+import { HOME_STAGGER_MS } from "../vendor/homeLayout";
 import { AgentMarkdown } from "../../sessions/ui/AgentMarkdown";
 import "./home.css";
 
@@ -57,11 +57,20 @@ export type HomeDone = {
   onOpen: () => void;
 };
 
+/** Dropwave: Home uses the room it has. The chat box stays a readable width; the cards below spread out. */
+const HOME_WIDE_WIDTH = 1120;
+const HOME_BOX_WIDTH = 760;
+// One card look for every section on Home.
+const HOME_CARD = "home-enter flex min-w-0 flex-col rounded-xl border border-stroke bg-surface pb-1.5";
+const HOME_ROW = "mx-1.5 flex min-h-10 items-center gap-3 rounded-lg px-2.5 py-1.5 text-left text-[13px] text-content";
+
 /** A section a project's home adds below the built-in ones: its pinned pages, its automations (Dropwave). */
 export type HomeExtraSection = {
   key: string;
   title: string;
   empty: string;
+  /** Tiles for things you open (pages); rows for the rest. */
+  layout?: "rows" | "tiles";
   rows: { key: string; text: string; meta?: string; onOpen: () => void }[];
   action?: { label: string; onClick: () => void };
 };
@@ -76,6 +85,10 @@ export type HomeChief = {
   options: { id: string; label: string }[];
   /** The box's prompt: Home's, or a project's. */
   placeholder?: string;
+  /** Its own picture, where the app has one; else its initials. */
+  avatar?: ReactNode;
+  /** One-tap starters under the box. */
+  starters?: readonly string[];
   onAdd: () => void;
   onOpenChat: () => void;
   onOption: (id: string) => void;
@@ -105,7 +118,7 @@ function NeedRow({ row }: { row: HomeNeed }) {
   if (row.stopped) {
     const open = row.actions[0]?.onClick ?? row.onOpen;
     return (
-      <div data-home-line="need" className="flex min-h-10 w-full flex-wrap items-center gap-2 border-t border-stroke px-3 py-2 text-[13px] text-content">
+      <div data-home-line="need" className={`${HOME_ROW} flex-wrap`}>
         <Tag name={row.project} />
         <span data-home-stopped className="shrink-0 font-medium" style={{ color: NEEDS_YOU_RED }}>Stopped.</span>
         <span className="min-w-0 flex-1">{row.sentence}</span>
@@ -127,7 +140,7 @@ function NeedRow({ row }: { row: HomeNeed }) {
       <button
         type="button"
         data-home-line="need"
-        className="flex min-h-10 w-full items-center gap-2 border-t border-stroke px-3 py-2 text-left text-[13px] text-content hover:bg-content/8"
+        className={`${HOME_ROW} hover:bg-content/8`}
         onClick={row.onOpen}
       >
         {body}
@@ -135,7 +148,7 @@ function NeedRow({ row }: { row: HomeNeed }) {
     );
   }
   return (
-    <div data-home-line="need" className="flex min-h-10 w-full flex-wrap items-center gap-2 border-t border-stroke px-3 py-2 text-[13px] text-content">
+    <div data-home-line="need" className={`${HOME_ROW} flex-wrap`}>
       <button type="button" className="flex min-w-0 flex-1 items-center gap-2 text-left" onClick={row.onOpen}>
         {body}
       </button>
@@ -270,45 +283,123 @@ function ChiefBox({ chief, onAsk, quiet }: { chief: HomeChief; onAsk: (text: str
       </div>
     );
   }
+  if (talking) {
+    return (
+      <div data-home-start="" className="mx-auto flex w-full flex-col rounded-xl border border-stroke bg-surface" style={{ maxWidth: HOME_BOX_WIDTH }}>
+        <ChiefExchange chief={chief} />
+        <AskForm chief={chief} text={text} setText={setText} ready={ready} onAsk={onAsk} />
+      </div>
+    );
+  }
+  // Dropwave (Ash, 11 Nov): Home's chat area is one big box to start a conversation from, not a conversation.
   return (
-    <div data-home-start="" className="flex flex-col rounded-lg border border-stroke">
-      {talking ? <ChiefExchange chief={chief} /> : (
-        <div className="px-3 pt-3">
-          <NameLine scope={chief.scope} />
-          {quiet ? (
-            <p data-home-quiet className="mt-2 text-[13px] leading-6 text-content/60">
-              All quiet. Ask me anything, or hand work to any project.
-            </p>
-          ) : null}
+    <div data-home-start="" className="mx-auto flex w-full flex-col items-center gap-4 pt-6 pb-2" style={{ maxWidth: HOME_BOX_WIDTH }}>
+      <div className="flex flex-col items-center gap-2 text-center">
+        {/* The same hello as an agent's empty chat (MonoHeader): its mascot standing on its name. */}
+        {chief.avatar ? <span data-home-avatar="chief" className="relative z-10 grid place-items-center">{chief.avatar}</span> : <ChiefAvatar />}
+        <div className={`flex flex-col items-center gap-2 ${chief.avatar ? "-mt-4" : ""}`}>
+          <span
+            data-home-chief
+            data-home-speaker="chief"
+            className={chief.avatar ? "mono-pill flex h-8 items-center rounded-full border px-3.5 text-[13px] font-semibold leading-none text-content backdrop-blur-md" : "text-[20px] font-semibold leading-7 text-content"}
+          >
+            {CHIEF_NAME}
+          </span>
+          {chief.scope ? <span data-home-scope className="text-[13px] text-content/60">{chief.scope}</span> : null}
         </div>
-      )}
-      <form
-        className="mt-3 flex items-center gap-2 border-t border-stroke py-1.5 pr-1.5 pl-4"
-        onSubmit={(event) => {
-          event.preventDefault();
-          if (!ready) return;
-          onAsk(text);
-          setText("");
-        }}
-      >
-        <input
-          aria-label="Ask"
-          value={text}
-          placeholder={chief.placeholder ?? "Ask anything, or hand work to any project"}
-          onChange={(event) => setText(event.target.value)}
-          className="min-w-0 flex-1 bg-transparent py-1.5 text-[14px] text-content outline-none placeholder:text-content/40"
-        />
-        <button
-          type="submit"
-          aria-label="Send"
-          title="Send"
-          disabled={!ready}
-          className={`grid size-7 shrink-0 place-items-center rounded-md transition-colors disabled:cursor-default ${ready ? "bg-accent text-black" : "bg-content/25 text-content"}`}
-        >
-          <SendArrow className="size-3.5" strokeWidth={2.25} aria-hidden />
-        </button>
-      </form>
+        {quiet ? (
+          <p data-home-quiet className="text-[13px] leading-6 text-content/60">
+            All quiet. Ask me anything, or hand work to any project.
+          </p>
+        ) : null}
+      </div>
+      <AskForm chief={chief} text={text} setText={setText} ready={ready} onAsk={onAsk} big />
+      {chief.starters?.length ? (
+        <div className="flex flex-wrap items-center justify-center gap-2" role="group" aria-label="Starters">
+          {chief.starters.map((starter) => (
+            <button
+              key={starter}
+              type="button"
+              data-home-starter
+              className="rounded-full border border-stroke px-3 py-1.5 text-[12px] text-content/75 hover:bg-content/8 hover:text-content"
+              onClick={() => onAsk(starter)}
+            >
+              {starter}
+            </button>
+          ))}
+        </div>
+      ) : null}
     </div>
+  );
+}
+
+function AskForm({
+  chief,
+  text,
+  setText,
+  ready,
+  onAsk,
+  big = false,
+}: {
+  chief: HomeChief;
+  text: string;
+  setText: (text: string) => void;
+  ready: boolean;
+  onAsk: (text: string) => void;
+  big?: boolean;
+}) {
+  return (
+    <form
+      className={
+        big
+          ? "flex w-full items-center gap-3 rounded-2xl border border-stroke bg-surface py-2.5 pr-2.5 pl-5 shadow-[0_8px_30px_-12px_rgba(0,0,0,0.45)] focus-within:border-content/30"
+          : "mt-3 flex items-center gap-2 border-t border-stroke py-1.5 pr-1.5 pl-4"
+      }
+      onSubmit={(event) => {
+        event.preventDefault();
+        if (!ready) return;
+        onAsk(text);
+        setText("");
+      }}
+    >
+      {big ? <Sparkles className="size-5 shrink-0 text-content/50" strokeWidth={1.75} aria-hidden /> : null}
+      <input
+        aria-label="Ask"
+        value={text}
+        placeholder={chief.placeholder ?? "Ask anything, or hand work to any project"}
+        onChange={(event) => setText(event.target.value)}
+        className={`min-w-0 flex-1 bg-transparent text-content outline-none placeholder:text-content/40 ${big ? "h-11 text-[16px]" : "py-1.5 text-[14px]"}`}
+      />
+      <button
+        type="submit"
+        aria-label="Send"
+        title="Send"
+        disabled={!ready}
+        className={`grid shrink-0 place-items-center transition-colors disabled:cursor-default ${big ? "size-10 rounded-xl" : "size-7 rounded-md"} ${ready ? "bg-accent text-black" : "bg-content/25 text-content"}`}
+      >
+        <SendArrow className={big ? "size-4" : "size-3.5"} strokeWidth={2.25} aria-hidden />
+      </button>
+    </form>
+  );
+}
+
+/** Dropwave: the three counts at a glance, above the cards. */
+function Glance({ label, value, note, tone, onClick }: { label: string; value: number; note: string; tone: string; onClick?: () => void }) {
+  const body = (
+    <>
+      <span className="flex items-center gap-2 text-[12px] text-content/60">
+        <span aria-hidden className="size-2 shrink-0 rounded-full" style={{ backgroundColor: tone }} />
+        {label}
+      </span>
+      <span className="text-[28px] font-semibold leading-8 tabular-nums text-content">{value}</span>
+      <span className="truncate text-[12px] text-content/60">{note}</span>
+    </>
+  );
+  const look = "home-enter flex min-w-0 flex-col gap-1 rounded-xl border border-stroke bg-surface px-4 py-3 text-left";
+  return onClick ? (
+    <button type="button" data-home-glance={label} className={`${look} hover:bg-content/8`} onClick={onClick}>{body}</button>
+  ) : (
+    <div data-home-glance={label} className={look}>{body}</div>
   );
 }
 
@@ -346,6 +437,7 @@ export function HomeScreen({
   chief,
   needs,
   needsTotal,
+  needsGlance = needsTotal,
   builders,
   working,
   workingTotal,
@@ -376,6 +468,8 @@ export function HomeScreen({
   chief: HomeChief;
   needs: readonly HomeNeed[];
   needsTotal: number;
+  /** The Needs you count at a glance, when it is known to be more than the rows listed here. */
+  needsGlance?: number;
   builders: readonly HomeLine[];
   working: readonly HomeWork[];
   workingTotal: number;
@@ -435,7 +529,7 @@ export function HomeScreen({
   const orderedNeeds = [...needs].sort((a, b) => homeNeedRank(a) - homeNeedRank(b));
   return (
     <div data-home data-home-order={visible.map(sectionKey).join(" ")} className="min-h-0 min-w-0 flex-1 overflow-y-auto text-content">
-      <div className="mx-auto flex flex-col gap-6 px-6 pt-12 pb-8" style={{ maxWidth: HOME_MAX_WIDTH }}>
+      <div className="mx-auto flex flex-col gap-6 px-8 pt-10 pb-10" style={{ maxWidth: HOME_WIDE_WIDTH }}>
         <header data-home-header className="flex items-baseline gap-3">
           <h1 className="text-[18px] font-medium text-content">{title}</h1>
           {date ? <p data-home-date className="min-w-0 flex-1 truncate text-[13px] text-content/60">{date}</p> : <span className="flex-1" />}
@@ -515,6 +609,36 @@ export function HomeScreen({
           </div>
         ) : null}
         {known ? <ChiefBox chief={chief} onAsk={onAsk} quiet={quiet} /> : null}
+        {known && !chief.missing ? (
+          <div data-home-glances className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+            {arrangement.hidden.includes("needs-you") ? null : (
+              <Glance
+                label="Needs you"
+                value={needsGlance}
+                note={needsGlance > 0 ? "Waiting on your answer" : "Nothing is waiting on you"}
+                tone={needsGlance > 0 ? NEEDS_YOU_RED : "var(--color-status-ok)"}
+                onClick={needsGlance > 0 ? onSeeNeeds : undefined}
+              />
+            )}
+            {arrangement.hidden.includes("moving-now") ? null : (
+              <Glance
+                label="Working now"
+                value={workingTotal}
+                note={workingTotal > 0 ? `${workersLabel(workingTotal)} on the job` : "Nobody is working right now"}
+                tone="var(--color-accent)"
+              />
+            )}
+            {arrangement.hidden.includes("recent") ? null : (
+              <Glance
+                label="Done today"
+                value={done.length}
+                note={done.length > 0 ? "Finished since this morning" : "Nothing finished yet today"}
+                tone="var(--color-status-ok)"
+              />
+            )}
+          </div>
+        ) : null}
+        <div data-home-cards className="grid grid-cols-1 items-start gap-4 md:grid-cols-2">
         {visible.map((ref, index) => {
           const key = sectionKey(ref);
           const title = titleOf(ref, catalog);
@@ -524,12 +648,12 @@ export function HomeScreen({
               key={key}
               data-home-section={key}
               aria-label={title}
-              className="home-enter rounded-lg border border-stroke"
+              className={`${HOME_CARD}${key === "needs-you" || ref.kind === "panel" ? " md:col-span-2" : ""}`}
               style={{ animationDelay: `${index * HOME_STAGGER_MS}ms` }}
             >
-              <header className="flex items-center gap-2 px-3 py-2">
+              <header className="flex items-center gap-2 px-4 pt-3 pb-2">
                 <SectionMark kind={key} />
-                <h2 className="truncate text-[13px] font-medium text-content">{title}</h2>
+                <h2 className="truncate text-[14px] font-semibold text-content">{title}</h2>
                 {key === "needs-you" && needsTotal > 0 ? <span data-home-count={needsTotal} className="text-[12px] text-content/60">{needsTotal}</span> : null}
                 {key === "moving-now" ? <span data-home-workers className="text-[12px] text-content/60">{workersLabel(workingTotal)}</span> : null}
                 {key === "recent" ? <span data-home-done className="text-[12px] text-content/60">{done.length}</span> : null}
@@ -545,7 +669,7 @@ export function HomeScreen({
                     <div
                       key={line.id}
                       data-home-line="builders"
-                      className="flex min-h-10 w-full items-center gap-3 border-t border-stroke px-3 py-1.5 text-[13px] text-content"
+                      className={HOME_ROW}
                     >
                       <span className="min-w-0 flex-1">{line.text}</span>
                       <button
@@ -569,7 +693,7 @@ export function HomeScreen({
                 );
                 if (!row.onOpen) {
                   return (
-                    <div key={row.key} data-home-line="working" className="flex min-h-10 w-full items-center gap-3 border-t border-stroke px-3 py-1.5 text-left text-[13px] text-content">
+                    <div key={row.key} data-home-line="working" className={HOME_ROW}>
                       {body}
                     </div>
                   );
@@ -579,7 +703,7 @@ export function HomeScreen({
                     key={row.key}
                     type="button"
                     data-home-line="working"
-                    className="flex min-h-10 w-full items-center gap-3 border-t border-stroke px-3 py-1.5 text-left text-[13px] text-content hover:bg-content/8"
+                    className={`${HOME_ROW} hover:bg-content/8`}
                     onClick={row.onOpen}
                   >
                     {body}
@@ -591,7 +715,7 @@ export function HomeScreen({
                   key={row.key}
                   type="button"
                   data-home-line="done"
-                  className="flex min-h-10 w-full items-center gap-3 border-t border-stroke px-3 py-1.5 text-left text-[13px] text-content hover:bg-content/8"
+                  className={`${HOME_ROW} hover:bg-content/8`}
                   onClick={row.onOpen}
                 >
                   <Tag name={row.project} />
@@ -615,11 +739,14 @@ export function HomeScreen({
                 key={extra.key}
                 data-home-section={extra.key}
                 aria-label={extra.title}
-                className="home-enter rounded-lg border border-stroke"
+                className={HOME_CARD}
                 style={{ animationDelay: `${(visible.length + index) * HOME_STAGGER_MS}ms` }}
               >
-                <header className="flex items-center gap-2 px-3 py-2">
-                  <h2 className="truncate text-[13px] font-medium text-content">{extra.title}</h2>
+                <header className="flex items-center gap-2 px-4 pt-3 pb-2">
+                  <span className="grid size-4 shrink-0 place-items-center text-content/60">
+                    {extra.layout === "tiles" ? <Book className="size-3.5" aria-hidden /> : <Zap className="size-3.5" aria-hidden />}
+                  </span>
+                  <h2 className="truncate text-[14px] font-semibold text-content">{extra.title}</h2>
                   {extra.rows.length ? <span className="text-[12px] text-content/60">{extra.rows.length}</span> : null}
                   <span className="min-w-0 flex-1" />
                   {extra.action ? (
@@ -627,13 +754,33 @@ export function HomeScreen({
                   ) : null}
                 </header>
                 {extra.rows.length === 0 ? (
-                  <p className="border-t border-stroke px-3 py-2.5 text-[13px] text-content/60">{extra.empty}</p>
+                  <p className="px-4 pb-2 text-[13px] text-content/60">{extra.empty}</p>
+                ) : extra.layout === "tiles" ? (
+                  <div className="grid grid-cols-1 gap-2 px-3 pb-1.5 sm:grid-cols-2">
+                    {extra.rows.map((row) => (
+                      <button
+                        key={row.key}
+                        type="button"
+                        data-home-line={extra.key}
+                        className="flex min-w-0 items-center gap-3 rounded-lg border border-stroke px-3 py-2.5 text-left hover:bg-content/8"
+                        onClick={row.onOpen}
+                      >
+                        <span className="grid size-8 shrink-0 place-items-center rounded-lg bg-content/8 text-content/70">
+                          <Book className="size-4" aria-hidden />
+                        </span>
+                        <span className="flex min-w-0 flex-col">
+                          <span className="truncate text-[13px] font-medium text-content">{row.text}</span>
+                          {row.meta ? <span className="truncate text-[12px] text-content/60">{row.meta}</span> : null}
+                        </span>
+                      </button>
+                    ))}
+                  </div>
                 ) : extra.rows.map((row) => (
                   <button
                     key={row.key}
                     type="button"
                     data-home-line={extra.key}
-                    className="flex min-h-10 w-full items-center gap-3 border-t border-stroke px-3 py-1.5 text-left text-[13px] text-content hover:bg-content/8"
+                    className={`${HOME_ROW} hover:bg-content/8`}
                     onClick={row.onOpen}
                   >
                     <span className="min-w-0 flex-1">{row.text}</span>
@@ -643,6 +790,7 @@ export function HomeScreen({
               </section>
             ))
           : null}
+        </div>
         {!known && failed ? <p data-home-retry className="text-[13px] text-content/70">Couldn't load home. Trying again.</p> : null}
         {!known && !failed ? <div data-home-loading className="h-8" /> : null}
       </div>

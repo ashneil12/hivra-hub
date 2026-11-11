@@ -14,11 +14,11 @@ import {
   Settings,
   Zap,
   DashboardSquare,
-  Bot,
+  Book,
 } from "../../shared/ui/icons";
 import { IS_HUB_BUNDLE } from "../../features/hub/model/hubBundle";
-import { showAppItem, useHubSelection } from "../../features/hub/model/hubNav";
-import { pinnedPages, requestOpenPage, usePagesVersion } from "../../features/pages/model/pages";
+import { useHubSelection } from "../../features/hub/model/hubNav";
+import { pinnedPages, requestOpenPage, requestPagesList, shownPageId, usePagesVersion } from "../../features/pages/model/pages";
 import {
   useEffect,
   useLayoutEffect,
@@ -271,7 +271,9 @@ export function ProjectRail({
   );
   const notificationProjects = useNotificationProjects([...allProjects.keys()]);
   const menuTrigger = useRef<HTMLElement | null>(null);
-  // The general places: on top in Monocode, under the agents and teams in the hub (Dropwave).
+  usePagesVersion();
+  const pinnedPageShown = pagesActive && pinnedPages().some((page) => page.id === shownPageId());
+  // The general places, on top. In the hub they follow Home and the Chief of Staff (Dropwave).
   const placesNav = (
     <>
       <RailAction
@@ -310,12 +312,15 @@ export function ProjectRail({
         <RailAction
           label="Pages"
           icon={DashboardSquare}
-          onClick={onOpenPages}
-          active={pagesActive}
+          onClick={() => {
+            requestPagesList();
+            onOpenPages();
+          }}
+          active={pagesActive && !(IS_HUB_BUNDLE && pinnedPageShown)}
           ariaLabel="Pages"
         />
       ) : null}
-      {onOpenPages ? <PinnedPages onOpen={onOpenPages} /> : null}
+      {onOpenPages ? <PinnedPages onOpen={onOpenPages} active={pagesActive} /> : null}
     </>
   );
   const lockOverscroll = useLockOverscroll<HTMLDivElement>();
@@ -487,7 +492,9 @@ export function ProjectRail({
               ariaLabel={`Search (${MOD}K)`}
             />
             <div className="mt-0.5" />
-            {hubItems && hubTopNav ? hubTopNav : placesNav}
+            {/* Dropwave: Home and the Chief of Staff first, then the places. */}
+            {hubItems && hubTopNav ? hubTopNav : null}
+            {placesNav}
           </div>
 
           <div
@@ -500,13 +507,6 @@ export function ProjectRail({
             {monos ? <MonoRailSection {...monos} /> : null}
 
             {hubItems ? hubItems : null}
-            {/* Dropwave: in the hub the general places sit under the agents and teams, not above the Chief of Staff. */}
-            {hubItems && hubTopNav ? (
-              <div className="mb-2 shrink-0" data-hub-places>
-                <div className="px-4 pb-1.5 pt-1 text-xs leading-5 text-content/50">Places</div>
-                <div className="flex flex-col gap-px px-2">{placesNav}</div>
-              </div>
-            ) : null}
             {hubItems ? null : <>
             {sections.pinned.length > 0 ? (
               <ProjectSection
@@ -618,10 +618,7 @@ export function ProjectRail({
           />
           <div className="flex shrink-0 flex-col gap-px p-2">
             <GithubStarPrompt />
-            {IS_HUB_BUNDLE ? (
-              // WP-219: the rail's Agents tile, until WP-213 owns it.
-              <RailAction label="Agents" icon={Bot} onClick={() => showAppItem("agents")} ariaLabel="Agents" />
-            ) : null}
+            {/* Dropwave (Ash, 11 Nov): no Agents tile down here. The board opens from a chat's "N working" line. */}
             <RailAction
               label="Settings"
               icon={Settings}
@@ -1321,13 +1318,34 @@ function AddProjectButton({ onOpenFolder }: { onOpenFolder: () => void }) {
 }
 
 /** Pinned pages (by Ash or by a Mono) under Pages; one click opens the page. */
-function PinnedPages({ onOpen }: { onOpen: () => void }) {
+function PinnedPages({ onOpen, active = false }: { onOpen: () => void; active?: boolean }) {
   usePagesVersion();
   // Dropwave: inside a project, only that project's pinned pages; Home lists them all.
   const sel = useHubSelection();
   const inProject = IS_HUB_BUNDLE && !!sel.project && sel.item !== "home" && sel.item !== "agents";
   const pinned = pinnedPages().filter((page) => !inProject || page.projectId === sel.project);
   if (!pinned.length) return null;
+  const open = (id: string) => {
+    requestOpenPage(id);
+    onOpen();
+  };
+  // Dropwave (Ash, 11 Nov): a pinned page is a place of its own in the sidebar, beside Inbox and Notes, not a
+  // sub-row under Pages.
+  if (IS_HUB_BUNDLE)
+    return (
+      <div className="contents" data-sidebar-pinned-pages aria-label="Pinned pages" role="group">
+        {pinned.map((p) => (
+          <RailAction
+            key={p.id}
+            label={p.title}
+            icon={Book}
+            active={active && shownPageId() === p.id}
+            ariaLabel={`${p.title}, pinned by ${p.pinnedBy ?? "you"}`}
+            onClick={() => open(p.id)}
+          />
+        ))}
+      </div>
+    );
   return (
     <div className="flex flex-col gap-px pl-6" data-sidebar-pinned-pages aria-label="Pinned pages" role="group">
       {pinned.map((p) => (
@@ -1335,10 +1353,7 @@ function PinnedPages({ onOpen }: { onOpen: () => void }) {
           key={p.id}
           type="button"
           title={`${p.title}, pinned by ${p.pinnedBy ?? "you"}`}
-          onClick={() => {
-            requestOpenPage(p.id);
-            onOpen();
-          }}
+          onClick={() => open(p.id)}
           className="flex h-7 min-w-0 items-center gap-2 rounded-md px-2 text-left text-[13px] text-content/75 hover:bg-content/8 hover:text-content"
         >
           <Pin className="size-3 shrink-0 text-content/50" strokeWidth={1.75} />

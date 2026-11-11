@@ -83,7 +83,9 @@ import {
   monoLook,
   monosSnapshot,
   subscribeMonos,
+  monoSessionProject,
 } from "../../monos/model/mono";
+import { hubData } from "../../hub/model/hubData";
 import { MonoHeader } from "../../monos/ui/MonoHeader";
 import { reportTeamOf, useDelegationPane } from "../../monos/hooks/useDelegationPane";
 import { readTeamReport } from "../../monos/model/teamReport";
@@ -1107,7 +1109,7 @@ const LocalSessionPane = memo(function LocalSessionPane({
             {remoteSessionLoading ? null : isEmpty ? (
               agent ? (
                 <div className="scrollbar-none h-full min-h-0 overflow-y-auto">
-                  <MonoHeader agent={agent} greeting />
+                  <MonoHeader agent={agent} greeting project={monoProjectName(session.id)} />
                 </div>
               ) : session.inboxAsk ? (
                 <div className="scrollbar-none h-full min-h-0 overflow-y-auto">
@@ -1567,4 +1569,10 @@ function monoUsageProviders(harness: HarnessId): RateLimitProvider[] {
     harness === "devin"
     ? [harness]
     : [];
+}
+
+/** Dropwave: the project a Mono's chat is its own chat for (the Chief of Staff has one per project), by name. */
+function monoProjectName(sessionId: string): string | undefined {
+  const projectId = monoSessionProject(sessionId);
+  return projectId ? hubData().listProjects().find((project) => project.id === projectId)?.name : undefined;
 }

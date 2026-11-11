@@ -7,6 +7,7 @@ import {
   CLASSIC_LAYOUT_HIDDEN_SETTINGS,
   INSET_LAYOUT_HIDDEN_SETTINGS,
   SETTINGS_INDEX,
+  SETTINGS_SECTIONS,
   settingsSectionsByGroup,
   MODEL_CONTROLS_DEFAULT,
   DIFF_VIEWER_DEFAULT,
@@ -702,43 +703,19 @@ describe("collapsed project rail setting", () => {
 describe("settings navigation", () => {
   it("lists every section under exactly one rail group", () => {
     const groups = settingsSectionsByGroup();
-    expect(groups.map((group) => group.label)).toEqual([
-      "App",
-      "Agents",
-      "Workspace",
-    ]);
-    expect(groups.flatMap((group) => group.sections.map((s) => s.id))).toEqual([
-      "general",
-      "connections",
-      "appearance",
-      "changes",
-      "decisions",
-      "activity",
-      "work-log",
-      "usage",
-      "connected",
-      "dashboards",
-      "portable",
-      "backups",
-      "history",
-      "memory",
-      "connectors",
+    // Dropwave (Ash, 11 Nov: "the settings area is an absolute mess"): five short lists, the rarely needed ones last.
+    expect(groups.map((group) => group.label)).toEqual(["App", "First mates", "What happened", "Your data", "Advanced"]);
+    expect(groups.filter((group) => group.folded).map((group) => group.label)).toEqual(["Advanced"]);
+    expect(groups.map((group) => group.sections.map((s) => s.id))).toEqual([
+      ["general", "appearance", "keybindings", "usage"],
+      ["monos", "teams", "chat", "providers", "skills", "connectors", "connected", "memory"],
+      ["decisions", "activity", "work-log", "changes", "history"],
       // WP-92: the key vault.
-      "secrets",
-      "keybindings",
-      "chat",
-      "providers",
-      "mcp",
-      "skills",
-      "plugins",
-      "crew",
-      "monos",
-      "teams",
-      "inbox",
-      "archive",
-      "trash",
-      "worktrees",
+      ["portable", "backups", "secrets"],
+      ["connections", "mcp", "plugins", "crew", "inbox", "dashboards", "archive", "trash", "worktrees"],
     ]);
+    // Every section is in the order list of its own group, once.
+    expect(groups.flatMap((group) => group.sections).length).toBe(SETTINGS_SECTIONS.length);
     // SSH machines are "Remote machines"; app logins live under Connectors.
     expect(groups.flatMap((g) => g.sections).find((s) => s.id === "connections")?.label).toBe("Remote machines");
     expect(groups.flatMap((g) => g.sections).find((s) => s.id === "activity")?.label).toBe("Activity");

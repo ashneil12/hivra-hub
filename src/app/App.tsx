@@ -1064,10 +1064,13 @@ import {
 } from "../features/monos/model/monoRotation";
 import {
   detachMonoTabs,
+  ensureMonoProjectSession,
   ensureMonoRoomSession,
   ensureMonoSession,
   resetMonoSession,
 } from "../features/monos/model/monoWorkspace";
+import { projectFront, setProjectFront, useProjectFrontVersion } from "../features/hub/model/projectFront";
+import { pickChief as pickCaptain } from "../features/home/model/chief";
 // WP-34: the Creator screen starts the Creator Mono's chat through this window's sessions.
 import { CREATOR_MONO_ID, landCreatorBrief, setCreatorSessionHost } from "../features/creator/model/creatorChat";
 import {
@@ -5766,7 +5769,7 @@ function Workspace({
 
   /** A Mono's conversation is a view over the existing workspace tabs. */
   const onOpenMono = useCallback(
-    async (monoId: string, options: { inTeam?: boolean; leaveSettings?: boolean } = {}) => {
+    async (monoId: string, options: { inTeam?: boolean; leaveSettings?: boolean; project?: string } = {}) => {
       // WP-06: held until the focus from uncovering the project pane has passed (onFocusPane).
       const opening = ++openingMonoGen.current;
       openingMono.current = true;
@@ -5774,11 +5777,17 @@ function Workspace({
       // A project's Lead lives in its coding team (Ash, 20 Oct: "mainly the coding team is the main place i want to
       // talk to"): opened from anywhere (the Monos rail, Being built, Today, a page), it lands there, with the
       // project's Sessions list beside its chat.
-      const team = leadCodingTeam(monoId);
+      // Dropwave: the Mono's own chat for a project (the Chief of Staff's) opens in that project's chat area the same
+      // way, pinned on top of its list.
+      const ownProject = options.project
+        ? hubData().listProjects().find((project) => project.id === options.project)
+        : undefined;
+      const team = ownProject ? (codingTeamsOn() && ownProject.folder ? ownProject : undefined) : leadCodingTeam(monoId);
       // Any other Mono opens on its own (people, not work), or inside its own team (monoTeams.ts) when asked: its
       // chat pinned on top of the team's Sessions list, as a Lead's is in its coding team.
-      const own = !team && options.inTeam && codingTeamsOn() ? monoTeam(monoId) : undefined;
+      const own = !team && !ownProject && options.inTeam && codingTeamsOn() ? monoTeam(monoId) : undefined;
       if (team?.folder) {
+        setProjectFront(team.id, ownProject ? "captain" : "lead");
         setHubSelection({ project: team.id, item: "coding-team" });
         nameHubProject(team);
         noteCodingTeamView(team.id, "lead");
@@ -5809,15 +5818,18 @@ function Workspace({
       workspaceNavigation.cancel();
       const request = ++monoViewRequest.current;
       lastMonoIdRef.current = monoId;
-      const opened = await ensureMonoSession(monoId, {
+      const sessionHost = {
         home: homeDir,
         load: ensureOpenSession,
-        create: (path) => newDefaultSession(path),
-        add: (created) => {
+        create: (path: string) => newDefaultSession(path),
+        add: (created: Session) => {
           sessionsRef.current = [...sessionsRef.current, created];
           setSessions(sessionsRef.current);
         },
-      });
+      };
+      const opened = ownProject
+        ? await ensureMonoProjectSession(monoId, ownProject, sessionHost)
+        : await ensureMonoSession(monoId, sessionHost);
       // WP-34: a build that started before this window's sessions existed lands its brief here.
       const session = opened && monoId === CREATOR_MONO_ID ? landCreatorBrief(opened) : opened;
       if (session && session !== opened) {
@@ -7609,7 +7621,18 @@ function Workspace({
   );
   useEffect(() => (codingTeamsOn() ? setMonoTeamOpener(openMonoTeamView) : undefined), [openMonoTeamView]);
   // A Mono's chat opened from anywhere, Settings included (hubNav.ts openMonoChat): in its team when it has one.
-  useEffect(() => setMonoChatOpener((monoId) => void onOpenMono(monoId, { inTeam: true, leaveSettings: true })), [onOpenMono]);
+  // Dropwave: every one-to-one chat has the same layout (the chat list beside the chat), so a Mono that is no project's
+  // Lead gets its own team's folder the first time its chat opens. `project` opens its own chat for that project.
+  useEffect(
+    () =>
+      setMonoChatOpener((monoId, target) => {
+        if (target?.project) return void onOpenMono(monoId, { project: target.project, leaveSettings: true });
+        const open = () => void onOpenMono(monoId, { inTeam: true, leaveSettings: true });
+        if (!codingTeamsOn() || leadFor(monoId) || monoTeam(monoId)) return open();
+        void ensureMonoTeam(monoId).catch(() => undefined).then(open);
+      }),
+    [onOpenMono],
+  );
   // WP-34: the Creator screen starts the Creator Mono's chat through this window's sessions.
   useEffect(() => setCreatorSessionHost({
     home: homeDir,
@@ -13296,15 +13319,20 @@ function Workspace({
 
   // WP-212: Home's box uses the Chief of Staff's own chat, the same session the sidebar opens.
   useEffect(() => setHomeChiefHost({
-    ensure: (monoId) => ensureMonoSession(monoId, {
-      home: homeDir,
-      load: ensureOpenSession,
-      create: (path) => newDefaultSession(path),
-      add: (created) => {
-        sessionsRef.current = [...sessionsRef.current, created];
-        setSessions(sessionsRef.current);
-      },
-    }),
+    ensure: (monoId, projectId) => {
+      const sessionHost = {
+        home: homeDir,
+        load: ensureOpenSession,
+        create: (path: string) => newDefaultSession(path),
+        add: (created: Session) => {
+          sessionsRef.current = [...sessionsRef.current, created];
+          setSessions(sessionsRef.current);
+        },
+      };
+      // Dropwave: a project home's box starts in the Chief of Staff's own chat for that project.
+      const project = projectId ? hubData().listProjects().find((entry) => entry.id === projectId) : undefined;
+      return project ? ensureMonoProjectSession(monoId, project, sessionHost) : ensureMonoSession(monoId, sessionHost);
+    },
     submit: (sessionId, text) => submitSession(sessionId, text),
     answer: (sessionId, requestId, reply) => onQuestionReply(sessionId, requestId, reply),
     read: (sessionId) => {
@@ -17756,6 +17784,8 @@ function Workspace({
     .listProjects()
     .find((project) => project.id === hubSel.project);
   const closeChromeViews = () => {
+    // Dropwave (Ash, 11 Nov): picking anything in the sidebar or the project strip leaves Settings too; no Back first.
+    setSettingsOpen(false);
     setSearchViewOpen(false);
     setInboxViewOpen(false);
     setNotesViewOpen(false);
@@ -17845,7 +17875,9 @@ function Workspace({
       setHubSelection(projectHomeSelection({ id: hubSel.project, folder: hubFolder }));
     }
   }, [hubSel.project, hubSel.item, hubFolder, openCodingTeam]);
-  const hubMonos = sidebarMonos
+  // Dropwave (Ash, 11 Nov): on Home there is only the Chief of Staff, so its sidebar lists no first mates.
+  const hubOnHome = hubSel.item === "home" || homeMonoInView(hubSel);
+  const hubMonos = sidebarMonos && !hubOnHome
     ? { ...sidebarMonos, rank: hubMonoRank, projectFilter: hubSel.item === "home" || homeMonoInView(hubSel) ? HOME_MONOS : hubSel.project === NO_PROJECT ? undefined : (hubProject?.folder ?? `hub-project:${hubSel.project}`) }
     : undefined;
 
@@ -17965,7 +17997,9 @@ function Workspace({
     monoTeamInView(hubSel) === monoViewMono.id &&
     sameProjectPath(sidebarCwd, monoTeam(monoViewMono.id)?.folder ?? "");
   const monoViewTeamAction =
-    monoViewMono && monoViewTeam?.kind === "mono"
+    // Dropwave (Ash, 11 Nov): every first mate's chat opens in its own chat list, so the button only shows for a chat
+    // that is somehow on its own; inside its list there is nothing to toggle and every chat's top bar reads the same.
+    monoViewMono && monoViewTeam?.kind === "mono" && !monoViewTeamOpen
       ? {
           name: monoViewTeam.name,
           open: monoViewTeamOpen,
@@ -18073,22 +18107,28 @@ function Workspace({
   const ownTeam = teamOwnerMonoId ? monoTeam(teamOwnerMonoId) : undefined;
   const ownTeamShown = !!ownTeam && sameProjectPath(sidebarCwd, ownTeam.folder);
   const teamFolder = teamProject?.folder ?? (ownTeamShown ? ownTeam.folder : undefined);
+  // Dropwave: the Chief of Staff's own chat for the project is the one pinned on top, unless Ash opened the project's
+  // Lead there last (projectFront.ts).
+  const projectFrontVersion = useProjectFrontVersion();
+  const teamCaptain =
+    teamProject && projectFront(teamProject.id) === "captain" ? pickCaptain(listMonos()) : undefined;
   const teamLeadMono = teamProject
-    ? leadMono(leadSpecFor(teamProject))
+    ? (teamCaptain ?? leadMono(leadSpecFor(teamProject)))
     : ownTeamShown
       ? findMono(teamOwnerMonoId!)
       : undefined;
-  const teamLeadSession = teamLeadMono?.sessionId
-    ? sessions.find((session) => session.id === teamLeadMono.sessionId)
+  const teamLeadSessionId =
+    teamCaptain && teamProject ? teamCaptain.projectSessions?.[teamProject.id] : teamLeadMono?.sessionId;
+  const teamLeadSession = teamLeadSessionId
+    ? sessions.find((session) => session.id === teamLeadSessionId)
     : undefined;
   const teamLeadLook = teamLeadMono ? monoLook(teamLeadMono) : undefined;
   const teamLeadStatus = teamLeadMono ? (monoRail.states.get(teamLeadMono.id)?.status ?? "idle") : "idle";
-  const teamLeadActive = !!teamLeadMono && monoCovers && monoViewMono?.id === teamLeadMono.id;
+  const teamLeadActive =
+    !!teamLeadMono && monoCovers && (teamCaptain ? monoViewId === teamLeadSessionId : monoViewMono?.id === teamLeadMono.id);
   const teamLeadBusy =
     !!teamLeadSession?.busy ||
-    !!(
-      teamLeadMono?.sessionId && liveBusySessionIds.has(teamLeadMono.sessionId)
-    );
+    !!(teamLeadSessionId && liveBusySessionIds.has(teamLeadSessionId));
   // Kept by identity while nothing it shows changes: the Sidebar is memoized.
   const codingTeamList = useMemo<CodingTeamList | undefined>(
     () =>
@@ -18099,7 +18139,7 @@ function Workspace({
               ? {
                   lead: {
                     session: {
-                      id: teamLeadMono.sessionId ?? `lead:${teamLeadMono.id}`,
+                      id: teamLeadSessionId ?? `lead:${teamLeadMono.id}`,
                       cwd: teamFolder,
                       harness: teamLeadSession?.harness ?? "claude",
                       model: teamLeadSession?.model ?? "",
@@ -18120,10 +18160,14 @@ function Workspace({
                     active: teamLeadActive,
                     busy: teamLeadBusy,
                     // In the time's place: what it is to the team.
-                    statusLabel: teamProject ? "Lead" : "Owner",
+                    statusLabel: teamCaptain || teamLeadMono.id === pickCaptain(listMonos())?.id ? "Captain" : teamProject ? "Lead" : "First mate",
                     // Its chat's own title, which renames as any chat's does (Sidebar.tsx renderLeadCard).
                     ...(teamLeadSession ? { chatTitle: teamLeadSession.title } : {}),
-                    onOpen: () => void onOpenMono(teamLeadMono.id, { inTeam: true }),
+                    onOpen: () =>
+                      void onOpenMono(
+                        teamLeadMono.id,
+                        teamCaptain && teamProject ? { project: teamProject.id } : { inTeam: true },
+                      ),
                   },
                 }
               : {}),
@@ -18133,7 +18177,9 @@ function Workspace({
       teamProject,
       teamFolder,
       teamLeadMono?.id,
-      teamLeadMono?.sessionId,
+      teamLeadSessionId,
+      !!teamCaptain,
+      projectFrontVersion,
       teamLeadLook?.name,
       teamLeadLook?.mascot,
       teamLeadLook?.color,
@@ -18191,7 +18237,7 @@ function Workspace({
     <Sidebar
       hubTopNav={
         <HubTopNav
-          openMonoId={monoViewId}
+          openSessionId={monoViewId}
           covered={searchViewOpen || settingsOpen || inboxViewOpen || notesViewOpen || automationsViewOpen}
           onLeaveCovers={() => {
             closeChromeViews();

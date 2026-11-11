@@ -2,13 +2,13 @@ import { useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type
 import { OverlayNav } from "../../../app/shell/TitleBar";
 import { WindowControls } from "../../../app/shell/WindowControls";
 import { IS_MAC } from "../../../platform/tauri/platform";
-import { ArrowUp, DashboardSquare, Pin, Undo2 } from "../../../shared/ui/icons";
+import { ArrowUp, DashboardSquare, MoreHorizontal, Pin, Undo2 } from "../../../shared/ui/icons";
 import { useHubSelection } from "../../hub/model/hubNav";
 import { leadFor } from "../../hub/model/hubLeads";
 import { listMonos, monoWorksOn } from "../../monos/model/mono";
 import { hubData, useHubDataVersion } from "../../hub/model/hubData";
 import { recordPageSource, undoBotChange } from "../../hub/model/botChanges";
-import { allPages, clearPagesProblem, pagesProblem, pendingOpenPage, setPinned, takeOpenRequest, allowPage, approvedPermissions, needsAllow, keepPage, pageBlocks, pageFromSpec, usePagesVersion, newAsks, useNewVersion, dropNewVersion, type Page, type PageBlock } from "../model/pages";
+import { allPages, noteShownPage, shownPageId, pagesListRequests, clearPagesProblem, pagesProblem, pendingOpenPage, setPinned, takeOpenRequest, allowPage, approvedPermissions, needsAllow, keepPage, pageBlocks, pageFromSpec, usePagesVersion, newAsks, useNewVersion, dropNewVersion, type Page, type PageBlock } from "../model/pages";
 import { buildPage, rebuildPage, type BuildPageResult } from "../model/buildPage";
 import type { PageSpec } from "../model/pageSpec";
 import { READY_BY, READY_PAGES, readyWhat, withReadySpec, type ReadyPage } from "../model/readyPages";
@@ -580,6 +580,19 @@ export function PagesContent() {
   useEffect(() => {
     if (requested) { setOpen(takeOpenRequest()); setBuild(undefined); setNewPage(false); }
   }, [requested]);
+  // Dropwave: the sidebar's Pages row asks for the list itself.
+  const listAsked = pagesListRequests();
+  const listSeen = useRef(listAsked);
+  useEffect(() => {
+    if (listSeen.current === listAsked) return;
+    listSeen.current = listAsked;
+    setOpen(undefined); setBuild(undefined); setNewPage(false);
+  }, [listAsked]);
+  // Dropwave: the sidebar marks a pinned page as open while it is the one shown here.
+  useEffect(() => {
+    noteShownPage(open);
+    return () => noteShownPage(undefined);
+  }, [open]);
   const pages = allPages();
   const shown = pages.find((p) => p.id === open);
   // A new page belongs to the filtered project, else the one selected in the hub.
@@ -700,16 +713,20 @@ export function PagesContent() {
       <div className="min-h-0 flex-1 overflow-auto">
         <div className="w-full px-6 py-6 xl:px-8" data-pages-open>
           <PagesProblem />
-          <button type="button" className={`${quietBtn} -ml-3 mb-2`} onClick={() => setOpen(undefined)}>← All pages</button>
+          {/* Dropwave (Ash, 11 Nov): a page just shows up. What you can do with it sits behind one three-dot menu, and
+              a change is something you ask a Mono for. */}
           <div className="flex items-center gap-2">
             <h1 className="min-w-0 flex-1 truncate text-[17px] font-medium text-content">{shown.title}</h1>
-            <button type="button" data-pages-rebuild className={quietBtn} aria-expanded={rebuilding === shown.id} onClick={() => setRebuilding(rebuilding === shown.id ? undefined : shown.id)}>Rebuild</button>
-            <PinToggle page={shown} inHeader />
+            <DotMenu label={`${shown.title} options`} items={[
+              { id: "rebuild", label: rebuilding === shown.id ? "Never mind the change" : "Ask for a change", onPick: () => setRebuilding(rebuilding === shown.id ? undefined : shown.id) },
+              { id: "pin", label: shown.pinned ? "Unpin from the sidebar" : "Pin to the sidebar", onPick: () => setPinned(shown.id, !shown.pinned) },
+              { id: "all", label: "All pages", onPick: () => setOpen(undefined) },
+            ]} />
           </div>
           {readyWhat(shown.request) ? <p className="mt-1 text-[13px] leading-5 text-content/70" data-pages-what>{readyWhat(shown.request)}</p> : null}
           {/* "Kept" says itself once, with Undo, in the bar below; this line is just where it lives and who built it. */}
           <div className="mt-1 text-[12px] text-content/60" data-pages-meta>{nameOf(shown.projectId ?? "today")} · by {shown.by}{request ? <> · “{request}”</> : null}{shown.permissions.length ? <> · <AllowedLine key={shown.id} asks={shown.permissions} /></> : null}</div>
-          <div className="mb-4 mt-1"><Limits /></div>
+          <div className="mb-4" />
           {kept === shown.title ? (
             <div className={`${card} mb-4 flex items-center gap-2 px-3 py-2 text-[12px] text-content/80`} role="status">
               <span className="min-w-0 flex-1">Kept.</span>
@@ -912,6 +929,38 @@ function PageRebuild({ page, asking, onDone, seated, projectId, children }: { pa
     </>
   );
 }
+/** One three-dot menu: what you can do with what's on screen, out of the way until asked for. */
+export function DotMenu({ label, items }: { label: string; items: { id: string; label: string; onPick: () => void }[] }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const away = (e: Event) => { if (!ref.current?.contains(e.target as Node)) setOpen(false); };
+    const key = (e: KeyboardEvent) => { if (e.key === "Escape") setOpen(false); };
+    document.addEventListener("pointerdown", away);
+    document.addEventListener("keydown", key);
+    return () => { document.removeEventListener("pointerdown", away); document.removeEventListener("keydown", key); };
+  }, [open]);
+  return (
+    <div ref={ref} className="relative shrink-0" data-pages-menu>
+      <button type="button" aria-label={label} title="More" aria-haspopup="menu" aria-expanded={open} data-pages-menu-button
+        onClick={() => setOpen((o) => !o)}
+        className={`grid size-7 place-items-center rounded-md text-content/70 hover:bg-surface-raised hover:text-content ${open ? "bg-surface-raised text-content" : ""}`}>
+        <MoreHorizontal className="size-4" strokeWidth={1.75} />
+      </button>
+      {open ? (
+        <div role="menu" className="popover-glass absolute right-0 top-8 z-20 min-w-[190px] rounded-lg p-1 shadow-lg ring-1 ring-surface-ring">
+          {items.map((item) => (
+            <button key={item.id} type="button" role="menuitem" data-pages-menu-item={item.id} {...(item.id === "rebuild" ? { "data-pages-rebuild": "" } : {})}
+              onClick={() => { setOpen(false); item.onPick(); }}
+              className="block w-full rounded-md px-2.5 py-1.5 text-left text-[13px] text-content/85 hover:bg-selection-hover hover:text-content">{item.label}</button>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 /** Pin or unpin a page; pinned pages show in the sidebar. */
 /** Unpinned: hidden until the row is hovered (always shown, at 70% content, beside an open page's title). Pinned: solid. */
 function PinToggle({ page, inHeader }: { page: Page; inHeader?: boolean }) {
@@ -933,7 +982,13 @@ export function PagesView({ onClose, onToggleSidebar, besideRail = true, compact
     window.addEventListener(OPEN_EDIT_TODAY, open);
     return () => window.removeEventListener(OPEN_EDIT_TODAY, open);
   }, []);
-  const tabs: ["pages" | ChangeFlow, string][] = [["pages", "Pages"], ["hub", FLOW_LABEL.hub], ["today", FLOW_LABEL.today], ["connect", FLOW_LABEL.connect]];
+  // Dropwave (Ash, 11 Nov): no row of tabs up here. A page just shows; "Change the hub", "Edit Today" and "Connect
+  // data" wait behind the list's three-dot menu.
+  usePagesVersion();
+  const listAsked = pagesListRequests();
+  useEffect(() => { if (listAsked) setTab("pages"); }, [listAsked]);
+  const pageShown = tab === "pages" && !!shownPageId() && allPages().some((p) => p.id === shownPageId());
+  const flows: ChangeFlow[] = ["hub", "today", "connect"];
   return (
     <div role="region" aria-label="Pages" data-app-pages className="flex min-h-0 min-w-0 flex-1 flex-col text-content">
       <div className="flex h-10 shrink-0 select-none items-center border-b border-stroke" data-tauri-drag-region="deep">
@@ -941,14 +996,18 @@ export function PagesView({ onClose, onToggleSidebar, besideRail = true, compact
         {IS_MAC && !besideRail ? <div className="w-[78px] shrink-0" /> : null}
         {besideRail || !onToggleSidebar ? null : <OverlayNav onBack={onClose} onToggleSidebar={onToggleSidebar} />}
         <div className="flex min-w-0 flex-1 items-center gap-2 px-3 text-[13px]">
-          <DashboardSquare className="size-3.5 shrink-0 text-content/60" strokeWidth={1.75} />
-          <span className="min-w-0 truncate text-content">Pages</span>
-          <div role="tablist" aria-label="Pages and changes" className="ml-3 flex gap-0.5">
-            {tabs.map(([id, label]) => (
-              <button key={id} type="button" role="tab" aria-selected={tab === id} onClick={() => setTab(id)}
-                className={`rounded-md px-2 py-0.5 text-[12px] ${tab === id ? "bg-selection text-content" : "text-content/70 hover:bg-selection-hover"}`}>{label}</button>
-            ))}
-          </div>
+          {pageShown ? null : tab === "pages" ? (
+            <>
+              <DashboardSquare className="size-3.5 shrink-0 text-content/60" strokeWidth={1.75} />
+              <span className="min-w-0 flex-1 truncate text-content">Pages</span>
+              <DotMenu label="More for Pages" items={flows.map((flow) => ({ id: flow, label: FLOW_LABEL[flow], onPick: () => setTab(flow) }))} />
+            </>
+          ) : (
+            <>
+              <button type="button" data-pages-back className="rounded-md px-2 py-0.5 text-[12px] text-content/70 hover:bg-selection-hover hover:text-content" onClick={() => setTab("pages")}>← Pages</button>
+              <span className="min-w-0 truncate text-content">{FLOW_LABEL[tab]}</span>
+            </>
+          )}
         </div>
         {IS_MAC ? null : <WindowControls />}
       </div>

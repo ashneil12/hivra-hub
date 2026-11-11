@@ -1416,7 +1416,8 @@ function MonoTitle({ look, state }: { look: MonoLook; state: MonoState }) {
         still={state.status === "idle"}
         className="size-4 shrink-0"
       />
-      <span className="min-w-0 truncate text-[13px] font-medium text-content">
+      {/* The name keeps its room; in a narrow bar it is the role after it that shortens. */}
+      <span className="min-w-0 max-w-[70%] shrink-0 truncate text-[13px] font-medium text-content">
         {look.name}
       </span>
       {look.id && !isProjectLeadId(look.id) ? <MonoRoleLabel id={look.id} role={look.role} /> : null}

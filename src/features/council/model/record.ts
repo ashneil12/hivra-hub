@@ -49,7 +49,51 @@ export type CouncilRecord = {
   chairmanDifferent?: boolean;
   meta: CouncilMeta;
   note?: string;
+  /** Dropwave: what this room's council decided before, oldest first, so a new question doesn't wipe the last answer. */
+  past?: CouncilPast[];
 };
+
+/** One earlier decision, as short as the thread shows it. */
+export type CouncilPast = { question: string; consensus: boolean; winner?: string; nextStep?: string; minority?: string };
+
+export const PAST_MAX = 20;
+
+/** The finished council as a line of history, or nothing while it has no verdict. */
+export function pastOf(record: CouncilRecord): CouncilPast | undefined {
+  if (record.phase !== "done" || !record.tally || !record.verdict) return undefined;
+  return {
+    question: record.question.slice(0, PAST_TEXT_MAX),
+    consensus: record.tally.consensus,
+    ...(record.tally.winner ? { winner: record.tally.winner.slice(0, 200) } : {}),
+    ...(record.verdict.nextStep ? { nextStep: record.verdict.nextStep.slice(0, PAST_TEXT_MAX) } : {}),
+    ...(record.verdict.minority ? { minority: record.verdict.minority.slice(0, PAST_TEXT_MAX) } : {}),
+  };
+}
+
+/** The history a new question starts with: what was there, plus the council just finished. */
+export function carriedPast(record: CouncilRecord): CouncilPast[] {
+  const done = pastOf(record);
+  return [...(record.past ?? []), ...(done ? [done] : [])].slice(-PAST_MAX);
+}
+
+const PAST_TEXT_MAX = 1_000;
+
+function pastFrom(value: unknown): CouncilPast | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const raw = value as Record<string, unknown>;
+  if (typeof raw.question !== "string" || typeof raw.consensus !== "boolean") return null;
+  const text = (v: unknown, max: number) => (typeof v === "string" && v ? v.slice(0, max) : undefined);
+  const winner = text(raw.winner, 200);
+  const nextStep = text(raw.nextStep, PAST_TEXT_MAX);
+  const minority = text(raw.minority, PAST_TEXT_MAX);
+  return {
+    question: raw.question.slice(0, PAST_TEXT_MAX),
+    consensus: raw.consensus,
+    ...(winner ? { winner } : {}),
+    ...(nextStep ? { nextStep } : {}),
+    ...(minority ? { minority } : {}),
+  };
+}
 
 const JSON_MAX = 100_000;
 const TEXT_MAX = 8_000;
@@ -128,6 +172,11 @@ export function councilFromUnknown(value: unknown): CouncilRecord | null {
   if (typeof raw.chairmanId === "string") record.chairmanId = raw.chairmanId.slice(0, 200);
   if (typeof raw.chairmanDifferent === "boolean") record.chairmanDifferent = raw.chairmanDifferent;
   if (typeof raw.note === "string" && raw.note.length <= 500) record.note = raw.note;
+  // History that doesn't read is dropped line by line; the council itself stays.
+  if (Array.isArray(raw.past)) {
+    const past = raw.past.flatMap((item) => pastFrom(item) ?? []).slice(-PAST_MAX);
+    if (past.length) record.past = past;
+  }
   return record;
 }
 

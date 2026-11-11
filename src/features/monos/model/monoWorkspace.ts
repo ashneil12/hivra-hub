@@ -11,7 +11,10 @@ import {
   findMono,
   isMonoSession,
   monoForSession,
+  monoProjectSession,
   monoRoomSession,
+  monoSessionProject,
+  saveMonoProjectSession,
   saveMonoRoomSession,
   saveMonoSessionId,
 } from "./mono";
@@ -120,6 +123,50 @@ async function loadMonoRoomSession(
   return session;
 }
 
+const openingProjects = new Map<string, Promise<Session | undefined>>();
+
+/**
+ * Dropwave: the Mono's own chat for one project (the Chief of Staff has one in every project, geared to it), made the
+ * first time it is opened there. It works in the project's folder when it has one, else where its chat on Home does.
+ */
+export function ensureMonoProjectSession(
+  monoId: string,
+  project: { id: string; folder?: string | null },
+  host: Parameters<typeof ensureMonoSession>[1],
+): Promise<Session | undefined> {
+  const key = JSON.stringify([monoId, project.id]);
+  const pending = openingProjects.get(key);
+  if (pending) return pending;
+  const opening = loadMonoProjectSession(monoId, project, host).finally(() => {
+    if (openingProjects.get(key) === opening) openingProjects.delete(key);
+  });
+  openingProjects.set(key, opening);
+  return opening;
+}
+
+async function loadMonoProjectSession(
+  monoId: string,
+  project: { id: string; folder?: string | null },
+  host: Parameters<typeof ensureMonoSession>[1],
+): Promise<Session | undefined> {
+  const mono = findMono(monoId);
+  if (!mono) return undefined;
+  const known = monoProjectSession(monoId, project.id);
+  if (known) {
+    const existing = await host.load(known);
+    if (existing) return stampFirstMate(existing);
+  }
+  const folder = project.folder?.trim() || (await host.home());
+  if (!findMono(monoId)) return undefined;
+  const engine = mono.engine && Object.prototype.hasOwnProperty.call(HARNESS_LABEL, mono.engine) ? (mono.engine as HarnessId) : undefined;
+  const created = host.create(folder);
+  const own = engine && (engine !== created.harness || (mono.engineModel && mono.engineModel !== created.model));
+  const session: Session = stampFirstMate({ ...(own ? newSession(engine, folder, mono.engineModel) : created), runtimeMode: "auto" });
+  if (!saveMonoProjectSession(monoId, project.id, session.id)) return undefined;
+  host.add(session);
+  return session;
+}
+
 /** Reset only the Mono's chat, keeping its identity, habits and memory. */
 export async function resetMonoSession(
   current: Session,
@@ -143,7 +190,10 @@ export async function resetMonoSession(
   await host.remove(stopped);
   forgetAgentContext(current.id);
   forgetMonoRotation(current.id);
-  if (monoId) saveMonoSessionId(monoId, fresh.id);
+  // Dropwave: a project's own chat with the Mono is reset in its place; its chat on Home is left alone.
+  const projectId = monoSessionProject(current.id);
+  if (monoId && projectId) saveMonoProjectSession(monoId, projectId, fresh.id);
+  else if (monoId) saveMonoSessionId(monoId, fresh.id);
   host.replace(fresh);
   return fresh;
 }

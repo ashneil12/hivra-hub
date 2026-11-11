@@ -50,14 +50,27 @@ export type SettingsSectionId =
   | "connectors"
   | "secrets";
 
-/** Rail buckets. Sections list in order under their group label. */
-export type SettingsGroupId = "app" | "agents" | "workspace";
+/** Rail buckets. Sections list under their group label, in the order SETTINGS_GROUPS gives. */
+export type SettingsGroupId = "app" | "agents" | "record" | "data" | "workspace";
 
-export const SETTINGS_GROUPS: { id: SettingsGroupId; label: string }[] = [
-  { id: "app", label: "App" },
-  { id: "agents", label: "Agents" },
-  // Dropwave: archive, trash, worktrees and the code tools, out of the way of a non-technical owner.
-  { id: "workspace", label: "Advanced" },
+// Dropwave (Ash, 11 Nov: "the settings area is an absolute mess"): five short lists instead of one long one. The
+// everyday ones are on top; what a non-technical owner rarely needs (machines, MCP, plugins, worktrees, archive, trash)
+// is under Advanced, folded until asked for.
+export const SETTINGS_GROUPS: { id: SettingsGroupId; label: string; folded?: boolean; sections: SettingsSectionId[] }[] = [
+  { id: "app", label: "App", sections: ["general", "appearance", "keybindings", "usage"] },
+  {
+    id: "agents",
+    label: "First mates",
+    sections: ["monos", "teams", "chat", "providers", "skills", "connectors", "connected", "memory"],
+  },
+  { id: "record", label: "What happened", sections: ["decisions", "activity", "work-log", "changes", "history"] },
+  { id: "data", label: "Your data", sections: ["portable", "backups", "secrets"] },
+  {
+    id: "workspace",
+    label: "Advanced",
+    folded: true,
+    sections: ["connections", "mcp", "plugins", "crew", "inbox", "dashboards", "archive", "trash", "worktrees"],
+  },
 ];
 
 export type SettingsSection = {
@@ -80,7 +93,7 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
   },
   {
     id: "connections",
-    group: "app",
+    group: "workspace",
     label: "Remote machines",
     description:
       "Run agents on your other machines, and pair your phone with this desktop. For app logins, see Connectors.",
@@ -98,14 +111,14 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
   },
   {
     id: "changes",
-    group: "app",
+    group: "record",
     label: "Changes",
     description: "Changes the app and your Monos made to their own screens, with Undo, and any it turned down for breaking a design rule.",
     keywords: "undo proposal self change dashboard history design rules",
   },
   {
     id: "decisions",
-    group: "app",
+    group: "record",
     label: "Decisions",
     description:
       "One project at a time: what is still waiting on you, and what is already decided or ruled out, newest first.",
@@ -113,7 +126,7 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
   },
   {
     id: "activity",
-    group: "app",
+    group: "record",
     label: "Activity",
     description:
       "What agents and the app did, newest first. Kept for 90 days.",
@@ -121,7 +134,7 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
   },
   {
     id: "work-log",
-    group: "app",
+    group: "record",
     label: "Work log",
     description: "What got done, grouped by day. One project, or every project.",
     keywords: "work log today outcomes decisions",
@@ -136,7 +149,7 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
   },
   {
     id: "connected",
-    group: "app",
+    group: "agents",
     label: "Connected apps",
     description:
       "AI tools on this computer that can read Hivra, and what each one may see.",
@@ -144,21 +157,21 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
   },
   {
     id: "dashboards",
-    group: "app",
+    group: "workspace",
     label: "Dashboards",
     description: "Each project's dashboard template, and reset to default.",
     keywords: "template dashboard today cards sidebar reset",
   },
   {
     id: "portable",
-    group: "app",
+    group: "data",
     label: "Export and import",
     description: "Your whole setup, and if you like your memory and workspace, saved to a file or folder and brought back after a preview.",
     keywords: "export import backup restore setup memory workspace move new mac engine portable chats",
   },
   {
     id: "backups",
-    group: "app",
+    group: "data",
     label: "Backups",
     description:
       "A checked copy on a schedule. Bring back one chat, Mono, doc or task, or put everything back.",
@@ -166,7 +179,7 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
   },
   {
     id: "history",
-    group: "app",
+    group: "record",
     label: "Chat history",
     description:
       "Read past Claude Code, Codex and Hermes chats, only with your OK, and draft how you work for you to review.",
@@ -174,21 +187,21 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
   },
   {
     id: "memory",
-    group: "app",
+    group: "agents",
     label: "Memory",
     description: "How Hivra remembers and what it remembers, with its source, for you to confirm, edit or delete.",
     keywords: "memory fact skill recall review tier rules cheap crew model cost",
   },
   {
     id: "connectors",
-    group: "app",
+    group: "agents",
     label: "Connectors",
     description: "The apps your Monos use (GitHub, Gmail, Slack and more), and where each login lives.",
     keywords: "connector login sign in composio apps oauth gmail slack github",
   },
   {
     id: "secrets",
-    group: "app",
+    group: "data",
     label: "Secrets",
     description: "The keys your agents can use, kept in your Mac's keychain. Never in chats, files or backups.",
     keywords: "secret key token password keychain agent approval env utility",
@@ -221,7 +234,7 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
   },
   {
     id: "mcp",
-    group: "agents",
+    group: "workspace",
     label: "MCP",
     description:
       "Find MCP servers across providers and manage their connections.",
@@ -238,7 +251,7 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
   },
   {
     id: "plugins",
-    group: "agents",
+    group: "workspace",
     label: "Plugins",
     description:
       "Plugins you can add, what each one does and its licence, and the indexes they come from.",
@@ -246,7 +259,7 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
   },
   {
     id: "crew",
-    group: "agents",
+    group: "workspace",
     label: "Crew",
     description: "Which CLI, model and effort a task uses, in the order you set.",
     keywords: "crew rules routing cli model effort reroute labels paths",
@@ -302,11 +315,14 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
 export function settingsSectionsByGroup(): {
   id: SettingsGroupId;
   label: string;
+  folded?: boolean;
   sections: SettingsSection[];
 }[] {
-  return SETTINGS_GROUPS.map((group) => ({
+  return SETTINGS_GROUPS.map(({ sections: order, ...group }) => ({
     ...group,
-    sections: SETTINGS_SECTIONS.filter((section) => section.group === group.id),
+    sections: SETTINGS_SECTIONS.filter((section) => section.group === group.id).sort(
+      (a, b) => order.indexOf(a.id) - order.indexOf(b.id),
+    ),
   })).filter((group) => group.sections.length > 0);
 }
 
@@ -378,6 +394,12 @@ export const SETTINGS_INDEX: SettingsEntry[] = [
     label: "Project actions",
     keywords:
       "project file .monocode project.json setup run dev slot check ship import trust buttons",
+  },
+  {
+    id: "show-code-tools",
+    section: "worktrees",
+    label: "Show code tools",
+    keywords: "advanced files changes git diff worktree picker sidebar developer technical simple",
   },
   {
     id: "worktree-autoclear",

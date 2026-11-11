@@ -224,6 +224,8 @@ function decisions(now: number) {
 function pages(now: number) {
   const page = (id: string, projectId: string, title: string, by: string, pinned: boolean, blocks: unknown[]) => ({
     id, projectId, title, request: title, by, spec: { kind: "blocks", title, blocks }, permissions: [], keptAt: now - 3_600_000,
+    // Who built it is who a change is asked of first.
+    monoId: by === "Chief of Staff" ? "chief-of-staff" : by === "EXO lead" ? "vg-game-lead" : by === "SafeTube lead" ? "safetube-lead" : undefined,
     ...(pinned ? { pinned: true, pinnedBy: by } : {}),
   });
   return [
@@ -257,4 +259,34 @@ function automations(now: number) {
   ];
 }
 
-export const EXAMPLE = { projects, roster, sessions, delegations, decisions, pages, automations };
+// Each project's Leadership team room (hubChats.ts reads `monocode:hub-chats`). SafeTube's and Hivra's councils have
+// already decided things, so the council opens on a thread with its earlier decisions in it.
+function rooms() {
+  const room = (projectId: string, past?: unknown[]) => ({
+    id: `${projectId}:leadership`, projectId, name: "Leadership team", isDefault: true, memberIds: [], conversations: [],
+    ...(past
+      ? {
+          council: {
+            revision: 1, generation: 0, question: "", preset: "triad", expectedCalls: 0, phase: "propose", seats: [], blind: [],
+            cross: [], stances: [], retried: [], skipped: [], meta: { seats: 0, rounds: 0, calls: 0, tokensComplete: false }, past,
+          },
+        }
+      : {}),
+  });
+  return [
+    room("vg-game"),
+    room("hivra", [
+      { question: "Example: do we build the phone app before or after the waitlist?", consensus: true, winner: "waitlist first",
+        nextStep: "Example: finish the waitlist page, then plan the phone app.", minority: "Example: Member B would start the phone app now." },
+    ]),
+    room("nibbii"),
+    room("safetube", [
+      { question: "Example: should the waitlist ask for the child's age?", consensus: true, winner: "don't ask",
+        nextStep: "Example: keep the form to an email address only.", minority: "Example: Member C would ask, to plan the content." },
+      { question: "Example: one launch email or a series of three?", consensus: false,
+        nextStep: "Example: no consensus. Decide this yourself.", minority: "Example: two seats for one email, one for a series." },
+    ]),
+  ];
+}
+
+export const EXAMPLE = { projects, roster, sessions, delegations, decisions, pages, automations, rooms };
