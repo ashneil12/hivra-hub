@@ -123,19 +123,40 @@ pub(super) struct Folders {
     pub group: Option<String>,
 }
 
+/// How a name is compared wherever two spellings may be one file: NFKD (U+017F, the long s, and the compatibility forms
+/// become their plain letters), then upper- and lower-cased (a case-insensitive disk keeps one file under every case),
+/// with trailing dots and spaces dropped (Windows reads `AGENTS.md.` as `AGENTS.md`). The one rule every name check in
+/// the portable code uses, and the rule the shared agent-config list follows.
+pub(super) fn fold_name(name: &str) -> String {
+    use unicode_normalization::UnicodeNormalization;
+    let decomposed: String = name.nfkd().collect();
+    decomposed
+        .to_uppercase()
+        .to_lowercase()
+        .replace('\u{17F}', "s")
+        .trim_end_matches(['.', ' '])
+        .to_string()
+}
+
 /// Files a CLI reads as instructions, rules, settings or tool servers from the folder it starts in and the folders above
-/// it (Claude Code, Codex, Gemini, OpenCode, Cursor, Windsurf, Cline, Copilot, Qwen). A deny-list, used only to decide
-/// where a written file is read from: what an import may write is an allow-list (`memory_note_file`).
+/// it (Claude Code, Codex, Gemini, OpenCode, Cursor, Windsurf, Cline, Copilot, Qwen, Hermes, Grok, Crush, AGENT.md). A
+/// deny-list, used only to decide where a written file is read from: what an import may write is an allow-list
+/// (`memory_note_file`). Compared folded (`fold_name`). SOUL.md is left out on purpose: a Mono's own soul is restored
+/// under that name, and holding it would break soul restore.
 pub(super) fn instruction_file(name: &str) -> bool {
     matches!(
-        name.to_ascii_lowercase().as_str(),
+        fold_name(name).as_str(),
         "claude.md"
             | "claude.local.md"
             | "agents.md"
+            | "agent.md"
             | "agents.override.md"
             | "gemini.md"
             | "qwen.md"
             | "codex.md"
+            | "hermes.md"
+            | "grok.md"
+            | "crush.md"
             | "copilot-instructions.md"
             | "settings.json"
             | "settings.local.json"
@@ -252,14 +273,18 @@ pub(super) fn instruction_file_for_review(relative: &Path) -> bool {
     }
 }
 
-/// A hidden entry a folder may hold without a CLI reading instructions from it (compared lowercased): git's own files,
-/// `.gitignore`, the Finder's `.DS_Store`, and the environment and virtualenv files of a project.
+/// A hidden entry a folder may hold without a CLI reading instructions from it (compared folded): git's own files,
+/// `.gitignore`, the Finder's `.DS_Store`, and the environment and virtualenv files of a project. Only a plain ASCII name
+/// with no trailing dot or space counts: on Windows `.git.` is git's folder, so any other spelling is held back.
 fn harmless_hidden(name: &str) -> bool {
-    let lower = name.to_ascii_lowercase();
+    if !name.is_ascii() || name.ends_with(['.', ' ']) {
+        return false;
+    }
+    let key = fold_name(name);
     matches!(
-        lower.as_str(),
+        key.as_str(),
         ".git" | ".gitignore" | ".ds_store" | ".env" | ".venv"
-    ) || lower.starts_with(".env.")
+    ) || key.starts_with(".env.")
 }
 
 fn plain_id(name: &str) -> bool {
