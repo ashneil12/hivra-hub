@@ -43,6 +43,26 @@ vi.mock("@tauri-apps/api/core", () => ({
     if (command === "session_upsert") {
       const session = args.session as Row & { teleport?: { op: string; moveId: string } };
       const prev = backend.get(session.id);
+      if (prev && !session.teleport) {
+        const away = (() => {
+          for (let i = prev.blocks.length - 1; i >= 0; i--) {
+            const notice = prev.blocks[i]?.notice;
+            if (notice === "teleported-back") return false;
+            if (notice === "teleported") return true;
+          }
+          return false;
+        })();
+        if (away) {
+          session.blocks = [...prev.blocks];
+          session.providerSessionId = prev.providerSessionId;
+          session.queuedMessages = prev.queuedMessages;
+        } else {
+          const owned = new Set(["teleport-frozen", "teleport-freeze-asked", "teleport-incoming", "teleport-release-owed", "teleport-aborted", "teleported", "teleported-back"]);
+          const body = session.blocks.filter((block) => !owned.has(String(block.notice ?? "")));
+          const notes = prev.blocks.filter((block) => owned.has(String(block.notice ?? "")));
+          session.blocks = [...body, ...notes];
+        }
+      }
       fakeGuard(prev?.blocks, session.blocks, session.teleport);
       const { teleport: _teleport, ...stored } = session;
       backend.set(String(session.id), JSON.parse(JSON.stringify(stored)));

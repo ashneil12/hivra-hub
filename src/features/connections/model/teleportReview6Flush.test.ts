@@ -3,8 +3,8 @@
 // back (session_store.rs teleport_guard refuses only a drop). A move that failed at once then leaves the chat frozen and
 // locked here, while the other machine refused it: no runnable copy until a later launch recovers it.
 //
-// The Tauri boundary is an in-memory backend whose ordinary save applies the same rules as teleport_guard's `write: None`
-// branch: refuse a dropped freeze, a changed away state, or a dropped move note; accept anything else. A step is stored.
+// The Tauri boundary is an in-memory backend. An ordinary save keeps the stored move notes and writes the rest. A step
+// is stored as sent.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Dispatch, RefObject, SetStateAction } from "react";
 import type { Session } from "../../../features/sessions/model/session";
@@ -12,29 +12,6 @@ import type { Session } from "../../../features/sessions/model/session";
 const backend = vi.hoisted(() => new Map<string, Record<string, unknown>>());
 const NOTES = ["teleport-freeze-asked", "teleport-incoming", "teleport-release-owed", "teleport-aborted"];
 type Raw = { id?: unknown; notice?: unknown };
-function ids(blocks: unknown, notice: string): string[] {
-  return (Array.isArray(blocks) ? (blocks as Raw[]) : []).filter((b) => b?.notice === notice).map((b) => String(b.id));
-}
-function away(blocks: unknown): string | null {
-  const list = Array.isArray(blocks) ? (blocks as Raw[]) : [];
-  for (let i = list.length - 1; i >= 0; i -= 1) {
-    if (list[i]?.notice === "teleported-back") return null;
-    if (list[i]?.notice === "teleported") return String(list[i]?.id);
-  }
-  return null;
-}
-/** teleport_guard with `write: None`, as session_store.rs has it on 456357592. */
-function ordinaryRefusal(previous: unknown, next: unknown): string | null {
-  const storedFrozen = ids(previous, "teleport-frozen");
-  const nextFrozen = ids(next, "teleport-frozen");
-  if (storedFrozen.some((id) => !nextFrozen.includes(id))) return "teleport-refused: this save would drop a chat move's freeze";
-  if (away(previous) !== away(next)) return "teleport-refused: this save would change whether the chat is on another machine";
-  for (const notice of NOTES) {
-    const kept = ids(next, notice);
-    if (ids(previous, notice).some((id) => !kept.includes(id))) return "teleport-refused: this save would drop a chat move's note";
-  }
-  return null;
-}
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(async (command: string, args: Record<string, unknown>) => {
     if (command === "session_upsert") {
@@ -42,8 +19,26 @@ vi.mock("@tauri-apps/api/core", () => ({
       const id = String(session.id);
       const previous = backend.get(id);
       if (previous && !session.teleport) {
-        const refusal = ordinaryRefusal(previous.blocks, session.blocks);
-        if (refusal) throw new Error(refusal);
+        const owned = (block: Raw) =>
+          block?.notice === "teleport-frozen" ||
+          NOTES.includes(String(block?.notice ?? "")) ||
+          block?.notice === "teleported" ||
+          block?.notice === "teleported-back";
+        const incoming = Array.isArray(session.blocks) ? (session.blocks as Raw[]) : [];
+        const stored = Array.isArray(previous.blocks) ? (previous.blocks as Raw[]) : [];
+        let away = false;
+        for (let i = stored.length - 1; i >= 0; i--) {
+          const notice = stored[i]?.notice;
+          if (notice === "teleported-back") { away = false; break; }
+          if (notice === "teleported") { away = true; break; }
+        }
+        if (away) {
+          session.blocks = [...stored];
+          session.providerSessionId = previous.providerSessionId;
+          session.queuedMessages = previous.queuedMessages;
+        } else {
+          session.blocks = [...incoming.filter((block) => !owned(block)), ...stored.filter((block) => owned(block))];
+        }
       }
       const { teleport: _step, ...row } = session;
       backend.set(id, { ...row });

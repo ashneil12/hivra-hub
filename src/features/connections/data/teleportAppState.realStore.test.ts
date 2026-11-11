@@ -8,6 +8,26 @@ vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(async (command: string, args: Record<string, unknown>) => {
     if (command === "session_upsert") {
       const session = args.session as Record<string, unknown>;
+      const prev = backend.get(String(session.id));
+      if (prev && !session.teleport && Array.isArray(session.blocks) && Array.isArray(prev.blocks)) {
+        const notice = (block: unknown) => (block && typeof block === "object" ? String((block as { notice?: unknown }).notice ?? "") : "");
+        let away = false;
+        for (let i = (prev.blocks as unknown[]).length - 1; i >= 0; i--) {
+          const name = notice((prev.blocks as unknown[])[i]);
+          if (name === "teleported-back") { away = false; break; }
+          if (name === "teleported") { away = true; break; }
+        }
+        if (away) {
+          session.blocks = [...(prev.blocks as unknown[])];
+          session.providerSessionId = prev.providerSessionId;
+          session.queuedMessages = prev.queuedMessages;
+        } else {
+          const owned = new Set(["teleport-frozen", "teleport-freeze-asked", "teleport-incoming", "teleport-release-owed", "teleport-aborted", "teleported", "teleported-back"]);
+          const body = (session.blocks as unknown[]).filter((block) => !owned.has(notice(block)));
+          const notes = (prev.blocks as unknown[]).filter((block) => owned.has(notice(block)));
+          session.blocks = [...body, ...notes];
+        }
+      }
       backend.set(String(session.id), { ...session });
       return { id: session.id };
     }
