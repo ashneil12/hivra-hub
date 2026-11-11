@@ -2942,6 +2942,48 @@ fn r3_review_a_main_rename_of_the_pull_request_s_file_holds_the_merge() {
     assert!(gh.ran("pr", "merge").is_empty(), "nothing merges over a move");
 }
 
+/// The floor is off. A question opened while the base hold has the store lock released still stops the merge.
+#[test]
+fn a_question_opened_during_the_base_hold_stops_the_merge() {
+    let s = store();
+    let delegation = task(
+        &mut s.lock_conn().unwrap(),
+        "lead-1",
+        "r-base",
+        "worker-1",
+    );
+    let question_on = delegation.clone();
+    let read = green("a1b2c3d");
+    let gh = FakeGithub::new(vec![read.clone(), read]).with_api(
+        "per_page=1",
+        &format!(
+            r#"{{"status":"identical","ahead_by":0,"behind_by":0,"merge_base_commit":{{"sha":"{}"}},"files":[]}}"#,
+            "ba5e".repeat(10)
+        ),
+    );
+    let wrapped = OpensAQuestionWhileReading {
+        inner: &gh,
+        during_list: Box::new(|| {
+            delegations::set_question(
+                &mut s.lock_conn().unwrap(),
+                &question_on,
+                Some("Keep the old file format?".into()),
+                None,
+                3,
+            )
+            .unwrap();
+        }),
+    };
+    let mut request = person_merge("acme/web");
+    request.delegation_id = Some(delegation);
+    let out = merge::merge(&s, &wrapped, request, 10).unwrap();
+    assert!(
+        matches!(&out, MergeOutcome::Refused { reason } if reason.contains("Keep the old file format?")),
+        "{out:?}"
+    );
+    assert!(gh.ran("pr", "merge").is_empty());
+}
+
 /// The merge base of the head and main, as GitHub's compare says it (the branch last took main there).
 const MERGE_BASE_B1: &str = r#"{"status":"ahead","ahead_by":1,"behind_by":1,"merge_base_commit":{"sha":"b1b1b1b"},"files":[]}"#;
 const MERGE_BASE_BASE: &str = r#"{"status":"ahead","ahead_by":1,"behind_by":0,"merge_base_commit":{"sha":"ba5eba5eba5eba5eba5eba5eba5eba5eba5eba5e"},"files":[]}"#;

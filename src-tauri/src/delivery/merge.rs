@@ -721,9 +721,19 @@ pub fn merge(
             drop(conn);
             let held = base_hold(gh, &repo, number, &head, &read);
             conn = store.lock_conn()?;
-            match held {
-                Some(reason) => Decision::Refuse(reason),
-                None => other,
+            // A question opened while the base was read (the lock was down) stops the merge, as the floor's re-check does.
+            let opened = match &delegation {
+                Some(id) => open_decision(&conn, id)?,
+                None => None,
+            };
+            match opened {
+                Some(question) => Decision::Refuse(format!(
+                    "A decision on this work is still open: {question}. It merges once that is answered."
+                )),
+                None => match held {
+                    Some(reason) => Decision::Refuse(reason),
+                    None => other,
+                },
             }
         }
     };
@@ -767,6 +777,7 @@ pub fn merge(
     // The base hold (WP-202) and this read run with the store lock released. `gh pr merge --match-head-commit` pins the
     // head only: GitHub does not pin the base, so the base is judged here, as close to the merge as this can get, and
     // GitHub's own up-to-date rule is the server-side guard when the branch protection asks for it.
+    // A base move in the last instant, after this read and before GitHub accepts the merge, is not seen here.
     if let Some(reason) = settle_again(gh, &repo, number, &head, open.as_deref(), &allow) {
         let conn = store.lock_conn()?;
         record(
