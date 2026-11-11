@@ -6,7 +6,7 @@ test.use({ viewport: { width: 1100, height: 760 } });
 
 test("a builder held by the disk pause says so in Needs you, opens Clean up, and clears when space is freed", async ({ page }) => {
   await page.goto("/tests/browser/wp161-builder-hold.html");
-  await expect(page.locator("[data-home-empty]")).toContainText("All quiet.");
+  await expect(page.locator("[data-home-empty]")).toContainText("Nothing needs you.");
   await expect(page.locator("[data-home-line='builders']")).toHaveCount(0);
 
   // The pause is on with nothing set: a launch at 24 GB free is held.
@@ -42,7 +42,7 @@ test("a builder held by the disk pause says so in Needs you, opens Clean up, and
   await page.locator("#pump").click();
   await expect(page.locator("body")).toHaveAttribute("data-started", "1");
   await expect(page.locator("[data-home-line='builders']")).toHaveCount(0);
-  await expect(page.locator("[data-home-empty]")).toContainText("All quiet.");
+  await expect(page.locator("[data-home-empty]")).toContainText("Nothing needs you.");
 });
 
 test("with the disk pause turned off, a low disk holds nothing and says nothing", async ({ page }) => {
@@ -52,5 +52,5 @@ test("with the disk pause turned off, a low disk holds nothing and says nothing"
   await page.locator("#launch").click();
   await expect(page.locator("body")).toHaveAttribute("data-admission", "start");
   await expect(page.locator("[data-home-line='builders']")).toHaveCount(0);
-  await expect(page.locator("[data-home-empty]")).toContainText("All quiet.");
+  await expect(page.locator("[data-home-empty]")).toContainText("Nothing needs you.");
 });

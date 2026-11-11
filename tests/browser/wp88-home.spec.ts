@@ -1,24 +1,27 @@
 import { expect, test } from "@playwright/test";
 
-// WP-88. The chief chat stays at the top of Home and answers across two seeded projects.
+// WP-88. The chief's own chat answers on Home. It does not file a task.
 test.use({ viewport: { width: 1100, height: 760 } });
 
-test("the chief chat is at the top and answers across two projects", async ({ page }) => {
+test("the chief chat answers across two projects and files nothing", async ({ page }) => {
   await page.goto("/tests/browser/wp88-home.html");
-  const column = page.locator("[data-home] > div");
-  await expect(column.locator(":scope > *").first()).toHaveAttribute("data-home-start", "");
+  await expect(page.locator("[data-home-header]")).toBeVisible();
+  await expect(page.locator("[data-home-start]")).toBeVisible();
+  await expect(page.locator("[data-home] [data-home-header]")).toHaveCount(1);
   await expect(page.getByRole("button", { name: "Start a chat with Crew" })).toHaveCount(0);
+  await expect(page.locator("[data-home-scope]")).toHaveText("read all 2 projects");
+  await expect(page.locator("[data-home-chief]")).toHaveText("Coordinator");
 
-  await page.getByLabel("Ask").fill("What's happening?");
+  await page.getByLabel("Ask").fill("how is EXO going?");
   await page.getByRole("button", { name: "Send" }).click();
   const reply = page.locator("[data-home-reply]");
-  await expect(reply.getByRole("button", { name: /Write the notes/ })).toBeVisible();
-  await expect(reply.getByRole("button", { name: /Paint the door/ })).toBeVisible();
-  await expect(reply.getByRole("button", { name: /Crew plan/ })).toBeVisible();
-  await expect(reply.getByRole("button", { name: /Site spec/ })).toBeVisible();
+  await expect(reply).toContainText("how is EXO going?");
+  await expect(reply).toContainText("EXO is fine.");
+  await expect(page.locator("body")).toHaveAttribute("data-tasks-created", "0");
 
-  await reply.getByRole("button", { name: /Write the notes/ }).click();
-  await expect(page.locator("body")).toHaveAttribute("data-opened", JSON.stringify({ kind: "task", projectId: "crew", id: "write" }));
-  await reply.getByRole("button", { name: /Site spec/ }).click();
-  await expect(page.locator("body")).toHaveAttribute("data-opened", JSON.stringify({ kind: "doc", id: "spec" }));
+  await page.getByRole("button", { name: "Open full chat" }).click();
+  const opened = await page.locator("body").getAttribute("data-mono-chat");
+  expect(opened).toBeTruthy();
+  expect(opened).not.toBe("coordinator");
+  await expect(page.locator("body")).toHaveAttribute("data-tasks-created", "0");
 });
