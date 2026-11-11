@@ -319,3 +319,60 @@ it("a new activity line does not read the older pages again", async () => {
   expect(container.textContent).toContain("Newer. Started by the 9:00 schedule.");
   expect(container.textContent).toContain("Older. Started by the hourly schedule.");
 });
+
+function expectTabControlsNameRenderedPanels() {
+  const tabs = [...container.querySelectorAll('[role="tab"]')];
+  expect(tabs.length).toBeGreaterThan(0);
+  for (const tab of tabs) {
+    const id = tab.getAttribute("aria-controls");
+    const selected = tab.getAttribute("aria-selected") === "true";
+    if (selected) expect(id).toBeTruthy();
+    if (!id) continue;
+    expect(document.getElementById(id), `${tab.textContent} -> ${id}`).not.toBeNull();
+  }
+}
+
+async function openTab(name: string) {
+  const tab = [...container.querySelectorAll('[role="tab"]')].find(
+    (element) => element.textContent === name,
+  );
+  if (!(tab instanceof HTMLButtonElement)) throw new Error(`missing ${name} tab`);
+  await act(async () => {
+    tab.click();
+  });
+}
+
+it("a tab only names a panel that is on screen", async () => {
+  invoke.mockImplementation(async (command: string) =>
+    command === "automations_list"
+      ? [automation("daily", "Daily review", "/work/project")]
+      : [],
+  );
+  await act(async () =>
+    root.render(
+      createElement(AutomationsView, {
+        cwd: "/work/project",
+        recents: [],
+        onClose: vi.fn(),
+        onLaunch: vi.fn(),
+        onOpenSession: vi.fn(),
+      }),
+    ),
+  );
+  expectTabControlsNameRenderedPanels();
+  await openTab("Runs");
+  expectTabControlsNameRenderedPanels();
+  await openTab("Map");
+  expectTabControlsNameRenderedPanels();
+  await openTab("Automations");
+  const card = container.querySelector('[aria-label="Open Daily review"]');
+  if (!(card instanceof HTMLButtonElement)) throw new Error("missing automation card");
+  await act(async () => {
+    card.click();
+  });
+  expectTabControlsNameRenderedPanels();
+  await openTab("Run history");
+  expectTabControlsNameRenderedPanels();
+  await openTab("Settings");
+  expectTabControlsNameRenderedPanels();
+});

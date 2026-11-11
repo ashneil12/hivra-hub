@@ -49,6 +49,7 @@ export function AutomationScreenTabs({
     >
       {TABS.map((tab) => {
         const selected = screen === tab.id;
+        // Only the open screen is mounted, so the other tabs must not name a missing panel.
         return (
           <button
             key={tab.id}
@@ -56,7 +57,7 @@ export function AutomationScreenTabs({
             type="button"
             role="tab"
             aria-selected={selected}
-            aria-controls={automationPanelId(tab.id)}
+            aria-controls={selected ? automationPanelId(tab.id) : undefined}
             tabIndex={selected ? 0 : -1}
             onClick={() => onScreen(tab.id)}
             className={`h-7 rounded-md px-2.5 text-[12px] ${
