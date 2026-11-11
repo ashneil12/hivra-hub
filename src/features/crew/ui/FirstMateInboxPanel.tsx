@@ -174,7 +174,8 @@ export function FirstMateInboxPanel({
     let applied = false;
     let threw = false;
     try {
-      const outcome = await tauriFirstMate.answer(item.project, item.key, answerText);
+      // The version of the card on screen: a secret card is answered only for the words the person read (fix round 4, N6).
+      const outcome = await tauriFirstMate.answer(item.project, item.key, answerText, undefined, decision?.version);
       applied = outcome.applied;
     } catch {
       // A timeout is not a final no. The decision stays open and is tried again.

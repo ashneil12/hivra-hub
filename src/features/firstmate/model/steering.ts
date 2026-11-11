@@ -95,7 +95,7 @@ export type FirstMateBackend = {
   list(query: { childSession?: string; ownerSession?: string }): Promise<SteerMessage[]>;
   settle(id: string, outcome: SteerOutcome): Promise<{ applied: boolean; message: SteerMessage | null }>;
   ask(input: AskInput): Promise<AskOutcome>;
-  answer(project: string, key: string, answer: string, by?: string): Promise<AnswerOutcome>;
+  answer(project: string, key: string, answer: string, by?: string, seenVersion?: number): Promise<AnswerOutcome>;
   decisions(answered?: number): Promise<Decision[]>;
 };
 
@@ -105,7 +105,7 @@ export const tauriFirstMate: FirstMateBackend = {
   list: (query) => invoke("steering_list", query),
   settle: (id, outcome) => invoke("steering_settle", { id, outcome }),
   ask: (input) => invoke("decisions_ask", { input }),
-  answer: (project, key, answer, by) => invoke("decisions_answer", { project, key, answer, by }),
+  answer: (project, key, answer, by, seenVersion) => invoke("decisions_answer", { project, key, answer, by, seenVersion }),
   decisions: (answered) => invoke("decisions_list", { answered }),
 };
 
