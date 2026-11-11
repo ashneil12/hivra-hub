@@ -59,16 +59,18 @@ test("a local link copies, fills the prompt, and a missing chat stays on this pa
   });
   await expect(page.locator("[data-thread-link-notice]")).toContainText(PUBLIC);
 
-  const stopped = await page.evaluate(() => {
-    const anchor = document.querySelector("a[href^='hivra:']");
-    if (!anchor) return "missing";
-    const event = new MouseEvent("click", { bubbles: true, cancelable: true });
-    anchor.dispatchEvent(event);
-    return event.defaultPrevented ? "stopped" : "navigated";
-  });
-  expect(stopped).toBe("stopped");
+  await page.getByRole("link", { name: "Open missing chat" }).click();
   await expect(page.locator("[data-thread-link-notice]")).toContainText(MISSING);
   expect(page.url()).toContain("wp125-thread-links.html");
+  const afterChat = await page.evaluate(() => window.__wp125OpenedUrls ?? []);
+  expect(afterChat.some((url) => url.toLowerCase().startsWith("hivra:"))).toBe(false);
+
+  await page.getByRole("link", { name: "A web page" }).click();
+  await expect.poll(async () => page.evaluate(() => window.__wp125OpenedUrls ?? [])).toEqual([
+    "https://example.com/notes",
+  ]);
+  expect(page.url()).toContain("wp125-thread-links.html");
+  expect(page.url()).not.toContain("example.com");
 
   await page.evaluate(() => {
     window.dispatchEvent(

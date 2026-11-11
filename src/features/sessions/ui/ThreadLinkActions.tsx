@@ -147,11 +147,12 @@ export function useThreadLinkOpener(hands: ThreadLinkHands): void {
       onUrl(href);
     };
     window.addEventListener("hivra:open-thread-link", onEvent);
-    document.addEventListener("click", onClick);
+    // Capture, so a bubble handler that calls preventDefault cannot hide the link.
+    document.addEventListener("click", onClick, true);
     return () => {
       beginThreadOpen();
       window.removeEventListener("hivra:open-thread-link", onEvent);
-      document.removeEventListener("click", onClick);
+      document.removeEventListener("click", onClick, true);
     };
   }, []);
 }

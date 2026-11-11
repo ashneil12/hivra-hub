@@ -144,3 +144,18 @@ it("a hivra link opens the chat and a web link is left alone", async () => {
   expect(opened).toEqual([CHAT]);
   expect(container.textContent).toContain("Demo chat");
 });
+
+it("a later preventDefault does not hide a hivra link", async () => {
+  const opened: string[] = [];
+  await act(async () => {
+    root.render(<OpenerProbe onOpen={(id) => opened.push(id)} />);
+  });
+  const hivra = container.querySelector("a") as HTMLAnchorElement;
+  hivra.addEventListener("click", (event) => {
+    event.preventDefault();
+  });
+  await act(async () => {
+    hivra.click();
+  });
+  expect(opened).toEqual([CHAT]);
+});

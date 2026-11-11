@@ -1,4 +1,4 @@
-// WP-125: the real copy buttons and the real link opener, on a made-up chat.
+// WP-125: the real copy buttons, the real link opener, and chat markdown, on a made-up chat.
 import { useState } from "react";
 import { createRoot } from "react-dom/client";
 import { chatLink, promptLink } from "../../src/features/sessions/model/threadLinks";
@@ -8,10 +8,22 @@ import {
   ThreadLinkNotice,
   useThreadLinkOpener,
 } from "../../src/features/sessions/ui/ThreadLinkActions";
+import { AgentMarkdown } from "../../src/features/sessions/ui/AgentMarkdown";
+import { installFakeTauri } from "./fakeTauri";
 import "../../src/styles/index.css";
 
 const CHAT = "11111111-1111-4111-8111-111111111111";
+const MISSING_CHAT = "22222222-2222-4222-8222-222222222222";
 const PROJECT = "demo";
+
+const openedUrls: string[] = [];
+window.__wp125OpenedUrls = openedUrls;
+installFakeTauri("wp125", (command, args) => {
+  if (command === "plugin:opener|open_url" && typeof args.url === "string") {
+    openedUrls.push(args.url);
+  }
+  return null;
+});
 
 Object.defineProperty(navigator, "clipboard", {
   configurable: true,
@@ -44,10 +56,18 @@ function Page() {
           return url ? { url } : { error: THREAD_LINK_MESSAGE.cannotCopy };
         }}
       />
-      <a href="hivra://local/chat/22222222-2222-4222-8222-222222222222">Open missing chat</a>
+      <AgentMarkdown
+        text={`[Open missing chat](hivra://local/chat/${MISSING_CHAT})\n\n[A web page](https://example.com/notes)`}
+      />
       <ThreadLinkNotice />
     </>
   );
 }
 
 createRoot(document.getElementById("root")!).render(<Page />);
+
+declare global {
+  interface Window {
+    __wp125OpenedUrls?: string[];
+  }
+}
