@@ -12114,7 +12114,7 @@ mod app_data_guard_tests {
         let _ = std::fs::remove_dir_all(&data);
     }
 
-    /// WP-129 L4 (lead review, 4 Jan): a path whose missing levels run through a symlink into the data folder is
+    /// WP-129 L4 (lead review, 11 Nov): a path whose missing levels run through a symlink into the data folder is
     /// refused. The check used to resolve only one missing level, so `link/new/deeper/file` was taken as outside.
     #[test]
     fn a_path_through_a_link_with_missing_levels_is_refused() {

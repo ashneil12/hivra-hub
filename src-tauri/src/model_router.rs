@@ -3413,7 +3413,7 @@ mod tests {
         assert!(!hits[0].body.contains(SECRET));
     }
 
-    /// WP-129 M2 (lead review, 4 Jan): an upstream error goes back to Claude Code scrubbed of the key. The text was cut
+    /// WP-129 M2 (lead review, 11 Nov): an upstream error goes back to Claude Code scrubbed of the key. The text was cut
     /// to 400 characters before the key was replaced, so a key straddling the cut left its start behind; a key written
     /// the JSON way (quotes, backslashes, escaped slashes) was never replaced at all.
     #[test]
@@ -3450,7 +3450,7 @@ mod tests {
         assert!(out.contains("***"), "{out}");
     }
 
-    /// WP-129 L2 (lead review, 4 Jan): each routed session has its own router token, and it stops working when that
+    /// WP-129 L2 (lead review, 11 Nov): each routed session has its own router token, and it stops working when that
     /// session ends. Two sessions on one router must not share a token.
     #[test]
     fn each_routed_session_has_its_own_router_token() {
@@ -3514,7 +3514,7 @@ mod tests {
         router_answer(port, token).expect("the router is not listening")
     }
 
-    /// WP-129 L1 (lead review, 4 Jan): deleting or replacing a model's key stops that account's routers, so a token
+    /// WP-129 L1 (lead review, 11 Nov): deleting or replacing a model's key stops that account's routers, so a token
     /// from before the change stops working. Another account's router keeps running.
     #[test]
     fn deleting_or_replacing_a_key_stops_its_routers() {
@@ -3570,5 +3570,44 @@ mod tests {
             200,
             "another account's router was stopped too"
         );
+    }
+
+    /// WP-129 (coordinator follow-up): a routed child's environment holds no form of the bound key. Not the key as it
+    /// is, not its base64 or hex, and not in any variable the builder sets. Built through the real routed-session path
+    /// (`prepare_routed_session_in`) from a sealed item, then every variable is checked.
+    #[test]
+    fn a_routed_child_environment_holds_no_form_of_the_key() {
+        use base64::Engine;
+        let stored = CustomRoute {
+            provider: "custom".into(),
+            base_url: "https://llm.example/v1".into(),
+            model_id: "grok-4".into(),
+            custom_model_id: "env-acct".into(),
+            reasoning_effort: None,
+        };
+        let key = "sk-env-fixture-0123456789abcdef";
+        let store = crate::key_binding::fake_keychain(vec![(
+            "env-acct".to_string(),
+            crate::key_binding::sealed_item(&stored, key),
+        )]);
+        let ((set, _), session) = prepare_routed_session_in(&stored, &store).unwrap();
+        let forms = [
+            key.to_string(),
+            base64::engine::general_purpose::STANDARD.encode(key),
+            base64::engine::general_purpose::STANDARD_NO_PAD.encode(key),
+            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(key),
+            key.bytes().map(|b| format!("{b:02x}")).collect::<String>(),
+            key.bytes().map(|b| format!("{b:02X}")).collect::<String>(),
+        ];
+        assert!(!set.is_empty());
+        for (name, value) in &set {
+            for form in &forms {
+                assert!(
+                    !value.contains(form.as_str()),
+                    "{name} holds a form of the key: {form}"
+                );
+            }
+        }
+        assert_ne!(session.value(), key, "the session token is the key");
     }
 }

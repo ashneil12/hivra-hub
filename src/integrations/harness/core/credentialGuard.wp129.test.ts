@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { HUB_DB_DENY_RULES } from "./credentialGuard";
 
-// WP-129 M1 (lead review, 4 Jan): the hub's data-folder deny rules used `com.ash.monocode-hub*`, which also matches
+// WP-129 M1 (lead review, 11 Nov): the hub's data-folder deny rules used `com.ash.monocode-hub*`, which also matches
 // the dev slots' folders (`com.ash.monocode-hub.dev.<slot>`). A dev copy keeps its agent-memory there, so a hub chat
 // running in a dev copy could not write its own memory. The rules must fence only the daily folder, exactly.
 
