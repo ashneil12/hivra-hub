@@ -105,6 +105,8 @@ type Live = {
   nextApprovalUiId: number;
   toolsByIndex: Map<number, InFlightTool>;
   toolsById: Map<string, InFlightTool>;
+  /** Subagent rows still running after their launch tool returned. */
+  backgroundAgents: Set<string>;
   cancelled: boolean;
   muteUpdates: boolean;
   compacting: boolean;
@@ -377,6 +379,8 @@ export async function cancelTurn(
   }
   live.cancelled = true;
   live.muteUpdates = true;
+  // Updates stop here, so a later completion cannot clear the set.
+  live.backgroundAgents.clear();
   live.settleToken += 1;
   for (const [, pending] of live.approvals) pending.resolve("deny");
   live.approvals.clear();
@@ -388,6 +392,19 @@ export async function cancelTurn(
     { type: "message.completed" },
     { type: "reasoning.completed" },
   ]);
+}
+
+/**
+ * Only a subagent whose details.async.state is "running" outlives the launch
+ * tool. Shells end at tool_execution_end. A non-terminal agent_end keeps the
+ * turn itself open, so it is not parked as background work.
+ */
+export function hasBackgroundWork(
+  flavor: PiFlavor,
+  sessionId: string,
+): boolean {
+  const live = stateFor(flavor).liveByThread.get(sessionId);
+  return (live?.backgroundAgents.size ?? 0) > 0;
 }
 
 export async function stopSession(
@@ -514,6 +531,7 @@ async function startLive(
     nextApprovalUiId: 1,
     toolsByIndex: new Map(),
     toolsById: new Map(),
+    backgroundAgents: new Set(),
     cancelled: false,
     muteUpdates: false,
     compacting: false,
@@ -607,6 +625,7 @@ async function runTurn(
   live.turnUsage = { done: {}, open: {} };
   live.toolsByIndex.clear();
   live.toolsById.clear();
+  // backgroundAgents stays: a subagent can still be running into the next turn.
   live.compacting = false;
   live.retrying = false;
   live.settleToken += 1;
@@ -938,15 +957,13 @@ function handleFrame(
         detail: execUpdate.detail,
         preview: previewFromTool(tool.name, tool.input, execUpdate.detail),
       });
-      if (toolKindFromName(tool.name) === "agent") {
-        for (const event of piSubagentEvents(
-          tool.id,
-          tool.input,
-          rec.partialResult,
-          false,
-        ))
-          live.onEvent(event);
-      }
+    }
+    // A finished agent tool still reports subagent progress. Bash updates stay
+    // inside the block above so a late one cannot flip a finished card.
+    if (tool && toolKindFromName(tool.name) === "agent") {
+      noteAgentProgress(live, tool, rec.partialResult, false);
+    } else if (!tool) {
+      noteOrphanAgentProgress(live, execUpdate.id, rec.partialResult);
     }
   }
 
@@ -965,14 +982,7 @@ function handleFrame(
         preview: previewFromTool(tool.name, tool.input, execEnd.detail),
       });
       if (toolKindFromName(tool.name) === "agent") {
-        for (const event of piSubagentEvents(
-          tool.id,
-          tool.input,
-          rec.result,
-          true,
-          execEnd.isError,
-        ))
-          live.onEvent(event);
+        noteAgentProgress(live, tool, rec.result, true, execEnd.isError);
       }
     }
   }
@@ -1292,6 +1302,54 @@ function updateTool(
 function emitTaskListIfNeeded(live: Live, tool: InFlightTool): void {
   const items = taskListFromToolInput(tool.name, tool.input);
   if (items) live.onEvent({ type: "tasks.updated", items });
+}
+
+function noteAgentProgress(
+  live: Live,
+  tool: InFlightTool,
+  result: unknown,
+  completed: boolean,
+  isError = false,
+): void {
+  for (const event of piSubagentEvents(
+    tool.id,
+    tool.input,
+    result,
+    completed,
+    isError,
+  )) {
+    live.onEvent(event);
+    noteBackgroundAgent(live, event);
+  }
+}
+
+/** A later turn clears the tool map, so match a still-open agent by call id. */
+function noteOrphanAgentProgress(
+  live: Live,
+  callId: string,
+  result: unknown,
+): void {
+  const related = [...live.backgroundAgents].some(
+    (id) => id === callId || id.startsWith(`${callId}:agent:`),
+  );
+  if (!related) return;
+  for (const event of piSubagentEvents(callId, {}, result, false)) {
+    live.onEvent(event);
+    noteBackgroundAgent(live, event);
+  }
+}
+
+function noteBackgroundAgent(live: Live, event: HarnessEvent): void {
+  if (event.type !== "tool.updated" || event.kind !== "agent" || !event.callId) {
+    return;
+  }
+  if (event.status === "in_progress" || event.status === "pending") {
+    live.backgroundAgents.add(event.callId);
+    return;
+  }
+  if (event.status === "completed" || event.status === "failed") {
+    live.backgroundAgents.delete(event.callId);
+  }
 }
 
 function finishActiveTurn(live: Live, extraEvents: HarnessEvent[] = []): void {
