@@ -13190,7 +13190,7 @@ function Workspace({
           : undefined,
       };
     },
-  }), [ensureOpenSession, submitSession, onQuestionReply]);
+  }), [ensureOpenSession, submitSession, onQuestionReply, homeDir]);
   useEffect(() => {
     notifyHomeChief();
   }, [sessions]);
