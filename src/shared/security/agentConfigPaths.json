@@ -104,7 +104,16 @@
     "src/features/autopilot/hooks",
     "src/integrations/harness/core/credentialGuard.ts",
     "src-tauri/src/watcher/safe_cmd.rs",
-    "src/integrations/harness/providers/claude/claudeProtocol.ts"
+    "src/integrations/harness/providers/claude/claudeProtocol.ts",
+    "src-tauri/src/watcher/checks.rs",
+    "src-tauri/src/watcher/mod.rs",
+    "src-tauri/src/fs.rs",
+    "src/platform/tauri/fs.ts",
+    "src/features/agent-app/model/agentAppTimers.ts",
+    "src/integrations/harness/providers/claude/claude.ts",
+    "src/integrations/harness/core/registry.ts",
+    "vite.config.mts",
+    "vite.config.js"
   ],
   "holdAnyDotSegment": true
 }

@@ -336,6 +336,33 @@ Third-party components Hivra adds:
   Used in: package.json, src/features/source-control/ui/pierreDiff.tsx
   Pinned npm package for the optional split diff view (WP-116).
 
+- Row-Bot's MCP tool effects
+  Source: https://github.com/siddsachar/row-bot
+  License: Apache-2.0
+  Copyright 2026 Row-Bot Contributors
+  Used in: src/features/autopilot/model/mcpEffect.ts, src/features/autopilot/model/LICENSE.row-bot
+  mcp_client/safety.py translated to TypeScript with test_mcp_safety.py's cases ported (WP-101). The verb patterns are written out as word lists; Row-Bot's interaction class is folded into a change so nothing but a read passes; and a name-only read counts only for a server the person installed through Hivra's plugin flow.
+
+- Row-Bot's approval reviewer
+  Source: https://github.com/siddsachar/row-bot
+  License: Apache-2.0
+  Copyright 2026 Row-Bot Contributors
+  Used in: src/features/autopilot/model/reviewerRules.ts, src/features/autopilot/model/LICENSE.row-bot
+  The rules of approval_review.py and its answer reading, with test_approval_reviewer.py's cases ported (WP-101). Hivra asks no model to judge an approval, so the checks a fixed rule can make are code, as a veto the decision path calls that can only hold an action; the judgement rules are kept as REVIEWER_RULES for a judged step. Row-Bot's four levels are kept for narrowing.
+
+- Row-Bot's install scanner
+  Source: https://github.com/siddsachar/row-bot
+  License: Apache-2.0
+  Copyright 2026 Row-Bot Contributors
+  Used in: src-tauri/src/plugins/scan.rs, src-tauri/src/plugins/LICENSE.row-bot
+  skills_hub/scanner.py translated to Rust with test_skills_hub.py's cases ported (WP-101). The thing scanned is a Hivra plugin: no skills is fine, an unloadable skill only warns, a setup step the person already approves does not block, and the file list comes from the staged folder.
+
+- Row-Bot's proposal guard
+  Source: https://github.com/siddsachar/row-bot
+  License: Apache-2.0
+  Copyright 2026 Row-Bot Contributors
+  Used in: src/features/memory/backpass/proposalGuard.ts, src/features/memory/backpass/LICENSE.row-bot
+  evolution.py's injection_problems translated to TypeScript with its E9 cases ported (WP-101). It checks what an edit adds rather than a whole draft, names each kind with a plain reason, and uses Hivra's own secret check.
 - Atomic Agent's fan-out contract
   Source: https://github.com/AtomicBot-ai/atomic-agent
   License: MIT

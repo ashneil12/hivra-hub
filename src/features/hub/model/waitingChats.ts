@@ -36,6 +36,7 @@ import { hubData } from "./hubData";
 import { asksHowThingsStand } from "./statusAsk";
 import { leadFor } from "./hubLeads";
 import { forUser, forYou } from "./userName";
+import { questionVeto, UNREADABLE_REASON } from "../../autopilot/model/reviewerRules";
 
 /** One chat waiting on Ash, as stored. */
 export type WaitingEntry = ChatQuestion & {
@@ -456,10 +457,57 @@ export async function takePick(sessionId: string, options: { by?: "ash" | "autop
   if (!chat) return { ok: false, reason: "That chat isn't waiting any more." };
   if (!chat.pick) return { ok: false, reason: "The agent didn't suggest an answer. Reply in your words or open the chat." };
   // A Page's tap is not Ash's either (PR #235 review): a red line waits for Ash whoever else asks.
-  if ((options.by === "autopilot" || options.by === "page") && (chat.redLine || chat.provide)) return { ok: false, reason: forYou("This one touches a red line, so it waits for Ash.") };
+  const notAsh = options.by === "autopilot" || options.by === "page";
+  if (notAsh && (chat.redLine || chat.provide)) return { ok: false, reason: forYou("This one touches a red line, so it waits for Ash.") };
+  // WP-101: the same rule a reviewed approval follows, on this door too. The pick is one answer, but the question
+  // it answers can be the action ("Send it to Priya?"), and so can any option the card points back to.
+  if (notAsh && chatQuestionVeto(chat))
+    return { ok: false, reason: forYou("That one sends, deletes, moves money, publishes or changes access, so it waits for Ash.") };
   const prompt = host?.liveQuestion(sessionId);
   const reply = prompt && prompt.requestId === chat.requestId ? pickReply(prompt) : undefined;
   return answer(chat, reply && { reply, words: chat.pick }, pickMessage(chat), { words: chat.pick, by: "pick" });
+}
+
+/**
+ * Every option a card points back to: its own, then each row's question and options. A list it can't read is `null`,
+ * which the veto reads as a hold.
+ */
+function cardOptions(chat: Pick<ChatQuestion, "options" | "rows">): unknown[] | null {
+  const collected: unknown[] = [];
+  const take = (value: unknown): boolean => {
+    if (value === undefined || value === null) return true;
+    if (!Array.isArray(value)) return false;
+    collected.push(...value);
+    return true;
+  };
+  if (!take(chat.options)) return null;
+  if (chat.rows === undefined || chat.rows === null) return collected;
+  if (!Array.isArray(chat.rows)) return null;
+  for (const row of chat.rows) {
+    if (!row || typeof row !== "object") {
+      collected.push(row);
+      continue;
+    }
+    collected.push(row.question);
+    if (!take(row.options)) return null;
+  }
+  return collected;
+}
+
+/**
+ * Why autopilot won't answer this waiting question by itself, or null when it may (WP-101: the approval rule, here).
+ * The chat is a saved shape read back from disk, so a field it can't read holds: `autopilotMayTake` runs while a list
+ * draws, and a throw there would break the list rather than wait (WP-101 fix round 2, item F).
+ */
+export function chatQuestionVeto(chat: Pick<ChatQuestion, "question" | "pick" | "options" | "rows">): string | null {
+  try {
+    if (!chat || typeof chat !== "object") return UNREADABLE_REASON;
+    const options = cardOptions(chat);
+    if (!options) return UNREADABLE_REASON;
+    return questionVeto({ question: chat.question, recommendation: chat.pick, options });
+  } catch {
+    return UNREADABLE_REASON;
+  }
 }
 
 /** Ash's own words for the chat. */
@@ -618,10 +666,16 @@ export function openWaitingChat(sessionId: string): void {
   host?.open(sessionId, e ? describe(e).projectId : null);
 }
 
-/** Autopilot may answer this one by itself: the agent suggested an answer and it is not a red line. */
-export function autopilotMayTake(chat: Pick<WaitingChat, "pick" | "redLine" | "provide">): boolean {
-  // Something only Ash can hand over (a key, access) is never Autopilot's to answer (r65).
-  return !!chat.pick && !chat.redLine && !chat.provide;
+/** Autopilot may answer this one by itself: the agent suggested an answer, it is not a red line, and it isn't a send,
+ * a delete, a payment, a publish or an account change. A shape it can't read is never taken (WP-101 fix round 2, F). */
+export function autopilotMayTake(chat: Pick<WaitingChat, "pick" | "redLine" | "provide" | "question" | "options" | "rows">): boolean {
+  try {
+    if (!chat || typeof chat !== "object") return false;
+    // Something only Ash can hand over (a key, access) is never Autopilot's to answer (r65).
+    return !!chat.pick && !chat.redLine && !chat.provide && !chatQuestionVeto(chat);
+  } catch {
+    return false;
+  }
 }
 
 // ---- the same hands, for a stuck worker (H4: monos/model/stuckActions.ts) --------------------------------------------
