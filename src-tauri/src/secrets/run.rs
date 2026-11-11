@@ -81,9 +81,27 @@ pub fn allow_env(secret_env: &str, secret_value: &str) -> Vec<(String, String)> 
     out
 }
 
-/// The search path a command is looked up on and runs with: fixed, never read from the caller or from `$SHELL`.
+/// The search path a secret command is looked up on: system folders first, then Homebrew and `/usr/local`. Never the
+/// caller's PATH, never `$SHELL`, and never a folder of the account's own (fix round 6). Connector launches keep
+/// [`crate::connectors::launch::SAFE_PATH`], which is Homebrew-first, so a planted `curl` under Homebrew is not the one a
+/// secret run finds.
 pub fn search_path() -> String {
-    crate::connectors::launch::safe_path()
+    #[cfg(unix)]
+    {
+        [
+            "/usr/bin",
+            "/bin",
+            "/usr/sbin",
+            "/sbin",
+            "/opt/homebrew/bin",
+            "/usr/local/bin",
+        ]
+        .join(":")
+    }
+    #[cfg(not(unix))]
+    {
+        crate::connectors::launch::safe_path()
+    }
 }
 
 /// The PATH the child runs with (fix round 5, L3): system folders first, then any other folder on the search path that the
@@ -196,11 +214,44 @@ impl Drop for RunHome {
     }
 }
 
+/// `/var/empty` where that folder exists (macOS). Otherwise `/nonexistent`, which a normal account cannot create because
+/// its parent is `/`. A home the account can write is never used, including a `/var/empty` that happens to be writable:
+/// the run is refused rather than pointed at a folder the account can plant files in.
+#[cfg(unix)]
+fn sealed_home_candidate() -> PathBuf {
+    let empty = PathBuf::from("/var/empty");
+    if empty.exists() {
+        empty
+    } else {
+        PathBuf::from("/nonexistent")
+    }
+}
+
+/// True when `path` is a directory the account cannot write, or it is missing and the nearest existing parent is a
+/// directory the account cannot write (so the account cannot create it either).
+#[cfg(unix)]
+fn account_cannot_write_or_create(path: &Path) -> bool {
+    if path.exists() {
+        return path.is_dir() && !has_user_writable_component(path);
+    }
+    let mut parent = path.parent();
+    while let Some(folder) = parent {
+        if folder.as_os_str().is_empty() {
+            return false;
+        }
+        if folder.exists() {
+            return folder.is_dir() && !has_user_writable_component(folder);
+        }
+        parent = folder.parent();
+    }
+    false
+}
+
 /// A folder the account cannot write, used as the child's home on Unix. Not created here and never removed.
 #[cfg(unix)]
 fn sealed_config_home() -> Result<PathBuf, String> {
-    let path = PathBuf::from("/var/empty");
-    if !path.is_dir() || has_user_writable_component(&path) {
+    let path = sealed_home_candidate();
+    if !account_cannot_write_or_create(&path) {
         return Err("Couldn't give the command a home you cannot write, so it wasn't run.".into());
     }
     Ok(path)
@@ -841,8 +892,15 @@ mod tests {
     fn the_program_is_resolved_on_the_allow_list_path_never_the_callers() {
         let tmp = std::env::temp_dir().join(format!("mc-run-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&tmp).unwrap();
+        // Unix resolves the bare name to this file. Windows appends `.exe`, `.cmd` or `.bat`, so the twin is a `.cmd`.
+        #[cfg(not(windows))]
         let program = tmp.join("fixture-command");
+        #[cfg(windows)]
+        let program = tmp.join("fixture-command.cmd");
+        #[cfg(not(windows))]
         std::fs::write(&program, b"#!/bin/sh\necho hi\n").unwrap();
+        #[cfg(windows)]
+        std::fs::write(&program, b"@echo off\r\n").unwrap();
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -1411,9 +1469,20 @@ mod tests {
             "the home must not be under the temporary folder: {home}"
         );
         assert!(
-            Path::new(&home).is_dir(),
-            "the sealed home is not deleted after the run"
+            home == "/var/empty" || home == "/nonexistent",
+            "the home must be /var/empty when that folder exists, otherwise /nonexistent: {home}"
         );
+        if home == "/var/empty" {
+            assert!(
+                Path::new(&home).is_dir(),
+                "the sealed home is not deleted after the run"
+            );
+        } else {
+            assert!(
+                !Path::new(&home).exists(),
+                "/nonexistent must not be created for the run"
+            );
+        }
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
@@ -1450,8 +1519,54 @@ mod tests {
         assert_eq!(line("xdg"), home);
         assert_eq!(line("wgetrc"), "/dev/null");
         assert_eq!(line("writable"), "no", "{}", outcome.stdout.text);
-        assert!(Path::new(&home).is_dir(), "the sealed home is not deleted");
+        assert!(
+            home == "/var/empty" || home == "/nonexistent",
+            "the home must be /var/empty when that folder exists, otherwise /nonexistent: {home}"
+        );
+        if home == "/var/empty" {
+            assert!(Path::new(&home).is_dir(), "the sealed home is not deleted");
+        } else {
+            assert!(
+                !Path::new(&home).exists(),
+                "/nonexistent must not be created for the run"
+            );
+        }
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// Round 6: `/var/empty` when it exists, otherwise `/nonexistent`. A writable folder, or a missing path whose parent
+    /// the account can write, is not a home.
+    #[cfg(unix)]
+    #[test]
+    fn the_sealed_home_is_var_empty_or_nonexistent_and_a_writable_one_is_refused() {
+        let candidate = super::sealed_home_candidate();
+        let empty = Path::new("/var/empty");
+        if empty.exists() {
+            assert_eq!(
+                candidate, empty,
+                "an existing /var/empty is used, even before the write check"
+            );
+        } else {
+            assert_eq!(candidate, Path::new("/nonexistent"));
+        }
+        // A writable /var/empty is refused. The run is not pointed at /nonexistent instead.
+        if super::account_cannot_write_or_create(&candidate) {
+            assert_eq!(super::sealed_config_home().unwrap(), candidate);
+        } else {
+            let err = super::sealed_config_home().unwrap_err();
+            assert!(err.contains("cannot write"), "{err}");
+        }
+        let tmp = std::env::temp_dir();
+        assert!(
+            !super::account_cannot_write_or_create(&tmp),
+            "a temporary folder the account writes must not be a home"
+        );
+        let missing = tmp.join(format!("mc-no-such-home-{}", uuid::Uuid::new_v4()));
+        assert!(!missing.exists());
+        assert!(
+            !super::account_cannot_write_or_create(&missing),
+            "a missing path under a folder the account writes must not be a home"
+        );
     }
 
     // ---- fix round 4, N3: a folder the account can write is never on the child's PATH, so a planted helper there
