@@ -271,6 +271,14 @@ describe("lead tick step (d): ship on green", () => {
     expect(again.line).not.toContain("is green");
   });
 
+  it("with Ship on green on, a green pull request behind main still goes to the merge path: the merge gate judges its files (WP-202)", async () => {
+    const ports = fake({ rows: [row({ id: "a", status: "pr_open" })], watches: [watch({ status: { behind: 4, mergeState: "BEHIND" } })] });
+    const result = await runLeadTick({ ...base, shipOnGreen: true }, ports);
+    expect(ports.calls).toContain("merge owner/app#7");
+    expect(ports.rows[0].status).toBe("merged");
+    expect(result.line).toContain("Merged WP-200");
+  });
+
   it("with Ship on green on, sends a green pull request to the project's merge path", async () => {
     const ports = green();
     const result = await runLeadTick({ ...base, shipOnGreen: true }, ports);

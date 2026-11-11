@@ -100,7 +100,7 @@ const ACTIONS: [&str; 14] = [
     "list", "delegate", "get", "steer", "message", "retry", "cancel", "wait", "review", "finish",
     "respond", "answer", "repair", "approve",
 ];
-const APP_ACTIONS: [&str; 86] = [
+pub(crate) const APP_ACTIONS: [&str; 86] = [
     "app.version",
     "app.ship",
     "models.list",
@@ -677,6 +677,24 @@ fn sent(error: impl Into<String>) -> Failure {
     }
 }
 
+/// How long the app may take to answer one action. A finish check takes minutes; a secret run waits as long as its own
+/// timeout (plus a margin for its output), so a run over a minute is not cut off; everything else answers in 35 seconds.
+/// Fix round 3 (L1).
+pub(crate) fn reply_seconds(action: &str, input: &Value) -> u64 {
+    match action {
+        "finish" => 3_660,
+        "secrets.run" => {
+            let timeout = input
+                .get("timeoutSeconds")
+                .and_then(Value::as_u64)
+                .unwrap_or(120)
+                .clamp(1, 600);
+            timeout + 60
+        }
+        _ => 35,
+    }
+}
+
 pub(crate) fn send(
     action: &str,
     input: &Value,
@@ -717,7 +735,7 @@ pub(crate) fn send(
     // WP-91: `finish` runs the run's own finish-line check in the lead's checkout before it answers, and a real
     // check takes minutes. Every other action answers in well under a minute, and a long wait there would only hide
     // a hung app. The app's own timeout for the check is at most an hour, so wait past it.
-    let read_seconds = if action == "finish" { 3_660 } else { 40 };
+    let read_seconds = reply_seconds(action, input) + 5;
     stream
         .set_read_timeout(Some(Duration::from_secs(read_seconds)))
         .map_err(|e| unsent(e.to_string()))?;

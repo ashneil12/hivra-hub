@@ -21,6 +21,10 @@ export type PrWatchStatus = {
   passed: boolean;
   mergeable: "mergeable" | "conflicting" | "unknown" | "";
   reviewDecision: string | null;
+  /** Commits main has that the branch lacks (WP-202; 0 when unknown). */
+  behind?: number;
+  /** GitHub's merge state: BEHIND, DIRTY, CLEAN and the rest (WP-202; empty when unknown). */
+  mergeState?: string;
 };
 
 /** One watch, as pr_watch.rs serializes it. */
@@ -189,6 +193,7 @@ export function prWatchLine(watch: Pick<PrWatch, "status" | "state" | "endReason
   if (s.pending) return `${s.checks - s.pending} of ${s.checks} ${which} done`;
   if (s.passed) {
     if (s.reviewDecision === "CHANGES_REQUESTED") return "Checks passed; changes requested";
+    if (s.behind && s.behind > 0) return `Checks passed; ${s.behind} ${s.behind === 1 ? "commit" : "commits"} behind main`;
     if (s.reviewDecision === "REVIEW_REQUIRED") return "Checks passed; waiting for review";
     return "Checks passed; waiting to merge";
   }

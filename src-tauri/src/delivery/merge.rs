@@ -23,6 +23,7 @@ use serde::{Deserialize, Serialize};
 
 use super::github::Github;
 use crate::delegations;
+use crate::pr_watch::base;
 use crate::pr_watch::eval::{gate, Check, CheckStatus, Mergeability};
 use crate::pr_watch::github::{split_repo, PrRead, PrState};
 use crate::session_store::SessionStore;
@@ -169,6 +170,13 @@ pub fn decide(read: &PrRead, open_decision: Option<&str>, allow: &Allow) -> Deci
             "{pr} conflicts with its base; bring it up to date first."
         ));
     }
+    // WP-202: GitHub's merge state DIRTY is a conflict with main. BEHIND alone refuses nothing: whether main's moved
+    // changes touch this pull request is judged at merge time (base.rs), so a pull request that misses them ships.
+    if read.merge_state.as_deref() == Some("DIRTY") {
+        return Decision::Refuse(format!(
+            "{pr} conflicts with main; merge main into it, resolve the conflicts, push, and wait for green again."
+        ));
+    }
     let (checks, required) = gate(&read.detail.checks);
     let which = if required { "required " } else { "" };
     let red: Vec<&Check> = checks
@@ -214,6 +222,54 @@ pub fn decide(read: &PrRead, open_decision: Option<&str>, allow: &Allow) -> Deci
             if no_checks { " (it has no checks)" } else { "" }
         )),
     }
+}
+
+/// The base check (WP-202) for the merge gate: `Some(reason)` holds the merge. It reads GitHub only (the merge base, the
+/// compare, the files), never the database, and it runs with the store lock released.
+fn base_hold(
+    gh: &dyn Github,
+    repo: &str,
+    number: u64,
+    head: &str,
+    read: &PrRead,
+) -> Option<String> {
+    base::hold(
+        &|path: &str| gh.run(None, &["api".to_string(), path.to_string()]),
+        repo,
+        number,
+        head,
+        read,
+    )
+}
+
+/// The second read before a merge (WP-202): the same judgement as the first, on what GitHub shows now. `Some(reason)`
+/// refuses; `None` lets the merge go on to `--match-head-commit`.
+fn settle_again(
+    gh: &dyn Github,
+    repo: &str,
+    number: u64,
+    head: &str,
+    open: Option<&str>,
+    allow: &Allow,
+) -> Option<String> {
+    let again = match gh.read_pr(repo, number) {
+        Ok(again) => again,
+        Err(error) => {
+            return Some(format!(
+                "{repo}#{number} couldn't be read again before the merge: {error}"
+            ))
+        }
+    };
+    if again.detail.head_sha.as_deref() != Some(head) {
+        return Some(format!(
+            "{repo}#{number} moved to a new head while it was being checked. Nothing was merged."
+        ));
+    }
+    match decide(&again, open, allow) {
+        Decision::Merge { .. } => {}
+        Decision::Refuse(reason) | Decision::Ask(reason) => return Some(reason),
+    }
+    base_hold(gh, repo, number, head, &again)
 }
 
 fn named_files(hits: &[String]) -> String {
@@ -657,6 +713,30 @@ pub fn merge(
     } else {
         decided
     };
+    // WP-202 (L1): the base hold runs before any question is asked. A pull request that main has moved under is refused,
+    // never "is green. Merge it?" first. Its GitHub reads run with the store lock released.
+    let decision = match decision {
+        Decision::Refuse(reason) => Decision::Refuse(reason),
+        other => {
+            drop(conn);
+            let held = base_hold(gh, &repo, number, &head, &read);
+            conn = store.lock_conn()?;
+            // A question opened while the base was read (the lock was down) stops the merge, as the floor's re-check does.
+            let opened = match &delegation {
+                Some(id) => open_decision(&conn, id)?,
+                None => None,
+            };
+            match opened {
+                Some(question) => Decision::Refuse(format!(
+                    "A decision on this work is still open: {question}. It merges once that is answered."
+                )),
+                None => match held {
+                    Some(reason) => Decision::Refuse(reason),
+                    None => other,
+                },
+            }
+        }
+    };
     let allowed_by = match decision {
         Decision::Refuse(reason) => {
             record(
@@ -692,6 +772,27 @@ pub fn merge(
         Decision::Merge { allowed_by } => allowed_by,
     };
     drop(conn);
+    // WP-202: read again just before the merge (the WP-160 pattern): a move, a conflict or a red check that landed
+    // while the read above was judged holds it. `--match-head-commit` still pins the head.
+    // The base hold (WP-202) and this read run with the store lock released. `gh pr merge --match-head-commit` pins the
+    // head only: GitHub does not pin the base, so the base is judged here, as close to the merge as this can get, and
+    // GitHub's own up-to-date rule is the server-side guard when the branch protection asks for it.
+    // A base move in the last instant, after this read and before GitHub accepts the merge, is not seen here.
+    if let Some(reason) = settle_again(gh, &repo, number, &head, open.as_deref(), &allow) {
+        let conn = store.lock_conn()?;
+        record(
+            &conn,
+            &repo,
+            number,
+            Some(&head),
+            "refused",
+            None,
+            &request.caller,
+            Some(&reason),
+            now,
+        )?;
+        return Ok(MergeOutcome::Refused { reason });
+    }
     let args: Vec<String> = [
         "pr",
         "merge",

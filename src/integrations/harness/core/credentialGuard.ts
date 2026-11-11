@@ -191,6 +191,8 @@ export const SECRET_ACTION_DENY_RULES: readonly string[] = [
   "Bash(op read:*)",
   "Bash(op inject:*)",
   "Bash(op item get:*)",
+  // WP-92: the launcher is the app's own, signed call; a worker cannot run it itself.
+  "Bash(*monocode secret-run*)",
   "Bash(*infisical run*)",
   "Bash(*infisical export*)",
   "Bash(*dotenv run*)",
@@ -236,6 +238,9 @@ export const SECRET_ACTION_DENY_RULES: readonly string[] = [
 /** One shell segment's command start (after `cd x &&`, `;`, `|`, `$(`, a backtick, `sudo`, `npx`, `bunx`, `pnpm dlx`). */
 const AT = String.raw`(?:^|[\s;&|(\x60$])(?:(?:sudo|npx|bunx|pnpm\s+dlx|yarn\s+dlx|command)\s+(?:-\S+\s+)*)?`;
 const SECRET_ACTIONS: readonly RegExp[] = [
+  // The secret launcher, invoked from a shell line: `monocode secret-run`, or any `secret-run --grant...` (the grant is
+  // the app's own, never a worker's to carry). A word that merely names it is ordinary text.
+  new RegExp(String.raw`\bmonocode\S*\s+secret-run\b|\bsecret-run\s+--grant`, "i"),
   // a platform's env or secret store: loading, pulling, setting, removing, running with it injected
   new RegExp(String.raw`${AT}vercel\s+(?:env\s+(?:run|pull|add|rm|remove|update)|secrets?)\b`, "i"),
   new RegExp(String.raw`${AT}netlify\s+env:(?:get|set|import|unset|clone)\b`, "i"),

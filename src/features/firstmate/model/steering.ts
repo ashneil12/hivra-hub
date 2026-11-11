@@ -115,7 +115,14 @@ export type FirstMateBackend = {
   list(query: { childSession?: string; ownerSession?: string }): Promise<SteerMessage[]>;
   settle(id: string, outcome: SteerOutcome): Promise<{ applied: boolean; message: SteerMessage | null }>;
   ask(input: AskInput): Promise<AskOutcome>;
-  answer(project: string, key: string, answer: string, by?: string, reason?: string): Promise<AnswerOutcome>;
+  answer(
+    project: string,
+    key: string,
+    answer: string,
+    by?: string,
+    seenVersion?: number,
+    reason?: string,
+  ): Promise<AnswerOutcome>;
   decisions(answered?: number): Promise<Decision[]>;
   /** WP-156: the standing-answers block for one project. Empty while the setting is off. */
   standingBrief?(project: string): Promise<string>;
@@ -127,7 +134,8 @@ export const tauriFirstMate: FirstMateBackend = {
   list: (query) => invoke("steering_list", query),
   settle: (id, outcome) => invoke("steering_settle", { id, outcome }),
   ask: (input) => invoke("decisions_ask", { input }),
-  answer: (project, key, answer, by, reason) => invoke("decisions_answer", { project, key, answer, by, reason }),
+  answer: (project, key, answer, by, seenVersion, reason) =>
+    invoke("decisions_answer", { project, key, answer, by, seenVersion, reason }),
   decisions: (answered) => invoke("decisions_list", { answered }),
   standingBrief: (project) => invoke("decisions_standing_brief", { project }),
 };
@@ -270,7 +278,8 @@ export async function askPersonRecorded(
     };
   }
   // The person answered it in this chat: their words are the answer, recorded once, and the waiting tasks carry on.
-  if (input.answer !== undefined && d.state === "open") {
+  // Never on a secret's own card (`secret/<name>/<executable>`): only the person approves one, on their card.
+  if (input.answer !== undefined && d.state === "open" && !d.decisionKey.startsWith("secret/")) {
     const words = nonEmpty(input.answer, "answer");
     const answered = await host.backend.answer(d.project, d.decisionKey, words, `chat:${source.id}`);
     if (answered.decision) d = answered.decision;

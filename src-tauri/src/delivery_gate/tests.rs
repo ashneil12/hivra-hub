@@ -1028,6 +1028,7 @@ fn a_chat_cannot_approve_a_gate_and_nothing_is_forwarded() {
                 key,
                 "approve",
                 Some(by.into()),
+                None,
                 3,
             )
             .unwrap_err();
@@ -1073,6 +1074,7 @@ fn an_answer_on_a_decision_that_is_not_open_forwards_nothing() {
         "gate/missing",
         "approve",
         Some("user".into()),
+        None,
         3,
     )
     .unwrap();
@@ -1102,6 +1104,7 @@ fn an_answer_on_a_decision_that_is_not_open_forwards_nothing() {
         "gate/r1",
         "skip",
         Some("person".into()),
+        None,
         5,
     )
     .unwrap();
@@ -1157,6 +1160,7 @@ fn the_persons_answer_still_forwards_and_another_projects_run_does_not() {
         "GATE/r1",
         "approve",
         Some("user".into()),
+        None,
         30,
     )
     .unwrap();
@@ -1179,7 +1183,8 @@ fn the_persons_answer_still_forwards_and_another_projects_run_does_not() {
     ] {
         ask_gate(&store, alpha, key);
         park(&store, run_id, alpha, run_id, key, 40);
-        let landed = crate::decisions::answer_and_relay(&store, alpha, key, "fix", by, 41).unwrap();
+        let landed =
+            crate::decisions::answer_and_relay(&store, alpha, key, "fix", by, None, 41).unwrap();
         assert!(landed.applied, "{key}");
         assert_eq!(responded(&store, alpha, key).as_deref(), Some("fix"));
         let text = log_of(&log);

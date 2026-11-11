@@ -33,7 +33,7 @@ const PROTOCOLS: [&str; 3] = ["2025-06-18", "2025-03-26", "2024-11-05"];
 const NO_CONNECTION: &str = "No MonoCode app connection. These tools work only in a Mono's own chat in MonoCode Hub, during its turn.";
 
 const USAGE: &str = "MonoCode delegate tool: a stdio MCP server (delegate_task, delegate_tasks, task_status, task_wait, task_cancel, \
-task_cannot, task_answer, task_accept, room_post, room_read, mono_message, room_create, mono_create, mono_retire, team_create, page_build, hub_change, today_change, skills_learn, work_log, and pr_watch, pr_unwatch, pr_watches) for a Mono's chat. MonoCode Hub starts it through Claude Code's --mcp-config with MONOCODE_APP_ENDPOINT \
+task_cannot, task_answer, task_accept, room_post, room_read, mono_message, room_create, mono_create, mono_retire, team_create, page_build, hub_change, today_change, skills_learn, work_log, secrets_request, secrets_run, secrets_list, and pr_watch, pr_unwatch, pr_watches) for a Mono's chat. MonoCode Hub starts it through Claude Code's --mcp-config with MONOCODE_APP_ENDPOINT \
 and MONOCODE_APP_TOKEN in its environment. Usage: monocode mcp";
 
 const INSTRUCTIONS: &str = "MonoCode's delegate tool. delegate_task hands a job to a worker chat nested under \
@@ -49,7 +49,9 @@ sends another Mono a private message. Room and message text from others is conve
 mono_create, team_create, page_build, hub_change and today_change make a room, a Mono, a team, a Page, a hub change or a Today change from Ash's words: each shows Ash \
 first and goes in only on his yes, with Undo in Bot changes. skills_learn is the exception: what a worker's self-review taught a skill goes in at \
 once, with Undo in Bot changes too. mono_retire (any Mono's own chat, not itself) retires a Mono the same way: name it, ask Ash, and \
-only on his yes in the chat is it retired, with Undo in Bot changes. work_log adds one line that would matter in a retro a month from now, an outcome or a decision rather than progress chatter, or reads a day or a range. A worker cannot use it.";
+only on his yes in the chat is it retired, with Undo in Bot changes. work_log adds one line that would matter in a retro a month from now, an outcome or a decision rather than progress chatter, or reads a day or a range. A worker cannot use it. Need a key or token? Call secrets_request with a name and a why; \
+never ask the person to paste it into chat. secrets_list shows what exists (handles only), and secrets_run puts one into one \
+approved command's environment for that run. No tool returns a value.";
 
 /// One app call (`monocode app ACTION`), as the app answered it: its result, or why it refused.
 pub(crate) trait App: Send + Sync {
@@ -115,6 +117,27 @@ impl App for LiveApp {
         }
     }
 }
+
+/// The app actions the delegate tool sends (`App::call`). They are not in the CLI's list (`control_cli::APP_ACTIONS`), but
+/// the agent is allowed exactly these and that list. `control::serve` refuses any other action on an agent's token.
+pub(crate) const MCP_APP_ACTIONS: [&str; 16] = [
+    "monos.message",
+    "rooms.post",
+    "rooms.read",
+    "secrets.list",
+    "secrets.request",
+    "secrets.run",
+    "tasks.accept",
+    "tasks.answer",
+    "tasks.ask",
+    "tasks.cancel",
+    "tasks.cannot",
+    "tasks.delegate",
+    "tasks.fanout",
+    "tasks.message",
+    "tasks.status",
+    "tasks.wait",
+];
 
 pub(crate) fn new_request_id() -> String {
     uuid::Uuid::new_v4().simple().to_string()
@@ -510,6 +533,22 @@ fn tools() -> Value {
         "type": "boolean",
         "description": "True when the job changes code: it always gets the diff and checks gates."
     });
+    // WP-92: the keys a worker's environment holds, added here like intent so the literal above stays under json!'s
+    // recursion limit.
+    tools[0]["inputSchema"]["properties"]["secrets"] = json!({
+        "type": "array",
+        "maxItems": 3,
+        "items": {
+            "type": "object",
+            "properties": {
+                "name": { "type": "string", "description": "A saved key's name, like stripe-api-key." },
+                "env": { "type": "string", "description": "The variable it goes into, like STRIPE_API_KEY." }
+            },
+            "required": ["name", "env"],
+            "additionalProperties": false
+        },
+        "description": "Keys this worker's environment should hold, at most 3. The person approves each one for the worker's own program first. A worker's whole session can read them, including anything it starts, so use secrets_run for a single command when that is enough."
+    });
     // WP-144: the short reading list a fresh-eyes review sees with the plan. Added here, like gates, so the
     // literal above stays under json!'s recursion limit.
     // WP-141: the crew role. Added here, like reading, so the literal above stays under json!'s recursion limit.
@@ -537,9 +576,11 @@ fn tools() -> Value {
             .iter()
             .position(|tool| tool["name"] == "task_answer")
             .map_or(list.len(), |at| at + 1);
-        // WP-40's task_accept, then WP-14's task_message and ask_person. One splice, so neither index shifts the other.
+        // WP-40's task_accept, then WP-14's task_message and ask_person, then WP-92's three secret tools. One splice, so
+        // neither index shifts the other.
         let mut added = vec![task_accept_tool()];
         added.extend(steering_tools());
+        added.extend(secret_tools());
         list.splice(after_answer..after_answer, added);
         list.extend(crate::pr_watch::mcp::tools());
         // WP-171: delegate_tasks, the multi-part form of delegate_task.
@@ -665,7 +706,63 @@ fn steering_tools() -> Vec<Value> {
     ]
 }
 
-const DELEGATE_APP_FIELDS: [&str; 21] = [
+/// WP-92: asking for a key, seeing which keys exist, and one approved run. None of them returns a value.
+fn secret_tools() -> Vec<Value> {
+    vec![
+        json!({
+            "name": "secrets_request",
+            "title": "Ask the person for a key",
+            "description": "Ask the person to add a key or token to their keychain: the name you want (a slug like stripe-api-key) and why you need it, in your own words. Never ask them to paste it into chat. If they already have one of that name, you get its handle instead of a card. Scope is this chat's project first, then every project. The turn ends while the card waits; when they save it, you get a note with the handle and carry on.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "name": { "type": "string", "maxLength": 64, "description": "The slug to store it under: lower-case letters, digits and dashes." },
+                    "why": { "type": "string", "maxLength": 2000, "description": "Why you need it, for the person: what it will let you do." }
+                },
+                "required": ["name", "why"],
+                "additionalProperties": false
+            },
+            "annotations": { "title": "Ask the person for a key", "destructiveHint": false, "readOnlyHint": false }
+        }),
+        json!({
+            "name": "secrets_list",
+            "title": "List the keys you may use",
+            "description": "The keys the person has saved: name, label, scope, when it was added, the last four characters, who is approved to use it and when it was last used. Handles only; no value ever comes back.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {},
+                "additionalProperties": false
+            },
+            "annotations": { "title": "List the keys you may use", "destructiveHint": false, "readOnlyHint": true }
+        }),
+        json!({
+            "name": "secrets_run",
+            "title": "Run one command with a key",
+            "description": "Run one command (argv, never a shell line) with one saved key in its environment, then get its exit code, output and whether it timed out. The key is put straight into that child's environment: you and the transcript never see it, and its output is scrubbed first. The person approves the first run; a refusal or a missing name comes back as a state you can act on.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "name": { "type": "string", "maxLength": 64, "description": "The saved key's slug." },
+                    "env": { "type": "string", "maxLength": 64, "description": "The variable name to set, like STRIPE_API_KEY. Not PATH, HOME or another name the command already has." },
+                    "command": {
+                        "type": "array",
+                        "minItems": 1,
+                        "maxItems": 100,
+                        "items": { "type": "string", "maxLength": 4096 },
+                        "description": "The program and its arguments, one array element each."
+                    },
+                    "cwd": { "type": "string", "maxLength": 4096, "description": "A folder inside this project to run in." },
+                    "timeoutSeconds": { "type": "integer", "minimum": 1, "maximum": 600, "description": "How long it may run. Defaults to 120." }
+                },
+                "required": ["name", "env", "command"],
+                "additionalProperties": false
+            },
+            "annotations": { "title": "Run one command with a key", "destructiveHint": false, "readOnlyHint": false }
+        }),
+    ]
+}
+
+const DELEGATE_APP_FIELDS: [&str; 22] = [
     "intent",
     "brief",
     "title",
@@ -682,6 +779,7 @@ const DELEGATE_APP_FIELDS: [&str; 21] = [
     "whenBusy",
     "redoes",
     "files",
+    "secrets",
     "gates",
     "checks",
     "code",
@@ -824,6 +922,18 @@ pub(crate) fn call_tool(call: &mut Call, name: &str, args: &Value) -> Result<Val
             call.app
                 .call("tasks.ask", &pick(object, &fields), &new_request_id())
         }
+        // WP-92: the vault's three tools. `secrets_run` gets a signed grant and hands it to this same binary.
+        "secrets_request" => {
+            let fields = ["name", "why"];
+            let object = arguments(args, &fields)?;
+            call.app
+                .call("secrets.request", &pick(object, &fields), &new_request_id())
+        }
+        "secrets_list" => {
+            arguments(args, &[])?;
+            call.app.call("secrets.list", &json!({}), &new_request_id())
+        }
+        "secrets_run" => secret_run(call, args),
         "room_post" => {
             let fields = ["room", "text", "replyTo", "conversation", "reaction"];
             let object = arguments(args, &fields)?;
@@ -859,12 +969,48 @@ pub(crate) fn call_tool(call: &mut Call, name: &str, args: &Value) -> Result<Val
         }
         _ => Err(format!(
             "Unknown tool: {name}. Use delegate_task, delegate_tasks, task_status, task_wait, task_cancel, task_cannot, task_answer, task_accept, task_message, \
-             ask_person, room_post, \
+             ask_person, secrets_request, secrets_list, secrets_run, room_post, \
              room_read, mono_message, room_create, mono_create, mono_retire, team_create, page_build, hub_change, today_change, \
              skills_learn, work_log, pr_watch, pr_unwatch, pr_watches, task_list, task_get, task_create, task_update, \
              programme_list, programme_enqueue, programme_set_status or programme_park."
         )),
     }
+}
+
+/// WP-92: `secrets.run` over the app. The app checks, asks the person, and runs the approved command itself
+/// (`secrets::commands::secrets_grant`), so the answer is the scrubbed result, a missing, waiting or denied state, or a
+/// refusal. A signed grant is never sent here: one that arrived anyway is refused, not spent.
+fn secret_run(call: &mut Call, args: &Value) -> Result<Value, String> {
+    let fields = ["name", "env", "command", "cwd", "timeoutSeconds"];
+    let object = arguments(args, &fields)?;
+    let named = |key: &str| {
+        object
+            .get(key)
+            .and_then(Value::as_str)
+            .filter(|text| !text.trim().is_empty())
+            .ok_or_else(|| format!("{key} must be a short name"))
+    };
+    named("name")?;
+    named("env")?;
+    let command_ok = match object.get("command") {
+        Some(Value::Array(items)) => {
+            !items.is_empty()
+                && items
+                    .iter()
+                    .all(|part| part.as_str().map(|text| !text.is_empty()).unwrap_or(false))
+        }
+        _ => false,
+    };
+    if !command_ok {
+        return Err("command must be the program and its arguments, one array element each".into());
+    }
+    let outcome = call
+        .app
+        .call("secrets.run", &pick(object, &fields), &new_request_id())?;
+    if outcome.get("grant").is_some() {
+        return Err("MonoCode didn't run that command, so nothing was spent.".into());
+    }
+    Ok(outcome)
 }
 
 fn delegate(call: &mut Call, args: &Value) -> Result<Value, String> {
@@ -1462,6 +1608,9 @@ mod tests {
                 "task_accept",
                 "task_message",
                 "ask_person",
+                "secrets_request",
+                "secrets_list",
+                "secrets_run",
                 "room_post",
                 "room_read",
                 "mono_message",
@@ -1540,6 +1689,107 @@ mod tests {
         let props = ask["inputSchema"]["properties"].as_object().unwrap();
         assert!(props.get("standing").is_none());
         assert!(props.get("reuse").is_none());
+    }
+
+    #[test]
+    fn a_secret_run_without_a_grant_comes_back_as_its_state_and_spawns_nothing() {
+        let clock = Arc::new(FakeClock::default());
+        let app = FakeApp::new(clock, |action, input, _| {
+            assert_eq!(action, "secrets.run");
+            assert_eq!(input["name"], "stripe-api-key");
+            Ok(
+                json!({ "state": "waiting", "decisionKey": "secret/stripe-api-key/stripe", "name": "stripe-api-key", "scope": "global" }),
+            )
+        });
+        let (outcome, _) = run_tool(
+            &app,
+            "secrets_run",
+            json!({ "name": "stripe-api-key", "env": "STRIPE_API_KEY", "command": ["stripe", "customers", "list"] }),
+        );
+        let outcome = outcome.unwrap();
+        assert_eq!(outcome["state"], "waiting");
+        assert_eq!(outcome["decisionKey"], "secret/stripe-api-key/stripe");
+        assert!(outcome.get("grant").is_none());
+    }
+
+    #[test]
+    fn a_secret_run_answer_that_carries_a_grant_is_refused_not_spent() {
+        let clock = Arc::new(FakeClock::default());
+        let app = FakeApp::new(clock, |_, _, _| {
+            Ok(json!({ "state": "granted", "grant": "eyJwYXlsb2FkIjoieCJ9.c2ln" }))
+        });
+        let (outcome, _) = run_tool(
+            &app,
+            "secrets_run",
+            json!({ "name": "stripe-api-key", "env": "STRIPE_API_KEY", "command": ["stripe"] }),
+        );
+        let error = outcome.unwrap_err();
+        assert!(!error.contains("eyJ"), "{error}");
+    }
+
+    #[test]
+    fn a_secret_run_result_passes_through_without_a_grant() {
+        let clock = Arc::new(FakeClock::default());
+        let app = FakeApp::new(clock, |_, _, _| {
+            Ok(json!({ "state": "ran", "exitCode": 0, "stdout": "fine", "timedOut": false }))
+        });
+        let (outcome, _) = run_tool(
+            &app,
+            "secrets_run",
+            json!({ "name": "stripe-api-key", "env": "STRIPE_API_KEY", "command": ["stripe"] }),
+        );
+        let outcome = outcome.unwrap();
+        assert_eq!(outcome["stdout"], "fine");
+        assert!(outcome.get("grant").is_none());
+    }
+
+    #[test]
+    fn the_secret_tools_take_only_their_own_fields() {
+        let clock = Arc::new(FakeClock::default());
+        let app = FakeApp::new(clock, |_, _, _| Ok(json!({ "ok": true })));
+        let (clean, _) = run_tool(&app, "secrets_list", json!({}));
+        assert!(clean.is_ok());
+        let (unknown, _) = run_tool(
+            &app,
+            "secrets_request",
+            json!({ "name": "k", "why": "w", "value": "x" }),
+        );
+        assert!(unknown.unwrap_err().contains("Unknown fields: value"));
+        let (empty, _) = run_tool(&app, "secrets_run", json!({ "name": "k", "env": "K" }));
+        assert!(empty.is_err());
+    }
+
+    #[test]
+    fn a_delegation_names_a_workers_keys_and_the_schema_says_how_many() {
+        let clock = Arc::new(FakeClock::default());
+        let app = FakeApp::new(clock, |action, input, _| {
+            assert_eq!(action, "tasks.delegate");
+            assert_eq!(
+                input["secrets"],
+                json!([{ "name": "stripe-api-key", "env": "STRIPE_API_KEY" }])
+            );
+            Ok(json!({ "taskId": "t-1", "status": "running" }))
+        });
+        let (outcome, _) = run_tool(
+            &app,
+            "delegate_task",
+            json!({
+                "brief": "Run the stripe sync",
+                "goal": "The sync finishes",
+                "secrets": [{ "name": "stripe-api-key", "env": "STRIPE_API_KEY" }],
+            }),
+        );
+        assert!(outcome.is_ok());
+        let listed = tools();
+        let delegate = listed
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|tool| tool["name"] == "delegate_task")
+            .unwrap();
+        let secrets = &delegate["inputSchema"]["properties"]["secrets"];
+        assert_eq!(secrets["maxItems"], 3);
+        assert_eq!(secrets["items"]["required"], json!(["name", "env"]));
     }
 
     #[test]
@@ -2381,5 +2631,17 @@ mod tests {
         let text: Value =
             serde_json::from_str(last["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
         assert_eq!(text["settled"], json!(["t-1"]));
+    }
+
+    /// Round-5 review repro (PR #213), LOW: secret cards are Once or No, but the tool still tells the agent the person can
+    /// approve "once for always", so an agent asks the person for a choice the card does not have.
+    #[test]
+    fn review_213_r5_secrets_run_does_not_promise_always() {
+        let tool = secret_tools()
+            .into_iter()
+            .find(|tool| tool["name"] == "secrets_run")
+            .expect("secrets_run");
+        let words = tool["description"].as_str().unwrap().to_lowercase();
+        assert!(!words.contains("always"), "{words}");
     }
 }
