@@ -564,3 +564,22 @@ test("candidates without a verifier are refused and nothing is written", { skip:
     rmSync(reviews, { recursive: true, force: true });
   }
 });
+
+// Item 5 end to end: a planted high written by the command blocks the ship helper for that exact head.
+test("a planted high-severity finding from the command blocks the ship helper on that head", { skip: process.platform === "win32" }, () => {
+  const { folder, sha } = changeRepo();
+  const reviews = mkdtempSync(join(tmpdir(), "wp203-planted-"));
+  try {
+    const candidates = join(folder, "planted.json");
+    writeFileSync(candidates, JSON.stringify([confirmed()]));
+    const review = cli(["--base", "main", "--head", "feature", "--author", "claude", "--reviewer", "codex",
+      "--candidates", candidates, "--verifier", "cat", "--reviews", reviews, "--paths", "one.ts"], folder);
+    assert.equal(review.status, 0, review.stdout + review.stderr);
+    const decision = evaluatePullRequest(prFor({ sha }), [{ ...greenRuns[0], headSha: sha }], { repo: REPO, reviewsRoot: reviews });
+    assert.equal(decision.ok, false);
+    assert.match(decision.message, /confirmed high/);
+  } finally {
+    rmSync(folder, { recursive: true, force: true });
+    rmSync(reviews, { recursive: true, force: true });
+  }
+});
