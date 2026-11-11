@@ -2080,10 +2080,8 @@ mod more_agent_sandbox_tests {
     /// path. When the launcher is off, a direct start ignores the hash, so the flag is not on the command.
     #[test]
     fn a_sandboxed_more_agents_start_keeps_the_hash_and_the_invoked_name() {
-        let scratch = Scratch(std::env::temp_dir().join(format!(
-            "wp178-more-pin-{}",
-            uuid::Uuid::new_v4()
-        )));
+        let scratch =
+            Scratch(std::env::temp_dir().join(format!("wp178-more-pin-{}", uuid::Uuid::new_v4())));
         std::fs::create_dir_all(&scratch.0).expect("scratch");
         let home = scratch.0.join("home");
         let chat = scratch.0.join("chat");
@@ -3473,7 +3471,9 @@ fn contained_version_output(path: &Path, timeout: Duration) -> Result<String, St
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     prepare_child(&mut cmd, &program);
-    let child = spawn_managed(&mut cmd).map_err(|e| format!("Failed to run {program}: {e}"))?;
+    // A version probe is not a More agents start, so there is no pin to recheck.
+    let child =
+        spawn_managed(&mut cmd, None).map_err(|e| format!("Failed to run {program}: {e}"))?;
     let pid = child.id();
     let (tx, rx) = mpsc::channel();
     thread::spawn(move || {
