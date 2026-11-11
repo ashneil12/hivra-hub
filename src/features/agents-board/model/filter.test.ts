@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { boardChipCounts } from "./counts";
 import { filterBoard, settledToday, type BoardFilter } from "./filter";
-import { buildAgentsTree, flattenBoard, type BoardNode, type BoardPerson } from "./tree";
+import { buildAgentsTree, flattenBoard, type BoardNode, type BoardPerson, type BoardState } from "./tree";
 
 const NOW = Date.UTC(2026, 10, 11, 15, 0, 0);
 
@@ -66,24 +66,53 @@ describe("filterBoard", () => {
     expect(ids({ projectId: null, state: "done-today" })).not.toContain("yesterday");
   });
 
-  it("each chip count equals the rows in that state under the project filter", () => {
-    // Limit until PR #243: the chip recounts this board. It does not take a separate needs number.
+  it("each chip equals the rows that are themselves in that state, not a rolled-up parent", () => {
+    // A parent whose chip only repeats a child does not count. That is the same set WP-210 counts.
     for (const projectId of [null, "hivra", "exo"] as const) {
       const counts = boardChipCounts(root, projectId, NOW);
       const rows = flattenBoard(filterBoard(root, { projectId, state: null }, NOW));
-      expect(counts.needsYou).toBe(rows.filter((node) => node.state === "needs-you").length);
-      expect(counts.working).toBe(rows.filter((node) => node.state === "working").length);
-      expect(counts.doneToday).toBe(rows.filter((node) => doneToday(node)).length);
+      expect(counts.needsYou).toBe(rows.filter((node) => itself(node, "needs-you")).length);
+      expect(counts.working).toBe(rows.filter((node) => itself(node, "working")).length);
+      expect(counts.doneToday).toBe(rows.filter((node) => itselfDoneToday(node)).length);
     }
     const all = boardChipCounts(root, null, NOW);
     const hivra = boardChipCounts(root, "hivra", NOW);
+    expect(all.needsYou).toBe(1);
+    expect(all.working).toBe(1);
     expect(all.doneToday).toBe(1);
-    expect(hivra.needsYou).toBe(all.needsYou);
+    expect(hivra.needsYou).toBe(1);
     expect(hivra.working).toBe(0);
     expect(hivra.doneToday).toBe(0);
   });
+
+  it("still counts a row that is itself in the state when a child is too", () => {
+    const counted = buildAgentsTree({
+      now: NOW,
+      projects: [
+        { id: "hivra", name: "Hivra" },
+        { id: "exo", name: "EXO" },
+      ],
+      people: [
+        person({ id: "captain", role: "captain", name: "Chief of Staff", state: "working" }),
+        person({ id: "home", role: "home", name: "Home", state: "working" }),
+        person({ id: "hivra-session", role: "project", projectId: "hivra", name: "Hivra", state: "idle" }),
+        person({ id: "coding", role: "mate", projectId: "hivra", name: "Coding", department: "coding", state: "needs-you" }),
+        person({ id: "need", role: "worker", projectId: "hivra", parentId: "coding", name: "Need", state: "needs-you" }),
+        person({ id: "exo-session", role: "project", projectId: "exo", name: "EXO", state: "idle" }),
+        person({ id: "run", role: "worker", projectId: "exo", name: "Run", state: "working" }),
+      ],
+    });
+    expect(flattenBoard(counted).find((node) => node.id === "coding")?.rolledUp).toBe(false);
+    expect(boardChipCounts(counted, null, NOW)).toEqual({ needsYou: 2, working: 2, doneToday: 0 });
+    expect(boardChipCounts(counted, "hivra", NOW)).toEqual({ needsYou: 2, working: 0, doneToday: 0 });
+    expect(boardChipCounts(counted, "exo", NOW)).toEqual({ needsYou: 0, working: 1, doneToday: 0 });
+  });
 });
 
-function doneToday(node: BoardNode): boolean {
-  return node.state === "done" && settledToday(node.settledAt, NOW);
+function itself(node: BoardNode, state: BoardState): boolean {
+  return !node.rolledUp && node.state === state;
+}
+
+function itselfDoneToday(node: BoardNode): boolean {
+  return itself(node, "done") && settledToday(node.settledAt, NOW);
 }

@@ -205,7 +205,7 @@ describe("buildAgentsTree", () => {
     expect(stopped?.prNumber).toBeNull();
   });
 
-  it("rolls a project or first mate up to Needs you, else Working, else Done or Idle", () => {
+  it("rolls every level, the top included, to Needs you, else Working, else Done or Idle", () => {
     const root = tree(
       [
         person({ id: "captain", role: "captain", name: "Chief of Staff", state: "idle" }),
@@ -269,17 +269,59 @@ describe("buildAgentsTree", () => {
         { id: "quiet", name: "Quiet" },
       ],
     );
-    const stateOf = (id: string) => flattenBoard(root).find((node) => node.id === id)?.state;
-    expect(stateOf("captain")).toBe("idle");
-    expect(stateOf("hivra-session")).toBe("needs-you");
-    expect(stateOf("coding")).toBe("needs-you");
-    expect(stateOf("need")).toBe("needs-you");
-    expect(stateOf("sub")).toBe("working");
-    expect(stateOf("marketing")).toBe("idle");
-    expect(stateOf("exo-session")).toBe("done");
-    expect(stateOf("shipped")).toBe("done");
-    expect(stateOf("busy")).toBe("working");
-    expect(stateOf("quiet-session")).toBe("working");
-    expect(stateOf("ops")).toBe("idle");
+    const nodeOf = (id: string) => flattenBoard(root).find((node) => node.id === id);
+    expect(nodeOf("captain")?.state).toBe("needs-you");
+    expect(nodeOf("captain")?.rolledUp).toBe(true);
+    expect(nodeOf("hivra-session")?.state).toBe("needs-you");
+    expect(nodeOf("hivra-session")?.rolledUp).toBe(true);
+    expect(nodeOf("coding")?.state).toBe("needs-you");
+    expect(nodeOf("coding")?.rolledUp).toBe(true);
+    expect(nodeOf("need")?.state).toBe("needs-you");
+    expect(nodeOf("need")?.rolledUp).toBe(false);
+    expect(nodeOf("sub")?.state).toBe("working");
+    expect(nodeOf("sub")?.rolledUp).toBe(false);
+    expect(nodeOf("marketing")?.state).toBe("idle");
+    expect(nodeOf("marketing")?.rolledUp).toBe(false);
+    expect(nodeOf("exo-session")?.state).toBe("done");
+    expect(nodeOf("exo-session")?.rolledUp).toBe(true);
+    expect(nodeOf("shipped")?.state).toBe("done");
+    expect(nodeOf("shipped")?.rolledUp).toBe(false);
+    expect(nodeOf("busy")?.state).toBe("working");
+    expect(nodeOf("busy")?.rolledUp).toBe(true);
+    expect(nodeOf("quiet-session")?.state).toBe("working");
+    expect(nodeOf("quiet-session")?.rolledUp).toBe(true);
+    expect(nodeOf("ops")?.state).toBe("idle");
+    expect(nodeOf("ops")?.rolledUp).toBe(false);
+  });
+
+  it("rolls a worker up from its sub-chat the same way as the top row", () => {
+    const root = tree([
+      person({ id: "captain", role: "captain", name: "Chief of Staff", state: "working" }),
+      person({ id: "hivra-session", role: "project", name: "Hivra", projectId: "hivra", state: "idle" }),
+      person({ id: "coding", role: "mate", name: "Coding", projectId: "hivra", department: "coding", state: "idle" }),
+      person({
+        id: "job",
+        role: "worker",
+        name: "Job",
+        projectId: "hivra",
+        parentId: "coding",
+        state: "working",
+      }),
+      person({
+        id: "ask",
+        role: "subchat",
+        name: "Ask",
+        projectId: "hivra",
+        parentId: "job",
+        state: "needs-you",
+      }),
+    ]);
+    const nodeOf = (id: string) => flattenBoard(root).find((node) => node.id === id);
+    for (const id of ["captain", "hivra-session", "coding", "job"]) {
+      expect(nodeOf(id)?.state).toBe("needs-you");
+      expect(nodeOf(id)?.rolledUp).toBe(true);
+    }
+    expect(nodeOf("ask")?.state).toBe("needs-you");
+    expect(nodeOf("ask")?.rolledUp).toBe(false);
   });
 });

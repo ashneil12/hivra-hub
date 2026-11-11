@@ -50,6 +50,10 @@ export type BoardNode = {
   canStop: boolean;
   settledAt: number | null;
   createdAt: number | null;
+  /** The row's own state, before a child makes the chip stronger. */
+  ownState: BoardState;
+  /** True when the chip is only there because a row under it is stronger. */
+  rolledUp: boolean;
   children: BoardNode[];
 };
 
@@ -78,6 +82,8 @@ function blank(person: BoardPerson, name: string, projectId: string | null, now:
     canStop: person.canStop === true,
     settledAt: typeof person.settledAt === "number" && Number.isFinite(person.settledAt) ? person.settledAt : null,
     createdAt: typeof person.createdAt === "number" && Number.isFinite(person.createdAt) ? person.createdAt : null,
+    ownState: person.state,
+    rolledUp: false,
     children: [],
   };
 }
@@ -198,6 +204,8 @@ export function buildAgentsTree(input: {
       canStop: false,
       settledAt: null,
       createdAt: null,
+      ownState: "idle",
+      rolledUp: false,
       children: [],
     });
   }
@@ -266,23 +274,15 @@ const STATE_RANK: Record<BoardState, number> = {
   idle: 3,
 };
 
-/** A project or first mate shows the strongest state under it. A worker keeps its own. */
+/** Every level, the top included, shows Needs you, then Working, then Done or Idle. */
 function rollupStates(node: BoardNode): void {
   for (const child of node.children) rollupStates(child);
-  if (node.role !== "project" && node.role !== "mate") return;
-  node.state = strongestState(node);
-}
-
-function strongestState(node: BoardNode): BoardState {
-  let state = node.state;
-  const walk = (current: BoardNode) => {
-    for (const child of current.children) {
-      if (STATE_RANK[child.state] < STATE_RANK[state]) state = child.state;
-      walk(child);
-    }
-  };
-  walk(node);
-  return state;
+  let state = node.ownState;
+  for (const child of node.children) {
+    if (STATE_RANK[child.state] < STATE_RANK[state]) state = child.state;
+  }
+  node.rolledUp = STATE_RANK[state] < STATE_RANK[node.ownState];
+  node.state = state;
 }
 
 export function flattenBoard(node: BoardNode): BoardNode[] {

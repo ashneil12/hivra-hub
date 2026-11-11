@@ -78,7 +78,11 @@ describe("boardFromStores", () => {
     expect(job?.prNumber).toBe(41);
     expect(job?.checksLabel).toBe("checks green");
     expect(job?.children.map((node) => node.id)).toEqual(["sub-chat"]);
-    expect(board.counts).toEqual({ needsYou: 3, working: 2, doneToday: 1 });
+    expect(job?.rolledUp).toBe(false);
+    // Hivra and Coding only repeat this worker, so the chip stays 1. Home and the sub-chat are themselves working.
+    expect(board.tree.rolledUp).toBe(true);
+    expect(board.tree.state).toBe("needs-you");
+    expect(board.counts).toEqual({ needsYou: 1, working: 2, doneToday: 1 });
     const text = JSON.stringify(flattenBoard(board.tree));
     expect(text).not.toMatch(/\bstuck\b/i);
     expect(text).not.toContain("/Work");
