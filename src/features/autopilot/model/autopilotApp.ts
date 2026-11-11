@@ -53,8 +53,8 @@ export type AutopilotAppDeps = {
   isLeadership(monoId: string): boolean;
   leadProject(monoId: string): string | undefined;
   /**
-   * WP-215: rules, a standing answer and the spend flag for this project. Absent means none of them,
-   * so a confident recommendation is still taken.
+   * WP-215: rules, a standing answer and the spend flag for this project. Absent means none of them.
+   * A pick is taken only when this context marks it confident.
    */
   captainContext?(input: { project: string | null; question: string; key?: string }): CaptainContext | Promise<CaptainContext>;
   /**

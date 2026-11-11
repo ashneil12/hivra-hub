@@ -461,11 +461,11 @@ export type CaptainDoorContext = {
   turns?: readonly number[];
   pendingSince?: number;
   now?: number;
-  /** Step 5 unless this is false. Money, the red list and an owner key are still checked first. */
+  /** Step 5 only when this is true. A missing flag is not a confident pick. */
   confident?: boolean;
 };
 
-/** The app, or a test, supplies standing answers and owner keys. Absent means the pick stands. */
+/** The app, or a test, supplies standing answers and owner keys. Absent does not mark a pick confident. */
 let captainDoor: ((chat: WaitingChat) => CaptainDoorContext) | null = null;
 
 export function setCaptainDoor(next: typeof captainDoor): () => void {
@@ -522,7 +522,7 @@ export async function takePick(
       question: chat.question,
       options: chat.options,
       recommendation: chat.pick,
-      confident: extra.confident !== false,
+      confident: extra.confident === true,
       rules: extra.rules,
       standing: extra.standing ?? null,
       learned: extra.learned ?? null,
