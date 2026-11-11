@@ -236,6 +236,49 @@ test("the Inbox leads with the Needs you list, each row with its own answer", as
   await expect(page.getByRole("button", { name: `Inbox, ${count} need you` })).toBeVisible();
 });
 
+// Ash, 11 Nov: "it's more like an All and then Ask and then GitHub", and a row "doesn't actually bring me to anything".
+test("the Inbox shows All, only Asks or one source, and a row opens its card with its answers and a reply box", async ({ page }) => {
+  await home(page);
+  await page.getByRole("button", { name: /^Inbox/ }).first().click();
+  const inbox = page.getByRole("region", { name: "Inbox" });
+  const tabs = inbox.getByRole("tablist", { name: "Inbox source" });
+  const needs = inbox.locator("[data-inbox-needs]");
+  const items = inbox.locator("[data-inbox-source-heading]");
+  // All: the asks and the work items, each under its own heading.
+  await expect(tabs.getByRole("tab", { name: "All" })).toHaveAttribute("aria-selected", "true");
+  await expect(needs).toBeVisible();
+  await expect(items).toContainText("GitHub");
+  // GitHub: the work items alone, with their own search.
+  await tabs.getByRole("tab", { name: "GitHub" }).click();
+  await expect(needs).toHaveCount(0);
+  await expect(inbox.getByRole("textbox", { name: "Filter inbox" })).toBeVisible();
+  await expect(tabs.getByRole("tab", { name: "GitHub" })).toHaveAttribute("aria-selected", "true");
+  // Asks: the asks alone, the first one open beside the list.
+  await tabs.getByRole("tab", { name: "Asks" }).click();
+  await expect(needs).toBeVisible();
+  await expect(inbox.getByRole("textbox", { name: "Filter inbox" })).toHaveCount(0);
+  await expect(inbox.locator("[data-need-detail]")).toBeVisible();
+  // A question's row opens its card and stays in the Inbox: the ask, who asked, its answer, its chat and a reply box.
+  const row = needs.locator("[data-inbox-need='question']").filter({ hasText: "Which take for the boss music?" });
+  await row.locator("button").first().click();
+  await expect(row).toHaveAttribute("data-selected", "true");
+  const card = inbox.locator("[data-need-detail]");
+  await expect(card.locator("[data-need-kind]")).toHaveText("Question");
+  await expect(card.locator("[data-need-sentence]")).toHaveText("Which take for the boss music?");
+  await expect(card.locator("[data-need-from]")).toContainText("EXO lead");
+  await expect(card.locator("[data-need-answer]").first()).toHaveText("Take A: drums first");
+  await expect(card.locator("[data-need-open]")).toHaveText("Open chat");
+  await expect(card.getByRole("textbox", { name: "Reply to EXO lead" })).toBeVisible();
+  await page.screenshot({ path: test.info().outputPath("inbox-ask-card.png") });
+  // The choice is kept: back in the Inbox it is still on Asks. All brings the work items back.
+  await page.reload();
+  await expect(page.locator("[data-home]")).toBeVisible({ timeout: 60_000 });
+  await page.getByRole("button", { name: /^Inbox/ }).first().click();
+  await expect(tabs.getByRole("tab", { name: "Asks" })).toHaveAttribute("aria-selected", "true");
+  await tabs.getByRole("tab", { name: "All" }).click();
+  await expect(items).toBeVisible();
+});
+
 test("first run: Dropwave's words, the Chief of Staff recommended and ticked, and a short tour", async ({ page }) => {
   await page.goto(`${base}/mockup.html?reset&onboarding`);
   const card = page.locator("[data-hub-onboarding]");

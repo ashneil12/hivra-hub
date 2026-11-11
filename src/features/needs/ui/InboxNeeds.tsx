@@ -9,6 +9,7 @@ import { needTarget } from "../../home/model/needTarget";
 import { needsRank } from "../../home/model/needsShown";
 import { openFromHome } from "../../home/model/opener";
 import { foldFirstMate } from "../model/inboxFold";
+import { shownNeed } from "../model/needContext";
 import { projectIdOf, useNeedsYou } from "../model/needsLive";
 import type { NeedsItem } from "../model/needsYou";
 import { OneTapNotice } from "./OneTapNotice";
@@ -18,6 +19,9 @@ export function inboxNeedsOrder(items: readonly NeedsItem[]): NeedsItem[] {
   return [...items].sort((a, b) => needsRank(a) - needsRank(b) || a.at - b.at || (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
 }
 
+/** How a row opens its card beside the list: the open one, whether the first is open when none is, and the pick. */
+export type InboxNeedsPick = { picked: string | null; firstWhenNone?: boolean; onPick: (item: NeedsItem) => void };
+
 /**
  * Dropwave (Ash, 11 Nov: "does the Inbox work with asks and things that need doing?"): the one Needs you list at the
  * top of the Inbox, above the work items from GitHub and the other connections. The same rows Home shows and the red
@@ -25,8 +29,11 @@ export function inboxNeedsOrder(items: readonly NeedsItem[]): NeedsItem[] {
  *
  * G10: with `firstMate` (the first-mate panel's fold), a first mate's decision is one row here: the row shows that
  * decision's answer buttons (and a secret card's exact command), and they run the panel's versioned answer.
+ *
+ * With `onPick` (Ash, 11 Nov: a row "doesn't actually bring me to anything"), a row's words open its card beside the
+ * list instead of leaving the Inbox; `picked` is the open one, and with `firstWhenNone` the first row is.
  */
-export function InboxNeeds({ firstMate = null }: { firstMate?: FirstMateFold | null } = {}) {
+export function InboxNeeds({ firstMate = null, pick }: { firstMate?: FirstMateFold | null; pick?: InboxNeedsPick } = {}) {
   useHubDataVersion();
   const needs = useNeedsYou();
   const ordered = useMemo(() => inboxNeedsOrder(needs), [needs]);
@@ -34,12 +41,34 @@ export function InboxNeeds({ firstMate = null }: { firstMate?: FirstMateFold | n
   const refs = projects.map((project) => ({ id: project.id, name: project.name, folder: project.folder ?? null }));
   const rows = foldFirstMate(ordered, firstMate?.decisions ?? [], (path) => projectIdOf(path, refs));
   const selected = firstMate?.selectedKey ?? null;
+  const open = pick ? shownNeed(ordered, pick.picked, pick.firstWhenNone ?? false)?.key : undefined;
+  const openRow = (item: NeedsItem) => (pick ? pick.onPick(item) : openFromHome(needTarget(item)));
+  // The decision Home led here for opens its card too, so the row a person came for is the one beside the list.
+  const led = pick && selected ? rows.find((row) => row.decision?.key === selected)?.need : undefined;
+  const ledKey = led?.key;
+  const onPick = pick?.onPick;
+  useEffect(() => {
+    if (led && onPick) onPick(led);
+    // Only when Home leads to another decision, not each time the list is read again.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ledKey]);
   const list = useRef<HTMLUListElement>(null);
   useEffect(() => {
     const node = list.current?.querySelector("[data-selected='true']");
     if (node instanceof HTMLElement && typeof node.scrollIntoView === "function") node.scrollIntoView({ block: "nearest" });
   }, [selected, rows.length]);
-  if (rows.length === 0) return <OneTapNotice />;
+  if (rows.length === 0) {
+    return (
+      <>
+        <OneTapNotice />
+        {pick?.firstWhenNone ? (
+          <p data-inbox-needs-empty className="px-3 py-3 text-[12px] text-content/50">
+            Nothing is asking for an answer.
+          </p>
+        ) : null}
+      </>
+    );
+  }
   const many = projects.length > 1;
   return (
     <section aria-label="Needs you" data-inbox-needs={rows.length} className="flex flex-col gap-1 border-b border-stroke px-1.5 pb-2 pt-2">
@@ -57,7 +86,8 @@ export function InboxNeeds({ firstMate = null }: { firstMate?: FirstMateFold | n
             // A secret card is the exact command the person approves, never the row's shortened sentence.
             const sentence = item && !isSecretDecisionKey(decision.key ?? "") ? item.sentence : decision.title;
             const meta = [project, item?.who].filter(Boolean).join(" · ");
-            const chosen = decision.key != null && decision.key === selected;
+            // With a card open beside the list, the lit row is that card's; else the decision Home led here for.
+            const chosen = open ? item?.key === open : decision.key != null && decision.key === selected;
             return (
               <li
                 key={key}
@@ -68,7 +98,7 @@ export function InboxNeeds({ firstMate = null }: { firstMate?: FirstMateFold | n
                 className={`flex flex-col rounded-lg px-1.5 py-1.5 hover:bg-content/5${chosen ? " bg-content/5" : ""}`}
               >
                 {item ? (
-                  <button type="button" className="flex min-w-0 flex-col gap-0.5 text-left" onClick={() => openFromHome(needTarget(item))}>
+                  <button type="button" className="flex min-w-0 flex-col gap-0.5 text-left" onClick={() => openRow(item)}>
                     <span className="text-[13px] leading-[18px] text-content">{sentence}</span>
                     {meta ? <span className="truncate text-[11px] leading-4 text-content/55">{meta}</span> : null}
                   </button>
@@ -91,8 +121,15 @@ export function InboxNeeds({ firstMate = null }: { firstMate?: FirstMateFold | n
           const project = many && item.projectId ? projects.find((p) => p.id === item.projectId)?.name : undefined;
           const action = needActions(item)[0];
           return (
-            <li key={key} data-inbox-need={item.kind} className="flex items-start gap-2 rounded-lg px-1.5 py-1.5 hover:bg-content/5">
-              <button type="button" className="flex min-w-0 flex-1 flex-col gap-0.5 text-left" onClick={() => openFromHome(needTarget(item))}>
+            <li
+              key={key}
+              data-inbox-need={item.kind}
+              data-need-key={item.key}
+              data-selected={item.key === open ? "true" : undefined}
+              aria-current={item.key === open ? "true" : undefined}
+              className={`flex items-start gap-2 rounded-lg px-1.5 py-1.5 hover:bg-content/5${item.key === open ? " bg-content/5" : ""}`}
+            >
+              <button type="button" className="flex min-w-0 flex-1 flex-col gap-0.5 text-left" onClick={() => openRow(item)}>
                 <span className="text-[13px] leading-[18px] text-content">{item.sentence}</span>
                 <span className="truncate text-[11px] leading-4 text-content/55">{[project, item.who].filter(Boolean).join(" · ")}</span>
               </button>
