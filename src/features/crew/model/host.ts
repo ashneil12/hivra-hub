@@ -102,10 +102,10 @@ function reasonOf(error: unknown): string {
  * system's saved policies (WP-141 MEDIUM 6). A policy that can't be read is an error, never an empty policy
  * (MEDIUM 4): the caller refuses the launch or the change.
  */
-export async function crewPolicyInForce(
+async function policyInForce(
   monoId: string | undefined,
   folder: string | undefined,
-): Promise<{ neverUse: string[]; lock: boolean }> {
+): Promise<{ neverUse: string[]; lock: boolean; owners: string[] }> {
   // Round 9 (LOW-3): every project that owns the folder counts, so a Lead in a worktree or a package gets its project's
   // lock. A folder no saved project owns reads only the Mono's and the system's.
   const owners = folder ? await owningProjects(folder) : [];
@@ -135,6 +135,14 @@ export async function crewPolicyInForce(
     lock = lock || policy.lockDefault;
     for (const id of policy.neverUse) if (!neverUse.includes(id)) neverUse.push(id);
   }
+  return { neverUse, lock, owners };
+}
+
+export async function crewPolicyInForce(
+  monoId: string | undefined,
+  folder: string | undefined,
+): Promise<{ neverUse: string[]; lock: boolean }> {
+  const { neverUse, lock } = await policyInForce(monoId, folder);
   return { neverUse, lock };
 }
 
@@ -195,10 +203,21 @@ export async function judgeV2Session(input: { sessionId: string; folder: string 
   await crewBindV2Session({ sessionId: input.sessionId, cli: "opencode", folder: input.folder, ticket });
 }
 
+/** A stored default the route can use. A blank pick is no default. */
+function usableDefault(
+  pick: Parameters<typeof routeDefaults>[0]["project"],
+): Parameters<typeof routeDefaults>[0]["project"] {
+  if (!pick || (!pick.cli && !pick.model && !pick.effort)) return undefined;
+  return pick;
+}
+
 /**
  * Round 8 (MED-C): the crew policy in force for a plan the Lead starts in a folder. It reads the Lead's own Mono, and
  * the locked default the route picks for that Mono and folder, so a plan is judged against that default rather than
  * the Lead's own CLI. A route that can't be read fails the plan closed.
+ *
+ * Round 10: the project default is the first owning project's, the same owners the policy in force already resolved.
+ * The Lead's own folder is not a project when it is a worktree, so looking the default up there misses the lock's CLI.
  */
 export async function crewPolicyForLead(
   folder: string,
@@ -209,8 +228,11 @@ export async function crewPolicyForLead(
   },
 ): Promise<{ neverUse: string[]; lock: boolean; lockedDefault?: string }> {
   const mono = monoForSession(leadId);
-  const policy = await crewPolicyInForce(mono?.id, folder);
-  if (!policy.lock) return { neverUse: policy.neverUse, lock: false };
+  const { neverUse, lock, owners } = await policyInForce(mono?.id, folder);
+  if (!lock) return { neverUse, lock: false };
+  const project = defaults?.project
+    ? owners.map((owner) => usableDefault(defaults.project?.(owner))).find((pick) => pick !== undefined)
+    : undefined;
   let route: Route;
   try {
     route = await crewRouteFor({
@@ -220,14 +242,14 @@ export async function crewPolicyForLead(
       ...(mono?.id ? { mono: mono.id } : {}),
       defaults: routeDefaults({
         mono: mono?.workerDefault,
-        project: defaults?.project?.(folder),
+        project,
         system: defaults?.system?.(),
       }),
     });
   } catch (error) {
     throw new Error(`The crew policy could not be read, so nothing was started (${reasonOf(error)}).`);
   }
-  return { neverUse: policy.neverUse, lock: true, ...(route.cli ? { lockedDefault: route.cli } : {}) };
+  return { neverUse, lock: true, ...(route.cli ? { lockedDefault: route.cli } : {}) };
 }
 
 /**

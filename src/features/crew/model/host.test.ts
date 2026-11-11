@@ -177,4 +177,29 @@ describe("crewPolicyForLead routes with the project and system defaults", () => 
     const route = calls.find(([command]) => command === "crew_route");
     expect(route?.[1]).toMatchObject({ query: { defaults: expect.objectContaining({ project: expect.anything(), system: expect.anything() }) } });
   });
+
+  it("uses the first owning project's default, not the worktree folder", async () => {
+    const calls: [string, unknown][] = [];
+    vi.mocked(invoke).mockImplementation(async (command: string, args?: unknown) => {
+      calls.push([command, args]);
+      if (command === "crew_projects_owning") return ["/pkg", "/repo"];
+      if (command === "crew_rules_get") return { policy: { lockDefault: true, neverUse: [], fallback: [] }, policyOwn: true };
+      if (command === "crew_route") return { cli: "claude" };
+      return undefined;
+    });
+    const lookedUp: string[] = [];
+    const policy = await crewPolicyForLead("/worktrees/repo-wt", "lead", {
+      project: (owner) => {
+        lookedUp.push(owner);
+        return owner === "/repo" ? ({ cli: "claude" } as never) : undefined;
+      },
+      system: () => ({ cli: "codex" } as never),
+    });
+    expect(lookedUp).toEqual(["/pkg", "/repo"]);
+    expect(policy).toMatchObject({ lock: true, lockedDefault: "claude" });
+    const route = calls.find(([command]) => command === "crew_route");
+    expect(route?.[1]).toMatchObject({
+      query: { project: "/worktrees/repo-wt", defaults: expect.objectContaining({ project: { cli: "claude" }, system: { cli: "codex" } }) },
+    });
+  });
 });
