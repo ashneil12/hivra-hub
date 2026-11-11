@@ -63,6 +63,21 @@ describe("WP-177 host teleport store", () => {
     expect(await store.holds(CHAT, "m1", DEV)).toBe("live");
   });
 
+  it("a move back carries the messages the host ran after it opened the copy, not the copy it received", async () => {
+    // The host's session list is where the live copy runs. A turn on the host adds messages and a new provider session id
+    // there, and the move back must send those. The teleport record's own snapshot is the copy as received.
+    let hostNow: { transcript: string; providerSessionId: string } | null = null;
+    const hostSessions = { open: () => {}, close: () => {}, current: () => hostNow && { ...payloadFor().chat, ...hostNow } };
+    const withHost = new HostTeleportStore({ dir, selfId: SELF, providers: ["claude", "codex"], leaseRoot, now: () => now, leaseMs: 60_000, sessions: hostSessions });
+    await withHost.receive(CHAT, "m1", payloadFor(), DEV);
+    await withHost.activate(CHAT, "m1", DEV);
+    const after = '[{"id":"b1","role":"user","text":"hello"},{"id":"b2","role":"user","text":"the turn run on the host"}]';
+    hostNow = { transcript: after, providerSessionId: "99999999-8888-7777-6666-555555555555" };
+    const rec = await withHost.read(CHAT, DEV);
+    expect(rec?.live?.transcript).toBe(after);
+    expect(rec?.live?.providerSessionId).toBe("99999999-8888-7777-6666-555555555555");
+  });
+
   it("activate throws when there is no copy for the move", async () => {
     await expect(store.activate(CHAT, "m1", DEV)).rejects.toThrow(/No copy/);
     await store.receive(CHAT, "m1", payloadFor(), DEV);

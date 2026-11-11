@@ -58,6 +58,12 @@ interface StoredChat {
 export interface HostChatSessions {
   open(chat: TransferChat, moveId: string): void;
   close(chatId: string): void;
+  /**
+   * The live copy as the host runs it now: its messages and provider session id change with every turn the host runs. A
+   * move back sends this, not the copy the host received, so a turn run on the host is not lost. Null when the host holds
+   * no session for the chat.
+   */
+  current?(chatId: string): TransferChat | null;
 }
 
 export interface HostTeleportOptions {
@@ -140,8 +146,12 @@ export class HostTeleportStore {
   async read(chatId: string, device: string): Promise<ChatRecord | null> {
     const stored = this.load(chatId);
     if (!stored || (stored.device !== null && stored.device !== device)) return null;
-    const live: ChatSnapshot | null = stored.live
-      ? { ...stored.live, queued: [...stored.live.queued], turnRunning: false, approvalPending: false }
+    // A live copy runs in the host's session list, so that is what a move back carries (the copy received is only the
+    // starting point). Without a session port, or when the host holds no session for it, the copy received is used.
+    const running = stored.live && stored.owner === this.options.selfId ? this.options.sessions?.current?.(chatId) : null;
+    const source = running ?? stored.live;
+    const live: ChatSnapshot | null = source
+      ? { ...pick(source), queued: [...source.queued], turnRunning: false, approvalPending: false }
       : null;
     return { owner: stored.owner ?? "", live };
   }

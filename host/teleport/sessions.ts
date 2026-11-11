@@ -66,5 +66,25 @@ export function hostChatSessions(store: HostStore): HostChatSessions {
       }
       store.updateSession(chatId, { archived: true });
     },
+    current(chatId: string): TransferChat | null {
+      let value;
+      try {
+        value = store.session(chatId);
+      } catch {
+        return null;
+      }
+      const session = value.session as Session;
+      // The saved messages as they stand now: the copy's messages plus every turn the host ran since (drafts excluded).
+      return {
+        chatId,
+        provider: session.harness as TransferChat["provider"],
+        providerSessionId: session.providerSessionId ?? "",
+        model: session.model,
+        effort: session.modelSettings?.effort ?? "",
+        title: session.title,
+        transcript: JSON.stringify(session.blocks.filter((block) => !block.draft)),
+        queued: (session.queuedMessages ?? []).map((message) => message.text),
+      };
+    },
   };
 }
