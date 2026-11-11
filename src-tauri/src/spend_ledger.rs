@@ -888,6 +888,22 @@ mod tests {
     }
 
     #[test]
+    fn review_r6_the_project_list_the_app_sends_at_start_holds_every_project_less_verdict() {
+        // Review r6 repro: wireSpendGate sends the hub's projects once, at module load, before the hub store has loaded
+        // them, so the list is [] (write_projects clears the table). With that list, a limit on a known hub project, keyed
+        // by its id, holds every verdict that names no project; and a folder-keyed limit no longer holds its own
+        // project's verdict.
+        let conn = db();
+        let now = now_ms();
+        write_projects(&conn, &[]).unwrap();
+        write_book(&conn, 0, 1, r#"{"revision":1,"limits":[{"scope":"project","project":"hivra","period":"month","amountUsd":10,"warnAt":0.8}],"ceilings":{}}"#).unwrap();
+        assert!(
+            admit_automated(&conn, None, now).is_ok(),
+            "hivra's limit is placed (hivra is a hub project), so a verdict with no project is not hers to hold"
+        );
+    }
+
+    #[test]
     fn review_r5_another_projects_limit_does_not_hold_this_projects_verdict() {
         // Review r5 repro: a limit keyed by another project's id is not this project's limit. The TS gate (limitsFor)
         // never applies it to this project's turns; here it counts the whole ledger and holds every verdict.
