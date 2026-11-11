@@ -1672,14 +1672,6 @@ fn the_janitor_never_offers_to_remove_a_landed_but_unmerged_copy() {
 
 const SECURITY_FILE: &str = "src-tauri/src/mobile_access.rs";
 
-fn changed(files: &[&str]) -> String {
-    let list: Vec<String> = files
-        .iter()
-        .map(|f| format!("{{\"path\":\"{f}\"}}"))
-        .collect();
-    format!("{{\"files\":[{}]}}", list.join(","))
-}
-
 fn review_folder(project: &Path, head: &str) -> PathBuf {
     project
         .join(".git")
@@ -1762,19 +1754,27 @@ fn security_request(project: &Path) -> MergeRequest {
     }
 }
 
+/// The pull request's changed files, read the way the gate reads them: the compare answer lists them and the
+/// pull request's count agrees.
 fn security_gh(head: &str, files: &[&str]) -> FakeGithub {
+    let body: String = files.iter().map(|f| format!("{f}\n")).collect();
     let gh = FakeGithub::new(vec![green(head)]);
-    *gh.files_json.lock().unwrap() = changed(files);
+    gh.reads.lock().unwrap()[0].changed_files = Some(files.len() as u64);
+    *gh.files.lock().unwrap() = Some(Ok(body));
     gh
 }
+
+/// Commit-shaped heads: the file list is read between commits, and only a full commit id is asked for.
+const H1_SEC: &str = "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1";
+const H0_SEC: &str = "b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0";
 
 #[test]
 fn a_security_pr_without_a_review_for_its_head_is_refused() {
     let f = fixture("sec-none");
-    let gh = security_gh("h1", &[SECURITY_FILE]);
+    let gh = security_gh(H1_SEC, &[SECURITY_FILE]);
     let outcome = merge::merge(&store(), &gh, security_request(&f.project), 10).unwrap();
     assert!(
-        matches!(&outcome, MergeOutcome::Refused { reason } if reason.contains("no security review for head h1")),
+        matches!(&outcome, MergeOutcome::Refused { reason } if reason.contains(&format!("no security review for head {H1_SEC}"))),
         "{outcome:?}"
     );
     assert!(gh.ran("pr", "merge").is_empty(), "nothing merges");
@@ -1783,8 +1783,15 @@ fn a_security_pr_without_a_review_for_its_head_is_refused() {
 #[test]
 fn a_review_for_another_head_does_not_pass_a_new_head() {
     let f = fixture("sec-stale");
-    write_review(&f.project, "h0", "[]", "claude", "codex", &[SECURITY_FILE]);
-    let gh = security_gh("h1", &[SECURITY_FILE]);
+    write_review(
+        &f.project,
+        H0_SEC,
+        "[]",
+        "claude",
+        "codex",
+        &[SECURITY_FILE],
+    );
+    let gh = security_gh(H1_SEC, &[SECURITY_FILE]);
     let outcome = merge::merge(&store(), &gh, security_request(&f.project), 10).unwrap();
     assert!(
         matches!(&outcome, MergeOutcome::Refused { .. }),
@@ -1797,8 +1804,15 @@ fn a_review_for_another_head_does_not_pass_a_new_head() {
 fn a_confirmed_high_on_the_head_refuses_the_merge() {
     let f = fixture("sec-high");
     let high = r#"[{"verdict":"confirmed","title":"Stale head merges","severity":{"overall_severity":"high"}}]"#;
-    write_review(&f.project, "h1", high, "claude", "codex", &[SECURITY_FILE]);
-    let gh = security_gh("h1", &[SECURITY_FILE]);
+    write_review(
+        &f.project,
+        H1_SEC,
+        high,
+        "claude",
+        "codex",
+        &[SECURITY_FILE],
+    );
+    let gh = security_gh(H1_SEC, &[SECURITY_FILE]);
     let outcome = merge::merge(&store(), &gh, security_request(&f.project), 10).unwrap();
     assert!(
         matches!(&outcome, MergeOutcome::Refused { reason } if reason.contains("confirmed high")),
@@ -1812,13 +1826,13 @@ fn a_clean_review_for_the_exact_head_lets_the_security_pr_merge() {
     let f = fixture("sec-clean");
     write_review(
         &f.project,
-        "h1",
+        H1_SEC,
         r#"[{"verdict":"rejected","title":"Cap exists"}]"#,
         "claude",
         "codex",
         &[SECURITY_FILE],
     );
-    let gh = security_gh("h1", &[SECURITY_FILE]);
+    let gh = security_gh(H1_SEC, &[SECURITY_FILE]);
     let outcome = merge::merge(&store(), &gh, security_request(&f.project), 10).unwrap();
     assert!(
         matches!(&outcome, MergeOutcome::Merged { .. }),
@@ -1834,13 +1848,13 @@ fn a_needs_validation_item_becomes_one_open_inbox_decision_and_does_not_block() 
     let pending = r#"[{"verdict":"needs_validation","title":"Unbounded read"},{"verdict":"needs_validation","title":"Second"}]"#;
     write_review(
         &f.project,
-        "h1",
+        H1_SEC,
         pending,
         "claude",
         "codex",
         &[SECURITY_FILE],
     );
-    let gh = security_gh("h1", &[SECURITY_FILE]);
+    let gh = security_gh(H1_SEC, &[SECURITY_FILE]);
     let outcome = merge::merge(&s, &gh, security_request(&f.project), 10).unwrap();
     assert!(
         matches!(&outcome, MergeOutcome::Merged { .. }),
@@ -1848,7 +1862,7 @@ fn a_needs_validation_item_becomes_one_open_inbox_decision_and_does_not_block() 
     );
     let conn = s.lock_conn().unwrap();
     let project = f.project.display().to_string();
-    let item = crate::decisions::get(&conn, &project, "security-review/h1")
+    let item = crate::decisions::get(&conn, &project, &format!("security-review/{H1_SEC}"))
         .unwrap()
         .expect("one Inbox item");
     assert_eq!(item.state, crate::decisions::OPEN);
@@ -1863,8 +1877,15 @@ fn a_needs_validation_item_becomes_one_open_inbox_decision_and_does_not_block() 
 #[test]
 fn a_review_by_the_same_builder_is_refused_at_the_merge() {
     let f = fixture("sec-same");
-    write_review(&f.project, "h1", "[]", "claude", "claude", &[SECURITY_FILE]);
-    let gh = security_gh("h1", &[SECURITY_FILE]);
+    write_review(
+        &f.project,
+        H1_SEC,
+        "[]",
+        "claude",
+        "claude",
+        &[SECURITY_FILE],
+    );
+    let gh = security_gh(H1_SEC, &[SECURITY_FILE]);
     let outcome = merge::merge(&store(), &gh, security_request(&f.project), 10).unwrap();
     assert!(
         matches!(&outcome, MergeOutcome::Refused { reason } if reason.contains("same builder")),
@@ -1873,11 +1894,34 @@ fn a_review_by_the_same_builder_is_refused_at_the_merge() {
 }
 
 #[test]
+fn a_security_path_past_the_file_list_cap_is_held_not_missed() {
+    let f = fixture("sec-cap");
+    // Three hundred other files, then the security path as the 301st. GitHub's list stops at 300, so the gate
+    // cannot see the path: it holds the merge (never merges) rather than pass a list it cannot trust.
+    let mut body: String = (0..300).map(|n| format!("docs/note{n}.md\n")).collect();
+    body.push_str(&format!("{SECURITY_FILE}\n"));
+    let gh = files_of(Ok(&body));
+    let outcome = merge::merge(&store(), &gh, security_request(&f.project), 10).unwrap();
+    assert!(
+        matches!(&outcome, MergeOutcome::NeedsYou { question, .. } if question.contains("couldn't be read") && question.contains("stops at 300")),
+        "{outcome:?}"
+    );
+    assert!(gh.ran("pr", "merge").is_empty(), "nothing merges");
+}
+
+#[test]
 fn a_security_pr_whose_review_leaves_a_changed_file_uncovered_is_refused() {
     let f = fixture("sec-uncovered");
-    write_review(&f.project, "h1", "[]", "claude", "codex", &[SECURITY_FILE]);
+    write_review(
+        &f.project,
+        H1_SEC,
+        "[]",
+        "claude",
+        "codex",
+        &[SECURITY_FILE],
+    );
     let gh = security_gh(
-        "h1",
+        H1_SEC,
         &[SECURITY_FILE, "src/features/mobile/ui/PairPhoneDialog.tsx"],
     );
     let outcome = merge::merge(&store(), &gh, security_request(&f.project), 10).unwrap();
@@ -1944,8 +1988,8 @@ fn the_floor_off_decides_exactly_as_before() {
     );
     assert_eq!(
         api_calls(&gh),
-        0,
-        "an off floor does not read the file list"
+        1,
+        "the security gate reads the list once; an off floor reads nothing more"
     );
 }
 
@@ -2167,6 +2211,7 @@ fn an_approval_of_this_head_still_merges_a_protected_diff() {
     let first = merge::merge(&s, &gh, agent_merge("acme/web"), 20).unwrap();
     assert!(matches!(first, MergeOutcome::NeedsYou { .. }), "{first:?}");
     assert!(gh.ran("pr", "merge").is_empty());
+    let before = api_calls(&gh);
     merge::approve(
         &s.lock_conn().unwrap(),
         "acme/web",
@@ -2183,14 +2228,14 @@ fn an_approval_of_this_head_still_merges_a_protected_diff() {
     );
     assert_eq!(gh.ran("pr", "merge").len(), 1);
     assert_eq!(
-        api_calls(&gh),
+        api_calls(&gh) - before,
         1,
-        "an approved head does not read the file list again"
+        "the approved head reads the list once, for the security gate, and the floor doesn't read it again"
     );
 }
 
 #[test]
-fn the_persons_own_tap_merges_a_protected_diff_without_reading_files() {
+fn the_persons_own_tap_merges_a_protected_diff_with_one_read_for_the_gate() {
     let project = floor_project("person");
     let s = store();
     set_mode(&s, &project, Some(Mode::Pr), true);
@@ -2205,7 +2250,11 @@ fn the_persons_own_tap_merges_a_protected_diff_without_reading_files() {
     };
     let merged = merge::merge(&s, &gh, request, 20).unwrap();
     assert!(matches!(merged, MergeOutcome::Merged { .. }), "{merged:?}");
-    assert_eq!(api_calls(&gh), 0);
+    assert_eq!(
+        api_calls(&gh),
+        1,
+        "the security gate reads the list once; the person's tap adds no floor read"
+    );
 }
 
 #[test]
@@ -2345,7 +2394,11 @@ fn red_and_a_pull_request_with_no_checks_do_not_consult_the_floor() {
     assert!(question.contains("no checks"), "{question}");
     assert!(!question.contains("couldn't be read"), "{question}");
     assert!(!question.contains("protected-path floor"), "{question}");
-    assert_eq!(api_calls(&unchecked), 1, "only the file list is read");
+    assert_eq!(
+        api_calls(&unchecked),
+        2,
+        "the security gate and the floor each read the list once"
+    );
     assert!(unchecked.ran("pr", "merge").is_empty());
 }
 
@@ -2594,7 +2647,7 @@ fn the_file_list_is_read_for_the_base_and_head_commits_it_judges() {
 #[test]
 fn a_change_outside_the_security_paths_merges_without_a_review() {
     let f = fixture("sec-skip");
-    let gh = security_gh("h1", &["docs/hivra/PLAN.md"]);
+    let gh = security_gh(H1_SEC, &["docs/hivra/PLAN.md"]);
     let outcome = merge::merge(&store(), &gh, security_request(&f.project), 10).unwrap();
     assert!(
         matches!(&outcome, MergeOutcome::Merged { .. }),

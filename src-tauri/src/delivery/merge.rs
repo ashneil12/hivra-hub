@@ -182,34 +182,18 @@ pub fn glob_match(pattern: &str, path: &str) -> bool {
     go(pattern.as_bytes(), path.as_bytes())
 }
 
-/// The changed files of the pull request, from GitHub.
-fn changed_files(gh: &dyn Github, repo: &str, number: u64) -> Result<Vec<String>, String> {
-    let out = gh.run(
-        None,
-        &[
-            "pr".into(),
-            "view".into(),
-            number.to_string(),
-            "--repo".into(),
-            repo.into(),
-            "--json".into(),
-            "files".into(),
-        ],
-    )?;
-    let json: serde_json::Value = serde_json::from_str(&out).map_err(|e| e.to_string())?;
-    let files = json
-        .get("files")
-        .and_then(|f| f.as_array())
-        .ok_or_else(|| "GitHub's answer had no file list".to_string())?;
-    files
-        .iter()
-        .map(|file| {
-            file.get("path")
-                .and_then(|p| p.as_str())
-                .map(str::to_string)
-                .ok_or_else(|| "a changed file had no path".to_string())
-        })
-        .collect()
+/// The changed files the security gate judges: the floor's own reader (the compare answer between the base and head
+/// commits of the first read), judged against that read's file count. A short, capped, empty or unreadable list is
+/// unread, and the gate refuses.
+fn gate_files(gh: &dyn Github, repo: &str, read: &PrRead) -> super::protected::ChangedFiles {
+    let Some(base) = read.base_tip.clone() else {
+        return super::protected::ChangedFiles::Unread {
+            reason: "GitHub didn't say where the base branch is now.".into(),
+        };
+    };
+    let head = read.detail.head_sha.clone().unwrap_or_default();
+    let listed = super::protected::changed_files_between(gh, repo, &base, &head);
+    super::protected::judge(listed, read.changed_files)
 }
 
 /// `<git common dir>/hivra-security-review` for the project's checkout, or None when it is not a git checkout.
@@ -237,6 +221,9 @@ enum SecurityGate {
     /// Not security-sensitive, or reviewed and clean.
     Pass,
     Refuse(String),
+    /// The changed files can't be read, so the gate can't tell. The merge is held for a question, never merged: the
+    /// gate runs before any approval, so a tap can't merge a list the gate could not read.
+    Hold(String),
 }
 
 fn read_json(path: &std::path::Path) -> Result<serde_json::Value, String> {
@@ -257,7 +244,7 @@ struct GateTarget<'a> {
 
 fn security_gate(
     conn: &mut rusqlite::Connection,
-    changed: Result<Vec<String>, String>,
+    changed: super::protected::ChangedFiles,
     target: GateTarget<'_>,
     now: i64,
 ) -> Result<SecurityGate, String> {
@@ -269,10 +256,10 @@ fn security_gate(
         labels,
     } = target;
     let files = match changed {
-        Ok(files) => files,
-        Err(error) => {
-            return Ok(SecurityGate::Refuse(format!(
-                "{repo}#{number}'s changed files couldn't be read, so Hivra can't tell whether it needs a security review: {error}"
+        super::protected::ChangedFiles::Listed(files) => files,
+        super::protected::ChangedFiles::Unread { reason } => {
+            return Ok(SecurityGate::Hold(format!(
+                "{repo}#{number}'s changed files couldn't be read, so Hivra can't tell whether it needs a security review: {reason} Nothing was merged."
             )))
         }
     };
@@ -779,7 +766,12 @@ pub fn merge(
     let shared = super::protected::shared_list();
     let read = gh.read_pr(&repo, number);
     // The changed files are read before the database is held (the same rule as the pull request read above).
-    let changed = changed_files(gh, &repo, number);
+    let changed = match &read {
+        Ok(read) => gate_files(gh, &repo, read),
+        Err(error) => super::protected::ChangedFiles::Unread {
+            reason: error.clone(),
+        },
+    };
     let mut conn = store.lock_conn()?;
     let read = match read {
         Ok(read) => read,
@@ -864,20 +856,24 @@ pub fn merge(
         project: project.as_deref(),
         labels: &read.labels,
     };
-    if let SecurityGate::Refuse(reason) = security_gate(&mut conn, changed, target, now)? {
-        record(
-            &conn,
-            &repo,
-            number,
-            Some(&head),
-            "refused",
-            None,
-            &request.caller,
-            Some(&reason),
-            now,
-        )?;
-        return Ok(MergeOutcome::Refused { reason });
-    }
+    let held = match security_gate(&mut conn, changed, target, now)? {
+        SecurityGate::Pass => None,
+        SecurityGate::Hold(question) => Some(question),
+        SecurityGate::Refuse(reason) => {
+            record(
+                &conn,
+                &repo,
+                number,
+                Some(&head),
+                "refused",
+                None,
+                &request.caller,
+                Some(&reason),
+                now,
+            )?;
+            return Ok(MergeOutcome::Refused { reason });
+        }
+    };
     // The pull request must still be on the branch the delivery pushed. A head pointed at another branch is not the
     // work the delivery judged, so it is refused. The delivery row is the only record of that branch.
     // The check is the floor's: with the floor off the project decides exactly as before.
@@ -952,6 +948,11 @@ pub fn merge(
         }
     } else {
         decided
+    };
+    // A held gate asks, unless the checks already refuse: a refusal stands, and nothing merges on a hold.
+    let decision = match (held, decision) {
+        (Some(question), Decision::Merge { .. } | Decision::Ask(_)) => Decision::Ask(question),
+        (_, decision) => decision,
     };
     let allowed_by = match decision {
         Decision::Refuse(reason) => {

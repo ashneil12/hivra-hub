@@ -108,14 +108,17 @@ pub(crate) mod fake {
         pub signed_in: bool,
         pub fail: Mutex<Vec<String>>,
         pub failed_log: String,
-        /// What `gh pr view --json files` answers (the changed files of the pull request).
-        pub files_json: Mutex<String>,
         /// `gh api` answer for the changed-file list. None falls through to an empty success.
         pub files: Mutex<Option<Result<String, String>>>,
     }
 
     impl FakeGithub {
-        pub fn new(reads: Vec<PrRead>) -> Self {
+        pub fn new(mut reads: Vec<PrRead>) -> Self {
+            // A pull request with one harmless changed file, unless a test sets its own list: the security gate and
+            // the floor refuse to merge a list they cannot read.
+            for read in &mut reads {
+                read.changed_files.get_or_insert(1);
+            }
             Self {
                 reads: Mutex::new(reads),
                 runs: Mutex::new(Vec::new()),
@@ -124,8 +127,7 @@ pub(crate) mod fake {
                 signed_in: true,
                 fail: Mutex::new(Vec::new()),
                 failed_log: "build\tRun tests\terror: expected 2, got 3".into(),
-                files_json: Mutex::new("{\"files\":[]}".into()),
-                files: Mutex::new(None),
+                files: Mutex::new(Some(Ok("README.md\n".into()))),
             }
         }
 
@@ -182,9 +184,6 @@ pub(crate) mod fake {
                     Ok(self.created.clone())
                 }
                 (Some("run"), Some("view")) => Ok(self.failed_log.clone()),
-                (Some("pr"), Some("view")) if args.iter().any(|a| a == "files") => {
-                    Ok(self.files_json.lock().unwrap().clone())
-                }
                 _ => Ok(String::new()),
             }
         }
