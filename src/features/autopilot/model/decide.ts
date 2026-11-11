@@ -119,6 +119,7 @@ export type ApprovalVerdict =
  * `trusted` is the exact set of MCP servers Hivra wired from installed plugins for this chat (mcpTrust.ts); without
  * it, every MCP call waits.
  */
+// WP-215: this door stays a tool approval. The captain answers through decideCall and takePick, not a fourth door.
 export function approvalVerdict(
   block: ApprovalBlock,
   folder: string | undefined,
