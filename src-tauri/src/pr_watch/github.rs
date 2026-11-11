@@ -1286,6 +1286,38 @@ pub(crate) mod tests {
         );
     }
 
+    /// r3 review HIGH: the sweep reads main's move and the behind count through `CliGh::rest`, whose filter refuses
+    /// any path that contains "..". Every compare path base.rs builds is `compare/{a}...{b}`, so in the app every one
+    /// is refused before `gh` runs: the behind count and the base-moved wake never come, and `facts.unread` pushes
+    /// every open watch to RETRY_AFTER (10 min) instead of its 2 or 5 minute pace, delaying CI wakes on every watched
+    /// pull request. `FakeGh::rest` has no filter, so no test saw it. The paths below are the ones base.rs builds.
+    #[test]
+    fn r3_review_the_installed_gh_lets_the_paths_the_base_reads_build_through() {
+        let asked = Mutex::new(Vec::<String>::new());
+        let record = |path: &str| -> Result<String, String> {
+            asked.lock().unwrap().push(path.to_string());
+            Err("recorded only".into())
+        };
+        let mut read = parse(RECORDED_REQUIRED).unwrap();
+        read.base_tip = Some("b2b2b2b".into());
+        assert!(read.detail.head_sha.is_some());
+        let memo = crate::pr_watch::eval::Memo {
+            base_sha: Some("b1b1b1b".into()),
+            ..Default::default()
+        };
+        let _ = crate::pr_watch::base::facts(&record, "acme/web", 7, &memo, &read, false);
+        let _ = crate::pr_watch::base::merge_base(&record, "acme/web", "b2b2b2b", "a1a1a1a");
+        let paths = asked.into_inner().unwrap();
+        assert!(paths.iter().any(|p| p.contains("/compare/")), "{paths:?}");
+        for path in &paths {
+            assert_ne!(
+                CliGh.rest(path),
+                Err("not a repository path".to_string()),
+                "the installed gh refuses a path base.rs reads: {path}"
+            );
+        }
+    }
+
     /// r2 check (M2 edges): exactly 100 is one page, 101 is two, and a total GitHub doesn't deliver is an error.
     #[test]
     fn r2_rest_pages_reads_the_page_edges_and_refuses_a_short_total() {

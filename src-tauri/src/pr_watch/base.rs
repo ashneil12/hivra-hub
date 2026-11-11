@@ -855,6 +855,73 @@ mod tests {
         );
     }
 
+    /// r3 review HIGH (renames): GitHub lists a renamed file under its new name in `filename` and its old name in
+    /// `previous_filename` (checked live on compare and pulls/N/files). Main moved src/lib.rs to src/engine.rs (and
+    /// changed it, R096) while the branch edits src/lib.rs. Git's rename detection applies the branch's edit to the
+    /// moved file, so the merge is clean and never tested, and nothing is DIRTY. The hold must see the same file.
+    #[test]
+    fn r3_review_main_renaming_a_file_the_pull_request_edits_holds() {
+        let get = canned(vec![
+            took_main_at(B1),
+            (
+                moved_key(),
+                r#"{"status":"ahead","ahead_by":1,"behind_by":0,"files":[
+                    {"filename":"src/engine.rs","previous_filename":"src/lib.rs","status":"renamed"}]}"#
+                    .into(),
+            ),
+            (
+                "pulls/7/files".into(),
+                r#"[{"filename":"src/lib.rs","status":"modified"}]"#.into(),
+            ),
+        ]);
+        assert!(
+            hold(&get, "acme/web", 7, H1, &open(H1, B2, None)).is_some(),
+            "main moved the file this pull request edits"
+        );
+    }
+
+    /// r3 review HIGH (renames), the other side: the branch renamed src/lib.rs to src/engine.rs and main changed
+    /// src/lib.rs since the branch last took main. Git applies main's change to the renamed file; untested.
+    #[test]
+    fn r3_review_a_pull_request_renaming_a_file_main_changed_holds() {
+        let get = canned(vec![
+            took_main_at(B1),
+            (moved_key(), compare_json(&["src/lib.rs"], 1)),
+            (
+                "pulls/7/files".into(),
+                r#"[{"filename":"src/engine.rs","previous_filename":"src/lib.rs","status":"renamed"}]"#
+                    .into(),
+            ),
+        ]);
+        assert!(
+            hold(&get, "acme/web", 7, H1, &open(H1, B2, None)).is_some(),
+            "main changed the file this pull request moved"
+        );
+    }
+
+    /// r3 review MED: the pull request's files are read one page of 100 and never paged, so any pull request with 100
+    /// or more files is "cut short" and held whenever main moved at all, even when main's move misses every one of its
+    /// files (here main changed only docs/notes.md; the pull request's 120 files are all under src/). The refusal then
+    /// says "main changed more files than GitHub lists", which is false: main changed one file. The contract says a
+    /// pull request that misses main's files ships as before.
+    #[test]
+    fn r3_review_a_big_pull_request_that_misses_main_s_move_is_not_held() {
+        let names: Vec<String> = (0..120).map(|i| format!("src/f{i}.rs")).collect();
+        let refs: Vec<&str> = names.iter().map(String::as_str).collect();
+        let get = canned(vec![
+            took_main_at(B1),
+            (moved_key(), compare_json(&["docs/notes.md"], 1)),
+            ("page=2".into(), files_json(&refs[100..])),
+            ("page=3".into(), files_json(&[])),
+            ("pulls/7/files".into(), files_json(&refs[..100])),
+        ]);
+        assert_eq!(
+            hold(&get, "acme/web", 7, H1, &open(H1, B2, None)),
+            None,
+            "main's move misses all 120 of the pull request's files"
+        );
+    }
+
     /// r3 MED: the hold's words say the rule: main changed these files since the branch last took main.
     #[test]
     fn r3_the_hold_says_main_changed_files_since_the_branch_last_took_main() {

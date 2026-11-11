@@ -2917,6 +2917,34 @@ fn r3_a_moved_main_refusal_says_merge_main_into_the_branch() {
     );
 }
 
+/// r3 review HIGH (renames), end to end: since the branch last took main, main moved src/lib.rs to src/engine.rs;
+/// the pull request edits src/lib.rs. GitHub lists the move under the new name (`previous_filename` holds the old), so
+/// the hold sees no shared file and Ash's tap (and the Lead tick) merge a combination nothing tested.
+#[test]
+fn r3_review_a_main_rename_of_the_pull_request_s_file_holds_the_merge() {
+    let s = store();
+    let moved = PrRead {
+        base_tip: Some("b2b2b2b".into()),
+        ..green("a1b2c3d")
+    };
+    let gh = FakeGithub::new(vec![moved.clone(), moved])
+        .with_api("compare/b2b2b2b...a1b2c3d", MERGE_BASE_B1)
+        .with_api(
+            "compare/b1b1b1b...b2b2b2b",
+            r#"{"status":"ahead","ahead_by":1,"behind_by":0,"files":[{"filename":"src/engine.rs","previous_filename":"src/lib.rs","status":"renamed"}]}"#,
+        )
+        .with_api("pulls/7/files", PR_FILES);
+    let out = merge::merge(&s, &gh, person_merge("acme/web"), 10).unwrap();
+    assert!(
+        matches!(&out, MergeOutcome::Refused { .. }),
+        "main moved the pull request's file: {out:?}"
+    );
+    assert!(
+        gh.ran("pr", "merge").is_empty(),
+        "nothing merges over a move"
+    );
+}
+
 /// The merge base of the head and main, as GitHub's compare says it (the branch last took main there).
 const MERGE_BASE_B1: &str = r#"{"status":"ahead","ahead_by":1,"behind_by":1,"merge_base_commit":{"sha":"b1b1b1b"},"files":[]}"#;
 const MERGE_BASE_BASE: &str = r#"{"status":"ahead","ahead_by":1,"behind_by":0,"merge_base_commit":{"sha":"ba5eba5eba5eba5eba5eba5eba5eba5eba5eba5e"},"files":[]}"#;
