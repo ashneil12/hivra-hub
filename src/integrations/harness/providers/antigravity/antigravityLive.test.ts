@@ -146,6 +146,19 @@ describe.each(providers)("$id offline ACP transport", (provider) => {
     resetHarnessModelOverlays();
   });
 
+  // Review repro (PR #194 round 6, HIGH-B): harness_spawn judges Never use by the session's grant, else by the project
+  // that owns the folder it is handed. Antigravity is handed only its binary folder, so a session with no grant (Ash's
+  // chat, a Lead's chat, a habit run, an orchestration worker: UUID ids) is judged by the system policy alone and a
+  // project's or Mono's Never use for Antigravity never applies at the spawn.
+  it("review r6: the spawn gate is handed the session's folder, not only the binary folder", async () => {
+    const turn = provider.send(input);
+    await waitPrompt();
+    const spawned = JSON.stringify(mock.spawn.mock.calls[0]);
+    finishPrompt();
+    await turn;
+    expect(spawned, "harness_spawn never sees /repo, the folder the agent works in").toContain('"/repo"');
+  });
+
   it("spawns the exact endpoint, sends settings/images and routes real approvals", async () => {
     const turn = provider.send({ ...input, modelSettings: { effort: "high" }, attachments: [
       { id: "img", name: "img.png", kind: "image", mimeType: "image/png", size: 4, data: "aGV5" },
@@ -158,6 +171,11 @@ describe.each(providers)("$id offline ACP transport", (provider) => {
       provider.id === "antigravity" ? "/fake/" : "/repo",
       undefined,
       provider.id,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      "/repo",
     );
     expect(mock.sent.find((m) => m.method === "initialize")?.params).toMatchObject({ protocolVersion: 1 });
     expect(mock.sent.find((m) => m.method === "session/set_config_option")?.params)
@@ -218,6 +236,26 @@ describe.each(providers)("$id offline ACP transport", (provider) => {
     await expect(provider.send(input)).rejects.toThrow("unsupported");
     expect(mock.sent.some((m) => m.method === "session/prompt")).toBe(false);
     expect(mock.kill).toHaveBeenCalledWith(genKey);
+  });
+
+  it("a refused upgrade keeps the current mode, says so, and the turn still runs (WP-175)", async () => {
+    mock.autoPrompt = true;
+    await provider.send(input);
+    mock.sent.length = 0;
+    events.length = 0;
+    mock.fail.add("session/set_mode");
+    await provider.send({ ...input, runtimeMode: "full-access" });
+    expect(mock.sent.some((m) => m.method === "session/prompt")).toBe(true);
+    expect(events.some((e) => e.type === "notice" && /stays on Supervised/.test(e.text))).toBe(true);
+  });
+
+  it("a refused downgrade ends the turn as waiting and sends no prompt (WP-175)", async () => {
+    mock.autoPrompt = true;
+    await provider.send({ ...input, runtimeMode: "full-access" });
+    mock.sent.length = 0;
+    mock.fail.add("session/set_mode");
+    await expect(provider.send(input)).rejects.toThrow(/waiting/);
+    expect(mock.sent.some((m) => m.method === "session/prompt")).toBe(false);
   });
 
   it.each(["resume", "load", "new"])("uses the %s branch of session recovery without replay", async (branch) => {

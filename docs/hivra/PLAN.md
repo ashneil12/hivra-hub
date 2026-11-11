@@ -1,6 +1,6 @@
 # Hivra: the build plan
 
-57 work packages in ten waves. A wave's packages run in parallel; a package starts when everything it depends on
+Work packages in fourteen waves, A to N. A wave's packages run in parallel; a package starts when everything it depends on
 has merged. Sizes are agent time: S is under two hours, M is half a day, L is about a day.
 
 ## How to take a package
@@ -193,14 +193,61 @@ WP-40's gates; it adds no second run model. It starts when 40 and 82 merge, and 
 | WP | Title | Size | Depends on | Grok OK |
 | --- | --- | --- | --- | --- |
 | [91](work/WP-91-goal-graph.md) | The goal graph: a finish line proved first, and a live view of the run | L | 14, 40, 82 | yes |
+| [176](work/WP-176-spend-limits.md) | Spend limits, with a warning and no new builders at the limit | M | 13, 78, 161 | yes |
+| [175](work/WP-175-permission-matrix.md) | One permission mode table across CLIs, pinned by tests | S | none | yes |
 | [174](work/WP-174-idle-reclaim-and-hibernation.md) | Idle reclaim and hibernation, a quiet chat gives back its process | M | 11, 146 | no |
 | Follow-up to [160](work/WP-160-lead-tick.md) | The lead tick opens the PR watch and the delivery row itself, so Ship on green can merge without asking | S | 160 | no |
+| [203](work/WP-203-structured-security-review.md) | A structured hard review for security-sensitive packages: a different builder, a coverage ledger, verified findings and a merge gate on the exact head | M | 81, 160 | no |
+| [202](work/WP-202-pr-watch-base-moved.md) | The PR watch knows when main moved under a pull request, and the merge gate waits for a rebase and green again | M | 155, 160, 158 (merge gate) | no |
+
+The WP-174 follow-up is done. Codex, OpenCode, Cursor, Hermes, Devin, Pi and omp report a running subagent or
+detached task (Codex: open agent rows until the turn closes them; OpenCode: child sessions until idle or error;
+Cursor: background agent tools, including a late cursor/task; Hermes: the background map while the session is live;
+Devin: a started subagent until it completes; Pi and omp: a subagent whose async state is running). Grok, fx and
+antigravity report none, because their ACP handling has no signal for work that outlives the prompt.
+
+### Wave L: the written-down ideas (Ash, 10 Nov)
+
+Ash, 10 Nov: everything written down gets built, so only a fresh idea is left. These are the packages for the ideas
+from kitze's factory teaser, oh-my-hermes and Aether listed at the end of this file. Anything that changes behaviour
+or reaches outside the Mac is off by default, and nothing provisions paid infrastructure or starts a service. kitze's
+fallback list (item 3) is the same mechanism as oh-my-hermes's lane chains, so both are in 187a. 195a and 195b are the
+phone app, built last, on WP-133's design. A lettered pair splits one idea into two PRs; "b" starts when "a" merges.
+
+| WP | Title | Size | Depends on | Grok OK |
+| --- | --- | --- | --- | --- |
+| [180a](work/WP-180a-automation-runs-and-map.md) | Automation runs in plain words, and a map of what feeds what | M | 78 | yes |
+| [180b](work/WP-180b-automation-webhook-trigger.md) | A webhook can start an automation | M | 180a | no |
+| [181a](work/WP-181a-machines-and-cli-versions.md) | Machines: every machine on one page, with each CLI's version | M | 60 | no |
+| [181b](work/WP-181b-update-cli-on-another-machine.md) | Update a CLI on another machine | S | 181a, 60 | no |
+| [182](work/WP-182-mono-card.md) | A Mono's settings on one card, with fast mode and its own skills and commands | M | 89 (187a for the chain) | yes |
+| [183](work/WP-183-chat-doctor.md) | The chat doctor finds broken chats and repairs what is safe | M | 11 | no |
+| [184](work/WP-184-commands-and-skills-library.md) | One page for every command and skill | M | 30, 41 | yes |
+| [185a](work/WP-185a-home-now-paragraph-and-workspace-cards.md) | Home says what is going on now in one paragraph, and shows a card per workspace | M | 73, 88 | yes |
+| [185b](work/WP-185b-home-todos-and-scratchpad.md) | To-dos and a scratchpad on Home | S | 73, 70, 185a | yes |
+| [186](work/WP-186-today-page.md) | The Today page: what was worked on, day by day | L | 70, 78, 157 | yes |
+| [187a](work/WP-187a-model-chain-per-kind-of-work.md) | An ordered model chain for each kind of work | M | 89 | yes |
+| [187b](work/WP-187b-refused-model-moves-down-the-chain.md) | A refused model moves to the next link in the chain | M | 187a, 13 | no |
+| [188](work/WP-188-memory-admission-reasons.md) | Memory says why it kept, refused or put off each fact | M | 51 | yes |
+| [189](work/WP-189-evidence-labels.md) | Evidence labels: what a task is, and what proves it | S | 40 | yes |
+| [190](work/WP-190-skill-router.md) | A skill router that picks one skill per message, in code | M | 41, 45 | yes |
+| [191](work/WP-191-hermes-code-navigation-tools.md) | Code navigation tools for Hermes workers (language servers) | L | none | no |
+| [192](work/WP-192-hermes-doctor.md) | The Hermes doctor | M | none (191 for its language-server row) | no |
+| [193a](work/WP-193a-machine-per-task-lifecycle.md) | A machine per task: the lifecycle and its timers | M | 60, 61 | no |
+| [193b](work/WP-193b-machine-per-task-on-a-host.md) | A machine per task on an added host, with warm slots | L | 193a, 60, 82 | no |
+| [194](work/WP-194-lend-login-for-one-session.md) | Your own subscription, lent to another machine for one session | L | 60, 61, 92 | no |
+| [195a](work/WP-195a-phone-reaches-the-host.md) | The phone keeps working when the laptop is closed (phone app, built last) | L | 133, 150, 60 | no |
+| [195b](work/WP-195b-phone-pull-request-review.md) | Review and merge a pull request from the phone, and read a worker's terminal (phone app, built last) | M | 195a, 12, 132 | no |
+| [196a](work/WP-196a-host-runs-schedules.md) | The host keeps schedules running while the laptop is closed | L | 60, 61, 196b | no |
+| [196b](work/WP-196b-limits-for-unattended-runs.md) | One set of limits for every run nobody is watching | M | none (176 when merged) | no |
+| [197a](work/WP-197a-reviewer-runs-the-changed-app.md) | A reviewer that runs the changed app before delivery | L | 40, 42, 43, 81, 87 | no |
+| [197b](work/WP-197b-review-every-pull-request.md) | Review every pull request in a connected repository | M | 197a, 132 | no |
 
 ### Wave M: overnight suggestions and atomic-agent (10 Nov 2026)
 
-Four packages from the 10 Nov overnight scout and the atomic-agent study. Each has a brief and none is started. All
-four are Grok OK: no, because they touch commit or CI files, the merge gate or security code, so a Claude builder
-takes them when Ash says. The other overnight and atomic-agent ideas were dropped because Hivra already has them or
+Four packages from the 10 Nov overnight scout and the atomic-agent study. All four are Grok OK: no, because they touch
+commit or CI files, the merge gate or security code, so a Claude builder takes each; Ash approved building them on
+10 Nov at 23:27. The other overnight and atomic-agent ideas were dropped because Hivra already has them or
 they duplicate a package; the reasons are in the PR that added this wave.
 
 Per-run and per-period dollar caps are WP-176 (PR #217, spend limits). They are not a new brief here.
@@ -211,6 +258,31 @@ Per-run and per-period dollar caps are WP-176 (PR #217, spend limits). They are 
 | [201](work/WP-201-pin-github-actions-to-shas.md) | Pin GitHub Actions to commit SHAs, and keep them current | S | WP-153, WP-154, WP-173 | no |
 | [202](work/WP-202-pr-watch-base-moved.md) | PR watch knows when main moved under a pull request | M | WP-155, WP-160, WP-158 | no |
 | [203](work/WP-203-structured-security-review.md) | A structured hard review for security-sensitive packages | M | WP-81, WP-160 | no |
+
+
+### Wave N: one model for every screen (Ash, 11 Nov 2026)
+
+Ash, 11 Nov, on 0.16.15: "visually nothing makes sense" and "home doesnt even work". [UX.md](UX.md) is the model
+every screen follows from now on (the chain of command, the places, one Needs-you list, one name for each thing), with
+mockups in [ux/mockups/](ux/mockups/). The same morning (05:33) Ash set the captain model: he owns the ship, the Chief
+of Staff is its captain and the default chat on Home and every project, first mates run departments, crew work under
+them, and about one decision in a thousand reaches him. Packages 215 to 219 build that. Every package here carries
+before and after screenshots, and the integrating Claude checks them by eye against UX.md before merging. Order: 210 and
+212 first, then 213, then 215, then 211 once PRs #213, #220 and #225 have merged (they touch the Inbox panel), then 216
+to 219, then 214 last.
+
+| WP | Title | Size | Depends on | Grok OK |
+| --- | --- | --- | --- | --- |
+| [210](work/WP-210-one-needs-you-list.md) | One Needs-you list that every count reads | L | none | yes |
+| [212](work/WP-212-home-chief-of-staff.md) | Home with the real Chief of Staff | L | 210 | yes |
+| [213](work/WP-213-rail-sidebar-project-screen.md) | The rail and a project's home, captain first | L | 210, 212 | yes |
+| [215](work/WP-215-captain.md) | The captain decides at its level | L | 212, 213, 156 | yes |
+| [211](work/WP-211-needs-you-screen.md) | The Decisions place: Needs you, Decided for you, Overturn | L | 210, 213 | yes |
+| [216](work/WP-216-owner-batch-calibration.md) | First launch, the owner batch and what it knows about you | L | 215, 211, 156 | yes |
+| [217](work/WP-217-captains-rounds-routines.md) | The captain's rounds, the morning brief and routines | M | 215, 216, 160 | yes |
+| [218](work/WP-218-departments.md) | Departments beyond coding | M | 213, 215, 176 | yes |
+| [219](work/WP-219-agents-board.md) | The Agents board, the whole tree | M | 213 | yes |
+| [214](work/WP-214-words-and-leftovers.md) | Words, Settings and leftovers | L | 210 to 213, after 215 to 219 | yes |
 
 ## Running it
 
@@ -238,7 +310,7 @@ Per-run and per-period dollar caps are WP-176 (PR #217, spend limits). They are 
 
 Ash watched kitze's factory teaser and asked what of it Hivra should take. It is a product tour, not a repository,
 so nothing is credited and no source is added to SOURCES.md. Each candidate below says what Hivra already has and
-what is missing, so any of them can become a package when Ash says. None has a WP doc yet.
+what is missing. They are packages 180a to 186 in Wave L (the fallback list in item 3 is in 187a).
 
 1. **An automations factory canvas.** Hivra has automations that run on a time or a GitHub or GitLab event, with a
    list of runs (`src-tauri/src/automations.rs`), and the activity log (WP-78). Missing: a webhook trigger, a canvas
@@ -279,7 +351,7 @@ Ash shared [oh-my-hermes](https://github.com/rlaope/oh-my-hermes) (MIT, read at 
 layer that sits beside Hermes Agent, so this is what it adds on top of the Hermes Hivra already drives as one of its
 harnesses (`src/integrations/harness/providers/hermes/`). Each item says what Hivra has and what is missing; the graph
 planner has its own package, WP-91. Copied with credit, if 91 is taken: `dag_core.py` and `dag_run.py`, translated to
-Rust. The rest are ideas only.
+Rust. The rest are ideas only. Items 2 to 7 are packages 187a to 192 in Wave L.
 
 1. **The goal graph (dag-ulw), as WP-91.** Hivra's orchestration run already requires file scopes per task, gives each
    worker an isolated checkout, dispatches in dependency order and accepts only on review. Missing: one run goal and a
@@ -309,7 +381,8 @@ Rust. The rest are ideas only.
 
 Ash shared [Aether](https://runaether.dev), a closed-source product, so this is ideas only: no code, nothing credited.
 Its campaigns (a lead splits a job across sub-agents, each in its own devbox on its own branch, and one pull request
-comes back) is what Hivra's orchestration run already does, so it is not a candidate. The gaps:
+comes back) is what Hivra's orchestration run already does, so it is not a candidate. The gaps are packages 193a
+to 197b in Wave L (item 3, the phone, is 195a and 195b, built last):
 
 1. **A machine per task.** Hivra has a warm worktree pool that keeps installs and build cache (WP-82), and a remote
    host and cloud machine (WP-60, WP-61). Missing: a disposable machine boundary per task (Aether uses a fresh

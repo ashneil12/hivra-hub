@@ -3,8 +3,8 @@
 // acts:
 // - while a switch covers a chat that waits on Ash (Today's "Waiting on you", hub/model/waitingChats.ts), its pick is
 //   taken through that list's own `takePick(id, { by: "autopilot" })`, which refuses its red lines; a question with no
-//   pick is handed back to the agent in words. A tool approval is allowed only when it is a read, a listed test or build
-//   command, or an edit inside the chat's own folder (model/safeApproval.ts); every other one waits for Ash as usual.
+//   pick is handed back to the agent in words. A tool approval is allowed only when it is a read, or an edit inside the
+//   chat's own folder (model/safeApproval.ts); every other one waits for Ash as usual.
 //   Anything that touches Ash's red list (theirs or ours, model/redList.ts) waits for him. Each call goes in the
 //   Autopilot log. A delegated worker's question is left to its Lead (H3's tasks.answer);
 // - agents' chats stopped at a usage limit are armed to resume at the reset (on by default; per-project override),
@@ -20,7 +20,9 @@ import type { ApprovalDecision } from "../../../integrations/harness/core/types"
 import type { Block, Session } from "../../sessions/model/session";
 import {
   answerInWords,
+  chatQuestionVeto,
   subscribeWaitingChats,
+  setCaptainDoor,
   takePick,
   waitingChats,
   type WaitingChat,
@@ -36,10 +38,12 @@ import {
   type LogInput,
   type Resume,
 } from "../model/autopilot";
-import { clearRedHold, redHoldFor, setAutopilotProjects } from "../model/autopilotApp";
-import { approvalVerdict, chatProject, handBackText } from "../model/decide";
-import { editStaysInside, type Locate } from "../model/safeApproval";
-import { gitLocateFiles } from "../../../platform/tauri/fs";
+import { appCaptainDoor, clearRedHold, redHoldFor, setAutopilotProjects } from "../model/autopilotApp";
+import { captainAnswerHeld } from "../../chief/model/captain";
+import { approvalVerdict, approvalWhat, chatProject, handBackText } from "../model/decide";
+import { appWiredServers, type WiredServersReader } from "../model/mcpTrust";
+import { placeStaysInside, type Canonical, type Locate } from "../model/safeApproval";
+import { gitCanonicalPaths, gitLocateFiles } from "../../../platform/tauri/fs";
 import { formatUntil } from "../model/endTime";
 import {
   pausedLabel,
@@ -108,6 +112,10 @@ export function useAutopilot(options: {
   openChat: (sessionId: string) => void;
   /** Where paths really are, links followed (the app's git_locate_files); tests pass their own. */
   locate?: Locate;
+  /** Canonical paths, every link followed, for a chat outside git (round 7); tests pass their own. */
+  canonical?: Canonical;
+  /** The MCP servers Hivra wired from installed plugins for a chat, read fresh for each decision (mcpTrust.ts). */
+  wiredServers?: WiredServersReader;
 }): void {
   const latest = useRef(options);
   latest.current = options;
@@ -131,9 +139,11 @@ export function useAutopilot(options: {
   useEffect(() => {
     const stopStore = ensureAutopilotStore();
     const stopProjects = setAutopilotProjects(projectsList);
+    const stopDoor = setCaptainDoor(appCaptainDoor);
     const stopEligibility = setAutoResumeEligibility((session) => eligible(session));
     return () => {
       stopStore();
+      stopDoor();
       stopProjects();
       stopEligibility();
     };
@@ -268,27 +278,56 @@ export function useAutopilot(options: {
           handled.current.set(key, session.id);
           const requestId = block.approval.requestId;
           const folder = session.worktreeCwd || session.cwd;
-          const verdict = approvalVerdict(block, folder, redHoldFor(session.id, now));
-          // It waits for Ash in the chat, as when autopilot is off; the log says why.
+          // It waits for Ash in the chat, as when autopilot is off; the log says why. A reason is read before the
+          // verdict's own words, so a held decision that throws still logs plainly.
           const hold = (red: string | null, why: string) =>
-            void log({ ...base, kind: "approval", outcome: "held", what: verdict.what, red, detail: `Not allowed by itself: ${why}`, dedupe: `${key}:${block.id}` });
-          if (verdict.kind === "held") {
-            hold(verdict.red, verdict.why);
-            continue;
-          }
-          // An edit its words allow is allowed only once the app has found where it really lands (links followed).
-          void editStaysInside(block.approval.call, folder, latest.current.locate ?? gitLocateFiles).then((why) => {
-            if (why) return hold(null, why);
-            return log({ ...base, kind: "approval", outcome: "taken", what: verdict.what, recommendation: "Allowed", dedupe: `${key}:${block.id}` }).then(
-              () => latest.current.approve(session.id, requestId, "allow"),
-            );
-          });
+            void log({ ...base, kind: "approval", outcome: "held", what: approvalWhat(block), red, detail: `Not allowed by itself: ${why}`, dedupe: `${key}:${block.id}` });
+          // Which MCP servers are the ones Hivra wired for this chat is read fresh for each call; a failure to read it
+          // reads as none, so every MCP call then waits (mcpTrust.ts).
+          void (latest.current.wiredServers ?? appWiredServers)(folder ?? "", session.id)
+            .catch(() => new Set<string>())
+            .then((trusted) => {
+              const verdict = approvalVerdict(block, folder, redHoldFor(session.id, now), trusted);
+              if (verdict.kind === "held") return hold(verdict.red, verdict.why);
+              // An edit its words allow is allowed only once the app has found where it really lands (links followed).
+              return placeStaysInside(block.approval!.call, folder, latest.current.locate ?? gitLocateFiles, latest.current.canonical ?? gitCanonicalPaths).then((why) => {
+                if (why) return hold(null, why);
+                return log({ ...base, kind: "approval", outcome: "taken", what: verdict.what, recommendation: "Allowed", dedupe: `${key}:${block.id}` }).then(
+                  () => latest.current.approve(session.id, requestId, "allow"),
+                );
+              });
+            })
+            .catch((error) => {
+              // A decision that can't be made holds: never allow on an error (WP-101, fail closed).
+              console.warn("Autopilot approval:", error);
+              hold(null, "the app couldn't decide it");
+            });
         }
       }
     }
 
     /** One waiting chat under autopilot: held on a red line (either list's), its pick taken, or handed back. */
     async function decideWaiting(chat: WaitingChat, untilLabel: string, key: string) {
+      // WP-101 fix round 2, item F: every read of a saved chat is kept inside a try. A shape this build can't read
+      // holds the question with its plain reason; it never becomes an exception that leaves the chat undecided.
+      try {
+        await decideWaitingInner(chat, untilLabel, key);
+      } catch (error) {
+        console.warn("Autopilot waiting chat:", error);
+        void log({
+          project: chat?.projectId ?? null,
+          chatId: chat?.sessionId,
+          who: chat?.chatName,
+          what: "A waiting question",
+          kind: "question",
+          outcome: "held",
+          detail: "Not allowed by itself: the app couldn't read this question, so it waits for Ash",
+          dedupe: key,
+        });
+      }
+    }
+
+    async function decideWaitingInner(chat: WaitingChat, untilLabel: string, key: string) {
       const base = {
         project: chat.projectId,
         chatId: chat.sessionId,
@@ -311,15 +350,29 @@ export function useAutopilot(options: {
         void log({ ...base, kind: "question", outcome: "held" });
         return;
       }
+      // WP-101: the rule a reviewed approval follows, on this door too. Taking the pick answers the question, and
+      // the question (or an option it points back to) can be the action itself. The veto itself never throws now; the
+      // wrapper above is the second wall, so a shape that slips past it still holds rather than rejects.
+      if (chatQuestionVeto(chat)) {
+        void log({ ...base, kind: "question", outcome: "held" });
+        return;
+      }
       if (chat.pick) {
-        const taken = await takePick(chat.sessionId, { by: "autopilot" });
+        const taken = await takePick(chat.sessionId, { by: "autopilot" }).catch((error: unknown) => {
+          // A delivery that throws is a failed delivery, never an answer.
+          console.warn("Autopilot take pick:", error);
+          return { ok: false as const, reason: "the app couldn't answer this one" };
+        });
         if (taken.ok) void log({ ...base, kind: "question", outcome: "taken" });
-        else if (/red line/i.test(taken.reason)) void log({ ...base, kind: "question", outcome: "held" });
+        else if (captainAnswerHeld(taken.reason)) void log({ ...base, kind: "question", outcome: "held" });
         // Couldn't deliver (the chat is busy or gone): try again in a while.
         else retryAt.current.set(key, Date.now() + RETRY_MS);
         return;
       }
-      const handed = await answerInWords(chat.sessionId, handBackText(untilLabel));
+      const handed = await answerInWords(chat.sessionId, handBackText(untilLabel)).catch((error: unknown) => {
+        console.warn("Autopilot hand back:", error);
+        return { ok: false as const, reason: "the app couldn't answer this one" };
+      });
       if (handed.ok)
         void log({ ...base, kind: "question", outcome: "handed_back", recommendation: "Told to decide itself" });
       else retryAt.current.set(key, Date.now() + RETRY_MS);

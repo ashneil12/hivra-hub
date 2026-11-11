@@ -33,6 +33,10 @@ export type TickWatch = {
     mergeable: "mergeable" | "conflicting" | "unknown" | "";
     /** The pull request's label names (pr_watch.rs `Status`). */
     labels: string[];
+    /** Commits main has that the branch lacks (pr_watch.rs `Status`, WP-202). Informational: the merge gate judges files. */
+    behind?: number;
+    /** GitHub's merge state (pr_watch.rs `Status`, WP-202). Informational: only DIRTY refuses, at the merge gate. */
+    mergeState?: string;
   };
 };
 
@@ -82,11 +86,15 @@ export type LeadTickPorts = {
    * from main" off this only reports; with it on, the package branch is brought up to date. Optional.
    */
   considerConflict?(packageId: string, branch: string): Promise<ConflictAnswer>;
+  /** WP-215: a call this tick settled, noted as this chat. Optional, so a tick without it still runs. */
+  noteDecision?(input: { project: string; what: string; reason: string }): void | Promise<void>;
 };
 
 export type LeadTickInput = {
   /** The project folder: the worker's project. */
   folder: string;
+  /** The hub id the decision store uses, when the caller has one. The folder is used when this is blank. */
+  projectId?: string;
   shipOnGreen: boolean;
   /** Keys of things already said (store.ts `noted`). */
   noted: readonly string[];
@@ -384,6 +392,19 @@ export async function runLeadTick(input: LeadTickInput, ports: LeadTickPorts): P
         // The next tick reads the watch and settles the row.
       }
       ports.outcome(`Merged ${row.wp}: ${row.title} (#${watch.number}).`);
+      try {
+        // A merge the person allowed is their call, not the Lead's. A note that fails is not a failed merge.
+        const allowedBy = outcome.allowedBy.trim().toLowerCase();
+        if (!allowedBy.startsWith("person")) {
+          await ports.noteDecision?.({
+            project: input.projectId?.trim() || input.folder,
+            what: `Merged ${row.wp}: ${row.title}`,
+            reason: "merge on green",
+          });
+        }
+      } catch {
+        // The merge already landed.
+      }
       did.push(`Merged ${row.wp} (#${watch.number}).`);
     } else if (outcome.outcome === "needsYou") {
       once(noteKey("ask", String(watch.number), outcome.headSha), `${pr} needs your word to merge: ${outcome.question}`, attention);

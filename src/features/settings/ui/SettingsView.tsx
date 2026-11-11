@@ -13,6 +13,8 @@ import { UsagePage } from "../../usage/ui/UsagePage";
 import { ConnectedApps } from "../../outside/ui/ConnectedApps";
 import { DashboardsPage } from "../../hub/ui/DashboardsPage";
 import { ConnectorsPage } from "../../hub/ui/ConnectorsPage";
+// WP-92: the keys agents ask for and use without seeing them.
+import { SecretsPage } from "../../secrets/ui/SecretsPage";
 import { PortablePage } from "../../portable/ui/PortablePage";
 // WP-75: checked backups.
 import { BackupsPage } from "../../backups/ui/BackupsPage";
@@ -21,18 +23,24 @@ import { HistoryImportScreen } from "../../historyImport/ui/HistoryImportScreen"
 import { MemorySettingsScreen } from "../../memory/ui/MemorySettingsScreen";
 import { TeamsPage } from "../../hub/ui/TeamsPage";
 import { PluginsPage } from "../../plugins/ui/DiscoverPage";
+import { CrewDefaults } from "../../crew/ui/CrewDefaults";
 import { CrewRulesPage } from "../../crew/ui/CrewRulesPage";
+import { hubProjectIdFor } from "../../hub/model/hubData";
 import { GateSetting } from "../../delivery-gate/ui/GateSetting";
 // WP-162: update a conflicting package from main. Off until the person turns it on.
 import { ProgrammeUpdateSetting } from "../../programme/ui/ProgrammeUpdateSetting";
 // WP-85: show Claude sessions started in a terminal.
 import { TerminalSessionsSetting } from "../../terminalMirror/ui/TerminalSessionsSetting";
+// WP-134b: More agents, off until the person switches it on.
+import { MoreAgentsSettings } from "../../registry/ui/MoreAgentsSettings";
 // WP-84: the project's default phase path.
 import { PhaseSettings } from "../../phases/ui/PhaseSettings";
 // WP-104: copy diagnostics, and the health list.
 import { DiagnosticsPanel } from "../../diagnostics/ui/DiagnosticsPanel";
 // WP-88: the morning note under the chat on Home.
 import { DailySummarySetting } from "../../chief/ui/DailySummarySetting";
+// WP-156: standing answers stay off until this setting is on.
+import { StandingAnswersSetting } from "./StandingAnswersSetting";
 // WP-164: quiet hours for routine programme notices.
 import { QuietHoursSetting } from "../../notifications/ui/QuietHoursSetting";
 import { QUIET_HOURS_DESCRIPTION } from "../../notifications/model/quietHours";
@@ -491,6 +499,8 @@ import {
 import { SkillsPage } from "../../skills/ui/SkillsPage";
 import { ProjectNotificationSettings } from "../../notifications/ui/ProjectNotificationSettings";
 import { WorktreesPage } from "../../source-control/ui/WorktreesPage";
+// WP-129: who writes titles, commits, pull request text and branch names.
+import { TextGenerationSetting } from "./TextGenerationSetting";
 import {
   removeWorktree,
   type RemoveWorktree,
@@ -748,6 +758,8 @@ export function SettingsView({
                 <MemorySettingsScreen />
               ) : null}
               {section === "connectors" ? <ConnectorsPage /> : null}
+              {/* WP-92: Settings > Secrets. */}
+              {section === "secrets" ? <SecretsPage project={cwd} /> : null}
               {section === "teams" ? <TeamsPage /> : null}
               {section === "plugins" ? (
                 // WP-32: Discover. Listing reads indexes; it never runs plugin code.
@@ -756,8 +768,10 @@ export function SettingsView({
               ) : null}
               {section === "crew" ? (
                 <>
+                  {/* WP-141: crew defaults, above the advanced rules. */}
+                  <CrewDefaults cwd={cwd} projectId={cwd ? hubProjectIdFor(cwd) : undefined} />
                   {/* WP-13: crew rules, the ordered list a person edits. */}
-                  <CrewRulesPage cwd={cwd} />
+                  <CrewRulesPage cwd={cwd} hideWorkerDefault />
                   {/* WP-81: check work before it goes to GitHub. Off until the person turns it on. */}
                   <GateSetting project={cwd} />
                   {/* WP-162: update a conflicting package from main. Off until the person turns it on. */}
@@ -773,7 +787,11 @@ export function SettingsView({
                 <McpSettings cwd={cwd} recents={recents} />
               ) : null}
               {section === "providers" ? (
-                <ProvidersPage cwd={cwd} recents={recents} />
+                <>
+                  {/* WP-129: who writes titles, commits, pull request text and branch names. */}
+                  <TextGenerationSetting />
+                  <ProvidersPage cwd={cwd} recents={recents} />
+                </>
               ) : null}
               {section === "worktrees" ? (
                 <WorktreesPage
@@ -1079,6 +1097,8 @@ function GeneralPage({
           <DailySummarySetting />
         </Row>
       </Group>
+      {/* WP-156: standing answers stay off until this is on. */}
+      <StandingAnswersSetting />
       <Group
         title="Alerts"
         description="How MonoCode reaches you while you are looking somewhere else."
@@ -4202,6 +4222,9 @@ function ProvidersPage({
           );
         })}
       </Group>
+
+      {/* WP-134b: More agents, off until the person switches it on. */}
+      <MoreAgentsSettings cwd={cwd} />
 
       <Group title="Advanced">
         <Row

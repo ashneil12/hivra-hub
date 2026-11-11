@@ -2,7 +2,7 @@
 // `monocode app timers.*`. A due timer becomes a wake in the first mate's queue ([MonoCode watcher]), so a first mate
 // ends its turn instead of polling. Only a first mate's own chat (a Mono's chat or a coding-team chat) sets them.
 import { sessionWorkCwd, type Session } from "../../sessions/model/session";
-import { safeCommand } from "../../autopilot/model/safeApproval";
+import { commandNamesLogin, safeCommand } from "../../autopilot/model/safeApproval";
 import { tauriWakeQueue, type Check, type Timer, type WakeQueueBackend } from "../../firstmate/watcher/wakeQueue";
 import type { AgentAppHost } from "./agentApp";
 
@@ -80,9 +80,13 @@ export async function handleTimers(source: Session, action: string, input: Recor
     }
     case "timers.check": {
       const command = typeof input.command === "string" ? input.command.trim() : "";
-      if (!command) throw new Error("command must be a read, test or build the app can run by itself");
+      if (!command) throw new Error("command must be a read the app can run by itself");
       if ([...command].length > 2000) throw new Error("that command is too long");
-      const why = safeCommand(command);
+      // Round 6, MED-2: judged in the folder the check runs in, the same as an approval's walk (a Mono starts at home).
+      // Round 2: the same login-store and hidden-file check autopilot's approvals make, since the table alone allowed
+      // `cat ~/.netrc` and `rg -g '.env*'`.
+      const cwd = sessionWorkCwd(source);
+      const why = safeCommand(command, cwd, true) ?? commandNamesLogin(command);
       if (why) throw new Error(`That command doesn't run by itself: ${why}`);
       const pattern = input.pattern === undefined ? "" : input.pattern;
       if (typeof pattern !== "string" || [...pattern].length > 200)
@@ -91,7 +95,6 @@ export async function handleTimers(source: Session, action: string, input: Recor
       if (!note) throw new Error("note must say what this check is for");
       const every = everyMinutes(input.everyMinutes);
       // Stored with the check: it runs in the folder this chat works in, not wherever the app was started.
-      const cwd = sessionWorkCwd(source);
       const check: Check = await timers.checkSet({
         ownerSession: source.id,
         command,

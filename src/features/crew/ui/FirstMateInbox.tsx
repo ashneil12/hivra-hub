@@ -40,7 +40,25 @@ export function FirstMateInbox({
           aria-current={item.key != null && item.key === selectedKey ? "true" : undefined}
           className="rounded-md border border-stroke px-3 py-2"
         >
-          <h3 className="text-[13px] text-content">{item.title}</h3>
+          <div className="flex items-start justify-between gap-3">
+            <div className="min-w-0">
+          <div className="flex min-w-0 flex-wrap items-baseline gap-2">
+            {item.chip ? (
+              <span className="inline-flex shrink-0 rounded bg-violet-500/15 px-1.5 py-0.5 text-[11px] font-medium text-violet-300">
+                {item.chip}
+              </span>
+            ) : null}
+            <h3 className="text-[13px] text-content">{item.title}</h3>
+            {item.marks?.map((mark) => (
+              <span
+                key={mark}
+                className="inline-flex shrink-0 rounded bg-content/10 px-1.5 py-0.5 text-[11px] text-content/60"
+              >
+                {mark}
+              </span>
+            ))}
+          </div>
+          {item.sourceLine ? <div className="text-[12px] leading-5 text-content/50">{item.sourceLine}</div> : null}
           {typeof now === "number" && waitingPhrase(item.since, now) ? (
             <p data-waiting className="text-[12px] text-content/60">
               {waitingPhrase(item.since, now)}
@@ -48,8 +66,12 @@ export function FirstMateInbox({
           ) : null}
           {item.statusWord ? <p className="text-[12px] text-content/60">{item.statusWord}</p> : null}
           {item.body ? (
-            <p data-failure={item.kind === "failure" ? item.id : undefined} className="mt-1 text-[12px] text-content/70">
-              {item.body}
+            <p
+              data-failure={item.kind === "failure" ? item.id : undefined}
+              className="mt-1 whitespace-pre-wrap break-words text-[12px] text-content/70"
+            >
+              {item.reasonLead ? `${item.reasonLead} ` : null}
+              {item.reasonLead ? <span data-reason-text>{item.body}</span> : item.body}
             </p>
           ) : null}
           {item.options.length ? (
@@ -62,6 +84,11 @@ export function FirstMateInbox({
               ))}
             </div>
           ) : null}
+          {item.note ? (
+            <p data-inbox-note className="mt-1.5 text-[12px] text-content/70">
+              {item.note}
+            </p>
+          ) : null}
           <div className="mt-1.5 flex flex-wrap gap-2">
             {item.chatId ? (
               <button type="button" className="text-[12px] text-content/60" onClick={() => onOpenChat?.(item.chatId!)}>
@@ -73,6 +100,26 @@ export function FirstMateInbox({
                 Open the worker
               </button>
             ))}
+          </div>
+            </div>
+            {item.actions?.length ? (
+              <div className="flex shrink-0 items-center gap-2">
+                {item.actions.map((action) => (
+                  <button
+                    key={action.label}
+                    type="button"
+                    onClick={() => action.onClick?.()}
+                    className={
+                      action.primary
+                        ? "rounded-md bg-blue-500 px-2.5 py-1 text-[12px] text-white"
+                        : "rounded-md border border-stroke px-2.5 py-1 text-[12px] text-content/80"
+                    }
+                  >
+                    {action.label}
+                  </button>
+                ))}
+              </div>
+            ) : null}
           </div>
         </article>
       ))}

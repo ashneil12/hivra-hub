@@ -19,14 +19,17 @@ export type SlotFacts = {
   inFlight: number;
   health: BuilderHealth | null | undefined;
   scale: BuilderScale;
+  /** The spend verdict for a new builder on this project (WP-176). Over the limit takes no slot. */
+  spend?: { status: string; reason: string };
 };
 
-/** A new builder may start when the project is under its worker limit and the machine is not paused (WP-161). */
+/** A new builder may start when the project is under its worker limit, under its spend limit and the machine is not paused (WP-161). */
 export function slotAnswer(facts: SlotFacts): SlotAnswer {
   const used = Math.max(facts.running + facts.waiting, facts.inFlight);
   if (used >= facts.limits.workers) {
     return { ok: false, reason: `all ${facts.limits.workers} builder slots for this project are in use.` };
   }
+  if (facts.spend?.status === "over") return { ok: false, reason: facts.spend.reason };
   const gate = builderLaunchAllowed(facts.health, facts.scale);
   if (!gate.ok) return { ok: false, reason: gate.reason };
   return { ok: true };
@@ -147,6 +150,17 @@ export function appPorts(host: PortHost, folder: string, context: LeadContext): 
     },
     async considerConflict(packageId, branch) {
       return conflictOf(await host.invoke("programme_consider_conflict", { project: folder, packageId, branch }));
+    },
+    // WP-215: the chat is the Lead's own, not a field the tick can set.
+    noteDecision(input) {
+      void host
+        .invoke("decisions_note", {
+          project: input.project,
+          session: context.lead.sessionId,
+          what: input.what,
+          reason: input.reason,
+        })
+        .catch(() => undefined);
     },
   };
 }

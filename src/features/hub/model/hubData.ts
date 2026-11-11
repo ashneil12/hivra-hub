@@ -176,8 +176,20 @@ export function hubProjectIdFor(folder: string): string | undefined {
   return (override ?? choose()).source.listProjects().find((project) => project.folder && pathKey(project.folder) === key)?.id;
 }
 
+/** The hub's projects as the spend gate reads them: the id and the folder (when it has one). */
+export function hubProjectList(): Array<{ id: string; folder?: string }> {
+  return (override ?? choose()).source.listProjects().map((project) => ({ id: project.id, folder: project.folder ?? undefined }));
+}
+
 export function hubProjectFolder(id: string): string | undefined {
   return (override ?? choose()).source.listProjects().find((project) => project.id === id)?.folder ?? undefined;
+}
+
+/** WP-141 round 11: every hub project folder, so a worktree can be owned by the project it belongs to. */
+export function hubProjectFolders(): string[] {
+  return (override ?? choose()).source.listProjects().flatMap((project) =>
+    typeof project.folder === "string" && project.folder.trim() !== "" ? [project.folder] : [],
+  );
 }
 
 /**

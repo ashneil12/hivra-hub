@@ -293,6 +293,18 @@ describe("ask_person and the decision Needs", () => {
     await expect(source.act("question", { id: "decision::nope" })).rejects.toThrow("isn't waiting on you");
   });
 
+  it("never forwards an answer for a secret's card: only the person approves one", async () => {
+    const store = fakeStore();
+    const answered = vi.fn(async () => ({ applied: true, decision: null, released: [], releasedTasks: [] }));
+    const host = { backend: { ...store.backend, answer: answered } };
+    const key = "secret/stripe-api-key/stripe";
+    const input = { key, question: "Let Tally run `stripe` with Stripe API key?", options: ["Once", "No"] };
+    const out = await askPerson({ id: "fm" }, { ...input, answer: "Once" }, { mono: "Tally" }, [row()], host);
+    expect(answered).not.toHaveBeenCalled();
+    expect(out).toMatchObject({ state: "open" });
+    expect(String(out.note)).toContain("waits in the person's Inbox");
+  });
+
   it("records an answer the person gave in chat, and an answered key gives the answer back", async () => {
     const store = fakeStore();
     const host = { backend: store.backend };
@@ -302,5 +314,57 @@ describe("ask_person and the decision Needs", () => {
     const again = await askPerson({ id: "fm" }, input, { project: "hivra" }, [], host);
     expect(again).toMatchObject({ state: "answered", answer: "Keep them 30 days" });
     expect(String(again.note)).toContain("don't ask again");
+  });
+
+  it("passes match words through and returns a standing answer as guidance", async () => {
+    const store = fakeStore();
+    let seen: AskInput | undefined;
+    const ask = store.backend.ask.bind(store.backend);
+    store.backend.ask = async (input) => {
+      seen = input;
+      return ask(input);
+    };
+    const host = { backend: store.backend };
+    await askPerson(
+      { id: "fm" },
+      { ...input, keys: ["Session", 1], force: true, reason: "This one is about staging." },
+      { project: "hivra" },
+      [],
+      host,
+    );
+    expect(seen).toMatchObject({ keys: ["Session"], force: true, reason: "This one is about staging." });
+
+    store.backend.ask = async () => ({
+      decision: {
+        project: "hivra",
+        decisionKey: "retention",
+        question: input.question,
+        options: input.options,
+        recommended: input.recommended,
+        askedBy: "fm",
+        askedByMono: null,
+        waiting: [],
+        state: "answered",
+        answer: "Keep 30 days",
+        answeredBy: "user",
+        answeredAt: 3,
+        createdAt: 1,
+        updatedAt: 3,
+        version: 2,
+        standingId: "S-4",
+      },
+      created: false,
+      added: [],
+      released: [],
+      matched: true,
+      standingId: "S-4",
+    });
+    const matched = await askPerson({ id: "fm" }, input, { project: "hivra" }, [row()], host);
+    expect(matched).toMatchObject({ state: "answered", matched: true, standingId: "S-4", answer: "Keep 30 days" });
+    expect(String(matched.note)).toContain(
+      "A standing answer S-4 to a similar question: guidance, not permission",
+    );
+    expect(String(matched.note)).not.toMatch(/[—–]/);
+    expect(store.decisions).toHaveLength(1);
   });
 });

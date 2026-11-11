@@ -26,6 +26,15 @@ function pkg(id: string) {
 const scale = { ...DEFAULT_BUILDER_SCALE, load: { kind: "default" as const } };
 
 describe("builder slot", () => {
+  it("a project over its spend limit takes no new builder slot (WP-176 round 3)", () => {
+    expect(
+      slotAnswer({ limits: { workers: 6 }, running: 0, waiting: 0, inFlight: 0, health: null, scale, spend: { status: "over", reason: "Monthly spend limit reached." } }),
+    ).toEqual({ ok: false, reason: "Monthly spend limit reached." });
+    expect(
+      slotAnswer({ limits: { workers: 6 }, running: 0, waiting: 0, inFlight: 0, health: null, scale, spend: { status: "warn", reason: "Near the limit." } }),
+    ).toEqual({ ok: true });
+  });
+
   it("is free under the project's worker limit with a healthy machine", () => {
     expect(slotAnswer({ limits: { workers: 6 }, running: 2, waiting: 1, inFlight: 1, health: null, scale })).toEqual({ ok: true });
   });
@@ -107,6 +116,24 @@ describe("app ports", () => {
     const h = host();
     await appPorts(h.value, "/code/app", context).delegate("lead-tick-a-2", { title: "x" });
     expect(h.delegated).toEqual([["s-lead", "lead-tick-a-2", { title: "x" }]]);
+  });
+
+  it("notes a settled call as the Lead's own chat", () => {
+    const h = host();
+    appPorts(h.value, "/code/app", context).noteDecision?.({
+      project: "/code/app",
+      what: "Merged WP-200: Build the thing",
+      reason: "merge on green",
+    });
+    expect(h.calls[0]).toEqual({
+      command: "decisions_note",
+      args: {
+        project: "/code/app",
+        session: "s-lead",
+        what: "Merged WP-200: Build the thing",
+        reason: "merge on green",
+      },
+    });
   });
 
   it("writes the activity line as the Lead, cut to the log's limit", async () => {

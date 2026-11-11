@@ -10,6 +10,7 @@ import type { HubProject } from "./types";
 import {
   answerInWords,
   autopilotMayTake,
+  chatQuestionVeto,
   findWaitingChat,
   gateLog,
   forgetWaitingChat,
@@ -18,6 +19,7 @@ import {
   pruneWaitingChats,
   resetWaitingChats,
   setWaitingChatsHost,
+  setCaptainDoor,
   setWorkerQuestionRouter,
   subscribeWaitingChats,
   takePick,
@@ -26,8 +28,8 @@ import {
 } from "./waitingChats";
 
 const PROJECTS: HubProject[] = [
-  { id: "vg-game", name: "EXO", shortName: "EXO", iconShape: "folder", folder: "/Users/ash/Projects/vg-game" },
-  { id: "hivra", name: "Hivra", shortName: "Hivra", iconShape: "folder", folder: "/Users/ash/Projects/hivra" },
+  { id: "vg-game", name: "EXO", shortName: "EXO", iconShape: "folder", folder: "/Users/someone/Projects/vg-game" },
+  { id: "hivra", name: "Hivra", shortName: "Hivra", iconShape: "folder", folder: "/Users/someone/Projects/hivra" },
 ];
 
 const ask = (requestId = 3, prompt = "Which boss comes first?"): UserQuestionPrompt => ({
@@ -38,7 +40,7 @@ const ask = (requestId = 3, prompt = "Which boss comes first?"): UserQuestionPro
 });
 
 type Chat = Parameters<typeof noteChats>[0][number];
-const chat = (over: Partial<Chat> & { id: string }): Chat => ({ cwd: "/Users/ash/Projects/vg-game", title: "claude · Boss fight", harness: "claude", blocks: [], ...over });
+const chat = (over: Partial<Chat> & { id: string }): Chat => ({ cwd: "/Users/someone/Projects/vg-game", title: "claude · Boss fight", harness: "claude", blocks: [], ...over });
 const markerChat = (id: string, text: string, over: Partial<Chat> = {}) =>
   chat({ id, blocks: [{ role: "user", text: "go", startedAt: 1 }, { role: "assistant", text }], ...over });
 
@@ -60,6 +62,7 @@ beforeEach(() => {
   localStorage.clear();
   localStorage.setItem("monocode:hub-team-pack", "ash"); // Ash's install: the app's words name him (userName.ts)
   resetWaitingChats();
+  setCaptainDoor(null);
   setHubDataSource({ ...mockHubData, listProjects: () => PROJECTS });
 });
 
@@ -67,7 +70,7 @@ describe("which chats are waiting", () => {
   it("lists a live question and a Needs Ash line, each under its project, with the question and the pick", () => {
     noteChats([
       chat({ id: "s1", busy: true, pendingQuestion: ask() }),
-      markerChat("s2", "Needs Ash: Keep the old waitlist page?\nMy pick: Archive it.", { cwd: "/Users/ash/Projects/hivra", title: "claude · Waitlist" }),
+      markerChat("s2", "Needs Ash: Keep the old waitlist page?\nMy pick: Archive it.", { cwd: "/Users/someone/Projects/hivra", title: "claude · Waitlist" }),
       markerChat("s3", "All done."),
     ], 1000);
     expect(waitingChats().map((c) => [c.sessionId, c.projectName, c.chatName, c.question, c.pick])).toEqual([
@@ -78,8 +81,8 @@ describe("which chats are waiting", () => {
   });
 
   it("a Mono's chat is named after the Mono and filed under the project it leads", () => {
-    addMono({ id: "vg-game-lead", name: "EXO lead", mascot: "robot", color: "#888", projects: ["/Users/ash/Projects/vg-game"], sessionId: "lead-chat" });
-    noteChats([markerChat("lead-chat", "Needs Ash: Cut Area 3 from the demo?\nMy pick: Cut it.", { cwd: "/Users/ash" })]);
+    addMono({ id: "vg-game-lead", name: "EXO lead", mascot: "robot", color: "#888", projects: ["/Users/someone/Projects/vg-game"], sessionId: "lead-chat" });
+    noteChats([markerChat("lead-chat", "Needs Ash: Cut Area 3 from the demo?\nMy pick: Cut it.", { cwd: "/Users/someone" })]);
     expect(waitingChats().map((c) => [c.chatName, c.projectId])).toEqual([["EXO lead", "vg-game"]]);
   });
 
@@ -280,6 +283,165 @@ describe("hooks for Autopilot and H4", () => {
     expect(await takePick("red")).toMatchObject({ ok: true }); // Ash himself may take it
     expect(calls.send.map(([id]) => id)).toEqual(["ok", "red"]);
     off();
+  });
+
+  it("Autopilot never takes a pick that sends, deletes, moves money, publishes or changes access (WP-101, row 19)", async () => {
+    const { calls } = host();
+    noteChats([
+      markerChat("mail", "Needs Ash: Send the invoice to Priya?\nMy pick: yes, send it"),
+      markerChat("notes", "Needs Ash: What next?\nMy pick: publish the release notes"),
+      markerChat("branch", "Needs Ash: Delete the old branch?\nMy pick: yes"),
+      markerChat("changelog", "Needs Ash: Next step?\nMy pick: keep it"),
+      markerChat("fine", "Needs Ash: Keep the old endpoint for a week?\nMy pick: yes"),
+    ]);
+    const vetoed = ["mail", "notes", "branch"];
+    for (const id of vetoed) {
+      const chat = findWaitingChat(id)!;
+      expect(autopilotMayTake(chat), id).toBe(false);
+      // Held either by the red line's own words or by the reviewer rule; both leave it for Ash.
+      const result = await takePick(id, { by: "autopilot" });
+      expect(result.ok, id).toBe(false);
+      if (!chat.redLine) expect(result, id).toEqual({ ok: false, reason: "That one sends, deletes, moves money, publishes or changes access, so it waits for Ash." });
+    }
+    expect(autopilotMayTake(findWaitingChat("fine")!)).toBe(true);
+    expect((await takePick("fine", { by: "autopilot" })).ok).toBe(true);
+    expect(calls.send.map(([id]) => id)).toEqual(["fine"]);
+    // Ash may still take a vetoed one himself: the rule only narrows what autopilot does.
+    for (const id of vetoed) expect((await takePick(id)).ok, id).toBe(true);
+  });
+
+  // WP-101 fix round 2, item F (N10): a chat's stored shape is read from disk and may have been written by an older
+  // build or edited by hand. A shape the veto can't read is a hold with a reason, never an exception: `autopilotMayTake`
+  // runs in render code, where a throw breaks a list rather than just waiting.
+  it("holds any chat shape it can't read, with a reason, instead of throwing (fix round 2, item F)", async () => {
+    const hostile = {
+      get question(): string {
+        throw new Error("a getter that throws");
+      },
+      pick: "yes",
+    };
+    const shapes: unknown[] = [
+      null,
+      undefined,
+      7,
+      "ship it",
+      {},
+      { question: "" },
+      { question: "Which first?", options: 5 },
+      { question: "Which first?", rows: 5 },
+      { question: "Which first?", rows: [null] },
+      { question: "Which first?", rows: [{ options: 5 }] },
+      { question: "Which first?", rows: [{ question: 7 }] },
+      { question: 7 },
+      hostile,
+    ];
+    for (const shape of shapes) {
+      const label = shape === hostile ? "a throwing getter" : JSON.stringify(shape) ?? "undefined";
+      expect(() => chatQuestionVeto(shape as never), label).not.toThrow();
+      expect(chatQuestionVeto(shape as never), label).toBe("The reviewer couldn't read what this would do, so it waits for you.");
+      expect(() => autopilotMayTake(shape as never), label).not.toThrow();
+      expect(autopilotMayTake(shape as never), label).toBe(false);
+    }
+    // A shape that is readable and names no action is still a plain null: the rule only holds what it can't read.
+    expect(chatQuestionVeto({ question: "Which first?" })).toBeNull();
+    // The list itself is render code: one unreadable saved chat doesn't take it down.
+    expect(() => waitingChats()).not.toThrow();
+  });
+
+  it("holds a saved chat whose rows hold an action, and one whose rows it can't read, on the same door (item F)", async () => {
+    host();
+    noteChats([markerChat("rows", "Needs Ash: What next?\nMy pick: keep it")]);
+    const chat = findWaitingChat("rows")!;
+    // A card whose other row is a send: taking this pick answers a card that names it.
+    expect(chatQuestionVeto({ ...chat, rows: [{ question: "Anything else?", redLine: false }, { question: "Ping Priya?", redLine: false }] })).not.toBeNull();
+    // A row whose own text can't be read: held too, never passed.
+    expect(chatQuestionVeto({ ...chat, rows: [{ question: 7, redLine: false } as never] })).not.toBeNull();
+    expect(chatQuestionVeto({ ...chat, rows: [{ question: "Rename the file?", redLine: false }] })).toBeNull();
+    // And `takePick` by autopilot says so plainly: a hold, not a rejection.
+    expect(await takePick("rows", { by: "autopilot" })).toMatchObject({ ok: true });
+  });
+
+  it("a standing answer is sent instead of the pick, and an owner key is not taken", async () => {
+    const { calls } = host();
+    setCaptainDoor((chat) =>
+      chat.sessionId === "own" ? { decisionKey: "secret/token" } : { standing: { answer: "Example: keep it", label: "merge on green" } },
+    );
+    noteChats([
+      markerChat("stand", "Needs Ash: Example: keep the gate?\nMy pick: Example: change it"),
+      markerChat("own", "Needs Ash: Example: which name?\nMy pick: Example: keep it"),
+    ]);
+    expect(await takePick("stand", { by: "autopilot" })).toMatchObject({ ok: true, sent: "Example: keep it" });
+    expect(await takePick("own", { by: "autopilot" })).toMatchObject({ ok: false });
+    expect(calls.send.map(([id]) => id)).toEqual(["stand"]);
+  });
+
+  it("the captain is refused by the same veto and person-only check a Page is", async () => {
+    const { calls } = host();
+    const standing = { answer: "Example: keep it", label: "merge on green" };
+    setCaptainDoor(() => ({ monoId: "ada", standing }));
+    noteChats([
+      markerChat("pub", "Needs Ash: What next?\nMy pick: merge it"),
+      markerChat("pub-page", "Needs Ash: What next?\nMy pick: merge it"),
+    ]);
+    const pub = findWaitingChat("pub")!;
+    expect(pub.redLine, "this one is the veto, not the red line").toBe(false);
+    expect(chatQuestionVeto(pub)).not.toBeNull();
+    const captain = await takePick("pub", { by: "autopilot" });
+    const page = await takePick("pub-page", { by: "page" });
+    expect(captain).toEqual(page);
+    expect(captain).toEqual({
+      ok: false,
+      reason: "That one sends, deletes, moves money, publishes or changes access, so it waits for Ash.",
+    });
+    expect(calls.send).toEqual([]);
+
+    for (const key of ["gate/run-7", "Gate/run-7", "irreversible/lead/task-6", "fresh-eyes/r9/00112233aabbccdd", "fanout-again/fm/task-2"]) {
+      const id = `own-${key.replace(/[^a-z0-9]+/gi, "-")}`;
+      setCaptainDoor(() => ({ decisionKey: key, monoId: "ada", standing }));
+      noteChats([markerChat(id, "Needs Ash: Example: which name?\nMy pick: Example: keep it")]);
+      expect(await takePick(id, { by: "autopilot" }), key).toEqual({
+        ok: false,
+        reason: "Only you can answer that one. Open Needs you to answer it.",
+      });
+    }
+    expect(calls.send).toEqual([]);
+  });
+
+  it("a captain answer is stored as captain:<id>, never as the person or a page", async () => {
+    const { calls } = host();
+    const standing = { answer: "Example: keep it", label: "merge on green" };
+    setCaptainDoor(() => ({ monoId: "ada", standing }));
+    noteChats([markerChat("id", "Needs Ash: Example: keep the gate?\nMy pick: Example: change it")]);
+    expect(await takePick("id", { by: "autopilot" })).toMatchObject({ ok: true, sent: "Example: keep it" });
+    expect(gateLog().find((row) => row.sessionId === "id")?.answer).toMatchObject({ words: "Example: keep it", who: "captain:ada" });
+
+    setCaptainDoor(() => ({ monoId: "ada" }));
+    noteChats([markerChat("same", "Needs Ash: Rename the file?\nMy pick: yes")]);
+    expect((await takePick("same", { by: "autopilot" })).ok).toBe(true);
+    expect(gateLog().find((row) => row.sessionId === "same")?.answer?.who).toBe("captain:ada");
+
+    for (const monoId of ["page:ada", "user", "person", "page", ""]) {
+      const id = `bad-${monoId || "blank"}`;
+      setCaptainDoor(() => ({ monoId, standing }));
+      noteChats([markerChat(id, "Needs Ash: Example: keep the gate?\nMy pick: Example: change it")]);
+      expect((await takePick(id, { by: "autopilot" })).ok, monoId || "blank").toBe(true);
+      const who = gateLog().find((row) => row.sessionId === id)?.answer?.who;
+      expect(who, monoId || "blank").toBe("captain:chief");
+    }
+    expect(calls.send.map(([id]) => id)).toContain("id");
+    expect(calls.send.map(([, text]) => text).join("\n")).not.toContain("page:");
+  });
+
+  it("keeps pager as a mono id, and does not read it as a page", async () => {
+    host();
+    const stop = setCaptainDoor(() => ({ monoId: "pager", standing: { answer: "Example: keep it", label: "merge on green" } }));
+    try {
+      noteChats([markerChat("pager-1", "Needs Ash: Example: keep the gate?\nMy pick: Example: change it")]);
+      expect(await takePick("pager-1", { by: "autopilot" })).toMatchObject({ ok: true, sent: "Example: keep it" });
+      expect(gateLog().find((row) => row.sessionId === "pager-1")?.answer?.who).toBe("captain:pager");
+    } finally {
+      stop();
+    }
   });
 
   it("a worker's question H4 routes to its Lead is not Ash's", () => {

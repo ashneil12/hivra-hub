@@ -203,6 +203,7 @@ npm run hub:dev -- --print        # which slot, port and config it would use; ch
 npm run hub:doctor                # the identity guard, then every bundle, data folder, running copy, slot and worktree
 npm run hub:clean                 # what a finished run left behind (stale slots, old configs, merged worktrees); removes nothing
 npm run hub:clean -- --yes        # reap exactly that: no running copy, no uncommitted changes, never the daily app
+npm run hub:clean -- --output-only --yes  # only rebuildable build output (target/ and the like); no worktree goes
 ```
 
 **Dev slots (`scripts/hub-dev.mjs`).** Every worktree runs its own dev copy, side by side with the others and with the

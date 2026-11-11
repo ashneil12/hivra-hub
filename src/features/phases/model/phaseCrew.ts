@@ -2,7 +2,7 @@
 // A second ask for a run that is already going does not start another worker.
 
 import type { AgentAppHost } from "../../agent-app/model/agentApp";
-import type { TaskHelpers } from "../../agent-app/model/agentAppTasks";
+import { gateSessionStart, type TaskHelpers } from "../../agent-app/model/agentAppTasks";
 import type { Session } from "../../sessions/model/session";
 import { taskTextFor } from "../../tasks/model/agentTasks";
 import type { FinishResult, Run, Work } from "./machine";
@@ -103,6 +103,8 @@ async function launchPhase(launch: Bound, run: Run, work: Work): Promise<FinishR
       },
       launch.host,
     );
+    // WP-141 round 6: a phase worker is a worker launch. It passes the crew gate before its process starts.
+    await gateSessionStart(launch.host, launch.source, started.harness, started.cwd, id);
     // No delegation meta: the reply is the document, not a coding worker's self-review.
     await launch.host.start(started, id, undefined, launch.source.id);
   } catch {
