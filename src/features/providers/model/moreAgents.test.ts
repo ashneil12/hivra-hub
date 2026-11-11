@@ -3,6 +3,14 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const invoke = vi.fn();
 vi.mock("@tauri-apps/api/core", () => ({ invoke: (...args: unknown[]) => invoke(...args) }));
 
+const listeners = vi.hoisted(() => new Map<string, (event: unknown) => void>());
+vi.mock("@tauri-apps/api/event", () => ({
+  listen: vi.fn(async (name: string, handler: (event: unknown) => void) => {
+    listeners.set(name, handler);
+    return () => listeners.delete(name);
+  }),
+}));
+
 const {
   FIRST_CLASS_COMMANDS,
   MORE_AGENT_COPY,
@@ -158,3 +166,16 @@ describe("More agents approvals", () => {
     expect(list.approved).toEqual(["copilot"]);
   });
 });
+
+describe("a change made in another window reaches this window", () => {
+  it("re-reads the list when the app announces a change, so a withdrawn run stops here too", async () => {
+    const { subscribeMoreAgentsChanges } = await import("./moreAgents");
+    const onChange = vi.fn();
+    const stop = await subscribeMoreAgentsChanges(onChange);
+    expect(listeners.has("more-agents-changed")).toBe(true);
+    listeners.get("more-agents-changed")?.({});
+    expect(onChange).toHaveBeenCalledTimes(1);
+    stop();
+  });
+});
+

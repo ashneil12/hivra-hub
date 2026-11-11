@@ -47,3 +47,13 @@ Anything that cannot run shows one of the sentences in the WP-134 table and does
 - [ ] One generic ACP session can send a turn on the desktop path, and every failure in the WP-134 table shows its sentence and is not a success. Unit tests and a real child process test pass. It has not been run in a live app window, so this stays open.
 - [x] An allow, a spawn and a running chat's next turn all check the approval the person saw, and a changed file is refused (`more_agents.rs` tests, `moreAgentAdapter.test.ts`).
 - [x] An unknown registry id is not passed to `asHarness` or `Kind::from_id`.
+
+## Known limits (review rounds 4 to 6)
+
+- **Approval key and generation (MED-2).** The approval MAC key and the generation are Keychain items the app creates on first approval. The app does not set an access list on them, so any process that the login Keychain grants can read or write them, as it can any app secret. A missing item approves nothing (fail closed), but a process with that access can replace the items. Setting a per-app access list needs Keychain ACL support the keyring crate does not expose; it stays open.
+- **Chat link and identity (LOW-7b, LOW-I).** The link from a chat to its More agents entry is kept in browser storage (`monocode.moreAgentChats`), so it is per window profile, not in the session row. A restored chat's route is set from that link. Moving the identity onto the session row needs a field in the saved session record and a migration; it stays open.
+- **Self-written data files (LOW-H).** An argument that points at a file inside the app's data folder (for example `--config /abs/settings.json`) is pinned like any file. If the agent rewrites that file on its own run, the next start is refused and the entry needs a new approval. The Allow card does not say so yet.
+- **Dev copies (LOW-H).** Dev copies share the approval key and generation names with each other (`monocode-hub-dev:more-agents-*` is one name per dev install, not per slot).
+- **Shebang scripts (LOW-F).** A script's first-line interpreter is not pinned. The Allow card says so.
+- **Hash-to-run window (MED-4).** A More agents program runs from a private copy named by its SHA-256 under the app data folder. The copy is written once and hashed before it is named, and a copy whose hash does not match is replaced. A process with write access to the data folder can still swap a copy between its check and its exec; that window is narrowed, not removed.
+- **Off switch (Rust side).** The More agents switch is kept in the webview. Rust does not read it, so a start checks the approval but not the switch.

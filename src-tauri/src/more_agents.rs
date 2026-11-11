@@ -369,11 +369,21 @@ fn pin_set(args: &[String]) -> Result<(Pins, Vec<String>), String> {
 /// A line for the Allow card when the entry fetches its program at start: only the launcher is pinned.
 fn remote_note(command: &str, args: &[String]) -> Option<String> {
     let name = command_basename(command);
+    let first = args.first().map(String::as_str).unwrap_or("");
     let remote = match name.as_str() {
-        "npx" | "bunx" | "uvx" => true,
-        "pipx" => args.first().is_some_and(|a| a == "run"),
+        "npx" | "bunx" | "uvx" | "pnpx" => true,
+        "bun" => first == "x",
+        "npm" => first == "exec" || first == "x",
+        "pnpm" | "yarn" => first == "dlx",
+        "pipx" => first == "run",
+        // A deno run of a file on this Mac is local; a URL or an npm:/jsr: specifier is fetched at start.
         "deno" => {
-            args.first().is_some_and(|a| a == "run") && args.iter().any(|a| a.contains("://"))
+            first == "run"
+                && args.iter().any(|a| {
+                    a.starts_with("npm:")
+                        || a.starts_with("jsr:")
+                        || (a.contains("://") && !a.starts_with("file://"))
+                })
         }
         _ => false,
     };
@@ -584,6 +594,7 @@ fn checked_fields(entry: &Value) -> Result<(String, String, Vec<String>), String
         return Err("There are too many arguments, or one is too long.".into());
     }
     if args.iter().any(|arg| inline_flag(arg))
+        || (command_basename(command) == "php" && args.iter().any(|arg| arg == "-r"))
         || (matches!(command_basename(command).as_str(), "deno" | "bun")
             && args.iter().any(|arg| arg == "eval"))
     {
@@ -617,9 +628,13 @@ fn inline_flag(arg: &str) -> bool {
         return true;
     }
     match lower.strip_prefix('-') {
-        Some(cluster) if !cluster.is_empty() && !cluster.starts_with('-') => {
-            cluster.chars().all(|c| "ceplrin".contains(c))
-                && cluster.chars().any(|c| "cep".contains(c))
+        Some(cluster)
+            if !cluster.is_empty()
+                && !cluster.starts_with('-')
+                && cluster.len() <= 4
+                && cluster.chars().all(|c| c.is_ascii_alphabetic()) =>
+        {
+            cluster.chars().any(|c| "cep".contains(c))
         }
         _ => false,
     }
@@ -731,10 +746,11 @@ pub(crate) fn set_approval(
     if allowed {
         let (checked_id, command, args) = checked_fields(&entry)?;
         let fp = fingerprint(&command, &args);
-        if shown != Some(fp.as_str()) {
+        let path = resolve_command(&command, path_value)?;
+        // The window must have shown this command AND the file it resolves to now (a PATH change shows another file).
+        if shown != Some(shown_fingerprint(&command, &args, &path).as_str()) {
             return Err(SHOWN_CHANGED.into());
         }
-        let path = resolve_command(&command, path_value)?;
         let sha256 = file_sha256(Path::new(&path))?;
         let (pins, _) = pin_set(&args)?;
         approvals.insert(
@@ -792,6 +808,11 @@ pub(crate) fn approved_spawn(
     if pins_now != approval.pins {
         return Err(ON_DISK_CHANGED.into());
     }
+    // The program that runs is a private copy named by its hash, not the file the person approved: nothing that can
+    // write the original after the check can change what starts (the copy is hashed before it is named).
+    let resolved = private_copy(data_dir, &approval.sha256, Path::new(&resolved))?
+        .to_string_lossy()
+        .into_owned();
     let name = entry
         .get("name")
         .and_then(Value::as_str)
@@ -896,14 +917,115 @@ fn still_approved(approval: &Approval, fp: &str, path: Option<&str>) -> bool {
             .all(|(pin, sha)| file_sha256(Path::new(pin)).is_ok_and(|now| &now == sha))
 }
 
+/// Copies an approved program into the app's own folder under its hash and returns that copy's path. The bytes are
+/// read once and hashed; only a copy whose hash is the approved one is written, and it is named by that hash.
+fn private_copy(data_dir: &Path, sha256: &str, source: &Path) -> Result<PathBuf, String> {
+    use sha2::{Digest, Sha256};
+    let dir = data_dir.join("more-agents").join("bin");
+    std::fs::create_dir_all(&dir).map_err(|_| NOT_APPROVED.to_string())?;
+    let target = dir.join(sha256);
+    if target.is_file() && file_sha256(&target).is_ok_and(|now| now == sha256) {
+        return Ok(target);
+    }
+    let bytes = std::fs::read(source).map_err(|_| NOT_APPROVED.to_string())?;
+    let hashed: String = Sha256::digest(&bytes)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    if hashed != sha256 {
+        return Err(ON_DISK_CHANGED.into());
+    }
+    let temp = dir.join(format!("{sha256}.{}.tmp", uuid::Uuid::new_v4()));
+    std::fs::write(&temp, &bytes).map_err(|_| NOT_APPROVED.to_string())?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&temp, std::fs::Permissions::from_mode(0o500));
+    }
+    std::fs::rename(&temp, &target).map_err(|_| {
+        let _ = std::fs::remove_file(&temp);
+        NOT_APPROVED.to_string()
+    })?;
+    Ok(target)
+}
+
 /// SHA-256 of a file's bytes, hex. A file that cannot be read is not approved.
 fn file_sha256(path: &Path) -> Result<String, String> {
     use sha2::{Digest, Sha256};
+    let meta = std::fs::metadata(path).map_err(|_| NOT_APPROVED.to_string())?;
+    let stamp = FileStamp::of(&meta);
+    if let Some((cached, sha)) = SHA_CACHE
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(path)
+        .cloned()
+    {
+        if cached == stamp {
+            return Ok(sha);
+        }
+    }
+    #[cfg(test)]
+    HASHES.with(|h| h.set(h.get() + 1));
     let bytes = std::fs::read(path).map_err(|_| NOT_APPROVED.to_string())?;
-    Ok(Sha256::digest(&bytes)
+    let sha: String = Sha256::digest(&bytes)
         .iter()
         .map(|byte| format!("{byte:02x}"))
-        .collect())
+        .collect();
+    SHA_CACHE
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(path.to_path_buf(), (stamp, sha.clone()));
+    Ok(sha)
+}
+
+/// What a cached hash is keyed on: the file's modification time, size and inode.
+#[derive(Clone, PartialEq, Eq, Debug)]
+struct FileStamp {
+    modified: u128,
+    size: u64,
+    inode: u64,
+}
+
+impl FileStamp {
+    fn of(meta: &std::fs::Metadata) -> Self {
+        let modified = meta
+            .modified()
+            .ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map_or(0, |d| d.as_nanos());
+        #[cfg(unix)]
+        let inode = std::os::unix::fs::MetadataExt::ino(meta);
+        #[cfg(not(unix))]
+        let inode = 0;
+        FileStamp {
+            modified,
+            size: meta.len(),
+            inode,
+        }
+    }
+}
+
+static SHA_CACHE: Mutex<BTreeMap<PathBuf, (FileStamp, String)>> = Mutex::new(BTreeMap::new());
+#[cfg(test)]
+thread_local! {
+    /// How many times this thread read a file to hash it (tests only).
+    static HASHES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Whether a file starts with `#!`, a script whose interpreter the app does not pin.
+fn starts_with_shebang(path: &str) -> bool {
+    use std::io::Read;
+    let mut head = [0u8; 2];
+    std::fs::File::open(path)
+        .and_then(|mut file| file.read_exact(&mut head))
+        .is_ok()
+        && &head == b"#!"
+}
+
+/// What the Allow card shows the person and the window sends back: the command, its arguments, and the absolute file
+/// the command resolves to. A change to any of them is a different thing to approve.
+pub(crate) fn shown_fingerprint(command: &str, args: &[String], resolved: &str) -> String {
+    fingerprint(&format!("{resolved}\u{0}{command}"), args)
 }
 
 /// The fingerprint of the command the person approves: its command and its arguments, length-prefixed.
@@ -945,17 +1067,24 @@ pub(crate) fn view(stored: &Stored, path_value: &str) -> Value {
         };
         let fp = fingerprint(&command, &args);
         let path = resolve_command(&command, path_value).ok();
+        let shown = shown_fingerprint(&command, &args, path.as_deref().unwrap_or(""));
         let allowed = stored
             .approvals
             .get(&id)
             .is_some_and(|a| still_approved(a, &fp, path.as_deref()));
         if let Some(note) = remote_note(&command, &args) {
             notes.insert(id.clone(), json!(note));
+        } else if path.as_deref().is_some_and(starts_with_shebang) {
+            // LOW-F: the interpreter on a script's first line is not pinned, so the card says so.
+            notes.insert(
+                id.clone(),
+                json!("This program is a script. The interpreter named on its first line is not pinned."),
+            );
         }
         if allowed {
             approved.push(id.clone());
         }
-        fingerprints.insert(id.clone(), json!(fp));
+        fingerprints.insert(id.clone(), json!(shown));
         resolved.insert(id, json!(path));
     }
     json!({
@@ -974,51 +1103,75 @@ fn data_dir(app: &AppHandle) -> Result<PathBuf, String> {
 
 /// The list for the window: its revision, its entries as saved, and which ids are approved to run.
 #[tauri::command]
-pub fn more_agents_read(app: AppHandle) -> Result<Value, String> {
-    Ok(view(
-        &read_stored(&data_dir(&app)?)?,
-        &crate::harness::gui_search_path(),
-    ))
+pub async fn more_agents_read(app: AppHandle) -> Result<Value, String> {
+    off_main(move || {
+        Ok(view(
+            &read_stored(&data_dir(&app)?)?,
+            &crate::harness::gui_search_path(),
+        ))
+    })
+    .await
+}
+
+/// Runs the work on a blocking thread: the hashing of a program must not hold up the window.
+async fn off_main<T: Send + 'static>(
+    work: impl FnOnce() -> Result<T, String> + Send + 'static,
+) -> Result<T, String> {
+    tauri::async_runtime::spawn_blocking(work)
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 /// Replace the list if the window read the current revision. Approvals are not changed here.
 #[tauri::command]
-pub fn more_agents_write(
+pub async fn more_agents_write(
     app: AppHandle,
     expected_revision: u64,
     agents: Vec<Value>,
 ) -> Result<Value, String> {
-    Ok(view(
-        &write_agents(&data_dir(&app)?, expected_revision, agents)?,
-        &crate::harness::gui_search_path(),
-    ))
+    off_main(move || {
+        let stored = write_agents(&data_dir(&app)?, expected_revision, agents)?;
+        announce(&app);
+        Ok(view(&stored, &crate::harness::gui_search_path()))
+    })
+    .await
+}
+
+/// Tells every window the list changed, so each one re-reads it and stops runs whose entry was withdrawn.
+fn announce(app: &AppHandle) {
+    let _ = tauri::Emitter::emit(app, "more-agents-changed", ());
 }
 
 /// Whether an entry may run right now: approved as it is, and its file unchanged. A running agent is checked this
 /// way before each turn, so a withdrawn or edited entry stops answering.
 #[tauri::command]
-pub fn more_agents_check(app: AppHandle, id: String) -> Result<(), String> {
-    approved_spawn(&data_dir(&app)?, &id, &crate::harness::gui_search_path()).map(|_| ())
+pub async fn more_agents_check(app: AppHandle, id: String) -> Result<(), String> {
+    off_main(move || {
+        approved_spawn(&data_dir(&app)?, &id, &crate::harness::gui_search_path()).map(|_| ())
+    })
+    .await
 }
 
 /// The person's own tap: allow or withdraw one entry. `shown` is the fingerprint the window displayed for it.
 #[tauri::command]
-pub fn more_agents_approve(
+pub async fn more_agents_approve(
     app: AppHandle,
     id: String,
     allowed: bool,
     shown: Option<String>,
 ) -> Result<Value, String> {
-    Ok(view(
-        &set_approval(
+    off_main(move || {
+        let stored = set_approval(
             &data_dir(&app)?,
             &id,
             allowed,
             shown.as_deref(),
             &crate::harness::gui_search_path(),
-        )?,
-        &crate::harness::gui_search_path(),
-    ))
+        )?;
+        announce(&app);
+        Ok(view(&stored, &crate::harness::gui_search_path()))
+    })
+    .await
 }
 
 #[cfg(test)]
@@ -1313,7 +1466,10 @@ mod tests {
         write_agents(d.path(), 0, vec![entry("wp134", "wp134-tool", &["--acp"])]).expect("seed");
         approve(d.path(), "wp134", &path_value).expect("approve");
         let run = approved_spawn(d.path(), "wp134", &path_value).expect("approved and present");
-        assert_eq!(run.command, canonical.to_string_lossy());
+        assert_eq!(
+            file_sha256(Path::new(&run.command)).expect("copy"),
+            file_sha256(&canonical).expect("original")
+        );
         assert_eq!(run.args, vec!["--acp".to_string()]);
         write_agents(
             d.path(),
@@ -1322,11 +1478,10 @@ mod tests {
         )
         .expect("absolute");
         approve(d.path(), "wp134", "/usr/bin").expect("approve absolute");
+        let again = approved_spawn(d.path(), "wp134", "/usr/bin").expect("absolute path runs");
         assert_eq!(
-            approved_spawn(d.path(), "wp134", "/usr/bin")
-                .expect("absolute path runs")
-                .command,
-            canonical.to_string_lossy()
+            file_sha256(Path::new(&again.command)).expect("copy"),
+            file_sha256(&canonical).expect("original")
         );
     }
 
@@ -1413,7 +1568,16 @@ mod tests {
             .expect("approved and present");
         assert_eq!(run.id, "wp134b");
         let canonical = std::fs::canonicalize(&tool).expect("canonical");
-        assert_eq!(run.command, canonical.to_string_lossy());
+        assert_ne!(
+            run.command,
+            canonical.to_string_lossy(),
+            "the approved file is not what runs"
+        );
+        assert!(run.command.starts_with(d.path().to_string_lossy().as_ref()));
+        assert_eq!(
+            file_sha256(Path::new(&run.command)).expect("copy"),
+            file_sha256(&canonical).expect("original")
+        );
         assert_eq!(run.args, vec!["acp".to_string(), "--flag".to_string()]);
     }
 
@@ -1766,5 +1930,138 @@ mod tests {
             approved_spawn(d.path(), "wp134a", &path_value).is_err(),
             "a withdrawn approval came back once the generation counter restarted"
         );
+    }
+
+    // Review round 6 tests. Each one fails on the code before its fix.
+
+    #[cfg(unix)]
+    #[test]
+    fn an_approved_program_runs_from_the_app_folder_not_the_original() {
+        let d = dir();
+        let tool = make_tool(&d.path().join("bin"), "wp134-copy", b"#!/bin/sh\n");
+        let path_value = tool.parent().unwrap().to_string_lossy().into_owned();
+        write_agents(d.path(), 0, vec![entry("wp134", "wp134-copy", &[])]).expect("seed");
+        approve(d.path(), "wp134", &path_value).expect("approve");
+        let run = approved_spawn(d.path(), "wp134", &path_value).expect("run");
+        let original = std::fs::canonicalize(&tool).expect("canonical");
+        assert_ne!(Path::new(&run.command), original.as_path());
+        assert!(Path::new(&run.command).starts_with(d.path()));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_allow_card_fingerprint_changes_when_the_same_name_resolves_to_another_file() {
+        let d = dir();
+        let first = d.path().join("first");
+        let second = d.path().join("second");
+        make_tool(&first, "wp134-p", b"#!/bin/sh\necho one\n");
+        make_tool(&second, "wp134-p", b"#!/bin/sh\necho two\n");
+        write_agents(d.path(), 0, vec![entry("wp134", "wp134-p", &[])]).expect("seed");
+        let fp_first = view(
+            &read_stored(d.path()).expect("read"),
+            &first.to_string_lossy(),
+        )["fingerprints"]["wp134"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let fp_second = view(
+            &read_stored(d.path()).expect("read"),
+            &second.to_string_lossy(),
+        )["fingerprints"]["wp134"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert_ne!(fp_first, fp_second);
+        // The window showed the first file; the approval now resolves to the second, and is refused.
+        assert_eq!(
+            set_approval(
+                d.path(),
+                "wp134",
+                true,
+                Some(&fp_first),
+                &second.to_string_lossy()
+            )
+            .expect_err("refused"),
+            SHOWN_CHANGED
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_unchanged_program_is_hashed_once_and_a_changed_one_again() {
+        let d = dir();
+        let file = d.path().join("hashed-once");
+        std::fs::write(&file, b"first version").expect("write");
+        let before = HASHES.with(|h| h.get());
+        let first = file_sha256(&file).expect("hash");
+        assert_eq!(file_sha256(&file).expect("hash again"), first);
+        assert_eq!(
+            HASHES.with(|h| h.get()) - before,
+            1,
+            "the unchanged file was read again"
+        );
+        std::fs::write(&file, b"a longer second version").expect("rewrite");
+        assert_ne!(file_sha256(&file).expect("hash changed"), first);
+        assert_eq!(HASHES.with(|h| h.get()) - before, 2);
+    }
+
+    #[test]
+    fn a_remote_launcher_is_named_on_the_card_in_every_form() {
+        let args = |list: &[&str]| list.iter().map(|a| a.to_string()).collect::<Vec<String>>();
+        for (command, list) in [
+            ("bunx", vec!["pkg"]),
+            ("bun", vec!["x", "pkg"]),
+            ("npm", vec!["exec", "pkg"]),
+            ("npm", vec!["x", "pkg"]),
+            ("pnpm", vec!["dlx", "pkg"]),
+            ("yarn", vec!["dlx", "pkg"]),
+            ("pipx", vec!["run", "pkg"]),
+            ("deno", vec!["run", "npm:pkg"]),
+            ("deno", vec!["run", "https://example.com/agent.ts"]),
+        ] {
+            assert!(
+                remote_note(command, &args(&list)).is_some(),
+                "{command} {list:?} is not named"
+            );
+        }
+        assert!(remote_note("deno", &args(&["run", "file:///opt/agent.ts"])).is_none());
+        assert!(remote_note("npm", &args(&["install", "pkg"])).is_none());
+    }
+
+    #[test]
+    fn an_inline_program_is_refused_in_every_interpreter_form() {
+        for (command, list) in [
+            ("/usr/bin/python3", vec!["-uc", "print(1)"]),
+            ("/usr/bin/perl", vec!["-we", "system('x')"]),
+            ("/opt/node", vec!["-pe", "1"]),
+            ("/usr/bin/php", vec!["-r", "echo 1;"]),
+        ] {
+            let args: Vec<&str> = list;
+            let e = entry("wp134", command, &args);
+            assert_eq!(
+                checked_fields(&e).expect_err("refused"),
+                INLINE_REFUSED,
+                "{command} {args:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_relative_file_argument_is_refused_and_a_package_name_is_not() {
+        assert!(checked_fields(&entry("wp134", "/opt/node", &["agent.mjs"])).is_err());
+        assert!(checked_fields(&entry("wp134", "/opt/node", &["--env-file=.env"])).is_err());
+        assert!(checked_fields(&entry("wp134", "/opt/node", &["./agent.mjs"])).is_err());
+        assert!(checked_fields(&entry("wp134", "/opt/npx", &["-y", "@scope/pkg"])).is_ok());
+        assert!(checked_fields(&entry("wp134", "/opt/npx", &["https://example.com/a.ts"])).is_ok());
+    }
+
+    #[test]
+    fn a_missing_generation_item_approves_nothing() {
+        let d = dir();
+        write_agents(d.path(), 0, vec![entry("wp134", "/opt/agent", &[])]).expect("seed");
+        set_approval(d.path(), "wp134", false, None, "/usr/bin").expect("first change");
+        // An approval recorded, then the generation item is gone (a deleted Keychain item reads as absent).
+        TEST_GEN.with(|g| *g.borrow_mut() = None);
+        assert!(read_stored(d.path()).expect("read").approvals.is_empty());
     }
 }

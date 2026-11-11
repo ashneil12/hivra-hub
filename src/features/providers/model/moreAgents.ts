@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { HARNESSES } from "../../sessions/model/session";
 
 /**
@@ -254,6 +255,11 @@ export class MoreAgentsChangedError extends Error {
 }
 
 const listeners = new Set<() => void>();
+
+/** The app announces every change to the list, from any window. `onChange` runs here for each one. */
+export async function subscribeMoreAgentsChanges(onChange: () => void): Promise<() => void> {
+  return listen("more-agents-changed", () => onChange());
+}
 
 export function subscribeMoreAgents(listener: () => void): () => void {
   listeners.add(listener);

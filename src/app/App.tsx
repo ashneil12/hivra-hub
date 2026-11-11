@@ -1,3 +1,4 @@
+import { subscribeMoreAgentsChanges } from "../features/providers/model/moreAgents";
 import { setTurnTextDecorator } from "../integrations/harness/core/registry";
 // WP-85: terminal Claude sessions in the chat list.
 import { mergeTerminalSessions } from "../features/terminalMirror/model/list";
@@ -3449,7 +3450,19 @@ function Workspace({
   // it changes in any window (Settings adds, allows, withdraws or removes an entry).
   useEffect(() => {
     void refreshRegistry();
-    return subscribeRegistry(() => undefined);
+    const unsubscribe = subscribeRegistry(() => undefined);
+    // A change made in another window (a withdraw, a removal) re-reads the list here too, so this window stops runs.
+    let stopChanges: (() => void) | undefined;
+    let disposed = false;
+    void subscribeMoreAgentsChanges(() => void refreshRegistry()).then((stop) => {
+      if (disposed) stop();
+      else stopChanges = stop;
+    });
+    return () => {
+      disposed = true;
+      unsubscribe();
+      stopChanges?.();
+    };
   }, []);
 
   // WP-134b: Start a chat opens a More agents session. The harness stays one of the eleven.
@@ -13454,6 +13467,9 @@ function Workspace({
               title: task.title,
             };
         const worker = { ...base, orchestrationLeadId: run.leadId };
+        // LOW-I: a More agents worker is routed to its entry before its saved ACP session is bound.
+        if (worker.registryAgentId)
+          openMoreAgentSession(worker.id, worker.registryAgentId);
         if (worker.providerSessionId)
           bindHarnessSession(
             worker.harness,
