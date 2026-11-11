@@ -198,6 +198,7 @@ WP-40's gates; it adds no second run model. It starts when 40 and 82 merge, and 
 | [174](work/WP-174-idle-reclaim-and-hibernation.md) | Idle reclaim and hibernation, a quiet chat gives back its process | M | 11, 146 | no |
 | [177](work/WP-177-teleport-chat-between-machines.md) | Teleport a chat between this Mac and a host, as a custody handover | L | 60, 61, 121, 133 | no |
 | Follow-up to [160](work/WP-160-lead-tick.md) | The lead tick opens the PR watch and the delivery row itself, so Ship on green can merge without asking | S | 160 | no |
+| [202](work/WP-202-pr-watch-base-moved.md) | The PR watch knows when main moved under a pull request, and the merge gate waits for a rebase and green again | M | 155, 160, 158 (merge gate) | no |
 
 The WP-174 follow-up is done. Codex, OpenCode, Cursor, Hermes, Devin, Pi and omp report a running subagent or
 detached task (Codex: open agent rows until the turn closes them; OpenCode: child sessions until idle or error;

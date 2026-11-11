@@ -114,6 +114,8 @@ Never merge a red PR, or one with a required check that has not reported, under 
 
 Hivra binding (rewrite: WP-12's modes are local, PR and checked PR, and there is no waiver flag): local lands in the project and pushes nothing; PR pushes and opens a pull request; checked PR is ready only once checks are green, with one fix round on red. Red or pending is never merged. The switch is off unless the person turns it on.
 
+Default delivery behaviour (WP-202): keep a pull request at the size its goal needs; when a review bot suggests more, fix the real bugs in scope and decline the rest with one written reason, and list the declined ones as follow-ups. A pull request waits when main changed files it touches since its branch last took main: merge main into the branch, push, and wait for green again. A pull request that misses those files ships as before.
+
 ## Talking to the person
 
 - **Talk in outcomes, not mechanics.**

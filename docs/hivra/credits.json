@@ -13,6 +13,12 @@
       "gave": "the first mate role, briefs with a definition of done, the status protocol and crew dispatch. The Pi watcher arm is not part of Hivra"
     },
     {
+      "name": "tstack (babysit-pr)",
+      "url": "https://github.com/t3dotgg/tstack",
+      "licence": "MIT",
+      "gave": "the logic of the PR watch's base checks: main moving under a pull request, BEHIND and DIRTY, and the rate-limit fallback (WP-202, written fresh in Rust)"
+    },
+    {
       "name": "pstack",
       "url": "https://github.com/cursor/plugins/tree/main/pstack",
       "licence": "MIT",
@@ -519,6 +525,14 @@
       "copyright": "Copyright (c) 2026 Lauren Tan",
       "where": "src-tauri/plugins/pstack",
       "how": "pstack 0.15.36 copied unchanged from cursor/plugins at commit 6ea74587, less its Cursor-only parts (agents, automations, .cursor-plugin), images and a test corpus; embedded in the app and installed once per data folder as Hivra's default plugin, with its LICENSE (WP-41)"
+    },
+    {
+      "name": "tstack's babysit-pr (pr-wait)",
+      "url": "https://github.com/t3dotgg/tstack",
+      "licence": "MIT",
+      "copyright": "No code is copied, so tstack's copyright line is not reproduced here",
+      "where": "src-tauri/src/pr_watch/base.rs",
+      "how": "skills/babysit-pr/scripts/pr-wait read for the logic only (WP-202): main moving under a pull request, the BEHIND and DIRTY states and the rate-limit fallback. Written fresh in Rust"
     },
     {
       "name": "pstack (test fixture)",
