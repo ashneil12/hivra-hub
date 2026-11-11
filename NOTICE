@@ -55,6 +55,12 @@ Third-party components Hivra adds:
   Used in: src-tauri/plugins/pstack
   pstack 0.15.36 copied unchanged from cursor/plugins at commit 6ea74587, less its Cursor-only parts (agents, automations, .cursor-plugin), images and a test corpus; embedded in the app and installed once per data folder as Hivra's default plugin, with its LICENSE (WP-41).
 
+- tstack's babysit-pr (pr-wait)
+  Source: https://github.com/t3dotgg/tstack
+  License: MIT (the upstream LICENSE; its copyright line is not copied here)
+  Used in: src-tauri/src/pr_watch/base.rs
+  skills/babysit-pr/scripts/pr-wait read for the logic only (WP-202): main moving under a pull request, the BEHIND and DIRTY states and the rate-limit fallback. Written fresh in Rust.
+
 - pstack (test fixture)
   Source: https://github.com/cursor/plugins/tree/main/pstack
   License: MIT
