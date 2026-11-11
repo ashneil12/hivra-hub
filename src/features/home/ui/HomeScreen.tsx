@@ -47,8 +47,9 @@ function NeedActions({ actions }: { actions: readonly { label: string; run: () =
       event.stopPropagation();
       action.run();
     };
-    // Open chat is the bordered button on a stopped row, not the blue primary.
-    if (index === 0 && action.label !== "Open chat") {
+    // A stopped row, a red-line step and a page ask stay bordered. A safe approval keeps the blue button.
+    const bordered = action.label === "Open chat" || action.label === "Allow once" || action.label === "Review";
+    if (index === 0 && !bordered) {
       return (
         <button
           key={action.label}
@@ -347,9 +348,10 @@ export function HomeScreen({
               style={{ animationDelay: `${index * HOME_STAGGER_MS}ms` }}
             >
               <header className="flex items-center gap-2 px-3 py-2">
+                {needsHead ? <span data-home-needs-dot className="size-2 shrink-0 rounded-full" style={{ background: "#e5484d" }} /> : null}
                 <h2 className={`${needsHead ? "" : "min-w-0 flex-1 "}truncate text-[13px] font-medium text-content`}>{title}</h2>
                 {needsHead && needsMark > 0 ? (
-                  <span data-home-needs-count={needsMark} className="shrink-0 text-[12px] tabular-nums text-red-400">{needsMark}</span>
+                  <span data-home-needs-count={needsMark} className="shrink-0 text-[12px] tabular-nums text-content/60">{needsMark}</span>
                 ) : null}
                 {/* Arranging is there when it's wanted: on hover or keyboard focus, not as words on every card. */}
                 <div data-home-arrange className={`flex items-center gap-3 opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100${needsHead ? " ml-auto" : ""}`}>

@@ -235,6 +235,11 @@ it("puts the Needs you count immediately after the title", () => {
   expect(count.textContent).toBe("5");
   expect(title.nextElementSibling).toBe(count);
   expect(title.className).not.toMatch(/\bflex-1\b/);
+  const dot = header.querySelector("[data-home-needs-dot]");
+  expect(dot).not.toBeNull();
+  expect(title.previousElementSibling).toBe(dot);
+  expect(count.className).not.toMatch(/text-red/);
+  expect(count.className).toMatch(/text-content\//);
   expect(header.querySelector("[data-home-arrange]")?.className).toMatch(/\bml-auto\b/);
   // Other sections keep their title filling the row. This change is only the Needs you header.
   const movingTitle = container.querySelector("[data-home-section='moving-now'] h2");
@@ -299,6 +304,58 @@ it("draws row actions as buttons, the first filled and the rest bordered, at mos
   expect(buttons[2]?.className).toMatch(/\bborder\b/);
   act(() => buttons[1]?.click());
   expect(ran).toEqual(["Deny"]);
+});
+
+it("keeps a blue button on a safe approval and borders both buttons on a risky one", () => {
+  draw({
+    needsYou: [
+      line({
+        id: "safe",
+        text: "frank wants to run npm test.",
+        actions: [
+          { label: "Allow", run: () => undefined },
+          { label: "Deny", run: () => undefined },
+        ],
+      }),
+      line({
+        id: "risk",
+        text: "frank wants to run npm publish.",
+        actions: [
+          { label: "Allow once", run: () => undefined },
+          { label: "Deny", run: () => undefined },
+        ],
+      }),
+    ],
+  });
+  const rows = [...container.querySelectorAll("[data-home-line]")];
+  const allow = [...rows[0]!.querySelectorAll("button")].find((item) => item.textContent === "Allow")!;
+  expect(allow.className).toMatch(/\bbg-accent\b/);
+  expect(allow.className).toMatch(/\btext-black\b/);
+  const once = [...rows[1]!.querySelectorAll("button")].find((item) => item.textContent === "Allow once")!;
+  const deny = [...rows[1]!.querySelectorAll("button")].find((item) => item.textContent === "Deny")!;
+  expect(once.className).not.toMatch(/\bbg-accent\b/);
+  expect(once.className).toMatch(/\bborder\b/);
+  expect(deny.className).not.toMatch(/\bbg-accent\b/);
+  expect(deny.className).toMatch(/\bborder\b/);
+});
+
+it("gives a page access ask one bordered Review", () => {
+  let opened = 0;
+  draw({
+    needsYou: [line({
+      text: "The Weekly views page asks to read YouTube stats.",
+      actions: [{ label: "Review", run: () => { opened += 1; } }],
+    })],
+  });
+  const row = container.querySelector("[data-home-line]")!;
+  const buttons = [...row.querySelectorAll("button")].filter((item) =>
+    item.textContent === "Review" || item.textContent === "Allow" || item.textContent === "Deny",
+  );
+  expect(buttons.map((item) => item.textContent)).toEqual(["Review"]);
+  expect(buttons[0]?.className).toMatch(/\bborder\b/);
+  expect(buttons[0]?.className).not.toMatch(/\bbg-accent\b/);
+  act(() => buttons[0]?.click());
+  expect(opened).toBe(1);
 });
 
 it("names a decision sentence by its project while the words stay the sentence", () => {
