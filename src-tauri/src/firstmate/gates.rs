@@ -430,7 +430,7 @@ struct Repo {
 }
 
 fn git(dir: &Path, args: &[&str]) -> Result<(bool, Vec<u8>, i32), String> {
-    let mut cmd = Command::new("git");
+    let mut cmd = crate::git_cmd::git();
     cmd.arg("-C")
         .arg(dir)
         .args(["-c", "core.quotepath=off"])
@@ -1194,12 +1194,29 @@ impl Runners for AppRunners {
             Vec::new()
         };
         let started = Instant::now();
+        let data = self.app.path().app_data_dir().ok();
+        let wrap = match crate::agent_sandbox::action_wrap(
+            data.as_deref(),
+            std::slice::from_ref(&checkout),
+        ) {
+            Ok(wrap) => wrap,
+            Err(why) => {
+                return Some(CommandEvidence {
+                    command: name,
+                    outcome: Outcome::NotRun,
+                    exit_code: None,
+                    output: why,
+                    seconds: 0.0,
+                })
+            }
+        };
         let (ok, output) = crate::gates::run_script(
             &script,
             &checkout,
             &items,
             crate::harness::login_shell_path(),
             crate::gates::GATE_TIMEOUT,
+            wrap.as_deref(),
         );
         Some(CommandEvidence {
             command: name,
@@ -1261,6 +1278,21 @@ pub fn claude_verdict(
     .stdout(Stdio::piped())
     .stderr(Stdio::piped());
     crate::harness::apply_gui_env(&mut cmd);
+    // The binary is the same Claude Code a worker can replace. Under the sandbox that replacement still cannot
+    // reach the switch file or a secret. Tests do not call this: it would read the daily data folder.
+    #[cfg(not(test))]
+    {
+        let data = crate::instance::data_dir(&crate::instance::current().identifier);
+        match crate::agent_sandbox::action_wrap(data.as_deref(), &[]) {
+            Ok(prefix) => {
+                cmd = crate::agent_sandbox::under_wrap(cmd, prefix.as_deref());
+            }
+            Err(error) => {
+                let _ = std::fs::remove_dir_all(&dir);
+                return Err(error);
+            }
+        }
+    }
     let result = (|| {
         let mut child = cmd
             .spawn()
@@ -1642,3 +1674,30 @@ pub fn decide(
 #[cfg(test)]
 #[path = "gates_tests.rs"]
 mod tests;
+
+/// Review r5 repro for PR #208 (WP-178). Red at a5bc60a97.
+#[cfg(test)]
+mod review_r5_repro {
+    /// HIGH (new, H-E class): when a delegated worker reports done, the app runs the verdict gate by itself:
+    /// `claude -p …` through `claude_verdict`, plain, outside the sandbox. The program is the same Claude Code the worker
+    /// runs as, and its real file is writable from inside the sandbox: `~/.local/bin/claude` is a link into
+    /// `~/.local/share/claude/versions/<v>` (only the link's own folder is denied), and an npm install lives under
+    /// `/opt/homebrew/lib/node_modules` or `~/.claude/local`. The worker replaces that file, reports done, and the app
+    /// runs it unwrapped. The seam is `agent_sandbox::under_wrap` (gates' own scripts already use it); a unit test cannot
+    /// turn the sandbox on off macOS, so this reads the function.
+    #[test]
+    fn the_verdict_gate_runs_claude_under_the_agent_sandbox() {
+        let source = include_str!("gates.rs");
+        let start = source
+            .find("pub fn claude_verdict(")
+            .expect("claude_verdict");
+        let end = source[start..]
+            .find("\n}\n")
+            .map(|end| start + end)
+            .expect("end of claude_verdict");
+        assert!(
+            source[start..end].contains("agent_sandbox::"),
+            "the verdict gate runs the worker's own Claude Code binary outside the sandbox"
+        );
+    }
+}

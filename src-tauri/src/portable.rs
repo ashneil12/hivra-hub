@@ -1182,7 +1182,7 @@ fn export_memory(
 
 /// A git bundle of the folder's whole history, unless an old commit holds something that looks like a secret.
 fn history_bundle(dir: &Path) -> Result<(Scratch, PathBuf), String> {
-    let log = Command::new("git")
+    let log = crate::git_cmd::git()
         .arg("-C")
         .arg(dir)
         .args(["log", "--all", "-p", "--format=%H%n%an <%ae>%n%s%n%b"])
@@ -1200,7 +1200,7 @@ fn history_bundle(dir: &Path) -> Result<(Scratch, PathBuf), String> {
     }
     let scratch = Scratch::temp("bundle")?;
     let bundle = scratch.0.join("history.bundle");
-    let made = Command::new("git")
+    let made = crate::git_cmd::git()
         .arg("-C")
         .arg(dir)
         .args(["bundle", "create"])
@@ -4161,7 +4161,7 @@ fn restore_history(
     fs::write(&attributes, b"").map_err(|_| HistoryRefusal::Failed)?;
     fs::create_dir(&hooks).map_err(|_| HistoryRefusal::Failed)?;
     let git = || {
-        let mut command = Command::new("git");
+        let mut command = crate::git_cmd::git();
         #[cfg(test)]
         INHERITED_GIT_ENV.with(|vars| {
             for (name, value) in vars.borrow().iter() {

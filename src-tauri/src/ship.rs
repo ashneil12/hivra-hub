@@ -19,7 +19,10 @@
 //!
 //! **When the runner dies** (a crash, a reboot), [`startup`] finishes what it left before the database opens: a trial
 //! (this build holds and the runner is restarted to watch it), a restore (the old app and database go back), or a
-//! ship that never got as far as the swap (called off). [`plan`] is that decision, as a pure function.
+//! ship that never got as far as the swap (called off). [`plan`] is that decision, as a pure function. The restart
+//! runs only a record this app wrote: the runner scripts must be this build's own copies, the node binary and any
+//! launchd plist must sit outside the ship folder, and `record.mac` must match the fields the runner must not change.
+//! A record planted in the data folder is not started.
 //!
 //! Only whoever holds `<id>/runner.lock` (an exclusive SQLite transaction, like the instance lock) writes `state.json`:
 //! the runner while it runs, this app only when the runner is gone. The apps' own notes are separate files.
@@ -414,6 +417,23 @@ pub fn startup(identity: &Identity, data: &Path) -> Boot {
     let Ok(mut ship) = Ship::load(&dir) else {
         return Boot::Normal;
     };
+    // restore and reopen run outside the sandbox and used to trust state.json with no mac. A missing or wrong mac
+    // is not a record this app signed, so it is left alone. A final phase already returned above.
+    if !mac_matches(&ship) {
+        log(
+            &dir,
+            "startup: record.mac does not match, so this record is not restored",
+        );
+        return Boot::Normal;
+    }
+    // The folder name comes from current.json. A signed record whose own id is some other folder is not this ship.
+    if ship.id() != id {
+        log(
+            &dir,
+            "startup: the record id does not match the ship folder, so this record is not restored",
+        );
+        return Boot::Normal;
+    }
     let Some(phase) = ship.phase() else {
         return Boot::Normal;
     };
@@ -838,8 +858,254 @@ fn runner_submit_args(label: &str, node: &str, dir: &Path, home: &str) -> Vec<St
     ]
 }
 
-/// The runner keeps going under launchd (or as a plain detached process when the ship said so).
+/// The runner scripts this build copies into a ship folder (`scripts/hub-ship.mjs` `stageShip`). A record whose
+/// copies differ was not written by this app.
+const APP_RUNNER: &str = include_str!("../../scripts/hub-ship-runner.mjs");
+const APP_SHIP_PLATFORM: &str = include_str!("../../scripts/ship-platform.mjs");
+
+fn file_is(path: &Path, expected: &str) -> bool {
+    std::fs::read(path).is_ok_and(|bytes| bytes == expected.as_bytes())
+}
+
+/// True when `path` is inside `root` (after resolving links), or when it is not on disk but lexically inside, or when
+/// it contains `..` and cannot be resolved. An empty root matches nothing.
+fn path_is_under(root: &Path, path: &Path) -> bool {
+    if root.as_os_str().is_empty() {
+        return false;
+    }
+    let Ok(root) = std::fs::canonicalize(root) else {
+        // Not a path we can prove is outside the ship folder.
+        return true;
+    };
+    if let Ok(path) = std::fs::canonicalize(path) {
+        return path.starts_with(&root);
+    }
+    if path
+        .components()
+        .any(|component| matches!(component, std::path::Component::ParentDir))
+    {
+        return true;
+    }
+    path.starts_with(&root)
+}
+
+/// A node binary this app would have recorded: absolute, named `node`, outside the ship folder and the data folder,
+/// and not a script. A missing file or a `#!` file is not ours.
+fn node_path_is_ours(ship: &Ship, node: &str) -> bool {
+    if node.is_empty() {
+        return false;
+    }
+    let path = Path::new(node);
+    if !path.is_absolute() {
+        return false;
+    }
+    match path.file_name().and_then(|name| name.to_str()) {
+        Some("node" | "node.exe") => {}
+        _ => return false,
+    }
+    if path_is_under(&ship.dir, path) {
+        return false;
+    }
+    if let Some(ships) = ship.dir.parent() {
+        if path_is_under(ships, path) {
+            return false;
+        }
+    }
+    if path_is_under(&ship.data_dir(), path) {
+        return false;
+    }
+    !binary_is_script(path)
+}
+
+/// True when the file is a script, or when it cannot be read as a regular file. Only the first two bytes are read.
+fn binary_is_script(path: &Path) -> bool {
+    let Ok(meta) = std::fs::metadata(path) else {
+        return true;
+    };
+    if !meta.is_file() {
+        return true;
+    }
+    let mut file = match std::fs::File::open(path) {
+        Ok(file) => file,
+        Err(_) => return true,
+    };
+    let mut buf = [0u8; 2];
+    match std::io::Read::read(&mut file, &mut buf) {
+        Ok(2) => buf == *b"#!",
+        _ => true,
+    }
+}
+
+/// While the sandbox is on, an agent's `app.ship` is refused unless Ash tapped.
+pub(crate) fn agent_ship_refused(sandbox_on: bool, ash_tap: bool) -> bool {
+    sandbox_on && !ash_tap
+}
+
+/// Sidecar next to `state.json`. Not a field in the record: the runner rewrites `phase`, and a mac of the whole file
+/// would fail on that legitimate write.
+const RECORD_MAC: &str = "record.mac";
+#[cfg(not(test))]
+const SHIP_MAC_SERVICE: &str = "monocode-hub:ship-mac";
+#[cfg(not(test))]
+const SHIP_MAC_ACCOUNT: &str = "record";
+
+/// The fields the runner must not change, in a fixed order. `phase` and `steps` are not here: the runner writes
+/// both, and a mac of them would fail on a real ship. `to.sha` and `from.sha` are here, so a rewritten stamp does
+/// not still match.
+fn canonical_record(ship: &Ship) -> String {
+    let mut lines = vec![
+        format!("id={}", ship.text("/id")),
+        format!("to.sha={}", ship.new_sha()),
+        format!("from.sha={}", ship.old_sha()),
+        format!("node={}", ship.text("/node")),
+        format!("appPath={}", ship.text("/appPath")),
+        format!("dataDir={}", ship.text("/dataDir")),
+        format!("home={}", ship.text("/home")),
+        format!("launch.mode={}", ship.text("/launch/mode")),
+    ];
+    if let Some(env) = ship.doc.pointer("/launch/env").and_then(Value::as_object) {
+        let mut keys: Vec<&String> = env.keys().collect();
+        keys.sort();
+        for key in keys {
+            let value = match env.get(key) {
+                Some(Value::String(text)) => text.clone(),
+                Some(other) => other.to_string(),
+                None => String::new(),
+            };
+            lines.push(format!("launch.env.{key}={value}"));
+        }
+    }
+    lines.push(format!("launchd.plist={}", ship.text("/launchd/plist")));
+    lines.join("\n")
+}
+
+fn hmac_sha256(key: &[u8], message: &[u8]) -> [u8; 32] {
+    const BLOCK: usize = 64;
+    let mut key_block = [0u8; BLOCK];
+    if key.len() > BLOCK {
+        let digest = Sha256::digest(key);
+        key_block[..digest.len()].copy_from_slice(&digest);
+    } else {
+        key_block[..key.len()].copy_from_slice(key);
+    }
+    let mut ipad = [0u8; BLOCK];
+    let mut opad = [0u8; BLOCK];
+    for (index, byte) in key_block.iter().enumerate() {
+        ipad[index] = byte ^ 0x36;
+        opad[index] = byte ^ 0x5c;
+    }
+    let mut inner = Sha256::new();
+    inner.update(ipad);
+    inner.update(message);
+    let inner = inner.finalize();
+    let mut outer = Sha256::new();
+    outer.update(opad);
+    outer.update(inner);
+    let done = outer.finalize();
+    let mut mac = [0u8; 32];
+    mac.copy_from_slice(&done);
+    mac
+}
+
+fn hex_encode(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        out.push(HEX[(byte >> 4) as usize] as char);
+        out.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    out
+}
+
+/// The test key never touches the Keychain. A real build reads `monocode-hub:ship-mac` (a dev copy's name is scoped)
+/// and stores a new one the first time.
+#[cfg(test)]
+fn ship_mac_key() -> Result<Vec<u8>, String> {
+    Ok(b"monocode-hub-test-ship-mac-key".to_vec())
+}
+
+#[cfg(not(test))]
+fn ship_mac_key() -> Result<Vec<u8>, String> {
+    match crate::hub_keychain::read(SHIP_MAC_SERVICE, SHIP_MAC_ACCOUNT)? {
+        Some(secret) if !secret.is_empty() => Ok(secret.into_bytes()),
+        _ => {
+            let secret = uuid::Uuid::new_v4().simple().to_string();
+            crate::hub_keychain::store(SHIP_MAC_SERVICE, SHIP_MAC_ACCOUNT, &secret)?;
+            Ok(secret.into_bytes())
+        }
+    }
+}
+
+fn mac_matches(ship: &Ship) -> bool {
+    let Ok(key) = ship_mac_key() else {
+        return false;
+    };
+    let Ok(got) = std::fs::read_to_string(ship.dir.join(RECORD_MAC)) else {
+        return false;
+    };
+    let got = got.trim();
+    let expect = hex_encode(&hmac_sha256(&key, canonical_record(ship).as_bytes()));
+    if got.len() != expect.len() {
+        return false;
+    }
+    let diff = got
+        .bytes()
+        .zip(expect.bytes())
+        .fold(0u8, |acc, (left, right)| acc | (left ^ right));
+    diff == 0
+}
+
+/// Write `record.mac` for the record as it is now. Called after a ship this app started, not by the runner.
+pub(crate) fn sign_ship_record(ship: &Ship) -> Result<(), String> {
+    let mac = hex_encode(&hmac_sha256(
+        &ship_mac_key()?,
+        canonical_record(ship).as_bytes(),
+    ));
+    let temp = ship
+        .dir
+        .join(format!("record.mac.{}.tmp", uuid::Uuid::new_v4()));
+    std::fs::write(&temp, mac).map_err(|error| error.to_string())?;
+    std::fs::rename(&temp, ship.dir.join(RECORD_MAC)).map_err(|error| {
+        let _ = std::fs::remove_file(&temp);
+        error.to_string()
+    })
+}
+
+/// The runner scripts match this build's copies, the node binary is the app's own, a launchd plist is not a file
+/// inside the ship folder, and `record.mac` matches the fields the runner must not change. A missing or wrong mac
+/// was planted and must not be started.
+fn runner_record_is_ours(ship: &Ship) -> bool {
+    if !file_is(&ship.dir.join("runner.mjs"), APP_RUNNER)
+        || !file_is(&ship.dir.join("ship-platform.mjs"), APP_SHIP_PLATFORM)
+        || !node_path_is_ours(ship, ship.text("/node"))
+        || !mac_matches(ship)
+    {
+        return false;
+    }
+    match ship.doc.pointer("/launchd/plist").and_then(Value::as_str) {
+        Some(plist) if !plist.is_empty() => {
+            !path_is_under(&ship.dir, Path::new(plist))
+                && ship
+                    .dir
+                    .parent()
+                    .is_none_or(|ships| !path_is_under(ships, Path::new(plist)))
+                && !path_is_under(&ship.data_dir(), Path::new(plist))
+        }
+        _ => true,
+    }
+}
+
+/// The runner keeps going under launchd (or as a plain detached process when the ship said so). A node path or a
+/// plist from a record this app did not write is not started: an agent can plant both in the data folder, and startup
+/// runs outside the sandbox.
 fn restart_runner(ship: &Ship) {
+    if !runner_record_is_ours(ship) {
+        log(
+            &ship.dir,
+            "refused to restart the runner: the record is not one this app wrote",
+        );
+        return;
+    }
     // WP-09: a Windows task or a systemd unit, from the script this ship stored.
     // macOS has no service record, so this does not run there.
     #[cfg(not(target_os = "macos"))]
@@ -1676,13 +1942,23 @@ fn list_ships(data: &Path, json_out: bool) -> i32 {
 
 /// `app.ship`: run `scripts/hub-ship.mjs` from the asking session's checkout, on its behalf. It checks, stages and
 /// schedules, and returns within seconds; this app then quits for the update when it's quiet, and that session's turn
-/// resumes with the receipt.
+/// resumes with the receipt. `ash_tap` is set only by Ash's Apply (`self_build`) or a tap in the app. A chat's
+/// `app.ship` leaves it unset.
 #[tauri::command(async)]
 pub fn ship_start(
     repo: String,
     requested_by: Option<String>,
     when_busy: Option<String>,
+    ash_tap: Option<bool>,
 ) -> Result<Value, String> {
+    let sandbox_on =
+        crate::agent_sandbox::enabled(instance::data_dir(instance::DAILY_IDENTIFIER).as_deref());
+    if agent_ship_refused(sandbox_on, ash_tap.unwrap_or(false)) {
+        return Err(
+            "Ship from a chat is refused while the agent sandbox is on. Use Apply in the app."
+                .into(),
+        );
+    }
     if instance::kind() != Kind::Daily {
         return Err(
             "Only the daily app takes a ship; a dev copy runs from its worktree (npm run hub:dev)."
@@ -1771,6 +2047,14 @@ pub fn ship_start(
             requested_by.as_deref(),
             target,
         );
+        if valid_id(target) {
+            if let Some(data) = instance::data_dir(instance::DAILY_IDENTIFIER) {
+                let dir = ship_dir(&data, target);
+                if let Ok(ship) = Ship::load(&dir) {
+                    sign_ship_record(&ship)?;
+                }
+            }
+        }
         Ok(answer)
     } else {
         let refusals = answer
@@ -2425,6 +2709,8 @@ mod tests {
             .unwrap()
             .insert("requestedBy".into(), json!({ "sessionId": "lead-1" }));
         ship.save().unwrap();
+        // save does not sign. This record is one the app wrote, so startup may act on it.
+        sign_ship_record(&ship).unwrap();
         let data = ship.data_dir();
         write_json(
             &data.join(SHIP_DIR).join(CURRENT),
@@ -2621,6 +2907,156 @@ mod tests {
         assert_eq!(iso(UNIX_EPOCH), "1970-01-01T00:00:00.000Z");
     }
 
+    /// H-B: while the sandbox is on, a chat's app.ship does not run unless Ash tapped.
+    #[test]
+    fn an_agent_cannot_ship_while_the_sandbox_is_on() {
+        assert!(
+            agent_ship_refused(true, false),
+            "an agent's app.ship must be refused while the sandbox is on"
+        );
+        assert!(!agent_ship_refused(true, true));
+        assert!(!agent_ship_refused(false, false));
+    }
+
+    /// The mac covers the fields the runner must not change. A phase rewrite, which the runner does, still matches.
+    /// A missing mac, a changed sha, a changed app path or a changed launch env does not.
+    #[cfg(unix)]
+    #[test]
+    fn a_signed_record_stays_ours_when_only_the_phase_changes() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = TempDir::new("record-mac");
+        let data = root.0.join("data");
+        let dir = data.join(SHIP_DIR).join("20261111-120000-abc1234");
+        let bin = root.0.join("bin");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::write(dir.join("runner.mjs"), APP_RUNNER).unwrap();
+        std::fs::write(dir.join("ship-platform.mjs"), APP_SHIP_PLATFORM).unwrap();
+        let node = bin.join("node");
+        std::fs::copy("/usr/bin/true", &node).unwrap();
+        std::fs::set_permissions(&node, std::fs::Permissions::from_mode(0o755)).unwrap();
+        write_json(
+            &dir.join(STATE),
+            &json!({
+                "id": "20261111-120000-abc1234",
+                "phase": "trial",
+                "node": node.to_string_lossy(),
+                "appPath": "/Applications/MonoCode Hub.app",
+                "dataDir": data.to_string_lossy(),
+                "home": "/Users/test",
+                "launch": { "mode": "direct", "env": { "B": "2", "A": "1" } },
+            }),
+        )
+        .unwrap();
+        let unsigned = Ship::load(&dir).unwrap();
+        assert!(
+            !runner_record_is_ours(&unsigned),
+            "a record with no mac is not one this app wrote"
+        );
+        sign_ship_record(&unsigned).unwrap();
+        assert!(runner_record_is_ours(&Ship::load(&dir).unwrap()));
+        let mut phased = Ship::load(&dir).unwrap();
+        phased.set("phase", json!("committed"));
+        phased.save().unwrap();
+        assert!(
+            runner_record_is_ours(&Ship::load(&dir).unwrap()),
+            "the runner rewrites phase, and that must not break the mac"
+        );
+        let mut stamped = Ship::load(&dir).unwrap();
+        stamped
+            .doc
+            .as_object_mut()
+            .unwrap()
+            .insert("from".into(), json!({ "sha": "deadbeef" }));
+        stamped.save().unwrap();
+        assert!(
+            !runner_record_is_ours(&Ship::load(&dir).unwrap()),
+            "a changed from sha must not still match"
+        );
+        let mut stamped = Ship::load(&dir).unwrap();
+        stamped.doc.as_object_mut().unwrap().remove("from");
+        stamped
+            .doc
+            .as_object_mut()
+            .unwrap()
+            .insert("to".into(), json!({ "sha": "cafebabe" }));
+        stamped.save().unwrap();
+        assert!(
+            !runner_record_is_ours(&Ship::load(&dir).unwrap()),
+            "a changed to sha must not still match"
+        );
+        // Back to the signed record, so the checks below still prove the env and the app path.
+        let mut stamped = Ship::load(&dir).unwrap();
+        stamped.doc.as_object_mut().unwrap().remove("to");
+        stamped.save().unwrap();
+        sign_ship_record(&stamped).unwrap();
+        let mut env = Ship::load(&dir).unwrap();
+        *env.doc.pointer_mut("/launch/env/A").unwrap() = json!("9");
+        env.save().unwrap();
+        assert!(
+            !runner_record_is_ours(&Ship::load(&dir).unwrap()),
+            "a changed launch env must not still match"
+        );
+        sign_ship_record(&Ship::load(&dir).unwrap()).unwrap();
+        let mut moved = Ship::load(&dir).unwrap();
+        moved.set("appPath", json!("/tmp/Agent.app"));
+        moved.save().unwrap();
+        assert!(
+            !runner_record_is_ours(&Ship::load(&dir).unwrap()),
+            "a changed app path must not still match"
+        );
+    }
+
+    /// A matching mac is not enough when the record's id is not the folder `current.json` names. Startup must not
+    /// move `previous.app.off` to the path that record chose.
+    #[cfg(unix)]
+    #[test]
+    fn startup_leaves_a_signed_record_whose_id_is_not_the_folder() {
+        let own = instance::stamp().sha.clone();
+        assert!(!own.is_empty(), "this test needs a build stamp");
+        let root = TempDir::new("ship-id");
+        let data = root.0.join("data");
+        let folder = "other-id";
+        let dir = data.join(SHIP_DIR).join(folder);
+        let agents = root.0.join("LaunchAgents");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::create_dir_all(&agents).unwrap();
+        let target = agents.join("com.agent.plist");
+        std::fs::write(dir.join(PREVIOUS_APP), "<plist>agent job</plist>\n").unwrap();
+        write_json(
+            &dir.join(STATE),
+            &json!({
+                "id": "real-id",
+                "phase": "rolling-back",
+                "to": { "sha": "0000000" },
+                "from": { "sha": own },
+                "appPath": target.to_string_lossy(),
+                "dataDir": data.to_string_lossy(),
+            }),
+        )
+        .unwrap();
+        write_json(&data.join(SHIP_DIR).join(CURRENT), &json!({ "id": folder })).unwrap();
+        sign_ship_record(&Ship::load(&dir).unwrap()).unwrap();
+        assert!(
+            mac_matches(&Ship::load(&dir).unwrap()),
+            "the record is signed; only the folder name is wrong"
+        );
+        let daily = Identity {
+            kind: Kind::Daily,
+            identifier: instance::DAILY_IDENTIFIER.into(),
+            slot: None,
+        };
+        let _ = startup(&daily, &data);
+        assert!(
+            !target.exists(),
+            "startup moved a file from a signed record whose id is not the ship folder"
+        );
+        assert!(
+            dir.join(PREVIOUS_APP).is_file(),
+            "the previous build stays in the ship folder"
+        );
+    }
+
     /// A ship folder the way the runner leaves a committed one: state.json and committed.json.
     fn committed_ship(dir: &Path, id: &str) {
         std::fs::create_dir_all(dir).unwrap();
@@ -2719,5 +3155,202 @@ mod tests {
         assert!(InstanceLock::acquire_file(&dir.0.join(RUNNER_LOCK), Duration::ZERO).is_err());
         drop(held);
         assert!(InstanceLock::acquire_file(&dir.0.join(RUNNER_LOCK), Duration::ZERO).is_ok());
+    }
+}
+
+/// Review r3 repro for PR #208 (WP-178). The sandbox profile protects only `settings/` and `monocode.db*` in the app's
+/// data folder. A sandboxed agent can still write `ship/current.json` and a ship record of its own, and at the daily
+/// app's next start `startup` restarts that record's "runner" with the record's own `node`, outside any sandbox. Red at
+/// 4417a9621 (the profile half is `agent_sandbox::review_r3_repro::the_rest_of_the_data_folder_cannot_be_written`).
+#[cfg(all(test, unix))]
+mod review_r3_repro {
+    use super::*;
+
+    #[test]
+    fn a_ship_record_an_agent_wrote_is_not_run_at_the_next_start() {
+        use std::os::unix::fs::PermissionsExt;
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let data = std::env::temp_dir().join(format!("ship-r3-{}-{nanos}", std::process::id()));
+        let dir = data.join(SHIP_DIR).join("planted");
+        std::fs::create_dir_all(&dir).unwrap();
+        let marker = data.join("RAN-OUTSIDE-THE-SANDBOX");
+        let program = dir.join("not-node.sh");
+        std::fs::write(
+            &program,
+            format!("#!/bin/sh\ntouch '{}'\n", marker.display()),
+        )
+        .unwrap();
+        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::write(dir.join("runner.mjs"), "// the agent's runner\n").unwrap();
+        // Everything below is what a sandboxed agent writes; it reads the running build's sha from `monocode version`.
+        write_json(
+            &dir.join(STATE),
+            &json!({
+                "id": "planted",
+                "phase": "trial",
+                "to": { "sha": instance::stamp().sha },
+                "from": { "sha": "0000000" },
+                "node": program.to_string_lossy(),
+            }),
+        )
+        .unwrap();
+        write_json(
+            &data.join(SHIP_DIR).join(CURRENT),
+            &json!({ "id": "planted" }),
+        )
+        .unwrap();
+
+        let daily = Identity {
+            kind: Kind::Daily,
+            identifier: instance::DAILY_IDENTIFIER.into(),
+            slot: None,
+        };
+        let _ = startup(&daily, &data);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !marker.exists() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        let ran = marker.exists();
+        let _ = std::fs::remove_dir_all(&data);
+        assert!(
+            !ran,
+            "the daily app ran a ship record an agent planted in its data folder, outside the sandbox"
+        );
+    }
+}
+
+/// Review r4 repro for PR #208 (WP-178). 5eedc0d75 says startup "refuses a ship runner the app did not write", but the
+/// proof is only things an agent can reproduce: the runner scripts are public (`scripts/hub-ship-runner.mjs` and
+/// `scripts/ship-platform.mjs` are in the checkout it works in), `node` is any non-script file named `node` outside
+/// the ship folder (a copied or compiled binary in `/tmp`), `dataDir` comes from the record itself, and nothing about
+/// `state.json` is checked, while the genuine runner then opens the record's `appPath` (with `launch.env` in direct
+/// mode). The data folder is write-denied, so this is the second line only (MED). Red at 5eedc0d75.
+#[cfg(all(test, unix))]
+mod review_r4_repro {
+    use super::*;
+
+    #[test]
+    fn a_record_built_from_the_public_runner_and_an_agent_node_is_not_the_apps() {
+        use std::os::unix::fs::PermissionsExt;
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let root = std::env::temp_dir().join(format!("ship-r4-{}-{nanos}", std::process::id()));
+        let data = root.join("data");
+        let dir = data.join(SHIP_DIR).join("planted");
+        let elsewhere = root.join("agent-bin");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::create_dir_all(&elsewhere).unwrap();
+        // Byte-for-byte the build's copies: the agent reads them from its own checkout.
+        std::fs::write(dir.join("runner.mjs"), APP_RUNNER).unwrap();
+        std::fs::write(dir.join("ship-platform.mjs"), APP_SHIP_PLATFORM).unwrap();
+        // Any binary (not a `#!` script) named node, outside the ship folder.
+        let node = elsewhere.join("node");
+        std::fs::copy("/usr/bin/true", &node).unwrap();
+        std::fs::set_permissions(&node, std::fs::Permissions::from_mode(0o755)).unwrap();
+        write_json(
+            &dir.join(STATE),
+            &json!({
+                "id": "planted",
+                "phase": "trial",
+                "to": { "sha": instance::stamp().sha },
+                "from": { "sha": "0000000" },
+                "node": node.to_string_lossy(),
+                "appPath": root.join("Agent.app").to_string_lossy(),
+                "launch": { "mode": "direct", "env": { "AGENT": "1" } },
+            }),
+        )
+        .unwrap();
+        let ship = Ship::load(&dir).unwrap();
+        let ours = runner_record_is_ours(&ship);
+        let _ = std::fs::remove_dir_all(&root);
+        assert!(
+            !ours,
+            "a record an agent can build (public runner copies, its own node, its own appPath) passes as the app's"
+        );
+    }
+}
+
+/// Review r5 repro for PR #208 (WP-178). The mac round 5 added (`record.mac`) is checked only in `restart_runner`. The
+/// app's own startup `restore` and `reopen` act on `state.json` before and without it: a record with no mac, phase
+/// `rolling-back` and `from.sha` set to this build's stamp (`monocode version` prints it) makes the daily app, outside
+/// any sandbox, rename the ship folder's `previous.app.off` to the record's `appPath`. That path is any file name the
+/// record chooses (a LaunchAgent plist here); with `to.sha` instead, `reopen` also runs `<appPath>`'s binary with the
+/// record's `launch.env`. The data folder is write-denied, so this is the second line (MED1 still open). Red at
+/// a5bc60a97.
+#[cfg(all(test, unix))]
+mod review_r5_repro {
+    use super::*;
+
+    #[test]
+    fn startup_does_not_restore_from_a_record_this_app_did_not_sign() {
+        let own = instance::stamp().sha.clone();
+        // An empty stamp makes the plan Leave, which exits the test process: refuse to run instead.
+        assert!(!own.is_empty(), "this test needs a build stamp");
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let root = std::env::temp_dir().join(format!("ship-r5-{}-{nanos}", std::process::id()));
+        let data = root.join("data");
+        let dir = data.join(SHIP_DIR).join("planted");
+        let agents = root.join("LaunchAgents");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::create_dir_all(&agents).unwrap();
+        let target = agents.join("com.agent.plist");
+        std::fs::write(dir.join(PREVIOUS_APP), "<plist>agent job</plist>\n").unwrap();
+        write_json(
+            &dir.join(STATE),
+            &json!({
+                "id": "planted",
+                "phase": "rolling-back",
+                "to": { "sha": "0000000" },
+                "from": { "sha": own },
+                "appPath": target.to_string_lossy(),
+                "dataDir": data.to_string_lossy(),
+            }),
+        )
+        .unwrap();
+        write_json(
+            &data.join(SHIP_DIR).join(CURRENT),
+            &json!({ "id": "planted" }),
+        )
+        .unwrap();
+        let daily = Identity {
+            kind: Kind::Daily,
+            identifier: instance::DAILY_IDENTIFIER.into(),
+            slot: None,
+        };
+        let _ = startup(&daily, &data);
+        let moved = target.exists();
+        let _ = std::fs::remove_dir_all(&root);
+        assert!(
+            !moved,
+            "startup moved a file from an unsigned ship record to the path that record chose, outside the sandbox"
+        );
+    }
+
+    /// Not a finding: the hand-rolled HMAC matches RFC 4231 test cases 1, 2 and 6 (a key longer than the block).
+    #[test]
+    fn the_ship_mac_is_hmac_sha256_per_rfc_4231() {
+        assert_eq!(
+            hex_encode(&hmac_sha256(&[0x0b; 20], b"Hi There")),
+            "b0344c61d8db38535ca8afceaf0bf12b881dc200c9833da726e9376c2e32cff7"
+        );
+        assert_eq!(
+            hex_encode(&hmac_sha256(b"Jefe", b"what do ya want for nothing?")),
+            "5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843"
+        );
+        assert_eq!(
+            hex_encode(&hmac_sha256(
+                &[0xaa; 131],
+                b"Test Using Larger Than Block-Size Key - Hash Key First"
+            )),
+            "60e431591ee0b67f0d8a26aacbf5b77f8e0bc6213728c5140546040f0ee37f54"
+        );
     }
 }

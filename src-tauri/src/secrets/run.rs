@@ -8,7 +8,8 @@
 //! a home the account cannot write, the allow-list and the one secret, in its own process group, with stdout and stderr captured. It
 //! prints one JSON object and nothing else on stdout; the value never appears in it. The child's home is a folder the
 //! account cannot write (`/var/empty` when that folder is sealed), not the account's own home and not a folder under the
-//! temporary directory.
+//! temporary directory. When the agent sandbox is on, the pinned program runs under it. The secret stays in the
+//! environment and is never written to a file.
 //!
 //! A timeout is `timedOut: true` with the output so far, not a failure. A keychain that won't give the key is "not now,
 //! try again", not "wrong secret".
@@ -514,6 +515,7 @@ fn collect(rx: mpsc::Receiver<std::io::Result<Vec<u8>>>, grace: Duration) -> Opt
 #[cfg(unix)]
 fn kill_group(pid: u32) {
     // The child is its own group leader (`process_group(0)`), so the negative pid reaches every process it started.
+    // This only signals a process group this app itself started.
     unsafe {
         libc::kill(-(pid as i32), libc::SIGKILL);
     }
@@ -521,6 +523,7 @@ fn kill_group(pid: u32) {
 
 #[cfg(windows)]
 fn kill_group(pid: u32) {
+    // taskkill of a process group this app itself started. It does not start a program an agent chose.
     let _ = Command::new("taskkill")
         .args(["/T", "/F", "/PID", &pid.to_string()])
         .stdout(Stdio::null())
@@ -702,7 +705,30 @@ pub fn execute_controlled(
     #[cfg(unix)]
     env.push(("WGETRC".to_string(), "/dev/null".to_string()));
     let needles = scrub::needles(value);
-    let mut command = Command::new(program);
+    // The pinned program is the command an agent chose, and it receives the key. While the agent sandbox is on it
+    // runs under that profile. The key is one of the cleared environment's entries, never a file and never an argument.
+    // If the profile cannot be built, the command does not run.
+    let mut command = if crate::agent_sandbox::enabled(Some(data)) {
+        let home = crate::instance::real_home().ok_or_else(|| {
+            "The command did not start. HOME is not set, so the macOS sandbox cannot be built."
+                .to_string()
+        })?;
+        let (launcher, lead) = crate::agent_sandbox::sandboxed_launch(
+            program.as_os_str(),
+            &home,
+            Some(data),
+            &[],
+            Path::new(crate::agent_sandbox::SANDBOX_EXEC),
+        )
+        .map_err(|_| {
+            "The command did not start. The macOS sandbox could not be built.".to_string()
+        })?;
+        let mut command = Command::new(launcher);
+        command.args(lead);
+        command
+    } else {
+        Command::new(program)
+    };
     command
         .args(&payload.command[1..])
         .env_clear()
@@ -766,7 +792,6 @@ pub fn execute_controlled(
     let err = scrub::stream(&err_bytes.unwrap_or_default(), &needles);
     let exit_code = status.and_then(|status| status.code());
     write_run(payload, &executable, exit_code, timed_out, duration_ms);
-    let _ = data;
     Ok(Outcome {
         exit_code,
         stdout: out,
@@ -778,7 +803,10 @@ pub fn execute_controlled(
 
 /// The app's own spend of one signed grant: `secret-run --grant-stdin` from this same program, with a cleared environment
 /// that holds only the fixed PATH and the account's home. The grant goes on stdin, never in an argument or the environment.
-/// The one JSON answer comes back; a refusal is its words. The grant never leaves Rust.
+/// The one JSON answer comes back; a refusal is its words. The grant never leaves Rust. This helper is not sandboxed:
+/// it is this app's own binary and it has to read the database and the keychain. The command an agent chose is
+/// `execute_controlled`, which runs under the agent sandbox. Sandboxing this helper would deny it those reads, or the
+/// agent's command would inherit an allow for them.
 pub fn spawn_run(exe: &Path, grant: &str) -> Result<serde_json::Value, String> {
     use std::io::Write;
     let mut command = Command::new(exe);
@@ -953,6 +981,30 @@ mod tests {
         assert!(read_grant(std::io::Cursor::new(vec![0xff, 0xfe])).is_err());
     }
 
+    #[cfg(target_os = "macos")]
+    fn dir_contains(dir: &Path, secret: &str) -> bool {
+        let needle = secret.as_bytes();
+        let mut stack = vec![dir.to_path_buf()];
+        while let Some(path) = stack.pop() {
+            let Ok(entries) = std::fs::read_dir(&path) else {
+                continue;
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    stack.push(path);
+                    continue;
+                }
+                if let Ok(bytes) = std::fs::read(&path) {
+                    if bytes.windows(needle.len()).any(|window| window == needle) {
+                        return true;
+                    }
+                }
+            }
+        }
+        false
+    }
+
     #[cfg(unix)]
     fn fixture(dir: &Path, name: &str, body: &str) -> PathBuf {
         use std::os::unix::fs::PermissionsExt;
@@ -978,6 +1030,61 @@ mod tests {
             timeout_seconds: 5,
             program_identity: identity,
         }
+    }
+
+    #[test]
+    fn the_pinned_program_runs_under_the_agent_sandbox_when_it_is_on() {
+        let src = include_str!("run.rs");
+        let start = src.find("pub fn execute_controlled(").unwrap();
+        let end = src[start..].find("pub fn spawn_run(").unwrap() + start;
+        let body = &src[start..end];
+        assert!(
+            body.contains("sandboxed_launch"),
+            "the pinned program is not sandboxed"
+        );
+        assert!(body.contains("SANDBOX_EXEC"));
+        assert!(
+            body.contains(".envs("),
+            "the key has to go through the environment"
+        );
+        assert!(
+            !body.contains("std::fs::write"),
+            "the key would be written to a file"
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_sandboxed_secret_run_cannot_write_the_key_into_the_data_folder() {
+        let root = std::env::temp_dir().join(format!("mc-sand-{}", uuid::Uuid::new_v4()));
+        let data = root.join("data");
+        std::fs::create_dir_all(&data).unwrap();
+        crate::agent_sandbox::write_setting(&data, true).unwrap();
+        let script = fixture(
+            &root,
+            "steal",
+            "#!/bin/sh\nprintf ran > \"$1\"\nprintf '%s' \"$STRIPE_API_KEY\" > \"$2\"\n",
+        );
+        let ran = root.join("ran");
+        let stolen = data.join("stolen");
+        let secret = "sk_live_abcdefgh";
+        assert!(!std::fs::read_to_string(&script).unwrap().contains(secret));
+        let payload = run_payload(vec![
+            crate::fs::path_to_js(&script),
+            crate::fs::path_to_js(&ran),
+            crate::fs::path_to_js(&stolen),
+        ]);
+        let outcome = execute(&payload, secret, &data).unwrap();
+        assert_eq!(std::fs::read_to_string(&ran).unwrap_or_default(), "ran");
+        assert!(!stolen.exists(), "the key was written into the data folder");
+        assert!(
+            !dir_contains(&root, secret),
+            "the key was written under {}",
+            root.display()
+        );
+        assert!(!outcome.stdout.text.contains(secret));
+        assert!(!outcome.stderr.text.contains(secret));
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[cfg(unix)]

@@ -632,7 +632,28 @@ fn tool_command(program: &Path, nm_home: &Path) -> Command {
     command.env("NO_MISTAKES_NO_UPDATE_CHECK", "1");
     command.env("NO_MISTAKES_TELEMETRY", "0");
     command.stdin(Stdio::null());
-    command
+    // The daemon then runs the repo's own checks and a pipeline agent. Only its home stays writable.
+    match gate_sandbox_prefix(nm_home) {
+        Ok(prefix) => crate::agent_sandbox::under_wrap(command, prefix.as_deref()),
+        Err(_) => Command::new("/nonexistent/monocode-sandbox-refused"),
+    }
+}
+
+/// The sandbox prefix for the no-mistakes tool, or nothing when the sandbox is off.
+/// Off means the switch file in the data folder is absent, so unit tests stay plain.
+/// A profile that cannot be built refuses the start instead of running the tool unwrapped.
+fn gate_sandbox_prefix(nm_home: &Path) -> Result<Option<Vec<std::ffi::OsString>>, String> {
+    let Some(data) = nm_home.parent() else {
+        return Err("The check's home has no data folder.".into());
+    };
+    if !crate::agent_sandbox::enabled(Some(data)) {
+        return Ok(None);
+    }
+    let home = std::env::var_os("HOME")
+        .map(std::path::PathBuf::from)
+        .ok_or_else(|| "HOME is not set, so the macOS sandbox cannot be built.".to_string())?;
+    let allowed = [nm_home.to_path_buf()];
+    crate::agent_sandbox::more_agent_wrap(&home, Some(data), &[], &allowed)
 }
 
 /// Keys a check's child may see. Values are not logged.
@@ -861,7 +882,7 @@ fn invoke(
 }
 
 fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
-    let output = crate::delivery::child("git")
+    let output = crate::git_cmd::child()
         .current_dir(dir)
         .args(args)
         .env("GIT_TERMINAL_PROMPT", "0")
@@ -1673,4 +1694,42 @@ pub(crate) fn respond(
         now_millis(),
     );
     forward_answer(store, &project, decision_key, answer)
+}
+
+/// Review r6 repro for PR #208 (WP-178), red at 520e3d4e3.
+#[cfg(test)]
+mod review_r6_repro {
+    /// HIGH (new, when a project has "Check work before it goes to GitHub" on): a crew's delivery calls `fill`, which
+    /// starts the no-mistakes daemon (`ensure_daemon`) and `axi run` (`invoke`) outside the sandbox. The daemon's
+    /// pipeline runs the repository's own test and lint commands (`npm run check` for this repo) and a pipeline agent
+    /// (claude or grok, with tools and auto-fix) in a copy of the crew's branch. Every one of those is the agents' code
+    /// or reads it, and none is wrapped. The spawn audit allows both starts for their arguments, not for what the
+    /// daemon then runs.
+    #[test]
+    fn the_gates_daemon_starts_inside_the_agent_sandbox() {
+        let source = include_str!("mod.rs");
+        let wrapped = |name: &str| -> bool {
+            let Some(start) = source.find(&format!("fn {name}(")) else {
+                return false;
+            };
+            let rest = &source[start..];
+            let body = &rest[..rest.find("\n}\n").unwrap_or(rest.len())];
+            [
+                "action_wrap",
+                "under_wrap",
+                "contained_command",
+                "sandboxed_launch",
+            ]
+            .iter()
+            .any(|marker| body.contains(marker))
+        };
+        let open: Vec<&str> = ["ensure_daemon", "tool_command"]
+            .into_iter()
+            .filter(|name| !wrapped(name))
+            .collect();
+        assert!(
+            open.len() < 2,
+            "the delivery gate's daemon, which runs the repo's checks and a pipeline agent, starts outside the sandbox"
+        );
+    }
 }
