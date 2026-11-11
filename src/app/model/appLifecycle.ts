@@ -30,6 +30,7 @@ import {
   type DockSide,
   type ProjectTerminalDock,
 } from "../../features/projects/model/projectTerminal";
+import { openMoreAgentSession } from "../../integrations/harness/moreAgents/moreAgentAdapter";
 import { sessionWorkCwd, type Session } from "../../features/sessions/model/session";
 import { sessionChildHarnesses } from "../../features/sessions/model/handoff";
 import {
@@ -438,6 +439,11 @@ async function loadResumedWorkspaceOnce(): Promise<ResumedWorkspace | null> {
 
 export function bindResumedSessions(sessions: Session[]): void {
   for (const session of sessions) {
+    // WP-134b: a More agents chat is routed to its entry before its saved ACP session is bound, so the bind never
+    // reaches the harness it was saved with (the route effect in App runs later).
+    if (session.registryAgentId && !session.worktreeRemoved) {
+      openMoreAgentSession(session.id, session.registryAgentId);
+    }
     if (
       session.worktreeRemoved ||
       !session.providerSessionId ||

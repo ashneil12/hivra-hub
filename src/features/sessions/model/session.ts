@@ -629,6 +629,11 @@ export type Session = {
   inboxAsk?: InboxAskContext;
   id: string;
   harness: HarnessId;
+  /**
+   * WP-134b: this chat belongs to a More agents entry. It is not a CLI id, and
+   * `harness` stays one of the eleven so an unknown id cannot become Cursor.
+   */
+  registryAgentId?: string;
   model: string;
   modelSettings: Record<string, string>;
   runtimeMode: RuntimeMode;

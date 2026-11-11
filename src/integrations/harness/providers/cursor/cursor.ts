@@ -230,6 +230,18 @@ export async function stopCursorSession(sessionId: string): Promise<void> {
   await killChild(sessionId).catch(() => undefined);
 }
 
+/**
+ * A background agent tool stays busy until session/prompt returns, which
+ * settles the ones already seen. A later cursor/task for a call from this
+ * turn can count again. Shells are not tracked past the tool call, and a
+ * stored-transcript poll is not CLI work.
+ */
+export function cursorHasBackgroundWork(sessionId: string): boolean {
+  const live = liveByThread.get(sessionId);
+  if (!live) return false;
+  return live.backgroundAgentTools.size > 0;
+}
+
 /** Delete or idle detach — drop the Cursor conversation too. */
 export async function forgetCursorSession(sessionId: string): Promise<void> {
   resumeByThread.delete(sessionId);
