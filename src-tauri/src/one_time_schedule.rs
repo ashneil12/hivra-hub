@@ -164,7 +164,7 @@ fn valid_local_text(value: &str) -> bool {
         30,
         31,
     ];
-    day >= 1 && day <= days[(month - 1) as usize]
+    (1..=days[(month - 1) as usize]).contains(&day)
 }
 
 fn valid_token(value: &str) -> bool {
