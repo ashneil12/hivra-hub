@@ -175,6 +175,15 @@ fn a_finished_task_is_not_released_and_bad_asks_are_refused() {
     let mut long = ask_input("fm", "k", &[]);
     long.question = "x".repeat(QUESTION_MAX + 1);
     assert!(ask(&mut conn, long, 2).unwrap_err().contains("at most"));
+    let shared: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../src/features/crew/model/decisionLimits.json"
+    ))
+    .unwrap();
+    assert_eq!(
+        shared["questionMax"].as_u64().unwrap() as usize,
+        QUESTION_MAX,
+        "the Inbox and the store share one question limit"
+    );
 
     ask(&mut conn, ask_input("fm", "k", &[&a.id]), 3).unwrap();
     crate::delegations::cancel(
@@ -415,34 +424,37 @@ fn only_the_person_answers_a_fresh_eyes_review_and_the_app_may_close_it() {
 fn a_secret_card_takes_no_answer_from_a_page_or_needs() {
     let store = store();
     let mut conn = store.lock_conn().unwrap();
-    ask(
+    let asked = ask(
         &mut conn,
         ask_input("chat", "secret/stripe-api-key/9f", &[]),
         1,
     )
     .unwrap();
     for by in ["user", "page:pg_1", "chat:abc"] {
+        let err = answer(
+            &mut conn,
+            "hivra",
+            "secret/stripe-api-key/9f",
+            "Once",
+            Some(by.into()),
+            2,
+        )
+        .unwrap_err();
         assert!(
-            answer(
-                &mut conn,
-                "hivra",
-                "secret/stripe-api-key/9f",
-                "Once",
-                Some(by.into()),
-                2
-            )
-            .is_err(),
-            "{by} must not answer a secret card"
+            err.contains("Only the person can approve a secret run"),
+            "{by} must not answer a secret card: {err}"
         );
     }
+    // The person's own answer names the version they read. Without it, the card stays open.
     assert!(
-        answer(
+        answer_seen(
             &mut conn,
             "hivra",
             "secret/stripe-api-key/9f",
             "Once",
             None,
-            3
+            Some(asked.decision.version),
+            3,
         )
         .unwrap()
         .applied

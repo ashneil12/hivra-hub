@@ -1260,7 +1260,10 @@ pub fn find_grant(
     fingerprint: &str,
 ) -> Result<Option<GrantRow>, String> {
     let same = |g: &GrantRow| {
-        g.executable == executable && g.identity == identity && g.fingerprint == fingerprint
+        g.mode != "always"
+            && g.executable == executable
+            && g.identity == identity
+            && g.fingerprint == fingerprint
     };
     if let Some(mono) = mono {
         if let Some(grant) = grants_for(conn, scope, name)?
@@ -1295,18 +1298,13 @@ pub fn put_grant(
     mode: &str,
     now: i64,
 ) -> Result<(), String> {
-    // The one place an `always` grant is written: a program that can run any code only gets one when the person has
-    // turned that on for this install. Checked here, so no caller (and no webview) can go around it.
-    if mode == "always" && runs_any_for(executable) && !always_for_any_code(conn) {
-        return Err(ALWAYS_REFUSED.into());
-    }
-    // Fix round 4 (N4, N7): Always only for a program on the short list, and never from a folder the account writes.
-    // A worker's entry (`worker:<cli>`) is not a program path, and the worker card offers no Always, so the program rule
-    // does not apply to it.
-    if mode == "always"
-        && !executable.starts_with("worker:")
-        && !always_allowed_for(conn, executable)
-    {
+    // Round 5: Always is not written for any program. A program that can run any code keeps its own sentence, so an
+    // older test still sees why that kind of program asks every time. Everything else, including a worker, is told
+    // that Always is not offered.
+    if mode == "always" {
+        if !executable.starts_with("worker:") && runs_any_for(executable) {
+            return Err(ALWAYS_REFUSED.into());
+        }
         return Err(ALWAYS_NOT_OFFERED.into());
     }
     conn.execute(
@@ -1685,45 +1683,54 @@ pub fn run_fingerprint(
     .to_string()
 }
 
-/// The approval options. "Always for this project" only exists when the chat has a project, and the two "Always"
-/// answers only exist when the program is not one that can run any code (or the person has turned that on).
+/// The approval options. Round 5: a secret card is Once and No only. Always is not offered, whatever the project or
+/// the program. The two flags stay so callers do not change.
 pub fn approval_options(has_project: bool, always_allowed: bool) -> Vec<String> {
-    let mut options = vec!["Once".to_string()];
-    if always_allowed {
-        options.push("Always for this Mono".to_string());
-        if has_project {
-            options.push("Always for this project".into());
-        }
-    }
-    options.push("No".into());
-    options
+    let _ = (has_project, always_allowed);
+    vec!["Once".to_string(), "No".to_string()]
 }
 
-/// Programs that run no code of their own (fix round 4, N4): "Always" is offered for these, and for a program that runs
-/// code only when the person has chosen it for this install. Matched by basename, `.exe` ignored; a program not on this
-/// list is asked every time unless it runs code and the person chose "Always" for those.
+/// Programs that run no code of their own. Round 5 does not offer Always for any of them. `curl` and `wget` were on
+/// this list and can read a config file or run a helper the card does not show (`curl -K`, `--variable name@file`,
+/// `--engine`, `wget --use-askpass`). An app-built curl that forces `-q` and only a few literal arguments could offer
+/// Always later. That form is not built, and "use my own config" is not offered.
 pub const ALWAYS_OFFERED_FOR: &[&str] = &[
     "true", "false", "echo", "printf", "cat", "ls", "head", "tail", "wc", "grep", "diff", "cmp",
     "stat", "date", "sleep", "curl", "wget", "whoami", "uname", "pwd",
 ];
 
-/// What a refused "Always" says for a program that is not on the short list.
-pub const ALWAYS_NOT_OFFERED: &str =
-    "Always is only offered for the programs the app knows run no code of their own. This one asks every time.";
+/// What a refused "Always" says. Always is not offered for any program.
+pub const ALWAYS_NOT_OFFERED: &str = "Always is not offered. This one asks every time.";
 
-/// Whether the card may offer "Always" for this program (its path). Three things must hold: no folder on the way to the
-/// program is one the account can write (the agent could replace a file there), and then either the program is on the
-/// short list of programs that run no code, or it runs code (a script with a `#!` line, or a program that runs code) and
-/// the person has turned that choice on.
-pub fn always_allowed_for(conn: &Connection, executable: &str) -> bool {
-    if run::has_user_writable_component(std::path::Path::new(executable)) {
-        return false;
+/// Whether the card may offer "Always". Round 5: never. The list stays so a later curl form has a place to start.
+pub fn always_allowed_for(_conn: &Connection, _executable: &str) -> bool {
+    false
+}
+
+/// The card says this when the program is curl, wget, or lives under Homebrew. Those can read a config file or run a
+/// helper the card does not show.
+pub const CONFIG_READER_NOTE: &str = "This program can read config files and run helpers.";
+
+fn reads_config_or_helpers(executable: &str) -> bool {
+    let mut base = program_base(executable).to_ascii_lowercase();
+    if let Some(stripped) = base.strip_suffix(".exe") {
+        base = stripped.to_string();
     }
-    if runs_any_for(executable) {
-        return always_for_any_code(conn);
+    if base == "curl" || base == "wget" {
+        return true;
     }
-    let base = program_base(executable).to_ascii_lowercase();
-    ALWAYS_OFFERED_FOR.contains(&base.as_str())
+    let raw = std::path::Path::new(executable);
+    let resolved = std::fs::canonicalize(raw).unwrap_or_else(|_| raw.to_path_buf());
+    const ROOTS: &[&str] = &[
+        "/opt/homebrew/",
+        "/usr/local/Homebrew/",
+        "/usr/local/Cellar/",
+        "/home/linuxbrew/.linuxbrew/",
+    ];
+    [raw.to_path_buf(), resolved].iter().any(|path| {
+        let text = path.to_string_lossy();
+        ROOTS.iter().any(|root| text.starts_with(root))
+    })
 }
 
 // ---- programs that can run any code, and the person's choice about them ------------------------------------------------
@@ -2170,7 +2177,7 @@ pub fn run_question(
     let env = escape_controls(env);
     let folder = match folder {
         Some(folder) => escape_controls(folder),
-        None => "none (the command gets an empty home folder of its own)".to_string(),
+        None => "none (the command's home is a folder you cannot write)".to_string(),
     };
     let line = display_command(command);
     if line.chars().count() > COMMAND_LINE_MAX {
@@ -2193,6 +2200,10 @@ pub fn run_question(
     if runs_any && always_allowed {
         text.push_str("\nWarning: ");
         text.push_str(ALWAYS_WARNING);
+    }
+    if reads_config_or_helpers(executable) {
+        text.push('\n');
+        text.push_str(CONFIG_READER_NOTE);
     }
     Ok(text)
 }
@@ -2672,6 +2683,8 @@ pub fn record_run(
 
 #[cfg(test)]
 mod approval_tests;
+#[cfg(test)]
+mod r4_repro_tests;
 #[cfg(test)]
 mod security_tests;
 #[cfg(test)]

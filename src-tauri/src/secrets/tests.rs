@@ -29,6 +29,14 @@ impl Bench {
     }
 }
 
+fn answer_card(conn: &mut Connection, project: &str, key: &str, text: &str, at: i64) {
+    let seen = crate::decisions::get(conn, project, key)
+        .unwrap()
+        .unwrap()
+        .version;
+    crate::decisions::answer_seen(conn, project, key, text, None, Some(seen), at).unwrap();
+}
+
 const VALUE: &str = "sk_live_51NxAbCdEfGhIjKl";
 
 // ---- the service name rules -----------------------------------------------------------------------------------------
@@ -842,7 +850,7 @@ fn delete_takes_the_grants_and_the_row_before_the_keychain_item() {
         "/usr/bin/true",
         "",
         "",
-        "always",
+        "once",
         bench.now,
     )
     .unwrap();
@@ -971,7 +979,7 @@ fn delete_removes_every_grant_and_names_what_stops_working() {
         "/usr/bin/true",
         "",
         "",
-        "always",
+        "once",
         bench.now,
     )
     .unwrap();
@@ -984,7 +992,7 @@ fn delete_removes_every_grant_and_names_what_stops_working() {
         "/usr/bin/true",
         "",
         "",
-        "always",
+        "once",
         bench.now,
     )
     .unwrap();
@@ -1015,7 +1023,7 @@ fn renaming_changes_the_label_and_keeps_the_slug_and_grants() {
         "/usr/bin/true",
         "",
         "",
-        "always",
+        "once",
         bench.now,
     )
     .unwrap();
@@ -1064,7 +1072,7 @@ fn a_mono_grant_works_for_that_mono_and_not_another() {
         "/usr/bin/true",
         "",
         "",
-        "always",
+        "once",
         bench.now,
     )
     .unwrap();
@@ -1121,7 +1129,7 @@ fn a_project_grant_works_for_every_mono_in_the_project_and_not_outside_it() {
         "/usr/bin/true",
         "",
         "",
-        "always",
+        "once",
         bench.now,
     )
     .unwrap();
@@ -1344,7 +1352,7 @@ fn run_request(project: Option<&str>, mono: &str) -> RunRequest {
 }
 
 #[test]
-fn first_use_asks_once_and_always_for_this_mono_stops_the_asking() {
+fn first_use_asks_once_and_an_always_answer_does_not_grant() {
     let bench = Bench::new();
     bench.save(SCOPE_GLOBAL, "stripe-api-key", VALUE);
     let mut conn = bench.conn();
@@ -1358,53 +1366,66 @@ fn first_use_asks_once_and_always_for_this_mono_stops_the_asking() {
     let RunOutcome::Waiting { decision_key, .. } = first else {
         panic!("the first use must ask");
     };
-    // The card is an ordinary decision, so it lands in the Inbox and survives a restart.
     let asked = crate::decisions::get(&conn, "", &decision_key)
         .unwrap()
         .unwrap();
-    assert_eq!(asked.options, vec!["Once", "Always for this Mono", "No"]);
+    assert_eq!(asked.options, vec!["Once".to_string(), "No".to_string()]);
     assert!(asked.question.contains("/usr/bin/true"));
-    // Answer "Always for this Mono".
-    // The person answers on their own path (the Inbox sends `user`); a bare `None` is no one's and never settles a
-    // secret card.
-    crate::decisions::answer(
+    answer_card(
         &mut conn,
         "",
         &decision_key,
         "Always for this Mono",
-        None,
         bench.now + 1,
-    )
-    .unwrap();
-    let granted = prepare_run(
+    );
+    let refused = prepare_run(
         &bench.vault,
         &mut conn,
         run_request(None, "mono-1"),
         bench.now + 2,
     )
+    .unwrap_err();
+    assert!(
+        refused.contains("asks every time") || refused.contains("Always"),
+        "{refused}"
+    );
+    let RunOutcome::Waiting { decision_key, .. } = prepare_run(
+        &bench.vault,
+        &mut conn,
+        run_request(None, "mono-1"),
+        bench.now + 3,
+    )
+    .unwrap() else {
+        panic!("Always did not grant, so the next run asks");
+    };
+    answer_card(&mut conn, "", &decision_key, "Once", bench.now + 4);
+    let granted = prepare_run(
+        &bench.vault,
+        &mut conn,
+        run_request(None, "mono-1"),
+        bench.now + 5,
+    )
     .unwrap();
     let RunOutcome::Granted { grant, version, .. } = granted else {
-        panic!("the answer grants the run");
+        panic!("Once grants the run");
     };
     assert_eq!(version, 1);
     assert!(!grant.is_empty());
-    // The next run never asks.
     assert!(matches!(
         prepare_run(
             &bench.vault,
             &mut conn,
             run_request(None, "mono-1"),
-            bench.now + 3
+            bench.now + 6
         )
         .unwrap(),
-        RunOutcome::Granted { .. }
+        RunOutcome::Waiting { .. }
     ));
-    // Only that Mono.
     let other = prepare_run(
         &bench.vault,
         &mut conn,
         run_request(None, "mono-2"),
-        bench.now + 4,
+        bench.now + 7,
     )
     .unwrap();
     assert!(matches!(other, RunOutcome::Waiting { .. }));
@@ -1424,7 +1445,7 @@ fn once_asks_again_after_it_is_spent() {
     .unwrap() else {
         panic!("asks first");
     };
-    crate::decisions::answer(&mut conn, "", &decision_key, "Once", None, bench.now + 1).unwrap();
+    answer_card(&mut conn, "", &decision_key, "Once", bench.now + 1);
     assert!(matches!(
         prepare_run(
             &bench.vault,
@@ -1462,7 +1483,7 @@ fn no_writes_nothing_and_says_so() {
     .unwrap() else {
         panic!("asks first");
     };
-    crate::decisions::answer(&mut conn, "", &decision_key, "No", None, bench.now + 1).unwrap();
+    answer_card(&mut conn, "", &decision_key, "No", bench.now + 1);
     assert!(matches!(
         prepare_run(
             &bench.vault,
@@ -1495,29 +1516,42 @@ fn always_for_this_project_covers_every_mono_in_it_and_no_other_project() {
     let asked = crate::decisions::get(&conn, "/p", &decision_key)
         .unwrap()
         .unwrap();
-    assert!(asked
+    assert!(!asked
         .options
         .contains(&"Always for this project".to_string()));
-    crate::decisions::answer(
+    assert_eq!(asked.options, vec!["Once".to_string(), "No".to_string()]);
+    answer_card(
         &mut conn,
         "/p",
         &decision_key,
         "Always for this project",
-        None,
         bench.now + 1,
+    );
+    let refused = prepare_run(
+        &bench.vault,
+        &mut conn,
+        run_request(Some("/p"), "mono-1"),
+        bench.now + 2,
     )
-    .unwrap();
+    .unwrap_err();
+    assert!(
+        refused.contains("asks every time") || refused.contains("Always"),
+        "{refused}"
+    );
     for mono in ["mono-1", "mono-2"] {
-        assert!(matches!(
-            prepare_run(
-                &bench.vault,
-                &mut conn,
-                run_request(Some("/p"), mono),
-                bench.now + 2
-            )
-            .unwrap(),
-            RunOutcome::Granted { .. }
-        ));
+        assert!(
+            matches!(
+                prepare_run(
+                    &bench.vault,
+                    &mut conn,
+                    run_request(Some("/p"), mono),
+                    bench.now + 3
+                )
+                .unwrap(),
+                RunOutcome::Waiting { .. }
+            ),
+            "{mono} must still be asked"
+        );
     }
     assert!(matches!(
         prepare_run(

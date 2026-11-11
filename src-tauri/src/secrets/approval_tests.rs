@@ -77,7 +77,11 @@ fn person_answers(bench: &Bench, key: &str, answer: &str, at: i64) {
 
 fn person_answers_in(bench: &Bench, project: &str, key: &str, answer: &str, at: i64) {
     let mut conn = bench.store.lock_conn().unwrap();
-    crate::decisions::answer(&mut conn, project, key, answer, None, at).unwrap();
+    let seen = crate::decisions::get(&conn, project, key)
+        .unwrap()
+        .unwrap()
+        .version;
+    crate::decisions::answer_seen(&mut conn, project, key, answer, None, Some(seen), at).unwrap();
 }
 
 // ---- which programs can run any code --------------------------------------------------------------------------------
@@ -227,9 +231,11 @@ fn the_card_for_a_run_anything_program_offers_once_only_while_the_setting_is_off
         NOW + 1,
     );
     let asked = card(&bench, &key);
-    assert_eq!(
-        asked.options,
-        vec!["Once", "Always for this Mono", "No"],
+    assert_eq!(asked.options, vec!["Once", "No"], "{}", asked.question);
+    assert!(
+        asked
+            .question
+            .contains("This program can read config files and run helpers."),
         "{}",
         asked.question
     );
@@ -473,7 +479,7 @@ fn the_grant_writer_itself_refuses_always_for_a_run_anything_program() {
     assert!(grants_for(&conn, SCOPE_GLOBAL, "stripe-api-key")
         .unwrap()
         .is_empty());
-    // Once is always allowed, and an ordinary program may have Always.
+    // Once is still allowed. Always is not, including for curl.
     put_grant(
         &conn,
         SCOPE_GLOBAL,
@@ -487,7 +493,7 @@ fn the_grant_writer_itself_refuses_always_for_a_run_anything_program() {
         NOW,
     )
     .unwrap();
-    put_grant(
+    let err = put_grant(
         &conn,
         SCOPE_GLOBAL,
         "stripe-api-key",
@@ -499,7 +505,11 @@ fn the_grant_writer_itself_refuses_always_for_a_run_anything_program() {
         "always",
         NOW,
     )
-    .unwrap();
+    .unwrap_err();
+    assert!(
+        err.contains("asks every time") || err.contains("Always"),
+        "{err}"
+    );
 }
 
 #[test]
@@ -539,57 +549,28 @@ fn with_the_setting_on_always_is_offered_warned_about_and_allowed() {
     }
     let (_, key) = ask(&bench, "mono-1", &["python3", "script.py"], NOW);
     let asked = card(&bench, &key);
-    assert_eq!(
-        asked.options,
-        vec!["Once", "Always for this Mono", "No"],
+    assert_eq!(asked.options, vec!["Once", "No"], "{}", asked.question);
+    assert!(
+        asked
+            .question
+            .contains("This can run any code, so it asks every time."),
         "{}",
         asked.question
     );
-    assert!(
-        asked.question.lines().any(|line| line
-            == "Warning: 'Always' lets an agent use this key for anything, without asking you. Leave this off unless you are sure."),
-        "{}",
-        asked.question
-    );
-    assert!(
-        !asked.question.contains("asks every time"),
-        "the Once-only line is for the setting being off: {}",
-        asked.question
-    );
+    assert!(!asked.question.contains("Warning:"), "{}", asked.question);
     person_answers(&bench, &key, "Always for this Mono", NOW + 1);
     let mut conn = bench.store.lock_conn().unwrap();
-    assert!(matches!(
-        prepare_run(
-            &bench.vault,
-            &mut conn,
-            request("mono-1", &["python3", "script.py"]),
-            NOW + 2
-        )
-        .unwrap(),
-        RunOutcome::Granted { .. }
-    ));
-    // The same command never asks again (fix round 3, H3: Always is for the exact command).
-    assert!(matches!(
-        prepare_run(
-            &bench.vault,
-            &mut conn,
-            request("mono-1", &["python3", "script.py"]),
-            NOW + 3
-        )
-        .unwrap(),
-        RunOutcome::Granted { .. }
-    ));
-    // Other arguments with the same program ask again.
-    assert!(matches!(
-        prepare_run(
-            &bench.vault,
-            &mut conn,
-            request("mono-1", &["python3", "other.py"]),
-            NOW + 4
-        )
-        .unwrap(),
-        RunOutcome::Waiting { .. }
-    ));
+    let err = prepare_run(
+        &bench.vault,
+        &mut conn,
+        request("mono-1", &["python3", "script.py"]),
+        NOW + 2,
+    )
+    .unwrap_err();
+    assert!(err.contains("asks every time"), "{err}");
+    assert!(grants_for(&conn, SCOPE_GLOBAL, "stripe-api-key")
+        .unwrap()
+        .is_empty());
 }
 
 #[test]
@@ -634,22 +615,16 @@ fn turning_the_setting_off_takes_back_the_always_grants_it_allowed() {
     let bench = Bench::new();
     let conn = bench.store.lock_conn().unwrap();
     set_always_for_any_code(&conn, true).unwrap();
+    // Always is not written any more. These rows are what an older build left in the table.
     for (kind, subject, program) in [
         ("mono", "mono-1", "python3"),
         ("project", "/p", "node"),
         ("mono", "mono-1", "curl"),
     ] {
-        put_grant(
-            &conn,
-            SCOPE_GLOBAL,
-            "stripe-api-key",
-            kind,
-            subject,
-            program,
-            "",
-            "",
-            "always",
-            NOW,
+        conn.execute(
+            "INSERT INTO secret_grants (scope, name, subject_kind, subject_id, executable, mode, created_at, identity, fingerprint)
+             VALUES (?1, 'stripe-api-key', ?2, ?3, ?4, 'always', ?5, '', '')",
+            rusqlite::params![SCOPE_GLOBAL, kind, subject, program, NOW],
         )
         .unwrap();
     }
@@ -946,7 +921,7 @@ fn a_grant_names_the_file_it_was_given_for() {
         "/usr/bin/curl",
         "1:2:3:4",
         "",
-        "always",
+        "once",
         NOW,
     )
     .unwrap();
@@ -1066,7 +1041,7 @@ fn the_no_always_list_covers_the_programs_found_to_leak_or_run_code() {
 }
 
 #[test]
-fn an_always_grant_covers_only_the_fingerprint_it_was_given_for() {
+fn a_grant_covers_only_the_fingerprint_it_was_given_for() {
     let conn = Connection::open_in_memory().unwrap();
     ensure_tables(&conn).unwrap();
     put_grant(
@@ -1078,7 +1053,7 @@ fn an_always_grant_covers_only_the_fingerprint_it_was_given_for() {
         "/usr/bin/true",
         "1:2:3:4",
         "fingerprint-a",
-        "always",
+        "once",
         NOW,
     )
     .unwrap();
@@ -1270,7 +1245,9 @@ fn always_is_offered_only_for_a_listed_program_in_a_folder_only_the_owner_writes
     // N4/N7: Always comes from a short list of programs that run no code, and never from a folder the account can write.
     let bench = Bench::new();
     let conn = bench.store.lock_conn().unwrap();
-    assert!(always_allowed_for(&conn, "/usr/bin/true"));
+    assert!(!always_allowed_for(&conn, "/usr/bin/true"));
+    assert!(!always_allowed_for(&conn, "/usr/bin/curl"));
+    assert!(!always_allowed_for(&conn, "/usr/bin/wget"));
     assert!(
         !always_allowed_for(&conn, "/usr/bin/nc"),
         "a program not on the list is asked every time"
@@ -1343,14 +1320,17 @@ fn a_once_answer_for_another_command_does_not_drop_an_always_grant() {
     person_answers(&bench, &key, "Always for this Mono", NOW + 1);
     {
         let mut conn = bench.store.lock_conn().unwrap();
-        let first = prepare_run(
+        let err = prepare_run(
             &bench.vault,
             &mut conn,
             request("mono-1", &["/usr/bin/true", "a"]),
             NOW + 2,
         )
-        .unwrap();
-        assert!(matches!(first, RunOutcome::Granted { .. }), "{first:?}");
+        .unwrap_err();
+        assert!(
+            err.contains("asks every time") || err.contains("Always"),
+            "{err}"
+        );
     }
     let (_, other) = ask(&bench, "mono-1", &["/usr/bin/true", "b"], NOW + 3);
     person_answers(&bench, &other, "Once", NOW + 4);
@@ -1371,8 +1351,8 @@ fn a_once_answer_for_another_command_does_not_drop_an_always_grant() {
     )
     .unwrap();
     assert!(
-        matches!(again, RunOutcome::Granted { .. }),
-        "the Always for command a survived the Once for command b: {again:?}"
+        matches!(again, RunOutcome::Waiting { .. }),
+        "Always for command a must not grant, so a still asks: {again:?}"
     );
 }
 

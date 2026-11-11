@@ -622,6 +622,13 @@ pub fn answer_seen(
     if key.trim().starts_with("secret/") && !secret_answer_by_person(by.as_deref()) {
         return Err("Only the person can approve a secret run. Ask them on their card.".into());
     }
+    // Fix round 5 (L5): a secret card's answer names the version that was read. Checked here, after the person check, so
+    // a missing version is refused on every path into the store, not only the Tauri command.
+    if key.trim().starts_with("secret/") && seen_version.is_none() {
+        return Err(
+            "Read the card again and answer it, so the answer is for what you read.".into(),
+        );
+    }
     let answer = plain(answer, "The answer", ANSWER_MAX)?;
     let tx = conn
         .transaction_with_behavior(TransactionBehavior::Immediate)

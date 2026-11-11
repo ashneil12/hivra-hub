@@ -10,6 +10,17 @@ use std::process::Command;
 const VALUE: &str = "sk_live_51NxAbCdEfGhIjKlMnOp";
 const NAME: &str = "stripe-api-key";
 
+fn answer_secret(
+    conn: &mut rusqlite::Connection,
+    key: &str,
+    text: &str,
+    by: Option<String>,
+    now: i64,
+) -> Result<crate::decisions::AnswerOutcome, String> {
+    let seen = crate::decisions::get(conn, "", key)?.unwrap().version;
+    crate::decisions::answer_seen(conn, "", key, text, by, Some(seen), now)
+}
+
 struct Bench {
     store: SessionStore,
     vault: Memory,
@@ -107,7 +118,7 @@ fn a_saved_value_is_in_no_database_row_whatever_window_wrote_it() {
         "/usr/bin/true",
         "",
         "",
-        "always",
+        "once",
         bench.now,
     )
     .unwrap();
@@ -323,7 +334,7 @@ fn a_worker_gets_the_one_variable_and_its_output_is_scrubbed() {
         "worker:claude",
         "",
         "worker:claude",
-        "always",
+        "once",
         bench.now,
     )
     .unwrap();
@@ -388,7 +399,7 @@ fn the_worker_environment_holds_no_inherited_monocode_value() {
         "worker:claude",
         "",
         "worker:claude",
-        "always",
+        "once",
         bench.now,
     )
     .unwrap();
@@ -446,7 +457,7 @@ fn a_worker_whose_output_cannot_be_scrubbed_is_refused_the_value() {
         "worker:opencode",
         "",
         "worker:opencode",
-        "always",
+        "once",
         bench.now,
     )
     .unwrap();
@@ -468,7 +479,7 @@ fn a_worker_whose_output_cannot_be_scrubbed_is_refused_the_value() {
         "worker:claude",
         "",
         "worker:claude",
-        "always",
+        "once",
         bench.now,
     )
     .unwrap();
@@ -557,7 +568,7 @@ fn a_worker_without_an_approval_is_asked_first_and_gets_nothing() {
     .unwrap();
     assert_eq!(cmd.get_envs().count(), 0);
     // "Once" is a grant for exactly one worker.
-    crate::decisions::answer(&mut conn, "", &key, "Once", None, bench.now + 1).unwrap();
+    answer_secret(&mut conn, &key, "Once", None, bench.now + 1).unwrap();
     let second = worker::prepare(&bench.vault, &mut conn, worker_request(), bench.now + 2).unwrap();
     assert!(matches!(second, worker::WorkerOutcome::Ready { .. }));
     let third = worker::prepare(&bench.vault, &mut conn, worker_request(), bench.now + 3).unwrap();
@@ -642,23 +653,31 @@ fn only_the_persons_own_paths_settle_a_secret_card() {
         else {
             panic!("the first use must ask");
         };
-        let out = crate::decisions::answer(
-            &mut conn,
-            "",
-            &decision_key,
-            "Once",
-            by.map(str::to_string),
-            bench.now + 1,
-        );
         if !settles {
+            let out = crate::decisions::answer(
+                &mut conn,
+                "",
+                &decision_key,
+                "Once",
+                by.map(str::to_string),
+                bench.now + 1,
+            );
             assert_eq!(
                 out.unwrap_err(),
                 "Only the person can approve a secret run. Ask them on their card.",
                 "{by:?}"
             );
-        }
-        crate::decisions::answer(&mut conn, "", &decision_key, "Once", None, bench.now + 2)
+        } else {
+            answer_secret(
+                &mut conn,
+                &decision_key,
+                "Once",
+                by.map(str::to_string),
+                bench.now + 1,
+            )
             .unwrap();
+        }
+        answer_secret(&mut conn, &decision_key, "Once", None, bench.now + 2).unwrap();
         assert!(
             matches!(
                 prepare_run(&bench.vault, &mut conn, run_request("Tally"), bench.now + 3).unwrap(),
@@ -689,15 +708,7 @@ fn the_person_answering_through_their_own_path_still_grants() {
         else {
             panic!("the first use must ask");
         };
-        crate::decisions::answer(
-            &mut conn,
-            "",
-            &decision_key,
-            "Once",
-            by.clone(),
-            bench.now + 1,
-        )
-        .unwrap();
+        answer_secret(&mut conn, &decision_key, "Once", by.clone(), bench.now + 1).unwrap();
         assert!(
             matches!(
                 prepare_run(&bench.vault, &mut conn, run_request("Tally"), bench.now + 2).unwrap(),
@@ -743,7 +754,7 @@ fn an_answered_secret_row_not_answered_by_the_person_is_never_a_grant() {
     assert!(crate::decisions::get(&conn, "", &decision_key)
         .unwrap()
         .is_some());
-    crate::decisions::answer(&mut conn, "", &decision_key, "Once", None, bench.now + 3).unwrap();
+    answer_secret(&mut conn, &decision_key, "Once", None, bench.now + 3).unwrap();
     assert!(matches!(
         prepare_run(&bench.vault, &mut conn, run_request("Tally"), bench.now + 4).unwrap(),
         RunOutcome::Granted { .. }
@@ -770,7 +781,7 @@ fn a_once_answer_for_one_mono_is_not_spent_by_another() {
         panic!("the first use must ask");
     };
     // The person answered the card Tally's first run put up.
-    crate::decisions::answer(&mut conn, "", &decision_key, "Once", None, bench.now + 1).unwrap();
+    answer_secret(&mut conn, &decision_key, "Once", None, bench.now + 1).unwrap();
     // Another Mono never gets that answer as its own run.
     assert!(matches!(
         prepare_run(&bench.vault, &mut conn, run_request("Other"), bench.now + 2).unwrap(),
@@ -865,7 +876,7 @@ fn armed_for(bench: &Bench, vault: &dyn Vault, session: &str) {
         "worker:claude",
         "",
         "worker:claude",
-        "always",
+        "once",
         bench.now,
     )
     .unwrap();
