@@ -89,12 +89,12 @@ it("lists one item of every kind across three projects, and both counts agree", 
   }), NOW);
 
   expect(kinds(items)).toEqual([
+    "stopped:hivra",
+    "merge:hivra",
     "check:nibbii",
     "question:exo",
     "approval:nibbii",
-    "merge:hivra",
     "review:exo",
-    "stopped:hivra",
   ]);
   expect(needsCount()).toBe(items.length);
   expect(needsCount("hivra")).toBe(2);
@@ -110,7 +110,27 @@ it("lists one item of every kind across three projects, and both counts agree", 
   expect(items.find((item) => item.kind === "stopped")?.actions[0]?.label).toBe("Open chat");
 
   for (const item of items) item.actions[0]?.run();
-  expect(answered).toEqual(["approve", "question", "allow", "merge", "review", "stopped"]);
+  expect(answered).toEqual(["stopped", "merge", "approve", "question", "allow", "review"]);
+});
+
+it("leads with a stopped or failed row, then what blocks a ship, then a question", () => {
+  const items = needsYou(sources({
+    questions: [{ id: "q", projectId: "exo", who: "EXO lead", at: NOW - 100, sentence: "Which font?" }],
+    approvals: [{ id: "a", projectId: "nibbii", who: "frank", at: NOW - 90, sentence: "frank wants to run npm publish." }],
+    reviews: [{ id: "r", repo: "ash/exo", projectId: "exo", who: "EXO lead", at: NOW - 80, sentence: "Review the pull request." }],
+    merges: [{ id: "m", projectId: "hivra", who: "Coding team", at: NOW - 10, sentence: "Ready to merge." }],
+    checks: [{ id: "c", projectId: "nibbii", who: "Coding team", at: NOW, sentence: "The delivery check needs a yes." }],
+    // Newest, and still first. A failed worker is this same kind.
+    stopped: [{ id: "s", projectId: "hivra", who: "Hivra lead", at: NOW, sentence: "The build failed." }],
+  }), NOW);
+  expect(items.map((item) => item.kind)).toEqual([
+    "stopped",
+    "merge",
+    "check",
+    "question",
+    "approval",
+    "review",
+  ]);
 });
 
 it("keeps an item with no project in the total only", () => {

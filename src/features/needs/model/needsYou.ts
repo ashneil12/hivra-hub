@@ -11,6 +11,9 @@
 // 5. A chat routed to its Lead is not Ash's. A grey waiting worker (With a Lead, retrying, stalled)
 //    is not in this list.
 //
+// Order. A stopped or failed row leads, then a delivery check or work ready to merge (that holds a
+// ship), then questions, approvals and reviews. Older first inside a group.
+//
 // hubWork, hubBuilds and proposals are never read. A review whose repo is not one of Ash's
 // project repos is left out.
 
@@ -119,6 +122,14 @@ const RANK: Record<NeedsKind, number> = {
   review: 4,
   stopped: 5,
 };
+
+/** Display order only. Collapse still uses RANK, so a check still beats a question on the same key. */
+function urgency(kind: NeedsKind): number {
+  if (kind === "stopped") return 0;
+  // A delivery check, or work that is ready to merge, is holding a ship.
+  if (kind === "check" || kind === "merge") return 1;
+  return 2;
+}
 
 const SENTENCE_MAX = 140;
 
@@ -358,7 +369,7 @@ function collapse(drafts: Draft[]): NeedsItem[] {
       open: row.open,
       ...(row.decisionKey ? { decisionKey: row.decisionKey } : {}),
     }))
-    .sort((a, b) => RANK[a.kind] - RANK[b.kind] || a.at - b.at || a.key.localeCompare(b.key));
+    .sort((a, b) => urgency(a.kind) - urgency(b.kind) || a.at - b.at || a.key.localeCompare(b.key));
 }
 
 function assemble(sources: NeedsSources, now: number): { items: NeedsItem[]; running: readonly RunningFact[] } {
