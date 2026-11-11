@@ -111,6 +111,8 @@ in Settings, under About.
 - [Agentlas](https://github.com/agentlas-ai/agentlas-desktop): ideas only: an operating-system boundary around each agent's terminal, with secret paths and protected config paths (design first).
 - [Atomic Agent](https://github.com/AtomicBot-ai/atomic-agent): contracts for a multi-part fan-out (what each part owns, provides and requires, and the checks it must pass), dependency waves, the person's own request quoted in every worker brief, and a few prompt lines (WP-171).
 - [Cloudflare security-audit-skill](https://github.com/cloudflare/security-audit-skill): the structured security review: a coverage ledger, isolated hunters, a fresh verifier for each candidate, findings.json with two zero-dependency validators, and the reference notes for desktop IPC, supply chain and AI agents (WP-203).
+- [Tailscale](https://github.com/tailscale/tailscale): the plan for a private overlay for Hivra boxes: tagged machines, deny-by-default access rules with policy tests, and tsnet for a bridge the owner starts on their own computer (WP-220, plan only).
+- [Headscale](https://github.com/juanfont/headscale): the self-hosted control server recommended for the WP-220 overlay pilot, so the product does not depend on Tailscale's hosted plane (WP-220, plan only).
 
 Also [poteto](https://x.com/poteto)'s writing on skills and verification, including the
 [verification skill example](https://github.com/poteto/verification-skill-example).
