@@ -7,6 +7,22 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Session } from "../../../features/sessions/model/session";
 
 const backend = vi.hoisted(() => new Map<string, Record<string, unknown>>());
+const trashed = vi.hoisted(() => new Set<string>());
+const MOVE_NOTICES = [
+  "teleport-frozen",
+  "teleport-incoming",
+  "teleport-aborted",
+  "teleport-release-owed",
+  "teleport-freeze-asked",
+];
+function carriesMoveNote(row: Record<string, unknown>): boolean {
+  if (!Array.isArray(row.blocks)) return false;
+  return row.blocks.some((block) => {
+    if (!block || typeof block !== "object") return false;
+    const notice = (block as { notice?: unknown }).notice;
+    return typeof notice === "string" && MOVE_NOTICES.includes(notice);
+  });
+}
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(async (command: string, args: Record<string, unknown>) => {
     if (command === "session_upsert") {
@@ -14,12 +30,21 @@ vi.mock("@tauri-apps/api/core", () => ({
       backend.set(String(session.id), { ...session });
       return { id: session.id };
     }
-    if (command === "session_get") return backend.get(String(args.sessionId)) ?? null;
+    if (command === "session_get" || command === "session_get_for_move") {
+      const id = String(args.sessionId);
+      const row = backend.get(id);
+      if (!row || (command === "session_get" && trashed.has(id))) return null;
+      return { ...row };
+    }
     if (command === "session_list_by_project" || command === "session_list_folderless" || command === "session_list_linked") {
-      return [...backend.values()].map((row) => ({ ...row }));
+      return [...backend.values()].filter((row) => !trashed.has(String(row.id))).map((row) => ({ ...row }));
+    }
+    if (command === "session_list_moved") {
+      return [...backend.values()].filter((row) => carriesMoveNote(row)).map((row) => String(row.id)).sort();
     }
     if (command === "session_delete") {
       backend.delete(String(args.sessionId));
+      trashed.delete(String(args.sessionId));
       return null;
     }
     return null;
@@ -75,6 +100,7 @@ describe("WP-177 the app's move path, against the real stores", () => {
   let call: HostCall;
   beforeEach(() => {
     backend.clear();
+    trashed.clear();
     forgetMovedRowsForTests();
     unlockChat(CHAT);
     dir = mkdtempSync(path.join(tmpdir(), "wp177-app-"));
@@ -143,6 +169,7 @@ describe("WP-177 the app's move path, against the real stores", () => {
 describe("WP-177 startup recovery, called at launch", () => {
   beforeEach(() => {
     backend.clear();
+    trashed.clear();
     forgetMovedRowsForTests();
     unlockChat(CHAT);
   });
@@ -177,6 +204,7 @@ describe("WP-177 startup recovery, called at launch", () => {
 describe("WP-177 startup recovery finds every move in the store", () => {
   beforeEach(() => {
     backend.clear();
+    trashed.clear();
     forgetMovedRowsForTests();
     unlockChat(CHAT);
   });
@@ -199,12 +227,27 @@ describe("WP-177 startup recovery finds every move in the store", () => {
     const ids = await findMovedChatIds(["/projects/app"]);
     expect(ids.sort()).toEqual(["frozen-1", "incoming-1"]);
   });
+
+  it("a trashed chat's move note is still found, and the sidebar read still hides it", async () => {
+    const { findMovedChatIds } = await import("./teleportMove");
+    const { readSessionForMove, getSession } = await import("../../../features/sessions/data/sessionStore");
+    await upsertSession({ ...savedChat(), id: "trashed-frozen" } as Session);
+    const local = localMoveEndpoint({ machineId: MAC, port: sessionStoreChatPort(), labelFor: () => "Studio box" });
+    expect(await local.freeze("trashed-frozen", "m-trash", HOST)).toBe(true);
+    trashed.add("trashed-frozen");
+    expect(await getSession("trashed-frozen")).toBeNull();
+    const row = await readSessionForMove("trashed-frozen");
+    expect(row?.blocks.some((block) => block.notice === "teleport-frozen")).toBe(true);
+    const ids = await findMovedChatIds(["/projects/app"]);
+    expect(ids).toContain("trashed-frozen");
+  });
 });
 
 describe("WP-177 M4: one chat's failure does not stop the others at launch", () => {
   it("recovery of a chat whose host is unreachable is reported, and the other chats are still recovered", async () => {
     const { recoverSavedMoves } = await import("./teleportMove");
     backend.clear();
+    trashed.clear();
     forgetMovedRowsForTests();
     await upsertSession({ ...savedChat(), id: "m4-bad" } as Session);
     await upsertSession({ ...savedChat(), id: "m4-good" } as Session);

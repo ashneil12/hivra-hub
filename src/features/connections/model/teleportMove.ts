@@ -172,10 +172,20 @@ export async function listPairedHosts(): Promise<Array<{ id: string; name: strin
 }
 
 /**
- * Every chat in the saved store that still carries a move's freeze, copy or refusal, whether or not any tab shows it.
- * The store's listings give the ids; each row is then read, because a summary does not carry the move's notices.
+ * Every chat in the saved store that still carries a move's freeze, copy or refusal, whether or not any tab shows it
+ * and whether or not it is in the trash. The store lists those ids. A build without that list is scanned from the
+ * sidebar listings, which hide a trashed chat.
  */
 export async function findMovedChatIds(projectCwds: string[]): Promise<string[]> {
+  try {
+    const { invoke } = await import("@tauri-apps/api/core");
+    const listed = await invoke<unknown>("session_list_moved");
+    if (Array.isArray(listed)) {
+      return [...new Set(listed.filter((id): id is string => typeof id === "string" && id.length > 0))];
+    }
+  } catch {
+    // A test double or an older build has no list. The listings below are the same scan, without a trashed chat.
+  }
   const store = await import("../../sessions/data/sessionStore");
   const summaries = [
     ...(await store.listFolderlessSessions()),

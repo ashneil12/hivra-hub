@@ -758,7 +758,61 @@ pub fn session_get_for_move(
 ) -> Result<Option<SessionRecord>, String> {
     validate_id(&session_id, "session")?;
     let conn = store.conn.lock().map_err(|_| "Session store is locked")?;
-    get_session(&conn, &session_id).map_err(|e| e.to_string())
+    get_session_for_move(&conn, &session_id).map_err(|e| e.to_string())
+}
+
+const MOVE_NOTE_NOTICES: [&str; 5] = [
+    "teleport-frozen",
+    "teleport-incoming",
+    "teleport-aborted",
+    "teleport-release-owed",
+    "teleport-freeze-asked",
+];
+
+/// Chats whose blocks still carry a move note. A mention of the word in a message is not a note.
+pub(crate) fn chat_ids_with_move_notes(conn: &Connection) -> rusqlite::Result<Vec<String>> {
+    let mut statement = conn.prepare(
+        "SELECT id, blocks_json FROM sessions
+         WHERE inbox_ask IS NULL
+           AND (
+             blocks_json LIKE '%\"teleport-frozen\"%'
+             OR blocks_json LIKE '%\"teleport-incoming\"%'
+             OR blocks_json LIKE '%\"teleport-aborted\"%'
+             OR blocks_json LIKE '%\"teleport-release-owed\"%'
+             OR blocks_json LIKE '%\"teleport-freeze-asked\"%'
+           )
+         ORDER BY id",
+    )?;
+    let rows = statement.query_map([], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+    })?;
+    let mut ids = Vec::new();
+    for row in rows {
+        let (id, raw) = row?;
+        let Ok(blocks) = serde_json::from_str::<Value>(&raw) else {
+            continue;
+        };
+        let Some(list) = blocks.as_array() else {
+            continue;
+        };
+        let carries = list.iter().any(|block| {
+            block
+                .get("notice")
+                .and_then(Value::as_str)
+                .is_some_and(|notice| MOVE_NOTE_NOTICES.contains(&notice))
+        });
+        if carries {
+            ids.push(id);
+        }
+    }
+    Ok(ids)
+}
+
+/// WP-177: ids recovery scans, including a chat the sidebar hides because it is in the trash.
+#[tauri::command(async)]
+pub fn session_list_moved(store: State<'_, SessionStore>) -> Result<Vec<String>, String> {
+    let conn = store.conn.lock().map_err(|_| "Session store is locked")?;
+    chat_ids_with_move_notes(&conn).map_err(|error| error.to_string())
 }
 
 /// WP-111: ids of chats memory must not read.
@@ -3039,22 +3093,36 @@ pub(crate) fn get_session(
     conn: &Connection,
     session_id: &str,
 ) -> rusqlite::Result<Option<SessionRecord>> {
-    get_session_record(conn, session_id, true)
+    get_session_record(conn, session_id, true, false)
 }
 
 pub(crate) fn get_session_metadata(
     conn: &Connection,
     session_id: &str,
 ) -> rusqlite::Result<Option<SessionRecord>> {
-    get_session_record(conn, session_id, false)
+    get_session_record(conn, session_id, false, false)
+}
+
+/// WP-177: the row a move reads. The sidebar read hides a trashed chat; recovery still has to see its notes.
+pub(crate) fn get_session_for_move(
+    conn: &Connection,
+    session_id: &str,
+) -> rusqlite::Result<Option<SessionRecord>> {
+    get_session_record(conn, session_id, true, true)
 }
 
 fn get_session_record(
     conn: &Connection,
     session_id: &str,
     with_blocks: bool,
+    include_trashed: bool,
 ) -> rusqlite::Result<Option<SessionRecord>> {
     let blocks = if with_blocks { "blocks_json" } else { "'[]'" };
+    let trash_filter = if include_trashed {
+        ""
+    } else {
+        "AND id NOT IN (SELECT item_id FROM trash_items WHERE kind = 'chat')"
+    };
     conn.query_row(
         &format!(
             "SELECT id, cwd, harness, model, model_settings, runtime_mode, title,
@@ -3066,7 +3134,7 @@ fn get_session_record(
                 move_brief_owed, moved_from, registry_agent_id
          FROM sessions
          WHERE id = ?1 AND inbox_ask IS NULL
-           AND id NOT IN (SELECT item_id FROM trash_items WHERE kind = 'chat')"
+           {trash_filter}"
         ),
         params![session_id],
         |row| {
@@ -6284,5 +6352,117 @@ mod review214_r4_move_notes {
         ));
         step(&conn, owed, "m2", "activate");
         quit_is_refused(&conn, opened, "teleport-release-owed-m2");
+    }
+}
+
+/// A trashed chat leaves the sidebar, and its move notes have to stay visible to recovery. A chat trashed on its own
+/// and a chat trashed with its project are both still rows. A message that only mentions a notice is not one.
+#[cfg(test)]
+mod review214_r5_trashed_move {
+    use super::*;
+
+    fn chat(id: &str, blocks: Value) -> SessionUpsert {
+        serde_json::from_value(json!({
+            "id": id,
+            "cwd": "/tmp/review214-r5",
+            "harness": "claude",
+            "model": "model",
+            "modelSettings": { "effort": "high" },
+            "runtimeMode": "default",
+            "title": id,
+            "blocks": blocks,
+        }))
+        .unwrap()
+    }
+
+    fn freeze_note() -> Value {
+        json!({
+            "id": "teleport-frozen-m1",
+            "role": "system",
+            "text": "{}",
+            "notice": "teleport-frozen"
+        })
+    }
+
+    fn trash(conn: &Connection, id: &str, with_kind: &str, with_id: &str) {
+        conn.execute(
+            "INSERT INTO trash_items (
+               kind, item_id, title, deleted_at, trashed_with_kind, trashed_with_id, version
+             ) VALUES ('chat', ?1, ?1, 1, ?2, ?3, 1)",
+            params![id, with_kind, with_id],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn recovery_still_reads_a_trashed_chats_move_notes() {
+        let store = SessionStore::open_in_memory().unwrap();
+        let conn = store.lock_conn().unwrap();
+        upsert_session(
+            &conn,
+            &chat(
+                "trashed-move",
+                json!([
+                    { "id": "u1", "role": "user", "text": "keep" },
+                    freeze_note()
+                ]),
+            ),
+        )
+        .unwrap();
+        upsert_session(
+            &conn,
+            &chat(
+                "child-move",
+                json!([
+                    { "id": "u1", "role": "user", "text": "keep" },
+                    freeze_note()
+                ]),
+            ),
+        )
+        .unwrap();
+        upsert_session(
+            &conn,
+            &chat(
+                "plain",
+                json!([{ "id": "u1", "role": "user", "text": "ordinary" }]),
+            ),
+        )
+        .unwrap();
+        upsert_session(
+            &conn,
+            &chat(
+                "mentioned",
+                json!([{
+                    "id": "u1",
+                    "role": "user",
+                    "text": "the log said \"teleport-frozen\" and nothing else"
+                }]),
+            ),
+        )
+        .unwrap();
+        trash(&conn, "trashed-move", "chat", "trashed-move");
+        trash(&conn, "child-move", "project", "proj-1");
+
+        assert!(get_session(&conn, "trashed-move").unwrap().is_none());
+        assert!(get_session(&conn, "child-move").unwrap().is_none());
+        assert!(get_session(&conn, "plain").unwrap().is_some());
+
+        let ids = chat_ids_with_move_notes(&conn).unwrap();
+        assert_eq!(
+            ids,
+            vec!["child-move".to_string(), "trashed-move".to_string()]
+        );
+
+        for id in ["trashed-move", "child-move"] {
+            let row = get_session_for_move(&conn, id)
+                .unwrap()
+                .expect("recovery cannot read a trashed chat");
+            assert!(
+                serde_json::to_string(&row.blocks)
+                    .unwrap()
+                    .contains("\"teleport-frozen\""),
+                "{id}"
+            );
+        }
     }
 }
