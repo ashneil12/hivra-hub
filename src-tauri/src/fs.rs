@@ -3074,9 +3074,9 @@ pub(crate) fn git_push_for(root: &Path) -> Result<(), String> {
     } else {
         git_remote_name(root).ok_or_else(|| "No git remote to push to".to_string())?
     };
-    crate::commit_guard::gate_outgoing_to(root, &remote)?;
+    let sha = crate::commit_guard::gate_outgoing_to(root, &remote)?;
     let branch = git_branch(root).ok_or_else(|| "Not on a branch".to_string())?;
-    let refspec = format!("HEAD:refs/heads/{branch}");
+    let refspec = format!("{sha}:refs/heads/{branch}");
     if upstream {
         return git_checked(
             root,

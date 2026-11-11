@@ -666,15 +666,17 @@ pub fn deliver(
                 .into();
                 delivery.detail = filled.detail;
             } else {
-                crate::commit_guard::gate_outgoing_to(&checkout, &remote)
+                let sha = crate::commit_guard::gate_outgoing_to(&checkout, &remote)
                     .map_err(|e| format!("Pushing {branch} refused: {e}"))?;
                 git(
                     &checkout,
                     &[
                         "push",
                         "--set-upstream",
+                        "--no-follow-tags",
+                        "--recurse-submodules=no",
                         &remote,
-                        &format!("HEAD:refs/heads/{branch}"),
+                        &format!("{sha}:refs/heads/{branch}"),
                     ],
                 )
                 .map_err(|e| format!("Pushing {branch} failed: {e}"))?;
