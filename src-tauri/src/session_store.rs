@@ -2024,12 +2024,9 @@ fn moved_away(blocks: &Value) -> Option<String> {
     None
 }
 
-/// WP-177: the guard on every write of a chat's blocks. An ordinary save (an autosave, a quit, a stale window's copy) may
-/// not drop or add a freeze, may not change whether the chat is away, and may not drop a move note (a freeze ask,
-/// an incoming copy, a release still owed, or a refused move) or add one of those except a freeze ask, so an old copy
-/// cannot bring a moved chat back, put a thawed freeze or a settled note back, or erase the note recovery needs. A
-/// freeze ask may still be planted by an ordinary save. Only a move's own step may add a freeze or any other note. A refusal
-/// names its reason with a prefix the webview reads.
+/// WP-177: checks a move step's result. An ordinary save does not come here: `prepare_teleport_blocks` copies the stored
+/// move notes onto it, so a quit or a stale window cannot change one. A step may change only the notes that step owns.
+/// A refusal names its reason with a prefix the webview reads.
 pub(crate) fn teleport_guard(
     previous: &Value,
     next: &Value,
@@ -2084,14 +2081,9 @@ pub(crate) fn teleport_guard(
                     "{TELEPORT_REFUSED}: this save would drop a chat move's note, so it was refused"
                 ));
             }
-            // A freeze ask may still arrive on an ordinary save: the older repro plants it with no step, and that save
-            // has to keep working. The live path uses the freeze-ask step. A freeze, an incoming copy, a release still
-            // owed, or a refused move may not be added back; only a move step may, so a stale window cannot put a
-            // thawed freeze or a settled note back.
+            // No ordinary save plants a note. A freeze ask arrives only on its own step, so a stale copy cannot put a
+            // cleared ask back and recovery cannot run it.
             let added = notes.iter().copied().any(|notice| {
-                if notice == "teleport-freeze-asked" {
-                    return false;
-                }
                 let stored_ids = ids_with_notice(previous, notice);
                 ids_with_notice(next, notice)
                     .iter()
@@ -2251,6 +2243,209 @@ pub(crate) fn teleport_guard(
     }
 }
 
+fn is_owned_note(block: &Value) -> bool {
+    matches!(
+        notice_of(block),
+        "teleport-frozen"
+            | "teleport-freeze-asked"
+            | "teleport-incoming"
+            | "teleport-release-owed"
+            | "teleport-aborted"
+            | "teleported"
+            | "teleported-back"
+    )
+}
+
+fn block_by_id<'a>(blocks: &'a [Value], id: &str) -> Option<&'a Value> {
+    blocks.iter().find(|block| id_of(block) == id)
+}
+
+fn push_owned(blocks: &mut Vec<Value>, note: &Value) {
+    let id = id_of(note);
+    if !id.is_empty() && blocks.iter().any(|block| id_of(block) == id) {
+        return;
+    }
+    blocks.push(note.clone());
+}
+
+fn require_note<'a>(blocks: &'a [Value], id: &str) -> Result<&'a Value, String> {
+    block_by_id(blocks, id)
+        .ok_or_else(|| format!("{TELEPORT_REFUSED}: this chat move step is missing its note"))
+}
+
+/// An ordinary save keeps every stored move note, all of its fields, and writes the rest of the incoming row.
+fn with_stored_move_notes(previous: &Value, incoming: &Value) -> Value {
+    let Some(incoming_blocks) = incoming.as_array() else {
+        return incoming.clone();
+    };
+    let mut blocks: Vec<Value> = incoming_blocks
+        .iter()
+        .filter(|block| !is_owned_note(block))
+        .cloned()
+        .collect();
+    for note in blocks_of(previous)
+        .iter()
+        .filter(|block| is_owned_note(block))
+    {
+        blocks.push(note.clone());
+    }
+    Value::Array(blocks)
+}
+
+/// A move step changes only the notes that step owns, on the stored row as it is. A reply saved after the step read
+/// the row is still there. Release and activate replace the transcript: that is the body the step sends.
+fn apply_move_step(
+    previous: &Value,
+    incoming: &Value,
+    write: &TeleportWrite,
+) -> Result<Value, String> {
+    let stored = blocks_of(previous);
+    let incoming_blocks = blocks_of(incoming);
+    let move_id = write.move_id.as_str();
+    let frozen_id = format!("teleport-frozen-{move_id}");
+    let incoming_id = format!("teleport-incoming-{move_id}");
+    let ask_id = format!("teleport-freeze-asked-{move_id}");
+    let owed_id = format!("teleport-release-owed-{move_id}");
+    let aborted_id = format!("teleport-aborted-{move_id}");
+    let back_id = format!("teleported-back-{move_id}");
+    let refused = |what: &str| Err(format!("{TELEPORT_REFUSED}: {what}"));
+    let blocks = match write.op.as_str() {
+        "freeze" => {
+            let freeze = require_note(incoming_blocks, &frozen_id)?;
+            let mut next = stored.to_vec();
+            push_owned(&mut next, freeze);
+            next
+        }
+        "thaw" => {
+            if !stored.iter().any(|block| id_of(block) == frozen_id) {
+                return refused("a thaw must only remove its own freeze");
+            }
+            stored
+                .iter()
+                .filter(|block| id_of(block) != frozen_id)
+                .cloned()
+                .collect()
+        }
+        "release" => {
+            let marker = incoming_blocks
+                .iter()
+                .find(|block| notice_of(block) == "teleported")
+                .ok_or_else(|| {
+                    format!(
+                        "{TELEPORT_REFUSED}: a release must drop the freeze and mark the chat moved"
+                    )
+                })?;
+            let mut next: Vec<Value> = incoming_blocks
+                .iter()
+                .filter(|block| !is_owned_note(block))
+                .cloned()
+                .collect();
+            for note in stored
+                .iter()
+                .filter(|block| is_owned_note(block) && notice_of(block) != "teleport-frozen")
+            {
+                next.push(note.clone());
+            }
+            push_owned(&mut next, marker);
+            next
+        }
+        "incoming" => {
+            let copy = require_note(incoming_blocks, &incoming_id)?;
+            let mut next: Vec<Value> = stored
+                .iter()
+                .filter(|block| id_of(block) != ask_id)
+                .cloned()
+                .collect();
+            push_owned(&mut next, copy);
+            next
+        }
+        "discard" => stored
+            .iter()
+            .filter(|block| id_of(block) != incoming_id)
+            .cloned()
+            .collect(),
+        "activate" => {
+            // A missing back marker is the guard's call: no stored copy is a conflict, a bad open is a refusal.
+            let back = block_by_id(incoming_blocks, &back_id);
+            let mut next: Vec<Value> = incoming_blocks
+                .iter()
+                .filter(|block| !is_owned_note(block))
+                .cloned()
+                .collect();
+            let mut seen: Vec<String> = next
+                .iter()
+                .map(|block| id_of(block).to_string())
+                .filter(|id| !id.is_empty())
+                .collect();
+            for block in stored.iter().filter(|block| !is_owned_note(block)) {
+                let id = id_of(block);
+                if id.is_empty() || seen.iter().any(|seen_id| seen_id == id) {
+                    continue;
+                }
+                seen.push(id.to_string());
+                next.push(block.clone());
+            }
+            for note in stored
+                .iter()
+                .filter(|block| is_owned_note(block) && id_of(block) != incoming_id)
+            {
+                next.push(note.clone());
+            }
+            if let Some(back) = back {
+                push_owned(&mut next, back);
+            }
+            if let Some(owed) = block_by_id(incoming_blocks, &owed_id) {
+                push_owned(&mut next, owed);
+            }
+            next
+        }
+        "abort" => {
+            let aborted = require_note(incoming_blocks, &aborted_id)?;
+            let mut next: Vec<Value> = stored
+                .iter()
+                .filter(|block| id_of(block) != incoming_id && id_of(block) != ask_id)
+                .cloned()
+                .collect();
+            push_owned(&mut next, aborted);
+            next
+        }
+        "freeze-ask" => {
+            let ask = require_note(incoming_blocks, &ask_id)?;
+            let mut next = stored.to_vec();
+            push_owned(&mut next, ask);
+            next
+        }
+        "clear-freeze-ask" => stored
+            .iter()
+            .filter(|block| id_of(block) != ask_id)
+            .cloned()
+            .collect(),
+        "settle" => stored
+            .iter()
+            .filter(|block| id_of(block) != owed_id)
+            .cloned()
+            .collect(),
+        _ => return refused("this chat move step is not known"),
+    };
+    let next = Value::Array(blocks);
+    teleport_guard(previous, &next, Some(write))?;
+    Ok(next)
+}
+
+fn prepare_teleport_blocks(
+    previous: &Value,
+    incoming: &Value,
+    write: Option<&TeleportWrite>,
+) -> Result<Value, String> {
+    match write {
+        // Away, the transcript, the provider session and the queue already left with the release. An ordinary save
+        // keeps that row's blocks. It does not put a pre-move copy back.
+        None if moved_away(previous).is_some() => Ok(previous.clone()),
+        None => Ok(with_stored_move_notes(previous, incoming)),
+        Some(write) => apply_move_step(previous, incoming, write),
+    }
+}
+
 pub(crate) fn upsert_session(
     conn: &Connection,
     session: &SessionUpsert,
@@ -2268,11 +2463,14 @@ pub(crate) fn upsert_session(
     let previous_blocks: Option<Value> = existing
         .as_ref()
         .and_then(|(_, _, raw, _, _, _)| serde_json::from_str(raw).ok());
-    if let Some(previous) = &previous_blocks {
-        teleport_guard(previous, &session.blocks, session.teleport.as_ref())
-            .map_err(|message| rusqlite::Error::ToSqlConversionFailure(message.into()))?;
-    }
-    let blocks = crate::artifacts::retain_existing_cards(conn, &session.blocks)?;
+    let prepared_blocks = match &previous_blocks {
+        Some(previous) => {
+            prepare_teleport_blocks(previous, &session.blocks, session.teleport.as_ref())
+                .map_err(|message| rusqlite::Error::ToSqlConversionFailure(message.into()))?
+        }
+        None => session.blocks.clone(),
+    };
+    let blocks = crate::artifacts::retain_existing_cards(conn, &prepared_blocks)?;
     // Loaded transcripts omit large tool output; never let a save erase it.
     let blocks = match &previous_blocks {
         Some(previous) => match crate::tool_detail::restore_details(previous, &blocks) {
@@ -2283,8 +2481,20 @@ pub(crate) fn upsert_session(
     };
     let blocks_json = serde_json::to_string(blocks.as_ref())
         .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
-    let queued_messages_json = serde_json::to_string(&session.queued_messages)
-        .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+    // A chat that is away keeps the queue and the provider session the release left. The copy a quit still holds is older.
+    let away_ordinary = session.teleport.is_none()
+        && previous_blocks
+            .as_ref()
+            .is_some_and(|blocks| moved_away(blocks).is_some());
+    let queued_messages_json = if away_ordinary {
+        existing
+            .as_ref()
+            .map(|(_, _, _, _, _, stored)| stored.clone())
+            .unwrap_or_else(|| "[]".to_string())
+    } else {
+        serde_json::to_string(&session.queued_messages)
+            .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?
+    };
     let linked_work_item_json = session
         .linked_work_item
         .as_ref()
@@ -2296,11 +2506,21 @@ pub(crate) fn upsert_session(
         .as_deref()
         .map(str::trim)
         .filter(|value| !value.is_empty());
-    let provider_session_id = session
-        .provider_session_id
-        .as_ref()
-        .map(|value| value.trim())
-        .filter(|value| !value.is_empty());
+    let provider_session_id = if away_ordinary {
+        conn.query_row(
+            "SELECT provider_session_id FROM sessions WHERE id = ?1",
+            params![session.id],
+            |row| row.get::<_, Option<String>>(0),
+        )?
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+    } else {
+        session
+            .provider_session_id
+            .as_ref()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+    };
     let provider_account_id = session
         .provider_account_id
         .as_ref()
@@ -2333,8 +2553,8 @@ pub(crate) fn upsert_session(
         .map(str::trim)
         .filter(|value| !value.is_empty());
 
-    let has_user_message = has_user_block(&session.blocks);
-    let is_draft = has_draft_block(&session.blocks);
+    let has_user_message = has_user_block(blocks.as_ref());
+    let is_draft = has_draft_block(blocks.as_ref());
 
     let created_at = existing
         .as_ref()
@@ -2433,7 +2653,7 @@ pub(crate) fn upsert_session(
         ],
     )?;
 
-    remember_worker_from_blocks(conn, &session.id, &session.blocks)?;
+    remember_worker_from_blocks(conn, &session.id, blocks.as_ref())?;
     Ok(SessionSummary {
         sidebar_hidden: session.sidebar_hidden,
         private_chat: session.private_chat,
@@ -2445,7 +2665,7 @@ pub(crate) fn upsert_session(
         model: session.model.clone(),
         runtime_mode: session.runtime_mode.clone(),
         title: session.title.clone(),
-        provider_session_id: provider_session_id.map(str::to_owned),
+        provider_session_id: provider_session_id.clone(),
         branch: branch.map(str::to_owned),
         worktree_cwd: worktree_cwd.map(str::to_owned),
         worktree_removed: session.worktree_removed,
@@ -5966,8 +6186,8 @@ mod teleport_guard_tests {
         let conn = store.lock_conn().unwrap();
         save(&conn, Value::Array(base())).unwrap();
         step(&conn, with(vec![frozen("m1")]), "m1", "freeze").unwrap();
-        // A window whose copy predates the freeze writes the chat: refused, and the freeze stays.
-        assert!(refused(save(&conn, Value::Array(base())).unwrap_err()));
+        // A window whose copy predates the freeze writes the chat. The save lands, and the freeze stays.
+        save(&conn, Value::Array(base())).unwrap();
         let row = get_session(&conn, "chat-1").unwrap().unwrap();
         assert!(blocks_of(&row.blocks)
             .iter()
@@ -5998,9 +6218,49 @@ mod teleport_guard_tests {
         save(&conn, Value::Array(base())).unwrap();
         step(&conn, with(vec![frozen("m1")]), "m1", "freeze").unwrap();
         step(&conn, with(vec![moved_away(1000.0)]), "m1", "release").unwrap();
-        assert!(refused(save(&conn, Value::Array(base())).unwrap_err()));
+        save(&conn, Value::Array(base())).unwrap();
+        let row = get_session(&conn, "chat-1").unwrap().unwrap();
+        assert_eq!(
+            super::moved_away(&row.blocks).as_deref(),
+            Some("teleported@host-a@1000"),
+            "an ordinary save of a pre-move copy brought the chat back"
+        );
         // The marker itself is an ordinary save the row accepts.
         save(&conn, with(vec![moved_away(1000.0)])).unwrap();
+    }
+
+    #[test]
+    fn an_ordinary_save_cannot_restore_a_moved_chat() {
+        let store = SessionStore::open_in_memory().unwrap();
+        let conn = store.lock_conn().unwrap();
+        save(&conn, Value::Array(base())).unwrap();
+        step(&conn, with(vec![frozen("m1")]), "m1", "freeze").unwrap();
+        // The release leaves the transcript and the provider session behind, as the move step does.
+        let mut released = chat(Value::Array(vec![moved_away(1000.0)]));
+        released.provider_session_id = None;
+        released.queued_messages.clear();
+        released.teleport = Some(TeleportWrite {
+            move_id: "m1".into(),
+            op: "release".into(),
+        });
+        upsert_session(&conn, &released).unwrap();
+        let mut stale = chat(Value::Array(base()));
+        stale.queued_messages = vec![json!({ "id": "q1", "text": "queued before the move" })];
+        save(&conn, stale.blocks.clone()).unwrap();
+        upsert_session(&conn, &stale).unwrap();
+        let row = get_session(&conn, "chat-1").unwrap().unwrap();
+        assert_eq!(row.provider_session_id, None);
+        assert!(row.queued_messages.is_empty());
+        assert!(
+            !blocks_of(&row.blocks)
+                .iter()
+                .any(|block| block.get("role") == Some(&json!("user"))),
+            "a pre-move copy put the transcript back on a moved chat"
+        );
+        assert_eq!(
+            super::moved_away(&row.blocks).as_deref(),
+            Some("teleported@host-a@1000")
+        );
     }
 
     #[test]
@@ -6055,10 +6315,14 @@ mod teleport_guard_tests {
             "release",
         )
         .unwrap();
-        // The copy App held before the second move still says it is back here: refused, not resurrected.
-        assert!(refused(
-            save(&conn, with(vec![moved_back("m2", 2000.0)])).unwrap_err()
-        ));
+        // The copy App held before the second move still says it is back here. The save lands, and the chat stays away.
+        save(&conn, with(vec![moved_back("m2", 2000.0)])).unwrap();
+        let row = get_session(&conn, "chat-1").unwrap().unwrap();
+        assert_eq!(
+            super::moved_away(&row.blocks).as_deref(),
+            Some("teleported@host-a@3000"),
+            "an ordinary save of an older copy brought the chat back"
+        );
     }
 
     /// PR #214 review r2: the release the webview writes (teleportLocal.ts) keeps the marker alone, with no user message.
@@ -6162,7 +6426,7 @@ mod teleport_guard_tests {
         save(&conn, Value::Array(base())).unwrap();
         // The freeze ask is its own step. A quit's copy from before the ask cannot erase it.
         step(&conn, with(vec![ask("m2")]), "m2", "freeze-ask").unwrap();
-        assert!(refused(save(&conn, Value::Array(base())).unwrap_err()));
+        save(&conn, Value::Array(base())).unwrap();
         assert!(has_notice(&conn, "teleport-freeze-asked"));
         step(&conn, Value::Array(base()), "m2", "clear-freeze-ask").unwrap();
         assert!(!has_notice(&conn, "teleport-freeze-asked"));
@@ -6176,9 +6440,7 @@ mod teleport_guard_tests {
             "incoming",
         )
         .unwrap();
-        assert!(refused(
-            save(&conn, with(vec![moved_away(1000.0)])).unwrap_err()
-        ));
+        save(&conn, with(vec![moved_away(1000.0)])).unwrap();
         assert!(has_notice(&conn, "teleport-incoming"));
 
         let aborted = json!({
@@ -6194,9 +6456,7 @@ mod teleport_guard_tests {
             "abort",
         )
         .unwrap();
-        assert!(refused(
-            save(&conn, with(vec![moved_away(1000.0)])).unwrap_err()
-        ));
+        save(&conn, with(vec![moved_away(1000.0)])).unwrap();
         assert!(has_notice(&conn, "teleport-aborted"));
 
         // A later move back owes a release. An ordinary save cannot drop that note either.
@@ -6214,9 +6474,7 @@ mod teleport_guard_tests {
             "activate",
         )
         .unwrap();
-        assert!(refused(
-            save(&conn, with(vec![moved_back("m3", 2000.0)])).unwrap_err()
-        ));
+        save(&conn, with(vec![moved_back("m3", 2000.0)])).unwrap();
         assert!(has_notice(&conn, "teleport-release-owed"));
         step(&conn, with(vec![moved_back("m3", 2000.0)]), "m3", "settle").unwrap();
         assert!(!has_notice(&conn, "teleport-release-owed"));
@@ -6293,18 +6551,14 @@ mod review214_r4_move_notes {
     }
 
     fn quit_is_refused(conn: &Connection, copy: Vec<Value>, kept: &str) {
-        let result = save(conn, copy);
-        assert!(
-            result
-                .as_ref()
-                .is_err_and(|error| error.to_string().starts_with("teleport-refused")),
-            "a quit's ordinary save erased {kept}"
-        );
+        save(conn, copy).expect("a quit's ordinary save did not land");
         assert!(stored_has(conn, kept), "{kept} is gone from the stored row");
     }
 
+    /// Same steps as the old quit test: an ordinary save carries the ask, then a quit saves the marker alone.
+    /// An ordinary save cannot plant the ask, so the quit has nothing to erase.
     #[test]
-    fn a_quit_cannot_erase_a_freeze_ask() {
+    fn an_ordinary_save_cannot_plant_a_freeze_ask() {
         let store = SessionStore::open_in_memory().unwrap();
         let conn = store.lock_conn().unwrap();
         moved_away(&conn);
@@ -6320,6 +6574,31 @@ mod review214_r4_move_notes {
             ],
         )
         .unwrap();
+        let _ = save(&conn, vec![marker()]);
+        assert!(
+            !stored_has(&conn, "teleport-freeze-asked-m2"),
+            "an ordinary save planted a freeze ask"
+        );
+    }
+
+    #[test]
+    fn a_quit_cannot_erase_a_freeze_ask() {
+        let store = SessionStore::open_in_memory().unwrap();
+        let conn = store.lock_conn().unwrap();
+        moved_away(&conn);
+        step(
+            &conn,
+            vec![
+                marker(),
+                note(
+                    "teleport-freeze-asked",
+                    "m2",
+                    "{\"peer\":\"host-a\",\"at\":1}",
+                ),
+            ],
+            "m2",
+            "freeze-ask",
+        );
         quit_is_refused(&conn, vec![marker()], "teleport-freeze-asked-m2");
     }
 
@@ -6712,6 +6991,46 @@ mod review214_r7_steps_and_asks {
         assert!(
             stored_has(&conn, "a2"),
             "the settle step wrote the row back without the saved reply"
+        );
+    }
+
+    /// An ordinary save may not rewrite a stored move note. Recovery trusts the peer, the time and the owner on it.
+    #[test]
+    fn an_ordinary_save_cannot_rewrite_a_move_note() {
+        let store = SessionStore::open_in_memory().unwrap();
+        let conn = store.lock_conn().unwrap();
+        upsert_session(&conn, &chat(base())).unwrap();
+        let ask = json!({
+            "id": "teleport-freeze-asked-m9",
+            "role": "system",
+            "text": "{\"peer\":\"host-a\",\"at\":1,\"owner\":\"window-a\"}",
+            "notice": "teleport-freeze-asked",
+            "owner": "window-a"
+        });
+        step(&conn, with(vec![ask]), "m9", "freeze-ask").unwrap();
+        let mut blocks = base();
+        blocks.push(json!({
+            "id": "teleport-freeze-asked-m9",
+            "role": "system",
+            "text": "{\"peer\":\"host-b\",\"at\":9,\"owner\":\"window-b\"}",
+            "notice": "teleport-freeze-asked",
+            "owner": "window-b"
+        }));
+        blocks.push(reply());
+        upsert_session(&conn, &chat(blocks)).unwrap();
+        let row = get_session(&conn, "chat-r7").unwrap().unwrap();
+        let note = blocks_of(&row.blocks)
+            .iter()
+            .find(|block| id_of(block) == "teleport-freeze-asked-m9")
+            .expect("the freeze ask is gone");
+        assert_eq!(
+            note.get("text").and_then(Value::as_str),
+            Some("{\"peer\":\"host-a\",\"at\":1,\"owner\":\"window-a\"}")
+        );
+        assert_eq!(note.get("owner").and_then(Value::as_str), Some("window-a"));
+        assert!(
+            stored_has(&conn, "a2"),
+            "the ordinary save that tried to rewrite the note dropped the reply"
         );
     }
 }
