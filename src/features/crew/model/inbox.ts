@@ -46,7 +46,9 @@ export type FirstMateItem = {
   /** Words in front of the body, so the reason can name who said it. */
   reasonLead?: string;
   /** Actions on the right. The first primary one is the suggestion. */
-  actions?: readonly { label: string; primary?: boolean }[];
+  actions?: readonly { label: string; primary?: boolean; onClick?: () => void }[];
+  /** Small chips beside the title, such as "Can wait". */
+  marks?: readonly string[];
   project: string;
   key: string | null;
   /** The decision version this card was drawn from. Absent on a row that is not a decision. */

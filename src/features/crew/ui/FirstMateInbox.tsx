@@ -42,12 +42,22 @@ export function FirstMateInbox({
         >
           <div className="flex items-start justify-between gap-3">
             <div className="min-w-0">
-          {item.chip ? (
-            <span className="mb-1 inline-flex rounded bg-violet-500/15 px-1.5 py-0.5 text-[11px] font-medium text-violet-300">
-              {item.chip}
-            </span>
-          ) : null}
-          <h3 className="text-[13px] text-content">{item.title}</h3>
+          <div className="flex min-w-0 flex-wrap items-baseline gap-2">
+            {item.chip ? (
+              <span className="inline-flex shrink-0 rounded bg-violet-500/15 px-1.5 py-0.5 text-[11px] font-medium text-violet-300">
+                {item.chip}
+              </span>
+            ) : null}
+            <h3 className="text-[13px] text-content">{item.title}</h3>
+            {item.marks?.map((mark) => (
+              <span
+                key={mark}
+                className="inline-flex shrink-0 rounded bg-content/10 px-1.5 py-0.5 text-[11px] text-content/60"
+              >
+                {mark}
+              </span>
+            ))}
+          </div>
           {item.sourceLine ? <div className="text-[12px] leading-5 text-content/50">{item.sourceLine}</div> : null}
           {typeof now === "number" && waitingPhrase(item.since, now) ? (
             <p data-waiting className="text-[12px] text-content/60">
@@ -98,6 +108,7 @@ export function FirstMateInbox({
                   <button
                     key={action.label}
                     type="button"
+                    onClick={() => action.onClick?.()}
                     className={
                       action.primary
                         ? "rounded-md bg-blue-500 px-2.5 py-1 text-[12px] text-white"

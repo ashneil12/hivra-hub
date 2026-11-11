@@ -51,10 +51,11 @@ const passedUp: FirstMateItem = {
   statusWord: suggestion,
   chip: "Passed up",
   sourceLine: "EXO · Chief of Staff · just now",
-  reasonLead: "Chief of Staff:",
+  reasonLead: "Why you:",
+  marks: ["Can wait"],
   note: "Passed up: your call",
   actions: [
-    { label: "Do that", primary: true },
+    { label: "Do that", primary: true, onClick: () => undefined },
     { label: "Something else" },
   ],
   chatId: null,
@@ -79,11 +80,11 @@ function Page() {
     <main className="min-h-screen bg-background-base text-content">
       <div className="mx-auto flex max-w-3xl flex-col gap-6 px-8 py-8">
         <h1 className="text-[22px] font-medium text-content">Hivra</h1>
-        <section className="flex items-center justify-center gap-3 rounded-lg border border-stroke px-3 py-3">
+        <section className="flex items-center gap-2 rounded-lg border border-stroke px-3 py-3">
           <div data-testid="handoff">
             <RoomMessage chatId="room" message={handoffMessage} messages={[handoffMessage]} nameOf={() => "App"} />
           </div>
-          <span className="text-xs text-content/50">Ada</span>
+          <span className="text-xs text-content/50">· Ada ·</span>
           <a href="#task-1" className="text-xs text-blue-400 underline">
             Open
           </a>
