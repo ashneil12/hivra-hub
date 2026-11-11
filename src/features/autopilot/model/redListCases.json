@@ -1,8 +1,11 @@
 [
   { "text": "please refund the second charge", "category": "money" },
-  { "text": "run:heroku deploy the site", "category": "prod-host" },
+  { "text": "run: heroku deploy the site", "category": "prod-host" },
   { "text": "cat \".env\"", "category": "credentials" },
   { "text": "open .aws/credentials now", "category": "credentials" },
+  { "text": "Paste the ｒｅｃｏｖｅｒｙ ｃｏｄｅｓ into the vault?", "category": "credentials" },
+  { "text": "Use the seed​ phrase from the notes?", "category": "credentials" },
+  { "text": "Print the mne​monic?", "category": "credentials" },
   { "text": "which name should the button use", "category": null },
   { "text": "look at HEAD~1", "category": null }
 ]
