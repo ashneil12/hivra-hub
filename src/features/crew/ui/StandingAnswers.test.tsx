@@ -146,12 +146,12 @@ describe("standing answers", () => {
     expect(container.textContent).toContain("That answer is gone.");
   });
 
-  it("keeps the answer when retire or stop does not land", async () => {
+  it("keeps the answer when retire or reuse does not land", async () => {
     const onRetire = vi.fn(async () => {
       throw new Error("timed out");
     });
-    const onStop = vi.fn(async () => false);
-    await show({ enabled: true, rows: [keep, logo], onRetire, onStop });
+    const onReuse = vi.fn(async () => false);
+    await show({ enabled: true, rows: [keep, logo], onRetire, onReuse });
     await act(async () => {
       button("Retire")?.click();
     });
@@ -168,24 +168,37 @@ describe("standing answers", () => {
     expect(container.querySelector("[data-standing-key='keep']")).toBeTruthy();
 
     const logoRow = container.querySelector("[data-standing-key='logo']")!;
+    const box = logoRow.querySelector("input[type='checkbox']") as HTMLInputElement;
     await act(async () => {
-      [...logoRow.querySelectorAll("button")].find((item) => item.textContent === "Stop reusing")?.click();
+      box.click();
     });
+    expect(onReuse).toHaveBeenCalledWith(logo, true);
     expect(container.textContent).toContain("Couldn't update this. Trying again.");
     expect(container.querySelector("[data-standing-key='logo']")).toBeTruthy();
     expect(container.querySelector("[data-standing-key='keep']")?.textContent).not.toContain("Couldn't update this");
   });
 
-  it("stops reusing one answer and leaves the other", async () => {
-    const onStop = vi.fn(async () => true);
-    await show({ enabled: true, rows: [keep, logo], onStop });
-    const logoRow = container.querySelector("[data-standing-key='logo']")!;
+  it("ticks reuse for one answer and leaves both on the list", async () => {
+    const onReuse = vi.fn(async () => true);
+    await show({ enabled: true, rows: [{ ...keep, standing: true }, logo], onReuse });
+    expect(container.textContent).toContain(
+      "A ticked answer is reused for similar questions. It is guidance, not permission.",
+    );
+    const keepBox = container.querySelector("[data-standing-key='keep'] input[type='checkbox']") as HTMLInputElement;
+    const logoBox = container.querySelector("[data-standing-key='logo'] input[type='checkbox']") as HTMLInputElement;
+    expect(keepBox.checked).toBe(true);
+    expect(logoBox.checked).toBe(false);
     await act(async () => {
-      [...logoRow.querySelectorAll("button")].find((item) => item.textContent === "Stop reusing")?.click();
+      logoBox.click();
     });
-    expect(onStop).toHaveBeenCalledWith(logo);
-    expect(container.querySelector("[data-standing-key='logo']")).toBeNull();
+    expect(onReuse).toHaveBeenCalledWith(logo, true);
+    await act(async () => {
+      keepBox.click();
+    });
+    expect(onReuse).toHaveBeenCalledWith({ ...keep, standing: true }, false);
+    expect(container.querySelector("[data-standing-key='logo']")).toBeTruthy();
     expect(container.querySelector("[data-standing-key='keep']")).toBeTruthy();
+    expect(container.textContent).not.toMatch(/[—–]/);
   });
 
   it("does not retire twice from a double click", async () => {

@@ -10,6 +10,8 @@ test("retire a standing answer and see who relied on it", async ({ page }) => {
 
   await expect(on.locator("[data-standing-key='keep']")).toContainText("Used 2 times");
   await expect(on.locator("[data-standing-key='logo']")).toContainText("Used 1 time");
+  await expect(on).toContainText("A ticked answer is reused for similar questions. It is guidance, not permission.");
+  await expect(on.locator("[data-standing-key='logo']").getByRole("checkbox", { name: "Reuse for similar questions" })).not.toBeChecked();
   await expect(on).toContainText("Keep deleted sessions, or delete them?");
   await expect(page.locator("body")).not.toContainText("—");
   await expect(page.locator("body")).not.toContainText("–");
@@ -26,8 +28,13 @@ test("retire a standing answer and see who relied on it", async ({ page }) => {
   await expect(retired).toContainText("task-1");
   await expect(retired).toContainText("task-2");
 
-  await on.locator("[data-standing-key='logo']").getByRole("button", { name: "Stop reusing" }).click();
-  await expect(on.locator("[data-standing-key='logo']")).toHaveCount(0);
+  const logoBox = on.locator("[data-standing-key='logo']").getByRole("checkbox", { name: "Reuse for similar questions" });
+  await logoBox.click();
+  await expect(logoBox).toBeChecked();
+  await expect(on.locator("[data-standing-key='logo']")).toHaveCount(1);
+  await logoBox.click();
+  await expect(logoBox).not.toBeChecked();
+  await expect(on.locator("[data-standing-key='logo']")).toHaveCount(1);
   await expect(retired).toContainText("task-1");
   await expect(page.locator("body")).not.toContainText("—");
   await expect(page.locator("body")).not.toContainText("–");

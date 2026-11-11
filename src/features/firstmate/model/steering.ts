@@ -254,12 +254,17 @@ export async function askPersonRecorded(
   if (outcome.matched) {
     const id = outcome.standingId ?? d.standingId ?? "";
     return {
-      key: d.decisionKey,
-      state: "answered",
-      answer: d.answer,
-      standingId: id,
-      matched: true,
-      note: `Standing answer ${id}: ${d.answer}. This is guidance, not permission. If it does not apply, ask again with force true and a one-line reason.`,
+      result: {
+        key: d.decisionKey,
+        state: "answered",
+        answer: d.answer,
+        standingId: id,
+        matched: true,
+        note: `A standing answer ${id} to a similar question: guidance, not permission. If it does not apply, ask again with force true and a one-line reason.`,
+      },
+      answeredBy: d.answeredBy,
+      question: d.question,
+      options: d.options,
     };
   }
   // The person answered it in this chat: their words are the answer, recorded once, and the waiting tasks carry on.

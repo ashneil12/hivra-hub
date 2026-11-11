@@ -173,7 +173,7 @@ describe("first mate inbox panel", () => {
     });
     vi.mocked(invoke).mockImplementation(async (cmd: string) => {
       if (cmd === "decisions_standing_enabled") return on;
-      if (cmd === "decisions_standing_list") {
+      if (cmd === "decisions_reuse_list") {
         lists += 1;
         if (lists > 1) throw new Error("timed out");
         return [row];
@@ -185,7 +185,7 @@ describe("first mate inbox panel", () => {
     });
     await vi.waitFor(() => expect(vi.mocked(invoke).mock.calls.some((call) => call[0] === "decisions_standing_enabled")).toBe(true));
     expect(container.querySelector("[aria-label='Standing answers']")).toBeNull();
-    expect(vi.mocked(invoke).mock.calls.some((call) => call[0] === "decisions_standing_list")).toBe(false);
+    expect(vi.mocked(invoke).mock.calls.some((call) => call[0] === "decisions_reuse_list")).toBe(false);
 
     on = true;
     await act(async () => {

@@ -22,6 +22,7 @@ function asRows(value: unknown): StandingAnswer[] {
       question: typeof row.question === "string" ? row.question : "",
       answer: typeof row.answer === "string" ? row.answer : "",
       uses: typeof row.uses === "number" && Number.isFinite(row.uses) ? row.uses : 0,
+      standing: row.standing === true,
     });
   }
   return out;
@@ -66,7 +67,7 @@ export function StandingAnswersPanel({ project }: { project: string }) {
         setStale(false);
         return;
       }
-      const listed = await invoke("decisions_standing_list", { project: folder });
+      const listed = await invoke("decisions_reuse_list", { project: folder });
       if (mine !== gen.current) return;
       setEnabled(true);
       setRows(asRows(listed));
@@ -109,19 +110,18 @@ export function StandingAnswersPanel({ project }: { project: string }) {
     return value;
   }
 
-  async function onStop(row: StandingAnswer): Promise<boolean> {
+  async function onReuse(row: StandingAnswer, standing: boolean): Promise<boolean> {
     const value = await invoke("decisions_set_standing", {
       project: row.project || folder,
       key: row.key,
-      standing: false,
+      standing,
     });
-    const standing =
-      value && typeof value === "object" ? (value as Record<string, unknown>).standing : undefined;
-    if (standing !== false) return false;
+    const got = value && typeof value === "object" ? (value as Record<string, unknown>).standing : undefined;
+    if (got !== standing) return false;
     void load();
     return true;
   }
 
   if (!folder) return null;
-  return <StandingAnswers enabled={enabled} rows={rows} stale={stale} onRetire={onRetire} onStop={onStop} />;
+  return <StandingAnswers enabled={enabled} rows={rows} stale={stale} onRetire={onRetire} onReuse={onReuse} />;
 }

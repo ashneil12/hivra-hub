@@ -9,6 +9,8 @@ export type StandingAnswer = {
   question: string;
   answer: string;
   uses: number;
+  /** True only after the person ticks reuse. Missing or anything else stays off. */
+  standing?: boolean;
 };
 
 export type RetireResult = {
@@ -59,13 +61,14 @@ export function StandingAnswers({
   rows,
   stale = false,
   onRetire,
-  onStop,
+  onReuse,
 }: {
   enabled: boolean;
   rows: readonly StandingAnswer[];
   stale?: boolean;
   onRetire?: (row: StandingAnswer, reason: string) => Promise<RetireResult>;
-  onStop?: (row: StandingAnswer) => Promise<boolean>;
+  /** The person's tick. Nothing else sets it, and it starts off. */
+  onReuse?: (row: StandingAnswer, standing: boolean) => Promise<boolean>;
 }) {
   const [asking, setAsking] = useState<string | null>(null);
   const [reason, setReason] = useState("");
@@ -73,12 +76,11 @@ export function StandingAnswers({
   const [errorKey, setErrorKey] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [retired, setRetired] = useState<Retired[]>([]);
-  const [stopped, setStopped] = useState<string[]>([]);
   const flight = useRef(0);
   const pending = useRef(false);
 
   if (!enabled && !stale && retired.length === 0) return null;
-  const hidden = new Set([...stopped, ...retired.map((row) => row.key)]);
+  const hidden = new Set(retired.map((row) => row.key));
   const active = rows.filter((row) => row.key && !hidden.has(row.key));
 
   function start(row: StandingAnswer) {
@@ -139,21 +141,20 @@ export function StandingAnswers({
     }
   }
 
-  async function stop(row: StandingAnswer) {
+  async function reuse(row: StandingAnswer, standing: boolean) {
     if (pending.current) return;
     pending.current = true;
     const mine = ++flight.current;
     setBusy(true);
     setError("");
     try {
-      const done = await onStop?.(row);
+      const done = await onReuse?.(row, standing);
       if (mine !== flight.current) return;
       if (!done) {
         setErrorKey(row.key);
         setError("Couldn't update this. Trying again.");
         return;
       }
-      setStopped((current) => (current.includes(row.key) ? current : [...current, row.key]));
       setAsking(null);
     } catch {
       if (mine !== flight.current) return;
@@ -170,6 +171,9 @@ export function StandingAnswers({
   return (
     <section aria-label="Standing answers" className="flex flex-col gap-2 px-3 py-2">
       <h3 className="text-[13px] text-content">Standing answers</h3>
+      <p className="text-[12px] text-content/60">
+        A ticked answer is reused for similar questions. It is guidance, not permission.
+      </p>
       {stale ? <p className="text-[12px] text-content/60">Couldn't load standing answers. Trying again.</p> : null}
       {active.map((row) => (
         <article
@@ -230,9 +234,15 @@ export function StandingAnswers({
               <button type="button" className="text-[12px] text-content" disabled={busy} onClick={() => start(row)}>
                 Retire
               </button>
-              <button type="button" className="text-[12px] text-content/60" disabled={busy} onClick={() => void stop(row)}>
-                Stop reusing
-              </button>
+              <label className="flex items-center gap-2 text-[12px] text-content">
+                <input
+                  type="checkbox"
+                  checked={row.standing === true}
+                  disabled={busy}
+                  onChange={(event) => void reuse(row, event.target.checked)}
+                />
+                Reuse for similar questions
+              </label>
               {error && errorKey === row.key ? (
                 <p role="alert" className="text-[12px] text-content/70">
                   {error}

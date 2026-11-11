@@ -349,7 +349,9 @@ describe("ask_person and the decision Needs", () => {
     });
     const matched = await askPerson({ id: "fm" }, input, { project: "hivra" }, [row()], host);
     expect(matched).toMatchObject({ state: "answered", matched: true, standingId: "S-4", answer: "Keep 30 days" });
-    expect(String(matched.note)).toContain("guidance, not permission");
+    expect(String(matched.note)).toContain(
+      "A standing answer S-4 to a similar question: guidance, not permission",
+    );
     expect(String(matched.note)).not.toMatch(/[—–]/);
     expect(store.decisions).toHaveLength(1);
   });

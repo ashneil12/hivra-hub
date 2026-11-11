@@ -30,8 +30,8 @@ function On() {
       enabled
       rows={left}
       onRetire={async () => ({ applied: true, relied: ["task-1", "task-2"] })}
-      onStop={async (row) => {
-        setLeft((current) => current.filter((item) => item.key !== row.key));
+      onReuse={async (row, standing) => {
+        setLeft((current) => current.map((item) => (item.key === row.key ? { ...item, standing } : item)));
         return true;
       }}
     />
