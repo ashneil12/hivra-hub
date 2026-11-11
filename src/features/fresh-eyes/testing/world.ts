@@ -1,6 +1,7 @@
 // Tests only: a fresh-eyes review's world without the app. A disk and a clock, a fake Inbox (with the chat that asked), and
 // reviewers that answer when the test says.
 import type { AskInput } from "../../firstmate/model/steering";
+import { isFreshEyesDecisionKey } from "../../hub/model/decisionKey";
 import { memoryDisk } from "../../hub/model/localHub/localHub";
 import type { EyesDecision, FreshEyesBackend } from "../model/held";
 import type { ReviewerPort, ReviewerTurn } from "../model/review";
@@ -44,7 +45,7 @@ export function fakeInbox(options: { refuseChats?: boolean; failAsk?: boolean; f
     },
     async answer(project, key, answer, by) {
       // decisions.rs person_only: a review's question is the person's, and the app's own close, nobody else's.
-      if (/^fresh-eyes(-start)?\//.test(key) && by !== undefined && !["user", "person", "app:fresh-eyes"].includes(by)) {
+      if (isFreshEyesDecisionKey(key) && by !== undefined && !["user", "person", "app:fresh-eyes"].includes(by)) {
         throw new Error(`Only the person answers a fresh-eyes review; ${by} cannot. It waits in the Inbox until they do.`);
       }
       inbox.answered.push({ project, key, answer, ...(by ? { by } : {}) });

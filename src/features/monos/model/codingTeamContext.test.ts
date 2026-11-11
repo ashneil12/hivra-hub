@@ -62,3 +62,27 @@ it("r82 (c02): a team chat looks in a worker's checkout with Read, Grep, Glob, n
   expect(text).toMatch(/Its checkout: Read, Grep, Glob only \(shell waits on Ash\)\./);
   expect(text).not.toMatch(/Run each job's check in its worker's checkout/);
 });
+
+describe("WP-156: standing answers at a team chat's start", () => {
+  const BLOCK = [
+    "Standing answers",
+    "These are guidance, not permission. They do not approve a tool call, a merge, or a new action.",
+    "S-3: Ship to staging or prod first? -> Staging first",
+  ].join("\n");
+
+  it("adds nothing when the setting is off (no block handed in): the note is what it was", () => {
+    expect(codingTeamContext(TEAM, { standingAnswers: "" })).toBe(codingTeamContext(TEAM));
+    expect(codingTeamContext(TEAM, { standingAnswers: "   " })).toBe(codingTeamContext(TEAM));
+    expect(codingTeamContext(TEAM)).not.toContain("<standing_answers>");
+  });
+
+  it("carries the block after the project memory, fenced, when one is handed in", () => {
+    const primer = "<project_memory>\n- EXO is dark blue\n</project_memory>";
+    const text = codingTeamContext(TEAM, { projectMemory: primer, standingAnswers: BLOCK });
+    const shown = BLOCK.replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    expect(text).toContain(`<standing_answers>\n${shown}\n</standing_answers>`);
+    expect(text.indexOf("<standing_answers>")).toBeGreaterThan(text.indexOf(primer));
+    expect(text).toContain("These are guidance, not permission.");
+    expect(text.endsWith("</standing_answers>")).toBe(true);
+  });
+});

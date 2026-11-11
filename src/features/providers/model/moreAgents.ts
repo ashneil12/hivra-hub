@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { HARNESSES } from "../../sessions/model/session";
 
 /**
@@ -143,6 +144,8 @@ export function parseMoreAgentEntry(
   if (record.protocol !== MORE_AGENT_PROTOCOL) {
     return { ok: false, reason: `${MORE_AGENT_COPY.wrongVersion} Hivra runs ${MORE_AGENT_PROTOCOL} only.`, ...label };
   }
+  const argsProblem = argumentProblem(command, args);
+  if (argsProblem) return { ok: false, reason: argsProblem, ...label };
   const abilities: MoreAgentAbilities = {};
   const rawAbilities = record.abilities;
   if (rawAbilities && typeof rawAbilities === "object" && !Array.isArray(rawAbilities)) {
@@ -152,6 +155,79 @@ export function parseMoreAgentEntry(
     }
   }
   return { ok: true, entry: { id, name, command, args, protocol: MORE_AGENT_PROTOCOL, abilities } };
+}
+
+// The same argument rules as src-tauri/src/more_agents.rs (checked_fields), so a bad entry is refused when it is added.
+const SCRIPT_EXTENSIONS = [
+  "mjs", "cjs", "js", "jsx", "ts", "tsx", "py", "rb", "pl", "php", "lua", "sh", "json", "yaml", "yml",
+  "toml", "ini", "env", "conf", "cfg", "wasm", "txt",
+];
+const INTERPRETERS = ["node", "nodejs", "bun", "deno", "ruby", "perl", "php", "uv", "uvx", "tsx", "ts-node"];
+const LOADER_FLAG_NAMES = ["-m", "-r", "--require", "--import", "--loader", "--experimental-loader", "--env-file", "--preload"];
+const INLINE_FLAG_NAMES = ["-c", "-e", "--eval", "-p", "--print", "/c", "/k", "-command", "-encodedcommand"];
+
+function isInterpreter(command: string): boolean {
+  const name = commandBasename(command);
+  return INTERPRETERS.includes(name) || name.startsWith("python");
+}
+
+function valuesOf(arg: string): string[] {
+  if (!arg.startsWith("-")) return [arg];
+  const out: string[] = [];
+  const eq = arg.indexOf("=");
+  if (eq >= 0) out.push(arg.slice(eq + 1));
+  if (arg.length > 2 && !arg.startsWith("--")) out.push(arg.slice(2));
+  return out;
+}
+
+function isRelativeFile(value: string): boolean {
+  if (!value || value.includes("://") || value.startsWith("@")) return false;
+  if (value.startsWith("/") || /^[A-Za-z]:[\\/]/.test(value)) return false;
+  const ext = value.includes(".") ? value.slice(value.lastIndexOf(".") + 1).toLowerCase() : "";
+  const segments = value.split(/[/\\]/);
+  // A slash in a model name is not a path. Refuse a .. segment, a ~ path, a leading dot, or a script or config name.
+  return segments.some((segment) => segment === "..")
+    || segments.some((segment) => segment.startsWith("~"))
+    || value.startsWith(".")
+    || SCRIPT_EXTENSIONS.includes(ext);
+}
+
+/** The reason an argument list is refused, or null when it is allowed. */
+export function argumentProblem(command: string, args: string[]): string | null {
+  const interpreter = isInterpreter(command);
+  if (interpreter) {
+    const inline = args.some((arg) => {
+      const lower = arg.toLowerCase();
+      const flag = lower.split("=")[0];
+      if (INLINE_FLAG_NAMES.includes(flag)) return true;
+      if (lower.startsWith("-") && !lower.startsWith("--") && lower.length <= 5 && /^-[a-z]+$/.test(lower)) {
+        return /[cep]/.test(lower.slice(1));
+      }
+      return false;
+    });
+    if (inline) return "An agent cannot be started with an inline program (-c, -e, --eval or -p). Point at its program file.";
+  }
+  if (args.some((arg) => valuesOf(arg).some(isRelativeFile))) {
+    return "An argument that names a file must give its full absolute path. A relative path is not pinned, so it is refused.";
+  }
+  if (interpreter) {
+    for (let i = 0; i < args.length; i++) {
+      const arg = args[i];
+      const lower = arg.toLowerCase();
+      const long = lower.split("=")[0];
+      const shortCluster = /^-[a-z]{1,3}$/i.test(arg) && /[mr]/i.test(arg.slice(1));
+      if (!LOADER_FLAG_NAMES.includes(long) && !shortCluster) continue;
+      const value = arg.includes("=") && long.startsWith("--")
+        ? arg.slice(arg.indexOf("=") + 1)
+        : shortCluster && !/[mr]$/i.test(arg)
+          ? arg.slice(arg.search(/[mr]/i) + 1)
+          : args[i + 1];
+      if (!value || !value.startsWith("/") && !/^[A-Za-z]:[\\/]/.test(value)) {
+        return "A loader flag (-m, -r, --require, --import, --loader, --env-file, --preload) must name an absolute file.";
+      }
+    }
+  }
+  return null;
 }
 
 /** Every entry, in order. A bad one is kept as unusable; a repeated id is unusable after the first. */
@@ -254,6 +330,11 @@ export class MoreAgentsChangedError extends Error {
 }
 
 const listeners = new Set<() => void>();
+
+/** The app announces every change to the list, from any window. `onChange` runs here for each one. */
+export async function subscribeMoreAgentsChanges(onChange: () => void): Promise<() => void> {
+  return listen("more-agents-changed", () => onChange());
+}
 
 export function subscribeMoreAgents(listener: () => void): () => void {
   listeners.add(listener);

@@ -145,3 +145,19 @@ it("a Mono sees one line for a brief to a coding team, not the workers", () => {
   expect(lines[0]?.text).not.toContain("third level");
   expect(crewBriefLines("mono-chat", [])).toEqual([]);
 });
+
+it("WP-156: a Mono's fresh turn carries the project's standing answers only when the app handed a block", () => {
+  const look = { name: "Ada", mascot: "dino", color: "x", projects: [] };
+  const block = "Standing answers\nThese are guidance, not permission.\nS-7: Staging or prod first? -> Staging first";
+  const plan = { soul: true, memory: false };
+  const off = monoTurnNote(look, files("You care about screens."), plan);
+  expect(off).not.toContain("<standing_answers>");
+  expect(monoTurnNote(look, files("You care about screens."), plan, { standingAnswers: "" })).toBe(off);
+  const on = monoTurnNote(look, files("You care about screens."), plan, { standingAnswers: block });
+  const shown = block.replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  expect(on).toContain(`<standing_answers>\n${shown}\n</standing_answers>`);
+  expect(on.indexOf("<standing_answers>")).toBeGreaterThan(on.indexOf("You care about screens."));
+  // A turn that hands over memory only (no soul) does not repeat the project's answers.
+  const memoryOnly = monoTurnNote(look, files("You care about screens."), { soul: false, memory: true }, { standingAnswers: block });
+  expect(memoryOnly).not.toContain("<standing_answers>");
+});

@@ -5,6 +5,7 @@ import type {
   TaskListMeta,
   TurnIntent,
 } from "../../../features/sessions/model/session";
+import { admitSpendTurn, noteUnpricedTurn, spendGateActive, type TurnOrigin } from "../../../features/usage/model/spendGate";
 import { requireChatFolder } from "./chatFolder";
 import { credentialBlock } from "./credentialGuard";
 import { invoke, isTauri } from "@tauri-apps/api/core";
@@ -117,6 +118,8 @@ export type HarnessAdapter = {
   restoreTaskLists?(threadId: string, lists: TaskListMeta[]): void;
   /** Carry on with a restored session's saved goal (Claude Code's /goal). */
   restoreGoal?(threadId: string, goal: SessionGoal): void;
+  /** Round 12: a restored transcript already left the launch folder, so relative paths wait again. */
+  restoreMovedFolder?(threadId: string, blocks: Block[]): void;
   /** Refresh the model catalog overlay when supported. */
   refreshCatalog?(): Promise<void>;
   /** Optional LLM tab title for the first turn. */
@@ -453,6 +456,12 @@ export function sendHarnessTurn(input: SendTurnInput & { harness: HarnessId }) {
     if (!adapter.live) {
       throw new Error(`${input.harness} is not connected yet`);
     }
+    // WP-176: the one admission point for spend. Every turn passes it, whatever started it (a person, a habit, a
+    // worker or a task). A refused turn starts nothing, and the reason is what the chat shows.
+    if (spendGateActive()) {
+      const admitted = await admitSpendTurn({ sessionId: input.sessionId, cwd: input.cwd, harness: input.harness, model: input.model, origin: input.origin });
+      if (!admitted.ok) throw new Error(admitted.reason);
+    }
     cancelIdlePark(input.sessionId);
     idleParkEvents.set(input.sessionId, input.onEvent);
     const controlled = typeof isTauri === "function" && isTauri();
@@ -608,6 +617,11 @@ export function steerHarnessTurn(
     if (!adapter.live) {
       throw new Error(`${input.harness} is not connected yet`);
     }
+    // WP-176: a steer is a turn too, so it passes the same admission (an automated steer over a limit is refused).
+    if (spendGateActive()) {
+      const admitted = await admitSpendTurn({ sessionId: input.sessionId, cwd: input.cwd, harness: input.harness, model: input.model, origin: input.origin });
+      if (!admitted.ok) throw new Error(admitted.reason);
+    }
     cancelIdlePark(input.sessionId);
     await adapter.steerTurn(input);
   });
@@ -694,6 +708,8 @@ export function bindHarnessSession(
   const adapter = adapterFor(harness, threadId);
   adapter?.bindSession(threadId, providerSessionId, cwd, providerAccountId);
   if (goal) adapter?.restoreGoal?.(threadId, goal);
+  // Round 12: before the task-list return, so a transcript with no task panel still drops the folder pin.
+  if (blocks?.length) adapter?.restoreMovedFolder?.(threadId, blocks);
   if (!blocks || !adapter?.restoreTaskLists) return;
   const lists = blocks.flatMap((block) =>
     block.role === "tasks" && block.taskList ? [block.taskList] : [],
@@ -761,13 +777,30 @@ export async function refreshHarnessCatalogs(
   );
 }
 
+/**
+ * A text call the adapter makes for the app (a title, a commit message, a PR, a branch name). It is automated work, so
+ * it passes the same spend admission as runHarnessTextPrompt, and what it ran is noted in the ledger as unpriced.
+ */
+async function gatedTextCall<T>(cwd: string, origin: TurnOrigin, run: () => Promise<T>): Promise<T> {
+  const sessionId = `text-prompt-${(textPromptSeq += 1)}`;
+  if (spendGateActive()) {
+    const admitted = await admitSpendTurn({ sessionId, cwd, harness: "claude", origin });
+    if (!admitted.ok) throw new Error(admitted.reason);
+  }
+  try {
+    return await run();
+  } finally {
+    noteUnpricedTurn({ sessionId, cwd });
+  }
+}
+
 export async function generateHarnessTitle(
   harness: HarnessId,
   input: TitleInput,
 ): Promise<GeneratedSessionTitle | null> {
   const adapter = getHarness(harness);
   if (!adapter?.generateTitle) return null;
-  return adapter.generateTitle(input);
+  return gatedTextCall("", "automated", () => adapter.generateTitle!(input));
 }
 
 export async function generateHarnessCommitMessage(
@@ -775,15 +808,19 @@ export async function generateHarnessCommitMessage(
   cwd: string,
   signal?: AbortSignal,
   paths?: readonly string[],
+  /** Who asked for it: a commit message Ash asks for is his turn (warned, not refused), otherwise automated. */
+  origin: TurnOrigin = "automated",
 ): Promise<string> {
   const adapter = requireHarness(harness);
   if (!adapter.generateCommitMessage) {
     throw new Error(`${harness} does not support commit message generation`);
   }
   signal?.throwIfAborted();
-  return paths === undefined
-    ? adapter.generateCommitMessage(cwd, signal)
-    : adapter.generateCommitMessage(cwd, signal, paths);
+  return gatedTextCall(cwd, origin, () =>
+    paths === undefined
+      ? adapter.generateCommitMessage!(cwd, signal)
+      : adapter.generateCommitMessage!(cwd, signal, paths),
+  );
 }
 
 export async function generateHarnessPrContent(
@@ -792,7 +829,7 @@ export async function generateHarnessPrContent(
 ): Promise<(PrContent & { base: string; head: string }) | null> {
   const adapter = getHarness(harness);
   if (!adapter?.generatePrContent) return null;
-  return adapter.generatePrContent(cwd);
+  return gatedTextCall(cwd, "automated", () => adapter.generatePrContent!(cwd));
 }
 
 export async function generateHarnessBranchName(
@@ -802,7 +839,7 @@ export async function generateHarnessBranchName(
 ): Promise<string | null> {
   const adapter = getHarness(harness);
   if (!adapter?.generateBranchName) return null;
-  return adapter.generateBranchName(cwd, message);
+  return gatedTextCall(cwd, "automated", () => adapter.generateBranchName!(cwd, message));
 }
 
 export async function warmupHarnessText(
@@ -849,7 +886,28 @@ function cancelledTextPrompt(): Error {
   return new Error("By-the-way request cancelled");
 }
 
+let textPromptSeq = 0;
+
+/**
+ * A text prompt (a title, a commit message, a memory or verdict pass) is automated work. It passes the spend gate's
+ * admission like any other automated turn, and what it ran is noted in the ledger as unpriced.
+ */
 export async function runHarnessTextPrompt(
+  input: TextPromptInput & { harness: HarnessId },
+): Promise<string> {
+  const sessionId = input.threadId ?? `text-prompt-${(textPromptSeq += 1)}`;
+  if (spendGateActive()) {
+    const admitted = await admitSpendTurn({ sessionId, cwd: input.cwd, harness: input.harness, model: input.model, origin: "automated" });
+    if (!admitted.ok) throw new Error(admitted.reason);
+  }
+  try {
+    return await runTextPromptUngated(input);
+  } finally {
+    noteUnpricedTurn({ sessionId, cwd: input.cwd });
+  }
+}
+
+async function runTextPromptUngated(
   input: TextPromptInput & { harness: HarnessId },
 ): Promise<string> {
   const adapter = requireHarness(input.harness);
