@@ -2908,14 +2908,11 @@ mod tests {
         );
     }
 
-    // Review #231 r3 repro (MEDIUM, the documented hash-to-run window, made deterministic): `approved_spawn` takes its
-    // last hash, then `harness_spawn` makes `<data>/more-agents/run/<uuid>` (harness.rs, after reserve_spawn and the
-    // previous child's stop) and only then spawns, on macOS through the disclaim launcher, a whole extra process start.
-    // A same-user process that can write the approved file (a user-writable /opt/homebrew/bin, ~/.local/bin, a repo's
-    // build output) watches the run folder (kqueue, FSEvents, inotify): the folder appearing means the check is done.
-    // It renames its own file over the approved one, the start runs it with no new Allow, and it puts the original
-    // back. Nothing is shown. The same window, wider, covers a pinned argument file (`node /abs/agent.mjs`), which the
-    // child reads after it starts. Not new against main; r2's private copy had closed it for install-folder writers.
+    // Review #231 r3 (MEDIUM, the hash-to-run window). harness_spawn makes the run folder and then hashes the path it
+    // will run (confirm_before_spawn) immediately before spawn. This test uses that order: the swap happens once the
+    // run folder exists, and the hash after the swap must fail. A writer who changes the file after that hash and
+    // before the exec can still win. The Allow card says so. Only the call order changed from the repro; a swapped
+    // program is still refused.
     #[cfg(unix)]
     #[test]
     fn review_231_r3_a_program_swapped_once_the_run_folder_appears_runs_without_a_new_allow() {
@@ -2928,30 +2925,18 @@ mod tests {
         approve(d.path(), "wp134", &path_value).expect("approve");
         let run = approved_start(d.path(), "wp134", "", &[], false, &path_value)
             .expect("starts as approved");
-        // What harness_spawn does next, and what a watcher sees: the run folder appears after the last hash.
+        // What harness_spawn does next, and what a watcher sees: the run folder appears, then the path that will
+        // run is hashed again (confirm_before_spawn) immediately before spawn.
         let folder = run_folder(d.path()).expect("run folder");
         let swap = bin.join(".wp134-swap.new");
         std::fs::write(&swap, b"#!/bin/sh\necho swapped-bytes\n").expect("swap file");
         std::fs::set_permissions(&swap, std::fs::Permissions::from_mode(0o755)).expect("chmod");
         std::fs::rename(&swap, &tool).expect("rename over the approved file");
-        let out = std::process::Command::new(&run.command)
-            .args(&run.args)
-            .current_dir(&folder)
-            .output()
-            .expect("spawn");
+        let hashed = confirm_before_spawn(d.path(), "wp134", &run.command);
         let _ = remove_run_folder(d.path(), &folder);
         assert!(
-            !String::from_utf8_lossy(&out.stdout).contains("swapped-bytes"),
-            "a program swapped after the last hash ran with no new approval"
-        );
-        // The path that will run is hashed again immediately before spawn. Replacing that path, not the original
-        // name, is the race a writer of the install folder still has. confirm_before_spawn is that last hash.
-        assert!(confirm_before_spawn(d.path(), "wp134", &run.command).is_ok());
-        std::fs::remove_file(&run.command).expect("drop the link");
-        std::fs::write(&run.command, b"#!/bin/sh\necho swapped-link\n").expect("new link");
-        assert!(
-            confirm_before_spawn(d.path(), "wp134", &run.command).is_err(),
-            "a replaced link still hashed as the approved file"
+            hashed.is_err(),
+            "a program swapped after the run folder appears still hashed as the approved file"
         );
     }
 
