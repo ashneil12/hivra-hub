@@ -227,9 +227,14 @@ fn launch_or_wait(
     now: i64,
 ) -> Result<SecurityGate, String> {
     let short = head.chars().take(12).collect::<String>();
-    if super::review::running_for(conn, repo, number, head)?.is_some() {
+    if let Some(running) = super::review::running_for(conn, repo, number, head)? {
+        if now.saturating_sub(running.run_started_at) > super::review::STUCK_AFTER_MS {
+            return Ok(SecurityGate::Hold(format!(
+                "Security review stuck for PR #{number} (head {short}): it has run longer than an hour. The merge is held; it never passes on the clock."
+            )));
+        }
         return Ok(SecurityGate::Hold(format!(
-            "Security review running for head {short}. The merge waits for its answer."
+            "Security review running for PR #{number} (head {short}). The merge waits for its answer."
         )));
     }
     if let Some(failed) = super::review::failed_for(conn, repo, number, head)? {
@@ -243,7 +248,8 @@ fn launch_or_wait(
             "{repo}#{number} is security-sensitive, and its author is not recorded, so no review can be started for head {short}."
         )));
     };
-    // Never use: the crew's exclusion list is not in this tree yet, so only the author is excluded.
+    // Never use: the crew's "never use" list lands with PR #194, which is not in this tree yet. Until it does, only the
+    // author is excluded here, and the list passed in is empty.
     let Some(reviewer) = super::review::pick_reviewer(&author, present, &[]) else {
         return Ok(SecurityGate::Refuse(format!(
             "{repo}#{number} is security-sensitive, and no builder other than its author ({author}) is signed in to review head {short}."
@@ -251,7 +257,7 @@ fn launch_or_wait(
     };
     let row = super::review::start(conn, repo, number, head, &author, &reviewer, now)?;
     Ok(SecurityGate::Hold(format!(
-        "Security review running for head {short} ({reviewer}). The merge waits for its answer. Review delegation {}.",
+        "Security review running for PR #{number} ({reviewer}, head {short}). The merge waits for its answer. Review delegation {}.",
         row.id
     )))
 }

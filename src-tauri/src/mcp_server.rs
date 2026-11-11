@@ -121,7 +121,9 @@ pub(crate) fn new_request_id() -> String {
 }
 
 pub(crate) fn valid_request_id(value: &str) -> bool {
+    // WP-203: a security review's request id is the app's launcher's alone; no caller's id may name one.
     !value.is_empty()
+        && !value.starts_with(crate::delivery::review::REQUEST_PREFIX)
         && value.len() <= 100
         && value
             .bytes()
@@ -1497,6 +1499,29 @@ mod tests {
         });
         let (outcome, _) = run_tool(&app, "delegate_task", json!({ "brief": "Build the title" }));
         assert_eq!(outcome.unwrap()["cliFallback"], line);
+    }
+
+    #[test]
+    fn delegate_task_refuses_a_security_review_request_id_before_any_app_call() {
+        // Entry: the MCP delegate tool. A caller that names a review request id gets no app call at all.
+        let calls = Arc::new(Mutex::new(Vec::<String>::new()));
+        let seen = calls.clone();
+        let clock = Arc::new(FakeClock::default());
+        let app = FakeApp::new(clock, move |action, _, _| {
+            seen.lock().unwrap().push(action.to_string());
+            Ok(json!({ "taskId": "t-1", "childSessionId": "c", "status": "running" }))
+        });
+        let review_id = format!("{}6162", crate::delivery::review::REQUEST_PREFIX);
+        let (outcome, _) = run_tool(
+            &app,
+            "delegate_task",
+            json!({ "brief": "Build it", "clientRequestId": review_id }),
+        );
+        assert!(outcome.is_err(), "{outcome:?}");
+        assert!(
+            calls.lock().unwrap().is_empty(),
+            "no app call for a review id"
+        );
     }
 
     #[test]

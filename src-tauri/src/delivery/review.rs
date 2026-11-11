@@ -26,6 +26,8 @@ const VERDICTS: [&str; 3] = ["confirmed", "needs_validation", "rejected"];
 const SEVERITIES: [&str; 5] = ["informational", "low", "medium", "high", "critical"];
 /// The most files one review reads (the review command's own cap).
 pub const FILE_CAP: usize = 40;
+/// How long a review may run before the gate says it is stuck. It still holds the merge: a stuck review never passes.
+pub const STUCK_AFTER_MS: i64 = 60 * 60 * 1000;
 
 pub fn ensure_table(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch(

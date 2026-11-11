@@ -3111,7 +3111,7 @@ fn the_gate_starts_a_review_to_another_builder_waits_for_its_settle_and_then_mer
     // 1. No record for the head: the app starts the review to claude (not the author, codex) and holds the merge.
     let first = merge::merge_with(&s, &gh, security_request(&f.project), 10, &present).unwrap();
     assert!(
-        matches!(&first, MergeOutcome::NeedsYou { question, .. } if question.contains("Security review running") && question.contains("(claude)")),
+        matches!(&first, MergeOutcome::NeedsYou { question, .. } if question.contains("Security review running for PR #7") && question.contains("(claude,")),
         "{first:?}"
     );
     assert!(
@@ -3193,5 +3193,37 @@ fn no_other_builder_signed_in_means_no_review_is_started_and_the_merge_is_refuse
     assert!(
         review_rows(&s).is_empty(),
         "nothing is started without a reviewer"
+    );
+}
+
+#[test]
+fn a_review_running_past_an_hour_is_stuck_and_still_holds_the_merge() {
+    // Item 5: a review that has run longer than the timeout says so, and holds: it never passes on its own clock.
+    let s = store();
+    let f = fixture("sec-stuck");
+    seed_author(&s, "codex");
+    let present = [
+        presence("codex", true, true),
+        presence("claude", true, true),
+    ];
+    let gh = security_gh(H1_SEC, &[SECURITY_FILE]);
+    let started = 1_000_000;
+    merge::merge_with(&s, &gh, security_request(&f.project), started, &present).unwrap();
+    let hour_and_a_bit = started + 60 * 60 * 1000 + 1;
+    let outcome = merge::merge_with(
+        &s,
+        &gh,
+        security_request(&f.project),
+        hour_and_a_bit,
+        &present,
+    )
+    .unwrap();
+    assert!(
+        matches!(&outcome, MergeOutcome::NeedsYou { question, .. } if question.contains("Security review stuck")),
+        "{outcome:?}"
+    );
+    assert!(
+        gh.ran("pr", "merge").is_empty(),
+        "a stuck review never merges"
     );
 }

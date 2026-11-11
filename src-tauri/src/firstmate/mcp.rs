@@ -126,6 +126,19 @@ mod tests {
     }
 
     #[test]
+    fn delegate_tasks_refuses_a_security_review_request_id_before_any_app_call() {
+        // Entry: the MCP delegate_tasks tool. A review request id from a caller is refused with no app call.
+        let app = Recorder(Mutex::new(Vec::new()));
+        let mut args = plan();
+        args["clientRequestId"] = json!(format!("{}6162", crate::delivery::review::REQUEST_PREFIX));
+        assert!(call(&app, "delegate_tasks", &args).is_err());
+        assert!(
+            app.0.lock().unwrap().is_empty(),
+            "no app call for a review id"
+        );
+    }
+
+    #[test]
     fn the_whole_plan_is_one_app_call_under_the_callers_request_id() {
         let app = Recorder(Mutex::new(Vec::new()));
         let mut args = plan();
