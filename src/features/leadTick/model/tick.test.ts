@@ -292,6 +292,18 @@ describe("lead tick step (d): ship on green", () => {
     expect(result.attention).toEqual(["#7 (WP-200) needs your word to merge: owner/app#7 is green. Merge it?"]);
   });
 
+  it("does not note a merge the person allowed as the Lead's own call (review of PR #244)", async () => {
+    // merge.rs: an agent's merge of a head the person approved carries `<by> (approved this head)`.
+    const ports = fake({
+      rows: [row({ id: "a", status: "pr_open" })],
+      watches: [watch({})],
+      merge: { outcome: "merged", headSha: "abc1234", allowedBy: "person (approved this head)" },
+    });
+    await runLeadTick({ ...base, shipOnGreen: true }, ports);
+    expect(ports.rows[0].status).toBe("merged");
+    expect(ports.decisions).not.toContainEqual(expect.objectContaining({ reason: "merge on green" }));
+  });
+
   it("never merges a security-parked package, even with Ship on green on", async () => {
     const ports = fake({ rows: [row({ id: "a", status: "pr_open", securityPark: true })], watches: [watch({})] });
     const result = await runLeadTick({ ...base, shipOnGreen: true }, ports);

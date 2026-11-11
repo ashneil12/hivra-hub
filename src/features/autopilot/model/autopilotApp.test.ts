@@ -3,7 +3,7 @@ import { newSession, type Block, type Session } from "../../sessions/model/sessi
 import { MONO_REPORT_PREFIX } from "../../monos/model/monoSessionCompletion";
 import { handleAgentApp, type AgentAppHost } from "../../agent-app/model/agentApp";
 import type { RedCategory } from "./redList";
-import { ashSaidIt, handleAutopilotApp, type AutopilotAppDeps, type AutopilotAppHost } from "./autopilotApp";
+import { ashSaidIt, defaultAutopilotDeps, handleAutopilotApp, type AutopilotAppDeps, type AutopilotAppHost } from "./autopilotApp";
 import { memoryAutopilot, type MemoryAutopilot } from "./memoryAutopilot";
 
 const NOW = new Date(2026, 9, 17, 15, 0).getTime();
@@ -312,5 +312,14 @@ describe("the app control", () => {
     );
     // Outside the desktop app there is no store.
     await expect(handleAgentApp(chat("w"), "r", "autopilot.status", {}, appHost)).rejects.toThrow("Autopilot needs the desktop app.");
+  });
+});
+
+describe("the captain in the app's own autopilot (review of PR #244)", () => {
+  it("the deps the app runs with give the captain its context, so money past the limit can pass up", () => {
+    // handleAgentApp calls handleAutopilotApp with defaultAutopilotDeps(). Without captainContext, captainDecide never
+    // sees moneyOverLimit, a rule, a standing answer or a turn count, and step 5 takes every recommendation.
+    const deps = defaultAutopilotDeps();
+    expect(deps.captainContext).toBeTypeOf("function");
   });
 });

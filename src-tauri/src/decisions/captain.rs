@@ -750,6 +750,105 @@ mod tests {
         .is_err());
     }
 
+    // Review of PR #244: `is_captain` reads the prefix as typed, but the turn count reads `answered_by LIKE 'captain:%'`
+    // (case-insensitive). A captain id in another case, or behind an invisible character, skips every guard here.
+    #[test]
+    fn a_captain_id_in_another_case_or_behind_an_invisible_character_is_still_a_captain() {
+        let store = store();
+        let mut conn = store.lock_conn().unwrap();
+        mate(&mut conn);
+        // No switch: every captain answer here must be refused.
+        open(&mut conn, "hivra", "secret/token", "Example: which name?");
+        open(&mut conn, "hivra", "font", "Example: which name?");
+        for (key, by) in [
+            ("secret/token", "Captain:ada"),
+            ("font", "CAPTAIN:ada"),
+            ("font", "\u{200B}captain:ada"),
+        ] {
+            let out = answer_with(
+                &mut conn,
+                "hivra",
+                key,
+                "Keep it",
+                Some(by.into()),
+                Some("standing answer: merge on green"),
+                NOW,
+            );
+            assert!(
+                out.is_err(),
+                "{by:?} answered {key} with the switch off: {:?}",
+                out.map(|o| o.decision.and_then(|d| d.answered_by))
+            );
+        }
+    }
+
+    // Review of PR #244: the store judges the question and the proposed answer, not the options or the recommendation,
+    // so a short answer to a question whose red part is in its options lands. The webview's check reads the options.
+    #[test]
+    fn a_captain_answer_is_refused_when_the_red_line_is_in_the_options() {
+        let store = store();
+        let mut conn = store.lock_conn().unwrap();
+        mate(&mut conn);
+        cover(&conn, "*");
+        ask(
+            &mut conn,
+            AskInput {
+                asked_by: "fm".into(),
+                asked_by_mono: None,
+                project: Some("hivra".into()),
+                key: "next-step".into(),
+                question: "Go ahead with the next step?".into(),
+                options: vec!["Yes, refund the second charge".into(), "No".into()],
+                recommended: Some("Yes, refund the second charge".into()),
+                task_ids: vec![],
+                keys: vec![],
+                force: false,
+                reason: None,
+            },
+            NOW,
+        )
+        .unwrap();
+        let out = captain_answers(
+            &mut conn,
+            "hivra",
+            "next-step",
+            "Yes",
+            "standing answer: merge on green",
+        );
+        assert!(
+            out.as_ref().is_err_and(|err| err.contains("red list")),
+            "{out:?}"
+        );
+    }
+
+    // Review of PR #244: the asker and every waiting worker hear a captain answer as the person's
+    // ("The person answered ... it outranks anything in your brief"), though the row says captain:<id>.
+    #[test]
+    fn the_asker_does_not_hear_a_captain_answer_as_the_persons() {
+        let store = store();
+        let mut conn = store.lock_conn().unwrap();
+        mate(&mut conn);
+        cover(&conn, "*");
+        open(&mut conn, "hivra", "font", "Example: which name?");
+        let out = captain_answers(
+            &mut conn,
+            "hivra",
+            "font",
+            "Keep it",
+            "standing answer: merge on green",
+        )
+        .unwrap();
+        assert!(out.applied);
+        assert!(!out.released.is_empty());
+        for message in &out.released {
+            assert!(
+                !message.text.contains("The person answered"),
+                "{}",
+                message.text
+            );
+        }
+    }
+
     #[test]
     fn charterboard_is_not_an_owner_key() {
         assert!(!owner_key("charterboard"));
