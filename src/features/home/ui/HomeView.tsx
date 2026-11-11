@@ -19,7 +19,9 @@ import { LOCAL_HUB_CHANGED, appHubTransport } from "../../hub/model/localHub/loc
 import { PanelFrame } from "../../panels/ui/PanelTabs";
 import { hideSection, moveSection, pinPanel, showSection, unpin } from "../model/arrangement";
 import { LateHomeLoad, createHomeLoader, mergeHomeLoad, realHomeSource, type HomeSnapshot } from "../model/load";
-import { builderHoldLine, hubProjectId, movingLines, namesFor, needsYouLines, projectLines, recentLines } from "../model/lines";
+import { builderHoldLine, hubProjectId, movingLines, namesFor, projectLines, recentLines, type HomeLine } from "../model/lines";
+import { useNeedsYou } from "../../needs/model/needsLive";
+import type { NeedsItem } from "../../needs/model/needsYou";
 import { openFromHome, targetFor } from "../model/opener";
 import { HOME_DOC_KEY, changeHome, type HomeDoc } from "../model/store";
 import { HomeScreen } from "./HomeScreen";
@@ -37,6 +39,19 @@ import {
 } from "../../programme/model/programme";
 
 const TASKS_CHANGED = "tasks://changed";
+
+function lineFromNeed(item: NeedsItem): HomeLine {
+  const kind = item.kind === "review" ? "review" : item.kind === "question" ? "question" : "decision";
+  return {
+    id: item.key,
+    kind,
+    text: item.sentence,
+    projectId: item.projectId ?? "",
+    target: item.open?.id ?? item.key,
+    at: item.at,
+    actions: item.actions,
+  };
+}
 const RETRY_MS = 2000;
 
 export function HomeView() {
@@ -288,7 +303,8 @@ export function HomeView() {
     }
   }
   const hold = builderHold();
-  const needsYou = [...(hold ? [builderHoldLine(hold)] : []), ...needsYouLines(snap?.decisions ?? [], tasks, name)];
+  const liveNeeds = useNeedsYou();
+  const needsYou = [...(hold ? [builderHoldLine(hold)] : []), ...liveNeeds.map(lineFromNeed)];
   const moving = movingLines(tasks, name);
   // The app holds no project at all (not one hidden by the trash or Ash's own "Remove from hub"): say why.
   const noProjects = snap && registryProjects().length === 0
@@ -297,6 +313,7 @@ export function HomeView() {
   return (
     <HomeScreen
       needsYou={needsYou}
+      needsMark={liveNeeds.length}
       projects={projectLines(projects, needsYou, moving, tasks)}
       noProjects={noProjects}
       onBringOver={() => void bringOver()}

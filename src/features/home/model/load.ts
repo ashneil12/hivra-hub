@@ -14,8 +14,6 @@ import {
   type HomeDoc,
   type HomeProject,
   type HomeTask,
-  namesFor,
-  needsYouLines,
   parseDecision,
   parseDoc,
   parseTask,
@@ -23,6 +21,8 @@ import {
   taskReadKeys,
 } from "./lines";
 import { browserStorage, readHome, type HomeStorage } from "./store";
+import { factsFromHome } from "../../needs/model/needsLive";
+import { needsYouQuiet } from "../../needs/model/needsYou";
 
 export class LateHomeLoad extends Error {
   constructor() {
@@ -126,7 +126,7 @@ export async function loadNeedsYouCount(source: HomeSource): Promise<number> {
   ]);
   const decisions = listOf(decisionsRaw).map(parseDecision).filter((item): item is HomeDecision => item != null);
   const tasks = dedupeTasks(taskLists.flatMap((list) => listOf(list).map(parseTask).filter((item): item is HomeTask => item != null)));
-  return needsYouLines(decisions, tasks, namesFor(projects)).length;
+  return needsYouQuiet(factsFromHome(decisions, tasks, projects), Date.now()).length;
 }
 
 export function createHomeLoader(source: HomeSource, now: () => number = Date.now) {

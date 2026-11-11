@@ -34,6 +34,47 @@ function noteLine(note: HomeNote): HomeLine {
   return { id: `${note.kind}:${note.id}`, kind, text: note.text, projectId: note.projectId, target: note.id, at: 0 };
 }
 
+function NeedRow({ line, onOpen }: { line: HomeLine; onOpen: (line: HomeLine) => void }) {
+  const actions = line.actions ?? [];
+  if (actions.length === 0) {
+    return (
+      <button
+        type="button"
+        data-home-line={line.kind}
+        className="flex min-h-10 w-full items-center border-t border-stroke px-3 py-1.5 text-left text-[13px] text-content hover:bg-content/8"
+        onClick={() => onOpen(line)}
+      >
+        <span className="min-w-0 flex-1 truncate">{line.text}</span>
+      </button>
+    );
+  }
+  return (
+    <div
+      data-home-line={line.kind}
+      data-needs-project={line.projectId || undefined}
+      className="flex min-h-10 w-full items-center gap-3 border-t border-stroke px-3 py-1.5 text-[13px] text-content"
+    >
+      <button type="button" className="min-w-0 flex-1 truncate text-left hover:underline" onClick={() => onOpen(line)}>
+        {line.text}
+      </button>
+      {actions.map((action, index) => (
+        <button
+          key={action.label}
+          type="button"
+          {...(index === 0 ? { "data-needs-answer": "" } : {})}
+          className="shrink-0 text-[12px] underline-offset-2 hover:underline"
+          onClick={(event) => {
+            event.stopPropagation();
+            action.run();
+          }}
+        >
+          {action.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
 function Notes({ notes, onOpen }: { notes: readonly HomeNote[]; onOpen: (line: HomeLine) => void }) {
   return notes.map((note) => (
     <button
@@ -187,6 +228,7 @@ export function HomeScreen({
   onAsk,
   renderPanel,
   programme,
+  needsMark = 0,
 }: {
   needsYou: readonly HomeLine[];
   /** One line per project (the overview). */
@@ -213,6 +255,8 @@ export function HomeScreen({
   renderPanel?: (panel: CatalogPanel) => ReactNode;
   /** WP-159: the programme card. Absent when the board is empty, so a quiet home stays quiet. */
   programme?: ReactNode;
+  /** How many items need Ash. The builder line is not one of them, so an empty home stays free of a number. */
+  needsMark?: number;
 }) {
   const lines: Record<string, readonly HomeLine[]> = {
     "needs-you": needsYou,
@@ -231,7 +275,7 @@ export function HomeScreen({
   const summaryNotes = summary ?? [];
   // Quiet is about activity: the projects overview alone is not something happening.
   const quiet =
-    known && !programme && !noProjects && needsYou.length + moving.length + recent.length === 0 && summaryNotes.length === 0;
+    known && !programme && !noProjects && needsMark === 0 && needsYou.length + moving.length + recent.length === 0 && summaryNotes.length === 0;
   return (
     <div
       data-home
@@ -263,6 +307,9 @@ export function HomeScreen({
             >
               <header className="flex items-center gap-3 px-3 py-2">
                 <h2 className="min-w-0 flex-1 truncate text-[13px] font-medium text-content">{title}</h2>
+                {ref.kind === "builtin" && ref.id === "needs-you" && needsMark > 0 ? (
+                  <span data-home-needs-count={needsMark} className="text-[12px] tabular-nums text-red-400">{needsMark}</span>
+                ) : null}
                 {/* Arranging is there when it's wanted: on hover or keyboard focus, not as words on every card. */}
                 <div data-home-arrange className="flex items-center gap-3 opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
                   <Control name={`Move ${title} up`} onClick={() => place > 0 && onMove(key, -1)} />
@@ -290,15 +337,7 @@ export function HomeScreen({
                   </button>
                 </div>
               ) : (
-                <button
-                  key={line.id}
-                  type="button"
-                  data-home-line={line.kind}
-                  className="flex min-h-10 w-full items-center border-t border-stroke px-3 py-1.5 text-left text-[13px] text-content hover:bg-content/8"
-                  onClick={() => onOpen(line)}
-                >
-                  <span className="min-w-0 flex-1 truncate">{line.text}</span>
-                </button>
+                <NeedRow key={line.id} line={line} onOpen={onOpen} />
               )) : panel && renderPanel ? renderPanel(panel) : (
                 <p className="border-t border-stroke px-3 py-3 text-[13px] text-content/70">This panel is not available.</p>
               )}
