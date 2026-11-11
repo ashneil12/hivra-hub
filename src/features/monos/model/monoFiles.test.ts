@@ -345,6 +345,23 @@ it("refuses a soul save that drops the charter, and keeps it when that Mono is r
   expect(String((saves[0]?.[1] as { text?: string }).text)).toContain(CAPTAIN_CHARTER);
 });
 
+it("does not save a soul when the current one could not be read", async () => {
+  const { id } = createMono();
+  invoke.mockImplementation(async (command: string) => {
+    if (command === "mono_read") throw new Error("disk");
+    return "saved";
+  });
+  await expect(writeAgentFile(id, "SOUL.md", "# Soul\n\nKept.\n", "h1")).rejects.toThrow(/could not be read/);
+  expect(invoke.mock.calls.some(([command]) => command === "mono_save")).toBe(false);
+
+  invoke.mockImplementation(async (command: string) => {
+    if (command === "mono_read") return { text: null, hash: "h0" };
+    return "saved-new";
+  });
+  await expect(writeAgentFile(id, "SOUL.md", "# Soul\n\nFirst.\n")).resolves.toBe("saved-new");
+  expect(invoke.mock.calls.some(([command]) => command === "mono_save")).toBe(true);
+});
+
 it("a whole soul given as instructions (the hub's team) is kept as it is; anything else goes under Standing instructions", () => {
   const soul = "# Soul\n\n## Role\nI run the plan.\n";
   expect(defaultSoul(soul)).toBe(soul);

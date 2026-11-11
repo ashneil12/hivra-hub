@@ -285,8 +285,13 @@ export async function writeAgentFile(
 ): Promise<string> {
   let saving = text;
   if (path === "SOUL.md") {
-    const current = await readAgentFile(monoId, path).catch(() => undefined);
-    if (current && hasCaptainCharter(current.text) && !hasCaptainCharter(text)) {
+    let current: Awaited<ReturnType<typeof readAgentFile>>;
+    try {
+      current = await readAgentFile(monoId, path);
+    } catch {
+      throw new Error("The soul could not be read, so it was not saved.");
+    }
+    if (hasCaptainCharter(current.text) && !hasCaptainCharter(text)) {
       throw new Error("The captain charter is fixed. Edit the personality beside it.");
     }
     if (hasCaptainCharter(text)) saving = withLockedRole(text);
