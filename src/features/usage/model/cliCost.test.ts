@@ -57,3 +57,11 @@ describe("cli cost meter", () => {
     expect(total.unpricedTurns).toBe(1);
   });
 });
+
+describe("a $0 report from a custom model is unmeasured", () => {
+  it("counts $0 from a billed model as unpriced, and a subscription's $0 as a price", () => {
+    expect(readTurnPrice({ costUsd: 0, inputTokens: 5 }, { billed: true })).toEqual({ kind: "unpriced" });
+    expect(readTurnPrice({ costUsd: 0, inputTokens: 5 })).toEqual({ kind: "priced", usd: 0 });
+    expect(readTurnPrice({ costUsd: 0.25, inputTokens: 5 }, { billed: true })).toEqual({ kind: "priced", usd: 0.25 });
+  });
+});
