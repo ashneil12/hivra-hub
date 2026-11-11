@@ -259,8 +259,9 @@ pub fn facts(get: Get, repo: &str, number: u64, memo: &Memo, read: &PrRead, stal
             return facts;
         }
     };
-    if c.status == "diverged" {
-        // Main was force-pushed: the files can't be listed, so the move counts as unknown.
+    if c.status == "diverged" || c.status == "behind" {
+        // Diverged: main was force-pushed and the files can't be listed. Behind: the base moved
+        // backwards between the two reads. Neither is a silent no-move.
         facts.moved = Some(Moved {
             files: Vec::new(),
             cut_short: true,
@@ -439,6 +440,11 @@ pub fn hold(get: Get, repo: &str, number: u64, head: &str, read: &PrRead) -> Opt
         Ok(c) if c.status == "diverged" => {
             return Some(format!(
                 "main was rewritten since this branch last took main, so {pr} waits. Merge main into it, push, and wait for green again."
+            ))
+        }
+        Ok(c) if c.status == "behind" => {
+            return Some(format!(
+                "main is behind where this branch last took it, so {pr} waits. Merge main into it, push, and wait for green again."
             ))
         }
         Ok(c) => Moved {
@@ -948,6 +954,50 @@ mod tests {
         assert!(
             hold(&get, "acme/web", 7, H1, &open(H1, B2, None)).is_some(),
             "main changed the file this pull request moved"
+        );
+    }
+
+    /// A compare whose status is "behind" between the merge base and the current base is a hold, even
+    /// when the listed files do not overlap. It is not "no move".
+    #[test]
+    fn a_behind_compare_between_the_two_reads_is_a_hold() {
+        let get = canned(vec![
+            took_main_at(B1),
+            (
+                moved_key(),
+                r#"{"status":"behind","ahead_by":0,"behind_by":1,"files":[{"filename":"docs/notes.md"}]}"#
+                    .into(),
+            ),
+            ("pulls/7/files".into(), files_json(&["src/lib.rs"])),
+        ]);
+        assert!(
+            hold(&get, "acme/web", 7, H1, &open(H1, B2, None)).is_some(),
+            "a behind compare is not a clean move"
+        );
+    }
+
+    /// The watch does not record a "behind" base compare as a silent no-move.
+    #[test]
+    fn a_behind_base_compare_is_told_and_not_a_silent_move() {
+        let get = canned(vec![
+            (
+                moved_key(),
+                r#"{"status":"behind","ahead_by":0,"behind_by":1,"files":[{"filename":"docs/notes.md"}]}"#
+                    .into(),
+            ),
+            (behind_key(), compare_json(&[], 0)),
+            ("pulls/7/files".into(), files_json(&["src/lib.rs"])),
+        ]);
+        let mut memo = Memo {
+            base_sha: Some(B1.into()),
+            ..Memo::default()
+        };
+        let read = open(H1, B2, None);
+        let got = facts(&get, "acme/web", 7, &memo, &read, false);
+        let told = news(&mut memo, &read, &got, false);
+        assert!(
+            told.iter().any(|change| matches!(change, Change::BaseMoved { .. })),
+            "a behind base is not a silent no-move: {told:?}"
         );
     }
 
