@@ -25,6 +25,14 @@ function interval(value: unknown): number {
   return Math.min(MAX_INTERVAL_MINUTES, Math.max(MIN_INTERVAL_MINUTES, Math.round(value)));
 }
 
+/**
+ * How long the lead lease lasts for one tick: two intervals, so a tick that runs a little late is not already stale.
+ * A bad interval is clamped the same way the setting is, and never becomes a fixed 15 minutes on its own.
+ */
+export function leaseMsForTick(intervalMinutes: number): number {
+  return readLeadTickSetting({ intervalMinutes }).intervalMinutes * 2 * 60_000;
+}
+
 export function readLeadTickSetting(raw: unknown): LeadTickSetting {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return defaultLeadTickSetting();
   const value = raw as Record<string, unknown>;

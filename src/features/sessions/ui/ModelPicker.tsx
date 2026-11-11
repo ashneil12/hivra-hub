@@ -66,6 +66,11 @@ type Props = {
   project?: string;
   /** Hide option rows from the menu when they render as pills beside the picker. */
   hideSettings?: boolean;
+  /**
+   * Native lists instead of the menu. Same installed-CLI filter and the same
+   * settings, for a surface whose tests and layout use selects.
+   */
+  fields?: boolean;
   /** Limit provider tabs for surfaces that only support one harness. */
   allowedHarnesses?: readonly HarnessId[];
   hotkeys?: boolean;
@@ -111,6 +116,9 @@ type ModelGroup = {
   name?: string;
   models: Array<{ item: AgentModel; index: number }>;
 };
+
+const FIELD_SELECT =
+  "max-w-full rounded-lg border border-content/10 bg-content/5 px-2 py-1 text-[13px] text-content outline-none focus:border-content/30";
 
 const MENU_WIDTH = 250;
 const MODEL_MENU_WIDTH = 310;
@@ -340,6 +348,7 @@ export function ModelPicker({
   values,
   project,
   hideSettings = false,
+  fields = false,
   allowedHarnesses,
   hotkeys = false,
   side = "top",
@@ -794,6 +803,47 @@ export function ModelPicker({
     submenu != null &&
     activeRow != null &&
     activeRow.dataset.modelControlIndex === String(active);
+
+  // After every hook. Leaving `open` false means this path never probes CLIs.
+  if (fields) {
+    const cli = pickerHarnesses.includes(harness) ? pickerHarnesses : [harness, ...pickerHarnesses];
+    const listed = source.modelsFor(harness);
+    const modelOptions = listed.some((item) => item.id === current.id) ? listed : [...listed, current];
+    return (
+      <>
+        <label className="flex items-center justify-between gap-3 text-[13px] text-content/80">
+          CLI
+          <select
+            aria-label="CLI"
+            className={FIELD_SELECT}
+            value={harness}
+            onChange={(event) => onChange(event.target.value as HarnessId, current.id)}
+          >
+            {cli.map((id) => (
+              <option key={id} value={id}>
+                {HARNESS_TITLE[id] ?? id}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="flex items-center justify-between gap-3 text-[13px] text-content/80">
+          Model
+          <select
+            aria-label="Model"
+            className={FIELD_SELECT}
+            value={current.id}
+            onChange={(event) => onChange(harness, event.target.value)}
+          >
+            {modelOptions.map((item) => (
+              <option key={item.id} value={item.id}>
+                {item.name}
+              </option>
+            ))}
+          </select>
+        </label>
+      </>
+    );
+  }
 
   return (
     <>
@@ -1290,9 +1340,12 @@ export function ModelSettingRows({
   model,
   values,
   side = "top",
+  fields = false,
   onSettingsChange,
   row,
 }: Pick<Props, "harness" | "model" | "values" | "side" | "onSettingsChange"> & {
+  /** Native lists for select settings. Toggles stay the plain switch. */
+  fields?: boolean;
   row: (setting: {
     id: string;
     label: string;
@@ -1321,6 +1374,23 @@ export function ModelSettingRows({
                   variant="plain"
                   onSettingsChange={onSettingsChange}
                 />
+              ) : fields ? (
+                <select
+                  aria-label={settingLabel(setting)}
+                  className={FIELD_SELECT}
+                  value={settingValue(setting, values)}
+                  onChange={(event) => {
+                    const value = event.target.value;
+                    if (setting.options.find((option) => option.value === value)?.unsupported) return;
+                    onSettingsChange({ ...values, [setting.id]: value });
+                  }}
+                >
+                  {setting.options.map((option) => (
+                    <option key={option.value} value={option.value} disabled={option.unsupported}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
               ) : (
                 <SelectPill
                   setting={setting}

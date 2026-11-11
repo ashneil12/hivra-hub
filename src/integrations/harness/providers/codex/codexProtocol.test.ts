@@ -13,6 +13,7 @@ import {
   mapCodexNotification,
   mapCodexSubagentSteps,
   codexSkipsOuterSandbox,
+  hivraSandboxEnabled,
   codexAutoFileChange,
   codexGrantsPermissionsAutomatically,
   resolvedPathInside,
@@ -46,6 +47,19 @@ describe("codexSkipsOuterSandbox", () => {
       codexSkipsOuterSandbox({ firstMate: true, runtimeMode: "auto", hivraSandbox: true }),
     ).toBe(true);
     expect(codexSkipsOuterSandbox({ runtimeMode: "full-access", hivraSandbox: true })).toBe(false);
+  });
+});
+
+describe("hivraSandboxEnabled", () => {
+  it("fails closed inside the app when the switch cannot be read", () => {
+    expect(hivraSandboxEnabled(true, null)).toBe(true);
+    expect(hivraSandboxEnabled(true, undefined)).toBe(true);
+    expect(hivraSandboxEnabled(true, {})).toBe(true);
+    expect(hivraSandboxEnabled(true, { enabled: "yes" })).toBe(true);
+    expect(hivraSandboxEnabled(true, { enabled: true })).toBe(true);
+    expect(hivraSandboxEnabled(true, { enabled: false })).toBe(false);
+    expect(hivraSandboxEnabled(false, null)).toBe(false);
+    expect(hivraSandboxEnabled(false, { enabled: true })).toBe(false);
   });
 });
 

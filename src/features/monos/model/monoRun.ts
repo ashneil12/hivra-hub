@@ -1,9 +1,12 @@
 // WP-182: fast mode on a Mono uses the catalog's `fast` setting. A model without
 // that setting never carries it. A change made while a turn is running waits here
 // until the turn is idle, so nothing restarts the running turn.
+import { customModelSettings, findCustomModel, isCustomModelId } from "../../sessions/model/customModels";
 import { mergeModelSettings, type AgentModel } from "../../sessions/model/models";
 import { HARNESSES, type HarnessId } from "../../sessions/model/session";
 import { findMono, monoForSession, type Mono } from "./mono";
+
+const ROUTE_KEYS = ["provider", "baseUrl", "modelId", "customModelId"] as const;
 
 const KEY = "monocode:mono-card-run";
 
@@ -29,14 +32,27 @@ export function withMonoFast(
 /**
  * What a card edit stores. Keeps this session's own compatible settings (not the
  * last ones another chat used, so a picked effort or this chat's context stays),
- * then overlays this Mono's fast flag. Keys the model does not offer are dropped.
+ * then overlays this Mono's fast flag. Keys the model does not offer are dropped,
+ * except a custom model's route (provider, address, model id), which the router
+ * reads and the catalog does not list as settings.
  */
 export function settingsForCard(
   model: AgentModel,
   current: Record<string, string> | undefined,
   engineFast: boolean | undefined,
 ): Record<string, string> {
-  return withMonoFast(model, mergeModelSettings(model, current), engineFast);
+  const next = mergeModelSettings(model, current);
+  if (isCustomModelId(model.id)) {
+    const saved = findCustomModel(model.id);
+    if (saved) Object.assign(next, customModelSettings(saved));
+    else if (current?.customModelId) {
+      for (const key of ROUTE_KEYS) {
+        const value = current[key];
+        if (value) next[key] = value;
+      }
+    }
+  }
+  return withMonoFast(model, next, engineFast);
 }
 
 export type CardRun = {
@@ -51,9 +67,15 @@ const memory = new Map<string, string>();
 
 /** Test seam. Runs after the seen record still matches and before it is written, so two windows can overlap. */
 let beforeCardRunWrite: (() => void) | undefined;
+/** Test seam. Runs after the write and before it is read back, so a second window can replace it. */
+let afterCardRunWrite: (() => void) | undefined;
 
 export function setBeforeCardRunWriteForTests(next: (() => void) | undefined): void {
   beforeCardRunWrite = next;
+}
+
+export function setAfterCardRunWriteForTests(next: (() => void) | undefined): void {
+  afterCardRunWrite = next;
 }
 
 function getItem(key: string): string | null {
@@ -134,17 +156,26 @@ function readBag(): { raw: string | null; bag: RunBag } {
   return { raw, bag: { rev: 0, runs: [] } };
 }
 
-/** Writes only when the record is still the one that was read. The seam runs between the two checks. */
+/**
+ * Writes only when the record is still the one that was read, then reads it back.
+ * A second window that lands its own write after this one makes the read-back miss,
+ * so the caller merges and tries again. The seam runs between the two checks before
+ * the write. The queue stays synchronous: the overlap check nests a second write in
+ * the seam and reads the result in the same turn.
+ */
 function commitBag(seenRaw: string | null, rev: number, runs: readonly CardRun[]): boolean {
   if (getItem(KEY) !== seenRaw) return false;
   beforeCardRunWrite?.();
   if (getItem(KEY) !== seenRaw) return false;
   if (!runs.length) {
     removeItem(KEY);
-    return true;
+    afterCardRunWrite?.();
+    return getItem(KEY) === null;
   }
-  setItem(KEY, JSON.stringify({ rev, runs }));
-  return true;
+  const payload = JSON.stringify({ rev, runs });
+  setItem(KEY, payload);
+  afterCardRunWrite?.();
+  return getItem(KEY) === payload;
 }
 
 export function queueCardRun(run: CardRun): void {
@@ -173,6 +204,7 @@ export function dropCardRun(run: CardRun): boolean {
 
 export function resetCardRunsForTests(): void {
   beforeCardRunWrite = undefined;
+  afterCardRunWrite = undefined;
   removeItem(KEY);
 }
 

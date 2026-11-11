@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   encodeModelLaunchId,
   resetHarnessModelOverlays,
+  resolveModel,
   setHarnessModels,
   type AgentModel,
   type ModelSetting,
@@ -16,7 +17,9 @@ import {
   peekCardRun,
   queueCardRun,
   resetCardRunsForTests,
+  setAfterCardRunWriteForTests,
   setBeforeCardRunWriteForTests,
+  settingsForCard,
   withMonoFast,
   type CardRun,
 } from "./monoRun";
@@ -129,6 +132,20 @@ describe("a card edit during a turn", () => {
     expect(applied).toEqual(["sess-ada"]);
   });
 
+  it("keeps both runs when another window replaces the record after this write", () => {
+    const ada: CardRun = { ...run, monoId: "ada" };
+    const bo: CardRun = { ...run, monoId: "bo", model: "claude:sonnet-plain" };
+    let replaced = false;
+    setAfterCardRunWriteForTests(() => {
+      if (replaced) return;
+      replaced = true;
+      localStorage.setItem("monocode:mono-card-run", JSON.stringify({ rev: 50, runs: [bo] }));
+    });
+    queueCardRun(ada);
+    expect(peekCardRun("ada")?.monoId).toBe("ada");
+    expect(peekCardRun("bo")?.monoId).toBe("bo");
+  });
+
   it("keeps the newer run when an older one is dropped", () => {
     queueCardRun(run);
     const newer = { ...run, model: "claude:sonnet-plain", settings: { effort: "low" }, engineFast: undefined };
@@ -142,4 +159,55 @@ describe("a card edit during a turn", () => {
 
 it("names a Mono settings change", () => {
   expect(kindLabel("mono.settings")).toBe("Mono settings");
+});
+
+it("keeps a custom model's route when a card edit changes effort, and drops it for a catalog model", () => {
+  setHarnessModels("claude", [sonnet]);
+  localStorage.setItem(
+    "monocode:custom-models",
+    JSON.stringify([
+      {
+        id: "mine",
+        name: "Mine",
+        provider: "openai",
+        baseUrl: "https://api.example/v1",
+        modelId: "gpt-x",
+        reasoningEfforts: ["low", "high"],
+      },
+    ]),
+  );
+  const route = {
+    provider: "openai",
+    baseUrl: "https://api.example/v1",
+    modelId: "gpt-x",
+    customModelId: "mine",
+  };
+  const custom = resolveModel("claude", "custom:mine");
+  const kept = settingsForCard(custom, { ...route, effort: "low", thinking: "gone" }, undefined);
+  expect(kept).toMatchObject({ ...route, effort: "low" });
+  expect(kept).not.toHaveProperty("thinking");
+
+  // The saved model supplies the route even when this edit did not carry it.
+  const fromSaved = settingsForCard(custom, { effort: "high" }, undefined);
+  expect(fromSaved).toMatchObject({ ...route, effort: "high" });
+
+  // A custom id with no saved model keeps a route that is already on the session.
+  localStorage.removeItem("monocode:custom-models");
+  const unsaved = resolveModel("claude", "custom:other");
+  const copied = settingsForCard(
+    unsaved,
+    { ...route, customModelId: "other", effort: "low", thinking: "gone" },
+    undefined,
+  );
+  expect(copied).toMatchObject({ ...route, customModelId: "other" });
+  expect(copied).not.toHaveProperty("thinking");
+  expect(copied).not.toHaveProperty("effort");
+
+  const catalog = settingsForCard(sonnet, { ...route, effort: "low" }, undefined);
+  expect(catalog.effort).toBe("low");
+  expect(catalog).not.toHaveProperty("provider");
+  expect(catalog).not.toHaveProperty("baseUrl");
+  expect(catalog).not.toHaveProperty("modelId");
+  expect(catalog).not.toHaveProperty("customModelId");
+  localStorage.removeItem("monocode:custom-models");
 });

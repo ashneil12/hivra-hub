@@ -34,6 +34,7 @@ import { IS_HUB_BUNDLE, ONE_CHAT_LOOK } from "../features/hub/model/hubBundle";
 import { hubDefaultsOn } from "../features/hub/model/hubDefaults";
 import { hubMonoRank } from "../features/hub/model/hubData";
 import { liveMonosNote } from "../features/hub/model/liveMonos";
+import { projectChatBrief } from "../features/hub/model/projectChatBrief";
 import { recoverMobileUsage } from "../features/mobile/model/mobileUsageLimit";
 import { runMobilePairing } from "../features/mobile/model/mobilePairing";
 import { sessionConversationPage } from "../features/agent-app/model/sessionConversation";
@@ -8249,10 +8250,11 @@ function Workspace({
   }, []);
 
   const onModelChange = useCallback(
-    (sessionId: string, harness: HarnessId, model: string) => {
+    (sessionId: string, harness: HarnessId, model: string): boolean => {
       const current = sessionsRef.current.find((s) => s.id === sessionId);
-      if (!current) return;
-      if (isPreparingHandoff(current)) return;
+      // WP-182: false means this session did not take the model, so a card must not show it.
+      if (!current) return false;
+      if (isPreparingHandoff(current)) return false;
       const resolved = resolveModel(harness, model);
       // Leaving fx resets the mode: fx's Full access is its only offer and must not carry to another CLI (WP-175).
       const leavesFx = current.harness === "fx" && resolved.harness !== "fx";
@@ -8302,9 +8304,11 @@ function Workspace({
         sessionId,
         { harness, model: resolved.id, modelSettings },
       );
-      if (switched.kind === "ok" && switched.outcome.forget) {
+      if (switched.kind !== "ok") return false;
+      if (switched.outcome.forget) {
         void forgetHarnessSession(switched.outcome.forget, sessionId);
       }
+      return true;
     },
     [],
   );
@@ -10063,6 +10067,10 @@ function Workspace({
           // r66: Chief of Staff reads the live Mono list every turn (retired ones are off it), never from memory.
           const monosNow = mono && !rawCommand ? liveMonosNote(monoForSession(sessionId)?.id) : undefined;
           if (monosNow) appContext.push(monosNow);
+          // G3: a Mono's own chat for one project (the Chief of Staff's, in a project) reads that project's brief every
+          // turn: name, one line, folder, first mates, open needs. Its chat on Home gets none (projectChatBrief.ts).
+          const projectBrief = mono && !rawCommand ? projectChatBrief(sessionId) : undefined;
+          if (projectBrief) appContext.push(projectBrief);
           // On Claude Code the hub's note, soul and memory go on Claude Code's own system prompt (hubNote.ts); another
           // engine reads them ahead of the message. A memory change reaches a running Claude Code in the message.
           // WP-04: this is the engine alone; it used to ride on "has the Ash OS tools", which no chat has any more.

@@ -31,7 +31,7 @@ export type SchedulerDeps = {
   allowed(): boolean;
   /** The project's Lead and how its chat is, or why there is none to tick for. */
   resolve(folder: string): Promise<LeadContext | { skip: string }>;
-  ports(folder: string, context: LeadContext): LeadTickPorts;
+  ports(folder: string, context: LeadContext, intervalMinutes: number): LeadTickPorts;
   run(input: LeadTickInput, ports: LeadTickPorts): Promise<LeadTickResult>;
   /**
    * Hands what needs the person to the batched notable pings (WP-164). Routine progress is never told. `held` is true
@@ -121,7 +121,7 @@ export class LeadTickScheduler {
     if (leadBlockedReason(context.look)) return;
     const result = await this.deps.run(
       { folder, projectId: context.projectId, shipOnGreen: setting.shipOnGreen, noted: before?.noted ?? [], now },
-      this.deps.ports(folder, context),
+      this.deps.ports(folder, context, setting.intervalMinutes),
     );
     // Recorded first: if the record fails nothing is told, and the backoff keeps the next look from running it again.
     await store.recordRun(folder, { at: now, line: result.line, noted: result.noted });

@@ -21,9 +21,12 @@ import {
  */
 export function AutomationRuns({
   automations,
+  scopeProject,
   onOpenSession,
 }: {
   automations: readonly Automation[];
+  /** The open project. Empty shows every project's runs. */
+  scopeProject?: string;
   onOpenSession: (sessionId: string) => void | Promise<void>;
 }) {
   const [rows, setRows] = useState<ActivityEntry[]>([]);
@@ -31,6 +34,8 @@ export function AutomationRuns({
   const [result, setResult] = useState<RunResult | "">("");
   const [problem, setProblem] = useState<string | null>(null);
   const generation = useRef(0);
+  // Runs already shown. A later activity event reads only until it meets one.
+  const held = useRef<ActivityEntry[]>([]);
 
   const load = useCallback(async () => {
     const mine = ++generation.current;
@@ -39,8 +44,10 @@ export function AutomationRuns({
         (kind, before) =>
           invoke("activity_list", { query: { kind, limit: 100, before } }),
         () => mine !== generation.current,
+        held.current,
       );
       if (mine !== generation.current) return;
+      held.current = next;
       setRows(next);
       setProblem(null);
     } catch {
@@ -69,7 +76,7 @@ export function AutomationRuns({
     };
   }, [load]);
 
-  const shown = visibleRuns(rows, { automationId, result });
+  const shown = visibleRuns(rows, { automationId, result, project: scopeProject });
   const filtering = automationId !== "" || result !== "";
   const names = [...automations]
     .filter((automation) => automation.id.trim() !== "")

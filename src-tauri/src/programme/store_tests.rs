@@ -137,6 +137,61 @@ fn append_claim_finish_and_park_round_trip() {
 }
 
 #[test]
+fn enqueue_refuses_a_branch_that_was_not_made_for_the_package() {
+    let mut conn = memory();
+    let who = mate();
+
+    let mut foreign = input("WP-162", "Update leftovers");
+    foreign.branch = "ash/notes".into();
+    let err = enqueue(&mut conn, &who, &foreign, 1).unwrap_err();
+    assert!(
+        err.contains("not made for this package"),
+        "queued a branch that is not this package's: {err}"
+    );
+    assert!(list(&conn, &who).unwrap().is_empty());
+
+    let mut own_branch = input("WP-162", "Update leftovers");
+    own_branch.branch = "wp/162b-update-leftovers".into();
+    let err = enqueue(&mut conn, &who, &own_branch, 2).unwrap_err();
+    assert!(
+        err.contains("not made for this package"),
+        "queued a branch whose number is not this package's: {err}"
+    );
+
+    let mut longer = input("WP-9", "Nine");
+    longer.branch = "wp/90".into();
+    let err = enqueue(&mut conn, &who, &longer, 3).unwrap_err();
+    assert!(err.contains("not made for this package"), "{err}");
+
+    let mut shorter = input("WP-90", "Ninety");
+    shorter.branch = "wp/9".into();
+    let err = enqueue(&mut conn, &who, &shorter, 4).unwrap_err();
+    assert!(err.contains("not made for this package"), "{err}");
+
+    let mut numbered = input("WP-162", "Update leftovers");
+    numbered.branch = "wp/162".into();
+    let row = enqueue(&mut conn, &who, &numbered, 5).unwrap();
+    assert_eq!(row.branch, "wp/162");
+
+    let mut titled = input("WP-20", "Twenty");
+    titled.branch = "wp/WP-20".into();
+    let titled = enqueue(&mut conn, &who, &titled, 6).unwrap();
+    assert_eq!(titled.branch, "wp/WP-20");
+
+    let mut morning = input("WP-159", "Morning");
+    morning.branch = "wp/159".into();
+    let morning = enqueue(&mut conn, &who, &morning, 7).unwrap();
+    assert_eq!(morning.branch, "wp/159");
+
+    // Already open: a branch that is not this package's is still refused, and the row is left as it was.
+    let mut again = input("WP-162", "Update leftovers");
+    again.branch = "ash/notes".into();
+    let err = enqueue(&mut conn, &who, &again, 8).unwrap_err();
+    assert!(err.contains("not made for this package"), "{err}");
+    assert_eq!(get(&conn, &who, &row.id).unwrap().branch, "wp/162");
+}
+
+#[test]
 fn a_repeated_enqueue_does_not_overwrite() {
     let mut conn = memory();
     let who = mate();

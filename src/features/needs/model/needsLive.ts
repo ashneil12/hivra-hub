@@ -8,7 +8,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { projectKey } from "../../../shared/lib/paths";
 import { DECISIONS_CHANGED, tauriFirstMate, type Decision } from "../../firstmate/model/steering";
 import { foldDecisionKey, isPersonOnlyDecisionKey } from "../../hub/model/decisionKey";
-import { useDelegationRows } from "../../monos/model/delegationStore";
+import { delegationRows, useDelegationRows } from "../../monos/model/delegationStore";
 import { findMono } from "../../monos/model/mono";
 import { openFromHome } from "../../home/model/opener";
 import { parseTask, taskReadKeys, type HomeDecision, type HomeProject, type HomeTask } from "../../home/model/lines";
@@ -906,6 +906,10 @@ export function useNeedsYou(): NeedsItem[] {
       }
     };
   }, []);
+  return needsFrom(rows, delegations, Date.now());
+}
+
+function needsFrom(rows: readonly NeedsYouRow[], delegations: readonly NeedsDelegation[], now: number): NeedsItem[] {
   return needsYou(factsFromParts({
     remote,
     rows,
@@ -914,5 +918,13 @@ export function useNeedsYou(): NeedsItem[] {
     pages: safePages(),
     delegations,
     tasks: liveTasks,
-  }), Date.now());
+  }), now);
+}
+
+/**
+ * The same list, read once outside React (a chat's turn: hub/model/projectChatBrief.ts). It uses the last remote read the
+ * screens published; it starts no read of its own.
+ */
+export function currentNeedsYou(now = Date.now()): NeedsItem[] {
+  return needsFrom(currentNeedsYouRows(now), delegationRows(), now);
 }
