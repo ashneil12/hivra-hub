@@ -4,7 +4,10 @@
 use super::store::Memory;
 use super::*;
 use crate::session_store::SessionStore;
+use rusqlite::hooks::{AuthAction, AuthContext, Authorization};
 use rusqlite::{params, Connection};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 const VALUE: &str = "sk_live_51NxAbCdEfGhIjKl";
 const NOW: i64 = 1_700_000_000_000;
@@ -98,12 +101,16 @@ fn run_request(mono: &str) -> RunRequest {
     }
 }
 
-/// The Once card is deleted inside the grant transaction, and only at the version that was read.
-/// A version that moves while the grant is written (another window rebound the card) is left in place.
-/// Before the fix the delete ran after the commit and named no version, so it removed the newer card.
+/// The Once card is cleared only at the version that was read. A newer version another window has already
+/// committed is left in place, and this run waits: its grant rolls back. A missed version used to commit
+/// the grant anyway.
 #[test]
 fn once_grant_leaves_a_card_whose_version_moved() {
-    let store = SessionStore::open_in_memory().unwrap();
+    // A file, not memory: another window commits the new version, and a memory database is private to one connection.
+    let dir = std::env::temp_dir().join(format!("mc-once-version-{}", uuid::Uuid::new_v4()));
+    let _rm = RmDir(dir.clone());
+    let path = dir.join("monocode.db");
+    let store = SessionStore::open(path.clone()).unwrap();
     let vault = Memory::new();
     {
         let conn = store.lock_conn().unwrap();
@@ -142,19 +149,43 @@ fn once_grant_leaves_a_card_whose_version_moved() {
         .unwrap()
         .unwrap()
         .version;
-    // Moves the card's version in the same transaction as the once grant, which is what a racing rebind does.
-    conn.execute_batch(
-        "CREATE TRIGGER bump_secret_card_during_once
-         AFTER INSERT ON secret_grants
-         BEGIN
-           UPDATE decisions SET version = version + 100;
-         END;",
-    )
+    // Another window commits a new version after this run has read the card and before the grant is written.
+    // A bump inside the grant transaction would roll back with the grant, so it cannot stand in for that window.
+    let bumped = Arc::new(AtomicBool::new(false));
+    let flag = Arc::clone(&bumped);
+    let bump_path = path.clone();
+    let bump_key = decision_key.clone();
+    conn.authorizer(Some(move |ctx: AuthContext<'_>| {
+        if let AuthAction::Read {
+            table_name: "secret_card_bindings",
+            ..
+        } = ctx.action
+        {
+            if !flag.swap(true, Ordering::SeqCst) {
+                let other = Connection::open(&bump_path).unwrap();
+                other
+                    .busy_timeout(std::time::Duration::from_secs(2))
+                    .unwrap();
+                let moved = other
+                    .execute(
+                        "UPDATE decisions SET version = version + 100 WHERE project = '' AND decision_key = ?1",
+                        params![bump_key.as_str()],
+                    )
+                    .unwrap();
+                assert_eq!(moved, 1, "the other window must move the card");
+            }
+        }
+        Authorization::Allow
+    }))
     .unwrap();
     let outcome = prepare_run(&vault, &mut conn, run_request("mono-1"), NOW + 2).unwrap();
     assert!(
-        matches!(outcome, RunOutcome::Granted { .. }),
-        "the once answer still grants this run, got {outcome:?}"
+        bumped.load(Ordering::SeqCst),
+        "the other window never moved the card"
+    );
+    assert!(
+        matches!(outcome, RunOutcome::Waiting { .. }),
+        "a once answer whose card moved must wait, got {outcome:?}"
     );
     let card = crate::decisions::get(&conn, "", &decision_key)
         .unwrap()
@@ -169,6 +200,189 @@ fn once_grant_leaves_a_card_whose_version_moved() {
         grants_for(&conn, SCOPE_GLOBAL, "stripe-api-key")
             .unwrap()
             .is_empty(),
-        "the once grant must still be spent"
+        "no grant may be left behind"
     );
+}
+
+/// A refused Always deletes the card it read, and only that version. A newer card another window has
+/// already committed stays, binding and all. Covers both refusal sentences: a program that can run any
+/// code, and one that cannot.
+#[test]
+fn a_refused_always_does_not_delete_a_newer_card() {
+    for program in [code_program(), harmless_program()] {
+        refused_always_leaves_the_newer_card(program);
+    }
+}
+
+fn refused_always_leaves_the_newer_card(program: &str) {
+    let dir = std::env::temp_dir().join(format!("mc-always-version-{}", uuid::Uuid::new_v4()));
+    let _rm = RmDir(dir.clone());
+    let path = dir.join("monocode.db");
+    let store = SessionStore::open(path.clone()).unwrap();
+    let vault = Memory::new();
+    {
+        let conn = store.lock_conn().unwrap();
+        save_value(
+            &vault,
+            &conn,
+            SCOPE_GLOBAL,
+            "stripe-api-key",
+            None,
+            VALUE,
+            NOW,
+        )
+        .unwrap();
+    }
+    let request = RunRequest {
+        chat: "chat-1".into(),
+        mono: Some("mono-1".into()),
+        project: None,
+        name: "stripe-api-key".into(),
+        env: "STRIPE_API_KEY".into(),
+        command: vec![program.into(), "customers".into(), "list".into()],
+        cwd: None,
+        timeout_seconds: None,
+    };
+    let mut conn = store.lock_conn().unwrap();
+    let RunOutcome::Waiting { decision_key, .. } =
+        prepare_run(&vault, &mut conn, request.clone(), NOW).unwrap()
+    else {
+        panic!("the first run must ask");
+    };
+    let seen = crate::decisions::get(&conn, "", &decision_key)
+        .unwrap()
+        .unwrap()
+        .version;
+    crate::decisions::answer_seen(
+        &mut conn,
+        "",
+        &decision_key,
+        "Always for this Mono",
+        Some("person".into()),
+        Some(seen),
+        NOW + 1,
+    )
+    .unwrap();
+    let read = crate::decisions::get(&conn, "", &decision_key)
+        .unwrap()
+        .unwrap()
+        .version;
+    let bumped = Arc::new(AtomicBool::new(false));
+    let flag = Arc::clone(&bumped);
+    let bump_path = path.clone();
+    let bump_key = decision_key.clone();
+    conn.authorizer(Some(move |ctx: AuthContext<'_>| {
+        if let AuthAction::Read {
+            table_name: "secret_card_bindings",
+            ..
+        } = ctx.action
+        {
+            if !flag.swap(true, Ordering::SeqCst) {
+                let other = Connection::open(&bump_path).unwrap();
+                other
+                    .busy_timeout(std::time::Duration::from_secs(2))
+                    .unwrap();
+                let moved = other
+                    .execute(
+                        "UPDATE decisions SET version = version + 100 WHERE project = '' AND decision_key = ?1",
+                        params![bump_key.as_str()],
+                    )
+                    .unwrap();
+                assert_eq!(moved, 1, "the other window must move the card");
+            }
+        }
+        Authorization::Allow
+    }))
+    .unwrap();
+    let err = prepare_run(&vault, &mut conn, request, NOW + 2).unwrap_err();
+    assert!(
+        bumped.load(Ordering::SeqCst),
+        "{program}: the other window never moved the card"
+    );
+    assert!(err.contains("asks every time"), "{program}: {err}");
+    let card = crate::decisions::get(&conn, "", &decision_key)
+        .unwrap()
+        .expect("a refused Always deleted a newer card");
+    assert_eq!(
+        card.version,
+        read + 100,
+        "{program}: card version is {}",
+        card.version
+    );
+    assert_eq!(card.answer.as_deref(), Some("Always for this Mono"));
+    assert!(
+        binding_of(&conn, "", &decision_key).unwrap().is_some(),
+        "{program}: the newer card's binding was deleted"
+    );
+    assert!(
+        grants_for(&conn, SCOPE_GLOBAL, "stripe-api-key")
+            .unwrap()
+            .is_empty(),
+        "{program}: a refused Always left a grant"
+    );
+}
+
+/// "Always for this project" with no project never reaches put_grant. It must not fall through to a grant.
+#[test]
+fn an_always_for_this_project_with_no_project_does_not_grant() {
+    let store = SessionStore::open_in_memory().unwrap();
+    let vault = Memory::new();
+    {
+        let conn = store.lock_conn().unwrap();
+        save_value(
+            &vault,
+            &conn,
+            SCOPE_GLOBAL,
+            "stripe-api-key",
+            None,
+            VALUE,
+            NOW,
+        )
+        .unwrap();
+    }
+    let mut conn = store.lock_conn().unwrap();
+    let RunOutcome::Waiting { decision_key, .. } =
+        prepare_run(&vault, &mut conn, run_request("mono-1"), NOW).unwrap()
+    else {
+        panic!("the first run must ask");
+    };
+    let seen = crate::decisions::get(&conn, "", &decision_key)
+        .unwrap()
+        .unwrap()
+        .version;
+    crate::decisions::answer_seen(
+        &mut conn,
+        "",
+        &decision_key,
+        "Always for this project",
+        Some("person".into()),
+        Some(seen),
+        NOW + 1,
+    )
+    .unwrap();
+    let outcome = prepare_run(&vault, &mut conn, run_request("mono-1"), NOW + 2);
+    assert!(
+        outcome.is_err(),
+        "an Always answer with no project granted the run: {outcome:?}"
+    );
+    assert!(
+        grants_for(&conn, SCOPE_GLOBAL, "stripe-api-key")
+            .unwrap()
+            .is_empty(),
+        "no grant may be left behind"
+    );
+    let again = prepare_run(&vault, &mut conn, run_request("mono-1"), NOW + 3).unwrap();
+    assert!(
+        matches!(again, RunOutcome::Waiting { .. }),
+        "the next run must be asked, got {again:?}"
+    );
+}
+
+/// Removes a temp database directory after the store that uses it has been dropped.
+struct RmDir(std::path::PathBuf);
+
+impl Drop for RmDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
 }
