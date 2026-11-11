@@ -117,23 +117,60 @@ import {
   isAppDelegate,
   TASK_FIELDS,
   APP_DELEGATE_FIELDS,
+  gateSessionStart,
   type AgentAppTasksHost,
   type DelegationMeta,
 } from "./agentAppTasks";
 import { handleTaskStore, isTaskStoreAction, TASK_STORE_FIELDS } from "../../tasks/model/agentTasks";
 import { handleProgramme, isProgrammeAction, PROGRAMME_FIELDS } from "../../programme/model/programme";
 import { handlePrs, PR_FIELDS, type AgentAppPrsHost } from "./agentAppPrs";
+// WP-92: the vault's three actions (secrets.request, secrets.list, secrets.run).
+import {
+  handleSecrets,
+  SECRET_FIELDS,
+  type WorkerArmOutcome,
+  type WorkerArmRequest,
+} from "./agentAppSecrets";
 import { handleTimers, TIMER_FIELDS, type AgentAppTimersHost } from "./agentAppTimers";
 import { handleWorkLog, WORK_LOG_FIELDS, type WorkLogBackend } from "./agentAppWorkLog";
 import { handleRooms, ROOM_FIELDS, type AgentAppRoomsHost } from "./agentAppRooms";
 import { handleSelfBuild, SELF_BUILD_FIELDS } from "./agentAppSelfBuild";
 import { DOC_FIELDS, handleDocs } from "./agentDocs";
 import { handleActivity, handleMemoryRecall } from "../../chief/model/tools";
+import { captainCanRead, captainHandoff, delegationId, filedTaskId, handoffGoal } from "../../chief/model/handoff";
+import { hasCaptainCharter, isCaptainMono, withLockedRole } from "../../chief/model/charter";
+import { recordNote } from "../../chief/model/notes";
+import { checkBrief } from "../../firstmate/model/brief";
 import type { DocCreateInput, DocRecord, DocUpdateInput, DocWriteResult } from "../../docs/gateway";
 
 /** What a Mono hears if it reaches for the old proposal path. */
 /** Hivra WP-10: the definition of done for a hub change's worker (its brief says what to build and check). */
 export const SELF_BUILD_GOAL = "The change is made in the preview copy, the checks its brief names pass, and the report says how to see it.";
+
+/** A handoff that filed and then failed to delegate, keyed by the host so a retry on that host reuses the task. */
+const handoffOrphans = new WeakMap<object, Map<string, string>>();
+
+function handoffMemory(host: object): {
+  recall(key: string): string | undefined;
+  remember(key: string, taskId: string): void;
+  forget(key: string): void;
+} {
+  let kept = handoffOrphans.get(host);
+  if (!kept) {
+    kept = new Map();
+    handoffOrphans.set(host, kept);
+  }
+  const box = kept;
+  return {
+    recall: (key) => box.get(key),
+    remember: (key, id) => {
+      box.set(key, id);
+    },
+    forget: (key) => {
+      box.delete(key);
+    },
+  };
+}
 
 export const MONO_ONE_WAY = "There is one way to make a Mono: mono_create, in your chat with Ash. Draft it with him, he says yes, and it is made. Nothing is filed on Settings > Teams any more.";
 import { CHECKER_MONO_ID } from "../../hub/model/hubMcp";
@@ -146,6 +183,7 @@ import {
   handleAutopilotApp,
 } from "../../autopilot/model/autopilotApp";
 import { forUser } from "../../hub/model/userName";
+import { isReviewSession, REVIEW_REQUEST_PREFIX } from "../../security-review/model/launch";
 
 export type AppSessionListing = {
   id: string;
@@ -372,6 +410,11 @@ export type AgentAppHost = {
   /** WP-157: the work log. The app's own store when absent. */
   workLog?: WorkLogBackend;
   /**
+   * WP-92: a delegated worker's keys (`delegate_task`'s `secrets`). Rust checks each name, asks the person where
+   * needed, and arms the handles for the child session; no value crosses to this side.
+   */
+  secretsWorkerArm?(sessionId: string, request: WorkerArmRequest): Promise<WorkerArmOutcome>;
+  /**
    * The rooms (agentAppRooms.ts): private messages between Monos, and `delegated`, told of each delegation so work
    * started from a room comes back to it.
    */
@@ -466,8 +509,13 @@ const FIELDS = new Map<string, readonly string[]>([
   ...ROOM_FIELDS,
   ...SELF_BUILD_FIELDS,
   ...DOC_FIELDS,
+  // WP-92: the vault. Handles only; no action here returns a value.
+  ...SECRET_FIELDS,
   // WP-88: the activity log, read only.
   ["activity.list", ["project", "agent", "kind", "search", "before", "limit"]],
+  // WP-215: file a task, then hand it to the project's first mate. A first mate notes a call it settled.
+  ["captain.handoff", ["project", "department", "title", "brief"]],
+  ["decisions.note", ["project", "what", "reason"]],
 ]);
 
 /**
@@ -627,6 +675,28 @@ function requireProject(
   if (own) return own;
   if (mono.projects.length === 1) return mono.projects[0];
   throw new Error(`Pass "project" to choose one. Yours: ${choices()}`);
+}
+
+/** The lead a handoff briefs. With no coding-team map, the project path is still a lead the delegate call can name. */
+function handoffLead(project: string, host: AgentAppHost): string {
+  const work = host.tasks?.monoWork;
+  if (!work) return project;
+  const id = work.codingTeam(project)?.projectId?.trim();
+  if (!id) throw new Error("That project has no first mate.");
+  return id;
+}
+
+/** A coding-team chat notes its own project only. */
+function teamFolder(
+  team: { project: string; name: string; folder: string },
+  input: Record<string, unknown>,
+): string {
+  const named = optionalString(input.project, "project", 4096);
+  if (!named) return team.folder;
+  if (pathKey(named) === pathKey(team.folder) || pathKey(named) === pathKey(team.project) || named === team.project) {
+    return team.folder;
+  }
+  throw new Error("A coding-team chat notes its own project.");
 }
 
 /** A Mono's chat lives outside its projects; project access follows its roster. */
@@ -931,11 +1001,15 @@ async function handleSoul(
   const expectedHash = requiredString(input.expectedHash, "expectedHash", 128);
   // The file as this write found it, so its Bot changes row can put it back (D1).
   const before = await host.readAgentFile(monoId, "SOUL.md");
+  if (hasCaptainCharter(before.text) && !hasCaptainCharter(input.text)) {
+    throw new Error("The captain charter is fixed. Edit the personality beside it.");
+  }
+  const nextSoul = hasCaptainCharter(input.text) ? withLockedRole(input.text) : input.text;
   try {
     const hash = await host.writeAgentFile(
       monoId,
       "SOUL.md",
-      input.text,
+      nextSoul,
       expectedHash,
     );
     const bot = selfWriter(host, monoId);
@@ -945,7 +1019,7 @@ async function handleSoul(
       file: "SOUL.md",
       line: `${bot} changed its soul`,
       before: before.text ?? "",
-      after: input.text,
+      after: nextSoul,
       run: source.id,
     });
     return { file: "SOUL.md", updated: true, hash };
@@ -1546,6 +1620,11 @@ export async function handleAgentApp(
   input: Record<string, unknown>,
   host: AgentAppHost,
 ): Promise<unknown> {
+  // WP-203: a security review's request id and the review owner belong to the app's launcher. A caller can't name either.
+  if (requestId.startsWith(REVIEW_REQUEST_PREFIX)) {
+    throw new Error("Security review request IDs belong to the app's review launcher; pick another request ID.");
+  }
+  if (isReviewSession(source.id)) throw new Error("This session is reserved for the app's security review.");
   fields(action, input);
   checkerLane(source, action, host);
   // WP-70: the shared task list. Not the delegation tools below.
@@ -1564,6 +1643,7 @@ export async function handleAgentApp(
         if (typeof (task as { childSessionId?: unknown })?.childSessionId === "string") host.rooms?.delegated?.(source, task);
     return result;
   }
+  if (action.startsWith("secrets.")) return handleSecrets(source, action, input, host);
   if (action.startsWith("prs.")) return handlePrs(source, action, input, host);
   if (action.startsWith("timers.")) return handleTimers(source, action, input, host);
   // WP-157: the work log.
@@ -1613,13 +1693,91 @@ export async function handleAgentApp(
     if (action === "souls.read") return readForMerge(caller, mono, files, templates);
     if (typeof input.text !== "string" || input.text.length > 240_000)
       throw new Error("text must be a string under 240000 characters");
+    const current = await host.readAgentFile(mono, "SOUL.md");
+    const nextSoul = hasCaptainCharter(input.text) ? withLockedRole(input.text) : input.text;
+    if (hasCaptainCharter(current.text) && !hasCaptainCharter(nextSoul)) {
+      throw new Error("The captain charter is fixed. Edit the personality beside it.");
+    }
     return mergeSoul(
       caller,
-      { mono, text: input.text, expectedHash: requiredString(input.expectedHash, "expectedHash", 128) },
+      { mono, text: nextSoul, expectedHash: requiredString(input.expectedHash, "expectedHash", 128) },
       files,
       templates,
       host.now?.() ?? new Date(),
     );
+  }
+  // WP-215: file the task, then hand it to the project's first mate.
+  if (action === "captain.handoff") {
+    const mono = host.monoOf?.(source.id);
+    if (!host.isMono(source.id) || !isCaptainMono(mono)) {
+      throw new Error("Only the Chief of Staff hands work on.");
+    }
+    const project = requiredString(input.project, "project", 4096);
+    const title = requiredString(input.title, "title", 300);
+    const brief = requiredString(input.brief, "brief", 8000);
+    const lead = handoffLead(project, host);
+    const goal = handoffGoal(title, brief);
+    const problem = checkBrief({ intent: brief, spec: brief, done: goal });
+    if (problem) throw new Error(problem);
+    // The probe, the brief and the lead are settled before anything is filed, so a retry cannot file a second task.
+    await harnessesProbed();
+    return captainHandoff(
+      {
+        project,
+        department: typeof input.department === "string" ? input.department : undefined,
+        title,
+        brief,
+      },
+      {
+        canRead: (named) =>
+          captainCanRead(mono, named, async () => {
+            if (!mono?.id || !host.agentFiles) return undefined;
+            try {
+              return (await host.agentFiles(mono.id)).soul;
+            } catch {
+              return undefined;
+            }
+          }),
+        ...handoffMemory(host),
+        createTask: async (task) => {
+          const created = await handleTaskStore(source, "tasks.create", {
+            title: task.title,
+            description: task.brief,
+            project: task.project,
+          }, host);
+          return { id: filedTaskId(created) };
+        },
+        delegate: async (task) => {
+          const created = await handleTasks(source, `${requestId}-handoff`, "tasks.delegate", {
+            title: task.title,
+            brief: task.brief,
+            intent: task.brief,
+            goal,
+            lead,
+            taskId: task.taskId,
+          }, host, { startLaunch, fileStarted });
+          return { id: delegationId(created) };
+        },
+      },
+    );
+  }
+  // WP-215: the chat id is this chat, not a field on the call. Only a Mono or a coding-team chat, on its own project.
+  if (action === "decisions.note") {
+    const mono = host.isMono(source.id) ? host.monoOf?.(source.id) : undefined;
+    const team = mono ? undefined : host.codingTeamOf?.(source.id);
+    const folder = mono
+      ? requireProject(source, input, host)
+      : team
+        ? teamFolder(team, input)
+        : null;
+    if (!folder) throw new Error("Only a Mono or a coding-team chat notes a decision.");
+    const project = host.tasks?.hubProjectId?.(folder) ?? (team ? team.project : folder);
+    return recordNote({
+      project,
+      what: requiredString(input.what, "what", 2000),
+      reason: requiredString(input.reason, "reason", 500),
+      sessionId: source.id,
+    });
   }
   if (action === "activity.list") return handleActivity(source, input, host);
   if (action === "memory.recall") return handleMemoryRecall(source, input, host);
@@ -1892,6 +2050,8 @@ export async function handleAgentApp(
           : (optionalString(input.besideSessionId, "besideSessionId", 256) ??
             source.id);
       const id = `app-${source.id}-${requestId}`;
+      // WP-141 MEDIUM 5: a session start is gated like a worker, before its process starts.
+      await gateSessionStart(host, source, launch.harness, launch.cwd, id);
       if (besideSessionId)
         await host.start(
           launch,

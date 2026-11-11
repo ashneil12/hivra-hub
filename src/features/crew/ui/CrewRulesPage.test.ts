@@ -4,6 +4,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { invoke } from "@tauri-apps/api/core";
 import { builderScale, resetWorkerPool } from "../../monos/model/workerPool";
+import { ceilingForProject, resetSpendGate, saveTaskCeiling, spendSnapshot } from "../../usage/model/spendGate";
 import { CrewRulesPage } from "./CrewRulesPage";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
@@ -155,6 +156,61 @@ it("shows a lost save when the stored revision is not the one just written", asy
   expect(sets().at(-1)?.revision).toBe(1);
 });
 
+it("a role row is kept on save and is not an editable rule", async () => {
+  invokeMock.mockImplementation((cmd: string) => {
+    if (cmd === "crew_rules_get") {
+      return Promise.resolve({
+        rules: [
+          { labels: ["builder"], paths: [], cli: "codex" },
+          { labels: ["ui"], paths: ["src"], cli: "cursor" },
+        ],
+        plugins: [],
+        revision: 2,
+        signedIn: [],
+      });
+    }
+    if (cmd === "crew_rules_set") return Promise.resolve({ rules: [], plugins: [], revision: 3, signedIn: [] });
+    return Promise.resolve(undefined);
+  });
+  show();
+  await act(async () => undefined);
+  expect(container.querySelectorAll("[data-crew-rule]")).toHaveLength(1);
+  expect(container.querySelector<HTMLInputElement>('[aria-label="Labels for rule 1"]')?.value).toBe("ui");
+  await act(async () => {
+    click("Save");
+  });
+  const rules = (sets().at(-1)?.rules ?? []) as { labels: string[] }[];
+  expect(rules.map((rule) => rule.labels[0]).sort()).toEqual(["builder", "ui"]);
+});
+
+it("a save leaves role rules where they were, including a second rule for the same role", async () => {
+  invokeMock.mockImplementation((cmd: string) => {
+    if (cmd === "crew_rules_get") {
+      return Promise.resolve({
+        rules: [
+          { labels: ["builder"], paths: [], cli: "grok" },
+          { labels: ["ui"], paths: ["src"], cli: "cursor" },
+          { labels: ["builder"], paths: [], cli: "codex" },
+        ],
+        plugins: [],
+        revision: 2,
+        signedIn: [],
+      });
+    }
+    if (cmd === "crew_rules_set") return Promise.resolve({ rules: [], plugins: [], revision: 3, signedIn: [] });
+    return Promise.resolve(undefined);
+  });
+  show();
+  await act(async () => undefined);
+  await act(async () => {
+    click("Save");
+  });
+  const rules = (sets().at(-1)?.rules ?? []) as { labels: string[]; cli: string | null; paths: string[] }[];
+  expect(rules.map((rule) => rule.labels[0])).toEqual(["builder", "ui", "builder"]);
+  expect(rules.map((rule) => rule.cli)).toEqual(["grok", "cursor", "codex"]);
+  expect(rules[1]?.paths).toEqual(["src"]);
+});
+
 it("says on Crew defaults that the builder pauses apply to all projects", async () => {
   invokeMock.mockImplementation((cmd: string) =>
     cmd === "crew_rules_get"
@@ -199,4 +255,43 @@ it("shows the free disk pause on at 30 GB from the start, and lets the person tu
   setValue("Free disk limit in GB", "50");
   expect(builderScale().pauseFreeDiskGb).toBe(50);
   expect(line()).toContain("free disk is below 50 GB");
+});
+
+it("a project rule sets its task ceiling on save; loading its rules does not change the enforced one", async () => {
+  resetSpendGate();
+  saveTaskCeiling("/work/app", { hardUsd: 4, dailyUsd: 2, softAt: 0.5 }, spendSnapshot().book.revision);
+  let reads = 0;
+  invokeMock.mockImplementation((cmd: string) => {
+    if (cmd === "crew_rules_get") {
+      reads += 1;
+      return Promise.resolve({
+        rules: [{ labels: ["ui"], paths: [], cli: "cursor", taskCeilingUsd: reads === 1 ? 10 : 3 }],
+        plugins: [{ labels: ["ui"], paths: [], cli: "pi", taskCeilingUsd: 1 }],
+        revision: reads === 1 ? 1 : 2,
+        signedIn: [],
+      });
+    }
+    if (cmd === "crew_rules_set") return Promise.resolve({ rules: [], plugins: [], revision: 2, signedIn: [] });
+    return Promise.resolve(undefined);
+  });
+  show();
+  await act(async () => undefined);
+  const ceiling = container.querySelector<HTMLInputElement>('[aria-label="Task ceiling for rule 1"]');
+  expect(ceiling?.value).toBe("10");
+  expect(container.textContent).toContain("Saving a higher number raises it");
+  expect(container.textContent).not.toMatch(/your bill/i);
+  // Loading shows the rule's number but enforces the one saved, until the person saves the rules.
+  expect(ceilingForProject("/work/app")).toEqual({ hardUsd: 4, dailyUsd: 2, softAt: 0.5 });
+
+  await act(async () => {
+    setValue("Task ceiling for rule 1", "3");
+  });
+  await act(async () => {
+    click("Save");
+  });
+  const sent = sets().at(-1);
+  const rules = sent?.rules as { taskCeilingUsd: number | null }[];
+  expect(rules[0]?.taskCeilingUsd).toBe(3);
+  expect(ceilingForProject("/work/app")).toEqual({ hardUsd: 3, dailyUsd: 2, softAt: 0.5 });
+  resetSpendGate();
 });

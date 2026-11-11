@@ -5,6 +5,7 @@ import { useMemo, useRef } from "react";
 import { heldForReview } from "../../fresh-eyes/model/gate";
 import { tauriDelegations, type Delegation } from "../../monos/model/delegations";
 import { fanoutHost, type FanoutHost } from "../host/fanoutHost";
+import { tauriFanoutCheckpoints } from "../host/fanoutCheckpointStore";
 
 export type FanoutWindow = {
   /** Every row this window has: the open ones and the recent ones, any version. */
@@ -20,6 +21,8 @@ export function appFanoutHost(view: FanoutWindow, store: Pick<typeof tauriDelega
     fetch: async (owner, session) => (await store.owned({ ownerSession: owner, requestIds: [session] }))[0],
     folder: view.folder,
     reviewing: (session) => heldForReview(session),
+    // WP-172: a provider started again is found through its plan's record.
+    checkpoints: () => tauriFanoutCheckpoints,
   });
 }
 

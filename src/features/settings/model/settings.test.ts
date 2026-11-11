@@ -723,6 +723,8 @@ describe("settings navigation", () => {
       "history",
       "memory",
       "connectors",
+      // WP-92: the key vault.
+      "secrets",
       "keybindings",
       "chat",
       "providers",
@@ -809,6 +811,14 @@ describe("settings search", () => {
       section: "chat",
       settingId: "format-on-save",
       label: "Format on save",
+    });
+  });
+
+  it("finds the short text setting on the providers page", () => {
+    expect(searchSettings("short text")[0]).toMatchObject({
+      section: "providers",
+      settingId: "text-generation",
+      label: "Short text",
     });
   });
 

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { callText, redListCategory, redVerdict, RED_LIST, type RedCategory } from "./redList";
+import cases from "./redListCases.json";
 
 const RED: Record<RedCategory, string[]> = {
   money: [
@@ -69,6 +70,20 @@ const RED: Record<RedCategory, string[]> = {
     "Store the seed phrase in notes",
     "security find-generic-password -s monocode-hub",
     "Share the service-role key with the worker",
+    // A file that holds a login, however it is read: cat, find, stat, file.
+    "cat ~/.netrc",
+    "find / -name .netrc",
+    "find ~/.config/gh",
+    "du -a ~/.gnupg",
+    "file ~/.netrc",
+    "stat ~/.netrc",
+    "find ~/Library/Keychains",
+    "cat ~/.docker/config.json",
+    "cat ~/.kube/config",
+    "cat ~/.npmrc",
+    "cat ~/.pgpass",
+    "cat ~/.aws/credentials",
+    "cat ~/.ssh/config",
   ],
 };
 
@@ -135,5 +150,11 @@ describe("Ash's red list", () => {
     const text = callText("How should I handle the duplicate charge?", "Option A: leave it", "Recommended: refund the customer");
     expect(redListCategory(text)).toBe("money");
     expect(callText(" A ", undefined, null, "")).toBe("a");
+  });
+
+  it("matches the cases the store's red list uses", () => {
+    for (const row of cases) {
+      expect(redListCategory(row.text), row.text).toBe(row.category);
+    }
   });
 });

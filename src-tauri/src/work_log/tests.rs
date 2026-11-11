@@ -987,6 +987,9 @@ fn an_answered_decision_writes_one_line() {
             options: vec!["CSV".into(), "JSON".into()],
             recommended: None,
             task_ids: Vec::new(),
+            keys: Vec::new(),
+            force: false,
+            reason: None,
         },
         unix_ms(2026, 11, 10),
     )
@@ -996,7 +999,7 @@ fn an_answered_decision_writes_one_line() {
         &project,
         "export-format",
         &format!("Keep CSV. {ASSIGNED}"),
-        None,
+        Some("user".into()),
         unix_ms(2026, 11, 10) + 60_000,
     )
     .unwrap();
@@ -1038,6 +1041,9 @@ fn an_answered_decision_writes_one_line() {
             options: vec!["Keep it".into(), "Delete it".into()],
             recommended: None,
             task_ids: Vec::new(),
+            keys: Vec::new(),
+            force: false,
+            reason: None,
         },
         unix_ms(2026, 11, 10),
     )
@@ -1126,6 +1132,9 @@ fn a_broken_work_log_does_not_stop_an_answer_from_landing() {
             options: vec!["CSV".into(), "JSON".into()],
             recommended: None,
             task_ids: Vec::new(),
+            keys: Vec::new(),
+            force: false,
+            reason: None,
         },
         at,
     )
@@ -1135,7 +1144,7 @@ fn a_broken_work_log_does_not_stop_an_answer_from_landing() {
         "tally",
         "export-format",
         "Keep CSV.",
-        None,
+        Some("user".into()),
         at + 60_000,
     )
     .expect("a journal that cannot be written must not fail the answer");
@@ -1212,6 +1221,9 @@ fn two_windows_keep_one_line_for_one_decision_and_one_send_back() {
                 options: vec!["CSV".into(), "JSON".into()],
                 recommended: None,
                 task_ids: Vec::new(),
+                keys: Vec::new(),
+                force: false,
+                reason: None,
             },
             1_000,
         )
@@ -1234,7 +1246,7 @@ fn two_windows_keep_one_line_for_one_decision_and_one_send_back() {
                     "tally",
                     "export-format",
                     word,
-                    None,
+                    Some("user".into()),
                     2_000 + index as i64,
                 );
             });

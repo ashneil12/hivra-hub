@@ -13,6 +13,12 @@
       "gave": "the first mate role, briefs with a definition of done, the status protocol and crew dispatch. The Pi watcher arm is not part of Hivra"
     },
     {
+      "name": "tstack (babysit-pr)",
+      "url": "https://github.com/t3dotgg/tstack",
+      "licence": "MIT",
+      "gave": "the logic of the PR watch's base checks: main moving under a pull request, BEHIND and DIRTY, and the rate-limit fallback (WP-202, written fresh in Rust)"
+    },
+    {
       "name": "pstack",
       "url": "https://github.com/cursor/plugins/tree/main/pstack",
       "licence": "MIT",
@@ -214,7 +220,7 @@
       "name": "T3 Code",
       "url": "https://github.com/pingdotgg/t3code",
       "licence": "MIT",
-      "gave": "the PR watch rules, honest Claude results, delegation delivery and stop rules, limit auto-resume guards, worktree cleanup cases, 18 recorded Claude transcripts for the test bench, a lead that can start work on any funded CLI (WP-120), a portable mid-thread handoff that says when a harness cannot resume, native subagent lineage with a child's approval answered on the parent thread (WP-122, ideas from the v0.1.0 and v0.1.7 release notes at e85e0094dd4617a1eada1ad7961f2132a79e67b2), forking a chat from a message (WP-123), copying the files named in .worktreeinclude into a new worktree (WP-138), and one prompt sent to several models from the thread sidebar (docs/user/thread-sidebar.md at e85e0094dd4617a1eada1ad7961f2132a79e67b2), and the open request for vendor cloud sessions (idea only, WP-136). WP-133 takes the remote, phone and web idea only (commit e85e0094) and does not copy T3 Connect"
+      "gave": "the PR watch rules, honest Claude results, delegation delivery and stop rules, limit auto-resume guards, worktree cleanup cases, 18 recorded Claude transcripts for the test bench, a lead that can start work on any funded CLI (WP-120), a portable mid-thread handoff that says when a harness cannot resume, native subagent lineage with a child's approval answered on the parent thread (WP-122, ideas from the v0.1.0 and v0.1.7 release notes at e85e0094dd4617a1eada1ad7961f2132a79e67b2), forking a chat from a message (WP-123), copying the files named in .worktreeinclude into a new worktree (WP-138), and one prompt sent to several models from the thread sidebar (docs/user/thread-sidebar.md at e85e0094dd4617a1eada1ad7961f2132a79e67b2), and a cheap text-generation model for titles, commit messages, pull request text and branch names (WP-129), and the open request for vendor cloud sessions (idea only, WP-136). WP-133 takes the remote, phone and web idea only (commit e85e0094) and does not copy T3 Connect"
     },
     {
       "name": "T3 Code usage",
@@ -235,6 +241,12 @@
       "gave": "desktop dictation that writes into the draft and does not send, from its voice input note at commit e85e0094dd4617a1eada1ad7961f2132a79e67b2 (ideas only, no code copied)"
     },
     {
+      "name": "T3 Code prompt links",
+      "url": "https://github.com/pingdotgg/t3code/blob/e85e0094dd4617a1eada1ad7961f2132a79e67b2/docs/user/prompt-links.md",
+      "licence": "MIT",
+      "gave": "local links that open a chat or fill a prompt on this computer, with no public guest link (WP-125)"
+    },
+    {
       "name": "Aether",
       "url": "https://runaether.dev",
       "licence": "closed source",
@@ -244,7 +256,7 @@
       "name": "Row-Bot",
       "url": "https://github.com/siddsachar/row-bot",
       "licence": "Apache-2.0",
-      "gave": "the automatic recall policy: skip gates, a query builder, a weighted score, rejection reasons, a broad-query margin, a cap on lines and a trace (WP-99), the correction rule behind the rules tier (WP-103), and a scan that refuses text which looks like instructions aimed at the model (WP-111)"
+      "gave": "the automatic recall policy: skip gates, a query builder, a weighted score, rejection reasons, a broad-query margin, a cap on lines and a trace (WP-99); the correction rule behind the rules tier (WP-103); the MCP tool effect classifier, the reviewer rules for approvals, the plugin install scanner and a guard on proposed instruction edits (WP-101); and a scan that refuses text which looks like instructions aimed at the model (WP-111)"
     },
     {
       "name": "Mnemos",
@@ -257,6 +269,12 @@
       "url": "https://github.com/BarganConstantin/ccdeck",
       "licence": "AGPL-3.0",
       "gave": "ideas only: a live session tree (main agent at the root, subagents as nodes, inspectable tool calls) and a waiting-on-you list ordered questions first and longest wait first"
+    },
+    {
+      "name": "precedent-log",
+      "url": "https://github.com/quotumorg/precedent-log",
+      "licence": "MIT",
+      "gave": "standing answers: show past answers before a new question, match a reworded question to an old answer, and list who relied on an answer when it is retired (ideas only)"
     },
     {
       "name": "tasklane",
@@ -449,6 +467,12 @@
       "url": "https://github.com/AtomicBot-ai/atomic-agent",
       "licence": "MIT",
       "gave": "contracts for a multi-part fan-out (what each part owns, provides and requires, and the checks it must pass), dependency waves, the person's own request quoted in every worker brief, and a few prompt lines (WP-171)"
+    },
+    {
+      "name": "Cloudflare security-audit-skill",
+      "url": "https://github.com/cloudflare/security-audit-skill",
+      "licence": "MIT",
+      "gave": "the structured security review: a coverage ledger, isolated hunters, a fresh verifier for each candidate, findings.json with two zero-dependency validators, and the reference notes for desktop IPC, supply chain and AI agents (WP-203)"
     }
   ],
   "components": [
@@ -507,6 +531,14 @@
       "copyright": "Copyright (c) 2026 Lauren Tan",
       "where": "src-tauri/plugins/pstack",
       "how": "pstack 0.15.36 copied unchanged from cursor/plugins at commit 6ea74587, less its Cursor-only parts (agents, automations, .cursor-plugin), images and a test corpus; embedded in the app and installed once per data folder as Hivra's default plugin, with its LICENSE (WP-41)"
+    },
+    {
+      "name": "tstack's babysit-pr (pr-wait)",
+      "url": "https://github.com/t3dotgg/tstack",
+      "licence": "MIT",
+      "copyright": "No code is copied, so tstack's copyright line is not reproduced here",
+      "where": "src-tauri/src/pr_watch/base.rs",
+      "how": "skills/babysit-pr/scripts/pr-wait read for the logic only (WP-202): main moving under a pull request, the BEHIND and DIRTY states and the rate-limit fallback. Written fresh in Rust"
     },
     {
       "name": "pstack (test fixture)",
@@ -821,12 +853,52 @@
       "how": "Pinned npm package for the optional split diff view (WP-116)."
     },
     {
+      "name": "Row-Bot's MCP tool effects",
+      "url": "https://github.com/siddsachar/row-bot",
+      "licence": "Apache-2.0",
+      "copyright": "Copyright 2026 Row-Bot Contributors",
+      "where": "src/features/autopilot/model/mcpEffect.ts, src/features/autopilot/model/LICENSE.row-bot",
+      "how": "WP-101: mcp_client/safety.py translated to TypeScript, with test_mcp_safety.py's cases ported. The verb patterns are written out as word lists; Row-Bot's interaction class is folded into a change so nothing but a read passes; and the provider's tool id is split into its server and tool, so a name-only read is trusted only for a server the person installed through Hivra's plugin flow."
+    },
+    {
+      "name": "Row-Bot's approval reviewer",
+      "url": "https://github.com/siddsachar/row-bot",
+      "licence": "Apache-2.0",
+      "copyright": "Copyright 2026 Row-Bot Contributors",
+      "where": "src/features/autopilot/model/reviewerRules.ts, src/features/autopilot/model/LICENSE.row-bot",
+      "how": "WP-101: the rules of approval_review.py, and its answer reading with test_approval_reviewer.py's cases ported. Hivra asks no model to judge an approval, so only the checks a fixed rule can make are code, as a veto the decision path calls; the judgement rules are kept as REVIEWER_RULES for a judged step. Row-Bot's four levels are kept for narrowing."
+    },
+    {
+      "name": "Row-Bot's install scanner",
+      "url": "https://github.com/siddsachar/row-bot",
+      "licence": "Apache-2.0",
+      "copyright": "Copyright 2026 Row-Bot Contributors",
+      "where": "src-tauri/src/plugins/scan.rs, src-tauri/src/plugins/LICENSE.row-bot",
+      "how": "WP-101: skills_hub/scanner.py translated to Rust, with test_skills_hub.py's cases ported. The thing scanned is a Hivra plugin, so no skills is fine and an unloadable skill only warns; a setup step the person already approves does not block; and the file list comes from the staged folder."
+    },
+    {
+      "name": "Row-Bot's proposal guard",
+      "url": "https://github.com/siddsachar/row-bot",
+      "licence": "Apache-2.0",
+      "copyright": "Copyright 2026 Row-Bot Contributors",
+      "where": "src/features/memory/backpass/proposalGuard.ts, src/features/memory/backpass/LICENSE.row-bot",
+      "how": "WP-101: evolution.py's injection_problems translated to TypeScript, with its E9 cases ported. It checks what an edit adds rather than a whole draft, names each kind with a plain reason, and uses Hivra's own secret check."
+    },
+    {
       "name": "Atomic Agent's fan-out contract",
       "url": "https://github.com/AtomicBot-ai/atomic-agent",
       "licence": "MIT",
       "copyright": "Copyright (c) 2026 Atomic Bot",
       "where": "src/features/firstmate/model/fanoutContract.ts, src/features/firstmate/model/fanoutWaves.ts, src/features/firstmate/model/fanoutChecks.ts, src/features/firstmate/model/originalRequest.ts",
       "how": "The contract's kinds of provide, its description and search-path rules, the contract block and per-task lines, and the requires-cycle walk (contract.ts); the wave planner and its cycle fallback (contract-waves.ts); the presence check of a provide in a file (contract-checks.ts); and the bounded quote of the person's request with its follow-up rule (worker-prompt.ts), translated to TypeScript at commit 1b4e641525c5b1427b48ff6b8d9932dc26bd8256 (WP-171). Hivra reads the contract from each task of one delegate_tasks call, refuses a requirement nothing provides and a provide nobody could check before anything starts, holds a task whose provider failed or did not deliver instead of running it anyway, fails a check that could not run, runs a declared check as the task's WP-40 checks gate, reads the request from the first mate's chat (the person's own messages only), and quotes it behind a mark on every line."
+    },
+    {
+      "name": "Cloudflare security-audit-skill (validators and reference notes)",
+      "url": "https://github.com/cloudflare/security-audit-skill",
+      "licence": "MIT",
+      "copyright": "Copyright (c) 2025-2026 Cloudflare, Inc.",
+      "where": "scripts/security-review/validate-findings.cjs, scripts/security-review/validate-coverage-ledger.cjs, scripts/security-review/report-schema.json, scripts/security-review/reference, scripts/security-review/LICENSE.cloudflare-security-audit",
+      "how": "Vendored from commit c1c8a8c1471069fb0e188eeaff69b8e8db6564a8 with a source header on each file; no code changed. Used by scripts/security-review/review.mjs"
     }
   ]
 }

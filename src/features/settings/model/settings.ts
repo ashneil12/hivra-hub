@@ -1,3 +1,4 @@
+import { invoke } from "@tauri-apps/api/core";
 import {
   ALT,
   IS_MAC,
@@ -46,7 +47,8 @@ export type SettingsSectionId =
   | "backups"
   | "history"
   | "memory"
-  | "connectors";
+  | "connectors"
+  | "secrets";
 
 /** Rail buckets. Sections list in order under their group label. */
 export type SettingsGroupId = "app" | "agents" | "workspace";
@@ -182,6 +184,13 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
     label: "Connectors",
     description: "The apps your Monos use (GitHub, Gmail, Slack and more), and where each login lives.",
     keywords: "connector login sign in composio apps oauth gmail slack github",
+  },
+  {
+    id: "secrets",
+    group: "app",
+    label: "Secrets",
+    description: "The keys your agents can use, kept in your Mac's keychain. Never in chats, files or backups.",
+    keywords: "secret key token password keychain agent approval env utility",
   },
   {
     id: "keybindings",
@@ -673,11 +682,23 @@ export const SETTINGS_INDEX: SettingsEntry[] = [
     keywords: "pacman snake arcade grid fun",
   },
   {
+    id: "text-generation",
+    section: "providers",
+    label: "Short text",
+    keywords: "title commit branch openrouter ollama deepseek",
+  },
+  {
     id: "agent-clis",
     section: "providers",
     label: "Agent CLIs",
     keywords:
       "codex opencode cursor grok pi omp fx hermes antigravity devin binary path",
+  },
+  {
+    id: "more-agents",
+    section: "providers",
+    label: "More agents",
+    keywords: "local command acp extra agent",
   },
   {
     id: "provider-accounts",
@@ -776,11 +797,24 @@ export const SETTINGS_INDEX: SettingsEntry[] = [
     label: "Plugin indexes",
     keywords: "index source bundled github marketplace url file",
   },
+  // WP-141: the crew defaults screen, above the advanced rules.
+  {
+    id: "crew-defaults",
+    section: "crew",
+    label: "Crew defaults",
+    keywords: "default lock never use fallback builder reviewer researcher",
+  },
   {
     id: "crew-rules",
     section: "crew",
     label: "Crew rules",
     keywords: "routing cli model effort reroute labels paths",
+  },
+  {
+    id: "spend-limit",
+    section: "crew",
+    label: "Spend limit",
+    keywords: "measured cost usd money budget pause builders ceiling month day",
   },
 ];
 
@@ -1309,6 +1343,47 @@ export function subscribeLiveAgentsEnabled(onStoreChange: () => void) {
   window.addEventListener(LIVE_AGENTS_ENABLED_CHANGE_EVENT, onStoreChange);
   return () =>
     window.removeEventListener(LIVE_AGENTS_ENABLED_CHANGE_EVENT, onStoreChange);
+}
+
+const MORE_AGENTS_ENABLED_KEY = "monocode.moreAgentsEnabled";
+
+export const MORE_AGENTS_ENABLED_DEFAULT = false;
+
+/** Fired on `window` when More agents is switched on or off. */
+export const MORE_AGENTS_ENABLED_CHANGE_EVENT =
+  "monocode:more-agents-enabled-change";
+
+export function loadMoreAgentsEnabled(): boolean {
+  return readFlag(MORE_AGENTS_ENABLED_KEY) ?? MORE_AGENTS_ENABLED_DEFAULT;
+}
+
+/** The app's own copy of the switch, which Rust checks before any More agents start. Failures are not shown here. */
+export function syncMoreAgentsSwitch(value: boolean): Promise<void> {
+  return invoke("more_agents_set_enabled", { on: value }).then(
+    () => undefined,
+    () => undefined,
+  );
+}
+
+export function saveMoreAgentsEnabled(value: boolean) {
+  writeFlag(MORE_AGENTS_ENABLED_KEY, value);
+  void syncMoreAgentsSwitch(value);
+  if (typeof window === "undefined") return;
+  window.dispatchEvent(
+    new CustomEvent<boolean>(MORE_AGENTS_ENABLED_CHANGE_EVENT, {
+      detail: value,
+    }),
+  );
+}
+
+export function subscribeMoreAgentsEnabled(onStoreChange: () => void) {
+  if (typeof window === "undefined") return () => {};
+  window.addEventListener(MORE_AGENTS_ENABLED_CHANGE_EVENT, onStoreChange);
+  return () =>
+    window.removeEventListener(
+      MORE_AGENTS_ENABLED_CHANGE_EVENT,
+      onStoreChange,
+    );
 }
 
 const CLOSE_TO_TRAY_KEY = "monocode.closeToTray";

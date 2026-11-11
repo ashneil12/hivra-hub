@@ -134,6 +134,7 @@ fn add_session(
             goal: None,
             private_chat: false,
             private_boundary_id: None,
+            registry_agent_id: None,
         },
     )
     .unwrap();
@@ -841,12 +842,14 @@ fn the_ticks_decide_what_goes_in_and_what_comes_back() {
     request.files.remove("workspace/hub/group-chats.json");
     export(&source, &request).unwrap();
     let names: Vec<String> = export_texts(&dest).into_keys().collect();
+    // WP-92: `secrets/index.json` is the one file this list gained, and it holds handles only (never a value).
     assert!(
         names
             .iter()
-            .all(|n| n == "manifest.json" || n.starts_with("setup/")),
+            .all(|n| n == "manifest.json" || n == "secrets/index.json" || n.starts_with("setup/")),
         "{names:?}"
     );
+    // WP-92: the vault's index is metadata the export always carries; it names no value and no other category.
     let preview = inspect(&target, &dest.to_string_lossy()).unwrap();
     assert!(preview.workspace.is_none() && preview.memory.is_empty());
 
@@ -4183,7 +4186,13 @@ fn an_export_whose_setup_files_are_past_the_budget_stops_with_one_line() {
     request
         .files
         .insert("setup/big.json".into(), " ".repeat(3 * 1024 * 1024));
-    let why = export_within(&source, &request, 2 * 1024 * 1024).unwrap_err();
+    let why = export_within(
+        &source,
+        &request,
+        2 * 1024 * 1024,
+        &crate::secrets::store::Memory::new(),
+    )
+    .unwrap_err();
     assert!(
         why.contains("setup files") && why.contains("3.0 MB") && why.contains("2 MB"),
         "{why}"
@@ -4191,7 +4200,13 @@ fn an_export_whose_setup_files_are_past_the_budget_stops_with_one_line() {
     assert!(!why.contains('\n'), "{why}");
     assert!(!dest.exists(), "an export was written");
     // Within it, the same request goes through.
-    assert!(export_within(&source, &request, 8 * 1024 * 1024).is_ok());
+    assert!(export_within(
+        &source,
+        &request,
+        8 * 1024 * 1024,
+        &crate::secrets::store::Memory::new()
+    )
+    .is_ok());
 }
 
 /// A chat the writer leaves out (here: its name clashes with another's apart from capitals) isn't counted as exported.
@@ -6782,4 +6797,166 @@ fn a_folder_that_cannot_be_resolved_is_not_taken_for_inside() {
     // The file is in the way of a folder: ENOTDIR, not "not there".
     assert!(!folder_is_inside(&root, &dir.0.join("file/sub")));
     assert!(!folder_is_inside(&root, &dir.0.join("link")));
+}
+
+/// WP-92: the vault goes as an index of handles. A planted value of no known shape is taken out of every text file,
+/// and the index holds metadata only.
+#[test]
+fn wp92_an_export_carries_the_index_and_no_vault_value() {
+    let source_dir = TestDir::new("wp92-export");
+    let out = TestDir::new("wp92-out");
+    let source = env_for(&source_dir.0);
+    let store = open_store(&source);
+    let conn = store.lock_conn().unwrap();
+    let vault = crate::secrets::store::Memory::new();
+    let value = "quietlyplanted1234567890";
+    crate::secrets::save_value(
+        &vault,
+        &conn,
+        "global",
+        "stripe-api-key",
+        Some("Stripe"),
+        value,
+        1_000,
+    )
+    .unwrap();
+    fs::create_dir_all(source.memory_root.join("ash")).unwrap();
+    fs::write(
+        source.memory_root.join("ash/MEMORY.md"),
+        format!("# Ash\n\nStripe: {value}\n"),
+    )
+    .unwrap();
+    drop(conn);
+
+    let dest = out.0.join("export");
+    export_with_vault(&source, &export_request(&dest, Form::Folder), &vault).unwrap();
+    let files = export_texts(&dest);
+    for (name, bytes) in &files {
+        assert!(
+            !String::from_utf8_lossy(bytes).contains(value),
+            "{name} carries the vault's value"
+        );
+    }
+    let index: Value = serde_json::from_slice(&files["secrets/index.json"]).unwrap();
+    assert_eq!(
+        index,
+        json!({"secrets": [{
+            "name": "stripe-api-key",
+            "scope": "global",
+            "label": "Stripe",
+            "last4": "7890",
+            "createdAt": 1_000,
+        }]})
+    );
+    assert!(!files["secrets/index.json"]
+        .windows(value.len())
+        .any(|window| window == value.as_bytes()));
+
+    // Import lands the row waiting for its value, with no grants and no .env records.
+    let target_dir = TestDir::new("wp92-import");
+    let target = env_for(&target_dir.0);
+    let copy = open_store(&target);
+    let copy_conn = copy.lock_conn().unwrap();
+    let request = ImportRequest {
+        path: dest.to_string_lossy().into_owned(),
+        memory: None,
+        workspace: None,
+    };
+    let report = import(&target, &request, || Ok(&*copy_conn)).unwrap();
+    assert_eq!(report.secrets_added, 1);
+    let rows = crate::secrets::handles(&copy_conn).unwrap();
+    assert_eq!(rows.len(), 1);
+    assert!(rows[0].needs_value);
+    assert_eq!(rows[0].version, 0);
+    assert!(rows[0].approved.is_empty());
+    assert!(rows[0].env_files.is_empty());
+    let grants: i64 = copy_conn
+        .query_row("SELECT COUNT(*) FROM secret_grants", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(grants, 0);
+}
+
+/// WP-92: the export's final scan refuses the whole export when a planted pattern survives the scrubber. A token
+/// used as a JSON key is not a value the scrubber rewrites, so the net has to catch it.
+#[test]
+fn wp92_the_final_scan_refuses_a_planted_pattern() {
+    let source_dir = TestDir::new("wp92-final-scan");
+    let out = TestDir::new("wp92-final-scan-out");
+    let source = env_for(&source_dir.0);
+    let dest = out.0.join("export");
+    let mut request = export_request(&dest, Form::Folder);
+    request.files.insert(
+        "setup/setup.json".to_string(),
+        json!({ GITHUB: 1 }).to_string(),
+    );
+    request.memory = None;
+    request.workspace = false;
+
+    let refused = export(&source, &request).unwrap_err();
+    assert!(
+        refused.contains("still holds something that looks like a secret"),
+        "{refused}"
+    );
+    assert!(!refused.contains(GITHUB), "{refused}");
+}
+
+// Review #231 r2 repro (MEDIUM): an export does not carry a chat's More agents entry, and the import writes none. A More
+// agents chat is saved with the placeholder harness `claude` (App.tsx, registrySessionFields), so the imported chat is
+// a plain Claude chat: its next message starts Claude Code with the other agent's conversation as its brief, instead of
+// going to the entry or refusing with "That agent is no longer in your list". The import should keep the entry id (the
+// target's own list and approval still decide whether it runs) or mark the chat so it refuses.
+#[test]
+fn review_231_r2_an_imported_more_agents_chat_does_not_become_a_claude_chat() {
+    let source_dir = TestDir::new("registry-source");
+    let target_dir = TestDir::new("registry-target");
+    let out = TestDir::new("registry-out");
+    let source = env_for(&source_dir.0);
+    let store = open_store(&source);
+    let conn = store.lock_conn().unwrap();
+    add_session(
+        &conn,
+        "acp-chat",
+        "Copilot",
+        "claude",
+        json!([
+            block("b1", "user", "hello"),
+            block("b2", "assistant", "hi from copilot")
+        ]),
+        5_000,
+    );
+    assert!(session_store::adopt_registry_agent(&conn, "acp-chat", "my-copilot").unwrap());
+    drop(conn);
+    drop(store);
+
+    let dest = out.0.join("export");
+    let mut request = export_request(&dest, Form::Folder);
+    request.memory = None;
+    request.files.clear();
+    export(&source, &request).unwrap();
+
+    let target = env_for(&target_dir.0);
+    let target_store = open_store(&target);
+    let conn = target_store.lock_conn().unwrap();
+    import_held(
+        &target,
+        &conn,
+        &ImportRequest {
+            path: dest.to_string_lossy().into_owned(),
+            memory: None,
+            workspace: Some(WorkspaceImport {
+                sessions: vec!["acp-chat".into()],
+                ..Default::default()
+            }),
+        },
+    )
+    .unwrap();
+    let stored = session_store::get_session(&conn, "acp-chat")
+        .unwrap()
+        .unwrap();
+    assert_eq!(stored.harness, "claude");
+    assert_eq!(
+        stored.registry_agent_id.as_deref(),
+        Some("my-copilot"),
+        "the imported More agents chat lost its entry and runs as a Claude chat"
+    );
 }

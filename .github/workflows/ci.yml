@@ -404,6 +404,14 @@ jobs:
         # catch packages that are missing from EPEL 10. fedora:43 joins it when the gate says full.
         image: ${{ fromJSON(needs.rpm-changes.outputs.full == 'true' && '["almalinux:10","fedora:43"]' || '["almalinux:10"]') }}
     steps:
+      # 11 Nov 2026: an AlmaLinux mirror sent packages at a few KB/s and several runs hit the 25 minute limit
+      # in "Install git". dnf only drops a mirror slower than 1 KB/s; this drops one under 100 KB/s for 15 seconds and
+      # tries the next, and fetches in parallel. It changes no package, only where they come from.
+      - name: Skip slow package mirrors
+        run: |
+          grep -q '^\[main\]' /etc/dnf/dnf.conf || echo '[main]' >> /etc/dnf/dnf.conf
+          printf 'minrate=100k\ntimeout=15\nmax_parallel_downloads=10\n' >> /etc/dnf/dnf.conf
+
       # Neither fedora:43 nor almalinux:10 ships git, which actions/checkout
       # otherwise has to work around with a REST API tarball download.
       - name: Install git
@@ -476,6 +484,14 @@ jobs:
     # binary can resolve against EL 10's glibc and runtime libraries.
     container: almalinux:10
     steps:
+      # 11 Nov 2026: an AlmaLinux mirror sent packages at a few KB/s and several runs hit the 25 minute limit
+      # in "Install git". dnf only drops a mirror slower than 1 KB/s; this drops one under 100 KB/s for 15 seconds and
+      # tries the next, and fetches in parallel. It changes no package, only where they come from.
+      - name: Skip slow package mirrors
+        run: |
+          grep -q '^\[main\]' /etc/dnf/dnf.conf || echo '[main]' >> /etc/dnf/dnf.conf
+          printf 'minrate=100k\ntimeout=15\nmax_parallel_downloads=10\n' >> /etc/dnf/dnf.conf
+
       - name: Install git
         run: dnf install -y git
 
