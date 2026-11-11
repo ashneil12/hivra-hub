@@ -58,6 +58,8 @@ const bookInDatabase: SpendBookStore = {
 async function syncProjectFolders(): Promise<void> {
   try {
     const projects = hubProjectList().filter((project) => project.folder);
+    // Nothing to send until the hub has projects: an empty list would clear the ledger's table (round 6).
+    if (projects.length === 0) return;
     const entries = await Promise.all(
       projects.map(async (project) => {
         try {
@@ -67,7 +69,9 @@ async function syncProjectFolders(): Promise<void> {
         }
       }),
     );
-    await invoke("spend_set_project_folders", { projects: entries.filter((entry) => entry !== null) });
+    const known = entries.filter((entry) => entry !== null);
+    if (known.length === 0) return;
+    await invoke("spend_set_project_folders", { projects: known });
   } catch {
     /* the next pass sends them again; until then a verdict that needs a folder holds (fail closed) */
   }
@@ -88,8 +92,11 @@ export function wireSpendGate(): void {
     },
     resolveFolder: (cwd) => invoke<string>("spend_project_folder", { cwd }),
   });
-  setSpendLoader((since) =>
-    Promise.all([
+  setSpendLoader((since) => {
+    // The project folders go to the ledger on every loader pass, so a list that was empty at start-up is sent again
+    // once the hub has projects (round 6).
+    void syncProjectFolders();
+    return Promise.all([
       invoke<LedgerRow[]>("spend_ledger_totals", { since }),
       // The redo links are read with the ledger, so a redo's ceiling follows its parent after a restart (WP-176 round 4).
       invoke<{ child: string; parent: string }[]>("spend_redo_links"),
@@ -104,9 +111,8 @@ export function wireSpendGate(): void {
         unpriced: row.unpriced,
         ...(row.source ? { source: row.source } : {}),
       }));
-    }),
-  );
-  void syncProjectFolders();
+    });
+  });
   setSpendPersist((entry) => invoke("spend_ledger_append", { entry }));
   useLiveSpendSink();
   if (typeof window !== "undefined") window.addEventListener("storage", onStorage);

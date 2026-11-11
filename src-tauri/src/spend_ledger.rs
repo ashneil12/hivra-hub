@@ -481,7 +481,10 @@ pub fn admit_automated(conn: &Connection, project: Option<&str>, now: i64) -> Re
                         window_spend(conn, since, Some(&stored), &projects)?
                     }
                     Some(_) => continue,
-                    None if projects.iter().all(|known| known.id != stored) => {
+                    // Only a folder that no project matches is unplaced. A key that is already a project id is placed.
+                    None if is_folder_key(&stored)
+                        && projects.iter().all(|known| known.id != stored) =>
+                    {
                         return Err(UNPLACED_LIMIT.to_string())
                     }
                     None => continue,
@@ -501,6 +504,13 @@ pub fn admit_automated(conn: &Connection, project: Option<&str>, now: i64) -> Re
         }
     }
     Ok(())
+}
+
+/// A key that names a folder (a path, not a project id): an absolute or Windows path.
+fn is_folder_key(key: &str) -> bool {
+    let b = key.as_bytes();
+    let drive = b.len() >= 2 && b[0].is_ascii_alphabetic() && b[1] == b':';
+    key.starts_with('/') || drive
 }
 
 /// One automated verdict: admitted, run, then noted in the ledger as unpriced. A refused verdict runs nothing and notes
@@ -885,6 +895,22 @@ mod tests {
         conn.execute("UPDATE spend_limit_book SET body = 'not json'", [])
             .unwrap();
         assert!(admit_automated(&conn, Some("hivra"), now).is_err());
+    }
+
+    #[test]
+    fn review_r6_the_project_list_the_app_sends_at_start_holds_every_project_less_verdict() {
+        // Review r6 repro: wireSpendGate sends the hub's projects once, at module load, before the hub store has loaded
+        // them, so the list is [] (write_projects clears the table). With that list, a limit on a known hub project, keyed
+        // by its id, holds every verdict that names no project; and a folder-keyed limit no longer holds its own
+        // project's verdict.
+        let conn = db();
+        let now = now_ms();
+        write_projects(&conn, &[]).unwrap();
+        write_book(&conn, 0, 1, r#"{"revision":1,"limits":[{"scope":"project","project":"hivra","period":"month","amountUsd":10,"warnAt":0.8}],"ceilings":{}}"#).unwrap();
+        assert!(
+            admit_automated(&conn, None, now).is_ok(),
+            "hivra's limit is placed (hivra is a hub project), so a verdict with no project is not hers to hold"
+        );
     }
 
     #[test]
