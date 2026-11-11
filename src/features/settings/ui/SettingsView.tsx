@@ -491,6 +491,8 @@ import {
 import { SkillsPage } from "../../skills/ui/SkillsPage";
 import { ProjectNotificationSettings } from "../../notifications/ui/ProjectNotificationSettings";
 import { WorktreesPage } from "../../source-control/ui/WorktreesPage";
+// WP-129: who writes titles, commits, pull request text and branch names.
+import { TextGenerationSetting } from "./TextGenerationSetting";
 import {
   removeWorktree,
   type RemoveWorktree,
@@ -771,7 +773,11 @@ export function SettingsView({
                 <McpSettings cwd={cwd} recents={recents} />
               ) : null}
               {section === "providers" ? (
-                <ProvidersPage cwd={cwd} recents={recents} />
+                <>
+                  {/* WP-129: who writes titles, commits, pull request text and branch names. */}
+                  <TextGenerationSetting />
+                  <ProvidersPage cwd={cwd} recents={recents} />
+                </>
               ) : null}
               {section === "worktrees" ? (
                 <WorktreesPage
