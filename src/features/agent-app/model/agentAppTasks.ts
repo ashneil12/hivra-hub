@@ -19,7 +19,7 @@
 //   dropped.
 import { monoHomeFence } from "../../hub/model/hubMcp";
 import type { QuickLaunch } from "../../quick-composer/model/quickComposer";
-import { modelEffortLabel, modelsFor, resolveModel } from "../../sessions/model/models";
+import { modelEffortLabel, modelsFor, preferredModelId, resolveModel } from "../../sessions/model/models";
 import { isCustomModelId } from "../../sessions/model/customModels";
 import {
   HARNESSES,
@@ -55,7 +55,17 @@ import { cliFallbackLine } from "../../crew/model/cliFallback";
 import { launchCatalog } from "../../crew/model/launchCatalog";
 import { lineRulesFor } from "../../crew/model/lineRules";
 import type { Catalog, RouteDefaults } from "../../crew/model/resolve";
-import { applyCrewLaunch, callerOverride, crewLabels, crewPaths } from "../../crew/model/taskRoute";
+import {
+  applyCrewLaunch,
+  callerOverride,
+  crewLabels,
+  crewPaths,
+  crewRefusal,
+  type CrewRouteAnswer,
+} from "../../crew/model/taskRoute";
+import { routeReason } from "../../crew/model/pick";
+import { CLI_ORDER, cliLabel, isCli } from "../../crew/model/clis";
+import { projectDefaultForFolder } from "../../crew/model/host";
 import { routeDefaults } from "../../crew/model/workerDefault";
 import { isFanoutAgainDecisionKey } from "../../hub/model/decisionKey";
 import {
@@ -174,12 +184,18 @@ export const TASK_FIELDS: ReadonlyArray<readonly [string, readonly string[]]> = 
       "gates",
       "checks",
       "code",
+      // WP-92: the keys a worker's environment holds (at most 3).
+      "secrets",
       // WP-144: a short reading list the fresh-eyes reviewers see with the plan.
       "reading",
+      // WP-141: builder, reviewer or researcher. A saved role row picks the CLI.
+      "role",
       // WP-70: the shared task this work moves. Not a worker's task id.
       "taskId",
     ],
   ],
+  // WP-141: the crew's pick for a job (a CLI or a Mono) and why. Reads only; delegate_task starts the work.
+  ["tasks.pick", ["role", "title", "brief", "files", "model", "effort", "lead"]],
   // WP-171: one call for a multi-part ask whose tasks name what they own, provide, require and check.
   ["tasks.fanout", ["intent", "tasks", "resume", "confirm"]],
   ["tasks.accept", ["taskId", "accept", "reason"]],
@@ -208,7 +224,7 @@ export const TASK_FIELDS: ReadonlyArray<readonly [string, readonly string[]]> = 
   ["tasks.answer", ["taskId", "requestId", "answers", "skip"]],
   // Hivra WP-14 (firstmate/model/steering.ts).
   ["tasks.message", ["taskId", "text", "whenBusy"]],
-  ["tasks.ask", ["key", "question", "options", "recommended", "taskIds", "answer"]],
+  ["tasks.ask", ["key", "question", "options", "recommended", "taskIds", "answer", "keys", "force", "reason"]],
 ];
 
 /**
@@ -241,6 +257,34 @@ export type DelegationMeta = {
   project?: string;
   /** WP-70: the shared task this work moves. */
   taskId?: string;
+  /** WP-141: why the crew picked this CLI, one plain line kept on the row and shown on the Crew tab. */
+  pickReason?: string;
+};
+
+/** WP-141: what tasks.pick asks the crew (the crew_route fields, plus the roster and how deep this chat is). */
+export type CrewPickQuery = {
+  labels: string[];
+  paths: string[];
+  override?: { cli?: string; model?: string; effort?: string };
+  project?: string;
+  mono?: string;
+  monoRules?: CrewRule[];
+  defaults?: RouteDefaults;
+  catalog?: Catalog;
+  monos: { id: string; name?: string; role?: string }[];
+  leadMonoId?: string;
+  depth: number;
+  atCap: string[];
+  monoOverride?: string;
+};
+
+export type CrewPickAnswer = {
+  ok: boolean;
+  cli: string | null;
+  monoId: string | null;
+  model: string | null;
+  effort: string | null;
+  reason: string;
 };
 
 /**
@@ -300,7 +344,7 @@ export type AgentAppTasksHost = {
    * Hivra WP-10: how deep a delegation from this chat would sit; rejects past the cap (first mate, first mate, workers)
    * with the reason (src-tauri/src/firstmate/mod.rs check_depth).
    */
-  checkDepth?(ownerSession: string): Promise<number>;
+  checkDepth?(ownerSession: string, opts?: { fanout?: boolean }): Promise<number>;
   /** Hivra WP-14: steering messages and decisions (firstmate/model/steering.ts). */
   firstMate?: FirstMateTasksHost;
   /**
@@ -319,6 +363,8 @@ export type AgentAppTasksHost = {
   /** The hub project id of a folder, and the folder of a hub project id. */
   hubProjectId?(folder: string): string | undefined;
   hubProjectFolder?(id: string): string | undefined;
+  /** WP-141 round 11: every hub project folder, so a worktree can find the project that owns it. */
+  hubProjectRoots?(): readonly string[];
   /** The clock waits are measured on; tests pin it. */
   now?(): number;
   /** Workers per project, and the ones waiting for a free worker (H8). */
@@ -328,6 +374,11 @@ export type AgentAppTasksHost = {
    * (hub/model/hubMemoryPrimer.ts workerMemoryBlock, the default), or undefined for a chat with no project.
    */
   memoryBrief?(ownerSession: string, harness: HarnessId): Promise<string | undefined>;
+  /**
+   * WP-156: active standing answers for the project a Lead is briefed on. Empty, or a failure, leaves the brief as it
+   * was. The text is guidance, not permission.
+   */
+  standingBrief?(project: string): Promise<string | undefined>;
   /**
    * WP-13: which CLI, model and effort this task uses. Absent, or a failure, keeps the model already chosen.
    * Labels are areas such as `ui`, not `area:ui`.
@@ -348,7 +399,35 @@ export type AgentAppTasksHost = {
     cliFrom?: string | null;
     modelFrom?: string | null;
     effortFrom?: string | null;
+    /** WP-141: the matched rule's first label, and what was skipped (Never use, the lock), for the reason. */
+    ruleLabel?: string | null;
+    skipped?: { field?: string | null; from?: string | null; value?: string | null; reason?: string | null }[] | null;
+    /** WP-141: the Never use list and the lock the route was chosen under. */
+    never?: string[] | null;
+    lock?: boolean | null;
   } | null | undefined>;
+  /**
+   * WP-141: the one gate a worker or session launch passes before its process starts (crew_launch_check). It rejects
+   * with the reason when the CLI is on Never use, is not the locked default under the lock, or the policy can't be read.
+   */
+  crewGate?(input: {
+    cli: string;
+    folder?: string;
+    mono?: string;
+    lockedDefault?: string;
+    sessionId: string;
+    /** The session that started this one, so the child keeps that session's projects. */
+    parentSession?: string;
+  }): Promise<void>;
+  /** WP-141 HIGH-B: whether any saved crew policy, in any scope, has the lock on. */
+  crewAnyLock?(): Promise<boolean>;
+  /**
+   * WP-141: the crew's pick across signed-in CLIs and the Monos this chat may brief, from the person's rules, defaults,
+   * Always use my default, Never use and fallback order (`crew_pick`). Reads only.
+   */
+  crewPick?(query: CrewPickQuery): Promise<CrewPickAnswer>;
+  /** WP-141: the Monos (project Leads) this Mono may brief: `lead` is what delegate_task's `lead` takes. */
+  pickMonos?(monoId: string): { id: string; name?: string; role?: string; lead: string }[];
   /**
    * WP-144: fresh-eyes review before builders start. Absent means today's start.
    * Hold only when `hold` is true.
@@ -364,6 +443,14 @@ export type AgentAppTasksHost = {
   }): Promise<{ hold: boolean; why: string }>;
   /** The Lead a brief names exists and this Mono may brief it. Throws when it does not. Checked before a review. */
   checkLead?(source: Session, mono: { id: string; name?: string }, lead: string): void | Promise<void>;
+  /** WP-141: the lock and Never use list in force for a Mono in a folder. Read before a brief or a default change. */
+  crewPolicy?(monoId: string | undefined, folder: string | undefined): Promise<{ neverUse: string[]; lock: boolean }>;
+  /** WP-156: the project the named Lead keeps, so the brief carries that project's standing answers. */
+  leadProject?(
+    source: Session,
+    mono: { id: string; name?: string },
+    lead: string,
+  ): string | undefined | Promise<string | undefined>;
   /** WP-144: the chat's briefs waiting on a fresh-eyes review, each named by the chat it will be. */
   freshEyesWaiting?(ownerSession: string): Promise<{ childSessionId: string; title: string; line: string }[]>;
   /** WP-144: the chat took back a brief waiting on a review (task_cancel). True when one matched. */
@@ -528,6 +615,33 @@ function fileList(value: unknown): string[] {
   return value.slice(0, 30).map((item: string) => item.trim());
 }
 
+/** WP-92: delegate_task's `secrets`: up to 3 keys, each into one environment variable of its own, never a value. */
+const SECRETS_MAX = 3;
+function workerSecrets(value: unknown): { name: string; env: string }[] {
+  if (value === undefined) return [];
+  if (!Array.isArray(value) || value.length > SECRETS_MAX)
+    throw new Error(`secrets must be up to ${SECRETS_MAX} keys, each with a name and an env`);
+  const out = value.map((item) => {
+    if (!item || typeof item !== "object" || Array.isArray(item))
+      throw new Error(
+        'Each key is an object with a name and an env, like {"name": "stripe-api-key", "env": "STRIPE_API_KEY"}',
+      );
+    const row = item as Record<string, unknown>;
+    const extra = Object.keys(row).filter((key) => key !== "name" && key !== "env");
+    if (extra.length) throw new Error(`Unknown secrets fields: ${extra.join(", ")}`);
+    const name = text(row.name, "name", 64);
+    const env = text(row.env, "env", 64);
+    if (!/^[A-Z_][A-Z0-9_]{0,63}$/.test(env))
+      throw new Error("env must be capital letters, digits and underscores, like STRIPE_API_KEY");
+    return { name, env };
+  });
+  if (new Set(out.map((secret) => secret.name.toLowerCase())).size !== out.length)
+    throw new Error("Each key once: two entries name the same key");
+  if (new Set(out.map((secret) => secret.env)).size !== out.length)
+    throw new Error("Each key needs its own env name");
+  return out;
+}
+
 function scopeList(value: unknown): string[] {
   if (value === undefined) return [];
   if (
@@ -643,6 +757,107 @@ function carriedMonoRules(rules: unknown): CrewRule[] {
 }
 
 /** Only a Mono's own chat or a coding-team chat has tasks; the checker only reads. */
+/** WP-141: the folder whose crew policy a launch or a pick reads: the chat's team, else the project it names, else its own. */
+/**
+ * WP-141 round 11: the worker default a session, a brief and a pick send. The same lookup as a plan
+ * (projectDefaultForFolder): the folder's own hub project, then the most specific project that owns it.
+ * Hub roots, when the host names them, are sent so a project with no crew row is still found.
+ */
+function projectDefaultFor(tasks: AgentAppTasksHost, folder: string) {
+  return projectDefaultForFolder(
+    folder,
+    (key) => tasks.pool?.projectDefault?.(tasks.hubProjectId?.(key) ?? key),
+    { roots: tasks.hubProjectRoots?.() },
+  );
+}
+
+function crewScopeFolder(owner: TaskOwner, source: Session, named: string | undefined, tasks: AgentAppTasksHost): string {
+  if (owner.team) return owner.team.folder;
+  if (named === undefined) return source.cwd;
+  // WP-141 HIGH-A: a name that is not a hub project is refused, not read as a folder. Policy and launch share one folder.
+  const hub = tasks.hubProjectFolder?.(named);
+  if (hub) return hub;
+  // A bare name the hub doesn't know (a folder's last segment, say) is refused: the policy would be read for nothing.
+  if (!named.startsWith("/") && !named.startsWith("~"))
+    throw new Error(`"${named}" is not one of the hub's projects, so nothing was started.`);
+  return named;
+}
+
+/** WP-141: a reason a fallback CLI may not take the work: the lock is on, or the chat's own CLI is on Never use. */
+function fallbackRefusal(answer: CrewRouteAnswer | null | undefined, baseline: string, routed: string): string | undefined {
+  const absent = `${cliLabel(routed)} isn't installed here`;
+  if (answer?.lock === true) return `${absent}, and Always use my default is on, so no other CLI was used.`;
+  if ((answer?.never ?? []).includes(baseline))
+    return `${absent}, and ${cliLabel(baseline)} is on Never use, so no other CLI was used.`;
+  return undefined;
+}
+
+function errorText(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+/**
+ * WP-141: the one gate a launch passes before its process starts. Without a gate (a build with none) the route alone
+ * decides; the app always wires one. The locked default is the route's CLI when the route is known.
+ */
+export async function gateCrewStart(
+  tasks: Pick<AgentAppTasksHost, "crewGate"> | undefined,
+  input: {
+    cli: string;
+    folder?: string;
+    mono?: string;
+    route?: CrewRouteAnswer | null;
+    sessionId: string;
+    parentSession?: string;
+  },
+): Promise<void> {
+  // WP-141 round 5: a build with no gate refuses. Failing open here let a launch through without a decision.
+  if (!tasks?.crewGate) throw new Error("The crew gate is unavailable, so nothing was started.");
+  await tasks.crewGate({
+    cli: input.cli,
+    ...(input.folder ? { folder: input.folder } : {}),
+    ...(input.mono ? { mono: input.mono } : {}),
+    ...(input.route?.cli ? { lockedDefault: input.route.cli } : {}),
+    sessionId: input.sessionId,
+    ...(input.parentSession ? { parentSession: input.parentSession } : {}),
+  });
+}
+
+/**
+ * WP-141 MEDIUM 5: sessions.start is gated like a worker. It has no task route, so the locked default is the route's
+ * pick for the Mono and folder with no task: a route that can't be read refuses the start.
+ */
+export async function gateSessionStart(
+  host: AgentAppHost,
+  source: Session,
+  cli: string,
+  folder: string,
+  sessionId: string,
+): Promise<void> {
+  const tasks = host.tasks;
+  if (!tasks?.crewGate) throw new Error("The crew gate is unavailable, so nothing was started.");
+  const mono = host.isMono(source.id) ? host.monoOf?.(source.id) : undefined;
+  let route: CrewRouteAnswer | null | undefined;
+  if (tasks.crewRoute) {
+    try {
+      route = await tasks.crewRoute({
+        labels: [],
+        paths: [],
+        project: folder,
+        ...(mono?.id ? { mono: mono.id } : {}),
+        defaults: routeDefaults({
+          mono: mono?.workerDefault,
+          project: await projectDefaultFor(tasks, folder),
+          system: tasks.pool?.systemDefault?.(),
+        }),
+      });
+    } catch (error) {
+      throw new Error(`The crew policy could not be read, so nothing was started (${errorText(error)}).`);
+    }
+  }
+  await gateCrewStart(tasks, { cli, folder, mono: mono?.id, route, sessionId, parentSession: source.id });
+}
+
 function taskOwner(source: Session, host: AgentAppHost): { owner: TaskOwner; tasks: AgentAppTasksHost } {
   const mono = host.isMono(source.id) ? host.monoOf?.(source.id) : undefined;
   const team = mono ? undefined : host.codingTeamOf?.(source.id);
@@ -933,11 +1148,17 @@ async function delegate(
   const gates = gateRequest(input);
   // Hivra WP-10: never deeper than first mate, first mate, workers.
   if (tasks.checkDepth) await tasks.checkDepth(source.id);
+  // WP-92: the keys a worker's environment holds. Checked before anything starts.
+  const secretList = workerSecrets(input.secrets);
   // A stuck task of the caller's this one takes on (a retry, or one piece of a split): checked before anything starts.
   const redoes =
     input.redoes === undefined ? undefined : (await ownRows(source, tasks, [text(input.redoes, "redoes", 128)]))[0];
   if (input.lead !== undefined) {
     if (redoes) throw new Error("redoes is for your own workers' tasks; leave it out when you brief a Lead.");
+    if (secretList.length)
+      throw new Error(
+        "secrets are for a worker you start yourself; a Lead's delegation names its own workers' keys. Leave them out here.",
+      );
     if (!owner.mono)
       throw new Error(
         "A coding-team chat hands its work to its own workers; only a Mono briefs a project's Lead. Leave out lead.",
@@ -945,6 +1166,8 @@ async function delegate(
     // Every refusal this brief can meet comes before the review: what it names, and whether that Lead exists.
     const request = leadRequest(input, tasks);
     await tasks.checkLead?.(source, owner.mono, request.lead);
+    // WP-156: the target Lead's project, not the chat that writes the brief.
+    const leadHome = (await tasks.leadProject?.(source, owner.mono, request.lead))?.trim();
     const held = await heldForReview();
     if (held) return held;
     // A Lead is a first mate: its brief comes from the same template, read-only on the project.
@@ -961,6 +1184,8 @@ async function delegate(
       title,
       asks,
       goal,
+      // WP-156: the same project key the decision gate stores answers under (see firstMateTool).
+      standingProject: leadHome || owner.team?.project || tasks.hubProjectId?.(source.cwd) || source.cwd,
       ...(sharedTask ? { taskId: sharedTask } : {}),
       input,
       gates,
@@ -1031,6 +1256,8 @@ async function delegate(
   // E7: a worker gets the right model for its job — Sonnet for a usual one, a stronger model (and high effort when it
   // offers one) for a hard one, and a project's own worker model for any of its jobs. A model or effort the caller
   // names always wins, and the route never touches another engine or one of Ash's own models (taskDifficulty.ts).
+  // WP-141 LOW 7: the folder whose crew policy this launch reads. The pick and the launch share the same function.
+  const policyFolder = crewScopeFolder(owner, source, named, tasks);
   const folder =
     ownTeam?.folder ??
     (named !== undefined && !owner.team ? tasks.hubProjectFolder?.(named) ?? named : source.cwd);
@@ -1039,29 +1266,6 @@ async function delegate(
     throw new Error(
       "A task that waits for another can't be held on a remote project yet. Send the tasks that need nothing from each other, and the rest once they report.",
     );
-  // WP-60: a remote project keeps the brief on its host. A local folder is unchanged.
-  const remoteBrief = await briefOnRemoteHost({
-    paths: [folder, source.cwd],
-    launchKey: `app-${source.id}-${requestId}`,
-    ownerSession: source.id,
-    title,
-    harness: source.harness,
-    model: source.model,
-    runtimeMode: WORKER_RUNTIME_MODE,
-    startedBy: firstMate ? "first-mate" : "person",
-    promptFor: (hostCwd) =>
-      briefPrompt(
-        owner.name,
-        renderBrief(
-          { intent, spec: brief },
-          { kind: "shared", folder: hostCwd },
-          classifyBriefTask(`${intent}\n${brief}`),
-          extras,
-        ),
-        goal,
-      ),
-  });
-  if (remoteBrief) return remoteBrief;
   const projectKey = tasks.hubProjectId?.(folder) ?? folder;
   const difficulty = judgeTask({ heavy, retry: Boolean(redoes), scope: scope.length, hard });
   // On the DeepSeek launcher a Claude name is only a label: a worker it names runs on DeepSeek.
@@ -1091,30 +1295,50 @@ async function delegate(
   // WP-89: outside a bench the routed CLI may simply not be installed. The worker keeps the chat's own CLI so the
   // work still starts, and this sentence says which CLI was asked for and what it runs on instead.
   let cliFallback: string | undefined;
+  // WP-141: why the crew picked this CLI. Kept on the row and told to the Lead, so a pick is never silent.
+  let crewWhy: string | undefined;
+  // WP-141: the route forced a CLI and named none (every CLI on Never use, or the lock with none installed).
+  let crewRefused: string | undefined;
+  // WP-141: the route this launch was judged by. The gate checks the CLI it starts on against its lock.
+  let crewAnswer: CrewRouteAnswer | null | undefined;
   if (tasks.crewRoute) {
     const baseline = model?.harness ?? source.harness;
     const baselineModel = model?.model ?? source.model;
+    const roleLabel =
+      input.role === undefined ? undefined : text(input.role, "role", 40).toLowerCase();
+    // WP-141 MEDIUM 4: a route that can't be read refuses the start. It never starts on the Lead's or the chat's CLI.
     try {
       const override = callerOverride(namedModel, input.effort);
       const monoRules = carriedMonoRules(owner.mono?.crewRules);
       const defaults = routeDefaults({
         mono: owner.mono?.workerDefault,
-        project: tasks.pool?.projectDefault?.(projectKey),
+        project: await projectDefaultFor(tasks, policyFolder),
         system: tasks.pool?.systemDefault?.(),
       });
       const catalog = launchCatalog();
-      const answer = await tasks.crewRoute({
-        labels: crewLabels(areasNamed(title, brief)),
+      crewAnswer = await tasks.crewRoute({
+        labels: [
+          ...new Set([...(roleLabel ? [roleLabel] : []), ...crewLabels(areasNamed(title, brief))]),
+        ],
         paths: crewPaths(fileList(input.files), filesNamed(brief)),
         ...(override ? { override } : {}),
-        ...(folder ? { project: folder } : {}),
+        project: policyFolder,
         ...(owner.mono?.id ? { mono: owner.mono.id } : {}),
         ...(monoRules.length ? { monoRules } : {}),
         ...(defaults ? { defaults } : {}),
         ...(Object.keys(catalog).length ? { catalog } : {}),
       });
-      const next = applyCrewLaunch(answer, { harness: baseline, model: baselineModel, effort });
+    } catch (error) {
+      throw new Error(`The crew policy could not be read, so no worker was started (${errorText(error)}).`);
+    }
+    try {
+      const answer = crewAnswer;
+      const named = { harness: baseline, model: baselineModel, effort };
+      crewRefused = crewRefusal(answer, named);
+      const next = applyCrewLaunch(answer, named);
       if (next.harness && isHarnessAvailable(next.harness)) {
+        // Only when the CLI it names is the one this worker runs on; a missing CLI says so in cliFallback instead.
+        if (answer?.cli && answer.cli === next.harness) crewWhy = routeReason(answer) || undefined;
         const moved = next.harness !== baseline || next.model !== baselineModel || next.effort !== effort;
         if (moved) {
           crewChose = next.harness !== model?.harness || next.model !== model?.model;
@@ -1125,7 +1349,10 @@ async function delegate(
         }
       } else if (next.harness && next.harness !== baseline) {
         const refused = benchCliRefusal(next.harness);
+        // WP-141 HIGH 1: a fallback never starts a CLI on Never use, and never gets past the lock.
+        const stuck = fallbackRefusal(answer, baseline, next.harness);
         if (refused) benchRefusal = refused;
+        else if (stuck) crewRefused = stuck;
         else cliFallback = cliFallbackLine(next.harness, baseline);
       }
     } catch {
@@ -1133,6 +1360,39 @@ async function delegate(
     }
   }
   if (benchRefusal) throw new Error(benchRefusal);
+  if (crewRefused) throw new Error(crewRefused);
+  // WP-60: a remote project keeps the brief on its host. A local folder is unchanged. WP-141: the gate judges the chat's
+  // CLI the host will run (remote briefs take the chat's harness), before anything reaches the host.
+  if ([folder, source.cwd].some((path) => remoteProjectFor(path)))
+    await gateCrewStart(tasks, {
+      cli: source.harness,
+      folder: policyFolder,
+      mono: owner.mono?.id,
+      route: crewAnswer,
+      sessionId: `app-${source.id}-${requestId}`,
+    });
+  const remoteBrief = await briefOnRemoteHost({
+    paths: [folder, source.cwd],
+    launchKey: `app-${source.id}-${requestId}`,
+    ownerSession: source.id,
+    title,
+    harness: source.harness,
+    model: source.model,
+    runtimeMode: WORKER_RUNTIME_MODE,
+    startedBy: firstMate ? "first-mate" : "person",
+    promptFor: (hostCwd) =>
+      briefPrompt(
+        owner.name,
+        renderBrief(
+          { intent, spec: brief },
+          { kind: "shared", folder: hostCwd },
+          classifyBriefTask(`${intent}\n${brief}`),
+          extras,
+        ),
+        goal,
+      ),
+  });
+  if (remoteBrief) return remoteBrief;
   // The worker works on this chat's project (hub/model/hubMcp.ts), so its brief carries that project's memory.
   const memory = await (tasks.memoryBrief ?? workerMemoryBlock)(
     source.id,
@@ -1236,6 +1496,40 @@ async function delegate(
     (firstMate || everyone.some((row) => (row.project ?? "") === projectOf(launch.cwd)));
   if (auto) launch = launchWith("worktree");
   const hubProject = tasks.hubProjectId?.(launch.cwd);
+  // WP-92: a worker's keys are checked, approved by the person where needed, and armed for its session before it
+  // starts. Nothing is armed unless every key is ready, and none of the words here carries a value.
+  if (secretList.length) {
+    if (!owner.mono)
+      throw new Error(
+        "A worker's key comes from a Mono's own chat: the approvals are the Mono's. A coding-team chat hands this work to its Lead, whose own delegation names the key.",
+      );
+    if (!host.secretsWorkerArm) throw new Error("Keys aren't available in this build");
+    const armed = await host.secretsWorkerArm(id, {
+      chat: source.id,
+      mono: owner.mono.id,
+      project: folder,
+      executable: launch.harness,
+      secrets: secretList,
+    });
+    if (armed.state !== "ready") {
+      const note =
+        armed.state === "waiting"
+          ? forUser`The person hasn't approved ${armed.name} for this worker yet. Tell them in one line what the worker will run, then end your turn; their answer comes back to you and you delegate again.`
+          : armed.state === "denied"
+            ? forUser`The person said no to ${armed.name}. Carry on without it, or ask again later with the reason it is needed.`
+            : forUser`No key named ${armed.name} is saved. Ask for it with secrets_request, then delegate again.`;
+      return {
+        taskId: null,
+        childSessionId: id,
+        status: armed.state === "denied" ? "refused" : "waiting",
+        title,
+        cwd: launch.cwd,
+        harness: launch.harness,
+        model: launch.model,
+        note,
+      };
+    }
+  }
   // Over the project's limit, or the provider has no account with room: it waits and starts by itself (H8).
   if (tasks.pool) {
     const job = {
@@ -1294,14 +1588,19 @@ async function delegate(
     ...(goal ? { goal } : {}),
     ...(hubProject ? { project: hubProject } : {}),
     ...(sharedTask ? { taskId: sharedTask } : {}),
+    ...(crewWhy ? { pickReason: crewWhy } : {}),
   };
-  // Always monitored: a task reports back to the chat that delegated it.
+  // Always monitored: a task reports back to the chat that delegated it. WP-141: the gate runs before each start.
+  const gated = () =>
+    gateCrewStart(tasks, { cli: launch.harness, folder: policyFolder, mono: owner.mono?.id, route: crewAnswer, sessionId: id });
   try {
+    await gated();
     await host.start(launch, id, undefined, source.id, meta);
   } catch (error) {
     // A checkout of its own couldn't be made (a folder that isn't a git repository): the shared one, as asked for.
     if (!auto && !(redo && !redo.path)) throw error;
     launch = launchWith("current");
+    await gated();
     await host.start(launch, id, undefined, source.id, meta);
   }
   tasks.pool?.started({ id, heavy, files });
@@ -1329,6 +1628,8 @@ async function delegate(
     ...(route && !crewChose ? { modelWhy: route.why } : {}),
     // WP-89: the CLI asked for isn't installed, so the worker runs on this chat's CLI; the Lead passes the line on.
     ...(cliFallback ? { cliFallback } : {}),
+    // WP-141: why the crew picked this CLI, in plain words the Lead can pass on.
+    ...(crewWhy ? { crewWhy } : {}),
     ...(launch.workspaceMode === "worktree" || (redo?.path && launch.worktreeCwd) ? { isolation: "worktree" } : {}),
     ...(auto && launch.workspaceMode === "worktree"
       ? {
@@ -1843,15 +2144,26 @@ async function briefLead(
     input: Record<string, unknown>;
     gates?: GateRequest;
     gateFolder?: string;
+    standingProject: string;
   },
 ) {
   const { lead, whenBusy } = leadRequest(job.input, tasks);
   if (!tasks.briefLead) throw new Error("This build can't brief a Lead");
+  // WP-156: standing answers ride on the Lead's brief. Off, empty, or unreachable: the brief is unchanged.
+  let brief = job.brief;
+  if (tasks.standingBrief) {
+    try {
+      const block = (await tasks.standingBrief(job.standingProject))?.trim() ?? "";
+      if (block) brief = `${job.brief}\n\n${block}`;
+    } catch {
+      brief = job.brief;
+    }
+  }
   const out = await tasks.briefLead(source, mono, {
     lead,
     // The brief's id in the Lead's chat and the row's request, in the app's namespace (sessions.send's too).
     requestId: `app-${source.id}-${job.requestId}`,
-    brief: job.brief,
+    brief,
     title: job.title,
     ...(job.goal ? { goal: job.goal } : {}),
     ...(job.taskId ? { taskId: job.taskId } : {}),
@@ -2219,6 +2531,7 @@ async function workers(source: Session, input: Record<string, unknown>, host: Ag
   if (!tasks.pool) throw new Error("This build starts every worker at once; it has no per-project limit.");
   const named = input.project === undefined ? undefined : text(input.project, "project", 4096);
   const folder = owner.team?.folder ?? (named !== undefined ? (tasks.hubProjectFolder?.(named) ?? named) : source.cwd);
+  const policyFolder = crewScopeFolder(owner, source, named, tasks);
   const project = owner.team?.project ?? (named !== undefined && tasks.hubProjectFolder?.(named) ? named : (tasks.hubProjectId?.(folder) ?? folder));
   const count = (value: unknown, field: string) => {
     if (value === undefined) return undefined;
@@ -2236,6 +2549,16 @@ async function workers(source: Session, input: Record<string, unknown>, host: Ag
   const planned = choosing ? planWorkerChoice(input, current, launchCatalog()) : undefined;
   if (planned?.scope === "project" && setter && !worksOn(setter.projects, folder, project))
     throw new Error("This Mono doesn't work on that project.");
+  // WP-141 HIGH 2: under Always use my default, no default (the Mono's, the project's or everyone's) is changed from a chat.
+  // The lock is read for the Mono, the folder and every saved scope: a change anywhere it reaches is refused.
+  // Round 6: a host with no lock hook counts as locked, never as unlocked.
+  const anyLock = planned && (tasks.crewAnyLock ? (await tasks.crewAnyLock()) === true : true);
+  if (planned && ((await tasks.crewPolicy?.(owner.mono?.id, policyFolder))?.lock || anyLock))
+    throw new Error(
+      planned.scope === "system"
+        ? "Always use my default is on, so the default for every worker can't be changed from here."
+        : "Always use my default is on, so a Mono's or project's default can't be changed from here.",
+    );
   const next = { workers: count(input.workers, "workers"), heavy: count(input.heavy, "heavy") };
   const limits =
     next.workers === undefined && next.heavy === undefined
@@ -2269,10 +2592,13 @@ async function workers(source: Session, input: Record<string, unknown>, host: Ag
   const changed = [planned && !planned.pick ? scopeClearLine(planned.scope) : "", planned?.dropped ?? ""]
     .filter(Boolean)
     .join(" ");
+  // WP-141 L9: the sentence names the lock and Never use, so the person sees what a chat can and cannot change.
+  const policy = await tasks.crewPolicy?.(owner.mono?.id, policyFolder);
   const force = describeInForce({
     defaults: routeDefaults({ mono: monoPick, project: projectPick, system: systemPick }),
     catalog,
     rules,
+    ...(policy ? { policy } : {}),
   });
   const rulesLine = crewRuleSentence(rules, catalog);
   let spendNote = "";
@@ -2421,9 +2747,103 @@ async function firstMateTool(
     throw new Error("Only the app asks whether a stopped task starts again. Name the task in a resume instead; the person answers it in Needs.");
   const ids = taskIds(input.taskIds) ?? [];
   const rows = ids.length ? await ownRows(source, tasks, ids) : [];
-  // The project the Needs row sits under: the coding team's, else the waiting tasks', else the chat's folder's.
-  const project = owner.team?.project ?? rows.find((row) => row.project)?.project ?? tasks.hubProjectId?.(source.cwd) ?? source.cwd;
+  // The project's home is the coding team's, else the chat's folder. A task's own project is not a way to pick another.
+  const project = owner.team?.project || tasks.hubProjectId?.(source.cwd) || source.cwd;
+  if (rows.some((row) => row.project && row.project !== project)) {
+    throw new Error("That task is in another project. Ask from the chat that owns it.");
+  }
   return askPerson(source, input, { mono: owner.mono?.id, project }, rows, tasks.firstMate);
+}
+
+/**
+ * WP-141: tasks.pick. The crew's pick for a job, a signed-in CLI or a Mono this chat may brief, with a short reason.
+ * The first mate's model or Lead is an override: Always use my default drops it, and the reason says so. Nothing starts.
+ */
+async function pickWorker(source: Session, input: Record<string, unknown>, host: AgentAppHost): Promise<unknown> {
+  const { owner, tasks } = taskOwner(source, host);
+  if (!tasks.crewPick) throw new Error("This build can't pick a worker");
+  const role = input.role === undefined ? undefined : text(input.role, "role", 40).toLowerCase();
+  const title = input.title === undefined ? "" : text(input.title, "title", 200);
+  const brief = input.brief === undefined ? "" : text(input.brief, "brief", BRIEF_MAX);
+  const labels = [...new Set([...(role ? [role] : []), ...crewLabels(areasNamed(title, brief))])];
+  const paths = crewPaths(fileList(input.files), filesNamed(brief));
+  const onBridge = source.harness === "claude" && claudeRunsOnSubscriptionBridge();
+  const override = callerOverride(taskModel(input.model, source, onBridge), input.effort);
+  const roster = owner.mono && tasks.pickMonos ? tasks.pickMonos(owner.mono.id) : [];
+  let monoOverride: string | undefined;
+  if (input.lead !== undefined) {
+    const named = text(input.lead, "lead", 200);
+    const want = named.toLowerCase();
+    const hit = roster.find((mono) => [mono.id, mono.name, mono.lead].some((name) => name?.toLowerCase() === want));
+    if (!hit) throw new Error(`No Lead "${named}" among the ones you can brief.`);
+    monoOverride = hit.id;
+  }
+  // How deep this chat sits: the depth a task from it would have, less one. A pick starts nothing, so the open-task cap is not asked.
+  let depth = 0;
+  try {
+    depth = Math.max(0, ((await tasks.checkDepth?.(source.id, { fanout: false })) ?? 1) - 1);
+  } catch (error) {
+    return { ok: false, reason: error instanceof Error ? error.message : String(error) };
+  }
+  // WP-141 LOW 7: the pick reads the same folder's policy the launch that follows reads.
+  const folder = crewScopeFolder(owner, source, undefined, tasks);
+  const projectKey = tasks.hubProjectId?.(folder) ?? folder;
+  // A CLI with no room left at its provider is not free for this job; the project's own cap is the same for every CLI.
+  const atCap = CLI_ORDER.filter((cli) => {
+    const admission = tasks.pool?.admit({ id: `pick-${source.id}-${cli}`, project: projectKey, projectName: projectName(folder), heavy: false, harness: cli });
+    return admission?.start === false && admission.reason === "limit";
+  });
+  const monoRules = carriedMonoRules(owner.mono?.crewRules);
+  const defaults = routeDefaults({
+    mono: owner.mono?.workerDefault,
+    project: await projectDefaultFor(tasks, folder),
+    system: tasks.pool?.systemDefault?.(),
+  });
+  const catalog = launchCatalog();
+  const pick = await tasks.crewPick({
+    labels,
+    paths,
+    ...(override ? { override } : {}),
+    ...(folder ? { project: folder } : {}),
+    ...(owner.mono?.id ? { mono: owner.mono.id, leadMonoId: owner.mono.id } : {}),
+    ...(monoRules.length ? { monoRules } : {}),
+    ...(defaults ? { defaults } : {}),
+    ...(Object.keys(catalog).length ? { catalog } : {}),
+    monos: roster.map(({ id, name, role: monoRole }) => ({ id, ...(name ? { name } : {}), ...(monoRole ? { role: monoRole } : {}) })),
+    depth,
+    atCap,
+    ...(monoOverride ? { monoOverride } : {}),
+  });
+  const reason = routeReasonLine(pick?.reason);
+  if (!pick?.ok) return { ok: false, reason: reason || "Nothing available can take it." };
+  const mono = pick.monoId ? roster.find((row) => row.id === pick.monoId) : undefined;
+  if (mono) {
+    return {
+      ok: true,
+      monoId: mono.id,
+      leadName: mono.name ?? mono.id,
+      reason,
+      delegateWith: { lead: mono.lead },
+      note: "Brief that Lead with delegate_task and lead as delegateWith says. Tell Ash in one line who it goes to and why.",
+    };
+  }
+  const cli = pick.cli && isCli(pick.cli) ? pick.cli : undefined;
+  if (!cli) return { ok: false, reason: reason || "Nothing available can take it." };
+  const model = pick.model ?? ((HARNESSES as readonly string[]).includes(cli) ? preferredModelId(cli as HarnessId) : undefined);
+  return {
+    ok: true,
+    cli,
+    cliName: cliLabel(cli),
+    ...(pick.model ? { model: pick.model } : {}),
+    ...(pick.effort ? { effort: pick.effort } : {}),
+    reason,
+    delegateWith: { ...(model ? { model } : {}), ...(pick.effort ? { effort: pick.effort } : {}) },
+    note: "Start it with delegate_task, passing delegateWith. Tell Ash in one line which CLI it runs on and why.",
+  };
+}
+
+function routeReasonLine(value: unknown): string {
+  return typeof value === "string" ? value.replace(/\s+/g, " ").trim().slice(0, 240) : "";
 }
 
 /** The `tasks.*` actions (agentApp.ts dispatches them here after checking their fields). */
@@ -2454,6 +2874,8 @@ export function handleTasks(
       return accept(source, input, host);
     case "tasks.workers":
       return Promise.resolve().then(() => workers(source, input, host));
+    case "tasks.pick":
+      return pickWorker(source, input, host);
     case "tasks.message":
     case "tasks.ask":
       return firstMateTool(source, requestId, action, input, host);

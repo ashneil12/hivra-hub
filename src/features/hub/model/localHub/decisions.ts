@@ -9,6 +9,7 @@
 // The store and the screens read it through `DecisionSource` only.
 import type { Delegation } from "../../../monos/model/delegations";
 import type { Decision, FirstMateBackend } from "../../../firstmate/model/steering";
+import { isPersonOnlyDecisionKey } from "../decisionKey";
 import { HubCallError } from "../hubTransport";
 
 export interface DecisionSource {
@@ -67,6 +68,11 @@ export function delegationJobGroups(rows: readonly Delegation[]): { groups: Arra
 /** A decision's Needs row id: its project and key, both kept whole. */
 export const decisionNeedId = (d: Pick<Decision, "project" | "decisionKey">) =>
   `decision:${encodeURIComponent(d.project)}:${encodeURIComponent(d.decisionKey)}`;
+
+/** The decision key a Needs row id names, or undefined when it names none. */
+export function needKeyOf(id: unknown): string | undefined {
+  return parseNeedId(id)?.key;
+}
 
 function parseNeedId(id: unknown): { project: string; key: string } | undefined {
   if (typeof id !== "string") return undefined;
@@ -137,12 +143,29 @@ async function findDecision(backend: Pick<FirstMateBackend, "decisions">, id: un
  * it, and the first mate that asked hears it.
  */
 async function answerDecision(backend: Pick<FirstMateBackend, "decisions" | "answer">, payload: Record<string, unknown>) {
+  // A Page's tap is the Page's answer, not the person's: decisions.rs refuses it on a key only the person answers. A
+  // `from` that is there but blank (or not a string) is refused rather than read as the person.
+  const from = typeof payload.from === "string" ? payload.from.trim() : "";
+  if (payload.from !== undefined && !from) throw new HubCallError("refused", "This page has no id, so it can't answer.");
+  // A Page (anything with `from`) is refused on a person-only key before the store is asked. The person's own answer
+  // has no `from` and is still "user".
+  const named = needKeyOf(payload.id);
+  if (from && named !== undefined && isPersonOnlyDecisionKey(named)) {
+    throw new HubCallError("refused", "Only you can answer that one. Open Needs you to answer it.");
+  }
   const d = await findDecision(backend, payload.id);
   const choice = typeof payload.choice === "number" ? d.options[payload.choice] : undefined;
   const words = typeof payload.text === "string" ? payload.text.trim() : "";
-  const answer = choice ?? words;
+  // "agree" takes the suggested answer (a Page's Take the pick); with none suggested there is nothing to take.
+  const agreed = payload.quick === "agree" ? (d.recommended ?? undefined) : undefined;
+  if (payload.quick === "agree" && !agreed) throw new HubCallError("refused", "No answer was suggested. Pick an option or write your answer.");
+  const answer = choice ?? agreed ?? words;
   if (!answer) throw new HubCallError("refused", "Pick an option or write your answer.");
-  const out = await backend.answer(d.project, d.decisionKey, answer, "user");
+  // A secret run's card is approved on the card in the Inbox, never through Needs (fix round 3, H1).
+  if (d.decisionKey.startsWith("secret/")) {
+    throw new HubCallError("refused", "A secret run is approved on its card in the Inbox. Needs can't answer it.");
+  }
+  const out = await backend.answer(d.project, d.decisionKey, answer, from ? `page:${from}` : "user");
   if (!out.applied) return { receipt: `Already answered: ${out.decision?.answer ?? ""}`, rowDone: true };
   const n = out.releasedTasks.length;
   return { receipt: n ? `Sent. ${n === 1 ? "The waiting task carries on" : `${n} waiting tasks carry on`}.` : "Sent.", rowDone: true };

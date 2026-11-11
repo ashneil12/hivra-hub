@@ -845,7 +845,16 @@ fn archive_stem(path: &Path) -> String {
 }
 
 pub fn export(env: &Env, request: &ExportRequest) -> Result<ExportReport, String> {
-    export_within(env, request, MAX_INSPECT_BYTES)
+    export_with_vault(env, request, crate::secrets::store::active())
+}
+
+/// WP-92: the export with the vault handed in, so a test can pass an in-memory one and never touch the keychain.
+pub fn export_with_vault(
+    env: &Env,
+    request: &ExportRequest,
+    vault: &dyn crate::secrets::store::Vault,
+) -> Result<ExportReport, String> {
+    export_within(env, request, MAX_INSPECT_BYTES, vault)
 }
 
 /// The file that holds the setup itself: the one webview file an export never goes without.
@@ -887,6 +896,7 @@ fn export_within(
     env: &Env,
     request: &ExportRequest,
     webview_budget: u64,
+    vault: &dyn crate::secrets::store::Vault,
 ) -> Result<ExportReport, String> {
     let mut destination = crate::fs::expand_home(request.destination.trim());
     if request.destination.trim().is_empty() || !destination.is_absolute() {
@@ -929,12 +939,34 @@ fn export_within(
     if let Some(choice) = &request.memory {
         export_memory(env, choice, &mut writer, &mut counts, &mut notes)?;
     }
+    let vault_db = env.read_db()?;
     if request.workspace {
-        if let Some(conn) = env.read_db()? {
-            export_workspace(env, &conn, &mut writer, &mut counts).map_err(|e| e.to_string())?;
+        if let Some(conn) = vault_db.as_ref() {
+            export_workspace(env, conn, &mut writer, &mut counts).map_err(|e| e.to_string())?;
         }
         export_note_assets(env, &mut writer, &counts, &mut notes)?;
         counts.remove("noteIds");
+    }
+    // WP-92: the vault goes as an index of handles, never a value, and one exact-value pass runs before the last net.
+    if let Some(conn) = vault_db.as_ref() {
+        writer.json("secrets/index.json", &crate::secrets::index_json(conn)?)?;
+        // Read once, not once per file: each value is a round trip to the Keychain.
+        let needles = crate::secrets::known_needles(vault, conn, None)?;
+        for index in 0..writer.files.len() {
+            let relative = writer.files[index].0.clone();
+            if is_binary(&relative) || relative == "secrets/index.json" {
+                continue;
+            }
+            let path = staging.0.join(&relative);
+            let Ok(text) = fs::read_to_string(&path) else {
+                continue;
+            };
+            let clean = crate::secrets::scrub::mask(&text, &needles);
+            if clean != text {
+                write_private(&path, clean.as_bytes())?;
+                writer.files[index] = (relative, clean.len() as u64, sha256_hex(clean.as_bytes()));
+            }
+        }
     }
 
     notes.append(&mut writer.left_out);
@@ -1278,6 +1310,7 @@ struct SessionRow {
     sidebar_hidden: bool,
     private_chat: bool,
     private_boundary_id: Option<String>,
+    registry_agent_id: Option<String>,
 }
 
 fn export_workspace(
@@ -1292,11 +1325,17 @@ fn export_workspace(
     } else {
         ""
     };
+    // A database from before the column has no More agents link to export.
+    let registry_select = if columns.iter().any(|c| c == "registry_agent_id") {
+        "registry_agent_id"
+    } else {
+        "NULL"
+    };
     let mut statement = conn.prepare(&format!(
         "SELECT id, cwd, harness, model, model_settings, runtime_mode, title, provider_session_id, blocks_json,
                 created_at, updated_at, branch, context_used, context_window, archived, worktree_cwd, pinned,
                 linked_work_item_json, worktree_removed, automation_id, sidebar_hidden,
-                private_chat, private_boundary_id
+                private_chat, private_boundary_id, {registry_select}
          FROM sessions {legacy_inbox} ORDER BY created_at, id"
     ))?;
     let rows = statement
@@ -1325,6 +1364,7 @@ fn export_workspace(
                 sidebar_hidden: row.get::<_, i64>(20)? != 0,
                 private_chat: row.get::<_, i64>(21)? != 0,
                 private_boundary_id: crate::session_store::boundary_for_read(row.get(22)?),
+                registry_agent_id: row.get(23)?,
             })
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -1370,6 +1410,7 @@ fn export_workspace(
             "sidebarHidden": row.sidebar_hidden,
             "private": row.private_chat,
             "privateBoundaryId": row.private_boundary_id,
+            "registryAgentId": row.registry_agent_id,
             "linkedWorkItem": row.linked_work_item_json.as_deref().and_then(|raw| serde_json::from_str::<Value>(raw).ok()),
             "automationId": row.automation_id,
             "contextUsed": row.context_used,
@@ -2660,10 +2701,13 @@ pub struct ImportReport {
     /// Monos whose SOUL.md this restore wrote from Rust (a memory folder that is the Monos home). The app records these
     /// as its own saves, so its soul tamper check doesn't take them for outside edits (hub/model/soulTamper.ts).
     pub souls_restored: Vec<String>,
+    /// WP-92: vault rows added, each waiting for its value.
+    pub secrets_added: usize,
 }
 
-/// `lock` takes the session store's lock. Every chat save waits on it, so it is taken only around the workspace's
-/// rows: the export is unpacked and checked (up to MAX_UNPACKED) and the memory written before it, never under it.
+/// `lock` takes the session store's lock. Every chat save waits on it, so it is taken only around the rows that go in
+/// (the workspace's, and WP-92's vault index when the export names any secret): the export is unpacked and checked (up
+/// to MAX_UNPACKED) and the memory written before it, never under it.
 pub fn import<G: std::ops::Deref<Target = Connection>>(
     env: &Env,
     request: &ImportRequest,
@@ -2714,22 +2758,36 @@ fn import_opened<G: std::ops::Deref<Target = Connection>>(
         )
     };
     rules.note_written(&written);
-    if let Some(workspace) = &request.workspace {
+    // WP-92: the vault's index lands as rows that wait for their value, with no grants and no .env records. An index
+    // that names nothing is not a reason to take the lock every chat save waits on.
+    let index = opened.json("secrets/index.json").filter(|index| {
+        index
+            .get("secrets")
+            .and_then(Value::as_array)
+            .is_some_and(|list| !list.is_empty())
+    });
+    if request.workspace.is_some() || index.is_some() {
         let conn = lock()?;
-        import_workspace(env, &conn, opened, workspace, &mut report, &rules)
-            .map_err(|e| e.to_string())?;
-        // Said in the report, so nobody finds out by surprise.
-        if report.sessions_added + report.sessions_copied + report.automations_added > 0 {
-            report.notes.push(
-                "Every restored chat and automation comes back supervised, whatever its file said; raise it for the ones you want freer."
-                    .to_string(),
-            );
+        if let Some(index) = &index {
+            report.secrets_added =
+                crate::secrets::import_index(&conn, index, crate::session_store::now_millis())?;
         }
-        if report.folders_cleared + report.automation_folders_cleared > 0 {
-            report.notes.push(
-                "A chat or automation whose folder is in ~/agent-memory, in a hidden folder or outside your home folder can't be relinked; choose a folder for it."
-                    .to_string(),
-            );
+        if let Some(workspace) = &request.workspace {
+            import_workspace(env, &conn, opened, workspace, &mut report, &rules)
+                .map_err(|e| e.to_string())?;
+            // Said in the report, so nobody finds out by surprise.
+            if report.sessions_added + report.sessions_copied + report.automations_added > 0 {
+                report.notes.push(
+                    "Every restored chat and automation comes back supervised, whatever its file said; raise it for the ones you want freer."
+                        .to_string(),
+                );
+            }
+            if report.folders_cleared + report.automation_folders_cleared > 0 {
+                report.notes.push(
+                    "A chat or automation whose folder is in ~/agent-memory, in a hidden folder or outside your home folder can't be relinked; choose a folder for it."
+                        .to_string(),
+                );
+            }
         }
     }
     // Files left out for their size, and a listed file that was fine when the export was checked and wasn't when it
@@ -3665,6 +3723,8 @@ fn insert_session(
         goal: None,
         // WP-111: a private chat stays private after import. An old file has no flag, so it stays readable.
         private_chat: file["private"].as_bool().unwrap_or(false),
+        // The entry id only. The target's own list and approval still decide whether the chat runs.
+        registry_agent_id: file["registryAgentId"].as_str().map(str::to_string),
         private_boundary_id: match &file["privateBoundaryId"] {
             Value::Null => None,
             Value::String(value) => crate::session_store::boundary_for_read(Some(value.clone())),

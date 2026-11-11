@@ -3,6 +3,7 @@ import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { queueHomeDecision, resetHomePending } from "../../home/model/pending";
 import { FirstMateInboxPanel } from "./FirstMateInboxPanel";
 
@@ -56,6 +57,8 @@ describe("first mate inbox panel", () => {
     document.body.append(container);
     root = createRoot(container);
     vi.mocked(invoke).mockReset();
+    vi.mocked(listen).mockReset();
+    vi.mocked(listen).mockImplementation(async () => () => {});
   });
 
   afterEach(() => {
@@ -88,6 +91,53 @@ describe("first mate inbox panel", () => {
     expect(selected).toHaveLength(1);
     expect(selected[0]?.textContent).toContain("Ship it now?");
     expect(selected[0]?.getAttribute("aria-current")).toBe("true");
+  });
+
+  it("sends person for a secret card and user for any other", async () => {
+    const sent: unknown[] = [];
+    vi.mocked(invoke).mockImplementation(async (cmd: string, args?: unknown) => {
+      if (cmd === "decisions_list") {
+        return [
+          {
+            ...openDecision(),
+            decisionKey: "secret/stripe-api-key/curl",
+            question: "Let Tally run curl with the stripe key?",
+            options: ["Once", "No"],
+            recommended: "Once",
+            version: 4,
+          },
+          openDecision(),
+        ];
+      }
+      if (cmd === "decisions_answer") {
+        sent.push(args ?? {});
+        return { applied: true, decision: null, released: [], releasedTasks: [] };
+      }
+      return [];
+    });
+    await act(async () => {
+      root.render(createElement(FirstMateInboxPanel, { cwd: PROJECT }));
+    });
+    const button = (label: string) =>
+      [...container.querySelectorAll("button")].find((item) => item.textContent?.startsWith(label));
+    await vi.waitFor(() => expect(button("Once")).toBeTruthy());
+    await act(async () => {
+      button("Once")?.click();
+    });
+    const calls = () => sent.filter((args): args is Record<string, unknown> => !!args && typeof args === "object");
+    await vi.waitFor(() => expect(calls().some((args) => args.key === "secret/stripe-api-key/curl")).toBe(true));
+    expect(calls().find((args) => args.key === "secret/stripe-api-key/curl")).toEqual({
+      project: PROJECT,
+      key: "secret/stripe-api-key/curl",
+      answer: "Once",
+      by: "person",
+      seenVersion: 4,
+    });
+    await act(async () => {
+      button("Ship it")?.click();
+    });
+    await vi.waitFor(() => expect(calls().some((args) => args.key === "ship")).toBe(true));
+    expect(calls().find((args) => args.key === "ship")).toMatchObject({ by: "user", answer: "Ship it", seenVersion: 1 });
   });
 
   it("keeps a timed-out decision open and tries the answer again", async () => {
@@ -150,5 +200,51 @@ describe("first mate inbox panel", () => {
       await new Promise((resolve) => setTimeout(resolve, 0));
     });
     await vi.waitFor(() => expect(shipButton(container)).toBeUndefined());
+  });
+
+  it("hides standing answers until the setting is on, and keeps them when a later read fails", async () => {
+    const row = {
+      project: PROJECT,
+      decisionKey: "keep",
+      standingId: "S-4",
+      question: "Keep deleted sessions?",
+      answer: "Keep",
+      uses: 2,
+    };
+    let on = false;
+    let lists = 0;
+    const changed: Array<() => void> = [];
+    vi.mocked(listen).mockImplementation(async (_event, fn) => {
+      changed.push(fn as () => void);
+      return () => {};
+    });
+    vi.mocked(invoke).mockImplementation(async (cmd: string) => {
+      if (cmd === "decisions_standing_enabled") return on;
+      if (cmd === "decisions_reuse_list") {
+        lists += 1;
+        if (lists > 1) throw new Error("timed out");
+        return [row];
+      }
+      return [];
+    });
+    await act(async () => {
+      root.render(createElement(FirstMateInboxPanel, { cwd: PROJECT }));
+    });
+    await vi.waitFor(() => expect(vi.mocked(invoke).mock.calls.some((call) => call[0] === "decisions_standing_enabled")).toBe(true));
+    expect(container.querySelector("[aria-label='Standing answers']")).toBeNull();
+    expect(vi.mocked(invoke).mock.calls.some((call) => call[0] === "decisions_reuse_list")).toBe(false);
+
+    on = true;
+    await act(async () => {
+      changed.forEach((fn) => fn());
+    });
+    await vi.waitFor(() => expect(container.textContent).toContain("Used 2 times"));
+
+    await act(async () => {
+      changed.forEach((fn) => fn());
+    });
+    await vi.waitFor(() => expect(container.textContent).toContain("Couldn't load standing answers. Trying again."));
+    expect(container.textContent).toContain("Used 2 times");
+    expect(container.textContent).not.toMatch(/[—–]/);
   });
 });

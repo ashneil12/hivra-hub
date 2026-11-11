@@ -5,7 +5,7 @@
 //! rules for display; this module is the last check before anything runs.
 
 use serde_json::{json, Value};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Mutex;
@@ -272,17 +272,35 @@ fn approval_mac_of(key: &[u8], id: &str, a: &Approval) -> String {
 }
 
 /// The loader flags: each loads a file as code or configuration, so its value must be an absolute, pinned file.
-const LOADER_FLAGS: [&str; 7] = [
+const LOADER_FLAGS: [&str; 8] = [
     "-m",
     "-r",
     "--require",
     "--import",
     "--loader",
+    "--experimental-loader",
     "--env-file",
     "--preload",
 ];
 pub(crate) const LOADER_REFUSED: &str =
     "A loader flag (-m, -r, --require, --import, --loader, --env-file, --preload) must name an absolute file.";
+pub(crate) const OFF_REFUSED: &str =
+    "More agents is off. Switch it on in Settings to run this agent.";
+const ENABLED_FILE: &str = "more-agents-enabled";
+
+/// The More agents switch as the app keeps it: a file in the app's folder that the webview writes when the person
+/// flips the setting. Off unless the file says on.
+pub(crate) fn enabled(data_dir: &Path) -> bool {
+    std::fs::read_to_string(data_dir.join(ENABLED_FILE)).is_ok_and(|text| text.trim() == "on")
+}
+
+/// Writes the switch. Only the app's own command calls this.
+pub(crate) fn set_enabled(data_dir: &Path, on: bool) -> Result<(), String> {
+    std::fs::create_dir_all(data_dir).map_err(|e| format!("Could not save the switch: {e}"))?;
+    std::fs::write(data_dir.join(ENABLED_FILE), if on { "on" } else { "off" })
+        .map_err(|e| format!("Could not save the switch: {e}"))
+}
+
 pub(crate) const FILE_ARG_REFUSED: &str =
     "A file named in the arguments must exist and be a file, given by its absolute path. A folder is not pinned.";
 
@@ -303,11 +321,54 @@ fn candidates(arg: &str) -> Vec<&str> {
     out
 }
 
-fn loader_flag(arg: &str) -> bool {
+/// The programs that run code named by an argument: a loader flag, an inline program or an eval is only a risk for
+/// these. Any other program keeps its own `-m`, `-r` and `-c`, which it reads as its own options.
+fn interpreter_command(command: &str) -> bool {
+    let name = command_basename(command);
+    matches!(
+        name.as_str(),
+        "node"
+            | "nodejs"
+            | "bun"
+            | "deno"
+            | "ruby"
+            | "perl"
+            | "php"
+            | "uv"
+            | "uvx"
+            | "tsx"
+            | "ts-node"
+    ) || name.starts_with("python")
+}
+
+/// The loader flag an argument is, if it is one: a long flag, or a short cluster of up to three letters that holds m or r
+/// (`-m`, `-Bm`, `-um`). Returns the index of that letter in a short cluster, or None.
+fn loader_flag_position(arg: &str) -> Option<LoaderFlag> {
     let lower = arg.to_ascii_lowercase();
     let flag = lower.split('=').next().unwrap_or("");
-    LOADER_FLAGS.contains(&flag)
-        || (arg.len() > 2 && !arg.starts_with("--") && matches!(arg.as_bytes()[1], b'm' | b'r'))
+    if LOADER_FLAGS.contains(&flag) {
+        return Some(LoaderFlag::Long {
+            attached: arg.contains('='),
+        });
+    }
+    if arg.starts_with('-') && !arg.starts_with("--") && (2..=4).contains(&arg.len()) {
+        let letters = &arg[1..];
+        if letters.chars().all(|c| c.is_ascii_alphabetic()) {
+            if let Some(at) = letters.find(['m', 'r', 'M', 'R']) {
+                return Some(LoaderFlag::Short {
+                    letter_last: at + 1 == letters.len(),
+                });
+            }
+        }
+    }
+    None
+}
+
+enum LoaderFlag {
+    /// A long flag; `attached` when its value follows `=`, else the next argument.
+    Long { attached: bool },
+    /// A short cluster; `letter_last` when the loader letter ends it, so the value is the next argument.
+    Short { letter_last: bool },
 }
 
 /// The canonical path of an argument that names a file. A folder, a missing path or a link to nothing is refused.
@@ -369,11 +430,21 @@ fn pin_set(args: &[String]) -> Result<(Pins, Vec<String>), String> {
 /// A line for the Allow card when the entry fetches its program at start: only the launcher is pinned.
 fn remote_note(command: &str, args: &[String]) -> Option<String> {
     let name = command_basename(command);
+    let first = args.first().map(String::as_str).unwrap_or("");
     let remote = match name.as_str() {
-        "npx" | "bunx" | "uvx" => true,
-        "pipx" => args.first().is_some_and(|a| a == "run"),
+        "npx" | "bunx" | "uvx" | "pnpx" => true,
+        "bun" => first == "x",
+        "npm" => first == "exec" || first == "x",
+        "pnpm" | "yarn" => first == "dlx",
+        "pipx" => first == "run",
+        // A deno run of a file on this Mac is local; a URL or an npm:/jsr: specifier is fetched at start.
         "deno" => {
-            args.first().is_some_and(|a| a == "run") && args.iter().any(|a| a.contains("://"))
+            first == "run"
+                && args.iter().any(|a| {
+                    a.starts_with("npm:")
+                        || a.starts_with("jsr:")
+                        || (a.contains("://") && !a.starts_with("file://"))
+                })
         }
         _ => false,
     };
@@ -583,9 +654,12 @@ fn checked_fields(entry: &Value) -> Result<(String, String, Vec<String>), String
     {
         return Err("There are too many arguments, or one is too long.".into());
     }
-    if args.iter().any(|arg| inline_flag(arg))
-        || (matches!(command_basename(command).as_str(), "deno" | "bun")
-            && args.iter().any(|arg| arg == "eval"))
+    let interpreter = interpreter_command(command);
+    if interpreter
+        && (args.iter().any(|arg| inline_flag(arg))
+            || (command_basename(command) == "php" && args.iter().any(|arg| arg == "-r"))
+            || (matches!(command_basename(command).as_str(), "deno" | "bun")
+                && args.iter().any(|arg| arg == "eval")))
     {
         return Err(INLINE_REFUSED.into());
     }
@@ -593,13 +667,19 @@ fn checked_fields(entry: &Value) -> Result<(String, String, Vec<String>), String
         return Err(RELATIVE_REFUSED.into());
     }
     for (index, arg) in args.iter().enumerate() {
-        if loader_flag(arg) {
-            let value = if let Some((_, value)) = arg.split_once('=') {
-                Some(value)
-            } else if arg.len() > 2 && !arg.starts_with("--") {
-                arg.get(2..)
-            } else {
-                args.get(index + 1).map(String::as_str)
+        if !interpreter {
+            continue;
+        }
+        if let Some(flag) = loader_flag_position(arg) {
+            let value = match flag {
+                LoaderFlag::Long { attached: true } => arg.split_once('=').map(|(_, value)| value),
+                LoaderFlag::Long { attached: false } => args.get(index + 1).map(String::as_str),
+                LoaderFlag::Short { letter_last: true } => args.get(index + 1).map(String::as_str),
+                LoaderFlag::Short { letter_last: false } => {
+                    let letters = &arg[1..];
+                    let at = letters.find(['m', 'r', 'M', 'R']).unwrap_or(0);
+                    arg.get(at + 2..)
+                }
             };
             if !value.is_some_and(|value| Path::new(value).is_absolute()) {
                 return Err(LOADER_REFUSED.into());
@@ -617,24 +697,58 @@ fn inline_flag(arg: &str) -> bool {
         return true;
     }
     match lower.strip_prefix('-') {
-        Some(cluster) if !cluster.is_empty() && !cluster.starts_with('-') => {
-            cluster.chars().all(|c| "ceplrin".contains(c))
-                && cluster.chars().any(|c| "cep".contains(c))
+        Some(cluster)
+            if !cluster.is_empty()
+                && !cluster.starts_with('-')
+                && cluster.len() <= 4
+                && cluster.chars().all(|c| c.is_ascii_alphabetic()) =>
+        {
+            cluster.chars().any(|c| "cep".contains(c))
         }
         _ => false,
     }
 }
 
-/// A relative path argument: the child would read it from the folder it runs in, which nothing pins. A scoped package
-/// name (`@scope/pkg`) and a URL are not paths. Every value an argument can carry is checked, not only the argument.
+/// A relative file argument. Refused: a `..` segment, a `~` path, a leading `.`, or a script or config file name.
+/// A slash in a model name (`openai/gpt-4.1`) is not a path. A scoped package (`@scope/pkg`) and a URL are not paths.
+/// The child runs in an empty folder, so a relative word cannot reach a chat file. Every value an argument can carry
+/// is checked, not only the argument.
 fn relative_file_arg(arg: &str) -> bool {
     candidates(arg).into_iter().any(|value| {
         !value.is_empty()
             && !value.contains("://")
             && !value.starts_with('@')
             && !Path::new(value).is_absolute()
-            && value.contains(['/', '\\', '.'])
+            && (has_parent_segment(value)
+                || has_tilde(value)
+                || value.starts_with('.')
+                || names_a_script_or_config(value))
     })
+}
+
+/// `..` as its own path segment (`../x`, `foo/../x`), not a word that merely contains two dots.
+fn has_parent_segment(value: &str) -> bool {
+    value.split(['/', '\\']).any(|segment| segment == "..")
+}
+
+/// A home path: `~`, `~/x`, or a segment that starts with `~`.
+fn has_tilde(value: &str) -> bool {
+    value
+        .split(['/', '\\'])
+        .any(|segment| segment.starts_with('~'))
+}
+
+/// A bare file name by its extension: `agent.mjs`, `settings.json`. A version (`pkg@1.2.3`), a model (`gpt-4.1`)
+/// or an address (`127.0.0.1`) does not end in one of these.
+fn names_a_script_or_config(value: &str) -> bool {
+    const EXTENSIONS: [&str; 22] = [
+        "mjs", "cjs", "js", "jsx", "ts", "tsx", "py", "rb", "pl", "php", "lua", "sh", "json",
+        "yaml", "yml", "toml", "ini", "env", "conf", "cfg", "wasm", "txt",
+    ];
+    let lower = value.to_ascii_lowercase();
+    lower
+        .rsplit_once('.')
+        .is_some_and(|(_, ext)| EXTENSIONS.contains(&ext))
 }
 
 fn valid_id(id: &str) -> bool {
@@ -731,10 +845,11 @@ pub(crate) fn set_approval(
     if allowed {
         let (checked_id, command, args) = checked_fields(&entry)?;
         let fp = fingerprint(&command, &args);
-        if shown != Some(fp.as_str()) {
+        let path = resolve_command(&command, path_value)?;
+        // The window must have shown this command AND the file it resolves to now (a PATH change shows another file).
+        if shown != Some(shown_fingerprint(&command, &args, &path).as_str()) {
             return Err(SHOWN_CHANGED.into());
         }
-        let path = resolve_command(&command, path_value)?;
         let sha256 = file_sha256(Path::new(&path))?;
         let (pins, _) = pin_set(&args)?;
         approvals.insert(
@@ -769,6 +884,9 @@ pub(crate) fn approved_spawn(
     id: &str,
     path_value: &str,
 ) -> Result<Resolved, String> {
+    if !enabled(data_dir) {
+        return Err(OFF_REFUSED.into());
+    }
     let stored = read_stored(data_dir)?;
     let entry = stored
         .agents
@@ -790,6 +908,11 @@ pub(crate) fn approved_spawn(
     // approval refuses the start, and the child is given the canonical paths.
     let (pins_now, canonical_args) = pin_set(&args)?;
     if pins_now != approval.pins {
+        return Err(ON_DISK_CHANGED.into());
+    }
+    // Run the canonical file itself, hashed again immediately before the path is handed back. A launcher then still
+    // finds the files installed beside it. A write between this hash and the spawn can still change the file.
+    if file_sha256(Path::new(&resolved)).ok().as_deref() != Some(approval.sha256.as_str()) {
         return Err(ON_DISK_CHANGED.into());
     }
     let name = entry
@@ -827,13 +950,88 @@ pub(crate) fn approved_start(
 /// The folder a More agents child runs in: app-owned and new for each start, so no file in the chat folder is a
 /// relative input to it.
 pub(crate) fn run_folder(data_dir: &Path) -> Result<PathBuf, String> {
-    let dir = data_dir
-        .join("more-agents")
-        .join("run")
-        .join(uuid::Uuid::new_v4().simple().to_string());
-    std::fs::create_dir_all(&dir)
-        .map_err(|e| format!("Could not prepare the More agents folder: {e}"))?;
+    let err = |e: std::io::Error| format!("Could not prepare the More agents folder: {e}");
+    let base = data_dir.join("more-agents");
+    let run = base.join("run");
+    // The app's own folders only: a link where one of them should be is replaced (the link, never its target) or
+    // refused, so the child never starts inside a folder an agent can write.
+    for folder in [&base, &run] {
+        match std::fs::symlink_metadata(folder) {
+            Ok(meta) if meta.file_type().is_symlink() && folder == &base => {
+                return Err("The More agents folder is a link, so it is not used.".into());
+            }
+            Ok(meta) if meta.file_type().is_symlink() => {
+                // remove_file drops a symlink. A Windows directory junction is a symlink remove_file
+                // refuses; remove_dir drops the junction and not the folder it points at.
+                std::fs::remove_file(folder)
+                    .or_else(|_| std::fs::remove_dir(folder))
+                    .map_err(err)?;
+            }
+            _ => {}
+        }
+    }
+    let mut builder = std::fs::DirBuilder::new();
+    builder.recursive(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        builder.mode(0o700);
+    }
+    builder.create(&run).map_err(err)?;
+    let mut live = LIVE_RUNS.lock().unwrap_or_else(|e| e.into_inner());
+    // Folders from earlier starts are not needed once they are an hour old. One this process handed out and has not
+    // reaped is still a child's working folder, so it is left alone even when its mtime is old.
+    if let Ok(entries) = std::fs::read_dir(&run) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if live.contains(&path) {
+                continue;
+            }
+            let old = entry
+                .metadata()
+                .and_then(|m| m.modified())
+                .ok()
+                .and_then(|t| t.elapsed().ok())
+                .is_some_and(|age| age > std::time::Duration::from_secs(3600));
+            if old {
+                let _ = std::fs::remove_dir_all(path);
+            }
+        }
+    }
+    let dir = run.join(uuid::Uuid::new_v4().simple().to_string());
+    builder.create(&dir).map_err(err)?;
+    // An empty package.json stops npm's search for a project above this folder.
+    std::fs::write(dir.join("package.json"), b"{}").map_err(err)?;
+    live.insert(dir.clone());
     Ok(dir)
+}
+
+/// Run folders this process created and has not reaped. The sweep skips them.
+static LIVE_RUNS: Mutex<BTreeSet<PathBuf>> = Mutex::new(BTreeSet::new());
+
+/// Removes one More agents run folder after its child has exited. A link, the run root, and anything that is not a
+/// direct child of `<data>/more-agents/run` are left where they are.
+pub(crate) fn remove_run_folder(data_dir: &Path, run_dir: &Path) -> Result<(), String> {
+    let root = data_dir.join("more-agents").join("run");
+    let meta = std::fs::symlink_metadata(run_dir)
+        .map_err(|error| format!("The run folder is not there: {error}"))?;
+    if meta.file_type().is_symlink() {
+        return Err("The run folder is a link, so it is not removed.".into());
+    }
+    if !meta.is_dir() {
+        return Err("The run folder is not a directory.".into());
+    }
+    let real_root = std::fs::canonicalize(&root).map_err(|error| error.to_string())?;
+    let real_dir = std::fs::canonicalize(run_dir).map_err(|error| error.to_string())?;
+    if real_dir == real_root || real_dir.parent() != Some(real_root.as_path()) {
+        return Err("That folder is not one More agents run.".into());
+    }
+    std::fs::remove_dir_all(&real_dir)
+        .map_err(|error| format!("Could not remove the run folder: {error}"))?;
+    let mut live = LIVE_RUNS.lock().unwrap_or_else(|e| e.into_inner());
+    live.remove(run_dir);
+    live.remove(&real_dir);
+    Ok(())
 }
 
 /// An absolute path that is a file, or a bare name found on `path_value`. Anything else is not started.
@@ -897,13 +1095,117 @@ fn still_approved(approval: &Approval, fp: &str, path: Option<&str>) -> bool {
 }
 
 /// SHA-256 of a file's bytes, hex. A file that cannot be read is not approved.
+/// On Unix the hash is cached by path, mtime, size, inode and ctime, so an in-place edit is seen even when the writer
+/// puts the mtime back. Windows has no ctime a user cannot reset, so it does not cache.
 fn file_sha256(path: &Path) -> Result<String, String> {
     use sha2::{Digest, Sha256};
+    let meta = std::fs::metadata(path).map_err(|_| NOT_APPROVED.to_string())?;
+    #[cfg(unix)]
+    let stamp = FileStamp::of(&meta);
+    #[cfg(unix)]
+    if let Some((cached, sha)) = SHA_CACHE
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(path)
+        .cloned()
+    {
+        if cached == stamp {
+            return Ok(sha);
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = meta;
+    #[cfg(test)]
+    HASHES.with(|h| h.set(h.get() + 1));
     let bytes = std::fs::read(path).map_err(|_| NOT_APPROVED.to_string())?;
-    Ok(Sha256::digest(&bytes)
+    let sha: String = Sha256::digest(&bytes)
         .iter()
         .map(|byte| format!("{byte:02x}"))
-        .collect())
+        .collect();
+    #[cfg(unix)]
+    SHA_CACHE
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(path.to_path_buf(), (stamp, sha.clone()));
+    Ok(sha)
+}
+
+/// What a cached hash is keyed on: modification time, size, inode, and the inode change time.
+/// ctime moves on every write and a user cannot put it back, so an in-place edit misses the cache.
+#[cfg(unix)]
+#[derive(Clone, PartialEq, Eq, Debug)]
+struct FileStamp {
+    modified: u128,
+    size: u64,
+    inode: u64,
+    changed_secs: i64,
+    changed_nsec: i64,
+}
+
+#[cfg(unix)]
+impl FileStamp {
+    fn of(meta: &std::fs::Metadata) -> Self {
+        use std::os::unix::fs::MetadataExt;
+        let modified = meta
+            .modified()
+            .ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map_or(0, |d| d.as_nanos());
+        FileStamp {
+            modified,
+            size: meta.len(),
+            inode: meta.ino(),
+            changed_secs: meta.ctime(),
+            changed_nsec: meta.ctime_nsec(),
+        }
+    }
+}
+
+#[cfg(unix)]
+static SHA_CACHE: Mutex<BTreeMap<PathBuf, (FileStamp, String)>> = Mutex::new(BTreeMap::new());
+#[cfg(test)]
+thread_local! {
+    /// How many times this thread read a file to hash it (tests only).
+    static HASHES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// The Allow card's line for an entry that reads a file in the app's own folder (`--config <app folder>/settings.json`).
+/// If the agent rewrites that file on a run, the next start no longer matches the pin and needs a new approval.
+pub(crate) fn data_folder_notes(
+    stored: &Stored,
+    data_dir: &Path,
+    notes: &mut serde_json::Map<String, Value>,
+) {
+    // Pins are canonical paths, so the folder is compared canonical too (macOS links /var to /private/var).
+    let folder = std::fs::canonicalize(data_dir).unwrap_or_else(|_| data_dir.to_path_buf());
+    for (id, approval) in &stored.approvals {
+        if approval
+            .pins
+            .iter()
+            .any(|(path, _)| Path::new(path).starts_with(&folder))
+        {
+            notes.insert(
+                id.clone(),
+                json!("This entry reads a file in the app's folder. If the agent rewrites that file, the next start needs a new approval."),
+            );
+        }
+    }
+}
+
+/// Whether a file starts with `#!`, a script whose interpreter the app does not pin.
+fn starts_with_shebang(path: &str) -> bool {
+    use std::io::Read;
+    let mut head = [0u8; 2];
+    std::fs::File::open(path)
+        .and_then(|mut file| file.read_exact(&mut head))
+        .is_ok()
+        && &head == b"#!"
+}
+
+/// What the Allow card shows the person and the window sends back: the command, its arguments, and the absolute file
+/// the command resolves to. A change to any of them is a different thing to approve.
+pub(crate) fn shown_fingerprint(command: &str, args: &[String], resolved: &str) -> String {
+    fingerprint(&format!("{resolved}\u{0}{command}"), args)
 }
 
 /// The fingerprint of the command the person approves: its command and its arguments, length-prefixed.
@@ -945,17 +1247,29 @@ pub(crate) fn view(stored: &Stored, path_value: &str) -> Value {
         };
         let fp = fingerprint(&command, &args);
         let path = resolve_command(&command, path_value).ok();
-        let allowed = stored
-            .approvals
-            .get(&id)
-            .is_some_and(|a| still_approved(a, &fp, path.as_deref()));
+        let shown = shown_fingerprint(&command, &args, path.as_deref().unwrap_or(""));
+        // The list checks what the start checks: the same pins over the same arguments, so a re-pointed link
+        // does not show as allowed.
+        let pins_match = pin_set(&args)
+            .is_ok_and(|(pins, _)| stored.approvals.get(&id).is_some_and(|a| a.pins == pins));
+        let allowed = pins_match
+            && stored
+                .approvals
+                .get(&id)
+                .is_some_and(|a| still_approved(a, &fp, path.as_deref()));
         if let Some(note) = remote_note(&command, &args) {
             notes.insert(id.clone(), json!(note));
+        } else if path.as_deref().is_some_and(starts_with_shebang) {
+            // LOW-F: the interpreter on a script's first line is not pinned, so the card says so.
+            notes.insert(
+                id.clone(),
+                json!("This program is a script. The interpreter named on its first line is not pinned."),
+            );
         }
         if allowed {
             approved.push(id.clone());
         }
-        fingerprints.insert(id.clone(), json!(fp));
+        fingerprints.insert(id.clone(), json!(shown));
         resolved.insert(id, json!(path));
     }
     json!({
@@ -974,51 +1288,84 @@ fn data_dir(app: &AppHandle) -> Result<PathBuf, String> {
 
 /// The list for the window: its revision, its entries as saved, and which ids are approved to run.
 #[tauri::command]
-pub fn more_agents_read(app: AppHandle) -> Result<Value, String> {
-    Ok(view(
-        &read_stored(&data_dir(&app)?)?,
-        &crate::harness::gui_search_path(),
-    ))
+pub async fn more_agents_read(app: AppHandle) -> Result<Value, String> {
+    off_main(move || {
+        let dir = data_dir(&app)?;
+        let stored = read_stored(&dir)?;
+        let mut shown = view(&stored, &crate::harness::gui_search_path());
+        if let Some(notes) = shown["notes"].as_object_mut() {
+            data_folder_notes(&stored, &dir, notes);
+        }
+        Ok(shown)
+    })
+    .await
+}
+
+/// The person's switch for More agents, written by the app when Settings changes it.
+#[tauri::command]
+pub async fn more_agents_set_enabled(app: AppHandle, on: bool) -> Result<(), String> {
+    off_main(move || set_enabled(&data_dir(&app)?, on)).await
+}
+
+/// Runs the work on a blocking thread: the hashing of a program must not hold up the window.
+async fn off_main<T: Send + 'static>(
+    work: impl FnOnce() -> Result<T, String> + Send + 'static,
+) -> Result<T, String> {
+    tauri::async_runtime::spawn_blocking(work)
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 /// Replace the list if the window read the current revision. Approvals are not changed here.
 #[tauri::command]
-pub fn more_agents_write(
+pub async fn more_agents_write(
     app: AppHandle,
     expected_revision: u64,
     agents: Vec<Value>,
 ) -> Result<Value, String> {
-    Ok(view(
-        &write_agents(&data_dir(&app)?, expected_revision, agents)?,
-        &crate::harness::gui_search_path(),
-    ))
+    off_main(move || {
+        let stored = write_agents(&data_dir(&app)?, expected_revision, agents)?;
+        announce(&app);
+        Ok(view(&stored, &crate::harness::gui_search_path()))
+    })
+    .await
+}
+
+/// Tells every window the list changed, so each one re-reads it and stops runs whose entry was withdrawn.
+fn announce(app: &AppHandle) {
+    let _ = tauri::Emitter::emit(app, "more-agents-changed", ());
 }
 
 /// Whether an entry may run right now: approved as it is, and its file unchanged. A running agent is checked this
 /// way before each turn, so a withdrawn or edited entry stops answering.
 #[tauri::command]
-pub fn more_agents_check(app: AppHandle, id: String) -> Result<(), String> {
-    approved_spawn(&data_dir(&app)?, &id, &crate::harness::gui_search_path()).map(|_| ())
+pub async fn more_agents_check(app: AppHandle, id: String) -> Result<(), String> {
+    off_main(move || {
+        approved_spawn(&data_dir(&app)?, &id, &crate::harness::gui_search_path()).map(|_| ())
+    })
+    .await
 }
 
 /// The person's own tap: allow or withdraw one entry. `shown` is the fingerprint the window displayed for it.
 #[tauri::command]
-pub fn more_agents_approve(
+pub async fn more_agents_approve(
     app: AppHandle,
     id: String,
     allowed: bool,
     shown: Option<String>,
 ) -> Result<Value, String> {
-    Ok(view(
-        &set_approval(
+    off_main(move || {
+        let stored = set_approval(
             &data_dir(&app)?,
             &id,
             allowed,
             shown.as_deref(),
             &crate::harness::gui_search_path(),
-        )?,
-        &crate::harness::gui_search_path(),
-    ))
+        )?;
+        announce(&app);
+        Ok(view(&stored, &crate::harness::gui_search_path()))
+    })
+    .await
 }
 
 #[cfg(test)]
@@ -1059,6 +1406,7 @@ mod tests {
         TEST_GEN.with(|g| *g.borrow_mut() = Some("gen-test".to_string()));
         let path = std::env::temp_dir().join(format!("wp134-more-agents-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&path).expect("scratch dir");
+        set_enabled(&path, true).expect("switch on for the test");
         Scratch(path)
     }
 
@@ -1313,7 +1661,10 @@ mod tests {
         write_agents(d.path(), 0, vec![entry("wp134", "wp134-tool", &["--acp"])]).expect("seed");
         approve(d.path(), "wp134", &path_value).expect("approve");
         let run = approved_spawn(d.path(), "wp134", &path_value).expect("approved and present");
-        assert_eq!(run.command, canonical.to_string_lossy());
+        assert_eq!(
+            file_sha256(Path::new(&run.command)).expect("copy"),
+            file_sha256(&canonical).expect("original")
+        );
         assert_eq!(run.args, vec!["--acp".to_string()]);
         write_agents(
             d.path(),
@@ -1322,11 +1673,10 @@ mod tests {
         )
         .expect("absolute");
         approve(d.path(), "wp134", "/usr/bin").expect("approve absolute");
+        let again = approved_spawn(d.path(), "wp134", "/usr/bin").expect("absolute path runs");
         assert_eq!(
-            approved_spawn(d.path(), "wp134", "/usr/bin")
-                .expect("absolute path runs")
-                .command,
-            canonical.to_string_lossy()
+            file_sha256(Path::new(&again.command)).expect("copy"),
+            file_sha256(&canonical).expect("original")
         );
     }
 
@@ -1413,7 +1763,20 @@ mod tests {
             .expect("approved and present");
         assert_eq!(run.id, "wp134b");
         let canonical = std::fs::canonicalize(&tool).expect("canonical");
-        assert_eq!(run.command, canonical.to_string_lossy());
+        assert_eq!(
+            run.command,
+            canonical.to_string_lossy(),
+            "the approved file is not what runs"
+        );
+        let data_real = std::fs::canonicalize(d.path()).expect("data");
+        assert!(
+            Path::new(&run.command).starts_with(&data_real),
+            "the approved program runs outside the data folder"
+        );
+        assert_eq!(
+            file_sha256(Path::new(&run.command)).expect("copy"),
+            file_sha256(&canonical).expect("original")
+        );
         assert_eq!(run.args, vec!["acp".to_string(), "--flag".to_string()]);
     }
 
@@ -1765,6 +2128,544 @@ mod tests {
         assert!(
             approved_spawn(d.path(), "wp134a", &path_value).is_err(),
             "a withdrawn approval came back once the generation counter restarted"
+        );
+    }
+
+    // Review round 6 tests. Each one fails on the code before its fix.
+
+    #[cfg(unix)]
+    #[test]
+    fn an_approved_program_runs_from_its_canonical_path() {
+        let d = dir();
+        let tool = make_tool(&d.path().join("bin"), "wp134-copy", b"#!/bin/sh\n");
+        let path_value = tool.parent().unwrap().to_string_lossy().into_owned();
+        write_agents(d.path(), 0, vec![entry("wp134", "wp134-copy", &[])]).expect("seed");
+        approve(d.path(), "wp134", &path_value).expect("approve");
+        let run = approved_spawn(d.path(), "wp134", &path_value).expect("run");
+        let original = std::fs::canonicalize(&tool).expect("canonical");
+        assert_eq!(Path::new(&run.command), original.as_path());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_allow_card_fingerprint_changes_when_the_same_name_resolves_to_another_file() {
+        let d = dir();
+        let first = d.path().join("first");
+        let second = d.path().join("second");
+        make_tool(&first, "wp134-p", b"#!/bin/sh\necho one\n");
+        make_tool(&second, "wp134-p", b"#!/bin/sh\necho two\n");
+        write_agents(d.path(), 0, vec![entry("wp134", "wp134-p", &[])]).expect("seed");
+        let fp_first = view(
+            &read_stored(d.path()).expect("read"),
+            &first.to_string_lossy(),
+        )["fingerprints"]["wp134"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let fp_second = view(
+            &read_stored(d.path()).expect("read"),
+            &second.to_string_lossy(),
+        )["fingerprints"]["wp134"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert_ne!(fp_first, fp_second);
+        // The window showed the first file; the approval now resolves to the second, and is refused.
+        assert_eq!(
+            set_approval(
+                d.path(),
+                "wp134",
+                true,
+                Some(&fp_first),
+                &second.to_string_lossy()
+            )
+            .expect_err("refused"),
+            SHOWN_CHANGED
+        );
+    }
+
+    #[test]
+    fn an_unchanged_program_is_hashed_once_and_a_changed_one_again() {
+        let d = dir();
+        let file = d.path().join("hashed-once");
+        std::fs::write(&file, b"first version").expect("write");
+        let before = HASHES.with(|h| h.get());
+        let first = file_sha256(&file).expect("hash");
+        assert_eq!(file_sha256(&file).expect("hash again"), first);
+        // Unix caches an unchanged file. Windows does not cache, so every read hashes.
+        #[cfg(unix)]
+        assert_eq!(
+            HASHES.with(|h| h.get()) - before,
+            1,
+            "the unchanged file was read again"
+        );
+        #[cfg(not(unix))]
+        assert_eq!(HASHES.with(|h| h.get()) - before, 2);
+        std::fs::write(&file, b"a longer second version").expect("rewrite");
+        assert_ne!(file_sha256(&file).expect("hash changed"), first);
+        #[cfg(unix)]
+        assert_eq!(HASHES.with(|h| h.get()) - before, 2);
+        #[cfg(not(unix))]
+        assert_eq!(HASHES.with(|h| h.get()) - before, 3);
+    }
+
+    #[test]
+    fn a_remote_launcher_is_named_on_the_card_in_every_form() {
+        let args = |list: &[&str]| list.iter().map(|a| a.to_string()).collect::<Vec<String>>();
+        for (command, list) in [
+            ("bunx", vec!["pkg"]),
+            ("bun", vec!["x", "pkg"]),
+            ("npm", vec!["exec", "pkg"]),
+            ("npm", vec!["x", "pkg"]),
+            ("pnpm", vec!["dlx", "pkg"]),
+            ("yarn", vec!["dlx", "pkg"]),
+            ("pipx", vec!["run", "pkg"]),
+            ("deno", vec!["run", "npm:pkg"]),
+            ("deno", vec!["run", "https://example.com/agent.ts"]),
+        ] {
+            assert!(
+                remote_note(command, &args(&list)).is_some(),
+                "{command} {list:?} is not named"
+            );
+        }
+        assert!(remote_note("deno", &args(&["run", "file:///opt/agent.ts"])).is_none());
+        assert!(remote_note("npm", &args(&["install", "pkg"])).is_none());
+    }
+
+    #[test]
+    fn an_inline_program_is_refused_in_every_interpreter_form() {
+        for (command, list) in [
+            ("/usr/bin/python3", vec!["-uc", "print(1)"]),
+            ("/usr/bin/perl", vec!["-we", "system('x')"]),
+            ("/opt/node", vec!["-pe", "1"]),
+            ("/usr/bin/php", vec!["-r", "echo 1;"]),
+        ] {
+            let args: Vec<&str> = list;
+            let e = entry("wp134", command, &args);
+            assert_eq!(
+                checked_fields(&e).expect_err("refused"),
+                INLINE_REFUSED,
+                "{command} {args:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_relative_file_argument_is_refused_and_a_package_name_is_not() {
+        assert!(checked_fields(&entry("wp134", "/opt/node", &["agent.mjs"])).is_err());
+        assert!(checked_fields(&entry("wp134", "/opt/node", &["--env-file=.env"])).is_err());
+        assert!(checked_fields(&entry("wp134", "/opt/node", &["./agent.mjs"])).is_err());
+        assert!(checked_fields(&entry("wp134", "/opt/node", &["../secret"])).is_err());
+        assert!(checked_fields(&entry("wp134", "/opt/node", &["~/secret"])).is_err());
+        assert!(checked_fields(&entry("wp134", "/opt/npx", &["-y", "@scope/pkg"])).is_ok());
+        assert!(checked_fields(&entry("wp134", "/opt/npx", &["https://example.com/a.ts"])).is_ok());
+    }
+
+    #[test]
+    fn a_missing_generation_item_approves_nothing() {
+        let d = dir();
+        write_agents(d.path(), 0, vec![entry("wp134", "/opt/agent", &[])]).expect("seed");
+        set_approval(d.path(), "wp134", false, None, "/usr/bin").expect("first change");
+        // An approval recorded, then the generation item is gone (a deleted Keychain item reads as absent).
+        TEST_GEN.with(|g| *g.borrow_mut() = None);
+        assert!(read_stored(d.path()).expect("read").approvals.is_empty());
+    }
+
+    // Review r5 check (should pass): a space-separated loader value and an attached short value are both pinned, and
+    // the child is given the canonical path, not the link.
+    #[cfg(unix)]
+    #[test]
+    fn review_r5_space_separated_and_attached_values_are_pinned_and_canonical() {
+        let d = dir();
+        let bin = d.path().join("bin");
+        make_tool(&bin, "wp134-node", b"#!/bin/sh\n");
+        let hook = d.path().join("hook.mjs");
+        let req = d.path().join("req.cjs");
+        let link = d.path().join("hook-link.mjs");
+        std::fs::write(&hook, b"// hook").expect("hook");
+        std::fs::write(&req, b"// req").expect("req");
+        std::os::unix::fs::symlink(&hook, &link).expect("link");
+        let path_value = bin.to_string_lossy().into_owned();
+        let link_arg = link.to_string_lossy().into_owned();
+        let attached = format!("-r{}", req.to_string_lossy());
+        write_agents(
+            d.path(),
+            0,
+            vec![entry(
+                "wp134",
+                "wp134-node",
+                &["--import", link_arg.as_str(), attached.as_str()],
+            )],
+        )
+        .expect("seed");
+        approve(d.path(), "wp134", &path_value).expect("approve");
+        let run = approved_spawn(d.path(), "wp134", &path_value).expect("starts as approved");
+        let canonical_hook = std::fs::canonicalize(&hook).expect("canon");
+        assert_eq!(run.args[1], canonical_hook.to_string_lossy());
+        std::fs::write(&req, b"require('child_process').exec('anything')").expect("swap");
+        assert!(approved_spawn(d.path(), "wp134", &path_value).is_err());
+    }
+
+    // Review r5 repro (LOW): `-m` inside a short-flag cluster (`python3 -Bm mod`, `-um mod`) loads a module by name and
+    // is not seen as a loader flag, because only the second character is checked.
+    #[test]
+    fn review_r5_a_loader_flag_inside_a_cluster_is_refused() {
+        for cluster in ["-Bm", "-um", "-Im"] {
+            assert_eq!(
+                checked_fields(&entry("wp134", "/opt/python3", &[cluster, "agentmod"]))
+                    .err()
+                    .as_deref(),
+                Some(LOADER_REFUSED),
+                "{cluster} agentmod loads a module by name"
+            );
+        }
+    }
+
+    // Review r5 repro (MEDIUM, functional): a dot alone now makes an argument a relative file, so a version-pinned
+    // package, a dotted model name and an address are refused.
+    #[test]
+    fn review_r5_a_dotted_word_that_is_not_a_path_is_accepted() {
+        for args in [
+            &["some-acp-agent@1.2.3", "--acp"][..],
+            &["--model=gpt-4.1"][..],
+            &["--host", "127.0.0.1"][..],
+        ] {
+            assert!(
+                checked_fields(&entry("wp134", "/opt/npx", args)).is_ok(),
+                "{args:?} is refused as a relative file"
+            );
+        }
+    }
+
+    // Review r5 repro (LOW): the run folder is made with `create_dir_all`, which follows a link planted at
+    // `<data>/more-agents/run`, so the child can start inside a folder an agent writes; and it is not private (0700).
+    #[cfg(unix)]
+    #[test]
+    fn review_r5_the_run_folder_stays_inside_the_data_folder_and_is_private() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = dir();
+        let data = d.path().join("data");
+        let outside = d.path().join("project");
+        std::fs::create_dir_all(data.join("more-agents")).expect("data");
+        std::fs::create_dir_all(&outside).expect("outside");
+        std::os::unix::fs::symlink(&outside, data.join("more-agents").join("run")).expect("plant");
+        let run = run_folder(&data).expect("run folder");
+        let real = std::fs::canonicalize(&run).expect("canon");
+        let mode = std::fs::metadata(&run).expect("meta").permissions().mode() & 0o777;
+        assert!(
+            real.starts_with(std::fs::canonicalize(&data).expect("canon data")) && mode == 0o700,
+            "run folder is {real:?} with mode {mode:o}"
+        );
+    }
+
+    fn short_lived_child(dir: &Path) -> std::process::Child {
+        #[cfg(unix)]
+        {
+            std::process::Command::new("true")
+                .current_dir(dir)
+                .spawn()
+                .expect("true")
+        }
+        #[cfg(windows)]
+        {
+            std::process::Command::new("cmd")
+                .args(["/c", "exit", "0"])
+                .current_dir(dir)
+                .spawn()
+                .expect("cmd")
+        }
+    }
+
+    /// The folder of a child that has exited is removed. The run root and anything outside it are not.
+    #[test]
+    fn a_short_lived_child_removes_its_run_folder_when_it_exits() {
+        let d = dir();
+        let data = d.path().join("data");
+        // An hour-old folder is still swept when a new run starts. `touch` sets a directory's time; opening one does not.
+        #[cfg(unix)]
+        {
+            std::fs::create_dir_all(data.join("more-agents").join("run")).expect("run root");
+            let stale = data.join("more-agents").join("run").join("stale");
+            std::fs::create_dir_all(&stale).expect("stale");
+            let aged = std::process::Command::new("touch")
+                .args(["-t", "202001010000.00"])
+                .arg(&stale)
+                .status()
+                .expect("touch");
+            assert!(aged.success(), "could not age the old run folder");
+            let run = run_folder(&data).expect("run folder");
+            assert!(
+                !stale.exists(),
+                "the startup sweep still removes an hour-old folder"
+            );
+            let _ = run;
+        }
+        let run = run_folder(&data).expect("run folder");
+        assert!(run.join("package.json").is_file());
+        let mut child = short_lived_child(&run);
+        let _ = child.wait();
+        // harness_spawn calls this after child.wait(), on the normal exit and on a spawn that was cancelled.
+        remove_run_folder(&data, &run).expect("reap");
+        assert!(!run.exists());
+        let root = data.join("more-agents").join("run");
+        assert!(root.is_dir());
+        let outside = d.path().join("outside");
+        std::fs::create_dir_all(&outside).expect("outside");
+        assert!(remove_run_folder(&data, &outside).is_err());
+        assert!(outside.is_dir());
+        assert!(remove_run_folder(&data, &root).is_err());
+        assert!(root.is_dir());
+        // A path that climbs out of the run root is not a child of it.
+        let climbed = root.join("..").join("outside");
+        assert!(remove_run_folder(&data, &climbed).is_err());
+        assert!(outside.is_dir());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_planted_link_is_not_removed_as_a_run_folder() {
+        let d = dir();
+        let data = d.path().join("data");
+        let outside = d.path().join("keep");
+        std::fs::create_dir_all(&outside).expect("keep");
+        std::fs::write(outside.join("note"), b"stay").expect("note");
+        let run = run_folder(&data).expect("run");
+        let link = run.parent().unwrap().join("linked");
+        std::os::unix::fs::symlink(&outside, &link).expect("link");
+        assert!(remove_run_folder(&data, &link).is_err());
+        assert_eq!(std::fs::read(outside.join("note")).expect("still"), b"stay");
+        assert!(outside.is_dir());
+        let _ = run;
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_planted_link_is_not_removed_as_a_run_folder() {
+        // The unix test plants a symlink. Here, a path that is not a direct child of the run root is refused.
+        let d = dir();
+        let data = d.path().join("data");
+        let run = run_folder(&data).expect("run");
+        let outside = d.path().join("keep");
+        std::fs::create_dir_all(&outside).expect("keep");
+        assert!(remove_run_folder(&data, &outside).is_err());
+        assert!(outside.is_dir());
+        assert!(run.is_dir());
+    }
+
+    #[test]
+    fn the_switch_off_refuses_every_more_agents_spawn() {
+        let d = dir();
+        write_agents(
+            d.path(),
+            0,
+            vec![entry("wp134", "/opt/approved-agent", &[])],
+        )
+        .expect("seed");
+        set_enabled(d.path(), false).expect("off");
+        assert_eq!(
+            approved_spawn(d.path(), "wp134", "/usr/bin").expect_err("off"),
+            OFF_REFUSED
+        );
+        // Off is the default: a folder that never saw the switch refuses too.
+        std::fs::remove_file(d.path().join(ENABLED_FILE)).expect("remove");
+        assert!(!enabled(d.path()));
+        assert!(approved_spawn(d.path(), "wp134", "/usr/bin").is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_pinned_file_in_the_app_folder_is_named_on_the_card() {
+        let d = dir();
+        let config = d.path().join("settings.json");
+        std::fs::write(&config, b"{}").expect("config");
+        let tool = make_tool(&d.path().join("bin"), "wp134-cfg", b"#!/bin/sh\n");
+        let path_value = tool.parent().unwrap().to_string_lossy().into_owned();
+        let arg = format!("--config={}", config.to_string_lossy());
+        write_agents(
+            d.path(),
+            0,
+            vec![entry("wp134", "wp134-cfg", &[arg.as_str()])],
+        )
+        .expect("seed");
+        approve(d.path(), "wp134", &path_value).expect("approve");
+        let stored = read_stored(d.path()).expect("read");
+        let mut notes = serde_json::Map::new();
+        data_folder_notes(&stored, d.path(), &mut notes);
+        assert!(notes["wp134"]
+            .as_str()
+            .unwrap()
+            .contains("needs a new approval"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_re_pointed_link_is_not_shown_as_allowed() {
+        let d = dir();
+        let bin = d.path().join("bin");
+        make_tool(&bin, "wp134-link", b"#!/bin/sh\n");
+        let real = d.path().join("agent.js");
+        let evil = d.path().join("evil.js");
+        let link = d.path().join("current.js");
+        std::fs::write(&real, b"ok").expect("real");
+        std::fs::write(&evil, b"bad").expect("evil");
+        std::os::unix::fs::symlink(&real, &link).expect("link");
+        let path_value = bin.to_string_lossy().into_owned();
+        let arg = link.to_string_lossy().into_owned();
+        write_agents(
+            d.path(),
+            0,
+            vec![entry("wp134", "wp134-link", &[arg.as_str()])],
+        )
+        .expect("seed");
+        approve(d.path(), "wp134", &path_value).expect("approve");
+        std::fs::remove_file(&link).expect("unlink");
+        std::os::unix::fs::symlink(&evil, &link).expect("relink");
+        let shown = view(&read_stored(d.path()).expect("read"), &path_value);
+        assert_eq!(shown["approved"], json!([]));
+    }
+
+    // Review #231 r2 repro (HIGH, functional): the approved program runs from a private copy at
+    // `<data>/more-agents/bin/<sha256>`, away from the folder it was installed in. Every npm-installed launcher or
+    // agent is a script that loads files beside it: `npx` resolves to `.../npm/bin/npx-cli.js`, whose first line is
+    // `require('../lib/cli.js')`, so the copy dies with "Cannot find module '../lib/cli.js'" (checked by hand with
+    // node 22's npx). The same holds for `gemini`, `copilot` and every `#!/usr/bin/env node` bin, and on Windows for
+    // `npx.cmd`, whose copy has no extension and is not run through cmd at all. This sh script has the same shape: a
+    // bin linked from PATH that loads `../lib/cli.sh` relative to itself.
+    #[cfg(unix)]
+    #[test]
+    fn review_231_r2_an_installed_program_still_finds_the_files_beside_it() {
+        let d = dir();
+        let pkg = d.path().join("lib").join("node_modules").join("fake-acp");
+        std::fs::create_dir_all(pkg.join("lib")).expect("pkg lib");
+        std::fs::write(
+            pkg.join("lib").join("cli.sh"),
+            b"echo started-from-install\n",
+        )
+        .expect("cli");
+        let cli = make_tool(
+            &pkg.join("bin"),
+            "fake-acp-cli.sh",
+            b"#!/bin/sh\n. \"$(dirname \"$0\")/../lib/cli.sh\"\n",
+        );
+        let bin = d.path().join("bin");
+        std::fs::create_dir_all(&bin).expect("bin");
+        std::os::unix::fs::symlink(&cli, bin.join("fake-acp"))
+            .expect("PATH link, as npm makes one");
+        let path_value = bin.to_string_lossy().into_owned();
+        write_agents(d.path(), 0, vec![entry("wp134", "fake-acp", &["--acp"])]).expect("seed");
+        approve(d.path(), "wp134", &path_value).expect("approve");
+        let run = approved_spawn(d.path(), "wp134", &path_value).expect("starts as approved");
+        let out = std::process::Command::new(&run.command)
+            .args(&run.args)
+            .output()
+            .expect("spawn the approved program");
+        assert!(
+            out.status.success()
+                && String::from_utf8_lossy(&out.stdout).contains("started-from-install"),
+            "the approved program could not run from {}: {}",
+            run.command,
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    // Review #231 r2 repro (MEDIUM, functional, same class as r5's dotted words): a model name with a slash is read as
+    // a relative path and refused. `--model openai/gpt-4.1`, `--model=anthropic/claude-sonnet-4` (OpenRouter, opencode,
+    // goose, aider style) and a Hugging Face id cannot be given at all, with or without `=`. The child now starts in its
+    // own empty run folder, so a relative word cannot reach a chat file anyway. The command is not named `agent`:
+    // that is one of Hivra's own CLIs, and the check here is the arguments.
+    #[test]
+    fn review_231_r2_a_model_slug_with_a_slash_is_accepted() {
+        for args in [
+            &["--model", "openai/gpt-4.1"][..],
+            &["--model=anthropic/claude-sonnet-4"][..],
+            &["--model", "Qwen/Qwen2.5-Coder-32B-Instruct"][..],
+        ] {
+            assert!(
+                checked_fields(&entry("wp134", "/opt/npx", args)).is_ok(),
+                "{args:?} is refused as a relative file"
+            );
+        }
+    }
+
+    // Review #231 r2 repro (MEDIUM, functional): a new start sweeps every run folder whose mtime is over an hour old,
+    // and a folder's mtime does not move while its child runs (nothing is added to it). A More agents chat open for
+    // over an hour has its working folder deleted under it the moment any other More agents chat starts. After that
+    // every process it starts without its own cwd fails: node aborts in `uv_cwd`, python's os.getcwd() raises, git
+    // says "Unable to read current working directory" (an MCP server the agent launches with npx, a tool it runs).
+    #[cfg(unix)]
+    #[test]
+    fn review_231_r2_a_folder_a_child_still_runs_in_is_not_swept() {
+        let d = dir();
+        let data = d.path().join("data");
+        let live = run_folder(&data).expect("first run");
+        let mut child = std::process::Command::new("sleep")
+            .arg("30")
+            .current_dir(&live)
+            .spawn()
+            .expect("a child that is still running");
+        // An hour and more since the folder was made: the child is still there.
+        let aged = std::process::Command::new("touch")
+            .args(["-t", "202001010000.00"])
+            .arg(&live)
+            .status()
+            .expect("touch");
+        assert!(aged.success());
+        let _second = run_folder(&data).expect("another chat starts");
+        let still_there = live.is_dir();
+        let _ = child.kill();
+        let _ = child.wait();
+        assert!(
+            still_there,
+            "a running child's folder was swept by another start"
+        );
+    }
+
+    // Review #231 r2 repro (MEDIUM): the hash cache is keyed on path, mtime, size and inode, all of which an edit in
+    // place keeps when the writer puts the mtime back (utimensat, `touch -r`). The pin check then reads the old hash
+    // from the cache and the changed script runs on the old approval. The same cache backs the private copy's check in
+    // `private_copy`. The inode change time (ctime) cannot be set back by a user and is not in the key.
+    #[cfg(unix)]
+    #[test]
+    fn review_231_r2_a_pinned_script_edited_in_place_does_not_run() {
+        use std::io::Write;
+        let d = dir();
+        let bin = d.path().join("bin");
+        make_tool(&bin, "wp134-runner", b"#!/bin/sh\n");
+        let script = d.path().join("agent.mjs");
+        std::fs::write(&script, b"console.log('approved')").expect("script");
+        let path_value = bin.to_string_lossy().into_owned();
+        let arg = script.to_string_lossy().into_owned();
+        write_agents(
+            d.path(),
+            0,
+            vec![entry("wp134", "wp134-runner", &[arg.as_str()])],
+        )
+        .expect("seed");
+        approve(d.path(), "wp134", &path_value).expect("approve");
+        approved_spawn(d.path(), "wp134", &path_value).expect("starts as approved");
+        let before = std::fs::metadata(&script)
+            .expect("meta")
+            .modified()
+            .expect("mtime");
+        {
+            let mut file = std::fs::OpenOptions::new()
+                .write(true)
+                .open(&script)
+                .expect("open in place");
+            // The same length, so the size in the key does not move either.
+            file.write_all(b"require('cp').exec('x')").expect("edit");
+            file.set_modified(before).expect("put the mtime back");
+        }
+        assert_ne!(
+            std::fs::read(&script).expect("read"),
+            b"console.log('approved')"
+        );
+        assert_eq!(
+            approved_spawn(d.path(), "wp134", &path_value)
+                .err()
+                .as_deref(),
+            Some(ON_DISK_CHANGED),
+            "an edited pinned script ran on the old approval"
         );
     }
 }

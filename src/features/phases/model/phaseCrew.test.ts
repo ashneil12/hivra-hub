@@ -11,7 +11,8 @@ import { startPhaseWork } from "./store";
 const PROJECT = "/tmp/phase-crew";
 
 function launcher(start: AgentAppHost["start"], requestId: string, extra: Partial<AgentAppHost> = {}) {
-  const host = { start, ...extra } as AgentAppHost;
+  // WP-141 round 6: a phase worker passes the crew gate; this file is about the phase, so the gate is permissive here.
+  const host = { start, tasks: { crewGate: async () => undefined }, isMono: () => false, ...extra } as AgentAppHost;
   const helpers = {
     startLaunch: (_source: Session, input: Record<string, unknown>) => ({
       prompt: String(input.prompt),
@@ -57,7 +58,7 @@ it("gives each phase worker the Hivra preamble and the code path", async () => {
   const start: AgentAppHost["start"] = async (_launch, id) => {
     deliverPhaseResult(id, { body: "A fact about the code." });
   };
-  const host = { start } as AgentAppHost;
+  const host = { start, tasks: { crewGate: async () => undefined }, isMono: () => false } as unknown as AgentAppHost;
   const helpers = {
     startLaunch: (_source: Session, input: Record<string, unknown>) => {
       prompts.push(String(input.prompt));
@@ -99,6 +100,8 @@ it("puts the task's title and description in every run's prompt, read when that 
   const host = {
     start,
     monoOf: () => ({ id: "mono", projects: [PROJECT] }),
+    isMono: () => true,
+    tasks: { crewGate: async () => undefined },
     taskStore: async (command: string, args: { id?: string }) => {
       reads.push(`${command}:${args.id ?? ""}`);
       return {
@@ -146,6 +149,8 @@ it("still starts the phase when the task store cannot answer", async () => {
   const host = {
     start,
     monoOf: () => ({ id: "mono", projects: [PROJECT] }),
+    isMono: () => true,
+    tasks: { crewGate: async () => undefined },
     taskStore: async () => {
       throw new Error("The store is unreachable.");
     },

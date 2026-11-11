@@ -1,5 +1,7 @@
+import { subscribeMoreAgentsChanges } from "../features/providers/model/moreAgents";
 import { setTurnTextDecorator } from "../integrations/harness/core/registry";
 // WP-85: terminal Claude sessions in the chat list.
+import { startPendingReviews, type ReviewHooks } from "../features/security-review/model/launch";
 import { mergeTerminalSessions } from "../features/terminalMirror/model/list";
 import { TerminalMirrorPane } from "../features/terminalMirror/ui/TerminalMirrorPane";
 import { useTerminalMirror } from "../features/terminalMirror/ui/useTerminalMirror";
@@ -64,13 +66,15 @@ import { gateAsk, gateAskNote, gateCheckout, gateDue, gateFailedResult, gateVerd
 import { briefGatesFor } from "../features/firstmate/model/completionGates";
 import {
   isOpenDelegation,
+  DELEGATIONS_CHANGED,
   tauriDelegations,
   type Delegation,
   type DelegationTracker,
 } from "../features/monos/model/delegations";
 import { delegationTasksHost } from "../features/monos/model/delegationTasks";
 import { withCrewAdvice } from "../features/crew/model/advice";
-import { crewRouteFor, recordCrewFailure, recordCrewPause } from "../features/crew/model/host";
+import { crewAnyLock, crewLaunchCheck, crewPickFor, crewPolicyForLead, crewPolicyInForce, crewRouteFor, pickMonosFrom, recordCrewFailure, recordCrewPause } from "../features/crew/model/host";
+import { refuseNeverUseLead } from "../features/crew/model/lead";
 import {
   briefCancelled,
   briefSentAt,
@@ -107,7 +111,7 @@ import {
   useMonoTeamsVersion,
 } from "../features/hub/model/monoTeams";
 import { isOrchestratorChat } from "../features/monos/model/orchestrators";
-import { leadMemoryBlock } from "../features/hub/model/hubMemoryPrimer";
+import { leadMemoryBlock, leadStandingBlock } from "../features/hub/model/hubMemoryPrimer";
 import { longChatOn, treeContext, treeDate, treeZoom } from "../features/monos/model/monoTreeStore";
 import { useMonoTrees } from "./hooks/useMonoTrees";
 import { useMemoryCurator } from "./hooks/useMemoryCurator";
@@ -186,6 +190,8 @@ import {
   type AppSessionListing,
   type AppSessionPlacement,
 } from "../features/agent-app/model/agentApp";
+// WP-92: the worker route's answer, so the host call is typed without a value.
+import type { WorkerArmOutcome } from "../features/agent-app/model/agentAppSecrets";
 import { submitWithSettlement } from "./model/managedSubmission";
 import { providerFailureOf, withProviderFailure } from "./model/turnFailure";
 import {
@@ -253,9 +259,14 @@ import { ProjectStrip } from "../features/hub/ui/ProjectStrip";
 import { HubProjectItems } from "../features/hub/ui/HubProjectItems";
 import { HubSurface } from "../features/hub/ui/HubSurface";
 import { ShipNotice } from "../features/hub/ui/ShipNotice";
+// WP-92: a Mono's request for a key appears as a form card above the chat.
+import { SecretCards } from "../features/secrets/ui/SecretRequestCard";
+// WP-92: a finished turn's "Needs Ash (provide): a key" gets the same form, not the composer.
+import { SecretKeyAsk } from "../features/secrets/ui/SecretKeyAsk";
 import {
   hubData,
   hubProjectFolder,
+  hubProjectFolders,
   hubProjectIdFor,
   nameHubProject,
   useHubDataVersion,
@@ -286,6 +297,8 @@ import { noteOpenedChat } from "../features/home/model/store";
 import { stampChat } from "../features/home/model/openedChat";
 import { useHomeOnOpen } from "../features/home/ui/useHomeOnOpen";
 import { useHomeOpener } from "../features/home/ui/useHomeOpener";
+import { placePrompt, rememberPromptSession } from "../features/sessions/model/threadLinkOpen";
+import { ThreadLinkNotice, useThreadLinkOpener } from "../features/sessions/ui/ThreadLinkActions";
 import {
   codingTeamView,
   noteCodingTeamView,
@@ -823,7 +836,6 @@ import {
 import { AGENT_GONE, WAITS } from "../features/registry/model/registryCopy";
 import {
   START_REGISTRY_CHAT_EVENT,
-  linkRegistryChat,
   loadRegistryDocument,
   refreshRegistry,
   reportRegistryChatRefused,
@@ -963,6 +975,7 @@ import {
   monoTurn,
   readAgentFile,
   recordAgentContext,
+  standingKeyPart,
   writeAgentFile,
 } from "../features/monos/model/monoFiles";
 import { withFirstMateContract } from "../features/firstmate/model/contract";
@@ -997,6 +1010,8 @@ import {
   setWorkerQueueBackend,
   subscribeWorkerPool,
   tauriWorkerQueue,
+  projectWorkerDefault,
+  systemWorkerDefault,
   workerPoolHost,
   type HeldSeen,
   type QueuedWorker,
@@ -1192,8 +1207,7 @@ import {
   subscribeNotesEnabled,
   type CollapsedProjectRailMode,
   type SettingsSectionId,
-  type FollowUpBehavior,
-} from "../features/settings/model/settings";
+  type FollowUpBehavior, syncMoreAgentsSwitch } from "../features/settings/model/settings";
 import {
   handleEditorFindKey,
   openFindInActiveEditor,
@@ -1239,6 +1253,7 @@ import type { InstalledUpdate } from "./model/updateNotice";
 
 import {
   bindResumedSessions,
+  bindRestoredHarness,
   closeBusyWindow,
   closeCurrentWindow,
   confirmReload,
@@ -1252,6 +1267,9 @@ import {
   type ResumedWorkspace,
 } from "./model/appLifecycle";
 import { wireSpendGate } from "../features/usage/model/spendWiring";
+
+/** WP-156: the project's standing answers as one block (the app answers "" while standing answers are off). */
+const readStandingBrief = (project: string): Promise<string> => invoke<string>("decisions_standing_brief", { project });
 
 const SearchView = lazySurface(
   async () => {
@@ -2822,6 +2840,8 @@ function Workspace({
       : (monoViewSession?.id ?? active?.id);
   const activeSessionIdRef = useRef(activeSessionId);
   activeSessionIdRef.current = activeSessionId;
+  // WP-92: the chat in view, for the key ask form below its header.
+  const activeChat = sessions.find((session) => session.id === activeSessionId);
 
   // Sessions that belong in the UI: a habit's hidden run is not one of them,
   // and asks through its Mono's chat rather than on its own.
@@ -3460,8 +3480,22 @@ function Workspace({
   // WP-134b: the More agents list the chat screens read is the app's own list. Read it at start, and again whenever
   // it changes in any window (Settings adds, allows, withdraws or removes an entry).
   useEffect(() => {
+    // The app's copy of the switch follows the saved setting from the start, so Rust agrees with what Settings shows.
+    void syncMoreAgentsSwitch(loadMoreAgentsEnabled());
     void refreshRegistry();
-    return subscribeRegistry(() => undefined);
+    const unsubscribe = subscribeRegistry(() => undefined);
+    // A change made in another window (a withdraw, a removal) re-reads the list here too, so this window stops runs.
+    let stopChanges: (() => void) | undefined;
+    let disposed = false;
+    void subscribeMoreAgentsChanges(() => void refreshRegistry()).then((stop) => {
+      if (disposed) stop();
+      else stopChanges = stop;
+    });
+    return () => {
+      disposed = true;
+      unsubscribe();
+      stopChanges?.();
+    };
   }, []);
 
   // WP-134b: Start a chat opens a More agents session. The harness stays one of the eleven.
@@ -3490,7 +3524,7 @@ function Workspace({
         ...newSession("claude", cwd),
         ...registrySessionFields(plan.agent, "claude"),
       };
-      if (!linkRegistryChat(session.id, plan.agent.id).ok) return;
+      // WP-134: the entry id is on the session and is saved with it. Browser storage is not the link.
       const tab = newTab(session.id);
       setSessions((prev) => [...prev, session]);
       appendTab(tab, cwd);
@@ -5926,15 +5960,16 @@ function Workspace({
   );
 
   const onSelectHistorySession = useCallback(
-    async (sessionId: string) => {
+    async (sessionId: string): Promise<boolean> => {
       const askedAt = Date.now();
       workspaceNavigation.cancel();
       let session = await ensureOpenSession(sessionId);
-      if (!session || session.inboxAsk) return;
+      // WP-125: false means no pane was shown (an inbox ask, or the chat is gone).
+      if (!session || session.inboxAsk) return false;
       const mono = monoForSession(session.id);
       if (mono) {
         await onOpenMono(mono.id);
-        return;
+        return true;
       }
       const parentId =
         session.orchestrationLeadId ??
@@ -5942,7 +5977,7 @@ function Workspace({
       if (parentId && parentId !== sessionId) {
         setInspectedWorkerId(sessionId);
         session = await ensureOpenSession(parentId);
-        if (!session) return;
+        if (!session) return false;
       }
       setSearchViewOpen(false);
       setSettingsOpen(false);
@@ -5957,17 +5992,18 @@ function Workspace({
       const linkedUpdate = linkedSessionUpdatesRef.current.get(session.id);
       if (focusOpenSession(session.id)) {
         if (linkedUpdate) revealLinkedSessionUpdate(session.id, linkedUpdate);
-        return;
+        return true;
       }
       if (replaceBlankPaneWithSession(session)) {
         if (linkedUpdate) revealLinkedSessionUpdate(session.id, linkedUpdate);
-        return;
+        return true;
       }
       const tab = newTab(session.id);
       appendTab(tab, session.cwd);
       setActiveTabId(tab.id);
       setComposerFocused(true);
       if (linkedUpdate) revealLinkedSessionUpdate(session.id, linkedUpdate);
+      return true;
     },
     [
       appendTab,
@@ -9890,8 +9926,27 @@ function Workspace({
           let notedMono = false;
           if (agentFiles && agentLook && agentPlan && handedFiles) {
             // WP-41: the contract is part of the note, and the key changes with the plain-English switch.
-            const noteKey = `${handedFiles.soulHash}\nplain-english:${plainEnglishEndings() ? "1" : "0"}`;
-            const fresh = appended ? hubNoteFor(sessionId)?.key !== noteKey : agentPlan.soul || agentPlan.memory;
+            // WP-156: the standing block is part of the key too, so a running chat picks up a change. A failed read keeps the previous token.
+            const previousNote = hubNoteFor(sessionId)?.key;
+            const readStanding = Boolean(agentPlan.soul || appended);
+            let standingAnswers: string | undefined;
+            let standingFailed = false;
+            if (readStanding) {
+              try {
+                standingAnswers = (await leadStandingBlock(sessionId, readStandingBrief)) ?? "";
+              } catch {
+                standingFailed = true;
+              }
+            }
+            const standingPart = readStanding
+              ? standingKeyPart(standingFailed ? undefined : standingAnswers, previousNote)
+              : undefined;
+            let noteKey = `${handedFiles.soulHash}\nplain-english:${plainEnglishEndings() ? "1" : "0"}${standingPart !== undefined ? `\nstanding:${standingPart}` : ""}`;
+            const fresh = appended ? previousNote !== noteKey : agentPlan.soul || agentPlan.memory;
+            if (fresh && standingFailed) {
+              standingAnswers = undefined;
+              noteKey = `${handedFiles.soulHash}\nplain-english:${plainEnglishEndings() ? "1" : "0"}\nstanding:`;
+            }
             if (fresh) {
               // A project Lead's fresh conversation starts on its project's memory and Ash's global one (hubMemoryPrimer.ts).
               const projectMemory = agentPlan.soul || appended
@@ -9902,6 +9957,7 @@ function Workspace({
                 delegate: delegateTool,
                 cli: appCliCommand(await invoke<string | null>("app_cli_path")),
                 ...(projectMemory ? { projectMemory } : {}),
+                ...(standingAnswers ? { standingAnswers } : {}),
                 // Every Mono but a Lead briefs project Leads (monoTeams.ts).
                 ...(delegateTool && briefsLeads(monoForSession(sessionId)?.id ?? "")
                   ? {
@@ -9918,15 +9974,37 @@ function Workspace({
             }
           }
           // A coding-team chat is told who it is and its project's memory once per conversation (codingTeamContext).
-          const teamHanded =
+          // WP-156: the standing block is part of this key too. A failed read keeps the previous token.
+          const teamBase =
             team && teamDelegates && !rawCommand
-              ? { soulHash: `team:${team.id}:${team.folder}:${MONO_PROMPT_VERSION}:delegate:plain:${plainEnglishEndings() ? "1" : "0"}`, memoryHash: "" }
+              ? `team:${team.id}:${team.folder}:${MONO_PROMPT_VERSION}:delegate:plain:${plainEnglishEndings() ? "1" : "0"}`
               : undefined;
+          const previousTeam = hubNoteFor(sessionId)?.key;
+          let teamStanding: string | undefined;
+          let teamStandingFailed = false;
+          if (teamBase) {
+            try {
+              teamStanding = (await leadStandingBlock(sessionId, readStandingBrief)) ?? "";
+            } catch {
+              teamStandingFailed = true;
+            }
+          }
+          let teamStandingPart = teamBase
+            ? standingKeyPart(teamStandingFailed ? undefined : teamStanding, previousTeam)
+            : undefined;
+          if (teamBase && teamStandingFailed && previousTeam !== `${teamBase}\nstanding:${teamStandingPart}`) {
+            teamStanding = undefined;
+            teamStandingPart = "";
+          }
+          const teamHanded = teamBase
+            ? { soulHash: `${teamBase}\nstanding:${teamStandingPart}`, memoryHash: "" }
+            : undefined;
           const teamPlan = teamHanded
             ? planAgentContext(sessionId, current.providerSessionId, teamHanded)
             : undefined;
           if (team && teamHanded && (appended ? hubNoteFor(sessionId)?.key !== teamHanded.soulHash : teamPlan?.soul)) {
             const projectMemory = await leadMemoryBlock(sessionId, current.harness).catch(() => undefined);
+            const standingAnswers = teamStanding;
             const note = withFirstMateContract(codingTeamContext(
               {
                 projectId: team.id,
@@ -9934,7 +10012,10 @@ function Workspace({
                 folder: team.folder!,
                 leadName: leadSpecFor(team).name,
               },
-              projectMemory ? { projectMemory } : {},
+              {
+                ...(projectMemory ? { projectMemory } : {}),
+                ...(standingAnswers ? { standingAnswers } : {}),
+              },
             ));
             if (appended) setHubNote(sessionId, { key: teamHanded.soulHash, text: note });
             else appContext.push(note);
@@ -10729,11 +10810,16 @@ function Workspace({
     // WP-13: a failed task is recorded from the CLI the child actually ran.
     crewFailure: (row, result) => {
       const child = sessionsRef.current.find((session) => session.id === row.childSession);
-      return recordCrewFailure(row, result, {
-        cli: child?.harness,
-        model: child?.model,
-        effort: child?.modelSettings?.effort,
-      });
+      return recordCrewFailure(
+        row,
+        result,
+        {
+          cli: child?.harness,
+          model: child?.model,
+          effort: child?.modelSettings?.effort,
+        },
+        row.project ? hubProjectFolder(row.project) : undefined,
+      );
     },
   });
   delegationsRef.current = delegations;
@@ -11220,6 +11306,8 @@ function Workspace({
         setSessions(sessionsRef.current);
       },
       submit: (sessionId, text, _history, options) => submitSessionRef.current(sessionId, text, [], options),
+      // WP-141 round 6: a reviewer is a launch like a worker: its CLI passes the crew gate before its session starts.
+      crewGate: (session, reviewed) => crewLaunchCheck({ cli: session.harness, folder: reviewed, sessionId: session.id }),
       stop: (sessionId) => {
         void onStopRef.current(sessionId, true);
       },
@@ -11229,6 +11317,29 @@ function Workspace({
       },
       cwd: () => folder,
     });
+  }, []);
+  useEffect(() => {
+    // WP-203: the reviewer session for each security review the app recorded a running row for. The finish settles the row.
+    const started = new Set<string>();
+    const hooks: ReviewHooks = {
+      add: (session) => {
+        sessionsRef.current = [...sessionsRef.current, session];
+        setSessions(sessionsRef.current);
+      },
+      submit: (sessionId, text, _history, options) => submitSessionRef.current(sessionId, text, [], options),
+      cwd: () => "~",
+    };
+    const run = () => {
+      void startPendingReviews(tauriDelegations, hooks, started).catch(() => undefined);
+    };
+    run();
+    let off: (() => void) | undefined;
+    void listen(DELEGATIONS_CHANGED, run)
+      .then((unlisten) => {
+        off = unlisten;
+      })
+      .catch(() => undefined);
+    return () => off?.();
   }, []);
   const roomsHost = useRoomRunner({
     sessions,
@@ -13353,6 +13464,14 @@ function Workspace({
           harness,
           models: modelsFor(harness).map(({ id, name }) => ({ id, name })),
         })),
+      // WP-141 round 6: the CLIs on Never use for a folder, so an approved card is filtered before a worker starts.
+      crewPolicy: (folder, leadId) =>
+        crewPolicyForLead(folder, leadId, {
+          project: (owner) => projectWorkerDefault(hubProjectIdFor(owner) ?? owner),
+          system: () => systemWorkerDefault(),
+          // WP-141 round 11: hub project folders, so a Lead in a worktree finds the project's worker default.
+          roots: hubProjectFolders(),
+        }),
       // WP-91: an irreversible step's decision sits under the hub project of the run's folder, like a delegation does.
       decisionProject: hubProjectIdFor,
       createWorker: async (run, task) => {
@@ -13478,15 +13597,8 @@ function Workspace({
               title: task.title,
             };
         const worker = { ...base, orchestrationLeadId: run.leadId };
-        if (worker.providerSessionId)
-          bindHarnessSession(
-            worker.harness,
-            worker.id,
-            worker.providerSessionId,
-            sessionWorkCwd(worker),
-            worker.providerAccountId,
-            worker.blocks,
-          );
+        // WP-134: a More agents worker is routed from the row before its saved ACP session is bound.
+        bindRestoredHarness(worker);
         await upsertSession(worker);
         const next = [...sessionsRef.current, worker];
         sessionsRef.current = next;
@@ -13984,9 +14096,24 @@ function Workspace({
   }, []);
   useEffect(() => {
     // WP-89: the line in force reads this project's crew rules, and a plugin's.
-    setLineRulesSource((project) =>
-      invoke("crew_rules_get", { scope: "project", scopeId: project, project }),
-    );
+    // WP-141: the line sees the project's rules, then everything's (the project's come first, as the route reads them).
+    setLineRulesSource(async (project) => {
+      const own = await invoke<{ rules?: unknown; plugins?: unknown } | undefined>("crew_rules_get", {
+        scope: "project",
+        scopeId: project,
+        project,
+      });
+      const system = await invoke<{ rules?: unknown } | undefined>("crew_rules_get", {
+        scope: "system",
+        scopeId: "system",
+        project,
+      }).catch(() => undefined);
+      const rules = [
+        ...(Array.isArray(own?.rules) ? own.rules : []),
+        ...(Array.isArray(system?.rules) ? system.rules : []),
+      ];
+      return { rules, plugins: own?.plugins };
+    });
     return () => setLineRulesSource(undefined);
   }, []);
   const removeSessionRef = useRef(onRemoveHistorySession);
@@ -14178,6 +14305,8 @@ function Workspace({
             ...(delegation?.askIds.length ? { askIds: delegation.askIds } : {}),
             ...(delegation?.goal ? { goal: delegation.goal } : {}),
             ...(delegation?.taskId ? { taskId: delegation.taskId } : {}),
+            // WP-141: why the crew picked this CLI, kept on the row's first line for the Crew tab.
+            ...(delegation?.pickReason ? { pickReason: delegation.pickReason } : {}),
             // WP-176 round 5: the redo's link is written with its row, in the same transaction, before its first turn.
             ...(delegation?.redoes ? { redoes: delegation.redoes.id } : {}),
             // A7: written on the row, not only in the worker's brief, so the store refuses a done settle without it even
@@ -15012,6 +15141,8 @@ function Workspace({
               questions: delegationTreeRef.current.questions,
               hubProjectId: hubProjectIdFor,
               hubProjectFolder,
+              // WP-141 round 11: hub project folders, so a worktree's session, brief and pick share the project's default.
+              hubProjectRoots: hubProjectFolders,
               unqueue: (childSession, requestId) => {
                 const next = sessionsRef.current.map((session) => {
                   if (session.id !== childSession) return session;
@@ -15037,6 +15168,9 @@ function Workspace({
                 : {}),
               // WP-13: the start of a delegated task asks which CLI, model and effort to use.
               crewRoute: (query) => crewRouteFor(query),
+              // WP-141: tasks.pick, the crew's pick across CLIs and the Leads this Mono may brief.
+              crewPick: (query) => crewPickFor(query),
+              pickMonos: (monoId) => pickMonosFrom(leadTargetsFor(monoId, hubData().listProjects()), listMonos()),
               pool: workerPoolHost({
                 openRows: openDelegationRows,
                 room: providerRoomNow,
@@ -15055,12 +15189,26 @@ function Workspace({
                   }),
               }),
               // The Lead a brief names must exist: asked before a fresh-eyes review, so an unknown one is never reviewed.
-              checkLead: (_owner, mono, lead) => {
-                if (!findLeadTarget(mono.id, hubData().listProjects(), lead))
+              checkLead: async (_owner, mono, lead) => {
+                const target = findLeadTarget(mono.id, hubData().listProjects(), lead);
+                if (!target)
                   throw new Error(
                     `No Lead "${lead}" among the ones you can brief (a Lead of a project you and it are both members of).`,
                   );
+                // WP-141 LOW 7: a Lead on Never use is not briefed, read from the Lead's own project, whatever the brief says.
+                await refuseNeverUseLead(
+                  { ...target, cli: sessionsRef.current.find((session) => session.id === findMono(target.leadId)?.sessionId)?.harness },
+                  mono.id,
+                  crewPolicyInForce,
+                );
               },
+              crewPolicy: (monoId, folder) => crewPolicyInForce(monoId, folder),
+              // WP-141: the one gate every worker and session launch passes before its process starts.
+              crewGate: (input) => crewLaunchCheck(input),
+              crewAnyLock: () => crewAnyLock(),
+              // WP-156: a Lead's brief carries that Lead's project, not the chat that writes it.
+              leadProject: (_owner, mono, lead) =>
+                findLeadTarget(mono.id, hubData().listProjects(), lead)?.projectId,
               briefLead: async (owner, mono, input) => {
                 const projects = hubData().listProjects();
                 const target = findLeadTarget(mono.id, projects, input.lead);
@@ -15096,6 +15244,9 @@ function Workspace({
               list: (ownerSession) => tauriPrWatches.list(ownerSession),
               hubProjectId: hubProjectIdFor,
             },
+            // WP-92: a worker's keys. Rust checks and asks; the values are armed for the child and never come back here.
+            secretsWorkerArm: (sessionId, request) =>
+              invoke<WorkerArmOutcome>("plugin:hub|secrets_worker_arm", { sessionId, request }),
             agentFiles: (monoId) => loadMonoFiles(monoId),
             readAgentFile: (monoId, path) => readAgentFile(monoId, path),
             writeAgentFile: (monoId, path, text, hash) =>
@@ -17560,6 +17711,47 @@ function Workspace({
     openSettings: (section, anchor) => openSettings(section, anchor),
     projects: () => hubData().listProjects(),
   });
+  // WP-125: a local chat or prompt link opens in this window. A missing chat is a message, not a new window.
+  // openChat is false when no pane was shown, so the opener can say the chat is not on this computer.
+  useThreadLinkOpener({
+    hasChat: (id) =>
+      sessionsRef.current.some((session) => session.id === id) ||
+      getSession(id).then((session) => session != null),
+    hasProject: (id) => hubData().listProjects().some((project) => project.id === id),
+    openChat: (id) => onSelectHistorySession(id),
+    openPrompt: (projectId, text, ticket) => {
+      placePrompt(
+        projectId,
+        text,
+        ticket,
+        {
+          projects: () => hubData().listProjects(),
+          sessions: () => sessionsRef.current,
+        },
+        {
+          openProject: (id) => {
+            openCodingTeam(id, { lead: false });
+            noteCodingTeamView(id, "chat");
+          },
+          addSession: (session) => {
+            const next = rememberPromptSession(sessionsRef.current, session);
+            if (!next) return;
+            sessionsRef.current = next;
+            setSessions(next);
+            const tab = newTab(session.id);
+            appendTab(tab, session.cwd);
+            setActiveTabId(tab.id);
+            setComposerFocused(true);
+            // A new chat from a prompt link follows the same worktree setting as New session.
+            attachNewChatWorktree(session.id, session.cwd, setSessions);
+          },
+          focusSession: (id) => {
+            void onSelectHistorySession(id);
+          },
+        },
+      );
+    },
+  });
   // r63 (PM, 0.16.3): Pages (an automations-view mode) and Coding team were highlighted at once. Any view that covers
   // the main area (a Mono's 1:1, Search, Settings, Inbox, Notes, Automations or Pages) takes the highlight from the
   // project's items, so one nav row is ever active.
@@ -18159,6 +18351,20 @@ function Workspace({
                 >
                   {/* WP-06: ship news is a slim bar at the top of the main pane, above the coding team and every hub page. It renders nothing when there is nothing to say. */}
                   <ShipNotice />
+                  {/* WP-92: a pending key request, and a finished turn's key ask, in the chat's own pane. */}
+                  <div className="px-3 pt-2 empty:hidden">
+                    <SecretCards />
+                    {/* WP-92: a project chat's key is saved for that project, where secrets_run looks first (agentAppSecrets where()). */}
+                    <SecretKeyAsk
+                      chat={activeChat}
+                      project={
+                        activeChat && !(monoForSession(activeChat.id) ?? findMono(habitRunMono(activeChat.id) ?? "") ?? chatMonoOwner(activeChat.id))
+                          ? (hubData().listProjects().find((entry) => entry.id === codingTeamChatProject(activeChat.id))?.folder ??
+                            (looksLikeProject(activeChat.cwd) ? activeChat.cwd : undefined))
+                          : undefined
+                      }
+                    />
+                  </div>
                   <div
                     className={
                       searchViewOpen ||
@@ -18807,6 +19013,8 @@ function Workspace({
             chipHost={pressureChipHost}
             insetChip={insetLayout}
           />
+          {/* WP-125: a local link that cannot be opened on this computer. */}
+          <ThreadLinkNotice />
           <ApprovalToasts
             notices={IS_HUB_BUNDLE ? hubToastNotices(hiddenApprovalToasts) : hiddenApprovalToasts}
             hubView={IS_HUB_BUNDLE ? hubToastView : undefined}

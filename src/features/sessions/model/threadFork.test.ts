@@ -295,6 +295,20 @@ describe("forkSessionAtMessage", () => {
     expect(fork!.id).toBe("reserved-1");
     expect(fork!.blocks[0].id).toBe("b1");
   });
+
+  // Review #231 r2 repro (MEDIUM): a More agents chat is saved with the placeholder harness `claude`, and its entry is
+  // now the session's `registryAgentId` (the row). A fork copies the harness but not the entry, so "Fork from here" on
+  // a More agents chat (offered on every chat: palette, ThreadForkHost) makes a Claude chat whose first send starts
+  // Claude Code with the other agent's conversation as its recap. The fork should keep the entry (and so be routed to
+  // it, or refused with the entry's own sentence).
+  it("keeps a More agents chat's entry, so the fork does not run on the placeholder CLI", () => {
+    const source = chat([block({ id: "u1", role: "user", text: "Hi" })], {
+      registryAgentId: "my-copilot",
+    });
+    const fork = forkSessionAtMessage(source, "u1", ids(["fork-1", "b1"]))!;
+    expect(fork.harness).toBe("claude");
+    expect(fork.registryAgentId).toBe("my-copilot");
+  });
 });
 
 describe("insertFork", () => {

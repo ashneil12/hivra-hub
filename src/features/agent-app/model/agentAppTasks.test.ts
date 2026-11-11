@@ -80,6 +80,19 @@ import { isFanoutAgainDecisionKey } from "../../hub/model/decisionKey";
 // `onlyClaude` is a bench plan (src-tauri/src/verify_live.rs): no CLI but the run's own Claude wrapper resolves.
 // `codexOff` is a Mac without the Codex CLI: the setting is in force, the binary simply isn't installed.
 const probe = vi.hoisted(() => ({ probed: true, runs: 0, onlyClaude: false, codexOff: false }));
+// MEDIUM 5: which folders are remote projects, and how many briefs reached a remote host.
+const remote = vi.hoisted(() => ({ folders: new Set<string>(), briefs: 0 }));
+vi.mock("../../connections/model/remoteProjects", async (actual) => ({
+  ...(await actual<Record<string, unknown>>()),
+  remoteProjectFor: (path: string) =>
+    remote.folders.has(path) ? { environmentId: "env", projectId: "project", cwd: path } : undefined,
+}));
+vi.mock("../../firstmate/host/remoteDelegate", () => ({
+  briefOnRemoteHost: vi.fn(async () => {
+    remote.briefs += 1;
+    return null;
+  }),
+}));
 // The DeepSeek launcher can be on or off for a case. The Grok CLI stays available either way.
 const bridge = vi.hoisted(() => ({ on: false }));
 vi.mock("../../../integrations/harness/providers/claude/claudeDeepseekBridge", async (actual) => {
@@ -92,6 +105,19 @@ vi.mock("../../selfBuild/model/hubCode", async (actual) => ({
   startHubChange: vi.fn(async () => ({ changeId: "hc-1", folder: PROJECT_PREVIEW })),
 }));
 const PROJECT_PREVIEW = "/tmp/hub-preview";
+
+// A session, a brief and a pick ask which projects own the folder. This file does not stage that command, so the
+// answer is no owners. Any other command still fails the way the real bridge does.
+vi.mock("@tauri-apps/api/core", async () => {
+  const actual = await vi.importActual<typeof import("@tauri-apps/api/core")>("@tauri-apps/api/core");
+  return {
+    ...actual,
+    invoke: vi.fn(async (command: string, args?: unknown) => {
+      if (command === "crew_projects_owning") return [];
+      return actual.invoke(command, args as never);
+    }),
+  };
+});
 
 vi.mock("../../../integrations/harness/core/availability", () => ({
   // Before the first probe ends every harness reads as missing. A bench plan resolves only the Claude wrapper.
@@ -173,6 +199,9 @@ function tasksHost(rows: Delegation[], clock = { now: 0 }) {
   /** tasks.cannot, as the row would record it: the caller, the task, the reason. */
   const declared: Array<[string, string, string]> = [];
   const host: AgentAppTasksHost = {
+    // WP-141 round 5: a permissive gate by default, so a test that is not about the gate can start its worker.
+    crewGate: vi.fn(async () => undefined),
+    crewAnyLock: vi.fn(async () => false),
     owned: vi.fn(async (owner, query) => {
       const mine = rows.filter((entry) => entry.ownerSession === owner);
       if (!query.ids?.length && !query.requestIds?.length)
@@ -949,14 +978,17 @@ describe("tasks.delegate", () => {
     });
   });
 
-  it("keeps the model already chosen when the crew route fails or names no usable CLI", async () => {
+  it("refuses the start when the crew route fails, and keeps the model when it names no usable CLI", async () => {
+    // WP-141 MEDIUM 4: a route that can't be read is refused, never started on the chat's or the Lead's CLI.
     const down = fixture();
     down.api.crewRoute = vi.fn(async () => {
       throw new Error("crew route timed out");
     });
-    await handleAgentApp(down.source, "r-down", "tasks.delegate", { brief: "Tidy the title." }, down.host);
+    await expect(
+      handleAgentApp(down.source, "r-down", "tasks.delegate", { brief: "Tidy the title." }, down.host),
+    ).rejects.toThrow("The crew policy could not be read, so no worker was started (crew route timed out).");
     expect(down.api.crewRoute).toHaveBeenCalled();
-    expect(down.started[0][0]).toMatchObject({ harness: "claude", model: "claude:sonnet-5" });
+    expect(down.started).toEqual([]);
 
     const odd = fixture();
     odd.api.crewRoute = vi.fn(async () => ({ cli: "not-a-cli", model: "nope", cliFrom: "rule", modelFrom: "rule" }));
@@ -973,6 +1005,125 @@ describe("tasks.delegate", () => {
     }));
     await handleAgentApp(missing.source, "r-missing", "tasks.delegate", { brief: "Tidy the title." }, missing.host);
     expect(missing.started[0][0]).toMatchObject({ harness: "claude", model: "claude:sonnet-5" });
+  });
+
+  it("WP-141: keeps why the crew picked this CLI on the row and tells the lead, skips first", async () => {
+    setHarnessModels("codex", [{ id: "codex:gpt-5", harness: "codex", name: "GPT-5", settings: [] }]);
+    const { source, host, started, api } = fixture();
+    api.crewRoute = vi.fn(async () => ({
+      cli: "codex",
+      cliFrom: "rule",
+      ruleLabel: "builder",
+      modelFrom: "none",
+      effortFrom: "none",
+      skipped: [{ field: "cli", from: "override", value: "cursor", reason: "Always use my default is on, so this override was not applied." }],
+    }));
+    const result = (await handleAgentApp(source, "r-why", "tasks.delegate", { brief: "Build the save screen." }, host)) as {
+      crewWhy?: string;
+    };
+    const why = "Always use my default is on, so this override was not applied. Builder role prefers Codex.";
+    expect(result.crewWhy).toBe(why);
+    expect(started[0][4]).toMatchObject({ pickReason: why });
+  });
+
+  it("WP-141: tasks.pick asks the crew for a CLI with the role, the files and the roster, and says how to use it", async () => {
+    const { source, host, api } = fixture();
+    api.checkDepth = vi.fn(async () => 1);
+    const asked: unknown[] = [];
+    api.crewPick = vi.fn(async (query: unknown) => {
+      asked.push(query);
+      return { ok: true, cli: "codex", monoId: null, model: "codex:gpt-5", effort: "high", reason: "Builder role prefers Codex." };
+    });
+    api.pickMonos = vi.fn(() => [{ id: "ada", name: "Ada", role: "reviewer", lead: "web" }]);
+    const result = (await handleRaw(
+      source,
+      "p-1",
+      "tasks.pick",
+      { role: "Builder", title: "Fix the save screen", files: ["src/save.ts"] },
+      host,
+    )) as Record<string, unknown>;
+    expect(result).toMatchObject({
+      ok: true,
+      cli: "codex",
+      cliName: "Codex",
+      model: "codex:gpt-5",
+      effort: "high",
+      reason: "Builder role prefers Codex.",
+      delegateWith: { model: "codex:gpt-5", effort: "high" },
+    });
+    expect(asked[0]).toMatchObject({
+      labels: expect.arrayContaining(["builder"]),
+      paths: ["src/save.ts"],
+      project: PROJECT,
+      mono: "vg-game-lead",
+      leadMonoId: "vg-game-lead",
+      depth: 0,
+      monos: [{ id: "ada", name: "Ada", role: "reviewer" }],
+    });
+    expect(api.pickMonos).toHaveBeenCalledWith("vg-game-lead");
+  });
+
+  it("WP-141: tasks.pick can name a Mono, passes an asked-for Lead on, and refuses one it cannot brief", async () => {
+    const { source, host, api } = fixture();
+    api.checkDepth = vi.fn(async () => 1);
+    api.crewPick = vi.fn(async () => ({ ok: true, cli: null, monoId: "ada", model: null, effort: null, reason: "This task asks for Ada." }));
+    api.pickMonos = vi.fn(() => [{ id: "ada", name: "Ada", role: "reviewer", lead: "web" }]);
+    const result = (await handleRaw(source, "p-2", "tasks.pick", { role: "reviewer", lead: "Ada" }, host)) as Record<string, unknown>;
+    expect(result).toMatchObject({ ok: true, monoId: "ada", leadName: "Ada", delegateWith: { lead: "web" } });
+    expect(api.crewPick).toHaveBeenCalledWith(expect.objectContaining({ monoOverride: "ada" }));
+    await expect(handleRaw(source, "p-3", "tasks.pick", { lead: "Nobody" }, host)).rejects.toThrow(
+      'No Lead "Nobody" among the ones you can brief',
+    );
+  });
+
+  it("WP-141: tasks.pick at the fan-out cap does not say the task was not started", async () => {
+  const { source, host, api } = fixture();
+  api.checkDepth = vi.fn(async (_owner: string, opts?: { fanout?: boolean }) => {
+    if (opts?.fanout !== false) {
+      throw new Error(
+        "Not started: you already have 8 tasks running, the most one first mate runs at once (8). End your turn and let one report.",
+      );
+    }
+    return 1;
+  });
+  api.crewPick = vi.fn(async () => ({
+    ok: true,
+    cli: "codex",
+    monoId: null,
+    model: null,
+    effort: null,
+    reason: "Your default is Codex.",
+  }));
+  const result = (await handleRaw(source, "p-cap", "tasks.pick", { role: "builder" }, host)) as Record<string, unknown>;
+  expect(result.ok).toBe(true);
+  expect(String(result.reason ?? "")).not.toContain("Not started");
+  expect(api.checkDepth).toHaveBeenCalledWith(source.id, { fanout: false });
+});
+
+it("WP-141: tasks.pick says plainly when nothing can take the work", async () => {
+    const { source, host, api } = fixture();
+    api.checkDepth = vi.fn(async () => 1);
+    api.crewPick = vi.fn(async () => ({
+      ok: false,
+      cli: null,
+      monoId: null,
+      model: null,
+      effort: null,
+      reason: "Codex is at its quota and Always use my default is on, so nothing else was picked.",
+    }));
+    const result = (await handleRaw(source, "p-4", "tasks.pick", {}, host)) as Record<string, unknown>;
+    expect(result).toMatchObject({ ok: false, reason: expect.stringContaining("Always use my default is on") });
+    expect(result).not.toHaveProperty("delegateWith");
+  });
+
+  it("WP-141: no reason is kept when the crew chose nothing", async () => {
+    const { source, host, started, api } = fixture();
+    api.crewRoute = vi.fn(async () => ({ cli: null, cliFrom: "none", modelFrom: "none", effortFrom: "none" }));
+    const result = (await handleAgentApp(source, "r-no-why", "tasks.delegate", { brief: "Tidy the title." }, host)) as {
+      crewWhy?: string;
+    };
+    expect(result).not.toHaveProperty("crewWhy");
+    expect(started[0][4]).not.toHaveProperty("pickReason");
   });
 
   it("does not send another engine's model id when the crew names a CLI and no model", async () => {
@@ -1035,6 +1186,21 @@ describe("tasks.delegate", () => {
     expect(withCrew.model).toBe(without.model);
     expect(withCrew.modelSettings?.effort).toBe(without.modelSettings?.effort);
     expect(withCrew).toMatchObject({ harness: "codex", model: "codex:gpt-5", modelSettings: { effort: "medium" } });
+  });
+
+  it("sends a named role on the crew labels, ahead of the file areas", async () => {
+    const { source, host, api } = fixture();
+    api.crewRoute = vi.fn(async () => ({ cli: "codex", cliFrom: "rule", modelFrom: "none", effortFrom: "none" }));
+    await handleAgentApp(
+      source,
+      "r-role",
+      "tasks.delegate",
+      { brief: "Build the UI.", role: "Builder", files: ["src/app/main.tsx"] },
+      host,
+    );
+    expect(api.crewRoute).toHaveBeenCalledWith(
+      expect.objectContaining({ labels: ["builder", "ui"] }),
+    );
   });
 
   it("moves a Claude task to Codex when a rule for its label says so", async () => {
@@ -2709,6 +2875,214 @@ describe("parallel workers per project, with throttling (H8)", () => {
       }
       expect(started).toEqual([]);
     });
+
+    // MEDIUM 5: a chat cannot change the everyone default while Always use my default is on.
+    it("refuses to change the default for every worker from a chat while the lock is on", async () => {
+      const { source, host, api } = lead();
+      api.crewPolicy = vi.fn(async () => ({ neverUse: [], lock: true }));
+      await expect(
+        handleAgentApp(source, "lock-system", "tasks.workers", { scope: "system", model: "opus", effort: "high" }, host),
+      ).rejects.toThrow("Always use my default is on, so the default for every worker can't be changed from here.");
+      expect(findMono("vg-game-lead")?.workerDefault).toBeUndefined();
+    });
+
+    /** The command's route with a project's Never use and lock. Same resolver as the Rust route. */
+    function policyRoute(policy: Record<string, unknown>, available: string[] = ["claude", "codex"]) {
+      return vi.fn(async (query: CrewRouteQuery) =>
+        resolveRoute(
+          {
+            labels: query.labels,
+            paths: query.paths,
+            ...(query.override ? { override: query.override } : {}),
+          },
+          query.monoRules ?? [],
+          available.map((cli) => ({ cli, installed: true, signedIn: true })),
+          {
+            ...(query.defaults ? { defaults: query.defaults } : {}),
+            catalog: query.catalog ?? launchCatalog(),
+            policy,
+          },
+        ),
+      );
+    }
+
+    // HIGH 1 probes, through the real tasks.delegate. The route's own CLI must win on each of the three.
+    it("does not start on a Never use CLI the Lead named, it starts on the route's CLI", async () => {
+      setHarnessModels("codex", [{ id: "codex:gpt-5", harness: "codex", name: "GPT-5", settings: [] }]);
+      const { source, host, started, api } = lead();
+      api.crewRoute = policyRoute({ neverUse: ["codex"] });
+      const result = await handleAgentApp(
+        source,
+        "never-named",
+        "tasks.delegate",
+        { brief: "Build the title.", model: "codex:gpt-5" },
+        host,
+      );
+      expect(result).not.toMatchObject({ status: "refused" });
+      expect(started).toHaveLength(1);
+      expect(started[0][0]).toMatchObject({ harness: "claude" });
+      expect(started[0][0]).not.toMatchObject({ model: "codex:gpt-5" });
+    });
+
+    it("does not stay on the chat's Claude when Never use bans it, it starts on the route's CLI", async () => {
+      setHarnessModels("codex", [{ id: "codex:gpt-5", harness: "codex", name: "GPT-5", settings: [] }]);
+      const { source, host, started, api } = lead();
+      api.crewRoute = policyRoute({ neverUse: ["claude"] });
+      await handleAgentApp(source, "never-chat", "tasks.delegate", { brief: "Build the title." }, host);
+      expect(started).toHaveLength(1);
+      expect(started[0][0]).toMatchObject({ harness: "codex" });
+    });
+
+    it("refuses the start with the reason when every CLI is on Never use", async () => {
+      const { source, host, started, api } = lead();
+      api.crewRoute = policyRoute({ neverUse: ["claude", "codex"] });
+      await expect(
+        handleAgentApp(source, "never-all", "tasks.delegate", { brief: "Build the title." }, host),
+      ).rejects.toThrow("No CLI can take this work.");
+      expect(started).toEqual([]);
+    });
+
+    it("under the lock with no default set, the Lead's named CLI is dropped and the default starts", async () => {
+      setHarnessModels("codex", [{ id: "codex:gpt-5", harness: "codex", name: "GPT-5", settings: [] }]);
+      const { source, host, started, api } = lead();
+      api.crewRoute = policyRoute({ lockDefault: true });
+      await handleAgentApp(
+        source,
+        "lock-named",
+        "tasks.delegate",
+        { brief: "Build the title.", model: "codex:gpt-5" },
+        host,
+      );
+      expect(started).toHaveLength(1);
+      expect(started[0][0]).toMatchObject({ harness: "claude" });
+      expect(started[0][0]).not.toMatchObject({ model: "codex:gpt-5" });
+    });
+
+    // WP-141 HIGH 1 probes. The route's own CLI wins when the launch's CLI is on Never use, whatever the chat ran on.
+    it("a Codex chat with Codex on Never use starts its worker on the route's CLI", async () => {
+      const { source, host, started, api } = lead();
+      source.harness = "codex";
+      api.crewRoute = policyRoute({ neverUse: ["codex"] });
+      await handleAgentApp(source, "codex-chat", "tasks.delegate", { brief: "Build the title." }, host);
+      expect(started).toHaveLength(1);
+      expect(started[0][0]).toMatchObject({ harness: "claude" });
+    });
+
+    it("a Grok chat with Grok on Never use starts its worker on the route's CLI", async () => {
+      const { source, host, started, api } = lead();
+      source.harness = "grok";
+      api.crewRoute = policyRoute({ neverUse: ["grok"] });
+      await handleAgentApp(source, "grok-chat", "tasks.delegate", { brief: "Build the title." }, host);
+      expect(started).toHaveLength(1);
+      expect(started[0][0]).toMatchObject({ harness: "claude" });
+    });
+
+    // The unavailable fallback never starts a banned CLI, and never gets past the lock.
+    it("refuses rather than starting a banned chat CLI when the routed CLI isn't installed here", async () => {
+      const { source, host, started, api } = lead();
+      api.crewRoute = policyRoute({ neverUse: ["claude"] }, ["claude", "codex"]);
+      probe.codexOff = true;
+      try {
+        await expect(
+          handleAgentApp(source, "unavail-banned", "tasks.delegate", { brief: "Build the title." }, host),
+        ).rejects.toThrow("Claude Code is on Never use, so no other CLI was used.");
+        expect(started).toEqual([]);
+      } finally {
+        probe.codexOff = false;
+      }
+    });
+
+    it("refuses rather than falling back past the lock when the default CLI isn't installed here", async () => {
+      updateMono("vg-game-lead", (mono) => ({ ...mono, workerDefault: { cli: "codex" } }));
+      const { source, host, started, api } = lead();
+      api.crewRoute = policyRoute({ lockDefault: true }, ["claude", "codex"]);
+      probe.codexOff = true;
+      try {
+        await expect(
+          handleAgentApp(source, "unavail-lock", "tasks.delegate", { brief: "Build the title." }, host),
+        ).rejects.toThrow("Codex isn't installed here, and Always use my default is on, so no other CLI was used.");
+        expect(started).toEqual([]);
+      } finally {
+        probe.codexOff = false;
+      }
+    });
+
+    it("a route that cannot be read refuses the start, it never starts on the Lead's or the chat's CLI", async () => {
+      const { source, host, started, api } = lead();
+      api.crewRoute = vi.fn(async () => {
+        throw new Error("policy row is broken");
+      });
+      await expect(
+        handleAgentApp(source, "route-broken", "tasks.delegate", { brief: "Build the title." }, host),
+      ).rejects.toThrow("The crew policy could not be read, so no worker was started (policy row is broken).");
+      expect(started).toEqual([]);
+    });
+
+    // The launch gate passes the route's CLI and the lock; a launch that is not the locked default is refused.
+    it("the launch gate refuses a start whose CLI is not the locked default", async () => {
+      const { source, host, started, api } = lead();
+      api.crewRoute = policyRoute({ lockDefault: true });
+      api.crewGate = vi.fn(async (input: { cli: string; lockedDefault?: string }) => {
+        if (input.lockedDefault !== input.cli) throw new Error("gate: not the locked default");
+      });
+      await handleAgentApp(source, "gate-ok", "tasks.delegate", { brief: "Build the title." }, host);
+      expect(api.crewGate).toHaveBeenCalledWith(expect.objectContaining({ cli: "claude", lockedDefault: "claude" }));
+      expect(started).toHaveLength(1);
+    });
+
+    // Round 6 (LOW): a host with no lock hook counts as locked, so a chat's default change is refused, never let through.
+    it("refuses a default change when the host has no lock hook", async () => {
+      const { source, host, api } = lead();
+      api.crewPolicy = vi.fn(async () => ({ neverUse: [], lock: false }));
+      delete (api as { crewAnyLock?: unknown }).crewAnyLock;
+      await expect(
+        handleAgentApp(source, "no-lock-hook", "tasks.workers", { scope: "mono", cli: "codex" }, host),
+      ).rejects.toThrow("Always use my default is on, so a Mono's or project's default can't be changed from here.");
+      expect(findMono("vg-game-lead")?.workerDefault).toBeUndefined();
+    });
+
+    // Round 6: a refused start returns the line that names the CLI and the place to change it. That is the tool result the chat shows.
+    it("a delegate refused for Never use returns the line that names the CLI and where to change it", async () => {
+      const { source, host, started, api } = lead();
+      const reason = "Codex is on Never use for this project (/work/app). To change that, open Settings > Crew Defaults and edit Never use for this project (/work/app).";
+      api.crewGate = vi.fn(async () => {
+        throw new Error(reason);
+      });
+      await expect(handleAgentApp(source, "refused-never", "tasks.delegate", { brief: "Build the title." }, host)).rejects.toThrow(reason);
+      expect(started).toEqual([]);
+    });
+
+    // HIGH 2: a chat cannot change any default while the lock is on, the Mono's or the project's included.
+    it("refuses a Mono or project default change from a chat while the lock is on", async () => {
+      const { source, host, api } = lead();
+      api.crewPolicy = vi.fn(async () => ({ neverUse: [], lock: true }));
+      await expect(
+        handleAgentApp(source, "lock-mono", "tasks.workers", { scope: "mono", cli: "codex" }, host),
+      ).rejects.toThrow("Always use my default is on, so a Mono's or project's default can't be changed from here.");
+      await expect(
+        handleAgentApp(source, "lock-project", "tasks.workers", { scope: "project", model: "opus", effort: "high" }, host),
+      ).rejects.toThrow("Always use my default is on, so a Mono's or project's default can't be changed from here.");
+      expect(findMono("vg-game-lead")?.workerDefault).toBeUndefined();
+    });
+
+    // MEDIUM 5: a remote project's brief is gated on the chat's CLI before it reaches the remote host.
+    it("a remote project's brief is gated on the chat's CLI before it reaches the host", async () => {
+      const { source, host, api } = lead();
+      api.crewRoute = policyRoute({ neverUse: ["claude"] });
+      api.crewGate = vi.fn(async (input: { cli: string }) => {
+        if (input.cli === "claude") throw new Error("Claude Code is on Never use, so it was not started.");
+      });
+      remote.folders.add(source.cwd);
+      const briefsBefore = remote.briefs;
+      try {
+        await expect(
+          handleAgentApp(source, "remote-gate", "tasks.delegate", { brief: "Build the title." }, host),
+        ).rejects.toThrow("Claude Code is on Never use, so it was not started.");
+        expect(remote.briefs).toBe(briefsBefore);
+      } finally {
+        remote.folders.delete(source.cwd);
+      }
+    });
   });
 
   it("lets a coding-team chat's workers wait too, in its own project", async () => {
@@ -2773,11 +3147,49 @@ describe("Hivra WP-14: tasks.message and tasks.ask", () => {
       source,
       "r-ask",
       "tasks.ask",
-      { key: "retention", question: "Keep 30 days?", options: ["Yes", "No"], recommended: "Yes", taskIds: ["t-1"] },
+      {
+        key: "retention",
+        question: "Keep 30 days?",
+        options: ["Yes", "No"],
+        recommended: "Yes",
+        taskIds: ["t-1"],
+        keys: ["sessions"],
+        force: true,
+        reason: "The old one is about staging.",
+      },
       host,
     );
     expect(fm.asked).toEqual([
-      expect.objectContaining({ askedBy: "mono-exo", askedByMono: "vg-game-lead", project: "vg-game", key: "retention", taskIds: ["t-1"] }),
+      expect.objectContaining({
+        askedBy: "mono-exo",
+        askedByMono: "vg-game-lead",
+        project: "vg-game",
+        key: "retention",
+        taskIds: ["t-1"],
+        keys: ["sessions"],
+        force: true,
+        reason: "The old one is about staging.",
+      }),
+    ]);
+    await expect(
+      handleAgentApp(source, "r-extra", "tasks.ask", { key: "k", question: "q", options: ["a", "b"], recommended: "a", extra: 1 }, host),
+    ).rejects.toThrow("Unknown tasks.ask fields");
+    await expect(
+      handleAgentApp(source, "r-stand", "tasks.ask", { key: "k", question: "q", options: ["a", "b"], recommended: "a", standing: true }, host),
+    ).rejects.toThrow("Unknown tasks.ask fields");
+    const other = fixture([row({ id: "t-1", project: "other-app" })]);
+    other.api.firstMate = fm.host;
+    await expect(
+      handleAgentApp(
+        other.source,
+        "r-other",
+        "tasks.ask",
+        { key: "retention", question: "Keep 30 days?", options: ["Yes", "No"], recommended: "Yes", taskIds: ["t-1"] },
+        other.host,
+      ),
+    ).rejects.toThrow("another project");
+    expect(fm.asked).toEqual([
+      expect.objectContaining({ project: "vg-game", taskIds: ["t-1"] }),
     ]);
     const worker = fixture([], "worker");
     worker.api.firstMate = fm.host;
@@ -2787,6 +3199,95 @@ describe("Hivra WP-14: tasks.message and tasks.ask", () => {
   });
 });
 
+describe("Hivra WP-92: a worker's keys", () => {
+  const KEYS = [{ name: "stripe-api-key", env: "STRIPE_API_KEY" }];
+  const VALUE = "sk-live-planted-value-123456";
+  const brief = "Run the stripe sync, then say how many customers it found.";
+
+  it("checks and arms every key on the worker's own session before it starts", async () => {
+    const { source, host, started } = fixture();
+    const arm = vi.fn(async () => ({ state: "ready", secrets: [{ name: "stripe-api-key", env: "STRIPE_API_KEY" }] }));
+    host.secretsWorkerArm = arm;
+    const out = (await handleAgentApp(source, "r-keys", "tasks.delegate", { brief, secrets: KEYS }, host)) as Record<string, unknown>;
+    expect(started).toHaveLength(1);
+    expect(arm).toHaveBeenCalledWith("app-mono-exo-r-keys", {
+      chat: "mono-exo",
+      mono: "vg-game-lead",
+      project: PROJECT,
+      executable: "claude",
+      secrets: KEYS,
+    });
+    expect(out.status).toBe("running");
+    expect(JSON.stringify(out)).not.toContain(VALUE);
+  });
+
+  it("waits for the person's yes without starting the worker, in plain words", async () => {
+    const { source, host, started } = fixture();
+    const arm = vi.fn(async () => ({ state: "waiting", decisionKey: "secret/stripe-api-key/claude", name: "stripe-api-key", scope: "global" }));
+    host.secretsWorkerArm = arm;
+    const out = (await handleAgentApp(source, "r-wait", "tasks.delegate", { brief, secrets: KEYS }, host)) as Record<string, unknown>;
+    expect(started).toEqual([]);
+    expect(out).toMatchObject({ taskId: null, childSessionId: "app-mono-exo-r-wait", status: "waiting" });
+    expect(String(out.note)).toMatch(/hasn't approved stripe-api-key for this worker/);
+    expect(String(out.note)).toMatch(/end your turn/);
+    expect(JSON.stringify(out)).not.toContain(VALUE);
+  });
+
+  it("brings a no back as refused, and a key that is not saved as a request to make", async () => {
+    const denied = fixture();
+    denied.host.secretsWorkerArm = vi.fn(async () => ({ state: "denied", decisionKey: "secret/stripe-api-key/claude", name: "stripe-api-key" }));
+    const no = (await handleAgentApp(denied.source, "r-no", "tasks.delegate", { brief, secrets: KEYS }, denied.host)) as Record<string, unknown>;
+    expect(denied.started).toEqual([]);
+    expect(no.status).toBe("refused");
+    expect(String(no.note)).toMatch(/said no to stripe-api-key/);
+
+    const missing = fixture();
+    missing.host.secretsWorkerArm = vi.fn(async () => ({ state: "missing", name: "stripe-api-key", scope: "global" }));
+    const ask = (await handleAgentApp(missing.source, "r-missing", "tasks.delegate", { brief, secrets: KEYS }, missing.host)) as Record<string, unknown>;
+    expect(missing.started).toEqual([]);
+    expect(ask.status).toBe("waiting");
+    expect(String(ask.note)).toMatch(/Ask for it with secrets_request/);
+  });
+
+  it("refuses keys on a Lead brief, from a coding-team chat, and with no keys here at all", async () => {
+    const { source, host, started } = fixture();
+    await expect(
+      handleAgentApp(source, "r-lead", "tasks.delegate", { brief, lead: "hub", secrets: KEYS }, host),
+    ).rejects.toThrow("secrets are for a worker you start yourself");
+    const team = fixture([], "team");
+    team.host.secretsWorkerArm = vi.fn();
+    await expect(
+      handleAgentApp(team.source, "r-team", "tasks.delegate", { brief, secrets: KEYS }, team.host),
+    ).rejects.toThrow("A worker's key comes from a Mono's own chat");
+    const bare = fixture();
+    await expect(
+      handleAgentApp(bare.source, "r-bare", "tasks.delegate", { brief, secrets: KEYS }, bare.host),
+    ).rejects.toThrow("Keys aren't available in this build");
+    expect(started).toEqual([]);
+  });
+
+  it("refuses bad key lists before anything starts: too many, a repeated name or env, a value, a bad name", async () => {
+    const { source, host, started } = fixture();
+    const arm = vi.fn();
+    host.secretsWorkerArm = arm;
+    const many = [...KEYS, { name: "b", env: "B" }, { name: "c", env: "C" }, { name: "d", env: "D" }];
+    await expect(handleAgentApp(source, "r-1", "tasks.delegate", { brief, secrets: many }, host)).rejects.toThrow("up to 3 keys");
+    await expect(
+      handleAgentApp(source, "r-2", "tasks.delegate", { brief, secrets: [KEYS[0], { name: "STRIPE-API-KEY", env: "OTHER" }] }, host),
+    ).rejects.toThrow("two entries name the same key");
+    await expect(
+      handleAgentApp(source, "r-3", "tasks.delegate", { brief, secrets: [KEYS[0], { name: "other", env: "STRIPE_API_KEY" }] }, host),
+    ).rejects.toThrow("its own env name");
+    await expect(
+      handleAgentApp(source, "r-4", "tasks.delegate", { brief, secrets: [{ name: "stripe-api-key", env: "STRIPE_API_KEY", value: VALUE }] }, host),
+    ).rejects.toThrow("Unknown secrets fields: value");
+    await expect(
+      handleAgentApp(source, "r-5", "tasks.delegate", { brief, secrets: [{ name: "stripe-api-key", env: "stripe key" }] }, host),
+    ).rejects.toThrow("capital letters, digits and underscores");
+    expect(arm).not.toHaveBeenCalled();
+    expect(started).toEqual([]);
+  });
+});
 // WP-171: a contract, waves and the tasks that wait for what they need, through the same delegate every task uses.
 describe("tasks.fanout: contracts and waves in the normal delegate path (WP-171)", () => {
   const INTENT = "Ash: a score board with an API behind it.";
@@ -3291,6 +3792,60 @@ describe("round 5 gap: a redo whose record failed does not start", () => {
     expect(redoLinkRefusal(redo, null)).toMatch(/could not be recorded/);
     expect(redoLinkRefusal(redo, { id: "t-new" } as unknown as Delegation)).toBeNull();
     expect(redoLinkRefusal({ title: "Fresh", askIds: [] }, null)).toBeNull();
+  });
+});
+
+// WP-203: the control socket (handleAgentApp) refuses a security review's request id, and the review owner, before any
+// task starts. The review launcher is the app's alone.
+import { REVIEW_OWNER, REVIEW_REQUEST_PREFIX } from "../../security-review/model/launch";
+
+describe("the control socket refuses a security review's request id and owner", () => {
+  const reviewRequest = `${REVIEW_REQUEST_PREFIX}6162`;
+
+  it("refuses a tasks.delegate whose request id names a security review, and starts nothing", async () => {
+    const { source, host, started } = fixture([]);
+    await expect(
+      handleAgentApp(source, reviewRequest, "tasks.delegate", { brief: "Build it" }, host),
+    ).rejects.toThrow(/Security review request IDs belong to the app/);
+    expect(started).toEqual([]);
+  });
+
+  it("refuses a tasks.fanout with a review request id too", async () => {
+    const { source, host, started } = fixture([]);
+    await expect(
+      handleAgentApp(source, reviewRequest, "tasks.fanout", { tasks: [{ name: "a", brief: "x" }] }, host),
+    ).rejects.toThrow(/Security review request IDs belong to the app/);
+    expect(started).toEqual([]);
+  });
+
+  it("refuses a call from the review owner's own session, whatever it asks", async () => {
+    const { source, host, started } = fixture([]);
+    const asOwner = { ...source, id: REVIEW_OWNER };
+    await expect(handleAgentApp(asOwner, "r-own", "tasks.delegate", { brief: "Build it" }, host)).rejects.toThrow(
+      /reserved for the app/,
+    );
+    expect(started).toEqual([]);
+  });
+
+  it("refuses a call from the reviewer's own chat, whose id is review-<hex>", async () => {
+    // The launcher names the reviewer's chat review-<hex> (the child session of a review), not the owner's id.
+    const { source, host, started } = fixture([]);
+    const asReviewer = { ...source, id: `review-${"6162".repeat(10)}` };
+    await expect(handleAgentApp(asReviewer, "r-chat", "tasks.delegate", { brief: "Build it" }, host)).rejects.toThrow(
+      /reserved for the app/,
+    );
+    expect(started).toEqual([]);
+  });
+
+  it("refuses an ownerSession or reviewLaunch field a caller adds to tasks.delegate", async () => {
+    const { source, host, started } = fixture([]);
+    await expect(
+      handleAgentApp(source, "r-field", "tasks.delegate", { brief: "Build it", ownerSession: REVIEW_OWNER }, host),
+    ).rejects.toThrow();
+    await expect(
+      handleAgentApp(source, "r-field2", "tasks.delegate", { brief: "Build it", reviewLaunch: true }, host),
+    ).rejects.toThrow();
+    expect(started).toEqual([]);
   });
 });
 

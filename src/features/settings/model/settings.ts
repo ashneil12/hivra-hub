@@ -1,3 +1,4 @@
+import { invoke } from "@tauri-apps/api/core";
 import {
   ALT,
   IS_MAC,
@@ -46,7 +47,8 @@ export type SettingsSectionId =
   | "backups"
   | "history"
   | "memory"
-  | "connectors";
+  | "connectors"
+  | "secrets";
 
 /** Rail buckets. Sections list in order under their group label. */
 export type SettingsGroupId = "app" | "agents" | "workspace";
@@ -182,6 +184,13 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
     label: "Connectors",
     description: "The apps your Monos use (GitHub, Gmail, Slack and more), and where each login lives.",
     keywords: "connector login sign in composio apps oauth gmail slack github",
+  },
+  {
+    id: "secrets",
+    group: "app",
+    label: "Secrets",
+    description: "The keys your agents can use, kept in your Mac's keychain. Never in chats, files or backups.",
+    keywords: "secret key token password keychain agent approval env utility",
   },
   {
     id: "keybindings",
@@ -794,6 +803,13 @@ export const SETTINGS_INDEX: SettingsEntry[] = [
     label: "Plugin indexes",
     keywords: "index source bundled github marketplace url file",
   },
+  // WP-141: the crew defaults screen, above the advanced rules.
+  {
+    id: "crew-defaults",
+    section: "crew",
+    label: "Crew defaults",
+    keywords: "default lock never use fallback builder reviewer researcher",
+  },
   {
     id: "crew-rules",
     section: "crew",
@@ -1347,8 +1363,17 @@ export function loadMoreAgentsEnabled(): boolean {
   return readFlag(MORE_AGENTS_ENABLED_KEY) ?? MORE_AGENTS_ENABLED_DEFAULT;
 }
 
+/** The app's own copy of the switch, which Rust checks before any More agents start. Failures are not shown here. */
+export function syncMoreAgentsSwitch(value: boolean): Promise<void> {
+  return invoke("more_agents_set_enabled", { on: value }).then(
+    () => undefined,
+    () => undefined,
+  );
+}
+
 export function saveMoreAgentsEnabled(value: boolean) {
   writeFlag(MORE_AGENTS_ENABLED_KEY, value);
+  void syncMoreAgentsSwitch(value);
   if (typeof window === "undefined") return;
   window.dispatchEvent(
     new CustomEvent<boolean>(MORE_AGENTS_ENABLED_CHANGE_EVENT, {

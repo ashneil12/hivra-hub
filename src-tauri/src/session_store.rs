@@ -278,6 +278,9 @@ pub struct SessionUpsert {
     /// WP-111: after privacy is switched off, this message and everything before it stay unread.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub private_boundary_id: Option<String>,
+    /// WP-134: the More agents entry this chat belongs to. Omitted on a save that does not know it, which keeps the stored one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub registry_agent_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -373,6 +376,9 @@ pub struct SessionRecord {
     /// WP-111: messages at or before this id stay unread after privacy is switched off.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub private_boundary_id: Option<String>,
+    /// WP-134: the More agents entry this chat belongs to. Absent on a chat saved before the column existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub registry_agent_id: Option<String>,
     pub created_at: i64,
     pub updated_at: i64,
 }
@@ -413,6 +419,22 @@ pub(crate) fn boundary_for_read(value: Option<String>) -> Option<String> {
         return None;
     }
     stored_boundary(Some(&raw)).or(Some("private-boundary-unreadable".to_string()))
+}
+
+/// A More agents entry id worth storing. A harness id, a bad slug, or anything else stores nothing, so it cannot
+/// clear a real entry already on the row.
+fn stored_registry_agent(value: Option<&str>) -> Option<String> {
+    let value = value?.trim();
+    let mut chars = value.chars();
+    let first = chars.next()?;
+    if value.len() > 48
+        || !(first.is_ascii_lowercase() || first.is_ascii_digit())
+        || !chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+        || crate::more_agents::FIRST_CLASS_IDS.contains(&value)
+    {
+        return None;
+    }
+    Some(value.to_string())
 }
 
 /// What a saved chat must look like. A blank folder is allowed: it is a chat that came in from an export with no folder
@@ -1095,6 +1117,34 @@ pub(crate) fn set_private(
     Ok(())
 }
 
+/// WP-134: copy one browser link onto the row, and only while the row has none. A bad id or a missing chat writes
+/// nothing and is not an error, so the caller can drop it. A database error is returned, so the caller can retry.
+#[tauri::command(async)]
+pub fn session_adopt_registry_agent(
+    store: State<'_, SessionStore>,
+    session_id: String,
+    agent_id: String,
+) -> Result<bool, String> {
+    validate_id(&session_id, "session")?;
+    let conn = store.conn.lock().map_err(|_| "Session store is locked")?;
+    adopt_registry_agent(&conn, &session_id, &agent_id).map_err(|error| error.to_string())
+}
+
+pub(crate) fn adopt_registry_agent(
+    conn: &Connection,
+    session_id: &str,
+    agent_id: &str,
+) -> rusqlite::Result<bool> {
+    let Some(agent) = stored_registry_agent(Some(agent_id)) else {
+        return Ok(false);
+    };
+    let changed = conn.execute(
+        "UPDATE sessions SET registry_agent_id = ?2 WHERE id = ?1 AND registry_agent_id IS NULL",
+        params![session_id, agent],
+    )?;
+    Ok(changed > 0)
+}
+
 #[tauri::command(async)]
 pub fn session_set_linked_work_item(
     store: State<'_, SessionStore>,
@@ -1435,6 +1485,8 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         ("private_boundary_id", "TEXT"),
         // Added in place, not as a numbered migration, so an older build (a ship rollback) still opens this database.
         ("goal_json", "TEXT"),
+        // WP-134: the More agents entry. Old rows stay null, and an older build still opens this database.
+        ("registry_agent_id", "TEXT"),
     ] {
         ensure_session_column(conn, column, decl)?;
     }
@@ -1693,6 +1745,10 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
     // Hivra WP-14: steering messages and decisions.
     crate::steering::ensure_tables(conn)?;
     crate::decisions::ensure_tables(conn)?;
+    // Hivra WP-92: the secret vault's metadata. Values never live here.
+    crate::secrets::ensure_tables(conn)?;
+    // A request left `saving` by a crash between the keychain write and the row update reopens at startup.
+    let _ = crate::secrets::reopen_stale(conn, now_millis());
     crate::autopilot::ensure_tables(conn)?;
     crate::pr_watch::ensure_tables(conn)?;
     crate::delivery::ensure_tables(conn)?; // Hivra WP-12
@@ -1942,8 +1998,8 @@ pub(crate) fn upsert_session(
            context_used, context_window, worktree_cwd, has_user_message,
            linked_work_item_json, provider_account_id, worktree_removed, is_draft,
            automation_id, queued_messages_json, queue_status, sidebar_hidden, goal_json,
-           private_chat, private_boundary_id
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27)
+           private_chat, private_boundary_id, registry_agent_id
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28)
          ON CONFLICT(id) DO UPDATE SET
            cwd = excluded.cwd,
            harness = excluded.harness,
@@ -1967,7 +2023,8 @@ pub(crate) fn upsert_session(
            queued_messages_json = excluded.queued_messages_json,
            queue_status = excluded.queue_status,
            sidebar_hidden = excluded.sidebar_hidden,
-           goal_json = excluded.goal_json",
+           goal_json = excluded.goal_json,
+           registry_agent_id = COALESCE(excluded.registry_agent_id, sessions.registry_agent_id)",
         params![
             session.id,
             session.cwd,
@@ -1996,6 +2053,7 @@ pub(crate) fn upsert_session(
             goal_json(session.goal.as_ref()),
             i64::from(session.private_chat),
             stored_boundary(session.private_boundary_id.as_deref()),
+            stored_registry_agent(session.registry_agent_id.as_deref()),
         ],
     )?;
 
@@ -2705,7 +2763,7 @@ fn get_session_record(
                 context_used, context_window, branch, worktree_cwd,
                 linked_work_item_json, provider_account_id, worktree_removed,
                 automation_id, queued_messages_json, queue_status, sidebar_hidden,
-                goal_json, archived, private_chat, private_boundary_id
+                goal_json, archived, private_chat, private_boundary_id, registry_agent_id
          FROM sessions
          WHERE id = ?1 AND inbox_ask IS NULL
            AND id NOT IN (SELECT item_id FROM trash_items WHERE kind = 'chat')"
@@ -2760,6 +2818,9 @@ fn get_session_record(
                 archived: row.get::<_, i64>(23)? != 0,
                 private_chat: row.get::<_, i64>(24)? != 0,
                 private_boundary_id: boundary_for_read(row.get(25)?),
+                registry_agent_id: stored_registry_agent(
+                    row.get::<_, Option<String>>(26)?.as_deref(),
+                ),
                 created_at: row.get(9)?,
                 updated_at: row.get(10)?,
             })
@@ -3182,6 +3243,7 @@ mod tests {
             goal: None,
             private_chat: false,
             private_boundary_id: None,
+            registry_agent_id: None,
         }
     }
 
@@ -3228,6 +3290,117 @@ mod tests {
             get_session_metadata(&conn, "worker").unwrap().unwrap().goal,
             Some(goal)
         );
+    }
+
+    /// A row written before `registry_agent_id` existed still loads, and the new column stays empty.
+    #[test]
+    fn a_session_written_before_the_registry_column_still_loads() {
+        let store = SessionStore::open_in_memory().unwrap();
+        let conn = store.lock_conn().unwrap();
+        conn.execute("ALTER TABLE sessions DROP COLUMN registry_agent_id", [])
+            .unwrap();
+        conn.execute(
+            "INSERT INTO sessions (
+                id, cwd, harness, model, model_settings, runtime_mode, title,
+                blocks_json, created_at, updated_at
+             ) VALUES (
+                'old-chat', '/tmp/a', 'claude', 'm', '{}', 'supervised', 'Before',
+                '[{\"id\":\"b1\",\"role\":\"user\",\"text\":\"hi\"}]', 5, 6
+             )",
+            [],
+        )
+        .unwrap();
+        migrate(&conn).unwrap();
+        let loaded = get_session(&conn, "old-chat").unwrap().unwrap();
+        assert_eq!(loaded.title, "Before");
+        assert_eq!(loaded.harness, "claude");
+        assert_eq!(loaded.created_at, 5);
+        assert_eq!(loaded.updated_at, 6);
+        assert!(loaded.registry_agent_id.is_none());
+        // A later save that names no entry must not invent one.
+        upsert_session(&conn, &sample("old-chat", "/tmp/a", "Before")).unwrap();
+        assert!(get_session(&conn, "old-chat")
+            .unwrap()
+            .unwrap()
+            .registry_agent_id
+            .is_none());
+    }
+
+    /// The entry id is stored with the chat. A later save that omits it keeps it. A harness id or a bad slug does not.
+    #[test]
+    fn an_upsert_stores_the_registry_entry_and_a_later_save_keeps_it() {
+        let store = SessionStore::open_in_memory().unwrap();
+        let conn = store.lock_conn().unwrap();
+        let mut session = sample("chat-1", "/tmp/a", "Copilot");
+        session.registry_agent_id = Some("my-copilot".into());
+        upsert_session(&conn, &session).unwrap();
+        let stored = get_session(&conn, "chat-1").unwrap().unwrap();
+        assert_eq!(stored.registry_agent_id.as_deref(), Some("my-copilot"));
+        assert_eq!(stored.harness, "cursor");
+        session.registry_agent_id = None;
+        session.title = "Renamed".into();
+        upsert_session(&conn, &session).unwrap();
+        let stored = get_session(&conn, "chat-1").unwrap().unwrap();
+        assert_eq!(stored.registry_agent_id.as_deref(), Some("my-copilot"));
+        assert_eq!(stored.title, "Renamed");
+        for bad in ["claude", "../x", "Not A Slug", ""] {
+            session.registry_agent_id = Some(bad.into());
+            upsert_session(&conn, &session).unwrap();
+            assert_eq!(
+                get_session(&conn, "chat-1")
+                    .unwrap()
+                    .unwrap()
+                    .registry_agent_id
+                    .as_deref(),
+                Some("my-copilot"),
+                "{bad}"
+            );
+        }
+        // A value planted in the row that is not a slug reads as none, and the rest of the row still loads.
+        conn.execute(
+            "UPDATE sessions SET registry_agent_id = 'Not A Slug' WHERE id = 'chat-1'",
+            [],
+        )
+        .unwrap();
+        let planted = get_session(&conn, "chat-1").unwrap().unwrap();
+        assert!(planted.registry_agent_id.is_none());
+        assert_eq!(planted.title, "Renamed");
+    }
+
+    /// The one-time move writes only while the column is empty, and a bad id writes nothing.
+    #[test]
+    fn adopt_registry_agent_fills_a_blank_link_and_does_not_overwrite() {
+        let store = SessionStore::open_in_memory().unwrap();
+        let conn = store.lock_conn().unwrap();
+        upsert_session(&conn, &sample("chat-1", "/tmp/a", "One")).unwrap();
+        upsert_session(&conn, &sample("chat-2", "/tmp/a", "Two")).unwrap();
+        assert!(adopt_registry_agent(&conn, "chat-1", "my-copilot").unwrap());
+        assert_eq!(
+            get_session(&conn, "chat-1")
+                .unwrap()
+                .unwrap()
+                .registry_agent_id
+                .as_deref(),
+            Some("my-copilot")
+        );
+        // A second move, and a move onto a row that already has an entry, leave the first one.
+        assert!(!adopt_registry_agent(&conn, "chat-1", "other-agent").unwrap());
+        assert_eq!(
+            get_session(&conn, "chat-1")
+                .unwrap()
+                .unwrap()
+                .registry_agent_id
+                .as_deref(),
+            Some("my-copilot")
+        );
+        assert!(!adopt_registry_agent(&conn, "missing", "my-copilot").unwrap());
+        assert!(!adopt_registry_agent(&conn, "chat-2", "claude").unwrap());
+        assert!(!adopt_registry_agent(&conn, "chat-2", "../x").unwrap());
+        assert!(get_session(&conn, "chat-2")
+            .unwrap()
+            .unwrap()
+            .registry_agent_id
+            .is_none());
     }
 
     #[test]

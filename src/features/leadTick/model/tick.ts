@@ -33,6 +33,10 @@ export type TickWatch = {
     mergeable: "mergeable" | "conflicting" | "unknown" | "";
     /** The pull request's label names (pr_watch.rs `Status`). */
     labels: string[];
+    /** Commits main has that the branch lacks (pr_watch.rs `Status`, WP-202). Informational: the merge gate judges files. */
+    behind?: number;
+    /** GitHub's merge state (pr_watch.rs `Status`, WP-202). Informational: only DIRTY refuses, at the merge gate. */
+    mergeState?: string;
   };
 };
 

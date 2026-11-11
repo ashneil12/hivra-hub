@@ -2,8 +2,8 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>Hivra project</title>
-<!-- Mockup with example data (WP-210..214, docs/hivra/UX.md). Not app code. -->
+<title>Hivra project home</title>
+<!-- Mockup with example data (docs/hivra/UX.md, the captain model). Not app code. -->
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&amp;display=swap" rel="stylesheet">
 <style>
@@ -61,92 +61,120 @@ a{color:#8ab8f5;text-decoration:none}a:hover{color:#b5d3fa}
 .wtop b{font-weight:500;flex:1;min-width:0}
 .pill{font-size:11px;font-weight:600;border-radius:10px;padding:2px 8px}
 .meta{font-size:12px;color:#9a9a9a}
+
+.glance{flex:1 1 300px;max-width:380px;min-width:0;display:flex;flex-direction:column;gap:12px;background:#181818;padding:16px 14px;box-sizing:border-box}
+.gh{font-size:11px;font-weight:600;letter-spacing:.04em;text-transform:uppercase;color:#8f8f8f}
+.box{border:1px solid #2a2a2a;border-radius:10px;background:#1b1b1b;padding:10px 12px;display:flex;flex-direction:column;gap:6px}
+.box.red{border-color:#6b2a2c;background:#241718}
+.bt{display:flex;align-items:center;gap:8px;font-weight:600}
+.bt span{margin-left:auto;font-weight:500;font-size:12px;color:#9a9a9a}
+.nums{display:flex;gap:10px}
+.num{flex:1;display:flex;flex-direction:column}
+.num b{font-size:18px;font-weight:600}
+.num span{font-size:11px;color:#9a9a9a}
+.dept{display:flex;align-items:center;gap:8px;font-size:12px;font-weight:500;border:1px solid #2c2c2c;border-radius:16px;padding:4px 10px 4px 4px;color:#ececec;background:#1b1b1b}
+.dept .av{width:22px;height:22px;flex:0 0 22px;font-size:10px}
+.dept.on{border-color:#4a9ff5}
+.drow{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.line{display:flex;gap:8px;font-size:12px;color:#d6d6d6}
+.line i{font-style:normal;color:#9a9a9a;flex:0 0 74px}
 </style>
 </head>
 <body>
 <div class="app">
-  <div class="nav">
+  <div class="nav" style="flex:0 0 72px">
     <nav class="strip" aria-label="Places">
       <a class="tile" href="Main.html"><span class="sq" style="background:#3a3a3a">H</span>Home</a>
       <div style="width:32px;height:1px;background:#2c2c2c;margin:4px 0"></div>
       <a class="tile" href="Project.html"><span class="sq" style="background:#5b4bd6">EX</span>EXO<span class="badge">1</span><span class="busy"></span></a>
-      <a class="tile on" href="Project.html"><span class="sq" style="background:#d9822b">Hi</span>Hivra<span class="badge">2</span><span class="busy"></span></a>
+      <a class="tile on" href="Project.html"><span class="sq" style="background:#d9822b">Hi</span>Hivra<span class="badge">1</span><span class="busy"></span></a>
       <a class="tile" href="Project.html"><span class="sq" style="background:#2f9e74">Ni</span>Nibbii<span class="badge">1</span><span class="busy"></span></a>
       <a class="tile" href="Project.html"><span class="sq" style="background:#4a6fa5">MH</span>MonoCode Hub</a>
       <a class="tile" href="Project.html"><span class="sq" style="background:#b54a6b">RC</span>Recall Checker</a>
       <a class="tile" href="Project.html"><span class="sq" style="background:#8a6d3b">BD</span>Bark Desk</a>
       <a class="tile" href="Project.html"><span class="sq" style="background:#c0453a">ST</span>SafeTube<span class="badge">1</span></a>
       <button class="tile" style="background:transparent;border:0;font-family:inherit" aria-label="Add a project"><span class="sq" style="background:transparent;border:1px dashed #444444;color:#9a9a9a">+</span>Add</button>
-      <a class="tile" style="margin-top:auto" href="Model.html" aria-label="Settings"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#9a9a9a" stroke-width="1.8" aria-hidden="true"><circle cx="12" cy="12" r="3"></circle><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M4.9 19.1 7 17M17 7l2.1-2.1"></path></svg>Settings</a>
+      <a class="tile" style="margin-top:auto" href="#" aria-label="Agents"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#9a9a9a" stroke-width="1.8" aria-hidden="true"><circle cx="12" cy="5" r="2.5"></circle><circle cx="5" cy="19" r="2.5"></circle><circle cx="19" cy="19" r="2.5"></circle><path d="M12 7.5v4M12 11.5 6 16.5M12 11.5l6 5"></path></svg>Agents</a>
+      <a class="tile" href="NeedsYou.html" aria-label="Decisions"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#9a9a9a" stroke-width="1.8" aria-hidden="true"><path d="M4 6h16M4 12h10M4 18h7"></path><path d="m15 17 2 2 4-4"></path></svg>Decisions<span class="badge">4</span></a>
+      <a class="tile" href="Model.html" aria-label="Settings"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#9a9a9a" stroke-width="1.8" aria-hidden="true"><circle cx="12" cy="12" r="3"></circle><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M4.9 19.1 7 17M17 7l2.1-2.1"></path></svg>Settings</a>
     </nav>
-    <aside class="side" aria-label="Hivra">
-      <div class="ph"><h1>Hivra</h1><div class="muted" style="font-size:12px">~/Projects/monocode-hub</div></div>
-      <div class="item on"><span class="av" style="background:#d9822b;color:#ffffff">Hi</span><span class="who"><b>Coding team</b><span style="color:#ff8a8d">2 need you · 4 working</span></span></div>
-      <div class="item"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#bdbdbd" stroke-width="1.8" aria-hidden="true"><path d="M9 6h11M9 12h11M9 18h11M4 6h.01M4 12h.01M4 18h.01"></path></svg>Tasks<span class="muted" style="margin-left:auto;font-size:12px">12 open</span></div>
-      <div class="item"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#bdbdbd" stroke-width="1.8" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"></rect><path d="M3 9h18M9 9v11"></path></svg>Pages</div>
-      <div class="label">Monos on Hivra</div>
-      <div class="item"><span class="av" style="background:#d8b4fe">Cr</span><span class="who"><b>Critiquito</b><span>Reviewing the new screens</span></span></div>
-      <div class="label">Chats</div>
-      <div class="chatrow">Fix the Windows build<span>12m</span></div>
-      <div class="chatrow">Spend limits review<span>1h</span></div>
-      <div class="chatrow">Phone app plan<span>Tue</span></div>
-      <div class="chatrow" style="color:#8ab8f5">+ New chat</div>
-      <div class="label">Groups</div>
-      <div class="item"><span class="av" style="background:#3a3a3a;color:#ececec">LT</span><span class="who"><b>Leadership team</b><span>3 Monos</span></span></div>
-    </aside>
   </div>
 
   <main class="main">
     <div class="mhead">
-      <h2>Coding team</h2>
-      <span class="muted">Hivra's lead plans the work and runs the workers</span>
-      <a class="chip" style="background:#3a1c1e;color:#ff8a8d" href="NeedsYou.html">2 need you</a>
-      <span class="chip" style="background:#16283d;color:#8ab8f5">4 working</span>
+      <h2>Hivra</h2>
+      <span class="muted">Chief of Staff, on this project</span>
       <button class="toggle" aria-label="Autopilot is off">Autopilot <span class="knob"><i></i></span> Off</button>
     </div>
+    <div class="mhead" style="padding:10px 24px">
+      <span class="muted" style="font-size:12px">First mates</span>
+      <div class="drow">
+        <span class="dept"><span class="av" style="background:#d9822b;color:#ffffff">Co</span>Coding<span class="muted">4 working</span></span>
+        <span class="dept"><span class="av" style="background:#d8b4fe">Ma</span>Marketing<span class="muted">drafting</span></span>
+        <span class="dept" style="padding-left:10px;color:#8ab8f5">+ Add a department</span>
+      </div>
+    </div>
     <div class="thread">
-      <div class="you">Fix the Windows build on #201, and keep the commit guard work going.</div>
+      <div class="you">Ship spend limits, and get the Windows build green.</div>
       <div class="lead">
-        <span class="av" style="background:#d9822b;color:#ffffff">Hi</span>
+        <span class="av" style="background:#4a9ff5;color:#0b1a2b">CS</span>
         <div style="flex:1;min-width:0">
-          <p>On it. I've split this into two jobs and started a worker on each.</p>
-          <div class="card">
-            <div class="crow"><span class="pill" style="background:#16283d;color:#8ab8f5">Working</span>Windows build fix<span class="muted" style="margin-left:auto">#201 · Grok</span></div>
-            <div class="crow"><span class="pill" style="background:#16283d;color:#8ab8f5">Working</span>Commit guard, round 6<span class="muted" style="margin-left:auto">#227 · Grok</span></div>
-          </div>
+          <p>On it. Coding has both. Spend limits merges when its checks are green; the Windows fix is with Coding's crew. I'll tell you when both are done.</p>
         </div>
       </div>
       <div class="lead">
-        <span class="av" style="background:#d9822b;color:#ffffff">Hi</span>
+        <span class="av" style="background:#4a9ff5;color:#0b1a2b">CS</span>
+        <div style="flex:1;min-width:0">
+          <p>Spend limits is merged. The Windows build is on its second try: a test read a short Windows folder name, and Coding is fixing the test, not the app.</p>
+          <p class="muted" style="font-size:12px;margin:0">Decided for you: merged #217 on green (your rule). Kept workers on Grok (your rule).</p>
+        </div>
+      </div>
+      <div class="lead">
+        <span class="av" style="background:#4a9ff5;color:#0b1a2b">CS</span>
         <div style="flex:1;min-width:0">
           <div class="need">
-            <b style="font-weight:600;color:#ff8a8d">Needs you.</b> The Windows build fix stopped after 3 tries. The test that keeps failing reads a short folder name, RUNNER~1, that only Windows uses. Should I try a new plan, or stop for now?
-            <div class="btns"><button class="btn primary">Try a new plan</button><button class="btn">Stop for now</button><button class="btn">Open the worker's chat</button></div>
+            <b style="font-weight:600;color:#ff8a8d">Needs you.</b> The secret vault is ready to merge. It touches keys, so it's yours. I'd merge it: the hard review passed with nothing serious left.
+            <div class="btns"><button class="btn primary">Merge it</button><button class="btn">Not yet</button><button class="btn">Why is this mine?</button></div>
           </div>
-        </div>
-      </div>
-      <div class="lead">
-        <span class="av" style="background:#d9822b;color:#ffffff">Hi</span>
-        <div style="flex:1;min-width:0">
-          <p>#217 Spend limits is green and the review passed. Merge it?</p>
-          <div class="btns" style="margin-top:4px"><button class="btn primary">Merge</button><button class="btn">Not yet</button></div>
         </div>
       </div>
     </div>
     <div class="compose">
-      <input aria-label="Message the coding team" placeholder="Tell the coding team what to do">
-      <div class="cbar">Lead: Claude<span>·</span>Workers: Grok<button class="send" aria-label="Send"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#0b1a2b" stroke-width="2.4" aria-hidden="true"><path d="M12 19V5M5 12l7-7 7 7"></path></svg></button></div>
+      <input aria-label="Message the Chief of Staff" placeholder="Ask anything, or hand Hivra some work">
+      <div class="cbar">Chief of Staff on Claude<button class="send" aria-label="Send"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#0b1a2b" stroke-width="2.4" aria-hidden="true"><path d="M12 19V5M5 12l7-7 7 7"></path></svg></button></div>
     </div>
   </main>
 
-  <aside class="crew" aria-label="Crew">
-    <div class="tabs"><span class="tab on">Crew</span><span class="tab">Changes</span><span class="tab">Files</span></div>
-    <div class="worker"><div class="wtop"><span class="pill" style="background:#3a1c1e;color:#ff8a8d">Stopped</span><b>Windows build fix</b></div><div class="meta">#201 · 3 checks failing · 3 tries</div></div>
-    <div class="worker"><div class="wtop"><span class="pill" style="background:#16283d;color:#8ab8f5">Working</span><b>Commit guard, round 6</b></div><div class="meta">#227 · checks running · 22 min</div></div>
-    <div class="worker"><div class="wtop"><span class="pill" style="background:#16283d;color:#8ab8f5">Working</span><b>PR watch, round 4</b></div><div class="meta">#228 · writing tests · 31 min</div></div>
-    <div class="worker"><div class="wtop"><span class="pill" style="background:#16283d;color:#8ab8f5">Working</span><b>Chat move fixes</b></div><div class="meta">#214 · round 2 · 28 min</div></div>
-    <div class="worker"><div class="wtop"><span class="pill" style="background:#1d2a22;color:#7fd1a4">Done</span><b>Spend limits</b></div><div class="meta">#217 · checks green · waiting for your merge</div></div>
-    <div class="meta" style="padding:12px 14px">Workers run on Grok. Change it in Crew rules.</div>
+  <aside class="glance" aria-label="At a glance">
+    <div class="gh">At a glance</div>
+    <div class="box red">
+      <div class="bt" style="color:#ff8a8d">Needs you<span>1</span></div>
+      <div class="line">Merge the secret vault?</div>
+    </div>
+    <div class="box">
+      <div class="bt">This week</div>
+      <div class="nums">
+        <div class="num"><b>6</b><span>shipped</span></div>
+        <div class="num"><b>9</b><span>open PRs</span></div>
+        <div class="num"><b>$41</b><span>of $150 spent</span></div>
+      </div>
+    </div>
+    <div class="box">
+      <div class="bt">Working now</div>
+      <div class="line"><i>Coding</i>Windows build, chat move, PR watch, vault</div>
+      <div class="line"><i>Marketing</i>Launch post for 0.17</div>
+    </div>
+    <div class="box">
+      <div class="bt">Decided for you<span>18 today</span></div>
+      <div class="line"><i>Captain</i>Merged #217 on green</div>
+      <div class="line"><i>Coding</i>Retried the Windows test once</div>
+      <div class="line" style="color:#8ab8f5">See all, or overturn one</div>
+    </div>
+    <div class="box">
+      <div class="bt">Tasks<span>12 open</span></div>
+      <div class="bt">Pages<span>3</span></div>
+      <div class="bt">Other chats<span>5</span></div>
+    </div>
   </aside>
 </div>
 </body>

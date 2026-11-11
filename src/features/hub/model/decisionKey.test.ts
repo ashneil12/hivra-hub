@@ -4,8 +4,12 @@ import { describe, expect, it } from "vitest";
 import {
   foldDecisionKey,
   isFanoutAgainDecisionKey,
+  isGateDecisionKey,
+  isPersonOnlyDecisionKey,
   isFreshEyesDecisionKey,
   isIrreversibleDecisionKey,
+  isSecretDecisionKey,
+  isSecurityReviewDecisionKey,
 } from "./decisionKey";
 
 describe("foldDecisionKey", () => {
@@ -68,5 +72,59 @@ describe("person-only key checks", () => {
   it("leaves an ordinary key alone", () => {
     expect(isIrreversibleDecisionKey("retention-policy")).toBe(false);
     expect(isFreshEyesDecisionKey("Retention-Policy")).toBe(false);
+  });
+});
+
+describe("keys only the person answers", () => {
+  it.each(["gate/run-7", "GATE/run-7", "\u200Bgate/run-7", "irreversible/lead/t", "fresh-eyes/r9/x", "fresh-eyes-start/r9", "fanout-again/fm/t"])(
+    "%j is the person's alone",
+    (key) => {
+      expect(isPersonOnlyDecisionKey(key)).toBe(true);
+    },
+  );
+
+  it("reads a gate key folded, like decisions.rs is_gate_key", () => {
+    expect(isGateDecisionKey("ｇａｔｅ/run-7")).toBe(true);
+    expect(isGateDecisionKey("gateway/run-7")).toBe(false);
+  });
+
+  it("folds a security review the way decisions.rs person_only does", () => {
+    const keys = [
+      "security-review/abc",
+      "Security-Review/abc",
+      `${String.fromCodePoint(0xff33)}ecurity-review/abc`,
+      `security${String.fromCodePoint(0x200b)}-review/abc`,
+      `  security-review/abc${String.fromCodePoint(0xfeff)}`,
+      `SECURITY${String.fromCodePoint(0x00ad)}-REVIEW/ABC`,
+      `security${String.fromCodePoint(0x070f)}-review/x`,
+      `security${String.fromCodePoint(0x06dd)}-review/x`,
+      `${String.fromCodePoint(0x110bd)}security-review/abc`,
+    ];
+    for (const key of keys) {
+      expect(isSecurityReviewDecisionKey(key), JSON.stringify(key)).toBe(true);
+      expect(isPersonOnlyDecisionKey(key), JSON.stringify(key)).toBe(true);
+    }
+  });
+
+  it("folds a secret the same way", () => {
+    const keys = [
+      "secret/token-1",
+      "Secret/token-1",
+      `${String.fromCodePoint(0x200b)}secret/token-1`,
+      `  secret/token-1${String.fromCodePoint(0xfeff)}`,
+    ];
+    for (const key of keys) {
+      expect(isSecretDecisionKey(key), JSON.stringify(key)).toBe(true);
+      expect(isPersonOnlyDecisionKey(key), JSON.stringify(key)).toBe(true);
+    }
+  });
+
+  it("leaves an ordinary key to anyone", () => {
+    expect(isPersonOnlyDecisionKey("copy/headline")).toBe(false);
+    expect(isPersonOnlyDecisionKey("retention-policy")).toBe(false);
+    expect(isSecurityReviewDecisionKey("security-review")).toBe(false);
+    expect(isSecurityReviewDecisionKey("review/notes")).toBe(false);
+    expect(isSecretDecisionKey("secrecy/token-1")).toBe(false);
+    expect(isGateDecisionKey("gateway/run-7")).toBe(false);
   });
 });
