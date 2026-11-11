@@ -306,8 +306,9 @@ pub(crate) const FILE_ARG_REFUSED: &str =
     "A file named in the arguments must exist and be a file, given by its absolute path. A folder is not pinned.";
 
 /// The text an argument may carry a path in: the argument itself, the value of a plain `key=value` word, the part
-/// after `=` or a flag colon, both sides when a colon flag also has `=options` (`-javaagent:jar=opts`), or the rest
-/// of a short flag. A Windows drive colon (`C:\foo`) is not a flag colon.
+/// after `=` or a flag colon, both sides when a colon flag also has `=options` (`-javaagent:jar=opts`), the rest
+/// of a short flag, or the value again when a flag's value is itself `key=value` (`--config=key=/abs/file`).
+/// A Windows drive colon (`C:\foo`) is not a flag colon.
 fn candidates(arg: &str) -> Vec<&str> {
     if !arg.starts_with('-') {
         if let Some((_, _, value)) = plain_assignment(arg) {
@@ -319,21 +320,30 @@ fn candidates(arg: &str) -> Vec<&str> {
     if let Some(parts) = flag_parts(arg) {
         if let Some(eq) = parts.eq {
             if let Some(middle) = arg.get(parts.at + 1..eq) {
-                out.push(middle);
+                push_flag_value(&mut out, middle);
             }
             if let Some(tail) = arg.get(eq + 1..) {
-                out.push(tail);
+                push_flag_value(&mut out, tail);
             }
         } else if let Some(value) = arg.get(parts.at + 1..) {
-            out.push(value);
+            push_flag_value(&mut out, value);
         }
     }
     if arg.len() > 2 && !arg.starts_with("--") {
         if let Some(value) = arg.get(2..) {
-            out.push(value);
+            push_flag_value(&mut out, value);
         }
     }
     out
+}
+
+/// A flag value, or the inner value when that text is itself `key=value` (`--config=key=~/x`).
+fn push_flag_value<'a>(out: &mut Vec<&'a str>, value: &'a str) {
+    if let Some((_, _, inner)) = plain_assignment(value) {
+        out.push(inner);
+    } else {
+        out.push(value);
+    }
 }
 
 /// Where a flag's value starts. A colon that comes before `=` splits the file from its options
@@ -365,11 +375,29 @@ fn flag_parts(arg: &str) -> Option<FlagParts> {
     }
 }
 
+/// A value is a URL only when it starts with a scheme and `://` (`https://example.com`). A `://` later in a
+/// path (`../../x://agent.mjs`, `/abs/x://f`) is not a URL: those characters are legal in a file name.
+fn starts_with_url(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    let mut index = 0;
+    if index >= bytes.len() || !bytes[index].is_ascii_alphabetic() {
+        return false;
+    }
+    index += 1;
+    while index < bytes.len()
+        && (bytes[index].is_ascii_alphanumeric() || matches!(bytes[index], b'+' | b'-' | b'.'))
+    {
+        index += 1;
+    }
+    bytes.get(index..index + 3) == Some(b"://")
+}
+
 /// A non-URL word `[@…]key=value` whose key is a plain name (letters, digits, `_`, `.`, `-`). The three parts are
-/// the leading `@` marks, the key, and the value. `None` when the word is not that shape.
+/// the leading `@` marks, the key, and the value. `None` when the word is not that shape. A word that starts with
+/// a URL is not an assignment, so `https://host?x=1` is left whole. A `://` inside the value does not do that.
 fn plain_assignment(arg: &str) -> Option<(&str, &str, &str)> {
     let rest = arg.trim_start_matches('@');
-    if rest.contains("://") {
+    if starts_with_url(rest) {
         return None;
     }
     let eq = rest.find('=')?;
@@ -485,10 +513,15 @@ fn canonical_file(path: &str) -> Result<String, String> {
 
 /// A local `file:` URL decoded to a path. `None` when `value` is not a file URL. A file URL that is not a local file
 /// (a host other than localhost, or a broken percent escape) is an error, so it cannot slip through unpinned.
+/// A `?` or `#` is refused: a URL parser drops the query and the fragment, so pinning the text that includes them
+/// would pin a different file from the one the program opens (`agent.ts?v=1` beside `agent.ts`).
 fn file_url_target(value: &str) -> Result<Option<String>, String> {
     let bytes = value.as_bytes();
     if bytes.len() < 5 || !bytes[..5].eq_ignore_ascii_case(b"file:") {
         return Ok(None);
+    }
+    if bytes.contains(&b'?') || bytes.contains(&b'#') {
+        return Err(FILE_ARG_REFUSED.into());
     }
     let rest = &value[5..];
     let (host, raw_path) = if let Some(after) = rest.strip_prefix("//") {
@@ -574,8 +607,8 @@ fn canonical_of_value(value: &str) -> Result<Option<String>, String> {
 }
 
 /// NFKC, so a fullwidth reverse solidus, equals or colon is the ASCII character. ASCII is left as it is.
-/// Yen (`¥`) and the division slash (`∕`) are not folded: Windows best-fit maps them to `\` and `/`, and a value that
-/// contains one is refused instead.
+/// Yen (`¥`), the won sign (`₩`) and the division slash (`∕`) are not folded: Windows best-fit maps them to `\` and
+/// `/` (the won sign in code page 949), and a value that contains one is refused instead.
 fn fold_path(value: &str) -> Cow<'_, str> {
     if value.is_ascii() {
         Cow::Borrowed(value)
@@ -618,26 +651,40 @@ fn pin_split(arg: &str) -> Result<(String, Vec<String>), String> {
         if let Some(eq) = parts.eq {
             let middle = arg.get(parts.at + 1..eq).unwrap_or("");
             let tail = arg.get(eq + 1..).unwrap_or("");
-            let (middle_body, mut pins) = rewrite_or_same(middle)?;
-            let (tail_body, tail_pins) = rewrite_or_same(tail)?;
+            let (middle_body, mut pins) = rewrite_flag_value(middle)?;
+            let (tail_body, tail_pins) = rewrite_flag_value(tail)?;
             pins.extend(tail_pins);
             if !pins.is_empty() {
                 return Ok((format!("{head}{sep}{middle_body}={tail_body}"), pins));
             }
         } else if let Some(value) = arg.get(parts.at + 1..) {
-            if let Some((body, pins)) = rewrite_pinned(value)? {
+            let (body, pins) = rewrite_flag_value(value)?;
+            if !pins.is_empty() {
                 return Ok((format!("{head}{sep}{body}"), pins));
             }
         }
     }
     if arg.len() > 2 && !arg.starts_with("--") {
         if let (Some(value), Some(head)) = (arg.get(2..), arg.get(..2)) {
-            if let Some((body, pins)) = rewrite_pinned(value)? {
+            let (body, pins) = rewrite_flag_value(value)?;
+            if !pins.is_empty() {
                 return Ok((format!("{head}{body}"), pins));
             }
         }
     }
     Ok((arg.to_string(), Vec::new()))
+}
+
+/// A flag value, pinned. When the value is itself `key=value` (`--config=key=/abs/file`), the inner value is
+/// pinned and `key=` stays in front of the canonical path. The child still sees the key.
+fn rewrite_flag_value(value: &str) -> Result<(String, Vec<String>), String> {
+    if let Some((marks, key, inner)) = plain_assignment(value) {
+        if let Some((body, pins)) = rewrite_pinned(inner)? {
+            return Ok((format!("{marks}{key}={body}"), pins));
+        }
+        return Ok((value.to_string(), Vec::new()));
+    }
+    rewrite_or_same(value)
 }
 
 /// `rewrite_pinned`, or the value unchanged when it names no absolute file.
@@ -693,10 +740,10 @@ fn remote_note(command: &str, args: &[String]) -> Option<String> {
         // A deno run of a file on this Mac is local; a URL or an npm:/jsr: specifier is fetched at start.
         "deno" => {
             first == "run"
-                && args.iter().any(|a| {
-                    a.starts_with("npm:")
-                        || a.starts_with("jsr:")
-                        || (a.contains("://") && !is_file_url(a))
+                && args.iter().any(|arg| {
+                    arg.starts_with("npm:")
+                        || arg.starts_with("jsr:")
+                        || (starts_with_url(arg) && !is_file_url(arg))
                 })
         }
         _ => false,
@@ -996,8 +1043,12 @@ fn path_is_refused(value: &str) -> bool {
     if value.is_empty() {
         return false;
     }
-    // Windows best-fit turns these into `\` and `/`. NFKC leaves them, so a value that contains one is refused.
-    if value.chars().any(|c| c == '\u{00A5}' || c == '\u{2215}') {
+    // Windows best-fit turns these into `\` and `/` (the won sign in code page 949). NFKC leaves them, so a value
+    // that contains one is refused.
+    if value
+        .chars()
+        .any(|c| c == '\u{00A5}' || c == '\u{20A9}' || c == '\u{2215}')
+    {
         return true;
     }
     if let Some(rest) = value.strip_prefix('@') {
@@ -1008,7 +1059,8 @@ fn path_is_refused(value: &str) -> bool {
         Ok(Some(_)) => return false,
         Ok(None) => {}
     }
-    if value.contains("://") {
+    // A URL is not a path. `://` later in the text is a path (`../../x://agent.mjs`), so only a leading scheme counts.
+    if starts_with_url(value) {
         return false;
     }
     if is_drive_relative(value) || is_rooted_without_drive(value) {
@@ -1275,10 +1327,12 @@ pub(crate) fn approved_spawn(
     })
 }
 
-/// The last hash in this process. Called after the run folder exists and immediately before the spawn, and again
-/// before a text-file-busy retry. On macOS the disclaim launcher hashes once more, immediately before exec. A direct
-/// spawn has no launcher check, and a script is read again by its interpreter after exec. A writer can still win
-/// either of those gaps.
+/// The last hash in this process, of the program and of every pinned argument file. Called after the run folder
+/// exists and immediately before the spawn, and again before a text-file-busy retry. On macOS the disclaim
+/// launcher hashes the program once more, by path, then execs that path. That narrows the window for the program
+/// only. A swap after the launcher's hash can still run, and a pinned argument file is not hashed again there.
+/// A direct spawn has no launcher check, and a script is read again by its interpreter after exec. A writer can
+/// still win any of those gaps.
 pub(crate) fn confirm_before_spawn(data_dir: &Path, id: &str, command: &str) -> Result<(), String> {
     let stored = read_stored(data_dir)?;
     let approval = stored.approvals.get(id).ok_or(NOT_APPROVED)?;
@@ -1648,11 +1702,13 @@ pub(crate) fn view(stored: &Stored, path_value: &str) -> Value {
                 .approvals
                 .get(&id)
                 .is_some_and(|a| still_approved(a, &fp, path.as_deref()));
-        // One note per entry. The shebang and remote lines stay, and the two limits that are not pinned are always said.
+        // One note per entry. A package launcher that is itself a script (npx, bunx, uvx) says both: the fetch,
+        // and that the interpreter on the first line is read again. The two limits that are not pinned are always said.
         let mut lines = Vec::new();
         if let Some(note) = remote_note(&command, &args) {
             lines.push(note);
-        } else if path.as_deref().is_some_and(starts_with_shebang) {
+        }
+        if path.as_deref().is_some_and(starts_with_shebang) {
             lines.push(
                 "This program is a script. The interpreter named on its first line is not pinned. The interpreter reads this script again after it starts, so a change in that gap runs without a new Allow."
                     .to_string(),
@@ -2055,6 +2111,30 @@ mod tests {
         assert!(note.contains(
             "The interpreter reads this script again after it starts, so a change in that gap runs without a new Allow."
         ));
+    }
+
+    /// npx, bunx and uvx are scripts that also fetch a package. The card says both, not only the fetch.
+    #[cfg(unix)]
+    #[test]
+    fn a_fetching_script_still_says_the_interpreter_is_reread() {
+        let d = dir();
+        let bin = d.path().join("bin");
+        let path_value = bin.to_string_lossy().into_owned();
+        let mut agents = Vec::new();
+        for (id, name) in [("wp134", "npx"), ("wp134b", "bunx"), ("wp134c", "uvx")] {
+            make_tool(&bin, name, b"#!/bin/sh\n");
+            agents.push(entry(id, name, &["pkg"]));
+        }
+        write_agents(d.path(), 0, agents).expect("seed");
+        let shown = view(&read_stored(d.path()).expect("read"), &path_value);
+        for id in ["wp134", "wp134b", "wp134c"] {
+            let note = shown["notes"][id].as_str().expect("note");
+            assert!(note.contains("fetched"), "{id} lost the fetch line: {note}");
+            assert!(
+                note.contains("The interpreter reads this script again after it starts"),
+                "{id} hid the script re-read behind the fetch line: {note}"
+            );
+        }
     }
 
     #[cfg(unix)]
@@ -3553,30 +3633,37 @@ mod tests {
         );
     }
 
+    /// The won sign is not folded. Windows best-fit (code page 949) maps it to `\`, so a value that holds one is refused.
+    #[test]
+    fn a_won_sign_path_is_refused() {
+        let arg = "\u{20A9}Users\u{20A9}ash";
+        assert_eq!(
+            checked_fields(&entry("wp134", "/opt/node", &[arg])).expect_err("was allowed"),
+            RELATIVE_REFUSED
+        );
+    }
+
     /// `file:///C:/x` must not be read as `C:/x` relative to this process's working folder.
-    /// The decoy is created in a temp folder, and nothing outside that folder is removed.
+    /// The decoded path stays absolute (`/C:/x`), so it cannot be joined onto the working folder.
+    /// This does not change the process working folder: another test reads it.
     #[cfg(unix)]
     #[test]
     fn a_file_url_with_a_drive_letter_does_not_use_the_working_folder() {
-        let scratch = dir();
-        static CWD: std::sync::Mutex<()> = std::sync::Mutex::new(());
-        let _lock = CWD.lock().expect("cwd lock");
-        struct Restore(PathBuf);
-        impl Drop for Restore {
-            fn drop(&mut self) {
-                let _ = std::env::set_current_dir(&self.0);
-            }
-        }
-        // Declared after the scratch, so the working folder is restored before the temp folder is removed.
-        let _restore = Restore(std::env::current_dir().expect("cwd"));
-        std::env::set_current_dir(scratch.path()).expect("chdir");
-        let decoy_dir = scratch.path().join("C:");
-        std::fs::create_dir_all(&decoy_dir).expect("decoy dir");
-        std::fs::write(decoy_dir.join("wp134-not-the-working-folder"), b"decoy").expect("decoy");
-        let result = canonical_of_value("file:///C:/wp134-not-the-working-folder");
-        match result {
+        let got = file_url_target("file:///C:/wp134-not-the-working-folder")
+            .expect("parse")
+            .expect("a file");
+        assert!(
+            got.starts_with("/C:/"),
+            "a drive-letter file URL lost its leading slash and would be read from the working folder: {got}"
+        );
+        assert!(
+            Path::new(&got).is_absolute(),
+            "the file URL was read relative to the working folder: {got}"
+        );
+        let cwd = std::env::current_dir().expect("cwd");
+        match canonical_of_value("file:///C:/wp134-not-the-working-folder") {
             Ok(Some(path)) => assert!(
-                !Path::new(&path).starts_with(scratch.path()),
+                !Path::new(&path).starts_with(&cwd),
                 "the file URL resolved inside the working folder: {path}"
             ),
             Ok(None) => panic!("the file URL was not treated as a file"),
@@ -3631,10 +3718,12 @@ mod tests {
         );
     }
 
-    /// Stated limit: a writer renaming over the approved name can still win a start that does not go through the
-    /// disclaim launcher. The steps are the repro (approve, run folder, `confirm_before_spawn`, then a direct spawn).
-    /// The launcher hash does not apply here, because this spawn passes no launcher. A rename between that hash and
-    /// exec runs the writer's bytes. The Allow card says a writer of the install folder can still race the start.
+    /// Stated limit: a writer renaming over the approved name can still run its own bytes. This test is a direct
+    /// spawn, so the launcher's hash does not run here. Going through the launcher does not close the same race:
+    /// it hashes the program by path and then execs that path, and it never sees a pinned argument file. A swap
+    /// after the last hash can still run, through the launcher or not. The steps are the repro (approve, run
+    /// folder, `confirm_before_spawn`, then a direct spawn). The Allow card says a writer of the install folder
+    /// can still race the start.
     #[cfg(unix)]
     #[test]
     fn review_241_r2_limit_a_writer_renaming_in_a_loop_can_run_its_own_bytes() {
@@ -4005,17 +4094,15 @@ mod tests {
         std::process::exit(crate::disclaim::main(&args));
     }
 
-    // Review #241 r3 repro (MEDIUM, the stated limit is smaller than the code). The PR body says "The launcher hash
-    // closes that gap on macOS for a start that uses it", and WP-134b says a swap after the last hash "still runs when
-    // the start does not go through the launcher". The launcher is given only the program's hash
-    // (`disclaim::command(.., Some(sha256))`). A pinned argument file (`node /abs/agent.mjs`, the usual shape of a
-    // local agent) is last hashed in the app by confirm_before_spawn, and the child reads it after it starts. This
-    // start goes through the launcher entry point (`disclaim::main` with `--expect-sha256`, in a child of this test
-    // binary) with the approved program unchanged: a rename over the pinned file after confirm_before_spawn runs the
-    // renamed bytes. The macOS branch of the launcher gets the same arguments and never sees a pin either.
+    // Stated limit (review #241 r3). The launcher is given only the program's hash. A pinned argument file
+    // (`node /abs/agent.mjs`) is last hashed in the app by confirm_before_spawn, and the child reads it later.
+    // This start goes through the launcher (`disclaim::main` with `--expect-sha256`, in a child of this test
+    // binary) with the approved program unchanged. A rename over the pinned file after that hash still runs.
+    // The launcher narrows the window for the program only. A swap after the last hash can still run, through
+    // the launcher or not. Pinned argument files are last checked in the app. The steps are the repro.
     #[cfg(unix)]
     #[test]
-    fn review_241_r3_a_pinned_file_swapped_after_the_last_hash_runs_through_the_launcher() {
+    fn review_241_r3_limit_a_pinned_file_swapped_after_the_last_hash_runs_through_the_launcher() {
         let d = dir();
         let bin = d.path().join("bin");
         make_tool(&bin, "wp134-runner", b"#!/bin/sh\n. \"$1\"\n");
@@ -4064,19 +4151,20 @@ mod tests {
             String::from_utf8_lossy(&out.stderr)
         );
         assert!(
-            !stdout.contains("swapped-bytes"),
-            "a pinned file renamed after the last hash ran through the launcher with no new Allow"
+            stdout.contains("swapped-bytes"),
+            "a pinned file renamed after the last hash did not run through the launcher"
         );
     }
 
-    // Review #241 r3 repro (MEDIUM, same claim, the program itself). The launcher's last hash opens the program by
-    // path, reads it and closes it, then execs that path again (posix_spawnp on macOS, exec after the fallback here).
-    // A writer renaming two files over the approved name in a loop still gets its bytes run through the launcher with
-    // the approved hash. Both files are ELF programs, so this is not the `#!` re-read: `true` is the approved bytes,
-    // and `id` printing `uid=` is the writer's.
+    // Stated limit (review #241 r3, the program itself). The launcher's last hash opens the program by path, reads
+    // it and closes it, then execs that path again (posix_spawnp on macOS, exec after the fallback here). A writer
+    // renaming two files over the approved name in a loop still gets its bytes run through the launcher with the
+    // approved hash. Both files are ELF programs, so this is not the `#!` re-read: `true` is the approved bytes,
+    // and `id` printing `uid=` is the writer's. The launcher narrows the window for the program only. A swap after
+    // that hash can still run. The steps are the repro.
     #[cfg(target_os = "linux")]
     #[test]
-    fn review_241_r3_a_rename_loop_still_beats_the_launcher_hash() {
+    fn review_241_r3_limit_a_rename_loop_still_beats_the_launcher_hash() {
         use sha2::{Digest, Sha256};
         use std::sync::atomic::{AtomicBool, Ordering};
         use std::sync::Arc;
@@ -4132,9 +4220,9 @@ mod tests {
         }
         stop.store(true, Ordering::Relaxed);
         let _ = writer.join();
-        assert_eq!(
+        assert_ne!(
             swapped_ran, 0,
-            "a looping writer ran its own bytes through the launcher's hash \
+            "a looping writer did not run its own bytes through the launcher's hash \
              ({approved_ran} approved runs and {refused} refused starts before it)"
         );
     }
