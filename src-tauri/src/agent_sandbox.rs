@@ -2326,9 +2326,10 @@ pub fn agent_stack_refused(sandbox_on: bool, trigger: &str, has_stack: bool) -> 
 
 /// `extra` plus every project folder and every session folder in `data_dir/monocode.db` that is on disk. A session or
 /// project folder that is gone is not locked: a long chat history of removed worktrees would otherwise make every
-/// profile too big to start. `extra` is kept even when it does not exist yet. No data folder, or no database file, is
-/// just `extra` (a launch with no store yet still wraps). A database that is there but cannot be read is an error:
-/// starting would lock only the caller's own folder.
+/// profile too big to start. `extra` is kept even when it does not exist yet. No database file is just `extra` (a
+/// launch with no store yet still wraps). No data folder agrees with the switch: when the sandbox is on, the project
+/// list cannot be read, so this is an error, the same as a database that is there but cannot be read. When the sandbox
+/// is off, it is just `extra`. Starting with the list unread would lock only the caller's own folder.
 fn with_project_folders(
     data_dir: Option<&Path>,
     extra: &[PathBuf],
@@ -2343,6 +2344,9 @@ fn with_project_folders(
         push(path.clone());
     }
     let Some(data) = data_dir else {
+        if enabled(None) {
+            return Err(project_list_unreadable());
+        }
         return Ok(out);
     };
     let db = data.join("monocode.db");
@@ -2925,10 +2929,14 @@ mod tests {
     #[test]
     fn a_sandboxed_launch_wraps_the_cli_in_sandbox_exec_with_the_profile() {
         let home = temp_home("wrap");
+        // An empty data folder has no database, so only the caller's folders are locked. None would refuse: the
+        // sandbox is on, and the project list cannot be read.
+        let data = home.join("data");
+        std::fs::create_dir_all(&data).unwrap();
         let (program, prefix) = sandboxed_launch(
             OsStr::new("claude"),
             &home,
-            None,
+            Some(&data),
             &[],
             Path::new(SANDBOX_EXEC),
         )

@@ -121,6 +121,41 @@ fn a_large_profile_file_stays_inside_the_write_denied_data_folder() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
+/// No data folder is not an empty project list. When the sandbox is on, that start is refused. When it is off, the
+/// caller's own folders are all there is to lock. A data folder with no database still locks only those.
+#[test]
+fn a_missing_data_folder_agrees_with_the_sandbox_switch() {
+    let extra = std::env::temp_dir().join("hivra-178b-extra");
+    let got = with_project_folders(None, std::slice::from_ref(&extra));
+    if enabled(None) {
+        assert!(
+            got.is_err(),
+            "the sandbox is on and the data folder is missing, but nothing was locked: {got:?}"
+        );
+        assert!(
+            with_project_folders(None, &[]).is_err(),
+            "the sandbox is on and the data folder is missing, but an empty list was allowed"
+        );
+    } else {
+        assert_eq!(got.unwrap(), vec![extra.clone()]);
+        assert_eq!(
+            with_project_folders(None, &[]).unwrap(),
+            Vec::<PathBuf>::new()
+        );
+    }
+
+    let root = scratch("no database");
+    let data = root.join("data");
+    std::fs::create_dir_all(&data).unwrap();
+    let listed = with_project_folders(Some(&data), std::slice::from_ref(&extra)).unwrap();
+    assert_eq!(
+        listed,
+        vec![extra],
+        "a data folder with no database must still lock the caller's folders"
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
 fn temp_profile_names() -> Vec<String> {
     let mut names = Vec::new();
     let Ok(entries) = std::fs::read_dir(std::env::temp_dir()) else {
