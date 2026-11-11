@@ -616,6 +616,9 @@ pub fn deliver(
                     .chars()
                     .take(200)
                     .collect();
+                // WP-200: the checked branch pushes and opens the pull request itself, so the guard runs first.
+                crate::commit_guard::gate_outgoing_to(&checkout, &remote)
+                    .map_err(|e| format!("Pushing {branch} refused: {e}"))?;
                 let filled = crate::delivery_gate::fill(
                     store,
                     crate::delivery_gate::FillInput {
@@ -663,7 +666,7 @@ pub fn deliver(
                 .into();
                 delivery.detail = filled.detail;
             } else {
-                crate::commit_guard::gate_outgoing(&checkout)
+                crate::commit_guard::gate_outgoing_to(&checkout, &remote)
                     .map_err(|e| format!("Pushing {branch} refused: {e}"))?;
                 git(
                     &checkout,
@@ -710,7 +713,7 @@ pub fn deliver(
                     .chars()
                     .take(200)
                     .collect();
-                crate::commit_guard::gate_outgoing(&checkout)?;
+                crate::commit_guard::gate_outgoing_to(&checkout, &remote)?;
                 let created = gh.run(
                     Some(&checkout),
                     &[

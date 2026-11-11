@@ -75,7 +75,7 @@ mod hub_plugin;
 mod inbox_media;
 pub mod instance;
 // WP-07: the name a person reads. Not the bundle name.
-mod commit_guard;
+pub mod commit_guard;
 mod display_name;
 mod jira;
 mod jsonc;

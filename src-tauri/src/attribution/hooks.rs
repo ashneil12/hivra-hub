@@ -23,6 +23,8 @@ const REAL_HOOK_LINE: &str = "real_hook=''";
 const HOOK_TEST_LINE: &str = "hook_test='-x'";
 
 const PREPARE: &str = "prepare-commit-msg";
+/// The pre-push hook, which runs the commit guard (WP-200) before the repository's own one.
+const PRE_PUSH: &str = "pre-push";
 
 /// These three must never be files in the crew folder.
 /// push-to-checkout: its presence makes receive-pack hand over the worktree
@@ -853,6 +855,32 @@ fn forwarder_script(real: &str) -> Result<String, String> {
     ))
 }
 
+/// The pre-push hook (WP-200): the commit guard checks what this push sends (secrets, agent files, merge commits
+/// included) and refuses it with its own line; then the repository's own pre-push hook runs, if it has one. `guard` is
+/// this app's binary, so a crew's shell push meets the same rules as the app's own push. Git passes the remote name as
+/// `$1`; the stdin of a push is left for the repository's hook.
+pub(crate) fn pre_push_script(guard: &str, real: Option<&str>) -> Result<String, String> {
+    let guard = shell_quote(guard).ok_or_else(|| refuse("pre-push: guard path has a NUL"))?;
+    let real = match real {
+        Some(path) => shell_quote(path).ok_or_else(|| refuse("pre-push: hook path has a NUL"))?,
+        None => "''".to_string(),
+    };
+    Ok(format!(
+        "#!/bin/sh\n\
+         # SPDX-License-Identifier: Apache-2.0\n\
+         # Hivra WP-200. Checks what this push sends before git sends it. Then runs the\n\
+         # repository's own pre-push hook, whose path was resolved when the crew started.\n\
+         guard={guard}\n\
+         real_hook={real}\n\
+         \"$guard\" pre-push-guard \"$1\" || exit 1\n\
+         if [ {test} \"$real_hook\" ]; then\n\
+         \texec \"$real_hook\" \"$@\"\n\
+         fi\n\
+         exit 0\n",
+        test = hook_test()
+    ))
+}
+
 /// Remove forwarders for hooks the repository no longer has, and temp files a
 /// failed publish left behind. Only regular files and links inside the folder
 /// are touched; removing a link removes the link, never what it points at.
@@ -954,6 +982,18 @@ pub fn install_for_repo(
     workdir: &Path,
     env: &[(String, String)],
 ) -> Result<PathBuf, String> {
+    let guard =
+        std::env::current_exe().map_err(|err| refuse_io("commit guard: find the app", &err))?;
+    install_for_repo_with(data_dir, workdir, env, &guard)
+}
+
+/// The install with the commit guard's binary given: the app passes its own; a test passes a stand-in.
+pub(crate) fn install_for_repo_with(
+    data_dir: &Path,
+    workdir: &Path,
+    env: &[(String, String)],
+    guard: &Path,
+) -> Result<PathBuf, String> {
     let root =
         crate::fs::canonical(data_dir).map_err(|err| refuse_io("data folder: resolve", &err))?;
     if !root.is_dir() {
@@ -978,10 +1018,25 @@ pub fn install_for_repo(
         PREPARE,
         &prepare_script(prepare.map(|hook| hook.path.as_str()))?,
     )?;
+    // WP-200: a crew's shell `git push` runs the commit guard first, whether or not the repository has a pre-push hook.
+    let guard = guard
+        .to_str()
+        .ok_or_else(|| refuse("commit guard: the app's path is not text"))?;
+    let real_pre_push = found
+        .iter()
+        .find(|hook| hook.name == PRE_PUSH)
+        .map(|hook| hook.path.as_str());
+    install_one(
+        &root,
+        &dir,
+        PRE_PUSH,
+        &pre_push_script(guard, real_pre_push)?,
+    )?;
     let mut keep = BTreeSet::new();
     keep.insert(PREPARE.to_string());
+    keep.insert(PRE_PUSH.to_string());
     for hook in &found {
-        if hook.name == PREPARE {
+        if hook.name == PREPARE || hook.name == PRE_PUSH {
             continue;
         }
         install_one(&root, &dir, &hook.name, &forwarder_script(&hook.path)?)?;

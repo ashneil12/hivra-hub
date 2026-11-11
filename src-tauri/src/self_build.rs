@@ -356,6 +356,8 @@ pub fn apply(change: &Change, dir: &Path) -> Result<Vec<ChangeCommit>, String> {
     let repo = Path::new(&change.repo);
     let before = git(repo, &["rev-parse", "HEAD"])?.trim().to_string();
     let range = format!("{}..{}", change.base, change.branch);
+    // WP-200: the commits this change brings in are checked the same way a push is, before they are picked.
+    crate::commit_guard::gate_range(repo, &[range.as_str()])?;
     if let Err(error) = git(repo, &["cherry-pick", "--allow-empty", &range]) {
         let _ = git(repo, &["cherry-pick", "--abort"]);
         return Err(format!(

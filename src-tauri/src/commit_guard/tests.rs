@@ -221,7 +221,7 @@ fn a_secret_on_a_removed_line_is_not_reported() {
 
 #[test]
 fn a_generic_assignment_on_a_plus_line_is_caught() {
-    let patch = patch_lines("config.toml", 3, &["password = \"hunter2hunter2\""]);
+    let patch = patch_lines("config.toml", 3, &["password = \"hunter2hunter2hunter2\""]);
     let err = scan_patch(&patch).unwrap_err();
     assert!(err.starts_with("Possible secret in config.toml:3"), "{err}");
     assert!(!err.contains("hunter2"), "the value leaked: {err}");
@@ -358,8 +358,41 @@ fn production_lines(text: &str) -> Vec<&str> {
     out
 }
 
-/// Every production git push or gh pr create must sit in a file that calls the guard. Test code (below each file's
-/// `#[cfg(test)]` line, and the tests.rs files) and git stash, which is local, are not delivery.
+/// The function that holds line `at`: from its header to its closing brace (a line at the header's indentation that
+/// starts with `}`). A site counts as guarded when its own function calls the guard, not merely its file.
+fn enclosing_fn(lines: &[&str], at: usize) -> (usize, usize) {
+    const HEADERS: [&str; 7] = [
+        "fn ",
+        "pub fn ",
+        "pub(crate) fn ",
+        "pub(super) fn ",
+        "async fn ",
+        "pub async fn ",
+        "pub(crate) async fn ",
+    ];
+    let mut head = 0;
+    for i in (0..=at).rev() {
+        let trimmed = lines[i].trim_start();
+        if HEADERS.iter().any(|h| trimmed.starts_with(h)) {
+            head = i;
+            break;
+        }
+    }
+    let indent = lines[head].len() - lines[head].trim_start().len();
+    let mut end = lines.len() - 1;
+    for (i, line) in lines.iter().enumerate().skip(head + 1) {
+        let here = line.len() - line.trim_start().len();
+        if here == indent && line.trim_start().starts_with('}') {
+            end = i;
+            break;
+        }
+    }
+    (head, end)
+}
+
+/// Every production git push or gh pr create must sit in a function that calls the guard. Test code (below each file's
+/// `#[cfg(test)]` line, and the tests.rs files) and git stash, which is local, are not delivery. A match arm that
+/// names "push" as one of several git commands (a classifier, not a call) is not a site.
 #[test]
 fn every_push_and_pr_site_goes_through_the_guard() {
     let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
@@ -378,9 +411,9 @@ fn every_push_and_pr_site_goes_through_the_guard() {
         let text = fs::read_to_string(&path).unwrap();
         let production = production_lines(&text);
         let rel = path.strip_prefix(&src).unwrap().display().to_string();
-        let mut is_site = false;
         for (number, line) in production.iter().enumerate() {
-            if line.contains("Some(") || line.contains("stash") {
+            if line.contains("stash") || line.contains("| \"push\"") || line.contains("\"push\" |")
+            {
                 continue;
             }
             let before = if number == 0 {
@@ -392,12 +425,15 @@ fn every_push_and_pr_site_goes_through_the_guard() {
             let create = line.contains("\"create\"")
                 && (line.contains("\"pr\"") || before.contains("\"pr\""));
             if push || create {
-                is_site = true;
                 sites.push(format!("{rel}:{}", number + 1));
+                let (head, end) = enclosing_fn(&production, number);
+                let guarded = production[head..=end]
+                    .iter()
+                    .any(|l| l.contains("commit_guard::"));
+                if !guarded {
+                    unguarded.push(format!("{rel}:{}", number + 1));
+                }
             }
-        }
-        if is_site && !production.iter().any(|l| l.contains("commit_guard::gate_")) {
-            unguarded.push(rel);
         }
     }
     assert!(
@@ -406,7 +442,7 @@ fn every_push_and_pr_site_goes_through_the_guard() {
     );
     assert!(
         unguarded.is_empty(),
-        "git push or gh pr create without the commit guard: {unguarded:?} (sites: {sites:?})"
+        "git push or gh pr create in a function without the commit guard: {unguarded:?} (sites: {sites:?})"
     );
 }
 
@@ -420,4 +456,96 @@ fn land_and_self_build_check_what_they_ship() {
             "{file} stages or lands without the commit guard"
         );
     }
+}
+
+#[test]
+fn the_pre_push_check_refuses_an_agent_file_and_a_secret_and_passes_a_clean_push() {
+    let remote = Repo::bare("hook-remote");
+    let local = Repo::new("hook-check");
+    local.git(&["remote", "add", "origin", remote.path().to_str().unwrap()]);
+    local.write("README.md", "hello\n");
+    local.commit("base");
+    local.git(&["push", "-q", "-u", "origin", "main"]);
+    local.write("src/app.txt", "shipped\n");
+    local.commit("clean");
+    pre_push_check(local.path(), "origin").expect("a clean push passes");
+    local.write(".claude/settings.local.json", "{}\n");
+    local.git(&["add", "-f", ".claude/settings.local.json"]);
+    local.git(&["commit", "-q", "-m", "agent file"]);
+    let err = pre_push_check(local.path(), "origin").unwrap_err();
+    assert!(
+        err.starts_with("Refused to push .claude/settings.local.json"),
+        "{err}"
+    );
+}
+
+/// The generated pre-push hook runs the guard first; the guard's refusal stops the push, and a pass runs the
+/// repository's own pre-push hook with the same arguments. The guard here is a stand-in script (the real one is the
+/// app's binary), so this tests the forwarding, and the check itself is tested above.
+#[test]
+fn the_pre_push_hook_runs_the_guard_then_the_repos_own_hook() {
+    let dir = Repo::dir("hook-script");
+    let guard = dir.path().join("guard.sh");
+    fs::write(
+        &guard,
+        "#!/bin/sh\nif [ -f \"$(dirname \"$0\")/fail\" ]; then exit 1; fi\nexit 0\n",
+    )
+    .unwrap();
+    let real = dir.path().join("real-pre-push");
+    fs::write(
+        &real,
+        format!(
+            "#!/bin/sh\necho \"$1\" > \"{}\"\n",
+            dir.path().join("real-ran").display()
+        ),
+    )
+    .unwrap();
+    let hook = dir.path().join("pre-push");
+    for script in [&guard, &real] {
+        Command::new("chmod")
+            .arg("+x")
+            .arg(script)
+            .status()
+            .unwrap();
+    }
+    let text = crate::attribution::hooks::pre_push_script(guard.to_str().unwrap(), real.to_str())
+        .expect("the hook script builds");
+    fs::write(&hook, text).unwrap();
+    Command::new("chmod").arg("+x").arg(&hook).status().unwrap();
+
+    fs::write(dir.path().join("fail"), "").unwrap();
+    let refused = Command::new(&hook).arg("origin").status().unwrap();
+    assert!(
+        !refused.success(),
+        "the guard's refusal did not stop the push"
+    );
+    assert!(
+        !dir.path().join("real-ran").exists(),
+        "the repository's hook ran after a refusal"
+    );
+
+    fs::remove_file(dir.path().join("fail")).unwrap();
+    let passed = Command::new(&hook).arg("origin").status().unwrap();
+    assert!(
+        passed.success(),
+        "a passing guard did not let the push go on"
+    );
+    assert_eq!(
+        fs::read_to_string(dir.path().join("real-ran"))
+            .unwrap()
+            .trim(),
+        "origin",
+        "the repository's own hook did not run with the remote"
+    );
+}
+
+#[test]
+fn a_transcript_in_the_hivra_folder_is_left_out_of_staging() {
+    let repo = Repo::new("hivra-folder");
+    repo.write("README.md", "hello\n");
+    repo.commit("base");
+    repo.write(".hivra/session.jsonl", "{\"turn\":1}\n");
+    repo.write("src/app.txt", "shipped\n");
+    stage_all(repo.path()).expect("staging runs");
+    assert_eq!(repo.staged(), vec!["src/app.txt".to_string()]);
 }

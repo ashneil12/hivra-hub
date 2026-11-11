@@ -2320,7 +2320,11 @@ fn a_repo_with_no_hooks_gets_only_prepare_commit_msg() {
         .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
         .collect();
     names.sort();
-    assert_eq!(names, vec!["prepare-commit-msg".to_string()]);
+    // WP-200: the pre-push hook (the commit guard) is installed too, even with no repository hook of its own.
+    assert_eq!(
+        names,
+        vec!["pre-push".to_string(), "prepare-commit-msg".to_string()]
+    );
     let script = fs::read_to_string(dir.join("prepare-commit-msg")).unwrap();
     assert!(script.contains("real_hook=''"));
     assert!(script.contains("Hivra-Chat:"));
@@ -2777,7 +2781,22 @@ fn pre_push_is_forwarded_with_stdin_args_and_exit_code() {
             sh_quote(&stdin_path)
         ),
     );
-    let armed = arm(&scratch.path().join("data"), &made.repo, &base);
+    // The guard here is a stand-in that passes, so this proves the forwarding; the guard itself is tested in commit_guard.
+    let stand_in = scratch.path().join("guard-stand-in");
+    write_hook(&stand_in, "exit 0\n");
+    let data = scratch.path().join("data");
+    fs::create_dir_all(&data).unwrap();
+    let hooks =
+        super::hooks::install_for_repo_with(&data, &made.repo, &env_pairs(&base), &stand_in)
+            .unwrap();
+    let hooks_path = hooks.to_str().unwrap().to_string();
+    let (count, key, value_name) = super::logic::git_config_env(None, &hooks_path).unwrap();
+    let armed = Armed {
+        count,
+        key,
+        value_name,
+        hooks_path,
+    };
     let crew = crew_pairs(&base, &armed);
     let config_before = fs::read(made.repo.join(".git").join("config")).unwrap();
     assert!(git(&made.repo, &crew, &["push", "origin", "HEAD"]).is_err());

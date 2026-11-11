@@ -129,7 +129,24 @@ fn worker_patch(checkout: &Path, project: &Path) -> Result<(Vec<u8>, Vec<String>
         if !ok {
             return Err(format!("the copy's change couldn't be written out: {why}"));
         }
-        crate::commit_guard::scan_patch(&String::from_utf8_lossy(&patch))?;
+        // WP-200: the same change as text (binary-marked files included) is what gets checked for secrets.
+        let (ok, text, why) = git(
+            checkout,
+            &[
+                "diff",
+                "--cached",
+                "--text",
+                "--no-ext-diff",
+                "--no-textconv",
+                &base,
+            ],
+            Some(&index),
+            None,
+        )?;
+        if !ok {
+            return Err(format!("the copy's change couldn't be checked: {why}"));
+        }
+        crate::commit_guard::scan_landing_patch(&String::from_utf8_lossy(&text))?;
         let files = String::from_utf8_lossy(&names)
             .lines()
             .map(str::to_string)
@@ -170,6 +187,8 @@ pub(crate) fn land(checkout: &Path, project: &Path) -> Result<Landing, String> {
             why: "the worker changed no files".into(),
         });
     }
+    // WP-200: an agent's approvals file the worker committed or staged itself does not land.
+    crate::commit_guard::refuse_land_names(project, &files)?;
     let (fits, _, why) = git(project, &["apply", "--check", "-"], None, Some(&patch))?;
     if !fits {
         let (already, _, _) = git(

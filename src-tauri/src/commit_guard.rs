@@ -1,28 +1,39 @@
 //! The commit guard: keeps files an agent writes for itself, and secrets, out of what Hivra stages, commits, pushes,
-//! opens as a pull request or lands. One list of agent files (`src/shared/security/agentConfigPaths.json`) and one
-//! secret scrubber (`src/features/portable/model/secretPatterns.json`, through `portable::scrubber`) serve every path.
+//! opens as a pull request or lands. The agent folders come from the shared list
+//! (`src/shared/security/agentConfigPaths.json`, read through the floor's loader), and the secret patterns from
+//! `src/features/portable/model/secretPatterns.json` (through `portable::scrubber`).
 //!
 //! - Staging leaves out an untracked agent file, so `git add -A` never takes it. A file the repo already tracks is
 //!   staged as usual.
 //! - Selecting or staging such a file by hand refuses the commit with one plain line.
-//! - Before a push, a pull request or a land, the lines being added are scanned for secrets, and any agent file in
-//!   the commits being sent stops the step. Only added lines are scanned: a removed secret is not shipped.
+//! - Before a push, a pull request, a land or a checked delivery, the commits being sent are checked: merge commits
+//!   included, binary-marked files read as text, an agent file refused, and each added line scanned for a secret
+//!   by its token shape or a long assigned value. A check that is too large or too slow refuses the step.
 //! - Nothing here edits an ignore file. A refusal names the choices in words and leaves the person to pick.
 
 use std::collections::BTreeMap;
+use std::io::Read;
 use std::path::Path;
+use std::process::Stdio;
+use std::time::{Duration, Instant};
 
 use crate::delivery::protected::{folded_segments, shared_list};
 
-/// The shared list (`src/shared/security/agentConfigPaths.json`) names the folders an agent keeps its files in (`.claude`,
-/// `.monocode`, ...). A file under one of them is an agent file when it is the approvals file or a saved transcript.
-/// The approvals file name must be in the list's `files` too, and the transcript rule is its extension.
 const APPROVALS_FILE: &str = "settings.local.json";
 const TRANSCRIPT_EXT: &str = ".jsonl";
 const APPROVALS: &str = "an agent's local approvals";
 const TRANSCRIPT: &str = "an agent's saved transcript";
+/// Agent folders the shared list's own `dirs` do not name: the repo's `.hivra` folder (the floor's `DIRECTORIES`).
+const AGENT_FOLDERS: &[&str] = &[".hivra"];
+/// The most patch text one check reads. Above it the step is refused rather than checked in part.
+const MAX_CHECKED_BYTES: usize = 32 * 1024 * 1024;
+/// How long one check's git may run before the step is refused.
+const CHECK_TIMEOUT: Duration = Duration::from_secs(120);
 
-/// What kind of agent file a repo path is, or `None` for any other file. Reads the shared list with the floor's fold.
+const TOO_LARGE: &str = "This change is too large for the secret check, so nothing was sent. Split it into smaller pushes, or ask Ash to check it.";
+const TIMED_OUT: &str = "The secret check did not finish in time, so nothing was sent. Try again, or ask Ash to check it.";
+
+/// What kind of agent file a repo path is, or `None`. The folder must be one the shared list names (or `.hivra`).
 /// A list that does not load is an error: the guard refuses rather than letting an agent file through.
 fn agent_file_kind(path: &str) -> Result<Option<&'static str>, String> {
     let list = shared_list()?;
@@ -32,10 +43,10 @@ fn agent_file_kind(path: &str) -> Result<Option<&'static str>, String> {
     let Some((name, folders)) = segments.split_last() else {
         return Ok(None);
     };
-    if !folders
-        .iter()
-        .any(|folder| list.folder_names().contains(folder))
-    {
+    let agent_folder = folders.iter().any(|folder| {
+        list.folder_names().contains(folder) || AGENT_FOLDERS.contains(&folder.as_str())
+    });
+    if !agent_folder {
         return Ok(None);
     }
     if name == APPROVALS_FILE && list.file_names().iter().any(|file| file == APPROVALS_FILE) {
@@ -57,12 +68,17 @@ fn refused_to_push(path: &str, kind: &str) -> String {
     format!("Refused to push {path}: it is {kind}, not for GitHub. {RECOVERY}")
 }
 
+fn refused_to_land(path: &str, kind: &str) -> String {
+    format!("Refused to land {path}: it is {kind}, and this project does not track it. {RECOVERY}")
+}
+
 fn secret_refusal(file: &str, line: usize) -> String {
     format!(
         "Possible secret in {file}:{line}. The value is not shown. To go on, either remove it from the commit, add the file to this project's ignore file (after you say yes), or say it is a test value. Hivra does not edit any ignore file itself."
     )
 }
 
+/// Small git answers (a name, a config value). Output that is not UTF-8 is read lossily, never an error.
 fn git_out(root: &Path, args: &[&str]) -> Result<String, String> {
     let output = crate::fs::git_cmd()
         .arg("--no-pager")
@@ -76,7 +92,56 @@ fn git_out(root: &Path, args: &[&str]) -> Result<String, String> {
     if !output.status.success() {
         return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
     }
-    String::from_utf8(output.stdout).map_err(|e| e.to_string())
+    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+/// A check's git output, bounded: the run is killed after `CHECK_TIMEOUT`, and output past `MAX_CHECKED_BYTES` refuses.
+fn git_checked_output(root: &Path, args: &[&str]) -> Result<String, String> {
+    let mut child = crate::fs::git_cmd()
+        .arg("--no-pager")
+        .arg("-C")
+        .arg(root)
+        .args(args)
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GIT_OPTIONAL_LOCKS", "0")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| e.to_string())?;
+    let mut stdout = child.stdout.take().ok_or("git output was not piped")?;
+    let mut stderr = child.stderr.take().ok_or("git errors were not piped")?;
+    let out_reader = std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        let _ = stdout.read_to_end(&mut buf);
+        buf
+    });
+    let err_reader = std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        let _ = stderr.read_to_end(&mut buf);
+        buf
+    });
+    let deadline = Instant::now() + CHECK_TIMEOUT;
+    let status = loop {
+        match child.try_wait().map_err(|e| e.to_string())? {
+            Some(status) => break status,
+            None if Instant::now() >= deadline => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(TIMED_OUT.into());
+            }
+            None => std::thread::sleep(Duration::from_millis(20)),
+        }
+    };
+    let out = out_reader.join().unwrap_or_default();
+    let err = err_reader.join().unwrap_or_default();
+    if !status.success() {
+        return Err(String::from_utf8_lossy(&err).trim().to_string());
+    }
+    if out.len() > MAX_CHECKED_BYTES {
+        return Err(TOO_LARGE.into());
+    }
+    Ok(String::from_utf8_lossy(&out).into_owned())
 }
 
 /// Whether HEAD already has the path. A repo with no commits has nothing tracked.
@@ -150,6 +215,19 @@ pub fn refuse_staged_agent_files(root: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// Refuses a land whose changed files name an agent file the project does not track (a worker's own approvals file,
+/// committed or staged by the worker itself, never reaches the project).
+pub fn refuse_land_names(project: &Path, names: &[String]) -> Result<(), String> {
+    for path in names {
+        if let Some(kind) = agent_file_kind(path)? {
+            if !tracked_at_head(project, path) {
+                return Err(refused_to_land(path, kind));
+            }
+        }
+    }
+    Ok(())
+}
+
 /// One added line of a patch: the file, its line number in the new file, and the text without its `+`.
 struct Added {
     file: String,
@@ -205,13 +283,15 @@ fn added_lines(patch: &str) -> Vec<Added> {
     out
 }
 
-/// Scans the added lines of a unified diff for secrets. A single line is scanned as one line; a private key block
-/// spans lines, so the added lines of each file are also scanned together for one.
+/// Scans the added lines of a unified diff for secrets. The gate uses the scrubber's token-shape patterns and its
+/// assigned-value pattern (a key name, then 16 or more letters and digits); it does not use the looser assignment
+/// fallback that the export scan uses, which refused ordinary code (`let token = home.join("token");`). A private key
+/// block spans lines, so the added lines of each file are also scanned together for one.
 pub fn scan_patch(patch: &str) -> Result<(), String> {
     let scrubber = crate::portable::scrubber();
     let added = added_lines(patch);
     for line in &added {
-        if scrubber.has_secret(&line.text) {
+        if !scrubber.findings(&line.text).is_empty() {
             return Err(secret_refusal(&line.file, line.line));
         }
     }
@@ -240,20 +320,21 @@ pub fn scan_patch(patch: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Gates the commits named by `revs` (for example `HEAD --not --remotes`): refuses an agent file added in them, and
-/// scans their added lines for secrets.
+/// Gates the commits named by `revs` (for example `HEAD --not --remotes=origin`). Merge commits are included: a merge
+/// reads as the change it makes against its first parent, remerged so conflict resolutions show. Binary-marked files
+/// are read as text (`--text`), so an attribute cannot hide them. The agent-file names and the added lines are checked.
 pub fn gate_range(root: &Path, revs: &[&str]) -> Result<(), String> {
     let mut name_args = vec![
         "log",
-        "--no-merges",
         "--format=",
         "--name-only",
         "--diff-filter=A",
         "--no-renames",
+        "--diff-merges=remerge",
         "-z",
     ];
     name_args.extend_from_slice(revs);
-    let names = git_out(root, &name_args)?;
+    let names = git_checked_output(root, &name_args)?;
     for path in names.split('\0').filter(|path| !path.is_empty()) {
         if let Some(kind) = agent_file_kind(path)? {
             return Err(refused_to_push(path, kind));
@@ -261,23 +342,87 @@ pub fn gate_range(root: &Path, revs: &[&str]) -> Result<(), String> {
     }
     let mut patch_args = vec![
         "log",
-        "--no-merges",
         "--format=",
         "-p",
         "-U0",
+        "--text",
         "--no-ext-diff",
         "--no-textconv",
         "--no-renames",
+        "--diff-merges=remerge",
     ];
     patch_args.extend_from_slice(revs);
-    let patch = git_out(root, &patch_args)?;
+    let patch = git_checked_output(root, &patch_args)?;
     scan_patch(&patch)
 }
 
-/// The gate before a push or a pull request: every commit the remote does not have yet.
-pub fn gate_outgoing(root: &Path) -> Result<(), String> {
-    gate_range(root, &["HEAD", "--not", "--remotes"])
+/// The remote a push from this checkout goes to: the current branch's configured remote, or `origin`.
+pub fn push_remote(root: &Path) -> String {
+    let branch = git_out(root, &["rev-parse", "--abbrev-ref", "HEAD"])
+        .map(|text| text.trim().to_string())
+        .unwrap_or_default();
+    if !branch.is_empty() && branch != "HEAD" {
+        if let Ok(remote) = git_out(
+            root,
+            &["config", "--get", &format!("branch.{branch}.remote")],
+        ) {
+            let remote = remote.trim();
+            if !remote.is_empty() {
+                return remote.to_string();
+            }
+        }
+    }
+    "origin".to_string()
 }
 
+/// The gate before a push to `remote`: every commit that remote does not have yet, whichever other remote holds it.
+pub fn gate_outgoing_to(root: &Path, remote: &str) -> Result<(), String> {
+    let remotes = format!("--remotes={remote}");
+    gate_range(root, &["HEAD", "--not", &remotes])
+}
+
+/// The gate before a push, a pull request or a checked delivery from this checkout.
+pub fn gate_outgoing(root: &Path) -> Result<(), String> {
+    gate_outgoing_to(root, &push_remote(root))
+}
+
+/// The gate for a patch that is about to land into a project (text of the same change, not the binary form).
+pub fn scan_landing_patch(patch: &str) -> Result<(), String> {
+    if patch.len() > MAX_CHECKED_BYTES {
+        return Err(TOO_LARGE.into());
+    }
+    scan_patch(patch)
+}
+
+/// What the pre-push hook checks: the same gate as the app's own push, to the remote git is pushing to.
+pub fn pre_push_check(root: &Path, remote: &str) -> Result<(), String> {
+    gate_outgoing_to(root, remote)
+}
+
+/// The `pre-push-guard` subcommand, run by a crew's pre-push hook in the repository (`$1` is the remote). Prints the
+/// refusal on stderr and exits 1; exits 0 when the push may go on. Reads nothing from stdin.
+pub fn pre_push_main(args: &[String]) -> i32 {
+    let cwd = match std::env::current_dir() {
+        Ok(cwd) => cwd,
+        Err(error) => {
+            eprintln!("Refused to push: the check could not find the folder ({error}).");
+            return 1;
+        }
+    };
+    let remote = match args.first().filter(|remote| !remote.is_empty()) {
+        Some(remote) => remote.clone(),
+        None => push_remote(&cwd),
+    };
+    match pre_push_check(&cwd, &remote) {
+        Ok(()) => 0,
+        Err(why) => {
+            eprintln!("{why}");
+            1
+        }
+    }
+}
+
+#[cfg(test)]
+mod review_tests;
 #[cfg(test)]
 mod tests;

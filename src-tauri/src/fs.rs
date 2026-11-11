@@ -2910,20 +2910,27 @@ fn git_head_message_for(root: &Path) -> Result<String, String> {
     git_stdout(root, &["log", "-1", "--pretty=%B"]).ok_or_else(|| "No commits yet".to_string())
 }
 
+/// Pushes the current branch with an explicit refspec, to the remote the guard checked (WP-200). A bare `git push`
+/// would follow the person's push configuration, which the guard does not read.
 fn git_push_for(root: &Path) -> Result<(), String> {
-    crate::commit_guard::gate_outgoing(root)?;
-    if git_stdout(root, &["rev-parse", "--abbrev-ref", "@{upstream}"]).is_some() {
-        return git_checked(root, &["push"]);
+    let upstream = git_stdout(root, &["rev-parse", "--abbrev-ref", "@{upstream}"]).is_some();
+    let remote = if upstream {
+        crate::commit_guard::push_remote(root)
+    } else {
+        git_remote_name(root).ok_or_else(|| "No git remote to push to".to_string())?
+    };
+    crate::commit_guard::gate_outgoing_to(root, &remote)?;
+    let branch = git_branch(root).ok_or_else(|| "Not on a branch".to_string())?;
+    let refspec = format!("HEAD:refs/heads/{branch}");
+    if upstream {
+        return git_checked(root, &["push", &remote, &refspec]);
     }
-    let remote = git_remote_name(root).ok_or_else(|| "No git remote to push to".to_string())?;
-    git_checked(root, &["push", "-u", &remote, "HEAD"])
+    git_checked(root, &["push", "-u", &remote, &refspec])
 }
 
 fn git_sync_changes_for(root: &Path) -> Result<(), String> {
     if git_stdout(root, &["rev-parse", "--abbrev-ref", "@{upstream}"]).is_some() {
         git_checked(root, &["pull", "--no-edit", "--ff"]).map_err(with_signing_hint)?;
-        crate::commit_guard::gate_outgoing(root)?;
-        return git_checked(root, &["push"]);
     }
     git_push_for(root)
 }
