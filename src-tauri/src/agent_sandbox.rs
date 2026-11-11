@@ -649,6 +649,8 @@ fn profile_scoped(
 const PROFILE_BYTE_CAP: usize = 4_000_000;
 /// Below this, `-p` is safe. Above it, the profile is a file (`-f`), so the argument list stays under ARG_MAX.
 const PROFILE_INLINE_LIMIT: usize = 100_000;
+/// Every profile file, including ones named by pid and time before the content name. The hour sweep matches this.
+const PROFILE_FILE_PREFIX: &str = "hivra-sandbox-profile-";
 
 /// When this profile's home is not the login home, also deny the real `~/.ssh` and the daily data folder. The files are
 /// not opened: only the password database's home directory string is used.
@@ -2023,6 +2025,14 @@ fn self_check_in(sandbox_exec: &Path, base: &Path) -> Result<(), String> {
                 d = data.display()
             ),
         ),
+        (
+            "a hard link of the switch file out of the data folder",
+            format!(
+                "ln '{d}/settings/{SETTING_FILE}' '{b}/switch-link'",
+                d = data.display(),
+                b = base.display()
+            ),
+        ),
     ];
     for (what, script) in must_refuse {
         if run(script) {
@@ -2030,6 +2040,12 @@ fn self_check_in(sandbox_exec: &Path, base: &Path) -> Result<(), String> {
                 "agent sandbox self-check failed: the profile allowed {what}, so no agent starts sandboxed"
             ));
         }
+    }
+    if std::fs::symlink_metadata(base.join("switch-link")).is_ok() {
+        return Err(
+            "agent sandbox self-check failed: the profile allowed a hard link of the switch file out of the data folder, so no agent starts sandboxed"
+                .to_string(),
+        );
     }
     if !run(format!("echo ok > '{}/ok.txt'", base.display())) {
         return Err(
@@ -2100,8 +2116,10 @@ pub fn sandboxed_launch(
 }
 
 /// `-p` while the profile is small enough for one argument. Above that, `-f` and a private file inside the data
-/// folder, which the profile write-denies. `$TMPDIR` is not denied, so the file is never written there. No data
-/// folder, or a file that cannot be kept inside it, refuses the start. The file is swept an hour after it was written.
+/// folder, which the profile write-denies. The file's name is the SHA-256 of the profile, so the same profile is
+/// written once and reused when that file reads back as the same bytes. `$TMPDIR` is not denied, so the file is never
+/// written there. No data folder, or a file that cannot be kept inside it, refuses the start. A file older than an
+/// hour is swept. Reuse refreshes that age, so a profile still in use is kept.
 pub(crate) fn sandbox_exec_profile_args(
     profile: &str,
     data_dir: Option<&Path>,
@@ -2156,14 +2174,143 @@ fn write_sandbox_profile(data_dir: &Path, profile: &str) -> Result<PathBuf, Stri
     let dir = profile_dir(data_dir)?;
     let data = dir.parent().ok_or_else(profile_not_written)?.to_path_buf();
     sweep_sandbox_profiles(&dir, &data);
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
-    let name = format!("hivra-sandbox-profile-{}-{nanos}", std::process::id());
-    let path = write_profile_file(&dir, &name, profile)?;
-    let written = crate::fs::canonical(&path).map_err(|_| profile_not_written())?;
-    if written.parent() != Some(dir.as_path()) || !written.starts_with(&data) {
+    let name = profile_content_name(profile);
+    if let Some(existing) = reusable_profile(&dir, &data, &name, profile)? {
+        return Ok(existing);
+    }
+    // The content name appears only once the bytes are complete. Two stores of the same profile then share it,
+    // and a reader never sees a half-written file.
+    #[cfg(unix)]
+    {
+        publish_profile_unix(&dir, &data, &name, profile)
+    }
+    #[cfg(not(unix))]
+    {
+        publish_profile_plain(&dir, &data, &name, profile)
+    }
+}
+
+/// Write the profile under a temporary name, then link that inode to the content name. The link fails if the
+/// content name is already there, and that file is reused only when it is the same bytes.
+#[cfg(unix)]
+fn publish_profile_unix(
+    dir: &Path,
+    data: &Path,
+    name: &str,
+    profile: &str,
+) -> Result<PathBuf, String> {
+    let partial = partial_profile_name(name);
+    write_profile_file(dir, &partial, profile)?;
+    struct DropPartial<'a> {
+        dir: &'a Path,
+        name: &'a str,
+    }
+    impl Drop for DropPartial<'_> {
+        fn drop(&mut self) {
+            remove_profile_file(self.dir, self.name);
+        }
+    }
+    let _drop_partial = DropPartial {
+        dir,
+        name: &partial,
+    };
+    if link_profile_name(dir, &partial, name)? {
+        return stored_profile(dir, data, &dir.join(name));
+    }
+    // The content name was created by another store. Use it only when it reads back as this profile.
+    reuse_after_publish(dir, data, name, profile)
+}
+
+#[cfg(not(unix))]
+fn publish_profile_plain(
+    dir: &Path,
+    data: &Path,
+    name: &str,
+    profile: &str,
+) -> Result<PathBuf, String> {
+    match write_profile_file(dir, name, profile) {
+        Ok(path) => stored_profile(dir, data, &path),
+        Err(_) => reuse_after_publish(dir, data, name, profile),
+    }
+}
+
+fn reuse_after_publish(
+    dir: &Path,
+    data: &Path,
+    name: &str,
+    profile: &str,
+) -> Result<PathBuf, String> {
+    match reusable_profile(dir, data, name, profile) {
+        Ok(Some(existing)) => Ok(existing),
+        Ok(None) => Err(profile_not_written()),
+        Err(error) => Err(error),
+    }
+}
+
+/// A name that is not the content hash. It is removed once the content name exists. The counter keeps two stores
+/// in this process from picking the same temporary name; the pid does the same across processes.
+#[cfg(unix)]
+fn partial_profile_name(final_name: &str) -> String {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static PARTIAL_SEQ: AtomicU64 = AtomicU64::new(0);
+    let n = PARTIAL_SEQ.fetch_add(1, Ordering::Relaxed);
+    format!("{final_name}.{}.{n}", std::process::id())
+}
+
+/// Link `from` to `to` inside `dir`. `Ok(true)` is a new link. `Ok(false)` means `to` was already there.
+#[cfg(unix)]
+fn link_profile_name(dir: &Path, from: &str, to: &str) -> Result<bool, String> {
+    use std::os::fd::AsRawFd;
+    use std::os::unix::fs::OpenOptionsExt;
+    if !profile_file_name_ok(from) || !profile_file_name_ok(to) {
+        return Err(profile_not_written());
+    }
+    let dir_file = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW)
+        .open(dir)
+        .map_err(|_| profile_not_written())?;
+    let from_c = std::ffi::CString::new(from).map_err(|_| profile_not_written())?;
+    let to_c = std::ffi::CString::new(to).map_err(|_| profile_not_written())?;
+    // Safety: `dir_file` is an open directory fd and both names are single path components. The flag does not
+    // follow a link, so a link parked on `to` is not replaced.
+    let rc = unsafe {
+        libc::linkat(
+            dir_file.as_raw_fd(),
+            from_c.as_ptr(),
+            dir_file.as_raw_fd(),
+            to_c.as_ptr(),
+            0,
+        )
+    };
+    if rc == 0 {
+        return Ok(true);
+    }
+    let error = std::io::Error::last_os_error();
+    if error.kind() == std::io::ErrorKind::AlreadyExists {
+        return Ok(false);
+    }
+    Err(profile_not_written())
+}
+
+/// `hivra-sandbox-profile-` plus the SHA-256 of the profile bytes. The same profile is the same name.
+fn profile_content_name(profile: &str) -> String {
+    use sha2::Digest;
+    let digest = sha2::Sha256::digest(profile.as_bytes());
+    let mut name = String::with_capacity(PROFILE_FILE_PREFIX.len() + digest.len() * 2);
+    name.push_str(PROFILE_FILE_PREFIX);
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    for byte in digest {
+        name.push(char::from(HEX[(byte >> 4) as usize]));
+        name.push(char::from(HEX[(byte & 0x0f) as usize]));
+    }
+    name
+}
+
+/// The canonical file, only when it is the named child of `dir` and stays inside the data folder.
+fn stored_profile(dir: &Path, data: &Path, path: &Path) -> Result<PathBuf, String> {
+    let written = crate::fs::canonical(path).map_err(|_| profile_not_written())?;
+    if written.parent() != Some(dir) || !written.starts_with(data) {
         return Err(profile_not_written());
     }
     Ok(written)
@@ -2243,6 +2390,130 @@ fn write_profile_file_plain(dir: &Path, name: &str, profile: &str) -> Result<Pat
     Ok(path)
 }
 
+/// The profile file already there, when it is the same bytes. Absent is `Ok(None)`. Anything else (a link, the wrong
+/// mode, a different length or different bytes, a path that leaves the data folder) refuses the start. The open does
+/// not follow a link. A matching file's age is refreshed so the hour sweep does not remove a profile still in use.
+fn reusable_profile(
+    dir: &Path,
+    data: &Path,
+    name: &str,
+    profile: &str,
+) -> Result<Option<PathBuf>, String> {
+    #[cfg(unix)]
+    {
+        reusable_profile_unix(dir, data, name, profile)
+    }
+    #[cfg(not(unix))]
+    {
+        reusable_profile_plain(dir, data, name, profile)
+    }
+}
+
+#[cfg(unix)]
+fn reusable_profile_unix(
+    dir: &Path,
+    data: &Path,
+    name: &str,
+    profile: &str,
+) -> Result<Option<PathBuf>, String> {
+    use std::io::Read;
+    use std::os::fd::{AsRawFd, FromRawFd};
+    use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+    if !profile_file_name_ok(name) {
+        return Err(profile_not_written());
+    }
+    let dir_file = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW)
+        .open(dir)
+        .map_err(|_| profile_not_written())?;
+    let c_name = std::ffi::CString::new(name).map_err(|_| profile_not_written())?;
+    let flags = libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_CLOEXEC;
+    // Safety: `dir_file` is an open directory fd and `c_name` is one path component. `O_NOFOLLOW` refuses a link.
+    let fd = unsafe { libc::openat(dir_file.as_raw_fd(), c_name.as_ptr(), flags) };
+    if fd < 0 {
+        let error = std::io::Error::last_os_error();
+        if error.kind() == std::io::ErrorKind::NotFound {
+            return Ok(None);
+        }
+        return Err(profile_not_written());
+    }
+    // Safety: `fd` is the descriptor just opened and it is not owned anywhere else.
+    let mut file = unsafe { std::fs::File::from_raw_fd(fd) };
+    let opened = file.metadata().map_err(|_| profile_not_written())?;
+    let path = dir.join(name);
+    let named = std::fs::symlink_metadata(&path).map_err(|_| profile_not_written())?;
+    if named.file_type().is_symlink()
+        || !named.is_file()
+        || opened.ino() != named.ino()
+        || opened.dev() != named.dev()
+        || opened.mode() & 0o777 != 0o600
+        || opened.len() != profile.len() as u64
+    {
+        return Err(profile_not_written());
+    }
+    // The length was the profile's, but read only that many bytes in case it grew after the check.
+    let mut bytes = vec![0u8; profile.len()];
+    file.read_exact(&mut bytes)
+        .map_err(|_| profile_not_written())?;
+    let mut extra = [0u8; 1];
+    if !matches!(file.read(&mut extra), Ok(0)) || bytes != profile.as_bytes() {
+        return Err(profile_not_written());
+    }
+    let named = std::fs::symlink_metadata(&path).map_err(|_| profile_not_written())?;
+    if named.file_type().is_symlink()
+        || !named.is_file()
+        || opened.ino() != named.ino()
+        || opened.dev() != named.dev()
+    {
+        return Err(profile_not_written());
+    }
+    let written = stored_profile(dir, data, &path)?;
+    // Owner can refresh the age. A failure still reuses the file; the sweep may then rewrite it next hour.
+    let _ = file.set_modified(std::time::SystemTime::now());
+    Ok(Some(written))
+}
+
+#[cfg(not(unix))]
+fn reusable_profile_plain(
+    dir: &Path,
+    data: &Path,
+    name: &str,
+    profile: &str,
+) -> Result<Option<PathBuf>, String> {
+    if !profile_file_name_ok(name) {
+        return Err(profile_not_written());
+    }
+    let path = dir.join(name);
+    let meta = match std::fs::symlink_metadata(&path) {
+        Ok(meta) => meta,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(_) => return Err(profile_not_written()),
+    };
+    if meta.file_type().is_symlink() || !meta.is_file() || meta.len() != profile.len() as u64 {
+        return Err(profile_not_written());
+    }
+    let bytes = std::fs::read(&path).map_err(|_| profile_not_written())?;
+    if bytes != profile.as_bytes() {
+        return Err(profile_not_written());
+    }
+    let _ = std::fs::File::options()
+        .write(true)
+        .open(&path)
+        .and_then(|file| file.set_modified(std::time::SystemTime::now()));
+    Ok(Some(stored_profile(dir, data, &path)?))
+}
+
+/// One path component. The content name is hex, but a swapped name must not be `..` or a separator.
+fn profile_file_name_ok(name: &str) -> bool {
+    !name.is_empty()
+        && name != "."
+        && name != ".."
+        && !name.contains('/')
+        && !name.contains('\\')
+        && !name.contains('\0')
+}
+
 /// Remove `dir/name` only when the canonical file is that exact child. A link is left alone.
 fn remove_profile_file(dir: &Path, name: &str) {
     if name.contains('/') || name.contains('\\') || name == ".." {
@@ -2274,7 +2545,7 @@ fn sweep_sandbox_profiles(dir: &Path, data: &Path) {
     for entry in entries.flatten() {
         let name = entry.file_name();
         let name = name.to_string_lossy();
-        if !name.starts_with("hivra-sandbox-profile-") {
+        if !name.starts_with(PROFILE_FILE_PREFIX) {
             continue;
         }
         let path = entry.path();
@@ -2846,10 +3117,14 @@ mod tests {
     #[test]
     fn a_sandbox_that_fails_to_start_refuses_the_launch_and_never_runs_unsandboxed() {
         let home = temp_home("fail-closed");
+        // A missing data folder is refused before the launcher runs. This folder lets the failing
+        // launcher be the thing that refuses the start.
+        let data = home.join("data");
+        std::fs::create_dir_all(&data).unwrap();
         let refused = sandboxed_launch(
             OsStr::new("claude"),
             &home,
-            None,
+            Some(&data),
             &[],
             Path::new("/usr/bin/false"),
         );
