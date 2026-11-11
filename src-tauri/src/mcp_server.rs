@@ -798,15 +798,16 @@ pub(crate) fn call_tool(call: &mut Call, name: &str, args: &Value) -> Result<Val
         "ask_person" => {
             let fields = ["key", "question", "options", "recommended", "taskIds", "answer"];
             let object = arguments(args, &fields)?;
-            // WP-172: the yes that starts a stopped task again is Ash's alone. An agent may ask it, never answer it.
-            let answers = object.get("answer").is_some();
+            // WP-172: the question that starts a stopped task again is the app's alone: an agent may neither create it
+            // (with or without an answer) nor answer it. The key is trimmed first, so a leading space does not get past.
             let restart = object
                 .get("key")
                 .and_then(Value::as_str)
+                .map(str::trim)
                 .is_some_and(crate::decisions::is_again_key);
-            if answers && restart {
+            if restart {
                 return Err(
-                    "Only the person answers whether a stopped task starts again. Ask it without an answer; it waits in Needs until they do."
+                    "Only the app asks whether a stopped task starts again, and only the person answers it in Needs. Name the task in a resume instead."
                         .into(),
                 );
             }
@@ -1368,10 +1369,10 @@ mod tests {
         (outcome, seen)
     }
 
-    /// WP-172: a stopped task's restart decision is asked by an agent, never answered by one: its answer is refused
-    /// before it reaches the app, while an ordinary decision's answer still goes through.
+    /// WP-172: an agent may not create a stopped task's restart decision, with or without an answer, nor answer one.
+    /// The key is trimmed before the check, so a leading space does not get past it. An ordinary decision still works.
     #[test]
-    fn an_agent_asks_a_restart_decision_but_never_answers_it() {
+    fn an_agent_neither_creates_nor_answers_a_restart_decision() {
         let clock = Arc::new(FakeClock::default());
         let app = FakeApp::new(clock, |_, _, _| Ok(json!({ "state": "open" })));
         let ask = |key: &str, answer: Option<&str>| {
@@ -1386,18 +1387,24 @@ mod tests {
             }
             run_tool(&app, "ask_person", args).0
         };
-        let restart = "fanout-again/r1/api/f2_r1-api";
-        assert!(ask(restart, None).is_ok());
-        let refused = ask(restart, Some("Start it again")).unwrap_err();
-        assert!(
-            refused.contains("Only the person answers whether a stopped task starts again"),
-            "{refused}"
-        );
-        // Only the ask reached the app: the refused answer never did.
-        assert_eq!(app.actions(), vec!["tasks.ask".to_string()]);
+        let restart = "fanout-again/r1/api/f2_r1-api/0123456789abcdef";
+        for key in [restart.to_string(), format!("  {restart}")] {
+            let refused = ask(&key, None).unwrap_err();
+            assert!(
+                refused.contains("Only the app asks whether a stopped task starts again"),
+                "{refused}"
+            );
+            let refused = ask(&key, Some("Start it again")).unwrap_err();
+            assert!(
+                refused.contains("Only the app asks whether a stopped task starts again"),
+                "{refused}"
+            );
+        }
+        // Nothing reached the app.
+        assert!(app.actions().is_empty());
         // An ordinary decision keeps its answer as before.
         assert!(ask("retention-policy", Some("Keep 30 days")).is_ok());
-        assert_eq!(app.actions().len(), 2);
+        assert_eq!(app.actions(), vec!["tasks.ask".to_string()]);
     }
 
     #[test]

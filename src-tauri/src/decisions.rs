@@ -178,8 +178,8 @@ fn save(conn: &Connection, d: &Decision) -> Result<(), String> {
 }
 
 /// WP-172: a restart decision of a fan-out names its plan, its task and the request id that was stopped (up to 100,
-/// 40 and 100 characters, with the prefix and two separators: 255 at most).
-const FANOUT_AGAIN_KEY_MAX: usize = 260;
+/// 40 and 100 characters), then a 16-character owner tag, with the prefix and separators: 272 at most.
+const FANOUT_AGAIN_KEY_MAX: usize = 300;
 
 fn key_max(value: &str) -> usize {
     if is_again_key(value) {

@@ -108,6 +108,7 @@ import { briefOnRemoteHost } from "../../firstmate/host/remoteDelegate";
 import { remoteProjectFor } from "../../connections/model/remoteProjects";
 import { WORKER_REPORT_SHAPE } from "../../firstmate/model/report";
 import { askPerson, askPersonRecorded, taskMessage, type FirstMateTasksHost } from "../../firstmate/model/steering";
+import { sha256Hex } from "../../historyImport/model/hash";
 import { taskProjectOf } from "../../tasks/model/agentTasks";
 import {
   bridgeFamily,
@@ -1454,11 +1455,19 @@ const AGAIN_NO = "Leave it stopped";
 
 /**
  * WP-172: the decision that starts a stopped task again. It names the plan, the task and the request id the stopped start
- * had, so each stop asks afresh: a yes given for one stop starts nothing after a second one. Every part is one of the
- * plan's own names (letters, digits, - and _), so the parts never run into each other.
+ * had, so each stop asks afresh: a yes given for one stop starts nothing after a second one. The tag is a hash of the
+ * chat that owns the plan and all three names, so two chats that picked the same plan id and task name get two keys
+ * (Ash's yes for one chat never restarts the other's task). The `fanout-again/` prefix is what person_only and the
+ * ask refusals match.
  */
-export function fanoutAgainKey(plan: string, name: string, stopped: string): string {
-  return `fanout-again/${plan}/${name}/${stopped}`;
+export function fanoutAgainKey(owner: string, plan: string, name: string, stopped: string): string {
+  const tag = sha256Hex(`${owner}\n${plan}\n${name}\n${stopped}`).slice(0, 16);
+  return `fanout-again/${plan}/${name}/${stopped}/${tag}`;
+}
+
+/** Whether a decision key is a restart decision (the trimmed key, as the store reads it). */
+export function isAgainKey(key: unknown): boolean {
+  return typeof key === "string" && key.trim().startsWith("fanout-again/");
 }
 
 /**
@@ -1474,11 +1483,12 @@ async function askAgain(
   firstMate: FirstMateTasksHost | undefined,
 ): Promise<boolean> {
   if (!firstMate) return false;
-  const { result, answeredBy } = await askPersonRecorded(
+  const question = `Start the "${name}" task again? Its worker stopped or went missing, and a repeat can do its work twice.`;
+  const { result, answeredBy, question: stored, options } = await askPersonRecorded(
     source,
     {
-      key: fanoutAgainKey(plan.id, name, requestOf(plan, name)),
-      question: `Start the "${name}" task again? Its worker stopped or went missing, and a repeat can do its work twice.`,
+      key: fanoutAgainKey(source.id, plan.id, name, requestOf(plan, name)),
+      question,
       options: [AGAIN_YES, AGAIN_NO],
       recommended: AGAIN_NO,
     },
@@ -1487,6 +1497,8 @@ async function askAgain(
     firstMate,
   );
   if (answeredBy?.startsWith("chat:")) return false;
+  // The card must be the app's own: a card made first under this key with other words is not Ash's answer to this question.
+  if (stored !== question || options.length !== 2 || options[0] !== AGAIN_YES || options[1] !== AGAIN_NO) return false;
   return result.state === "answered" && result.answer === AGAIN_YES;
 }
 
@@ -1574,8 +1586,14 @@ async function resumeFanout(
     const sentAs = restart.has(task.name) ? restartRequestId(found.id, task.name, generation) : requestOf(found, task.name);
     // A start again is recorded as the stopped task it was first: a task still marked started would keep its old request
     // id, and the tasks waiting on it would look for the stopped chat.
-    if (restart.has(task.name)) await writer.write((cp) => noteStopped(cp, task.name, now));
-    await writer.write((cp) => noteStarting(cp, task.name, now, sentAs));
+    // Nothing starts unless its "starting" (and, for a start again, its "stopped") is saved: a start whose record is not
+    // there could be sent twice after a crash. With no store there is no record to keep, and the start goes on as before.
+    const stoppedSaved = restart.has(task.name) ? await writer.write((cp) => noteStopped(cp, task.name, now)) : true;
+    const startingSaved = await writer.write((cp) => noteStarting(cp, task.name, now, sentAs));
+    if (store && !(stoppedSaved && startingSaved)) {
+      outcome.set(task.name, "not started: could not save this plan's progress");
+      continue;
+    }
     try {
       const out = (await delegate(
         source,
@@ -2288,6 +2306,10 @@ async function firstMateTool(
     const [row] = await ownRows(source, tasks, [text(input.taskId, "taskId", 128)]);
     return taskMessage(source, requestId, input, row, tasks.firstMate);
   }
+  // WP-172: the question that starts a stopped task again is the app's alone: an agent may not create it (not even
+  // without an answer), since the card would carry the words the agent chose.
+  if (action === "tasks.ask" && isAgainKey(input.key))
+    throw new Error("Only the app asks whether a stopped task starts again. Name the task in a resume instead; the person answers it in Needs.");
   const ids = taskIds(input.taskIds) ?? [];
   const rows = ids.length ? await ownRows(source, tasks, ids) : [];
   // The project the Needs row sits under: the coding team's, else the waiting tasks', else the chat's folder's.

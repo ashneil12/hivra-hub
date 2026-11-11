@@ -215,7 +215,7 @@ export async function askPersonRecorded(
   where: { mono?: string; project?: string },
   ownTasks: Delegation[],
   host: FirstMateTasksHost,
-): Promise<{ result: Record<string, unknown>; answeredBy: string | null }> {
+): Promise<{ result: Record<string, unknown>; answeredBy: string | null; question: string; options: string[] }> {
   const outcome = await host.backend.ask({
     askedBy: source.id,
     ...(where.mono ? { askedByMono: where.mono } : {}),
@@ -244,6 +244,8 @@ export async function askPersonRecorded(
             : "Recorded their answer.",
         },
         answeredBy: d.answeredBy,
+        question: d.question,
+        options: d.options,
       };
   }
   const base = { key: d.decisionKey, state: d.state, waiting: d.waiting };
@@ -255,6 +257,8 @@ export async function askPersonRecorded(
         note: `Already answered: ${d.answer}. Carry on from it; don't ask again.${outcome.released.length ? " The tasks you named have it too." : ""}`,
       },
       answeredBy: d.answeredBy,
+      question: d.question,
+      options: d.options,
     };
   return {
     result: {
@@ -265,6 +269,8 @@ export async function askPersonRecorded(
         : "Already asked under this key; nothing changed. Their answer comes back to you as a new turn.",
     },
     answeredBy: d.answeredBy,
+    question: d.question,
+    options: d.options,
   };
 }
 

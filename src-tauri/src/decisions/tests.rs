@@ -463,10 +463,11 @@ fn only_the_person_answers_a_restart_decision_of_a_stopped_task() {
 #[test]
 fn a_restart_decision_key_names_a_whole_plan_task_and_request() {
     let key = format!(
-        "fanout-again/{}/{}/{}",
+        "fanout-again/{}/{}/{}/{}",
         "p".repeat(100),
         "t".repeat(40),
-        "r".repeat(100)
+        "r".repeat(100),
+        "0".repeat(16)
     );
     assert!(key.len() > KEY_MAX && key.len() <= FANOUT_AGAIN_KEY_MAX);
     assert_eq!(key_like(&key).unwrap(), key);
