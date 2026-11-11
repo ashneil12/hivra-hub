@@ -1,7 +1,7 @@
 //! Hivra Cloud (WP-61): an optional managed machine. It is OFF by default. With the switch off, or no endpoint set,
 //! nothing here opens a socket. Settings writes `<data>/hivra-cloud.json`
 //! (`{"enabled": true, "endpoint": "https://..."}`). The default is off, with an empty address. The endpoint is a
-//! placeholder until a service exists; it must be an address only (https, or http to this Mac).
+//! placeholder until a service exists. It must be an address only: https, or plain http to this Mac in a dev copy or a test.
 //!
 //! - Sign-in is a browser flow on a loopback address (PKCE S256, state checked, the connectors' flow). The access
 //!   token lives in memory only: never the Keychain, a file or a log, and it is sent only to the configured endpoint.
@@ -17,8 +17,8 @@ mod routines;
 
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::AtomicBool;
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager};
@@ -63,11 +63,28 @@ impl Setup {
     }
 }
 
-/// The endpoint must be only an address: https, or plain http to this Mac, with no path, query, fragment or login.
+/// Plain http to this Mac is only for a dev copy or a test. The daily app is a release build, so this is false there.
+pub fn loopback_http_allowed() -> bool {
+    cfg!(any(test, debug_assertions))
+}
+
+/// The endpoint must be only an address: https, or (when allowed) plain http to this Mac, with no path, query,
+/// fragment or login.
 pub fn endpoint_url(raw: &str) -> Result<Url, String> {
+    endpoint_url_allowing(raw, loopback_http_allowed())
+}
+
+/// Same rules as [`endpoint_url`], with the loopback-http choice made by the caller. Tests pass `false` for the daily app.
+pub fn endpoint_url_allowing(raw: &str, allow_loopback_http: bool) -> Result<Url, String> {
     let url =
         Url::parse(raw).map_err(|_| "The Hivra Cloud address isn't a valid URL.".to_string())?;
-    if !oauth::secure_or_loopback(raw) {
+    let https = url.scheme() == "https" && url.host_str().is_some();
+    let loopback = url.scheme() == "http"
+        && matches!(url.host_str(), Some("127.0.0.1" | "localhost" | "[::1]"));
+    if !(https || (loopback && allow_loopback_http)) {
+        if loopback {
+            return Err("The Hivra Cloud address must be https.".to_string());
+        }
         return Err("The Hivra Cloud address must be https, or http to this Mac.".to_string());
     }
     let bare = (url.path().is_empty() || url.path() == "/")
@@ -82,6 +99,31 @@ pub fn endpoint_url(raw: &str) -> Result<Url, String> {
         );
     }
     Ok(url)
+}
+
+fn origin_key(url: &Url) -> String {
+    url.origin().ascii_serialization()
+}
+
+fn config_origin(config: &Config) -> Option<String> {
+    match setup(config) {
+        Setup::Ready(url) => Some(origin_key(&url)),
+        _ => None,
+    }
+}
+
+fn token_origin(tokens: &OAuthTokens) -> Option<String> {
+    Url::parse(&tokens.token_endpoint)
+        .ok()
+        .map(|url| origin_key(&url))
+}
+
+/// The token was issued for the address this config would contact.
+fn same_origin(tokens: &OAuthTokens, config: &Config) -> bool {
+    match (token_origin(tokens), config_origin(config)) {
+        (Some(issued), Some(current)) => issued == current,
+        _ => false,
+    }
 }
 
 pub fn setup(config: &Config) -> Setup {
@@ -110,9 +152,18 @@ pub fn load_config(path: &Path) -> Config {
         .unwrap_or_default()
 }
 
-/// The access token of this run. Memory only.
+/// The access token of this run. Memory only. It is kept only while the saved address is the one that issued it.
 static SESSION: Mutex<Option<OAuthTokens>> = Mutex::new(None);
 static ACCOUNT_CACHE: Mutex<AccountCache> = Mutex::new(AccountCache::new());
+/// The sign-in that is waiting, if any. A new sign-in, a sign-out, or an address change sets the previous flag.
+static SIGN_IN_FLAG: Mutex<Option<Arc<AtomicBool>>> = Mutex::new(None);
+
+const NOTICE_SAVE_ERROR: &str = "Hivra Cloud couldn't save that this notice was shown.";
+
+/// A finished sign-in may be stored only when Cloud is still on for the address that issued the token.
+pub(crate) fn keep_sign_in(issued_origin: &str, live: &Config) -> bool {
+    config_origin(live).as_deref() == Some(issued_origin)
+}
 
 /// Browser sign-in against `endpoint`. `open` shows the authorize page; the callback is read on loopback.
 pub fn sign_in_with(
@@ -120,9 +171,7 @@ pub fn sign_in_with(
     open: &dyn Fn(&str) -> Result<(), String>,
     cancel: &AtomicBool,
 ) -> Result<OAuthTokens, String> {
-    if !oauth::secure_or_loopback(endpoint.as_str()) {
-        return Err("Hivra Cloud must be reached over https, or on this Mac.".to_string());
-    }
+    endpoint_url(endpoint.as_str())?;
     let listener = TcpListener::bind("127.0.0.1:0")
         .map_err(|_| "Couldn't listen for the sign-in.".to_string())?;
     let port = listener
@@ -156,10 +205,12 @@ pub fn sign_in_with(
         client_secret: None,
         resource: None,
     };
-    oauth::exchange(&client, &code, &pkce.verifier, &redirect)
+    oauth::exchange_once(&client, &code, &pkce.verifier, &redirect)
 }
 
 /// Account view for the app. Off or not set up means no network call at all.
+/// The commands use [`load_account`], which does not hold the cache across the network call. Tests call this directly.
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn account_with(
     config: &Config,
     token: Option<String>,
@@ -372,6 +423,8 @@ pub fn mark_notice_shown(path: &Path) -> Result<(), String> {
 }
 
 /// Account view, with the shown flag kept in `notice_path` across runs. Never returns an error.
+/// Tests pass their own cache. The command path is [`load_account`].
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn account_from(
     config: &Config,
     token: Option<String>,
@@ -383,21 +436,86 @@ pub fn account_from(
     if already {
         cache.suppress_notice();
     }
-    let view = account_with(config, token, cache, now);
+    let mut view = account_with(config, token, cache, now);
     if !already && cache.notice_is_shown() {
-        if let Some(path) = notice_path {
-            let _ = mark_notice_shown(path);
-        }
+        view = note_notice_save(view, notice_path);
     }
     view
 }
 
-fn drop_token_if_off(config: &Config) {
-    if config.enabled {
-        return;
+fn note_notice_save(mut view: AccountView, notice_path: Option<&Path>) -> AccountView {
+    let failed = match notice_path {
+        Some(path) => mark_notice_shown(path).is_err(),
+        None => false,
+    };
+    if failed {
+        view.notice_error = Some(NOTICE_SAVE_ERROR.to_string());
     }
-    let mut session = SESSION.lock().unwrap_or_else(|poison| poison.into_inner());
-    *session = None;
+    view
+}
+
+fn clear_account_cache() {
+    let mut cache = ACCOUNT_CACHE
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner());
+    *cache = AccountCache::new();
+}
+
+fn clear_session() {
+    {
+        let mut session = SESSION.lock().unwrap_or_else(|poison| poison.into_inner());
+        *session = None;
+    }
+    clear_account_cache();
+}
+
+fn begin_sign_in() -> Arc<AtomicBool> {
+    let flag = Arc::new(AtomicBool::new(false));
+    let mut slot = SIGN_IN_FLAG
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner());
+    if let Some(previous) = slot.replace(Arc::clone(&flag)) {
+        previous.store(true, Ordering::SeqCst);
+    }
+    flag
+}
+
+fn cancel_sign_in() {
+    if let Some(flag) = SIGN_IN_FLAG
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner())
+        .as_ref()
+    {
+        flag.store(true, Ordering::SeqCst);
+    }
+}
+
+/// Drops the token when Cloud is off, or when the saved address is not the one that issued it.
+/// The account cache goes with it, so a new address cannot show the previous plan.
+fn drop_token_if_off(config: &Config) {
+    let current = config_origin(config);
+    let drop_token = {
+        let session = SESSION.lock().unwrap_or_else(|poison| poison.into_inner());
+        match session.as_ref() {
+            Some(tokens) => !same_origin(tokens, config),
+            None => !config.enabled,
+        }
+    };
+    if drop_token {
+        let mut session = SESSION.lock().unwrap_or_else(|poison| poison.into_inner());
+        *session = None;
+    }
+    let drop_cache = drop_token || {
+        let cache = ACCOUNT_CACHE
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        cache
+            .bound_origin()
+            .is_some_and(|origin| current.as_deref() != Some(origin))
+    };
+    if drop_cache {
+        clear_account_cache();
+    }
 }
 
 fn config_path(app: &AppHandle) -> Result<PathBuf, String> {
@@ -414,8 +532,10 @@ fn current_config(app: &AppHandle) -> Config {
 }
 
 /// The access token, unless it has expired. Never written anywhere.
+/// Callers that have a config use [`token_for`], which also checks the issuing address.
+#[cfg_attr(not(test), allow(dead_code))]
 fn token_now() -> Option<String> {
-    let session = SESSION.lock().ok()?;
+    let session = SESSION.lock().unwrap_or_else(|poison| poison.into_inner());
     let tokens = session.as_ref()?;
     if oauth::expiring(tokens) {
         return None;
@@ -423,9 +543,80 @@ fn token_now() -> Option<String> {
     Some(tokens.access_token.clone())
 }
 
+/// The access token only when it was issued for `config`'s address and has not expired.
+/// A mismatch drops the token and the account cache.
+fn token_for(config: &Config) -> Option<String> {
+    let mut drop_cache = false;
+    let access = {
+        let mut session = SESSION.lock().unwrap_or_else(|poison| poison.into_inner());
+        let tokens = session.as_ref()?;
+        if oauth::expiring(tokens) {
+            return None;
+        }
+        if !same_origin(tokens, config) {
+            *session = None;
+            drop_cache = true;
+            None
+        } else {
+            Some(tokens.access_token.clone())
+        }
+    };
+    if drop_cache {
+        clear_account_cache();
+    }
+    access
+}
+
+/// Account view through the process cache. The network call is made without holding that cache's lock.
+fn load_account(
+    config: &Config,
+    token: Option<String>,
+    now: u64,
+    notice_path: Option<&Path>,
+    fetch: &mut dyn FnMut() -> Result<client::AccountInfo, CloudError>,
+) -> AccountView {
+    let Setup::Ready(base) = setup(config) else {
+        return AccountView::without_account("off");
+    };
+    if token.as_deref().is_none_or(|value| value.is_empty()) {
+        return AccountView::without_account("signed_out");
+    }
+    let origin = origin_key(&base);
+    let already = notice_path.is_some_and(notice_was_shown);
+    if let Some(view) = {
+        let mut cache = ACCOUNT_CACHE
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        cache.retain_origin(&origin);
+        if already {
+            cache.suppress_notice();
+        }
+        cache.without_network(now)
+    } {
+        return view;
+    }
+    let fetched = fetch();
+    let (mut view, write_notice) = {
+        let mut cache = ACCOUNT_CACHE
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        if cache.bound_origin() != Some(origin.as_str()) {
+            return AccountView::without_account("signed_out");
+        }
+        let view = cache.store_fetch(now, fetched);
+        let write_notice = !already && cache.notice_is_shown();
+        (view, write_notice)
+    };
+    if write_notice {
+        view = note_notice_save(view, notice_path);
+    }
+    view
+}
+
 #[tauri::command]
 pub fn hivra_cloud_status(app: AppHandle) -> Status {
-    status_for(&current_config(&app), token_now().is_some())
+    let config = current_config(&app);
+    status_for(&config, token_for(&config).is_some())
 }
 
 #[tauri::command]
@@ -435,42 +626,65 @@ pub async fn hivra_cloud_sign_in(app: AppHandle) -> Result<Status, String> {
         Setup::Ready(url) => url,
         other => return Err(format!("Hivra Cloud is not set up ({}).", other.state())),
     };
+    let issued = origin_key(&endpoint);
+    let cancel = begin_sign_in();
+    let waiting = Arc::clone(&cancel);
     let tokens = tauri::async_runtime::spawn_blocking(move || {
         let opener = |url: &str| {
             open::that_detached(url).map_err(|_| "Couldn't open the browser.".to_string())
         };
-        sign_in_with(&endpoint, &opener, &AtomicBool::new(false))
+        sign_in_with(&endpoint, &opener, &waiting)
     })
     .await
     .map_err(|e| e.to_string())??;
-    *SESSION
-        .lock()
-        .map_err(|_| "Hivra Cloud is busy.".to_string())? = Some(tokens);
-    Ok(status_for(&config, true))
+    let _guard = config_lock();
+    let live = current_config(&app);
+    // A rejected finish must not wipe a newer sign-in. Sign-out and a changed address already dropped theirs.
+    let keep =
+        !cancel.load(Ordering::SeqCst) && keep_sign_in(&issued, &live) && !oauth::expiring(&tokens);
+    if !keep {
+        return Ok(status_for(&live, token_for(&live).is_some()));
+    }
+    {
+        let mut session = SESSION
+            .lock()
+            .map_err(|_| "Hivra Cloud is busy.".to_string())?;
+        *session = Some(tokens);
+    }
+    Ok(status_for(&live, true))
 }
 
 #[tauri::command]
 pub fn hivra_cloud_sign_out(app: AppHandle) -> Status {
-    if let Ok(mut session) = SESSION.lock() {
-        *session = None;
-    }
+    cancel_sign_in();
+    clear_session();
     status_for(&current_config(&app), false)
 }
 
 #[tauri::command]
 pub async fn hivra_cloud_account(app: AppHandle) -> AccountView {
     let config = current_config(&app);
-    let token = token_now();
+    let token = token_for(&config);
     let notice = app
         .path()
         .app_data_dir()
         .ok()
         .map(|dir| dir.join(NOTICE_FILE));
     tauri::async_runtime::spawn_blocking(move || {
-        let mut cache = ACCOUNT_CACHE
-            .lock()
-            .unwrap_or_else(|poison| poison.into_inner());
-        account_from(&config, token, &mut cache, oauth::now(), notice.as_deref())
+        let token = token.clone();
+        load_account(
+            &config,
+            token.clone(),
+            oauth::now(),
+            notice.as_deref(),
+            &mut || match setup(&config) {
+                Setup::Ready(base) => match Client::new(base, token.clone()) {
+                    Ok(client) => client.account(),
+                    Err(error) => Err(error),
+                },
+                _ => Err(CloudError::NotSetUp),
+            },
+        )
     })
     .await
     .unwrap_or_else(|_| AccountView::without_account("unavailable"))
@@ -483,20 +697,24 @@ pub fn hivra_cloud_save(
     endpoint: String,
     expected_revision: u64,
 ) -> Result<Status, String> {
+    let previous = current_config(&app);
     let dir = app
         .path()
         .app_data_dir()
         .map_err(|_| "Hivra Cloud can't find this Mac's data folder.".to_string())?;
     let config = save_config(&dir, expected_revision, enabled, &endpoint)
         .map_err(|error| error.message())?;
+    if !config.enabled || config_origin(&previous) != config_origin(&config) {
+        cancel_sign_in();
+    }
     drop_token_if_off(&config);
-    Ok(status_for(&config, token_now().is_some()))
+    Ok(status_for(&config, token_for(&config).is_some()))
 }
 
 #[tauri::command]
 pub async fn hivra_cloud_pair(app: AppHandle, code: String) -> Result<PairedMachine, String> {
     let config = current_config(&app);
-    let token = token_now();
+    let token = token_for(&config);
     tauri::async_runtime::spawn_blocking(move || pair_with(&config, token, &code))
         .await
         .map_err(|e| e.to_string())?
@@ -506,6 +724,7 @@ pub async fn hivra_cloud_pair(app: AppHandle, code: String) -> Result<PairedMach
 #[cfg(test)]
 mod tests {
     use super::client::stub::{serve, silent};
+    use super::client::AccountInfo;
     use super::*;
     use std::io::{Read, Write};
     use std::net::TcpStream;
@@ -524,6 +743,12 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("hivra-cloud-test-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    /// Tests that touch the process token or account cache take this for the whole test.
+    fn session_lock() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        LOCK.lock().unwrap_or_else(|poison| poison.into_inner())
     }
 
     #[test]
@@ -795,6 +1020,7 @@ mod tests {
 
     #[test]
     fn turning_the_switch_off_drops_the_in_memory_token() {
+        let _session = session_lock();
         let tokens = crate::connectors::secrets::OAuthTokens {
             access_token: "tok".into(),
             refresh_token: None,
@@ -910,6 +1136,391 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&secret).unwrap(), "do not touch");
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_dir_all(&outside);
+    }
+
+    // Review of PR #240 (MED): the in-memory token is not bound to the address that issued it. Changing the address
+    // while the switch stays on (Settings saves the address on blur) keeps the token, reports "signed in" for the new
+    // address, and the next account check or pairing sends the old address's bearer token to the new one.
+    #[test]
+    fn review_a_token_from_one_address_is_never_sent_to_another() {
+        let _session = session_lock();
+        let first = silent();
+        let second = serve(vec![(200, String::new(), r#"{"plan":"pro"}"#.into())]);
+        let dir = scratch();
+        save_config(&dir, 0, true, &first.base).unwrap();
+        {
+            let mut session = super::SESSION
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner());
+            *session = Some(crate::connectors::secrets::OAuthTokens {
+                access_token: "token-issued-by-first".into(),
+                refresh_token: None,
+                expires_at: None,
+                token_endpoint: format!("{}/oauth/token", first.base),
+                client_id: "hivra-desktop".into(),
+                client_secret: None,
+                resource: None,
+            });
+        }
+        // What hivra_cloud_save does when the address changes and the switch stays on.
+        let saved = save_config(&dir, 1, true, &second.base).unwrap();
+        super::drop_token_if_off(&saved);
+        let status = status_for(&saved, super::token_now().is_some());
+        let mut cache = AccountCache::new();
+        let _ = account_with(&saved, super::token_now(), &mut cache, 0);
+        let leaked = second.seen.lock().unwrap().iter().any(|request| {
+            request
+                .to_ascii_lowercase()
+                .contains("authorization: bearer")
+        });
+        {
+            let mut session = super::SESSION
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner());
+            *session = None;
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(
+            !leaked,
+            "the first address's bearer token was sent to the second address"
+        );
+        assert!(
+            !status.signed_in,
+            "a new address must not report signed in with the old address's token"
+        );
+    }
+
+    fn approve_sign_in(url: &str) -> Result<(), String> {
+        let query: std::collections::HashMap<String, String> = Url::parse(url)
+            .unwrap()
+            .query_pairs()
+            .into_owned()
+            .collect();
+        let redirect = Url::parse(&query["redirect_uri"]).unwrap();
+        let target = format!("{}?code=code-1&state={}", redirect.path(), query["state"]);
+        let port = redirect.port().unwrap();
+        thread::spawn(move || {
+            let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
+            let _ = write!(stream, "GET {target} HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n");
+            let mut sink = Vec::new();
+            let _ = stream.read_to_end(&mut sink);
+        });
+        Ok(())
+    }
+
+    fn token_for_test(endpoint: &str, access: &str) -> crate::connectors::secrets::OAuthTokens {
+        crate::connectors::secrets::OAuthTokens {
+            access_token: access.into(),
+            refresh_token: None,
+            expires_at: Some(u64::MAX / 2),
+            token_endpoint: format!("{endpoint}/oauth/token"),
+            client_id: "hivra-desktop".into(),
+            client_secret: None,
+            resource: None,
+        }
+    }
+
+    #[test]
+    fn the_daily_app_refuses_plain_http_even_to_this_mac() {
+        assert_eq!(
+            endpoint_url_allowing("http://127.0.0.1:9", false).unwrap_err(),
+            "The Hivra Cloud address must be https.",
+            "the daily app must not send a bearer to a local listener"
+        );
+        assert_eq!(
+            endpoint_url_allowing("http://localhost", false).unwrap_err(),
+            "The Hivra Cloud address must be https."
+        );
+        assert_eq!(
+            endpoint_url_allowing("http://[::1]:9", false).unwrap_err(),
+            "The Hivra Cloud address must be https."
+        );
+        assert!(endpoint_url_allowing("https://cloud.example", false).is_ok());
+        assert_eq!(
+            endpoint_url_allowing("http://cloud.example", false).unwrap_err(),
+            "The Hivra Cloud address must be https, or http to this Mac."
+        );
+    }
+
+    #[test]
+    fn a_finished_sign_in_is_kept_only_for_the_address_that_is_still_on() {
+        assert!(
+            !keep_sign_in(
+                "https://cloud.example",
+                &cfg(false, "https://cloud.example")
+            ),
+            "turning the switch off drops the token"
+        );
+        assert!(
+            !keep_sign_in("https://cloud.example", &cfg(true, "https://other.example")),
+            "a new address drops the token"
+        );
+        assert!(!keep_sign_in("https://cloud.example", &cfg(true, "")));
+        assert!(keep_sign_in(
+            "https://cloud.example",
+            &cfg(true, "https://cloud.example")
+        ));
+    }
+
+    #[test]
+    fn sign_in_does_not_follow_a_redirect_off_the_endpoint() {
+        let other = serve(vec![(
+            200,
+            String::new(),
+            r#"{"access_token":"stolen","expires_in":3600}"#.into(),
+        )]);
+        let stub = serve(vec![(
+            302,
+            format!("Location: {}/oauth/token\r\n", other.base),
+            String::new(),
+        )]);
+        let endpoint = Url::parse(&stub.base).unwrap();
+        let cancel = AtomicBool::new(false);
+        let result = sign_in_with(&endpoint, &approve_sign_in, &cancel);
+        assert!(
+            result.is_err(),
+            "a redirect is a refusal, not a token from somewhere else"
+        );
+        assert!(
+            other.seen.lock().unwrap().is_empty(),
+            "the code was not sent to the redirect target"
+        );
+    }
+
+    #[test]
+    fn a_token_without_an_expiry_is_already_expired() {
+        let stub = serve(vec![(
+            200,
+            String::new(),
+            r#"{"access_token":"tok"}"#.into(),
+        )]);
+        let endpoint = Url::parse(&stub.base).unwrap();
+        let cancel = AtomicBool::new(false);
+        let tokens = sign_in_with(&endpoint, &approve_sign_in, &cancel).unwrap();
+        assert!(
+            oauth::expiring(&tokens),
+            "a token with no expires_in must not live until the process exits"
+        );
+    }
+
+    #[test]
+    fn clearing_the_address_drops_the_in_memory_token() {
+        let _session = session_lock();
+        let dir = scratch();
+        let saved = save_config(&dir, 0, true, "").unwrap();
+        {
+            let mut session = super::SESSION
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner());
+            *session = Some(token_for_test("https://cloud.example", "tok"));
+        }
+        super::drop_token_if_off(&saved);
+        let left = super::SESSION
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .is_some();
+        {
+            let mut session = super::SESSION
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner());
+            *session = None;
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(!left, "an empty address must not keep the previous token");
+    }
+
+    #[test]
+    fn a_new_address_forgets_the_cached_account() {
+        let _session = session_lock();
+        {
+            let mut cache = super::ACCOUNT_CACHE
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner());
+            *cache = AccountCache::new();
+            let _ = cache.view(0, &mut || {
+                Ok(AccountInfo {
+                    plan: Some("old".into()),
+                    machine_limit: None,
+                })
+            });
+        }
+        {
+            let mut session = super::SESSION
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner());
+            *session = Some(token_for_test(
+                "https://one.example",
+                "token-issued-by-first",
+            ));
+        }
+        let dir = scratch();
+        let saved = save_config(&dir, 0, true, "https://two.example").unwrap();
+        super::drop_token_if_off(&saved);
+        let mut calls = 0;
+        let plan = {
+            let mut cache = super::ACCOUNT_CACHE
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner());
+            let view = cache.view(10, &mut || {
+                calls += 1;
+                Ok(AccountInfo {
+                    plan: Some("new".into()),
+                    machine_limit: None,
+                })
+            });
+            view.plan
+        };
+        {
+            let mut session = super::SESSION
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner());
+            *session = None;
+            let mut cache = super::ACCOUNT_CACHE
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner());
+            *cache = AccountCache::new();
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(
+            calls, 1,
+            "the old plan must not be reused for a new address"
+        );
+        assert_eq!(plan.as_deref(), Some("new"));
+    }
+
+    #[test]
+    fn a_failed_notice_write_is_its_own_error() {
+        let stub = serve(vec![(500, String::new(), String::new())]);
+        let dir = scratch();
+        let notice = dir.join("missing").join(NOTICE_FILE);
+        let mut cache = AccountCache::new();
+        let view = account_from(
+            &cfg(true, &stub.base),
+            Some("t".into()),
+            &mut cache,
+            0,
+            Some(&notice),
+        );
+        let mut restarted = AccountCache::new();
+        let again = account_from(
+            &cfg(true, &stub.base),
+            Some("t".into()),
+            &mut restarted,
+            10,
+            Some(&notice),
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(
+            view.notice.is_some(),
+            "this run still says the check failed"
+        );
+        assert!(
+            view.notice_error.is_some(),
+            "a failed save of the shown flag is its own error"
+        );
+        assert!(
+            again.notice.is_some(),
+            "the next launch shows the notice when the flag was not saved"
+        );
+    }
+
+    #[test]
+    fn the_same_address_keeps_the_token() {
+        let _session = session_lock();
+        let dir = scratch();
+        let saved = save_config(&dir, 0, true, "https://cloud.example").unwrap();
+        {
+            let mut session = super::SESSION
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner());
+            *session = Some(token_for_test("https://cloud.example", "kept"));
+        }
+        super::drop_token_if_off(&saved);
+        let kept = super::token_now();
+        {
+            let mut session = super::SESSION
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner());
+            *session = None;
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(kept.as_deref(), Some("kept"));
+    }
+
+    #[test]
+    fn signing_out_forgets_the_cached_plan() {
+        let _session = session_lock();
+        {
+            let mut cache = super::ACCOUNT_CACHE
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner());
+            *cache = AccountCache::new();
+            let _ = cache.view(0, &mut || {
+                Ok(AccountInfo {
+                    plan: Some("old".into()),
+                    machine_limit: None,
+                })
+            });
+        }
+        {
+            let mut session = super::SESSION
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner());
+            *session = Some(token_for_test("https://cloud.example", "tok"));
+        }
+        super::clear_session();
+        let mut calls = 0;
+        let plan = {
+            let mut cache = super::ACCOUNT_CACHE
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner());
+            let view = cache.view(10, &mut || {
+                calls += 1;
+                Ok(AccountInfo {
+                    plan: Some("new".into()),
+                    machine_limit: None,
+                })
+            });
+            view.plan
+        };
+        {
+            let mut cache = super::ACCOUNT_CACHE
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner());
+            *cache = AccountCache::new();
+        }
+        assert_eq!(calls, 1, "sign-out must not keep the previous plan");
+        assert_eq!(plan.as_deref(), Some("new"));
+    }
+
+    #[test]
+    fn the_account_fetch_does_not_hold_the_cache_lock() {
+        let _session = session_lock();
+        {
+            let mut cache = super::ACCOUNT_CACHE
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner());
+            *cache = AccountCache::new();
+        }
+        let config = cfg(true, "https://cloud.example");
+        let view = super::load_account(&config, Some("t".into()), 0, None, &mut || {
+            assert!(
+                super::ACCOUNT_CACHE.try_lock().is_ok(),
+                "the account check must not hold the cache while it waits on the network"
+            );
+            Ok(AccountInfo {
+                plan: Some("pro".into()),
+                machine_limit: None,
+            })
+        });
+        {
+            let mut cache = super::ACCOUNT_CACHE
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner());
+            *cache = AccountCache::new();
+        }
+        assert_eq!(view.status, "fresh");
+        assert_eq!(view.plan.as_deref(), Some("pro"));
     }
 
     #[cfg(windows)]

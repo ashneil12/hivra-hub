@@ -8,13 +8,13 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use url::Url;
 
-use crate::connectors::oauth;
-
 pub const ACCOUNT_PATH: &str = "/v1/account";
 pub const PAIR_PATH: &str = "/v1/machines/pair";
 pub const ACCOUNT_TTL_SECS: u64 = 6 * 3600;
 pub const FAILURE_RETRY_SECS: u64 = 15 * 60;
 const MAX_REPLY_BYTES: u64 = 1024 * 1024;
+const ACCOUNT_NOTICE: &str =
+    "Hivra Cloud can't be reached right now. Your own machines still work.";
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum CloudError {
@@ -67,7 +67,8 @@ pub struct Client {
 impl Client {
     /// `base` must be an endpoint address (https, or loopback). The token is kept for this client only.
     pub fn new(base: Url, token: Option<String>) -> Result<Self, CloudError> {
-        if !oauth::secure_or_loopback(base.as_str()) {
+        // Same address rules as settings, including the daily app's refusal of plain http.
+        if super::endpoint_url(base.as_str()).is_err() {
             return Err(CloudError::NotSetUp);
         }
         let token = token
@@ -76,6 +77,7 @@ impl Client {
         let agent = ureq::AgentBuilder::new()
             .try_proxy_from_env(false)
             .redirects(0)
+            .timeout(Duration::from_secs(30))
             .timeout_connect(Duration::from_secs(5))
             .timeout_read(Duration::from_secs(20))
             .build();
@@ -152,6 +154,9 @@ pub struct AccountView {
     pub machine_limit: Option<u32>,
     /// Set the first time the account is unavailable. Kept across restarts, and never repeated.
     pub notice: Option<String>,
+    /// The notice could not be saved, so the next launch may show it again.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub notice_error: Option<String>,
 }
 
 impl AccountView {
@@ -162,6 +167,7 @@ impl AccountView {
             plan: None,
             machine_limit: None,
             notice: None,
+            notice_error: None,
         }
     }
 
@@ -171,6 +177,7 @@ impl AccountView {
             plan: info.plan.clone(),
             machine_limit: info.machine_limit,
             notice,
+            notice_error: None,
         }
     }
 }
@@ -180,6 +187,8 @@ pub struct AccountCache {
     ok: Option<(u64, AccountInfo)>,
     failed_at: Option<u64>,
     notice_shown: bool,
+    /// The address this cache belongs to. A different address starts empty, including the notice flag.
+    origin: Option<String>,
 }
 
 impl Default for AccountCache {
@@ -194,7 +203,25 @@ impl AccountCache {
             ok: None,
             failed_at: None,
             notice_shown: false,
+            origin: None,
         }
+    }
+
+    /// Drops a cached plan, failure and notice when the address is not the one already stored.
+    pub fn retain_origin(&mut self, origin: &str) {
+        if self.origin.as_deref() == Some(origin) {
+            return;
+        }
+        *self = AccountCache {
+            ok: None,
+            failed_at: None,
+            notice_shown: false,
+            origin: Some(origin.to_string()),
+        };
+    }
+
+    pub fn bound_origin(&self) -> Option<&str> {
+        self.origin.as_deref()
     }
 
     /// The failure notice was already shown, including on a previous run.
@@ -206,46 +233,84 @@ impl AccountCache {
         self.notice_shown
     }
 
-    /// Reads the account through `fetch` unless a fresh answer or a recent failure is already cached. Never returns an
-    /// error: a failed check is `unavailable`, and the app goes on.
-    pub fn view(
-        &mut self,
-        now: u64,
-        fetch: &mut dyn FnMut() -> Result<AccountInfo, CloudError>,
-    ) -> AccountView {
-        if let Some((at, info)) = &self.ok {
-            if now.saturating_sub(*at) < ACCOUNT_TTL_SECS {
-                return AccountView::with_info("cached", info, None);
-            }
+    /// A cached answer, if one is still fresh or a failure is still inside the retry window. No network call.
+    pub fn without_network(&mut self, now: u64) -> Option<AccountView> {
+        if let Some(view) = self.fresh(now) {
+            return Some(view);
         }
         let recently_failed = self
             .failed_at
             .is_some_and(|at| now.saturating_sub(at) < FAILURE_RETRY_SECS);
         if !recently_failed {
-            match fetch() {
-                Ok(info) => {
-                    self.ok = Some((now, info.clone()));
-                    self.failed_at = None;
-                    return AccountView::with_info("fresh", &info, None);
-                }
-                Err(_) => self.failed_at = Some(now),
+            return None;
+        }
+        Some(self.cached_or_unavailable())
+    }
+
+    /// Stores one fetch that already happened. The caller makes that fetch without holding this cache.
+    pub fn store_fetch(
+        &mut self,
+        now: u64,
+        fetched: Result<AccountInfo, CloudError>,
+    ) -> AccountView {
+        match fetched {
+            Ok(info) => {
+                self.ok = Some((now, info.clone()));
+                self.failed_at = None;
+                AccountView::with_info("fresh", &info, None)
+            }
+            Err(_) => {
+                self.failed_at = Some(now);
+                self.cached_or_unavailable()
             }
         }
-        match &self.ok {
-            Some((_, info)) => AccountView::with_info("cached", info, None),
-            None => {
-                let notice = if self.notice_shown {
-                    None
-                } else {
-                    self.notice_shown = true;
-                    Some(
-                        "Hivra Cloud can't be reached right now. Your own machines still work."
-                            .to_string(),
-                    )
-                };
-                AccountView::without_account("unavailable").with_notice(notice)
-            }
+    }
+
+    fn fresh(&self, now: u64) -> Option<AccountView> {
+        let (at, info) = self.ok.as_ref()?;
+        if now.saturating_sub(*at) < ACCOUNT_TTL_SECS {
+            Some(AccountView::with_info("cached", info, None))
+        } else {
+            None
         }
+    }
+
+    fn cached_or_unavailable(&mut self) -> AccountView {
+        if let Some((_, info)) = self.ok.clone() {
+            return AccountView::with_info("cached", &info, None);
+        }
+        self.unavailable()
+    }
+
+    fn unavailable(&mut self) -> AccountView {
+        let notice = if self.notice_shown {
+            None
+        } else {
+            self.notice_shown = true;
+            Some(ACCOUNT_NOTICE.to_string())
+        };
+        AccountView::without_account("unavailable").with_notice(notice)
+    }
+
+    /// Reads the account through `fetch` unless a fresh answer or a recent failure is already cached. Never returns an
+    /// error: a failed check is `unavailable`, and the app goes on.
+    /// Commands use [`store_fetch`] after fetching without this lock. Tests call `view` on their own cache.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn view(
+        &mut self,
+        now: u64,
+        fetch: &mut dyn FnMut() -> Result<AccountInfo, CloudError>,
+    ) -> AccountView {
+        if let Some(view) = self.fresh(now) {
+            return view;
+        }
+        let recently_failed = self
+            .failed_at
+            .is_some_and(|at| now.saturating_sub(at) < FAILURE_RETRY_SECS);
+        if !recently_failed {
+            return self.store_fetch(now, fetch());
+        }
+        self.cached_or_unavailable()
     }
 }
 
