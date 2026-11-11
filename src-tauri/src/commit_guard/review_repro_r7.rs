@@ -36,7 +36,7 @@ fn temp(tag: &str) -> Dir {
         .as_nanos();
     let path = std::env::temp_dir().join(format!("cg-r7-{tag}-{}-{nanos}", std::process::id()));
     fs::create_dir_all(&path).unwrap();
-    Dir(crate::fs::canonical(&path).unwrap())
+    Dir(dunce::canonicalize(&path).unwrap())
 }
 
 fn git_in(dir: &Path, args: &[&str], input: Option<&[u8]>) -> String {

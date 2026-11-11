@@ -30,7 +30,7 @@ fn temp(tag: &str) -> Dir {
         .as_nanos();
     let path = std::env::temp_dir().join(format!("cg-r5-{tag}-{}-{nanos}", std::process::id()));
     fs::create_dir_all(&path).unwrap();
-    Dir(std::fs::canonicalize(&path).unwrap())
+    Dir(dunce::canonicalize(&path).unwrap())
 }
 
 fn git(dir: &Path, args: &[&str]) -> String {

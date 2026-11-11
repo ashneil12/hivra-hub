@@ -630,7 +630,8 @@ fn the_pre_push_hook_runs_the_guard_then_the_repos_own_hook() {
     Command::new("chmod").arg("+x").arg(&hook).status().unwrap();
 
     fs::write(dir.path().join("fail"), "").unwrap();
-    let refused = Command::new(&hook)
+    let refused = Command::new("sh")
+        .arg(&hook)
         .arg("origin")
         .stdin(Stdio::null())
         .status()
@@ -645,7 +646,8 @@ fn the_pre_push_hook_runs_the_guard_then_the_repos_own_hook() {
     );
 
     fs::remove_file(dir.path().join("fail")).unwrap();
-    let passed = Command::new(&hook)
+    let passed = Command::new("sh")
+        .arg(&hook)
         .arg("origin")
         .stdin(Stdio::null())
         .status()
