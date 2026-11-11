@@ -684,9 +684,21 @@ test("repro 220-r1: the vault, approval, keychain, phone and gate files are secu
 
 // ---- WP-203 round 2 (the lead's hard review at 82876e1be) ----------------------------------------------------------------
 
+/**
+ * Paths gated now for work that is not in this tree yet. Each names the open PR that brings it. The test's list must
+ * equal neverMerge.json's plannedPaths, so a planned path is only ever listed on purpose.
+ */
+const PLANNED_ALLOW_LIST = Object.freeze({
+  "src-tauri/src/secrets/**": "WP-92 vault, PR #213",
+  "src/features/secrets/**": "WP-92 vault UI, PR #213",
+  "src-tauri/src/crew/gate.rs": "crew gate, PR #194",
+  "**/commit_guard.rs": "commit guard, PR #227",
+});
+
 test("H2: every security path names a tracked file, or a planned path another work package lands", () => {
   const tracked = spawnSync("git", ["ls-files"], { cwd: resolve(here, ".."), encoding: "utf8" }).stdout.split("\n");
-  const planned = new Set(neverMergeList.plannedPaths ?? []);
+  assert.deepEqual([...(neverMergeList.plannedPaths ?? [])].sort(), Object.keys(PLANNED_ALLOW_LIST).sort(), "the planned list is the explicit allow list");
+  const planned = new Set(Object.keys(PLANNED_ALLOW_LIST));
   const matches = (pattern, file) => globToRegExp(pattern.toLowerCase()).test(file.normalize("NFKC").toLowerCase());
   const dead = neverMergeList.securityPaths.filter(
     (pattern) => !planned.has(pattern) && !tracked.some((file) => file && matches(pattern, file)),
@@ -748,3 +760,31 @@ test("M3: a change lists its deletions and both names of a rename, and each file
   }
 });
 
+
+test("item 4: the review command writes nothing into the checkout's git folder, only an advisory file", async () => {
+  const repo = scratch();
+  const git = (...args) => spawnSync("git", args, { cwd: repo, encoding: "utf8" });
+  try {
+    git("init", "-q");
+    git("config", "user.email", "t@example.com");
+    git("config", "user.name", "t");
+    writeFileSync(join(repo, "a.ts"), "one\n");
+    git("add", ".");
+    git("commit", "-q", "-m", "base");
+    const base = git("rev-parse", "HEAD").stdout.trim();
+    writeFileSync(join(repo, "a.ts"), "two\n");
+    git("commit", "-q", "-am", "change");
+    const { runCli } = await import("./security-review/review.mjs");
+    const out = [];
+    const code = await runCli(["--base", base, "--author", "claude", "--reviewer", "codex"], {
+      cwd: repo,
+      out: (line) => out.push(line),
+      err: (line) => out.push(line),
+    });
+    assert.equal(code, 0, out.join("\n"));
+    assert.equal(existsSync(join(repo, ".git", "hivra-security-review")), false, "nothing lands in the git folder the gate used to read");
+    assert.match(out.join("\n"), /Advisory: findings for/);
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
+  }
+});

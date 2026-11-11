@@ -1808,7 +1808,7 @@ fn a_security_pr_without_a_review_for_its_head_is_refused() {
     let gh = security_gh(H1_SEC, &[SECURITY_FILE]);
     let outcome = merge::merge(&s, &gh, security_request(&f.project), 10).unwrap();
     assert!(
-        matches!(&outcome, MergeOutcome::Refused { reason } if reason.contains("no security review is recorded")),
+        matches!(&outcome, MergeOutcome::Refused { reason } if reason.contains("author is not recorded")),
         "{outcome:?}"
     );
     assert!(gh.ran("pr", "merge").is_empty(), "nothing merges");
@@ -2986,7 +2986,7 @@ fn repro_220_a_change_to_the_wp92_vault_needs_a_security_review() {
     let gh = security_gh(H1_SEC, &["src-tauri/src/secrets/store.rs"]);
     let outcome = merge::merge(&s, &gh, security_request(&f.project), 10).unwrap();
     assert!(
-        matches!(&outcome, MergeOutcome::Refused { reason } if reason.contains("no security review")),
+        matches!(&outcome, MergeOutcome::Refused { .. }),
         "{outcome:?}"
     );
     assert!(
@@ -3032,4 +3032,166 @@ fn repro_220_a_hand_written_review_the_validators_would_refuse_does_not_pass() {
         );
         assert!(gh.ran("pr", "merge").is_empty(), "{tag}: nothing merges");
     }
+}
+
+// ---- WP-203 round 3: the app starts a review and the gate waits for its settle (fakes for the reviewer's session) ----
+
+fn seed_author(s: &SessionStore, author: &str) {
+    let conn = s.lock_conn().unwrap();
+    conn.execute(
+        "INSERT INTO work_deliveries (id, project, mode, state, repo, number, fix_rounds, created_at, updated_at, author) \
+         VALUES ('dlv-launch', '/no/such/launch', 'pr', 'open', 'acme/web', 7, 0, 1, 1, ?1)",
+        rusqlite::params![author],
+    )
+    .unwrap();
+}
+
+fn presence(cli: &str, installed: bool, signed_in: bool) -> crate::crew::resolve::Presence {
+    crate::crew::resolve::Presence {
+        cli: cli.into(),
+        installed,
+        signed_in,
+    }
+}
+
+fn review_result(findings: &str) -> String {
+    format!(
+        r#"{{"hunt":{{"builder":"claude","candidates":{},"files":["{SECURITY_FILE}"]}},"findings":{findings},"ledger":[{{"status":"covered","starting_paths":["{SECURITY_FILE}"]}}]}}"#,
+        if findings == "[]" { 0 } else { 1 }
+    )
+}
+
+/// The reviewer's session settles its run. Only the app's review delegation can be settled this way in the test.
+fn settle_review(s: &SessionStore, id: &str, result: &str) {
+    let mut conn = s.lock_conn().unwrap();
+    crate::delegations::settle(
+        &mut conn,
+        crate::delegations::SettleInput {
+            id: id.into(),
+            generation: 1,
+            state: "completed".into(),
+            result: Some(result.into()),
+            error: None,
+            error_class: None,
+            retryable: None,
+            resets_at: None,
+            by: None,
+            self_review: None,
+        },
+        20,
+    )
+    .unwrap();
+}
+
+fn review_rows(s: &SessionStore) -> Vec<(String, String, String)> {
+    let conn = s.lock_conn().unwrap();
+    let mut statement = conn
+        .prepare("SELECT id, owner_session, state FROM delegations WHERE owner_session = ?1")
+        .unwrap();
+    statement
+        .query_map([crate::delivery::review::OWNER], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+        })
+        .unwrap()
+        .map(|row| row.unwrap())
+        .collect()
+}
+
+#[test]
+fn the_gate_starts_a_review_to_another_builder_waits_for_its_settle_and_then_merges() {
+    let s = store();
+    let f = fixture("sec-launch");
+    seed_author(&s, "codex");
+    let present = [
+        presence("codex", true, true),
+        presence("claude", true, true),
+    ];
+    let gh = security_gh(H1_SEC, &[SECURITY_FILE]);
+
+    // 1. No record for the head: the app starts the review to claude (not the author, codex) and holds the merge.
+    let first = merge::merge_with(&s, &gh, security_request(&f.project), 10, &present).unwrap();
+    assert!(
+        matches!(&first, MergeOutcome::NeedsYou { question, .. } if question.contains("Security review running") && question.contains("(claude)")),
+        "{first:?}"
+    );
+    assert!(
+        gh.ran("pr", "merge").is_empty(),
+        "held while the review runs"
+    );
+    let rows = review_rows(&s);
+    assert_eq!(
+        rows.len(),
+        1,
+        "one review delegation, owned by the app: {rows:?}"
+    );
+    let (id, owner, state) = rows[0].clone();
+    assert_eq!(owner, crate::delivery::review::OWNER);
+    assert_eq!(state, "running");
+
+    // 2. Asking again while it runs holds again and starts nothing new.
+    let again = merge::merge_with(&s, &gh, security_request(&f.project), 11, &present).unwrap();
+    assert!(
+        matches!(&again, MergeOutcome::NeedsYou { question, .. } if question.contains("running")),
+        "{again:?}"
+    );
+    assert_eq!(review_rows(&s).len(), 1);
+
+    // 3. The reviewer settles with a clean result: the record is written by the app and the gate passes.
+    settle_review(&s, &id, &review_result("[]"));
+    {
+        let conn = s.lock_conn().unwrap();
+        let record = crate::delivery::review::lookup(&conn, "acme/web", 7, H1_SEC)
+            .unwrap()
+            .expect("the app wrote the record");
+        assert_eq!(record.status, "recorded");
+        assert_eq!(record.reviewer, "claude");
+        assert_eq!(record.author.as_deref(), Some("codex"));
+    }
+    let merged = merge::merge_with(&s, &gh, security_request(&f.project), 30, &present).unwrap();
+    assert!(matches!(merged, MergeOutcome::Merged { .. }), "{merged:?}");
+    assert_eq!(gh.ran("pr", "merge").len(), 1);
+}
+
+#[test]
+fn a_review_that_settles_with_a_high_finding_holds_the_merge_refused() {
+    let s = store();
+    let f = fixture("sec-launch-high");
+    seed_author(&s, "codex");
+    let present = [
+        presence("codex", true, true),
+        presence("claude", true, true),
+    ];
+    let gh = security_gh(H1_SEC, &[SECURITY_FILE]);
+    merge::merge_with(&s, &gh, security_request(&f.project), 10, &present).unwrap();
+    let (id, _, _) = review_rows(&s)[0].clone();
+    let high = r#"[{"verdict":"confirmed","title":"Token leaks","severity":{"overall_severity":"high"},"verified_by":"human"}]"#;
+    settle_review(&s, &id, &review_result(high));
+    let outcome = merge::merge_with(&s, &gh, security_request(&f.project), 30, &present).unwrap();
+    assert!(
+        matches!(&outcome, MergeOutcome::Refused { reason } if reason.contains("confirmed high")),
+        "{outcome:?}"
+    );
+    assert!(gh.ran("pr", "merge").is_empty());
+}
+
+#[test]
+fn no_other_builder_signed_in_means_no_review_is_started_and_the_merge_is_refused() {
+    let s = store();
+    let f = fixture("sec-launch-none");
+    seed_author(&s, "codex");
+    let only_author = [
+        presence("codex", true, true),
+        presence("claude", false, false),
+    ];
+    let gh = security_gh(H1_SEC, &[SECURITY_FILE]);
+    let outcome =
+        merge::merge_with(&s, &gh, security_request(&f.project), 10, &only_author).unwrap();
+    assert!(
+        matches!(&outcome, MergeOutcome::Refused { reason } if reason.contains("no builder other than its author")),
+        "{outcome:?}"
+    );
+    assert!(
+        review_rows(&s).is_empty(),
+        "nothing is started without a reviewer"
+    );
 }

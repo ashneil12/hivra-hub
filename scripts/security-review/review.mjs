@@ -429,11 +429,10 @@ export async function runCli(argv, { cwd = process.cwd(), out = console.log, err
     return 1;
   }
   const head = resolved.stdout.trim();
-  const reviewsRoot = opts.reviews ? resolve(cwd, opts.reviews) : defaultReviewsRoot(repo);
-  if (!reviewsRoot) {
-    err("No review folder is known for this checkout. Pass --reviews <folder>.");
-    return 1;
-  }
+  // Advisory output only: the app records a review from its own review delegation (delivery/review.rs). The folder
+  // is a fresh temporary one unless --reviews names another, and it is never the checkout's git folder, which nothing
+  // reads as a record.
+  const reviewsRoot = opts.reviews ? resolve(cwd, opts.reviews) : mkdtempSync(join(tmpdir(), "wp203-advisory-"));
   let files;
   try {
     files = opts.paths ? opts.paths.split(",") : changedFiles({ base: opts.base, head, cwd: repo });
@@ -479,7 +478,7 @@ export async function runCli(argv, { cwd = process.cwd(), out = console.log, err
     err(run.reason);
     return 1;
   }
-  out(`Findings for ${head} written to ${run.findingsPath} (${run.records} record${run.records === 1 ? "" : "s"}).`);
+  out(`Advisory: findings for ${head} written to ${run.findingsPath} (${run.records} record${run.records === 1 ? "" : "s"}). The app records the review; this file is not read as a record.`);
   return 0;
 }
 

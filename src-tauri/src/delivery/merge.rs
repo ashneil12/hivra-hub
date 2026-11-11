@@ -212,6 +212,48 @@ struct GateTarget<'a> {
     head: &'a str,
     project: Option<&'a str>,
     labels: &'a [String],
+    /// The CLIs installed and signed in, for choosing a reviewer the app starts (empty: none can be chosen).
+    present: &'a [crate::crew::resolve::Presence],
+}
+
+/// No record for this head: the review is already running (hold), or it failed (refuse), or the app starts it now to a
+/// builder other than the author, and holds until it settles.
+fn launch_or_wait(
+    conn: &mut rusqlite::Connection,
+    repo: &str,
+    number: u64,
+    head: &str,
+    present: &[crate::crew::resolve::Presence],
+    now: i64,
+) -> Result<SecurityGate, String> {
+    let short = head.chars().take(12).collect::<String>();
+    if super::review::running_for(conn, repo, number, head)?.is_some() {
+        return Ok(SecurityGate::Hold(format!(
+            "Security review running for head {short}. The merge waits for its answer."
+        )));
+    }
+    if let Some(failed) = super::review::failed_for(conn, repo, number, head)? {
+        return Ok(SecurityGate::Refuse(format!(
+            "The security review for head {short} failed: {}",
+            failed.error.unwrap_or_else(|| "no reason was given".into())
+        )));
+    }
+    let Some(author) = super::review::author_of(conn, repo, number)? else {
+        return Ok(SecurityGate::Refuse(format!(
+            "{repo}#{number} is security-sensitive, and its author is not recorded, so no review can be started for head {short}."
+        )));
+    };
+    // Never use: the crew's exclusion list is not in this tree yet, so only the author is excluded.
+    let Some(reviewer) = super::review::pick_reviewer(&author, present, &[]) else {
+        return Ok(SecurityGate::Refuse(format!(
+            "{repo}#{number} is security-sensitive, and no builder other than its author ({author}) is signed in to review head {short}."
+        )));
+    };
+    let row = super::review::start(conn, repo, number, head, &author, &reviewer, now)?;
+    Ok(SecurityGate::Hold(format!(
+        "Security review running for head {short} ({reviewer}). The merge waits for its answer. Review delegation {}.",
+        row.id
+    )))
 }
 
 /// The security gate (WP-203) for one head. The review is the app's record (delivery/review.rs), written from a
@@ -230,6 +272,7 @@ fn security_gate(
         head,
         project,
         labels,
+        present,
     } = target;
     let files = match changed {
         super::protected::ChangedFiles::Listed(files) => files,
@@ -249,9 +292,7 @@ fn security_gate(
     }
     let short = head.chars().take(12).collect::<String>();
     let Some(record) = super::review::lookup(conn, repo, number, head)? else {
-        return Ok(SecurityGate::Refuse(format!(
-            "{repo}#{number} is security-sensitive, and no security review is recorded for head {short}. Start the review for this head first."
-        )));
+        return launch_or_wait(conn, repo, number, head, present, now);
     };
     if record.status != "recorded" {
         return Ok(SecurityGate::Refuse(format!(
@@ -690,6 +731,18 @@ pub fn merge(
     request: MergeRequest,
     now: i64,
 ) -> Result<MergeOutcome, String> {
+    merge_with(store, gh, request, now, &[])
+}
+
+/// The one merge path (module docs), with the CLIs installed and signed in, so the security gate can start a review to a
+/// builder other than the author. `present` empty means none can be chosen: a gate that needs a review then refuses.
+pub fn merge_with(
+    store: &SessionStore,
+    gh: &dyn Github,
+    request: MergeRequest,
+    now: i64,
+    present: &[crate::crew::resolve::Presence],
+) -> Result<MergeOutcome, String> {
     let repo = repo_key(&request.repo)?;
     let number = request.number;
     if number == 0 {
@@ -789,6 +842,7 @@ pub fn merge(
         head: &head,
         project: project.as_deref(),
         labels: &read.labels,
+        present,
     };
     let held = match security_gate(&mut conn, changed, target, now)? {
         SecurityGate::Pass => None,

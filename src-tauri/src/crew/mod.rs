@@ -8,7 +8,7 @@
 mod budget;
 mod failure;
 mod reroute;
-mod resolve;
+pub(crate) mod resolve;
 mod rules;
 mod store;
 
@@ -98,7 +98,7 @@ fn claude_signed_in(app: &tauri::AppHandle) -> bool {
     }
 }
 
-fn live_presence(app: &tauri::AppHandle) -> Vec<Presence> {
+pub(crate) fn live_presence(app: &tauri::AppHandle) -> Vec<Presence> {
     crew_presence(cli_installed, |cli| {
         if cli == "claude" {
             claude_signed_in(app)

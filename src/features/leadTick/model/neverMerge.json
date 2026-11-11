@@ -46,10 +46,14 @@
     "scripts/hivra-ship-green.mjs",
     "src/features/leadTick/model/neverMerge.json",
     "src-tauri/src/secrets/**",
-    "src/features/secrets/**"
+    "src/features/secrets/**",
+    "src-tauri/src/crew/gate.rs",
+    "**/commit_guard.rs"
   ],
   "plannedPaths": [
     "src-tauri/src/secrets/**",
-    "src/features/secrets/**"
+    "src/features/secrets/**",
+    "src-tauri/src/crew/gate.rs",
+    "**/commit_guard.rs"
   ]
 }

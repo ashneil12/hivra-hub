@@ -350,10 +350,13 @@ pub fn delivery_merge_approve(
 
 #[tauri::command(async)]
 pub fn delivery_merge(
+    app: tauri::AppHandle,
     store: State<'_, SessionStore>,
     input: merge::MergeRequest,
 ) -> Result<merge::MergeOutcome, String> {
-    merge::merge(&store, &github::CliGithub, input, now_millis())
+    // The installed and signed-in CLIs, so a security review can be started to a builder other than the author.
+    let present = crate::crew::live_presence(&app);
+    merge::merge_with(&store, &github::CliGithub, input, now_millis(), &present)
 }
 
 #[tauri::command(async)]

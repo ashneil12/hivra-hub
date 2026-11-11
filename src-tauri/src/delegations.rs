@@ -630,6 +630,10 @@ pub struct RecordInput {
     /// WP-70: the person's task this work picks up. Absent, a task is created with the delegation.
     #[serde(default)]
     pub task_id: Option<String>,
+    /// WP-203: set only by the app's review launcher (delivery/review.rs). Skipped by serde, so no JSON from a caller can
+    /// set it: with it false, the review owner and the review request ids are refused.
+    #[serde(skip)]
+    pub review_launch: bool,
 }
 
 const FOLLOWS: [&str; 3] = ["queue", "steer", "lead"];
@@ -676,11 +680,15 @@ pub fn record(conn: &mut Connection, input: RecordInput, now: i64) -> Result<Del
             return Err("follow must be queue, steer or lead".into());
         }
     }
-    // WP-203: a security review's request id is the app's alone. Any other owner naming one is refused.
-    if request.starts_with(crate::delivery::review::REQUEST_PREFIX)
-        && owner != crate::delivery::review::OWNER
+    // WP-203: the review owner and its request ids belong to the app's launcher. A caller can't claim either, and the
+    // launcher's own record must name both.
+    let review_owner = owner == crate::delivery::review::OWNER;
+    let review_request = request.starts_with(crate::delivery::review::REQUEST_PREFIX);
+    if (review_owner || review_request) && !(input.review_launch && review_owner && review_request)
     {
-        return Err("security review requests are the app's; this owner can't start one".into());
+        return Err(
+            "security reviews are started by the app's review launcher, not by a caller".into(),
+        );
     }
     let by = actor(input.by);
     let tx = conn
@@ -3468,5 +3476,111 @@ mod tests {
                 .is_empty()
         );
         assert_eq!(get(&conn, &row.id).unwrap().unwrap().delivery, DELIVERED);
+    }
+}
+
+/// WP-203: the review owner is the app's alone, on every entry that records a delegation or lists one for a caller.
+#[cfg(test)]
+mod review_guard_tests {
+    use super::*;
+    use crate::delivery::review::{request_id, OWNER};
+
+    fn store() -> SessionStore {
+        SessionStore::open_in_memory().unwrap()
+    }
+
+    fn input(owner: &str, request: &str) -> RecordInput {
+        RecordInput {
+            owner_session: owner.into(),
+            request_id: request.into(),
+            child_session: "child-1".into(),
+            ..Default::default()
+        }
+    }
+
+    fn launcher(request: &str) -> RecordInput {
+        RecordInput {
+            review_launch: true,
+            ..input(OWNER, request)
+        }
+    }
+
+    const HEAD: &str = "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1";
+
+    // Entry: the record command (delegations_record). delegate_task, delegate_tasks, the MCP tools and the control
+    // socket's tasks.* actions all reach it through the app's TypeScript layer, with the caller's own session as owner.
+    #[test]
+    fn a_caller_cannot_record_under_the_review_owner() {
+        let s = store();
+        let mut conn = s.lock_conn().unwrap();
+        let err = record(&mut conn, input(OWNER, "agent-request-1"), 10).unwrap_err();
+        assert!(err.contains("review launcher"), "{err}");
+    }
+
+    #[test]
+    fn a_caller_cannot_record_a_review_request_under_its_own_owner() {
+        let s = store();
+        let mut conn = s.lock_conn().unwrap();
+        let id = request_id("acme/web", 7, HEAD, "claude");
+        assert!(record(&mut conn, input("claude-session", &id), 10).is_err());
+    }
+
+    // Entry: the command's JSON. A caller can't claim the launcher's flag.
+    #[test]
+    fn the_launcher_flag_cannot_come_from_json() {
+        let parsed: RecordInput = serde_json::from_value(json!({
+            "ownerSession": OWNER,
+            "requestId": request_id("acme/web", 7, HEAD, "claude"),
+            "childSession": "child-1",
+            "reviewLaunch": true,
+        }))
+        .unwrap();
+        assert!(!parsed.review_launch);
+        let s = store();
+        let mut conn = s.lock_conn().unwrap();
+        assert!(record(&mut conn, parsed, 10).is_err());
+    }
+
+    #[test]
+    fn the_launcher_records_its_own_review_and_no_one_else_can() {
+        let s = store();
+        let mut conn = s.lock_conn().unwrap();
+        let id = request_id("acme/web", 7, HEAD, "claude");
+        let row = record(&mut conn, launcher(&id), 10).unwrap();
+        assert_eq!(row.owner_session, OWNER);
+        // The launcher's flag names a review request only: it can't record an ordinary request under the review owner.
+        assert!(record(&mut conn, launcher("ordinary-request"), 11).is_err());
+    }
+
+    // Entry: the listing a caller reads for its own rows (owned). A review row never appears under a caller's session.
+    #[test]
+    fn a_callers_listing_never_shows_a_review_row() {
+        let s = store();
+        let mut conn = s.lock_conn().unwrap();
+        let id = request_id("acme/web", 7, HEAD, "claude");
+        record(&mut conn, launcher(&id), 10).unwrap();
+        let listed = owned(
+            &conn,
+            OwnedQuery {
+                owner_session: "claude-session".into(),
+                ids: Vec::new(),
+                request_ids: vec![id.clone()],
+            },
+        )
+        .unwrap();
+        assert!(
+            listed.is_empty(),
+            "a caller listed a review row: {listed:?}"
+        );
+        let by_owner = owned(
+            &conn,
+            OwnedQuery {
+                owner_session: OWNER.into(),
+                ids: Vec::new(),
+                request_ids: vec![id],
+            },
+        )
+        .unwrap();
+        assert_eq!(by_owner.len(), 1, "the app still sees its own review row");
     }
 }

@@ -17,9 +17,9 @@ use serde_json::Value;
 use unicode_normalization::UnicodeNormalization;
 
 /// The owner of every review delegation. Only the app starts one, so only its settle may record a review.
-pub const OWNER: &str = "app:security-review";
+pub const OWNER: &str = "app-security-review";
 /// The request id prefix that marks a review delegation.
-pub const REQUEST_PREFIX: &str = "security-review:";
+pub const REQUEST_PREFIX: &str = "security-review-";
 /// The builders that may author or review a change.
 pub const BUILDERS: [&str; 5] = ["claude", "codex", "grok", "devin", "human"];
 const VERDICTS: [&str; 3] = ["confirmed", "needs_validation", "rejected"];
@@ -68,18 +68,34 @@ pub struct Request {
     pub reviewer: String,
 }
 
-/// The request id the app gives a review it starts. Only tests build one until the review launcher exists.
-#[cfg(test)]
+/// The request id the app gives a review it starts.
+/// The request id for one review: the prefix and the hex of its key, so it keeps the id charset the delegation table
+/// accepts (letters, digits, dashes) and the key reads back exactly.
 pub fn request_id(repo: &str, number: u64, head: &str, reviewer: &str) -> String {
-    format!("{REQUEST_PREFIX}{repo}#{number}@{head}:{reviewer}")
+    let key = format!("{repo}#{number}@{head}:{reviewer}");
+    let hex: String = key.bytes().map(|b| format!("{b:02x}")).collect();
+    format!("{REQUEST_PREFIX}{hex}")
+}
+
+fn unhex(text: &str) -> Option<String> {
+    if !text.len().is_multiple_of(2) {
+        return None;
+    }
+    let bytes: Option<Vec<u8>> = (0..text.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(text.get(i..i + 2)?, 16).ok())
+        .collect();
+    String::from_utf8(bytes?).ok()
 }
 
 /// Parses a review's request id. A malformed id, an unknown reviewer or a head that is not a full commit id is an
 /// error: the record is refused and the gate says why.
 pub fn parse_request(request_id: &str) -> Result<Request, String> {
-    let rest = request_id
+    let key = request_id
         .strip_prefix(REQUEST_PREFIX)
+        .and_then(unhex)
         .ok_or("the request id is not a security review's")?;
+    let rest = key.as_str();
     let (target, reviewer) = rest
         .rsplit_once(':')
         .ok_or("the review's request id names no reviewer")?;
@@ -268,6 +284,128 @@ pub fn judge(author: &str, reviewer: &str, result: &str) -> Result<Judged, Strin
         pending,
         blocking,
     })
+}
+
+/// The reviewer the app starts for a change: the crew default CLI (crew/resolve.rs), never the change's author and never a
+/// CLI on `never_use`. None when no other builder is signed in.
+pub fn pick_reviewer(
+    author: &str,
+    present: &[crate::crew::resolve::Presence],
+    never_use: &[String],
+) -> Option<String> {
+    let mut cooled: Vec<String> = never_use.to_vec();
+    cooled.push(author.to_string());
+    crate::crew::resolve::default_cli_except(present, &cooled)
+        .and_then(|cli| known_builder(&cli))
+        .filter(|reviewer| reviewer != author)
+}
+
+/// The hex prefix every review request for one pull request and head shares, whatever the reviewer.
+fn key_prefix(repo: &str, number: u64, head: &str) -> String {
+    let key = format!("{repo}#{number}@{head}:");
+    let hex: String = key.bytes().map(|b| format!("{b:02x}")).collect();
+    format!("{REQUEST_PREFIX}{hex}")
+}
+
+/// The app's review delegation for this head in one state, if any.
+fn review_in_state(
+    conn: &Connection,
+    repo: &str,
+    number: u64,
+    head: &str,
+    state: &str,
+) -> Result<Option<crate::delegations::Delegation>, String> {
+    let pattern = format!("{}%", key_prefix(&repo.to_ascii_lowercase(), number, head));
+    let id: Option<String> = conn
+        .query_row(
+            "SELECT id FROM delegations WHERE owner_session = ?1 AND request_id LIKE ?2 AND state = ?3 \
+             ORDER BY created_at DESC, rowid DESC LIMIT 1",
+            params![OWNER, pattern, state],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|e| e.to_string())?;
+    match id {
+        Some(id) => crate::delegations::get(conn, &id),
+        None => Ok(None),
+    }
+}
+
+/// The review delegation still running for this head, if any.
+pub fn running_for(
+    conn: &Connection,
+    repo: &str,
+    number: u64,
+    head: &str,
+) -> Result<Option<crate::delegations::Delegation>, String> {
+    review_in_state(conn, repo, number, head, crate::delegations::RUNNING)
+}
+
+/// The review delegation for this head that failed, if any (its error is the reason the gate gives).
+pub fn failed_for(
+    conn: &Connection,
+    repo: &str,
+    number: u64,
+    head: &str,
+) -> Result<Option<crate::delegations::Delegation>, String> {
+    review_in_state(conn, repo, number, head, crate::delegations::FAILED)
+}
+
+/// The brief the reviewer gets: the pull request, its head, who wrote the change and what to return. The reviewer's
+/// result is the record the app writes; nothing is written to the checkout.
+fn brief_for(repo: &str, number: u64, head: &str, author: &str, reviewer: &str) -> String {
+    format!(
+        "Security review of {repo}#{number} at head {head}. The change was written by {author}; you are {reviewer}, a different \
+         builder. Read every changed file at this head (scripts/security-review/review.mjs lists them and the path rules), hunt \
+         for security findings, and verify each candidate with a fresh builder that is neither you nor {author}. Return one JSON \
+         object: {{\"hunt\": {{\"builder\": \"{reviewer}\", \"candidates\": <count>, \"files\": [<every file read>]}}, \
+         \"findings\": [<one record per candidate, each with verdict, title, severity.overall_severity and verified_by>], \
+         \"ledger\": [<one covered unit per file read>]}}. Nothing else is written anywhere."
+    )
+}
+
+/// Starts the review for this head, as the app's own delegation to `reviewer`. The row is recorded as running with the
+/// brief; the reviewer's session is started from it, and its settle writes the record.
+pub(crate) fn start(
+    conn: &mut Connection,
+    repo: &str,
+    number: u64,
+    head: &str,
+    author: &str,
+    reviewer: &str,
+    now: i64,
+) -> Result<crate::delegations::Delegation, String> {
+    let request = request_id(repo, number, head, reviewer);
+    let child = format!("review-{}", &request[REQUEST_PREFIX.len()..]);
+    crate::delegations::record(
+        conn,
+        crate::delegations::RecordInput {
+            owner_session: OWNER.into(),
+            request_id: request,
+            child_session: child,
+            title: Some(format!("Security review of {repo}#{number}")),
+            brief: Some(brief_for(repo, number, head, author, reviewer)),
+            review_launch: true,
+            ..Default::default()
+        },
+        now,
+    )
+}
+
+/// The builder that did a delegation's work: the engine (`harness`) of the session it ran in. None when that engine is not a
+/// known builder, or the delegation or its session is gone. Nothing the caller says counts.
+pub fn author_for_delegation(
+    conn: &Connection,
+    delegation_id: &str,
+) -> Result<Option<String>, String> {
+    conn.query_row(
+        "SELECT s.harness FROM delegations d JOIN sessions s ON s.id = d.child_session WHERE d.id = ?1",
+        params![delegation_id],
+        |row| row.get::<_, String>(0),
+    )
+    .optional()
+    .map(|harness| harness.and_then(|name| known_builder(&name)))
+    .map_err(|e| e.to_string())
 }
 
 /// The author of a pull request: the builder its delivery row records, the newest delivery first.
@@ -512,6 +650,64 @@ mod tests {
         assert!(judge("codex", "claude", &uncovered)
             .unwrap_err()
             .contains("does not cover every file read"));
+    }
+
+    fn session(conn: &Connection, id: &str, harness: &str) {
+        conn.execute(
+            "INSERT INTO sessions (id, cwd, harness, model, runtime_mode, title, created_at, updated_at) \
+             VALUES (?1, '/tmp', ?2, 'm', 'auto', 't', 1, 1)",
+            params![id, harness],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn the_author_is_the_work_sessions_engine_and_nothing_the_caller_says() {
+        let store = crate::session_store::SessionStore::open_in_memory().unwrap();
+        let mut conn = store.lock_conn().unwrap();
+        session(&conn, "codex-child", "codex");
+        session(&conn, "odd-child", "some-other-engine");
+        let codex = crate::delegations::record(
+            &mut conn,
+            crate::delegations::RecordInput {
+                owner_session: "lead-1".into(),
+                request_id: "work-1".into(),
+                child_session: "codex-child".into(),
+                ..Default::default()
+            },
+            10,
+        )
+        .unwrap();
+        let odd = crate::delegations::record(
+            &mut conn,
+            crate::delegations::RecordInput {
+                owner_session: "lead-1".into(),
+                request_id: "work-2".into(),
+                child_session: "odd-child".into(),
+                ..Default::default()
+            },
+            10,
+        )
+        .unwrap();
+        assert_eq!(
+            author_for_delegation(&conn, &codex.id).unwrap().as_deref(),
+            Some("codex")
+        );
+        // An engine that is not a builder gives no author, so the review is refused rather than guessed.
+        assert_eq!(author_for_delegation(&conn, &odd.id).unwrap(), None);
+        assert_eq!(
+            author_for_delegation(&conn, "no-such-delegation").unwrap(),
+            None
+        );
+        // A caller's author is not read: the delivery input has no such field, so a value in its JSON is ignored.
+        let parsed: crate::delivery::deliver::DeliverInput =
+            serde_json::from_value(serde_json::json!({
+                "project": "/p",
+                "checkout": "/c",
+                "author": "claude",
+            }))
+            .unwrap();
+        assert_eq!(parsed.delegation_id, None);
     }
 
     #[test]
