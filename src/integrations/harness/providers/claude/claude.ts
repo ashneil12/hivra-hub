@@ -1,5 +1,6 @@
 import { TurnNotReadyError } from "../../core/types";
 import { credentialBlock } from "../../core/credentialGuard";
+import { goalToolRefusal } from "../../../../features/sessions/model/goalIntegrity";
 import {
   claudeAppend,
   claudeAppendArgs,
@@ -2036,7 +2037,9 @@ async function handleControlRequest(
   // A subagent started with isolation "worktree" works outside the chat folder, so its asks do not keep the pin either.
   if (toolMovesLaunchFolder(toolName)) noteFolderMoved(live);
   const pinned = live.folderMoved !== true && !childDropsFolderPin(live, control.toolUseId);
-  const blocked = credentialBlock(approvalCall(toolName, input, pinned), live.cwd);
+  // WP-247: the run can't set or clear its own goal (a SlashCommand running `/goal`), in any mode.
+  const blocked =
+    credentialBlock(approvalCall(toolName, input, pinned), live.cwd) ?? goalToolRefusal(approvalCall(toolName, input, pinned));
   if (blocked) {
     await writeJson(sessionId, buildControlResponse(control.requestId, { behavior: "deny", message: blocked }));
     return;

@@ -534,6 +534,8 @@ type UserTurnExtra = {
   monoSessionCompletion?: Block["monoSessionCompletion"];
   monoCheck?: Block["monoCheck"];
   monoNote?: Block["monoNote"];
+  /** WP-243: Ash typed it himself. Never kept on a hidden turn. */
+  byOwner?: true;
 };
 
 function userTurnFields(extra?: UserTurnExtra) {
@@ -542,6 +544,7 @@ function userTurnFields(extra?: UserTurnExtra) {
     ...(extra?.noteCard ? { noteCard: extra.noteCard } : {}),
     ...(extra?.ciContext ? { ciContext: extra.ciContext } : {}),
     ...(extra?.internal ? { internal: true } : {}),
+    ...(extra?.byOwner && !extra.internal ? { byOwner: true as const } : {}),
     ...(extra?.monocode ? { monocode: true } : {}),
     ...(extra?.intent ? { intent: extra.intent } : {}),
     ...(extra?.appRequestId ? { appRequestId: extra.appRequestId } : {}),

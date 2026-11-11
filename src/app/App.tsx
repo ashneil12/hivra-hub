@@ -1358,6 +1358,12 @@ type SubmitOptions = ComposerTurnOptions & {
    * (habits, automations, agent apps, wakes, continue prompts, first-mate steers) leaves it out, so it is automated.
    */
   origin?: TurnOrigin;
+  /**
+   * WP-247 / WP-243: Ash typed this turn in the composer himself. Only `onComposerSubmit` sets it (and a queued message
+   * he typed keeps it); every other caller leaves it out. Only such a turn may set or clear the chat's goal, and only its
+   * words count as Ash's own when the app checks an action against what he said.
+   */
+  byOwner?: boolean;
   ciRepair?: CiRepairRequest;
   /** Saved alongside the user turn; does not replace the submitted prompt. */
   ciContext?: string;
@@ -8454,6 +8460,15 @@ function Workspace({
     ): SubmissionAcceptance => {
       // Every turn is built from here: a hidden character never reaches the agent, whichever surface sent it.
       const text = stripHiddenCharacters(rawText).text;
+      // WP-247 / WP-243: Ash's own typed turn. A turn the app wrote around it (hidden, a resume, a wake) never is.
+      const byOwner =
+        options?.byOwner === true &&
+        !options.managed &&
+        !options.monoNote &&
+        !options.monoCheck &&
+        !options.monoSessionCompletion &&
+        !options.autoResume &&
+        !options.appRequestId;
       const remote = sessionsRef.current.find(
         (session) => session.id === sessionId,
       );
@@ -9028,6 +9043,7 @@ function Workspace({
                           ? { appRequestId: options.appRequestId }
                           : {}),
                         ...(options?.waitForIdle ? { waitForIdle: true } : {}),
+                        ...(byOwner ? { byOwner: true } : {}),
                       },
                     ],
                     queueStatus:
@@ -9072,6 +9088,7 @@ function Workspace({
             ...(options?.appRequestId
               ? { appRequestId: options.appRequestId }
               : {}),
+            ...(byOwner ? { byOwner: true as const } : {}),
           });
         });
         sessionsRef.current = nextSessions;
@@ -9086,6 +9103,7 @@ function Workspace({
             });
             await steerHarnessTurn({
               origin: options?.origin,
+              ...(byOwner ? { byOwner: true } : {}),
               harness: current.harness,
               sessionId,
               cwd: initialWorkCwd,
@@ -9252,6 +9270,8 @@ function Workspace({
         ...(options?.managed || options?.monoSessionCompletion || options?.monoCheck || options?.monoNote
           ? { internal: true }
           : {}),
+        // WP-243: Ash's own words, typed in the composer. Never on a hidden turn, a CI repair or a handoff card.
+        ...(byOwner && !ciContext && !card ? { byOwner: true as const } : {}),
         ...(options?.monoNote ? { monoNote: options.monoNote } : {}),
         ...(options?.monoSessionCompletion
           ? { monoSessionCompletion: options.monoSessionCompletion }
@@ -9931,6 +9951,7 @@ function Workspace({
             return sendHarnessTurn({
               // WP-176: the caller's origin. Only the composer sets "person"; an omitted origin is automated.
               origin: options?.origin,
+              ...(byOwner ? { byOwner: true } : {}),
               harness: current.harness,
               sessionId,
               cwd: workCwd,
@@ -10503,7 +10524,7 @@ function Workspace({
   // The composer's own send is the person's turn for the spend gate. Other callers of onSubmit are automated.
   const onComposerSubmit = useCallback(
     (sessionId: string, text: string, attachments: Attachment[] = [], options?: ComposerTurnOptions): boolean =>
-      onSubmit(sessionId, text, attachments, { ...options, origin: "person" }),
+      onSubmit(sessionId, text, attachments, { ...options, origin: "person", byOwner: true }),
     [onSubmit],
   );
 
@@ -11892,6 +11913,7 @@ function Workspace({
               head.attachments,
               {
                 queuedMessageId: head.id,
+                ...(head.byOwner ? { byOwner: true } : {}),
                 followUpBehavior: steering ? "steer" : undefined,
                 noteCard: head.noteCard,
                 handoffCard: head.handoffCard,
@@ -12067,6 +12089,7 @@ function Workspace({
       onSubmit(sessionId, message.text, message.attachments, {
         followUpBehavior: "steer",
         queuedMessageId: message.id,
+        ...(message.byOwner ? { byOwner: true } : {}),
         noteCard: message.noteCard,
         handoffCard: message.handoffCard,
         intent: message.intent,

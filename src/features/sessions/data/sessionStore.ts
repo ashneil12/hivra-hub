@@ -412,6 +412,8 @@ function sanitizeQueuedMessages(value: unknown): QueuedMessage[] {
           ? { appRequestId: message.appRequestId }
           : {}),
         ...(message.waitForIdle === true ? { waitForIdle: true } : {}),
+        // WP-243: Ash typed it himself. Never on an app note.
+        ...(message.byOwner === true && !monoNote && !completion ? { byOwner: true } : {}),
         ...(monoNote ? { monoNote } : {}),
         ...(["default", "plan", "build", "orchestrate"].includes(
           message.intent ?? "",
@@ -1320,6 +1322,8 @@ function sanitizeBlock(
   // Without this the transcript would show the app's orchestration turns as
   // the user's own after a reload.
   if (block.role === "user" && block.internal) next.internal = true;
+  // WP-243: Ash typed it himself. Only exactly `true`, and never on a hidden turn.
+  if (block.role === "user" && block.byOwner === true && !block.internal) next.byOwner = true;
   const completion = sanitizeMonoSessionCompletion(block.monoSessionCompletion);
   if (block.role === "user" && block.internal && completion)
     next.monoSessionCompletion = completion;

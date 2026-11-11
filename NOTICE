@@ -398,6 +398,13 @@ Third-party components Hivra adds:
   Used in: src/features/monos/vendor/routineChecklist.ts, src/features/monos/model/monoHabits.ts, src/features/monos/vendor/LICENSE.openbot
   shared/routine-checklist.ts with checklistNotice and openPartsNudge from shared/run-notices.ts copied at commit 558cba6, its test cases ported to vitest; the notices say habit where OpenBot says routine. monoHabits.ts adds the checklist under a list habit's instructions with OpenBot's unattended-run lines (ROUTINE_RUN_LINES, adapted), and sends a finished run back once while a part is open or its answer ends on a promise.
 
+- OpenBot's ask test
+  Source: https://github.com/CopilotKit/OpenBot
+  License: MIT
+  Copyright (c) 2026 CopilotKit
+  Used in: src/features/firstmate/model/askTest.ts, src/features/firstmate/contract.md, src/features/firstmate/vendor/LICENSE.openbot
+  ASK_TEST_LINES and ASKING_GUIDANCE_LINES from shared/bot-prompt.ts copied at commit 558cba6 and adapted (WP-247): OpenBot reads the app, and the list of what the app already asks names Hivra's own gates. The first-mate contract's Asking section and the crew brief carry it, so an agent asks only when a wrong guess is hard to undo, the readings differ, or only the person knows, and never asks first about what the app's own card asks.
+
 MonoCode
 ========
 MonoCode is not affiliated with, endorsed by, or sponsored by the makers of the

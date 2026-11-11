@@ -8,6 +8,7 @@ import type {
 import { admitSpendTurn, noteUnpricedTurn, spendGateActive, type TurnOrigin } from "../../../features/usage/model/spendGate";
 import { requireChatFolder } from "./chatFolder";
 import { credentialBlock } from "./credentialGuard";
+import { goalToolRefusal, goalTurnRefusal } from "../../../features/sessions/model/goalIntegrity";
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { transferProviderSession } from "./child";
 import type { GeneratedSessionTitle } from "../../../features/sessions/model/sessionTitle";
@@ -448,6 +449,9 @@ export function sendHarnessTurn(input: SendTurnInput & { harness: HarnessId }) {
   } catch (error) {
     return Promise.reject(error);
   }
+  // WP-247: only Ash, from his own composer, sets or clears a chat's goal. Checked on the text as the caller gave it.
+  const goalRefused = goalTurnRefusal(input.text, input.byOwner === true);
+  if (goalRefused) return Promise.reject(new Error(goalRefused));
   input = { ...input, text: decorateTurnText(input.sessionId, input.text) };
   return queueSessionOperation(input.sessionId, async () => {
     // Before the control port or any provider hears of the turn: a chat with no folder starts nothing.
@@ -479,7 +483,8 @@ export function sendHarnessTurn(input: SendTurnInput & { harness: HarnessId }) {
         onEvent: (event) => {
           // r65 (#13): every harness, not only Claude: a keychain or credential read is refused here before it reaches
           // the chat or any auto-approval, and the agent is left to ask Ash for it.
-          if (event.type === "approval.requested" && credentialBlock(event.call, input.cwd)) {
+          // WP-247: a tool call that would set or clear the chat's own goal is refused the same way, on every CLI.
+          if (event.type === "approval.requested" && (credentialBlock(event.call, input.cwd) || goalToolRefusal(event.call))) {
             // Some providers register the pending approval just after emitting it (grok, cursor, pi): answer next tick.
             setTimeout(() => adapter.respondApproval(input.sessionId, event.requestId, "deny"), 0);
             return;
@@ -612,6 +617,8 @@ export function steerHarnessTurn(
   } catch (error) {
     return Promise.reject(error);
   }
+  const goalRefused = goalTurnRefusal(input.text, input.byOwner === true);
+  if (goalRefused) return Promise.reject(new Error(goalRefused));
   return queueSteerOperation(input.sessionId, async () => {
     const adapter = requireAdapterFor(input.harness, input.sessionId);
     if (!adapter.live) {

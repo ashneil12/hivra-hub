@@ -276,6 +276,12 @@ export type HarnessSessionInput = {
 export type SendTurnInput = HarnessSessionInput & {
   /** WP-176: who started the turn. Only the composer sends "person"; omitted is automated. */
   origin?: "person" | "automated";
+  /**
+   * WP-247 / WP-243: Ash typed this turn in the composer himself. Set by the composer's own send and nothing else; a
+   * brief, a steer from another chat, a habit or an app note never carries it. Only such a turn may set or clear the
+   * chat's goal.
+   */
+  byOwner?: boolean;
   text: string;
   attachments?: Attachment[];
   /** Called once the provider has accepted the user turn. */
@@ -314,6 +320,8 @@ export type SteerTurnInput = {
   cwd: string;
   model: string;
   modelSettings?: Record<string, string>;
+  /** WP-247: Ash typed this steer himself (see SendTurnInput.byOwner). */
+  byOwner?: boolean;
   text: string;
   attachments?: Attachment[];
 };
