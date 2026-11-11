@@ -49,16 +49,19 @@ test("opens in Classic with Focused stored, and every main Hub screen renders th
   await expect(rail).toHaveCount(2);
   const sidebar = rail.nth(1);
 
-  const screens: Array<[string, (page: Page) => Locator]> = [
-    ["Inbox", (p) => p.getByRole("region", { name: "Inbox" })],
-    ["Coding team", (p) => p.getByRole("main").getByRole("heading", { name: "EXO lead" })],
-    ["Leadership team", (p) => p.getByPlaceholder("Message EXO's leadership team")],
-    ["Pages", (p) => p.getByRole("region", { name: "Pages" })],
-    ["Notes", (p) => p.getByRole("region", { name: "Notes" })],
-    ["Automations", (p) => p.getByRole("heading", { name: "New automation" })],
+  // Dropwave's sidebar (PR #252): the Inbox row carries its count ("Inbox, 4 need you"), and what was the "Coding team"
+  // row is the first mate's own row under First mates (see openProjectLead in localHub.ts). Each screen and what proves
+  // it rendered is unchanged.
+  const screens: Array<[string, RegExp, (page: Page) => Locator]> = [
+    ["Inbox", /^Inbox(,|$)/, (p) => p.getByRole("region", { name: "Inbox" })],
+    ["Coding team", /^EXO lead,/, (p) => p.getByRole("main").getByRole("heading", { name: "EXO lead" })],
+    ["Leadership team", /^Leadership team$/, (p) => p.getByPlaceholder("Message EXO's leadership team")],
+    ["Pages", /^Pages$/, (p) => p.getByRole("region", { name: "Pages" })],
+    ["Notes", /^Notes$/, (p) => p.getByRole("region", { name: "Notes" })],
+    ["Automations", /^Automations$/, (p) => p.getByRole("heading", { name: "New automation" })],
   ];
-  for (const [name, shown] of screens) {
-    await sidebar.getByRole("button", { name, exact: true }).click();
+  for (const [name, row, shown] of screens) {
+    await sidebar.getByRole("button", { name: row }).click();
     await expect(shown(page)).toBeVisible({ timeout: 15_000 });
     await expectClassic(page);
     await shot(page, name.toLowerCase().replace(/[^a-z]+/g, "-"), engine);

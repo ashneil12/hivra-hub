@@ -226,7 +226,9 @@ test("a team's settings are in Settings, Teams, not in its chat", async ({ page 
 test("the Inbox leads with the Needs you list, each row with its own answer", async ({ page }) => {
   await home(page);
   await page.getByRole("button", { name: /^Inbox/ }).first().click();
-  const needs = page.locator("[data-inbox-needs]");
+  // The Inbox's own list. The sidebar's count beside Inbox carries the same data-inbox-needs mark (WP-210), so the bare
+  // attribute matches two elements once that count has painted; other regions' names contain "Needs you" too.
+  const needs = page.locator("section[data-inbox-needs]");
   await expect(needs).toBeVisible();
   const count = Number(await needs.getAttribute("data-inbox-needs"));
   expect(count).toBeGreaterThan(0);
