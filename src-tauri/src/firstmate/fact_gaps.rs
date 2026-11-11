@@ -1466,3 +1466,152 @@ mod review_r1 {
         assert!(gaps.is_empty(), "{gaps:?}");
     }
 }
+
+/// Review round 2 (PR #232): failing repros. Each test states what the gate should do.
+#[cfg(test)]
+mod review_r2 {
+    use super::*;
+
+    fn check(command: &str, status: &str, at: f64) -> FactCheck {
+        FactCheck {
+            command: command.to_string(),
+            status: status.to_string(),
+            at,
+        }
+    }
+
+    fn edit(path: &str, at: f64) -> FactEdit {
+        FactEdit {
+            path: path.to_string(),
+            at,
+        }
+    }
+
+    fn facts(checks: Vec<FactCheck>, edits: Vec<FactEdit>, answer: &str) -> FactTurn {
+        FactTurn {
+            checks,
+            edits,
+            todos: vec![],
+            answer: answer.to_string(),
+        }
+    }
+
+    // HIGH (r1 HIGH-2 still open): Claude's Edit tool records an absolute path. The repo's own cargo test, run with
+    // `--manifest-path src-tauri/Cargo.toml` or after `cd src-tauri`, reaches that file, but the cargo root is only
+    // compared with a relative path, so the module is "not reached" and the identical retry fails delivery.
+    #[test]
+    fn r2_the_repos_own_cargo_test_reaches_an_edited_module_at_its_absolute_path() {
+        let edited = "/Users/ash/Worktrees/hub-x/src-tauri/src/firstmate/gates.rs";
+        for command in [
+            "cargo test --manifest-path src-tauri/Cargo.toml -p monocode --lib firstmate",
+            "cargo test --manifest-path src-tauri/Cargo.toml",
+            "cd src-tauri && cargo test -p monocode",
+        ] {
+            let gaps = done_gaps(&facts(
+                vec![check(command, "passed", 2.0)],
+                vec![edit(edited, 1.0)],
+                "",
+            ));
+            assert!(gaps.is_empty(), "{command}: {gaps:?}");
+        }
+    }
+
+    // HIGH (r1 HIGH-2 still open): this repo has a workspace Cargo.toml at its root, so `cargo test -p monocode` there
+    // runs the src-tauri crate. `-p monocode` is compared with the folder name ("firstmate"), so it never reaches.
+    #[test]
+    fn r2_cargo_test_p_monocode_from_the_workspace_root_reaches_src_tauri() {
+        for edited in [
+            "src-tauri/src/firstmate/gates.rs",
+            "/Users/ash/Worktrees/hub-x/src-tauri/src/firstmate/gates.rs",
+        ] {
+            let gaps = done_gaps(&facts(
+                vec![check(
+                    "cargo test -p monocode --lib firstmate",
+                    "passed",
+                    2.0,
+                )],
+                vec![edit(edited, 1.0)],
+                "",
+            ));
+            assert!(gaps.is_empty(), "{edited}: {gaps:?}");
+        }
+    }
+
+    // MED (r1 MED, general form): only a pipe is read as masking the runner's exit status. `;`, `||` and a second
+    // line run after the test, so the command's status is theirs, and a failing suite reads as a pass.
+    #[test]
+    fn r2_a_test_whose_exit_status_is_masked_is_not_evidence_of_a_pass() {
+        for masked in [
+            "npm test || true",
+            "npx vitest run; echo \"exit $?\"",
+            "npm test; exit 0",
+            "npm test\necho done",
+        ] {
+            let gaps = done_gaps(&facts(
+                vec![check(masked, "passed", 2.0)],
+                vec![edit("src/features/crew/row.ts", 1.0)],
+                "All tests passed.",
+            ));
+            assert!(!gaps.is_empty(), "{masked:?} was taken as a pass");
+        }
+    }
+
+    // MED: the r1 docs fix matches `docs` as any segment, so code in a folder named docs (this repo's own
+    // src/features/docs) is docs: an edit after the last test never makes it stale and no test has to reach it.
+    #[test]
+    fn r2_code_in_a_folder_named_docs_is_still_code() {
+        for path in [
+            "src/features/docs/gateway.ts",
+            "/Users/ash/Worktrees/hub-x/src/features/docs/gateway.ts",
+        ] {
+            let gaps = done_gaps(&facts(
+                vec![check("npx vitest run", "passed", 1.0)],
+                vec![edit(path, 2.0)],
+                "",
+            ));
+            assert_eq!(gaps, vec![STALE.to_string()], "{path}");
+        }
+    }
+
+    // MED: a runner that runs no test (compile only, a version or a listing) counts as a passing test run.
+    #[test]
+    fn r2_a_runner_that_runs_no_tests_is_not_a_test_run() {
+        for fake in [
+            "cargo test --no-run",
+            "npx vitest --version",
+            "npx jest --listTests",
+        ] {
+            let gaps = done_gaps(&facts(
+                vec![
+                    check("npx vitest run", "passed", 1.0),
+                    check(fake, "passed", 3.0),
+                ],
+                vec![edit("src/features/crew/row.ts", 2.0)],
+                "",
+            ));
+            assert_eq!(gaps, vec![STALE.to_string()], "{fake}");
+        }
+    }
+
+    // LOW: keeping the latest 40 checks lets 40 quick type checks push a failing test out, so the failure is gone.
+    #[test]
+    fn r2_a_flood_of_later_checks_does_not_hide_a_failing_test() {
+        let mut checks = vec![check("npm test", "failed", 2.0)];
+        checks.extend((0..40).map(|i| check("npx tsc --noEmit", "passed", 3.0 + i as f64)));
+        checks.push(check(
+            "npx vitest run src/features/crew/other.test.ts",
+            "passed",
+            50.0,
+        ));
+        let gaps = done_gaps(&facts(
+            checks,
+            vec![edit("src/features/crew/row.ts", 1.0)],
+            "",
+        ));
+        assert!(
+            gaps.iter()
+                .any(|gap| gap.starts_with("A check failed this turn")),
+            "{gaps:?}"
+        );
+    }
+}

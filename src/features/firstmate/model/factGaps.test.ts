@@ -376,3 +376,42 @@ describe("review r1: edits the facts miss", () => {
     expect(doneGaps(factsFromBlocks(blocks, ""))).toEqual(["Tests went stale after the last edit."]);
   });
 });
+
+// Review round 2 (PR #232): failing repros. Each test states what the gate should do.
+describe("review r2", () => {
+  // MED: a second line runs after the test, so the command's status is the second line's. The facts sent to Rust join
+  // the lines with `&&`, which reads as if the test's failure would still show, and a failing suite counts as a pass.
+  it("r2: a multi-line test command is not sent as if its lines were joined by &&", () => {
+    const blocks: Block[] = [
+      block({ role: "user", text: "do it" }),
+      block({
+        id: "edit",
+        role: "tool",
+        tool: { kind: "edit", title: "Edit", preview: { kind: "write", path: "src/features/crew/row.ts" } },
+      }),
+      block({ id: "t", role: "tool", tool: { kind: "execute", command: "npm test\necho done", status: "completed" } }),
+    ];
+    const facts = factsFromBlocks(blocks, "All tests passed.");
+    expect(facts.checks.filter((check) => check.command.includes("&& echo done"))).toEqual([]);
+    expect(doneGaps(facts)).not.toEqual([]);
+  });
+
+  // LOW: a `sed -i` and the test in one command (`sed -i ... && npx vitest run`) is an edit and then a run of it. Both
+  // get the same place, so the run never counts as after the edit and correct work is sent back as stale.
+  it("r2: a sed -i edit followed by the test in the same command is not stale", () => {
+    const blocks: Block[] = [
+      block({ role: "user", text: "do it" }),
+      block({ id: "t1", role: "tool", tool: { kind: "execute", command: "npx vitest run", status: "completed" } }),
+      block({
+        id: "t2",
+        role: "tool",
+        tool: {
+          kind: "execute",
+          command: "sed -i 's/a/b/' src/features/crew/row.ts && npx vitest run",
+          status: "completed",
+        },
+      }),
+    ];
+    expect(doneGaps(factsFromBlocks(blocks, ""))).toEqual([]);
+  });
+});

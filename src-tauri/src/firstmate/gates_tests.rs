@@ -922,3 +922,63 @@ fn r1_a_planless_turn_fixed_after_a_send_back_does_not_stay_failed() {
         settled.status_notice
     );
 }
+
+// ---- review round 2 (PR #232): failing repro --------------------------------------------------------------------------
+
+// MED: the r1 fix clears a send-back whenever a completed report is settled, in `delegations::settle`. A report that is
+// settled without a gate run (a resumed turn, a boot settle, a followed brief) clears it too. Here the app's own project
+// checks failed beside a fact gap; nothing ran them again, and the delivered row shows Done. On main it stays Failed.
+#[test]
+fn r2_a_completed_settle_does_not_clear_a_failed_plan_gate_nothing_reran() {
+    use crate::firstmate::status::Status;
+    let f = fixture("r2-plan");
+    std::fs::write(f.copy.join("app.ts"), "export const b = 2;\n").unwrap();
+    let mut conn = store();
+    let row = record_row(&mut conn);
+    let p = plan(&[GateKind::Diff, GateKind::Checks]);
+    save_plan(&conn, &row.id, &p, 1).unwrap();
+    let failing = Fake {
+        checks: Some(Ok(vec![run("Project checks", Outcome::Failed, "1 failed")])),
+        ..Default::default()
+    };
+    let facts = stale_facts();
+    let record = run_round(
+        &RoundInput {
+            delegation_id: &row.id,
+            round: 1,
+            checkout: &f.copy,
+            plan: &p,
+            brief: "Add b",
+            done_when: "app.ts exports b",
+            report: "Done.",
+            now: 2,
+            gate_owns_checks: false,
+            facts: Some(&facts),
+        },
+        &failing,
+    );
+    assert_eq!(record.verdict, Verdict::Failed);
+    assert!(
+        record.summary.starts_with("Sent back:"),
+        "{}",
+        record.summary
+    );
+    let applied = crate::delegations::set_gate_verdict(
+        &mut conn,
+        &row.id,
+        record.verdict.stored(),
+        &record.summary,
+        None,
+        2,
+    )
+    .unwrap();
+    assert!(applied.applied);
+    let settled = settle_done(&mut conn, &row);
+    assert_eq!(
+        settled.status,
+        Status::Failed,
+        "a failed project check nothing reran shows {:?}",
+        settled.status
+    );
+    let _ = &f.project;
+}
