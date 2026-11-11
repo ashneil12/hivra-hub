@@ -7,11 +7,13 @@ import { queueHomeDecision, queueHomeDoc, queueHomeTask } from "./pending";
 
 export type HomeOpenTarget =
   | { kind: "inbox"; projectId: string; decisionKey: string }
+  | { kind: "needs" }
   | { kind: "task"; projectId: string; id: string }
   | { kind: "doc"; id: string }
   | { kind: "chat"; id: string; projectId: string }
   | { kind: "coding"; projectId: string }
-  | { kind: "settings"; section: SettingsSectionId; anchor: string };
+  | { kind: "settings"; section: SettingsSectionId; anchor: string }
+  | { kind: "url"; href: string };
 
 /** The Clean up card on Settings > Worktrees (`data-setting-id` in WorktreeCleanup.tsx). */
 export const WORKTREE_CLEANUP = "worktree-cleanup";
@@ -45,6 +47,16 @@ export function applyHomeOpen(target: HomeOpenTarget, hands: HomeOpenHands): voi
     hands.closeChrome();
     queueHomeDecision(decisionProject(target.projectId, hands.projects()), target.decisionKey);
     hands.openInbox();
+    return;
+  }
+  // WP-212: Needs you, the whole list. No decision is queued, so the inbox opens on its own.
+  if (target.kind === "needs") {
+    hands.closeChrome();
+    hands.openInbox();
+    return;
+  }
+  if (target.kind === "url") {
+    openHttp(target.href);
     return;
   }
   if (target.kind === "task") {
@@ -102,8 +114,16 @@ export function openFromHome(target: HomeOpenTarget): void {
     queueHomeDoc(target.id);
     openDocsMode();
     window.dispatchEvent(new CustomEvent("monocode:home-open", { detail: "notes" }));
+    return;
   }
-  // A settings line needs the workspace's hands. Without them there is nowhere to open it, so it does nothing.
+  if (target.kind === "url") openHttp(target.href);
+  // A settings line, or Needs you, needs the workspace's hands. Without them there is nowhere to open it.
+}
+
+/** A web link only. Any other scheme is ignored. */
+function openHttp(href: string): void {
+  if (!/^https?:\/\//i.test(href.trim())) return;
+  window.open(href.trim(), "_blank", "noopener");
 }
 
 export function targetFor(line: { kind: string; projectId: string; target: string }): HomeOpenTarget {

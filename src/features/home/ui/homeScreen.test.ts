@@ -1,26 +1,25 @@
 // @vitest-environment happy-dom
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, expect, it } from "vitest";
 import { defaultArrangement, hideSection, pinPanel } from "../model/arrangement";
 import type { HomeLine } from "../model/lines";
-import { HomeScreen } from "./HomeScreen";
+import { HomeScreen, type HomeChief, type HomeDone, type HomeNeed, type HomeWork } from "./HomeScreen";
 
-const line = (over: Partial<HomeLine>): HomeLine => ({
-  id: "n1",
-  kind: "decision",
-  text: "Crew · Should we ship?",
-  projectId: "crew",
-  target: "ship",
-  at: 1,
-  ...over,
-});
+const chief: HomeChief = {
+  missing: false,
+  name: "Coordinator",
+  options: [],
+  onAdd: () => undefined,
+  onOpenChat: () => undefined,
+  onOption: () => undefined,
+};
 
 let root: Root;
 let container: HTMLElement;
 
 beforeEach(() => {
-  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+  viStub();
   container = document.createElement("div");
   document.body.append(container);
   root = createRoot(container);
@@ -30,18 +29,28 @@ afterEach(() => {
   container.remove();
 });
 
+function viStub() {
+  (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+}
+
 function draw(props: Partial<Parameters<typeof HomeScreen>[0]> = {}) {
-  const onOpen = props.onOpen ?? (() => undefined);
   act(() => {
     root.render(createElement(HomeScreen, {
-      needsYou: [],
-      moving: [],
-      recent: [],
+      date: "Wednesday 11 November",
+      chief,
+      needs: [],
+      needsTotal: 0,
+      builders: [],
+      working: [],
+      workingTotal: 0,
+      done: [],
+      onSeeNeeds: () => undefined,
+      onSeeDone: () => undefined,
       arrangement: defaultArrangement(),
       catalog: [],
       known: true,
       failed: false,
-      onOpen,
+      onOpen: () => undefined,
       onMove: () => undefined,
       onHide: () => undefined,
       onShow: () => undefined,
@@ -54,138 +63,155 @@ function draw(props: Partial<Parameters<typeof HomeScreen>[0]> = {}) {
   });
 }
 
-it("hides an empty section, says all quiet, and keeps the chat at the top", () => {
+it("with nothing to show, says nothing needs you and keeps the chat", () => {
   draw();
   expect(container.querySelector("[data-home-section]")).toBeNull();
-  expect(container.querySelector("[data-home-empty]")?.textContent).toContain("All quiet.");
-  expect(container.querySelector("[data-home] > div")?.firstElementChild?.hasAttribute("data-home-start")).toBe(true);
-  expect(container.textContent).not.toContain("Start a chat with Crew");
+  expect(container.querySelector("[data-home-empty]")?.textContent).toContain("Nothing needs you.");
+  expect(container.querySelector("h1")?.textContent).toBe("Home");
+  expect(container.querySelector("[data-home-date]")?.textContent).toBe("Wednesday 11 November");
+  expect(container.querySelector("[data-home-start]")).not.toBeNull();
+  expect(container.textContent).not.toContain("All quiet.");
+  expect(container.textContent).not.toContain("Projects");
   expect(container.querySelector("[data-home-summary]")).toBeNull();
-  expect(container.querySelector("[data-count]")).toBeNull();
-  expect(container.textContent).not.toMatch(/\d/);
+  expect(container.querySelector("[data-home-no-projects]")).toBeNull();
+  const input = container.querySelector<HTMLInputElement>("input[aria-label='Ask']")!;
+  expect(input.placeholder).toBe("Ask anything, or hand work to any project");
 });
 
-it("shows a section that has a line and hides one that does not", () => {
-  draw({
-    needsYou: [line({})],
-    moving: [line({ id: "m1", kind: "moving", text: "Crew · Write the notes · Ada" })],
-  });
+it("hides an empty section and shows one that has a line", () => {
+  const needs: HomeNeed[] = [{ key: "n1", sentence: "Should we ship?", stopped: false, actions: [], onOpen: () => undefined }];
+  const working: HomeWork[] = [{ key: "w1", text: "1 worker: notes", since: "since 03:40" }];
+  draw({ needs, needsTotal: 1, working, workingTotal: 1 });
   expect(container.querySelector("[data-home-section='needs-you']")).not.toBeNull();
   expect(container.querySelector("[data-home-section='moving-now']")).not.toBeNull();
   expect(container.querySelector("[data-home-section='recent']")).toBeNull();
+  expect(container.querySelector("[data-home-section='projects']")).toBeNull();
   expect(container.querySelector("[data-home-empty]")).toBeNull();
-  expect(container.querySelector("[data-home] > div")?.firstElementChild?.hasAttribute("data-home-start")).toBe(true);
+  expect(container.querySelector("[data-home-section='moving-now'] h2")?.textContent).toBe("Working now");
+  expect(container.querySelector("[data-home-section='needs-you'] h2")?.textContent).toBe("Needs you");
 });
 
-it("shows the morning summary only when it has a line", () => {
-  draw({
-    summary: [{ id: "task-1", kind: "task", text: "Crew · Write the notes", projectId: "crew" }],
-  });
-  expect(container.querySelector("[data-home-summary]")?.textContent).toContain("Crew · Write the notes");
-  expect(container.querySelector("[data-home-empty]")).toBeNull();
-  draw({ summary: [] });
-  expect(container.querySelector("[data-home-summary]")).toBeNull();
-  expect(container.querySelector("[data-home-empty]")?.textContent).toContain("All quiet.");
+it("shows at most the rows it was given, and the count is the whole list", () => {
+  const needs: HomeNeed[] = [{ key: "n1", project: "Crew", sentence: "Should we ship?", stopped: false, actions: [], onOpen: () => undefined }];
+  let seen = 0;
+  draw({ needs, needsTotal: 6, onSeeNeeds: () => { seen += 1; } });
+  expect(container.querySelectorAll("[data-home-line='need']")).toHaveLength(1);
+  expect(container.querySelector("[data-home-count='6']")?.textContent).toBe("6");
+  expect(container.querySelector("[data-home-project]")?.textContent).toBe("Crew");
+  act(() => container.querySelector<HTMLButtonElement>("[data-home-see='needs']")!.click());
+  expect(seen).toBe(1);
 });
 
-it("does not say all quiet before the first load, including when the load failed", () => {
-  draw({ known: false, failed: false });
-  expect(container.querySelector("[data-home-loading]")).not.toBeNull();
-  expect(container.querySelector("[data-home-empty]")).toBeNull();
-  draw({ known: false, failed: true });
-  expect(container.querySelector("[data-home-retry]")?.textContent).toContain("Couldn't load home. Trying again.");
-  expect(container.querySelector("[data-home-empty]")).toBeNull();
-});
-
-it("keeps a hidden section hidden and still lists a pinned panel that is not in the catalog", () => {
-  const arrangement = pinPanel(hideSection(defaultArrangement(), "needs-you"), "my-panels", "missing");
-  draw({
-    needsYou: [line({})],
-    arrangement,
-    catalog: [{ plugin: "my-panels", panelId: "board", title: "Example board", spec: { kind: "bespoke", title: "Example board", html: "<p>Example</p>", permissions: [] } }],
-  });
-  expect(container.querySelector("[data-home-section='needs-you']")).toBeNull();
-  expect(container.querySelector("[data-home-empty]")).toBeNull();
-  expect(container.textContent).toContain("Show Needs you");
-  expect(container.querySelector("[data-home-section='panel:my-panels:missing']")?.textContent).toContain("This panel is not available.");
-  expect(container.textContent).toContain("Pin Example board");
-});
-
-it("shows a builders line in Needs you with its own Free up space action, and the action opens it", () => {
+it("a builders line sits in Needs you and does not add to the count", () => {
   const opened: HomeLine[] = [];
-  const builders = line({
+  const builders: HomeLine = {
     id: "builders:builders-disk",
     kind: "builders",
     text: "New builders are waiting: 24 GB free, under the 30 GB floor",
     projectId: "",
     target: "builders-disk",
     at: 0,
-  });
-  draw({ needsYou: [builders, line({})], onOpen: (picked) => opened.push(picked) });
+  };
+  draw({ builders: [builders], onOpen: (line) => opened.push(line) });
   const row = container.querySelector("[data-home-section='needs-you'] [data-home-line='builders']");
-  expect(row?.textContent).toContain("New builders are waiting: 24 GB free, under the 30 GB floor");
-  expect(row?.textContent).toContain("Free up space");
-  // The row holds a text and one button; it is not itself a button (no button inside a button).
   expect(row?.tagName).toBe("DIV");
-  const action = row?.querySelector("button[data-home-action='free-up-space']") as HTMLButtonElement | null;
-  expect(action?.textContent).toBe("Free up space");
-  expect(row?.querySelectorAll("button")).toHaveLength(1);
+  expect(row?.textContent).toContain("Free up space");
+  expect(container.querySelector("[data-home-count]")).toBeNull();
+  expect(container.querySelector("[data-home-see='needs']")).toBeNull();
   expect(container.querySelector("[data-home-empty]")).toBeNull();
-  // The other line in the section is still a plain button that opens its own place.
-  expect(container.querySelector("button[data-home-line='decision']")?.textContent).toContain("Crew · Should we ship?");
-  act(() => action?.click());
+  act(() => row?.querySelector<HTMLButtonElement>("button[data-home-action='free-up-space']")!.click());
   expect(opened).toEqual([builders]);
 });
 
-it("asks with one box and one send button, and an empty ask says nothing", () => {
+it("does not say nothing needs you before the first load", () => {
+  draw({ known: false, failed: false });
+  expect(container.querySelector("[data-home-loading]")).not.toBeNull();
+  expect(container.querySelector("[data-home-empty]")).toBeNull();
+  expect(container.querySelector("[data-home-start]")).toBeNull();
+  draw({ known: false, failed: true });
+  expect(container.querySelector("[data-home-retry]")?.textContent).toContain("Couldn't load home. Trying again.");
+  expect(container.querySelector("[data-home-empty]")).toBeNull();
+});
+
+it("keeps customize on one button: hide, show, and pin", () => {
+  const arrangement = pinPanel(hideSection(defaultArrangement(), "needs-you"), "my-panels", "missing");
+  draw({
+    needs: [{ key: "n1", sentence: "Should we ship?", stopped: false, actions: [], onOpen: () => undefined }],
+    needsTotal: 1,
+    arrangement,
+    catalog: [{ plugin: "my-panels", panelId: "board", title: "Example board", spec: { kind: "bespoke", title: "Example board", html: "<p>Example</p>", permissions: [] } }],
+  });
+  expect(container.querySelector("[data-home-section='needs-you']")).toBeNull();
+  expect(container.textContent).not.toContain("Show Needs you");
+  expect(container.textContent).not.toContain("Pin a panel");
+  act(() => container.querySelector<HTMLButtonElement>("[data-home-action='customize']")!.click());
+  expect(container.textContent).toContain("Show Needs you");
+  expect(container.textContent).toContain("Pin Example board");
+  expect(container.querySelector("[data-home-section='panel:my-panels:missing']")?.textContent).toContain("This panel is not available.");
+});
+
+it("an empty ask says nothing", () => {
   const asked: string[] = [];
   draw({ onAsk: (text) => asked.push(text) });
   const start = container.querySelector("[data-home-start]")!;
-  // One visible "Ask" at most: the label is the box's accessible name and its placeholder, not a heading over it.
-  expect(start.textContent).not.toContain("Ask");
-  const input = start.querySelector<HTMLInputElement>("input[aria-label='Ask']")!;
-  expect(input.placeholder).toMatch(/Ask what's happening/);
   const send = start.querySelector<HTMLButtonElement>("button[aria-label='Send']")!;
   expect(send.disabled).toBe(true);
   act(() => start.querySelector("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })));
   expect(asked).toEqual([]);
 });
 
-it("lists every project in the overview, and opens one", () => {
-  const opened: HomeLine[] = [];
-  draw({
-    projects: [
-      line({ id: "project:crew", kind: "project", text: "Crew · needs you", target: "crew" }),
-      line({ id: "project:notes", kind: "project", text: "Notes", projectId: "notes", target: "notes" }),
-    ],
-    onOpen: (item) => opened.push(item),
-  });
-  const section = container.querySelector("[data-home-section='projects']")!;
-  expect(section.querySelector("h2")?.textContent).toBe("Projects");
-  const rows = [...section.querySelectorAll<HTMLButtonElement>("[data-home-line='project']")];
-  expect(rows.map((row) => row.textContent)).toEqual(["Crew · needs you", "Notes"]);
-  act(() => rows[1].click());
-  expect(opened.map((item) => item.target)).toEqual(["notes"]);
-  // A list of projects with nothing happening in them is still a quiet Home.
-  expect(container.querySelector("[data-home-empty]")?.textContent).toContain("All quiet.");
+it("with no chief, offers to add one and does not ask", () => {
+  let added = 0;
+  draw({ chief: { ...chief, missing: true, onAdd: () => { added += 1; } } });
+  expect(container.querySelector("[data-home-no-chief]")?.textContent).toContain("There is no Chief of Staff.");
+  expect(container.querySelector("input")).toBeNull();
+  act(() => container.querySelector<HTMLButtonElement>("[data-home-action='add-chief']")!.click());
+  expect(added).toBe(1);
 });
 
-it("says why there are no projects instead of all quiet, and offers the way back", () => {
-  let brought = 0;
-  let made = 0;
-  draw({ noProjects: { inAshOs: true }, onBringOver: () => brought++, onNewProject: () => made++ });
-  const note = container.querySelector("[data-home-no-projects]")!;
-  expect(note.textContent).toContain("Your projects haven't come over from Ash OS yet.");
-  expect(container.querySelector("[data-home-empty]")).toBeNull();
-  act(() => note.querySelector<HTMLButtonElement>("[data-home-action='bring-over']")!.click());
-  act(() => note.querySelector<HTMLButtonElement>("[data-home-action='new-project']")!.click());
-  expect([brought, made]).toEqual([1, 1]);
+it("names the chief, the scope, and opens the same chat", () => {
+  let opened = 0;
+  draw({
+    chief: { ...chief, scope: "read all 7 projects", you: "how is EXO going?", reply: "EXO is fine.", onOpenChat: () => { opened += 1; } },
+  });
+  expect(container.querySelector("[data-home-chief]")?.textContent).toBe("Coordinator");
+  expect(container.querySelector("[data-home-scope]")?.textContent).toBe("read all 7 projects");
+  expect(container.querySelector("[data-home-you]")?.textContent).toBe("how is EXO going?");
+  expect(container.querySelector("[data-home-reply]")?.textContent).toContain("EXO is fine.");
+  act(() => container.querySelector<HTMLButtonElement>("[data-home-action='open-chat']")!.click());
+  expect(opened).toBe(1);
+});
 
-  draw({ noProjects: { inAshOs: true, busy: true, outcome: "Ash OS didn't answer. Try again when it's running." }, onBringOver: () => brought++ });
-  expect(container.querySelector<HTMLButtonElement>("[data-home-action='bring-over']")?.disabled).toBe(true);
-  expect(container.querySelector("[data-home-import-outcome]")?.textContent).toContain("Ash OS didn't answer.");
+it("a stopped row is red Needs you, never Stuck, and its action is not the row", () => {
+  const clicked: string[] = [];
+  const needs: HomeNeed[] = [{
+    key: "stopped:1",
+    sentence: "The notes worker stopped.",
+    stopped: true,
+    actions: [{ label: "Open Ada's chat", onClick: () => clicked.push("action") }],
+    onOpen: () => clicked.push("open"),
+  }];
+  draw({ needs, needsTotal: 1 });
+  const row = container.querySelector("[data-home-line='need']")!;
+  expect(row.tagName).toBe("DIV");
+  expect(row.textContent).toContain("Needs you");
+  expect(row.textContent).not.toContain("Stuck");
+  expect(container.textContent).not.toContain("Stuck");
+  const mark = row.querySelector<HTMLElement>("[data-home-mark='needs-you']")!;
+  expect(["rgb(255, 107, 107)", "#ff6b6b", "rgb(255,107,107)"]).toContain(mark.style.color);
+  act(() => row.querySelector<HTMLButtonElement>("[data-home-action=\"Open Ada's chat\"]")!.click());
+  expect(clicked).toEqual(["action"]);
+});
 
-  draw({ noProjects: { inAshOs: false }, onBringOver: () => brought++, onNewProject: () => made++ });
-  expect(container.querySelector("[data-home-no-projects]")?.textContent).toContain("No projects yet.");
-  expect(container.querySelector("[data-home-action='bring-over']")).toBeNull();
+it("shows working and done lines, with the worker count and the time", () => {
+  const working: HomeWork[] = [{ key: "crew", project: "Crew", text: "4 workers: chat move fixes, PR watch, commit guard, crew locks", since: "since 03:40", onOpen: () => undefined }];
+  const done: HomeDone[] = [{ key: "m1", project: "Crew", text: "Merged the notes", time: "09:05", onOpen: () => undefined }];
+  let seen = 0;
+  draw({ working, workingTotal: 4, done, onSeeDone: () => { seen += 1; } });
+  expect(container.querySelector("[data-home-workers]")?.textContent).toBe("4 workers");
+  expect(container.querySelector("[data-home-since]")?.textContent).toBe("since 03:40");
+  expect(container.querySelector("[data-home-section='recent'] h2")?.textContent).toBe("Done today");
+  expect(container.querySelector("[data-home-time]")?.textContent).toBe("09:05");
+  act(() => container.querySelector<HTMLButtonElement>("[data-home-see='done']")!.click());
+  expect(seen).toBe(1);
 });

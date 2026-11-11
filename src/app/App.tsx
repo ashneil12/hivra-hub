@@ -286,6 +286,7 @@ import { noteOpenedChat } from "../features/home/model/store";
 import { stampChat } from "../features/home/model/openedChat";
 import { useHomeOnOpen } from "../features/home/ui/useHomeOnOpen";
 import { useHomeOpener } from "../features/home/ui/useHomeOpener";
+import { notifyHomeChief, setHomeChiefHost } from "../features/home/model/homeChief";
 import {
   codingTeamView,
   noteCodingTeamView,
@@ -13146,6 +13147,53 @@ function Workspace({
     },
     [],
   );
+
+  // WP-212: Home's box uses the Chief of Staff's own chat, the same session the sidebar opens.
+  useEffect(() => setHomeChiefHost({
+    ensure: (monoId) => ensureMonoSession(monoId, {
+      home: homeDir,
+      load: ensureOpenSession,
+      create: (path) => newDefaultSession(path),
+      add: (created) => {
+        sessionsRef.current = [...sessionsRef.current, created];
+        setSessions(sessionsRef.current);
+      },
+    }),
+    submit: (sessionId, text) => submitSession(sessionId, text),
+    answer: (sessionId, requestId, reply) => onQuestionReply(sessionId, requestId, reply),
+    read: (sessionId) => {
+      const session = sessionsRef.current.find((item) => item.id === sessionId);
+      if (!session) return undefined;
+      const pending = session.pendingQuestion;
+      return {
+        id: session.id,
+        busy: session.busy,
+        blocks: session.blocks.map((block) => ({
+          role: block.role,
+          text: block.text,
+          internal: block.internal,
+          draft: block.draft,
+          streaming: block.streaming,
+          monoNote: block.monoNote,
+          monoSessionCompletion: block.monoSessionCompletion,
+          monoCheck: block.monoCheck,
+        })),
+        pendingQuestion: pending
+          ? {
+              requestId: pending.requestId,
+              questions: pending.questions.map((question) => ({
+                id: question.id,
+                prompt: question.prompt,
+                options: question.options.map((option) => ({ id: option.id, label: option.label })),
+              })),
+            }
+          : undefined,
+      };
+    },
+  }), [ensureOpenSession, submitSession, onQuestionReply]);
+  useEffect(() => {
+    notifyHomeChief();
+  }, [sessions]);
 
   // Autopilot: covered chats take their own recommendation (red list waits for Ash), agents resume at a limit's
   // reset, and armed resumes come back after a restart (features/autopilot).
