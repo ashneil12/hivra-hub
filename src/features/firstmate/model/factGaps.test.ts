@@ -656,3 +656,68 @@ describe("leftover: coverage and stale follow the package", () => {
     ).toEqual([]);
   });
 });
+
+describe("leftover: sed then a check", () => {
+  function sedThen(command: string, answer: string) {
+    const blocks: Block[] = [
+      block({ role: "user", text: "do it" }),
+      block({
+        id: "run",
+        role: "tool",
+        tool: { kind: "execute", command, status: "completed" },
+      }),
+    ];
+    return factsFromBlocks(blocks, answer);
+  }
+
+  it("leftover: sed -i followed by a typecheck in the same command is after the edit", () => {
+    const commands = [
+      "sed -i 's/a/b/' src/features/crew/row.ts && npx tsc --noEmit",
+      "sed -i 's/a/b/' src/features/crew/row.ts && npm run typecheck",
+      "sed -i 's/a/b/' src/features/crew/row.ts && cargo check",
+      "sed -i 's/a/b/' src/features/crew/row.ts && cargo clippy",
+      "sed -i 's/a/b/' src/features/crew/row.ts && cargo build",
+      "sed -i 's/a/b/' src/features/crew/row.ts && npx eslint src/features/crew/row.ts",
+      "sed -i 's/a/b/' src/features/crew/row.ts\nnpx tsc --noEmit",
+    ];
+    for (const command of commands) {
+      const facts = sedThen(command, "The typecheck passed.");
+      const edit = facts.edits.find((row) => row.path.endsWith("row.ts"));
+      const check = facts.checks[0];
+      expect(edit, command).toBeDefined();
+      expect(check, command).toBeDefined();
+      expect(edit && check && edit.at < check.at, command).toBe(true);
+      expect(doneGaps(facts), command).toEqual(["No test reached crew."]);
+    }
+  });
+
+  it("leftover: a typecheck after sed does not stand in for the test", () => {
+    const blocks: Block[] = [
+      block({ role: "user", text: "do it" }),
+      block({ id: "t", role: "tool", tool: { kind: "execute", command: "npx vitest run", status: "completed" } }),
+      block({
+        id: "run",
+        role: "tool",
+        tool: {
+          kind: "execute",
+          command: "sed -i 's/a/b/' src/features/crew/row.ts && npx tsc --noEmit",
+          status: "completed",
+        },
+      }),
+    ];
+    const facts = factsFromBlocks(blocks, "The typecheck passed.");
+    expect(doneGaps(facts)).toEqual(["Tests went stale after the last edit."]);
+  });
+
+  it("leftover: a typecheck before sed, or a piped typecheck, is not after the edit", () => {
+    for (const command of [
+      "npx tsc --noEmit && sed -i 's/a/b/' src/features/crew/row.ts",
+      "sed -i 's/a/b/' src/features/crew/row.ts && npx tsc --noEmit | tail",
+    ]) {
+      const facts = sedThen(command, "The typecheck passed.");
+      expect(doneGaps(facts), command).toContain(
+        "The answer says the build passed, but no check ran after the last edit.",
+      );
+    }
+  });
+});

@@ -857,25 +857,25 @@ function editPaths(block: Block): string[] {
 }
 
 /**
- * A `sed -i` (or `--in-place`) writes the files after its script. The script itself is not a path. `beforeTest` is true
- * when a real test run comes later in the same command, so that run is after the edit.
+ * A `sed -i` (or `--in-place`) writes the files after its script. The script itself is not a path.
+ * `beforeCheck` is true when a real test or check comes later in the same command, so that run is after the edit.
  */
-function shellEdits(command: string): { path: string; beforeTest: boolean }[] {
+function shellEdits(command: string): { path: string; beforeCheck: boolean }[] {
   if (!command) return [];
-  const out: { path: string; beforeTest: boolean }[] = [];
+  const out: { path: string; beforeCheck: boolean }[] = [];
   const all = invocations(commandText(command));
   all.forEach((invocation, index) => {
     if (invocation.piped || invocation.program.toLowerCase() !== "sed") return;
-    const beforeTest = all
+    const beforeCheck = all
       .slice(index + 1)
-      .some((later) => !later.masked && roleOf(later) === "test");
+      .some((later) => !later.masked && roleOf(later) !== undefined);
     const inplace = invocation.args.some(
       (arg) => arg === "-i" || arg.startsWith("-i") || arg === "--in-place" || arg.startsWith("--in-place="),
     );
     if (!inplace) return;
     const operands = invocation.args.filter((arg) => !arg.startsWith("-"));
     for (const file of operands.slice(1)) {
-      if (looksLikePath(file) || /\.[A-Za-z0-9]+$/.test(file)) out.push({ path: file, beforeTest });
+      if (looksLikePath(file) || /\.[A-Za-z0-9]+$/.test(file)) out.push({ path: file, beforeCheck });
     }
   });
   return out;
@@ -927,9 +927,9 @@ export function factsFromBlocks(blocks: readonly Block[], answer: string): FactT
       checks.push({ command, status, at });
     }
     for (const path of editPaths(block)) edits.push({ path, at });
-    for (const { path, beforeTest } of shellEdits(command)) {
-      // An edit and then a test in one command: the edit is placed just before this block's run.
-      const editAt = beforeTest ? at - 0.5 : at;
+    for (const { path, beforeCheck } of shellEdits(command)) {
+      // An edit and then a test or check in one command: the edit is placed just before this block's run.
+      const editAt = beforeCheck ? at - 0.5 : at;
       if (!edits.some((edit) => edit.path === path && edit.at === editAt)) edits.push({ path, at: editAt });
     }
     if (block.taskList) {
