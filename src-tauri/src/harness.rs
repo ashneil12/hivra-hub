@@ -24,11 +24,13 @@ const MAX_STDOUT_LINE: usize = 8 * 1024 * 1024;
 const MAX_STDERR_LINE: usize = 64 * 1024;
 
 /// Reads stdout line by line and hands each line on until `on_line` says stop or the stream ends. With a cap, a line
-/// past it ends the read; without one, every line is read whole.
+/// past it is dropped and `on_dropped` is called then, before the next line is read. Without a cap, every line is read
+/// whole.
 pub(crate) fn read_stdout_lines<R: BufRead>(
     mut reader: R,
     cap: Option<usize>,
     mut on_line: impl FnMut(String) -> bool,
+    mut on_dropped: impl FnMut(usize),
 ) -> usize {
     let mut raw = Vec::new();
     let mut dropped = 0;
@@ -47,6 +49,7 @@ pub(crate) fn read_stdout_lines<R: BufRead>(
         if cap.is_some_and(|max| raw.len() > max && raw.last() != Some(&b'\n')) {
             skip_to_newline(&mut reader);
             dropped += 1;
+            on_dropped(dropped);
             continue;
         }
         let line = String::from_utf8_lossy(&raw)
@@ -89,10 +92,15 @@ mod stdout_cap_tests {
         let big = "x".repeat(65 * 1024);
         let input = format!("{big}\nnext\n");
         let mut got = Vec::new();
-        read_stdout_lines(Cursor::new(input.into_bytes()), Some(64 * 1024), |line| {
-            got.push(line);
-            true
-        });
+        read_stdout_lines(
+            Cursor::new(input.into_bytes()),
+            Some(64 * 1024),
+            |line| {
+                got.push(line);
+                true
+            },
+            |_| {},
+        );
         assert!(
             got.iter().any(|line| line == "next"),
             "the read ended at the long line"
@@ -104,10 +112,15 @@ mod stdout_cap_tests {
         let big = "x".repeat(9 * 1024 * 1024);
         let input = format!("{big}\nnext\n");
         let mut got = Vec::new();
-        read_stdout_lines(Cursor::new(input.into_bytes()), None, |line| {
-            got.push(line);
-            true
-        });
+        read_stdout_lines(
+            Cursor::new(input.into_bytes()),
+            None,
+            |line| {
+                got.push(line);
+                true
+            },
+            |_| {},
+        );
         assert_eq!(got.len(), 2);
         assert_eq!(got[0].len(), 9 * 1024 * 1024);
         assert_eq!(got[1], "next");
@@ -117,17 +130,25 @@ mod stdout_cap_tests {
     fn a_more_agents_line_past_the_cap_is_dropped_counted_and_the_read_goes_on() {
         let big = "x".repeat(9 * 1024 * 1024);
         let input = format!("first\n{big}\nnext\n");
-        let mut got = Vec::new();
+        let mut order = Vec::new();
         let dropped = read_stdout_lines(
             Cursor::new(input.into_bytes()),
             Some(8 * 1024 * 1024),
             |line| {
-                got.push(line);
+                order.push(line);
                 true
             },
+            |count| order.push(format!("dropped {count}")),
         );
-        // The over-cap line is not delivered. It is counted, so the caller can post its one status line.
-        assert_eq!(got, vec!["first".to_string(), "next".to_string()]);
+        // The over-cap line is not delivered. The drop is reported when it happens, not when the stream ends.
+        assert_eq!(
+            order,
+            vec![
+                "first".to_string(),
+                "dropped 1".to_string(),
+                "next".to_string()
+            ]
+        );
         assert_eq!(dropped, 1);
     }
 
@@ -136,10 +157,15 @@ mod stdout_cap_tests {
         let big = "x".repeat(9 * 1024 * 1024);
         let input = format!("{big}\n");
         let mut got = Vec::new();
-        let dropped = read_stdout_lines(Cursor::new(input.into_bytes()), None, |line| {
-            got.push(line);
-            true
-        });
+        let dropped = read_stdout_lines(
+            Cursor::new(input.into_bytes()),
+            None,
+            |line| {
+                got.push(line);
+                true
+            },
+            |_| {},
+        );
         assert_eq!(dropped, 0);
         assert_eq!(got.len(), 1);
     }
@@ -1282,8 +1308,18 @@ pub fn harness_spawn(
     if more_run {
         crate::more_agents::restrict_env(&mut cmd, &gui_search_path());
     }
-    let mut child =
-        spawn_managed(&mut cmd).map_err(|e| format!("Failed to start {command}: {e}"))?;
+    let mut child = match spawn_managed(&mut cmd) {
+        Ok(child) => child,
+        Err(error) => {
+            // The run folder was made before the spawn. A failed start must not leave it behind.
+            if more_run {
+                if let Ok(data_dir) = app.path().app_data_dir() {
+                    let _ = crate::more_agents::remove_run_folder(&data_dir, &spawn_dir);
+                }
+            }
+            return Err(format!("Failed to start {command}: {error}"));
+        }
+    };
     let pid = child.id();
 
     let stdin = child
@@ -1357,33 +1393,38 @@ pub fn harness_spawn(
     let status_id = session_id.clone();
     thread::spawn(move || {
         let _routed_session = routed_session;
-        let dropped = read_stdout_lines(BufReader::new(stdout), stdout_cap, |line| {
-            if crate::harness_runs::ends_turn(&line) {
-                stdout_run
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .output(&line, crate::harness_runs::now_ms());
-            }
-            if let Some(store) = &stdout_store {
-                if line.contains("\"turn/completed\"")
-                    || line.contains("\"item/started\"")
-                    || line.contains("\"account/updated\"")
-                {
-                    store.sync_auth();
+        let _dropped = read_stdout_lines(
+            BufReader::new(stdout),
+            stdout_cap,
+            |line| {
+                if crate::harness_runs::ends_turn(&line) {
+                    stdout_run
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .output(&line, crate::harness_runs::now_ms());
                 }
-            }
-            stdout_tx.send(line).is_ok()
-        });
-        // One status line for the run's dropped lines, on the stderr channel so the ACP reader never sees it.
-        if dropped > 0 {
-            let _ = status_app.emit(
-                STDERR_EVENT,
-                HarnessLine {
-                    session_id: status_id.clone(),
-                    line: format!("A line over the length limit was dropped ({dropped})."),
-                },
-            );
-        }
+                if let Some(store) = &stdout_store {
+                    if line.contains("\"turn/completed\"")
+                        || line.contains("\"item/started\"")
+                        || line.contains("\"account/updated\"")
+                    {
+                        store.sync_auth();
+                    }
+                }
+                stdout_tx.send(line).is_ok()
+            },
+            |dropped| {
+                // On the stderr channel so the ACP reader never sees it, and when the line is dropped,
+                // not when stdout closes.
+                let _ = status_app.emit(
+                    STDERR_EVENT,
+                    HarnessLine {
+                        session_id: status_id.clone(),
+                        line: format!("A line over the length limit was dropped ({dropped})."),
+                    },
+                );
+            },
+        );
     });
 
     let stderr_app = app.clone();
@@ -1391,16 +1432,21 @@ pub fn harness_spawn(
     // A More agents child's stderr is capped too, so a child that writes forever cannot grow the app's memory.
     let stderr_cap = more_run.then_some(MAX_STDERR_LINE);
     thread::spawn(move || {
-        read_stdout_lines(BufReader::new(stderr), stderr_cap, |line| {
-            let _ = stderr_app.emit(
-                STDERR_EVENT,
-                HarnessLine {
-                    session_id: stderr_id.clone(),
-                    line,
-                },
-            );
-            true
-        });
+        read_stdout_lines(
+            BufReader::new(stderr),
+            stderr_cap,
+            |line| {
+                let _ = stderr_app.emit(
+                    STDERR_EVENT,
+                    HarnessLine {
+                        session_id: stderr_id.clone(),
+                        line,
+                    },
+                );
+                true
+            },
+            |_| {},
+        );
     });
 
     let wait_app = app.clone();
