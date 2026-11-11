@@ -1578,6 +1578,12 @@ pub fn retire(
     let reason = plain(reason, "The reason", 300)?;
     let project = project.trim();
     let key = key.trim();
+    // A secret card is not a standing answer. Retiring it would reopen it on the next ask, which clears the person's
+    // answer and puts the card on the reuse path. Checked on the folded key, so a capital or look-alike spelling is
+    // the same refusal, including when no such card is stored.
+    if is_secret_key(key) {
+        return Err("A secret's card cannot be retired.".into());
+    }
     let tx = conn
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(|e| e.to_string())?;
