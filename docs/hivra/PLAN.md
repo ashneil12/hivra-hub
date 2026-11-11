@@ -286,6 +286,17 @@ to 219, then 214 last.
 | [219](work/WP-219-agents-board.md) | The Agents board, the whole tree | M | 213 | yes |
 | [214](work/WP-214-words-and-leftovers.md) | Words, Settings and leftovers | L | 210 to 213, after 215 to 219 | yes |
 
+### Wave O: a private network for boxes, and a bridge to your own computer (Ash, 11 Nov 2026)
+
+Plan only. Every box on a private overlay with an empty inbound firewall, deny-by-default access rules (people reach
+boxes on SSH; boxes reach neither each other nor people's devices), and a bridge the owner switches on so a cloud agent
+can run a command on their own computer. Nothing is built, no firewall changes and no production machine is enrolled
+until Ash okays the page. It touches remote and phone access, so every build PR after it needs the WP-203 hard review.
+
+| WP | Title | Size | Depends on | Grok OK |
+| --- | --- | --- | --- | --- |
+| [220](work/WP-220-private-overlay-and-local-bridge.md) | A private network for Hivra boxes, and a bridge to your own computer (plan only) | L | 133, 61, 203 | no |
+
 ## Running it
 
 - Each wave runs as one agent per package, in parallel (up to about ten at once). Wave A can start the moment this

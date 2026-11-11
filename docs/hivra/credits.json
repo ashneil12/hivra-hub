@@ -485,6 +485,18 @@
       "url": "https://github.com/cloudflare/security-audit-skill",
       "licence": "MIT",
       "gave": "the structured security review: a coverage ledger, isolated hunters, a fresh verifier for each candidate, findings.json with two zero-dependency validators, and the reference notes for desktop IPC, supply chain and AI agents (WP-203)"
+    },
+    {
+      "name": "Tailscale",
+      "url": "https://github.com/tailscale/tailscale",
+      "licence": "BSD-3-Clause",
+      "gave": "the plan for a private overlay for Hivra boxes: tagged machines, deny-by-default access rules with policy tests, and tsnet for a bridge the owner starts on their own computer (WP-220, plan only)"
+    },
+    {
+      "name": "Headscale",
+      "url": "https://github.com/juanfont/headscale",
+      "licence": "BSD-3-Clause",
+      "gave": "the self-hosted control server recommended for the WP-220 overlay pilot, so the product does not depend on Tailscale's hosted plane (WP-220, plan only)"
     }
   ],
   "components": [
