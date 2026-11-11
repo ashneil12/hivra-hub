@@ -2592,6 +2592,10 @@ pub fn ensure_grant(
                     options: input.options.clone(),
                     recommended: Some(input.recommended.clone()),
                     task_ids: Vec::new(),
+                    // A secret card is never a standing answer. No match words, and it does not force past one.
+                    keys: Vec::new(),
+                    force: false,
+                    reason: None,
                 },
                 now,
             )?;
