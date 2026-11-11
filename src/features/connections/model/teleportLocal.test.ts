@@ -15,7 +15,7 @@ class TestMouseEvent {
 }
 (globalThis as unknown as { MouseEvent: unknown }).MouseEvent = TestMouseEvent;
 const CLICK = Object.assign(new TestMouseEvent("click"), { isTrusted: true }) as never;
-import { movedBlocks, teleportStateOf } from "./teleportState";
+import { incomingBlock, movedBlocks, teleportStateOf } from "./teleportState";
 import { isChatLocked, unlockChat } from "./teleportLock";
 import { sessionToChat, chatToSession, localMoveEndpoint, recapForRefusal, type LocalChatPort } from "./teleportLocal";
 import { sshMoveEndpoint, type HostCall } from "./teleportSsh";
@@ -289,5 +289,33 @@ describe("WP-177 LOW J: a Mono chat is not moved (its saved transcript is only t
     const port = memoryPort([session({ monoTranscript: { before: 40, firstBlockId: "x" } } as never)]);
     const mac = localMoveEndpoint({ machineId: "this-mac", port });
     await expect(mac.read(CHAT)).rejects.toThrow(/Mono chats cannot move/);
+  });
+});
+
+describe("WP-177 a chat moved back to this Mac carries its messages into the next turn", () => {
+  it("marks the brief as owed when the copy is opened, so the next turn sends the chat so far", async () => {
+    const copy = JSON.stringify({
+      chatId: CHAT,
+      provider: "claude",
+      providerSessionId: "",
+      model: "test-model-1",
+      effort: "high",
+      title: "Moved back",
+      transcript: JSON.stringify([
+        { id: "h1", role: "user", text: "the turn run on the host" },
+        { id: "h2", role: "assistant", text: "the host's reply" },
+      ]),
+      queued: [],
+    });
+    const row = session({
+      blocks: [...movedBlocks("Studio box", AT, HOST), incomingBlock("move-back-1", HOST, copy)],
+      providerSessionId: undefined,
+    });
+    const port = memoryPort([row]);
+    const local = localMoveEndpoint({ machineId: "this-mac", port });
+    await local.activate(CHAT, "move-back-1");
+    const opened = await port.get(CHAT);
+    expect(opened?.providerSessionId).toBeUndefined();
+    expect(opened?.moveBriefOwed).toBe(true);
   });
 });

@@ -259,6 +259,8 @@ export function localMoveEndpoint(options: {
         modelSettings: chat.effort ? { effort: chat.effort } : {},
         title: chat.title,
         providerSessionId: undefined,
+        // Its next turn sends the chat so far with the text: the copy has no provider conversation here (movedChatPrompt).
+        moveBriefOwed: true,
         queuedMessages: chat.queued.map((text, index) => ({ id: `${chat.chatId}-queued-${index}`, text, attachments: [] })),
         blocks: [...saved, returned],
       } as unknown as Session;

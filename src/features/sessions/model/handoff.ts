@@ -412,6 +412,26 @@ export function wrapRecoveredPrompt(brief: string, text: string): string {
   return `${lead}\n\n<chat_brief>\n${body}\n</chat_brief>\n\n${text}`;
 }
 
+/**
+ * WP-177: the first prompt of a moved chat that has no provider conversation yet. The chat so far is rebuilt from the
+ * saved messages with the same brief and wrapper as the recovery after a lost conversation (wrapRecoveredPrompt), then the
+ * turn's own text. Once the provider has a session id the turn resumes it, so nothing is added. Used by the host engine
+ * and the desktop send path alike, so a moved chat behaves the same on either machine.
+ */
+export function movedChatPrompt(session: Session, text: string, request: string = text): string {
+  if (!session.moveBriefOwed || session.providerSessionId) return text;
+  return recoveredChatPrompt(session, text, request);
+}
+
+/**
+ * The chat so far, rebuilt from the saved messages, then the turn's text: the one fallback prompt the desktop's recovery
+ * (App.tsx resumeFallback) and a moved chat's first turn (movedChatPrompt, host and desktop) both send. `request` is the
+ * turn's own message, which the brief leaves out of its prior-messages list (defaults to the text).
+ */
+export function recoveredChatPrompt(session: Session, text: string, request: string = text): string {
+  return wrapRecoveredPrompt(buildDeterministicHandoff(session, request), text);
+}
+
 export function wrapHandoffPrompt(
   brief: string,
   from: HarnessId,

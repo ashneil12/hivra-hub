@@ -35,6 +35,8 @@ export function hostChatSessions(store: HostStore): HostChatSessions {
         title: chat.title,
         cwd: project.cwd,
         blocks: savedMessages(chat.transcript),
+        // The first turn here carries the chat so far to the CLI (movedChatPrompt), since the copy has no provider session.
+        moveBriefOwed: true,
         queuedMessages: chat.queued.map((text, index) => ({ id: `${chat.chatId}-queued-${index}`, text, attachments: [] })),
       } as unknown as Session;
       let revision = 0;

@@ -32,6 +32,7 @@ import {
 import type { HostProvider } from "./providers";
 import { HostStore } from "./store";
 import { parseRemoteAttachments, resolveAttachments } from "./attachments";
+import { movedChatPrompt } from "../src/features/sessions/model/handoff";
 
 // Streamed output is written in batches. Anything a user may need to act on
 // (approvals, questions, errors, completion) is written immediately.
@@ -830,7 +831,8 @@ export class HostEngine {
             else
               await provider.send({
                 ...input,
-                text: prompt,
+                // WP-177: a moved chat's first turn carries the chat so far (the desktop's recovery brief, one shared function).
+                text: movedChatPrompt(session, prompt),
                 attachments: attachments?.map((file) =>
                   isVisionImage(file.mimeType) &&
                   file.path &&

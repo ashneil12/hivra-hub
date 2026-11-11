@@ -698,6 +698,11 @@ export type Session = {
   ephemeral?: boolean;
   /** Provider-side conversation id (Cursor ACP session id). */
   providerSessionId?: string;
+  /**
+   * WP-177: this chat was moved in (to a host, or back to this Mac) and has no provider conversation yet. Its next turn
+   * sends the chat so far with the text (movedChatPrompt), until the provider gives it a session id.
+   */
+  moveBriefOwed?: boolean;
   /** Named local credential profile used by Claude or Codex. */
   providerAccountId?: string;
   /** Context-window level reported by the harness. Absent until it reports. */

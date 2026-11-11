@@ -617,7 +617,8 @@ import {
   userMessagesAfterHandoff,
   wrapForkPrompt,
   wrapHandoffPrompt,
-  wrapRecoveredPrompt,
+  movedChatPrompt,
+  recoveredChatPrompt,
 } from "../features/sessions/model/handoff";
 import {
   applyMidThreadSwitch,
@@ -9674,18 +9675,21 @@ function Workspace({
               appAccess: operatorAccess,
               ...firstMateLaunch(current),
               ...crewLaunch(current, crewRows()), // WP-143
-              text,
+              // WP-177: a moved chat's first turn sends the chat so far with the text (the same brief as resumeFallback).
+              text: movedChatPrompt(
+                sessionsRef.current.find((s) => s.id === sessionId) ?? current,
+                text,
+                submittedText,
+              ),
               attachments: turnAttachments,
               ...(editedResend ? { onAccepted: acceptEditedResend } : {}),
               // A conversation whose saved transcript is gone starts again from the chat's own brief.
               resumeFallback: (prompt) =>
-                wrapRecoveredPrompt(
-                  buildDeterministicHandoff(
-                    sessionsRef.current.find((s) => s.id === sessionId) ??
-                      current,
-                    submittedText,
-                  ),
+                recoveredChatPrompt(
+                  sessionsRef.current.find((s) => s.id === sessionId) ??
+                    current,
                   prompt,
+                  submittedText,
                 ),
               onEvent: routeTurnEvent,
             });
