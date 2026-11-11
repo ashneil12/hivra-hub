@@ -6,7 +6,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { HUB_DB_DENY_RULES, SECRET_ACTION_DENY_RULES } from "../../../integrations/harness/core/credentialGuard";
+import { GIT_HOOK_DENY_RULES, HUB_DB_DENY_RULES, SECRET_ACTION_DENY_RULES } from "../../../integrations/harness/core/credentialGuard";
 
 const appData = fs.mkdtempSync(path.join(os.tmpdir(), "hub-leads-appdata-"));
 vi.mock("@tauri-apps/api/core", () => ({
@@ -110,7 +110,7 @@ describe("the project Leads", () => {
     };
     expect(hubChatIdentity("chat-hivra", lookups)).toMatchObject({ kind: "mono", monoId: "hivra-lead", role: "lead", chat: "chat-hivra" });
     // Nothing but the fence round the Monos' home, which every hub chat has, and no Claude Code worktrees of its own.
-    expect(hubMcpArgs("chat-hivra", { cli: null }, lookups)).toEqual(["--disallowedTools", ["Edit(~/agent-memory/monos/**)", ...OLD_MONO_COPY_DENIED_TOOLS, "mcp__ash-os", ...CREDENTIAL_DENIED_TOOLS, ...HUB_DB_DENY_RULES, ...SECRET_ACTION_DENY_RULES, ...HUB_WORKTREE_DENIED_TOOLS].join(",")]);
+    expect(hubMcpArgs("chat-hivra", { cli: null }, lookups)).toEqual(["--disallowedTools", ["Edit(~/agent-memory/monos/**)", ...OLD_MONO_COPY_DENIED_TOOLS, "mcp__ash-os", ...CREDENTIAL_DENIED_TOOLS, ...HUB_DB_DENY_RULES, ...SECRET_ACTION_DENY_RULES, ...GIT_HOOK_DENY_RULES, ...HUB_WORKTREE_DENIED_TOOLS].join(",")]);
   });
 
   it("have a soul that is the first mate contract plus who they are, and nothing about a particular person", () => {

@@ -1,7 +1,7 @@
 // The MCP entries each hub chat's Claude Code session gets (hubMcp.ts): who it is, and the delegate tool for a
 // Mono's own chat only, with its app connection passed as ${VAR} so the token never reaches argv.
 import { afterEach, describe, expect, it } from "vitest";
-import { HUB_DB_DENY_RULES, SECRET_ACTION_DENY_RULES } from "../../../integrations/harness/core/credentialGuard";
+import { GIT_HOOK_DENY_RULES, HUB_DB_DENY_RULES, SECRET_ACTION_DENY_RULES } from "../../../integrations/harness/core/credentialGuard";
 import {
   chatProjects,
   CHECKER_MONO_ID,
@@ -178,7 +178,7 @@ describe("the delegate tool", () => {
       "monocode",
     ]);
     // Only the fence round the Monos' home, which every hub chat has.
-    const fence = ["--disallowedTools", ["Edit(~/agent-memory/monos/**)", ...OLD_MONO_COPY_DENIED_TOOLS, "mcp__ash-os", ...CREDENTIAL_DENIED_TOOLS, ...HUB_DB_DENY_RULES, ...SECRET_ACTION_DENY_RULES].join(",")];
+    const fence = ["--disallowedTools", ["Edit(~/agent-memory/monos/**)", ...OLD_MONO_COPY_DENIED_TOOLS, "mcp__ash-os", ...CREDENTIAL_DENIED_TOOLS, ...HUB_DB_DENY_RULES, ...SECRET_ACTION_DENY_RULES, ...GIT_HOOK_DENY_RULES].join(",")];
     expect(hubMcpArgs("plain-1", { cli: CLI }, lookups)).toEqual(fence);
     // A Mono's chat also has Claude Code's own worktree tools kept from it (the app makes its workers' checkouts).
     expect(hubMcpArgs("chat-ed", { cli: null }, lookups)).toEqual([

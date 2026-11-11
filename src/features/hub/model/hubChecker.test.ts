@@ -6,7 +6,7 @@
 // Plus: it is made once, on the runtime's own model, with Alfred's slim soul and no schedule (it runs once after each
 // dump), an older install's hourly audit is switched off, and it never comes back over Ash's "remove".
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { HUB_DB_DENY_RULES, SECRET_ACTION_DENY_RULES } from "../../../integrations/harness/core/credentialGuard";
+import { GIT_HOOK_DENY_RULES, HUB_DB_DENY_RULES, SECRET_ACTION_DENY_RULES } from "../../../integrations/harness/core/credentialGuard";
 import { appActions, handleAgentApp, type AgentAppHost } from "../../agent-app/model/agentApp";
 import { newSession, type Session } from "../../sessions/model/session";
 import { monoContext, type MonoFiles } from "../../monos/model/monoFiles";
@@ -182,7 +182,7 @@ describe("2. the tool list: no MCP entry, no delegate tool, only Bash and readin
       "--tools",
       "Bash,Read,Grep,Glob",
       "--disallowedTools",
-      [...CHECKER_DENIED_TOOLS, "Edit(~/agent-memory/monos/**)", ...OLD_MONO_COPY_DENIED_TOOLS, "mcp__ash-os", ...CREDENTIAL_DENIED_TOOLS, ...HUB_DB_DENY_RULES, ...SECRET_ACTION_DENY_RULES].join(","),
+      [...CHECKER_DENIED_TOOLS, "Edit(~/agent-memory/monos/**)", ...OLD_MONO_COPY_DENIED_TOOLS, "mcp__ash-os", ...CREDENTIAL_DENIED_TOOLS, ...HUB_DB_DENY_RULES, ...SECRET_ACTION_DENY_RULES, ...GIT_HOOK_DENY_RULES].join(","),
     ]);
     expect(flag(hubMcpArgs("chat-checker", { cli: CLI }, lookups), "--mcp-config")).toBeUndefined();
   });
@@ -193,7 +193,7 @@ describe("2. the tool list: no MCP entry, no delegate tool, only Bash and readin
     // Its only deny rules are the ones every hub chat has (the Monos' home fence, no reading a saved login by hand) and
     // Claude Code's own worktree tools, since the app makes its workers' checkouts, and (r79) its settings skill, since a
     // chat that hands out work saves Ash's rules in the memory files.
-    expect(flag(args, "--disallowedTools")).toBe(["Edit(~/agent-memory/monos/**)", ...OLD_MONO_COPY_DENIED_TOOLS, "mcp__ash-os", ...CREDENTIAL_DENIED_TOOLS, ...HUB_DB_DENY_RULES, ...SECRET_ACTION_DENY_RULES, ...HUB_WORKTREE_DENIED_TOOLS, ...ORCHESTRATOR_DENIED_TOOLS].join(","));
+    expect(flag(args, "--disallowedTools")).toBe(["Edit(~/agent-memory/monos/**)", ...OLD_MONO_COPY_DENIED_TOOLS, "mcp__ash-os", ...CREDENTIAL_DENIED_TOOLS, ...HUB_DB_DENY_RULES, ...SECRET_ACTION_DENY_RULES, ...GIT_HOOK_DENY_RULES, ...HUB_WORKTREE_DENIED_TOOLS, ...ORCHESTRATOR_DENIED_TOOLS].join(","));
     expect(args).toContain(MONOCODE_ALLOWED_TOOLS);
   });
 });

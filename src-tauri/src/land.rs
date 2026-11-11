@@ -146,7 +146,7 @@ fn worker_patch(checkout: &Path, project: &Path) -> Result<(Vec<u8>, Vec<String>
         if !ok {
             return Err(format!("the copy's change couldn't be checked: {why}"));
         }
-        crate::commit_guard::scan_landing_patch(&String::from_utf8_lossy(&text))?;
+        crate::commit_guard::scan_landing_patch(project, &String::from_utf8_lossy(&text))?;
         let files = String::from_utf8_lossy(&names)
             .lines()
             .map(str::to_string)

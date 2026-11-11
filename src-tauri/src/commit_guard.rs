@@ -95,8 +95,13 @@ fn git_out(root: &Path, args: &[&str]) -> Result<String, String> {
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
-/// A check's git output, bounded: the run is killed after `CHECK_TIMEOUT`, and output past `MAX_CHECKED_BYTES` refuses.
-fn git_checked_output(root: &Path, args: &[&str]) -> Result<String, String> {
+/// A check's git output, bounded: the run is killed after `limit`, and output past `max_bytes` refuses.
+pub(crate) fn checked_output_within(
+    root: &Path,
+    args: &[&str],
+    limit: Duration,
+    max_bytes: usize,
+) -> Result<String, String> {
     let mut child = crate::fs::git_cmd()
         .arg("--no-pager")
         .arg("-C")
@@ -121,15 +126,15 @@ fn git_checked_output(root: &Path, args: &[&str]) -> Result<String, String> {
         let _ = stderr.read_to_end(&mut buf);
         buf
     });
-    let deadline = Instant::now() + CHECK_TIMEOUT;
+    let deadline = Instant::now() + limit;
     let status = loop {
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(TIMED_OUT.into());
+        }
         match child.try_wait().map_err(|e| e.to_string())? {
             Some(status) => break status,
-            None if Instant::now() >= deadline => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(TIMED_OUT.into());
-            }
             None => std::thread::sleep(Duration::from_millis(20)),
         }
     };
@@ -138,10 +143,14 @@ fn git_checked_output(root: &Path, args: &[&str]) -> Result<String, String> {
     if !status.success() {
         return Err(String::from_utf8_lossy(&err).trim().to_string());
     }
-    if out.len() > MAX_CHECKED_BYTES {
+    if out.len() > max_bytes {
         return Err(TOO_LARGE.into());
     }
     Ok(String::from_utf8_lossy(&out).into_owned())
+}
+
+fn git_checked_output(root: &Path, args: &[&str]) -> Result<String, String> {
+    checked_output_within(root, args, CHECK_TIMEOUT, MAX_CHECKED_BYTES)
 }
 
 /// Whether HEAD already has the path. A repo with no commits has nothing tracked.
@@ -286,12 +295,15 @@ fn added_lines(patch: &str) -> Vec<Added> {
 /// Scans the added lines of a unified diff for secrets. The gate uses the scrubber's token-shape patterns and its
 /// assigned-value pattern (a key name, then 16 or more letters and digits); it does not use the looser assignment
 /// fallback that the export scan uses, which refused ordinary code (`let token = home.join("token");`). A private key
-/// block spans lines, so the added lines of each file are also scanned together for one.
-pub fn scan_patch(patch: &str) -> Result<(), String> {
+/// block spans lines, so the added lines of each file are also scanned together for one. A line a person allowed
+/// (`allows`, for this repo `repo`) is not a finding.
+pub fn scan_patch_with(patch: &str, allows: &[Allow], repo: &str) -> Result<(), String> {
     let scrubber = crate::portable::scrubber();
     let added = added_lines(patch);
     for line in &added {
-        if !scrubber.findings(&line.text).is_empty() {
+        if !scrubber.findings(&line.text).is_empty()
+            && !is_allowed(allows, repo, &line.file, &line.text)
+        {
             return Err(secret_refusal(&line.file, line.line));
         }
     }
@@ -314,8 +326,34 @@ pub fn scan_patch(patch: &str) -> Result<(), String> {
                 .iter()
                 .find(|line| line.text.contains("-----BEGIN"))
                 .unwrap_or(&lines[0]);
-            return Err(secret_refusal(file, first.line));
+            if !is_allowed(allows, repo, file, &first.text) {
+                return Err(secret_refusal(file, first.line));
+            }
         }
+    }
+    Ok(())
+}
+
+/// The same scan with no allows: what a patch looks like before any person has allowed a line.
+pub fn scan_patch(patch: &str) -> Result<(), String> {
+    scan_patch_with(patch, &[], "")
+}
+
+/// Scans commit messages the way the diff is scanned: a secret pasted into a message is a finding too. The message
+/// text is never shown; the refusal names the message and its line.
+fn scan_message(message: &str) -> Result<(), String> {
+    let scrubber = crate::portable::scrubber();
+    for (index, line) in message.lines().enumerate() {
+        if !scrubber.findings(line).is_empty() {
+            return Err(secret_refusal("a commit message", index + 1));
+        }
+    }
+    if scrubber
+        .findings(message)
+        .iter()
+        .any(|name| name == "Private key")
+    {
+        return Err(secret_refusal("a commit message", 1));
     }
     Ok(())
 }
@@ -353,7 +391,11 @@ pub fn gate_range(root: &Path, revs: &[&str]) -> Result<(), String> {
     ];
     patch_args.extend_from_slice(revs);
     let patch = git_checked_output(root, &patch_args)?;
-    scan_patch(&patch)
+    scan_patch_with(&patch, &load_allows(), &repo_id(root))?;
+    let mut message_args = vec!["log", "--format=%B"];
+    message_args.extend_from_slice(revs);
+    let messages = git_checked_output(root, &message_args)?;
+    scan_message(&messages)
 }
 
 /// The remote a push from this checkout goes to: the current branch's configured remote, or `origin`.
@@ -387,11 +429,11 @@ pub fn gate_outgoing(root: &Path) -> Result<(), String> {
 }
 
 /// The gate for a patch that is about to land into a project (text of the same change, not the binary form).
-pub fn scan_landing_patch(patch: &str) -> Result<(), String> {
+pub fn scan_landing_patch(project: &Path, patch: &str) -> Result<(), String> {
     if patch.len() > MAX_CHECKED_BYTES {
         return Err(TOO_LARGE.into());
     }
-    scan_patch(patch)
+    scan_patch_with(patch, &load_allows(), &repo_id(project))
 }
 
 /// What the pre-push hook checks: the same gate as the app's own push, to the remote git is pushing to.
@@ -420,6 +462,124 @@ pub fn pre_push_main(args: &[String]) -> i32 {
             1
         }
     }
+}
+
+// ---- person-approved allows ------------------------------------------------------------------------------------------
+
+/// Where person-approved allows are kept: the app's own data folder, which no agent's repository reaches. The app
+/// sets it at startup; with no store, nothing is allowed.
+static ALLOW_STORE: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+
+pub fn set_allow_store(path: std::path::PathBuf) {
+    let _ = ALLOW_STORE.set(path);
+}
+
+/// One line a person allowed: the repository (a hash of its path), the file, and a hash of the line's text.
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct Allow {
+    pub repo: String,
+    pub file: String,
+    pub hash: String,
+}
+
+/// Proof that a person chose the allow in the app's UI. Only this module builds one, in the Tauri command below; no
+/// MCP tool, CLI subcommand or agent path can, so an agent cannot set an allow.
+pub struct PersonChoice(());
+
+fn digest(text: &str) -> String {
+    use sha2::{Digest, Sha256};
+    Sha256::digest(text.as_bytes())
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+fn repo_id(root: &Path) -> String {
+    digest(&root.to_string_lossy())
+}
+
+fn line_hash(text: &str) -> String {
+    digest(text)
+}
+
+fn is_allowed(allows: &[Allow], repo: &str, file: &str, text: &str) -> bool {
+    let hash = line_hash(text);
+    allows
+        .iter()
+        .any(|allow| allow.repo == repo && allow.file == file && allow.hash == hash)
+}
+
+/// The allows on disk. A store that is missing or does not parse allows nothing: every finding stays refused.
+fn load_allows() -> Vec<Allow> {
+    match ALLOW_STORE.get() {
+        Some(path) => read_allows(path),
+        None => Vec::new(),
+    }
+}
+
+fn read_allows(path: &Path) -> Vec<Allow> {
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|text| serde_json::from_str(&text).ok())
+        .unwrap_or_default()
+}
+
+fn save_allows(allows: &[Allow]) -> Result<(), String> {
+    let path = ALLOW_STORE
+        .get()
+        .ok_or_else(|| "the allow list has no folder yet".to_string())?;
+    write_allows(path, allows)
+}
+
+fn write_allows(path: &Path, allows: &[Allow]) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    let text = serde_json::to_string_pretty(allows).map_err(|e| e.to_string())?;
+    let temp = path.with_extension("json.tmp");
+    std::fs::write(&temp, text).map_err(|e| e.to_string())?;
+    std::fs::rename(&temp, path).map_err(|e| e.to_string())
+}
+
+/// The text of a line in the repository's HEAD: what a refusal's `file:line` points at now.
+fn head_line(root: &Path, file: &str, line: usize) -> Result<String, String> {
+    let text = git_out(root, &["show", &format!("HEAD:{file}")])?;
+    text.lines()
+        .nth(line.saturating_sub(1))
+        .map(str::to_string)
+        .ok_or_else(|| format!("{file} has no line {line} at HEAD"))
+}
+
+/// Records a person's allow for one flagged line. The line's text is read from HEAD, so the allow matches only that
+/// exact line of that exact file in that repository.
+pub fn allow_finding(
+    _choice: PersonChoice,
+    repo: &Path,
+    file: &str,
+    line: usize,
+) -> Result<(), String> {
+    let text = head_line(repo, file, line)?;
+    let mut allows = load_allows();
+    let allow = Allow {
+        repo: repo_id(repo),
+        file: file.to_string(),
+        hash: line_hash(&text),
+    };
+    if !allows.contains(&allow) {
+        allows.push(allow);
+    }
+    save_allows(&allows)
+}
+
+/// Allows one flagged line from the app's UI (registered in lib.rs; the webview calls it from the refusal or Settings).
+#[tauri::command]
+pub async fn commit_guard_allow(repo: String, file: String, line: usize) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let root = crate::fs::expand_home(&repo);
+        allow_finding(PersonChoice(()), &root, &file, line)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[cfg(test)]

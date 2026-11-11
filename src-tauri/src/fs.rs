@@ -2912,7 +2912,7 @@ fn git_head_message_for(root: &Path) -> Result<String, String> {
 
 /// Pushes the current branch with an explicit refspec, to the remote the guard checked (WP-200). A bare `git push`
 /// would follow the person's push configuration, which the guard does not read.
-fn git_push_for(root: &Path) -> Result<(), String> {
+pub(crate) fn git_push_for(root: &Path) -> Result<(), String> {
     let upstream = git_stdout(root, &["rev-parse", "--abbrev-ref", "@{upstream}"]).is_some();
     let remote = if upstream {
         crate::commit_guard::push_remote(root)

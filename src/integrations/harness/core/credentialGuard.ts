@@ -7,8 +7,50 @@
 export const CREDENTIAL_BLOCK_MESSAGE =
   "Blocked by MonoCode: that reads a saved password, key or token, which agents never do. Don't retry it or look for it another way. If you need it, ask Ash on its own line: \"Needs Ash (provide): <what you need and why>\".";
 
+/**
+ * WP-200 (PR #227 review, item 3): a crew's push or commit must go through the hooks the crew was started with. The
+ * pre-push hook checks secrets and agent files before anything leaves, and the commit hooks add attribution, so a
+ * command that turns them off is held like a secret action. A person in their own shell can still skip a hook; this
+ * stops the agent's shell only.
+ */
+export const GIT_HOOK_BLOCK_MESSAGE =
+  "Blocked by MonoCode: a push or commit that skips the hooks, or points git at another hooks folder or config, skips the secret and attribution checks. Don't retry it or look for another way. Push or commit with the normal command. If a check refuses, read its line and ask Ash on its own line: \"Needs Ash (provide): <what the check refused and why>\".";
+
+/** Claude Code deny rules for the same skips (every Claude process and hub chat carries them). */
+export const GIT_HOOK_DENY_RULES: readonly string[] = [
+  "Bash(*git*push*--no-v*)",
+  "Bash(*git*push* -n *)",
+  "Bash(*git*push* -n)",
+  "Bash(*git*commit*--no-v*)",
+  "Bash(*git*commit* -n *)",
+  "Bash(*git*commit* -n)",
+  "Bash(*core.hooksPath*)",
+  "Bash(*GIT_CONFIG_*)",
+  "Bash(*--config-env*)",
+  "Bash(*git* -c alias.*)",
+];
+
+const GIT_HOOK_SKIP: readonly RegExp[] = [
+  // a push or commit with --no-verify (or any unambiguous prefix of it), or -n
+  /\bgit\b[^;&|\n]*\b(?:push|commit)\b[^;&|\n]*(?:--no-v\w*|\s-n(?=\s|$))/i,
+  // another hooks folder, set on the command line, in the environment, or in config
+  /core\.hookspath/i,
+  // git's environment overrides of its own configuration
+  /\bGIT_CONFIG_(?:COUNT|KEY_\d+|VALUE_\d+|PARAMETERS|GLOBAL|SYSTEM|NOSYSTEM)\b/,
+  // an alias that can carry a skip under another name
+  /\bgit\b[^;&|\n]*\s-c\s*=?\s*alias\./i,
+  /\bgit\b[^;&|\n]*--config-env\b/i,
+];
+
+/** The reason a command skips a git hook, or undefined. */
+export function gitHookSkipBlock(command?: string): string | undefined {
+  if (!command) return undefined;
+  return GIT_HOOK_SKIP.some((pattern) => pattern.test(command)) ? GIT_HOOK_BLOCK_MESSAGE : undefined;
+}
+
 /** Claude Code permission rules, passed as --disallowedTools; deny rules hold even in bypass mode. */
 export const CREDENTIAL_DENY_RULES: readonly string[] = [
+  ...GIT_HOOK_DENY_RULES,
   "Bash(security find-generic-password:*)",
   "Bash(security find-internet-password:*)",
   "Bash(security find-certificate:*)",
@@ -84,6 +126,8 @@ export function credentialBlock(
 ): string | undefined {
   if (!call) return undefined;
   home ??= cwd?.match(/^\/(?:Users|home)\/[^/]+/)?.[0];
+  const hookSkip = gitHookSkipBlock(call.command);
+  if (hookSkip) return hookSkip;
   const secret = secretActionBlock(call.command);
   if (secret) return secret;
   const texts = [call.command ?? "", ...(call.paths ?? [])].filter(Boolean);

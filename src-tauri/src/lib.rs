@@ -467,6 +467,8 @@ pub fn run() {
                     error: format!("the app's data folder is {app_data:?}"),
                 });
             }
+            // WP-200: the person-approved allows of the commit guard live in this copy's data folder, nowhere else.
+            commit_guard::set_allow_store(claim.data_dir.join("commit-guard-allows.json"));
             // WP-90: this copy's proxy answers every stack name, loopback only. A dev copy
             // keeps its own registry and takes the next free port above 7400.
             let dev_copy = identity.kind != instance::Kind::Daily;
@@ -828,6 +830,7 @@ pub fn run() {
             fs::git_range_context,
             fs::git_pr_status,
             fs::git_pr_create,
+            commit_guard::commit_guard_allow,
             fs::git_github_status,
             fs::github_monocode_star_status,
             fs::github_star_monocode,

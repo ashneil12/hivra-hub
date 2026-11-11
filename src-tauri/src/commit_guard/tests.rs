@@ -2,6 +2,7 @@ use super::*;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::Duration;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// A key shaped like an Anthropic key, built here so no source file holds a real secret.
@@ -456,6 +457,12 @@ fn land_and_self_build_check_what_they_ship() {
             "{file} stages or lands without the commit guard"
         );
     }
+    // The self-build cherry-pick gate is the exact call apply makes before it picks.
+    let self_build = fs::read_to_string(src.join("self_build.rs")).unwrap();
+    assert!(
+        self_build.contains("commit_guard::gate_range(repo, &[range.as_str()])"),
+        "self_build::apply picks commits without the commit guard's range gate"
+    );
 }
 
 #[test]
@@ -548,4 +555,158 @@ fn a_transcript_in_the_hivra_folder_is_left_out_of_staging() {
     repo.write("src/app.txt", "shipped\n");
     stage_all(repo.path()).expect("staging runs");
     assert_eq!(repo.staged(), vec!["src/app.txt".to_string()]);
+}
+
+// ---- review round 3 -------------------------------------------------------------------------------------------------
+
+#[test]
+fn an_allowed_line_is_not_a_finding_and_only_that_line_is() {
+    let key = fake_key();
+    let line = format!("const KEY: &str = \"{key}\";");
+    let patch = patch_lines("src/config.rs", 2, &[&line]);
+    let allow = Allow {
+        repo: "repo-a".into(),
+        file: "src/config.rs".into(),
+        hash: line_hash(&line),
+    };
+    scan_patch_with(&patch, std::slice::from_ref(&allow), "repo-a")
+        .expect("the allowed line passes");
+    let other_file = Allow {
+        file: "src/other.rs".into(),
+        ..allow.clone()
+    };
+    assert!(
+        scan_patch_with(&patch, &[other_file], "repo-a").is_err(),
+        "an allow for another file passed"
+    );
+    assert!(
+        scan_patch_with(&patch, std::slice::from_ref(&allow), "repo-b").is_err(),
+        "an allow for another repository passed"
+    );
+    let changed = format!("{line} // changed");
+    let other_line = Allow {
+        hash: line_hash(&changed),
+        ..allow.clone()
+    };
+    assert!(
+        scan_patch_with(&patch, &[other_line], "repo-a").is_err(),
+        "an allow for other text on the line passed"
+    );
+}
+
+#[test]
+fn an_allow_store_that_does_not_parse_allows_nothing() {
+    let dir = Repo::dir("allow-store");
+    let path = dir.path().join("commit-guard-allows.json");
+    fs::write(&path, "{ not json").unwrap();
+    assert!(
+        read_allows(&path).is_empty(),
+        "a broken store allowed something"
+    );
+    let allow = Allow {
+        repo: "repo-a".into(),
+        file: "src/config.rs".into(),
+        hash: line_hash("x"),
+    };
+    write_allows(&path, std::slice::from_ref(&allow)).unwrap();
+    assert_eq!(read_allows(&path), vec![allow]);
+}
+
+#[test]
+fn an_agent_path_cannot_set_an_allow() {
+    let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut files = Vec::new();
+    collect_sources(&src, &mut files);
+    for path in files {
+        let rel = path.strip_prefix(&src).unwrap().display().to_string();
+        if rel.starts_with("commit_guard") || rel == "lib.rs" {
+            continue;
+        }
+        let text = fs::read_to_string(&path).unwrap();
+        assert!(
+            !text.contains("PersonChoice(")
+                && !text.contains("allow_finding(")
+                && !text.contains("commit_guard_allow"),
+            "{rel} reaches the allow outside the app's UI command"
+        );
+    }
+}
+
+#[test]
+fn a_secret_in_a_commit_message_stops_the_push_without_showing_it() {
+    let (local, _remote) = pushed_repo("message");
+    local.write("src/app.txt", "shipped\n");
+    local.commit("add app");
+    let key = fake_key();
+    local.git(&[
+        "commit",
+        "-q",
+        "--allow-empty",
+        "-m",
+        &format!("fix the thing\n\nkey {key}"),
+    ]);
+    let err = gate_outgoing(local.path()).unwrap_err();
+    assert!(
+        err.starts_with("Possible secret in a commit message:"),
+        "{err}"
+    );
+    assert!(!err.contains(key_body(&key)), "the value leaked: {err}");
+}
+
+#[test]
+fn a_check_past_its_size_cap_is_refused_not_cut() {
+    let (local, _remote) = pushed_repo("cap");
+    let err =
+        checked_output_within(local.path(), &["log", "--format=%B"], CHECK_TIMEOUT, 4).unwrap_err();
+    assert_eq!(err, TOO_LARGE);
+}
+
+#[test]
+fn a_check_past_its_time_limit_is_killed_and_refused() {
+    let (local, _remote) = pushed_repo("time");
+    let err = checked_output_within(
+        local.path(),
+        &["log", "--format=%B"],
+        Duration::ZERO,
+        MAX_CHECKED_BYTES,
+    )
+    .unwrap_err();
+    assert_eq!(err, TIMED_OUT);
+}
+
+#[test]
+fn the_push_names_its_refspec_so_a_push_default_cannot_change_it() {
+    let (local, remote) = pushed_repo("refspec");
+    local.git(&["config", "push.default", "nothing"]);
+    local.write("src/app.txt", "shipped\n");
+    local.commit("add app");
+    crate::fs::git_push_for(local.path()).expect("the push goes out");
+    let remote_main = Command::new("git")
+        .arg("-C")
+        .arg(remote.path())
+        .args(["rev-parse", "main"])
+        .output()
+        .unwrap();
+    let head = local.git(&["rev-parse", "HEAD"]);
+    assert_eq!(
+        String::from_utf8_lossy(&remote_main.stdout).trim(),
+        head.trim(),
+        "the push did not send HEAD to main"
+    );
+}
+
+#[test]
+fn a_secret_in_a_branch_the_self_build_would_pick_is_refused_before_the_pick() {
+    let (local, _remote) = pushed_repo("pick");
+    local.git(&["checkout", "-q", "-b", "hub-change/x"]);
+    let key = fake_key();
+    local.write("src/config.rs", &format!("const KEY: &str = \"{key}\";\n"));
+    local.commit("change");
+    let base = "main";
+    let range = format!("{base}..hub-change/x");
+    let err = gate_range(local.path(), &[range.as_str()]).unwrap_err();
+    assert!(
+        err.starts_with("Possible secret in src/config.rs:1"),
+        "{err}"
+    );
 }
