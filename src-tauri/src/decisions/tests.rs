@@ -502,10 +502,7 @@ fn a_chat_answer_to_a_folded_restart_or_security_key_is_refused() {
         3,
     )
     .unwrap_err();
-    assert!(
-        delivery_name.contains("Only the gate"),
-        "{delivery_name}"
-    );
+    assert!(delivery_name.contains("Only the gate"), "{delivery_name}");
     ask(
         &mut conn,
         AskInput {
