@@ -297,7 +297,13 @@ pub fn save_key_in(
     key: &str,
     route: Option<&CustomRoute>,
 ) -> Result<(), String> {
-    save_key_with(service, custom_model_id, key, route, &crate::hub_keychain::store)
+    save_key_with(
+        service,
+        custom_model_id,
+        key,
+        route,
+        &crate::hub_keychain::store,
+    )
 }
 
 /// `save_key_in` with the Keychain write passed in (tests use a fake). A saved key replaces the account's routers
@@ -1213,10 +1219,7 @@ fn stop_routers_for(custom_model_id: &str) {
             return true;
         }
         r.stop.store(true, Ordering::SeqCst);
-        r.tokens
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .clear();
+        r.tokens.lock().unwrap_or_else(|e| e.into_inner()).clear();
         // One connection wakes the accept loop, which then sees the stop flag and returns.
         let _ = TcpStream::connect(("127.0.0.1", r.port));
         false
@@ -1227,12 +1230,7 @@ fn stop_routers_for(custom_model_id: &str) {
 #[cfg(test)]
 pub fn start_router(route: CustomRoute, upstream: String, token: String) -> Result<u16, String> {
     let tokens = Arc::new(Mutex::new(HashSet::from([token])));
-    start_router_with(
-        route,
-        upstream,
-        tokens,
-        Arc::new(AtomicBool::new(false)),
-    )
+    start_router_with(route, upstream, tokens, Arc::new(AtomicBool::new(false)))
 }
 
 fn start_router_with(
@@ -3456,7 +3454,14 @@ mod tests {
     /// session ends. Two sessions on one router must not share a token.
     #[test]
     fn each_routed_session_has_its_own_router_token() {
-        let server = local(vec![http(200, "OK", r#"{"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]}"#); 4]);
+        let server = local(vec![
+            http(
+                200,
+                "OK",
+                r#"{"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]}"#
+            );
+            4
+        ]);
         let r = CustomRoute {
             provider: "custom".into(),
             base_url: base_of(server.port),
@@ -3467,14 +3472,26 @@ mod tests {
         let (port_a, token_a) = ensure_router(&r, "l2-upstream-key").unwrap();
         let (port_b, token_b) = ensure_router(&r, "l2-upstream-key").unwrap();
         assert_eq!(port_a, port_b);
-        assert_ne!(token_a.value(), token_b.value(), "two sessions were given the same router token");
+        assert_ne!(
+            token_a.value(),
+            token_b.value(),
+            "two sessions were given the same router token"
+        );
         // Each session's token works on the shared router until that session ends.
         assert_eq!(router_status(port_a, token_a.value()), 200);
         assert_eq!(router_status(port_b, token_b.value()), 200);
         let ended = token_a.value().to_string();
         drop(token_a);
-        assert_eq!(router_status(port_a, &ended), 401, "an ended session's token still works");
-        assert_eq!(router_status(port_b, token_b.value()), 200, "ending one session stopped the other");
+        assert_eq!(
+            router_status(port_a, &ended),
+            401,
+            "an ended session's token still works"
+        );
+        assert_eq!(
+            router_status(port_b, token_b.value()),
+            200,
+            "ending one session stopped the other"
+        );
     }
 
     /// Sends one request to a router with `token`: the status it answers with, or None when nothing listens there any
@@ -3516,18 +3533,42 @@ mod tests {
         let (port_d, token_d) = ensure_router(&deleted, "l1-key-a").unwrap();
         let (port_r, token_r) = ensure_router(&replaced, "l1-key-b").unwrap();
         let (port_k, token_k) = ensure_router(&kept, "l1-key-c").unwrap();
-        let (token_d, token_r, token_k) = (token_d.value().to_string(), token_r.value().to_string(), token_k.value().to_string());
+        let (token_d, token_r, token_k) = (
+            token_d.value().to_string(),
+            token_r.value().to_string(),
+            token_k.value().to_string(),
+        );
         assert_eq!(router_status(port_d, &token_d), 200);
         assert_eq!(router_status(port_r, &token_r), 200);
         assert_eq!(router_status(port_k, &token_k), 200);
 
-        assert_eq!(delete_key_with(KEY_SERVICE, "l1-deleted", &|_: &str, _: &str| Ok(true)), Ok(true));
-        save_key_with(KEY_SERVICE, "l1-replaced", "a-new-key-1234", None, &|_: &str, _: &str, _: &str| Ok(())).unwrap();
+        assert_eq!(
+            delete_key_with(KEY_SERVICE, "l1-deleted", &|_: &str, _: &str| Ok(true)),
+            Ok(true)
+        );
+        save_key_with(
+            KEY_SERVICE,
+            "l1-replaced",
+            "a-new-key-1234",
+            None,
+            &|_: &str, _: &str, _: &str| Ok(()),
+        )
+        .unwrap();
 
-        for (port, token, what) in [(port_d, &token_d, "a deleted key's"), (port_r, &token_r, "a replaced key's")] {
+        for (port, token, what) in [
+            (port_d, &token_d, "a deleted key's"),
+            (port_r, &token_r, "a replaced key's"),
+        ] {
             let answer = router_answer(port, token);
-            assert!(matches!(answer, None | Some(401)), "{what} router still takes its old token: {answer:?}");
+            assert!(
+                matches!(answer, None | Some(401)),
+                "{what} router still takes its old token: {answer:?}"
+            );
         }
-        assert_eq!(router_status(port_k, &token_k), 200, "another account's router was stopped too");
+        assert_eq!(
+            router_status(port_k, &token_k),
+            200,
+            "another account's router was stopped too"
+        );
     }
 }
