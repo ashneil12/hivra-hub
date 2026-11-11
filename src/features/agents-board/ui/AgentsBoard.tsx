@@ -88,6 +88,7 @@ export function AgentsBoard({
   }, [tree]);
 
   function pick(id: string) {
+    if (id !== selected) setStops((prev) => withoutOpenQuestion(prev));
     setSelected(id);
   }
 
@@ -251,6 +252,19 @@ export function AgentsBoard({
       </div>
     </div>
   );
+}
+
+function withoutOpenQuestion(stops: Record<string, StopEntry>): Record<string, StopEntry> {
+  let changed = false;
+  const next: Record<string, StopEntry> = {};
+  for (const [id, entry] of Object.entries(stops)) {
+    if (entry.phase === "asking") {
+      changed = true;
+      continue;
+    }
+    next[id] = entry;
+  }
+  return changed ? next : stops;
 }
 
 function chipText(node: BoardNode): string {

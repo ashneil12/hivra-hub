@@ -223,6 +223,19 @@ describe("Agents board stop", () => {
     expect(failure.className).not.toMatch(/e5484d|ff6b6b|text-red|bg-red/);
   });
 
+  it("drops an open Stop question when another row is opened", () => {
+    render(() => undefined);
+    act(() => row("job").click());
+    click("Stop");
+    expect(container.textContent).toContain("Stop Example worker?");
+    act(() => row("other").click());
+    expect(container.textContent).not.toContain("Stop Example worker?");
+    expect(container.textContent).not.toContain("Stop Example other?");
+    act(() => row("job").click());
+    expect(container.textContent).not.toContain("Stop Example worker?");
+    expect([...container.querySelectorAll("button")].some((item) => item.textContent === "Stop")).toBe(true);
+  });
+
   it("opens a needs-you row from the row and from the panel", () => {
     const opened: string[] = [];
     render(() => undefined, (id) => opened.push(id));
