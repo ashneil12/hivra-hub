@@ -96,16 +96,52 @@ pub fn worker_card_question(mono: &str, label: &str, whose: &str) -> String {
     )
 }
 
-/// The app actions that keep what they are given (a memory, a note, a room post, a doc). A worker's copy of one is scrubbed
-/// of its armed values before the app stores it (fix round 4, N8). Reads are left as they are.
-fn keeps_what_it_is_given(action: &str) -> bool {
-    matches!(action, "memory.add" | "notes.write" | "rooms.post") || action.starts_with("docs.")
+/// App actions that do not store what they are given. Everything else an armed worker sends is scrubbed, so a write that
+/// was added later cannot keep the value (fix round 5, L1).
+fn read_only_app_action(action: &str) -> bool {
+    matches!(
+        action,
+        "app.version"
+            | "models.list"
+            | "sessions.list"
+            | "sessions.read"
+            | "worktrees.list"
+            | "actions.list"
+            | "stacks.list"
+            | "folders.list"
+            | "notes.list"
+            | "notes.read"
+            | "artifacts.list"
+            | "artifacts.read"
+            | "soul.read"
+            | "souls.read"
+            | "memory.read"
+            | "memory.search"
+            | "memory.recall"
+            | "skills.list"
+            | "skills.read"
+            | "habits.list"
+            | "timers.list"
+            | "activity.list"
+            | "tasks.list"
+            | "tasks.get"
+            | "tasks.status"
+            | "rooms.read"
+            | "prs.status"
+            | "docs.list"
+            | "docs.get"
+            | "secrets.list"
+            | "creator.state"
+            | "programme.list"
+            | "work_log.read"
+            | "autopilot.status"
+    )
 }
 
 /// Scrub a worker's app action before it reaches the app: every string in its input is masked with the session's needles,
-/// for the actions that keep what they are given. A session without armed values is left unchanged.
+/// except a read. A session without armed values is left unchanged.
 pub fn scrub_app_input(session_id: &str, action: &str, input: &mut serde_json::Value) {
-    if !keeps_what_it_is_given(action) {
+    if read_only_app_action(action) {
         return;
     }
     let Ok(map) = session_values().lock() else {
@@ -537,6 +573,18 @@ mod tests {
         let mut read = serde_json::json!({ "q": VALUE });
         scrub_app_input("worker-8", "rooms.read", &mut read);
         assert_eq!(read["q"], VALUE, "a read is not a write");
+        // Round 5 (L1): every app action is scrubbed except an explicit read list. A send keeps what it is given.
+        for action in ["sessions.send", "artifacts.write", "memory.replace"] {
+            let mut input = serde_json::json!({ "prompt": format!("key {VALUE}") });
+            scrub_app_input("worker-8", action, &mut input);
+            let text = input.to_string();
+            assert!(!text.contains(VALUE), "{action} kept the value: {text}");
+            assert!(text.contains(scrub::MARKER), "{action}: {text}");
+        }
+        // docs.get is a read. The old prefix `docs.` scrubbed it.
+        let mut get = serde_json::json!({ "id": VALUE });
+        scrub_app_input("worker-8", "docs.get", &mut get);
+        assert_eq!(get["id"], VALUE, "docs.get is a read");
     }
 
     // fix round 2 (M3): an armed worker's final environment holds no MONOCODE_* variable, even one configure_child set.

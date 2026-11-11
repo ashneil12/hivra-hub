@@ -262,7 +262,7 @@ fn serve(mut stream: TcpStream, app: &AppHandle, inner: &Arc<Mutex<Inner>>) {
             );
             grant
         };
-        // Fix round 4 (N8): a worker's memory, note, room or doc write is scrubbed of the values armed for it first.
+        // WP-92: a worker's app action is scrubbed of the values armed for it, except a read.
         if request.namespace == "app" {
             crate::secrets::worker::scrub_app_input(
                 &grant.session,
