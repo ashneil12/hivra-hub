@@ -794,12 +794,10 @@ pub(crate) fn owns_within_checkout(
     ))
 }
 
-/// A checkout: the git common directory it shares with its worktrees, and its top-level folder, both in `path_key`
-/// form.
+/// A checkout's git common directory, in `path_key` form. The top-level folder is not taken from git.
 #[derive(Clone, Debug, PartialEq)]
 struct Checkout {
     common: String,
-    top: String,
 }
 
 /// The `.git` entry (a folder, or a file in a linked worktree) of the nearest ancestor that has one. None means no git
@@ -884,11 +882,13 @@ fn git_admin_ok(dir: &std::path::Path) -> bool {
         && meta_of(&dir.join("refs")).is_some_and(|meta| meta.is_dir())
 }
 
-/// The git common directory a `.git` entry names, read from its files alone. A directory is its own common directory
-/// unless it has a `commondir` file. A file holds `gitdir: <path>`, and that directory's `commondir` file, when
-/// present, names the common directory. The common directory must be a real git dir. A `commondir` that is present but
-/// not a readable file is None: the directory is not then treated as its own common directory. None for a fifo or
-/// anything else that is not a file or a directory, and that entry is never opened.
+/// The git common directory a `.git` entry names, read from its files alone. A directory that is already a git admin
+/// (HEAD, objects, refs) is its own common directory. Git writes `commondir` only in a linked worktree's admin
+/// directory, which is not itself an admin, so a `commondir` file beside a real admin is not followed. A file holds
+/// `gitdir: <path>`, and that directory's `commondir` file, when present and the directory is not an admin, names the
+/// common directory. The common directory must be a real git dir. A `commondir` that is present but not a readable
+/// file is None: the directory is not then treated as its own common directory. None for a fifo or anything else that
+/// is not a file or a directory, and that entry is never opened.
 fn common_dir(entry: &std::path::Path) -> Option<std::path::PathBuf> {
     let meta = meta_of(entry)?;
     if !meta.is_file() && !meta.is_dir() {
@@ -909,7 +909,11 @@ fn common_dir(entry: &std::path::Path) -> Option<std::path::PathBuf> {
             entry.parent()?.join(target)
         }
     };
-    let common = if std::fs::symlink_metadata(dir.join("commondir")).is_ok() {
+    // A real admin is the common dir. Following `commondir` here would let a worker point the project at a repo they
+    // made, or pad the file past the read cap so the real admin is skipped.
+    let common = if git_admin_ok(&dir) {
+        dir
+    } else if std::fs::symlink_metadata(dir.join("commondir")).is_ok() {
         let text = read_git_file(&dir.join("commondir"))?;
         let relative = std::path::Path::new(text.trim());
         if relative.as_os_str().is_empty() {
@@ -938,39 +942,20 @@ fn main_checkout_top(common: &std::path::Path) -> Option<String> {
     parent.is_dir().then(|| path_key(&parent.to_string_lossy()))
 }
 
-/// Tops of the linked worktrees this common directory has registered (`worktrees/*/gitdir`, files only). The file names
-/// the worktree's `.git` file, and the top is that file's parent.
-fn registered_worktree_tops(common: &std::path::Path) -> Vec<String> {
-    let Ok(read) = std::fs::read_dir(common.join("worktrees")) else {
-        return Vec::new();
-    };
-    let mut tops = Vec::new();
-    for entry in read.flatten() {
-        let gitdir = entry.path().join("gitdir");
-        let Some(text) = read_git_file(&gitdir) else {
-            continue;
-        };
-        let named = text.lines().next().unwrap_or("").trim();
-        if named.is_empty() {
-            continue;
-        }
-        let path = std::path::Path::new(named);
-        let resolved = if path.is_absolute() {
-            path.to_path_buf()
-        } else {
-            gitdir
-                .parent()
-                .map(|dir| dir.join(path))
-                .unwrap_or_else(|| path.to_path_buf())
-        };
-        let Some(top) = resolved.parent() else {
-            continue;
-        };
-        if top.is_dir() {
-            tops.push(path_key(&top.to_string_lossy()));
-        }
-    }
-    tops
+/// One linked worktree this common directory has registered. Read once per common directory per judgment.
+#[derive(Clone)]
+struct Registered {
+    /// The canonical path of the `.git` entry the registration names, when that path exists on disk.
+    named: Option<std::path::PathBuf>,
+    /// The parent of that canonical path, when it is a directory. A name that is not on disk is not a checkout: a worker
+    /// can write the name.
+    top: Option<String>,
+}
+
+/// Holds the registration list for one common directory so a judgment reads `worktrees/` once.
+struct RegOnce {
+    key: Option<String>,
+    rows: Vec<Registered>,
 }
 
 /// The most checkouts kept in the cache. The oldest goes first when a new one is put in.
@@ -996,9 +981,10 @@ type CheckoutEntry = (
 );
 static CHECKOUTS: std::sync::Mutex<Vec<CheckoutEntry>> = std::sync::Mutex::new(Vec::new());
 
-/// The checkout a folder is in, or None when it is not in one. A `.git` entry that git cannot read is an error, so
-/// the judgment that needs it fails closed. The result is cached per folder, bounded, and keyed by that `.git` entry's
-/// modified time, so a checkout that changes is read again. Git runs with the C locale.
+/// The common directory of the checkout a folder is in, or None when it is not in one. A `.git` entry that git cannot
+/// read is an error, so the judgment that needs it fails closed. The result is cached per folder, bounded, and keyed by
+/// that `.git` entry's modified time, so a checkout that changes is read again. Git runs with the C locale. Git is asked
+/// for the common directory only: `core.worktree` changes `--show-toplevel`, so the checkout top is never taken from git.
 fn checkout_of(folder: &std::path::Path) -> Result<Option<Checkout>, String> {
     let unreadable = || {
         format!(
@@ -1030,7 +1016,7 @@ fn checkout_of(folder: &std::path::Path) -> Result<Option<Checkout>, String> {
     command
         .arg("-C")
         .arg(folder)
-        .args(["rev-parse", "--git-common-dir", "--show-toplevel"])
+        .args(["rev-parse", "--git-common-dir"])
         .env("LC_ALL", "C")
         .env("LANGUAGE", "C")
         .env("GIT_OPTIONAL_LOCKS", "0")
@@ -1043,13 +1029,11 @@ fn checkout_of(folder: &std::path::Path) -> Result<Option<Checkout>, String> {
         return Err(unreadable());
     }
     let text = output.stdout;
-    let mut lines = text.lines();
-    let (Some(common), Some(top)) = (lines.next(), lines.next()) else {
+    let Some(common) = text.lines().next() else {
         return Err(unreadable());
     };
     let found = Checkout {
         common: path_key(&folder.join(common.trim()).to_string_lossy()),
-        top: path_key(top.trim()),
     };
     if let Ok(mut cache) = CHECKOUTS.lock() {
         bounded_put(
@@ -1113,37 +1097,69 @@ fn resolve_git_path(base_file: &std::path::Path, raw: &str) -> Option<std::path:
     Some(crate::fs::canonical(&resolved).unwrap_or(resolved))
 }
 
-/// Whether a registered `worktrees/*/gitdir` names this `.git` entry.
-fn registered_names_entry(common: &std::path::Path, entry: &std::path::Path) -> bool {
-    let want = path_key(&entry.to_string_lossy());
+/// The linked worktrees registered on `common`, from `worktrees/*/gitdir`. The top is the parent of the canonical path,
+/// and only when that path exists. A name a worker wrote for a path that is not on disk is not a checkout.
+fn read_registrations(common: &std::path::Path) -> Vec<Registered> {
     let Ok(read) = std::fs::read_dir(common.join("worktrees")) else {
-        return false;
+        return Vec::new();
     };
-    for item in read.flatten() {
-        let gitdir = item.path().join("gitdir");
+    let mut rows = Vec::new();
+    for entry in read.flatten() {
+        let gitdir = entry.path().join("gitdir");
         let Some(text) = read_git_file(&gitdir) else {
             continue;
         };
-        let named = text.lines().next().unwrap_or("").trim();
-        let Some(resolved) = resolve_git_path(&gitdir, named) else {
+        let Some(resolved) = resolve_git_path(&gitdir, text.lines().next().unwrap_or("")) else {
             continue;
         };
-        if path_key(&resolved.to_string_lossy()) == want {
-            return true;
+        if std::fs::symlink_metadata(&resolved).is_err() {
+            continue;
         }
+        let top = resolved
+            .parent()
+            .filter(|top| top.is_dir())
+            .map(|top| path_key(&top.to_string_lossy()));
+        rows.push(Registered {
+            named: Some(resolved),
+            top,
+        });
     }
-    false
+    rows
+}
+
+/// The registrations of `common`, read from disk at most once for this judgment.
+fn cached_regs(cache: &mut RegOnce, common: &std::path::Path) -> Vec<Registered> {
+    let key = path_key(&common.to_string_lossy());
+    if cache.key.as_deref() != Some(key.as_str()) {
+        cache.rows = read_registrations(common);
+        cache.key = Some(key);
+    }
+    cache.rows.clone()
+}
+
+/// Whether a registration names this `.git` entry. The named path is the canonical one, so a symlink does not move it.
+fn names_entry(regs: &[Registered], entry: &std::path::Path) -> bool {
+    let want = path_key(&entry.to_string_lossy());
+    regs.iter().any(|row| {
+        row.named
+            .as_ref()
+            .is_some_and(|named| path_key(&named.to_string_lossy()) == want)
+    })
 }
 
 /// `Some(true)` when `entry` is the main checkout of `common` or a worktree it has registered. `Some(false)` when
 /// `entry` is a checkout of `common` but neither of those: its registration is gone, and the main checkout must not
 /// stand in for it. `None` when `entry` is not a readable checkout of this common (garbage, or another repository).
-fn known_checkout(common: &std::path::Path, entry: &std::path::Path) -> Option<bool> {
+fn known_checkout(
+    common: &std::path::Path,
+    entry: &std::path::Path,
+    regs: &[Registered],
+) -> Option<bool> {
     let found = common_dir(entry)?;
     if !same_key(&found, common) {
         return None;
     }
-    if same_key(entry, common) || registered_names_entry(common, entry) {
+    if same_key(entry, common) || names_entry(regs, entry) {
         return Some(true);
     }
     // A main checkout whose `.git` is a file pointing straight at this common dir (a separate git dir).
@@ -1159,27 +1175,148 @@ fn known_checkout(common: &std::path::Path, entry: &std::path::Path) -> Option<b
     Some(same_key(&resolved, common))
 }
 
-/// The nearest readable git common directory above the checkout that owns `entry`.
-fn enclosing_common(entry: &std::path::Path) -> Option<std::path::PathBuf> {
-    let checkout = entry.parent()?;
+/// What sits above the checkout that owns `entry`. An unreadable `.git` is not skipped: walking past it would trust a
+/// repository a worker made underneath.
+enum Enclosing {
+    Found(std::path::PathBuf),
+    /// A `.git` above the checkout exists, but its common directory cannot be read.
+    Unreadable,
+    None,
+}
+
+/// The nearest git common directory above the checkout that owns `entry`.
+fn enclosing_common(entry: &std::path::Path) -> Enclosing {
+    let Some(checkout) = entry.parent() else {
+        return Enclosing::None;
+    };
     for dir in checkout.ancestors().skip(1) {
         let candidate = dir.join(".git");
         if !candidate.exists() {
             continue;
         }
         if let Some(common) = common_dir(&candidate) {
-            return Some(common);
+            return Enclosing::Found(common);
         }
+        return Enclosing::Unreadable;
     }
-    None
+    Enclosing::None
 }
 
-/// The root's git dir cannot be read. The root's top is the parent of its own `.git` entry, judged through the
-/// enclosing checkout's registered tops. Git is not asked about the folder, so a folder with no `.git` of its own is
-/// still placed when a registered top contains it. A folder in none of those tops is not owned: a broken project does
-/// not refuse an unrelated folder. With no enclosing checkout the place is not known only when the folder's own git
-/// cannot be read; otherwise the project does not own it.
-fn place_unreadable_root(folder_key: &str, root_key: &str) -> Place {
+/// True when `admin` is `<common>/worktrees/<id>`, one level under `worktrees`, not `worktrees` itself.
+fn worktree_admin_of(admin: &std::path::Path, common: &std::path::Path) -> bool {
+    let base = path_key(&common.join("worktrees").to_string_lossy());
+    let admin_key = path_key(&admin.to_string_lossy());
+    if !key_within(&admin_key, &base) || admin_key == base {
+        return false;
+    }
+    let rest = admin_key[base.len()..].trim_start_matches('/');
+    !rest.is_empty() && !rest.contains('/')
+}
+
+/// The checkout top of a `.git` file that points straight at `common` (a separate git dir, not a linked worktree).
+fn checkout_file_top(common: &std::path::Path, root_key: &str) -> Option<String> {
+    let entry = git_entry(std::path::Path::new(root_key))?;
+    let text = read_git_file(&entry)?;
+    let target = text.lines().find_map(|line| line.strip_prefix("gitdir:"))?;
+    let resolved = resolve_git_path(&entry, target)?;
+    if !same_key(&resolved, common) {
+        return None;
+    }
+    let top = entry.parent()?;
+    top.is_dir().then(|| path_key(&top.to_string_lossy()))
+}
+
+/// The checkout top of `folder` when its own `.git` file names a linked worktree of `common`. The registration
+/// back-pointer is not read: git does not need it to work in the worktree, and a worker can empty it. A file that
+/// points at the main git dir, rather than at `worktrees/<id>`, is not a checkout top.
+fn folder_checkout_top(folder_key: &str, common: &std::path::Path) -> Option<String> {
+    let entry = git_entry(std::path::Path::new(folder_key))?;
+    let text = read_git_file(&entry)?;
+    let target = text.lines().find_map(|line| line.strip_prefix("gitdir:"))?;
+    let admin = resolve_git_path(&entry, target)?;
+    if !worktree_admin_of(&admin, common) {
+        return None;
+    }
+    let found = common_dir(&entry)?;
+    if !same_key(&found, common) {
+        return None;
+    }
+    let top = entry.parent()?;
+    top.is_dir().then(|| path_key(&top.to_string_lossy()))
+}
+
+/// A registration top that sits strictly inside the main checkout and strictly above the project. Such a top is a
+/// measuring top only when the named `.git` file points back at this common's `worktrees/<id>`. A sibling worktree is
+/// not intermediate, so its top is kept even when a worker rewrote the file.
+fn is_intermediate_top(root_key: &str, top: &str, primary: Option<&str>) -> bool {
+    let Some(primary) = primary else {
+        return false;
+    };
+    if top == primary || !key_within(top, primary) {
+        return false;
+    }
+    key_within(root_key, top) && root_key != top.trim_end_matches('/')
+}
+
+/// The named `.git` file points at `<common>/worktrees/<id>` and that admin's common dir is `common`.
+fn registration_round_trips(row: &Registered, common: &std::path::Path) -> bool {
+    let Some(named) = &row.named else {
+        return false;
+    };
+    let Some(text) = read_git_file(named) else {
+        return false;
+    };
+    let Some(target) = text.lines().find_map(|line| line.strip_prefix("gitdir:")) else {
+        return false;
+    };
+    let Some(admin) = resolve_git_path(named, target) else {
+        return false;
+    };
+    if !worktree_admin_of(&admin, common) {
+        return false;
+    }
+    common_dir(named).is_some_and(|found| same_key(&found, common))
+}
+
+fn registration_top_round_trips(top: &str, regs: &[Registered], common: &std::path::Path) -> bool {
+    regs.iter()
+        .any(|row| row.top.as_deref() == Some(top) && registration_round_trips(row, common))
+}
+
+/// The `.git` file still has the shape of a linked worktree (`gitdir:` with a `worktrees` component).
+fn linked_worktree_shape(entry: &std::path::Path) -> bool {
+    let Some(text) = read_git_file(entry) else {
+        return false;
+    };
+    text.lines().any(|line| {
+        let Some(rest) = line.strip_prefix("gitdir:") else {
+            return false;
+        };
+        rest.trim()
+            .split(['/', '\\'])
+            .any(|part| part == "worktrees")
+    })
+}
+
+/// The `gitdir:` path is a worktree admin of `common`.
+fn shape_under_common(entry: &std::path::Path, common: &std::path::Path) -> bool {
+    let Some(text) = read_git_file(entry) else {
+        return false;
+    };
+    let Some(rest) = text.lines().find_map(|line| line.strip_prefix("gitdir:")) else {
+        return false;
+    };
+    let Some(admin) = resolve_git_path(entry, rest) else {
+        return false;
+    };
+    worktree_admin_of(&admin, common)
+}
+
+/// The root's git dir cannot be read. The root's top is judged through the enclosing checkout. An enclosing `.git`
+/// that cannot be read is undecided, not skipped. With nothing above the root, the folder's own common dir (from its
+/// files, not from git) keeps the place when it still registers the root, or when the root's `.git` still has the
+/// shape of a linked worktree of that common. A folder in another repository, or a folder with no git, stays unowned.
+fn place_unreadable_root(folder_key: &str, root_key: &str, cache: &mut RegOnce) -> Place {
     let Some(entry) = git_entry(std::path::Path::new(root_key)) else {
         return if folder_unreadable(folder_key) {
             Place::Undecided
@@ -1187,52 +1324,92 @@ fn place_unreadable_root(folder_key: &str, root_key: &str) -> Place {
             Place::No
         };
     };
-    let Some(common) = enclosing_common(&entry) else {
-        return if folder_unreadable(folder_key) {
-            Place::Undecided
-        } else {
-            Place::No
-        };
-    };
-    // A checkout of this common that is neither the main `.git` nor a registered worktree is not measured from the
-    // main checkout. A worker can empty the registration, and the main checkout would then move the project.
-    if known_checkout(&common, &entry) == Some(false) {
-        return Place::Undecided;
+    match enclosing_common(&entry) {
+        Enclosing::Unreadable => Place::Undecided,
+        Enclosing::Found(common) => {
+            let placed = place_inside_common(folder_key, root_key, &common, cache);
+            if placed == Place::No && folder_unreadable(folder_key) {
+                Place::Undecided
+            } else {
+                placed
+            }
+        }
+        Enclosing::None => place_with_no_enclosing(folder_key, root_key, &entry, cache),
     }
-    let placed = place_inside_common(folder_key, root_key, &common);
-    if placed == Place::No && folder_unreadable(folder_key) {
-        return Place::Undecided;
+}
+
+/// Nothing encloses the unreadable root. Fail closed when this folder's repository still lists it, or when the root's
+/// `.git` still looks like one of that repository's linked worktrees. Anything else is not owned.
+fn place_with_no_enclosing(
+    folder_key: &str,
+    root_key: &str,
+    entry: &std::path::Path,
+    cache: &mut RegOnce,
+) -> Place {
+    let folder_entry = git_entry(std::path::Path::new(folder_key));
+    if let Some(common) = folder_entry.as_ref().and_then(|item| common_dir(item)) {
+        let regs = cached_regs(cache, &common);
+        if names_entry(&regs, entry) {
+            let placed = place_inside_common(folder_key, root_key, &common, cache);
+            return if placed == Place::No {
+                Place::Undecided
+            } else {
+                placed
+            };
+        }
+        if linked_worktree_shape(entry) && shape_under_common(entry, &common) {
+            return Place::Undecided;
+        }
     }
-    placed
+    if folder_unreadable(folder_key) {
+        Place::Undecided
+    } else {
+        Place::No
+    }
 }
 
 /// Membership from git, used when the project's files do not name a common directory (a bare repo, or a broken one).
-/// The common dir git reads for the root is what decides. The folder's own `.git` is not.
-fn place_by_git(folder_key: &str, root_key: &str) -> Place {
+/// The common dir git reads for the root is what decides. The folder's own `.git` is not, and neither is a top git
+/// would report from `core.worktree`.
+fn place_by_git(folder_key: &str, root_key: &str, cache: &mut RegOnce) -> Place {
     let theirs = match checkout_of(std::path::Path::new(root_key)) {
         Ok(Some(checkout)) => checkout,
-        Ok(None) | Err(_) => return place_unreadable_root(folder_key, root_key),
+        Ok(None) | Err(_) => return place_unreadable_root(folder_key, root_key, cache),
     };
-    let placed = place_inside_common(folder_key, root_key, std::path::Path::new(&theirs.common));
+    let placed = place_inside_common(
+        folder_key,
+        root_key,
+        std::path::Path::new(&theirs.common),
+        cache,
+    );
     if placed == Place::No && folder_unreadable(folder_key) {
         return Place::Undecided;
     }
     placed
 }
 
-/// Checkouts registered on this common dir. The main checkout when its git dir is named `.git`. Otherwise the project's
-/// own checkout, and only when git names this same common dir. Then every linked worktree. Git is not asked about the
-/// folder being judged.
-fn checkout_tops(common: &std::path::Path, root_key: &str) -> Vec<String> {
+/// Checkouts of this common dir. The main checkout when its git dir is named `.git`. Otherwise the parent of a `.git`
+/// file that points straight at this common (a separate git dir). Then every registered worktree whose named path
+/// exists, and the folder's own checkout when its `.git` file names a linked worktree of this common. Git is not asked
+/// for a top.
+fn checkout_tops(
+    common: &std::path::Path,
+    root_key: &str,
+    folder_key: &str,
+    regs: &[Registered],
+) -> Vec<String> {
     let mut tops = Vec::new();
     if let Some(main) = main_checkout_top(common) {
         tops.push(main);
-    } else if let Ok(Some(found)) = checkout_of(std::path::Path::new(root_key)) {
-        if path_key(&common.to_string_lossy()) == found.common {
-            tops.push(found.top);
+    } else if let Some(top) = checkout_file_top(common, root_key) {
+        tops.push(top);
+    }
+    for top in regs.iter().filter_map(|row| row.top.clone()) {
+        if !tops.iter().any(|have| have == &top) {
+            tops.push(top);
         }
     }
-    for top in registered_worktree_tops(common) {
+    if let Some(top) = folder_checkout_top(folder_key, common) {
         if !tops.iter().any(|have| have == &top) {
             tops.push(top);
         }
@@ -1260,22 +1437,38 @@ fn longest_containing<'a>(path: &str, tops: &'a [String]) -> Option<&'a str> {
     best
 }
 
-/// Membership from the project's side. The project's top is the longest registered checkout that contains the project.
-/// The folder is owned when any registered top that contains it maps into that project: a longer top a worker registered
-/// inside the package does not drop the package. A checkout of this common that is neither the main `.git` nor a
-/// registered worktree is undecided, so a broken registration is not measured from the main checkout. Git is not asked
-/// about the folder's own `.git`.
-fn place_inside_common(folder_key: &str, root_id: &str, common: &std::path::Path) -> Place {
+/// Membership from the project's side. The project's top is the longest checkout that contains the project, ignoring a
+/// top a worker registered between the main checkout and the project unless that registration's `.git` file points
+/// back at this common. The folder is owned when any top that contains it maps into that project. A checkout of this
+/// common that is neither the main `.git` nor a registered worktree is undecided, so a broken registration is not
+/// measured from the main checkout. The registrations are the list already read for this common.
+fn place_inside_common(
+    folder_key: &str,
+    root_id: &str,
+    common: &std::path::Path,
+    cache: &mut RegOnce,
+) -> Place {
     let root_key = path_key(root_id);
-    let tops = checkout_tops(common, &root_key);
+    let regs = cached_regs(cache, common);
     if let Some(entry) = git_entry(std::path::Path::new(&root_key)) {
-        if known_checkout(common, &entry) == Some(false) {
+        if known_checkout(common, &entry, &regs) == Some(false) {
             return Place::Undecided;
         }
     }
-    let Some(project_top) = longest_containing(&root_key, &tops) else {
+    let tops = checkout_tops(common, &root_key, folder_key, &regs);
+    let primary = main_checkout_top(common).or_else(|| checkout_file_top(common, &root_key));
+    let measuring: Vec<String> = tops
+        .iter()
+        .filter(|top| {
+            !is_intermediate_top(&root_key, top, primary.as_deref())
+                || registration_top_round_trips(top, &regs, common)
+        })
+        .cloned()
+        .collect();
+    let Some(project_top) = longest_containing(&root_key, &measuring) else {
         return Place::Undecided;
     };
+    let project_top = project_top.to_string();
     let mut saw_folder = false;
     let mut undecided = false;
     for top in &tops {
@@ -1283,7 +1476,7 @@ fn place_inside_common(folder_key: &str, root_id: &str, common: &std::path::Path
             continue;
         }
         saw_folder = true;
-        match owns_within_checkout(folder_key, top, &root_key, project_top) {
+        match owns_within_checkout(folder_key, top, &root_key, &project_top) {
             Ok(true) => return Place::Yes,
             Ok(false) => {}
             Err(_) => undecided = true,
@@ -1312,34 +1505,35 @@ fn place_project(folder_key: &str, root_id: &str) -> Place {
     let Some(entry) = git_entry(std::path::Path::new(&root_key)) else {
         return Place::No;
     };
+    let mut cache = RegOnce {
+        key: None,
+        rows: Vec::new(),
+    };
     let direct = if let Some(common) = common_dir(&entry) {
-        place_inside_common(folder_key, root_id, &common)
+        place_inside_common(folder_key, root_id, &common, &mut cache)
     } else {
-        place_by_git(folder_key, &root_key)
+        place_by_git(folder_key, &root_key, &mut cache)
     };
     if direct == Place::Yes {
         return Place::Yes;
     }
-    // The project folder is itself a checkout sitting inside another checkout (a repository made in the package).
-    // Judge through the enclosing checkout too. Yes from either side is Yes.
-    let project_is_checkout = entry
-        .parent()
-        .is_some_and(|parent| path_key(&parent.to_string_lossy()) == root_key);
-    if !project_is_checkout {
-        return direct;
-    }
-    let Some(outer) = enclosing_common(&entry) else {
-        return direct;
-    };
-    if let Some(inner) = common_dir(&entry) {
-        if path_key(&inner.to_string_lossy()) == path_key(&outer.to_string_lossy()) {
-            return direct;
+    // A repository made above the project, or an enclosing checkout the project's own `.git` hides. Yes from either
+    // side is Yes. An enclosing `.git` that cannot be read is doubt, not a reason to trust the inner repository.
+    match enclosing_common(&entry) {
+        Enclosing::Found(outer) => {
+            if let Some(inner) = common_dir(&entry) {
+                if path_key(&inner.to_string_lossy()) == path_key(&outer.to_string_lossy()) {
+                    return direct;
+                }
+            }
+            match place_inside_common(folder_key, root_id, &outer, &mut cache) {
+                Place::Yes => Place::Yes,
+                Place::Undecided => Place::Undecided,
+                Place::No => direct,
+            }
         }
-    }
-    match place_inside_common(folder_key, root_id, &outer) {
-        Place::Yes => Place::Yes,
-        Place::Undecided => Place::Undecided,
-        Place::No => direct,
+        Enclosing::Unreadable => Place::Undecided,
+        Enclosing::None => direct,
     }
 }
 
