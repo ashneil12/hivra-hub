@@ -125,6 +125,29 @@ describe("two windows on one database (WP-04 review)", () => {
     expect(names).toEqual(["EXO", "Nibbii"]);
   });
 
+  it("G8: a pin from an older copy of the pages is refused on disk and made again on top of the other window's page", async () => {
+    const disk = memoryDisk();
+    const one = new LocalHub(disk);
+    await one.pageUpdate({ pageId: "pg-1", projectId: "today", spec: blocks("Builds"), kept: true });
+    const write = disk.write.bind(disk);
+    const refused: Array<number | undefined> = [];
+    let raced = false;
+    disk.write = async (key, value, rev) => {
+      if (!raced && key === "pages") {
+        raced = true;
+        // Another window keeps a page between one's read and its write.
+        await new LocalHub(disk).pageUpdate({ pageId: "pg-2", projectId: "today", spec: blocks("Costs"), kept: true });
+      }
+      const at = await write(key, value, rev);
+      if (at === null) refused.push(rev);
+      return at;
+    };
+    await one.pageUpdate({ pageId: "pg-1", pinned: true });
+    expect(refused).toEqual([1]);
+    const { pages } = await new LocalHub(disk).pages();
+    expect(pages.map((p) => [p.id, p.pinned ?? false]).sort()).toEqual([["pg-1", true], ["pg-2", false]]);
+  });
+
   it("changes in one window run in order, even when called together", async () => {
     const disk = memoryDisk();
     const hub = new LocalHub(disk);
