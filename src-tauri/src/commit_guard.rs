@@ -1159,4 +1159,6 @@ mod review_tests_r3;
 #[cfg(test)]
 mod review_tests_r4;
 #[cfg(test)]
+mod review_repro_r5;
+#[cfg(test)]
 mod tests;
