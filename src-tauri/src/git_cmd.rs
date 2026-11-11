@@ -32,7 +32,9 @@ const REFUSED_PROGRAM: &str = "/nonexistent/monocode-sandbox-refused";
 #[derive(Clone, Debug)]
 pub(crate) enum Contain {
     Plain,
-    Profile(String),
+    /// The container profile, and the data folder a profile past the inline limit is written into.
+    /// `None` has nowhere to keep that file, so a large profile is refused.
+    Profile(String, Option<PathBuf>),
     Refused,
 }
 
@@ -84,9 +86,19 @@ pub(crate) fn command_for(scrubbed: bool, keep_hooks: bool, contain: Contain) ->
             };
             with_settings(program, settings(keep_hooks))
         }
-        Contain::Profile(profile) => {
+        Contain::Profile(profile, data_dir) => {
+            let args = match crate::agent_sandbox::sandbox_exec_profile_args(
+                &profile,
+                data_dir.as_deref(),
+            ) {
+                Ok(args) => args,
+                Err(_) => return Command::new(REFUSED_PROGRAM),
+            };
             let mut command = Command::new(crate::agent_sandbox::SANDBOX_EXEC);
-            command.arg("-p").arg(profile).arg("git");
+            for arg in args {
+                command.arg(arg);
+            }
+            command.arg("git");
             if scrubbed {
                 apply_scrub(&mut command);
             }
@@ -110,11 +122,11 @@ fn contain_now() -> Contain {
     };
     let launcher = Path::new(crate::agent_sandbox::SANDBOX_EXEC);
     if crate::agent_sandbox::self_check(launcher).is_err()
-        || crate::agent_sandbox::preflight_with(launcher, &profile).is_err()
+        || crate::agent_sandbox::preflight_with(launcher, &profile, data.as_deref()).is_err()
     {
         return Contain::Refused;
     }
-    Contain::Profile(profile)
+    Contain::Profile(profile, data)
 }
 
 #[cfg(test)]
@@ -152,12 +164,26 @@ pub(crate) fn child_keep_hooks() -> Command {
 /// profile. Unit tests stay plain, the same as `contain_now`. A container that cannot be built is a program that does
 /// not exist, so the caller fails before the real program runs.
 pub(crate) fn contained_command(program: impl AsRef<std::ffi::OsStr>) -> Command {
-    match contain_now() {
+    contained_with(contain_now(), program)
+}
+
+fn contained_with(contain: Contain, program: impl AsRef<std::ffi::OsStr>) -> Command {
+    match contain {
         Contain::Plain => Command::new(program),
         Contain::Refused => Command::new(REFUSED_PROGRAM),
-        Contain::Profile(profile) => {
+        Contain::Profile(profile, data_dir) => {
+            let args = match crate::agent_sandbox::sandbox_exec_profile_args(
+                &profile,
+                data_dir.as_deref(),
+            ) {
+                Ok(args) => args,
+                Err(_) => return Command::new(REFUSED_PROGRAM),
+            };
             let mut command = Command::new(crate::agent_sandbox::SANDBOX_EXEC);
-            command.arg("-p").arg(profile).arg(program);
+            for arg in args {
+                command.arg(arg);
+            }
+            command.arg(program);
             command
         }
     }
@@ -455,7 +481,7 @@ mod tests {
         let command = command_for(
             false,
             false,
-            Contain::Profile("(version 1)\n(allow default)\n".into()),
+            Contain::Profile("(version 1)\n(allow default)\n".into(), None),
         );
         assert_eq!(
             command.get_program(),
@@ -465,6 +491,82 @@ mod tests {
         assert_eq!(got[0], "-p");
         assert_eq!(got[2], "git");
         assert!(got.iter().any(|arg| arg == "core.hooksPath=/dev/null"));
+    }
+
+    /// A container profile past the inline limit cannot be one `-p` argument. It is a file inside the data folder.
+    /// With no data folder the command is refused, and nothing is written where a sandboxed agent can replace it.
+    #[test]
+    fn a_large_container_profile_is_a_file_inside_the_data_folder() {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let root =
+            std::env::temp_dir().join(format!("git-cmd-178b-{}-{nanos}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let data = crate::fs::canonical(&root).unwrap();
+        let profile = "x".repeat(100_001);
+        let command = command_for(
+            false,
+            false,
+            Contain::Profile(profile.clone(), Some(data.clone())),
+        );
+        let got = args_of(&command);
+        assert_eq!(
+            command.get_program(),
+            std::ffi::OsStr::new(crate::agent_sandbox::SANDBOX_EXEC)
+        );
+        assert_eq!(
+            got.first().map(String::as_str),
+            Some("-f"),
+            "a profile past 100,000 bytes was inlined"
+        );
+        let written = crate::fs::canonical(Path::new(&got[1])).unwrap();
+        assert!(
+            written.starts_with(&data),
+            "the profile file is not inside the data folder: {written:?}"
+        );
+        assert_eq!(std::fs::read_to_string(&written).unwrap(), profile);
+        assert_eq!(got[2], "git");
+
+        let before = temp_profile_names();
+        let missing = command_for(false, false, Contain::Profile(profile.clone(), None));
+        assert_eq!(missing.get_program(), REFUSED_PROGRAM);
+        assert_eq!(
+            temp_profile_names(),
+            before,
+            "a large profile was written into the temp directory"
+        );
+
+        let other = contained_with(Contain::Profile(profile.clone(), Some(data.clone())), "gh");
+        let other_args = args_of(&other);
+        assert_eq!(other_args.first().map(String::as_str), Some("-f"));
+        let other_file = crate::fs::canonical(Path::new(&other_args[1])).unwrap();
+        assert!(other_file.starts_with(&data));
+        assert_eq!(other_args[2], "gh");
+        let refused = contained_with(Contain::Profile(profile, None), "gh");
+        assert_eq!(refused.get_program(), REFUSED_PROGRAM);
+        assert_eq!(
+            temp_profile_names(),
+            before,
+            "a large profile was written into the temp directory"
+        );
+        let _ = std::fs::remove_dir_all(&data);
+    }
+
+    fn temp_profile_names() -> Vec<String> {
+        let mut names = Vec::new();
+        let Ok(entries) = std::fs::read_dir(std::env::temp_dir()) else {
+            return names;
+        };
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if name.starts_with("hivra-sandbox-profile-") {
+                names.push(name);
+            }
+        }
+        names.sort();
+        names
     }
 
     #[cfg(unix)]
