@@ -1370,6 +1370,7 @@ async function delegate(
       mono: owner.mono?.id,
       route: crewAnswer,
       sessionId: `app-${source.id}-${requestId}`,
+      parentSession: source.id,
     });
   const remoteBrief = await briefOnRemoteHost({
     paths: [folder, source.cwd],
@@ -1592,7 +1593,14 @@ async function delegate(
   };
   // Always monitored: a task reports back to the chat that delegated it. WP-141: the gate runs before each start.
   const gated = () =>
-    gateCrewStart(tasks, { cli: launch.harness, folder: policyFolder, mono: owner.mono?.id, route: crewAnswer, sessionId: id });
+    gateCrewStart(tasks, {
+      cli: launch.harness,
+      folder: policyFolder,
+      mono: owner.mono?.id,
+      route: crewAnswer,
+      sessionId: id,
+      parentSession: source.id,
+    });
   try {
     await gated();
     await host.start(launch, id, undefined, source.id, meta);
