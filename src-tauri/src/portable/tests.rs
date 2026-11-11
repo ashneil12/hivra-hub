@@ -134,6 +134,7 @@ fn add_session(
             goal: None,
             private_chat: false,
             private_boundary_id: None,
+            registry_agent_id: None,
         },
     )
     .unwrap();

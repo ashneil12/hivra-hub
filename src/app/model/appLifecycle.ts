@@ -31,6 +31,7 @@ import {
   type ProjectTerminalDock,
 } from "../../features/projects/model/projectTerminal";
 import { openMoreAgentSession } from "../../integrations/harness/moreAgents/moreAgentAdapter";
+import { moveRegistryChatLinks } from "../../features/registry/model/registryList";
 import { sessionWorkCwd, type Session } from "../../features/sessions/model/session";
 import { sessionChildHarnesses } from "../../features/sessions/model/handoff";
 import {
@@ -273,6 +274,10 @@ export function loadResumedWorkspace(): Promise<ResumedWorkspace | null> {
 export function loadBootWorkspace(): Promise<BootWorkspace> {
   if (!bootPromise) {
     bootPromise = (async () => {
+      // WP-134: a window that arrives by transfer never loads the resumed workspace, so the browser links move here too.
+      await moveRegistryChatLinks((sessionId, agentId) =>
+        invoke("session_adopt_registry_agent", { sessionId, agentId }),
+      ).catch(() => undefined);
       const hintedCwd = lastProjectPath();
       const historyHint = listProjectHistory(hintedCwd);
       const windowTransfer = await loadWindowTransfer();
@@ -374,6 +379,10 @@ export async function endLeftoverTurns(
 }
 
 async function loadResumedWorkspaceOnce(): Promise<ResumedWorkspace | null> {
+  // WP-134: browser links move onto the row before any chat is read, so restore routes from the row.
+  await moveRegistryChatLinks((sessionId, agentId) =>
+    invoke("session_adopt_registry_agent", { sessionId, agentId }),
+  ).catch(() => undefined);
   const [snapshotRaw, refs] = await Promise.all([
     loadWorkspaceSnapshot().catch(() => null),
     listInFlightSessions().catch(() => []),
@@ -437,29 +446,31 @@ async function loadResumedWorkspaceOnce(): Promise<ResumedWorkspace | null> {
   return workspace;
 }
 
-export function bindResumedSessions(sessions: Session[]): void {
-  for (const session of sessions) {
-    // WP-134b: a More agents chat is routed to its entry before its saved ACP session is bound, so the bind never
-    // reaches the harness it was saved with (the route effect in App runs later).
-    if (session.registryAgentId && !session.worktreeRemoved) {
-      openMoreAgentSession(session.id, session.registryAgentId);
-    }
-    if (
-      session.worktreeRemoved ||
-      !session.providerSessionId ||
-      !isLiveHarness(session.harness)
-    )
-      continue;
-    bindHarnessSession(
-      session.harness,
-      session.id,
-      session.providerSessionId,
-      sessionWorkCwd(session),
-      session.providerAccountId,
-      session.blocks,
-      session.goal,
-    );
+/** Route a restored chat from the entry on its row, then bind its saved ACP session. The worker restore uses this too. */
+export function bindRestoredHarness(session: Session): void {
+  // WP-134: the entry on the row is routed before the bind, so the bind never reaches the harness the chat was saved with.
+  if (session.registryAgentId && !session.worktreeRemoved) {
+    openMoreAgentSession(session.id, session.registryAgentId);
   }
+  if (
+    session.worktreeRemoved ||
+    !session.providerSessionId ||
+    !isLiveHarness(session.harness)
+  )
+    return;
+  bindHarnessSession(
+    session.harness,
+    session.id,
+    session.providerSessionId,
+    sessionWorkCwd(session),
+    session.providerAccountId,
+    session.blocks,
+    session.goal,
+  );
+}
+
+export function bindResumedSessions(sessions: Session[]): void {
+  for (const session of sessions) bindRestoredHarness(session);
 }
 
 export async function hideCurrentWindow(): Promise<void> {

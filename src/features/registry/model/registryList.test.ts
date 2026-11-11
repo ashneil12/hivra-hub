@@ -21,6 +21,7 @@ import {
   START_REGISTRY_CHAT_EVENT,
   linkRegistryChat,
   loadRegistryDocument,
+  moveRegistryChatLinks,
   refreshRegistry,
   registryAgentIdForSession,
   requestRegistryChat,
@@ -95,6 +96,33 @@ describe("chat links", () => {
     expect(registryAgentIdForSession("chat-1", store)).toBe("copilot");
     unlinkRegistryChat("chat-1", store);
     expect(registryAgentIdForSession("chat-1", store)).toBeUndefined();
+  });
+
+  it("moves each browser link onto the row once, and keeps a link whose write failed", async () => {
+    const raw = new Map<string, string>([
+      [REGISTRY_CHAT_LINKS_KEY, JSON.stringify({ "chat-1": "my-copilot", "chat-2": "other-agent", "chat-3": "gone-agent" })],
+    ]);
+    const store = {
+      raw,
+      getItem: (key: string) => raw.get(key) ?? null,
+      setItem: (key: string, value: string) => raw.set(key, value),
+      removeItem: (key: string) => raw.delete(key),
+    };
+    const adopted: [string, string][] = [];
+    await moveRegistryChatLinks(async (sessionId, agentId) => {
+      adopted.push([sessionId, agentId]);
+      if (sessionId === "chat-2") throw new Error("locked");
+      return sessionId !== "chat-3";
+    }, store);
+    expect(adopted).toEqual([
+      ["chat-1", "my-copilot"],
+      ["chat-2", "other-agent"],
+      ["chat-3", "gone-agent"],
+    ]);
+    // chat-1 was written. chat-3 had no row, so its link is dropped. chat-2's write failed, so it stays for the next start.
+    expect(JSON.parse(store.getItem(REGISTRY_CHAT_LINKS_KEY) ?? "{}")).toEqual({ "chat-2": "other-agent" });
+    await moveRegistryChatLinks(async () => true, store);
+    expect(store.getItem(REGISTRY_CHAT_LINKS_KEY)).toBeNull();
   });
 });
 

@@ -60,7 +60,6 @@ import { defaultModelId } from "../model/models";
 import { readRetiredGrokModel } from "../model/grokRetirement";
 
 import { HARNESSES, RUNTIME_MODES } from "../model/session";
-import { registryAgentIdForSession } from "../../registry/model/registryList";
 import type { InFlightRef } from "../model/inFlight";
 
 import { restoreOrchestrationProposal } from "../../orchestration/model/orchestrationPlan";
@@ -125,6 +124,8 @@ type SessionRecord = {
   automationId?: string | null;
   /** The open /goal saved with the chat (session_store.rs `goal_json`). */
   goal?: unknown;
+  /** WP-134: the More agents entry this chat belongs to. Absent on a chat saved before the column existed. */
+  registryAgentId?: string | null;
   archived?: boolean;
   createdAt: number;
   updatedAt: number;
@@ -155,6 +156,8 @@ type SessionUpsertPayload = {
   linkedWorkItem?: LinkedWorkItem;
   automationId?: string;
   goal?: SessionGoal;
+  /** WP-134: the More agents entry. Omitted when this save does not know it, which keeps the stored one. */
+  registryAgentId?: string;
 };
 
 /** Only real chats belong in project history — blank tabs stay ephemeral. */
@@ -170,6 +173,15 @@ export function shouldPersistSession(session: Session): boolean {
   );
 }
 
+const REGISTRY_AGENT_ID = /^[a-z0-9][a-z0-9-]{0,47}$/;
+
+/** An entry id from the row or a save. A harness id or a bad slug is not one. */
+function registryAgentFromRow(value: unknown): string | undefined {
+  if (typeof value !== "string" || !REGISTRY_AGENT_ID.test(value)) return undefined;
+  if ((HARNESSES as readonly string[]).includes(value)) return undefined;
+  return value;
+}
+
 function persistableMeta(
   session: Session,
   includeQueue = true,
@@ -178,6 +190,7 @@ function persistableMeta(
   const queuedMessages = includeQueue
     ? sanitizeQueuedMessages(session.queuedMessages)
     : [];
+  const registryAgentId = registryAgentFromRow(session.registryAgentId);
   return {
     id: session.id,
     cwd: normalizeProjectPath(session.cwd),
@@ -217,6 +230,7 @@ function persistableMeta(
       : {}),
     // Only a goal still open is saved; a met, cleared or stopped one is dropped from the row, so it never comes back.
     ...(openGoal(session.goal) ? { goal: openGoal(session.goal) } : {}),
+    ...(registryAgentId ? { registryAgentId } : {}),
   };
 }
 
@@ -1709,8 +1723,8 @@ function recordToSession(record: SessionRecord): Session {
   const linkedWorkItem = sanitizeLinkedWorkItem(record.linkedWorkItem);
   const queuedMessages = sanitizeQueuedMessages(record.queuedMessages);
   const goal = openGoal(record.goal);
-  // WP-134b: the chat map says this session belongs to More agents. The stored harness stays one of the eleven.
-  const registryAgentId = registryAgentIdForSession(record.id);
+  // WP-134: the entry id is on the row. Browser storage is not read. The stored harness stays one of the eleven.
+  const registryAgentId = registryAgentFromRow(record.registryAgentId);
   return {
     id: record.id,
     sidebarHidden: record.sidebarHidden === true || undefined,

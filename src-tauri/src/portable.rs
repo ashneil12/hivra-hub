@@ -3665,6 +3665,7 @@ fn insert_session(
         goal: None,
         // WP-111: a private chat stays private after import. An old file has no flag, so it stays readable.
         private_chat: file["private"].as_bool().unwrap_or(false),
+        registry_agent_id: None,
         private_boundary_id: match &file["privateBoundaryId"] {
             Value::Null => None,
             Value::String(value) => crate::session_store::boundary_for_read(Some(value.clone())),

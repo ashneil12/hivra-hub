@@ -824,7 +824,6 @@ import {
 import { AGENT_GONE, WAITS } from "../features/registry/model/registryCopy";
 import {
   START_REGISTRY_CHAT_EVENT,
-  linkRegistryChat,
   loadRegistryDocument,
   refreshRegistry,
   reportRegistryChatRefused,
@@ -1238,6 +1237,7 @@ import type { InstalledUpdate } from "./model/updateNotice";
 
 import {
   bindResumedSessions,
+  bindRestoredHarness,
   closeBusyWindow,
   closeCurrentWindow,
   confirmReload,
@@ -3494,7 +3494,7 @@ function Workspace({
         ...newSession("claude", cwd),
         ...registrySessionFields(plan.agent, "claude"),
       };
-      if (!linkRegistryChat(session.id, plan.agent.id).ok) return;
+      // WP-134: the entry id is on the session and is saved with it. Browser storage is not the link.
       const tab = newTab(session.id);
       setSessions((prev) => [...prev, session]);
       appendTab(tab, cwd);
@@ -13470,18 +13470,8 @@ function Workspace({
               title: task.title,
             };
         const worker = { ...base, orchestrationLeadId: run.leadId };
-        // LOW-I: a More agents worker is routed to its entry before its saved ACP session is bound.
-        if (worker.registryAgentId)
-          openMoreAgentSession(worker.id, worker.registryAgentId);
-        if (worker.providerSessionId)
-          bindHarnessSession(
-            worker.harness,
-            worker.id,
-            worker.providerSessionId,
-            sessionWorkCwd(worker),
-            worker.providerAccountId,
-            worker.blocks,
-          );
+        // WP-134: a More agents worker is routed from the row before its saved ACP session is bound.
+        bindRestoredHarness(worker);
         await upsertSession(worker);
         const next = [...sessionsRef.current, worker];
         sessionsRef.current = next;

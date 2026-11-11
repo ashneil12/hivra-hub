@@ -1095,6 +1095,8 @@ pub fn run() {
             session_store::session_set_pinned,
             // WP-111: the private flag, written on its own so a transcript save cannot clear it.
             session_store::session_set_private,
+            // WP-134: one browser link copied onto the session row, and only while the row has none.
+            session_store::session_adopt_registry_agent,
             session_store::session_set_linked_work_item,
             session_store::session_set_in_flight,
             session_store::session_list_in_flight,
