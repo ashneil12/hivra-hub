@@ -987,6 +987,7 @@ mod tests {
 
     // ---- fix round 1, item J: output that could not be read in time is not a silent run ----------------------------
 
+    #[cfg(unix)]
     fn payload_for(command: &[&str]) -> super::super::grant::Payload {
         super::super::grant::Payload {
             program_identity: program_identity(Path::new(command[0])).unwrap_or_default(),

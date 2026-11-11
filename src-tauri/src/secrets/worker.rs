@@ -527,7 +527,7 @@ mod tests {
             let mut input = serde_json::json!({
                 "title": "t",
                 "body": format!("the key is {VALUE} done"),
-                "nested": [format!("{VALUE}")],
+                "nested": [VALUE.to_string()],
             });
             scrub_app_input("worker-8", action, &mut input);
             let text = input.to_string();

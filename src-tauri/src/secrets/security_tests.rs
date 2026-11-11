@@ -823,13 +823,23 @@ struct Flaky {
 impl Vault for Flaky {
     fn read(&self, service: &str, account: &str) -> Result<Option<String>, String> {
         use std::sync::atomic::Ordering;
-        if self
-            .refuse_reads
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |left| {
-                left.checked_sub(1)
-            })
-            .is_ok()
-        {
+        let mut left = self.refuse_reads.load(Ordering::SeqCst);
+        let mut refused = false;
+        while left > 0 {
+            match self.refuse_reads.compare_exchange(
+                left,
+                left - 1,
+                Ordering::SeqCst,
+                Ordering::SeqCst,
+            ) {
+                Ok(_) => {
+                    refused = true;
+                    break;
+                }
+                Err(now) => left = now,
+            }
+        }
+        if refused {
             return Err("Not now. Your keychain didn't give the key. Try again.".into());
         }
         self.inner.read(service, account)
