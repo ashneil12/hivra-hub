@@ -1610,7 +1610,7 @@ pub fn answer_with(
     reason: Option<&str>,
     now: i64,
 ) -> Result<AnswerOutcome, String> {
-    answer_both(conn, project, key, answer, by, reason, None, now)
+    answer_both(conn, project, key, answer, by, reason, None, None, now)
 }
 
 /// [`answer`] for the card the person read: `seen_version` is the card's version on their screen. A secret card whose
@@ -1628,7 +1628,62 @@ pub fn answer_seen(
     seen_version: Option<i64>,
     now: i64,
 ) -> Result<AnswerOutcome, String> {
-    answer_both(conn, project, key, answer, by, None, seen_version, now)
+    answer_both(
+        conn,
+        project,
+        key,
+        answer,
+        by,
+        None,
+        seen_version,
+        None,
+        now,
+    )
+}
+
+/// The command path, with the calling chat. Tests that skip the asker check pass `caller: None` through `answer_with`.
+#[cfg(test)]
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn answer_as_caller(
+    conn: &mut Connection,
+    project: &str,
+    key: &str,
+    answer: &str,
+    by: Option<String>,
+    reason: Option<&str>,
+    caller: Option<&str>,
+    now: i64,
+) -> Result<AnswerOutcome, String> {
+    answer_both(conn, project, key, answer, by, reason, None, caller, now)
+}
+
+/// A captain answer from a chat. That chat may answer a card it asked, or a card its first mate asked.
+/// An empty caller is refused. A first mate does not answer a card its worker asked.
+fn captain_caller_may_answer(
+    conn: &Connection,
+    asked_by: &str,
+    caller: &str,
+) -> Result<bool, String> {
+    let session = caller.trim();
+    if session.is_empty() {
+        return Ok(false);
+    }
+    let asked = asked_by.trim();
+    if asked == session {
+        return Ok(true);
+    }
+    let mate: Option<String> = conn
+        .query_row(
+            "SELECT owner_session FROM delegations
+              WHERE child_session = ?1 AND state IN ('running', 'question')
+              ORDER BY created_at DESC, rowid DESC
+              LIMIT 1",
+            [session],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|e| e.to_string())?;
+    Ok(mate.as_deref() == Some(asked))
 }
 
 /// Both optional parts of an answer: the captain's reason (WP-215) and the card version the person read (WP-92).
@@ -1641,6 +1696,7 @@ fn answer_both(
     by: Option<String>,
     reason: Option<&str>,
     seen_version: Option<i64>,
+    caller: Option<&str>,
     now: i64,
 ) -> Result<AnswerOutcome, String> {
     if is_secret_key(key) && !secret_answer_by_person(by.as_deref()) {
@@ -1721,6 +1777,18 @@ fn answer_both(
             "Pick one of this card's options: {}.",
             decision.options.join(", ")
         ));
+    }
+    // WP-215: a captain answer on the command path names the calling chat. It may answer a card that chat
+    // asked, or a card its first mate asked. A missing caller fails closed. In-process tests pass none.
+    if captain::is_captain(by.as_deref()) {
+        if let Some(session) = caller {
+            if !captain_caller_may_answer(&tx, &decision.asked_by, session)? {
+                return Err(
+                    "The captain only answers a card this chat asked, or its first mate asked."
+                        .into(),
+                );
+            }
+        }
     }
     // WP-215: inside the write, so two windows cannot both pass the turn cap or skip the switch.
     if let Some(refusal) = captain::refuse_stored(
@@ -2175,9 +2243,11 @@ pub fn decisions_answer(
     by: Option<String>,
     reason: Option<String>,
     seen_version: Option<i64>,
+    caller: Option<String>,
 ) -> Result<AnswerOutcome, String> {
     // The version a secret card was read at is required inside answer_seen, in any spelling of the key. A gate answer
     // is forwarded only when this one landed and the person gave it. A reason is stored beside the answer (WP-215).
+    // A captain answer with no calling chat is refused. Other answers do not read the caller.
     let outcome = answer_and_relay_with(
         &store,
         project.as_deref().unwrap_or(""),
@@ -2186,6 +2256,7 @@ pub fn decisions_answer(
         by,
         reason.as_deref(),
         seen_version,
+        Some(caller.as_deref().map(str::trim).unwrap_or("")),
         now_millis(),
     )?;
     if outcome.applied {
@@ -2235,6 +2306,7 @@ pub(crate) fn answer_and_relay(
         by,
         None,
         seen_version,
+        None,
         now,
     )
 }
@@ -2248,6 +2320,7 @@ pub(crate) fn answer_and_relay_with(
     by: Option<String>,
     reason: Option<&str>,
     seen_version: Option<i64>,
+    caller: Option<&str>,
     now: i64,
 ) -> Result<AnswerOutcome, String> {
     let outcome = answer_both(
@@ -2258,6 +2331,7 @@ pub(crate) fn answer_and_relay_with(
         by,
         reason,
         seen_version,
+        caller,
         now,
     )?;
     relay_gate_answer(store, &outcome, answer_text);

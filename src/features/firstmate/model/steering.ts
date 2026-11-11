@@ -122,6 +122,7 @@ export type FirstMateBackend = {
     by?: string,
     seenVersion?: number,
     reason?: string,
+    caller?: string,
   ): Promise<AnswerOutcome>;
   decisions(answered?: number): Promise<Decision[]>;
   /** WP-156: the standing-answers block for one project. Empty while the setting is off. */
@@ -134,8 +135,8 @@ export const tauriFirstMate: FirstMateBackend = {
   list: (query) => invoke("steering_list", query),
   settle: (id, outcome) => invoke("steering_settle", { id, outcome }),
   ask: (input) => invoke("decisions_ask", { input }),
-  answer: (project, key, answer, by, seenVersion, reason) =>
-    invoke("decisions_answer", { project, key, answer, by, seenVersion, reason }),
+  answer: (project, key, answer, by, seenVersion, reason, caller) =>
+    invoke("decisions_answer", { project, key, answer, by, seenVersion, reason, caller }),
   decisions: (answered) => invoke("decisions_list", { answered }),
   standingBrief: (project) => invoke("decisions_standing_brief", { project }),
 };

@@ -3,7 +3,7 @@ import { newSession, type Block, type Session } from "../../sessions/model/sessi
 import { MONO_REPORT_PREFIX } from "../../monos/model/monoSessionCompletion";
 import { handleAgentApp, type AgentAppHost } from "../../agent-app/model/agentApp";
 import type { RedCategory } from "./redList";
-import { ashSaidIt, defaultAutopilotDeps, handleAutopilotApp, type AutopilotAppDeps, type AutopilotAppHost } from "./autopilotApp";
+import { ashSaidIt, defaultAutopilotDeps, handleAutopilotApp, standingFromCache, type AutopilotAppDeps, type AutopilotAppHost } from "./autopilotApp";
 import { memoryAutopilot, type MemoryAutopilot } from "./memoryAutopilot";
 
 const NOW = new Date(2026, 9, 17, 15, 0).getTime();
@@ -259,7 +259,7 @@ describe("autopilot.decide", () => {
       decision: "taken",
       act: "proceed",
       answer: "Example: keep it",
-      answeredBy: "captain:hivra-lead",
+      answeredBy: "captain:chief",
       answerReason: "standing answer: merge on green",
     });
     const ruled = await call(
@@ -296,11 +296,40 @@ describe("autopilot.decide", () => {
     expect(String(money.reason)).toContain("limit");
   });
 
+  it("a blank captain id is not the asking Mono", async () => {
+    const s = setup();
+    await on(s, ["*"]);
+    s.deps.captainContext = () => ({ monoId: "   ", standing: { answer: "Example: keep it", label: "merge on green" } });
+    const taken = await call(
+      chat("hivra-chat"),
+      "autopilot.decide",
+      {
+        question: "Example: keep the gate?",
+        recommendation: "Example: change it",
+        options: ["Example: keep it", "Example: change it"],
+      },
+      s,
+      "blank-chief",
+    );
+    expect(taken).toMatchObject({ decision: "taken", answeredBy: "captain:chief" });
+    expect((taken as { answeredBy?: string }).answeredBy).not.toBe("captain:hivra-lead");
+  });
+
   it("status says what is on, for whom", async () => {
     const s = setup();
     await on(s, ["hivra"]);
     expect(await call(chat("hivra-chat"), "autopilot.status", {}, s)).toMatchObject({ on: true, for: "Hivra", untilLabel: "Mon 9:00" });
     expect(await call(chat("cos-chat"), "autopilot.status", {}, s)).toMatchObject({ on: false });
+  });
+});
+
+describe("a standing answer kept after a failed fetch", () => {
+  const row = { answer: "Example: keep it", label: "merge on green" };
+  it("is used while it is fresh, and dropped once it is older than a minute", () => {
+    expect(standingFromCache(undefined, 1_000)).toBeNull();
+    expect(standingFromCache({ at: Number.NaN, row }, 1_000)).toBeNull();
+    expect(standingFromCache({ at: 1_000, row }, 1_000 + 59_999)).toEqual(row);
+    expect(standingFromCache({ at: 1_000, row }, 1_000 + 60_000)).toBeNull();
   });
 });
 

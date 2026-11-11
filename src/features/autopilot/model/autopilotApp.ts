@@ -12,7 +12,7 @@ import { CONTINUE_PROMPT } from "../../sessions/model/inFlight";
 import type { Session } from "../../sessions/model/session";
 import { MONO_REPORT_PREFIX } from "../../monos/model/monoSessionCompletion";
 import { leadFor } from "../../hub/model/hubLeads";
-import { findMono, monoLook } from "../../monos/model/mono";
+import { findMono, listMonos, monoLook } from "../../monos/model/mono";
 import { pathKey } from "../../../shared/lib/paths";
 import {
   autopilotBackend,
@@ -25,7 +25,7 @@ import {
 } from "./autopilot";
 import { chatProject, decideCall, type ProjectRef } from "./decide";
 import { captainDecide, type CaptainRule, type NamedAnswer } from "../../chief/model/captain";
-import { listMonos } from "../../monos/model/mono";
+import { isCaptainMono } from "../../chief/model/charter";
 import { judgeLaunch } from "../../usage/model/spendGate";
 import { tauriFirstMate } from "../../firstmate/model/steering";
 import { formatUntil, parseUntil } from "./endTime";
@@ -68,7 +68,21 @@ export type AutopilotAppDeps = {
     by?: string,
     seenVersion?: number,
     reason?: string,
+    caller?: string,
   ): Promise<{ applied?: boolean } | unknown>;
+  /**
+   * The open card this key names, so the captain is run on the stored question, not the caller's words.
+   * Absent only in tests. A miss or a throw writes nothing.
+   */
+  openCard?(project: string, key: string): Promise<StoredCaptainCard | null>;
+};
+
+export type StoredCaptainCard = {
+  question: string;
+  options?: readonly string[];
+  recommended?: string | null;
+  askedBy: string;
+  state?: string;
 };
 
 export type CaptainContext = {
@@ -80,9 +94,9 @@ export type CaptainContext = {
   pendingSince?: number;
   department?: string;
   decisionKey?: string;
-  /** The Chief of Staff, when this copy has one. Absent keeps the asking Mono. */
+  /** The Chief of Staff, when this copy has one. A blank id is "chief", never the asking Mono. */
   monoId?: string;
-  /** Step 5 only when this is not false. The app sets it; money and the red list are still checked first. */
+  /** Step 5 only when this is true. The app does not stamp it on. */
   confident?: boolean;
 };
 
@@ -137,12 +151,43 @@ export function defaultAutopilotDeps(): AutopilotAppDeps {
     isLeadership: () => false,
     leadProject: (monoId) => leadFor(monoId)?.projectId,
     captainContext: (input) => appCaptainContext(input),
-    answerDecision: (project, key, answer, by, seenVersion, reason) =>
-      tauriFirstMate.answer(project, key, answer, by, seenVersion, reason),
+    answerDecision: (project, key, answer, by, seenVersion, reason, caller) =>
+      tauriFirstMate.answer(project, key, answer, by, seenVersion, reason, caller),
+    openCard: (project, key) => loadOpenCard(project, key),
   };
 }
 
 const standingCache = new Map<string, { at: number; row: NamedAnswer | null }>();
+
+/** A failed fetch may reuse a row only this long. After that the next call asks again. */
+export const STANDING_TTL_MS = 60_000;
+
+export function standingFromCache(
+  cached: { at: number; row: NamedAnswer | null } | undefined,
+  now: number,
+  ttl = STANDING_TTL_MS,
+): NamedAnswer | null {
+  if (!cached || typeof cached.at !== "number" || !Number.isFinite(cached.at)) return null;
+  if (now - cached.at >= ttl) return null;
+  return cached.row;
+}
+
+async function loadOpenCard(project: string, key: string): Promise<StoredCaptainCard | null> {
+  const rows = await tauriFirstMate.decisions();
+  if (!Array.isArray(rows)) return null;
+  const wanted = foldDecisionKey(key);
+  const hit = rows.find(
+    (row) => row?.state === "open" && row.project === project && foldDecisionKey(row.decisionKey) === wanted,
+  );
+  if (!hit || typeof hit.askedBy !== "string") return null;
+  return {
+    question: typeof hit.question === "string" ? hit.question : "",
+    options: Array.isArray(hit.options) ? hit.options : [],
+    recommended: hit.recommended,
+    askedBy: hit.askedBy,
+    state: hit.state,
+  };
+}
 
 function standingKey(project: string, key: string): string {
   return `${project}\n${foldDecisionKey(key)}`;
@@ -150,20 +195,33 @@ function standingKey(project: string, key: string): string {
 
 function chiefMonoId(): string | undefined {
   try {
-    return listMonos().find((mono) => (mono.name ?? "").trim() === "Chief of Staff")?.id;
+    return listMonos().find((mono) => isCaptainMono(mono))?.id;
   } catch {
     return undefined;
   }
 }
 
 function moneyBlocked(project: string | null): boolean {
-  if (!project) return false;
   try {
-    return judgeLaunch({ project, harness: "claude", warn: false }).status === "over";
+    const named = typeof project === "string" ? project.trim() : "";
+    const verdict = judgeLaunch({ project: named, harness: "claude", warn: false });
+    if (!verdict || typeof verdict.status !== "string") return true;
+    return verdict.status === "over";
   } catch {
     // A spend book that cannot be read blocks, the same way an unreadable store does.
     return true;
   }
+}
+
+/** The hub project this chat works in, or null when it works in none. */
+function callerProject(source: Session, host: AutopilotAppHost, deps: AutopilotAppDeps): string | null {
+  const projects = deps.projects();
+  const mono = host.isMono(source.id) ? host.monoOf?.(source.id) : undefined;
+  return chatProject(
+    source,
+    projects,
+    mono ? { projects: mono.projects, leadProjectId: deps.leadProject(mono.id) } : undefined,
+  );
 }
 
 async function loadStanding(project: string, key?: string): Promise<NamedAnswer | null> {
@@ -198,7 +256,7 @@ export async function appCaptainContext(input: {
       }
     } catch {
       const cached = input.key ? standingCache.get(standingKey(project, input.key)) : undefined;
-      standing = cached?.row ?? null;
+      standing = standingFromCache(cached, Date.now());
     }
   }
   return {
@@ -208,7 +266,6 @@ export async function appCaptainContext(input: {
     moneyOverLimit: moneyBlocked(project),
     monoId: chiefMonoId(),
     department: "The first mate",
-    confident: true,
   };
 }
 
@@ -225,7 +282,6 @@ export function appCaptainDoor(chat: { projectId?: string | null; question?: str
     moneyOverLimit: moneyBlocked(project),
     monoId: chiefMonoId(),
     department: "The first mate",
-    confident: true,
   };
 }
 
@@ -525,14 +581,24 @@ export async function handleAutopilotApp(
       // WP-215: the captain answers inside this door. Off already returned. A red call already returned held.
       const key = text(input.key, "key", 200, false);
       const ctx = (await deps.captainContext?.({ project, question, key })) ?? {};
+      const inProject = !!project && callerProject(source, host, deps) === project;
+      let card: StoredCaptainCard | null | undefined;
+      if (deps.openCard && key && project && inProject) {
+        try {
+          card = await deps.openCard(project, key);
+        } catch {
+          card = null;
+        }
+      }
+      const fromCard = !!card && card.state !== "answered";
       const captain = captainDecide({
         project: project ?? "",
-        monoId: ctx.monoId?.trim() || mono?.id || "chief",
+        monoId: ctx.monoId?.trim() || chiefMonoId() || "chief",
         decisionKey: key ?? ctx.decisionKey,
-        question,
-        options: Array.isArray(input.options) ? (input.options as string[]) : undefined,
-        recommendation,
-        confident: ctx.confident !== false,
+        question: fromCard ? card!.question : question,
+        options: fromCard ? [...(card!.options ?? [])] : Array.isArray(input.options) ? (input.options as string[]) : undefined,
+        recommendation: fromCard ? (card!.recommended ?? "") : recommendation,
+        confident: ctx.confident === true,
         why,
         department: ctx.department,
         rules: ctx.rules,
@@ -560,10 +626,24 @@ export async function handleAutopilotApp(
         };
       }
       const answer = captain.kind === "answer" ? captain.answer : verdict.answer;
-      if (captain.kind === "answer" && deps.answerDecision && key && project) {
+      if (captain.kind === "answer" && deps.answerDecision && key && project && inProject) {
         const heldNote = "The decision store did not keep the captain's answer, so it waits.";
+        if (deps.openCard && !fromCard) {
+          const logged = await backend.log({ ...base, kind: "decision", outcome: "held", red: null });
+          return {
+            autopilot: "on",
+            until: new Date(verdict.until).toISOString(),
+            untilLabel,
+            decision: "held",
+            act: "ask",
+            red: null,
+            reason: heldNote,
+            ...(logged ? { logged: logged.id } : {}),
+            note: heldNote,
+          };
+        }
         try {
-          const outcome = await deps.answerDecision(project, key, answer, captain.answeredBy, undefined, captain.reason);
+          const outcome = await deps.answerDecision(project, key, answer, captain.answeredBy, undefined, captain.reason, source.id);
           const refused =
             !!outcome && typeof outcome === "object" && "applied" in outcome && (outcome as { applied?: boolean }).applied === false;
           if (refused) {

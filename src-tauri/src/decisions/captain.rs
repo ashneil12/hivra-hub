@@ -439,9 +439,11 @@ fn categories() -> &'static [Category] {
 }
 
 fn normalize(text: &str) -> String {
+    // The same fold as a decision key: fullwidth letters and invisible characters are still the red line.
+    let folded = super::fold_key(text);
     let mut out = String::new();
     let mut space = false;
-    for c in text.to_lowercase().chars() {
+    for c in folded.chars() {
         if c.is_whitespace() {
             if !out.is_empty() {
                 space = true;
@@ -1210,6 +1212,113 @@ mod tests {
             let want = case["category"].as_str();
             assert_eq!(red_category(text), want, "{text}");
         }
+    }
+
+    // Review of PR #244, round 4: a captain answer on the command path names the calling chat. It answers a card that
+    // chat asked, or a card its first mate asked. Another chat, an empty caller, and a first mate answering its
+    // worker's card are refused, and the row stays open.
+    #[test]
+    fn review_r4_a_captain_answer_only_from_the_chat_that_asked_or_its_first_mate() {
+        let store = store();
+        let mut conn = store.lock_conn().unwrap();
+        // A worker cannot ask once it has a first mate. The card is opened first, then the delegation is recorded.
+        open_as(&mut conn, "hivra", "font-child", "Which font?", "w-cap");
+        mate(&mut conn);
+        cover(&conn, "*");
+        let reason = "standing answer: merge on green";
+        let captain = Some("captain:ada".into());
+
+        open_as(&mut conn, "hivra", "font-stranger", "Which font?", "fm");
+        let refused = answer_as_caller(
+            &mut conn,
+            "hivra",
+            "font-stranger",
+            "Keep it",
+            captain.clone(),
+            Some(reason),
+            Some("stranger"),
+            NOW,
+        );
+        assert!(
+            refused.as_ref().is_err_and(|err| err.contains("this chat")),
+            "{refused:?}"
+        );
+        assert_eq!(
+            get(&conn, "hivra", "font-stranger").unwrap().unwrap().state,
+            OPEN
+        );
+        let later =
+            captain_answers(&mut conn, "hivra", "font-stranger", "Keep it", reason).unwrap();
+        assert!(later.applied);
+
+        open_as(&mut conn, "hivra", "font-asker", "Which font?", "fm");
+        let asker = answer_as_caller(
+            &mut conn,
+            "hivra",
+            "font-asker",
+            "Keep it",
+            captain.clone(),
+            Some(reason),
+            Some("fm"),
+            NOW,
+        )
+        .unwrap();
+        assert!(asker.applied);
+
+        open_as(&mut conn, "hivra", "font-worker", "Which font?", "fm");
+        let worker = answer_as_caller(
+            &mut conn,
+            "hivra",
+            "font-worker",
+            "Keep it",
+            captain.clone(),
+            Some(reason),
+            Some("w-cap"),
+            NOW,
+        )
+        .unwrap();
+        assert!(worker.applied);
+
+        let mate_for_child = answer_as_caller(
+            &mut conn,
+            "hivra",
+            "font-child",
+            "Keep it",
+            captain.clone(),
+            Some(reason),
+            Some("fm"),
+            NOW,
+        );
+        assert!(
+            mate_for_child
+                .as_ref()
+                .is_err_and(|err| err.contains("this chat")),
+            "{mate_for_child:?}"
+        );
+        assert_eq!(
+            get(&conn, "hivra", "font-child").unwrap().unwrap().state,
+            OPEN
+        );
+
+        open_as(&mut conn, "hivra", "font-empty", "Which font?", "fm");
+        let empty = answer_as_caller(
+            &mut conn,
+            "hivra",
+            "font-empty",
+            "Keep it",
+            captain,
+            Some(reason),
+            Some(""),
+            NOW,
+        );
+        assert!(
+            empty.as_ref().is_err_and(|err| err.contains("this chat")),
+            "{empty:?}"
+        );
+        assert_eq!(
+            get(&conn, "hivra", "font-empty").unwrap().unwrap().state,
+            OPEN
+        );
     }
 
     // Review of PR #244, round 3: `red_category` lower-cases the text but does not fold it (NFKC, invisible characters)
