@@ -62,15 +62,22 @@ pub fn admit_automated(conn: &Connection, project: Option<&str>, now: i64) -> Re
                 |row| row.get(0),
             ),
             "project" => {
-                let Some(project) = project else { continue };
-                if limit.get("project").and_then(|v| v.as_str()) != Some(project) {
-                    continue;
+                // A limit keyed by the project's id counts that project's turns. One keyed by a folder (the TS side maps
+                // it through git), or a verdict with no project id, cannot be matched here, so it counts the whole ledger:
+                // that holds the verdict early rather than letting it past the limit.
+                let stored = limit.get("project").and_then(|v| v.as_str()).unwrap_or("");
+                match project {
+                    Some(id) if stored == id => conn.query_row(
+                        "SELECT COALESCE(SUM(micros), 0) FROM spend_ledger WHERE at >= ?1 AND project_key = ?2",
+                        params![since, id],
+                        |row| row.get(0),
+                    ),
+                    _ => conn.query_row(
+                        "SELECT COALESCE(SUM(micros), 0) FROM spend_ledger WHERE at >= ?1",
+                        params![since],
+                        |row| row.get(0),
+                    ),
                 }
-                conn.query_row(
-                    "SELECT COALESCE(SUM(micros), 0) FROM spend_ledger WHERE at >= ?1 AND project_key = ?2",
-                    params![since, project],
-                    |row| row.get(0),
-                )
             }
             _ => return Err(BOOK_UNREADABLE.to_string()),
         }
@@ -86,6 +93,19 @@ pub fn admit_automated(conn: &Connection, project: Option<&str>, now: i64) -> Re
         }
     }
     Ok(())
+}
+
+/// One automated verdict: admitted, run, then noted in the ledger as unpriced. A refused verdict runs nothing and notes
+/// nothing. The steps are passed in so the sequence is one function, and the test drives that same function.
+pub fn admitted_verdict(
+    admit: impl FnOnce() -> Result<(), String>,
+    run: impl FnOnce() -> Result<String, String>,
+    note: impl FnOnce() -> Result<(), String>,
+) -> Result<String, String> {
+    admit()?;
+    let out = run();
+    note()?;
+    out
 }
 
 /// Notes an automated call whose cost is not reported (a verdict): it is counted as unpriced and adds no money.
@@ -264,6 +284,31 @@ pub fn totals(conn: &Connection, since: i64) -> Result<Vec<DayTotal>, String> {
         .map_err(|e| e.to_string())
 }
 
+/// The one form a folder takes as a ledger and limit key: a verbatim `\\?\` prefix is dropped, separators are `/`,
+/// a trailing separator is trimmed, and a Windows drive or UNC path is lowercased. It is the same as TS `pathKey`
+/// (src/shared/lib/paths.ts), so the ledger and the limits key a folder alike on every OS.
+pub fn spend_path_key(text: &str) -> String {
+    let trimmed = text.trim();
+    let unprefixed = if let Some(rest) = trimmed.strip_prefix(r"\\?\UNC\") {
+        format!(r"\\{rest}")
+    } else if let Some(rest) = trimmed.strip_prefix(r"\\?\") {
+        rest.to_string()
+    } else {
+        trimmed.to_string()
+    };
+    let mut key = unprefixed.replace('\\', "/");
+    while key.len() > 1 && key.ends_with('/') {
+        key.pop();
+    }
+    let bytes = key.as_bytes();
+    let drive = bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':';
+    if drive || key.starts_with("//") {
+        key.to_lowercase()
+    } else {
+        key
+    }
+}
+
 /// The project a working copy belongs to: the main checkout, for a worktree, a pool slot or the checkout itself.
 /// A bare repository's common dir is its own folder. Falls back to the copy's own folder when git says nothing.
 pub fn project_folder_for(cwd: &str) -> String {
@@ -280,14 +325,15 @@ pub fn project_folder_for(cwd: &str) -> String {
         Ok(out) if out.status.success() => {
             let common = String::from_utf8_lossy(&out.stdout).trim().to_string();
             if common.is_empty() {
-                return canonical_or_as_written(text);
+                return spend_path_key(&canonical_or_as_written(text));
             }
+            let common = spend_path_key(&common);
             match common.strip_suffix("/.git") {
                 Some(parent) if !parent.is_empty() => parent.to_string(),
                 _ => common,
             }
         }
-        _ => canonical_or_as_written(text),
+        _ => spend_path_key(&canonical_or_as_written(text)),
     }
 }
 
@@ -414,6 +460,30 @@ mod tests {
     }
 
     #[test]
+    fn a_folder_has_one_key_on_every_os() {
+        // Round 5 (Windows CI): git reports C:/..., canonicalize reports \\?\C:\..., and the TS key is pathKey. All of
+        // them must give the one key the ledger and the limits use. These inputs are Windows-shaped on every OS.
+        assert_eq!(
+            spend_path_key(r"\\?\C:\Users\Ash\main-repo"),
+            "c:/users/ash/main-repo"
+        );
+        assert_eq!(
+            spend_path_key("C:/Users/Ash/main-repo/"),
+            "c:/users/ash/main-repo"
+        );
+        assert_eq!(
+            spend_path_key(r"C:\Users\Ash\main-repo"),
+            "c:/users/ash/main-repo"
+        );
+        assert_eq!(
+            spend_path_key(r"\\?\UNC\Server\Share\Repo"),
+            "//server/share/repo"
+        );
+        assert_eq!(spend_path_key("/home/ash/repo/"), "/home/ash/repo");
+        assert_eq!(spend_path_key("/"), "/");
+    }
+
+    #[test]
     fn the_ledger_refuses_an_update_or_a_delete() {
         // WP-176 round 3: a recorded turn is append-only. Neither a reader nor a later write may rewrite or remove it.
         let conn = db();
@@ -472,6 +542,52 @@ mod tests {
     }
 
     #[test]
+    fn a_verdict_runs_only_when_admitted_and_is_noted_unpriced() {
+        // Round 5 LOW2: the verdict goes through admitted_verdict. Over the limit it runs nothing and notes nothing; a
+        // folder-keyed limit (which this side cannot map) holds it too; under the limit it runs and is noted unpriced.
+        let conn = db();
+        let now = now_ms();
+        write_book(&conn, 0, 1, r#"{"revision":1,"limits":[{"scope":"app","period":"month","amountUsd":10,"warnAt":0.8}],"ceilings":{}}"#).unwrap();
+        append(&conn, &turn("chat", "hivra", now, 12_000_000, true)).unwrap();
+        let ran = std::cell::Cell::new(0);
+        let attempt = || {
+            admitted_verdict(
+                || admit_automated(&conn, Some("hivra"), now),
+                || {
+                    ran.set(ran.get() + 1);
+                    Ok("verdict".to_string())
+                },
+                || note_unpriced(&conn, "hivra", now),
+            )
+        };
+        assert!(attempt().is_err());
+        assert_eq!(ran.get(), 0, "a refused verdict runs nothing");
+        assert_eq!(
+            totals(&conn, 0)
+                .unwrap()
+                .iter()
+                .filter(|r| r.session_id.starts_with("verdict-"))
+                .count(),
+            0,
+            "and notes nothing"
+        );
+        write_book(&conn, 1, 2, r#"{"revision":2,"limits":[{"scope":"app","period":"month","amountUsd":50,"warnAt":0.8}],"ceilings":{}}"#).unwrap();
+        assert_eq!(attempt(), Ok("verdict".to_string()));
+        assert_eq!(ran.get(), 1);
+        let noted = totals(&conn, 0)
+            .unwrap()
+            .into_iter()
+            .find(|r| r.session_id.starts_with("verdict-"))
+            .unwrap();
+        assert_eq!((noted.micros, noted.priced, noted.unpriced), (0, 0, 1));
+        // A folder-keyed project limit cannot be matched to the project, so it holds the verdict too.
+        write_book(&conn, 2, 3, r#"{"revision":3,"limits":[{"scope":"project","project":"/work/hivra","period":"month","amountUsd":10,"warnAt":0.8}],"ceilings":{}}"#).unwrap();
+        assert!(admit_automated(&conn, Some("hivra"), now).is_err());
+        // A project limit with no project id on the verdict is held as well.
+        assert!(admit_automated(&conn, None, now).is_err());
+    }
+
+    #[test]
     #[cfg(unix)]
     fn a_folder_reached_through_a_symlink_resolves_to_its_real_path() {
         // WP-176 round 3: macOS temp folders are symlinks (/var -> /private/var). Both sides must compare real paths.
@@ -527,8 +643,9 @@ mod tests {
         // git reports the real path (macOS resolves /var to /private/var), so compare against that.
         let real = std::fs::canonicalize(&main).unwrap();
         let main_text = real.to_str().unwrap();
-        assert_eq!(project_folder_for(main.to_str().unwrap()), main_text);
-        assert_eq!(project_folder_for(slot.to_str().unwrap()), main_text);
+        let main_key = spend_path_key(main_text);
+        assert_eq!(project_folder_for(main.to_str().unwrap()), main_key);
+        assert_eq!(project_folder_for(slot.to_str().unwrap()), main_key);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
