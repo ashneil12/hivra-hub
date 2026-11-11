@@ -141,7 +141,9 @@ export class HostTeleportStore {
         continue;
       }
       if (!stored || stored.live || stored.frozenBy) continue;
-      if (!stored.owner || stored.owner === this.options.selfId) continue;
+      // This host still owns the copy. A record with no owner is a first move whose session was opened and then
+      // the process died before that was saved: close it, the same as a chat that already left.
+      if (stored.owner === this.options.selfId) continue;
       if (sessions.presence(chatId) === "open") sessions.close(chatId);
     }
   }

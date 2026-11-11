@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -47,6 +47,66 @@ describe("WP-177 host teleport store", () => {
     store = make();
   });
   afterEach(() => rmSync(dir, { recursive: true, force: true }));
+
+  it("closes a session a first move opened when the record still has no owner", () => {
+    const closed: string[] = [];
+    mkdirSync(path.join(dir, "chats"), { recursive: true });
+    writeFileSync(
+      path.join(dir, "chats", `${CHAT}.json`),
+      JSON.stringify({
+        owner: null,
+        device: null,
+        live: null,
+        incoming: { moveId: "m1", payload: payloadFor().chat, from: MAC, expiresAt: now + 60_000, device: DEV },
+        activatedBy: null,
+        frozenBy: null,
+        frozenDevice: null,
+        frozenTo: null,
+      }),
+    );
+    const sessions = {
+      open: () => {},
+      close: (id: string) => {
+        closed.push(id);
+      },
+      presence: () => "open" as const,
+    };
+    new HostTeleportStore({ dir, selfId: SELF, providers: ["claude"], leaseRoot, now: () => now, sessions });
+    expect(closed).toEqual([CHAT]);
+  });
+
+  it("does not close a session this host still owns", () => {
+    const closed: string[] = [];
+    mkdirSync(path.join(dir, "chats"), { recursive: true });
+    writeFileSync(
+      path.join(dir, "chats", `${CHAT}.json`),
+      JSON.stringify({
+        owner: SELF,
+        device: DEV,
+        live: null,
+        incoming: null,
+        activatedBy: "m1",
+        frozenBy: null,
+        frozenDevice: null,
+        frozenTo: null,
+      }),
+    );
+    new HostTeleportStore({
+      dir,
+      selfId: SELF,
+      providers: ["claude"],
+      leaseRoot,
+      now: () => now,
+      sessions: {
+        open: () => {},
+        close: (id: string) => {
+          closed.push(id);
+        },
+        presence: () => "open",
+      },
+    });
+    expect(closed).toEqual([]);
+  });
 
   it("stores an incoming copy that does not run, and does not claim ownership until activated", async () => {
     const reply = await store.receive(CHAT, "m1", payloadFor(), DEV);
