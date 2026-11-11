@@ -59,6 +59,18 @@ import {
   resolveClaudeApiModelId,
 } from "../../../integrations/harness/providers/claude/claudeProtocol";
 import { parseCliArgs } from "../../../../scripts/fake-claude.mjs";
+import { dayKey } from "../../usage/model/history";
+import {
+  admitSpendTurn,
+  resetSpendGate,
+  saveTaskCeiling,
+  setSpendClock,
+  setSpendLoader,
+  setSpendMonotonicClock,
+  setSpendProjectLookup,
+  setSpendRedoLinks,
+  spendSnapshot,
+} from "../../usage/model/spendGate";
 
 // `onlyClaude` is a bench plan (src-tauri/src/verify_live.rs): no CLI but the run's own Claude wrapper resolves.
 // `codexOff` is a Mac without the Codex CLI: the setting is in force, the binary simply isn't installed.
@@ -3203,3 +3215,67 @@ describe("a brief quotes the person's own request (WP-171)", () => {
   });
 });
 
+describe("review r4: a redo's very first turn counts its parent's spend", () => {
+  afterEach(() => resetSpendGate());
+
+  it("a redo of a task held at its ceiling is held on its first turn too", async () => {
+    resetSpendGate();
+    importCustomModels([
+      { id: "acme", name: "Acme", provider: "deepseek", baseUrl: "https://api.example.test/v1", modelId: "acme-1" },
+    ]);
+    const now = Date.parse("2026-11-10T15:00:00");
+    setSpendClock(() => now);
+    // Every check reads the ledger again, so the record TTL plays no part: only the order of the writes does.
+    let tick = 0;
+    setSpendMonotonicClock(() => (tick += 60_000));
+    setSpendProjectLookup({
+      idOf: (folder) => (folder === PROJECT ? "vg-game" : undefined),
+      folderOf: (id) => (id === "vg-game" ? PROJECT : undefined),
+    });
+    // The app's database as spendWiring reads it: the ledger rows and the redo links, read together.
+    const db = {
+      ledger: [{ projectKey: "vg-game", sessionId: "app-mono-exo-t-stuck", day: dayKey(now), micros: 9_500_000, priced: 1, unpriced: 0 }],
+      links: [] as { child: string; parent: string }[],
+    };
+    setSpendLoader(async () => {
+      setSpendRedoLinks(db.links);
+      return db.ledger;
+    });
+    saveTaskCeiling("vg-game", { hardUsd: 9 }, spendSnapshot().book.revision);
+    // Control: the stuck task itself is held at its ceiling.
+    expect(
+      await admitSpendTurn({ sessionId: "app-mono-exo-t-stuck", cwd: PROJECT, harness: "claude", model: "custom:acme", origin: "automated" }),
+    ).toMatchObject({ ok: false });
+
+    const stuck = row({ id: "t-stuck", childSession: "app-mono-exo-t-stuck", stallKind: "blocked", stallReason: "Task ceiling reached" });
+    const rows = [stuck];
+    const { source, host, api } = fixture(rows);
+    // delegations.rs note_redo + redo_links: the new task's chat is linked to the one it redoes.
+    api.redo = vi.fn(async (_owner, entry, task) => {
+      const made = rows.find((candidate) => candidate.id === task);
+      if (made) db.links.push({ child: made.childSession, parent: entry.childSession });
+    });
+    // As the app's start does: the worker's first turn goes out through sendHarnessTurn, which asks admitSpendTurn.
+    const firstTurn: Array<{ ok: boolean }> = [];
+    const start = host.start as (...args: unknown[]) => Promise<void>;
+    host.start = vi.fn(async (...args: unknown[]) => {
+      await start(...args);
+      const [launch, id] = args as [{ cwd?: string; model?: string }, string];
+      firstTurn.push(
+        await admitSpendTurn({ sessionId: id, cwd: launch.cwd ?? PROJECT, harness: "claude", model: launch.model, origin: "automated" }),
+      );
+    }) as unknown as AgentAppHost["start"];
+
+    await handleAgentApp(source, "r-redo-spend", "tasks.delegate", { brief: "Same job, smaller.", redoes: "t-stuck", model: "custom:acme" }, host);
+
+    expect(api.redo).toHaveBeenCalledTimes(1);
+    expect(db.links).toEqual([{ child: "app-mono-exo-r-redo-spend", parent: "app-mono-exo-t-stuck" }]);
+    expect(firstTurn).toHaveLength(1);
+    // Control: once delegate_task has noted the redo, the redo's next turn is held, so the link itself works.
+    expect(
+      await admitSpendTurn({ sessionId: "app-mono-exo-r-redo-spend", cwd: PROJECT, harness: "claude", model: "custom:acme", origin: "automated" }),
+    ).toMatchObject({ ok: false });
+    // Fails today: the first turn is admitted with the redo's own $0, because the link is written after it starts.
+    expect(firstTurn[0]).toMatchObject({ ok: false });
+  });
+});

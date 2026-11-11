@@ -87,7 +87,7 @@ export function useLeadTick(host: LeadTickHost): void {
                 inFlight,
                 health: builderHealth(),
                 scale: builderScale(),
-                spend: judgeLaunch({ project, harness: "claude", warn: false }),
+                spend: judgeLaunch({ project, harness: "", warn: false }),
               }),
             delegate: (owner, requestId, input) => crewDelegate(owner, requestId, input),
           },

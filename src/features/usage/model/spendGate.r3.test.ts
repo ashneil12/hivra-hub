@@ -270,3 +270,15 @@ describe("R4-M5b: a Claude-priced spend warning says its cost is an estimate, in
     expect(lines[0]).toMatch(/Estimated from Claude Code's price table\.$/);
   });
 });
+
+describe("R5-L4: a Claude-priced refusal's dollar figure carries the estimate label", () => {
+  it("a task ceiling refusal from a Claude turn says the cost is estimated", async () => {
+    setSpendSessions([{ id: "parent", cwd: HUB.folder, harness: "claude", model: "opus", blocks: [{ id: "p-t", role: "user", startedAt: now, turnMetrics: { costUsd: 9.5, inputTokens: 5 } }] }]);
+    setSpendProjectLookup({ idOf: (f) => (f === HUB.folder ? HUB.id : undefined), folderOf: (id) => (id === HUB.id ? HUB.folder : undefined) });
+    saveTaskCeiling(HUB.id, { hardUsd: 9 }, 0);
+    const refusal = await admitSpendTurn({ sessionId: "parent", cwd: HUB.folder, harness: "claude", model: "custom:acme", origin: "automated" });
+    expect(refusal).toMatchObject({ ok: false });
+    if (refusal.ok) throw new Error("expected a refusal");
+    expect(refusal.reason).toContain("Estimated from Claude Code's price table.");
+  });
+});

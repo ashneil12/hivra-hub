@@ -661,13 +661,30 @@ export async function refreshHarnessCatalogs(
   );
 }
 
+/**
+ * A text call the adapter makes for the app (a title, a commit message, a PR, a branch name). It is automated work, so
+ * it passes the same spend admission as runHarnessTextPrompt, and what it ran is noted in the ledger as unpriced.
+ */
+async function gatedTextCall<T>(cwd: string, run: () => Promise<T>): Promise<T> {
+  const sessionId = `text-prompt-${(textPromptSeq += 1)}`;
+  if (spendGateActive()) {
+    const admitted = await admitSpendTurn({ sessionId, cwd, harness: "claude", origin: "automated" });
+    if (!admitted.ok) throw new Error(admitted.reason);
+  }
+  try {
+    return await run();
+  } finally {
+    noteUnpricedTurn({ sessionId, cwd });
+  }
+}
+
 export async function generateHarnessTitle(
   harness: HarnessId,
   input: TitleInput,
 ): Promise<GeneratedSessionTitle | null> {
   const adapter = getHarness(harness);
   if (!adapter?.generateTitle) return null;
-  return adapter.generateTitle(input);
+  return gatedTextCall("", () => adapter.generateTitle!(input));
 }
 
 export async function generateHarnessCommitMessage(
@@ -681,9 +698,11 @@ export async function generateHarnessCommitMessage(
     throw new Error(`${harness} does not support commit message generation`);
   }
   signal?.throwIfAborted();
-  return paths === undefined
-    ? adapter.generateCommitMessage(cwd, signal)
-    : adapter.generateCommitMessage(cwd, signal, paths);
+  return gatedTextCall(cwd, () =>
+    paths === undefined
+      ? adapter.generateCommitMessage!(cwd, signal)
+      : adapter.generateCommitMessage!(cwd, signal, paths),
+  );
 }
 
 export async function generateHarnessPrContent(
@@ -692,7 +711,7 @@ export async function generateHarnessPrContent(
 ): Promise<(PrContent & { base: string; head: string }) | null> {
   const adapter = getHarness(harness);
   if (!adapter?.generatePrContent) return null;
-  return adapter.generatePrContent(cwd);
+  return gatedTextCall(cwd, () => adapter.generatePrContent!(cwd));
 }
 
 export async function generateHarnessBranchName(
@@ -702,7 +721,7 @@ export async function generateHarnessBranchName(
 ): Promise<string | null> {
   const adapter = getHarness(harness);
   if (!adapter?.generateBranchName) return null;
-  return adapter.generateBranchName(cwd, message);
+  return gatedTextCall(cwd, () => adapter.generateBranchName!(cwd, message));
 }
 
 export async function warmupHarnessText(

@@ -41,7 +41,7 @@ import {
 } from "../../monos/model/delegations";
 import { CHECKER_MONO_ID } from "../../hub/model/hubMcp";
 import { formatMeasuredUsd, sanitizeSpendLimit, type SpendLimit } from "../../usage/model/spend";
-import { clearSpendLimit, NO_SPEND_LIMIT_TO_CLEAR, saveSpendLimit, spendFor, spendSnapshot } from "../../usage/model/spendGate";
+import { addSpendRedoLink, clearSpendLimit, NO_SPEND_LIMIT_TO_CLEAR, saveSpendLimit, spendFor, spendSnapshot } from "../../usage/model/spendGate";
 import { SELF_REVIEW_SHAPE, storedReview } from "../../monos/model/workerReview";
 import { waitingOnAshLine } from "../../hub/model/chatQuestions";
 import { answeredJobRefusal } from "../../monos/model/ashAnswersWorker";
@@ -216,6 +216,8 @@ export function isAppDelegate(input: object): boolean {
 export type DelegationMeta = {
   title: string;
   askIds: string[];
+  /** WP-176 round 5: the owner's row this one redoes (its id, and its chat, which the spend gate follows). */
+  redoes?: { id: string; childSession: string };
   goal?: string;
   /** The hub project id (what Ash OS resolves), when the folder is one of the hub's projects. */
   project?: string;
@@ -1116,6 +1118,12 @@ async function delegate(
   const [already] = await tasks.owned(source.id, { requestIds: [id] }).catch(() => [] as Delegation[]);
   if (already && already.state !== "cancelled") {
     if (sharedTask) bindCrew(already.id, sharedTask);
+    // A redo's link is kept on the retry too (round 5): the gate has it at once, and the row keeps it. A refused link
+    // refuses the call.
+    if (redoes) {
+      addSpendRedoLink(id, redoes.childSession);
+      await tasks.redo?.(source.id, redoes, already.id);
+    }
     tasks.pool?.started({ id, heavy, files });
     // A retry after a save that didn't land keeps the same plan. A save that fails still returns the task.
     await keepGates(tasks, already.id, gates, folder);
@@ -1249,9 +1257,12 @@ async function delegate(
       };
     }
   }
+  // A redo's link is known to the spend gate before the worker's first turn (round 5): its chat sums its parent's spend.
+  if (redoes) addSpendRedoLink(id, redoes.childSession);
   const meta = {
     title,
     askIds: asks,
+    ...(redoes ? { redoes: { id: redoes.id, childSession: redoes.childSession } } : {}),
     ...(goal ? { goal } : {}),
     ...(hubProject ? { project: hubProject } : {}),
     ...(sharedTask ? { taskId: sharedTask } : {}),

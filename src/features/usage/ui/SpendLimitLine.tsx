@@ -10,6 +10,9 @@ import {
   spendFor,
   spendLine,
   spendSnapshot,
+  spendPulse,
+  spendStoreIsDatabase,
+  spendStoreLoading,
   spendUnreadable,
   subscribeSpend,
 } from "../model/spendGate";
@@ -32,11 +35,15 @@ export function SpendLimitLine({
   indexed?: boolean;
   scope?: "project" | "app";
 }) {
-  const revision = useSyncExternalStore(subscribeSpend, () => spendSnapshot().book.revision, () => 0);
+  // The line follows the database's state too: a failed or late read changes the line (round 5 MED-1).
+  const pulse = useSyncExternalStore(subscribeSpend, spendPulse, () => "");
+  const revision = spendSnapshot().book.revision;
   const [period, setPeriod] = useState<SpendPeriod>("month");
   const [draft, setDraft] = useState<string | null>(null);
   const [notice, setNotice] = useState("");
   const unreadable = spendUnreadable();
+  const loading = spendStoreLoading();
+  const inDatabase = spendStoreIsDatabase();
   const who = scope === "app" ? "" : project;
   const mine = spendFor(who).find((row) => row.scope === scope && row.period === period);
   const text = spendLine(who, harness, scope);
@@ -71,13 +78,18 @@ export function SpendLimitLine({
   };
 
   return (
-    <div className="flex flex-col gap-1" data-spend-limit={revision} {...(indexed ? { "data-setting-id": "spend-limit" } : {})}>
+    <div className="flex flex-col gap-1" data-spend-limit={revision} data-spend-state={pulse} {...(indexed ? { "data-setting-id": "spend-limit" } : {})}>
       <p className="text-[12px] leading-4 text-content/60" data-spend-line>
         {text || UNSET}
       </p>
       {unreadable ? (
         <div className="flex items-center justify-between gap-2 text-[12px] text-content/70">
-          <span>Saved spend limits could not be read. New builders wait until you replace them.</span>
+          {inDatabase ? (
+            <span>Saved spend limits could not be read. Restart MonoCode Hub to retry.</span>
+          ) : (
+            <span>Saved spend limits could not be read. New builders wait until you replace them.</span>
+          )}
+          {inDatabase ? null : (
           <button
             type="button"
             data-spend-replace
@@ -86,6 +98,7 @@ export function SpendLimitLine({
           >
             Replace unreadable limits
           </button>
+          )}
         </div>
       ) : null}
       <label className="flex items-center justify-between gap-2 text-[13px] text-content">
@@ -98,7 +111,7 @@ export function SpendLimitLine({
             data-spend-amount
             value={field}
             placeholder="None"
-            disabled={!canEdit || unreadable}
+            disabled={!canEdit || unreadable || loading}
             onChange={(event) => setDraft(event.target.value)}
             onBlur={(event) => commit(event.target.value)}
             onKeyDown={(event) => {

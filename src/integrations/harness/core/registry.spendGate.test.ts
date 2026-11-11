@@ -11,11 +11,13 @@ import {
   setSpendClock,
   setSpendWarnSink,
 } from "../../../features/usage/model/spendGate";
-import { registerHarness, resetHarnessIdlePark, runHarnessTextPrompt, sendHarnessTurn, steerHarnessTurn, type HarnessAdapter } from "./registry";
+import { generateHarnessCommitMessage, registerHarness, resetHarnessIdlePark, runHarnessTextPrompt, sendHarnessTurn, steerHarnessTurn, type HarnessAdapter } from "./registry";
 import type { SendTurnInput, SteerTurnInput } from "./types";
 
 const now = Date.parse("2026-11-10T15:00:00");
 const FOLDER = "/work/monocode-hub";
+
+let generatedCommits = 0;
 
 function stub(sent: string[], steered: string[]): HarnessAdapter {
   return {
@@ -34,6 +36,10 @@ function stub(sent: string[], steered: string[]): HarnessAdapter {
     bindSession() {},
     async runTextPrompt() {
       return "ok";
+    },
+    async generateCommitMessage() {
+      generatedCommits += 1;
+      return "feat: change";
     },
   } as HarnessAdapter;
 }
@@ -76,6 +82,12 @@ describe("H1: the turns submitSession sends pass the spend gate by their origin"
     await expect(steerHarnessTurn({ harness: "claude", sessionId: "habit-run", cwd: FOLDER, model: "custom:acme", text: "nudge" } as never)).rejects.toThrow(/limit/i);
     await steerHarnessTurn({ harness: "claude", sessionId: "composer", cwd: FOLDER, model: "custom:acme", text: "steer", origin: "person" } as never);
     expect(steered).toEqual(["steer"]);
+  });
+
+  it("a commit message is automated text work: refused over the limit before the adapter runs", async () => {
+    generatedCommits = 0;
+    await expect(generateHarnessCommitMessage("claude", FOLDER)).rejects.toThrow(/limit/i);
+    expect(generatedCommits).toBe(0);
   });
 
   it("a text prompt (a title, a memory pass) is automated work: refused over the limit", async () => {

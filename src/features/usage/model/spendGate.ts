@@ -135,6 +135,8 @@ const folders = new Map<string, string>();
 const asked = new Set<string>();
 /** The redo links the app keeps: a chat's child session to the session it redid. Read with the ledger each TTL. */
 let redoLinks = new Map<string, string>();
+/** Links merged in at once, not yet seen in the stored links. */
+const pendingRedoLinks = new Map<string, string>();
 /** Chats the person has continued after a soft ask. The ask is not repeated for them. */
 const continued = new Set<string>();
 /** Chats whose unmeasured ceiling has been reported once. */
@@ -265,9 +267,25 @@ function keyForTurnNow(sessionId: string, cwd: string): string {
   return spendKey(folderOfCwdCached(cwd));
 }
 
+/**
+ * One redo link, merged in at once when a redo is started, so the chat's first turn already sees its parent (the app
+ * keeps the same link on the row; a later read of the links replaces this map with the stored ones).
+ */
+export function addSpendRedoLink(child: string, parent: string): void {
+  if (!child || !parent || child === parent) return;
+  pendingRedoLinks.set(child, parent);
+  redoLinks.set(child, parent);
+}
+
 /** The redo links from the app's delegation rows. A redo's chat sums its parent's spend (lineageOf). */
 export function setSpendRedoLinks(links: readonly { child: string; parent: string }[] | null | undefined): void {
-  redoLinks = new Map(Array.isArray(links) ? links.map((link) => [link.child, link.parent] as const) : []);
+  const stored = new Map(Array.isArray(links) ? links.map((link) => [link.child, link.parent] as const) : []);
+  // A link merged in before its row was stored stays until the stored links have it (a read in between must not drop it).
+  for (const [child, parent] of pendingRedoLinks) {
+    if (stored.has(child)) pendingRedoLinks.delete(child);
+    else stored.set(child, parent);
+  }
+  redoLinks = stored;
 }
 
 /** Tests and the app register the hub's project lookup. The default knows no projects. */
@@ -408,7 +426,18 @@ export function subscribeSpend(listener: () => void): () => void {
 /** Changes when a limit is saved or a ceiling changes, so an open task can show it. */
 export function spendPulse(): string {
   boot();
-  return `${book.revision}:${storeUnreadable ? "x" : "ok"}`;
+  const database = dbStore ? (dbFailed ? "f" : dbLoaded ? "l" : "w") : "-";
+  return `${book.revision}:${storeUnreadable ? "x" : "ok"}:${database}`;
+}
+
+/** True when the app's database holds the book (the replace control does not apply to it). */
+export function spendStoreIsDatabase(): boolean {
+  return dbStore !== null;
+}
+
+/** True while the app's database has not answered for the book yet. */
+export function spendStoreLoading(): boolean {
+  return dbStore !== null && !dbLoaded && !dbFailed;
 }
 
 export function spendSnapshot(): { book: SpendBook; ceilings: Record<string, TaskCeiling> } {
@@ -700,7 +729,10 @@ function lineageOf(sessionId: string): Set<string> {
   return chain;
 }
 
-/** A run's total across all days, from the ledger, including the chats it redid. */
+/**
+ * A run's total from the ledger rows the reader holds (the ledger is read from the start of the month), including the
+ * chats it redid. A redo's parent spent earlier in the month counts only if its rows are in that read.
+ */
 export function sessionTotal(sessionId: string): { micros: number; priced: number; unpriced: number; unreadable: boolean } {
   const rows = currentRecords();
   if (rows === null) return { micros: 0, priced: 0, unpriced: 0, unreadable: true };
@@ -935,6 +967,11 @@ export function spendLimitsSetting(): string | null {
  * The verdict a new builder reads, and the queue re-reads. Over refuses for any CLI, because a CLI that reports no cost
  * cannot be a way around a limit that is already reached. Reads only: it sends no warning.
  */
+/** The price-table label, on a dollar figure whose cost a Claude CLI reported (round 5). Empty for any other CLI. */
+function estimateNote(harness: string | undefined): string {
+  return (harness ?? "").trim().toLowerCase() === "claude" ? " Estimated from Claude Code's price table." : "";
+}
+
 export function judgeLaunch(input: { project: string; harness: string; ownerSession?: string; warn?: boolean }): SpendVerdict {
   boot();
   if (storeUnreadable) return UNREADABLE_STORE;
@@ -1051,7 +1088,7 @@ export async function admitSpendTurn(input: {
     } else if (task.micros >= Math.round(ceiling.hardUsd * MICRO)) {
       return {
         ok: false,
-        reason: `Task ceiling reached: ${formatUsd(task.micros / MICRO)} of ${formatUsd(ceiling.hardUsd)}. This run is held. Raise the task ceiling in Crew rules to continue.`,
+        reason: `Task ceiling reached: ${formatUsd(task.micros / MICRO)} of ${formatUsd(ceiling.hardUsd)}. This run is held. Raise the task ceiling in Crew rules to continue.${estimateNote(input.harness)}`,
       };
     }
   }
@@ -1180,6 +1217,7 @@ export function resetSpendGate(): void {
   continued.clear();
   unmeasuredNoticed.clear();
   redoLinks = new Map();
+  pendingRedoLinks.clear();
   records = null;
   loadedAt = -Infinity;
   loader = null;
@@ -1222,6 +1260,7 @@ export function spendLine(project: string, harness: string, scope: SpendScope = 
   boot();
   // A book the database could not answer is not "no limit". The person restarts the app to retry it.
   if (dbStore && dbFailed) return `${UNREADABLE_DB.reason} Restart MonoCode Hub to retry.`;
+  if (dbStore && !dbLoaded) return "Loading saved spend limits.";
   const key = scope === "app" ? "" : spendKey(project);
   const own = findLimit(scope, key, "month") ?? findLimit(scope, key, "day");
   const limit = own ?? (scope === "project" ? book.limits.find((row) => row.scope === "app") : undefined);

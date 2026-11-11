@@ -14062,12 +14062,16 @@ function Workspace({
             ...(delegation?.askIds.length ? { askIds: delegation.askIds } : {}),
             ...(delegation?.goal ? { goal: delegation.goal } : {}),
             ...(delegation?.taskId ? { taskId: delegation.taskId } : {}),
+            // WP-176 round 5: the redo's link is written with its row, in the same transaction, before its first turn.
+            ...(delegation?.redoes ? { redoes: delegation.redoes.id } : {}),
             // A7: written on the row, not only in the worker's brief, so the store refuses a done settle without it even
             // when the turn settles through a restart's recovery path.
             ...(delegation ? { reviewRequired: true } : {}),
             by: `owner:${monoId}`,
           });
           const row = await launch?.row;
+          // A redo whose link could not be recorded does not start: its turn would be judged without its parent.
+          if (delegation?.redoes && !row) throw new Error("The redo could not be recorded, so this run is not started.");
           // Dev-only (D5 scripted test): a worker started while a tester armed dev-faults/fail-next-workers runs, then
           // reports a failure. Off by default; see devFault.ts and docs/DEV-FAULTS.md.
           const fault = await takeWorkerFault();
