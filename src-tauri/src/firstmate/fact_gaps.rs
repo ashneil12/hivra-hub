@@ -957,3 +957,189 @@ mod tests {
         assert_eq!(gaps, vec![TESTS_CLAIM.to_string()]);
     }
 }
+
+/// Review round 1 (PR #232): failing repros. Each test states what the gate should do.
+#[cfg(test)]
+mod review_r1 {
+    use super::*;
+
+    fn check(command: &str, status: &str, at: f64) -> FactCheck {
+        FactCheck {
+            command: command.to_string(),
+            status: status.to_string(),
+            at,
+        }
+    }
+
+    fn edit(path: &str, at: f64) -> FactEdit {
+        FactEdit {
+            path: path.to_string(),
+            at,
+        }
+    }
+
+    fn facts(checks: Vec<FactCheck>, edits: Vec<FactEdit>, answer: &str) -> FactTurn {
+        FactTurn {
+            checks,
+            edits,
+            todos: vec![],
+            answer: answer.to_string(),
+        }
+    }
+
+    // HIGH: this repo's documented Rust test command never reaches an edited module, so verified work is sent back
+    // and, on the identical retry, delivery fails.
+    #[test]
+    fn r1_the_repos_own_cargo_test_reaches_an_edited_rust_module() {
+        let gaps = done_gaps(&facts(
+            vec![check(
+                "cargo test --manifest-path src-tauri/Cargo.toml -p monocode --lib firstmate",
+                "passed",
+                2.0,
+            )],
+            vec![edit("src-tauri/src/firstmate/gates.rs", 1.0)],
+            "",
+        ));
+        assert!(gaps.is_empty(), "{gaps:?}");
+        let root = done_gaps(&facts(
+            vec![check(
+                "cd src-tauri && cargo test -p monocode",
+                "passed",
+                2.0,
+            )],
+            vec![edit("src-tauri/src/delegations.rs", 1.0)],
+            "",
+        ));
+        assert!(root.is_empty(), "{root:?}");
+    }
+
+    // HIGH: `npm run check` (AGENTS.md: run it before calling anything done) runs vitest and cargo test, but is not a
+    // test run here, so every edited package is "not reached".
+    #[test]
+    fn r1_npm_run_check_reaches_the_edited_package() {
+        let gaps = done_gaps(&facts(
+            vec![check("npm run check", "passed", 2.0)],
+            vec![edit("src/features/crew/row.ts", 1.0)],
+            "",
+        ));
+        assert!(gaps.is_empty(), "{gaps:?}");
+    }
+
+    // HIGH: the caps keep the oldest entries. Past 80 edits the last edit is dropped, so a stale test is not seen.
+    #[test]
+    fn r1_a_turn_past_the_edit_cap_still_sees_its_last_edit() {
+        let mut edits: Vec<FactEdit> = (0..80)
+            .map(|at| edit("src/features/crew/row.ts", at as f64))
+            .collect();
+        edits.push(edit("src/features/crew/row.ts", 200.0));
+        let gaps = done_gaps(&facts(
+            vec![check("npx vitest run", "passed", 100.0)],
+            edits,
+            "",
+        ));
+        assert!(gaps.contains(&STALE.to_string()), "{gaps:?}");
+    }
+
+    // HIGH: past 40 checks every later run is dropped, so a fresh test after the last edit is never seen and a
+    // correct worker is refused twice (delivery failed).
+    #[test]
+    fn r1_a_turn_past_the_check_cap_still_sees_its_last_test() {
+        let mut checks: Vec<FactCheck> = (0..40)
+            .map(|at| check("npx tsc --noEmit", "passed", at as f64))
+            .collect();
+        checks.push(check("npx vitest run", "passed", 60.0));
+        let gaps = done_gaps(&facts(
+            checks,
+            vec![edit("src/features/crew/row.ts", 50.0)],
+            "",
+        ));
+        assert!(gaps.is_empty(), "{gaps:?}");
+    }
+
+    // MED: a command that only names a runner counts as a passing, project-wide test run.
+    #[test]
+    fn r1_reading_a_vitest_config_or_echoing_npm_test_is_not_a_test_run() {
+        for fake in [
+            "cat vitest.config.ts",
+            "echo npm test",
+            "git commit -m \"fix row, ran npm test\"",
+        ] {
+            let gaps = done_gaps(&facts(
+                vec![
+                    check("npx vitest run", "passed", 1.0),
+                    check(fake, "passed", 3.0),
+                ],
+                vec![edit("src/features/crew/row.ts", 2.0)],
+                "",
+            ));
+            assert_eq!(gaps, vec![STALE.to_string()], "{fake}");
+        }
+    }
+
+    // MED: the exit status of `| tail` hides a failing suite; it should not back a pass claim.
+    #[test]
+    fn r1_a_test_piped_into_tail_is_not_evidence_of_a_pass() {
+        let gaps = done_gaps(&facts(
+            vec![check("npm test 2>&1 | tail -20", "passed", 2.0)],
+            vec![edit("src/features/crew/row.ts", 1.0)],
+            "All tests passed.",
+        ));
+        assert!(!gaps.is_empty(), "a masked exit status was taken as a pass");
+    }
+
+    // MED: `one_line` strips the newline before it splits, so a multi-line command is glued into one word and a
+    // failing check vanishes.
+    #[test]
+    fn r1_a_multi_line_failing_check_is_still_a_failure() {
+        let gaps = done_gaps(&facts(
+            vec![
+                check("npm test", "passed", 1.0),
+                check("cd src-tauri\ncargo test", "failed", 2.0),
+            ],
+            vec![edit("src/features/crew/row.ts", 0.0)],
+            "",
+        ));
+        assert!(
+            gaps.iter()
+                .any(|gap| gap.starts_with("A check failed this turn")),
+            "{gaps:?}"
+        );
+    }
+
+    // LOW: a failing build is not a check, so it never fails the claim.
+    #[test]
+    fn r1_a_failing_build_is_a_failed_check() {
+        let gaps = done_gaps(&facts(
+            vec![
+                check("npm test", "passed", 2.0),
+                check(
+                    "cargo build --manifest-path src-tauri/Cargo.toml",
+                    "failed",
+                    3.0,
+                ),
+            ],
+            vec![edit("src/features/crew/row.ts", 1.0)],
+            "",
+        ));
+        assert!(
+            gaps.iter()
+                .any(|gap| gap.starts_with("A check failed this turn")),
+            "{gaps:?}"
+        );
+    }
+
+    // MED: Claude's edit paths are absolute, so the `docs/` rule (first segment) never matches and a non-Markdown
+    // file under docs/ is code: a stale test and a coverage gap.
+    #[test]
+    fn r1_a_docs_folder_edit_with_an_absolute_path_is_still_docs() {
+        let gaps = done_gaps(&facts(
+            vec![check("npm test", "passed", 1.0)],
+            vec![edit(
+                "/Users/ash/Worktrees/hub-x/docs/hivra/credits.json",
+                2.0,
+            )],
+            "",
+        ));
+        assert!(gaps.is_empty(), "{gaps:?}");
+    }
+}
