@@ -1210,3 +1210,214 @@ fn a_gate_secret_or_irreversible_key_never_reuses_or_shows_a_standing_answer() {
     assert!(!standing_eligible("irreversible/run/a"));
     assert!(!standing_eligible("fresh-eyes-start/r1"));
 }
+
+/// WP-156 security, the chat-start path: a protected key never shows as guidance, whatever its case. Keys are stored as
+/// typed (`key_like` keeps the case), so `Gate/...` must be refused the same as `gate/...`.
+#[test]
+fn a_protected_key_in_any_case_never_shows_at_a_chat_start() {
+    let store = store();
+    let conn = store.lock_conn().unwrap();
+    set_standing_enabled(&conn, true).unwrap();
+    insert_answered(
+        &conn,
+        "hivra",
+        "ordinary",
+        "Ship to staging first?",
+        "Staging first",
+        1,
+    );
+    insert_answered(
+        &conn,
+        "hivra",
+        "Gate/run-9",
+        "Merge the room branch?",
+        "Approve",
+        2,
+    );
+    insert_answered(
+        &conn,
+        "hivra",
+        "SECRET/token-9",
+        "Rotate the bot token?",
+        "Yes",
+        3,
+    );
+    insert_answered(
+        &conn,
+        "hivra",
+        "Irreversible/lead/task",
+        "Delete the archive?",
+        "Yes",
+        4,
+    );
+    insert_answered(
+        &conn,
+        "hivra",
+        "Fresh-Eyes/r1/0011",
+        "Review the plan?",
+        "Approve",
+        5,
+    );
+    let block = standing_block(&conn, "hivra").unwrap();
+    assert!(block.contains("Ship to staging first?"), "{block}");
+    for leaked in [
+        "Gate/run-9",
+        "Merge the room branch",
+        "SECRET/",
+        "Rotate the bot",
+        "Irreversible/",
+        "Delete the archive",
+        "Fresh-Eyes",
+        "Review the plan",
+    ] {
+        assert!(
+            !block.contains(leaked),
+            "{leaked} leaked into the chat-start block:\n{block}"
+        );
+    }
+    assert_eq!(
+        block.lines().filter(|line| line.starts_with("S-")).count(),
+        1,
+        "{block}"
+    );
+    assert!(!standing_eligible("Gate/run-9"));
+    assert!(!standing_eligible(" SECRET/token-9 "));
+    assert!(!standing_eligible("Irreversible/lead/task"));
+    assert!(!standing_eligible("Fresh-Eyes/r1"));
+    assert!(standing_eligible("retention-policy"));
+}
+
+/// WP-156 steps a to e, through the store the way the app drives it (the same calls `decisions_*` make): a first mate
+/// asks, the person answers in the Inbox, a reworded question comes back with the answer and its citation, retire lists
+/// who relied on it, the reworded question is then asked fresh, and with the setting off nothing matches.
+#[test]
+fn standing_answer_flow_asks_answers_reuses_retires_and_turns_off() {
+    let store = store();
+    let mut conn = store.lock_conn().unwrap();
+    set_standing_enabled(&conn, true).unwrap();
+
+    // a. A first mate asks, with a task of its own waiting on the answer.
+    let task = record(&mut conn, launch("fm", "r1", "w1"), 1).unwrap();
+    let mut first = ask_input("fm", "release-target", &[&task.id]);
+    first.question = "Should the release go to staging or straight to prod?".into();
+    first.options = vec!["Staging first".into(), "Prod now".into()];
+    first.recommended = Some("Staging first".into());
+    first.keys = vec!["staging".into(), "prod".into(), "release".into()];
+    let asked = ask(&mut conn, first, 2).unwrap();
+    assert!(asked.created && !asked.matched);
+    assert_eq!(asked.decision.state, OPEN);
+    assert_eq!(
+        list(&conn, 10)
+            .unwrap()
+            .iter()
+            .filter(|d| d.state == OPEN)
+            .count(),
+        1
+    );
+
+    // b. The person answers in the Inbox. The waiting task is released, and the answer is standing for the project.
+    let answered = answer(
+        &mut conn,
+        "hivra",
+        "release-target",
+        "Staging first",
+        Some("user".into()),
+        3,
+    )
+    .unwrap();
+    assert!(answered.applied);
+    assert_eq!(answered.released_tasks, vec![task.id.clone()]);
+    let block = standing_block(&conn, "hivra").unwrap();
+    assert!(
+        block.contains("S-")
+            && block
+                .contains("Should the release go to staging or straight to prod? -> Staging first"),
+        "{block}"
+    );
+
+    // c. Later, a reworded question on a new key returns the answer, with its id, and no Inbox item opens.
+    let later = record(&mut conn, launch("fm", "r2", "w2"), 4).unwrap();
+    let mut reworded = ask_input("fm", "where-do-we-ship", &[&later.id]);
+    reworded.question = "Do we ship the release to staging first, or go to prod now?".into();
+    reworded.options = vec!["Staging first".into(), "Prod now".into()];
+    reworded.recommended = Some("Staging first".into());
+    reworded.keys = Vec::new();
+    let hit = ask(&mut conn, reworded, 5).unwrap();
+    assert!(hit.matched && !hit.created, "{hit:?}");
+    assert_eq!(hit.decision.decision_key, "release-target");
+    assert_eq!(hit.decision.answer.as_deref(), Some("Staging first"));
+    assert_eq!(
+        hit.standing_id.as_deref(),
+        Some(hit.decision.standing_id.as_str())
+    );
+    assert_eq!(hit.released.len(), 1);
+    assert_eq!(hit.released[0].child_session, "w2");
+    assert_eq!(
+        list(&conn, 10)
+            .unwrap()
+            .iter()
+            .filter(|d| d.state == OPEN)
+            .count(),
+        0
+    );
+    let uses = standing_rows(&conn, "hivra").unwrap();
+    assert_eq!(uses.len(), 1);
+    assert_eq!(
+        uses[0].uses, 1,
+        "the waiting task that asked is the one that relied on it"
+    );
+
+    // d. Retire is asked for a reason, and lists every task that relied on it. The reworded question is then asked fresh.
+    let retired = retire(
+        &mut conn,
+        "hivra",
+        "release-target",
+        "Staging was removed",
+        6,
+    )
+    .unwrap();
+    assert!(retired.applied);
+    let relied: Vec<&str> = retired
+        .relied
+        .iter()
+        .map(|row| row.task_id.as_str())
+        .collect();
+    assert_eq!(relied, vec![later.id.as_str()]);
+    assert!(standing_rows(&conn, "hivra").unwrap().is_empty());
+    assert_eq!(standing_block(&conn, "hivra").unwrap(), "");
+    let mut fresh = ask_input("fm", "where-do-we-ship-again", &[]);
+    fresh.question = "Do we ship the release to staging first, or go to prod now?".into();
+    fresh.options = vec!["Staging first".into(), "Prod now".into()];
+    fresh.recommended = Some("Staging first".into());
+    let after = ask(&mut conn, fresh, 7).unwrap();
+    assert!(after.created && !after.matched, "{after:?}");
+    assert_eq!(after.decision.state, OPEN);
+    assert_eq!(
+        list(&conn, 10)
+            .unwrap()
+            .iter()
+            .filter(|d| d.state == OPEN)
+            .count(),
+        1
+    );
+
+    // e. With the setting off, the same wording never matches, and no block is handed to a chat.
+    answer(
+        &mut conn,
+        "hivra",
+        "where-do-we-ship-again",
+        "Prod now",
+        Some("user".into()),
+        8,
+    )
+    .unwrap();
+    set_standing_enabled(&conn, false).unwrap();
+    let mut off = ask_input("fm", "where-do-we-ship-off", &[]);
+    off.question = "Do we ship the release to staging first, or go to prod now?".into();
+    off.options = vec!["Staging first".into(), "Prod now".into()];
+    off.recommended = Some("Staging first".into());
+    let off = ask(&mut conn, off, 9).unwrap();
+    assert!(off.created && !off.matched, "{off:?}");
+    assert_eq!(standing_block(&conn, "hivra").unwrap(), "");
+    assert!(standing_rows(&conn, "hivra").unwrap().is_empty());
+}

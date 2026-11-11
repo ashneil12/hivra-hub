@@ -103,7 +103,8 @@ fn ensure_decision_columns(conn: &Connection) -> rusqlite::Result<()> {
 /// an irreversible step and a fresh-eyes review; a delivery gate's approval belongs to the gate, not to an old answer;
 /// a secret is never reused. A key that is not listed here is an ordinary question the first mate chose.
 pub fn standing_eligible(key: &str) -> bool {
-    let key = key.trim();
+    // Keys keep the case they were typed in (`key_like`), so a protected prefix is matched in any case.
+    let key = key.trim().to_ascii_lowercase();
     !["irreversible/", "fresh-eyes", "gate/", "secret/"]
         .iter()
         .any(|prefix| key.starts_with(prefix))
