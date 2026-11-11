@@ -6,6 +6,7 @@
 // merge gate. Hunting itself is done by a builder following reference/SKILL.md; this file records and checks it.
 
 import { spawnSync } from "node:child_process";
+import { createRequire } from "node:module";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -101,7 +102,67 @@ export function changedFiles({ base, head, cwd }) {
 const here = dirname(fileURLToPath(import.meta.url));
 /** The skill's validator for findings.json (vendored; see LICENSE.cloudflare-security-audit). */
 const FINDINGS_VALIDATOR = join(here, "validate-findings.cjs");
+const LEDGER_VALIDATOR = join(here, "validate-coverage-ledger.cjs");
+const { canonicalCoverageId } = createRequire(import.meta.url)("./validate-coverage-ledger.cjs");
 const VERDICTS = new Set(["confirmed", "needs_validation", "rejected"]);
+
+/** Where the coverage ledger for one head lives, beside its findings. */
+export function coverageLedgerPathFor(root, head) {
+  return join(root, head, "coverage-ledger.json");
+}
+
+/**
+ * The skill's coverage-ledger validator on one file (vendored; a separate process, as for the findings).
+ * @param {string} file
+ * @returns {{ ok: boolean, output: string }}
+ */
+export function validateLedgerFile(file) {
+  const run = spawnSync(process.execPath, [LEDGER_VALIDATOR, file], { encoding: "utf8", timeout: 30000 });
+  return { ok: run.status === 0, output: `${run.stdout ?? ""}${run.stderr ?? ""}`.trim() };
+}
+
+/**
+ * The ledger a review writes: one unit per changed file, covered by the reviewer who read it in this run.
+ * @param {{ files: string[], reviewer: string }} input
+ * @returns {object[]}
+ */
+export function ledgerFor({ files, reviewer }) {
+  const units = files.map((file) => {
+    const canonical_refs = { surface: file, boundary: "changed file", subsystem: "diff", attack_class: "security review" };
+    return {
+      coverage_id: canonicalCoverageId(canonical_refs),
+      canonical_refs,
+      surface: file,
+      boundary: "changed file",
+      subsystem: "diff",
+      attack_class: "security review",
+      starting_paths: [file],
+      ordinary_attack_class_block: "SKILL.md#Reconnaissance",
+      selected_companion_blocks: [],
+      excluded_blocks: [],
+      prior_status: "new",
+      attempts: [],
+      wave: 1,
+      status: "covered",
+      agent_id: reviewer,
+      reviewed_paths: [file],
+      local_checks: [
+        {
+          agent_id: reviewer,
+          reviewed_paths: [file],
+          invariant: "The changed file was read in full by the reviewer.",
+          method: "source",
+          result: "Read in this run.",
+          artifact: null,
+        },
+      ],
+      result_fingerprints: [],
+      unresolved: [],
+    };
+  });
+  // The validator needs the units sorted by coverage id.
+  return units.sort((a, b) => (a.coverage_id < b.coverage_id ? -1 : a.coverage_id > b.coverage_id ? 1 : 0));
+}
 
 /** Where the findings for one head sha live: `<root>/<sha>/findings.json`, next to its `run.json`. */
 export function findingsPathFor(root, head) {
@@ -163,11 +224,16 @@ export async function runReview(input) {
     writeFileSync(draft, JSON.stringify(records, null, 2));
     const check = validateFindingsFile(draft);
     if (!check.ok) return { ok: false, reason: `The findings do not validate, so nothing was written. ${check.output}` };
+    const ledgerDraft = join(scratch, "coverage-ledger.json");
+    writeFileSync(ledgerDraft, JSON.stringify(ledgerFor({ files: scope.files, reviewer }), null, 2));
+    const ledgerCheck = validateLedgerFile(ledgerDraft);
+    if (!ledgerCheck.ok) return { ok: false, reason: `The coverage ledger does not validate, so nothing was written. ${ledgerCheck.output}` };
 
     const dir = join(root, head);
     mkdirSync(dir, { recursive: true });
     const findingsPath = findingsPathFor(root, head);
     writeFileSync(findingsPath, readFileSync(draft));
+    writeFileSync(coverageLedgerPathFor(root, head), readFileSync(ledgerDraft));
     writeFileSync(
       join(dir, "run.json"),
       `${JSON.stringify({ head, author, reviewer, files: scope.files, records: records.length }, null, 2)}\n`,
@@ -235,7 +301,7 @@ const refuseGate = (reason) => ({ status: "refuse", reason, inbox: [] });
  *   validate?: (file: string) => { ok: boolean, output: string } }} input
  * @returns {{ status: "skip" | "pass" | "refuse", reason: string, inbox: string[] }}
  */
-export function securityGate({ head, files, labels = [], reviewsRoot, validate = validateFindingsFile }) {
+export function securityGate({ head, files, labels = [], reviewsRoot, validate = validateFindingsFile, validateLedger = validateLedgerFile }) {
   const why = isSecuritySensitive({ files, labels });
   if (!why) return { status: "skip", reason: "", inbox: [] };
   const sha = String(head ?? "").trim().toLowerCase();
@@ -257,6 +323,18 @@ export function securityGate({ head, files, labels = [], reviewsRoot, validate =
   if (!roles.ok) return refuseGate(roles.reason);
   const check = validate(file);
   if (!check.ok) return refuseGate(`The findings for head ${short} do not validate. ${check.output}`);
+  const ledgerFile = coverageLedgerPathFor(reviewsRoot, sha);
+  if (!existsSync(ledgerFile)) return refuseGate(`The security review for head ${short} has no coverage ledger.`);
+  if (!validateLedger(ledgerFile).ok) return refuseGate(`The coverage ledger for head ${short} does not validate.`);
+  const covered = new Set(
+    JSON.parse(readFileSync(ledgerFile, "utf8"))
+      .filter((unit) => unit.status === "covered")
+      .map((unit) => unit.starting_paths?.[0]),
+  );
+  const uncovered = files.filter((path) => !covered.has(path));
+  if (uncovered.length > 0) {
+    return refuseGate(`The security review for head ${short} does not cover every changed file; not covered: ${uncovered.join(", ")}.`);
+  }
   const records = JSON.parse(readFileSync(file, "utf8"));
   const high = records.find((r) => r.verdict === "confirmed" && BLOCKING_SEVERITIES.has(r.severity?.overall_severity));
   if (high) {

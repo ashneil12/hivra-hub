@@ -317,7 +317,7 @@ async function reviewedRoot(records, head = HEAD) {
     head,
     author: "claude",
     reviewer: "codex",
-    files: ["scripts/security-review/review.mjs"],
+    files: SENSITIVE,
     candidates: records,
     verifier: async (candidate) => candidate,
     read: fakeRead(),
@@ -567,19 +567,69 @@ test("candidates without a verifier are refused and nothing is written", { skip:
 
 // Item 5 end to end: a planted high written by the command blocks the ship helper for that exact head.
 test("a planted high-severity finding from the command blocks the ship helper on that head", { skip: process.platform === "win32" }, () => {
-  const { folder, sha } = changeRepo();
+  const { folder } = changeRepo();
   const reviews = mkdtempSync(join(tmpdir(), "wp203-planted-"));
   try {
+    // The change also touches a security path, so the gate applies to it.
+    mkdirSync(join(folder, "src-tauri/src"), { recursive: true });
+    writeFileSync(join(folder, "src-tauri/src/mobile_access.rs"), "fn pair() {}\n");
+    spawnSync("git", ["add", "."], { cwd: folder });
+    spawnSync("git", ["commit", "-q", "-m", "pairing"], { cwd: folder });
+    const sha = spawnSync("git", ["rev-parse", "HEAD"], { cwd: folder, encoding: "utf8" }).stdout.trim();
+    const changed = spawnSync("git", ["diff", "--name-only", "main...feature"], { cwd: folder, encoding: "utf8" })
+      .stdout.trim().split("\n");
     const candidates = join(folder, "planted.json");
     writeFileSync(candidates, JSON.stringify([confirmed()]));
     const review = cli(["--base", "main", "--head", "feature", "--author", "claude", "--reviewer", "codex",
-      "--candidates", candidates, "--verifier", "cat", "--reviews", reviews, "--paths", "one.ts"], folder);
+      "--candidates", candidates, "--verifier", "cat", "--reviews", reviews], folder);
     assert.equal(review.status, 0, review.stdout + review.stderr);
-    const decision = evaluatePullRequest(prFor({ sha }), [{ ...greenRuns[0], headSha: sha }], { repo: REPO, reviewsRoot: reviews });
+    const decision = evaluatePullRequest(prFor({ sha, files: changed }), [{ ...greenRuns[0], headSha: sha }], { repo: REPO, reviewsRoot: reviews });
     assert.equal(decision.ok, false);
     assert.match(decision.message, /confirmed high/);
   } finally {
     rmSync(folder, { recursive: true, force: true });
     rmSync(reviews, { recursive: true, force: true });
+  }
+});
+
+// The coverage ledger: a review writes one unit per changed file it read, and the gate needs it to cover the change.
+const coverageFile = (root, head = HEAD) => join(root, head, "coverage-ledger.json");
+
+test("a review writes a coverage ledger that validates and covers every file it read", async () => {
+  const root = scratch();
+  try {
+    const files = ["src/a.ts", "src/b.rs"];
+    const run = await runReview({ root, head: HEAD, author: "claude", reviewer: "codex", files, candidates: [], verifier: async (c) => c, read: fakeRead() });
+    assert.equal(run.ok, true, run.reason);
+    assert.equal(existsSync(coverageFile(root)), true);
+    const units = JSON.parse(readFileSync(coverageFile(root), "utf8"));
+    assert.deepEqual(units.map((unit) => unit.starting_paths[0]).sort(), files);
+    assert.ok(units.every((unit) => unit.status === "covered" && unit.agent_id === "codex"));
+    assert.equal(validate(ledgerValidator, units).status, 0);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("the gate refuses a head whose review has no coverage ledger", async () => {
+  const root = await reviewedRoot([rejected()]);
+  try {
+    rmSync(coverageFile(root));
+    const gate = securityGate({ head: HEAD, files: SENSITIVE, reviewsRoot: root });
+    assert.equal(gate.status, "refuse");
+    assert.match(gate.reason, /coverage ledger/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("the gate refuses a change with a file the review did not cover", async () => {
+  const root = await reviewedRoot([rejected()]);
+  try {
+    const gate = securityGate({ head: HEAD, files: [...SENSITIVE, "src/features/mobile/ui/PairPhoneDialog.tsx"], reviewsRoot: root });
+    assert.equal(gate.status, "refuse");
+    assert.match(gate.reason, /not covered/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
   }
 });
