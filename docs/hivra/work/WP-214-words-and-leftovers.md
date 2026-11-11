@@ -2,7 +2,7 @@
 
 | Wave | Size | Depends on | Grok OK |
 | --- | --- | --- | --- |
-| N | L | WP-210, WP-211, WP-212, WP-213 | yes |
+| N | L | WP-210 to WP-213, and last after WP-215 to WP-219 (it renames across what they build) | yes |
 
 ## Goal
 
