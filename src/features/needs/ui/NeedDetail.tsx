@@ -6,7 +6,7 @@ import { NEEDS_YOU_RED } from "../../hub/ui/StatusMark";
 import { needActions } from "../../home/model/needActions";
 import { openFromHome } from "../../home/model/opener";
 import { findMono } from "../../monos/model/mono";
-import { askedAgo, NEED_KIND_LABEL, needChatId, needPlace, shownNeed } from "../model/needContext";
+import { askedAgo, markAsked, NEED_KIND_LABEL, needChatId, needPlace, openNeed, shownNeed } from "../model/needContext";
 import { useNeedsYou } from "../model/needsLive";
 import type { NeedsItem } from "../model/needsYou";
 import { inboxNeedsOrder } from "./InboxNeeds";
@@ -33,10 +33,20 @@ export function NeedDetail({ item, now = Date.now() }: { item: NeedsItem; now?: 
   const place = needPlace(item);
   const chatId = needChatId(item, findMono);
   const open = place
-    ? { label: place.label, run: () => openFromHome(place.target) }
-    : item.monoId
-      ? { label: "Open chat", run: () => openMonoChat(item.monoId!, item.projectId ? { project: item.projectId } : undefined) }
-      : undefined;
+    ? { label: place.label, run: () => openNeed(item) }
+    : chatId
+      ? {
+          label: "Open chat",
+          run: () => {
+            // The same chat the reply box sends to. When the decision names it as the chat that asked, the time it was
+            // asked can find the message; in the first mate's other chat only the ask's own words can.
+            markAsked(chatId, item, item.askedBy?.trim() === chatId);
+            openFromHome({ kind: "chat", id: chatId, projectId: item.projectId ?? "" });
+          },
+        }
+      : item.monoId
+        ? { label: "Open chat", run: () => openMonoChat(item.monoId!, item.projectId ? { project: item.projectId } : undefined) }
+        : undefined;
   return (
     <article data-need-detail={item.key} aria-label="What needs you" className="flex h-full min-h-0 flex-col overflow-y-auto">
       <div className="mx-auto flex w-full max-w-[640px] flex-col gap-4 px-6 py-6">

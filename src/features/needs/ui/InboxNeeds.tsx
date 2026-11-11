@@ -5,11 +5,9 @@ import { isSecretDecisionKey } from "../../hub/model/decisionKey";
 import { hubData, useHubDataVersion } from "../../hub/model/hubData";
 import { NEEDS_YOU_RED } from "../../hub/ui/StatusMark";
 import { needActions } from "../../home/model/needActions";
-import { needTarget } from "../../home/model/needTarget";
 import { needsRank } from "../../home/model/needsShown";
-import { openFromHome } from "../../home/model/opener";
 import { foldFirstMate } from "../model/inboxFold";
-import { shownNeed } from "../model/needContext";
+import { openNeed, shownNeed } from "../model/needContext";
 import { projectIdOf, useNeedsYou } from "../model/needsLive";
 import type { NeedsItem } from "../model/needsYou";
 import { OneTapNotice } from "./OneTapNotice";
@@ -42,7 +40,7 @@ export function InboxNeeds({ firstMate = null, pick }: { firstMate?: FirstMateFo
   const rows = foldFirstMate(ordered, firstMate?.decisions ?? [], (path) => projectIdOf(path, refs));
   const selected = firstMate?.selectedKey ?? null;
   const open = pick ? shownNeed(ordered, pick.picked, pick.firstWhenNone ?? false)?.key : undefined;
-  const openRow = (item: NeedsItem) => (pick ? pick.onPick(item) : openFromHome(needTarget(item)));
+  const openRow = (item: NeedsItem) => (pick ? pick.onPick(item) : openNeed(item));
   // The decision Home led here for opens its card too, so the row a person came for is the one beside the list.
   const led = pick && selected ? rows.find((row) => row.decision?.key === selected)?.need : undefined;
   const ledKey = led?.key;

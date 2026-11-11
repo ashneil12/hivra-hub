@@ -92,6 +92,18 @@ function sessions(now: number) {
         "assistant",
         "Area 3's three rooms are blocked out and playable. Two workers are on it now:\n\n- **Boss arena lighting**, about half done.\n- **Controller layout**: dodge moved to the right bumper after the playtest.\n\nThe playtest upload stopped on credits; the Chief of Staff moved it to the spare account and it's running again.",
       ],
+      ["user", "Example: how is the boss music coming along?"],
+      [
+        "assistant",
+        "Example: two takes are ready. Take A opens on the drums and hits harder. Take B opens on the choir and builds slower.\n\nWhich take for the boss music? I'd go with take A. Both are in Needs you so you can answer from there.",
+      ],
+      ["user", "Example: and the controller layout?"],
+      ["assistant", "Example: dodge is on the right bumper now. Nobody in the last playtest asked where it was."],
+      ["user", "Example: what is left before the Area 3 playtest?"],
+      [
+        "assistant",
+        "Example: three things.\n\n1. The boss arena lighting, about half done.\n2. The boss music, waiting on your pick.\n3. One more pass on the checkpoint before the arena.\n\nI'll tell you when the build is up.",
+      ],
     ], now, 35),
     chat(CHAT.hivra, "Hivra lead", folderOf("hivra"), [
       ["user", "Can you get the waitlist page ready to ship?"],

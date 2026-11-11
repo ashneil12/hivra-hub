@@ -15,13 +15,14 @@ import { useHubDataVersion, hubData } from "../../hub/model/hubData";
 import { LOCAL_HUB_CHANGED } from "../../hub/model/localHub/localTransport";
 import { PanelFrame } from "../../panels/ui/PanelTabs";
 import { useNeedsYou } from "../../needs/model/needsLive";
-import { workingCount, type NeedsItem } from "../../needs/model/needsYou";
+import { workingCount } from "../../needs/model/needsYou";
 import { localDay, readLines, type WorkLogLine } from "../../workLog/model/workLog";
 import { hideSection, pinPanel, showSection, unpin, withCardOrder } from "../model/arrangement";
 import { addChiefOfStaff, chiefScopeLine, openChiefChat, pickChief } from "../model/chief";
 import { openProjectChief } from "../../hub/ui/HubTopNav";
 import { needActions } from "../model/needActions";
 import { needTarget } from "../model/needTarget";
+import { openNeed } from "../../needs/model/needContext";
 
 export { needTarget };
 import { homeDateLabel } from "../model/dateLabel";
@@ -58,10 +59,6 @@ function labelFor(projects: readonly HomeProject[]): (projectId: string) => stri
       return named === id ? undefined : named;
     });
   };
-}
-
-function openNeed(item: NeedsItem): void {
-  openFromHome(needTarget(item));
 }
 
 /** Opens a Places view (Pages, Notes, Automations) over Home; App.tsx listens. */
