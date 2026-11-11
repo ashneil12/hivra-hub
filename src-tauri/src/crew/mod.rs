@@ -18,6 +18,9 @@ mod store;
 #[cfg(test)]
 mod tests;
 
+#[cfg(test)]
+mod review_r10_tests;
+
 use std::path::PathBuf;
 
 use serde::Serialize;

@@ -203,3 +203,52 @@ describe("crewPolicyForLead routes with the project and system defaults", () => 
     });
   });
 });
+
+// PR #194 round 10 review (head b28d877f9). crew_projects_owning answers only for projects that have a saved crew row
+// (crew_rule_meta), in that table's key order (sqlite_autoindex on (scope, scope_id): "/repo" before "/repo/pkg").
+// A project's worker default lives elsewhere (the worker pool settings), so the owners list is not the list of
+// projects that have a default.
+describe("PR #194 r10 review: crewPolicyForLead keeps the Lead folder's own project default", () => {
+  function mockLockedSystem(owners: string[], calls: [string, unknown][]) {
+    vi.mocked(invoke).mockImplementation(async (command: string, args?: unknown) => {
+      calls.push([command, args]);
+      if (command === "crew_projects_owning") return owners;
+      if (command === "crew_rules_get") {
+        const scope = (args as { scope?: string }).scope;
+        // The lock is the system's (Always use my default for everything). A project row bans nothing.
+        if (scope === "system") return { policy: { lockDefault: true, neverUse: [], fallback: [] }, policyOwn: true };
+        return { policy: { lockDefault: false, neverUse: [], fallback: [] }, policyOwn: true };
+      }
+      if (command === "crew_route") return { cli: "claude" };
+      return undefined;
+    });
+  }
+
+  // HIGH (regression from round 9): the Lead is in its project's own folder, the project has a worker default but no
+  // saved crew row, so crew_projects_owning is []. Round 9 looked the default up by the folder and found it; round 10
+  // looks only among the owners and drops it, so the plan is pinned to the system default instead.
+  it("uses the project default of the Lead's own folder when that project saved no crew policy", async () => {
+    const calls: [string, unknown][] = [];
+    mockLockedSystem([], calls);
+    await crewPolicyForLead("/repo", "lead", {
+      project: (key) => (key === "/repo" ? ({ cli: "claude" } as never) : undefined),
+      system: () => ({ cli: "codex" }) as never,
+    });
+    const route = calls.find(([command]) => command === "crew_route");
+    expect(route?.[1]).toMatchObject({ query: { defaults: expect.objectContaining({ project: { cli: "claude" } }) } });
+  });
+
+  // MED: a Lead in a nested package project gets the enclosing project's default, because the owners come back in
+  // key order and "the first owner with a default" is the outermost one. Round 9 used the package's own default.
+  it("prefers the nearest owning project's default over an enclosing project's", async () => {
+    const calls: [string, unknown][] = [];
+    mockLockedSystem(["/repo", "/repo/pkg"], calls);
+    await crewPolicyForLead("/repo/pkg", "lead", {
+      project: (key) =>
+        key === "/repo" ? ({ cli: "claude" } as never) : key === "/repo/pkg" ? ({ cli: "codex" } as never) : undefined,
+      system: () => ({ cli: "grok" }) as never,
+    });
+    const route = calls.find(([command]) => command === "crew_route");
+    expect(route?.[1]).toMatchObject({ query: { defaults: expect.objectContaining({ project: { cli: "codex" } }) } });
+  });
+});
