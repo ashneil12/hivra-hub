@@ -7,11 +7,15 @@ import {
   type ModelSetting,
 } from "../../sessions/model/models";
 import { kindLabel } from "../../activity/model/activity";
+import { addMono } from "./mono";
 import {
+  applyIdleCardRuns,
   dropCardRun,
   modelOffersFast,
+  peekCardRun,
   queueCardRun,
   resetCardRunsForTests,
+  setBeforeCardRunWriteForTests,
   withMonoFast,
   type CardRun,
 } from "./monoRun";
@@ -83,6 +87,45 @@ describe("a card edit during a turn", () => {
     settings: { effort: "high", fast: "true" },
     engineFast: true,
   };
+
+  it("keeps both runs when two queues overlap, and applies a drop only once", () => {
+    const ada: CardRun = { ...run, monoId: "ada" };
+    const bo: CardRun = { ...run, monoId: "bo", model: "claude:opus-fast" };
+    const cam: CardRun = { ...run, monoId: "cam", settings: { effort: "low", fast: "true" } };
+    queueCardRun(ada);
+    let nested = false;
+    setBeforeCardRunWriteForTests(() => {
+      if (nested) return;
+      nested = true;
+      queueCardRun(bo);
+    });
+    queueCardRun(cam);
+    expect(peekCardRun("bo")?.monoId).toBe("bo");
+    expect(peekCardRun("cam")?.monoId).toBe("cam");
+    resetCardRunsForTests();
+
+    addMono({
+      id: "ada",
+      name: "Ada",
+      mascot: "robot",
+      color: "x",
+      projects: [],
+      engine: "claude",
+      engineModel: run.model,
+      engineFast: true,
+      sessionId: "sess-ada",
+    });
+    queueCardRun(ada);
+    const applied: string[] = [];
+    nested = false;
+    setBeforeCardRunWriteForTests(() => {
+      if (nested) return;
+      nested = true;
+      applyIdleCardRuns([{ id: "sess-ada" }], (id) => applied.push(id));
+    });
+    applyIdleCardRuns([{ id: "sess-ada" }], (id) => applied.push(id));
+    expect(applied).toEqual(["sess-ada"]);
+  });
 
   it("keeps the newer run when an older one is dropped", () => {
     queueCardRun(run);

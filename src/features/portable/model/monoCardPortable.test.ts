@@ -4,6 +4,36 @@
 import { beforeEach, expect, it, vi } from "vitest";
 import type { AgentFilePath } from "../../monos/model/monoFiles";
 
+const tauri = vi.hoisted(() => ({
+  files: null as Record<string, string> | null,
+  findNames: [] as string[],
+}));
+
+vi.mock("@tauri-apps/api/core", () => ({
+  isTauri: () => true,
+  invoke: async (cmd: string, args: Record<string, unknown> = {}) => {
+    if (cmd === "portable_inspect") {
+      return {
+        format: "v2",
+        v1: null,
+        manifest: null,
+        files: tauri.files ?? {},
+        memory: [],
+        workspace: null,
+        memoryTarget: "",
+      };
+    }
+    if (cmd === "portable_paths_exist") return {};
+    if (cmd === "portable_project_folder_checks") return {};
+    if (cmd === "portable_find_skills") {
+      const names = Array.isArray(args.names) ? (args.names as string[]) : [];
+      tauri.findNames = names;
+      return names.map((name) => ({ name, path: name === "missing-skill" ? null : `/skills/${name}` }));
+    }
+    return {};
+  },
+}));
+
 const PROJECTS = [
   { id: "hivra", name: "Hivra", shortName: "Hivra", iconShape: "sparkles", folder: "/work/hivra" },
 ];
@@ -31,7 +61,11 @@ function folders() {
   };
 }
 
-beforeEach(() => localStorage.clear());
+beforeEach(() => {
+  localStorage.clear();
+  tauri.files = null;
+  tauri.findNames = [];
+});
 
 it("round-trips fast, skills and commands, and keeps an unknown skill with its note", async () => {
   const a = await app();
@@ -116,4 +150,24 @@ it("round-trips fast, skills and commands, and keeps an unknown skill with its n
   expect(c.mono.findMono("ada")?.engineFast).toBe(false);
   expect(c.mono.findMono("ada")?.skills).toEqual(["tdd", "grill-me", "missing-skill"]);
   expect(c.mono.findMono("ada")?.commands).toEqual(["review", "ship"]);
+});
+
+it("asks whether an offered skill is installed here, and the preview says when it is not", async () => {
+  const a = await app();
+  a.mono.addMono({
+    id: "ada",
+    name: "Ada",
+    mascot: "robot",
+    color: "x",
+    projects: ["/work/hivra"],
+    engine: "claude",
+    skills: ["grill-me", "missing-skill"],
+    commands: ["ship"],
+  });
+  tauri.files = a.doc.setupDocToFiles(a.doc.buildSetupDoc({ monoFiles: {}, workspace: false }));
+  const portable = await import("./portable");
+  const pending = await portable.readImport("/tmp/hivra-export.tar.gz");
+  expect(tauri.findNames).toEqual(expect.arrayContaining(["missing-skill"]));
+  const planned = a.plan.planImport(pending).monos.find((mono) => mono.mono.id === "ada");
+  expect(planned?.offeredMissing).toEqual(["missing-skill"]);
 });

@@ -3222,7 +3222,7 @@ export async function applyClaudeSettings(
   return "applied";
 }
 
-function launchOptions(
+export function launchOptions(
   input: HarnessSessionInput,
   resume?: string,
   sessionId?: string,

@@ -36,6 +36,13 @@ export type CardRun = {
 
 const memory = new Map<string, string>();
 
+/** Test seam. Runs after a queued run is read and before it is written, so two windows can overlap. */
+let beforeCardRunWrite: (() => void) | undefined;
+
+export function setBeforeCardRunWriteForTests(next: (() => void) | undefined): void {
+  beforeCardRunWrite = next;
+}
+
 function getItem(key: string): string | null {
   try {
     if (typeof localStorage !== "undefined") return localStorage.getItem(key);
@@ -100,6 +107,7 @@ function readRuns(): CardRun[] {
 }
 
 function writeRuns(runs: readonly CardRun[]): void {
+  beforeCardRunWrite?.();
   if (!runs.length) {
     removeItem(KEY);
     return;
@@ -126,6 +134,7 @@ export function dropCardRun(run: CardRun): boolean {
 }
 
 export function resetCardRunsForTests(): void {
+  beforeCardRunWrite = undefined;
   removeItem(KEY);
 }
 

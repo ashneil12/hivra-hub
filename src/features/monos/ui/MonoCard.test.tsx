@@ -2,6 +2,7 @@
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { modelsFromClaudeListModels } from "../../../integrations/harness/providers/claude/claudeCatalog";
 import { resetHarnessModelOverlays, setHarnessModels, type AgentModel } from "../../sessions/model/models";
 import { addMono, findMono } from "../model/mono";
 import { peekCardRun, resetCardRunsForTests } from "../model/monoRun";
@@ -109,6 +110,49 @@ it("queues a fast change while a turn is running and does not touch that turn", 
   expect(findMono("ada")?.engineFast).toBe(true);
   expect(peekCardRun("ada")?.engineFast).toBe(true);
   expect(peekCardRun("ada")?.settings.fast).toBe("true");
+});
+
+it("keeps compatible context and fast when the model changes", async () => {
+  const models = modelsFromClaudeListModels([
+    {
+      value: "claude-opus-5[1m]",
+      displayName: "Opus 5",
+      supportsEffort: true,
+      supportedEffortLevels: ["low", "high"],
+      supportsFastMode: true,
+    },
+    {
+      value: "claude-opus-4-6[1m]",
+      displayName: "Opus 4.6",
+      supportsEffort: true,
+      supportedEffortLevels: ["low", "high"],
+      supportsFastMode: true,
+    },
+  ]);
+  setHarnessModels("claude", models);
+  const [from, to] = models;
+  await act(async () => {
+    root.render(
+      createElement(MonoCard, {
+        monoId: "ada",
+        cwd: "/work/hivra",
+        harness: "claude",
+        model: from!.id,
+        modelSettings: { effort: "high", thinking: "true", context: "1m", fast: "true" },
+        offers: [],
+        onModelChange,
+        onModelSettingsChange,
+      }),
+    );
+  });
+  await act(async () => {
+    container.querySelector<HTMLButtonElement>('[data-mono-card-section="runs"]')!.click();
+  });
+  const select = container.querySelector<HTMLSelectElement>('[data-mono-card-runs] [aria-label="Model"]')!;
+  await act(async () => pick(select, to!.id));
+  const settings = onModelSettingsChange.mock.calls.at(-1)?.[0] as Record<string, string>;
+  expect(settings).toMatchObject({ effort: "high", context: "1m", fast: "true" });
+  expect(settings).not.toHaveProperty("thinking");
 });
 
 it("drops fast when the chosen model does not offer it, and applies the change when idle", async () => {
