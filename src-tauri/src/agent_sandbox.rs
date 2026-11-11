@@ -433,6 +433,72 @@ fn push_ancestor_locks(
     Ok(())
 }
 
+/// Parents of a checkout, not of the data folder. The lexical chain and the canonical chain are both locked, so a
+/// `~/Projects` that is a link still locks the real parent's own parent. A checkout outside home locks every parent
+/// up to the root: renaming one of those moves `.git` out from under the write deny. The data folder does not use this.
+fn push_checkout_locks(
+    lines: &mut Vec<String>,
+    home: &Path,
+    start: &Path,
+    seen: &mut BTreeSet<String>,
+) -> Result<(), String> {
+    let mut queue = vec![start.to_path_buf()];
+    let mut queued = BTreeSet::new();
+    queued.insert(start.to_path_buf());
+    let mut steps = 0usize;
+    while let Some(cur) = queue.pop() {
+        steps += 1;
+        if steps > 512 {
+            return Err(
+                "The checkout's parent chain is too long to lock, so nothing starts.".to_string(),
+            );
+        }
+        let at_home = same_folder(&cur, home);
+        if !at_home || LOCK_HOME_NODE {
+            push_unlink_node(lines, &cur, seen)?;
+        }
+        if !at_home {
+            if let Some(parent) = cur.parent() {
+                if parent != cur
+                    && !parent.as_os_str().is_empty()
+                    && queued.insert(parent.to_path_buf())
+                {
+                    queue.push(parent.to_path_buf());
+                }
+            }
+        }
+        if let Some(real) = canonical_node(&cur) {
+            if real != cur {
+                if queued.insert(real.clone()) {
+                    queue.push(real.clone());
+                }
+                if let Some(parent) = real.parent() {
+                    if !parent.as_os_str().is_empty() && queued.insert(parent.to_path_buf()) {
+                        queue.push(parent.to_path_buf());
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// The deepest existing prefix of `path`, canonicalised. A missing checkout still yields the parent that does exist,
+/// so a link higher up the chain is not missed. A path that cannot be canonicalised is skipped.
+fn canonical_node(path: &Path) -> Option<PathBuf> {
+    let mut cur = path.to_path_buf();
+    loop {
+        if std::fs::symlink_metadata(&cur).is_ok() {
+            return std::fs::canonicalize(&cur).ok();
+        }
+        let parent = cur.parent()?;
+        if parent == cur || parent.as_os_str().is_empty() {
+            return None;
+        }
+        cur = parent.to_path_buf();
+    }
+}
+
 /// The directory chain of a home-relative name. A file locks its parents only. A glob locks the prefix before `*`.
 fn lock_relative(
     lines: &mut Vec<String>,
@@ -500,9 +566,10 @@ fn profile_scoped(
     let mut seen = BTreeSet::new();
     let mut lines = vec!["(version 1)".to_string(), "(allow default)".to_string()];
     push_secret_places(&mut lines, home, &forms, list, &mut seen, !deny_git)?;
-    push_sourced_places(&mut lines, home, &forms);
+    push_sourced_places(&mut lines, home, &forms, &mut seen)?;
     push_protected_writes(&mut lines, home, &forms, &mut seen)?;
     push_app_data(&mut lines, home, &forms, &mut seen)?;
+    push_webview_storage(&mut lines, home, &forms, &mut seen)?;
     if let Some(data) = data_dir {
         push_explicit_data(&mut lines, data)?;
         push_ancestor_locks(&mut lines, home, data, &mut seen)?;
@@ -515,6 +582,11 @@ fn profile_scoped(
     push_launchd_services(&mut lines);
     if deny_git {
         push_git_writes(&mut lines, home, checkouts, &mut seen)?;
+    } else if let Some(data) = data_dir {
+        // Hooks and config of known projects only. The index stays writable, so `git status` still runs. A missing
+        // database adds nothing. A database that cannot be read fails closed, the same as an agent wrap.
+        let known = with_project_folders(Some(data), &[])?;
+        push_known_hook_config(&mut lines, &known)?;
     }
     for program in DENIED_PROGRAMS {
         lines.push(format!(
@@ -526,8 +598,16 @@ fn profile_scoped(
     lines.push("(deny job-creation)".to_string());
     lines.push("(deny lsopen)".to_string());
     lines.push(String::new());
-    Ok(lines.join("\n"))
+    let text = lines.join("\n");
+    // sandbox-exec takes the profile as one argument. Past about a megabyte it refuses the profile, which would fail
+    // open if a caller caught the error and started anyway. Callers treat this error as "do not start".
+    if text.len() > PROFILE_BYTE_CAP {
+        return Err("The sandbox profile is too large to apply, so nothing starts.".to_string());
+    }
+    Ok(text)
 }
+
+const PROFILE_BYTE_CAP: usize = 900_000;
 
 /// When this profile's home is not the login home, also deny the real `~/.ssh` and the daily data folder. The files are
 /// not opened: only the password database's home directory string is used.
@@ -605,12 +685,223 @@ fn push_secret_places(
 }
 
 /// Files a login shell sources after the profile (`~/.zshrc` pulls these in). Writes only: the app terminal and the
-/// container probe still read them, and an agent cannot replace them.
-fn push_sourced_places(lines: &mut Vec<String>, home: &Path, forms: &[String]) {
+/// container probe still read them, and an agent cannot replace them. The fixed names cover the dump and cache files
+/// those tools write even when the profile names them through a parameter. `source` and `.` lines in the shell profiles
+/// are read the same way gitconfig includes are, and each named file is write-denied.
+fn push_sourced_places(
+    lines: &mut Vec<String>,
+    home: &Path,
+    forms: &[String],
+    locks: &mut BTreeSet<String>,
+) -> Result<(), String> {
     for (name, folder) in [(".oh-my-zsh", true), (".p10k.zsh", false), (".nvm", true)] {
         push_home_entry(lines, forms, name, folder, WRITE_OPS);
         push_real_target(lines, home, name, folder, WRITE_OPS);
     }
+    for form in forms {
+        // `.zcompdump` and `.zcompdump-<host>-<version>`. A `*` inside one path segment is not a glob here.
+        lines.push(format!(
+            r#"(deny {WRITE_OPS} (regex #"^{}/{}(-[^/]*)?$"))"#,
+            ci_regex(form),
+            ci_regex(".zcompdump")
+        ));
+        lines.push(format!(
+            r#"(deny {WRITE_OPS} (regex #"^{}/{}/{}[^/]*{}$"))"#,
+            ci_regex(form),
+            ci_regex(".cache"),
+            ci_regex("p10k-instant-prompt-"),
+            ci_regex(".zsh")
+        ));
+    }
+    let mut seen = BTreeSet::new();
+    for name in [
+        ".zshrc",
+        ".zprofile",
+        ".zshenv",
+        ".zlogin",
+        ".bashrc",
+        ".bash_profile",
+        ".profile",
+    ] {
+        walk_shell_sources(lines, home, &home.join(name), 0, &mut seen, locks)?;
+    }
+    Ok(())
+}
+
+const SHELL_SOURCE_DEPTH: usize = 8;
+
+fn walk_shell_sources(
+    lines: &mut Vec<String>,
+    home: &Path,
+    path: &Path,
+    depth: usize,
+    seen: &mut BTreeSet<PathBuf>,
+    locks: &mut BTreeSet<String>,
+) -> Result<(), String> {
+    if depth >= SHELL_SOURCE_DEPTH {
+        return Ok(());
+    }
+    let key = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    if !seen.insert(key) {
+        return Ok(());
+    }
+    let Ok(meta) = std::fs::metadata(path) else {
+        return Ok(());
+    };
+    if !meta.is_file() || meta.len() > 1024 * 1024 {
+        return Ok(());
+    }
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return Ok(());
+    };
+    for operand in shell_source_operands(&text) {
+        let Some(resolved) = resolve_shell_source(home, path, &operand) else {
+            continue;
+        };
+        deny_file_and_target(lines, &resolved);
+        if inside_home(home, &resolved) {
+            if let Some(parent) = resolved.parent() {
+                push_checkout_locks(lines, home, parent, locks)?;
+            }
+        }
+        walk_shell_sources(lines, home, &resolved, depth + 1, seen, locks)?;
+    }
+    Ok(())
+}
+
+/// `source` and `.` operands. A line may have the command after `&&` or `;`. An operand with `$`, a backtick or `*`
+/// is left out: the fixed globs cover the ones those expansions name, and a guessed expansion would deny the wrong file.
+fn shell_source_operands(text: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for raw in text.split(['\n', '\r']) {
+        for segment in split_shell_commands(&strip_shell_comment(raw)) {
+            let words = shell_words(&segment);
+            if words.len() < 2 {
+                continue;
+            }
+            if words[0] == "source" || words[0] == "." {
+                out.push(words[1].clone());
+            }
+        }
+    }
+    out
+}
+
+fn strip_shell_comment(line: &str) -> String {
+    let mut out = String::new();
+    let mut quote: Option<char> = None;
+    for c in line.chars() {
+        if let Some(q) = quote {
+            out.push(c);
+            if c == q {
+                quote = None;
+            }
+            continue;
+        }
+        if c == '#' {
+            break;
+        }
+        if c == '"' || c == '\'' {
+            quote = Some(c);
+        }
+        out.push(c);
+    }
+    out
+}
+
+fn split_shell_commands(line: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut cur = String::new();
+    let mut quote: Option<char> = None;
+    let mut chars = line.chars().peekable();
+    while let Some(c) = chars.next() {
+        if let Some(q) = quote {
+            cur.push(c);
+            if c == q {
+                quote = None;
+            }
+            continue;
+        }
+        if c == '"' || c == '\'' {
+            quote = Some(c);
+            cur.push(c);
+            continue;
+        }
+        if c == ';' || c == '&' || c == '|' {
+            if (c == '&' || c == '|') && chars.peek() == Some(&c) {
+                chars.next();
+            }
+            let piece = cur.trim().to_string();
+            if !piece.is_empty() {
+                out.push(piece);
+            }
+            cur.clear();
+            continue;
+        }
+        cur.push(c);
+    }
+    let piece = cur.trim().to_string();
+    if !piece.is_empty() {
+        out.push(piece);
+    }
+    out
+}
+
+fn shell_words(segment: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut cur = String::new();
+    let mut quote: Option<char> = None;
+    for c in segment.chars() {
+        if let Some(q) = quote {
+            if c == q {
+                quote = None;
+            } else {
+                cur.push(c);
+            }
+            continue;
+        }
+        if c == '"' || c == '\'' {
+            quote = Some(c);
+            continue;
+        }
+        if c.is_whitespace() || c == '>' || c == '<' {
+            if !cur.is_empty() {
+                out.push(std::mem::take(&mut cur));
+            }
+            continue;
+        }
+        cur.push(c);
+    }
+    if !cur.is_empty() {
+        out.push(cur);
+    }
+    out
+}
+
+fn resolve_shell_source(home: &Path, from: &Path, operand: &str) -> Option<PathBuf> {
+    if operand.is_empty()
+        || operand.contains('$')
+        || operand.contains('`')
+        || operand.contains('*')
+        || operand.contains('\0')
+        || operand.contains('"')
+        || operand.contains('\\')
+        || operand.contains('\n')
+    {
+        return None;
+    }
+    if operand == "~" {
+        return Some(home.to_path_buf());
+    }
+    if let Some(rest) = operand.strip_prefix("~/") {
+        return Some(normalize_lexical(&home.join(rest)));
+    }
+    let raw = Path::new(operand);
+    if raw.is_absolute() {
+        return Some(normalize_lexical(raw));
+    }
+    let prefix = from.parent().unwrap_or(home);
+    Some(normalize_lexical(&prefix.join(raw)))
 }
 
 /// The shared list's `denyWrite` globs under home. A glob with no `*` is one file: a link's target is denied too, and
@@ -778,6 +1069,37 @@ fn push_app_data(
     lock_relative(lines, home, APP_DATA_UNDER_HOME, true, seen)
 }
 
+/// WebKit, caches and preferences for this app, daily and dev (`com.ash.monocode-hub` plus anything after it in the
+/// same segment, so `.dev.<slot>` is covered). localStorage there holds provider binary paths the next launch runs.
+/// Not the data folder: that one is denied on its own.
+fn push_webview_storage(
+    lines: &mut Vec<String>,
+    home: &Path,
+    forms: &[String],
+    seen: &mut BTreeSet<String>,
+) -> Result<(), String> {
+    const ROOTS: [&str; 5] = [
+        "Library/WebKit/com.ash.monocode-hub",
+        "Library/Caches/com.ash.monocode-hub",
+        "Library/HTTPStorages/com.ash.monocode-hub",
+        "Library/Preferences/com.ash.monocode-hub",
+        "Library/Saved Application State/com.ash.monocode-hub",
+    ];
+    for root in ROOTS {
+        for form in forms {
+            lines.push(format!(
+                r#"(deny {WRITE_OPS} (regex #"^{}/{}[^/]*(/|$)"))"#,
+                ci_regex(form),
+                ci_regex(root)
+            ));
+        }
+        if let Some((parent, _)) = root.rsplit_once('/') {
+            lock_relative(lines, home, parent, true, seen)?;
+        }
+    }
+    Ok(())
+}
+
 /// The whole of a data folder that is not the one under home (a test's, or a moved one).
 fn push_explicit_data(lines: &mut Vec<String>, data: &Path) -> Result<(), String> {
     for form in folder_forms(data)? {
@@ -836,6 +1158,52 @@ fn push_tool_places(lines: &mut Vec<String>, home: &Path) {
             continue;
         };
         deny_file_and_target(lines, &path);
+    }
+    push_searched_home_dirs(lines, home);
+}
+
+/// Home folders the app searches before the system directories, plus the resolver candidate folders that are not in
+/// the fixed list above. A planted `git` or `grok` in one of those runs outside the sandbox. The cut is the first
+/// system directory on the search path, so a home folder that appears after `/usr/bin` is not denied here.
+fn push_searched_home_dirs(lines: &mut Vec<String>, home: &Path) {
+    let Ok(forms) = folder_forms(home) else {
+        return;
+    };
+    for dir in ["bin", "n/bin", ".fx/bin", ".hermes", ".local/share/agy-acp"] {
+        push_home_entry(lines, &forms, dir, true, WRITE_OPS);
+    }
+    const SYSTEM: &[&str] = &[
+        "/usr/bin",
+        "/bin",
+        "/usr/sbin",
+        "/sbin",
+        "/opt/homebrew/bin",
+        "/usr/local/bin",
+        "/snap/bin",
+    ];
+    let search = crate::harness::cached_gui_search_path();
+    let dirs: Vec<PathBuf> = std::env::split_paths(&search).collect();
+    let cut = dirs
+        .iter()
+        .position(|dir| SYSTEM.iter().any(|sys| dir.as_path() == Path::new(sys)))
+        .unwrap_or(dirs.len());
+    for dir in dirs.into_iter().take(cut) {
+        if !dir.starts_with(home) {
+            continue;
+        }
+        let Ok(rel) = dir.strip_prefix(home) else {
+            continue;
+        };
+        let rel = rel.to_string_lossy();
+        if rel.is_empty()
+            || rel.contains('\0')
+            || rel.contains('"')
+            || rel.contains('\\')
+            || rel.split('/').any(|part| part == "..")
+        {
+            continue;
+        }
+        push_home_entry(lines, &forms, &rel, true, WRITE_OPS);
     }
 }
 
@@ -924,27 +1292,192 @@ fn tool_on_path(name: &str) -> Option<PathBuf> {
 
 /// Writes and links for each named checkout's repository, not only `<checkout>/.git`. A folder inside a repo locks
 /// that repo's `.git`. A linked worktree's `.git` file is read, the git dir it names is locked, and so is the common
-/// dir that file's `commondir` points at (where the config, hooks and attributes actually live). A checkout that does
-/// not exist yet still locks the lexical `<checkout>/.git`. A temp clone that was not named is not locked.
+/// dir that file's `commondir` points at (where the config, hooks and attributes actually live). The main checkout
+/// that holds that common dir is locked too, and so is every sibling worktree's `.git` file (`worktrees/*/gitdir`).
+/// A checkout that does not exist yet still locks the lexical `<checkout>/.git`. A temp clone that was not named is
+/// not locked.
 fn push_git_writes(
     lines: &mut Vec<String>,
     home: &Path,
     checkouts: &[PathBuf],
     seen: &mut BTreeSet<String>,
 ) -> Result<(), String> {
+    let mut git_seen = BTreeSet::new();
+    for checkout in checkouts {
+        lock_checkout(lines, home, checkout, seen, &mut git_seen)?;
+    }
+    Ok(())
+}
+
+fn lock_checkout(
+    lines: &mut Vec<String>,
+    home: &Path,
+    checkout: &Path,
+    seen: &mut BTreeSet<String>,
+    git_seen: &mut BTreeSet<PathBuf>,
+) -> Result<(), String> {
+    let root = repo_root(checkout);
+    let dot = root.join(".git");
+    let fresh = git_seen.insert(normalize_lexical(&dot));
+    if fresh {
+        deny_one_git(lines, &dot)?;
+    }
+    // Renaming the checkout, or a parent, moves `.git` out from under the write deny. Outside home that walk goes
+    // to the root. A link in the chain locks the real parents as well.
+    push_checkout_locks(lines, home, &root, seen)?;
+    if root != checkout {
+        push_checkout_locks(lines, home, checkout, seen)?;
+    }
+    if !fresh {
+        return Ok(());
+    }
+    if let Some(gitdir) = read_gitdir(&root) {
+        if git_seen.insert(normalize_lexical(&gitdir)) {
+            deny_one_git(lines, &gitdir)?;
+        }
+        if let Some(common) = read_commondir(&gitdir) {
+            lock_common(lines, home, &common, seen, git_seen)?;
+        }
+    } else if std::fs::metadata(&dot).is_ok_and(|meta| meta.is_dir()) {
+        lock_common(lines, home, &dot, seen, git_seen)?;
+    }
+    Ok(())
+}
+
+/// The common git dir, the main checkout that contains it, and each linked worktree's `.git` file.
+fn lock_common(
+    lines: &mut Vec<String>,
+    home: &Path,
+    common: &Path,
+    seen: &mut BTreeSet<String>,
+    git_seen: &mut BTreeSet<PathBuf>,
+) -> Result<(), String> {
+    let fresh = git_seen.insert(normalize_lexical(common));
+    if fresh {
+        deny_one_git(lines, common)?;
+    }
+    if common.file_name().is_some_and(|name| name == ".git") {
+        if let Some(main) = common.parent() {
+            push_checkout_locks(lines, home, main, seen)?;
+        }
+    }
+    if !fresh {
+        return Ok(());
+    }
+    let dir = common.join("worktrees");
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        return Ok(());
+    };
+    for entry in entries {
+        let Ok(entry) = entry else {
+            return Err(
+                "A worktree list could not be read, so its git file could not be locked."
+                    .to_string(),
+            );
+        };
+        let Some(wt_git) = read_worktree_gitfile(&entry.path().join("gitdir"))? else {
+            continue;
+        };
+        if let Some(wt) = wt_git.parent() {
+            lock_checkout(lines, home, wt, seen, git_seen)?;
+        }
+    }
+    Ok(())
+}
+
+/// The path written in `worktrees/<name>/gitdir`: a plain absolute path to that worktree's `.git` file, not a
+/// `gitdir:` line. A path the profile cannot quote fails the profile closed.
+fn read_worktree_gitfile(path: &Path) -> Result<Option<PathBuf>, String> {
+    let Ok(meta) = std::fs::symlink_metadata(path) else {
+        return Ok(None);
+    };
+    if !meta.is_file() || meta.len() > 4096 {
+        return Ok(None);
+    }
+    let text = std::fs::read_to_string(path).map_err(|_| {
+        "A worktree list could not be read, so its git file could not be locked.".to_string()
+    })?;
+    let Some(rest) = text.lines().next().map(str::trim) else {
+        return Ok(None);
+    };
+    if rest.is_empty() {
+        return Ok(None);
+    }
+    if rest.contains('\0')
+        || rest.contains('"')
+        || rest.contains('\\')
+        || rest.contains('\n')
+        || rest.contains('\r')
+    {
+        return Err("A worktree git path cannot be quoted, so nothing starts.".to_string());
+    }
+    let raw = Path::new(rest);
+    if !raw.is_absolute() {
+        return Ok(None);
+    }
+    Ok(Some(normalize_lexical(raw)))
+}
+
+/// Hooks and config only, for the container profile. The `.git` directory and the index stay writable.
+fn push_known_hook_config(lines: &mut Vec<String>, checkouts: &[PathBuf]) -> Result<(), String> {
+    let mut seen = BTreeSet::new();
     for checkout in checkouts {
         let root = repo_root(checkout);
-        deny_one_git(lines, &root.join(".git"))?;
-        // Renaming the checkout, or a parent up to home, moves `.git` out from under the write deny.
-        push_ancestor_locks(lines, home, &root, seen)?;
-        if &root != checkout {
-            push_ancestor_locks(lines, home, checkout, seen)?;
+        let dot = root.join(".git");
+        if seen.insert(normalize_lexical(&dot)) {
+            deny_hooks_and_config(lines, &dot)?;
         }
         if let Some(gitdir) = read_gitdir(&root) {
-            deny_one_git(lines, &gitdir)?;
-            if let Some(common) = read_commondir(&gitdir) {
-                deny_one_git(lines, &common)?;
+            if seen.insert(normalize_lexical(&gitdir)) {
+                deny_hooks_and_config(lines, &gitdir)?;
             }
+            if let Some(common) = read_commondir(&gitdir) {
+                if seen.insert(normalize_lexical(&common)) {
+                    deny_hooks_and_config(lines, &common)?;
+                }
+                deny_sibling_hooks(lines, &common, &mut seen)?;
+            }
+        } else if std::fs::metadata(&dot).is_ok_and(|meta| meta.is_dir()) {
+            deny_sibling_hooks(lines, &dot, &mut seen)?;
+        }
+    }
+    Ok(())
+}
+
+fn deny_sibling_hooks(
+    lines: &mut Vec<String>,
+    common: &Path,
+    seen: &mut BTreeSet<PathBuf>,
+) -> Result<(), String> {
+    let Ok(entries) = std::fs::read_dir(common.join("worktrees")) else {
+        return Ok(());
+    };
+    for entry in entries {
+        let Ok(entry) = entry else {
+            return Err(
+                "A worktree list could not be read, so its git file could not be locked."
+                    .to_string(),
+            );
+        };
+        let Some(wt_git) = read_worktree_gitfile(&entry.path().join("gitdir"))? else {
+            continue;
+        };
+        if seen.insert(normalize_lexical(&wt_git)) {
+            deny_hooks_and_config(lines, &wt_git)?;
+        }
+    }
+    Ok(())
+}
+
+fn deny_hooks_and_config(lines: &mut Vec<String>, git: &Path) -> Result<(), String> {
+    for form in folder_forms(git)? {
+        let base = ci_regex(&form);
+        for suffix in ["/hooks", "/config"] {
+            let tail = if suffix == "/hooks" { "(/|$)" } else { "$" };
+            lines.push(format!(
+                r#"(deny {WRITE_OPS} (regex #"^{base}{}{tail}"))"#,
+                ci_regex(suffix)
+            ));
         }
     }
     Ok(())
@@ -1259,7 +1792,8 @@ pub fn sandboxed_launch(
     checkouts: &[PathBuf],
     sandbox_exec: &Path,
 ) -> Result<(OsString, Vec<OsString>), String> {
-    let profile = profile_with_checkouts(home, data_dir, checkouts)?;
+    let checkouts = with_project_folders(data_dir, checkouts)?;
+    let profile = profile_with_checkouts(home, data_dir, &checkouts)?;
     self_check(sandbox_exec)?;
     preflight_with(sandbox_exec, &profile)?;
     Ok((
@@ -1291,8 +1825,90 @@ pub fn agent_stack_refused(sandbox_on: bool, trigger: &str, has_stack: bool) -> 
     sandbox_on && trigger != "app" && has_stack
 }
 
+/// `extra` plus every project folder and every session folder in `data_dir/monocode.db`. No data folder, or no database
+/// file, is just `extra` (a launch with no store yet still wraps). A database that is there but cannot be read is an
+/// error: starting would lock only the caller's own folder.
+fn with_project_folders(
+    data_dir: Option<&Path>,
+    extra: &[PathBuf],
+) -> Result<Vec<PathBuf>, String> {
+    let mut out = Vec::new();
+    let mut push = |path: PathBuf| {
+        if !out.iter().any(|have| have == &path) {
+            out.push(path);
+        }
+    };
+    for path in extra {
+        push(path.clone());
+    }
+    let Some(data) = data_dir else {
+        return Ok(out);
+    };
+    let db = data.join("monocode.db");
+    if std::fs::symlink_metadata(&db).is_err() {
+        return Ok(out);
+    }
+    let conn =
+        rusqlite::Connection::open_with_flags(&db, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .map_err(|_| project_list_unreadable())?;
+    let _ = conn.busy_timeout(std::time::Duration::from_millis(400));
+    for path in crate::local_hub::project_folders(&conn).map_err(|_| project_list_unreadable())? {
+        push(path);
+    }
+    for path in session_folders(&conn)? {
+        push(path);
+    }
+    Ok(out)
+}
+
+fn project_list_unreadable() -> String {
+    "The project list could not be read, so other projects' git folders could not be locked."
+        .to_string()
+}
+
+fn session_folders(conn: &rusqlite::Connection) -> Result<Vec<PathBuf>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT cwd FROM sessions
+             UNION
+             SELECT worktree_cwd FROM sessions
+             WHERE worktree_cwd IS NOT NULL AND worktree_cwd != ''",
+        )
+        .map_err(|_| project_list_unreadable())?;
+    let rows = stmt
+        .query_map([], |row| row.get::<_, String>(0))
+        .map_err(|_| project_list_unreadable())?;
+    let mut out = Vec::new();
+    for row in rows {
+        let text = row.map_err(|_| project_list_unreadable())?;
+        if let Some(path) = absolute_checkout(&text) {
+            out.push(path);
+        }
+    }
+    Ok(out)
+}
+
+/// An absolute folder with no `..` and no null. A `~/` path is skipped, the same as the project list.
+fn absolute_checkout(text: &str) -> Option<PathBuf> {
+    if text.is_empty() || text.contains('\0') {
+        return None;
+    }
+    let path = Path::new(text);
+    if !path.is_absolute() {
+        return None;
+    }
+    if path
+        .components()
+        .any(|part| matches!(part, std::path::Component::ParentDir))
+    {
+        return None;
+    }
+    Some(path.to_path_buf())
+}
+
 /// How a project action starts when the sandbox is on: `sandbox-exec -p <profile>` in front of its shell. Off, nothing.
-/// `checkouts` scope the `.git` write denies. An empty list denies no `.git` path.
+/// `checkouts` are extra trees. The known projects and every session folder are locked as well, from the database.
+/// A database that cannot be read fails closed. A missing database locks only `checkouts`.
 pub fn action_wrap(
     data_dir: Option<&Path>,
     checkouts: &[PathBuf],
@@ -1304,7 +1920,8 @@ pub fn action_wrap(
         "The action did not start: HOME is not set, so the macOS sandbox cannot be built."
             .to_string()
     })?;
-    let profile = profile_with_checkouts(&home, data_dir, checkouts)?;
+    let checkouts = with_project_folders(data_dir, checkouts)?;
+    let profile = profile_with_checkouts(&home, data_dir, &checkouts)?;
     self_check(Path::new(SANDBOX_EXEC))?;
     preflight_with(Path::new(SANDBOX_EXEC), &profile)?;
     Ok(Some(vec![
@@ -1328,7 +1945,8 @@ pub fn more_agent_wrap(
     if !enabled(data_dir) {
         return Ok(None);
     }
-    let mut profile = profile_with_checkouts(home, data_dir, checkouts)?;
+    let checkouts = with_project_folders(data_dir, checkouts)?;
+    let mut profile = profile_with_checkouts(home, data_dir, &checkouts)?;
     for path in allowed {
         for form in folder_forms(path)? {
             profile.push_str(&format!(
