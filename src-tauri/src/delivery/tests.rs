@@ -3557,7 +3557,7 @@ fn repro_220_r5_a_chat_question_passes_a_head_with_a_critical_candidate() {
     let item = crate::decisions::get(&conn, &project, &gate_key)
         .unwrap()
         .expect("the gate did not ask its own key");
-    assert_eq!(item.asked_by, "gate");
+    assert_eq!(item.asked_by, "security-gate");
     assert_eq!(item.state, crate::decisions::OPEN);
     assert!(
         item.question.contains("candidate"),
@@ -3775,7 +3775,9 @@ fn repro_220_r5_the_gate_is_not_sent_a_steering_message() {
         let queued = crate::steering::pending(&conn).unwrap();
         let to_gate: Vec<_> = queued
             .iter()
-            .filter(|message| message.child_session == "gate")
+            .filter(|message| {
+                message.child_session == "gate" || message.child_session == "security-gate"
+            })
             .map(|message| message.child_session.clone())
             .collect();
         assert!(
@@ -3887,7 +3889,7 @@ fn repro_220_r5_the_switch_merges_a_change_to_who_answered() {
 }
 
 /// The gate passes on any answered decision under `(project, security-review/<head>)`: it never checks that it asked it
-/// (asked_by "gate"), nor that the answer is to the question it would ask now. A top-level chat asks that key first with its
+/// (asked_by "security-gate"), nor that the answer is to the question it would ask now. A top-level chat asks that key first with its
 /// own wording ("rename a button?", options Approve/No); the gate's later ask changes nothing (one key, one question); the
 /// person's "Approve" to the chat's question passes a head whose review has a critical candidate that needs validation,
 /// and the candidate is never put to them. The lead tick then merges by the switch.
@@ -4032,7 +4034,7 @@ fn repro_220_r6_a_chat_cannot_open_the_gate_key_in_any_spelling() {
     let shown = crate::decisions::get(&s.lock_conn().unwrap(), &project, &key)
         .unwrap()
         .unwrap();
-    assert_eq!(shown.asked_by, "gate");
+    assert_eq!(shown.asked_by, "security-gate");
     assert!(
         shown.question.contains("Token may leak"),
         "{}",

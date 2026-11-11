@@ -349,7 +349,7 @@ fn security_gate(
     crate::decisions::ask(
         conn,
         crate::decisions::AskInput {
-            asked_by: "gate".into(),
+            asked_by: "security-gate".into(),
             asked_by_mono: None,
             project: Some(project.to_string()),
             key: key.clone(),
@@ -367,7 +367,7 @@ fn security_gate(
         decision.answered_by.as_deref(),
         Some("person") | Some("user")
     );
-    let from_gate = crate::decisions::fold_key(&decision.asked_by) == "gate";
+    let from_gate = crate::decisions::fold_key(&decision.asked_by) == "security-gate";
     if decision.state != crate::decisions::ANSWERED || !by_person || !from_gate {
         return Ok(SecurityGate::Hold(question));
     }

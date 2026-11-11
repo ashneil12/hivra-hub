@@ -490,13 +490,29 @@ fn a_chat_answer_to_a_folded_restart_or_security_key_is_refused() {
     )
     .unwrap_err();
     assert!(refused_ask.contains("Only the gate"), "{refused_ask}");
-    ask(
+    // "gate" is the delivery check. It must not be able to open a security review under that name.
+    let delivery_name = ask(
         &mut conn,
         AskInput {
             question: "Accept this security review?".into(),
             options: vec!["Approve".into(), "Reject".into()],
             recommended: Some("Reject".into()),
             ..ask_input("gate", security, &[])
+        },
+        3,
+    )
+    .unwrap_err();
+    assert!(
+        delivery_name.contains("Only the gate"),
+        "{delivery_name}"
+    );
+    ask(
+        &mut conn,
+        AskInput {
+            question: "Accept this security review?".into(),
+            options: vec!["Approve".into(), "Reject".into()],
+            recommended: Some("Reject".into()),
+            ..ask_input("security-gate", security, &[])
         },
         3,
     )

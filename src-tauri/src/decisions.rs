@@ -195,7 +195,7 @@ fn save(conn: &Connection, d: &Decision) -> Result<(), String> {
 /// question is replaced, an open question that no longer matches the record is replaced, and an answer that is not one
 /// of the new options is cleared. An answer that is still one of the options stays, including "Hold the merge".
 fn security_stale(existing: &Decision, question: &str, options: &[String]) -> bool {
-    if fold_key(&existing.asked_by) != "gate" {
+    if fold_key(&existing.asked_by) != "security-gate" {
         return true;
     }
     if existing.question == question && existing.options == options {
@@ -437,7 +437,7 @@ pub fn ask(conn: &mut Connection, input: AskInput, now: i64) -> Result<AskOutcom
     let key = key_like(&input.key)?;
     // A chat that asks security-review/... first would put its own question under the gate's key. Only the gate asks one.
     let security = is_security_key(&fold_key(&key));
-    if security && fold_key(&asked_by) != "gate" {
+    if security && fold_key(&asked_by) != "security-gate" {
         return Err(
             "Only the gate asks a security review. A chat cannot open that question.".into(),
         );
@@ -778,8 +778,10 @@ pub fn answer(
         decision.answered_by.as_deref() == Some(format!("chat:{}", decision.asked_by).as_str());
     // The app closing a review's question (a brief taken back, replaced, or accepted as clean) has nothing to tell.
     let from_app = decision.answered_by.as_deref() == Some(APP_CLOSER);
-    // The gate is not a chat. A steering message to it would wait forever for a session that does not exist.
-    let from_gate = fold_key(&decision.asked_by) == "gate";
+    // Neither gate is a chat. A steering message to one would wait forever for a session that does not exist.
+    // The delivery check still asks as "gate". The security review asks as "security-gate".
+    let asked = fold_key(&decision.asked_by);
+    let from_gate = asked == "gate" || asked == "security-gate";
     if !from_asker && !from_app && !from_gate {
         released.push(steering::record(
             &tx,
