@@ -946,8 +946,13 @@ fn create_lock(path: &Path, root: &Path) -> Result<Option<HeldLock>, Outcome> {
         Err(error) => return Err(lock_open_error(error)),
     };
     let token = uuid::Uuid::new_v4().simple().to_string();
-    if !write_token(&mut file, &token) || !lock_exclusive(&file) || !same_file_as_path(&file, path)
-    {
+    // The flock comes first. A creator that loses it must not remove the file an adopter holds.
+    if !try_lock(&file, path) {
+        return Err(not_finished(
+            "The update could not lock the worktree. Nothing was changed. Try again.",
+        ));
+    }
+    if !write_token(&mut file, &token) || !same_file_as_path(&file, path) {
         let _ = unlink_if_ours(&mut file, path, &token);
         return Err(not_finished(
             "The update could not lock the worktree. Nothing was changed. Try again.",
@@ -1071,6 +1076,35 @@ fn lock_open_error(error: std::io::Error) -> Outcome {
     let _ = error;
     not_finished("The update could not lock the worktree. Nothing was changed. Try again.")
 }
+
+/// Locks `file`. A test can take the flock first, standing in for an adopter that wins it.
+fn try_lock(file: &fs::File, path: &Path) -> bool {
+    steal_before_lock(path);
+    lock_exclusive(file)
+}
+
+#[cfg(test)]
+thread_local! {
+    static STEAL_BEFORE_LOCK: Cell<bool> = const { Cell::new(false) };
+    static STOLEN_LOCK: std::cell::RefCell<Option<fs::File>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+fn steal_before_lock(path: &Path) {
+    if !STEAL_BEFORE_LOCK.with(|cell| cell.replace(false)) {
+        return;
+    }
+    let file = open_existing(path).expect("the new lock file");
+    assert!(
+        lock_exclusive(&file),
+        "the adopter could not take the flock"
+    );
+    STOLEN_LOCK.with(|slot| *slot.borrow_mut() = Some(file));
+}
+
+#[cfg(not(test))]
+fn steal_before_lock(_path: &Path) {}
 
 fn lock_exclusive(file: &fs::File) -> bool {
     #[cfg(unix)]
@@ -1443,5 +1477,42 @@ mod lock_ownership {
         assert!(path.exists(), "the old token removed the new holder's lock");
         drop(held);
         finish(&root);
+    }
+
+    #[test]
+    fn a_creator_that_loses_the_flock_does_not_unlink_the_file() {
+        struct Cleanup(PathBuf);
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                STOLEN_LOCK.with(|slot| *slot.borrow_mut() = None);
+                STEAL_BEFORE_LOCK.with(|cell| cell.set(false));
+                finish(&self.0);
+            }
+        }
+
+        let root = scratch();
+        let _cleanup = Cleanup(root.clone());
+        let path = root.join(LOCK_NAME);
+        STEAL_BEFORE_LOCK.with(|cell| cell.set(true));
+        let result = create_lock(&path, &root);
+        assert!(
+            STOLEN_LOCK.with(|slot| slot.borrow().is_some()),
+            "the adopter never took the flock"
+        );
+        assert!(
+            path.is_file(),
+            "the creator removed the lock file after losing the flock"
+        );
+        let body = fs::read_to_string(&path).unwrap_or_default();
+        assert!(
+            body.trim().is_empty(),
+            "a token was written before the flock was held: {body:?}"
+        );
+        assert!(result.is_err(), "the creator kept a lock it does not hold");
+        let other = open_existing(&path).unwrap();
+        assert!(
+            !lock_exclusive(&other),
+            "the adopter no longer holds the flock"
+        );
     }
 }

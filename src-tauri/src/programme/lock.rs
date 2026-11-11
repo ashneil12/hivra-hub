@@ -8,6 +8,8 @@ use serde::Serialize;
 use crate::activity::{self, Who};
 
 const DEFAULT_LEASE_MS: i64 = 15 * 60 * 1000;
+/// The web view's longest lead lease: two ticks at its longest interval of 240 minutes.
+const MAX_LEASE_MS: i64 = 480 * 60 * 1000;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
@@ -268,7 +270,7 @@ fn lease_ms_of(lease_ms: i64) -> Result<i64, String> {
     if lease_ms <= 0 {
         return Err("The lease needs a length.".into());
     }
-    Ok(lease_ms)
+    Ok(lease_ms.min(MAX_LEASE_MS))
 }
 
 #[cfg(test)]
@@ -393,5 +395,19 @@ mod tests {
         let refused = acquire(&conn, dotted.to_str().unwrap(), "lead-b", 1_100, 500).unwrap();
         assert!(matches!(refused, Acquire::Refused { .. }), "{refused:?}");
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_lease_longer_than_the_webview_max_is_cut_to_480_minutes() {
+        let conn = memory();
+        let max = 480 * 60 * 1000;
+        acquire(&conn, "alpha", "lead-a", 1_000, max + 60_000).unwrap();
+        assert_eq!(holder_of(&conn, "alpha").1, 1_000 + max);
+        acquire(&conn, "beta", "lead-b", 5_000, max).unwrap();
+        assert_eq!(holder_of(&conn, "beta").1, 5_000 + max);
+        assert!(heartbeat(&conn, "alpha", "lead-a", 2_000, i64::MAX).unwrap());
+        assert_eq!(holder_of(&conn, "alpha").1, 2_000 + max);
+        acquire(&conn, "gamma", "lead-c", 3_000, 500).unwrap();
+        assert_eq!(holder_of(&conn, "gamma").1, 3_500);
     }
 }

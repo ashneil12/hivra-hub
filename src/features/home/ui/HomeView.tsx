@@ -17,7 +17,7 @@ import { PanelFrame } from "../../panels/ui/PanelTabs";
 import { useNeedsYou } from "../../needs/model/needsLive";
 import { workingCount, type NeedsItem } from "../../needs/model/needsYou";
 import { localDay, readLines, type WorkLogLine } from "../../workLog/model/workLog";
-import { hideSection, pinPanel, showSection, unpin } from "../model/arrangement";
+import { hideSection, pinPanel, showSection, unpin, withCardOrder } from "../model/arrangement";
 import { addChiefOfStaff, chiefScopeLine, openChiefChat, pickChief } from "../model/chief";
 import { openProjectChief } from "../../hub/ui/HubTopNav";
 import { needActions } from "../model/needActions";
@@ -442,6 +442,7 @@ export function HomeView({ projectId }: { projectId?: string } = {}) {
       onShow={(key) => void update((doc) => ({ ...doc, arrangement: showSection(doc.arrangement, key) }))}
       onPin={(plugin, panelId) => void update((doc) => ({ ...doc, arrangement: pinPanel(doc.arrangement, plugin, panelId) }))}
       onUnpin={(key) => void update((doc) => ({ ...doc, arrangement: unpin(doc.arrangement, key) }))}
+      onReorder={(keys) => void update((doc) => ({ ...doc, arrangement: withCardOrder(doc.arrangement, keys) }))}
       onAsk={(text) => {
         if (!chiefMono) return;
         // The box is a starting point: the conversation carries on in the Chief of Staff's own chat. In a project that is
