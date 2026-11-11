@@ -12,9 +12,10 @@
 //! ceiling set to that scratch directory's parent. Git stops only at a proper ancestor, so a ceiling equal to the
 //! current folder would still use a repository above it. The push URL is resolved with the same config `git push`
 //! reads, system file included: hiding that file lets a system `url.insteadOf` send the push somewhere this check never
-//! asked. `ls-remote` keeps credential keys from the global and system config as `GIT_CONFIG_KEY_<n>` pairs and points
-//! both files at `/dev/null`, so a swapped scratch file or a `url.*` rewrite cannot steer the read. A commit is already
-//! on the remote only when every push destination advertises it.
+//! asked. `ls-remote` keeps credential keys from the global and system config as `GIT_CONFIG_KEY_<n>` pairs (their
+//! `includeIf` evaluated in the repository, as for the push) and points both files at `/dev/null`, so a swapped scratch
+//! file or a `url.*` rewrite cannot steer the read. A commit is already on the remote only when every push destination
+//! advertises it.
 //!
 //! A commit-graph and a pack bitmap are unverified caches. Guard reads turn both off. `git commit-graph verify` has to
 //! accept a local graph, and an alternate object store that has a graph of its own is not trusted: a graph `git push`
@@ -1009,31 +1010,16 @@ fn commit_graph_file(objects: &Path) -> bool {
 }
 
 /// An alternate object store with a commit-graph is untrusted. `git commit-graph verify` reads the repository's own
-/// graph, not one reached through `objects/info/alternates`, and `git push` would still walk that graph.
+/// graph, not one reached through `objects/info/alternates`, and `git push` would still walk that graph. The stores
+/// come from `count-objects -v`, which lists nested alternates and unquotes a quoted line the way `git push` does. A
+/// path it still prints quoted is untrusted.
 fn alternate_has_commit_graph(repo: &Repo) -> Result<bool, String> {
-    let path = git_path(repo, "objects/info/alternates")?;
-    if !path.is_file() {
-        return Ok(false);
-    }
-    let text = match std::fs::read_to_string(&path) {
-        Ok(text) => text,
-        Err(_) => return Ok(true),
-    };
-    let Some(objects) = path.parent().and_then(|info| info.parent()) else {
-        return Ok(true);
-    };
+    let text = git_text(repo, &["-c", "core.quotePath=false", "count-objects", "-v"])?;
     for line in text.lines() {
-        let line = line.trim().trim_end_matches('\r');
-        if line.is_empty() || line.starts_with('#') {
+        let Some(store) = line.strip_prefix("alternate: ") else {
             continue;
-        }
-        let raw = Path::new(line);
-        let store = if raw.is_absolute() {
-            raw.to_path_buf()
-        } else {
-            objects.join(raw)
         };
-        if commit_graph_file(&store) {
+        if store.starts_with('"') || commit_graph_file(Path::new(store)) {
             return Ok(true);
         }
     }
@@ -1300,6 +1286,7 @@ fn push_unique(urls: &mut Vec<String>, url: String) {
 /// each of these URLs from outside the repository, with `url.*` hidden, so a second `insteadOf` cannot point the check
 /// at a decoy.
 pub(super) fn push_destinations(repo: &Repo, remote: &str) -> Result<Vec<String>, String> {
+    refuse_own_push_command(repo, remote)?;
     let mut cmd = command_with(repo, true);
     cmd.args(["remote", "get-url", "--push", "--all", remote]);
     let output = match read_capped(cmd, None, CHECK_TIMEOUT, MAX_CHECKED_BYTES) {
@@ -1327,6 +1314,49 @@ pub(super) fn push_destinations(repo: &Repo, remote: &str) -> Result<Vec<String>
     Ok(urls)
 }
 
+/// `remote.<name>.receivepack` and `remote.<name>.vcs` pick what `git push` runs for that remote, and git keeps the
+/// first value it reads, so the app's own `-c` cannot replace one the repository sets. The check reads each push URL
+/// with plain git from outside the repository, so a remote that sets either is refused: its push can reach a
+/// repository that read never asked (a decoy URL with `receivepack = git-receive-pack '<real>' #`).
+pub(super) fn refuse_own_push_command(repo: &Repo, remote: &str) -> Result<(), String> {
+    for key in ["receivepack", "vcs"] {
+        let mut cmd = command_with(repo, true);
+        cmd.args(["config", "--get-all", &format!("remote.{remote}.{key}")]);
+        match read_capped(cmd, None, CHECK_TIMEOUT, MAX_CHECKED_BYTES) {
+            Ok(_) => {
+                return Err(format!(
+                    "The remote {remote} sets its own push command (remote.{remote}.{key}), so the secret check cannot tell where the push goes. Nothing was sent."
+                ))
+            }
+            // `git config --get-all` exits 1, with nothing on stderr, when the key is not set.
+            Err(error) if error == "git failed" || error.is_empty() => {}
+            Err(error) => return Err(error),
+        }
+    }
+    // The same for `core.sshCommand` set by the repository itself: the check's read runs outside the repository with
+    // plain ssh, while the push would run the repository's command, which can send it to another host than the URL
+    // names. Ash's own global or system value is the same for both, so only a local or worktree value is refused.
+    let mut cmd = command_with(repo, true);
+    cmd.args(["config", "--show-scope", "--get-all", "core.sshCommand"]);
+    match read_capped(cmd, None, CHECK_TIMEOUT, MAX_CHECKED_BYTES) {
+        Ok(out) => {
+            let text = String::from_utf8_lossy(&out);
+            if text
+                .lines()
+                .any(|line| line.starts_with("local\t") || line.starts_with("worktree\t"))
+            {
+                return Err(
+                    "This repository sets its own ssh command (core.sshCommand), so the secret check cannot tell where the push goes. Nothing was sent."
+                        .to_string(),
+                );
+            }
+        }
+        Err(error) if error == "git failed" || error.is_empty() => {}
+        Err(error) => return Err(error),
+    }
+    Ok(())
+}
+
 pub(super) fn destinations_for(repo: &Repo, target: &str) -> Result<Vec<String>, String> {
     if let Ok(urls) = push_destinations(repo, target) {
         if !urls.is_empty() {
@@ -1340,9 +1370,9 @@ pub(super) fn destinations_for(repo: &Repo, target: &str) -> Result<Vec<String>,
 }
 
 /// Tips a remote advertises, read from outside the repository. The credential helper is kept. `url.*` is not.
-pub(super) fn advertised_shas(url: &str) -> Result<Vec<String>, String> {
+pub(super) fn advertised_shas(repo: &Repo, url: &str) -> Result<Vec<String>, String> {
     let scratch = exclusive_scratch("cg-ls")?;
-    let result = advertised_in(&scratch, url);
+    let result = advertised_in(&scratch, url, &repo.git_dir);
     let _ = std::fs::remove_dir_all(&scratch);
     result
 }
@@ -1364,8 +1394,8 @@ fn exclusive_scratch(prefix: &str) -> Result<PathBuf, String> {
     Err("The secret check could not make a temporary folder, so nothing was sent.".into())
 }
 
-fn advertised_in(scratch: &Path, url: &str) -> Result<Vec<String>, String> {
-    let mut cmd = ls_remote_cmd(scratch)?;
+fn advertised_in(scratch: &Path, url: &str, git_dir: &Path) -> Result<Vec<String>, String> {
+    let mut cmd = ls_remote_cmd(scratch, Some(git_dir))?;
     cmd.args(["--no-pager", "-c", "color.ui=never", "ls-remote", url]);
     let out = read_capped(cmd, None, CHECK_TIMEOUT, MAX_CHECKED_BYTES)?;
     if colour_wrapped(&out) {
@@ -1510,8 +1540,8 @@ pub(super) fn read_capped(
 /// `ls-remote` outside the repository. Credential keys from the global and system config are passed as
 /// `GIT_CONFIG_KEY_<n>` pairs. Both config files are `/dev/null`, so a file planted in the scratch folder cannot
 /// replace them and a `url.*` rewrite cannot steer the read. A missing config or a failed lookup is no extra
-/// credentials, not a failed push.
-fn ls_remote_cmd(scratch: &Path) -> Result<Command, String> {
+/// credentials, not a failed push. `git_dir` is the repository `git push` runs in, for `includeIf` (see below).
+fn ls_remote_cmd(scratch: &Path, git_dir: Option<&Path>) -> Result<Command, String> {
     let empty = scratch.join("empty");
     std::fs::create_dir_all(&empty).map_err(|error| error.to_string())?;
     // Git ignores a ceiling equal to the current directory. The ceiling has to be a proper ancestor, and the
@@ -1520,7 +1550,7 @@ fn ls_remote_cmd(scratch: &Path) -> Result<Command, String> {
         Some(parent) => crate::fs::canonical(parent).unwrap_or_else(|_| parent.to_path_buf()),
         None => scratch.to_path_buf(),
     };
-    let pairs = kept_credential_pairs();
+    let pairs = kept_credential_pairs(git_dir);
     let mut cmd = crate::fs::git_cmd();
     strip_repo_env(&mut cmd, true);
     cmd.current_dir(&empty)
@@ -1535,33 +1565,45 @@ fn ls_remote_cmd(scratch: &Path) -> Result<Command, String> {
 
 /// System credentials, then global ones. Git applies the later value for a single key and keeps every
 /// `credential.helper`. `GIT_CONFIG_SYSTEM` and `GIT_CONFIG_GLOBAL`, when set, name the files. Otherwise git reads
-/// its usual ones. Nothing from a repository config is copied: this read runs outside the repository.
-fn kept_credential_pairs() -> Vec<(String, String)> {
+/// its usual ones. Nothing from a repository config is copied: only the system and global files are read.
+fn kept_credential_pairs(git_dir: Option<&Path>) -> Vec<(String, String)> {
     let system = std::env::var_os("GIT_CONFIG_SYSTEM").filter(|value| !value.is_empty());
     let global = std::env::var_os("GIT_CONFIG_GLOBAL").filter(|value| !value.is_empty());
-    let mut pairs = scoped_credentials("--system", system.as_deref().map(Path::new));
+    let mut pairs = scoped_credentials("--system", system.as_deref().map(Path::new), git_dir);
     pairs.extend(scoped_credentials(
         "--global",
         global.as_deref().map(Path::new),
+        git_dir,
     ));
     pairs
 }
 
-fn scoped_credentials(scope: &str, file: Option<&Path>) -> Vec<(String, String)> {
+fn scoped_credentials(
+    scope: &str,
+    file: Option<&Path>,
+    git_dir: Option<&Path>,
+) -> Vec<(String, String)> {
     let Ok(scratch) = exclusive_scratch("cg-cred") else {
         return Vec::new();
     };
-    let pairs = credentials_in(&scratch, scope, file);
+    let pairs = credentials_in(&scratch, scope, file, git_dir);
     let _ = std::fs::remove_dir_all(&scratch);
     pairs
 }
 
 /// `scope` is `--system` or `--global`. `file`, when set, is the config git reads for that scope. The command runs
-/// in an empty folder whose parent is the discovery ceiling, so a repository `includeIf gitdir:` cannot match.
-/// `--includes` is required: without it, `git config --system` and `--global` do not open included files, so a system
-/// file that starts with an include would lose that helper and keep only its own. Git then evaluates `includeIf`.
+/// in an empty folder whose parent is the discovery ceiling. `git_dir`, when set, is passed with `--git-dir`, so an
+/// `includeIf gitdir:` or `onbranch:` in the system or global file matches as it does for `git push` in that
+/// repository: auth Ash keeps behind `includeIf` reaches the read. Only that scope's files are read, never the
+/// repository's own config. `--includes` is required: without it, `git config --system` and `--global` do not open
+/// included files, so a system file that starts with an include would lose that helper and keep only its own.
 /// A missing file, no match, or any other failure is no credentials.
-fn credentials_in(scratch: &Path, scope: &str, file: Option<&Path>) -> Vec<(String, String)> {
+fn credentials_in(
+    scratch: &Path,
+    scope: &str,
+    file: Option<&Path>,
+    git_dir: Option<&Path>,
+) -> Vec<(String, String)> {
     let empty = scratch.join("empty");
     if std::fs::create_dir_all(&empty).is_err() {
         return Vec::new();
@@ -1585,6 +1627,9 @@ fn credentials_in(scratch: &Path, scope: &str, file: Option<&Path>) -> Vec<(Stri
         cmd.env(var, path);
     }
     apply_config_pairs(&mut cmd, &[]);
+    if let Some(git_dir) = git_dir {
+        cmd.arg("--git-dir").arg(git_dir);
+    }
     cmd.args([
         "--no-pager",
         "-c",
@@ -1645,6 +1690,56 @@ fn apply_config_pairs(cmd: &mut Command, pairs: &[(String, String)]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn plain_git(dir: &Path, args: &[&str]) {
+        let out = std::process::Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    #[test]
+    fn a_repository_that_sets_its_own_ssh_command_or_receive_pack_is_refused() {
+        let dir = std::env::temp_dir().join(format!("cg-own-push-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let dir = crate::fs::canonical(&dir).unwrap();
+        plain_git(&dir, &["init", "-q"]);
+        plain_git(
+            &dir,
+            &["remote", "add", "origin", "git@example.test:o/r.git"],
+        );
+        let repo = open_repo(&dir).unwrap();
+        assert!(refuse_own_push_command(&repo, "origin").is_ok());
+        plain_git(
+            &dir,
+            &[
+                "config",
+                "core.sshCommand",
+                "ssh -o HostName=elsewhere.test",
+            ],
+        );
+        let refused = refuse_own_push_command(&repo, "origin").unwrap_err();
+        assert!(refused.contains("core.sshCommand"), "{refused}");
+        plain_git(&dir, &["config", "--unset", "core.sshCommand"]);
+        plain_git(
+            &dir,
+            &[
+                "config",
+                "remote.origin.receivepack",
+                "git-receive-pack '/elsewhere' #",
+            ],
+        );
+        let refused = refuse_own_push_command(&repo, "origin").unwrap_err();
+        assert!(refused.contains("receivepack"), "{refused}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn guard_arguments_never_set_a_numeric_abbrev() {
@@ -1753,7 +1848,7 @@ file:/etc/gitconfig\tprotocol.version 0\n\
             ),
         )
         .unwrap();
-        let pairs = credentials_in(&dir, "--system", Some(&system));
+        let pairs = credentials_in(&dir, "--system", Some(&system), None);
         let _ = std::fs::remove_dir_all(&dir);
         let helpers: Vec<&str> = pairs
             .iter()
@@ -1806,7 +1901,7 @@ file:/etc/gitconfig\tprotocol.version 0\n\
         )
         .unwrap();
         std::fs::write(scratch.join("blank-system.gitconfig"), "planted").unwrap();
-        let cmd = ls_remote_cmd(&scratch).unwrap();
+        let cmd = ls_remote_cmd(&scratch, None).unwrap();
         let mut global = None;
         let mut system = None;
         let mut count = None;
@@ -1821,7 +1916,10 @@ file:/etc/gitconfig\tprotocol.version 0\n\
             } else if name == "GIT_CONFIG_COUNT" {
                 count = value.clone();
             } else if name.starts_with("GIT_CONFIG_KEY_") {
-                keys.push(value.clone().unwrap_or_default());
+                // A removed inherited key (the test runner's own `GIT_CONFIG_KEY_<n>`) has no value.
+                if let Some(key) = value.clone() {
+                    keys.push(key);
+                }
             }
             if let Some(value) = value.as_deref() {
                 assert!(

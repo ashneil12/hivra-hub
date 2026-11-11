@@ -270,12 +270,10 @@ fn read(path: &Path) -> Option<Vec<u8>> {
 
 /// Three-way merge of one file's three versions: the merged bytes, or None when they clash (or aren't text).
 fn merge3(ours: &[u8], base: &[u8], theirs: &[u8]) -> Result<Option<Vec<u8>>, String> {
-    let dir = std::env::temp_dir().join(format!(
-        "monocode-merge-{}-{}",
-        std::process::id(),
-        NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-    ));
-    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    // A random name, made here: a folder or link planted under a predictable name is never used (#227 r9 review).
+    let dir =
+        std::env::temp_dir().join(format!("monocode-merge-{}", uuid::Uuid::new_v4().simple()));
+    std::fs::create_dir(&dir).map_err(|e| e.to_string())?;
     let result = (|| {
         let (o, b, t) = (dir.join("ours"), dir.join("base"), dir.join("theirs"));
         std::fs::write(&o, ours).map_err(|e| e.to_string())?;

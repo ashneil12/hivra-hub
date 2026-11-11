@@ -538,6 +538,8 @@ fn union_push_urls(
     remote: &str,
     also: Option<&str>,
 ) -> Result<Vec<String>, String> {
+    // Not swallowed with the lookup below: git hands the hook that decoy's URL as `also`.
+    objects::refuse_own_push_command(repo, remote)?;
     let mut urls = match objects::destinations_for(repo, remote) {
         Ok(urls) => urls,
         Err(error) => {
@@ -577,7 +579,7 @@ fn union_push_urls(
 fn tips_on_every_destination(repo: &objects::Repo, urls: &[String]) -> Result<Vec<String>, String> {
     let mut common: Option<HashSet<String>> = None;
     for url in urls {
-        let advertised = objects::advertised_shas(url)?;
+        let advertised = objects::advertised_shas(repo, url)?;
         let local = objects::local_tips(repo, &advertised)?;
         let set: HashSet<String> = local.into_iter().collect();
         common = Some(match common {
