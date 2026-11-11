@@ -131,6 +131,22 @@ it("WP-141 MEDIUM 4: a policy that can't be read is an error, never an empty pol
   );
 });
 
+// The gate and the webview both say this sentence. Wrapping it again shows it twice.
+it("says a crew read failure once when the answer is already that sentence", async () => {
+  const line =
+    "The crew policy could not be read, so nothing was started (a folder's place in its git checkout could not be decided).";
+  invokeMock.mockRejectedValue(new Error(line));
+  let message = "";
+  try {
+    await crewPolicyInForce("vg-lead", "/tmp/proj");
+  } catch (error) {
+    message = error instanceof Error ? error.message : String(error);
+  }
+  const lead = "The crew policy could not be read";
+  expect(message.split(lead).length - 1).toBe(1);
+  expect(message).toBe(line);
+});
+
 it("WP-141 gate: crew_launch_check is sent the CLI, the Mono, the folder and the locked default, and its refusal is the reason", async () => {
   invokeMock.mockRejectedValueOnce("Codex is on Never use, so it was not started.");
   await expect(
