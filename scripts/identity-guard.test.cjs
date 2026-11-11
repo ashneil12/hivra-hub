@@ -59,7 +59,51 @@ function bundle(root, relative, identifier, stamp = STAMP) {
       Buffer.from([0x7d, 0, 0xff]),
     ]),
   );
+  // The dictation helper and its launch agent, as hub:build puts them in (scripts/hub-dictation-helper.mjs). Their
+  // signatures are read through the stand-in codesign below, so the fixture needs no signing identity.
+  const helper = path.join(app, "Contents/Helpers/MonoCode Dictation.app/Contents");
+  fs.mkdirSync(path.join(helper, "MacOS"), { recursive: true });
+  fs.writeFileSync(path.join(helper, "MacOS/monocode-dictation"), "helper");
+  fs.writeFileSync(
+    path.join(helper, "Info.plist"),
+    `<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0"><dict>
+  <key>CFBundleIdentifier</key><string>${identifier}.dictation</string>
+  <key>NSMicrophoneUsageDescription</key><string>Dictation</string>
+  <key>NSSpeechRecognitionUsageDescription</key><string>Dictation</string>
+</dict></plist>
+`,
+  );
+  fs.mkdirSync(path.join(app, "Contents/Library/LaunchAgents"), { recursive: true });
+  fs.writeFileSync(
+    path.join(app, "Contents/Library/LaunchAgents/com.ash.monocode-hub.dictation.plist"),
+    `<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0"><dict>
+  <key>BundleProgram</key><string>Contents/Helpers/MonoCode Dictation.app/Contents/MacOS/monocode-dictation</string>
+</dict></plist>
+`,
+  );
   return app;
+}
+
+/** A stand-in codesign: the helper carries only the audio input entitlement, both are hardened, one Team ID. */
+function fakeCodesign(root) {
+  const file = path.join(root, "fake-codesign.mjs");
+  fs.writeFileSync(
+    file,
+    `const args = process.argv.slice(2);
+const target = args[args.length - 1];
+const helper = target.endsWith("MonoCode Dictation.app");
+if (args.includes("--entitlements")) {
+  process.stdout.write(helper
+    ? '<plist version="1.0"><dict><key>com.apple.security.device.audio-input</key><true/></dict></plist>'
+    : '<plist version="1.0"><dict></dict></plist>');
+} else {
+  process.stderr.write("CodeDirectory v=20500 size=1 flags=0x10000(runtime)\\nTeamIdentifier=TESTTEAM01\\n");
+}
+`,
+  );
+  return file;
 }
 
 function database(root, identifier, sessions) {
@@ -83,7 +127,9 @@ function guard(root) {
 }
 
 function verify(app) {
-  const result = spawnSync(process.execPath, [VERIFY, app], { encoding: "utf8" });
+  const root = path.dirname(path.dirname(app));
+  const env = { ...process.env, MONOCODE_TEST_CODESIGN: fakeCodesign(root) };
+  const result = spawnSync(process.execPath, [VERIFY, app], { encoding: "utf8", env });
   return { code: result.status, out: result.stdout + result.stderr };
 }
 
