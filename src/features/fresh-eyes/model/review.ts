@@ -19,6 +19,8 @@ export type ReviewerTurn = {
   effort: string | null;
   prompt: string;
   history: readonly [];
+  /** Round 7: the reviewed project's folder, which the crew gate judges the reviewer against. */
+  folder?: string;
 };
 
 export type ReviewerPort = {
@@ -162,6 +164,7 @@ export async function runReview(input: {
   count: number;
   choice: { model: string | null; effort: string | null };
   port: ReviewerPort;
+  folder?: string;
 }): Promise<ReviewRun> {
   const plan = input.plan.replace(/\r\n/g, "\n").trim();
   if (!plan) return { status: "empty", findings: [], failed: [], retry: false, calls: [] };
@@ -176,6 +179,7 @@ export async function runReview(input: {
       effort: input.choice.effort,
       prompt: reviewerPrompt({ persona, plan, reading: input.reading }),
       history: [],
+      ...(input.folder ? { folder: input.folder } : {}),
     };
     calls.push(turn);
     try {

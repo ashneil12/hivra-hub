@@ -369,6 +369,8 @@ export async function spawnChild(
   },
   /** The provider's default CLI, not a configured override. */
   defaultBinary?: boolean,
+  /** Round 7: the folder the crew gate judges the process against, when it is not the folder the process runs in. */
+  crewFolder?: string,
 ): Promise<void> {
   // Every provider process starts here: none for a chat with no folder (the home folder is not a stand-in).
   requireChatFolder(cwd);
@@ -384,7 +386,7 @@ export async function spawnChild(
     ? await invoke<string>("crew_spawn_ticket", {
         sessionId,
         cli: binaryProvider ?? "claude",
-        folder: cwd,
+        folder: crewFolder ?? cwd,
       })
     : undefined;
   const pid = await invoke<number>("harness_spawn", {
@@ -399,6 +401,7 @@ export async function spawnChild(
     ...(devinAskEdits ? { devinAskEdits } : {}),
     ...(customRoute ? { customRoute } : {}),
     ...(crewTicket ? { crewTicket } : {}),
+    ...(crewFolder ? { crewFolder } : {}),
   });
   if (typeof pid !== "number" || pid <= 0) return;
   livePid.set(sessionId, pid);

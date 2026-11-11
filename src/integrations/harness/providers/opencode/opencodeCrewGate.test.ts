@@ -78,6 +78,8 @@ async function startTurn(): Promise<void> {
 }
 
 beforeEach(() => {
+  // The crew bind runs where the app runs, in the webview, which has a window. The headless host skips it.
+  vi.stubGlobal("window", {});
   invoked.length = 0;
   onStdout = undefined;
   onSseEvent = undefined;
@@ -86,6 +88,7 @@ beforeEach(() => {
 });
 
 afterEach(async () => {
+  vi.unstubAllGlobals();
   onSseEvent?.({ type: "session.status", properties: { sessionID: "session_1", status: { type: "idle" } } });
   await stopOpenCodeSession(SESSION);
   __openCodeTestReset();
@@ -124,6 +127,24 @@ it("a v2 session is not created when the bind refuses its crew ticket", async ()
   }
   bindRefusal = undefined;
   expect(thrown).toBeInstanceOf(Error);
+  const creates = harnessHttp.mock.calls.filter(
+    ([input]) => input.method === "POST" && ["/api/session", "/session"].includes(new URL(input.url).pathname),
+  );
+  expect(creates).toEqual([]);
+});
+
+// Round 7 (HIGH): the OpenCode text helper starts the same 2.x service as a chat, so it is judged the same way first.
+it("the OpenCode text helper is judged before it starts a 2.x service, and a refused bind creates no session", async () => {
+  openCodeVersion = "opencode v2.0.15";
+  bindRefusal = "This crew gate ticket is unknown or was already used, so it was not started.";
+  const { warmupOpenCodeText } = await import("./opencodeText");
+  void warmupOpenCodeText("/repo");
+  for (let index = 0; index < 100; index += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  bindRefusal = undefined;
+  expect(invoked).toContain("crew_spawn_ticket");
+  // The warm-up swallows a refused start (its text is skipped), so the outcome to check is that no session was created.
   const creates = harnessHttp.mock.calls.filter(
     ([input]) => input.method === "POST" && ["/api/session", "/session"].includes(new URL(input.url).pathname),
   );

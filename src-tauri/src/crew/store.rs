@@ -615,11 +615,11 @@ pub fn prune_grants(conn: &Connection, now: i64) -> Result<usize, String> {
 }
 
 /// Where the Never use list that holds `cli` lives, in words a person can find in Crew Defaults: this Mono, this
-/// project (its folder), or everything. None when no saved scope lists it.
+/// project (its folder), or everything. None when no saved scope lists it. `projects` are every project in force.
 pub(crate) fn never_use_scope(
     conn: &Connection,
     mono: Option<&str>,
-    project: Option<&str>,
+    projects: &[String],
     cli: &str,
 ) -> Result<Option<String>, String> {
     let lists = |policy: Option<Value>| {
@@ -633,7 +633,7 @@ pub(crate) fn never_use_scope(
             return Ok(Some("this Mono".into()));
         }
     }
-    if let Some(id) = project.map(str::trim).filter(|id| !id.is_empty()) {
+    for id in projects {
         if lists(saved_policy(conn, "project", id)?) {
             return Ok(Some(format!("this project ({id})")));
         }
@@ -660,30 +660,58 @@ pub fn grant_of(conn: &Connection, session: &str) -> Result<Option<Grant>, Strin
     .map_err(|error| error.to_string())
 }
 
-/// The git common directory of a folder that exists. A linked worktree and its main checkout share one.
-fn common_dir(folder: &std::path::Path) -> Option<std::path::PathBuf> {
+type CommonDirs = std::collections::HashMap<std::path::PathBuf, std::path::PathBuf>;
+static COMMON_DIRS: std::sync::Mutex<Option<CommonDirs>> = std::sync::Mutex::new(None);
+
+/// The git common directory of a folder. A linked worktree and its main checkout share one. None for a folder that does
+/// not exist or is not a git repository. Any other git failure on a folder that exists is an error, so the gate fails
+/// closed rather than reading the folder as no project's. A found directory is cached per folder.
+fn common_dir(folder: &std::path::Path) -> Result<Option<std::path::PathBuf>, String> {
+    if !folder.exists() {
+        return Ok(None);
+    }
+    if let Ok(cache) = COMMON_DIRS.lock() {
+        if let Some(found) = cache.as_ref().and_then(|map| map.get(folder)) {
+            return Ok(Some(found.clone()));
+        }
+    }
+    let unreadable = || {
+        format!(
+            "The git folder of {} could not be read, so nothing was started.",
+            folder.display()
+        )
+    };
     let output = std::process::Command::new("git")
         .arg("-C")
         .arg(folder)
         .args(["rev-parse", "--git-common-dir"])
         .output()
-        .ok()?;
+        .map_err(|_| unreadable())?;
     if !output.status.success() {
-        return None;
+        if String::from_utf8_lossy(&output.stderr).contains("not a git repository") {
+            return Ok(None);
+        }
+        return Err(unreadable());
     }
-    let raw = String::from_utf8(output.stdout).ok()?;
-    std::fs::canonicalize(folder.join(raw.trim())).ok()
+    let raw = String::from_utf8(output.stdout).map_err(|_| unreadable())?;
+    let common = std::fs::canonicalize(folder.join(raw.trim())).map_err(|_| unreadable())?;
+    if let Ok(mut cache) = COMMON_DIRS.lock() {
+        cache
+            .get_or_insert_with(Default::default)
+            .insert(folder.to_path_buf(), common.clone());
+    }
+    Ok(Some(common))
 }
 
 /// The hub project that owns a folder: the one whose git common directory the folder shares (a worktree counts),
-/// else the deepest one the folder sits inside. None when no project owns it, so only the system's policy applies.
+/// else the deepest one the folder sits inside. None when no project owns it.
 pub(crate) fn project_owning(conn: &Connection, folder: &str) -> Result<Option<String>, String> {
     let folder = folder.trim();
     if folder.is_empty() {
         return Ok(None);
     }
     let here = std::path::PathBuf::from(crate::delivery::settings::key(folder));
-    let here_common = common_dir(&here);
+    let here_common = common_dir(&here)?;
     let mut statement = conn
         .prepare("SELECT DISTINCT scope_id FROM crew_rule_meta WHERE scope = 'project'")
         .map_err(|error| error.to_string())?;
@@ -694,7 +722,7 @@ pub(crate) fn project_owning(conn: &Connection, folder: &str) -> Result<Option<S
     for project in projects {
         let project = project.map_err(|error| error.to_string())?;
         let root = std::path::PathBuf::from(&project);
-        if let (Some(mine), Some(theirs)) = (&here_common, common_dir(&root)) {
+        if let (Some(mine), Some(theirs)) = (&here_common, common_dir(&root)?) {
             if *mine == theirs {
                 return Ok(Some(project));
             }
@@ -707,6 +735,42 @@ pub(crate) fn project_owning(conn: &Connection, folder: &str) -> Result<Option<S
         }
     }
     Ok(inside.map(|(_, project)| project))
+}
+
+/// Every project that owns one of the folders, each once, in the order given. A folder no project owns adds nothing.
+pub(crate) fn projects_owning_all(
+    conn: &Connection,
+    folders: &[String],
+) -> Result<Vec<String>, String> {
+    let mut projects: Vec<String> = Vec::new();
+    for folder in folders {
+        if let Some(owner) = project_owning(conn, folder)? {
+            if !projects.contains(&owner) {
+                projects.push(owner);
+            }
+        }
+    }
+    Ok(projects)
+}
+
+/// The policy in force for a launch in the given projects: the Mono's, every project's, then the system's. Round 7:
+/// the union of all of them, so a project's Never use is never shed by another scope.
+pub(crate) fn policy_for_all(
+    conn: &Connection,
+    mono: Option<&str>,
+    projects: &[String],
+) -> Result<Value, String> {
+    let mut scopes = Vec::new();
+    if let Some(id) = mono.map(str::trim).filter(|id| !id.is_empty()) {
+        scopes.extend(saved_policy(conn, "mono", id)?);
+    }
+    for id in projects {
+        scopes.extend(saved_policy(conn, "project", id)?);
+    }
+    scopes.push(
+        saved_policy(conn, "system", "system")?.unwrap_or_else(|| sanitize_policy(&Value::Null)),
+    );
+    Ok(union_policy(&scopes))
 }
 
 /// Far enough ahead that a real attempt is outside the cool-down. The command passes `now` to `route_at`.
@@ -748,27 +812,6 @@ fn saved_policy(conn: &Connection, scope: &str, raw: &str) -> Result<Option<Valu
     };
     let (_, _, text) = meta(conn, &scope, &id)?;
     text.map(|text| policy_value(Some(text))).transpose()
-}
-
-/// The policy in force for a launch: the union of the Mono's, the project's and the system's saved policies.
-/// Never use is every scope's list together, so a "For everything" ban reaches every project. The lock is on when any
-/// scope sets it. The fallback order is the most specific one saved (Mono, then project, then system).
-pub(crate) fn policy_for(
-    conn: &Connection,
-    mono: Option<&str>,
-    project: Option<&str>,
-) -> Result<Value, String> {
-    let mut scopes = Vec::new();
-    if let Some(id) = mono.map(str::trim).filter(|id| !id.is_empty()) {
-        scopes.extend(saved_policy(conn, "mono", id)?);
-    }
-    if let Some(id) = project.map(str::trim).filter(|id| !id.is_empty()) {
-        scopes.extend(saved_policy(conn, "project", id)?);
-    }
-    scopes.push(
-        saved_policy(conn, "system", "system")?.unwrap_or_else(|| sanitize_policy(&Value::Null)),
-    );
-    Ok(union_policy(&scopes))
 }
 
 /// Whether any saved policy, in any scope, has the lock on.
@@ -826,7 +869,10 @@ fn union_policy(scopes: &[Value]) -> Value {
 }
 
 fn policy_in_force(conn: &Connection, query: &RouteQuery) -> Result<Value, String> {
-    policy_for(conn, query.mono.as_deref(), query.project.as_deref())
+    // Round 7: the route reads the policy of every project that owns its folder, as a launch does.
+    let folders: Vec<String> = query.project.iter().cloned().collect();
+    let projects = projects_owning_all(conn, &folders)?;
+    policy_for_all(conn, query.mono.as_deref(), &projects)
 }
 
 /// The rules in force for a query: the Mono's (carried, else stored), then the project's, then the system's, then plugins'.
@@ -1133,7 +1179,9 @@ fn record_failure(
     input: &FailureQuery,
     now: i64,
 ) -> Result<Result<Decision, FailureResult>, String> {
-    let policy = policy_for(tx, input.mono.as_deref(), input.project.as_deref())?;
+    let folders: Vec<String> = input.project.iter().cloned().collect();
+    let projects = projects_owning_all(tx, &folders)?;
+    let policy = policy_for_all(tx, input.mono.as_deref(), &projects)?;
     let Some(row) = crate::delegations::get(tx, &input.delegation_id)? else {
         let ledger = Vec::new();
         let decision = decide(&FailureInput {

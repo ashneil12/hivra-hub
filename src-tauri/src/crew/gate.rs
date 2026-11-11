@@ -3,8 +3,9 @@
 //! on, and any launch whose policy can't be read. Nothing here starts or stops a process.
 //!
 //! Round 6 invariant: every agent CLI start (`harness_spawn`, and the OpenCode 2.x service through `crew_spawn_ticket`)
-//! judges Never use for that CLI. The policy is the most specific one: the project in the session's grant, else the hub
-//! project that owns the folder (a worktree counts), else the system's. The lock applies to `app-` sessions only.
+//! judges Never use for that CLI. Round 7: the policy in force is the UNION of the Mono, the project the grant names,
+//! the project owning the grant's folder, the project owning the spawn folder, and the system's. A worktree or a
+//! subfolder counts as its project. The lock applies to `app-` sessions only.
 
 use rusqlite::Connection;
 use serde::Deserialize;
@@ -22,13 +23,16 @@ pub struct LaunchCheck {
     pub cli: String,
     #[serde(default)]
     pub mono: Option<String>,
-    /// The project's folder, which is what its policy is saved under.
+    /// The folder the launch runs in. Its policy is the one of the project that owns it.
     #[serde(default)]
     pub project: Option<String>,
     /// The CLI the lock pins for this launch: the crew route's own pick. None when no default is known.
     #[serde(default)]
     pub locked_default: Option<String>,
 }
+
+/// Settings > Crew Defaults, named the same way in every refusal, so the person knows where the rule is changed.
+const CREW_DEFAULTS: &str = "Settings > Crew Defaults";
 
 fn label_of(cli: &str) -> String {
     cli_id_of(cli)
@@ -54,20 +58,25 @@ fn never_listed(policy: &Value) -> Vec<String> {
         .unwrap_or_default()
 }
 
+fn unreadable(error: String) -> String {
+    format!("The crew policy could not be read, so nothing was started ({error}).")
+}
+
 /// Ok when the launch may start. The reason is one plain line, shown to the person and the Lead.
 pub fn check_launch(conn: &Connection, input: &LaunchCheck) -> Result<(), String> {
-    let policy = store::policy_for(conn, input.mono.as_deref(), input.project.as_deref()).map_err(
-        |error| format!("The crew policy could not be read, so nothing was started ({error})."),
-    )?;
+    let folders: Vec<String> = input.project.iter().cloned().collect();
+    let projects = store::projects_owning_all(conn, &folders).map_err(unreadable)?;
+    let policy =
+        store::policy_for_all(conn, input.mono.as_deref(), &projects).map_err(unreadable)?;
     let cli = input.cli.trim();
     let name = label_of(cli);
     if never_listed(&policy).iter().any(|id| id == cli) {
-        let scope =
-            store::never_use_scope(conn, input.mono.as_deref(), input.project.as_deref(), cli)?
-                .unwrap_or_else(|| "everything (the system default)".into());
-        return Err(format!(
-            "{name} is on Never use for {scope}, so it was not started. To change that, open Settings > Crew Defaults and edit Never use for {scope}."
-        ));
+        return Err(never_use_message(
+            conn,
+            input.mono.as_deref(),
+            &projects,
+            cli,
+        )?);
     }
     if !lock_on(&policy) {
         return Ok(());
@@ -79,10 +88,10 @@ pub fn check_launch(conn: &Connection, input: &LaunchCheck) -> Result<(), String
         .filter(|id| !id.is_empty());
     match locked {
         None => Err(format!(
-            "Always use my default is on and no default CLI can take this work, so {name} was not started."
+            "Always use my default is on and no default CLI can take this work, so {name} was not started. Change it in {CREW_DEFAULTS}."
         )),
         Some(default) if default != cli => Err(format!(
-            "Always use my default is on, and the default is {}, so {name} was not started.",
+            "Always use my default is on, and the default is {}, so {name} was not started. Change it in {CREW_DEFAULTS}.",
             label_of(default)
         )),
         Some(_) => Ok(()),
@@ -120,7 +129,21 @@ fn poisoned() -> String {
 
 /// The gate's decision for a launch, saved for its session in the app database. Called once the launch has passed
 /// `check_launch`, so a restart, a resumed worker or Ash typing into a worker is judged against the same default.
+/// The folder is stored as the project that owns it, when one does, so the grant names the project, not a worktree.
 pub fn record_grant(conn: &Connection, session: &str, input: &LaunchCheck) -> Result<(), String> {
+    let project = match input
+        .project
+        .as_deref()
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+    {
+        Some(folder) => Some(
+            store::project_owning(conn, folder)
+                .map_err(unreadable)?
+                .unwrap_or_else(|| folder.to_string()),
+        ),
+        None => None,
+    };
     let grant = Grant {
         mono: input
             .mono
@@ -128,12 +151,7 @@ pub fn record_grant(conn: &Connection, session: &str, input: &LaunchCheck) -> Re
             .map(str::trim)
             .filter(|id| !id.is_empty())
             .map(str::to_string),
-        project: input
-            .project
-            .as_deref()
-            .map(str::trim)
-            .filter(|id| !id.is_empty())
-            .map(str::to_string),
+        project,
         locked_default: input
             .locked_default
             .as_deref()
@@ -149,45 +167,47 @@ pub fn record_grant(conn: &Connection, session: &str, input: &LaunchCheck) -> Re
     )
 }
 
-/// The project a session's policy comes from: its grant's, else the one owning the folder.
-fn project_in_force(
+/// The projects whose policy applies to a launch: the one the grant names, the one owning the grant's folder, and the
+/// one owning the spawn folder. Round 7: a grant never sheds the Never use of the project that owns the folder.
+fn projects_in_force(
     conn: &Connection,
     grant: Option<&Grant>,
     folder: &str,
-) -> Result<Option<String>, String> {
-    match grant.and_then(|grant| grant.project.clone()) {
-        Some(project) => Ok(Some(project)),
-        None => store::project_owning(conn, folder),
+) -> Result<Vec<String>, String> {
+    let mut folders = Vec::new();
+    if let Some(project) = grant.and_then(|grant| grant.project.clone()) {
+        folders.push(project);
     }
+    folders.push(folder.to_string());
+    store::projects_owning_all(conn, &folders).map_err(unreadable)
 }
 
 fn policy_of(
     conn: &Connection,
     grant: Option<&Grant>,
-    project: Option<&str>,
+    projects: &[String],
 ) -> Result<Value, String> {
-    store::policy_for(conn, grant.and_then(|grant| grant.mono.as_deref()), project).map_err(
-        |error| format!("The crew policy could not be read, so nothing was started ({error})."),
+    store::policy_for_all(
+        conn,
+        grant.and_then(|grant| grant.mono.as_deref()),
+        projects,
     )
+    .map_err(unreadable)
 }
 
 /// The refusal for a CLI on Never use. It names the CLI, the list that holds it and where to change it, so the person
 /// (and the Lead, which sees the same line in the chat) knows what to do.
-fn never_use_refusal(
+fn never_use_message(
     conn: &Connection,
-    grant: Option<&Grant>,
-    project: Option<&str>,
+    mono: Option<&str>,
+    projects: &[String],
     cli: &str,
 ) -> Result<String, String> {
-    let scope = store::never_use_scope(
-        conn,
-        grant.and_then(|grant| grant.mono.as_deref()),
-        project,
-        cli,
-    )?
-    .unwrap_or_else(|| "everything (the system default)".into());
+    let scope = store::never_use_scope(conn, mono, projects, cli)
+        .map_err(unreadable)?
+        .unwrap_or_else(|| "everything (the system default)".into());
     Ok(format!(
-        "{} is on Never use for {scope}, so it was not started. To change that, open Settings > Crew Defaults and edit Never use for {scope}.",
+        "{} is on Never use for {scope}, so it was not started. To change that, open {CREW_DEFAULTS} and edit Never use for {scope}.",
         label_of(cli)
     ))
 }
@@ -201,15 +221,15 @@ pub fn judge_start(
     folder: &str,
 ) -> Result<(), String> {
     let grant = store::grant_of(conn, session_of(session))?;
-    let project = project_in_force(conn, grant.as_ref(), folder)?;
-    let policy = policy_of(conn, grant.as_ref(), project.as_deref())?;
+    let projects = projects_in_force(conn, grant.as_ref(), folder)?;
+    let policy = policy_of(conn, grant.as_ref(), &projects)?;
     let cli = cli.trim();
     let name = label_of(cli);
     if never_listed(&policy).iter().any(|id| id == cli) {
-        return Err(never_use_refusal(
+        return Err(never_use_message(
             conn,
-            grant.as_ref(),
-            project.as_deref(),
+            grant.as_ref().and_then(|grant| grant.mono.as_deref()),
+            &projects,
             cli,
         )?);
     }
@@ -235,11 +255,11 @@ pub fn judge_start(
     match grant.locked_default.as_deref() {
         Some(default) if default == cli => Ok(()),
         Some(default) => Err(format!(
-            "Always use my default is on, and the default is {}, so {name} was not started.",
+            "Always use my default is on, and the default is {}, so {name} was not started. Change it in {CREW_DEFAULTS}.",
             label_of(default)
         )),
         None => Err(format!(
-            "Always use my default is on and this launch has no gate decision, so {name} was not started."
+            "Always use my default is on and this launch has no gate decision, so {name} was not started. Change it in {CREW_DEFAULTS}."
         )),
     }
 }

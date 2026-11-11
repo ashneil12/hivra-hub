@@ -2491,7 +2491,7 @@ fn the_launch_gate_refuses_a_banned_cli_an_off_default_launch_and_an_unreadable_
     .unwrap();
     assert_eq!(
         check(&conn, "grok", Some("claude")).unwrap_err(),
-        "Always use my default is on, and the default is Claude Code, so Grok was not started."
+        "Always use my default is on, and the default is Claude Code, so Grok was not started. Change it in Settings > Crew Defaults."
     );
     assert!(check(&conn, "claude", Some("claude")).is_ok());
     assert!(check(&conn, "claude", None)
@@ -2617,7 +2617,7 @@ fn under_the_lock_a_spawn_needs_the_granted_default_and_nothing_else() {
         issue_ticket(&conn, "app-lock-spawn-2", "grok", "/tmp/lock-spawn").unwrap_err();
     assert_eq!(
         off_default,
-        "Always use my default is on, and the default is Claude Code, so Grok was not started."
+        "Always use my default is on, and the default is Claude Code, so Grok was not started. Change it in Settings > Crew Defaults."
     );
 }
 
@@ -2636,8 +2636,8 @@ fn a_corrupt_stored_policy_is_an_error_not_an_empty_policy() {
     )
     .unwrap();
     conn.execute(
-        "UPDATE crew_rule_meta SET policy = 'not json' WHERE scope = 'project' AND scope_id = '/tmp/corrupt-policy'",
-        [],
+        "UPDATE crew_rule_meta SET policy = 'not json' WHERE scope = 'project' AND scope_id = ?1",
+        [crate::delivery::settings::key("/tmp/corrupt-policy")],
     )
     .unwrap();
     let refused = check_launch(
@@ -3000,8 +3000,8 @@ fn ashs_explicit_save_replaces_a_corrupt_saved_policy() {
     )
     .unwrap();
     conn.execute(
-        "UPDATE crew_rule_meta SET policy = 'not json' WHERE scope = 'project' AND scope_id = '/tmp/r6-corrupt-save'",
-        [],
+        "UPDATE crew_rule_meta SET policy = 'not json' WHERE scope = 'project' AND scope_id = ?1",
+        [crate::delivery::settings::key("/tmp/r6-corrupt-save")],
     )
     .unwrap();
     let loaded = store::get_rules(&conn, "project", "/tmp/r6-corrupt-save").unwrap();
@@ -3036,7 +3036,10 @@ fn a_never_use_refusal_names_the_cli_the_list_and_where_to_change_it() {
     .unwrap();
     let judged = judge_start(&conn, "7d3e5c2a-lead-chat", "codex", "/tmp/r6-refusal").unwrap_err();
     assert!(
-        judged.starts_with("Codex is on Never use for this project (/tmp/r6-refusal)"),
+        judged.starts_with(&format!(
+            "Codex is on Never use for this project ({})",
+            crate::delivery::settings::key("/tmp/r6-refusal")
+        )),
         "{judged}"
     );
     assert!(
@@ -3133,4 +3136,199 @@ fn an_idle_grant_is_pruned_and_a_used_one_is_kept() {
     assert_eq!(pruned, 1);
     assert!(store::grant_of(&conn, "app-r6-idle-1").unwrap().is_none());
     assert!(store::grant_of(&conn, "app-r6-used-1").unwrap().is_some());
+}
+
+/// Review repro (PR #194 round 6, HIGH-A): a grant never sheds the Never use of the project that owns the folder.
+/// `crew_launch_check` records the folder it was handed as the grant's project, unresolved, and `judge_start` then
+/// prefers that project over the one owning the spawn folder. A launch gated with a worktree's folder (sessions.start
+/// or a phase from a chat sitting in a worktree) or a project's subfolder gets only the system policy, so a CLI on the
+/// project's Never use passes the launch gate, gets a ticket and spawns. The same folder with no grant is refused.
+#[test]
+fn review_r6_a_grant_never_sheds_the_never_use_of_the_project_owning_the_folder() {
+    use super::gate::{check_launch, issue_ticket, judge_spawn, record_grant, LaunchCheck};
+    let store = memory();
+    let mut conn = store.lock_conn().unwrap();
+    // A project's subfolder (no git needed).
+    store::set_policy(
+        &mut conn,
+        "project",
+        "/tmp/review-r6-sub-project",
+        &json!({ "lockDefault": false, "neverUse": ["codex"], "fallback": [] }),
+        0,
+    )
+    .unwrap();
+    let sub = "/tmp/review-r6-sub-project/packages/app";
+    // Control: judged by the folder alone, the subfolder is the project's, so Codex is refused.
+    assert!(judge_spawn(&conn, "5e0c1d2b-ashs-chat", "codex", sub, None).is_err());
+    let gated = LaunchCheck {
+        cli: "codex".into(),
+        mono: None,
+        project: Some(sub.into()),
+        locked_default: None,
+    };
+    let launch = check_launch(&conn, &gated);
+    let session = "app-review-r6-sub-1";
+    let _ = record_grant(&conn, session, &gated);
+    let ticket = issue_ticket(&conn, session, "codex", sub);
+    let spawn = ticket
+        .as_ref()
+        .map_err(Clone::clone)
+        .and_then(|ticket| judge_spawn(&conn, session, "codex", sub, Some(ticket)));
+
+    // A linked worktree of a project (the realistic shape: a worker's own checkout).
+    let root = std::env::temp_dir().join(format!("review-r6-wt-{}", uuid::Uuid::new_v4()));
+    let repo = root.join("repo");
+    let worktree = root.join("worktree");
+    std::fs::create_dir_all(&repo).unwrap();
+    let git = |dir: &std::path::Path, args: &[&str]| {
+        let out = std::process::Command::new("git")
+            .current_dir(dir)
+            .args(["-c", "user.name=r6", "-c", "user.email=r6@example.invalid"])
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "git {args:?} failed");
+    };
+    git(&repo, &["init", "-q"]);
+    git(&repo, &["commit", "-q", "--allow-empty", "-m", "init"]);
+    git(
+        &repo,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "review-r6",
+            worktree.to_str().unwrap(),
+        ],
+    );
+    let key = |path: &std::path::Path| {
+        std::fs::canonicalize(path)
+            .unwrap()
+            .to_string_lossy()
+            .into_owned()
+    };
+    let (repo_key, worktree_key) = (key(&repo), key(&worktree));
+    store::set_policy(
+        &mut conn,
+        "project",
+        &repo_key,
+        &json!({ "lockDefault": false, "neverUse": ["codex"], "fallback": [] }),
+        0,
+    )
+    .unwrap();
+    let control = judge_spawn(&conn, "5e0c1d2b-ashs-chat", "codex", &worktree_key, None);
+    let in_worktree = LaunchCheck {
+        cli: "codex".into(),
+        mono: None,
+        project: Some(worktree_key.clone()),
+        locked_default: None,
+    };
+    let wt_launch = check_launch(&conn, &in_worktree);
+    let wt_session = "app-review-r6-wt-1";
+    let _ = record_grant(&conn, wt_session, &in_worktree);
+    let wt_spawn = issue_ticket(&conn, wt_session, "codex", &worktree_key)
+        .and_then(|ticket| judge_spawn(&conn, wt_session, "codex", &worktree_key, Some(&ticket)));
+    let _ = std::fs::remove_dir_all(&root);
+
+    assert!(
+        control.is_err(),
+        "control: the worktree with no grant is its project's"
+    );
+    let passed: Vec<&str> = [
+        ("subfolder launch gate", launch.is_ok()),
+        ("subfolder spawn", spawn.is_ok()),
+        ("worktree launch gate", wt_launch.is_ok()),
+        ("worktree spawn", wt_spawn.is_ok()),
+    ]
+    .into_iter()
+    .filter_map(|(what, ok)| ok.then_some(what))
+    .collect();
+    assert!(
+        passed.is_empty(),
+        "Codex is on the project's Never use, yet these passed: {passed:?}"
+    );
+}
+
+/// WP-141 round 7 (CI, Windows): a project is saved and read under one key on every OS, however its folder is spelled.
+#[test]
+fn a_project_is_saved_and_read_under_one_key_on_every_os() {
+    assert_eq!(
+        crate::delivery::settings::key("/tmp/r7-one-key/"),
+        crate::delivery::settings::key("/tmp/r7-one-key")
+    );
+    let store = memory();
+    let mut conn = store.lock_conn().unwrap();
+    store::set_policy(
+        &mut conn,
+        "project",
+        "/tmp/r7-one-key/",
+        &json!({ "lockDefault": false, "neverUse": ["codex"], "fallback": [] }),
+        0,
+    )
+    .unwrap();
+    let loaded = store::get_rules(&conn, "project", "/tmp/r7-one-key").unwrap();
+    assert!(loaded.policy_own);
+    assert_eq!(loaded.policy["neverUse"], json!(["codex"]));
+}
+
+/// WP-141 round 7 (MED-3): a git failure on a folder that exists fails the judgment closed. It is not read as a folder
+/// that no project owns, which would fall back to the system policy alone.
+#[cfg(unix)]
+#[test]
+fn a_git_error_on_an_existing_folder_fails_closed() {
+    use super::gate::judge_start;
+    use std::os::unix::fs::PermissionsExt;
+    let store = memory();
+    let mut conn = store.lock_conn().unwrap();
+    store::set_policy(
+        &mut conn,
+        "project",
+        "/tmp/r7-med3-project",
+        &json!({ "lockDefault": false, "neverUse": ["codex"], "fallback": [] }),
+        0,
+    )
+    .unwrap();
+    let dir = std::env::temp_dir().join(format!("r7-med3-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o000)).unwrap();
+    let judged = judge_start(&conn, "7d3e5c2a-lead-chat", "claude", dir.to_str().unwrap());
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+    let err = judged.expect_err("a git error must refuse the launch");
+    assert!(err.contains("could not be read"), "{err}");
+}
+
+/// WP-141 round 7 (LOW): a lock refusal names Settings > Crew Defaults, so the person knows where the lock is changed.
+#[test]
+fn a_lock_refusal_names_where_to_change_it() {
+    use super::gate::{judge_start, record_grant, LaunchCheck};
+    let store = memory();
+    let mut conn = store.lock_conn().unwrap();
+    store::set_policy(
+        &mut conn,
+        "system",
+        "system",
+        &json!({ "lockDefault": true, "neverUse": [], "fallback": [] }),
+        0,
+    )
+    .unwrap();
+    record_grant(
+        &conn,
+        "app-r7-lock-name-1",
+        &LaunchCheck {
+            cli: "claude".into(),
+            mono: None,
+            project: None,
+            locked_default: Some("claude".into()),
+        },
+    )
+    .unwrap();
+    let refused =
+        judge_start(&conn, "app-r7-lock-name-1", "grok", "/tmp/r7-lock-name").unwrap_err();
+    assert!(refused.contains("the default is Claude Code"), "{refused}");
+    assert!(
+        refused.contains("Change it in Settings > Crew Defaults"),
+        "{refused}"
+    );
 }

@@ -289,8 +289,17 @@ describe("local orchestration", () => {
   it("refuses an approved card that names a CLI on Never use, before any worker starts", async () => {
     const f = setup();
     f.lead.busy = false;
-    f.host.neverUse = vi.fn(async () => ["codex"]);
-    await expect(f.manager.startApproved("lead", "card", proposal())).rejects.toThrow("codex is on Never use");
+    f.host.crewPolicy = vi.fn(async () => ({ neverUse: ["codex"], lock: false }));
+    await expect(f.manager.startApproved("lead", "card", proposal())).rejects.toThrow("Codex is on Never use");
+    expect(f.host.createWorker).not.toHaveBeenCalled();
+  });
+
+  // WP-141 round 7 (MED-1): under the lock an approved plan starts workers only on the Lead's own CLI.
+  it("under the lock, an approved plan can only start workers on the Lead's CLI", async () => {
+    const f = setup();
+    f.lead.busy = false;
+    f.host.crewPolicy = vi.fn(async () => ({ neverUse: [], lock: true }));
+    await expect(f.manager.startApproved("lead", "card", proposal())).rejects.toThrow("Always use my default is on");
     expect(f.host.createWorker).not.toHaveBeenCalled();
   });
 

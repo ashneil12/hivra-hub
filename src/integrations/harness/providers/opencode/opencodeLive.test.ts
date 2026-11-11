@@ -3,7 +3,7 @@ import { newSession, type RuntimeMode } from "../../../../features/sessions/mode
 import { applyHarnessEvent } from "../../core/apply";
 
 // WP-141 round 6: the OpenCode 2.x crew judgment is asked before the service starts; this file is not about the gate.
-vi.mock("../../../../features/crew/model/host", () => ({ crewSpawnTicket: vi.fn(async () => "ticket"), crewBindV2Session: vi.fn(async () => undefined) }));
+vi.mock("../../../../features/crew/model/host", () => ({ judgeV2Session: vi.fn(async () => undefined) }));
 
 let onStdout: ((line: string) => void) | undefined;
 let onChildExit: ((code: number | null) => void) | undefined;

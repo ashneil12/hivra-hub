@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { cliLabel } from "../../crew/model/clis";
 import { HARNESSES, type HarnessId, type Session } from "../../sessions/model/session";
 import { pathKey } from "../../../shared/lib/paths";
 import type { ApprovalDecision, HarnessEvent, ProviderErrorClass } from "../../../integrations/harness/core/types";
@@ -76,7 +77,7 @@ export type OrchestrationHost = {
   sessions(): Session[];
   choices(): { harness: HarnessId; models: { id: string; name: string }[] }[];
   /** WP-141 round 6: the CLIs on Never use for a folder, read from the crew policy in force there. */
-  neverUse?(folder: string): Promise<readonly string[]>;
+  crewPolicy?(folder: string): Promise<{ neverUse: readonly string[]; lock: boolean }>;
   createWorker(
     run: OrchestrationRun,
     task: OrchestrationTask,
@@ -1204,10 +1205,18 @@ Run the whole check again and report what you observed.`,
     );
     if (!Number.isInteger(maxWorkers) || maxWorkers < 1 || maxWorkers > 4)
       throw new Error("Choose 1 to 4 workers");
-    // WP-141 round 6: an approved card never starts a worker on a CLI on Never use for the Lead's folder.
-    const banned = new Set((await this.host!.neverUse?.(lead.cwd)) ?? []);
+    // WP-141 round 7: an approved card is judged by the crew policy in force for the Lead's folder. A CLI on Never use is
+    // refused by name; under Always use my default the plan may only use the Lead's own CLI (the lock applies to plans too).
+    const policy = (await this.host!.crewPolicy?.(lead.cwd)) ?? { neverUse: [], lock: false };
+    const banned = new Set(policy.neverUse);
     const onNever = approved?.tasks.find((task) => banned.has(task.harness));
-    if (onNever) throw new Error(`${onNever.harness} is on Never use, so this plan was not started. Change it in Settings > Crew Defaults.`);
+    if (onNever)
+      throw new Error(`${cliLabel(onNever.harness)} is on Never use, so this plan was not started. Change it in Settings > Crew Defaults.`);
+    if (policy.lock) {
+      const off = [...allowedHarnesses, ...(approved?.tasks.map((task) => task.harness) ?? [])].find((id) => id !== lead.harness);
+      if (off)
+        throw new Error(`Always use my default is on, so this plan can only start workers on ${cliLabel(lead.harness)}. ${cliLabel(off)} was not started. Change it in Settings > Crew Defaults.`);
+    }
     allowedHarnesses = allowedHarnesses.filter((id) => !banned.has(id));
     const available = this.host!.choices().map((choice) => choice.harness);
     if (

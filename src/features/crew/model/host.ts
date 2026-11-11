@@ -174,3 +174,13 @@ export function crewAnyLock(): Promise<boolean> {
 export function crewBindV2Session(input: { sessionId: string; cli: string; folder: string; ticket: string }): Promise<void> {
   return invoke<void>("crew_bind_v2_session", input);
 }
+
+/**
+ * Round 7: the OpenCode 2.x judgment for one session: the ticket, then the bind that consumes it. It runs where the
+ * crew gate runs, the webview. The headless host has no window and no gate, so it skips here and the app enforces it.
+ */
+export async function judgeV2Session(input: { sessionId: string; folder: string }): Promise<void> {
+  if (typeof window === "undefined") return;
+  const ticket = await crewSpawnTicket({ sessionId: input.sessionId, cli: "opencode", folder: input.folder });
+  await crewBindV2Session({ sessionId: input.sessionId, cli: "opencode", folder: input.folder, ticket });
+}

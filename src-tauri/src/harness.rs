@@ -981,6 +981,7 @@ pub fn harness_spawn(
     custom_route: Option<crate::model_router::CustomRoute>,
     crew_ticket: Option<String>,
     store: State<'_, crate::session_store::SessionStore>,
+    crew_folder: Option<String>,
 ) -> Result<u32, String> {
     let workdir = launch_preflight(
         &command,
@@ -996,7 +997,7 @@ pub fn harness_spawn(
         &*store.lock_conn()?,
         &session_id,
         binary_provider.as_deref().unwrap_or("claude"),
-        &cwd,
+        crew_folder.as_deref().unwrap_or(&cwd),
         crew_ticket.as_deref(),
     )?;
 

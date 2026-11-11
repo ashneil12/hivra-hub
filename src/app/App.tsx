@@ -11092,7 +11092,7 @@ function Workspace({
       },
       submit: (sessionId, text, _history, options) => submitSessionRef.current(sessionId, text, [], options),
       // WP-141 round 6: a reviewer is a launch like a worker: its CLI passes the crew gate before its session starts.
-      crewGate: (session) => crewLaunchCheck({ cli: session.harness, folder, sessionId: session.id }),
+      crewGate: (session, reviewed) => crewLaunchCheck({ cli: session.harness, folder: reviewed, sessionId: session.id }),
       stop: (sessionId) => {
         void onStopRef.current(sessionId, true);
       },
@@ -13225,7 +13225,7 @@ function Workspace({
           models: modelsFor(harness).map(({ id, name }) => ({ id, name })),
         })),
       // WP-141 round 6: the CLIs on Never use for a folder, so an approved card is filtered before a worker starts.
-      neverUse: async (folder) => (await crewPolicyInForce(undefined, folder)).neverUse,
+      crewPolicy: (folder) => crewPolicyInForce(undefined, folder),
       // WP-91: an irreversible step's decision sits under the hub project of the run's folder, like a delegation does.
       decisionProject: hubProjectIdFor,
       createWorker: async (run, task) => {
