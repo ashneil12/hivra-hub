@@ -1763,12 +1763,16 @@ mod tests {
             .expect("approved and present");
         assert_eq!(run.id, "wp134b");
         let canonical = std::fs::canonicalize(&tool).expect("canonical");
-        assert_ne!(
+        assert_eq!(
             run.command,
             canonical.to_string_lossy(),
             "the approved file is not what runs"
         );
-        assert!(run.command.starts_with(d.path().to_string_lossy().as_ref()));
+        let data_real = std::fs::canonicalize(d.path()).expect("data");
+        assert!(
+            Path::new(&run.command).starts_with(&data_real),
+            "the approved program runs outside the data folder"
+        );
         assert_eq!(
             file_sha256(Path::new(&run.command)).expect("copy"),
             file_sha256(&canonical).expect("original")
@@ -2567,7 +2571,8 @@ mod tests {
     // Review #231 r2 repro (MEDIUM, functional, same class as r5's dotted words): a model name with a slash is read as
     // a relative path and refused. `--model openai/gpt-4.1`, `--model=anthropic/claude-sonnet-4` (OpenRouter, opencode,
     // goose, aider style) and a Hugging Face id cannot be given at all, with or without `=`. The child now starts in its
-    // own empty run folder, so a relative word cannot reach a chat file anyway.
+    // own empty run folder, so a relative word cannot reach a chat file anyway. The command is not named `agent`:
+    // that is one of Hivra's own CLIs, and the check here is the arguments.
     #[test]
     fn review_231_r2_a_model_slug_with_a_slash_is_accepted() {
         for args in [
@@ -2576,7 +2581,7 @@ mod tests {
             &["--model", "Qwen/Qwen2.5-Coder-32B-Instruct"][..],
         ] {
             assert!(
-                checked_fields(&entry("wp134", "/opt/agent", args)).is_ok(),
+                checked_fields(&entry("wp134", "/opt/npx", args)).is_ok(),
                 "{args:?} is refused as a relative file"
             );
         }
