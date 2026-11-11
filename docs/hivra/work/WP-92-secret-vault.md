@@ -188,7 +188,8 @@ write a second copy of any of them.
    write there. The identity also carries the change time and a SHA-256 of the file's bytes, so a rewrite that keeps the
    size and restores the modification time is still a different program. A program in a folder the person owns gets a
    warning on the card. The command's process group is ended when the command ends, not only on a timeout, so a
-   background child keeps the key only until then. A timeout is reported as `timedOut: true` with the
+   background child in that group does not keep the key past the run. A child that leaves the group (it calls setsid
+   or daemonizes) is not reached by that kill; see Known limits. A timeout is reported as `timedOut: true` with the
    output so far, not as a failure; a keychain refusal (the person clicked Deny on the system prompt) is "not now,
    try again", not "wrong secret". The app writes the run to the activity log (WP-78) with the name, scope, Mono,
    executable, exit code and duration — never the grant, never the value.
@@ -464,6 +465,32 @@ assumed one.
   placed in the app's folder, or a build that is copied there, still reads. The real fix needs per-read access control on
   each vault item (so a read names the app's own binary and asks), and agent builds that are not signed with the daily
   identity. It is already an open decision in Ash's decisions doc (section 2.x).
+- **`app.ship` lets a Mono install its own signed build (round 4, H4).** `app.ship` (`agentApp.ts`, `shipCaller`) checks only
+  that the caller is a Mono. A Mono can build a copy of the app signed with the daily identity, install it under
+  `~/Applications/MonoCode Hub.app/Contents/MacOS`, and pass the keychain-subcommand check (`instance.rs`, the refusal
+  for `secret-run` and `connector-run` outside the app's own folder). That copy then reads the vault without a card. The
+  check does not stop it, so this is a known limit until ship refuses agent callers. Open for Ash to decide.
+- **A setsid or daemonized child outlives the run (round 4, H4).** The command's process group is ended when the command
+  ends. A child that calls `setsid`, or daemonizes, is in another group and is not reached by that kill. It keeps the
+  value in its environment after the run ends, until it exits by itself.
+- **The child has no account config (round 4, N2).** Each run gets an empty home folder for its own life, and
+  `HOME`, `CURL_HOME` and `XDG_CONFIG_HOME` point at it, so the account's `~/.curlrc`, `~/.gitconfig` and similar files
+  never reach the child. A run that needs the account's config is not offered that choice on the card yet.
+- **The child's PATH holds only folders the account cannot write (round 4, N3).** The app still resolves a bare program
+  name on the full search path, so a program under a folder the account owns (Homebrew's, when that folder is the
+  account's) is found and the card warns about it, but it is not on the child's PATH, and Always is not offered for it.
+  The search order puts the system folders first.
+- **Always is offered only for a short list (round 4, N4, N7).** The list is `ALWAYS_OFFERED_FOR` in `secrets/mod.rs`
+  (programs that run no code: `true`, `echo`, `cat`, `curl`, `wget`, and similar). Any other program asks every time,
+  and a program that runs code (or any script with a `#!` line) is offered Always only when the person has turned that
+  choice on. A program in a folder the account can write is never offered Always.
+- **Other platforms have no per-app store ACL (round 4, LOW).** On Windows and Linux the saved values have no per-app
+  access control like the Mac Keychain's. The folder rules in this list judge Unix permissions; on Windows they do not
+  apply.
+- **Another process running as the account reads a run's environment (round 4).** The card says so on every run. On
+  macOS `ps eww` and `ps -E` show a process's environment to any process of the same user, and on Linux
+  `/proc/<pid>/environ` does. That is the process-table hold of #201, and it is the same design limit as the agent-shell
+  bullet above.
 - **A program swapped in the instant between its check and its start is seen after it starts.** The identity is checked
   before the spawn and again once the child has started; a change in that gap is caught and the run is stopped, but the
   command may already have run. Closing the gap needs an exec from an open file descriptor, which the standard library
