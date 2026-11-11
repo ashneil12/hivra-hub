@@ -1063,6 +1063,7 @@ fn checkout_of(folder: &std::path::Path) -> Result<Option<Checkout>, String> {
 }
 
 /// Where a candidate project sits relative to the folder being judged.
+#[derive(Clone, Copy, PartialEq, Eq)]
 enum Place {
     /// It owns the folder.
     Yes,
@@ -1093,52 +1094,130 @@ fn folder_unreadable(folder_key: &str) -> bool {
     !matches!(checkout_of(std::path::Path::new(folder_key)), Ok(Some(_)))
 }
 
-/// The root's git dir cannot be read. If the root sits inside the main checkout of the folder's own repo, membership is
-/// the relative path from that checkout. Otherwise the place is not known: never a plain No, which would drop the project.
+fn same_key(left: &std::path::Path, right: &std::path::Path) -> bool {
+    path_key(&left.to_string_lossy()) == path_key(&right.to_string_lossy())
+}
+
+/// A path written in a git file, absolute or relative to the file that names it.
+fn resolve_git_path(base_file: &std::path::Path, raw: &str) -> Option<std::path::PathBuf> {
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return None;
+    }
+    let path = std::path::Path::new(raw);
+    let resolved = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        base_file.parent()?.join(path)
+    };
+    Some(crate::fs::canonical(&resolved).unwrap_or(resolved))
+}
+
+/// Whether a registered `worktrees/*/gitdir` names this `.git` entry.
+fn registered_names_entry(common: &std::path::Path, entry: &std::path::Path) -> bool {
+    let want = path_key(&entry.to_string_lossy());
+    let Ok(read) = std::fs::read_dir(common.join("worktrees")) else {
+        return false;
+    };
+    for item in read.flatten() {
+        let gitdir = item.path().join("gitdir");
+        let Some(text) = read_git_file(&gitdir) else {
+            continue;
+        };
+        let named = text.lines().next().unwrap_or("").trim();
+        let Some(resolved) = resolve_git_path(&gitdir, named) else {
+            continue;
+        };
+        if path_key(&resolved.to_string_lossy()) == want {
+            return true;
+        }
+    }
+    false
+}
+
+/// `Some(true)` when `entry` is the main checkout of `common` or a worktree it has registered. `Some(false)` when
+/// `entry` is a checkout of `common` but neither of those: its registration is gone, and the main checkout must not
+/// stand in for it. `None` when `entry` is not a readable checkout of this common (garbage, or another repository).
+fn known_checkout(common: &std::path::Path, entry: &std::path::Path) -> Option<bool> {
+    let found = common_dir(entry)?;
+    if !same_key(&found, common) {
+        return None;
+    }
+    if same_key(entry, common) || registered_names_entry(common, entry) {
+        return Some(true);
+    }
+    // A main checkout whose `.git` is a file pointing straight at this common dir (a separate git dir).
+    let Some(text) = read_git_file(entry) else {
+        return Some(false);
+    };
+    let Some(target) = text.lines().find_map(|line| line.strip_prefix("gitdir:")) else {
+        return Some(false);
+    };
+    let Some(resolved) = resolve_git_path(entry, target) else {
+        return Some(false);
+    };
+    Some(same_key(&resolved, common))
+}
+
+/// The nearest readable git common directory above the checkout that owns `entry`.
+fn enclosing_common(entry: &std::path::Path) -> Option<std::path::PathBuf> {
+    let checkout = entry.parent()?;
+    for dir in checkout.ancestors().skip(1) {
+        let candidate = dir.join(".git");
+        if !candidate.exists() {
+            continue;
+        }
+        if let Some(common) = common_dir(&candidate) {
+            return Some(common);
+        }
+    }
+    None
+}
+
+/// The root's git dir cannot be read. The root's top is the parent of its own `.git` entry, judged through the
+/// enclosing checkout's registered tops. Git is not asked about the folder, so a folder with no `.git` of its own is
+/// still placed when a registered top contains it. A folder in none of those tops is not owned: a broken project does
+/// not refuse an unrelated folder. With no enclosing checkout the place is not known only when the folder's own git
+/// cannot be read; otherwise the project does not own it.
 fn place_unreadable_root(folder_key: &str, root_key: &str) -> Place {
-    let mine = match checkout_of(std::path::Path::new(folder_key)) {
-        Ok(Some(checkout)) => checkout,
-        // No checkout here at all, so this project does not own the folder. A checkout that cannot be read is doubt.
-        Ok(None) => return Place::No,
-        Err(_) => return Place::Undecided,
+    let Some(entry) = git_entry(std::path::Path::new(root_key)) else {
+        return if folder_unreadable(folder_key) {
+            Place::Undecided
+        } else {
+            Place::No
+        };
     };
-    let Some(main) = main_checkout_top(std::path::Path::new(&mine.common)) else {
-        return Place::Undecided;
+    let Some(common) = enclosing_common(&entry) else {
+        return if folder_unreadable(folder_key) {
+            Place::Undecided
+        } else {
+            Place::No
+        };
     };
-    if !key_within(root_key, &main) {
+    // A checkout of this common that is neither the main `.git` nor a registered worktree is not measured from the
+    // main checkout. A worker can empty the registration, and the main checkout would then move the project.
+    if known_checkout(&common, &entry) == Some(false) {
         return Place::Undecided;
     }
-    match owns_within_checkout(folder_key, &mine.top, root_key, &main) {
-        Ok(true) => Place::Yes,
-        Ok(false) => Place::No,
-        Err(_) => Place::Undecided,
+    let placed = place_inside_common(folder_key, root_key, &common);
+    if placed == Place::No && folder_unreadable(folder_key) {
+        return Place::Undecided;
     }
+    placed
 }
 
 /// Membership from git, used when the project's files do not name a common directory (a bare repo, or a broken one).
+/// The common dir git reads for the root is what decides. The folder's own `.git` is not.
 fn place_by_git(folder_key: &str, root_key: &str) -> Place {
     let theirs = match checkout_of(std::path::Path::new(root_key)) {
         Ok(Some(checkout)) => checkout,
         Ok(None) | Err(_) => return place_unreadable_root(folder_key, root_key),
     };
-    let mine = match checkout_of(std::path::Path::new(folder_key)) {
-        Ok(Some(checkout)) => checkout,
-        Ok(None) | Err(_) => {
-            return if folder_unreadable(folder_key) {
-                Place::Undecided
-            } else {
-                Place::No
-            };
-        }
-    };
-    if mine.common != theirs.common {
-        return Place::No;
+    let placed = place_inside_common(folder_key, root_key, std::path::Path::new(&theirs.common));
+    if placed == Place::No && folder_unreadable(folder_key) {
+        return Place::Undecided;
     }
-    match owns_within_checkout(folder_key, &mine.top, root_key, &theirs.top) {
-        Ok(true) => Place::Yes,
-        Ok(false) => Place::No,
-        Err(_) => Place::Undecided,
-    }
+    placed
 }
 
 /// Checkouts registered on this common dir. The main checkout when its git dir is named `.git`. Otherwise the project's
@@ -1181,22 +1260,42 @@ fn longest_containing<'a>(path: &str, tops: &'a [String]) -> Option<&'a str> {
     best
 }
 
-/// Membership from the project's side. The project's top is the longest registered checkout that contains the project,
-/// never assumed to be the main checkout. A folder in none of those tops is not owned. Git is not asked about the
-/// folder's own `.git`.
+/// Membership from the project's side. The project's top is the longest registered checkout that contains the project.
+/// The folder is owned when any registered top that contains it maps into that project: a longer top a worker registered
+/// inside the package does not drop the package. A checkout of this common that is neither the main `.git` nor a
+/// registered worktree is undecided, so a broken registration is not measured from the main checkout. Git is not asked
+/// about the folder's own `.git`.
 fn place_inside_common(folder_key: &str, root_id: &str, common: &std::path::Path) -> Place {
     let root_key = path_key(root_id);
     let tops = checkout_tops(common, &root_key);
+    if let Some(entry) = git_entry(std::path::Path::new(&root_key)) {
+        if known_checkout(common, &entry) == Some(false) {
+            return Place::Undecided;
+        }
+    }
     let Some(project_top) = longest_containing(&root_key, &tops) else {
         return Place::Undecided;
     };
-    let Some(folder_top) = longest_containing(folder_key, &tops) else {
+    let mut saw_folder = false;
+    let mut undecided = false;
+    for top in &tops {
+        if !key_within(folder_key, top) {
+            continue;
+        }
+        saw_folder = true;
+        match owns_within_checkout(folder_key, top, &root_key, project_top) {
+            Ok(true) => return Place::Yes,
+            Ok(false) => {}
+            Err(_) => undecided = true,
+        }
+    }
+    if !saw_folder {
         return Place::No;
-    };
-    match owns_within_checkout(folder_key, folder_top, &root_key, project_top) {
-        Ok(true) => Place::Yes,
-        Ok(false) => Place::No,
-        Err(_) => Place::Undecided,
+    }
+    if undecided {
+        Place::Undecided
+    } else {
+        Place::No
     }
 }
 
@@ -1213,10 +1312,35 @@ fn place_project(folder_key: &str, root_id: &str) -> Place {
     let Some(entry) = git_entry(std::path::Path::new(&root_key)) else {
         return Place::No;
     };
-    if let Some(common) = common_dir(&entry) {
-        return place_inside_common(folder_key, root_id, &common);
+    let direct = if let Some(common) = common_dir(&entry) {
+        place_inside_common(folder_key, root_id, &common)
+    } else {
+        place_by_git(folder_key, &root_key)
+    };
+    if direct == Place::Yes {
+        return Place::Yes;
     }
-    place_by_git(folder_key, &root_key)
+    // The project folder is itself a checkout sitting inside another checkout (a repository made in the package).
+    // Judge through the enclosing checkout too. Yes from either side is Yes.
+    let project_is_checkout = entry
+        .parent()
+        .is_some_and(|parent| path_key(&parent.to_string_lossy()) == root_key);
+    if !project_is_checkout {
+        return direct;
+    }
+    let Some(outer) = enclosing_common(&entry) else {
+        return direct;
+    };
+    if let Some(inner) = common_dir(&entry) {
+        if path_key(&inner.to_string_lossy()) == path_key(&outer.to_string_lossy()) {
+            return direct;
+        }
+    }
+    match place_inside_common(folder_key, root_id, &outer) {
+        Place::Yes => Place::Yes,
+        Place::Undecided => Place::Undecided,
+        Place::No => direct,
+    }
 }
 
 /// Saved project ids, then any hub root that is not already one of them (the crew row's spelling wins).
