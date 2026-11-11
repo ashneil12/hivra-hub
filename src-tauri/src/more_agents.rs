@@ -99,6 +99,8 @@ const INLINE_FLAGS: [&str; 9] = [
 ];
 pub(crate) const SHELL_REFUSED: &str =
     "A shell cannot be a More agent. Point at the agent program itself.";
+pub(crate) const RELATIVE_REFUSED: &str =
+    "An argument that names a file must give its full absolute path. A relative path is not pinned, so it is refused.";
 pub(crate) const INLINE_REFUSED: &str =
     "An agent cannot be started with an inline program (-c, -e, --eval or -p). Point at its program file.";
 pub(crate) const SHOWN_CHANGED: &str =
@@ -122,9 +124,49 @@ pub(crate) struct Approval {
     pub fingerprint: String,
     pub path: String,
     pub sha256: String,
-    /// HMAC-SHA256 over the id, fingerprint, path and SHA-256, keyed with the install's approval key (Keychain). A
-    /// record that is edited by hand, or written without the key, does not verify and is dropped on read.
+    /// Absolute file arguments that were files at approval, each with its SHA-256 then. Every one must still match.
+    pub pins: Vec<(String, String)>,
+    /// The approval generation this record was issued in. The Keychain holds the current one, so a record kept from an
+    /// earlier generation (a withdrawn approval put back, say) does not count.
+    pub generation: u64,
+    /// HMAC-SHA256 over every field above, keyed with the install's approval key (Keychain). A record edited by hand,
+    /// or written without the key, does not verify and is dropped on read.
     pub mac: String,
+}
+
+#[cfg_attr(test, allow(dead_code))]
+const GEN_SERVICE: &str = "monocode-hub:more-agents-approval-generation";
+#[cfg_attr(test, allow(dead_code))]
+const GEN_ACCOUNT: &str = "approvals";
+
+#[cfg(test)]
+thread_local! {
+    pub(crate) static TEST_GEN: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// The current approval generation. Nothing in the data folder can move it back.
+#[cfg(test)]
+fn approval_generation() -> Result<u64, String> {
+    Ok(TEST_GEN.with(|g| g.get()))
+}
+
+#[cfg(test)]
+fn store_generation(generation: u64) -> Result<(), String> {
+    TEST_GEN.with(|g| g.set(generation));
+    Ok(())
+}
+
+#[cfg(not(test))]
+fn approval_generation() -> Result<u64, String> {
+    match crate::hub_keychain::read(GEN_SERVICE, GEN_ACCOUNT)? {
+        Some(text) => text.parse::<u64>().map_err(|_| NO_KEY.to_string()),
+        None => Ok(0),
+    }
+}
+
+#[cfg(not(test))]
+fn store_generation(generation: u64) -> Result<(), String> {
+    crate::hub_keychain::store(GEN_SERVICE, GEN_ACCOUNT, &generation.to_string())
 }
 
 /// Keychain item for the approval key. Dev copies use `monocode-hub-dev:` through `hub_keychain`, like every app secret.
@@ -212,9 +254,50 @@ fn mac(key: &[u8], parts: &[&str]) -> String {
     hex(&outer.finalize())
 }
 
-/// The MAC an approval must carry to be honoured.
-fn approval_mac(key: &[u8], id: &str, fingerprint: &str, path: &str, sha256: &str) -> String {
-    mac(key, &[id, fingerprint, path, sha256])
+/// The MAC an approval must carry to be honoured: every field it holds, the pins and the generation included.
+fn approval_mac_of(key: &[u8], id: &str, a: &Approval) -> String {
+    let pins = a
+        .pins
+        .iter()
+        .map(|(path, sha)| format!("{path}\u{0}{sha}"))
+        .collect::<Vec<_>>()
+        .join("\u{1}");
+    let generation = a.generation.to_string();
+    mac(
+        key,
+        &[id, &a.fingerprint, &a.path, &a.sha256, &generation, &pins],
+    )
+}
+
+/// The absolute file arguments that are files now, each with its SHA-256. An approval pins them, so a script named
+/// after the interpreter cannot be changed after the person allowed it.
+fn pins_for(args: &[String]) -> Result<Vec<(String, String)>, String> {
+    let mut pins = Vec::new();
+    for arg in args {
+        let path = Path::new(arg);
+        if path.is_absolute() && path.is_file() {
+            let canonical = std::fs::canonicalize(path).map_err(|_| NOT_APPROVED.to_string())?;
+            let sha = file_sha256(&canonical)?;
+            pins.push((canonical.to_string_lossy().into_owned(), sha));
+        }
+    }
+    Ok(pins)
+}
+
+/// A line for the Allow card when the entry fetches its program at start: only the launcher is pinned.
+fn remote_note(command: &str, args: &[String]) -> Option<String> {
+    let name = command_basename(command);
+    let remote = match name.as_str() {
+        "npx" | "bunx" | "uvx" => true,
+        "pipx" => args.first().is_some_and(|a| a == "run"),
+        "deno" => {
+            args.first().is_some_and(|a| a == "run") && args.iter().any(|a| a.contains("://"))
+        }
+        _ => false,
+    };
+    remote.then(|| {
+        format!("This runs a package fetched by {name} at start; only {name} itself is pinned.")
+    })
 }
 
 /// What is on disk. `approvals` maps an id to what the person allowed for it.
@@ -274,12 +357,25 @@ pub(crate) fn read_stored(data_dir: &Path) -> Result<Stored, String> {
                 .filter_map(|(id, record)| {
                     let record = record.as_object()?;
                     let text = |key: &str| Some(record.get(key)?.as_str()?.to_string());
+                    let pins = record
+                        .get("pins")?
+                        .as_array()?
+                        .iter()
+                        .map(|pin| {
+                            Some((
+                                pin.get("path")?.as_str()?.to_string(),
+                                pin.get("sha256")?.as_str()?.to_string(),
+                            ))
+                        })
+                        .collect::<Option<Vec<_>>>()?;
                     Some((
                         id.clone(),
                         Approval {
                             fingerprint: text("fingerprint")?,
                             path: text("path")?,
                             sha256: text("sha256")?,
+                            pins,
+                            generation: record.get("generation")?.as_u64()?,
                             mac: text("mac")?,
                         },
                     ))
@@ -290,10 +386,12 @@ pub(crate) fn read_stored(data_dir: &Path) -> Result<Stored, String> {
     // An approval counts only if its MAC verifies under the install's key. With no key (or a missing one), none does.
     if !approvals.is_empty() {
         let key = approval_key(false).ok();
-        approvals.retain(|id, a| {
-            key.as_deref().is_some_and(|key| {
-                approval_mac(key, id, &a.fingerprint, &a.path, &a.sha256) == a.mac
-            })
+        let current = approval_generation().ok();
+        approvals.retain(|id, a| match (key.as_deref(), current) {
+            (Some(key), Some(current)) => {
+                a.generation == current && approval_mac_of(key, id, a) == a.mac
+            }
+            _ => false,
         });
     }
     Ok(Stored {
@@ -310,9 +408,21 @@ fn save(data_dir: &Path, stored: &Stored) -> Result<(), String> {
         .approvals
         .iter()
         .map(|(id, a)| {
+            let pins: Vec<Value> = a
+                .pins
+                .iter()
+                .map(|(path, sha256)| json!({ "path": path, "sha256": sha256 }))
+                .collect();
             (
                 id.clone(),
-                json!({ "fingerprint": a.fingerprint, "path": a.path, "sha256": a.sha256, "mac": a.mac }),
+                json!({
+                    "fingerprint": a.fingerprint,
+                    "path": a.path,
+                    "sha256": a.sha256,
+                    "pins": pins,
+                    "generation": a.generation,
+                    "mac": a.mac,
+                }),
             )
         })
         .collect();
@@ -390,13 +500,42 @@ fn checked_fields(entry: &Value) -> Result<(String, String, Vec<String>), String
     {
         return Err("There are too many arguments, or one is too long.".into());
     }
-    if args
-        .iter()
-        .any(|arg| INLINE_FLAGS.contains(&arg.to_ascii_lowercase().as_str()))
+    if args.iter().any(|arg| inline_flag(arg))
+        || (matches!(command_basename(command).as_str(), "deno" | "bun")
+            && args.iter().any(|arg| arg == "eval"))
     {
         return Err(INLINE_REFUSED.into());
     }
+    if args.iter().any(|arg| relative_file_arg(arg)) {
+        return Err(RELATIVE_REFUSED.into());
+    }
     Ok((id.to_string(), command.to_string(), args))
+}
+
+/// An inline-program flag, with or without `=value`, or a short-flag cluster that holds c, e or p (`-pe`, `-Ic`).
+fn inline_flag(arg: &str) -> bool {
+    let lower = arg.to_ascii_lowercase();
+    let flag = lower.split('=').next().unwrap_or("");
+    if INLINE_FLAGS.contains(&flag) {
+        return true;
+    }
+    match lower.strip_prefix('-') {
+        Some(cluster) if !cluster.is_empty() && !cluster.starts_with('-') => {
+            cluster.chars().all(|c| "ceplrin".contains(c))
+                && cluster.chars().any(|c| "cep".contains(c))
+        }
+        _ => false,
+    }
+}
+
+/// A relative path argument: the child would read it from the chat folder, which nothing pins. A scoped package name
+/// (`@scope/pkg`) and a URL are not paths.
+fn relative_file_arg(arg: &str) -> bool {
+    let value = arg.split_once('=').map_or(arg, |(_, v)| v);
+    if value.contains("://") || value.starts_with('@') || !value.contains(['/', '\\']) {
+        return false;
+    }
+    !Path::new(value).is_absolute()
 }
 
 fn valid_id(id: &str) -> bool {
@@ -452,6 +591,16 @@ pub(crate) fn write_agents(
             }
         }
     }
+    if approvals.len() != current.approvals.len() {
+        // An allowance was dropped (an edit or a removal): move the generation on, so a copy of it cannot come back.
+        let key = approval_key(true)?;
+        let generation = approval_generation()? + 1;
+        store_generation(generation)?;
+        for (id, a) in approvals.iter_mut() {
+            a.generation = generation;
+            a.mac = approval_mac_of(&key, id, a);
+        }
+    }
     let next = Stored {
         revision: expected + 1,
         agents,
@@ -478,6 +627,8 @@ pub(crate) fn set_approval(
         .find(|agent| agent.get("id").and_then(Value::as_str) == Some(id))
         .cloned()
         .ok_or("This agent is not in your list.")?;
+    let key = approval_key(true)?;
+    let mut approvals = stored.approvals.clone();
     if allowed {
         let (checked_id, command, args) = checked_fields(&entry)?;
         let fp = fingerprint(&command, &args);
@@ -486,20 +637,29 @@ pub(crate) fn set_approval(
         }
         let path = resolve_command(&command, path_value)?;
         let sha256 = file_sha256(Path::new(&path))?;
-        let key = approval_key(true)?;
-        let mac = approval_mac(&key, &checked_id, &fp, &path, &sha256);
-        stored.approvals.insert(
+        let pins = pins_for(&args)?;
+        approvals.insert(
             checked_id,
             Approval {
                 fingerprint: fp,
                 path,
                 sha256,
-                mac,
+                pins,
+                generation: 0,
+                mac: String::new(),
             },
         );
     } else {
-        stored.approvals.remove(id);
+        approvals.remove(id);
     }
+    // Every change moves the generation on and re-MACs what is kept, so a withdrawn record cannot be put back.
+    let generation = approval_generation()? + 1;
+    store_generation(generation)?;
+    for (aid, a) in approvals.iter_mut() {
+        a.generation = generation;
+        a.mac = approval_mac_of(&key, aid, a);
+    }
+    stored.approvals = approvals;
     save(data_dir, &stored)?;
     Ok(stored)
 }
@@ -568,6 +728,12 @@ fn resolve_command(command: &str, path_value: &str) -> Result<String, String> {
         );
     }
     let resolved = std::fs::canonicalize(&candidate).map_err(|_| not_found.to_string())?;
+    let real = resolved.file_name().and_then(|n| n.to_str()).unwrap_or("");
+    if SHELLS.contains(&command_basename(real).as_str())
+        || FIRST_CLASS_COMMANDS.contains(&command_basename(real).as_str())
+    {
+        return Err(SHELL_REFUSED.into());
+    }
     Ok(resolved.to_string_lossy().into_owned())
 }
 
@@ -589,6 +755,10 @@ fn still_approved(approval: &Approval, fp: &str, path: Option<&str>) -> bool {
     approval.fingerprint == fp
         && approval.path == path
         && file_sha256(Path::new(path)).is_ok_and(|sha| sha == approval.sha256)
+        && approval
+            .pins
+            .iter()
+            .all(|(pin, sha)| file_sha256(Path::new(pin)).is_ok_and(|now| &now == sha))
 }
 
 /// SHA-256 of a file's bytes, hex. A file that cannot be read is not approved.
@@ -633,6 +803,7 @@ pub(crate) fn view(stored: &Stored, path_value: &str) -> Value {
     let mut approved = Vec::new();
     let mut fingerprints = serde_json::Map::new();
     let mut resolved = serde_json::Map::new();
+    let mut notes = serde_json::Map::new();
     for agent in &stored.agents {
         let Ok((id, command, args)) = checked_fields(agent) else {
             continue;
@@ -643,6 +814,9 @@ pub(crate) fn view(stored: &Stored, path_value: &str) -> Value {
             .approvals
             .get(&id)
             .is_some_and(|a| still_approved(a, &fp, path.as_deref()));
+        if let Some(note) = remote_note(&command, &args) {
+            notes.insert(id.clone(), json!(note));
+        }
         if allowed {
             approved.push(id.clone());
         }
@@ -655,6 +829,7 @@ pub(crate) fn view(stored: &Stored, path_value: &str) -> Value {
         "approved": approved,
         "fingerprints": fingerprints,
         "resolved": resolved,
+        "notes": notes,
     })
 }
 
@@ -746,6 +921,7 @@ mod tests {
     fn dir() -> Scratch {
         // A fake key for this test thread: no test reads or writes the real Keychain.
         TEST_KEY.with(|key| *key.borrow_mut() = Some(vec![7u8; 32]));
+        TEST_GEN.with(|g| g.set(0));
         let path = std::env::temp_dir().join(format!("wp134-more-agents-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&path).expect("scratch dir");
         Scratch(path)
@@ -1126,14 +1302,122 @@ mod tests {
 
     #[test]
     fn the_mac_depends_on_the_key_and_every_part() {
-        let base = approval_mac(b"key-one", "id", "fp", "/opt/a", "sha");
-        assert_eq!(base, approval_mac(b"key-one", "id", "fp", "/opt/a", "sha"));
-        assert_ne!(base, approval_mac(b"key-two", "id", "fp", "/opt/a", "sha"));
+        let a = Approval {
+            fingerprint: "fp".into(),
+            path: "/opt/a".into(),
+            sha256: "sha".into(),
+            pins: vec![("/opt/s.mjs".into(), "pin".into())],
+            generation: 1,
+            mac: String::new(),
+        };
+        let base = approval_mac_of(b"key-one", "id", &a);
+        assert_eq!(base, approval_mac_of(b"key-one", "id", &a));
+        assert_ne!(base, approval_mac_of(b"key-two", "id", &a));
+        assert_ne!(base, approval_mac_of(b"key-one", "other", &a));
         assert_ne!(
             base,
-            approval_mac(b"key-one", "other", "fp", "/opt/a", "sha")
+            approval_mac_of(
+                b"key-one",
+                "id",
+                &Approval {
+                    path: "/opt/b".into(),
+                    ..a.clone()
+                }
+            )
         );
-        assert_ne!(base, approval_mac(b"key-one", "id", "fp", "/opt/b", "sha"));
-        assert_ne!(base, approval_mac(b"key-one", "id", "fp", "/opt/a", "sha2"));
+        assert_ne!(
+            base,
+            approval_mac_of(
+                b"key-one",
+                "id",
+                &Approval {
+                    generation: 2,
+                    ..a.clone()
+                }
+            )
+        );
+        assert_ne!(
+            base,
+            approval_mac_of(
+                b"key-one",
+                "id",
+                &Approval {
+                    pins: vec![],
+                    ..a.clone()
+                }
+            )
+        );
+    }
+
+    // Review r3 repro (MEDIUM, M3 residual): a withdrawn approval comes back when its saved record is written back.
+    // The MAC binds id, fingerprint, path and SHA-256, but nothing that a withdraw changes, so a copy taken earlier
+    // verifies again. Red on 11be1d122.
+    #[cfg(unix)]
+    #[test]
+    fn review_r3_a_withdrawn_approval_cannot_be_replayed() {
+        let d = dir();
+        let bin = d.path().join("bin");
+        make_tool(&bin, "wp134-r", b"#!/bin/sh\n");
+        let path_value = bin.to_string_lossy().into_owned();
+        write_agents(d.path(), 0, vec![entry("wp134", "wp134-r", &["--acp"])]).expect("seed");
+        approve(d.path(), "wp134", &path_value).expect("approve");
+        let file = file_path(d.path());
+        let saved: Value =
+            serde_json::from_str(&std::fs::read_to_string(&file).expect("read")).expect("json");
+        let record = saved["approvals"]["wp134"].clone();
+        set_approval(d.path(), "wp134", false, None, &path_value).expect("withdraw");
+        assert!(approved_spawn(d.path(), "wp134", &path_value).is_err());
+        // Anything with write access to the data folder puts the old record back.
+        let mut now: Value =
+            serde_json::from_str(&std::fs::read_to_string(&file).expect("read")).expect("json");
+        now["approvals"]["wp134"] = record;
+        std::fs::write(&file, serde_json::to_string(&now).expect("text")).expect("write");
+        assert!(
+            approved_spawn(d.path(), "wp134", &path_value).is_err(),
+            "a withdrawn approval was replayed from a saved record"
+        );
+    }
+
+    // Review r3 repro (MEDIUM, M2 residual): an interpreter entry pins the interpreter, not the script it runs.
+    // Red on 11be1d122.
+    #[cfg(unix)]
+    #[test]
+    fn review_r3_an_interpreter_entry_pins_the_script_it_runs() {
+        let d = dir();
+        let bin = d.path().join("bin");
+        make_tool(&bin, "wp134-node", b"#!/bin/sh\n");
+        let script = d.path().join("agent.mjs");
+        std::fs::write(&script, b"console.log('approved')").expect("script");
+        let path_value = bin.to_string_lossy().into_owned();
+        let script_arg = script.to_string_lossy().into_owned();
+        write_agents(
+            d.path(),
+            0,
+            vec![entry("wp134", "wp134-node", &[script_arg.as_str()])],
+        )
+        .expect("seed");
+        approve(d.path(), "wp134", &path_value).expect("approve");
+        std::fs::write(&script, b"require('child_process').exec('anything')").expect("swap");
+        assert!(
+            approved_spawn(d.path(), "wp134", &path_value).is_err(),
+            "the script changed after approval and still starts"
+        );
+    }
+
+    // Review r3 repro (LOW, M1 residual): the shell check reads the name as typed, not the file it resolves to.
+    // Red on 11be1d122.
+    #[cfg(unix)]
+    #[test]
+    fn review_r3_a_shell_behind_a_symlink_is_refused() {
+        let d = dir();
+        let bin = d.path().join("bin");
+        std::fs::create_dir_all(&bin).expect("bin");
+        std::os::unix::fs::symlink("/bin/sh", bin.join("wp134-agent")).expect("link");
+        let path_value = bin.to_string_lossy().into_owned();
+        write_agents(d.path(), 0, vec![entry("wp134", "wp134-agent", &["-s"])]).expect("seed");
+        assert!(
+            approve(d.path(), "wp134", &path_value).is_err(),
+            "a shell was approved through a symlink"
+        );
     }
 }
