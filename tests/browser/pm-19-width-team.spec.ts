@@ -1,7 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 import fs from "node:fs";
 import { openLocalHub } from "./localHub";
-import { assertStartersUnticked, openOnboarding, skipAddsNobody, tickedBecomesOrdinaryMono } from "./starterOnboarding";
+import { assertStarterTicks, openOnboarding, skipAddsNobody, tickedBecomesOrdinaryMono } from "./starterOnboarding";
 
 // Round 19 proofs, a browser preview only (not Ash's Mac):
 // - Ash 21 Oct, width: Pages and the project's coding team (WP-06: that chat replaced Today)
@@ -78,9 +78,9 @@ test("fresh install onboarding: our team with a role line under each name, and n
   await openOnboarding(page);
   await page.locator("[data-hub-onboarding-name]").fill("Sam");
   await page.locator("[data-hub-onboarding-next]").click();
-  await assertStartersUnticked(page);
+  await assertStarterTicks(page);
   const text = () => page.evaluate(() => document.body.innerText);
-  await expect.poll(text).toMatch(/None are added unless you tick them/);
+  await expect.poll(text).toMatch(/Only ticked ones are added/);
   const body = await text();
   for (const [name, role] of [
     ["Chief of Staff", "The first mono you talk to about work."],

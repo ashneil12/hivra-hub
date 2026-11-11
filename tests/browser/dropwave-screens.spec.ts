@@ -159,7 +159,7 @@ test("the Inbox leads with the Needs you list, each row with its own answer", as
   await expect(page.getByRole("button", { name: `Inbox, ${count} need you` })).toBeVisible();
 });
 
-test("first run: Dropwave's words, the Chief of Staff recommended but not ticked, and a short tour", async ({ page }) => {
+test("first run: Dropwave's words, the Chief of Staff recommended and ticked, and a short tour", async ({ page }) => {
   await page.goto(`${base}/mockup.html?reset&onboarding`);
   const card = page.locator("[data-hub-onboarding]");
   await expect(card).toBeVisible({ timeout: 60_000 });
@@ -178,14 +178,15 @@ test("first run: Dropwave's words, the Chief of Staff recommended but not ticked
   const starters = page.locator("[data-hub-onboarding-starter]");
   await expect(starters.first()).toContainText("Chief of Staff");
   await expect(starters.first().locator("[data-hub-onboarding-tag]")).toHaveText("Recommended");
-  for (const box of await starters.all()) await expect(box).toHaveAttribute("aria-checked", "false");
-  await expect(page.locator("[data-hub-onboarding-team]")).toContainText("None are added unless you tick them");
+  await expect(starters.first()).toHaveAttribute("aria-checked", "true");
+  for (const box of (await starters.all()).slice(1)) await expect(box).toHaveAttribute("aria-checked", "false");
+  await expect(page.locator("[data-hub-onboarding-team]")).toContainText("Chief of Staff is ticked to get you started");
   await page.locator("[data-hub-onboarding-project]").fill("Field notes");
   await page.locator("[data-hub-onboarding-next]").click();
   await page.locator("[data-hub-onboarding-next]").click();
 
   await expect(card).toHaveAttribute("data-step", "done");
   await expect(page.locator("[data-hub-onboarding-tour]")).toContainText("Home");
-  await expect(page.locator("[data-hub-onboarding-tour]")).toContainText("You didn't add one");
+  await expect(page.locator("[data-hub-onboarding-tour]")).not.toContainText("You didn't add one");
   await expect(page.locator("[data-hub-onboarding-done]")).toHaveText("Open Field notes");
 });

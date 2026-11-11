@@ -12,7 +12,7 @@ test("first launch lands in the new project's coding team", async ({ page }) => 
   if (await notNow.isVisible().catch(() => false)) await notNow.click();
   await expect(page.getByText("What should your team call you?")).toBeVisible();
   await page.locator("[data-hub-onboarding-next]").click();
-  await expect(page.locator("[data-hub-onboarding-team]")).toContainText("None are added unless you tick them");
+  await expect(page.locator("[data-hub-onboarding-team]")).toContainText("Only ticked ones are added");
   // Dropwave: a setup that already proved Claude Code (this page's stand-in does) starts with it ticked; the other
   // tools stay off.
   const claude = page.locator('[data-hub-onboarding-cli="claude"]');
