@@ -488,6 +488,12 @@ async function startLive(input: SendTurnInput, life: number): Promise<Live> {
       antigravitySpawnCwd(path, input.cwd),
       undefined,
       "antigravity",
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      input.cwd,
     );
     if (retired()) throw new Error("Antigravity session stopped during startup");
     try {

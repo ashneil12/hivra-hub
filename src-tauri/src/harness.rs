@@ -1153,10 +1153,30 @@ pub fn harness_spawn(
     // Codex chats that already run inside Codex's own sandbox. macOS refuses a sandbox inside a sandbox, so those
     // skip this wrap. A full access Codex chat does not set it. A More agents child never skips it.
     skip_outer_sandbox: Option<bool>,
+    crew_ticket: Option<String>,
+    store: State<'_, crate::session_store::SessionStore>,
+    crew_folder: Option<String>,
     // WP-134: a More agents entry. Its command and arguments come from the saved list, and only once the person has
     // approved that command (src-tauri/src/more_agents.rs). The webview sends no command for it.
     more_agent: Option<String>,
 ) -> Result<u32, String> {
+    // WP-141: an agent session's process needs the one-time ticket its crew gate issued for this session, CLI and folder.
+    // Ash's own chats (no `app-` id) pass without one. The default CLI of a spawn with no provider is Claude Code.
+    // Round 6: judged for every session, Ash's and the Monos' chats included: Never use for this CLI in the policy the
+    // session's grant or its folder's project puts in force, and under the lock an `app-` session must be granted.
+    // A More agents entry (WP-134) is judged under its own entry id, so a lock or Never use can name it.
+    let judged_cli = match more_agent.as_deref() {
+        Some(agent) => agent.to_string(),
+        None => binary_provider.as_deref().unwrap_or("claude").to_string(),
+    };
+    crate::crew::gate::judge_spawn_in(
+        &*store.lock_conn()?,
+        &session_id,
+        &judged_cli,
+        crew_folder.as_deref().unwrap_or(&cwd),
+        &cwd,
+        crew_ticket.as_deref(),
+    )?;
     let more = match more_agent.as_deref() {
         None => None,
         Some(agent) => {

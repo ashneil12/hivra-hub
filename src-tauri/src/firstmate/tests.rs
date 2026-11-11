@@ -66,6 +66,23 @@ fn depth_three_is_refused_with_a_plain_reason() {
 }
 
 #[test]
+fn a_pick_at_the_fanout_cap_still_reads_the_depth() {
+    let store = store();
+    let mut conn = store.lock_conn().unwrap();
+    for n in 0..8 {
+        record(
+            &mut conn,
+            launch("mono", &format!("r{n}"), &format!("child-{n}")),
+            n + 1,
+        )
+        .unwrap();
+    }
+    let blocked = depth_and_fanout(&conn, "mono", true).unwrap_err();
+    assert!(blocked.starts_with("Not started:"), "{blocked}");
+    assert_eq!(depth_and_fanout(&conn, "mono", false).unwrap(), 1);
+}
+
+#[test]
 fn a_mono_brief_to_a_coding_team_runs_at_depth_two_and_a_third_level_is_refused() {
     let store = store();
     let mut conn = store.lock_conn().unwrap();

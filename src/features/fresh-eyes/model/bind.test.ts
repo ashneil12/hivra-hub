@@ -117,3 +117,43 @@ describe("fresh-eyes sessions", () => {
     expect(freshEyesPort()).toBe(stub);
   });
 });
+
+describe("WP-141 round 6 (MED-E): a reviewer is a launch and passes the crew gate", () => {
+  it("a reviewer whose CLI the crew gate refuses is never sent", async () => {
+    const submitted: string[] = [];
+    const port = portFromHooks({
+      sessions: () => [],
+      add: () => {},
+      submit: (id) => {
+        submitted.push(id);
+        return true;
+      },
+      crewGate: () => {
+        throw new Error("Claude Code is on Never use, so it was not started.");
+      },
+      cwd: "/tmp/fresh-eyes-gate",
+      timeoutMs: 20,
+    });
+    await expect(port.ask(TURN)).rejects.toThrow("Never use");
+    expect(submitted).toEqual([]);
+  });
+});
+
+describe("WP-141 round 7 (MED-2): a reviewer is gated against the reviewed project's folder", () => {
+  it("passes the reviewed project's folder to the crew gate, not the home folder", async () => {
+    const gate = vi.fn(async () => undefined);
+    const port = portFromHooks({
+      sessions: () => [],
+      add: () => {},
+      submit: (_id, _text, _history, options) => {
+        options.onSettled?.({ status: "completed", text: "FINDING: none" });
+        return true;
+      },
+      crewGate: gate,
+      cwd: "~",
+      timeoutMs: 1000,
+    });
+    await port.ask({ ...TURN, folder: "/work/reviewed" });
+    expect(gate).toHaveBeenCalledWith(expect.objectContaining({ harness: expect.any(String) }), "/work/reviewed");
+  });
+});

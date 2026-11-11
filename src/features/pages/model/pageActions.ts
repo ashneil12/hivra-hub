@@ -9,8 +9,10 @@
 // Nothing here is a new door: when the app hasn't lent a hand yet the page is told so, and nothing is guessed. What a
 // page sends into a chat ends with "(sent from the <page> page)", and every action is logged for the page to show.
 import { useSyncExternalStore } from "react";
-import { pickMessage, pickReply, wordsReply } from "../../hub/model/chatQuestions";
+import { fromPrompt, pickMessage, pickReply, wordsReply } from "../../hub/model/chatQuestions";
+import { isPersonOnlyDecisionKey } from "../../hub/model/decisionKey";
 import { hubData } from "../../hub/model/hubData";
+import { needKeyOf } from "../../hub/model/localHub/decisions";
 import type { HubAnswer } from "../../hub/model/types";
 import { answerInWords, findWaitingChat, openWaitingChat, takePick, type TakeResult, type WaitingChat } from "../../hub/model/waitingChats";
 import { delegationActions, delegationRows, type DelegationActions } from "../../monos/model/delegationStore";
@@ -64,7 +66,7 @@ export const appActionDeps: PageActionDeps = {
   host: () => host,
   findWaiting: findWaitingChat,
   answerInWords,
-  takePick: (id) => takePick(id, { by: "ash" }),
+  takePick: (id) => takePick(id, { by: "page" }),
   openWaiting: openWaitingChat,
   answerNeed: (id, answer) => {
     const answer_ = hubData().answer;
@@ -167,6 +169,23 @@ function chatName(chatId: string, d: PageActionDeps): string {
   const r = rowForChat(chatId, d);
   return r?.title ? quoteOf(r.title) : "that chat";
 }
+// A Page answers as itself, never as the person (review 220-r6, HIGH-1). A key only the person answers (a delivery
+// check, an irreversible step, a fresh-eyes review, a fan-out restart) is refused here with a plain reason, and
+// decisions.rs refuses the `page:<id>` answer again if a spelling slips past this check.
+const ONLY_YOU = "Only you can answer that one. Open Needs you to answer it.";
+const ONLY_YOU_CHAT = "Only you can answer that one. Open the chat to answer it.";
+function refusePersonOnly(needId: string, ctx: ActionContext): void {
+  // A Page with no id has no name to answer under, and it is never the person (decisions.ts refuses it too).
+  if (!ctx.pageId.trim()) throw new Error("This page has no id, so it can't answer. Open Needs you to answer it.");
+  const key = needKeyOf(needId);
+  if (key !== undefined && isPersonOnlyDecisionKey(key)) throw new Error(ONLY_YOU);
+}
+type RedLineAsk = Pick<WaitingChat, "redLine" | "provide"> & { rows?: ReadonlyArray<{ redLine?: boolean }> };
+/** A red-line ask, or one asking for a key, waits for the person: a Page answers neither, in words or by its pick. */
+function refuseRedLine(ask: RedLineAsk | null | undefined): void {
+  if (ask && (ask.redLine || ask.provide || ask.rows?.some((r) => r.redLine))) throw new Error(ONLY_YOU_CHAT);
+}
+
 function took(result: TakeResult): void {
   if (!result.ok) throw new Error(result.reason);
 }
@@ -176,19 +195,23 @@ async function answer(args: Record<string, unknown>, ctx: ActionContext, d: Page
   if (!text) throw new Error("Type an answer first.");
   const needId = str(args.needId);
   if (needId) {
-    d.answerNeed(needId, { text });
+    refusePersonOnly(needId, ctx);
+    d.answerNeed(needId, { text, from: ctx.pageId });
     return `Answered ${quoteOf(text)}`;
   }
   const chatId = str(args.chatId);
   if (!chatId) throw new Error("Say which chat to answer (chatId).");
   const name = chatName(chatId, d);
-  if (d.findWaiting(chatId)) {
+  const waiting = d.findWaiting(chatId);
+  if (waiting) {
+    refuseRedLine(waiting);
     took(await d.answerInWords(chatId, signed(text, ctx)));
     return `Answered ${name}: ${quoteOf(text)}`;
   }
   const h = d.host();
   const prompt = h?.liveQuestion(chatId);
   if (!h || !prompt) throw new Error("That chat isn't asking anything now.");
+  refuseRedLine(fromPrompt(prompt));
   const reply = wordsReply(prompt, signed(text, ctx));
   if (reply) h.respond(chatId, prompt.requestId, reply);
   else if (!(await h.send(chatId, signed(text, ctx)).catch(() => false))) throw new Error(`${name} couldn't take a message right now. Open the chat to answer.`);
@@ -198,7 +221,8 @@ async function answer(args: Record<string, unknown>, ctx: ActionContext, d: Page
 async function pick(args: Record<string, unknown>, ctx: ActionContext, d: PageActionDeps): Promise<string> {
   const needId = str(args.needId);
   if (needId) {
-    d.answerNeed(needId, { quick: "agree" });
+    refusePersonOnly(needId, ctx);
+    d.answerNeed(needId, { quick: "agree", from: ctx.pageId });
     return "Took the suggested answer";
   }
   const chatId = str(args.chatId);
@@ -206,6 +230,7 @@ async function pick(args: Record<string, unknown>, ctx: ActionContext, d: PageAc
   const name = chatName(chatId, d);
   const waiting = d.findWaiting(chatId);
   if (waiting) {
+    refuseRedLine(waiting);
     // A "Needs Ash:" line is answered with a message, which can say where it came from; a live question takes the
     // option itself (Waiting on you's Take the pick).
     if (waiting.source === "marker" && waiting.pick) took(await d.answerInWords(chatId, signed(pickMessage(waiting), ctx)));
@@ -215,6 +240,7 @@ async function pick(args: Record<string, unknown>, ctx: ActionContext, d: PageAc
   const h = d.host();
   const prompt = h?.liveQuestion(chatId);
   if (!h || !prompt) throw new Error("That chat isn't asking anything now.");
+  refuseRedLine(fromPrompt(prompt));
   const reply = pickReply(prompt);
   if (!reply) throw new Error("The agent didn't suggest an answer. Answer in your words or open the chat.");
   h.respond(chatId, prompt.requestId, reply);

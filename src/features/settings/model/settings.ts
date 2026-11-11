@@ -799,6 +799,13 @@ export const SETTINGS_INDEX: SettingsEntry[] = [
     label: "Plugin indexes",
     keywords: "index source bundled github marketplace url file",
   },
+  // WP-141: the crew defaults screen, above the advanced rules.
+  {
+    id: "crew-defaults",
+    section: "crew",
+    label: "Crew defaults",
+    keywords: "default lock never use fallback builder reviewer researcher",
+  },
   {
     id: "crew-rules",
     section: "crew",

@@ -371,6 +371,8 @@ export async function spawnChild(
   defaultBinary?: boolean,
   /** Codex only: its own sandbox is already on, and macOS refuses a sandbox inside a sandbox. */
   skipOuterSandbox?: boolean,
+  /** Round 7: the folder the crew gate judges the process against, when it is not the folder the process runs in. */
+  crewFolder?: string,
 ): Promise<void> {
   // Every provider process starts here: none for a chat with no folder (the home folder is not a stand-in).
   requireChatFolder(cwd);
@@ -379,6 +381,15 @@ export async function spawnChild(
   ownedChildren.add(sessionId);
   const binaryPath = binaryProvider && !defaultBinary
     ? runtimeProviderBinaryPath(binaryProvider)
+    : undefined;
+  // WP-141: an agent session's process starts only with the one-time ticket its crew gate issues, for this session, CLI and
+  // folder. The spawn refuses without it (harness_spawn). Ash's own chats have no `app-` id and need none.
+  const crewTicket = sessionId.startsWith("app-")
+    ? await invoke<string>("crew_spawn_ticket", {
+        sessionId,
+        cli: binaryProvider ?? "claude",
+        folder: crewFolder ?? cwd,
+      })
     : undefined;
   const pid = await invoke<number>("harness_spawn", {
     sessionId,
@@ -392,6 +403,8 @@ export async function spawnChild(
     ...(devinAskEdits ? { devinAskEdits } : {}),
     ...(customRoute ? { customRoute } : {}),
     ...(skipOuterSandbox ? { skipOuterSandbox: true } : {}),
+    ...(crewTicket ? { crewTicket } : {}),
+    ...(crewFolder ? { crewFolder } : {}),
   });
   notePid(sessionId, pid);
 }
@@ -421,12 +434,17 @@ export async function spawnMoreAgentChild(
   ownedChildren.add(sessionId);
   let pid: unknown;
   try {
+    // WP-141: an agent session's More agents start needs its crew ticket too, judged under the entry's own id.
+    const crewTicket = sessionId.startsWith("app-")
+      ? await invoke<string>("crew_spawn_ticket", { sessionId, cli: agentId, folder: cwd })
+      : undefined;
     pid = await invoke<number>("harness_spawn", {
       sessionId,
       command: "",
       args: [],
       cwd,
       moreAgent: agentId,
+      ...(crewTicket ? { crewTicket } : {}),
     });
   } catch (error) {
     // A start that was refused holds no output: nothing a process printed after this is shown.
