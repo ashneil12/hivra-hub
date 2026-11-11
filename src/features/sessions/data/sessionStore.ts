@@ -453,35 +453,21 @@ export function sanitizeLinkedWorkItem(
   };
 }
 
-// WP-177: a moved chat keeps no transcript, so a project list that only counts rows with a user message would drop
-// it. The stored row carries an empty mark for that count. Loading the chat removes the mark, so no message is shown.
-const MOVED_LISTING_MARK = "teleport-listed";
-
-function withMovedListingMark(blocks: Block[]): Block[] {
-  const carriesMove = blocks.some(
-    (block) => typeof block.notice === "string" && block.notice.startsWith("teleport"),
-  );
-  if (!carriesMove || blocks.some((block) => block.role === "user")) return blocks;
-  return [...blocks, { id: MOVED_LISTING_MARK, role: "user", text: "" }];
-}
-
 export function sanitizeSessionForPersist(
   session: Session,
 ): SessionUpsertPayload {
   const firstUser = session.blocks.findIndex((block) => block.role === "user");
   return {
     ...persistableMeta(session),
-    blocks: withMovedListingMark(
-      session.blocks
-        .map((block, index) =>
-          sanitizeBlock(
-            index === firstUser && session.orchestrationLeadId
-              ? { ...block, orchestrationLeadId: session.orchestrationLeadId }
-              : block,
-          ),
-        )
-        .filter((block): block is Block => block != null),
-    ),
+    blocks: session.blocks
+      .map((block, index) =>
+        sanitizeBlock(
+          index === firstUser && session.orchestrationLeadId
+            ? { ...block, orchestrationLeadId: session.orchestrationLeadId }
+            : block,
+        ),
+      )
+      .filter((block): block is Block => block != null),
   };
 }
 
@@ -525,6 +511,7 @@ const movedSessionIds = new Map<string, number>();
 /** Test-only reset: a new process starts with no moved rows known, and reads fill the set again. */
 export function forgetMovedRowsForTests(): void {
   movedSessionIds.clear();
+  sessionsWithMoveNotes.clear();
 }
 
 /** When a chat was moved away (the marker's time), or 0 when the row does not say. */
@@ -541,7 +528,17 @@ function returnedAfterMove(session: Session, movedAt: number): boolean {
 /** One step of a chat move (WP-177). The store checks that the step makes only its own change. */
 export type TeleportStep = {
   moveId: string;
-  op: "freeze" | "thaw" | "release" | "incoming" | "discard" | "activate" | "abort";
+  op:
+    | "freeze"
+    | "thaw"
+    | "release"
+    | "incoming"
+    | "discard"
+    | "activate"
+    | "abort"
+    | "freeze-ask"
+    | "clear-freeze-ask"
+    | "settle";
 };
 
 /** The store refused a move step because the chat is not in the state the step needs (another move holds it). */
@@ -549,6 +546,39 @@ export class TeleportConflict extends Error {}
 
 function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+const MOVE_NOTE_NOTICES = new Set([
+  "teleport-freeze-asked",
+  "teleport-incoming",
+  "teleport-release-owed",
+  "teleport-aborted",
+]);
+
+/**
+ * Chats this window has stored a move note for. An ordinary save of one is checked against the stored row, so a quit
+ * cannot erase a note this window's copy never heard about. Other chats are not read first: a save must stay one write.
+ */
+const sessionsWithMoveNotes = new Set<string>();
+
+function blocksHaveMoveNote(blocks: Array<{ notice?: string }>): boolean {
+  return blocks.some((block) => typeof block.notice === "string" && MOVE_NOTE_NOTICES.has(block.notice));
+}
+
+/** True when an ordinary save would erase a move note the stored row still has. A failed read does not block the save. */
+async function ordinarySaveDropsMoveNote(sessionId: string, nextBlocks: Block[]): Promise<boolean> {
+  let stored: Session | null;
+  try {
+    stored = await readSession(sessionId);
+  } catch {
+    return false;
+  }
+  if (!stored) return false;
+  const kept = new Set(nextBlocks.map((block) => block.id));
+  return stored.blocks.some((block) => {
+    const notice = block.notice;
+    return typeof notice === "string" && MOVE_NOTE_NOTICES.has(notice) && !kept.has(block.id);
+  });
 }
 
 export async function upsertSession(
@@ -572,6 +602,18 @@ export async function upsertSession(
   const payload = mono
     ? persistableMeta(session)
     : sanitizeSessionForPersist(session);
+  // An ordinary save (a quit, an autosave) must not erase a move note the window's copy never heard about.
+  // A move step is allowed to add or clear the note it owns; the store checks that step. Only a chat this window
+  // has stored a note for is read first, so every other save stays a single write.
+  const savedBlocks = (payload as SessionUpsertPayload).blocks;
+  if (
+    !teleport &&
+    !mono &&
+    sessionsWithMoveNotes.has(session.id) &&
+    (await ordinarySaveDropsMoveNote(session.id, savedBlocks))
+  ) {
+    return null;
+  }
   if (session.orchestrationLeadId) {
     sessionWriteLeadById.set(session.id, session.orchestrationLeadId);
   } else {
@@ -631,6 +673,11 @@ export async function upsertSession(
       throw error;
     });
   });
+  // Remember a note only after the step is stored. A refused step leaves the set as it was.
+  if (teleport && summary && !mono) {
+    if (blocksHaveMoveNote(savedBlocks)) sessionsWithMoveNotes.add(session.id);
+    else sessionsWithMoveNotes.delete(session.id);
+  }
   return summary ? normalizeSummary(summary) : null;
 }
 
@@ -1228,8 +1275,6 @@ function sanitizeBlock(
 ): Block | null {
   // r63: a CLI notice saved before the filter (cliNotices.ts) is left out when the chat loads.
   if (options?.hydrate && block.role === "system" && !block.notice && isCliNotice(block.text)) return null;
-  // WP-177: the empty mark that keeps a moved row in a project list is not a message.
-  if (options?.hydrate && block.id === MOVED_LISTING_MARK) return null;
   const next: Block = {
     id: block.id,
     role: block.role,
