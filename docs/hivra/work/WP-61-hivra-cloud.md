@@ -37,13 +37,16 @@ provisioned, no account is created, no domain is bought and nothing spends money
 is empty by default. Code: `src-tauri/src/hivra_cloud/` (`mod.rs`, `client.rs`, `routines.rs`).
 
 1. **Connect Hivra Cloud** (built, off). The switch and endpoint live in `<data>/hivra-cloud.json`; the default is
-   `enabled: false` with an empty endpoint. A loopback sign-in (`sign_in_with`, reusing the PKCE, state check and code
+   `enabled: false` with an empty endpoint. Settings reads and writes that file (`hivra_cloud_save`), and a stale
+   revision changes nothing. A loopback sign-in (`sign_in_with`, reusing the PKCE, state check and code
    exchange in `connectors/oauth.rs`) gets an access token that stays in memory only. Pairing (`pair_with`) sends a
-   one-time code, never a key, and returns the machine for the existing Add machine (SSH) path. Not built: the
-   sign-in and machine-list screens, and the hand-off into Add machine.
+   one-time code, never a key, and returns the machine for the existing Add machine (SSH) path. The sign-in and
+   machine-list screens, and the hand-off into Add machine, are in Settings (`src/features/hivraCloud/`). Connecting
+   still happens in the existing SSH form.
 2. **Account check** (built, off). `AccountCache`: an answer is kept six hours, a failed check waits fifteen minutes
-   before it is tried again, and the failure notice shows once per run. The check never returns an error to the app.
-   Not built: keeping the "shown" flag across restarts, and the notice UI.
+   before it is tried again, and the failure notice shows once. The shown flag is kept in
+   `<data>/hivra-cloud-notice.json`, which cannot turn Cloud on. The check never returns an error to the app, and the
+   notice is shown in Settings.
 3. **Routines** (built as pure rules, tested). `routines.rs`: a fifteen-minute floor, 24 runs a day, stop after three
    failures in a row (only the person resumes), and skip a missed window rather than catch up in a burst. Not built:
    the scheduler on the machine, which needs WP-60's host.
@@ -55,13 +58,12 @@ is empty by default. Code: `src-tauri/src/hivra_cloud/` (`mod.rs`, `client.rs`, 
 
 Also built: the endpoint must be only an address (https, or http to this Mac, with no path, query or login); the
 token is sent only to that endpoint; redirects are never followed and any non-2xx answer is a refusal; the pairing
-code is checked before any request. Commands: `hivra_cloud_status`, `hivra_cloud_sign_in`, `hivra_cloud_sign_out`,
-`hivra_cloud_account`, `hivra_cloud_pair`. Nothing calls them from the UI yet.
+code is checked before any request. Commands: `hivra_cloud_status`, `hivra_cloud_save`, `hivra_cloud_sign_in`,
+`hivra_cloud_sign_out`, `hivra_cloud_account`, `hivra_cloud_pair`. Settings calls them. The switch stays off until
+the person turns it on.
 
 ### Left for when Ash turns it on
 
-- A Settings switch and endpoint field. Today the switch is the file `<data>/hivra-cloud.json`, edited by hand.
-- The sign-in and machine-list screens, a browser spec and screenshots for them, and the hand-off into Add machine.
 - A staging service and its endpoint. Nothing here creates a server, an account or a domain; that needs Ash's go.
 - WP-60's run stamps and the host scheduler, so routines and the away feed run on a machine that stays up.
 - A native check in a dev copy with the switch on against a loopback stand-in, then against staging.
