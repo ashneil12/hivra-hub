@@ -1244,10 +1244,48 @@ pub fn authorize(
     Ok(())
 }
 
+/// The key as it can appear in an upstream error: as it is, and as JSON writes it (a quote or backslash escaped, a
+/// slash escaped as `\/` or as `/`).
+fn key_forms(token: &str) -> Vec<String> {
+    let mut forms = vec![token.to_string()];
+    let json = serde_json::to_string(token).unwrap_or_default();
+    let json = json
+        .strip_prefix('"')
+        .and_then(|s| s.strip_suffix('"'))
+        .unwrap_or(&json)
+        .to_string();
+    for form in [
+        json.replace('/', "\\/"),
+        json.replace('/', "\\u002f"),
+        json.clone(),
+    ] {
+        if !forms.contains(&form) {
+            forms.push(form);
+        }
+    }
+    forms
+}
+
+/// Redacts the key from an upstream error before it goes back to Claude Code. Every spelling of the key is replaced
+/// first, then the text is cut to 400 characters, then any prefix of a key that the cut split off the end is dropped
+/// (the start of a key the upstream sent in full would otherwise be left behind).
 fn scrub(text: &str, token: &str) -> String {
-    let mut t: String = text.chars().take(400).collect();
-    if token.len() >= 4 {
-        t = t.replace(token, "***");
+    if token.len() < 4 {
+        return text.chars().take(400).collect();
+    }
+    let forms = key_forms(token);
+    let mut replaced = text.to_string();
+    for form in &forms {
+        replaced = replaced.replace(form.as_str(), "***");
+    }
+    let mut t: String = replaced.chars().take(400).collect();
+    for form in &forms {
+        let cut = (1..form.len())
+            .rev()
+            .find(|&k| form.is_char_boundary(k) && t.ends_with(&form[..k]));
+        if let Some(k) = cut {
+            t.truncate(t.len() - k);
+        }
     }
     t
 }
@@ -3213,5 +3251,42 @@ mod tests {
         );
         assert_eq!(hits[0].auth, "Bearer monocode-ollama-local");
         assert!(!hits[0].body.contains(SECRET));
+    }
+
+    /// WP-129 M2 (lead review, 4 Jan): an upstream error goes back to Claude Code scrubbed of the key. The text was cut
+    /// to 400 characters before the key was replaced, so a key straddling the cut left its start behind; a key written
+    /// the JSON way (quotes, backslashes, escaped slashes) was never replaced at all.
+    #[test]
+    fn an_upstream_error_never_shows_the_key_at_the_400_character_cut() {
+        const KEY: &str = "sk-live-0123456789abcdefghijklmnopqrstuvwxyz";
+        let no_key_start = |out: &str| {
+            for k in 4..=KEY.len() {
+                assert!(
+                    !out.ends_with(&KEY[..k]),
+                    "a key prefix of {k} characters is left at the cut: {out}"
+                );
+            }
+            assert!(!out.contains(&KEY[..8]), "{out}");
+        };
+
+        // 370 characters of padding, then the whole key: it straddles the 400-character cut.
+        let straddling = format!("{}{KEY}tail", "x".repeat(370));
+        let out = scrub(&straddling, KEY);
+        no_key_start(&out);
+        assert!(out.chars().count() <= 400, "{}", out.chars().count());
+
+        // The cut lands inside a key the upstream itself sent (no whole key left to replace).
+        let cut_inside = format!("{}{}", "x".repeat(397), &KEY[..11]);
+        let out = scrub(&cut_inside, KEY);
+        no_key_start(&out);
+        assert_eq!(out, "x".repeat(397));
+
+        // A key written the JSON way: a quote and a backslash escaped, the slash written as \/ or as /.
+        const JSON_KEY: &str = "sk-json\"quote\\slash/part";
+        let body = r#"{"error":{"message":"bad key sk-json\"quote\\slash/part, sk-json\"quote\\slash\/part, sk-json\"quote\\slash/part"}}"#;
+        let out = scrub(body, JSON_KEY);
+        assert!(!out.contains("sk-json"), "{out}");
+        assert!(!out.contains("quote"), "{out}");
+        assert!(out.contains("***"), "{out}");
     }
 }
