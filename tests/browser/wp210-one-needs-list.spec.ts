@@ -47,15 +47,19 @@ const PROJECTS: SeedProject[] = [
   { id: "safetube", name: "SafeTube", shortName: "SafeTube", iconShape: "play", folder: "/Users/example/Projects/safetube" },
 ];
 
-const NOW = 1_700_000_000_000;
-
-function decision(project: string, key: string, question: string, at: number) {
+function decision(
+  project: string,
+  key: string,
+  question: string,
+  agoMs: number,
+  pick?: { options: string[]; recommended: string },
+) {
   return {
     project,
     decisionKey: key,
     question: `Example: ${question}`,
-    options: ["Yes", "No"],
-    recommended: "Yes",
+    options: pick?.options ?? ["Yes", "No"],
+    recommended: pick?.recommended ?? "Yes",
     askedBy: "lead-session",
     askedByMono: null,
     waiting: [],
@@ -63,14 +67,13 @@ function decision(project: string, key: string, question: string, at: number) {
     answer: null,
     answeredBy: null,
     answeredAt: null,
-    createdAt: at,
-    updatedAt: at,
+    agoMs,
     version: 1,
   };
 }
 
 // EXO's one item is a stopped worker, so the rail chip, the header and the Mono line share one count.
-// A failure only counts for six hours, so the times come from the page clock, not the example decisions.
+// A failure only counts for six hours, so this worker's time comes from the page clock. The decisions are stamped the same way when the page starts.
 function stoppedWorker(ownerSession: string, now: number) {
   return {
     id: "upload-build",
@@ -96,9 +99,9 @@ function stoppedWorker(ownerSession: string, now: number) {
     pendingQuestion: null,
     delivery: "pending",
     deliveryMessage: null,
-    createdAt: now - 60_000,
-    updatedAt: now - 60_000,
-    settledAt: now - 60_000,
+    createdAt: now - 4 * 60_000,
+    updatedAt: now - 4 * 60_000,
+    settledAt: now - 4 * 60_000,
     log: [],
     version: 1,
     mirroredVersion: 1,
@@ -141,16 +144,25 @@ test("rail, home, header, mono line and inbox share one Needs you list", async (
   const shoot = testInfo.project.name === "chromium";
   if (shoot) mkdirSync(AFTER, { recursive: true });
 
-  await page.addInitScript((decisions) => {
+  await page.addInitScript((rows) => {
+    const now = Date.now();
+    const decisions = rows.map((row) => {
+      const { agoMs, ...rest } = row;
+      const at = now - agoMs;
+      return { ...rest, createdAt: at, updatedAt: at };
+    });
     localStorage.setItem("monocode.colorScheme", "dark");
     // The four ready-made pages ask for access on a fresh setup. This shot is the decisions and the stopped worker.
     localStorage.setItem("monocode:ready-pages-seeded-v2", "1");
     localStorage.setItem("monocode:dev-decisions", JSON.stringify(decisions));
   }, [
-    decision("hivra", "windows-build", "Which Windows build should ship?", NOW - 50_000),
-    decision("hivra", "merge-217", "Ready to merge #217.", NOW - 40_000),
-    decision("nibbii", "npm-publish", "frank wants to run npm publish in nibbii-web.", NOW - 20_000),
-    decision("safetube", "weekly-views", "The Weekly views page asks to read YouTube stats.", NOW - 10_000),
+    decision("hivra", "windows-build", "Which Windows build should ship?", 20 * 60_000, {
+      options: ["Ship 1.4.2", "Wait for 1.4.3"],
+      recommended: "Ship 1.4.2",
+    }),
+    decision("hivra", "merge-217", "Ready to merge #217.", 9 * 60_000),
+    decision("nibbii", "npm-publish", "frank wants to run npm publish in nibbii-web.", 2 * 60_000),
+    decision("safetube", "weekly-views", "The Weekly views page asks to read YouTube stats.", 60_000),
   ]);
   await openLocalHub(page, "", PROJECTS);
   await expect(page.locator("[data-hub-strip]")).toBeVisible({ timeout: 60_000 });
@@ -184,7 +196,8 @@ test("rail, home, header, mono line and inbox share one Needs you list", async (
   expect(needsText).not.toMatch(/[0-9a-f]{8}-[0-9a-f-]{8,}/i);
   expect(needsText).toContain("Open chat");
   expect(needsText).not.toContain("Open EXO lead's chat");
-  expect(needsText).toContain("Stopped.");
+  expect(needsText).toContain("Stopped");
+  expect(needsText).not.toContain("Stopped.");
   expect(needsText).toContain("Example: Out of credits");
   const title = needs.locator("h2");
   expect(await title.evaluate((el) => el.nextElementSibling?.getAttribute("data-home-needs-count") ?? "")).toBe("5");
@@ -192,20 +205,23 @@ test("rail, home, header, mono line and inbox share one Needs you list", async (
   await expect(stopped).toHaveCount(1);
   await expect(needs.locator("[data-home-line]").first()).toHaveAttribute("data-home-line", "stopped");
   const order = (await needs.innerText()).replace(/\s+/g, " ");
-  const stoppedAt = order.indexOf("Stopped.");
+  const stoppedAt = order.indexOf("Example: Out of credits");
   const mergeAt = order.indexOf("Ready to merge");
   const askAt = order.indexOf("Which Windows build should ship?");
   expect(stoppedAt).toBeGreaterThanOrEqual(0);
   expect(mergeAt).toBeGreaterThan(stoppedAt);
   expect(askAt).toBeGreaterThan(mergeAt);
   await expect(stopped.locator("[data-needs-chip]")).toHaveText("EXO");
-  await expect(stopped.locator("[data-needs-stopped]")).toHaveText("Stopped.");
-  await expect(stopped.locator("[data-needs-stopped]")).toHaveClass(/text-red-400/);
+  await expect(stopped.locator("[data-needs-kind='stopped']")).toHaveText("Stopped");
+  await expect(stopped.locator("[data-needs-kind='stopped']")).toHaveClass(/text-red-400/);
+  await expect(stopped.locator("[data-needs-stopped]")).toHaveCount(0);
   const openChat = stopped.getByRole("button", { name: "Open chat" });
   expect(Number.parseFloat(await openChat.evaluate((el) => getComputedStyle(el).borderTopWidth))).toBeGreaterThan(0);
   await expect(openChat).not.toHaveClass(/bg-accent/);
   const windows = needs.locator("[data-home-line]").filter({ hasText: "Which Windows build should ship?" });
-  const answer = windows.getByRole("button", { name: "Yes", exact: true });
+  const answer = windows.getByRole("button", { name: "Ship 1.4.2", exact: true });
+  const otherWay = windows.getByRole("button", { name: "Open", exact: true });
+  await expect(otherWay).toHaveCount(1);
   await expect(answer).toHaveClass(/bg-accent/);
   await expect(answer).not.toHaveClass(/primary-action/);
   const paint = await answer.evaluate((el) => {
@@ -226,6 +242,7 @@ test("rail, home, header, mono line and inbox share one Needs you list", async (
     await expect(button).not.toHaveClass(/bg-accent/);
     expect(Number.parseFloat(await button.evaluate((el) => getComputedStyle(el).borderTopWidth))).toBeGreaterThan(0);
   };
+  await bordered(otherWay);
   const publish = needs.locator("[data-home-line]").filter({ hasText: "npm publish" });
   const allowOnce = publish.getByRole("button", { name: "Allow once" });
   await expect(allowOnce).toHaveCount(1);
@@ -294,6 +311,10 @@ test("rail, home, header, mono line and inbox share one Needs you list", async (
   await page.locator("[data-hub-home]").getByRole("button", { name: "Home" }).click({ force: true });
   await expect(page.locator("[data-home]")).toBeVisible();
   await page.locator("[data-needs-project='hivra']").filter({ hasText: "Which Windows build should ship?" }).locator("[data-needs-answer]").click();
+  await expect.poll(async () => page.evaluate(() => {
+    const rows = JSON.parse(localStorage.getItem("monocode:dev-decisions") ?? "[]") as Array<{ decisionKey?: string; answer?: string | null }>;
+    return rows.find((row) => row.decisionKey === "windows-build")?.answer ?? "";
+  })).toBe("Ship 1.4.2");
   await agree("4", "1");
   await expect(page.locator("[data-home-section='needs-you']")).not.toContainText("Which Windows build should ship?");
   await expect(page.locator("[data-home-section='projects']")).toContainText("Hivra · 1 needs you");
