@@ -9,6 +9,8 @@ import type { Block, MonoSpawnedSession } from "../../sessions/model/session";
 import { USAGE_LIMIT_RESUME_GRACE_MS } from "../../sessions/model/usageLimit";
 import { withFirstMateContract } from "../../firstmate/model/contract";
 import type { MonoLook } from "./mono";
+import { unkeptPromise } from "../vendor/unkeptPromise";
+import { checklistNotice, openParts, openPartsNudge, routineParts } from "../vendor/routineChecklist";
 import {
   MonoFileConflict,
   monoContext,
@@ -388,8 +390,36 @@ You are running one of your habits on your own; the user did not just message yo
 Habit: ${habit.name}
 ${habit.instructions.trim()}
 ${extra?.trim() ? `\n${extra.trim()}\n` : ""}
-Do the work now with your tools and the app CLI. Then reply with exactly the message you would send the user in your chat: short, in your own voice, only what they would want to know, with no preamble about running a habit. If there is nothing worth telling them, reply with exactly ${QUIET_MARKER} and nothing else; silence is the right answer more often than not. Save anything worth remembering with the memory actions before you reply.
+${habitChecklist(habit.instructions)}${UNATTENDED_RULES}
+Do the work now with your tools and the app CLI. Then reply with exactly the message you would send the user in your chat: short, in your own voice, only what they would want to know, with no preamble about running a habit. Put the result first, with any assumption you made said first; then, only if there are any, a part headed "What I could not confirm" giving each gap with its reason; then questions that still matter now the work is done; then the changes you made, each with a link or path. If there is nothing worth telling them, reply with exactly ${QUIET_MARKER} and nothing else; silence is the right answer more often than not. Save anything worth remembering with the memory actions before you reply.
 </habit_run>`);
+}
+
+/**
+ * How an unattended habit run works. (Adapted from OpenBot by CopilotKit, MIT, shared/bot-prompt.ts ROUTINE_RUN_LINES,
+ * commit 558cba6.)
+ */
+const UNATTENDED_RULES = `Nobody is watching this run, and nobody can answer a question until it ends. The user set up this habit and approved its steps, so carry them out without asking. Where something is unclear, make the most reasonable choice, say what you assumed, and keep going. The app still asks the user before anything it gates; that is not a question for you to ask. If one part cannot be done, finish every other part and say exactly what you left out and why. Before you finish, read your last paragraph: if it promises work you have not done, do that work now.
+`;
+
+/** A habit written as a list gets a numbered checklist to close. Empty when it is one job. */
+function habitChecklist(instructions: string): string {
+  const parts = routineParts(instructions);
+  return parts.length ? `${checklistNotice(parts)}\n\n` : "";
+}
+
+/**
+ * The one message a finished habit run is sent back with, or nothing: parts of its list still open, or its last words
+ * promising work it did not do. A quiet run is finished. The caller sends it once per run. (OpenBot by CopilotKit, MIT:
+ * openPartsNudge and the unkept-promise check.)
+ */
+export function habitFollowUp(instructions: string, reply: string): string | undefined {
+  if (!reply.trim() || habitReport(reply) === undefined) return undefined;
+  const open = openParts(routineParts(instructions), reply);
+  if (open.length) return openPartsNudge(open);
+  const promise = unkeptPromise(reply);
+  if (promise) return `Your answer ended on "${promise}" with no step after it, so nothing is running. Do that step now, or finish with what is done, what is missing and why.`;
+  return undefined;
 }
 
 /** What to post, or nothing when the run chose to stay quiet. */

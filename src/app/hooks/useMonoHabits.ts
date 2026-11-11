@@ -24,6 +24,7 @@ import {
   dueHabits,
   HABIT_APPROVAL_WAIT_MS,
   HABIT_RUN_TIMEOUT_MS,
+  habitFollowUp,
   habitReport,
   habitRunLaunches,
   isRelayed,
@@ -229,6 +230,8 @@ export function useMonoHabits(
       setHabitRunning(habit.id, now);
       host.add(run);
       let outcome: ControlOutcome;
+      // The first answer of a run that was sent back once: the report keeps it above the second.
+      let earlier = "";
       // WP-164: a read that fails leaves the morning run with its usual instructions.
       const waiting = morningHabitNotes(habit.id);
       try {
@@ -239,6 +242,23 @@ export function useMonoHabits(
         outcome = await watchRun(host, mono.id, habit, run.id, () =>
           host.run(run.id, prompt),
         );
+        // A list habit with parts still open, or an answer that ends on a promise, is sent back once.
+        if (outcome.status === "completed") {
+          const first =
+            finalReply(host.sessions().find((s) => s.id === run.id)) ||
+            outcome.text;
+          const followUp = habitFollowUp(habit.instructions, first);
+          if (followUp) {
+            const again = await watchRun(host, mono.id, habit, run.id, () =>
+              host.run(run.id, `/operator ${followUp}`),
+            );
+            // A send-back that fails keeps the first answer: it was a finished run.
+            if (again.status === "completed") {
+              outcome = again;
+              earlier = first;
+            }
+          }
+        }
       } catch (error) {
         outcome = {
           status: "failed",
@@ -246,9 +266,10 @@ export function useMonoHabits(
           error: error instanceof Error ? error.message : String(error),
         };
       }
-      const reply =
+      const latest =
         finalReply(host.sessions().find((s) => s.id === run.id)) ||
         outcome.text;
+      const reply = earlier ? `${earlier.trim()}\n\n${latest.trim()}` : latest;
       const artifacts = artifactCards(
         host.sessions().find((s) => s.id === run.id)?.blocks ?? [],
       );
