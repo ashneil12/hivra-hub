@@ -169,6 +169,15 @@ export async function cancelFxTurn(sessionId: string): Promise<void> {
   live.acp.rejectPending(new Error("cancelled"));
 }
 
+/**
+ * fx's ACP session/prompt is awaited for the whole turn. This adapter's
+ * ACP handling has no signal for a detached shell, a subagent that outlives
+ * the prompt, or a follow-up turn after it returns, so nothing is kept busy.
+ */
+export function fxHasBackgroundWork(_sessionId: string): boolean {
+  return false;
+}
+
 export async function stopFxSession(sessionId: string): Promise<void> {
   cancelledThreads.delete(sessionId);
   const live = liveByThread.get(sessionId);

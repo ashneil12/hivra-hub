@@ -258,6 +258,15 @@ async function teardownLive(live: Live): Promise<void> {
   await killChild(live.childKey).catch(() => undefined);
 }
 
+/**
+ * Antigravity's ACP session/prompt is awaited for the whole turn. This adapter's
+ * ACP handling has no signal for a detached shell, a subagent that outlives
+ * the prompt, or a follow-up turn after it returns, so nothing is kept busy.
+ */
+export function antigravityHasBackgroundWork(_sessionId: string): boolean {
+  return false;
+}
+
 export async function stopAntigravitySession(sessionId: string): Promise<void> {
   // Stopping the session invalidates work already queued for it, not just the
   // registered live — a send waiting its turn must not resurrect it.
