@@ -4050,15 +4050,30 @@ mod review_r3_repro {
         assert!(on, "after the rename the switch reads off");
     }
 
-    /// Limit: the deny is job-creation and the launchd mach services, not exec. With System Integrity Protection on,
-    /// CI can kill a byte copy of a platform binary before `main`, so a failed `version` does not prove the profile
-    /// refused the copy. This is the original repro with only that assertion inverted.
+    /// Limit: the deny is job-creation and the launchd mach services, not exec. Where System Integrity Protection is
+    /// off (CI), a byte copy of launchctl runs `version` under the profile; it still cannot create a job (the ad-hoc
+    /// copy and submit probes below). This is the original repro with only that assertion inverted, behind a control
+    /// run: where the system kills a byte copy before `main` (SIP on), the limit cannot be observed, so it says so.
     #[cfg(target_os = "macos")]
     #[test]
     fn a_copied_launchctl_limit_the_copy_runs() {
         let home = temp_home("copy");
         let copy = home.join("lc");
         std::fs::copy("/bin/launchctl", &copy).unwrap();
+        let control = Command::new(&copy)
+            .arg("version")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map(|status| status.success())
+            .unwrap_or(false);
+        if !control {
+            let _ = std::fs::remove_dir_all(&home);
+            eprintln!(
+                "the system kills a byte copy of launchctl here, so the limit cannot be observed"
+            );
+            return;
+        }
         let profile = profile_text(&home).unwrap();
         let ran = Command::new(SANDBOX_EXEC)
             .args(["-p", &profile])
