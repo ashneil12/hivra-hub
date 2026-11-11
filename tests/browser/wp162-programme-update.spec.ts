@@ -14,6 +14,12 @@ test("the update starts off, and turning it on sends the command", async ({ page
   await expect(page.locator("body")).toHaveAttribute("data-last-flag", "true");
 });
 
+test("rebase says an already pushed branch is left as it is", async ({ page }) => {
+  await page.goto(pageUrl);
+  await expect(page.getByRole("button", { name: "Rebase" })).toBeVisible();
+  await expect(page.getByText("already on the remote is left as it is")).toBeVisible();
+});
+
 test("a late reply for the previous project does not overwrite the current one", async ({ page }) => {
   await page.goto(pageUrl);
   await page.getByRole("button", { name: "Slow project" }).click();
