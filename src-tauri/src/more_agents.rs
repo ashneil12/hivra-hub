@@ -381,23 +381,100 @@ fn canonical_file(path: &str) -> Result<String, String> {
     Ok(canonical.to_string_lossy().into_owned())
 }
 
-/// One argument as the child will get it, and the absolute files it names (whole, after `=`, or a short flag's value).
+/// A local `file:` URL decoded to a path. `None` when `value` is not a file URL. A file URL that is not a local file
+/// (a host other than localhost, or a broken percent escape) is an error, so it cannot slip through unpinned.
+fn file_url_target(value: &str) -> Result<Option<String>, String> {
+    let bytes = value.as_bytes();
+    if bytes.len() < 5 || !bytes[..5].eq_ignore_ascii_case(b"file:") {
+        return Ok(None);
+    }
+    let rest = &value[5..];
+    let (host, raw_path) = if let Some(after) = rest.strip_prefix("//") {
+        match after.find('/') {
+            Some(at) => (&after[..at], &after[at..]),
+            None => return Err(FILE_ARG_REFUSED.into()),
+        }
+    } else if rest.starts_with('/') {
+        ("", rest)
+    } else {
+        return Err(FILE_ARG_REFUSED.into());
+    };
+    if !host.is_empty() && !host.eq_ignore_ascii_case("localhost") {
+        return Err(FILE_ARG_REFUSED.into());
+    }
+    let decoded = percent_decode(raw_path)?;
+    if decoded.is_empty() || decoded == "/" {
+        return Err(FILE_ARG_REFUSED.into());
+    }
+    Ok(Some(file_url_path(&decoded)))
+}
+
+fn percent_decode(input: &str) -> Result<String, String> {
+    let bytes = input.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'%' {
+            if index + 2 >= bytes.len() {
+                return Err(FILE_ARG_REFUSED.into());
+            }
+            let hi = hex_digit(bytes[index + 1]).ok_or_else(|| FILE_ARG_REFUSED.to_string())?;
+            let lo = hex_digit(bytes[index + 2]).ok_or_else(|| FILE_ARG_REFUSED.to_string())?;
+            out.push((hi << 4) | lo);
+            index += 3;
+        } else {
+            out.push(bytes[index]);
+            index += 1;
+        }
+    }
+    String::from_utf8(out).map_err(|_| FILE_ARG_REFUSED.to_string())
+}
+
+fn hex_digit(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
+}
+
+/// `file:///C:/dir/file` carries a leading slash in front of the drive. Drop it so the path is `C:/dir/file`.
+fn file_url_path(decoded: &str) -> String {
+    let bytes = decoded.as_bytes();
+    if bytes.len() >= 3 && bytes[0] == b'/' && bytes[1].is_ascii_alphabetic() && bytes[2] == b':' {
+        decoded[1..].to_string()
+    } else {
+        decoded.to_string()
+    }
+}
+
+/// The canonical file a value names, when it is an absolute path or a local file URL.
+fn canonical_of_value(value: &str) -> Result<Option<String>, String> {
+    if let Some(path) = file_url_target(value)? {
+        return Ok(Some(canonical_file(&path)?));
+    }
+    if Path::new(value).is_absolute() {
+        return Ok(Some(canonical_file(value)?));
+    }
+    Ok(None)
+}
+
+/// One argument as the child will get it, and the absolute files it names (whole, after `=`, a short flag's value,
+/// or the file a `file:` URL names).
 fn pin_arg(arg: &str) -> Result<(String, Vec<String>), String> {
-    if Path::new(arg).is_absolute() {
-        let canonical = canonical_file(arg)?;
+    if let Some(canonical) = canonical_of_value(arg)? {
         return Ok((canonical.clone(), vec![canonical]));
     }
     if arg.starts_with('-') {
         if let Some((flag, value)) = arg.split_once('=') {
-            if Path::new(value).is_absolute() {
-                let canonical = canonical_file(value)?;
+            if let Some(canonical) = canonical_of_value(value)? {
                 return Ok((format!("{flag}={canonical}"), vec![canonical]));
             }
         }
         if arg.len() > 2 && !arg.starts_with("--") {
             if let (Some(value), Some(head)) = (arg.get(2..), arg.get(..2)) {
-                if Path::new(value).is_absolute() {
-                    let canonical = canonical_file(value)?;
+                if let Some(canonical) = canonical_of_value(value)? {
                     return Ok((format!("{head}{canonical}"), vec![canonical]));
                 }
             }
@@ -712,23 +789,73 @@ fn inline_flag(arg: &str) -> bool {
 /// A relative file argument. Refused: a `..` segment, a `~` path, a leading `.`, or a script or config file name.
 /// A slash in a model name (`openai/gpt-4.1`) is not a path. A scoped package (`@scope/pkg`) and a URL are not paths.
 /// The child runs in an empty folder, so a relative word cannot reach a chat file. Every value an argument can carry
-/// is checked, not only the argument.
+/// is checked, not only the argument. A leading `@` is not a free pass: the same rule applies to what follows it.
+/// A rooted path with no drive (`\Users\ash`) and a drive-relative path (`C:foo`, `C:..\agent`) are refused too.
 fn relative_file_arg(arg: &str) -> bool {
-    candidates(arg).into_iter().any(|value| {
-        !value.is_empty()
-            && !value.contains("://")
-            && !value.starts_with('@')
-            && !Path::new(value).is_absolute()
-            && (has_parent_segment(value)
-                || has_tilde(value)
-                || value.starts_with('.')
-                || names_a_script_or_config(value))
-    })
+    candidates(arg).into_iter().any(refused_path_value)
+}
+
+/// One value an argument can carry. A leading `@` is stripped and the rest is checked the same way, so `@../x` and
+/// `@~/x` are refused and `@scope/pkg` is not.
+fn refused_path_value(value: &str) -> bool {
+    if value.is_empty() {
+        return false;
+    }
+    if let Some(rest) = value.strip_prefix('@') {
+        return refused_path_value(rest);
+    }
+    match file_url_target(value) {
+        Err(_) => return true,
+        Ok(Some(_)) => return false,
+        Ok(None) => {}
+    }
+    if value.contains("://") {
+        return false;
+    }
+    if is_drive_relative(value) || is_rooted_without_drive(value) {
+        return true;
+    }
+    if Path::new(value).is_absolute() {
+        return false;
+    }
+    has_parent_segment(value)
+        || has_tilde(value)
+        || value.starts_with('.')
+        || names_a_script_or_config(value)
+}
+
+/// `C:foo` and `C:..\agent`: a drive letter, a colon, and no slash. `C:\foo` is absolute and is not this.
+fn is_drive_relative(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    if bytes.len() < 2 || !bytes[0].is_ascii_alphabetic() || bytes[1] != b':' {
+        return false;
+    }
+    bytes.len() == 2 || (bytes[2] != b'/' && bytes[2] != b'\\')
+}
+
+/// A root with no drive: `\Users\ash`, and on Windows `/Users/ash`. A UNC path (`\\server\share`) is not this.
+fn is_rooted_without_drive(value: &str) -> bool {
+    if value.starts_with("\\\\") || value.starts_with("//") {
+        return false;
+    }
+    if value.starts_with('\\') {
+        return true;
+    }
+    cfg!(windows) && value.starts_with('/')
 }
 
 /// `..` as its own path segment (`../x`, `foo/../x`), not a word that merely contains two dots.
+/// `C:..` is a parent segment too: the drive letter would otherwise hide the `..`.
 fn has_parent_segment(value: &str) -> bool {
-    value.split(['/', '\\']).any(|segment| segment == "..")
+    value.split(['/', '\\']).any(is_parent_segment)
+}
+
+fn is_parent_segment(segment: &str) -> bool {
+    if segment == ".." {
+        return true;
+    }
+    let bytes = segment.as_bytes();
+    bytes.len() == 4 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' && &bytes[2..] == b".."
 }
 
 /// A home path: `~`, `~/x`, or a segment that starts with `~`.
@@ -2822,5 +2949,41 @@ mod tests {
             );
         }
         assert!(checked_fields(&entry("wp134", "/opt/npx", &["-y", "@scope/pkg"])).is_ok());
+    }
+
+    // A percent-encoded file: URL names the same local file as a plain one. The space must not hide it from the pin.
+    #[cfg(unix)]
+    #[test]
+    fn a_percent_encoded_file_url_is_pinned_or_refused() {
+        let d = dir();
+        let bin = d.path().join("bin");
+        make_tool(&bin, "deno", b"#!/bin/sh\n");
+        let script = d.path().join("my agent.ts");
+        std::fs::write(&script, b"console.log('approved')").expect("script");
+        let encoded = script.to_string_lossy().replace(' ', "%20");
+        let url = format!("file://{encoded}");
+        let path_value = bin.to_string_lossy().into_owned();
+        let agent = entry("wp134", "deno", &["run", url.as_str()]);
+        if checked_fields(&agent).is_err() {
+            return;
+        }
+        write_agents(d.path(), 0, vec![agent]).expect("seed");
+        approve(d.path(), "wp134", &path_value).expect("approve");
+        std::fs::write(&script, b"require('cp').exec('xx')").expect("edit");
+        assert!(
+            approved_spawn(d.path(), "wp134", &path_value).is_err(),
+            "a percent-encoded file URL was not pinned"
+        );
+    }
+
+    // `C:foo` is drive-relative even when it has no `..` segment. It is not absolute, so it must be refused.
+    #[test]
+    fn a_drive_relative_path_without_a_parent_segment_is_refused() {
+        for arg in ["C:foo", "C:foo\\agent", "d:bar", "--config=C:foo"] {
+            assert!(
+                checked_fields(&entry("wp134", "/opt/node", &[arg])).is_err(),
+                "{arg} is a drive-relative path"
+            );
+        }
     }
 }

@@ -180,20 +180,46 @@ function valuesOf(arg: string): string[] {
   return out;
 }
 
-function isRelativeFile(value: string): boolean {
-  if (!value || value.includes("://") || value.startsWith("@")) return false;
+function runningOnWindows(): boolean {
+  if (typeof navigator !== "undefined" && /Windows/.test(navigator.userAgent)) return true;
+  return typeof process !== "undefined" && process.platform === "win32";
+}
+
+/** A drive letter, a colon, and no slash: `C:foo`, `C:..\agent`. `C:\foo` is absolute and is not this. */
+function isDriveRelative(value: string): boolean {
+  return /^[A-Za-z]:([^\\/]|$)/.test(value);
+}
+
+/** A root with no drive: `\Users\ash`, and on Windows `/Users/ash`. A UNC path is not this. */
+function isRootedWithoutDrive(value: string, platform: string): boolean {
+  if (value.startsWith("\\\\") || value.startsWith("//")) return false;
+  if (value.startsWith("\\")) return true;
+  return platform === "win32" && value.startsWith("/");
+}
+
+/** `..`, or `C:..` where the drive letter would otherwise hide the parent segment. */
+function isParentSegment(segment: string): boolean {
+  return segment === ".." || /^[A-Za-z]:\.\.$/.test(segment);
+}
+
+function isRelativeFile(value: string, platform: string): boolean {
+  if (!value) return false;
+  // A leading @ is not a free pass. `@../x` and `@~/x` are paths. `@scope/pkg` is not.
+  if (value.startsWith("@")) return isRelativeFile(value.slice(1), platform);
+  if (value.includes("://")) return false;
+  if (isDriveRelative(value) || isRootedWithoutDrive(value, platform)) return true;
   if (value.startsWith("/") || /^[A-Za-z]:[\\/]/.test(value)) return false;
   const ext = value.includes(".") ? value.slice(value.lastIndexOf(".") + 1).toLowerCase() : "";
   const segments = value.split(/[/\\]/);
   // A slash in a model name is not a path. Refuse a .. segment, a ~ path, a leading dot, or a script or config name.
-  return segments.some((segment) => segment === "..")
+  return segments.some((segment) => isParentSegment(segment))
     || segments.some((segment) => segment.startsWith("~"))
     || value.startsWith(".")
     || SCRIPT_EXTENSIONS.includes(ext);
 }
 
-/** The reason an argument list is refused, or null when it is allowed. */
-export function argumentProblem(command: string, args: string[]): string | null {
+/** The reason an argument list is refused, or null when it is allowed. `platform` is for tests; the running OS is the default. */
+export function argumentProblem(command: string, args: string[], platform = runningOnWindows() ? "win32" : "other"): string | null {
   const interpreter = isInterpreter(command);
   if (interpreter) {
     const inline = args.some((arg) => {
@@ -207,7 +233,7 @@ export function argumentProblem(command: string, args: string[]): string | null 
     });
     if (inline) return "An agent cannot be started with an inline program (-c, -e, --eval or -p). Point at its program file.";
   }
-  if (args.some((arg) => valuesOf(arg).some(isRelativeFile))) {
+  if (args.some((arg) => valuesOf(arg).some((value) => isRelativeFile(value, platform)))) {
     return "An argument that names a file must give its full absolute path. A relative path is not pinned, so it is refused.";
   }
   if (interpreter) {

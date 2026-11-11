@@ -228,5 +228,17 @@ describe("review #231 r3: a Windows path that is not absolute is not a model nam
     expect(argumentProblem("/opt/node", ["\\Users\\ash\\agent"])).not.toBeNull();
     expect(argumentProblem("/opt/node", ["--config=\\Users\\ash\\cfg"])).not.toBeNull();
     expect(argumentProblem("/opt/node", ["C:..\\agent"])).not.toBeNull();
+    expect(argumentProblem("/opt/node", ["C:foo"])).not.toBeNull();
+    expect(argumentProblem("/opt/node", ["--config=C:foo"])).not.toBeNull();
+    expect(argumentProblem("/opt/node", ["/Users/ash/agent"], "win32")).not.toBeNull();
+    expect(argumentProblem("/opt/node", ["/Users/ash/agent"], "darwin")).toBeNull();
+  });
+
+  it("refuses a parent or home path after @ and still allows a scoped package", async () => {
+    const { argumentProblem } = await import("./moreAgents");
+    expect(argumentProblem("/opt/npx", ["@../args.txt"])).not.toBeNull();
+    expect(argumentProblem("/opt/npx", ["@~/args"])).not.toBeNull();
+    expect(argumentProblem("/opt/npx", ["--opts=@../args"])).not.toBeNull();
+    expect(argumentProblem("/opt/npx", ["-y", "@scope/pkg"])).toBeNull();
   });
 });
