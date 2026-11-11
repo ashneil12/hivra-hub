@@ -39,6 +39,14 @@ export type FirstMateItem = {
   recommended: string | null;
   /** WP-92: a line that sits under the answer buttons (a secret card's warning about "Always"). */
   note?: string | null;
+  /** A short kind, such as "Passed up". Absent on a row that has none. */
+  chip?: string;
+  /** Where the row came from, such as the project and who passed it up. */
+  sourceLine?: string;
+  /** Words in front of the body, so the reason can name who said it. */
+  reasonLead?: string;
+  /** Actions on the right. The first primary one is the suggestion. */
+  actions?: readonly { label: string; primary?: boolean }[];
   project: string;
   key: string | null;
   /** The decision version this card was drawn from. Absent on a row that is not a decision. */

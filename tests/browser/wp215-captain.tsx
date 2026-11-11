@@ -49,6 +49,14 @@ const passedUp: FirstMateItem = {
   title: "Example: retry the check?",
   body: reason,
   statusWord: suggestion,
+  chip: "Passed up",
+  sourceLine: "EXO · Chief of Staff · just now",
+  reasonLead: "Chief of Staff:",
+  note: "Passed up: your call",
+  actions: [
+    { label: "Do that", primary: true },
+    { label: "Something else" },
+  ],
   chatId: null,
   workerIds: [],
   options: [],
@@ -65,14 +73,20 @@ function Page() {
   useLayoutEffect(() => {
     const lines = passRef.current?.querySelectorAll("article p");
     lines?.[0]?.setAttribute("data-testid", "passup");
-    lines?.[1]?.setAttribute("data-testid", "passup-reason");
+    passRef.current?.querySelector("[data-reason-text]")?.setAttribute("data-testid", "passup-reason");
   }, []);
   return (
     <main className="min-h-screen bg-background-base text-content">
       <div className="mx-auto flex max-w-3xl flex-col gap-6 px-8 py-8">
         <h1 className="text-[22px] font-medium text-content">Hivra</h1>
-        <section className="rounded-lg border border-stroke px-3 py-3" data-testid="handoff">
-          <RoomMessage chatId="room" message={handoffMessage} messages={[handoffMessage]} nameOf={() => "App"} />
+        <section className="flex items-center justify-center gap-3 rounded-lg border border-stroke px-3 py-3">
+          <div data-testid="handoff">
+            <RoomMessage chatId="room" message={handoffMessage} messages={[handoffMessage]} nameOf={() => "App"} />
+          </div>
+          <span className="text-xs text-content/50">Ada</span>
+          <a href="#task-1" className="text-xs text-blue-400 underline">
+            Open
+          </a>
         </section>
         <section className="rounded-lg border border-stroke">
           <h2 className="px-3 pt-3 text-[13px] font-medium text-content">Needs you</h2>
@@ -83,12 +97,12 @@ function Page() {
         <section className="rounded-lg border border-stroke">
           <h2 className="px-3 pt-3 text-[13px] font-medium text-content">Decided for you</h2>
           <div className="px-3 py-2.5">
-            <div className="break-words text-[13px] leading-5 text-content">Example: keep the gate?</div>
-            <div className="break-words text-[13px] leading-5 text-content" data-testid="standing-answer">
+            <div className="break-words text-[13px] leading-5 text-content/45">Example: keep the gate?</div>
+            <div className="break-words text-[13px] font-medium leading-5 text-content" data-testid="standing-answer">
               {answer}
             </div>
-            <div className="text-xs text-content/60" data-testid="standing-reason">
-              {why}
+            <div className="text-xs text-content/60">
+              Chief of Staff, <span data-testid="standing-reason">{why}</span>, 2 min ago
             </div>
           </div>
         </section>
