@@ -20,6 +20,8 @@ mod review_r10_lead_tests;
 #[cfg(test)]
 mod review_r10_tests;
 #[cfg(test)]
+mod review_r11_tests;
+#[cfg(test)]
 mod tests;
 
 use std::path::PathBuf;
