@@ -1407,15 +1407,19 @@ pub fn harness_spawn(
     // WP-92: a worker's approved secrets go into this one child's environment, read in Rust from the Keychain. This runs
     // after configure_child, so the app's MONOCODE_* variables it just set are stripped again for an armed worker (M3).
     // The Keychain is read before the store's lock is taken (secrets::worker::apply_to_child locks it itself, briefly).
-    {
+    // A More agents child gets its environment cleared below, so its secrets are applied after that clear instead.
+    let apply_secrets = |cmd: &mut Command| -> Result<(), String> {
         let store = app.state::<crate::session_store::SessionStore>();
         crate::secrets::worker::apply_to_child(
             &session_id,
             crate::secrets::store::active(),
-            &mut cmd,
+            cmd,
             &store,
             crate::session_store::now_millis(),
-        )?;
+        )
+    };
+    if !more_run {
+        apply_secrets(&mut cmd)?;
     }
     // WP-04: no Ash OS env any more (the ash-os entry is gone; every chat denies `mcp__ash-os`, hubMcp.ts).
     // WP-86: stamp this crew's commits. A failure here must not stop the crew.
@@ -1439,18 +1443,23 @@ pub fn harness_spawn(
             task.as_deref(),
         );
     }
-    // WP-134: a More agents child gets no app environment (keys, the control endpoint): only the allow-list.
+    // WP-134: a More agents child gets no app environment (keys, the control endpoint): only the allow-list, then the
+    // secrets the person approved for this worker (WP-92). Applying them before the clear dropped them.
     // The last hash in this process is here, after the run folder exists and immediately before the spawn.
     // A text-file-busy retry hashes again before the next spawn. On macOS the disclaim launcher hashes once more,
     // immediately before exec. When the sandbox is on, that launcher sits inside the wrap, so the hash still
     // applies to the approved program, and the wrap is the last step before spawn.
     let more_recheck = if more_run {
-        if !sandbox_more {
-            crate::more_agents::restrict_env(&mut cmd, &gui_search_path());
-        }
         let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
         let id = more_id.as_deref().unwrap_or("").to_string();
-        if let Err(error) = crate::more_agents::confirm_before_spawn(&data_dir, &id, &command) {
+        // A sandboxed child's environment is cleared inside the wrap, so its secrets go on after the wrap below.
+        let ready = if sandbox_more {
+            crate::more_agents::confirm_before_spawn(&data_dir, &id, &command)
+        } else {
+            crate::more_agents::restrict_env_then(&mut cmd, &gui_search_path(), apply_secrets)
+                .and_then(|()| crate::more_agents::confirm_before_spawn(&data_dir, &id, &command))
+        };
+        if let Err(error) = ready {
             let _ = crate::more_agents::remove_run_folder(&data_dir, &spawn_dir);
             return Err(error);
         }
@@ -1496,6 +1505,13 @@ pub fn harness_spawn(
                 );
             }
         };
+        // WP-92: the wrap cleared the environment to the allow-list, so the approved secrets go on now.
+        if let Err(error) = apply_secrets(&mut cmd) {
+            if let Some((data_dir, _, _)) = more_recheck.as_ref() {
+                let _ = crate::more_agents::remove_run_folder(data_dir, &spawn_dir);
+            }
+            return Err(error);
+        }
     }
     let recheck = || match more_recheck.as_ref() {
         Some((data_dir, id, command)) => {

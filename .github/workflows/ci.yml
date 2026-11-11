@@ -73,12 +73,13 @@ jobs:
     # plus the tests. A second attempt that also runs to the cap can meet this limit, and that still fails the hang.
     # The OS packages' .deb files are cached as well: on 10 Nov 2026 the Ubuntu mirror was slow enough that most
     # browser jobs hit the old 8 minute cap twice before a test ran.
-    name: browser (${{ matrix.shard }}/4)
+    # 11 Nov 2026: six shards. With four, two shards took 13 minutes and two took 6, so the slowest set the wait.
+    name: browser (${{ matrix.shard }}/6)
     timeout-minutes: 35
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4]
+        shard: [1, 2, 3, 4, 5, 6]
     runs-on: ubuntu-latest
     # GitHub's default job timeout is 360 minutes, which is too long for a hang.
     permissions:
@@ -155,7 +156,7 @@ jobs:
       - name: Hivra layout (Hub flag)
         if: matrix.shard == 1
         run: npx playwright test -c tests/browser/hivra-layout.config.ts
-      - run: npm run test:browser -- --shard=${{ matrix.shard }}/4
+      - run: npm run test:browser -- --shard=${{ matrix.shard }}/6
       - name: Upload browser failure traces
         if: failure()
         uses: actions/upload-artifact@v4
@@ -171,7 +172,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        # Windows and Linux are off while the app is Mac-only (Ash, 11 Nov 2026). Set the repository variable
+        # HUB_CROSS_PLATFORM_CI to true to run them again.
+        os: ${{ fromJSON(vars.HUB_CROSS_PLATFORM_CI == 'true' && '["ubuntu-latest","macos-latest","windows-latest"]' || '["macos-latest"]') }}
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -193,20 +196,19 @@ jobs:
     if: github.event_name != 'schedule' && (github.event_name != 'pull_request' || !github.event.pull_request.draft)
     # Hivra: the web tests and the Rust checks ran one after the other in one job (about 24 minutes on Windows).
     # On Linux and Windows they now run as separate jobs, and Windows splits the web tests in two (vitest --shard).
-    # macOS stays one runner. The web half and the Rust half run at the same time in that job, because a second
-    # macOS runner would sit in the queue. Linux and Windows stay split.
+    # macOS stays one runner. When every OS runs, the web half and the Rust half run at the same time in that job,
+    # because a second macOS runner would sit in the queue. By default (11 Nov 2026) macOS runs only the Rust half.
     name: check (${{ matrix.os }}, ${{ matrix.part }}${{ matrix.shard && format(' {0}', matrix.shard) || '' }})
     timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - { os: macos-latest, part: all }
-          - { os: ubuntu-latest, part: web }
-          - { os: ubuntu-latest, part: rust }
-          - { os: windows-latest, part: web, shard: 1/2 }
-          - { os: windows-latest, part: web, shard: 2/2 }
-          - { os: windows-latest, part: rust }
+        # Windows and Linux are off while the app is Mac-only (Ash, 11 Nov 2026). Set the repository variable
+        # HUB_CROSS_PLATFORM_CI to true to run them again.
+        # By default the web half (vitest and tsc, which test no OS) runs on two Linux runners and macOS runs only the
+        # Rust half. On 11 Nov 2026 the macOS job ran both halves on one 3-core runner: vitest took 25 minutes there
+        # against 6 on Linux, and the Rust tests waited behind it, so every PR waited 27 minutes for that one job.
+        include: ${{ fromJSON(vars.HUB_CROSS_PLATFORM_CI == 'true' && '[{"os":"macos-latest","part":"all"},{"os":"ubuntu-latest","part":"web"},{"os":"ubuntu-latest","part":"rust"},{"os":"windows-latest","part":"web","shard":"1/2"},{"os":"windows-latest","part":"web","shard":"2/2"},{"os":"windows-latest","part":"rust"}]' || '[{"os":"ubuntu-latest","part":"web","shard":"1/2"},{"os":"ubuntu-latest","part":"web","shard":"2/2"},{"os":"macos-latest","part":"rust"}]') }}
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -274,7 +276,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-latest, ubuntu-latest, windows-latest]
+        # Windows and Linux are off while the app is Mac-only; HUB_CROSS_PLATFORM_CI=true runs them again.
+        os: ${{ fromJSON(vars.HUB_CROSS_PLATFORM_CI == 'true' && '["macos-latest","ubuntu-latest","windows-latest"]' || '["macos-latest"]') }}
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -292,7 +295,8 @@ jobs:
         run: node --disable-warning=ExperimentalWarning --test scripts/hub-ship.test.mjs scripts/ship-platform.test.mjs
 
   appimage:
-    if: github.event_name != 'schedule' && (github.event_name != 'pull_request' || !github.event.pull_request.draft)
+    # Linux packaging is off while the app is Mac-only; HUB_CROSS_PLATFORM_CI=true runs it again.
+    if: vars.HUB_CROSS_PLATFORM_CI == 'true' && github.event_name != 'schedule' && (github.event_name != 'pull_request' || !github.event.pull_request.draft)
     name: AppImage host libraries
     runs-on: ubuntu-22.04
     permissions:
@@ -362,7 +366,9 @@ jobs:
   # and every pull request whose base-sha diff touches an RPM input, the same idea as the AppImage job. The script
   # prints full=true or full=false. A missing event, a missing base or a git failure prints full=true.
   rpm-changes:
-    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
+    # Linux packaging is off while the app is Mac-only; HUB_CROSS_PLATFORM_CI=true runs it again. The rpm build and
+    # the clean install need this job, so they skip with it.
+    if: vars.HUB_CROSS_PLATFORM_CI == 'true' && (github.event_name != 'pull_request' || !github.event.pull_request.draft)
     name: RPM packaging changes
     runs-on: ubuntu-latest
     permissions:
