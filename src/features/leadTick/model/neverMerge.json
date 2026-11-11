@@ -100,7 +100,8 @@
     "src/features/hub/model/hubStore.ts",
     "src/features/hub/model/liveHubData.ts",
     "src/features/hub/model/localHub/localTransport.ts",
-    "src-tauri/src/self_build.rs"
+    "src-tauri/src/self_build.rs",
+    "src/features/hub/model/decisionKey.ts"
   ],
   "plannedPaths": [
     "src-tauri/src/secrets/**",
