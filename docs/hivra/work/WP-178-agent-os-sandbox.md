@@ -140,6 +140,24 @@ Not built in this round, on purpose:
 - [ ] `npm run check` passes. Not run; scoped checks run instead (tsc, the two test files, node test). Native checks
   stay open until seen in a dev copy on Ash's Mac.
 
+## Limits
+
+- The seatbelt profile grows by about 9.4 KB for each known project. It is refused, and nothing starts, once the
+  profile is 900,000 bytes (under the about 1 MiB argument limit). That is around 110 to 220 projects. The error is
+  "The sandbox profile is too large to apply, so nothing starts."
+- `project_folders` keeps an absolute path with no `..` and no null. Anything else is skipped, not expanded, so a
+  folder written as `~/Projects/name` is not locked.
+- Ash's own commit, push, pull and fetch run with git hooks on, and not inside the container. An in-tree hook such as
+  `core.hooksPath=.husky` still runs on those commands.
+- A self-build Apply runs the project's src tests.
+- The container profile denies writes to `.git/hooks` and `.git/config` for known projects. It does not deny the rest
+  of `.git`, so the index stays writable. The agent profile denies the whole `.git`.
+- The ship record mac signs the id, both stamps (`to.sha` and `from.sha`), the app path, the data dir, home, the
+  launch mode and env, and the launchd plist. It does not sign `phase` or `steps`, because the runner writes those on
+  a real ship and a mac of them would fail. Startup also leaves a record alone when its id is not the ship folder
+  name. The data folder is write-denied while the sandbox is on, so an agent cannot rewrite that record in place.
+  Startup itself runs outside the sandbox, which is why the mac and the folder check are there.
+
 ## Licence
 
 Ideas from Agentlas 2.0 (Appbridge Inc., announced 10 Nov 2026) and its public desktop repository (agentlas-ai/agentlas-desktop, Apache-2.0). No code is copied in this package. If a file is ever vendored, it gets its header, a NOTICE line and a credits.json entry, and this WP names it.

@@ -426,6 +426,14 @@ pub fn startup(identity: &Identity, data: &Path) -> Boot {
         );
         return Boot::Normal;
     }
+    // The folder name comes from current.json. A signed record whose own id is some other folder is not this ship.
+    if ship.id() != id {
+        log(
+            &dir,
+            "startup: the record id does not match the ship folder, so this record is not restored",
+        );
+        return Boot::Normal;
+    }
     let Some(phase) = ship.phase() else {
         return Boot::Normal;
     };
@@ -941,10 +949,14 @@ const SHIP_MAC_SERVICE: &str = "monocode-hub:ship-mac";
 #[cfg(not(test))]
 const SHIP_MAC_ACCOUNT: &str = "record";
 
-/// The fields the runner must not change, in a fixed order. `phase` is not here.
+/// The fields the runner must not change, in a fixed order. `phase` and `steps` are not here: the runner writes
+/// both, and a mac of them would fail on a real ship. `to.sha` and `from.sha` are here, so a rewritten stamp does
+/// not still match.
 fn canonical_record(ship: &Ship) -> String {
     let mut lines = vec![
         format!("id={}", ship.text("/id")),
+        format!("to.sha={}", ship.new_sha()),
+        format!("from.sha={}", ship.old_sha()),
         format!("node={}", ship.text("/node")),
         format!("appPath={}", ship.text("/appPath")),
         format!("dataDir={}", ship.text("/dataDir")),
@@ -2907,7 +2919,7 @@ mod tests {
     }
 
     /// The mac covers the fields the runner must not change. A phase rewrite, which the runner does, still matches.
-    /// A missing mac, or a changed app path or launch env, does not.
+    /// A missing mac, a changed sha, a changed app path or a changed launch env does not.
     #[cfg(unix)]
     #[test]
     fn a_signed_record_stays_ours_when_only_the_phase_changes() {
@@ -2950,6 +2962,34 @@ mod tests {
             runner_record_is_ours(&Ship::load(&dir).unwrap()),
             "the runner rewrites phase, and that must not break the mac"
         );
+        let mut stamped = Ship::load(&dir).unwrap();
+        stamped
+            .doc
+            .as_object_mut()
+            .unwrap()
+            .insert("from".into(), json!({ "sha": "deadbeef" }));
+        stamped.save().unwrap();
+        assert!(
+            !runner_record_is_ours(&Ship::load(&dir).unwrap()),
+            "a changed from sha must not still match"
+        );
+        let mut stamped = Ship::load(&dir).unwrap();
+        stamped.doc.as_object_mut().unwrap().remove("from");
+        stamped
+            .doc
+            .as_object_mut()
+            .unwrap()
+            .insert("to".into(), json!({ "sha": "cafebabe" }));
+        stamped.save().unwrap();
+        assert!(
+            !runner_record_is_ours(&Ship::load(&dir).unwrap()),
+            "a changed to sha must not still match"
+        );
+        // Back to the signed record, so the checks below still prove the env and the app path.
+        let mut stamped = Ship::load(&dir).unwrap();
+        stamped.doc.as_object_mut().unwrap().remove("to");
+        stamped.save().unwrap();
+        sign_ship_record(&stamped).unwrap();
         let mut env = Ship::load(&dir).unwrap();
         *env.doc.pointer_mut("/launch/env/A").unwrap() = json!("9");
         env.save().unwrap();
@@ -2964,6 +3004,56 @@ mod tests {
         assert!(
             !runner_record_is_ours(&Ship::load(&dir).unwrap()),
             "a changed app path must not still match"
+        );
+    }
+
+    /// A matching mac is not enough when the record's id is not the folder `current.json` names. Startup must not
+    /// move `previous.app.off` to the path that record chose.
+    #[cfg(unix)]
+    #[test]
+    fn startup_leaves_a_signed_record_whose_id_is_not_the_folder() {
+        let own = instance::stamp().sha.clone();
+        assert!(!own.is_empty(), "this test needs a build stamp");
+        let root = TempDir::new("ship-id");
+        let data = root.0.join("data");
+        let folder = "other-id";
+        let dir = data.join(SHIP_DIR).join(folder);
+        let agents = root.0.join("LaunchAgents");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::create_dir_all(&agents).unwrap();
+        let target = agents.join("com.agent.plist");
+        std::fs::write(dir.join(PREVIOUS_APP), "<plist>agent job</plist>\n").unwrap();
+        write_json(
+            &dir.join(STATE),
+            &json!({
+                "id": "real-id",
+                "phase": "rolling-back",
+                "to": { "sha": "0000000" },
+                "from": { "sha": own },
+                "appPath": target.to_string_lossy(),
+                "dataDir": data.to_string_lossy(),
+            }),
+        )
+        .unwrap();
+        write_json(&data.join(SHIP_DIR).join(CURRENT), &json!({ "id": folder })).unwrap();
+        sign_ship_record(&Ship::load(&dir).unwrap()).unwrap();
+        assert!(
+            mac_matches(&Ship::load(&dir).unwrap()),
+            "the record is signed; only the folder name is wrong"
+        );
+        let daily = Identity {
+            kind: Kind::Daily,
+            identifier: instance::DAILY_IDENTIFIER.into(),
+            slot: None,
+        };
+        let _ = startup(&daily, &data);
+        assert!(
+            !target.exists(),
+            "startup moved a file from a signed record whose id is not the ship folder"
+        );
+        assert!(
+            dir.join(PREVIOUS_APP).is_file(),
+            "the previous build stays in the ship folder"
         );
     }
 
