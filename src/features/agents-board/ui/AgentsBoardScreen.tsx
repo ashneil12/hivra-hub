@@ -23,6 +23,8 @@ import { AgentsBoard } from "./AgentsBoard";
 
 const emptySubscribe = () => () => undefined;
 const noSessions = (): Session[] => [];
+const NO_LINES: Record<string, readonly string[]> = {};
+const lineCache = new WeakMap<readonly Block[], readonly string[]>();
 
 export function AgentsBoardScreen() {
   const hubSnap = useHubDataVersion();
@@ -88,14 +90,13 @@ export function AgentsBoardScreen() {
     });
   }, [codingVersion, delegations, hubSnap, monos, now, prefsVersion, sessions, stopVersion, watchVersion]);
 
-  const lines = useMemo(() => transcriptLines(sessions, delegations), [sessions, delegations]);
-
   return (
     <AgentsBoard
       tree={board.tree}
       projects={board.projects}
       now={now}
-      lines={lines}
+      lines={NO_LINES}
+      readLines={(id) => transcriptFor(id, sessions, delegations)}
       onStop={(id) => stopBoardRow(id, { delegations, sessions })}
       onOpen={(id) => {
         const node = flattenBoard(board.tree).find((item) => item.id === id);
@@ -128,26 +129,24 @@ function checksFor(delegations: readonly Delegation[]): StoreCheck[] {
   return out;
 }
 
-function transcriptLines(sessions: readonly Session[], delegations: readonly Delegation[]): Record<string, string[]> {
-  const bySession = new Map(sessions.map((session) => [session.id, session]));
-  const out: Record<string, string[]> = {};
-  for (const session of sessions) {
-    const lines = textLines(session.blocks);
-    if (lines.length) out[session.id] = lines;
-  }
-  for (const row of delegations) {
-    const session = row.childSession ? bySession.get(row.childSession) : undefined;
-    const lines = session ? textLines(session.blocks) : [];
-    if (lines.length) out[row.id] = lines;
-  }
-  return out;
+/** One row's chat. A worker row uses its child session. Nothing else is read. */
+function transcriptFor(id: string, sessions: readonly Session[], delegations: readonly Delegation[]): readonly string[] {
+  const child = delegations.find((row) => row.id === id)?.childSession;
+  const sessionId = child?.trim() ? child : id;
+  const session = sessions.find((item) => item.id === sessionId);
+  return session ? textLines(session.blocks) : [];
 }
 
-function textLines(blocks: readonly Block[]): string[] {
+function textLines(blocks: readonly Block[] | undefined): readonly string[] {
+  if (!blocks?.length) return [];
+  const cached = lineCache.get(blocks);
+  if (cached) return cached;
   const lines: string[] = [];
   for (const block of blocks) {
     const text = taskWords(block.text);
     if (text) lines.push(text);
   }
-  return lines.slice(-12);
+  const shown = lines.slice(-12);
+  lineCache.set(blocks, shown);
+  return shown;
 }

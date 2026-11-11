@@ -26,6 +26,7 @@ export function AgentsBoard({
   projects,
   now,
   lines,
+  readLines,
   onStop,
   onOpen,
   initialOpen,
@@ -34,6 +35,8 @@ export function AgentsBoard({
   projects: readonly { id: string; name: string }[];
   now: number;
   lines: Record<string, readonly string[]>;
+  /** Read one chat when its row is open. A full map in `lines` still wins, so older callers stay put. */
+  readLines?: (id: string) => readonly string[];
   onStop: (id: string) => void | Promise<void>;
   onOpen: (id: string) => void;
   initialOpen?: OpenMap;
@@ -50,6 +53,7 @@ export function AgentsBoard({
   const ids = useMemo(() => flattenBoard(shown).map((node) => node.id), [shown]);
   const current = selected ? flattenBoard(shown).find((node) => node.id === selected) ?? null : null;
   const entry = current ? stops[current.id] ?? { phase: "closed" as StopPhase } : { phase: "closed" as StopPhase };
+  const chatLines = current ? (lines[current.id] ?? readLines?.(current.id) ?? []) : [];
   const asking = entry.phase === "asking" && current != null;
 
   // Stopped stays until this row has been quiet and then starts working again.
@@ -204,8 +208,8 @@ export function AgentsBoard({
               <p className="mt-1 text-[12px] text-content/50">{chipText(current)}</p>
             </div>
             <div className="min-h-0 flex-1 space-y-2 overflow-auto px-4 py-3 text-[13px] leading-5 text-content/80">
-              {(lines[current.id] ?? []).length ? (
-                (lines[current.id] ?? []).map((line, index) => <p key={index}>{line}</p>)
+              {chatLines.length ? (
+                chatLines.map((line, index) => <p key={index}>{line}</p>)
               ) : (
                 <p className="text-content/45">No messages in this chat yet.</p>
               )}
