@@ -5,6 +5,7 @@ import {
   forgetSession,
   respondApproval,
   rewindLastTurn,
+  hasBackgroundWork,
   sendTurn,
   setPiBinaryResolver as setFlavorBinaryResolver,
   steerTurn,
@@ -57,6 +58,10 @@ export function cancelPiTurn(sessionId: string): Promise<void> {
 
 export function stopPiSession(sessionId: string): Promise<void> {
   return stopSession(PI_FLAVOR, sessionId);
+}
+
+export function piHasBackgroundWork(sessionId: string): boolean {
+  return hasBackgroundWork(PI_FLAVOR, sessionId);
 }
 
 export function forgetPiSession(sessionId: string): Promise<void> {

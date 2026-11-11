@@ -681,11 +681,23 @@ export const SETTINGS_INDEX: SettingsEntry[] = [
     keywords: "pacman snake arcade grid fun",
   },
   {
+    id: "text-generation",
+    section: "providers",
+    label: "Short text",
+    keywords: "title commit branch openrouter ollama deepseek",
+  },
+  {
     id: "agent-clis",
     section: "providers",
     label: "Agent CLIs",
     keywords:
       "codex opencode cursor grok pi omp fx hermes antigravity devin binary path",
+  },
+  {
+    id: "more-agents",
+    section: "providers",
+    label: "More agents",
+    keywords: "local command acp extra agent",
   },
   {
     id: "provider-accounts",
@@ -1317,6 +1329,38 @@ export function subscribeLiveAgentsEnabled(onStoreChange: () => void) {
   window.addEventListener(LIVE_AGENTS_ENABLED_CHANGE_EVENT, onStoreChange);
   return () =>
     window.removeEventListener(LIVE_AGENTS_ENABLED_CHANGE_EVENT, onStoreChange);
+}
+
+const MORE_AGENTS_ENABLED_KEY = "monocode.moreAgentsEnabled";
+
+export const MORE_AGENTS_ENABLED_DEFAULT = false;
+
+/** Fired on `window` when More agents is switched on or off. */
+export const MORE_AGENTS_ENABLED_CHANGE_EVENT =
+  "monocode:more-agents-enabled-change";
+
+export function loadMoreAgentsEnabled(): boolean {
+  return readFlag(MORE_AGENTS_ENABLED_KEY) ?? MORE_AGENTS_ENABLED_DEFAULT;
+}
+
+export function saveMoreAgentsEnabled(value: boolean) {
+  writeFlag(MORE_AGENTS_ENABLED_KEY, value);
+  if (typeof window === "undefined") return;
+  window.dispatchEvent(
+    new CustomEvent<boolean>(MORE_AGENTS_ENABLED_CHANGE_EVENT, {
+      detail: value,
+    }),
+  );
+}
+
+export function subscribeMoreAgentsEnabled(onStoreChange: () => void) {
+  if (typeof window === "undefined") return () => {};
+  window.addEventListener(MORE_AGENTS_ENABLED_CHANGE_EVENT, onStoreChange);
+  return () =>
+    window.removeEventListener(
+      MORE_AGENTS_ENABLED_CHANGE_EVENT,
+      onStoreChange,
+    );
 }
 
 const CLOSE_TO_TRAY_KEY = "monocode.closeToTray";

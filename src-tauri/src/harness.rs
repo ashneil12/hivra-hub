@@ -15,6 +15,80 @@ use crate::dirs_home;
 use crate::fs::expand_home;
 use crate::passwd_identity;
 
+// WP-134b: the More agents start. A child module so it shares this host's private pieces without widening them.
+
+/// The longest stdout line a More agents child may send. A longer line stops that child's read, so a child that never
+/// ends a line cannot grow the app's memory without bound.
+const MAX_STDOUT_LINE: usize = 8 * 1024 * 1024;
+/// The longest stderr line a More agents child may send.
+const MAX_STDERR_LINE: usize = 64 * 1024;
+
+/// Reads stdout line by line and hands each line on until `on_line` says stop or the stream ends. With a cap, a line
+/// past it ends the read; without one, every line is read whole.
+pub(crate) fn read_stdout_lines<R: BufRead>(
+    mut reader: R,
+    cap: Option<usize>,
+    mut on_line: impl FnMut(String) -> bool,
+) {
+    let mut raw = Vec::new();
+    loop {
+        raw.clear();
+        let read = match cap {
+            Some(max) => (&mut reader)
+                .take((max + 1) as u64)
+                .read_until(b'\n', &mut raw),
+            None => reader.read_until(b'\n', &mut raw),
+        };
+        if !matches!(read, Ok(n) if n > 0) {
+            break;
+        }
+        if cap.is_some_and(|max| raw.len() > max) {
+            break;
+        }
+        let line = String::from_utf8_lossy(&raw)
+            .trim_end_matches(['\n', '\r'])
+            .to_string();
+        if !on_line(line) {
+            break;
+        }
+    }
+}
+
+#[cfg(test)]
+mod stdout_cap_tests {
+    use super::read_stdout_lines;
+    use std::io::Cursor;
+
+    #[test]
+    fn a_claude_line_of_nine_mebibytes_is_delivered_whole_and_the_session_goes_on() {
+        let big = "x".repeat(9 * 1024 * 1024);
+        let input = format!("{big}\nnext\n");
+        let mut got = Vec::new();
+        read_stdout_lines(Cursor::new(input.into_bytes()), None, |line| {
+            got.push(line);
+            true
+        });
+        assert_eq!(got.len(), 2);
+        assert_eq!(got[0].len(), 9 * 1024 * 1024);
+        assert_eq!(got[1], "next");
+    }
+
+    #[test]
+    fn a_more_agents_line_past_the_cap_ends_the_read() {
+        let big = "x".repeat(9 * 1024 * 1024);
+        let input = format!("first\n{big}\nnext\n");
+        let mut got = Vec::new();
+        read_stdout_lines(
+            Cursor::new(input.into_bytes()),
+            Some(8 * 1024 * 1024),
+            |line| {
+                got.push(line);
+                true
+            },
+        );
+        assert_eq!(got, vec!["first".to_string()]);
+    }
+}
 const STDOUT_EVENT: &str = "harness-stdout";
 const STDERR_EVENT: &str = "harness-stderr";
 const EXIT_EVENT: &str = "harness-exit";
@@ -979,13 +1053,47 @@ pub fn harness_spawn(
     codex_store: Option<String>,
     devin_ask_edits: Option<bool>,
     custom_route: Option<crate::model_router::CustomRoute>,
+    // WP-134: a More agents entry. Its command and arguments come from the saved list, and only once the person has
+    // approved that command (src-tauri/src/more_agents.rs). The webview sends no command for it.
+    more_agent: Option<String>,
 ) -> Result<u32, String> {
-    let workdir = launch_preflight(
-        &command,
-        &cwd,
-        binary_provider.as_deref(),
-        binary_path.as_deref(),
-    )?;
+    let more = match more_agent.as_deref() {
+        None => None,
+        Some(agent) => {
+            let other_fields_sent = binary_provider.is_some()
+                || binary_path.is_some()
+                || account.is_some()
+                || custom_route.is_some()
+                || codex_store.is_some()
+                || devin_ask_edits.is_some();
+            let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+            Some(crate::more_agents::approved_start(
+                &data_dir,
+                agent,
+                &command,
+                &args,
+                other_fields_sent,
+                &gui_search_path(),
+            )?)
+        }
+    };
+    let more_run = more.is_some();
+    let (command, args) = match more {
+        Some(run) => (run.command, run.args),
+        None => (command, args),
+    };
+    let workdir = if more_run {
+        // WP-134: the command was approved above. The bench gate and the chat folder still apply; the binary check does not.
+        crate::verify_live::provider_start_allowed(crate::verify_live::plan(), None, &command)?;
+        crate::chat_folder::require(&cwd)?
+    } else {
+        launch_preflight(
+            &command,
+            &cwd,
+            binary_provider.as_deref(),
+            binary_path.as_deref(),
+        )?
+    };
 
     // `--config` is a global option, so it precedes the `acp` subcommand.
     let devin_config = match devin_ask_edits {
@@ -1037,6 +1145,12 @@ pub fn harness_spawn(
     );
     let mut cmd =
         crate::disclaim::command(std::ffi::OsStr::new(&command), disclaim_launcher.as_deref());
+    // A More agents child runs in its own empty folder, never the chat folder: nothing a chat holds is a relative input.
+    let spawn_dir = if more_run {
+        crate::more_agents::run_folder(&app.path().app_data_dir().map_err(|e| e.to_string())?)?
+    } else {
+        workdir.clone()
+    };
     if dev_claude {
         if let Some(config_dir) = crate::instance::dev_claude_config_dir()? {
             cmd.env("CLAUDE_CONFIG_DIR", &config_dir)
@@ -1045,7 +1159,7 @@ pub fn harness_spawn(
     }
     cmd.args(&devin_config)
         .args(&args)
-        .current_dir(&workdir)
+        .current_dir(&spawn_dir)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -1053,7 +1167,10 @@ pub fn harness_spawn(
     apply_provider_account(&app, &mut cmd, account.as_ref())?;
     // "Other models": a Claude Code session on a non-Claude model goes through the hub's local router with the
     // model's own key. Claude models (and Ash's subscription login) are never routed: may_route refuses them.
-    if let Some((set, remove)) = routed {
+    // The routed session's router token (WP-129 L2) is held by the stdout reader below, so it ends with the session.
+    let mut routed_session = None;
+    if let Some(((set, remove), session)) = routed {
+        routed_session = Some(session);
         for key in remove {
             cmd.env_remove(key);
         }
@@ -1118,6 +1235,10 @@ pub fn harness_spawn(
             &session_id,
             task.as_deref(),
         );
+    }
+    // WP-134: a More agents child gets no app environment (keys, the control endpoint): only the allow-list.
+    if more_run {
+        crate::more_agents::restrict_env(&mut cmd, &gui_search_path());
     }
     let mut child =
         spawn_managed(&mut cmd).map_err(|e| format!("Failed to start {command}: {e}"))?;
@@ -1186,9 +1307,12 @@ pub fn harness_spawn(
     let stdout_run = run.clone();
     // WP-92: a worker given a secret has every line of its output scrubbed before the app stores or shows it.
     let scrub_stdout = session_id.clone();
+    // Only a More agents child is capped. A Claude or Codex line can carry a large base64 payload (a PDF or an image),
+    // and cutting it would end the session, so those lines are read whole, as they always were.
+    let stdout_cap = more_run.then_some(MAX_STDOUT_LINE);
     thread::spawn(move || {
-        for line in BufReader::new(stdout).lines() {
-            let Ok(line) = line else { break };
+        let _routed_session = routed_session;
+        read_stdout_lines(BufReader::new(stdout), stdout_cap, |line| {
             let line = crate::secrets::worker::scrub_line(&scrub_stdout, line);
             if crate::harness_runs::ends_turn(&line) {
                 stdout_run
@@ -1204,17 +1328,16 @@ pub fn harness_spawn(
                     store.sync_auth();
                 }
             }
-            if stdout_tx.send(line).is_err() {
-                break;
-            }
-        }
+            stdout_tx.send(line).is_ok()
+        });
     });
 
     let stderr_app = app.clone();
     let stderr_id = session_id.clone();
+    // A More agents child's stderr is capped too, so a child that writes forever cannot grow the app's memory.
+    let stderr_cap = more_run.then_some(MAX_STDERR_LINE);
     thread::spawn(move || {
-        for line in BufReader::new(stderr).lines() {
-            let Ok(line) = line else { break };
+        read_stdout_lines(BufReader::new(stderr), stderr_cap, |line| {
             let line = crate::secrets::worker::scrub_line(&stderr_id, line);
             let _ = stderr_app.emit(
                 STDERR_EVENT,
@@ -1223,7 +1346,8 @@ pub fn harness_spawn(
                     line,
                 },
             );
-        }
+            true
+        });
     });
 
     let wait_app = app.clone();

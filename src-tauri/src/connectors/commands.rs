@@ -620,7 +620,8 @@ mod tests {
             .unwrap();
         let err = prepare_with_vault(&args, &svc.dir, memory.as_ref(), &vault).unwrap_err();
         assert!(err.contains("isn't saved any more"), "{err}");
-        std::fs::remove_dir_all(svc.dir).unwrap();
+        // Windows keeps the store's files open until the handles drop, so cleanup is best effort.
+        let _ = std::fs::remove_dir_all(svc.dir);
     }
 
     #[test]
@@ -660,7 +661,8 @@ mod tests {
             .iter()
             .any(|value| value == "ghp_OTHER_0123456789"));
         assert!(!vault.values().iter().any(|value| value == SENTINEL));
-        std::fs::remove_dir_all(svc.dir).unwrap();
+        // Windows keeps the store's files open until the handles drop, so cleanup is best effort.
+        let _ = std::fs::remove_dir_all(svc.dir);
     }
 
     #[test]
@@ -711,7 +713,8 @@ mod tests {
             vec!["/p/hivra"],
             "projects kept for the next sign-in"
         );
-        std::fs::remove_dir_all(&svc.dir).unwrap();
+        // Windows keeps the store's files open until the handles drop, so cleanup is best effort.
+        let _ = std::fs::remove_dir_all(&svc.dir);
     }
 
     #[test]

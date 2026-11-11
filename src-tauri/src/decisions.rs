@@ -112,6 +112,19 @@ fn from_row(row: &Row) -> rusqlite::Result<Decision> {
     })
 }
 
+/// The decision a key names: as stored, or else under its folded form (a spelling that differs only in case or width).
+/// Rows written before the fold are found by their exact key, so they stay answerable as they were.
+fn find(conn: &Connection, project: &str, key: &str) -> Result<Option<Decision>, String> {
+    if let Some(found) = get(conn, project, key)? {
+        return Ok(Some(found));
+    }
+    let folded = fold_key(key);
+    if folded == key {
+        return Ok(None);
+    }
+    get(conn, project, &folded)
+}
+
 pub fn get(conn: &Connection, project: &str, key: &str) -> Result<Option<Decision>, String> {
     conn.query_row(
         &format!("SELECT {COLUMNS} FROM decisions WHERE project = ?1 AND decision_key = ?2"),
@@ -177,17 +190,30 @@ fn save(conn: &Connection, d: &Decision) -> Result<(), String> {
     Ok(())
 }
 
+/// WP-172: a restart decision of a fan-out names its plan, its task and the request id that was stopped (up to 100,
+/// 40 and 100 characters), then a 16-character owner tag, with the prefix and separators: 272 at most.
+const FANOUT_AGAIN_KEY_MAX: usize = 300;
+
+fn key_max(value: &str) -> usize {
+    if is_again_key(value) {
+        FANOUT_AGAIN_KEY_MAX
+    } else {
+        KEY_MAX
+    }
+}
+
 fn key_like(value: &str) -> Result<String, String> {
     let value = value.trim();
+    let max = key_max(value);
     if value.is_empty()
-        || value.len() > KEY_MAX
+        || value.len() > max
         || !value
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b':' | b'/'))
     {
         return Err(format!(
             "key must be a stable name for the question, like \"retention-policy\": letters, digits, - _ . : / and at \
-             most {KEY_MAX} characters"
+             most {max} characters"
         ));
     }
     Ok(value.to_string())
@@ -502,7 +528,7 @@ pub fn secret_answered_by_person(answered_by: Option<&str>) -> bool {
 /// the exact command. An agent's `ask_person` reaches the store through `decisions_ask`, and it may not pick a key that
 /// would put its own words on a card the person approves a secret run on.
 pub fn check_ask_key(key: &str) -> Result<(), String> {
-    if key.trim().starts_with("secret/") {
+    if is_secret_key(key) {
         return Err(
             "A key's approval card is made by the app when you run a command with that key; only the app can ask it. \
              Call secrets_run and the person is asked."
@@ -526,7 +552,7 @@ pub fn refresh_open(
     by_mono: Option<&str>,
     now: i64,
 ) -> Result<bool, String> {
-    if !key.starts_with("secret/") {
+    if !is_secret_key(key) {
         return Ok(false);
     }
     let Some(card) = get(conn, project, key)? else {
@@ -561,8 +587,52 @@ pub fn refresh_open(
 /// clean review). It tells no one: the chat that asked did the thing, or the person allowed it.
 pub const APP_CLOSER: &str = "app:fresh-eyes";
 
+/// Invisible characters: Unicode general category Cf (format) and the other default-ignorable code points. A spelling
+/// that differs only by them looks the same on screen, so the fold drops them. Mirrored in TS by the `\p{Cf}` and
+/// `\p{Default_Ignorable_Code_Point}` classes in `foldDecisionKey`.
+fn is_ignorable(c: char) -> bool {
+    matches!(
+        c as u32,
+        0x00AD
+            | 0x034F
+            | 0x0600..=0x0605
+            | 0x061C
+            | 0x06DD
+            | 0x070F
+            | 0x08E2
+            | 0x115F..=0x1160
+            | 0x17B4..=0x17B5
+            | 0x180B..=0x180F
+            | 0x200B..=0x200F
+            | 0x202A..=0x202E
+            | 0x2060..=0x206F
+            | 0x3164
+            | 0xFE00..=0xFE0F
+            | 0xFEFF
+            | 0xFFA0
+            | 0xFFF0..=0xFFFB
+            | 0x110BD
+            | 0x110CD
+            | 0x13430..=0x1343F
+            | 0x1BCA0..=0x1BCA3
+            | 0x1D173..=0x1D17A
+            | 0xE0000..=0xE0FFF
+    )
+}
+
+/// The one form every decision-key prefix check reads: NFKC (so fullwidth and other compatibility spellings become
+/// their plain form), invisible characters dropped, trimmed (any Unicode white space, as `str::trim` takes it),
+/// lower-case. A chat can ask or answer under any spelling, so a check on the raw key is a check on the wrong string.
+/// Mirrored in TS by `foldDecisionKey` (src/features/hub/model/decisionKey.ts).
+pub fn fold_key(key: &str) -> String {
+    use unicode_normalization::UnicodeNormalization;
+    let folded: String = key.nfkc().filter(|c| !is_ignorable(*c)).collect();
+    folded.trim().to_lowercase()
+}
+
 /// WP-144: the questions a fresh-eyes review puts to the person (the review itself, and a brief that could not start).
 fn is_review_key(key: &str) -> bool {
+    let key = fold_key(key);
     key.starts_with("fresh-eyes/") || key.starts_with("fresh-eyes-start/")
 }
 
@@ -575,10 +645,33 @@ fn is_review_key(key: &str) -> bool {
 /// WP-144: so is a fresh-eyes review (`fresh-eyes/...`) and the question that its approved brief could not start
 /// (`fresh-eyes-start/...`). A chat answering `ask_person` on its own review's key would take the question out of the
 /// person's Inbox, and the review ignores its answer anyway. The app itself may close them (`app:fresh-eyes`).
+///
+/// WP-172: so is the decision that starts a stopped fan-out task again (`fanout-again/<plan>/<task>/<stopped request id>`).
+/// A stopped worker runs again only on Ash's yes, so an agent's `ask_person` answer (a chat, whatever the words) is refused
+/// here, and the app's own closers are not a way round it.
+///
+/// WP-81: so is a delivery check (`gate/<run>`). Approving it tells the check to send the work on, so a chat that knows
+/// the run id must not answer it, whatever the spelling. The app's own closers are not a way round it either.
+///
+/// WP-92: so is a secret's approval card (`secret/<name>/<program>`). A chat that spells it another way (`SECRET/...`)
+/// must not approve the run. Only the card's own answer (nobody named, or `person`) counts; the Needs sheet (`user`)
+/// does not, and the app's own closers are not a way round it.
 pub fn person_only(key: &str, by: Option<&str>) -> Option<String> {
     let review = is_review_key(key);
-    if !key.starts_with("irreversible/") && !review {
+    let again = is_again_key(key);
+    let gate = is_gate_key(key);
+    let secret = is_secret_key(key);
+    if !fold_key(key).starts_with("irreversible/") && !review && !again && !gate && !secret {
         return None;
+    }
+    // A secret card is stricter than the other person-only keys: `user` (the Needs sheet) is not the person on the card.
+    if secret {
+        return match by.map(str::trim).filter(|word| !word.is_empty()) {
+            None | Some("person") => None,
+            Some(_) => {
+                Some("Only the person can approve a secret run. Ask them on their card.".into())
+            }
+        };
     }
     match by.map(str::trim).filter(|word| !word.is_empty()) {
         None | Some("user") | Some("person") => None,
@@ -586,10 +679,40 @@ pub fn person_only(key: &str, by: Option<&str>) -> Option<String> {
         Some(other) if review => Some(format!(
             "Only the person answers a fresh-eyes review; {other} cannot. It waits in the Inbox until they do."
         )),
+        Some(other) if again => Some(format!(
+            "Only the person answers whether a stopped task starts again; {other} cannot. It waits in Needs until they do."
+        )),
+        Some(other) if gate => Some(format!(
+            "Only the person answers the check; {other} cannot. It waits in Needs until they do."
+        )),
         Some(other) => Some(format!(
             "Only the person answers an irreversible step; {other} cannot. It waits in Needs until they do."
         )),
     }
+}
+
+/// WP-81: a delivery check parked under `gate/<run>`. Read through `fold_key`, like the other person-only prefixes.
+pub fn is_gate_key(key: &str) -> bool {
+    fold_key(key).starts_with("gate/")
+}
+
+/// WP-92: a secret's approval card (`secret/<name>/<program>`). Read through `fold_key`, like the other person-only
+/// prefixes, so a capital or fullwidth spelling is the same card.
+pub fn is_secret_key(key: &str) -> bool {
+    fold_key(key).starts_with("secret/")
+}
+
+/// The person, as an answer is recorded: nobody named, or the words the app uses for them.
+fn from_person(by: Option<&str>) -> bool {
+    matches!(
+        by.map(str::trim).filter(|word| !word.is_empty()),
+        None | Some("user") | Some("person")
+    )
+}
+
+/// WP-172: the decision keys that start a stopped fan-out task again.
+pub fn is_again_key(key: &str) -> bool {
+    fold_key(key).starts_with("fanout-again/")
 }
 
 pub fn answer(
@@ -619,21 +742,27 @@ pub fn answer_seen(
     seen_version: Option<i64>,
     now: i64,
 ) -> Result<AnswerOutcome, String> {
-    if key.trim().starts_with("secret/") && !secret_answer_by_person(by.as_deref()) {
+    if is_secret_key(key) && !secret_answer_by_person(by.as_deref()) {
         return Err("Only the person can approve a secret run. Ask them on their card.".into());
     }
     // Fix round 5 (L5): a secret card's answer names the version that was read. Checked here, after the person check, so
-    // a missing version is refused on every path into the store, not only the Tauri command.
-    if key.trim().starts_with("secret/") && seen_version.is_none() {
+    // a missing version is refused on every path into the store, not only the Tauri command. The prefix is folded, so
+    // "SECRET/..." is the same card.
+    if is_secret_key(key) && seen_version.is_none() {
         return Err(
             "Read the card again and answer it, so the answer is for what you read.".into(),
         );
     }
     let answer = plain(answer, "The answer", ANSWER_MAX)?;
+    // The key as asked, before any lookup: a chat's spelling of a person-only key is refused even when no such
+    // decision exists, so nothing about the lookup can turn a refusal into a quiet no-op or a bypass.
+    if let Some(refusal) = person_only(key, by.as_deref()) {
+        return Err(refusal);
+    }
     let tx = conn
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(|e| e.to_string())?;
-    let Some(mut decision) = get(&tx, project.trim(), key.trim())? else {
+    let Some(mut decision) = find(&tx, project.trim(), key.trim())? else {
         return Ok(AnswerOutcome {
             applied: false,
             decision: None,
@@ -642,7 +771,7 @@ pub fn answer_seen(
         });
     };
     if let Some(seen) = seen_version {
-        if decision.decision_key.starts_with("secret/") && seen != decision.version {
+        if is_secret_key(&decision.decision_key) && seen != decision.version {
             return Err(CARD_CHANGED.into());
         }
     }
@@ -651,7 +780,7 @@ pub fn answer_seen(
         // it; anything else leaves it as it is. Fix round 4 (LOW): "the person" here is the card's own answer, not the
         // Needs sheet's (`user`).
         let person_settles_an_agents_answer = secret_answer_by_person(by.as_deref())
-            && decision.decision_key.starts_with("secret/")
+            && is_secret_key(&decision.decision_key)
             && decision.state == ANSWERED
             && !answered_by_person(decision.answered_by.as_deref());
         if !person_settles_an_agents_answer {
@@ -664,8 +793,9 @@ pub fn answer_seen(
         }
     }
     // WP-91: an irreversible step is the person's to answer, and nobody else's. The webview puts it on its red list
-    // so autopilot holds it, but that is a screen away; this refuses it at the store, whatever path asked.
-    if let Some(refusal) = person_only(decision.decision_key.trim(), by.as_deref()) {
+    // so autopilot holds it, but that is a screen away; this refuses it at the store, whatever path asked. It reads the
+    // stored key, so a decision stored in any case is checked as the person-only key it is.
+    if let Some(refusal) = person_only(&decision.decision_key, by.as_deref()) {
         return Err(refusal);
     }
     decision.state = ANSWERED.into();
@@ -765,15 +895,10 @@ pub fn decisions_answer(
     by: Option<String>,
     seen_version: Option<i64>,
 ) -> Result<AnswerOutcome, String> {
-    // Fix round 4 (N6): a secret card's answer names the version of the card the person read. Without it, nothing is
-    // recorded: the Inbox always sends it.
-    if key.trim().starts_with("secret/") && seen_version.is_none() {
-        return Err(
-            "Read the card again and answer it, so the answer is for what you read.".into(),
-        );
-    }
-    let outcome = answer_seen(
-        &mut *store.lock_conn()?,
+    // The version a secret card was read at is required inside answer_seen, in any spelling of the key. A gate answer
+    // is forwarded only when this one landed and the person gave it.
+    let outcome = answer_and_relay(
+        &store,
         project.as_deref().unwrap_or(""),
         &key,
         &answer,
@@ -781,14 +906,53 @@ pub fn decisions_answer(
         seen_version,
         now_millis(),
     )?;
-    // WP-81: an answer on a check's question goes back to the check. Nothing is answered for the person.
-    if key.starts_with("gate/") {
-        let _ = crate::delivery_gate::forward_answer(&store, &key, &answer);
-    }
     if outcome.applied {
         announce(&app, outcome.decision.as_ref(), &outcome.released);
     }
     Ok(outcome)
+}
+
+/// What `decisions_answer` does with the store, without the window announce, so a test can run the same path.
+pub(crate) fn answer_and_relay(
+    store: &SessionStore,
+    project: &str,
+    key: &str,
+    answer_text: &str,
+    by: Option<String>,
+    seen_version: Option<i64>,
+    now: i64,
+) -> Result<AnswerOutcome, String> {
+    let outcome = answer_seen(
+        &mut *store.lock_conn()?,
+        project,
+        key,
+        answer_text,
+        by,
+        seen_version,
+        now,
+    )?;
+    relay_gate_answer(store, &outcome, answer_text);
+    Ok(outcome)
+}
+
+/// WP-81: a check hears an answer only when this one just landed and the person gave it.
+/// The key and the project are the stored decision's, not the spelling the caller typed.
+pub(crate) fn relay_gate_answer(store: &SessionStore, outcome: &AnswerOutcome, answer: &str) {
+    if !outcome.applied {
+        return;
+    }
+    let Some(decision) = outcome.decision.as_ref() else {
+        return;
+    };
+    if !from_person(decision.answered_by.as_deref()) || !is_gate_key(&decision.decision_key) {
+        return;
+    }
+    let _ = crate::delivery_gate::forward_answer(
+        store,
+        &decision.project,
+        &decision.decision_key,
+        answer,
+    );
 }
 
 #[tauri::command(async)]

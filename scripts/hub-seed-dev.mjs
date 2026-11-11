@@ -138,6 +138,10 @@ export function scrub(db) {
     // copies of his Mono chats, and its outbox would replay them (to the stub, never the live studio).
     wipe("delegations", "delegations");
     wipe("delegationChatBinds", "delegation_chat_binds");
+    // WP-172 (src-tauri/src/fanout_checkpoint.rs): a fan-out's checkpoint names Ash's real briefs and folders. A resume
+    // in a dev copy would start those tasks again in his project folders, so the plans and their leases go.
+    wipe("fanoutCheckpoints", "fanout_checkpoints");
+    wipe("fanoutLeases", "fanout_leases");
     // Hivra WP-14 (src-tauri/src/steering.rs, decisions.rs): pending messages would be delivered into the copy's chats,
     // and decisions answered there would release them. Both belong to the daily app's work.
     wipe("steerMessages", "steer_messages");

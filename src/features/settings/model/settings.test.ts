@@ -814,6 +814,14 @@ describe("settings search", () => {
     });
   });
 
+  it("finds the short text setting on the providers page", () => {
+    expect(searchSettings("short text")[0]).toMatchObject({
+      section: "providers",
+      settingId: "text-generation",
+      label: "Short text",
+    });
+  });
+
   it("finds the new chat worktree setting on the worktrees page", () => {
     expect(searchSettings("every chat")[0]).toMatchObject({
       section: "worktrees",

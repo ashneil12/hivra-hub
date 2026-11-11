@@ -55,6 +55,7 @@ import { lineRulesFor } from "../../crew/model/lineRules";
 import type { Catalog, RouteDefaults } from "../../crew/model/resolve";
 import { applyCrewLaunch, callerOverride, crewLabels, crewPaths } from "../../crew/model/taskRoute";
 import { routeDefaults } from "../../crew/model/workerDefault";
+import { isFanoutAgainDecisionKey } from "../../hub/model/decisionKey";
 import {
   activityNoteSummary,
   crewRuleSentence,
@@ -83,15 +84,32 @@ import { bindCrew, commentId } from "../../phases/model/store";
 import { claudeRunsOnSubscriptionBridge } from "../../../integrations/harness/providers/claude/claudeDeepseekBridge";
 import { checkBrief, renderBrief, type BriefIsolation } from "../../firstmate/model/brief";
 import { parseFanout } from "../../firstmate/model/fanoutContract";
+import {
+  createCheckpoint,
+  describeResume,
+  isComplete,
+  noteQueued,
+  noteRefused,
+  noteStarted,
+  noteStarting,
+  noteStopped,
+  noteWaveDone,
+  planResume,
+  type FanoutCheckpoint,
+  type ResumePlan,
+  type RowLookup,
+} from "../../firstmate/model/fanoutCheckpoint";
+import { windowHolder, type FanoutCheckpointStore } from "../../firstmate/host/fanoutCheckpointStore";
 import { boundRequest, readOriginalRequest } from "../../firstmate/model/originalRequest";
-import { fanoutSection, parseFanoutLink, planFanout, taskRequestId } from "../../firstmate/model/fanoutWaves";
+import { fanoutSection, parseFanoutLink, planFanout, restartRequestId, taskRequestId } from "../../firstmate/model/fanoutWaves";
 import { classifyBriefTask } from "../../firstmate/model/briefSkills";
 import { gateRequest, type GateRequest } from "../../firstmate/model/completionGates";
 import { isFirstMate } from "../../firstmate/model/checkoutGuard";
 import { briefOnRemoteHost } from "../../firstmate/host/remoteDelegate";
 import { remoteProjectFor } from "../../connections/model/remoteProjects";
 import { WORKER_REPORT_SHAPE } from "../../firstmate/model/report";
-import { askPerson, taskMessage, type FirstMateTasksHost } from "../../firstmate/model/steering";
+import { askPerson, askPersonRecorded, taskMessage, type FirstMateTasksHost } from "../../firstmate/model/steering";
+import { sha256Hex } from "../../historyImport/model/hash";
 import { taskProjectOf } from "../../tasks/model/agentTasks";
 import {
   bridgeFamily,
@@ -163,7 +181,7 @@ export const TASK_FIELDS: ReadonlyArray<readonly [string, readonly string[]]> = 
     ],
   ],
   // WP-171: one call for a multi-part ask whose tasks name what they own, provide, require and check.
-  ["tasks.fanout", ["intent", "tasks"]],
+  ["tasks.fanout", ["intent", "tasks", "resume", "confirm"]],
   ["tasks.accept", ["taskId", "accept", "reason"]],
   ["tasks.workers", ["project", "workers", "heavy", "scope", "cli", "model", "effort", "clear"]],
   ["tasks.status", ["taskIds"]],
@@ -214,6 +232,8 @@ export type TaskChild = Pick<Session, "busy" | "pendingQuestion"> & {
 
 /** The app's side of the task tools (App.tsx builds it on the delegation tracker). */
 export type AgentAppTasksHost = {
+  /** WP-172: where a fan-out keeps its checkpoint while it sends (absent: a plan is not checkpointed). */
+  fanoutCheckpoints?: FanoutCheckpointStore;
   /** The caller's own rows: by id or request, or (neither) the ones still running or owed, newest first. */
   owned(
     owner: string,
@@ -1373,7 +1393,322 @@ async function delegate(
  * task that requires a name waits in the worker queue until the task that provides it is delivered and checked
  * (fanoutWaves.ts, fanoutChecks.ts), starting by itself then. A task that cannot start holds the tasks that need it.
  */
+/** WP-172: the plans this app is sending right now, by owner and plan id. A resume of one of them waits its turn. */
+const SENDING_PLANS = new Set<string>();
+
+/** The one plain line a second send or resume of a plan gets, from this window or another. */
+const PLAN_BUSY = "This plan is already being sent, from this window or another. Wait for its answer, then check task_status.";
+
+/** How often a window that is sending a plan renews its lease (the lease itself lasts LEASE_MS in the database). */
+const LEASE_RENEW_MS = 30_000;
+
+/**
+ * WP-172: runs one send or resume of a plan. The plan's lease in the database is taken first, so only one window of
+ * the app sends or resumes a given plan at a time; a second window is refused in plain words. The lease is renewed
+ * while the send runs and given up at the end, and a lease whose window died runs out and can be taken over.
+ */
+async function sendingPlan<T>(
+  owner: string,
+  planId: string,
+  store: FanoutCheckpointStore | undefined,
+  run: () => Promise<T>,
+): Promise<T> {
+  const key = `${owner}\n${planId}`;
+  if (SENDING_PLANS.has(key))
+    throw new Error(PLAN_BUSY);
+  SENDING_PLANS.add(key);
+  const holder = windowHolder();
+  let renew: ReturnType<typeof setInterval> | undefined;
+  let held = false;
+  try {
+    if (store) {
+      held = await store.acquire(owner, planId, holder);
+      if (!held) throw new Error(PLAN_BUSY);
+      renew = setInterval(() => void store.renew(owner, planId, holder).catch(() => false), LEASE_RENEW_MS);
+    }
+    return await run();
+  } finally {
+    if (renew !== undefined) clearInterval(renew);
+    SENDING_PLANS.delete(key);
+    if (held && store) await store.release(owner, planId, holder).catch(() => false);
+  }
+}
+
+/** Said once to the owner when a plan's progress could not be saved: it then cannot be resumed after a crash. */
+const CHECKPOINT_NOTE =
+  "Could not save this plan's progress, so it cannot be resumed if the app stops. Tell Ash in one line.";
+
+/**
+ * A checkpoint writer for one plan: each change is saved as the next revision. A failed or refused save never fails the
+ * plan by itself, but it is remembered, so the owner is told once that the plan cannot be resumed. The write answers
+ * whether it was saved, for the one caller that must not go on without it (a resume's own number).
+ */
+function planWriter(store: FanoutCheckpointStore | undefined, owner: string, first: FanoutCheckpoint | undefined) {
+  let current = first;
+  let failed = false;
+  return {
+    get: () => current,
+    /** WP-172: the checkpoint note for the result, when a write failed or was refused. */
+    note: (): { checkpointNote: string } | Record<string, never> => (failed ? { checkpointNote: CHECKPOINT_NOTE } : {}),
+    async write(change: (cp: FanoutCheckpoint) => FanoutCheckpoint): Promise<boolean> {
+      if (!store || !current) return false;
+      current = change(current);
+      const saved = await store.save(owner, current).catch(() => false);
+      if (!saved) failed = true;
+      return saved;
+    },
+    /** Once every task has started or been refused, the plan is no longer offered for a resume. */
+    async finish(): Promise<void> {
+      if (!store || !current || !isComplete(current)) return;
+      await store.remove(owner, current.id).catch(() => false);
+    },
+  };
+}
+
+/**
+ * The request id a task's last start was sent under: the plan's own id for the task, unless a start again took a new
+ * one (then the stopped row is left as it is, and the new worker has a row of its own).
+ */
+function requestOf(plan: FanoutCheckpoint, name: string): string {
+  return plan.tasks.find((task) => task.name === name)?.requestId ?? taskRequestId(plan.id, name);
+}
+
+/** The rows of a plan's tasks, read by the child session each start was given. */
+function rowsOfPlan(owner: string, plan: FanoutCheckpoint, owned: readonly Delegation[]): RowLookup {
+  return (name) => {
+    const child = `app-${owner}-${requestOf(plan, name)}`;
+    const row = owned.find((entry) => entry.childSession === child);
+    return row ? { id: row.id, childSession: row.childSession, state: row.state } : undefined;
+  };
+}
+
+/** The child session of a task's start (the app's own `app-<owner>-<request>` form). */
+function childOf(owner: string, plan: FanoutCheckpoint, name: string): string {
+  return `app-${owner}-${requestOf(plan, name)}`;
+}
+
+const PLAN_READ_FAILED = "Could not read this plan's tasks, so nothing was started or changed. Try again.";
+const RESUME_NOT_SAVED = "Could not save this plan's resume, so nothing was started again. Try again.";
+
+/**
+ * WP-172: one plan's rows, in one read: the store refuses more than 20 requests at once, so a plan is never read with
+ * another. A read that fails throws; it is never taken for "no row" (a running task would look stopped).
+ */
+async function readPlanRows(owner: string, plan: FanoutCheckpoint, tasks: AgentAppTasksHost): Promise<Delegation[]> {
+  const requestIds = plan.tasks.map((task) => `app-${owner}-${requestOf(plan, task.name)}`);
+  return tasks.owned(owner, { requestIds }).catch(() => {
+    throw new Error(PLAN_READ_FAILED);
+  });
+}
+
+/**
+ * The children still waiting in this window's worker queue, or held for review: their jobs have no row yet. A read that
+ * fails throws: a held brief taken for "no job" would look stopped, and a second worker would start for it.
+ */
+async function waitingChildren(owner: string, tasks: AgentAppTasksHost): Promise<Set<string>> {
+  const waiting = new Set<string>();
+  for (const entry of tasks.pool?.queued(owner) ?? []) waiting.add(entry.job.id);
+  if (tasks.freshEyesWaiting) {
+    const held = await tasks.freshEyesWaiting(owner).catch(() => {
+      throw new Error(HELD_READ_FAILED);
+    });
+    for (const entry of held) waiting.add(entry.childSessionId);
+  }
+  return waiting;
+}
+
+const HELD_READ_FAILED = "Could not read which tasks are held for review, so nothing was started or changed. Try again.";
+
+/** The yes and no a stopped task's decision offers (WP-14). Asked under a stable key, so asking again changes nothing. */
+const AGAIN_YES = "Start it again";
+const AGAIN_NO = "Leave it stopped";
+
+/**
+ * WP-172: the decision that starts a stopped task again. It names the plan, the task and the request id the stopped start
+ * had, so each stop asks afresh: a yes given for one stop starts nothing after a second one. The tag is a hash of the
+ * chat that owns the plan and all three names, so two chats that picked the same plan id and task name get two keys
+ * (Ash's yes for one chat never restarts the other's task). The `fanout-again/` prefix is what person_only and the
+ * ask refusals match.
+ */
+export function fanoutAgainKey(owner: string, plan: string, name: string, stopped: string): string {
+  const tag = sha256Hex(`${owner}\n${plan}\n${name}\n${stopped}`).slice(0, 16);
+  return `fanout-again/${plan}/${name}/${stopped}/${tag}`;
+}
+
+/** Whether a decision key is a restart decision (the trimmed key, as the store reads it). */
+export function isAgainKey(key: unknown): boolean {
+  return typeof key === "string" && isFanoutAgainDecisionKey(key);
+}
+
+/**
+ * WP-14: asks Ash whether a stopped task starts again, as a decision of its own. True only when Ash has answered yes, and
+ * not through a chat (a chat's answer is the model's, whatever the words); the model's `confirm` alone never starts a
+ * worker. Without a first mate's decision store, nothing can be asked.
+ */
+async function askAgain(
+  source: Session,
+  plan: FanoutCheckpoint,
+  name: string,
+  where: { mono?: string; project?: string },
+  firstMate: FirstMateTasksHost | undefined,
+): Promise<boolean> {
+  if (!firstMate) return false;
+  const question = `Start the "${name}" task again? Its worker stopped or went missing, and a repeat can do its work twice.`;
+  const { result, answeredBy, question: stored, options } = await askPersonRecorded(
+    source,
+    {
+      key: fanoutAgainKey(source.id, plan.id, name, requestOf(plan, name)),
+      question,
+      options: [AGAIN_YES, AGAIN_NO],
+      recommended: AGAIN_NO,
+    },
+    where,
+    [],
+    firstMate,
+  );
+  if (answeredBy?.startsWith("chat:")) return false;
+  // The card must be the app's own: a card made first under this key with other words is not Ash's answer to this question.
+  if (stored !== question || options.length !== 2 || options[0] !== AGAIN_YES || options[1] !== AGAIN_NO) return false;
+  return result.state === "answered" && result.answer === AGAIN_YES;
+}
+
 async function fanout(
+  source: Session,
+  requestId: string,
+  input: Record<string, unknown>,
+  host: AgentAppHost,
+  helpers: TaskHelpers,
+) {
+  if (input.resume !== undefined) {
+    if (input.tasks !== undefined)
+      throw new Error("A resume carries on a plan already sent: leave out tasks (name the stopped ones in confirm).");
+    const planId = text(input.resume, "resume", 100);
+    return sendingPlan(source.id, planId, taskOwner(source, host).tasks.fanoutCheckpoints, () =>
+      resumeFanout(source, planId, input, host, helpers),
+    );
+  }
+  return sendingPlan(source.id, requestId, taskOwner(source, host).tasks.fanoutCheckpoints, () =>
+    sendFanout(source, requestId, input, host, helpers),
+  );
+}
+
+/**
+ * WP-172: a plan an earlier run did not finish (a crash, a restart, a quit mid-plan). What never started is sent now,
+ * what started is kept as it is, and a task whose worker was stopped or has gone is sent again only when `confirm`
+ * names it. Every start keeps the plan's request id, so a task that already has a row is never started a second time.
+ */
+async function resumeFanout(
+  source: Session,
+  planId: string,
+  input: Record<string, unknown>,
+  host: AgentAppHost,
+  helpers: TaskHelpers,
+) {
+  const { tasks } = taskOwner(source, host);
+  if (input.confirm !== undefined && (!Array.isArray(input.confirm) || input.confirm.some((name) => typeof name !== "string")))
+    throw new Error("confirm must be a list of the task names to start again");
+  const confirm = (input.confirm as string[] | undefined) ?? [];
+  const store = tasks.fanoutCheckpoints;
+  const found = store ? (await store.list(source.id).catch(() => [] as FanoutCheckpoint[])).find((cp) => cp.id === planId) : undefined;
+  if (!found) throw new Error("There is no unfinished plan with that id. Send the tasks again with delegate_tasks.");
+  const unknown = confirm.filter((name) => !found.tasks.some((task) => task.name === name));
+  if (unknown.length)
+    throw new Error(`${unknown.join(", ")} ${unknown.length === 1 ? "is" : "are"} not part of this plan.`);
+  const now = (tasks.now ?? Date.now)();
+  // Everything is read before anything is decided: a read that fails throws here, and nothing has changed yet.
+  const owned = await readPlanRows(source.id, found, tasks);
+  const waiting = await waitingChildren(source.id, tasks);
+  const rowOf = rowsOfPlan(source.id, found, owned);
+  const plan: ResumePlan = planResume(found, rowOf, (name) => waiting.has(childOf(source.id, found, name)));
+  const writer = planWriter(store, source.id, found);
+  // The resume's number is saved before anything starts. A resume whose number was not saved starts nothing: the next
+  // one would take the same number, and a start again under it could revive a row that was stopped.
+  const counted = await writer.write((cp) => ({ ...cp, resumes: cp.resumes + 1, revision: cp.revision + 1, updatedAt: now }));
+  if (!counted) throw new Error(RESUME_NOT_SAVED);
+  const generation = found.resumes + 1;
+  for (const adopted of plan.adopt)
+    await writer.write((cp) => noteStarted(cp, adopted.name, { taskId: adopted.taskId, childSession: adopted.childSession, status: adopted.state }, now));
+  const outcome = new Map<string, string>();
+  for (const name of plan.kept) outcome.set(name, "kept");
+  for (const name of plan.refused) outcome.set(name, "refused earlier, not retried");
+  for (const name of plan.waiting) {
+    outcome.set(name, "waiting for a free worker");
+    const child = childOf(source.id, found, name);
+    await writer.write((cp) => noteQueued(cp, name, child, now));
+  }
+  // WP-14: a stopped task starts again only on Ash's yes to its own decision, and only when the call names it too.
+  const { owner } = taskOwner(source, host);
+  const where = { ...(owner.mono ? { mono: owner.mono.id } : {}), project: owner.team?.project ?? tasks.hubProjectId?.(source.cwd) ?? source.cwd };
+  const restart = new Set<string>();
+  for (const name of plan.confirm) {
+    const yes = await askAgain(source, found, name, where, tasks.firstMate);
+    if (yes && confirm.includes(name)) {
+      restart.add(name);
+      continue;
+    }
+    outcome.set(name, yes ? "answered yes; name it in confirm to start it again" : "needs your yes");
+    await writer.write((cp) => noteStopped(cp, name, now));
+  }
+  const send = new Set([...plan.start, ...restart]);
+  // In the plan's own order, so the waves still run in order.
+  for (const task of found.tasks.filter((entry) => send.has(entry.name))) {
+    // A start again gets a request id of its own; any other start keeps the one it had (a crashed one is adopted by it).
+    const sentAs = restart.has(task.name) ? restartRequestId(found.id, task.name, generation) : requestOf(found, task.name);
+    // A start again is recorded as the stopped task it was first: a task still marked started would keep its old request
+    // id, and the tasks waiting on it would look for the stopped chat.
+    // Nothing starts unless its "starting" (and, for a start again, its "stopped") is saved: a start whose record is not
+    // there could be sent twice after a crash. With no store there is no record to keep, and the start goes on as before.
+    const stoppedSaved = restart.has(task.name) ? await writer.write((cp) => noteStopped(cp, task.name, now)) : true;
+    const startingSaved = await writer.write((cp) => noteStarting(cp, task.name, now, sentAs));
+    if (store && !(stoppedSaved && startingSaved)) {
+      outcome.set(task.name, "not started: could not save this plan's progress");
+      continue;
+    }
+    try {
+      const out = (await delegate(
+        source,
+        sentAs,
+        {
+          ...task.input,
+          ...(found.originalRequest
+            ? {
+                originalRequest: found.originalRequest,
+                ...(found.originalRequestChars !== undefined ? { originalRequestChars: found.originalRequestChars } : {}),
+              }
+            : {}),
+        },
+        host,
+        helpers,
+      )) as Record<string, unknown>;
+      if (typeof out.taskId === "string" && typeof out.childSessionId === "string") {
+        const status = typeof out.status === "string" ? out.status : undefined;
+        await writer.write((cp) =>
+          noteStarted(cp, task.name, { taskId: out.taskId as string, childSession: out.childSessionId as string, status }, now),
+        );
+      } else if (out.status === "waiting" && typeof out.childSessionId === "string") {
+        const child = out.childSessionId;
+        await writer.write((cp) => noteQueued(cp, task.name, child, now));
+      }
+      outcome.set(
+        task.name,
+        out.alreadyStarted === true ? "kept" : out.status === "waiting" ? "waiting for a free worker" : "started",
+      );
+    } catch (error) {
+      const why = error instanceof Error ? error.message : String(error);
+      await writer.write((cp) => noteRefused(cp, task.name, why, now));
+      outcome.set(task.name, `refused: ${why}`);
+    }
+  }
+  await writer.finish();
+  return {
+    plan: found.id,
+    tasks: found.tasks.map((task) => ({ name: task.name, status: outcome.get(task.name) ?? "kept" })),
+    ...writer.note(),
+    note: forUser`${describeResume(plan)} Tell Ash in one line what carried on and what waits for his yes (in plain words: never a task id, a task name or a folder path), then end your turn.`,
+  };
+}
+
+async function sendFanout(
   source: Session,
   requestId: string,
   input: Record<string, unknown>,
@@ -1392,59 +1727,102 @@ async function fanout(
   // One request for the whole plan, read once and cut to the quote budget: the tasks that wait keep it, whatever
   // the person says meanwhile. The real length travels with it so the cut note stays honest.
   const takenRequest = readOriginalRequest(source.blocks);
+  const originalRequest = takenRequest?.text || undefined;
+  const originalRequestChars = takenRequest && takenRequest.chars > takenRequest.text.length ? takenRequest.chars : undefined;
   const linkOf = new Map(planned.links.map((link) => [link.name, link]));
   const taskOf = new Map(parsed.tasks.map((task) => [task.name, task]));
+  /** The delegate input of one task, as a resume replays it (the person's request is kept once, on the plan). */
+  const delegateInput = (name: string): Record<string, unknown> => {
+    const link = linkOf.get(name)!;
+    const task = taskOf.get(name)!;
+    return {
+      intent: task.intent,
+      brief: task.brief,
+      goal: task.goal,
+      ...(task.title ? { title: task.title } : {}),
+      ...(task.files.length ? { files: task.files } : {}),
+      ...(task.gates ?? {}),
+      ...task.passthrough,
+      fanout: link,
+    };
+  };
+  // WP-172: the plan is written before the first start, so a crash from here on can be resumed.
+  const plans = tasks.fanoutCheckpoints;
+  const writer = planWriter(
+    plans,
+    source.id,
+    plans
+      ? createCheckpoint({
+          id: requestId,
+          owner: source.id,
+          ...(originalRequest ? { originalRequest } : {}),
+          ...(originalRequestChars !== undefined ? { originalRequestChars } : {}),
+          waves: planned.waves,
+          tasks: planned.waves.flat().map((name) => ({ name, wave: linkOf.get(name)!.wave, input: delegateInput(name) })),
+          now: (tasks.now ?? Date.now)(),
+        })
+      : undefined,
+  );
+  const stamp = () => (tasks.now ?? Date.now)();
+  await writer.write((cp) => cp);
   /** Tasks that did not start (refused, or needing one that did not), by name, with why. */
   const notStarted = new Map<string, string>();
   const results: Record<string, unknown>[] = [];
   // The tasks that need nothing first, then each wave after, so the queue holds the rest in order.
-  for (const name of planned.waves.flat()) {
-    const link = linkOf.get(name)!;
-    const task = taskOf.get(name)!;
-    const blocker = link.after.find((dep) => notStarted.has(dep));
-    if (blocker) {
-      notStarted.set(name, `${blocker} did not start`);
-      results.push({ name, wave: link.wave, status: "not started", error: `It needs ${blocker}, which did not start (${notStarted.get(blocker)}).` });
-      continue;
+  for (const [waveIndex, wave] of planned.waves.entries()) {
+    for (const name of wave) {
+      const link = linkOf.get(name)!;
+      const blocker = link.after.find((dep) => notStarted.has(dep));
+      if (blocker) {
+        notStarted.set(name, `${blocker} did not start`);
+        results.push({ name, wave: link.wave, status: "not started", error: `It needs ${blocker}, which did not start (${notStarted.get(blocker)}).` });
+        await writer.write((cp) => noteRefused(cp, name, `It needs ${blocker}, which did not start.`, stamp()));
+        continue;
+      }
+      await writer.write((cp) => noteStarting(cp, name, stamp(), taskRequestId(requestId, name)));
+      try {
+        const out = (await delegate(
+          source,
+          taskRequestId(requestId, name),
+          {
+            ...delegateInput(name),
+            ...(originalRequest
+              ? { originalRequest, ...(originalRequestChars !== undefined ? { originalRequestChars } : {}) }
+              : {}),
+          },
+          host,
+          helpers,
+        )) as Record<string, unknown>;
+        if (typeof out.taskId === "string" && typeof out.childSessionId === "string") {
+          const status = typeof out.status === "string" ? out.status : undefined;
+          await writer.write((cp) =>
+            noteStarted(cp, name, { taskId: out.taskId as string, childSession: out.childSessionId as string, status }, stamp()),
+          );
+        } else if (out.status === "waiting" && typeof out.childSessionId === "string") {
+          // Queued (or held for review): no row yet, and its job is what a resume looks for.
+          const child = out.childSessionId;
+          await writer.write((cp) => noteQueued(cp, name, child, stamp()));
+        }
+        results.push({
+          name,
+          wave: link.wave,
+          ...Object.fromEntries(
+            ["taskId", "childSessionId", "status", "title", "waiting", "freshEyes", "modelName", "effort", "alreadyStarted"]
+              .filter((key) => out[key] !== undefined)
+              .map((key) => [key, out[key]]),
+          ),
+        });
+      } catch (error) {
+        const why = error instanceof Error ? error.message : String(error);
+        notStarted.set(name, why);
+        results.push({ name, wave: link.wave, status: "refused", error: why });
+        await writer.write((cp) => noteRefused(cp, name, why, stamp()));
+      }
     }
-    try {
-      const out = (await delegate(
-        source,
-        taskRequestId(requestId, name),
-        {
-          intent: task.intent,
-          brief: task.brief,
-          goal: task.goal,
-          ...(task.title ? { title: task.title } : {}),
-          ...(task.files.length ? { files: task.files } : {}),
-          ...(task.gates ?? {}),
-          ...task.passthrough,
-          fanout: link,
-          ...(takenRequest
-            ? {
-                originalRequest: takenRequest.text,
-                ...(takenRequest.chars > takenRequest.text.length ? { originalRequestChars: takenRequest.chars } : {}),
-              }
-            : {}),
-        },
-        host,
-        helpers,
-      )) as Record<string, unknown>;
-      results.push({
-        name,
-        wave: link.wave,
-        ...Object.fromEntries(
-          ["taskId", "childSessionId", "status", "title", "waiting", "freshEyes", "modelName", "effort", "alreadyStarted"]
-            .filter((key) => out[key] !== undefined)
-            .map((key) => [key, out[key]]),
-        ),
-      });
-    } catch (error) {
-      const why = error instanceof Error ? error.message : String(error);
-      notStarted.set(name, why);
-      results.push({ name, wave: link.wave, status: "refused", error: why });
-    }
+    await writer.write((cp) => noteWaveDone(cp, waveIndex + 1, stamp()));
   }
+  // Nothing is left to send: the plan is no longer offered for a resume.
+  await writer.finish();
   if (notStarted.size === results.length)
     throw new Error(`Nothing started. ${results.map((entry) => `${String(entry.name)}: ${String(entry.error)}`).join(" ")}`);
   // Said in the order the tasks were given, not the order they started.
@@ -1458,6 +1836,7 @@ async function fanout(
     waves: planned.waves,
     tasks: ordered,
     ...(planned.warnings.length ? { warnings: planned.warnings } : {}),
+    ...writer.note(),
     note: forUser`${ordered.length - waiting - reviewed - problems} started now${reviewed ? `; ${reviewed} wait${reviewed === 1 ? "s" : ""} for ${reviewed === 1 ? "its" : "their"} fresh-eyes review` : ""}${waiting ? `; ${waiting} wait${waiting === 1 ? "s" : ""} for what ${waiting === 1 ? "it needs" : "they need"} to be delivered and checked, and start${waiting === 1 ? "s" : ""} by itself then` : ""}${problems ? `; ${problems} did not start (see each task's error)` : ""}. A task whose provider fails is held, not run anyway, and you hear what landed and what did not. Reports come back to you as their own turns. Tell Ash in one line what is running and what waits (in plain words: never a task id, a task name or a folder path), then end your turn.`,
   };
 }
@@ -1531,6 +1910,29 @@ async function briefLead(
   };
 }
 
+/** WP-172: the chat's unfinished fan-outs, each with a plain line on what carrying it on would do. */
+async function unfinishedPlans(source: Session, tasks: AgentAppTasksHost): Promise<{ plan: string; line: string }[]> {
+  const store = tasks.fanoutCheckpoints;
+  if (!store) return [];
+  const found = await store.list(source.id).catch(() => [] as FanoutCheckpoint[]);
+  if (!found.length) return [];
+  const waiting = await waitingChildren(source.id, tasks);
+  const offered: { plan: string; line: string }[] = [];
+  for (const plan of found) {
+    // One read per plan. A read that fails leaves the plan out: a running task is never taken for a stopped one.
+    const owned = await readPlanRows(source.id, plan, tasks).catch(() => undefined);
+    if (!owned) continue;
+    const planned = planResume(plan, rowsOfPlan(source.id, plan, owned), (name) => waiting.has(childOf(source.id, plan, name)));
+    // Only a plan a resume would act on is offered: what is kept or waiting in the queue needs nothing from anyone.
+    if (!planned.start.length && !planned.confirm.length) continue;
+    offered.push({
+      plan: plan.id,
+      line: `${describeResume(planned)} To carry it on, send delegate_tasks with resume "${plan.id}" (and confirm with the names of any stopped task you want started again).`,
+    });
+  }
+  return offered;
+}
+
 async function status(source: Session, input: Record<string, unknown>, host: AgentAppHost) {
   const { tasks } = taskOwner(source, host);
   const ids = taskIds(input.taskIds);
@@ -1554,7 +1956,10 @@ async function status(source: Session, input: Record<string, unknown>, host: Age
   // WP-144: a brief held for a fresh-eyes review is waiting too, though no worker is queued for it.
   const reviewed = ids ? [] : await (tasks.freshEyesWaiting?.(source.id) ?? Promise.resolve([])).catch(() => []);
   const team = ids ? [] : await othersOpen(source, tasks);
+  // WP-172: a plan an earlier run did not finish, so First Mate can carry it on (delegate_tasks resume).
+  const plans = ids ? [] : await unfinishedPlans(source, tasks);
   return {
+    ...(plans.length ? { unfinishedPlans: plans } : {}),
     tasks: rows.map((row, index) =>
       taskView(
         row,
@@ -1971,6 +2376,10 @@ async function firstMateTool(
     const [row] = await ownRows(source, tasks, [text(input.taskId, "taskId", 128)]);
     return taskMessage(source, requestId, input, row, tasks.firstMate);
   }
+  // WP-172: the question that starts a stopped task again is the app's alone: an agent may not create it (not even
+  // without an answer), since the card would carry the words the agent chose.
+  if (action === "tasks.ask" && isAgainKey(input.key))
+    throw new Error("Only the app asks whether a stopped task starts again. Name the task in a resume instead; the person answers it in Needs.");
   const ids = taskIds(input.taskIds) ?? [];
   const rows = ids.length ? await ownRows(source, tasks, ids) : [];
   // The project the Needs row sits under: the coding team's, else the waiting tasks', else the chat's folder's.

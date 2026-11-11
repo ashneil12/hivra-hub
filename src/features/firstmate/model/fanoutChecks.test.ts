@@ -266,7 +266,8 @@ describe("settling a fan-out before the queue decides (WP-171)", () => {
     const io = disk({});
     const plain: QueuedWorker = { ...queued(board), input: { brief: "x" } };
     const broken: QueuedWorker = { ...queued(board), input: { brief: "x", fanout: { name: "nobody" } } };
-    await expect(settleFanout([plain, broken], { row: () => done, folder: () => PROJECT, io })).resolves.toBeUndefined();
+    // Nothing is resolved for these: no chat moves, and nothing is read.
+    await expect(settleFanout([plain, broken], { row: () => done, folder: () => PROJECT, io })).resolves.toEqual(new Map());
     expect(io.reads).toEqual([]);
   });
 });

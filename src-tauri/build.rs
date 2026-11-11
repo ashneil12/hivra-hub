@@ -74,6 +74,10 @@ fn main() {
             // WP-103: the cheap memory tier, and its "Test this model" check.
             "memory_cheap_ask",
             "memory_cheap_test",
+            // WP-129: short text. One completion, no tools and no path.
+            "text_generation_ask",
+            "text_generation_remember",
+            "text_generation_forget",
         ])
         .default_permission(tauri_build::DefaultPermissionRule::AllowAllCommands);
     tauri_build::try_build(tauri_build::Attributes::new().plugin("hub", hub))
