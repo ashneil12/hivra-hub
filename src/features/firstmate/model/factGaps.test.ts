@@ -415,3 +415,58 @@ describe("review r2", () => {
     expect(doneGaps(factsFromBlocks(blocks, ""))).toEqual([]);
   });
 });
+
+describe("whole class", () => {
+  it("a pipe with pipefail counts as a pass, and && still counts", () => {
+    for (const command of ["set -o pipefail && npm test | tail -20", "set -euo pipefail && npm test | tail -20", "npm test && echo done"]) {
+      expect(
+        doneGaps(
+          turn({
+            checks: [{ command, status: "passed", at: 2 }],
+            edits: [{ path: "src/features/crew/row.ts", at: 1 }],
+          }),
+        ),
+        command,
+      ).toEqual([]);
+    }
+  });
+
+  it("a crlf line break masks the test", () => {
+    const gaps = doneGaps(
+      turn({
+        checks: [{ command: "npm test\r\necho done", status: "passed", at: 2 }],
+        edits: [{ path: "src/features/crew/row.ts", at: 1 }],
+        answer: "All tests passed.",
+      }),
+    );
+    expect(gaps).toContain("A piped or masked run does not count.");
+  });
+
+  it("check:rust, check:web and check:scripts reach the edited package", () => {
+    for (const command of ["npm run check:rust", "npm run check:web", "npm run check:scripts"]) {
+      expect(
+        doneGaps(
+          turn({
+            checks: [{ command, status: "passed", at: 2 }],
+            edits: [{ path: "src/features/crew/row.ts", at: 1 }],
+          }),
+        ),
+        command,
+      ).toEqual([]);
+    }
+  });
+
+  it("native:check is not a test run", () => {
+    expect(
+      doneGaps(
+        turn({
+          checks: [
+            { command: "npx vitest run", status: "passed", at: 1 },
+            { command: "npm run native:check", status: "passed", at: 3 },
+          ],
+          edits: [{ path: "src/features/crew/row.ts", at: 2 }],
+        }),
+      ),
+    ).toEqual(["Tests went stale after the last edit."]);
+  });
+});

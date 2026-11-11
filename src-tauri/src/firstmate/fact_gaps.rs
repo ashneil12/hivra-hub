@@ -13,6 +13,7 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 const MAX_CHECKS: usize = 40;
@@ -28,6 +29,11 @@ const MAX_PACKAGE: usize = 60;
 const STALE: &str = "Tests went stale after the last edit.";
 const TESTS_CLAIM: &str = "The answer says the tests passed, but no check ran after the last edit.";
 const BUILD_CLAIM: &str = "The answer says the build passed, but no check ran after the last edit.";
+const MASKED: &str = "A piped or masked run does not count.";
+/// A workspace manifest or a member manifest bigger than this is not read.
+const MAX_TOML_BYTES: u64 = 256 * 1024;
+const MAX_WORKSPACE_MEMBERS: usize = 200;
+const MAX_WORKSPACE_WALK: usize = 12;
 
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 #[serde(rename_all = "camelCase")]
@@ -100,7 +106,12 @@ struct Invocation {
     /// A `cd` earlier in the same command, when there was one.
     cwd: Option<String>,
     /// True when this command's output is piped. The pipe's exit status is not the runner's.
+    /// A pass is judged from `masked`, which also covers `;` and `||`. This stays so the two can be told apart.
+    #[allow(dead_code)]
     piped: bool,
+    /// True when a pass of this command is not the runner's own status.
+    /// A pipe without `pipefail`, or any `;` or `||` after the runner, masks it. `&&` does not.
+    masked: bool,
 }
 
 fn negated_re() -> &'static Regex {
@@ -154,16 +165,36 @@ fn segments_of(path: &str) -> Vec<String> {
         .collect()
 }
 
+/// `docs` at the checkout root, including an absolute path whose `docs` segment is not inside source.
+/// A folder named docs under `src` or `features` is code. `src/docs.ts` is a filename, not that folder.
+fn docs_at_checkout_root(segments: &[String]) -> bool {
+    const INTERIOR: &[&str] = &[
+        "src", "crates", "packages", "apps", "features", "lib", "app", "test", "tests", "host",
+        "scripts",
+    ];
+    if segments
+        .first()
+        .is_some_and(|part| part.eq_ignore_ascii_case("docs"))
+    {
+        return true;
+    }
+    let Some(at) = segments
+        .iter()
+        .position(|part| part.eq_ignore_ascii_case("docs"))
+    else {
+        return false;
+    };
+    !segments[..at]
+        .iter()
+        .any(|part| INTERIOR.iter().any(|name| part.eq_ignore_ascii_case(name)))
+}
+
 fn is_docs_path(path: &str) -> bool {
     let segments = segments_of(path);
     if segments.is_empty() {
         return false;
     }
-    // Any segment, so an absolute path (`/work/repo/docs/credits.json`) is still docs. `src/docs.ts` is not.
-    if segments
-        .iter()
-        .any(|part| part.eq_ignore_ascii_case("docs"))
-    {
+    if docs_at_checkout_root(&segments) {
         return true;
     }
     let base = segments[segments.len() - 1].to_lowercase();
@@ -223,17 +254,28 @@ fn package_of(path: &str) -> Option<String> {
     valid_package(&segments[segments.len() - 2])
 }
 
-/// Newlines become `&&` before other control characters are stripped, so a second line stays its own command.
+/// A line break is its own command, joined with `;`. `&&` would hide a failure on the line above.
+/// A CRLF pair is one break, not two.
 fn command_text(raw: &str) -> String {
+    let chars: Vec<char> = raw.chars().collect();
     let mut separated = String::new();
-    for c in raw.chars() {
-        if c == '\n' || c == '\r' {
-            separated.push_str(" && ");
-        } else if c == '\t' {
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        if c == '\r' || c == '\n' {
+            if c == '\r' && chars.get(i + 1) == Some(&'\n') {
+                i += 1;
+            }
+            separated.push_str(" ; ");
+            i += 1;
+            continue;
+        }
+        if c == '\t' {
             separated.push(' ');
         } else if !c.is_control() {
             separated.push(c);
         }
+        i += 1;
     }
     one_line(&separated, MAX_COMMAND)
 }
@@ -269,7 +311,20 @@ fn tokenize(text: &str) -> Vec<String> {
     out
 }
 
-fn split_statements(command: &str) -> Vec<String> {
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Join {
+    And,
+    Or,
+    Semi,
+}
+
+struct Piece {
+    text: String,
+    /// The separator after this piece. None on the last piece.
+    after: Option<Join>,
+}
+
+fn split_statements(command: &str) -> Vec<Piece> {
     let chars: Vec<char> = command.chars().collect();
     let mut out = Vec::new();
     let mut start = 0;
@@ -290,17 +345,30 @@ fn split_statements(command: &str) -> Vec<String> {
             continue;
         }
         let next = chars.get(i + 1).copied();
-        let separator =
-            (c == '&' && next == Some('&')) || (c == '|' && next == Some('|')) || c == ';';
-        if separator {
-            out.push(chars[start..i].iter().collect());
-            i += if c == ';' { 1 } else { 2 };
+        let join = if c == '&' && next == Some('&') {
+            Some(Join::And)
+        } else if c == '|' && next == Some('|') {
+            Some(Join::Or)
+        } else if c == ';' {
+            Some(Join::Semi)
+        } else {
+            None
+        };
+        if let Some(join) = join {
+            out.push(Piece {
+                text: chars[start..i].iter().collect(),
+                after: Some(join),
+            });
+            i += if join == Join::Semi { 1 } else { 2 };
             start = i;
             continue;
         }
         i += 1;
     }
-    out.push(chars[start..].iter().collect());
+    out.push(Piece {
+        text: chars[start..].iter().collect(),
+        after: None,
+    });
     out
 }
 
@@ -360,11 +428,60 @@ fn program_and_args(tokens: Vec<String>) -> (String, Vec<String>) {
     (tokens[i].clone(), tokens[i + 1..].to_vec())
 }
 
+/// `set -o pipefail` and `set -euo pipefail` turn the pipe's status into the runner's.
+/// `set +o pipefail` turns that off. Anything else leaves the current setting.
+fn pipefail_change(statement: &str) -> Option<bool> {
+    let tokens = tokenize(statement.trim());
+    if tokens.first().is_none_or(|word| word != "set") {
+        return None;
+    }
+    let rest = &tokens[1..];
+    if rest.len() >= 2 && rest[0] == "+o" && rest[1] == "pipefail" {
+        return Some(false);
+    }
+    if rest.len() >= 2 && rest[0] == "-o" && rest[1] == "pipefail" {
+        return Some(true);
+    }
+    let enables = rest.iter().any(|token| token == "pipefail")
+        && rest.iter().any(|token| {
+            let Some(flags) = token.strip_prefix('-') else {
+                return false;
+            };
+            !flags.is_empty() && !token.starts_with("--") && flags.contains('o')
+        });
+    if enables {
+        Some(true)
+    } else {
+        None
+    }
+}
+
+fn pipefail_before(pieces: &[Piece]) -> Vec<bool> {
+    let mut on = false;
+    let mut before = Vec::with_capacity(pieces.len());
+    for piece in pieces {
+        before.push(on);
+        if let Some(next) = pipefail_change(&piece.text) {
+            on = next;
+        }
+    }
+    before
+}
+
+/// A pass counts only when every separator after the runner is `&&` (or there is none).
+fn separators_after_are_and(pieces: &[Piece], index: usize) -> bool {
+    pieces[index..]
+        .iter()
+        .all(|piece| piece.after.is_none() || piece.after == Some(Join::And))
+}
+
 fn invocations(command: &str) -> Vec<Invocation> {
+    let pieces = split_statements(command);
+    let pipefail = pipefail_before(&pieces);
     let mut cwd: Option<String> = None;
     let mut out = Vec::new();
-    for statement in split_statements(command) {
-        let stages = split_pipes(&statement);
+    for (index, piece) in pieces.iter().enumerate() {
+        let stages = split_pipes(&piece.text);
         let piped = stages.len() > 1;
         let Some(stage) = stages.first() else {
             continue;
@@ -373,11 +490,14 @@ fn invocations(command: &str) -> Vec<Invocation> {
         if program.is_empty() {
             continue;
         }
+        let pipe_masks = piped && !pipefail[index];
+        let tail_masks = !separators_after_are_and(&pieces, index);
         let invocation = Invocation {
             program: program.clone(),
             args,
             cwd: cwd.clone(),
             piped,
+            masked: pipe_masks || tail_masks,
         };
         if !piped && program.eq_ignore_ascii_case("cd") {
             if let Some(dir) = invocation.args.first() {
@@ -407,8 +527,13 @@ fn npm_role(args: &[String]) -> Option<CommandRole> {
         args.first()
     }?;
     let script = script.to_lowercase();
-    if script == "test" || script.ends_with(":test") || script == "check" {
-        // `npm run check` is this repo's full check: it runs the tests.
+    // `npm run check` is this repo's full check. `check:web` and `check:rust` are the same family.
+    // `native:check` is not: only a script named `check` or starting with `check:` runs the tests.
+    if script == "test"
+        || script.ends_with(":test")
+        || script == "check"
+        || script.starts_with("check:")
+    {
         return Some(CommandRole::Test);
     }
     if script == "lint" || script == "typecheck" || script.ends_with(":check") {
@@ -425,7 +550,35 @@ fn cargo_role(args: &[String]) -> Option<CommandRole> {
     }
 }
 
+/// A runner that compiles, prints a version, or lists tests did not run them.
+fn runs_no_tests(args: &[String]) -> bool {
+    args.iter().any(|arg| {
+        let name = arg.split_once('=').map(|(flag, _)| flag).unwrap_or(arg);
+        matches!(
+            name,
+            "--no-run"
+                | "--version"
+                | "-V"
+                | "--listTests"
+                | "--list-tests"
+                | "--showConfig"
+                | "--show-config"
+                | "--collect-only"
+                | "--help"
+                | "-h"
+        )
+    })
+}
+
 fn role_of(invocation: &Invocation) -> Option<CommandRole> {
+    let role = command_role(invocation)?;
+    if role == CommandRole::Test && runs_no_tests(&invocation.args) {
+        return Some(CommandRole::Check);
+    }
+    Some(role)
+}
+
+fn command_role(invocation: &Invocation) -> Option<CommandRole> {
     let program = invocation.program.to_lowercase();
     let tool = if program == "npx" {
         first_positional(&invocation.args)
@@ -461,15 +614,35 @@ fn role_of(invocation: &Invocation) -> Option<CommandRole> {
 }
 
 fn counts_as_check(command: &str, status: &str) -> bool {
-    invocations(command).into_iter().any(|invocation| {
-        role_of(&invocation).is_some() && (status == "failed" || !invocation.piped)
-    })
+    if status_word(status).is_none() {
+        return false;
+    }
+    // A masked pass is kept so the send-back can say why it does not count. It is not evidence.
+    invocations(command)
+        .into_iter()
+        .any(|invocation| role_of(&invocation).is_some())
 }
 
 fn is_test_command(command: &str) -> bool {
     invocations(command)
         .iter()
-        .any(|invocation| !invocation.piped && role_of(invocation) == Some(CommandRole::Test))
+        .any(|invocation| !invocation.masked && role_of(invocation) == Some(CommandRole::Test))
+}
+
+/// The command names a test runner, and every one of those runs is masked.
+fn command_masks_a_pass(command: &str) -> bool {
+    let mut saw_test = false;
+    let mut saw_real = false;
+    for invocation in invocations(command) {
+        if role_of(&invocation) != Some(CommandRole::Test) {
+            continue;
+        }
+        saw_test = true;
+        if !invocation.masked {
+            saw_real = true;
+        }
+    }
+    saw_test && !saw_real
 }
 
 fn looks_like_path(token: &str) -> bool {
@@ -536,16 +709,22 @@ fn manifest_dir(args: &[String]) -> Option<String> {
     None
 }
 
+/// The root is a run of path segments, with at least one segment after it.
+/// A relative root (`src-tauri`) matches an absolute edit (`/work/repo/src-tauri/src/a.rs`).
 fn path_under(root: &str, path: &str) -> bool {
     let root_segs = segments_of(root);
     let path_segs = segments_of(path);
-    if root_segs.is_empty() || path_segs.len() <= root_segs.len() {
+    let width = root_segs.len();
+    if width == 0 || path_segs.len() <= width {
         return false;
     }
-    root_segs
-        .iter()
-        .zip(path_segs.iter())
-        .all(|(root_part, path_part)| root_part.eq_ignore_ascii_case(path_part))
+    path_segs.windows(width).enumerate().any(|(index, window)| {
+        index + width < path_segs.len()
+            && window
+                .iter()
+                .zip(root_segs.iter())
+                .all(|(path_part, root_part)| path_part.eq_ignore_ascii_case(root_part))
+    })
 }
 
 /// `crates/<name>`, `packages/<name>` or `apps/<name>`, when the path is inside one.
@@ -586,8 +765,13 @@ fn cargo_root_covers(invocation: &Invocation, root: &str, edited: &str) -> bool 
     true
 }
 
-fn invocation_reaches(invocation: &Invocation, pkg: &str, edited: &str) -> bool {
-    if invocation.piped || role_of(invocation) != Some(CommandRole::Test) {
+fn invocation_reaches(
+    invocation: &Invocation,
+    pkg: &str,
+    edited: &str,
+    packages: &HashMap<String, String>,
+) -> bool {
+    if invocation.masked || role_of(invocation) != Some(CommandRole::Test) {
         return false;
     }
     if let Some(root) = cargo_root(invocation) {
@@ -595,21 +779,145 @@ fn invocation_reaches(invocation: &Invocation, pkg: &str, edited: &str) -> bool 
     }
     let named = named_packages(&invocation.args);
     let paths = path_tokens(&invocation.args);
+    // No paths and no `-p` is a project-wide run. It reaches every package.
     if named.is_empty() && paths.is_empty() {
         return true;
     }
     if named.iter().any(|name| name == pkg) {
         return true;
     }
-    paths
+    if paths
         .iter()
         .any(|path| package_of(path).as_deref() == Some(pkg))
+    {
+        return true;
+    }
+    // `-p monocode` names the package in Cargo.toml, whose folder is `src-tauri`, not `firstmate`.
+    named.iter().any(|name| {
+        packages
+            .get(name)
+            .is_some_and(|folder| path_under(folder, edited))
+    })
 }
 
-fn test_reaches(command: &str, pkg: &str, edited: &str) -> bool {
+fn test_reaches(
+    command: &str,
+    pkg: &str,
+    edited: &str,
+    packages: &HashMap<String, String>,
+) -> bool {
     invocations(command)
         .iter()
-        .any(|invocation| invocation_reaches(invocation, pkg, edited))
+        .any(|invocation| invocation_reaches(invocation, pkg, edited, packages))
+}
+
+fn member_path_is_safe(rel: &str) -> bool {
+    if rel.is_empty()
+        || rel.contains('\0')
+        || rel.contains('*')
+        || rel.contains('?')
+        || rel.starts_with('/')
+        || rel.starts_with('\\')
+    {
+        return false;
+    }
+    if rel.as_bytes().get(1) == Some(&b':') {
+        return false;
+    }
+    !rel.split(['/', '\\'])
+        .any(|part| part.is_empty() || part == "." || part == "..")
+}
+
+fn read_inside(root: &Path, path: &Path) -> Option<String> {
+    let canon = crate::fs::canonical(path).ok()?;
+    if !canon.starts_with(root) {
+        return None;
+    }
+    let meta = std::fs::metadata(&canon).ok()?;
+    if !meta.is_file() || meta.len() > MAX_TOML_BYTES {
+        return None;
+    }
+    std::fs::read_to_string(&canon).ok()
+}
+
+fn toml_has_members(text: &str) -> bool {
+    toml::from_str::<toml::Value>(text)
+        .ok()
+        .and_then(|value| {
+            value
+                .get("workspace")
+                .and_then(|workspace| workspace.get("members"))
+                .and_then(|members| members.as_array())
+                .map(|members| !members.is_empty())
+        })
+        .unwrap_or(false)
+}
+
+/// Walk up from the process folder to a Cargo.toml that lists workspace members.
+/// Used when a unit test has no checkout. A worker's checkout is never discovered this way.
+fn discover_workspace_root() -> Option<PathBuf> {
+    let mut dir = std::env::current_dir().ok()?;
+    for _ in 0..MAX_WORKSPACE_WALK {
+        if dir.join("Cargo.toml").is_file() {
+            if let Ok(root) = crate::fs::canonical(&dir) {
+                if let Some(text) = read_inside(&root, &root.join("Cargo.toml")) {
+                    if toml_has_members(&text) {
+                        return Some(root);
+                    }
+                }
+            }
+        }
+        if !dir.pop() {
+            break;
+        }
+    }
+    None
+}
+
+/// Package name to member folder, from the checkout's workspace Cargo.toml.
+/// A bad, huge, or escaping manifest is an empty map, and `-p` then matches the folder name only.
+fn workspace_packages(checkout: Option<&Path>) -> Option<HashMap<String, String>> {
+    let root = match checkout {
+        Some(path) => crate::fs::canonical(path).ok()?,
+        None => discover_workspace_root()?,
+    };
+    let text = read_inside(&root, &root.join("Cargo.toml"))?;
+    let value = toml::from_str::<toml::Value>(&text).ok()?;
+    let members = value
+        .get("workspace")
+        .and_then(|workspace| workspace.get("members"))
+        .and_then(|members| members.as_array())?;
+    let mut map = HashMap::new();
+    for member in members.iter().take(MAX_WORKSPACE_MEMBERS) {
+        let Some(rel) = member.as_str() else {
+            continue;
+        };
+        if !member_path_is_safe(rel) {
+            continue;
+        }
+        let Some(body) = read_inside(&root, &root.join(rel).join("Cargo.toml")) else {
+            continue;
+        };
+        let Ok(parsed) = toml::from_str::<toml::Value>(&body) else {
+            continue;
+        };
+        let Some(name) = parsed
+            .get("package")
+            .and_then(|package| package.get("name"))
+            .and_then(|name| name.as_str())
+        else {
+            continue;
+        };
+        let Some(valid) = valid_package(name) else {
+            continue;
+        };
+        map.entry(valid).or_insert_with(|| rel.replace('\\', "/"));
+    }
+    Some(map).filter(|map| !map.is_empty())
+}
+
+fn workspace_or_empty(checkout: Option<&Path>) -> HashMap<String, String> {
+    workspace_packages(checkout).unwrap_or_default()
 }
 
 fn status_word(status: &str) -> Option<&'static str> {
@@ -773,13 +1081,39 @@ fn is_stale(checks: &[StoredCheck], edits: &[FactEdit]) -> bool {
     passed_before && !finished_after
 }
 
+fn counts_as_evidence(check: &StoredCheck) -> bool {
+    match check.status {
+        "failed" => true,
+        "passed" => !command_masks_a_pass(&check.command),
+        _ => false,
+    }
+}
+
 fn claim_has_evidence(checks: &[StoredCheck], edits: &[FactEdit]) -> bool {
     match last_code_at(edits) {
-        None => checks.iter().any(|check| check.status == "passed"),
+        None => checks
+            .iter()
+            .any(|check| check.status == "passed" && !command_masks_a_pass(&check.command)),
         Some(last) => checks
             .iter()
-            .any(|check| (check.status == "passed" || check.status == "failed") && check.at > last),
+            .any(|check| counts_as_evidence(check) && check.at > last),
     }
+}
+
+fn masked_pass_stands_in(checks: &[StoredCheck]) -> bool {
+    let mut saw_masked = false;
+    let mut saw_real = false;
+    for check in checks {
+        if check.status != "passed" {
+            continue;
+        }
+        if is_test_command(&check.command) {
+            saw_real = true;
+        } else if command_masks_a_pass(&check.command) {
+            saw_masked = true;
+        }
+    }
+    saw_masked && !saw_real
 }
 
 fn open_todos(todos: &[FactTodo]) -> Vec<String> {
@@ -794,8 +1128,7 @@ fn open_todos(todos: &[FactTodo]) -> Vec<String> {
     open
 }
 
-/// Edited packages no finished test reached. Docs-only edits are skipped.
-pub fn coverage_gaps(turn: &FactTurn) -> Vec<String> {
+fn coverage_with(turn: &FactTurn, packages: &HashMap<String, String>) -> Vec<String> {
     let clean = sanitize(turn);
     let mut seen = HashSet::new();
     let mut gaps = Vec::new();
@@ -811,7 +1144,7 @@ pub fn coverage_gaps(turn: &FactTurn) -> Vec<String> {
         }
         let reached = clean.checks.iter().any(|check| {
             (check.status == "passed" || check.status == "failed")
-                && test_reaches(&check.command, &pkg, &edit.path)
+                && test_reaches(&check.command, &pkg, &edit.path, packages)
         });
         if !reached {
             gaps.push(format!("No test reached {pkg}."));
@@ -820,10 +1153,17 @@ pub fn coverage_gaps(turn: &FactTurn) -> Vec<String> {
     gaps
 }
 
-/// Every fact gap in this turn, in a stable order. Empty when the facts support done.
-pub fn done_gaps(turn: &FactTurn) -> Vec<String> {
+/// Edited packages no finished test reached. Docs-only edits are skipped.
+pub fn coverage_gaps(turn: &FactTurn) -> Vec<String> {
+    coverage_with(turn, &workspace_or_empty(None))
+}
+
+fn gaps_before_coverage(turn: &FactTurn) -> Vec<String> {
     let clean = sanitize(turn);
     let mut gaps = failure_gaps(&clean.checks);
+    if masked_pass_stands_in(&clean.checks) {
+        gaps.push(MASKED.to_string());
+    }
     if is_stale(&clean.checks, &clean.edits) {
         gaps.push(STALE.to_string());
     }
@@ -843,6 +1183,24 @@ pub fn done_gaps(turn: &FactTurn) -> Vec<String> {
     } else if open.len() > 1 {
         gaps.push(format!("There are still {} open to-dos.", open.len()));
     }
+    gaps
+}
+
+/// Every fact gap in this turn, in a stable order. Empty when the facts support done.
+/// `checkout` is the worker's project. None discovers a workspace from the process folder (unit tests).
+pub(crate) fn done_gaps_in(turn: &FactTurn, checkout: Option<&Path>) -> Vec<String> {
+    // No checkout is the unit-test entry, which is `done_gaps` itself.
+    let Some(checkout) = checkout else {
+        return done_gaps(turn);
+    };
+    let mut gaps = gaps_before_coverage(turn);
+    gaps.extend(coverage_with(turn, &workspace_or_empty(Some(checkout))));
+    gaps
+}
+
+/// Every fact gap in this turn, in a stable order. Empty when the facts support done.
+pub fn done_gaps(turn: &FactTurn) -> Vec<String> {
+    let mut gaps = gaps_before_coverage(turn);
     gaps.extend(coverage_gaps(turn));
     gaps
 }
@@ -1613,5 +1971,92 @@ mod review_r2 {
                 .any(|gap| gap.starts_with("A check failed this turn")),
             "{gaps:?}"
         );
+    }
+}
+
+/// The same rules as review_r2, for the cases a single example does not pin down.
+#[cfg(test)]
+mod whole_class {
+    use super::*;
+
+    fn check(command: &str, status: &str, at: f64) -> FactCheck {
+        FactCheck {
+            command: command.to_string(),
+            status: status.to_string(),
+            at,
+        }
+    }
+
+    fn edit(path: &str, at: f64) -> FactEdit {
+        FactEdit {
+            path: path.to_string(),
+            at,
+        }
+    }
+
+    fn gaps_for(command: &str) -> Vec<String> {
+        done_gaps(&FactTurn {
+            checks: vec![check(command, "passed", 2.0)],
+            edits: vec![edit("src/features/crew/row.ts", 1.0)],
+            todos: vec![],
+            answer: String::new(),
+        })
+    }
+
+    #[test]
+    fn a_pipe_with_pipefail_counts_as_a_pass() {
+        for command in [
+            "set -o pipefail && npm test | tail -20",
+            "set -euo pipefail && npm test | tail -20",
+        ] {
+            assert!(gaps_for(command).is_empty(), "{command}");
+        }
+    }
+
+    #[test]
+    fn turning_pipefail_off_does_not_make_a_pipe_a_pass() {
+        let gaps = gaps_for("set -o pipefail && set +o pipefail && npm test | tail -20");
+        assert!(gaps.iter().any(|gap| gap == MASKED), "{gaps:?}");
+    }
+
+    #[test]
+    fn a_test_joined_by_and_and_still_counts() {
+        assert!(gaps_for("npm test && echo done").is_empty());
+    }
+
+    #[test]
+    fn a_crlf_line_break_is_one_separator_and_masks_the_test() {
+        let gaps = done_gaps(&FactTurn {
+            checks: vec![check("npm test\r\necho done", "passed", 2.0)],
+            edits: vec![edit("src/features/crew/row.ts", 1.0)],
+            todos: vec![],
+            answer: "All tests passed.".into(),
+        });
+        assert!(gaps.iter().any(|gap| gap == MASKED), "{gaps:?}");
+    }
+
+    #[test]
+    fn check_scripts_reach_the_edited_package() {
+        for command in [
+            "npm run check:rust",
+            "npm run check:web",
+            "npm run check:scripts",
+        ] {
+            assert!(gaps_for(command).is_empty(), "{command}");
+        }
+    }
+
+    #[test]
+    fn native_check_is_not_a_test_run() {
+        let gaps = done_gaps(&FactTurn {
+            checks: vec![
+                check("npx vitest run", "passed", 1.0),
+                check("npm run native:check", "passed", 3.0),
+            ],
+            edits: vec![edit("src/features/crew/row.ts", 2.0)],
+            todos: vec![],
+            answer: String::new(),
+        });
+        assert_eq!(gaps, vec![STALE.to_string()], "{gaps:?}");
     }
 }

@@ -18,7 +18,11 @@ type Invocation = {
   cwd?: string;
   /** True when this command's output is piped. The pipe's exit status is not the runner's. */
   piped: boolean;
+  /** True when a pass of this command is not the runner's own status. */
+  masked: boolean;
 };
+
+const MASKED = "A piped or masked run does not count.";
 
 const DOC_EXT = new Set(["md", "mdx", "rst", "adoc", "txt"]);
 const DOC_NAME = new Set(["readme", "license", "licence", "notice", "changelog", "contributing", "authors"]);
@@ -89,12 +93,33 @@ function segmentsOf(path: string): string[] {
     .filter((part) => part && part !== "." && part !== "..");
 }
 
+const INTERIOR = new Set([
+  "src",
+  "crates",
+  "packages",
+  "apps",
+  "features",
+  "lib",
+  "app",
+  "test",
+  "tests",
+  "host",
+  "scripts",
+]);
+
+/** `docs` at the checkout root. A folder named docs under source is code. `src/docs.ts` is a filename. */
+function docsAtCheckoutRoot(segments: readonly string[]): boolean {
+  if (segments[0]?.toLowerCase() === "docs") return true;
+  const at = segments.findIndex((part) => part.toLowerCase() === "docs");
+  if (at < 0) return false;
+  return !segments.slice(0, at).some((part) => INTERIOR.has(part.toLowerCase()));
+}
+
 /** A docs path is not a coverage target and does not make an earlier test stale. `src/docs.ts` is code. */
 export function isDocsPath(path: string): boolean {
   const segments = segmentsOf(path);
   if (segments.length === 0) return false;
-  // Any segment, so an absolute path is still docs. `src/docs.ts` is not: its last segment is the filename.
-  if (segments.some((part) => part.toLowerCase() === "docs")) return true;
+  if (docsAtCheckoutRoot(segments)) return true;
   const base = segments[segments.length - 1].toLowerCase();
   const dot = base.lastIndexOf(".");
   const ext = dot >= 0 ? base.slice(dot + 1) : "";
@@ -134,9 +159,9 @@ function looksLikePath(token: string): boolean {
   return /[/\\]/.test(token) && !token.startsWith("-");
 }
 
-/** Newlines become `&&` before other control characters are stripped, so a second line stays its own command. */
+/** A line break is its own command, joined with `;`. `&&` would hide a failure on the line above. */
 function commandText(raw: string): string {
-  const separated = raw.replace(/\r\n|\n|\r/g, " && ").replace(/\t/g, " ");
+  const separated = raw.replace(/\r\n|\n|\r/g, " ; ").replace(/\t/g, " ");
   return oneLine(separated, MAX_COMMAND);
 }
 
@@ -196,14 +221,51 @@ function splitOutsideQuotes(text: string, at: (chars: string[], i: number) => nu
   return out;
 }
 
-function splitStatements(command: string): string[] {
-  return splitOutsideQuotes(command, (chars, i) => {
+type Join = "and" | "or" | "semi";
+
+type Piece = { text: string; after?: Join };
+
+function splitStatements(command: string): Piece[] {
+  const chars = [...command];
+  const out: Piece[] = [];
+  let start = 0;
+  let i = 0;
+  let quote: '"' | "'" | undefined;
+  while (i < chars.length) {
     const c = chars[i];
+    if (quote) {
+      if (c === quote) quote = undefined;
+      i += 1;
+      continue;
+    }
+    if (c === '"' || c === "'") {
+      quote = c;
+      i += 1;
+      continue;
+    }
     const next = chars[i + 1];
-    if ((c === "&" && next === "&") || (c === "|" && next === "|")) return 2;
-    if (c === ";") return 1;
-    return 0;
-  });
+    let join: Join | undefined;
+    let width = 0;
+    if (c === "&" && next === "&") {
+      join = "and";
+      width = 2;
+    } else if (c === "|" && next === "|") {
+      join = "or";
+      width = 2;
+    } else if (c === ";") {
+      join = "semi";
+      width = 1;
+    }
+    if (join && width > 0) {
+      out.push({ text: chars.slice(start, i).join(""), after: join });
+      i += width;
+      start = i;
+      continue;
+    }
+    i += 1;
+  }
+  out.push({ text: chars.slice(start).join("") });
+  return out;
 }
 
 function splitPipes(statement: string): string[] {
@@ -227,23 +289,56 @@ function programAndArgs(tokens: string[]): { program: string; args: string[] } {
   return { program: tokens[i], args: tokens.slice(i + 1) };
 }
 
+/** `set -o pipefail` and `set -euo pipefail` make the pipe's status the runner's. `set +o pipefail` turns that off. */
+function pipefailChange(statement: string): boolean | undefined {
+  const tokens = tokenize(statement.trim());
+  if (tokens[0] !== "set") return undefined;
+  const rest = tokens.slice(1);
+  if (rest[0] === "+o" && rest[1] === "pipefail") return false;
+  if (rest[0] === "-o" && rest[1] === "pipefail") return true;
+  const enables =
+    rest.includes("pipefail") &&
+    rest.some((token) => token.startsWith("-") && !token.startsWith("--") && token.slice(1).includes("o"));
+  return enables ? true : undefined;
+}
+
+function pipefailBefore(pieces: readonly Piece[]): boolean[] {
+  let on = false;
+  const before: boolean[] = [];
+  for (const piece of pieces) {
+    before.push(on);
+    const next = pipefailChange(piece.text);
+    if (next !== undefined) on = next;
+  }
+  return before;
+}
+
+/** A pass counts only when every separator after the runner is `&&` (or there is none). */
+function separatorsAfterAreAnd(pieces: readonly Piece[], index: number): boolean {
+  return pieces.slice(index).every((piece) => piece.after === undefined || piece.after === "and");
+}
+
 function invocations(command: string): Invocation[] {
+  const pieces = splitStatements(command);
+  const pipefail = pipefailBefore(pieces);
   let cwd: string | undefined;
   const out: Invocation[] = [];
-  for (const statement of splitStatements(command)) {
-    const stages = splitPipes(statement);
+  pieces.forEach((piece, index) => {
+    const stages = splitPipes(piece.text);
     const piped = stages.length > 1;
     const stage = stages[0];
-    if (stage === undefined) continue;
+    if (stage === undefined) return;
     const { program, args } = programAndArgs(tokenize(stage));
-    if (!program) continue;
-    const invocation: Invocation = { program, args, cwd, piped };
+    if (!program) return;
+    const pipeMasks = piped && !pipefail[index];
+    const tailMasks = !separatorsAfterAreAnd(pieces, index);
+    const invocation: Invocation = { program, args, cwd, piped, masked: pipeMasks || tailMasks };
     if (!piped && program.toLowerCase() === "cd") {
       const dir = args[0];
       if (dir && !dir.startsWith("-")) cwd = dir;
     }
     out.push(invocation);
-  }
+  });
   return out;
 }
 
@@ -255,8 +350,9 @@ function npmRole(args: readonly string[]): CommandRole | undefined {
   const script = args[0]?.toLowerCase() === "run" ? args[1] : args[0];
   if (!script) return undefined;
   const name = script.toLowerCase();
-  // `npm run check` is this repo's full check: it runs the tests.
-  if (name === "test" || name.endsWith(":test") || name === "check") return "test";
+  // `npm run check` is this repo's full check. `check:web` and `check:rust` are the same family.
+  // `native:check` is not: only a script named `check` or starting with `check:` runs the tests.
+  if (name === "test" || name.endsWith(":test") || name === "check" || name.startsWith("check:")) return "test";
   if (name === "lint" || name === "typecheck" || name.endsWith(":check")) return "check";
   return undefined;
 }
@@ -275,7 +371,32 @@ function cargoRole(args: readonly string[]): CommandRole | undefined {
   }
 }
 
+/** A runner that compiles, prints a version, or lists tests did not run them. */
+function runsNoTests(args: readonly string[]): boolean {
+  return args.some((arg) => {
+    const name = arg.split("=", 1)[0] ?? arg;
+    return (
+      name === "--no-run" ||
+      name === "--version" ||
+      name === "-V" ||
+      name === "--listTests" ||
+      name === "--list-tests" ||
+      name === "--showConfig" ||
+      name === "--show-config" ||
+      name === "--collect-only" ||
+      name === "--help" ||
+      name === "-h"
+    );
+  });
+}
+
 function roleOf(invocation: Invocation): CommandRole | undefined {
+  const role = commandRole(invocation);
+  if (role === "test" && runsNoTests(invocation.args)) return "check";
+  return role;
+}
+
+function commandRole(invocation: Invocation): CommandRole | undefined {
   const program = invocation.program.toLowerCase();
   const tool = program === "npx" ? (firstPositional(invocation.args)?.toLowerCase() ?? "") : program;
   switch (tool) {
@@ -313,11 +434,25 @@ function roleOf(invocation: Invocation): CommandRole | undefined {
 }
 
 function countsAsCheck(command: string, status: CheckStatus): boolean {
-  return invocations(command).some((invocation) => roleOf(invocation) !== undefined && (status === "failed" || !invocation.piped));
+  if (!CHECK_STATUS.has(status)) return false;
+  // A masked pass is kept so the send-back can say why it does not count. It is not evidence.
+  return invocations(command).some((invocation) => roleOf(invocation) !== undefined);
 }
 
 function isTestCommand(command: string): boolean {
-  return invocations(command).some((invocation) => !invocation.piped && roleOf(invocation) === "test");
+  return invocations(command).some((invocation) => !invocation.masked && roleOf(invocation) === "test");
+}
+
+/** The command names a test runner, and every one of those runs is masked. */
+function commandMasksAPass(command: string): boolean {
+  let sawTest = false;
+  let sawReal = false;
+  for (const invocation of invocations(command)) {
+    if (roleOf(invocation) !== "test") continue;
+    sawTest = true;
+    if (!invocation.masked) sawReal = true;
+  }
+  return sawTest && !sawReal;
 }
 
 function pathTokens(tokens: readonly string[]): string[] {
@@ -363,11 +498,17 @@ function manifestDir(args: readonly string[]): string | undefined {
   return undefined;
 }
 
+/** The root is a run of path segments, with at least one segment after it. */
 function pathUnder(root: string, path: string): boolean {
   const rootSegs = segmentsOf(root);
   const pathSegs = segmentsOf(path);
-  if (rootSegs.length === 0 || pathSegs.length <= rootSegs.length) return false;
-  return rootSegs.every((part, i) => part.toLowerCase() === pathSegs[i]?.toLowerCase());
+  const width = rootSegs.length;
+  if (width === 0 || pathSegs.length <= width) return false;
+  for (let index = 0; index + width < pathSegs.length; index++) {
+    const same = rootSegs.every((part, offset) => part.toLowerCase() === pathSegs[index + offset]?.toLowerCase());
+    if (same) return true;
+  }
+  return false;
 }
 
 function workspaceMember(path: string): string | undefined {
@@ -394,7 +535,7 @@ function cargoRootCovers(invocation: Invocation, root: string, edited: string): 
 }
 
 function invocationReaches(invocation: Invocation, pkg: string, edited: string): boolean {
-  if (invocation.piped || roleOf(invocation) !== "test") return false;
+  if (invocation.masked || roleOf(invocation) !== "test") return false;
   const root = cargoRoot(invocation);
   if (root) return cargoRootCovers(invocation, root, edited);
   const named = namedPackages(invocation.args);
@@ -523,10 +664,27 @@ function stale(checks: readonly StoredCheck[], edits: readonly FactEdit[]): bool
 }
 
 /** A finished check after the last code edit. With no code edit, a pass anywhere stands. A running check never does. */
+function countsAsEvidence(check: StoredCheck): boolean {
+  if (check.status === "failed") return true;
+  if (check.status === "passed") return !commandMasksAPass(check.command);
+  return false;
+}
+
 function claimHasEvidence(checks: readonly StoredCheck[], edits: readonly FactEdit[]): boolean {
   const last = lastCodeAt(edits);
-  if (last === undefined) return checks.some((check) => check.status === "passed");
-  return checks.some((check) => (check.status === "passed" || check.status === "failed") && check.at > last);
+  if (last === undefined) return checks.some((check) => check.status === "passed" && !commandMasksAPass(check.command));
+  return checks.some((check) => countsAsEvidence(check) && check.at > last);
+}
+
+function maskedPassStandsIn(checks: readonly StoredCheck[]): boolean {
+  let sawMasked = false;
+  let sawReal = false;
+  for (const check of checks) {
+    if (check.status !== "passed") continue;
+    if (isTestCommand(check.command)) sawReal = true;
+    else if (commandMasksAPass(check.command)) sawMasked = true;
+  }
+  return sawMasked && !sawReal;
 }
 
 function openTodos(todos: readonly FactTodo[]): string[] {
@@ -563,6 +721,7 @@ export function coverageGaps(turn: FactTurn): string[] {
 export function doneGaps(turn: FactTurn): string[] {
   const clean = sanitize(turn);
   const gaps = [...failureGaps(clean.checks)];
+  if (maskedPassStandsIn(clean.checks)) gaps.push(MASKED);
   if (stale(clean.checks, clean.edits)) gaps.push("Tests went stale after the last edit.");
   const claim = claimOf(clean.answer);
   if (claim && !claimHasEvidence(clean.checks, clean.edits)) {
