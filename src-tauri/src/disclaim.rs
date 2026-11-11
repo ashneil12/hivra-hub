@@ -90,11 +90,21 @@ pub(crate) fn launcher_for(program: &OsStr, data_dir: Option<&Path>) -> Option<P
 ///
 /// `argv0` is the name the child should see when it differs from `program` (a same-folder multi-call link).
 /// Through the launcher that is `--argv0 <name> -- <program>`. A direct start sets it on the command.
-pub(crate) fn command(program: &OsStr, launcher: Option<&Path>, argv0: Option<&OsStr>) -> Command {
+/// `expect_sha256` is the approved program's hash. The launcher checks it immediately before exec and refuses
+/// on a mismatch. A direct start ignores it: there is no launcher to check inside.
+pub(crate) fn command(
+    program: &OsStr,
+    launcher: Option<&Path>,
+    argv0: Option<&OsStr>,
+    expect_sha256: Option<&str>,
+) -> Command {
     match launcher {
         Some(launcher) => {
             let mut cmd = Command::new(launcher);
             cmd.arg(SUBCOMMAND);
+            if let Some(sha) = expect_sha256 {
+                cmd.arg("--expect-sha256").arg(sha);
+            }
             if let Some(name) = argv0 {
                 cmd.arg("--argv0").arg(name);
             }
@@ -110,6 +120,7 @@ pub(crate) fn command(program: &OsStr, launcher: Option<&Path>, argv0: Option<&O
             }
             #[cfg(not(unix))]
             let _ = argv0;
+            let _ = expect_sha256;
             cmd
         }
     }
@@ -117,15 +128,18 @@ pub(crate) fn command(program: &OsStr, launcher: Option<&Path>, argv0: Option<&O
 
 enum Request {
     /// `file` is executed. `argv` is what the child sees, and `argv[0]` may differ from `file`.
+    /// `expect_sha256` is checked immediately before exec when it is set.
     Exec {
         file: OsString,
         argv: Vec<OsString>,
+        expect_sha256: Option<String>,
     },
     Responsible(i32),
 }
 
 fn parse(args: &[OsString]) -> Result<Request, String> {
-    let usage = "usage: monocode disclaim-exec -- <program> [args…]";
+    let usage =
+        "usage: monocode disclaim-exec [--expect-sha256 HEX] [--argv0 NAME] -- <program> [args…]";
     match args.first().and_then(|a| a.to_str()) {
         Some("--responsible") => args
             .get(1)
@@ -134,6 +148,25 @@ fn parse(args: &[OsString]) -> Result<Request, String> {
             .filter(|pid| *pid > 0)
             .map(Request::Responsible)
             .ok_or_else(|| "usage: monocode disclaim-exec --responsible <pid>".to_string()),
+        Some("--expect-sha256") => {
+            let Some(hex) = args.get(1).and_then(|a| a.to_str()) else {
+                return Err(usage.into());
+            };
+            if hex.len() != 64 || !hex.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+                return Err(usage.into());
+            }
+            parse_exec(&args[2..], Some(hex.to_string()), usage)
+        }
+        _ => parse_exec(args, None, usage),
+    }
+}
+
+fn parse_exec(
+    args: &[OsString],
+    expect_sha256: Option<String>,
+    usage: &str,
+) -> Result<Request, String> {
+    match args.first().and_then(|a| a.to_str()) {
         Some("--argv0") => {
             let Some(name) = args.get(1).cloned() else {
                 return Err(usage.into());
@@ -145,11 +178,16 @@ fn parse(args: &[OsString]) -> Result<Request, String> {
             let mut argv = Vec::with_capacity(args.len() - 3);
             argv.push(name);
             argv.extend_from_slice(&args[4..]);
-            Ok(Request::Exec { file, argv })
+            Ok(Request::Exec {
+                file,
+                argv,
+                expect_sha256,
+            })
         }
         Some("--") if args.len() > 1 => Ok(Request::Exec {
             file: args[1].clone(),
             argv: args[1..].to_vec(),
+            expect_sha256,
         }),
         _ => Err(usage.into()),
     }
@@ -172,13 +210,58 @@ pub fn main(args: &[OsString]) -> i32 {
                 1
             }
         },
-        Ok(Request::Exec { file, argv }) => {
-            match disclaimed_exec(&file, &argv) {
+        Ok(Request::Exec {
+            file,
+            argv,
+            expect_sha256,
+        }) => {
+            match disclaimed_exec(&file, &argv, expect_sha256.as_deref()) {
                 Ok(never) => match never {},
-                Err(why) => eprintln!("[disclaim] {why}; starting it without disclaim"),
+                Err(why) => {
+                    if !approved_program_unchanged(&file, expect_sha256.as_deref()) {
+                        eprintln!("[disclaim] the approved program changed on disk");
+                        return 1;
+                    }
+                    eprintln!("[disclaim] {why}; starting it without disclaim");
+                }
+            }
+            if !approved_program_unchanged(&file, expect_sha256.as_deref()) {
+                eprintln!("[disclaim] the approved program changed on disk");
+                return 1;
             }
             plain_exec(&file, &argv)
         }
+    }
+}
+
+/// SHA-256 of the open file, compared to the approved hash. One open: the stamp is not separate from the bytes.
+fn program_hash_matches(file: &OsStr, expected: &str) -> bool {
+    use sha2::{Digest, Sha256};
+    use std::io::Read;
+    let mut opened = match std::fs::File::open(file) {
+        Ok(file) => file,
+        Err(_) => return false,
+    };
+    let mut hasher = Sha256::new();
+    let mut buf = [0u8; 8192];
+    loop {
+        match opened.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => hasher.update(&buf[..n]),
+            Err(_) => return false,
+        }
+    }
+    let mut hex = String::with_capacity(64);
+    for byte in hasher.finalize() {
+        hex.push_str(&format!("{byte:02x}"));
+    }
+    hex == expected
+}
+
+fn approved_program_unchanged(file: &OsStr, expected: Option<&str>) -> bool {
+    match expected {
+        None => true,
+        Some(expected) => program_hash_matches(file, expected),
     }
 }
 
@@ -246,10 +329,15 @@ mod mac {
     pub struct Prepared {
         file: CString,
         argv: Vec<CString>,
+        expect_sha256: Option<String>,
     }
 
     impl Prepared {
-        pub fn new(file: &OsStr, argv: &[OsString]) -> Result<Self, String> {
+        pub fn new(
+            file: &OsStr,
+            argv: &[OsString],
+            expect_sha256: Option<String>,
+        ) -> Result<Self, String> {
             let file = CString::new(file.as_bytes())
                 .map_err(|_| "the program path holds a NUL byte".to_string())?;
             let argv = argv
@@ -260,7 +348,11 @@ mod mac {
             if argv.is_empty() {
                 return Err("no program".into());
             }
-            Ok(Self { file, argv })
+            Ok(Self {
+                file,
+                argv,
+                expect_sha256,
+            })
         }
 
         /// Become the program, disclaimed. Returns only when that failed.
@@ -320,6 +412,13 @@ mod mac {
                     if let Some(e) = step("setdisclaim", set_disclaim(&mut attr, 1)) {
                         return e;
                     }
+                    // The last hash, on this open, immediately before exec. A mismatch does not spawn.
+                    if let Some(expected) = &self.expect_sha256 {
+                        let path = OsStr::from_bytes(self.file.as_bytes());
+                        if !super::program_hash_matches(path, expected) {
+                            return "the approved program changed on disk".into();
+                        }
+                    }
                     let mut pid: libc::pid_t = 0;
                     let rc = libc::posix_spawnp(
                         &mut pid,
@@ -339,12 +438,20 @@ mod mac {
 }
 
 #[cfg(target_os = "macos")]
-fn disclaimed_exec(file: &OsStr, argv: &[OsString]) -> Result<std::convert::Infallible, String> {
-    Err(mac::Prepared::new(file, argv)?.exec())
+fn disclaimed_exec(
+    file: &OsStr,
+    argv: &[OsString],
+    expect_sha256: Option<&str>,
+) -> Result<std::convert::Infallible, String> {
+    Err(mac::Prepared::new(file, argv, expect_sha256.map(str::to_string))?.exec())
 }
 
 #[cfg(not(target_os = "macos"))]
-fn disclaimed_exec(_file: &OsStr, _argv: &[OsString]) -> Result<std::convert::Infallible, String> {
+fn disclaimed_exec(
+    _file: &OsStr,
+    _argv: &[OsString],
+    _expect_sha256: Option<&str>,
+) -> Result<std::convert::Infallible, String> {
     Err("disclaim is macOS only".into())
 }
 
@@ -444,6 +551,7 @@ mod tests {
             OsStr::new("/usr/local/bin/claude"),
             Some(Path::new("/A/monocode")),
             None,
+            None,
         );
         cmd.args(["--print", "hi"]);
         assert_eq!(cmd.get_program(), OsStr::new("/A/monocode"));
@@ -458,7 +566,7 @@ mod tests {
                 "hi"
             ]
         );
-        let plain = command(OsStr::new("claude"), None, None);
+        let plain = command(OsStr::new("claude"), None, None, None);
         assert_eq!(plain.get_program(), OsStr::new("claude"));
         assert_eq!(plain.get_args().count(), 0);
     }
@@ -469,6 +577,7 @@ mod tests {
             OsStr::new("/usr/local/bin/bun"),
             Some(Path::new("/A/monocode")),
             Some(OsStr::new("/usr/local/bin/bunx")),
+            None,
         );
         let args: Vec<_> = cmd.get_args().collect();
         assert_eq!(
@@ -486,7 +595,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn a_direct_start_shows_the_invoked_name_as_argv0() {
-        let mut cmd = command(OsStr::new("/bin/sh"), None, Some(OsStr::new("bunx")));
+        let mut cmd = command(OsStr::new("/bin/sh"), None, Some(OsStr::new("bunx")), None);
         cmd.arg("-c").arg("printf %s \"$0\"");
         let out = cmd.output().expect("spawn");
         assert_eq!(String::from_utf8_lossy(&out.stdout), "bunx");
@@ -496,11 +605,11 @@ mod tests {
     fn launcher_arguments_parse() {
         assert!(matches!(
             parse(&os(&["--", "a", "b"])),
-            Ok(Request::Exec { ref file, ref argv }) if file == "a" && argv == &os(&["a", "b"])
+            Ok(Request::Exec { ref file, ref argv, expect_sha256: None }) if file == "a" && argv == &os(&["a", "b"])
         ));
         assert!(matches!(
             parse(&os(&["--argv0", "bunx", "--", "/bin/bun", "-x"])),
-            Ok(Request::Exec { ref file, ref argv })
+            Ok(Request::Exec { ref file, ref argv, expect_sha256: None })
                 if file == "/bin/bun" && argv == &os(&["bunx", "-x"])
         ));
         assert!(parse(&os(&["--argv0", "bunx"])).is_err());
@@ -512,6 +621,59 @@ mod tests {
         assert!(parse(&os(&[])).is_err());
         assert!(parse(&os(&["a"])).is_err());
         assert!(parse(&os(&["--responsible", "x"])).is_err());
+        let hex = "ab".repeat(32);
+        assert!(matches!(
+            parse(&os(&["--expect-sha256", &hex, "--", "/bin/sh"])),
+            Ok(Request::Exec { ref file, expect_sha256: Some(ref sha), .. })
+                if file == "/bin/sh" && sha == &hex
+        ));
+        assert!(parse(&os(&["--expect-sha256", "short", "--", "/bin/sh"])).is_err());
+    }
+
+    #[test]
+    fn the_launcher_passes_the_expected_hash() {
+        let hex = "cd".repeat(32);
+        let cmd = command(
+            OsStr::new("/bin/sh"),
+            Some(Path::new("/A/monocode")),
+            Some(OsStr::new("sh")),
+            Some(&hex),
+        );
+        let args: Vec<_> = cmd
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            args,
+            [
+                "disclaim-exec",
+                "--expect-sha256",
+                hex.as_str(),
+                "--argv0",
+                "sh",
+                "--",
+                "/bin/sh",
+            ]
+        );
+    }
+
+    /// A wrong hash returns before exec. Calling this with the right hash would replace the test process.
+    #[test]
+    fn a_changed_program_is_refused_before_exec() {
+        use sha2::{Digest, Sha256};
+        let dir = tempdir();
+        let program = dir.path().join("tool");
+        std::fs::write(&program, b"#!/bin/sh\necho swapped\n").unwrap();
+        let wrong = "aa".repeat(32);
+        let path = program.to_string_lossy().into_owned();
+        let code = main(&os(&["--expect-sha256", &wrong, "--", &path]));
+        assert_eq!(code, 1);
+        let right: String = Sha256::digest(std::fs::read(&program).unwrap())
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
+        assert!(program_hash_matches(program.as_os_str(), &right));
+        assert!(!program_hash_matches(program.as_os_str(), &wrong));
     }
 
     /// The real thing on macOS: a child that becomes `sh` through the disclaimed exec keeps the pid, the pipes,
@@ -528,7 +690,8 @@ mod tests {
             "echo pid=$$; echo pgid=$(ps -o pgid= -p $$ | tr -d ' '); echo cwd=$(pwd -P); \
                       echo sigpipe=$(trap -p PIPE); read line; echo got=$line; sleep 2";
         let prepared =
-            mac::Prepared::new(OsStr::new("/bin/sh"), &os(&["/bin/sh", "-c", script])).unwrap();
+            mac::Prepared::new(OsStr::new("/bin/sh"), &os(&["/bin/sh", "-c", script]), None)
+                .unwrap();
         let mut cmd = Command::new("/usr/bin/true");
         cmd.current_dir(&cwd)
             .stdin(Stdio::piped())

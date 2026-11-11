@@ -710,6 +710,8 @@ pub(crate) struct Resolved {
     pub command: String,
     pub args: Vec<String>,
     pub argv0: Option<String>,
+    /// SHA-256 of the approved program. The disclaim launcher checks it immediately before exec.
+    pub sha256: String,
 }
 
 pub(crate) fn file_path(data_dir: &Path) -> PathBuf {
@@ -1242,12 +1244,14 @@ pub(crate) fn approved_spawn(
         command: found.path,
         args: canonical_args,
         argv0: found.argv0,
+        sha256: approval.sha256.clone(),
     })
 }
 
-/// The last hash. Called after the run folder exists and immediately before the spawn. The command is the canonical
-/// path that will be executed. A writer of the install folder can still change that file in the gap between this hash
-/// and the exec.
+/// The last hash in this process. Called after the run folder exists and immediately before the spawn, and again
+/// before a text-file-busy retry. On macOS the disclaim launcher hashes once more, immediately before exec. A direct
+/// spawn has no launcher check, and a script is read again by its interpreter after exec. A writer can still win
+/// either of those gaps.
 pub(crate) fn confirm_before_spawn(data_dir: &Path, id: &str, command: &str) -> Result<(), String> {
     let stored = read_stored(data_dir)?;
     let approval = stored.approvals.get(id).ok_or(NOT_APPROVED)?;
@@ -1633,7 +1637,7 @@ pub(crate) fn view(stored: &Stored, path_value: &str) -> Value {
             lines.push(note);
         } else if path.as_deref().is_some_and(starts_with_shebang) {
             lines.push(
-                "This program is a script. The interpreter named on its first line is not pinned."
+                "This program is a script. The interpreter named on its first line is not pinned. The interpreter reads this script again after it starts, so a change in that gap runs without a new Allow."
                     .to_string(),
             );
         }
@@ -2031,6 +2035,9 @@ mod tests {
             "Files beside wp134-d aren't checked; an edit to them runs without a new Allow."
         ));
         assert!(note.contains("A writer of the install folder can still race the start."));
+        assert!(note.contains(
+            "The interpreter reads this script again after it starts, so a change in that gap runs without a new Allow."
+        ));
     }
 
     #[cfg(unix)]
@@ -3567,6 +3574,7 @@ mod tests {
             std::ffi::OsStr::new(&run.command),
             None,
             run.argv0.as_deref().map(std::ffi::OsStr::new),
+            None,
         )
         .args(&run.args)
         .current_dir(&folder)
@@ -3579,17 +3587,13 @@ mod tests {
         );
     }
 
-    // Review #241 r2 repro (MEDIUM, the hash-to-run window with no link, stated on the Allow card as a limit). A writer
-    // of the install folder needs no timing at all: it renames two files over the approved name in a loop, and some
-    // starts pass every hash (approved_spawn, then confirm_before_spawn after the run folder exists) and still run its
-    // bytes. Every lost try is a refused start, so the writer can also wait for the run folder to appear and rename
-    // right after the last hash, which wins every time (the HIGH repro above). On macOS the window is wider: the exec
-    // happens inside the disclaim launcher, a whole start of the app binary after the last hash, and a script (`#!`) is
-    // opened again by its interpreter after the exec. A rename of a parent folder or a symlink put in the path does the
-    // same. This loops until one swapped run is seen, or 3000 starts.
+    /// Stated limit: a writer renaming over the approved name can still win a start that does not go through the
+    /// disclaim launcher. The steps are the repro (approve, run folder, `confirm_before_spawn`, then a direct spawn).
+    /// The launcher hash does not apply here, because this spawn passes no launcher. A rename between that hash and
+    /// exec runs the writer's bytes. The Allow card says a writer of the install folder can still race the start.
     #[cfg(unix)]
     #[test]
-    fn review_241_r2_a_writer_renaming_in_a_loop_runs_its_own_bytes_without_a_new_allow() {
+    fn review_241_r2_limit_a_writer_renaming_in_a_loop_can_run_its_own_bytes() {
         use std::sync::atomic::{AtomicBool, Ordering};
         use std::sync::Arc;
         let d = dir();
@@ -3632,6 +3636,7 @@ mod tests {
                 std::ffi::OsStr::new(&run.command),
                 None,
                 run.argv0.as_deref().map(std::ffi::OsStr::new),
+                None,
             )
             .args(&run.args)
             .current_dir(&folder)
@@ -3650,10 +3655,10 @@ mod tests {
         }
         stop.store(true, Ordering::Relaxed);
         let _ = writer.join();
-        assert_eq!(
+        assert_ne!(
             swapped_ran, 0,
-            "a looping writer ran its own bytes on a start that passed every hash \
-             ({approved_ran} approved runs and {refused} refused starts before it)"
+            "a looping writer did not run its own bytes on a direct spawn \
+             ({approved_ran} approved runs and {refused} refused starts)"
         );
     }
 
