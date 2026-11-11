@@ -1257,9 +1257,9 @@ pub struct AnswerOutcome {
     pub released_tasks: Vec<String>,
 }
 
-/// WP-92: a secret's approval card is answered by the person alone. The person's own paths are the Inbox (which sends
-/// no answerer), the Needs sheet (`user`) and the check cards (`person`). An agent's `ask_person` forwards `chat:<id>`,
-/// and a Monos or a worker that names itself never counts.
+/// Whether a recorded answerer is one of the person's own names, or nobody was named. A secret card does not use
+/// this: only the exact word `person` counts there (`secret_answer_by_person`). Nobody named still counts here, so an
+/// older row that is not a secret and has no answerer stays the person's.
 fn is_person(by: Option<&str>) -> bool {
     match by.map(str::trim).filter(|b| !b.is_empty()) {
         None => true,
@@ -1267,8 +1267,8 @@ fn is_person(by: Option<&str>) -> bool {
     }
 }
 
-/// A secret run's card is answered by the person on the card: no answerer (the Inbox) or "person". Not "user" (the Needs
-/// sheet), not a page, not a chat (fix round 3, H1).
+/// A secret run's card is answered only by the exact word `person` (trimmed). The Inbox sends that. Nobody named,
+/// `user` (the Needs sheet), a page, the captain and autopilot are refused.
 fn secret_answer_by_person(by: Option<&str>) -> bool {
     // Nobody named is not the person on a secret card. Only the card's own answer (`person`) is.
     matches!(by.map(str::trim).filter(|b| !b.is_empty()), Some("person"))

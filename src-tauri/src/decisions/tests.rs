@@ -1175,8 +1175,8 @@ fn only_the_person_answers_a_fresh_eyes_review_and_the_app_may_close_it() {
     );
 }
 
-// Fix round 3, H1: a secret run's card is answered by the person on the card alone. A page or the Needs sheet
-// (answered as "user") and a chat's own answer are refused; the card's own answer (no answerer) still applies.
+// A secret card is answered only as `person` (what the Inbox sends). A page, the captain, autopilot,
+// the Needs sheet (`user`), a chat and nobody named are refused, and the card stays open.
 #[test]
 fn a_secret_card_takes_no_answer_from_a_page_or_needs() {
     let store = store();
@@ -1187,34 +1187,54 @@ fn a_secret_card_takes_no_answer_from_a_page_or_needs() {
         1,
     )
     .unwrap();
-    for by in ["user", "page:pg_1", "chat:abc"] {
+    for by in [
+        None,
+        Some("user"),
+        Some("page:pg_1"),
+        Some("captain:c1"),
+        Some("autopilot"),
+        Some("chat:abc"),
+    ] {
         let err = answer(
             &mut conn,
             "hivra",
             "secret/stripe-api-key/9f",
             "Once",
-            Some(by.into()),
+            by.map(str::to_string),
             2,
         )
         .unwrap_err();
         assert!(
             err.contains("Only the person can approve a secret run"),
-            "{by} must not answer a secret card: {err}"
+            "{by:?} must not answer a secret card: {err}"
         );
     }
-    // The person's own answer names the version they read. Without it, the card stays open.
-    assert!(
-        answer_seen(
-            &mut conn,
-            "hivra",
-            "secret/stripe-api-key/9f",
-            "Once",
-            None,
-            Some(asked.decision.version),
-            3,
-        )
-        .unwrap()
-        .applied
+    assert_eq!(
+        get(&conn, "hivra", "secret/stripe-api-key/9f")
+            .unwrap()
+            .unwrap()
+            .state,
+        OPEN
+    );
+    // The Inbox's approval names the version on screen and is stored as the person.
+    let done = answer_seen(
+        &mut conn,
+        "hivra",
+        "secret/stripe-api-key/9f",
+        "Once",
+        Some("person".into()),
+        Some(asked.decision.version),
+        3,
+    )
+    .unwrap();
+    assert!(done.applied);
+    assert_eq!(
+        get(&conn, "hivra", "secret/stripe-api-key/9f")
+            .unwrap()
+            .unwrap()
+            .answered_by
+            .as_deref(),
+        Some("person")
     );
 }
 
@@ -1317,7 +1337,7 @@ fn a_gate_secret_or_irreversible_key_never_reuses_or_shows_a_standing_answer() {
                 "hivra",
                 key,
                 options[0],
-                None,
+                Some("person".into()),
                 Some(asked.decision.version),
                 10 + n as i64,
             )
@@ -1612,7 +1632,7 @@ fn a_standing_answer_never_answers_a_secret_card() {
         "hivra",
         key,
         "Keep 30 days",
-        None,
+        Some("person".into()),
         Some(asked.decision.version),
         3,
     )
