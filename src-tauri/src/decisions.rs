@@ -965,3 +965,29 @@ mod person_only_fold_tests {
         assert!(person_only("ask/ordinary", Some("chat:x")).is_none());
     }
 }
+
+// review/220-r5 repro (red at 348326363): this fold trims before it drops invisible characters, so an invisible
+// character next to white space survives as a leading space; PR #230's fold_key (NFKC, drop invisibles, then trim, then
+// lower case) reads the same key as `security-review/...`. The two folds disagree once both land, and this one is not
+// idempotent. #230 also drops U+0600..U+0605, U+06DD, U+070F, U+08E2, U+FFF0..U+FFFB and others this list keeps.
+#[cfg(test)]
+mod repro_220_r5_fold {
+    use super::*;
+
+    #[test]
+    fn repro_220_r5_fold_key_agrees_with_pr_230_and_is_idempotent() {
+        for key in [
+            "\u{200B} security-review/abc",
+            "security-review/abc \u{FEFF}",
+            "\u{0600}security-review/abc",
+        ] {
+            let once = fold_key(key);
+            assert_eq!(once, "security-review/abc", "{key:?} folds to {once:?}");
+            assert_eq!(fold_key(&once), once, "{key:?}: the fold is not idempotent");
+            assert!(
+                person_only(key, Some("chat:author-lead")).is_some(),
+                "{key:?} was answerable by a chat"
+            );
+        }
+    }
+}
