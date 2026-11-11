@@ -59,12 +59,12 @@ watermark), `memory-tree.ts` (`statusOf`, `archivedSchema`, `archive`), `memory-
 
 ## Done when
 
-- [ ] Tests:
+- [x] Tests:
   - the batch applies once under a lost compare-and-swap;
   - a confirmed or edited item is never rewritten by the batch;
   - each status label is shown;
   - "Let go" and "Bring back" work;
   - each repair rule runs;
   - an old doc loads unchanged.
-- [ ] Browser spec of the Memory screen's "Let go" tab, with before and after screenshots.
-- [ ] Credits: Nod in NOTICE if any code or prompt text is copied.
+- [x] Browser spec of the Memory screen's "Let go" tab, with before and after screenshots.
+- [x] Credits: no Nod code or prompt text was copied (ideas only), so NOTICE is unchanged; credits.json names what Nod gave.

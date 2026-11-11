@@ -2,7 +2,7 @@
 // A timeout is not a decision. A secret is never stored and never sent on.
 
 import { isValidSkillName, slugSkillName } from "../../skills/model/skills";
-import { bump, emptyDoc, ENGINE_ID, isForgotten, memoryId, mentionsSecret, normalizeFact, withoutForgotten, type MemoryDoc, type MemoryItem, type MemoryVia } from "./doc";
+import { bump, cleanEntities, emptyDoc, ENGINE_ID, FACT_KINDS, isDay, isForgotten, memoryId, mentionsSecret, normalizeFact, withoutForgotten, type FactKind, type MemoryDoc, type MemoryItem, type MemoryVia } from "./doc";
 import { touch } from "./fade";
 import { givesOrders } from "./orderScan";
 import { withContradiction } from "./review";
@@ -38,9 +38,20 @@ export type CuratorContext = {
   via?: MemoryVia;
 };
 
+/** WP-240: the typed details a curator may give with a new fact. Each is optional and checked on the way in. */
+export type FactDetails = {
+  kind?: FactKind;
+  entities?: string[];
+  occurredOn?: string;
+  validFrom?: string;
+  validTo?: string;
+};
+
+export type CuratorProposal = Proposal;
+
 type Proposal =
   | { kind: "none" }
-  | { kind: "add"; text: string; evidence: string }
+  | { kind: "add"; text: string; evidence: string; details?: FactDetails }
   | { kind: "update"; targetId: string; text: string; evidence: string }
   | { kind: "remove"; targetId: string; evidence: string }
   | { kind: "skill"; name: string; lesson: string; evidence: string };
@@ -130,12 +141,29 @@ function scanned(body: string): unknown[] {
   return found;
 }
 
-function asProposal(value: unknown): Proposal | undefined {
+/** WP-240: the details a reply gave, each kept only when it can be read. Undefined when none survive. */
+export function detailsOf(value: unknown): FactDetails | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const raw = value as Record<string, unknown>;
+  const out: FactDetails = {};
+  if (FACT_KINDS.includes(raw.kind as FactKind)) out.kind = raw.kind as FactKind;
+  const entities = cleanEntities(raw.entities);
+  if (entities) out.entities = entities;
+  for (const field of ["occurredOn", "validFrom", "validTo"] as const) {
+    if (isDay(raw[field])) out[field] = raw[field];
+  }
+  return Object.keys(out).length ? out : undefined;
+}
+
+export function asProposal(value: unknown): Proposal | undefined {
   if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
   const raw = value as { kind?: unknown; text?: unknown; evidence?: unknown; targetId?: unknown; name?: unknown; lesson?: unknown };
   const evidence = typeof raw.evidence === "string" ? raw.evidence : "";
   if (raw.kind === "none") return { kind: "none" };
-  if (raw.kind === "add" && typeof raw.text === "string") return { kind: "add", text: raw.text, evidence };
+  if (raw.kind === "add" && typeof raw.text === "string") {
+    const details = detailsOf((value as { details?: unknown }).details);
+    return details ? { kind: "add", text: raw.text, evidence, details } : { kind: "add", text: raw.text, evidence };
+  }
   if (raw.kind === "update" && typeof raw.text === "string" && typeof raw.targetId === "string") {
     return { kind: "update", text: raw.text, targetId: raw.targetId, evidence };
   }
@@ -145,6 +173,16 @@ function asProposal(value: unknown): Proposal | undefined {
   }
   return undefined;
 }
+
+/**
+ * WP-240: what a curator must not read into a person's words, and the optional details an add may carry. Hivra's own
+ * wording; no prompt text was copied. (Idea: Nod by n8n, Apache-2.0, src/server/memory-learning.ts, whose curator keeps
+ * the same distinctions.)
+ */
+export const FACT_RULES: readonly string[] = [
+  'Something planned has not happened yet, so it is not an event. Having a thing does not show it was bought. A question, or a what-if, confirms nothing. Keep any "not" the person said.',
+  'An add may carry "details":{"kind":"fact"|"preference"|"plan"|"event"|"possession","entities":["names as written"],"occurredOn":"YYYY-MM-DD","validFrom":"YYYY-MM-DD","validTo":"YYYY-MM-DD"}. Give only what the quote supports and leave out any date you do not know.',
+];
 
 export function curatorPrompt(input: { user: string; assistant: string; facts: readonly { id: string; text: string }[] }): string {
   const facts = input.facts
@@ -161,6 +199,7 @@ export function curatorPrompt(input: { user: string; assistant: string; facts: r
     'Or {"kind":"skill","name":"a repeated procedure","lesson":"one plain sentence","evidence":"a short quote from the turn"} when the turn shows a procedure they repeat.',
     "Never more than one object. Evidence must be copied from the turn.",
     "For add, update and remove, the evidence must be the person's own words. The reply may repeat a web page, a tool or another agent, so it never proves a fact about the person.",
+    ...FACT_RULES,
     "",
     "Facts already kept:",
     facts || "(none)",
@@ -212,11 +251,12 @@ function viaOf(ctx: CuratorContext): { via?: MemoryVia } {
  * its row: its support grows by one and it is topped up (fade, lastUsedAt). A skill is not used this way, because a
  * repeated lesson is not the same as reading it.
  */
-function repeatItem(doc: MemoryDoc, item: MemoryItem, key: string): MemoryDoc {
+function repeatItem(doc: MemoryDoc, item: MemoryItem): MemoryDoc {
   return bump({
-    ...markDone(doc, key),
+    ...doc,
     items: doc.items.map((have) =>
-      have.id !== item.id
+      // WP-240: support counts distinct messages, so the same message read twice is not a second mention.
+      have.id !== item.id || (have.source.kind === item.source.kind && have.source.ref === item.source.ref)
         ? have
         : have.action === "skill"
           ? { ...have, support: have.support + 1 }
@@ -225,11 +265,18 @@ function repeatItem(doc: MemoryDoc, item: MemoryItem, key: string): MemoryDoc {
   });
 }
 
-function addItem(doc: MemoryDoc, item: MemoryItem, key: string): { doc: MemoryDoc; outcome: CuratorOutcome } {
+function addItem(doc: MemoryDoc, item: MemoryItem): { doc: MemoryDoc; outcome: CuratorOutcome } {
   if (doc.items.some((have) => have.id === item.id)) {
-    return { doc: repeatItem(doc, item, key), outcome: { status: "stored", ignored: 0 } };
+    return { doc: repeatItem(doc, item), outcome: { status: "stored", ignored: 0 } };
   }
-  return { doc: bump({ ...markDone(doc, key), items: [...doc.items, item] }), outcome: { status: "stored", ignored: 0 } };
+  // WP-240: a fact said again after it was let go is kept again, and leaves the "Let go" list.
+  const archived = doc.archived?.filter((have) => have.id !== item.id);
+  const next: MemoryDoc = { ...doc, items: [...doc.items, item] };
+  if (archived && archived.length !== doc.archived?.length) {
+    if (archived.length) next.archived = archived;
+    else delete next.archived;
+  }
+  return { doc: bump(next), outcome: { status: "stored", ignored: 0 } };
 }
 
 /** addItem only stores or drops. The ignored count is how many later proposals were not kept. */
@@ -269,7 +316,22 @@ export function settleTurn(doc: MemoryDoc, ctx: CuratorContext, answer: CuratorA
   const chosen = proposals[0];
   const ignored = Math.max(0, proposals.length - 1);
   if (!chosen) return { doc: markDone(doc, key), outcome: { status: "dropped", reason: "invalid", ignored } };
-  if (chosen.kind === "none") return { doc: markDone(doc, key), outcome: { status: "none", ignored } };
+  const judged = applyProposal(doc, ctx, chosen, ignored);
+  return { doc: markDone(judged.doc, key), outcome: judged.outcome };
+}
+
+/**
+ * WP-240: one proposal checked and, when it passes, stored. The turn is not marked done here: settleTurn does that for
+ * a turn, and the batch curator moves its watermark instead. Every check a proposal passes lives here, so the
+ * per-turn path and the batch path keep the same rules.
+ */
+export function applyProposal(
+  doc: MemoryDoc,
+  ctx: CuratorContext,
+  chosen: CuratorProposal,
+  ignored = 0,
+): { doc: MemoryDoc; outcome: CuratorOutcome } {
+  if (chosen.kind === "none") return { doc, outcome: { status: "none", ignored } };
 
   // A fact about the person is grounded only in the person's own words. The reply can repeat a web page, a tool's
   // output or another agent, and none of that may become a fact about them. A skill is a procedure the turn showed,
@@ -278,16 +340,16 @@ export function settleTurn(doc: MemoryDoc, ctx: CuratorContext, answer: CuratorA
   // owner message.)
   const grounds = chosen.kind === "skill" ? `${ctx.user}\n${ctx.assistant}` : ctx.user;
   if (!cited(chosen.evidence, grounds) || mentionsSecret(chosen.evidence)) {
-    return { doc: markDone(doc, key), outcome: { status: "dropped", reason: "ungrounded", ignored } };
+    return { doc, outcome: { status: "dropped", reason: "ungrounded", ignored } };
   }
 
   if (chosen.kind === "add") {
     const text = normalizeFact(chosen.text);
-    if (!text || mentionsSecret(text)) return { doc: markDone(doc, key), outcome: { status: "dropped", reason: "secret", ignored } };
+    if (!text || mentionsSecret(text)) return { doc, outcome: { status: "dropped", reason: "secret", ignored } };
     // WP-111: instructions aimed at the model are not stored. What is already kept stays.
-    if (givesOrders(text)) return { doc: markDone(doc, key), outcome: { status: "dropped", reason: "orders", ignored } };
+    if (givesOrders(text)) return { doc, outcome: { status: "dropped", reason: "orders", ignored } };
     const remembered = unforgotten(doc, ctx, text);
-    if (!remembered) return { doc: markDone(doc, key), outcome: { status: "dropped", reason: "forgotten", ignored } };
+    if (!remembered) return { doc, outcome: { status: "dropped", reason: "forgotten", ignored } };
     doc = remembered;
     const item: MemoryItem = {
       id: memoryId([ctx.mateId, "add", text.toLowerCase()]),
@@ -303,21 +365,22 @@ export function settleTurn(doc: MemoryDoc, ctx: CuratorContext, answer: CuratorA
       against: 0,
       createdAt: ctx.now,
       updatedAt: ctx.now,
+      ...(chosen.details ?? {}),
     };
     // WP-111: a fact that disagrees with a confirmed one is parked beside it. Nothing is overwritten.
     const parked = withContradiction(doc, item);
-    return counted(addItem(parked.doc, parked.item, key), ignored);
+    return counted(addItem(parked.doc, parked.item), ignored);
   }
 
   if (chosen.kind === "skill") {
     const name = slugSkillName(chosen.name);
     const lesson = oneSentence(chosen.lesson);
     if (!isValidSkillName(name) || !lesson || mentionsSecret(lesson) || mentionsSecret(name)) {
-      return { doc: markDone(doc, key), outcome: { status: "dropped", reason: mentionsSecret(lesson) ? "secret" : "invalid", ignored } };
+      return { doc, outcome: { status: "dropped", reason: mentionsSecret(lesson) ? "secret" : "invalid", ignored } };
     }
-    if (givesOrders(lesson)) return { doc: markDone(doc, key), outcome: { status: "dropped", reason: "orders", ignored } };
+    if (givesOrders(lesson)) return { doc, outcome: { status: "dropped", reason: "orders", ignored } };
     const remembered = unforgotten(doc, ctx, lesson);
-    if (!remembered) return { doc: markDone(doc, key), outcome: { status: "dropped", reason: "forgotten", ignored } };
+    if (!remembered) return { doc, outcome: { status: "dropped", reason: "forgotten", ignored } };
     doc = remembered;
     const item: MemoryItem = {
       id: memoryId([ctx.mateId, "skill", name, lesson.toLowerCase()]),
@@ -335,17 +398,17 @@ export function settleTurn(doc: MemoryDoc, ctx: CuratorContext, answer: CuratorA
       createdAt: ctx.now,
       updatedAt: ctx.now,
     };
-    return counted(addItem(doc, item, key), ignored);
+    return counted(addItem(doc, item), ignored);
   }
 
   if (!TARGET.test(chosen.targetId)) {
-    return { doc: markDone(doc, key), outcome: { status: "dropped", reason: "invalid", ignored } };
+    return { doc, outcome: { status: "dropped", reason: "invalid", ignored } };
   }
   const target = doc.items.find((item) => item.id === chosen.targetId && item.mateId === ctx.mateId && item.action === "add");
-  if (!target) return { doc: markDone(doc, key), outcome: { status: "dropped", reason: "invalid", ignored } };
+  if (!target) return { doc, outcome: { status: "dropped", reason: "invalid", ignored } };
   // A removal whose text matches is refused too, so the fact is not deleted from here.
   if (chosen.kind === "remove" && givesOrders(target.text)) {
-    return { doc: markDone(doc, key), outcome: { status: "dropped", reason: "orders", ignored } };
+    return { doc, outcome: { status: "dropped", reason: "orders", ignored } };
   }
 
   if (chosen.kind === "remove") {
@@ -365,14 +428,14 @@ export function settleTurn(doc: MemoryDoc, ctx: CuratorContext, answer: CuratorA
       createdAt: ctx.now,
       updatedAt: ctx.now,
     };
-    return counted(addItem(doc, item, key), ignored);
+    return counted(addItem(doc, item), ignored);
   }
 
   const text = normalizeFact(chosen.text);
-  if (!text || mentionsSecret(text)) return { doc: markDone(doc, key), outcome: { status: "dropped", reason: "secret", ignored } };
-  if (givesOrders(text)) return { doc: markDone(doc, key), outcome: { status: "dropped", reason: "orders", ignored } };
+  if (!text || mentionsSecret(text)) return { doc, outcome: { status: "dropped", reason: "secret", ignored } };
+  if (givesOrders(text)) return { doc, outcome: { status: "dropped", reason: "orders", ignored } };
   const remembered = unforgotten(doc, ctx, text);
-  if (!remembered) return { doc: markDone(doc, key), outcome: { status: "dropped", reason: "forgotten", ignored } };
+  if (!remembered) return { doc, outcome: { status: "dropped", reason: "forgotten", ignored } };
   doc = remembered;
   const item: MemoryItem = {
     id: memoryId([ctx.mateId, "update", chosen.targetId, text.toLowerCase()]),
@@ -390,7 +453,7 @@ export function settleTurn(doc: MemoryDoc, ctx: CuratorContext, answer: CuratorA
     createdAt: ctx.now,
     updatedAt: ctx.now,
   };
-  return counted(addItem(doc, item, key), ignored);
+  return counted(addItem(doc, item), ignored);
 }
 
 export async function curateTurn(

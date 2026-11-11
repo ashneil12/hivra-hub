@@ -1,16 +1,32 @@
-// WP-51: after a first mate's turn, one unreviewed fact or a skill proposal. The main window only, so two windows
-// don't both ask. A failed ask leaves the turn unfinished, and the save is compare-and-swap.
+// WP-51: what a first mate's chats teach memory. The main window only, so two windows don't both ask, and every save is
+// compare-and-swap.
+// WP-240: two paths. Right after a turn, the person's own "remember that …" is saved at once, as confirmed, with no
+// model. Everything else is learned in batches (features/memory/model/batch.ts): every BATCH_EVERY_TURNS finished
+// turns, after BATCH_IDLE_MS quiet, or when a chat closes. The curator no longer runs after every turn.
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useEffect, useRef } from "react";
 import { codingTeamChatProject } from "../../features/hub/model/codingTeam";
 import { findMono, monoForSession } from "../../features/monos/model/mono";
-import { collectAnswer, settleTurn, type CuratorAsk, type CuratorContext } from "../../features/memory/model/curator";
+import type { CuratorAsk, CuratorContext } from "../../features/memory/model/curator";
+import {
+  BATCH_EVERY_TURNS,
+  BATCH_IDLE_MS,
+  chatKey,
+  planBatches,
+  rememberNow,
+  rulesBatchReply,
+  runBatch,
+  type BatchChat,
+} from "../../features/memory/model/batch";
 import { cheapAsk, cheapProblem } from "../../features/memory/model/cheapAsk";
 import { askCrew } from "../../features/memory/model/crewBrief";
 import { parseDoc, type MemoryDoc } from "../../features/memory/model/doc";
 import { markLived } from "../../features/memory/model/fade";
-import { noteDeferred, noteOutcome } from "../../features/memory/model/health";
+import { noteOutcome } from "../../features/memory/model/health";
+
+/** WP-240: the one-line reply the explicit path gives, for whatever shows it. Detail: `{ sessionId, text }`. */
+export const MEMORY_REMEMBERED_EVENT = "monocode:memory-remembered";
 import { notePaused, takeBudget } from "../../features/memory/model/memoryBudget";
 import { commitDoc } from "../../features/memory/model/review";
 import { memoryReadableBlocks } from "../../features/memory/model/privateChat";
@@ -174,75 +190,150 @@ export function mayTryAgain(tries: Map<string, number>, key: string): boolean {
   return used < MAX_TRIES;
 }
 
+/** WP-240: a chat a batch should still read: one that just closed, kept until the batch that reads it has run. */
+type ClosedChat = BatchChat;
+
+/** WP-240: the first-mate chats memory may read right now, plus any that closed since the last batch. */
+export function batchChats(
+  sessions: readonly { id: string; busy?: boolean; private?: boolean; privateBoundaryId?: string; sidebarHidden?: boolean; blocks: readonly FeedBlock[] }[],
+  mateOf: (sessionId: string) => string | undefined,
+  closed: readonly ClosedChat[] = [],
+): BatchChat[] {
+  const open = sessions.flatMap((session) => {
+    if (session.busy) return [];
+    const mateId = mateOf(session.id);
+    if (!mateId) return [];
+    return [{ mateId, sessionId: session.id, blocks: memoryReadableBlocks(session) }];
+  });
+  const seen = new Set(open.map((chat) => chat.sessionId));
+  return [...open, ...closed.filter((chat) => !seen.has(chat.sessionId))];
+}
+
+/**
+ * WP-240: the batch triggers. Every BATCH_EVERY_TURNS finished turns, after BATCH_IDLE_MS with none, or when a
+ * first-mate chat closes (it leaves the list or is hidden), whichever comes first.
+ */
+export function trackChats(
+  known: Map<string, BatchChat>,
+  sessions: readonly { id: string; busy?: boolean; private?: boolean; privateBoundaryId?: string; sidebarHidden?: boolean; blocks: readonly FeedBlock[] }[],
+  mateOf: (sessionId: string) => string | undefined,
+): BatchChat[] {
+  // A busy chat is still open: only one that left the list or was hidden has closed. Its last readable snapshot is
+  // what the batch reads.
+  const present = new Set(sessions.filter((session) => !session.sidebarHidden && mateOf(session.id)).map((session) => session.id));
+  const closed = [...known.values()].filter((chat) => !present.has(chat.sessionId));
+  for (const chat of closed) known.delete(chat.sessionId);
+  for (const chat of batchChats(sessions, mateOf)) if (present.has(chat.sessionId)) known.set(chat.sessionId, chat);
+  return closed;
+}
+
 export function useMemoryCurator(sessions: readonly Session[], enabled: boolean): void {
   const on = enabled && isMainWindow();
   const fedLast = useRef(new Map<string, string | undefined>());
-  const countedDeferrals = useRef(new Set<string>());
-  const attempts = useRef(new Map<string, number>());
+  const sessionsRef = useRef(sessions);
+  sessionsRef.current = sessions;
+  const turnsSince = useRef(0);
+  const running = useRef(false);
+  const again = useRef(false);
+  const idle = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const known = useRef(new Map<string, BatchChat>());
+  const closing = useRef<BatchChat[]>([]);
+
+  const runBatches = useRef(async () => {
+    if (running.current) {
+      again.current = true;
+      return;
+    }
+    running.current = true;
+    turnsSince.current = 0;
+    try {
+      do {
+        again.current = false;
+        const closed = closing.current;
+        closing.current = [];
+        const chats = batchChats(sessionsRef.current, mateForSession, closed);
+        // WP-103: the tier is read once per batch, so a change lands on the next batch, never on one half done.
+        const choice = loadMemoryTier();
+        let base = await loadDoc();
+        const mates = planBatches(base, chats).map((plan) => plan.mateId);
+        for (const mateId of mates) {
+          // At most a few calls in a row for one first mate: a long backlog is read over several batches.
+          for (let round = 0; round < 5; round++) {
+            base = await loadDoc();
+            const plan = planBatches(base, chats).find((candidate) => candidate.mateId === mateId);
+            if (!plan) break;
+            const now = Date.now();
+            // WP-103: only a batch that will call a model spends the background budget. A batch that does not fit
+            // waits; its messages stay behind the watermark, nothing is counted as failed.
+            if (plan.messages.length && !backgroundAskFits(choice.tier, choice.model, now)) return;
+            const engine = sessionsRef.current.find((session) => plan.messages[0] && chatKey(mateId, session.id) === plan.messages[0].chat)?.harness;
+            const ask: (prompt: string) => Promise<CuratorAsk> =
+              choice.tier === "rules" ? async () => ({ ok: true, text: rulesBatchReply(plan) }) : curatorAsk(choice.tier, { user: "", assistant: "" }, choice.model);
+            const result = await runBatch(loadDoc, saveDoc, plan, base, ask, {
+              now,
+              via: choice.tier,
+              ...(engine ? { by: engine } : {}),
+            });
+            if (result.status !== "applied" || !plan.more) break;
+          }
+        }
+      } while (again.current);
+    } catch {
+      // Memory could not be read or saved this time. The messages stay behind the watermark for the next batch.
+    } finally {
+      running.current = false;
+    }
+  });
+
   useEffect(() => {
     if (!on) return;
-    for (const feed of curatorFeeds(sessions, fedLast.current, mateForSession)) {
-      // WP-100: the engine whose chat this turn ran in, so a memory one engine wrote is labelled for another.
+    const now = Date.now();
+    // WP-240: a chat that closed is read one last time by a batch, now.
+    const closed = trackChats(known.current, sessions, mateForSession);
+
+    const feeds = curatorFeeds(sessions, fedLast.current, mateForSession);
+    for (const feed of feeds) {
       const engine = sessions.find((session) => session.id === feed.sessionId)?.harness;
       const ctx: CuratorContext = {
         mateId: feed.mateId,
         turnId: feed.turnId,
         user: feed.user,
         assistant: feed.assistant,
-        now: Date.now(),
+        now,
         ...(engine ? { by: engine } : {}),
       };
       void (async () => {
-        let loaded: MemoryDoc;
+        let reply: string | undefined;
         try {
-          loaded = await loadDoc();
-        } catch {
-          fedLast.current.delete(feed.sessionId);
-          return;
-        }
-        // WP-103: the tier is read here, once per turn: a change lands on the next turn, never on a past one. The turn
-        // carries it from here, so the memory written says which tier wrote it.
-        const choice = loadMemoryTier();
-        const tierCtx: CuratorContext = { ...ctx, via: choice.tier };
-        // The budget is taken inside the ask, just before the real call, so a turn that never reaches a model
-        // (already done, a secret, empty) spends nothing.
-        const turnKey = `${ctx.mateId}:${ctx.turnId}`;
-        let paused = false;
-        const guarded = budgetedAsk(choice.tier, choice.model, curatorAsk(choice.tier, tierCtx, choice.model), () => {
-          paused = true;
-        });
-        const result = await collectAnswer(loaded, tierCtx, guarded);
-        if (paused) {
-          fedLast.current.delete(feed.sessionId);
-          return;
-        }
-        if (result.kind === "deferred") {
-          // WP-103: the card should say a model failed to answer, not stay silent about it. The turn is not done, so
-          // the next turn tries it again; the count moves on its first failure only.
-          if (firstDeferral(countedDeferrals.current, turnKey)) {
-            const at = Date.now();
-            try {
-              await commitDoc(loadDoc, saveDoc, (doc) => noteDeferred(markLived(doc, at), at));
-            } catch {
-              // The count is a nicety: not being able to write it never holds the turn back.
-            }
-          }
-          // At most MAX_TRIES asks a turn: after that it is left alone, so a model that never answers cannot burn
-          // the budget for every other chat.
-          if (mayTryAgain(attempts.current, turnKey)) fedLast.current.delete(feed.sessionId);
-          return;
-        }
-        try {
-          // WP-100: a turn the curator saw is a day the app lived, which memory fades over, and a count for the
-          // Memory screen's health card.
+          // WP-240: the explicit path. "Remember that …" is saved now, as confirmed; nothing else is asked here.
           await commitDoc(loadDoc, saveDoc, (doc) => {
-            const settled = settleTurn(markLived(doc, tierCtx.now), tierCtx, result);
-            return noteOutcome(settled.doc, settled.outcome, tierCtx.now);
+            const remembered = rememberNow(markLived(doc, now), ctx);
+            reply = remembered.reply;
+            return remembered.outcome.status === "none" ? remembered.doc : noteOutcome(remembered.doc, remembered.outcome, now);
           });
         } catch {
           fedLast.current.delete(feed.sessionId);
+          return;
+        }
+        if (reply && typeof window !== "undefined") {
+          window.dispatchEvent(new CustomEvent(MEMORY_REMEMBERED_EVENT, { detail: { sessionId: feed.sessionId, text: reply } }));
         }
       })();
     }
+
+    if (feeds.length) {
+      turnsSince.current += feeds.length;
+      if (idle.current) clearTimeout(idle.current);
+      idle.current = setTimeout(() => void runBatches.current(), BATCH_IDLE_MS);
+    }
+    if (closed.length) closing.current = [...closing.current, ...closed];
+    if (closed.length || turnsSince.current >= BATCH_EVERY_TURNS) void runBatches.current();
   }, [sessions, on]);
+
+  useEffect(
+    () => () => {
+      if (idle.current) clearTimeout(idle.current);
+    },
+    [],
+  );
 }

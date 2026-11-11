@@ -43,7 +43,34 @@ export type MemoryItem = {
   asked?: number;
   /** WP-111: this fact disagrees with another one. Absent when nothing is parked. */
   dispute?: MemoryDispute;
+  /** WP-240: what sort of fact this is. Absent on old data and when the curator did not say. */
+  kind?: FactKind;
+  /** WP-240: the names the fact is about, as the person wrote them. Absent when none were given. */
+  entities?: string[];
+  /** WP-240: the day an event happened (`2026-10-01`). Absent when unknown. */
+  occurredOn?: string;
+  /** WP-240: the first day the fact holds. Absent when unknown. */
+  validFrom?: string;
+  /** WP-240: the last day the fact holds. The repair pass lets it go once this day is past. Absent when it lasts. */
+  validTo?: string;
+  /** WP-240: why and when this item was let go. Only set on items in `MemoryDoc.archived`. */
+  letGo?: LetGo;
+  /** WP-241: the person marked this fact to be sent in every chat. Absent means not marked. */
+  essential?: boolean;
+  /** WP-241: how many times a first mate read this fact through its own memory tool. Absent on old data, read as 0. */
+  uses?: number;
 };
+
+/** WP-240: the sort of fact, so the repair pass knows an event from a guess. */
+export type FactKind = "fact" | "preference" | "plan" | "event" | "possession";
+export const FACT_KINDS: readonly FactKind[] = ["fact", "preference", "plan", "event", "possession"];
+
+/** WP-240: why an item left the kept list. */
+export type LetGoReason = "superseded" | "duplicate" | "expired" | "stale" | "contradicted" | "manual";
+export const LET_GO_REASONS: readonly LetGoReason[] = ["superseded", "duplicate", "expired", "stale", "contradicted", "manual"];
+
+/** WP-240: a let-go item remembers why, which item replaced it (when one did) and when. */
+export type LetGo = { reason: LetGoReason; by?: string; at: number };
 
 /** WP-111: a parked clash. `was` is the state the older fact had, and is absent on the newer fact. */
 export type MemoryDispute = {
@@ -84,7 +111,28 @@ export type MemoryDoc = {
    * CopilotKit, MIT, deleted-fact digests.)
    */
   forgotten?: string[];
+  /**
+   * WP-240: the "Let go" list. Items the repair pass or the person set aside, each with `letGo` saying why. They are
+   * never recalled, asked about or counted; "Bring back" puts one back. At most ARCHIVE_CAP, oldest out first.
+   * Absent on old data.
+   */
+  archived?: MemoryItem[];
+  /**
+   * WP-240: the batch curator's watermark. For each first-mate chat (`<mate>:<session>`), the last message of the
+   * person's it has read. Saved in the same write as the facts that batch learned, so a batch applies once. Absent on
+   * old data.
+   */
+  reflected?: Record<string, string>;
+  /** WP-240: how many times the current batch has failed to get an answer. Absent means none. */
+  batchTries?: number;
 };
+
+/** WP-240: the "Let go" list keeps at most this many items. */
+export const ARCHIVE_CAP = 500;
+/** WP-240: the watermark keeps at most this many chats. */
+const REFLECTED_CAP = 500;
+const REFLECTED_KEY = /^[a-z0-9][a-z0-9-]{0,79}:[A-Za-z0-9._:-]{1,200}$/;
+const BLOCK_ID = /^[A-Za-z0-9._:-]{1,200}$/;
 
 const FORGET_KEY = /^fgt-[a-f0-9]{16}$/;
 const FORGOTTEN_CAP = 2000;
@@ -216,6 +264,7 @@ function loadedItem(value: unknown): MemoryItem | undefined {
   if (rest.fade !== undefined && !(finite(rest.fade) && rest.fade <= 1)) delete rest.fade;
   if (rest.lastUsedAt !== undefined && !finite(rest.lastUsedAt)) delete rest.lastUsedAt;
   if (rest.asked !== undefined && !(finite(rest.asked) && Number.isInteger(rest.asked))) delete rest.asked;
+  loadDetails(rest);
   const rawDispute = (value as { dispute?: unknown }).dispute;
   if (rawDispute !== undefined) {
     const dispute = loadedDispute(rest.id, rawDispute);
@@ -223,6 +272,77 @@ function loadedItem(value: unknown): MemoryItem | undefined {
     else delete rest.dispute;
   }
   return rest;
+}
+
+/** A real calendar day, `2026-10-01`. */
+export function isDay(value: unknown): value is string {
+  if (typeof value !== "string" || !DAY.test(value)) return false;
+  const at = new Date(`${value}T00:00:00Z`);
+  return Number.isFinite(at.getTime()) && at.toISOString().slice(0, 10) === value;
+}
+
+/** The names a fact is about: short, no secrets, one of each, at most ten. Undefined when none survive. */
+export function cleanEntities(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const names = [
+    ...new Set(
+      value
+        .filter((name): name is string => typeof name === "string")
+        .map((name) => name.replace(/\s+/g, " ").trim())
+        .filter((name) => name.length > 0 && name.length <= 80 && !mentionsSecret(name)),
+    ),
+  ].slice(0, 10);
+  return names.length ? names : undefined;
+}
+
+/** WP-240: the typed details and the WP-241 marks, each dropped on its own when it cannot be read. */
+function loadDetails(item: MemoryItem): void {
+  if (item.kind !== undefined && !FACT_KINDS.includes(item.kind)) delete item.kind;
+  if (item.entities !== undefined) {
+    const entities = cleanEntities(item.entities);
+    if (entities) item.entities = entities;
+    else delete item.entities;
+  }
+  if (item.occurredOn !== undefined && !isDay(item.occurredOn)) delete item.occurredOn;
+  if (item.validFrom !== undefined && !isDay(item.validFrom)) delete item.validFrom;
+  if (item.validTo !== undefined && !isDay(item.validTo)) delete item.validTo;
+  if (item.essential !== undefined && item.essential !== true) delete item.essential;
+  if (item.uses !== undefined && !(finite(item.uses) && Number.isInteger(item.uses))) delete item.uses;
+  // Only the archive's own reader keeps a let-go mark; a kept item never carries one.
+  delete item.letGo;
+}
+
+function loadedLetGo(value: unknown): LetGo | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const raw = value as { reason?: unknown; by?: unknown; at?: unknown };
+  if (!LET_GO_REASONS.includes(raw.reason as LetGoReason) || !finite(raw.at)) return undefined;
+  const letGo: LetGo = { reason: raw.reason as LetGoReason, at: raw.at };
+  if (typeof raw.by === "string" && ITEM_ID.test(raw.by)) letGo.by = raw.by;
+  return letGo;
+}
+
+/** The "Let go" list: each item read like a kept one, plus its let-go mark. One without a readable mark is dropped. */
+function loadedArchive(value: unknown): MemoryItem[] {
+  if (!Array.isArray(value)) return [];
+  const seen = new Set<string>();
+  const out: MemoryItem[] = [];
+  for (const raw of value) {
+    const item = loadedItem(raw);
+    const letGo = loadedLetGo((raw as { letGo?: unknown } | null)?.letGo);
+    if (!item || !letGo || seen.has(item.id)) continue;
+    seen.add(item.id);
+    out.push({ ...item, letGo });
+  }
+  return out.slice(-ARCHIVE_CAP);
+}
+
+function loadedReflected(value: unknown): Record<string, string> | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const out: Record<string, string> = {};
+  for (const [key, id] of Object.entries(value).slice(-REFLECTED_CAP)) {
+    if (REFLECTED_KEY.test(key) && typeof id === "string" && BLOCK_ID.test(id) && !mentionsSecret(key)) out[key] = id;
+  }
+  return Object.keys(out).length ? out : undefined;
 }
 
 /** A clash that cannot be read is dropped. The fact it was on is kept. */
@@ -305,6 +425,9 @@ export function parseDoc(value: unknown): MemoryDoc {
   const forgotten = (Array.isArray(raw.forgotten) ? raw.forgotten : [])
     .filter((key): key is string => typeof key === "string" && FORGET_KEY.test(key))
     .slice(-FORGOTTEN_CAP);
+  const archived = loadedArchive(raw.archived);
+  const reflected = loadedReflected(raw.reflected);
+  const batchTries = finite(raw.batchTries) ? Math.floor(raw.batchTries) : 0;
   return {
     revision: finite(raw.revision) ? Math.floor(raw.revision) : 0,
     generation: finite(raw.generation) ? Math.floor(raw.generation) : 0,
@@ -315,6 +438,9 @@ export function parseDoc(value: unknown): MemoryDoc {
     ...(askSession ? { askSession } : {}),
     ...(health ? { health } : {}),
     ...(forgotten.length ? { forgotten } : {}),
+    ...(archived.length ? { archived } : {}),
+    ...(reflected ? { reflected } : {}),
+    ...(batchTries ? { batchTries } : {}),
   };
 }
 
