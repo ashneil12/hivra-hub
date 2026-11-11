@@ -981,39 +981,36 @@ pub fn automations_claim_event(
     Ok(Some(DueAutomationRun { automation, run }))
 }
 
-#[tauri::command(async)]
-pub fn automation_run_update(
-    app: AppHandle,
-    store: State<'_, SessionStore>,
-    run_id: String,
-    status: String,
+struct StoredRunUpdate {
+    run: AutomationRun,
+    /// WP-180a: true once a new activity line was written for this update.
+    noted: bool,
+}
+
+/// The body of `automation_run_update`, without the app handle, so a test can
+/// drive it. A retried status writes no second activity line.
+#[allow(clippy::too_many_arguments)]
+fn update_stored_run(
+    conn: &mut Connection,
+    run_id: &str,
+    status: &str,
     session_id: Option<String>,
     error: Option<String>,
+    _error_class: Option<&str>,
     now: i64,
-) -> Result<AutomationRun, String> {
-    validate_id(&run_id, "automation run")?;
-    if let Some(session_id) = session_id.as_deref() {
-        validate_id(session_id, "session")?;
-    }
-    if !matches!(
-        status.as_str(),
-        "pending" | "running" | "succeeded" | "failed" | "skipped" | "cancelled"
-    ) {
-        return Err("Invalid automation run status.".into());
-    }
-    let mut conn = store.lock_conn()?;
+) -> Result<StoredRunUpdate, String> {
     let tx = conn.transaction().map_err(|error| error.to_string())?;
     let raw = tx
         .query_row(
             "SELECT run_json FROM automation_runs WHERE id = ?1",
-            [&run_id],
+            [run_id],
             |row| row.get::<_, String>(0),
         )
         .optional()
         .map_err(|error| error.to_string())?
         .ok_or_else(|| "Automation run not found.".to_string())?;
     let mut run: AutomationRun = serde_json::from_str(&raw).map_err(|error| error.to_string())?;
-    run.status = status;
+    run.status = status.to_string();
     if run.status == "running" && run.started_at.is_none() {
         run.started_at = Some(now);
     }
@@ -1034,9 +1031,45 @@ pub fn automation_run_update(
     write_automation(&tx, &automation)?;
     trim_history(&tx, &run.automation_id)?;
     tx.commit().map_err(|error| error.to_string())?;
+    Ok(StoredRunUpdate { run, noted: false })
+}
+
+#[tauri::command(async)]
+#[allow(clippy::too_many_arguments)]
+pub fn automation_run_update(
+    app: AppHandle,
+    store: State<'_, SessionStore>,
+    run_id: String,
+    status: String,
+    session_id: Option<String>,
+    error: Option<String>,
+    error_class: Option<String>,
+    now: i64,
+) -> Result<AutomationRun, String> {
+    validate_id(&run_id, "automation run")?;
+    if let Some(session_id) = session_id.as_deref() {
+        validate_id(session_id, "session")?;
+    }
+    if !matches!(
+        status.as_str(),
+        "pending" | "running" | "succeeded" | "failed" | "skipped" | "cancelled"
+    ) {
+        return Err("Invalid automation run status.".into());
+    }
+    let mut conn = store.lock_conn()?;
+    let updated = update_stored_run(
+        &mut conn,
+        &run_id,
+        &status,
+        session_id,
+        error,
+        error_class.as_deref(),
+        now,
+    )?;
     drop(conn);
     let _ = app.emit(CHANGED, ());
-    Ok(run)
+    let _ = updated.noted;
+    Ok(updated.run)
 }
 
 #[cfg(test)]
@@ -1316,5 +1349,172 @@ mod tests {
 
         assert_eq!(claim(), 1);
         assert_eq!(claim(), 0);
+    }
+
+    struct ActivitySeen {
+        kind: String,
+        summary: String,
+        link: String,
+        target: String,
+    }
+
+    fn stored_automation(id: &str, name: &str, prompt: &str) -> Automation {
+        Automation {
+            id: id.into(),
+            name: name.into(),
+            prompt: prompt.into(),
+            harness: "claude".into(),
+            model: "model".into(),
+            model_settings: HashMap::new(),
+            cwd: "/work/project".into(),
+            workspace_mode: "current".into(),
+            worktree_cwd: String::new(),
+            session_folder_id: String::new(),
+            reuse_session: false,
+            runtime_mode: "auto".into(),
+            trigger_kind: "time".into(),
+            trigger_event: String::new(),
+            schedule_kind: "weekdays".into(),
+            minute: 0,
+            time: "09:00".into(),
+            day_of_week: 1,
+            triggers: None,
+            missed_run_grace_minutes: 720,
+            enabled: true,
+            next_run_at: 1,
+            last_run_at: None,
+            last_run_status: None,
+            last_run_error: None,
+            last_session_id: None,
+            created_at: 1,
+            updated_at: 1,
+        }
+    }
+
+    fn stored_run(id: &str, automation_id: &str) -> AutomationRun {
+        AutomationRun {
+            id: id.into(),
+            automation_id: automation_id.into(),
+            trigger: "scheduled".into(),
+            scheduled_for: 1,
+            created_at: 1,
+            started_at: None,
+            completed_at: None,
+            status: "pending".into(),
+            session_id: None,
+            error: None,
+            event_key: None,
+            event_kind: None,
+            event: None,
+            prompt: Some("PROMPT_SHOULD_NOT_LEAK".into()),
+        }
+    }
+
+    fn activity_rows(conn: &Connection) -> Vec<ActivitySeen> {
+        let mut statement = conn
+            .prepare(
+                "SELECT kind, summary, link, target FROM activity ORDER BY seq ASC",
+            )
+            .unwrap();
+        statement
+            .query_map([], |row| {
+                Ok(ActivitySeen {
+                    kind: row.get(0)?,
+                    summary: row.get(1)?,
+                    link: row.get(2)?,
+                    target: row.get(3)?,
+                })
+            })
+            .unwrap()
+            .map(|row| row.unwrap())
+            .collect()
+    }
+
+    /// A finished run and a failed run each write one activity line. Repeating
+    /// the same `automation_run_update` writes no second line. Today, before the
+    /// hook, both updates write nothing.
+    #[test]
+    fn finished_and_failed_runs_write_one_activity_line() {
+        let store = crate::session_store::SessionStore::open_in_memory().unwrap();
+        let mut conn = store.lock_conn().unwrap();
+        let automation = stored_automation(
+            "morning-audit",
+            "Morning audit",
+            "PROMPT_SHOULD_NOT_LEAK",
+        );
+        write_automation(&conn, &automation).unwrap();
+        write_run(&conn, &stored_run("run-finished", "morning-audit")).unwrap();
+        let secret = "sk-ant-api03-PLANTEDplantedPLANTED0123456789abcdefXYZ";
+        update_stored_run(
+            &mut conn,
+            "run-finished",
+            "succeeded",
+            Some("session-1".into()),
+            None,
+            None,
+            1_700_000_000_000,
+        )
+        .unwrap();
+        update_stored_run(
+            &mut conn,
+            "run-finished",
+            "succeeded",
+            Some("session-1".into()),
+            None,
+            None,
+            1_700_000_000_001,
+        )
+        .unwrap();
+        write_run(&conn, &stored_run("run-failed", "morning-audit")).unwrap();
+        update_stored_run(
+            &mut conn,
+            "run-failed",
+            "failed",
+            None,
+            Some(format!("login failed\n{secret}")),
+            Some("not_authenticated"),
+            1_700_000_000_002,
+        )
+        .unwrap();
+        update_stored_run(
+            &mut conn,
+            "run-failed",
+            "failed",
+            None,
+            Some(format!("login failed again\n{secret}")),
+            Some("not_authenticated"),
+            1_700_000_000_003,
+        )
+        .unwrap();
+
+        let rows = activity_rows(&conn);
+        assert_eq!(
+            rows.len(),
+            2,
+            "a finished run and a failed run write one line each, and a retry writes no second"
+        );
+        let finished = rows
+            .iter()
+            .find(|row| row.kind == "automation.completed")
+            .expect("finished line");
+        assert!(finished.summary.contains("Morning audit"));
+        assert!(finished.summary.contains("Finished"));
+        assert!(finished.summary.contains("the 9:00 schedule"));
+        assert!(!finished.summary.contains("PROMPT_SHOULD_NOT_LEAK"));
+        assert_eq!(finished.link, "session:session-1");
+        assert_eq!(finished.target, "morning-audit/run-finished");
+        let failed = rows
+            .iter()
+            .find(|row| row.kind == "automation.failed")
+            .expect("failed line");
+        assert!(failed.summary.contains("Morning audit"));
+        assert!(failed
+            .summary
+            .contains("Failed: the Claude login has expired"));
+        assert!(failed.summary.contains("the 9:00 schedule"));
+        assert!(!failed.summary.contains("PROMPT_SHOULD_NOT_LEAK"));
+        assert!(!failed.summary.contains(secret));
+        assert!(!failed.summary.contains("sk-ant-"));
+        assert_eq!(failed.target, "morning-audit/run-failed");
     }
 }
