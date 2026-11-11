@@ -5,6 +5,7 @@
 //! rules for display; this module is the last check before anything runs.
 
 use serde_json::{json, Value};
+use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -477,18 +478,29 @@ fn hex_digit(byte: u8) -> Option<u8> {
     }
 }
 
-/// `file:///C:/dir/file` carries a leading slash in front of the drive. Drop it so the path is `C:/dir/file`.
+/// `file:///C:/dir/file` carries a leading slash in front of the drive. On Windows, drop it so the path is
+/// `C:/dir/file`. Anywhere else that slash is the root: `C:/x` would otherwise be read from the working folder.
 fn file_url_path(decoded: &str) -> String {
-    let bytes = decoded.as_bytes();
-    if bytes.len() >= 3 && bytes[0] == b'/' && bytes[1].is_ascii_alphabetic() && bytes[2] == b':' {
-        decoded[1..].to_string()
-    } else {
-        decoded.to_string()
+    #[cfg(windows)]
+    {
+        let bytes = decoded.as_bytes();
+        if bytes.len() >= 3
+            && bytes[0] == b'/'
+            && bytes[1].is_ascii_alphabetic()
+            && bytes[2] == b':'
+        {
+            return decoded[1..].to_string();
+        }
     }
+    decoded.to_string()
 }
 
-/// The canonical file a value names, when it is an absolute path or a local file URL.
+/// The canonical file a value names, when it is an absolute path or a local file URL. Fullwidth slashes are folded
+/// first, so the path that is pinned is the path a Windows API would open. A value that is not a path is not folded
+/// into the argument the child receives.
 fn canonical_of_value(value: &str) -> Result<Option<String>, String> {
+    let folded = fold_path(value);
+    let value = folded.as_ref();
     if let Some(path) = file_url_target(value)? {
         return Ok(Some(canonical_file(&path)?));
     }
@@ -496,6 +508,16 @@ fn canonical_of_value(value: &str) -> Result<Option<String>, String> {
         return Ok(Some(canonical_file(value)?));
     }
     Ok(None)
+}
+
+/// NFKC, so a fullwidth reverse solidus is a real `\`. ASCII is left as it is.
+fn fold_path(value: &str) -> Cow<'_, str> {
+    if value.is_ascii() {
+        Cow::Borrowed(value)
+    } else {
+        use unicode_normalization::UnicodeNormalization;
+        Cow::Owned(value.chars().nfkc().collect())
+    }
 }
 
 /// One argument as the child will get it, and the absolute files it names (whole, after `=` or a flag colon, a short
@@ -573,7 +595,7 @@ fn remote_note(command: &str, args: &[String]) -> Option<String> {
                 && args.iter().any(|a| {
                     a.starts_with("npm:")
                         || a.starts_with("jsr:")
-                        || (a.contains("://") && !a.starts_with("file://"))
+                        || (a.contains("://") && !is_file_url(a))
                 })
         }
         _ => false,
@@ -581,6 +603,11 @@ fn remote_note(command: &str, args: &[String]) -> Option<String> {
     remote.then(|| {
         format!("This runs a package fetched by {name} at start; only {name} itself is pinned.")
     })
+}
+
+/// `file://` in any case. `FILE:///tmp/x` is a local file, not a fetch.
+fn is_file_url(arg: &str) -> bool {
+    arg.len() >= 7 && arg.as_bytes()[..7].eq_ignore_ascii_case(b"file://")
 }
 
 /// What is on disk. `approvals` maps an id to what the person allowed for it.
@@ -855,11 +882,16 @@ fn relative_file_arg(arg: &str) -> bool {
 /// One value an argument can carry. A leading `@` is stripped and the rest is checked the same way, so `@../x` and
 /// `@~/x` are refused and `@scope/pkg` is not.
 fn refused_path_value(value: &str) -> bool {
+    let folded = fold_path(value);
+    path_is_refused(folded.as_ref())
+}
+
+fn path_is_refused(value: &str) -> bool {
     if value.is_empty() {
         return false;
     }
     if let Some(rest) = value.strip_prefix('@') {
-        return refused_path_value(rest);
+        return path_is_refused(rest);
     }
     match file_url_target(value) {
         Err(_) => return true,
@@ -882,12 +914,17 @@ fn refused_path_value(value: &str) -> bool {
 }
 
 /// `C:foo` and `C:..\agent`: a drive letter, a colon, and no slash. `C:\foo` is absolute and is not this.
+/// A model tag (`o:latest`, `m:stable`, `x:nightly`) is not a path. `C:foo` and `d:bar` still are.
+/// `C:latest` is the same shape as a tag, so it is not caught here.
 fn is_drive_relative(value: &str) -> bool {
     let bytes = value.as_bytes();
     if bytes.len() < 2 || !bytes[0].is_ascii_alphabetic() || bytes[1] != b':' {
         return false;
     }
-    bytes.len() == 2 || (bytes[2] != b'/' && bytes[2] != b'\\')
+    if bytes.len() > 2 && (bytes[2] == b'/' || bytes[2] == b'\\') {
+        return false;
+    }
+    !matches!(&value[2..], "latest" | "stable" | "nightly")
 }
 
 /// A root with no drive: `\Users\ash`, and on Windows `/Users/ash`. A UNC path (`\\server\share`) is not this.
@@ -896,6 +933,12 @@ fn is_rooted_without_drive(value: &str) -> bool {
         return false;
     }
     if value.starts_with('\\') {
+        // `\t`, `\n` and `\r` are escapes (`--delimiter=\t`), not a file at the root of the current drive.
+        // `\Users\ash` and `\t\secret` are longer, so they stay refused.
+        let bytes = value.as_bytes();
+        if bytes.len() == 2 && matches!(bytes[1], b't' | b'n' | b'r') {
+            return false;
+        }
         return true;
     }
     cfg!(windows) && value.starts_with('/')
@@ -3332,5 +3375,69 @@ mod tests {
                 "{relative} names a file outside the run folder"
             );
         }
+    }
+
+    /// `\t` is an escape, not a rooted path. `o:latest` is a model tag, not `C:foo`. The rooted and drive-relative
+    /// shapes stay refused, including a tag glued to a real path (`\t\secret`).
+    #[test]
+    fn an_escape_or_a_model_tag_is_not_a_windows_path() {
+        for arg in [
+            "--delimiter=\\t",
+            "--model=o:latest",
+            "o:stable",
+            "x:nightly",
+        ] {
+            assert!(
+                checked_fields(&entry("wp134", "/opt/node", &[arg])).is_ok(),
+                "{arg} was refused"
+            );
+        }
+        for arg in ["\\Users\\ash", "\\t\\secret", "C:foo", "d:bar"] {
+            assert!(
+                checked_fields(&entry("wp134", "/opt/node", &[arg])).is_err(),
+                "{arg} was allowed"
+            );
+        }
+    }
+
+    /// A fullwidth reverse solidus folds to `\`, so this is the rooted path the check already refuses.
+    #[test]
+    fn a_fullwidth_backslash_path_is_refused() {
+        let arg = "\u{FF3C}Users\u{FF3C}ash";
+        assert_eq!(
+            checked_fields(&entry("wp134", "/opt/node", &[arg])).expect_err("was allowed"),
+            RELATIVE_REFUSED
+        );
+    }
+
+    /// `file:///C:/x` must not be read as `C:/x` relative to this process's working folder.
+    #[cfg(unix)]
+    #[test]
+    fn a_file_url_with_a_drive_letter_does_not_use_the_working_folder() {
+        let cwd = std::env::current_dir().expect("cwd");
+        let decoy_dir = cwd.join("C:");
+        let decoy = decoy_dir.join("wp134-not-the-working-folder");
+        std::fs::create_dir_all(&decoy_dir).expect("decoy dir");
+        std::fs::write(&decoy, b"decoy").expect("decoy");
+        let result = canonical_of_value("file:///C:/wp134-not-the-working-folder");
+        let _ = std::fs::remove_file(&decoy);
+        let _ = std::fs::remove_dir(&decoy_dir);
+        match result {
+            Ok(Some(path)) => assert!(
+                !Path::new(&path).starts_with(&cwd),
+                "the file URL resolved inside the working folder: {path}"
+            ),
+            Ok(None) => panic!("the file URL was not treated as a file"),
+            Err(_) => {}
+        }
+    }
+
+    /// `FILE://` is a local file. Only a real fetch (`https://`, `npm:`) is a remote note.
+    #[test]
+    fn an_uppercase_file_url_is_not_a_remote_fetch() {
+        let local = vec!["run".into(), "FILE:///tmp/agent.ts".into()];
+        assert!(remote_note("deno", &local).is_none());
+        let remote = vec!["run".into(), "HTTPS://example.com/a.ts".into()];
+        assert!(remote_note("deno", &remote).is_some());
     }
 }

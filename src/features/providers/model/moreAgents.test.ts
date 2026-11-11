@@ -248,4 +248,24 @@ describe("review #231 r3: a Windows path that is not absolute is not a model nam
     expect(argumentProblem("/opt/node", ["-p:../x"])).not.toBeNull();
     expect(argumentProblem("/opt/node", ["-IC:\\foo"], "win32")).toBeNull();
   });
+
+  it("allows an escape and a model tag, and refuses a fullwidth rooted path", async () => {
+    const { argumentProblem } = await import("./moreAgents");
+    expect(argumentProblem("/opt/agent", ["--delimiter=\\t"])).toBeNull();
+    expect(argumentProblem("/opt/agent", ["--model=o:latest"])).toBeNull();
+    expect(argumentProblem("/opt/agent", ["o:stable"])).toBeNull();
+    expect(argumentProblem("/opt/agent", ["x:nightly"])).toBeNull();
+    expect(argumentProblem("/opt/agent", ["\\Users\\ash"])).not.toBeNull();
+    expect(argumentProblem("/opt/agent", ["\\t\\secret"])).not.toBeNull();
+    expect(argumentProblem("/opt/agent", ["C:foo"])).not.toBeNull();
+    const fullwidth = `${String.fromCharCode(0xff3c)}Users${String.fromCharCode(0xff3c)}ash`;
+    expect(argumentProblem("/opt/agent", [fullwidth])).not.toBeNull();
+  });
+
+  it("refuses a file URL that is not a local file, and allows one that is", async () => {
+    const { argumentProblem } = await import("./moreAgents");
+    expect(argumentProblem("/opt/deno", ["file:../x"])).not.toBeNull();
+    expect(argumentProblem("/opt/deno", ["file://evil/x"])).not.toBeNull();
+    expect(argumentProblem("/opt/deno", ["FILE:///tmp/agent.ts"])).toBeNull();
+  });
 });

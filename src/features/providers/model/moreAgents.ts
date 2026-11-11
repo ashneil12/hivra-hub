@@ -206,16 +206,49 @@ function runningOnWindows(): boolean {
   return typeof process !== "undefined" && process.platform === "win32";
 }
 
-/** A drive letter, a colon, and no slash: `C:foo`, `C:..\agent`. `C:\foo` is absolute and is not this. */
+/** A drive letter, a colon, and no slash: `C:foo`, `C:..\agent`. `C:\foo` is absolute and is not this.
+ *  A model tag (`o:latest`, `m:stable`, `x:nightly`) is not a path. `C:latest` is the same shape, so it is not caught. */
 function isDriveRelative(value: string): boolean {
-  return /^[A-Za-z]:([^\\/]|$)/.test(value);
+  if (!/^[A-Za-z]:/.test(value)) return false;
+  if (value.length > 2 && (value[2] === "/" || value[2] === "\\")) return false;
+  const rest = value.slice(2);
+  return rest !== "latest" && rest !== "stable" && rest !== "nightly";
 }
 
-/** A root with no drive: `\Users\ash`, and on Windows `/Users/ash`. A UNC path is not this. */
+/** A root with no drive: `\Users\ash`, and on Windows `/Users/ash`. A UNC path is not this.
+ *  `\t`, `\n` and `\r` are escapes, not a file at the root of the current drive. */
 function isRootedWithoutDrive(value: string, platform: string): boolean {
   if (value.startsWith("\\\\") || value.startsWith("//")) return false;
-  if (value.startsWith("\\")) return true;
+  if (value.startsWith("\\")) {
+    if (value.length === 2 && (value[1] === "t" || value[1] === "n" || value[1] === "r")) return false;
+    return true;
+  }
   return platform === "win32" && value.startsWith("/");
+}
+
+function foldPath(value: string): string {
+  for (let i = 0; i < value.length; i++) {
+    if (value.charCodeAt(i) > 0x7f) return value.normalize("NFKC");
+  }
+  return value;
+}
+
+/** `file:` that is not a local file is refused. A local `file://` or `file:/` URL is pinned by the app, so it is allowed here. */
+function fileUrlClass(value: string): "not-file" | "local" | "refuse" {
+  if (value.length < 5 || value.slice(0, 5).toLowerCase() !== "file:") return "not-file";
+  const rest = value.slice(5);
+  if (rest.startsWith("//")) {
+    const after = rest.slice(2);
+    const slash = after.indexOf("/");
+    if (slash < 0) return "refuse";
+    const host = after.slice(0, slash);
+    if (host !== "" && host.toLowerCase() !== "localhost") return "refuse";
+    const path = after.slice(slash);
+    if (path === "" || path === "/") return "refuse";
+    return "local";
+  }
+  if (rest.startsWith("/")) return rest === "/" ? "refuse" : "local";
+  return "refuse";
 }
 
 /** `..`, or `C:..` where the drive letter would otherwise hide the parent segment. */
@@ -225,8 +258,16 @@ function isParentSegment(segment: string): boolean {
 
 function isRelativeFile(value: string, platform: string): boolean {
   if (!value) return false;
+  return relativeFolded(foldPath(value), platform);
+}
+
+function relativeFolded(value: string, platform: string): boolean {
+  if (!value) return false;
   // A leading @ is not a free pass. `@../x` and `@~/x` are paths. `@scope/pkg` is not.
-  if (value.startsWith("@")) return isRelativeFile(value.slice(1), platform);
+  if (value.startsWith("@")) return relativeFolded(value.slice(1), platform);
+  const fileUrl = fileUrlClass(value);
+  if (fileUrl === "refuse") return true;
+  if (fileUrl === "local") return false;
   if (value.includes("://")) return false;
   if (isDriveRelative(value) || isRootedWithoutDrive(value, platform)) return true;
   if (value.startsWith("/") || /^[A-Za-z]:[\\/]/.test(value)) return false;
