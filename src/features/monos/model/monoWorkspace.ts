@@ -11,6 +11,7 @@ import { sameProjectPath } from "../../projects/model/recents";
 import {
   findMono,
   isMonoSession,
+  isMonoSideChat,
   monoForSession,
   monoProjectSession,
   monoRoomSession,
@@ -19,6 +20,7 @@ import {
   saveMonoRoomSession,
   saveMonoSessionId,
   saveMonoSideChat,
+  replaceMonoSideChat,
 } from "./mono";
 import { stampFirstMate } from "./monoMate";
 import { withMonoFast } from "./monoRun";
@@ -225,9 +227,11 @@ export async function resetMonoSession(
   await host.remove(stopped);
   forgetAgentContext(current.id);
   forgetMonoRotation(current.id);
-  // Dropwave: a project's own chat with the Mono is reset in its place; its chat on Home is left alone.
+  // Dropwave: a project's own chat with the Mono, or one of its further chats (G2), is reset in its place; its main
+  // chat is left alone.
   const projectId = monoSessionProject(current.id);
   if (monoId && projectId) saveMonoProjectSession(monoId, projectId, fresh.id);
+  else if (monoId && isMonoSideChat(current.id)) replaceMonoSideChat(monoId, current.id, fresh.id);
   else if (monoId) saveMonoSessionId(monoId, fresh.id);
   host.replace(fresh);
   return fresh;
