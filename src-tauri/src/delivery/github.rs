@@ -108,6 +108,8 @@ pub(crate) mod fake {
         pub signed_in: bool,
         pub fail: Mutex<Vec<String>>,
         pub failed_log: String,
+        /// What `gh pr view --json files` answers (the changed files of the pull request).
+        pub files_json: Mutex<String>,
     }
 
     impl FakeGithub {
@@ -120,6 +122,7 @@ pub(crate) mod fake {
                 signed_in: true,
                 fail: Mutex::new(Vec::new()),
                 failed_log: "build\tRun tests\terror: expected 2, got 3".into(),
+                files_json: Mutex::new("{\"files\":[]}".into()),
             }
         }
 
@@ -171,6 +174,9 @@ pub(crate) mod fake {
                     Ok(self.created.clone())
                 }
                 (Some("run"), Some("view")) => Ok(self.failed_log.clone()),
+                (Some("pr"), Some("view")) if args.iter().any(|a| a == "files") => {
+                    Ok(self.files_json.lock().unwrap().clone())
+                }
                 _ => Ok(String::new()),
             }
         }

@@ -474,7 +474,6 @@ export function evaluatePullRequest(pr, runs, options) {
   if (early) return { ok: false, number: pr.number, message: early };
   const ci = assessCi(runs, pr.sha);
   if (!ci.ok) return { ok: false, number: pr.number, message: ci.message };
-  const inbox = securityReviewGate(pr, options).inbox;
   if (!options.repo || !REPO_NAME.test(options.repo)) {
     return { ok: false, number: pr.number, message: "could not read the repo name" };
   }
@@ -496,7 +495,6 @@ export function evaluatePullRequest(pr, runs, options) {
     updatedAt: ci.run.updatedAt,
     mergeArgs,
     commandLine: formatCommand(mergeArgs),
-    inbox,
   };
 }
 
@@ -843,7 +841,6 @@ export async function shipPullRequests(numbers, givenOptions = {}) {
   /** @type {string[]} */
   const ready = [];
   for (const plan of plans) {
-    for (const line of plan.inbox ?? []) out(`inbox: ${line}`);
     out(`ready: ${plan.commandLine}`);
     const logged = writeTiming(options, plan, err);
     if (!logged.ok) return { code: 1, ready };

@@ -13,11 +13,20 @@
 //! A pull request with no checks at all needs the person's word even when the switch is on: no checks is not green.
 //!
 //! Red is never merged (firstmate, `bin/fm-pr-merge.sh`).
+//!
+//! A pull request that touches a security path (neverMerge.json's `securityPaths`) or carries a park label merges only
+//! with a security review for its exact head (WP-203): the findings, run record and coverage ledger the review command
+//! writes under `<git common dir>/hivra-security-review/<head>/`. The gate reads those files; it refuses a missing,
+//! stale, uncovered or same-builder review, and any confirmed high or critical finding. A needs_validation record
+//! becomes one open decision in the Inbox and does not block.
 
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 
+use std::path::PathBuf;
+
 use super::github::Github;
+use crate::decisions::{self, AskInput};
 use crate::delegations;
 use crate::pr_watch::eval::{gate, Check, CheckStatus, Mergeability};
 use crate::pr_watch::github::{split_repo, PrRead, PrState};
@@ -119,6 +128,270 @@ const NEVER_MERGE_JSON: &str = include_str!("../../../src/features/leadTick/mode
 #[derive(Deserialize)]
 struct NeverMergeList {
     labels: Vec<String>,
+    #[serde(default, rename = "securityPaths")]
+    security_paths: Vec<String>,
+}
+
+/// The paths that make a change security-sensitive (the same list the ship helper reads).
+pub fn security_paths() -> Vec<String> {
+    let list: NeverMergeList =
+        serde_json::from_str(NEVER_MERGE_JSON).expect("neverMerge.json is valid JSON");
+    list.security_paths
+}
+
+/// The review folder's name under the clone's git common directory (the review command and the ship helper use it too).
+const SECURITY_REVIEW_DIR: &str = "hivra-security-review";
+/// The Inbox key of a needs_validation item for one head.
+const SECURITY_KEY: &str = "security-review/";
+
+/// A glob as the ship helper reads it: `**` any path, `*` within one folder name, `?` one character.
+pub fn glob_match(pattern: &str, path: &str) -> bool {
+    fn go(p: &[u8], s: &[u8]) -> bool {
+        match p.first() {
+            None => s.is_empty(),
+            Some(b'*') if p.get(1) == Some(&b'*') => {
+                let rest = &p[2..];
+                let rest = if rest.first() == Some(&b'/') {
+                    &rest[1..]
+                } else {
+                    rest
+                };
+                (0..=s.len()).any(|i| go(rest, &s[i..]))
+            }
+            Some(b'*') => {
+                let rest = &p[1..];
+                let mut i = 0;
+                loop {
+                    if go(rest, &s[i..]) {
+                        return true;
+                    }
+                    if i >= s.len() || s[i] == b'/' {
+                        return false;
+                    }
+                    i += 1;
+                }
+            }
+            Some(b'?') => !s.is_empty() && s[0] != b'/' && go(&p[1..], &s[1..]),
+            Some(&c) => s.first() == Some(&c) && go(&p[1..], &s[1..]),
+        }
+    }
+    go(pattern.as_bytes(), path.as_bytes())
+}
+
+/// The changed files of the pull request, from GitHub.
+fn changed_files(gh: &dyn Github, repo: &str, number: u64) -> Result<Vec<String>, String> {
+    let out = gh.run(
+        None,
+        &[
+            "pr".into(),
+            "view".into(),
+            number.to_string(),
+            "--repo".into(),
+            repo.into(),
+            "--json".into(),
+            "files".into(),
+        ],
+    )?;
+    let json: serde_json::Value = serde_json::from_str(&out).map_err(|e| e.to_string())?;
+    let files = json
+        .get("files")
+        .and_then(|f| f.as_array())
+        .ok_or_else(|| "GitHub's answer had no file list".to_string())?;
+    files
+        .iter()
+        .map(|file| {
+            file.get("path")
+                .and_then(|p| p.as_str())
+                .map(str::to_string)
+                .ok_or_else(|| "a changed file had no path".to_string())
+        })
+        .collect()
+}
+
+/// `<git common dir>/hivra-security-review` for the project's checkout, or None when it is not a git checkout.
+fn review_root(project: &str) -> Option<PathBuf> {
+    let out = super::child("git")
+        .args([
+            "-C",
+            project,
+            "rev-parse",
+            "--path-format=absolute",
+            "--git-common-dir",
+        ])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let common = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    (!common.is_empty()).then(|| PathBuf::from(common).join(SECURITY_REVIEW_DIR))
+}
+
+/// The security gate's answer for one merge.
+#[derive(Debug, PartialEq, Eq)]
+enum SecurityGate {
+    /// Not security-sensitive, or reviewed and clean.
+    Pass,
+    Refuse(String),
+}
+
+fn read_json(path: &std::path::Path) -> Result<serde_json::Value, String> {
+    let text = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
+    serde_json::from_str(&text).map_err(|e| e.to_string())
+}
+
+/// The security gate (WP-203) for one head. Files are read from disk; the rules are the ship helper's, restated here
+/// for the merge path. A needs_validation record opens one Inbox decision and passes.
+/// The pull request and its head that the gate judges.
+struct GateTarget<'a> {
+    repo: &'a str,
+    number: u64,
+    head: &'a str,
+    project: Option<&'a str>,
+    labels: &'a [String],
+}
+
+fn security_gate(
+    conn: &mut rusqlite::Connection,
+    changed: Result<Vec<String>, String>,
+    target: GateTarget<'_>,
+    now: i64,
+) -> Result<SecurityGate, String> {
+    let GateTarget {
+        repo,
+        number,
+        head,
+        project,
+        labels,
+    } = target;
+    let files = match changed {
+        Ok(files) => files,
+        Err(error) => {
+            return Ok(SecurityGate::Refuse(format!(
+                "{repo}#{number}'s changed files couldn't be read, so Hivra can't tell whether it needs a security review: {error}"
+            )))
+        }
+    };
+    let paths = security_paths();
+    let sensitive = park_label(labels).is_some()
+        || files
+            .iter()
+            .any(|file| paths.iter().any(|pattern| glob_match(pattern, file)));
+    if !sensitive {
+        return Ok(SecurityGate::Pass);
+    }
+    let refuse =
+        |reason: String| -> Result<SecurityGate, String> { Ok(SecurityGate::Refuse(reason)) };
+    let Some(project) = project else {
+        return refuse(format!("{repo}#{number} is security-sensitive, and no project folder is known to find its review."));
+    };
+    let Some(root) = review_root(project) else {
+        return refuse(format!("{repo}#{number} is security-sensitive, and {project} is not a git checkout to find its review in."));
+    };
+    let dir = root.join(head);
+    if !dir.join("findings.json").exists() {
+        return refuse(format!(
+            "{repo}#{number} is security-sensitive, and there is no security review for head {head}. Run the review on this head first."
+        ));
+    }
+    let run = match read_json(&dir.join("run.json")) {
+        Ok(run) => run,
+        Err(_) => {
+            return refuse(format!(
+                "The security review for head {head} has no readable run record."
+            ))
+        }
+    };
+    if run.get("head").and_then(|h| h.as_str()) != Some(head) {
+        return refuse(format!(
+            "The security review on record is for another head, not {head}."
+        ));
+    }
+    let author = run.get("author").and_then(|a| a.as_str()).unwrap_or("");
+    let reviewer = run.get("reviewer").and_then(|r| r.as_str()).unwrap_or("");
+    if author.is_empty() || reviewer.is_empty() || author == reviewer {
+        return refuse(format!(
+            "The security review for head {head} needs a different builder: the author and the reviewer must both be recorded, and the same builder cannot review its own change."
+        ));
+    }
+    let ledger = match read_json(&dir.join("coverage-ledger.json")) {
+        Ok(ledger) => ledger,
+        Err(_) => {
+            return refuse(format!(
+                "The security review for head {head} has no coverage ledger."
+            ))
+        }
+    };
+    let covered: Vec<&str> = ledger
+        .as_array()
+        .map(|units| {
+            units
+                .iter()
+                .filter(|u| u.get("status").and_then(|s| s.as_str()) == Some("covered"))
+                .filter_map(|u| u.get("starting_paths")?.get(0)?.as_str())
+                .collect()
+        })
+        .unwrap_or_default();
+    let uncovered: Vec<&str> = files
+        .iter()
+        .map(String::as_str)
+        .filter(|f| !covered.contains(f))
+        .collect();
+    if !uncovered.is_empty() {
+        return refuse(format!(
+            "The security review for head {head} does not cover every changed file; not covered: {}.",
+            uncovered.join(", ")
+        ));
+    }
+    let findings = read_json(&dir.join("findings.json"))?;
+    let records = findings.as_array().cloned().unwrap_or_default();
+    let blocking = records.iter().find(|r| {
+        r.get("verdict").and_then(|v| v.as_str()) == Some("confirmed")
+            && matches!(
+                r.get("severity")
+                    .and_then(|s| s.get("overall_severity"))
+                    .and_then(|v| v.as_str()),
+                Some("high") | Some("critical")
+            )
+    });
+    if let Some(record) = blocking {
+        let severity = record["severity"]["overall_severity"]
+            .as_str()
+            .unwrap_or("high");
+        let title = record["title"].as_str().unwrap_or("untitled");
+        return refuse(format!(
+            "A confirmed {severity} finding is open on head {head}: {title}."
+        ));
+    }
+    let pending: Vec<&str> = records
+        .iter()
+        .filter(|r| r.get("verdict").and_then(|v| v.as_str()) == Some("needs_validation"))
+        .filter_map(|r| r.get("title").and_then(|t| t.as_str()))
+        .collect();
+    if !pending.is_empty() {
+        let question = format!(
+            "Security review of {repo}#{number} (head {}): {} candidate{} need validation: {}. Nothing is blocked; check them before this ships.",
+            head.chars().take(12).collect::<String>(),
+            pending.len(),
+            if pending.len() == 1 { "" } else { "s" },
+            pending.join("; "),
+        );
+        decisions::ask(
+            conn,
+            AskInput {
+                asked_by: "gate".into(),
+                asked_by_mono: None,
+                project: Some(project.to_string()),
+                key: format!("{SECURITY_KEY}{head}"),
+                question,
+                options: vec!["Looked at it".into(), "Hold the merge".into()],
+                recommended: None,
+                task_ids: Vec::new(),
+            },
+            now,
+        )?;
+    }
+    Ok(SecurityGate::Pass)
 }
 
 /// The first park or never-merge label on the pull request, as the tick names it (trimmed, lower case, spaces and
@@ -414,7 +687,9 @@ pub fn merge(
         return Err("number must be the pull request's number".into());
     }
     let read = gh.read_pr(&repo, number);
-    let conn = store.lock_conn()?;
+    // The changed files are read before the database is held (the same rule as the pull request read above).
+    let changed = changed_files(gh, &repo, number);
+    let mut conn = store.lock_conn()?;
     let read = match read {
         Ok(read) => read,
         Err(error) => {
@@ -494,6 +769,27 @@ pub fn merge(
             None => Allow::Nobody,
         },
     };
+    let target = GateTarget {
+        repo: &repo,
+        number,
+        head: &head,
+        project: project.as_deref(),
+        labels: &read.labels,
+    };
+    if let SecurityGate::Refuse(reason) = security_gate(&mut conn, changed, target, now)? {
+        record(
+            &conn,
+            &repo,
+            number,
+            Some(&head),
+            "refused",
+            None,
+            &request.caller,
+            Some(&reason),
+            now,
+        )?;
+        return Ok(MergeOutcome::Refused { reason });
+    }
     let decision = decide(&read, open.as_deref(), &allow);
     let allowed_by = match decision {
         Decision::Refuse(reason) => {

@@ -442,12 +442,13 @@ test("the ship helper refuses a security change with a confirmed high finding on
   }
 });
 
-test("the ship helper passes a security change with a clean review and shows the Inbox line for needs_validation", async () => {
+test("the ship helper passes a security change with a clean review, and a needs_validation item does not block it", async () => {
   const root = await reviewedRoot([needsValidation()]);
   try {
     const decision = evaluatePullRequest(prFor(), greenRuns, { repo: REPO, reviewsRoot: root });
     assert.equal(decision.ok, true, decision.message);
-    assert.equal(decision.inbox.length, 1);
+    // The Inbox item is recorded by the app's merge path (delivery/merge.rs), not printed here.
+    assert.equal("inbox" in decision, false);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
