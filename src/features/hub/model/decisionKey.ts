@@ -33,10 +33,31 @@ export function isGateDecisionKey(key: string): boolean {
   return foldDecisionKey(key).startsWith("gate/");
 }
 
+/** A security review parked for the person (`security-review/<head>`, decisions.rs `is_security_key`). */
+export function isSecurityReviewDecisionKey(key: string): boolean {
+  return foldDecisionKey(key).startsWith("security-review/");
+}
+
 /**
- * The keys only the person answers (decisions.rs `person_only`). A Page's tap, a chat or an automation never answers
- * one: it waits in Needs until the person does.
+ * A secret (`secret/`). decisions.rs `person_only` does not name it; standing answers already refuse to reuse one.
+ * A Page never answers one either, in any spelling.
+ */
+export function isSecretDecisionKey(key: string): boolean {
+  return foldDecisionKey(key).startsWith("secret/");
+}
+
+/**
+ * The keys a Page never answers. decisions.rs `person_only` is a fresh-eyes review, an irreversible step, a fan-out
+ * restart, a delivery check and a security review. A secret is on this list too: standing answers never reuse one,
+ * and a Page does not answer it. Every prefix is read on the folded key.
  */
 export function isPersonOnlyDecisionKey(key: string): boolean {
-  return isFreshEyesDecisionKey(key) || isIrreversibleDecisionKey(key) || isFanoutAgainDecisionKey(key) || isGateDecisionKey(key);
+  return (
+    isFreshEyesDecisionKey(key) ||
+    isIrreversibleDecisionKey(key) ||
+    isFanoutAgainDecisionKey(key) ||
+    isGateDecisionKey(key) ||
+    isSecurityReviewDecisionKey(key) ||
+    isSecretDecisionKey(key)
+  );
 }

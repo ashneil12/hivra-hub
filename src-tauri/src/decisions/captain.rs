@@ -509,11 +509,11 @@ mod tests {
         .unwrap();
     }
 
-    fn open(conn: &mut Connection, project: &str, key: &str, question: &str) {
+    fn open_as(conn: &mut Connection, project: &str, key: &str, question: &str, asked_by: &str) {
         ask(
             conn,
             AskInput {
-                asked_by: "fm".into(),
+                asked_by: asked_by.into(),
                 asked_by_mono: None,
                 project: Some(project.into()),
                 key: key.into(),
@@ -528,6 +528,10 @@ mod tests {
             NOW,
         )
         .unwrap();
+    }
+
+    fn open(conn: &mut Connection, project: &str, key: &str, question: &str) {
+        open_as(conn, project, key, question, "fm");
     }
 
     fn cover(conn: &Connection, scope: &str) {
@@ -1016,7 +1020,13 @@ mod tests {
             ("security-review/run", "chat:lead"),
             ("captain-cap", "page:home"),
         ] {
-            open(&mut conn, "hivra", key, "Example: which name?");
+            // Only the gate may open a security review. The chat still must not answer it.
+            let asker = if is_security_key(key) {
+                "security-gate"
+            } else {
+                "fm"
+            };
+            open_as(&mut conn, "hivra", key, "Example: which name?", asker);
             let err = answer(&mut conn, "hivra", key, "Keep it", Some(by.into()), NOW).unwrap_err();
             assert!(err.contains("person"), "{key} {by}: {err}");
         }
@@ -1031,6 +1041,108 @@ mod tests {
         )
         .unwrap();
         assert!(person.applied);
+    }
+
+    /// Nobody named is not the person on an owner key (a budget, the charter). Only `user` or `person`,
+    /// trimmed and exact, lands. A chat, a page, the captain and autopilot are refused, and the row stays open.
+    #[test]
+    fn an_unnamed_answer_on_an_owner_key_is_refused_and_the_person_lands() {
+        let store = store();
+        let mut conn = store.lock_conn().unwrap();
+        mate(&mut conn);
+        for key in ["budget/x", "charter"] {
+            assert!(
+                person_only(key, None).is_some(),
+                "{key} treated nobody as the person"
+            );
+            assert!(person_only(key, Some(" ")).is_some(), "{key}");
+            assert!(person_only(key, Some("person")).is_none(), "{key}");
+            assert!(person_only(key, Some("user")).is_none(), "{key}");
+            assert!(person_only(key, Some(" person ")).is_none(), "{key}");
+            assert!(person_only(key, Some(" user ")).is_none(), "{key}");
+            for machine in [
+                "chat:lead",
+                "page:home",
+                "captain:ada",
+                "autopilot",
+                "Person",
+                "USER",
+            ] {
+                assert!(
+                    person_only(key, Some(machine)).is_some(),
+                    "{key} accepted {machine}"
+                );
+            }
+        }
+        assert!(person_only("security/login", None).is_some());
+        assert!(person_only("security/login", Some("user")).is_none());
+        assert!(person_only("captain-cap", None).is_some());
+        assert!(person_only("captain-cap", Some("person")).is_none());
+
+        for (key, by) in [("budget/x", "person"), ("charter", "user")] {
+            open(&mut conn, "hivra", key, "Example: which name?");
+            for unnamed in [None, Some(" ")] {
+                let err = answer(
+                    &mut conn,
+                    "hivra",
+                    key,
+                    "Keep it",
+                    unnamed.map(str::to_string),
+                    NOW,
+                )
+                .unwrap_err();
+                assert!(
+                    err.contains("who") || err.contains("person"),
+                    "{key} {unnamed:?}: {err}"
+                );
+                let row = get(&conn, "hivra", key).unwrap().unwrap();
+                assert_eq!(row.state, OPEN, "{key}");
+                assert!(row.answer.is_none() && row.answered_by.is_none(), "{key}");
+            }
+            for machine in ["chat:lead", "page:home", "captain:ada", "autopilot"] {
+                let err = answer(
+                    &mut conn,
+                    "hivra",
+                    key,
+                    "Keep it",
+                    Some(machine.into()),
+                    NOW,
+                )
+                .unwrap_err();
+                assert!(err.contains("person"), "{key} {machine}: {err}");
+                assert_eq!(get(&conn, "hivra", key).unwrap().unwrap().state, OPEN);
+            }
+            let landed = answer(&mut conn, "hivra", key, "Keep it", Some(by.into()), NOW).unwrap();
+            assert!(landed.applied, "{key}");
+            let row = get(&conn, "hivra", key).unwrap().unwrap();
+            assert_eq!(row.state, ANSWERED, "{key}");
+            assert_eq!(row.answer.as_deref(), Some("Keep it"), "{key}");
+            assert_eq!(row.answered_by.as_deref(), Some(by), "{key}");
+        }
+
+        // The same two words, with space around them, land as the trimmed exact word.
+        for (key, by) in [("budget/y", "user"), ("charter/name", "person")] {
+            open(&mut conn, "hivra", key, "Example: which name?");
+            let landed = answer(
+                &mut conn,
+                "hivra",
+                key,
+                "Keep it",
+                Some(format!(" {by} ")),
+                NOW,
+            )
+            .unwrap();
+            assert!(landed.applied, "{key}");
+            assert_eq!(
+                get(&conn, "hivra", key)
+                    .unwrap()
+                    .unwrap()
+                    .answered_by
+                    .as_deref(),
+                Some(by),
+                "{key}"
+            );
+        }
     }
 
     #[test]
