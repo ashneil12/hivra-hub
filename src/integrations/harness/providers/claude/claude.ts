@@ -241,6 +241,12 @@ type Live = {
   approvals: Map<number, PendingApproval>;
   /** WP-122: a child tool id, and the port its approval answer is written to. */
   childTools: Map<string, { name: string; sessionPort: string }>;
+  /** Child tool id to the Agent call that spawned it, so a late isolation field can still drop the pin. */
+  childAgent: Map<string, string>;
+  /**
+   * A child tool whose agent works in its own folder (`isolation: "worktree"`). Its asks do not keep the parent's pin.
+   */
+  unpinnedChildren: Set<string>;
   childPorts: Map<string, SessionPort>;
   childInputs: Map<string, Record<string, unknown>>;
   questions: Map<number, PendingQuestion>;
@@ -1172,6 +1178,8 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
     onEvent: input.onEvent,
     approvals: new Map(),
     childTools: new Map(),
+    childAgent: new Map(),
+    unpinnedChildren: new Set(),
     childPorts: new Map(),
     childInputs: new Map(),
     questions: new Map(),
@@ -2023,8 +2031,9 @@ async function handleControlRequest(
   // r65 (#13): a keychain or credential read is refused in code before any mode can allow it, with a message that sends
   // the agent to ask Ash instead of retrying.
   // Round 12: a move drops the pin before this call is judged, so a relative path in the same request waits too.
+  // A subagent started with isolation "worktree" works outside the chat folder, so its asks do not keep the pin either.
   if (toolMovesLaunchFolder(toolName)) noteFolderMoved(live);
-  const pinned = live.folderMoved !== true;
+  const pinned = live.folderMoved !== true && !childDropsFolderPin(live, control.toolUseId);
   const blocked = credentialBlock(approvalCall(toolName, input, pinned), live.cwd);
   if (blocked) {
     await writeJson(sessionId, buildControlResponse(control.requestId, { behavior: "deny", message: blocked }));
@@ -2569,6 +2578,34 @@ function handleToolProgress(live: Live, rec: Record<string, unknown>): void {
  * The Agent call a subagent message belongs to, or nothing when the message
  * came from somewhere the parent transcript has no row for.
  */
+/** Whether this agent call works in its own worktree, not the chat folder. */
+function agentOwnWorktree(tool: InFlightTool): boolean {
+  return isAgentToolName(tool.name) && stringField(tool.input, "isolation") === "worktree";
+}
+
+function rememberChildFolder(live: Live, childId: string, parent: InFlightTool): void {
+  live.childAgent.set(childId, parent.id);
+  if (agentOwnWorktree(parent) || live.unpinnedChildren.has(parent.id)) live.unpinnedChildren.add(childId);
+}
+
+/**
+ * A subagent in its own worktree is not in the launch folder, so its asks are not pinned. A child noted before the
+ * parent's isolation field arrived is checked again here.
+ */
+function childDropsFolderPin(live: Live, toolUseId: string | undefined): boolean {
+  const id = toolUseId?.trim();
+  if (!id) return false;
+  if (live.unpinnedChildren.has(id)) return true;
+  const parentId = live.childAgent.get(id);
+  if (!parentId) return false;
+  const parent = live.toolsById.get(parentId);
+  if ((parent && agentOwnWorktree(parent)) || live.unpinnedChildren.has(parentId)) {
+    live.unpinnedChildren.add(id);
+    return true;
+  }
+  return false;
+}
+
 function subagentParent(
   live: Live,
   rec: Record<string, unknown>,
@@ -2594,6 +2631,7 @@ function noteSubagentTool(
 ): void {
   const parent = subagentParent(live, rec);
   if (!parent) return;
+  if (id) rememberChildFolder(live, id, parent);
   const title = toolTitle(name, input);
   // No detail: the Agent row's detail is the report the run hands back, and
   // writing the call of the moment there would leave whatever the subagent
