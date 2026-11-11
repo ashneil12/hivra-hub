@@ -27,3 +27,16 @@ export function isIrreversibleDecisionKey(key: string): boolean {
 export function isFanoutAgainDecisionKey(key: string): boolean {
   return foldDecisionKey(key).startsWith("fanout-again/");
 }
+
+/** A delivery check parked for the person under `gate/<run>` (decisions.rs `is_gate_key`). */
+export function isGateDecisionKey(key: string): boolean {
+  return foldDecisionKey(key).startsWith("gate/");
+}
+
+/**
+ * The keys only the person answers (decisions.rs `person_only`). A Page's tap, a chat or an automation never answers
+ * one: it waits in Needs until the person does.
+ */
+export function isPersonOnlyDecisionKey(key: string): boolean {
+  return isFreshEyesDecisionKey(key) || isIrreversibleDecisionKey(key) || isFanoutAgainDecisionKey(key) || isGateDecisionKey(key);
+}

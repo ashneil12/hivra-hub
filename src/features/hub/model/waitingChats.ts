@@ -449,17 +449,19 @@ async function answer(
 }
 
 /**
- * "Take the pick": answer with the agent's recommended answer. Autopilot calls this with `by: "autopilot"`; it is
- * refused on a red line, which always waits for Ash.
+ * "Take the pick": answer with the agent's recommended answer. Autopilot calls this with `by: "autopilot"` and a Page
+ * with `by: "page"`; both are refused on a red line, which always waits for Ash.
  */
-export async function takePick(sessionId: string, options: { by?: "ash" | "autopilot" } = {}): Promise<TakeResult> {
+export async function takePick(sessionId: string, options: { by?: "ash" | "autopilot" | "page" } = {}): Promise<TakeResult> {
   const chat = findWaitingChat(sessionId);
   if (!chat) return { ok: false, reason: "That chat isn't waiting any more." };
   if (!chat.pick) return { ok: false, reason: "The agent didn't suggest an answer. Reply in your words or open the chat." };
-  if (options.by === "autopilot" && (chat.redLine || chat.provide)) return { ok: false, reason: forYou("This one touches a red line, so it waits for Ash.") };
+  // A Page's tap is not Ash's either (PR #235 review): a red line waits for Ash whoever else asks.
+  const notAsh = options.by === "autopilot" || options.by === "page";
+  if (notAsh && (chat.redLine || chat.provide)) return { ok: false, reason: forYou("This one touches a red line, so it waits for Ash.") };
   // WP-101: the same rule a reviewed approval follows, on this door too. The pick is one answer, but the question
   // it answers can be the action ("Send it to Priya?"), and so can any option the card points back to.
-  if (options.by === "autopilot" && chatQuestionVeto(chat))
+  if (notAsh && chatQuestionVeto(chat))
     return { ok: false, reason: forYou("That one sends, deletes, moves money, publishes or changes access, so it waits for Ash.") };
   const prompt = host?.liveQuestion(sessionId);
   const reply = prompt && prompt.requestId === chat.requestId ? pickReply(prompt) : undefined;
