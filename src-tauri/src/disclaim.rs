@@ -12,8 +12,10 @@
 //! `<app data>/settings/disclaim-harness` or set `MONOCODE_DISCLAIM_HARNESS=0`. Each new session reads the switch.
 //! There are two fallbacks. When the launcher can't be used (the switch is off, the CLI isn't found, or this
 //! binary's path is unknown), the Hub spawns the CLI directly, as it did before r53. When the disclaimed spawn
-//! fails inside the launcher, the launcher prints a `[disclaim]` line on stderr and execs the CLI normally (same
-//! pid, not disclaimed).
+//! fails inside the launcher for any reason other than a hash mismatch, the launcher prints a `[disclaim]` line
+//! on stderr and execs the CLI normally (same pid, not disclaimed). A hash mismatch is final: the launcher exits
+//! 1 and does not exec. The hash is of the program only, taken by path, and the exec opens that path again, so a
+//! swap after the hash can still run. Pinned argument files are not hashed here.
 //!
 //! `monocode disclaim-exec --responsible <pid>` prints the pid macOS holds responsible for `<pid>`. For a
 //! disclaimed CLI it prints the CLI's own pid; for a plain child it prints the Hub's pid.
@@ -23,6 +25,11 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 pub const SUBCOMMAND: &str = "disclaim-exec";
+
+/// Printed, and returned from the disclaimed exec, when the program on disk is not the approved hash.
+/// Main treats this as final: it exits 1 and does not exec without disclaim. Re-hashing would let a file
+/// restored between the two checks fall through to a plain exec.
+const PROGRAM_CHANGED: &str = "the approved program changed on disk";
 pub const ENV_SWITCH: &str = "MONOCODE_DISCLAIM_HARNESS";
 pub const SETTING_FILE: &str = "disclaim-harness";
 
@@ -90,8 +97,9 @@ pub(crate) fn launcher_for(program: &OsStr, data_dir: Option<&Path>) -> Option<P
 ///
 /// `argv0` is the name the child should see when it differs from `program` (a same-folder multi-call link).
 /// Through the launcher that is `--argv0 <name> -- <program>`. A direct start sets it on the command.
-/// `expect_sha256` is the approved program's hash. The launcher checks it immediately before exec and refuses
-/// on a mismatch. A direct start ignores it: there is no launcher to check inside.
+/// `expect_sha256` is the approved program's hash. The launcher hashes the program by path and then execs that
+/// path. A mismatch exits 1 and does not exec. A swap after the hash can still run. A direct start ignores the
+/// hash: there is no launcher to check inside. Pinned argument files are not passed here.
 pub(crate) fn command(
     program: &OsStr,
     launcher: Option<&Path>,
@@ -128,7 +136,8 @@ pub(crate) fn command(
 
 enum Request {
     /// `file` is executed. `argv` is what the child sees, and `argv[0]` may differ from `file`.
-    /// `expect_sha256` is checked immediately before exec when it is set.
+    /// `expect_sha256` is checked by path before exec when it is set. A mismatch does not exec. A swap after the
+    /// check can still run, because exec opens the path again.
     Exec {
         file: OsString,
         argv: Vec<OsString>,
@@ -218,15 +227,21 @@ pub fn main(args: &[OsString]) -> i32 {
             match disclaimed_exec(&file, &argv, expect_sha256.as_deref()) {
                 Ok(never) => match never {},
                 Err(why) => {
+                    // The disclaimed path already saw a mismatch. Hashing again would let a restored file
+                    // fall through to a plain exec with no disclaim. Exit instead.
+                    if why == PROGRAM_CHANGED {
+                        eprintln!("[disclaim] {PROGRAM_CHANGED}");
+                        return 1;
+                    }
                     if !approved_program_unchanged(&file, expect_sha256.as_deref()) {
-                        eprintln!("[disclaim] the approved program changed on disk");
+                        eprintln!("[disclaim] {PROGRAM_CHANGED}");
                         return 1;
                     }
                     eprintln!("[disclaim] {why}; starting it without disclaim");
                 }
             }
             if !approved_program_unchanged(&file, expect_sha256.as_deref()) {
-                eprintln!("[disclaim] the approved program changed on disk");
+                eprintln!("[disclaim] {PROGRAM_CHANGED}");
                 return 1;
             }
             plain_exec(&file, &argv)
@@ -412,11 +427,13 @@ mod mac {
                     if let Some(e) = step("setdisclaim", set_disclaim(&mut attr, 1)) {
                         return e;
                     }
-                    // The last hash, on this open, immediately before exec. A mismatch does not spawn.
+                    // The program is hashed by path, then posix_spawnp opens that path again. A swap after this
+                    // hash can still run. A mismatch returns, and main exits 1 instead of execing without
+                    // disclaim. Pinned argument files are not hashed here.
                     if let Some(expected) = &self.expect_sha256 {
                         let path = OsStr::from_bytes(self.file.as_bytes());
                         if !super::program_hash_matches(path, expected) {
-                            return "the approved program changed on disk".into();
+                            return super::PROGRAM_CHANGED.into();
                         }
                     }
                     let mut pid: libc::pid_t = 0;
@@ -740,5 +757,101 @@ mod tests {
         let _ = child.wait();
         let responsible = responsible.expect("macOS names a responsible pid");
         assert_ne!(responsible, pid);
+    }
+
+    /// A hash mismatch from the disclaimed exec is final. The bytes the launcher reads come from a pipe: the first
+    /// read is not the approved hash, and the later reads are. Re-hashing would then start the program with no
+    /// disclaim. The launcher must exit 1 on the first mismatch and must not print the plain-exec fallback.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_hash_mismatch_does_not_fall_through_to_a_plain_exec() {
+        use sha2::{Digest, Sha256};
+        use std::io::Write;
+        use std::os::unix::ffi::OsStrExt;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc;
+        let dir = tempdir();
+        let fifo = dir.path().join("tool");
+        let c_path = std::ffi::CString::new(fifo.as_os_str().as_bytes()).expect("fifo path");
+        let made = unsafe { libc::mkfifo(c_path.as_ptr(), 0o600) };
+        assert_eq!(made, 0, "mkfifo: {}", std::io::Error::last_os_error());
+        let good = b"approved-bytes-for-the-hash\n";
+        let evil = b"other-bytes-that-are-not-approved\n";
+        let expected: String = Sha256::digest(good)
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
+        let done = Arc::new(AtomicBool::new(false));
+        let writer = {
+            let (fifo, done) = (fifo.clone(), done.clone());
+            std::thread::spawn(move || {
+                for bytes in [evil.as_slice(), good.as_slice(), good.as_slice()] {
+                    let mut file = std::fs::OpenOptions::new()
+                        .write(true)
+                        .open(&fifo)
+                        .expect("open the pipe for write");
+                    file.write_all(bytes).expect("write");
+                }
+                done.store(true, Ordering::Relaxed);
+            })
+        };
+        let child = Command::new(std::env::current_exe().expect("test binary"))
+            .args([
+                "--exact",
+                "disclaim::tests::review_241_r4_mismatch_child",
+                "--test-threads=1",
+                "--nocapture",
+                "-q",
+            ])
+            .env(
+                "REVIEW_241_R4_MISMATCH",
+                format!("{}\u{1f}{expected}", fifo.display()),
+            )
+            .output()
+            .expect("start the launcher");
+        let started = std::time::Instant::now();
+        while !done.load(Ordering::Relaxed) && started.elapsed() < std::time::Duration::from_secs(5)
+        {
+            let fd = unsafe { libc::open(c_path.as_ptr(), libc::O_RDONLY | libc::O_NONBLOCK) };
+            if fd >= 0 {
+                let mut buf = [0u8; 64];
+                loop {
+                    let n = unsafe {
+                        libc::read(fd, buf.as_mut_ptr().cast::<libc::c_void>(), buf.len())
+                    };
+                    if n <= 0 {
+                        break;
+                    }
+                }
+                unsafe { libc::close(fd) };
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        if done.load(Ordering::Relaxed) {
+            let _ = writer.join();
+        }
+        let stderr = String::from_utf8_lossy(&child.stderr);
+        assert!(
+            !stderr.contains("starting it without disclaim"),
+            "a hash mismatch fell through to a plain exec: {stderr}"
+        );
+        assert_eq!(
+            child.status.code(),
+            Some(1),
+            "a hash mismatch should exit 1, stderr: {stderr}"
+        );
+    }
+
+    /// The child for `a_hash_mismatch_does_not_fall_through_to_a_plain_exec`. Without its variable it does nothing.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn review_241_r4_mismatch_child() {
+        let Ok(raw) = std::env::var("REVIEW_241_R4_MISMATCH") else {
+            return;
+        };
+        let mut parts = raw.split('\u{1f}');
+        let path = parts.next().unwrap_or("");
+        let hex = parts.next().unwrap_or("");
+        std::process::exit(main(&os(&["--expect-sha256", hex, "--", path])));
     }
 }
