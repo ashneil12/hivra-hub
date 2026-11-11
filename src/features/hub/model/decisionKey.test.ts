@@ -4,6 +4,8 @@ import { describe, expect, it } from "vitest";
 import {
   foldDecisionKey,
   isFanoutAgainDecisionKey,
+  isGateDecisionKey,
+  isPersonOnlyDecisionKey,
   isFreshEyesDecisionKey,
   isIrreversibleDecisionKey,
 } from "./decisionKey";
@@ -68,5 +70,24 @@ describe("person-only key checks", () => {
   it("leaves an ordinary key alone", () => {
     expect(isIrreversibleDecisionKey("retention-policy")).toBe(false);
     expect(isFreshEyesDecisionKey("Retention-Policy")).toBe(false);
+  });
+});
+
+describe("keys only the person answers", () => {
+  it.each(["gate/run-7", "GATE/run-7", "\u200Bgate/run-7", "irreversible/lead/t", "fresh-eyes/r9/x", "fresh-eyes-start/r9", "fanout-again/fm/t"])(
+    "%j is the person's alone",
+    (key) => {
+      expect(isPersonOnlyDecisionKey(key)).toBe(true);
+    },
+  );
+
+  it("reads a gate key folded, like decisions.rs is_gate_key", () => {
+    expect(isGateDecisionKey("ｇａｔｅ/run-7")).toBe(true);
+    expect(isGateDecisionKey("gateway/run-7")).toBe(false);
+  });
+
+  it("leaves an ordinary key to anyone", () => {
+    expect(isPersonOnlyDecisionKey("copy/headline")).toBe(false);
+    expect(isPersonOnlyDecisionKey("retention-policy")).toBe(false);
   });
 });
