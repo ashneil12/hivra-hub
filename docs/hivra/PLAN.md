@@ -1,6 +1,6 @@
 # Hivra: the build plan
 
-57 work packages in ten waves. A wave's packages run in parallel; a package starts when everything it depends on
+Work packages in thirteen waves, A to M. A wave's packages run in parallel; a package starts when everything it depends on
 has merged. Sizes are agent time: S is under two hours, M is half a day, L is about a day.
 
 ## How to take a package
@@ -232,6 +232,22 @@ phone app, built last, on WP-133's design. A lettered pair splits one idea into 
 | [196b](work/WP-196b-limits-for-unattended-runs.md) | One set of limits for every run nobody is watching | M | none (176 when merged) | no |
 | [197a](work/WP-197a-reviewer-runs-the-changed-app.md) | A reviewer that runs the changed app before delivery | L | 40, 42, 43, 81, 87 | no |
 | [197b](work/WP-197b-review-every-pull-request.md) | Review every pull request in a connected repository | M | 197a, 132 | no |
+
+### Wave M: overnight suggestions and atomic-agent (10 Nov 2026)
+
+Four packages from the 10 Nov overnight scout and the atomic-agent study. All four are Grok OK: no, because they touch
+commit or CI files, the merge gate or security code, so a Claude builder takes each; Ash approved building them on
+10 Nov at 23:27. The other overnight and atomic-agent ideas were dropped because Hivra already has them or
+they duplicate a package; the reasons are in the PR that added this wave.
+
+Per-run and per-period dollar caps are WP-176 (PR #217, spend limits). They are not a new brief here.
+
+| WP | Title | Size | Depends on | Grok OK |
+| --- | --- | --- | --- | --- |
+| [200](work/WP-200-agent-commit-secret-guard.md) | Keep agent approval files and transcripts out of commits, and scan what ships for secrets | M | WP-86, WP-158 | no |
+| [201](work/WP-201-pin-github-actions-to-shas.md) | Pin GitHub Actions to commit SHAs, and keep them current | S | WP-153, WP-154, WP-173 | no |
+| [202](work/WP-202-pr-watch-base-moved.md) | PR watch knows when main moved under a pull request | M | WP-155, WP-160, WP-158 | no |
+| [203](work/WP-203-structured-security-review.md) | A structured hard review for security-sensitive packages | M | WP-81, WP-160 | no |
 
 ## Running it
 
