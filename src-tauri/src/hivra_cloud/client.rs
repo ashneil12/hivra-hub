@@ -150,7 +150,7 @@ pub struct AccountView {
     pub status: &'static str,
     pub plan: Option<String>,
     pub machine_limit: Option<u32>,
-    /// Set once per process, the first time the account is unavailable. Never repeated.
+    /// Set the first time the account is unavailable. Kept across restarts, and never repeated.
     pub notice: Option<String>,
 }
 
@@ -195,6 +195,15 @@ impl AccountCache {
             failed_at: None,
             notice_shown: false,
         }
+    }
+
+    /// The failure notice was already shown, including on a previous run.
+    pub fn suppress_notice(&mut self) {
+        self.notice_shown = true;
+    }
+
+    pub fn notice_is_shown(&self) -> bool {
+        self.notice_shown
     }
 
     /// Reads the account through `fetch` unless a fresh answer or a recent failure is already cached. Never returns an

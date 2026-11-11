@@ -1,7 +1,7 @@
 //! Hivra Cloud (WP-61): an optional managed machine. It is OFF by default. With the switch off, or no endpoint set,
-//! nothing here opens a socket. Ash turns it on himself in `<data>/hivra-cloud.json`:
-//! `{"enabled": true, "endpoint": "https://..."}`. The endpoint is a placeholder until a service exists; it must be an
-//! address only (https, or http to this Mac).
+//! nothing here opens a socket. Settings writes `<data>/hivra-cloud.json`
+//! (`{"enabled": true, "endpoint": "https://..."}`). The default is off, with an empty address. The endpoint is a
+//! placeholder until a service exists; it must be an address only (https, or http to this Mac).
 //!
 //! - Sign-in is a browser flow on a loopback address (PKCE S256, state checked, the connectors' flow). The access
 //!   token lives in memory only: never the Keychain, a file or a log, and it is sent only to the configured endpoint.
@@ -31,6 +31,8 @@ pub use client::{AccountCache, AccountView, Client, CloudError, PairedMachine};
 
 /// The file in the app's data folder that holds the switch and the endpoint.
 pub const CONFIG_FILE: &str = "hivra-cloud.json";
+/// The account-check notice was shown. Separate from the switch, so saving settings cannot turn Cloud on.
+pub const NOTICE_FILE: &str = "hivra-cloud-notice.json";
 /// Public client id for the desktop app. There is no client secret.
 const CLIENT_ID: &str = "hivra-desktop";
 
@@ -39,6 +41,7 @@ const CLIENT_ID: &str = "hivra-desktop";
 pub struct Config {
     pub enabled: bool,
     pub endpoint: String,
+    pub revision: u64,
 }
 
 #[derive(Debug, PartialEq)]
@@ -97,6 +100,10 @@ pub fn setup(config: &Config) -> Setup {
 
 /// A missing or unreadable file means off. Nothing is switched on by a bad file.
 pub fn load_config(path: &Path) -> Config {
+    // A link is not a setting. Following one could turn Cloud on from somewhere else.
+    if std::fs::symlink_metadata(path).is_ok_and(|meta| meta.file_type().is_symlink()) {
+        return Config::default();
+    }
     std::fs::read_to_string(path)
         .ok()
         .and_then(|raw| serde_json::from_str::<Config>(&raw).ok())
@@ -194,6 +201,9 @@ pub fn pair_with(
 #[serde(rename_all = "camelCase")]
 pub struct Status {
     pub state: &'static str,
+    pub enabled: bool,
+    pub endpoint: String,
+    pub revision: u64,
     pub signed_in: bool,
     pub message: Option<String>,
 }
@@ -206,9 +216,188 @@ pub fn status_for(config: &Config, signed_in: bool) -> Status {
     };
     Status {
         state: setup.state(),
+        enabled: config.enabled,
+        endpoint: config.endpoint.trim().to_string(),
+        revision: config.revision,
         signed_in: signed_in && matches!(setup, Setup::Ready(_)),
         message,
     }
+}
+
+#[derive(Debug, PartialEq)]
+pub enum SaveError {
+    Invalid(String),
+    Conflict(Config),
+    Io(String),
+}
+
+impl SaveError {
+    fn message(&self) -> String {
+        match self {
+            SaveError::Invalid(why) => why.clone(),
+            SaveError::Conflict(_) => {
+                "Hivra Cloud was changed somewhere else. Nothing was saved.".to_string()
+            }
+            SaveError::Io(why) => format!("Couldn't save Hivra Cloud. {why}"),
+        }
+    }
+}
+
+fn config_lock() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: Mutex<()> = Mutex::new(());
+    LOCK.lock().unwrap_or_else(|poison| poison.into_inner())
+}
+
+fn write_bytes(dir: &Path, path: &Path, bytes: &[u8]) -> Result<(), String> {
+    use std::io::Write;
+    let name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("file");
+    let tmp = dir.join(format!(".{name}.{}.tmp", uuid::Uuid::new_v4().simple()));
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let write = (|| {
+        let mut file = options.open(&tmp)?;
+        file.write_all(bytes)?;
+        file.sync_all()?;
+        std::io::Result::Ok(())
+    })();
+    if let Err(error) = write {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(error.to_string());
+    }
+    if let Err(error) = std::fs::rename(&tmp, path) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(error.to_string());
+    }
+    Ok(())
+}
+
+/// Writes the switch and address. A stale revision changes nothing. A bad address is not stored.
+pub fn save_config(
+    dir: &Path,
+    expected_revision: u64,
+    enabled: bool,
+    endpoint: &str,
+) -> Result<Config, SaveError> {
+    let _guard = config_lock();
+    let dir = crate::fs::canonical(dir).map_err(|error| SaveError::Io(error.to_string()))?;
+    if !dir.is_dir() {
+        return Err(SaveError::Io(
+            "Hivra Cloud settings folder is missing.".into(),
+        ));
+    }
+    let path = dir.join(CONFIG_FILE);
+    if std::fs::symlink_metadata(&path).is_ok_and(|meta| meta.file_type().is_symlink()) {
+        return Err(SaveError::Io("refusing to follow a link".into()));
+    }
+    let current = load_config(&path);
+    if current.revision != expected_revision {
+        return Err(SaveError::Conflict(current));
+    }
+    let trimmed = endpoint.trim();
+    let endpoint = if trimmed.is_empty() {
+        String::new()
+    } else if let Err(why) = endpoint_url(trimmed) {
+        if enabled {
+            return Err(SaveError::Invalid(why));
+        }
+        let previous = current.endpoint.trim();
+        if previous.is_empty() || endpoint_url(previous).is_ok() {
+            previous.to_string()
+        } else {
+            String::new()
+        }
+    } else {
+        trimmed.to_string()
+    };
+    let revision = expected_revision
+        .checked_add(1)
+        .ok_or_else(|| SaveError::Io("Hivra Cloud settings can't be saved again.".into()))?;
+    let next = Config {
+        enabled,
+        endpoint,
+        revision,
+    };
+    let mut bytes =
+        serde_json::to_vec_pretty(&next).map_err(|error| SaveError::Io(error.to_string()))?;
+    bytes.push(b'\n');
+    write_bytes(&dir, &path, &bytes).map_err(SaveError::Io)?;
+    Ok(next)
+}
+
+/// True only for `{"shown": true}` in the notice file. Anything else, including a link, counts as not shown.
+pub fn notice_was_shown(path: &Path) -> bool {
+    if path.file_name().and_then(|name| name.to_str()) != Some(NOTICE_FILE) {
+        return false;
+    }
+    let Ok(meta) = std::fs::symlink_metadata(path) else {
+        return false;
+    };
+    if meta.file_type().is_symlink() || !meta.is_file() || meta.len() > 4096 {
+        return false;
+    }
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return false;
+    };
+    serde_json::from_str::<serde_json::Value>(&text)
+        .ok()
+        .and_then(|value| value.get("shown").and_then(|flag| flag.as_bool()))
+        .unwrap_or(false)
+}
+
+pub fn mark_notice_shown(path: &Path) -> Result<(), String> {
+    if path.file_name().and_then(|name| name.to_str()) != Some(NOTICE_FILE) {
+        return Err("refusing to write any other file".into());
+    }
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .ok_or_else(|| "missing folder".to_string())?;
+    let parent = crate::fs::canonical(parent).map_err(|error| error.to_string())?;
+    if !parent.is_dir() {
+        return Err("not a folder".into());
+    }
+    let dest = parent.join(NOTICE_FILE);
+    if std::fs::symlink_metadata(&dest).is_ok_and(|meta| meta.file_type().is_symlink()) {
+        return Err("refusing to follow a link".into());
+    }
+    write_bytes(&parent, &dest, b"{\"shown\":true}\n")
+}
+
+/// Account view, with the shown flag kept in `notice_path` across runs. Never returns an error.
+pub fn account_from(
+    config: &Config,
+    token: Option<String>,
+    cache: &mut AccountCache,
+    now: u64,
+    notice_path: Option<&Path>,
+) -> AccountView {
+    let already = notice_path.is_some_and(notice_was_shown);
+    if already {
+        cache.suppress_notice();
+    }
+    let view = account_with(config, token, cache, now);
+    if !already && cache.notice_is_shown() {
+        if let Some(path) = notice_path {
+            let _ = mark_notice_shown(path);
+        }
+    }
+    view
+}
+
+fn drop_token_if_off(config: &Config) {
+    if config.enabled {
+        return;
+    }
+    let mut session = SESSION.lock().unwrap_or_else(|poison| poison.into_inner());
+    *session = None;
 }
 
 fn config_path(app: &AppHandle) -> Result<PathBuf, String> {
@@ -272,14 +461,36 @@ pub fn hivra_cloud_sign_out(app: AppHandle) -> Status {
 pub async fn hivra_cloud_account(app: AppHandle) -> AccountView {
     let config = current_config(&app);
     let token = token_now();
+    let notice = app
+        .path()
+        .app_data_dir()
+        .ok()
+        .map(|dir| dir.join(NOTICE_FILE));
     tauri::async_runtime::spawn_blocking(move || {
         let mut cache = ACCOUNT_CACHE
             .lock()
             .unwrap_or_else(|poison| poison.into_inner());
-        account_with(&config, token, &mut cache, oauth::now())
+        account_from(&config, token, &mut cache, oauth::now(), notice.as_deref())
     })
     .await
     .unwrap_or_else(|_| AccountView::without_account("unavailable"))
+}
+
+#[tauri::command]
+pub fn hivra_cloud_save(
+    app: AppHandle,
+    enabled: bool,
+    endpoint: String,
+    expected_revision: u64,
+) -> Result<Status, String> {
+    let dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|_| "Hivra Cloud can't find this Mac's data folder.".to_string())?;
+    let config = save_config(&dir, expected_revision, enabled, &endpoint)
+        .map_err(|error| error.message())?;
+    drop_token_if_off(&config);
+    Ok(status_for(&config, token_now().is_some()))
 }
 
 #[tauri::command]
@@ -298,19 +509,29 @@ mod tests {
     use super::*;
     use std::io::{Read, Write};
     use std::net::TcpStream;
+    use std::path::PathBuf;
     use std::thread;
 
     fn cfg(enabled: bool, endpoint: &str) -> Config {
         Config {
             enabled,
             endpoint: endpoint.into(),
+            revision: 0,
         }
+    }
+
+    fn scratch() -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("hivra-cloud-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
     }
 
     #[test]
     fn the_endpoint_is_only_an_address() {
         assert!(endpoint_url("https://cloud.example").is_ok());
+        assert!(endpoint_url("HTTPS://Cloud.Example").is_ok());
         assert!(endpoint_url("http://127.0.0.1:9").is_ok());
+        assert!(endpoint_url("HTTP://Cloud.Example").is_err());
         assert!(
             endpoint_url("http://cloud.example").is_err(),
             "plain http off this Mac"
@@ -471,5 +692,236 @@ mod tests {
             stub.seen.lock().unwrap().is_empty(),
             "no code was exchanged"
         );
+    }
+
+    #[test]
+    fn saving_the_switch_writes_the_file_and_opens_no_socket() {
+        let silent = silent();
+        let dir = scratch();
+        let saved = save_config(&dir, 0, true, &format!("  {}  ", silent.base)).unwrap();
+        assert!(saved.enabled);
+        assert_eq!(saved.endpoint, silent.base);
+        assert_eq!(saved.revision, 1);
+        assert_eq!(load_config(&dir.join(CONFIG_FILE)), saved);
+        assert_eq!(
+            silent.connections(),
+            0,
+            "saving does not contact the address"
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(dir.join(CONFIG_FILE))
+                .unwrap()
+                .permissions()
+                .mode();
+            assert_eq!(mode & 0o777, 0o600, "the settings file is private");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_empty_address_is_saved_and_still_contacts_nothing() {
+        let silent = silent();
+        let dir = scratch();
+        let saved = save_config(&dir, 0, true, " \n ").unwrap();
+        assert_eq!(saved.endpoint, "");
+        assert_eq!(setup(&saved), Setup::NoEndpoint);
+        assert_eq!(silent.connections(), 0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_bad_address_is_not_stored_while_turning_on() {
+        let dir = scratch();
+        let error = save_config(&dir, 0, true, "http://cloud.example").unwrap_err();
+        assert!(matches!(error, SaveError::Invalid(_)));
+        assert!(!dir.join(CONFIG_FILE).exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn turning_off_keeps_the_previous_good_address() {
+        let dir = scratch();
+        save_config(&dir, 0, true, "https://cloud.example").unwrap();
+        let off = save_config(&dir, 1, false, "http://cloud.example/secret").unwrap();
+        assert!(!off.enabled);
+        assert_eq!(off.endpoint, "https://cloud.example");
+        assert_eq!(off.revision, 2);
+        assert_eq!(load_config(&dir.join(CONFIG_FILE)), off);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_stale_revision_changes_nothing() {
+        let dir = scratch();
+        let first = save_config(&dir, 0, true, "https://cloud.example").unwrap();
+        let error = save_config(&dir, 0, false, "").unwrap_err();
+        match error {
+            SaveError::Conflict(current) => assert_eq!(current, first),
+            other => panic!("expected a conflict, got {other:?}"),
+        }
+        assert_eq!(load_config(&dir.join(CONFIG_FILE)), first);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_old_file_without_a_revision_stays_at_zero() {
+        let dir = scratch();
+        let path = dir.join(CONFIG_FILE);
+        std::fs::write(
+            &path,
+            "{\r\n  \"enabled\": true,\r\n  \"endpoint\": \"https://cloud.example\"\r\n}\r\n",
+        )
+        .unwrap();
+        assert_eq!(load_config(&path), cfg(true, "https://cloud.example"));
+        let saved = save_config(&dir, 0, true, "https://cloud.example").unwrap();
+        assert_eq!(saved.revision, 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_folder_with_spaces_and_the_parent_marker_still_saves_inside_it() {
+        let dir = scratch().join("cloud tëst");
+        std::fs::create_dir_all(&dir).unwrap();
+        let via_parent = dir.join("nested").join("..");
+        std::fs::create_dir_all(dir.join("nested")).unwrap();
+        let saved = save_config(&via_parent, 0, false, "").unwrap();
+        assert_eq!(saved.revision, 1);
+        assert!(dir.join(CONFIG_FILE).is_file());
+        assert!(!dir.join("nested").join(CONFIG_FILE).exists());
+        let _ = std::fs::remove_dir_all(dir.parent().unwrap());
+    }
+
+    #[test]
+    fn turning_the_switch_off_drops_the_in_memory_token() {
+        let tokens = crate::connectors::secrets::OAuthTokens {
+            access_token: "tok".into(),
+            refresh_token: None,
+            expires_at: None,
+            token_endpoint: "https://cloud.example/oauth/token".into(),
+            client_id: "hivra-desktop".into(),
+            client_secret: None,
+            resource: None,
+        };
+        {
+            let mut session = super::SESSION
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner());
+            *session = Some(tokens);
+        }
+        let dir = scratch();
+        let saved = save_config(&dir, 0, false, "").unwrap();
+        super::drop_token_if_off(&saved);
+        assert!(super::SESSION
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_shown_flag_is_quiet_next_run_but_the_check_still_runs() {
+        let stub = serve(vec![
+            (500, String::new(), String::new()),
+            (500, String::new(), String::new()),
+        ]);
+        let dir = scratch();
+        let notice = dir.join(NOTICE_FILE);
+        let config = cfg(true, &stub.base);
+        let mut cache = AccountCache::new();
+        let first = account_from(&config, Some("t".into()), &mut cache, 0, Some(&notice));
+        assert_eq!(first.status, "unavailable");
+        assert_eq!(
+            first.notice.as_deref(),
+            Some("Hivra Cloud can't be reached right now. Your own machines still work.")
+        );
+        assert!(notice_was_shown(&notice));
+        let text = std::fs::read_to_string(&notice).unwrap();
+        let as_config: Config = serde_json::from_str(&text).unwrap();
+        assert!(!as_config.enabled, "the notice file cannot turn Cloud on");
+        assert!(as_config.endpoint.is_empty());
+        let mut again = AccountCache::new();
+        let second = account_from(&config, Some("t".into()), &mut again, 10, Some(&notice));
+        assert_eq!(second.status, "unavailable");
+        assert_eq!(
+            second.notice, None,
+            "already shown, including after a restart"
+        );
+        assert_eq!(stub.seen.lock().unwrap().len(), 2, "the check still ran");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_broken_notice_file_counts_as_not_shown() {
+        let dir = scratch();
+        let notice = dir.join(NOTICE_FILE);
+        std::fs::write(&notice, "{\"shown\":\"true\"}").unwrap();
+        assert!(!notice_was_shown(&notice));
+        std::fs::write(&notice, "{ not json").unwrap();
+        assert!(!notice_was_shown(&notice));
+        assert!(!notice_was_shown(&dir.join("other.json")));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_off_account_check_does_not_write_the_notice_or_connect() {
+        let silent = silent();
+        let dir = scratch();
+        let notice = dir.join(NOTICE_FILE);
+        let mut cache = AccountCache::new();
+        let view = account_from(
+            &cfg(false, &silent.base),
+            Some("t".into()),
+            &mut cache,
+            0,
+            Some(&notice),
+        );
+        assert_eq!(view.status, "off");
+        assert!(!notice.exists());
+        assert_eq!(silent.connections(), 0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_settings_link_is_not_followed() {
+        use std::os::unix::fs::symlink;
+        let dir = scratch();
+        let outside = scratch();
+        let real = outside.join(CONFIG_FILE);
+        std::fs::write(
+            &real,
+            "{\"enabled\":true,\"endpoint\":\"https://cloud.example\"}",
+        )
+        .unwrap();
+        symlink(&real, dir.join(CONFIG_FILE)).unwrap();
+        assert_eq!(load_config(&dir.join(CONFIG_FILE)), Config::default());
+        let error = save_config(&dir, 0, false, "").unwrap_err();
+        assert!(matches!(error, SaveError::Io(_)));
+        assert!(std::fs::read_to_string(&real)
+            .unwrap()
+            .contains("https://cloud.example"));
+        let secret = outside.join("secret.txt");
+        std::fs::write(&secret, "do not touch").unwrap();
+        symlink(&secret, dir.join(NOTICE_FILE)).unwrap();
+        assert!(!notice_was_shown(&dir.join(NOTICE_FILE)));
+        assert!(mark_notice_shown(&dir.join(NOTICE_FILE)).is_err());
+        assert_eq!(std::fs::read_to_string(&secret).unwrap(), "do not touch");
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&outside);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn saving_replaces_a_normal_file_on_windows() {
+        let dir = scratch();
+        let path = dir.join(CONFIG_FILE);
+        std::fs::write(&path, "{}\n").unwrap();
+        let saved = save_config(&dir, 0, true, "https://cloud.example").unwrap();
+        assert_eq!(saved.endpoint, "https://cloud.example");
+        assert_eq!(saved.revision, 1);
+        assert!(path.is_file());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

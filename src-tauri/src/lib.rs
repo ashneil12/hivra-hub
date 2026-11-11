@@ -570,6 +570,7 @@ pub fn run() {
             dictation::dictation_stop,
             // WP-61: Hivra Cloud (off by default).
             hivra_cloud::hivra_cloud_status,
+            hivra_cloud::hivra_cloud_save,
             hivra_cloud::hivra_cloud_sign_in,
             hivra_cloud::hivra_cloud_sign_out,
             hivra_cloud::hivra_cloud_account,
