@@ -304,14 +304,15 @@ pub(crate) fn set_enabled(data_dir: &Path, on: bool) -> Result<(), String> {
 pub(crate) const FILE_ARG_REFUSED: &str =
     "A file named in the arguments must exist and be a file, given by its absolute path. A folder is not pinned.";
 
-/// The text an argument may carry a path in: the argument itself, the part after `=`, or the rest of a short flag.
+/// The text an argument may carry a path in: the argument itself, the part after `=` or a flag colon, or the rest of
+/// a short flag. A Windows drive colon (`C:\foo`) is not a flag colon.
 fn candidates(arg: &str) -> Vec<&str> {
     if !arg.starts_with('-') {
         return vec![arg];
     }
     let mut out = Vec::new();
-    if let Some((_, value)) = arg.split_once('=') {
-        out.push(value);
+    if let Some(at) = value_separator(arg) {
+        out.push(&arg[at + 1..]);
     }
     if arg.len() > 2 && !arg.starts_with("--") {
         if let Some(value) = arg.get(2..) {
@@ -319,6 +320,43 @@ fn candidates(arg: &str) -> Vec<&str> {
         }
     }
     out
+}
+
+/// Index of `=`, or of the colon that separates a flag from its value. A drive colon is skipped.
+fn value_separator(arg: &str) -> Option<usize> {
+    if let Some(at) = arg.find('=') {
+        return Some(at);
+    }
+    if !arg.starts_with('-') {
+        return None;
+    }
+    let bytes = arg.as_bytes();
+    let mut from = 0;
+    while let Some(rel) = bytes[from..].iter().position(|&byte| byte == b':') {
+        let at = from + rel;
+        if !is_drive_colon(bytes, at) {
+            return Some(at);
+        }
+        from = at + 1;
+    }
+    None
+}
+
+/// A colon that is a Windows drive letter (`C:\foo`), including after `=` , after another colon, or as the value of
+/// an attached short flag (`-IC:\foo`).
+fn is_drive_colon(bytes: &[u8], at: usize) -> bool {
+    if at == 0 || at + 1 >= bytes.len() {
+        return false;
+    }
+    let letter = bytes[at - 1];
+    let next = bytes[at + 1];
+    if !letter.is_ascii_alphabetic() || (next != b'/' && next != b'\\') {
+        return false;
+    }
+    if at == 1 || bytes[at - 2] == b'=' || bytes[at - 2] == b':' {
+        return true;
+    }
+    at == 3 && bytes[0] == b'-' && bytes[1] != b'-'
 }
 
 /// The programs that run code named by an argument: a loader flag, an inline program or an eval is only a risk for
@@ -460,27 +498,42 @@ fn canonical_of_value(value: &str) -> Result<Option<String>, String> {
     Ok(None)
 }
 
-/// One argument as the child will get it, and the absolute files it names (whole, after `=`, a short flag's value,
-/// or the file a `file:` URL names).
+/// One argument as the child will get it, and the absolute files it names (whole, after `=` or a flag colon, a short
+/// flag's value, a leading `@`, or the file a `file:` URL names). The pin is the path without `@`. The child still
+/// sees the `@`.
 fn pin_arg(arg: &str) -> Result<(String, Vec<String>), String> {
-    if let Some(canonical) = canonical_of_value(arg)? {
-        return Ok((canonical.clone(), vec![canonical]));
-    }
-    if arg.starts_with('-') {
-        if let Some((flag, value)) = arg.split_once('=') {
-            if let Some(canonical) = canonical_of_value(value)? {
-                return Ok((format!("{flag}={canonical}"), vec![canonical]));
-            }
+    if !arg.starts_with('-') {
+        if let Some((text, pins)) = rewrite_pinned(arg)? {
+            return Ok((text, pins));
         }
-        if arg.len() > 2 && !arg.starts_with("--") {
-            if let (Some(value), Some(head)) = (arg.get(2..), arg.get(..2)) {
-                if let Some(canonical) = canonical_of_value(value)? {
-                    return Ok((format!("{head}{canonical}"), vec![canonical]));
-                }
+        return Ok((arg.to_string(), Vec::new()));
+    }
+    if let Some(at) = value_separator(arg) {
+        let head = &arg[..at];
+        let sep = &arg[at..at + 1];
+        let value = &arg[at + 1..];
+        if let Some((body, pins)) = rewrite_pinned(value)? {
+            return Ok((format!("{head}{sep}{body}"), pins));
+        }
+    }
+    if arg.len() > 2 && !arg.starts_with("--") {
+        if let (Some(value), Some(head)) = (arg.get(2..), arg.get(..2)) {
+            if let Some((body, pins)) = rewrite_pinned(value)? {
+                return Ok((format!("{head}{body}"), pins));
             }
         }
     }
     Ok((arg.to_string(), Vec::new()))
+}
+
+/// The canonical file `value` names, with any leading `@` kept in front. `None` when it is not an absolute file.
+fn rewrite_pinned(value: &str) -> Result<Option<(String, Vec<String>)>, String> {
+    let rest = value.trim_start_matches('@');
+    let marks = &value[..value.len() - rest.len()];
+    let Some(canonical) = canonical_of_value(rest)? else {
+        return Ok(None);
+    };
+    Ok(Some((format!("{marks}{canonical}"), vec![canonical])))
 }
 
 /// The pins for an argument list, each file with its SHA-256, and the arguments as the child gets them (paths made

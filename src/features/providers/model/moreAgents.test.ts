@@ -241,4 +241,11 @@ describe("review #231 r3: a Windows path that is not absolute is not a model nam
     expect(argumentProblem("/opt/npx", ["--opts=@../args"])).not.toBeNull();
     expect(argumentProblem("/opt/npx", ["-y", "@scope/pkg"])).toBeNull();
   });
+
+  it("refuses a relative file after a colon flag", async () => {
+    const { argumentProblem } = await import("./moreAgents");
+    expect(argumentProblem("/opt/node", ["--config:../x"])).not.toBeNull();
+    expect(argumentProblem("/opt/node", ["-p:../x"])).not.toBeNull();
+    expect(argumentProblem("/opt/node", ["-IC:\\foo"], "win32")).toBeNull();
+  });
 });

@@ -171,11 +171,32 @@ function isInterpreter(command: string): boolean {
   return INTERPRETERS.includes(name) || name.startsWith("python");
 }
 
+/** Index of `=`, or of the colon that separates a flag from its value. A Windows drive colon is not that colon. */
+function valueSeparator(arg: string): number {
+  const eq = arg.indexOf("=");
+  if (eq >= 0) return eq;
+  if (!arg.startsWith("-")) return -1;
+  for (let at = 0; at < arg.length; at++) {
+    if (arg[at] === ":" && !isDriveColon(arg, at)) return at;
+  }
+  return -1;
+}
+
+/** `C:\foo` after `=`, after another colon, or as an attached short flag (`-IC:\foo`). */
+function isDriveColon(arg: string, at: number): boolean {
+  if (at === 0 || at + 1 >= arg.length) return false;
+  const letter = arg[at - 1];
+  const next = arg[at + 1];
+  if (!/[A-Za-z]/.test(letter) || (next !== "/" && next !== "\\")) return false;
+  if (at === 1 || arg[at - 2] === "=" || arg[at - 2] === ":") return true;
+  return at === 3 && arg[0] === "-" && arg[1] !== "-";
+}
+
 function valuesOf(arg: string): string[] {
   if (!arg.startsWith("-")) return [arg];
   const out: string[] = [];
-  const eq = arg.indexOf("=");
-  if (eq >= 0) out.push(arg.slice(eq + 1));
+  const at = valueSeparator(arg);
+  if (at >= 0) out.push(arg.slice(at + 1));
   if (arg.length > 2 && !arg.startsWith("--")) out.push(arg.slice(2));
   return out;
 }
