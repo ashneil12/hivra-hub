@@ -18,10 +18,11 @@ export const FANOUT_CHECKPOINT_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 
 /**
  * pending: not started yet. starting: the start was sent and its answer not yet written (a crash here leaves it
- * unknown whether a worker exists). started: a row exists for it. stopped: it had a row, but the row was stopped or
- * has gone, so a start again needs the person's yes. refused: it did not start and is not retried alone.
+ * unknown whether a worker exists). queued: the start answered "waiting" (the worker queue, or held for review): no row
+ * yet, and its childSession names the job in the queue. started: a row exists for it. stopped: it had a row, but the row
+ * was stopped or has gone, so a start again needs the person's yes. refused: it did not start and is not retried alone.
  */
-export const CHECKPOINT_STATES = ["pending", "starting", "started", "stopped", "refused"] as const;
+export const CHECKPOINT_STATES = ["pending", "starting", "queued", "started", "stopped", "refused"] as const;
 export type CheckpointState = (typeof CHECKPOINT_STATES)[number];
 
 export type CheckpointTask = {
@@ -30,6 +31,11 @@ export type CheckpointTask = {
   state: CheckpointState;
   /** The task's delegate input as the fan-out sent it (the same request id makes a repeat idempotent). */
   input: Record<string, unknown>;
+  /**
+   * The request id the last start was sent under. Absent: the plan's own id for the task. A start again after a stop
+   * takes a new one, so the app records a new worker instead of reviving the stopped row (delegations.rs record).
+   */
+  requestId?: string;
   taskId?: string;
   childSession?: string;
   /** The start's own status (running, waiting...). */
@@ -99,11 +105,24 @@ function touch(cp: FanoutCheckpoint, name: string, change: Partial<CheckpointTas
   };
 }
 
-/** The task's start is about to be sent. A task already started or refused is left as it is. */
-export function noteStarting(cp: FanoutCheckpoint, name: string, now: number): FanoutCheckpoint {
+/**
+ * The task's start is about to be sent, under `requestId` (the plan's own id for the task when absent). A task already
+ * started, queued or refused is left as it is.
+ */
+export function noteStarting(cp: FanoutCheckpoint, name: string, now: number, requestId?: string): FanoutCheckpoint {
   const task = cp.tasks.find((t) => t.name === name);
   if (!task || (task.state !== "pending" && task.state !== "stopped")) return cp;
-  return touch(cp, name, { state: "starting" }, now);
+  return touch(cp, name, { state: "starting", ...(requestId === undefined ? {} : { requestId }) }, now);
+}
+
+/**
+ * The start answered "waiting": the task is in the worker queue (or held for review) and has no row yet. Its
+ * childSession names that job, so a resume can tell it is still waiting and not gone.
+ */
+export function noteQueued(cp: FanoutCheckpoint, name: string, childSession: string, now: number): FanoutCheckpoint {
+  const task = cp.tasks.find((t) => t.name === name);
+  if (!task || task.state === "started" || task.state === "refused") return cp;
+  return touch(cp, name, { state: "queued", childSession }, now);
 }
 
 /** The task's row was stopped (or has gone) and a start again waits for the person's yes. */
@@ -143,8 +162,11 @@ export function noteWaveDone(cp: FanoutCheckpoint, wave: number, now: number): F
   return { ...cp, wavesDone: wave, revision: cp.revision + 1, updatedAt: now };
 }
 
-/** Every task has either started or been refused: nothing is left to send. A stopped task is not settled. */
-export function isSettled(cp: FanoutCheckpoint): boolean {
+/**
+ * Every task has either started or been refused: the plan is done and its checkpoint can go. A queued task is not
+ * complete: its job may still leave the queue without a row, and a resume has to say so.
+ */
+export function isComplete(cp: FanoutCheckpoint): boolean {
   return cp.tasks.every((task) => task.state === "started" || task.state === "refused");
 }
 
@@ -162,47 +184,63 @@ export type ResumePlan = {
   adopt: { name: string; taskId: string; childSession: string; state: string }[];
   /** Started, and its row is running or done: left as it is. */
   kept: string[];
-  /** Stopped, or started with no row now: a repeat could do the work twice, so it waits for the person's yes. */
+  /** Queued and still in the worker queue (or held for review): it starts by itself, nothing is sent. */
+  waiting: string[];
+  /**
+   * Stopped, or started or queued with no row and no place in the queue: a repeat could do the work twice, so it
+   * waits for the person's yes (a decision of its own, WP-14).
+   */
   confirm: string[];
   /** Refused when first sent: not retried on a resume. */
   refused: string[];
 };
 
-/** What a resume does with each task. Pure: the rows come in through `rowOf`. */
-export function planResume(cp: FanoutCheckpoint, rowOf: RowLookup): ResumePlan {
-  const plan: ResumePlan = { start: [], adopt: [], kept: [], confirm: [], refused: [] };
+/**
+ * What a resume does with each task. Pure: the rows come in through `rowOf`, and `waitingOn` says whether a task's job is
+ * still in the worker queue (or held for review), by name.
+ */
+export function planResume(
+  cp: FanoutCheckpoint,
+  rowOf: RowLookup,
+  waitingOn: (name: string) => boolean = () => false,
+): ResumePlan {
+  const plan: ResumePlan = { start: [], adopt: [], kept: [], waiting: [], confirm: [], refused: [] };
   for (const task of cp.tasks) {
     const row = rowOf(task.name);
     if (task.state === "refused") {
       plan.refused.push(task.name);
       continue;
     }
-    if (task.state === "started" || task.state === "stopped") {
-      if (!row || row.state === "cancelled") {
-        plan.confirm.push(task.name);
-      } else {
-        plan.kept.push(task.name);
-        if (task.state === "stopped") plan.adopt.push({ name: task.name, taskId: row.id, childSession: row.childSession, state: row.state });
-      }
+    // A row the app already has for the task: adopted when the checkpoint did not see it, cancelled means it needs a yes.
+    if (row && row.state !== "cancelled") {
+      plan.kept.push(task.name);
+      if (task.state !== "started") plan.adopt.push({ name: task.name, taskId: row.id, childSession: row.childSession, state: row.state });
       continue;
     }
-    // pending or starting: a row may exist if the crash came after the start was sent.
-    if (!row) {
-      plan.start.push(task.name);
-    } else if (row.state === "cancelled") {
+    if (row) {
       plan.confirm.push(task.name);
-    } else {
-      plan.kept.push(task.name);
-      plan.adopt.push({ name: task.name, taskId: row.id, childSession: row.childSession, state: row.state });
+      continue;
     }
+    // No row. Still in the queue (or held for review): it starts by itself, and a second send would start it twice.
+    if (waitingOn(task.name)) {
+      plan.waiting.push(task.name);
+      continue;
+    }
+    // Pending or starting, and never queued: the start was never answered, so it is sent (the same id keeps it once).
+    if (task.state === "pending" || task.state === "starting") {
+      plan.start.push(task.name);
+      continue;
+    }
+    // Started, queued or stopped, and nothing is there: a repeat could do the work twice, so it waits for the yes.
+    plan.confirm.push(task.name);
   }
   return plan;
 }
 
-/** Unsettled, unexpired checkpoints of one chat, newest first. */
+/** Unfinished, unexpired checkpoints of one chat, newest first. */
 export function listResumable(all: readonly FanoutCheckpoint[], owner: string, now: number): FanoutCheckpoint[] {
   return all
-    .filter((cp) => cp.owner === owner && !isExpired(cp, now) && !isSettled(cp))
+    .filter((cp) => cp.owner === owner && !isExpired(cp, now) && !isComplete(cp))
     .sort((a, b) => b.updatedAt - a.updatedAt);
 }
 
@@ -211,6 +249,8 @@ export function describeResume(plan: ResumePlan): string {
   const parts: string[] = [];
   if (plan.adopt.length + plan.kept.length)
     parts.push(`${plan.adopt.length + plan.kept.length} already started and kept as it is`);
+  if (plan.waiting.length)
+    parts.push(`${plan.waiting.length} waiting for a free worker, which starts by itself`);
   if (plan.start.length) parts.push(`${plan.start.length} not started yet, which is sent now`);
   if (plan.confirm.length)
     parts.push(`${plan.confirm.length} stopped or missing, which needs your yes before it starts again`);
@@ -260,12 +300,15 @@ export function parseCheckpoint(value: unknown): FanoutCheckpoint | null {
     const childSession = optionalString(raw.childSession);
     const status = optionalString(raw.status);
     const error = optionalString(raw.error);
+    const requestId = optionalString(raw.requestId);
     if (taskId === null || childSession === null || status === null || error === null) return null;
+    if (requestId === null || (requestId !== undefined && !ID.test(requestId))) return null;
     tasks.push({
       name: raw.name,
       wave: raw.wave as number,
       state: raw.state as CheckpointState,
       input: raw.input,
+      ...(requestId === undefined ? {} : { requestId }),
       ...(taskId === undefined ? {} : { taskId }),
       ...(childSession === undefined ? {} : { childSession }),
       ...(status === undefined ? {} : { status }),

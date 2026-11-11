@@ -40,7 +40,11 @@ pub(crate) fn ensure_tables(conn: &Connection) -> rusqlite::Result<()> {
             until INTEGER NOT NULL,
             PRIMARY KEY (owner, id)
          );",
-    )
+    )?;
+    // The database is opened once per run, and the instance lock lets one app run per data folder: a lease left in the
+    // table was held by a window that has gone, so it must not hold its plan for up to LEASE_MS after a restart.
+    conn.execute("DELETE FROM fanout_leases", [])?;
+    Ok(())
 }
 
 /// Takes the plan's lease for `holder` (one window) when it is free, its holder is `holder`, or it has run out.
@@ -210,6 +214,9 @@ pub fn list(conn: &Connection, owner: &str, now: i64) -> Result<Vec<Value>, Stri
         params![now - RETENTION_MS],
     )
     .map_err(|error| error.to_string())?;
+    // A lease that has run out is held by nobody: drop it, so the table does not keep every plan ever sent.
+    conn.execute("DELETE FROM fanout_leases WHERE until < ?1", params![now])
+        .map_err(|error| error.to_string())?;
     let mut statement = conn
         .prepare(
             "SELECT body FROM fanout_checkpoints WHERE owner = ?1 ORDER BY updated_at DESC, id ASC",
@@ -486,5 +493,62 @@ mod tests {
         assert!(!remove(&conn, "chat-1", "plan-1").unwrap());
         assert!(!remove(&conn, "chat-1", "bad id").unwrap());
         assert_eq!(list(&conn, "chat-1", T0).unwrap().len(), 1);
+    }
+}
+
+#[cfg(test)]
+mod lease_hygiene_tests {
+    use super::*;
+
+    const T0: i64 = 1_000_000_000;
+
+    /// One SQLite file with the fan-out tables, as the app opens it.
+    fn file_db(name: &str) -> (Connection, std::path::PathBuf) {
+        let path = std::env::temp_dir().join(format!(
+            "fanout-hygiene-{name}-{}-{}.sqlite",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let conn = Connection::open(&path).unwrap();
+        ensure_tables(&conn).unwrap();
+        (conn, path)
+    }
+
+    fn lease_rows(conn: &Connection) -> i64 {
+        conn.query_row("SELECT count(*) FROM fanout_leases", [], |row| row.get(0))
+            .unwrap()
+    }
+
+    /// A lease that has run out is dropped when the checkpoints are listed; one still live stays.
+    #[test]
+    fn listing_drops_the_leases_that_have_run_out_and_keeps_a_live_one() {
+        let (conn, path) = file_db("prune");
+        assert!(acquire_lease(&conn, "chat-1", "plan-1", "window-a", T0, LEASE_MS).unwrap());
+        assert!(acquire_lease(
+            &conn,
+            "chat-1",
+            "plan-2",
+            "window-a",
+            T0 + LEASE_MS,
+            LEASE_MS
+        )
+        .unwrap());
+        list(&conn, "chat-1", T0 + LEASE_MS + 1).unwrap();
+        assert_eq!(lease_rows(&conn), 1);
+        let _ = std::fs::remove_file(path);
+    }
+
+    /// The app quits without giving its lease up; the next run opens the same database and may take the plan.
+    #[test]
+    fn a_lease_left_by_an_earlier_run_does_not_block_the_next_open() {
+        let (first, path) = file_db("restart");
+        assert!(acquire_lease(&first, "chat-1", "plan-1", "window-a", T0, LEASE_MS).unwrap());
+        let second = Connection::open(&path).unwrap();
+        ensure_tables(&second).unwrap();
+        assert!(acquire_lease(&second, "chat-1", "plan-1", "window-b", T0 + 1, LEASE_MS).unwrap());
+        let _ = std::fs::remove_file(path);
     }
 }

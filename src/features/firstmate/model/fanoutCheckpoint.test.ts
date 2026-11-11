@@ -4,10 +4,11 @@ import {
   createCheckpoint,
   describeResume,
   isExpired,
-  isSettled,
+  isComplete,
   listResumable,
   noteRefused,
   noteStarted,
+  noteQueued,
   noteStarting,
   noteStopped,
   noteWaveDone,
@@ -54,7 +55,7 @@ describe("createCheckpoint", () => {
       ["ui", 2, "pending"],
       ["docs", 1, "pending"],
     ]);
-    expect(isSettled(cp)).toBe(false);
+    expect(isComplete(cp)).toBe(false);
   });
 
   it("never stores the person's request on each task, only once for the plan", () => {
@@ -103,7 +104,7 @@ describe("noting progress", () => {
   it("marks a task starting before the call, so a crash in between is visible", () => {
     const cp = noteStarting(fresh(), "api", T0 + 1);
     expect(cp.tasks[0].state).toBe("starting");
-    expect(isSettled(cp)).toBe(false);
+    expect(isComplete(cp)).toBe(false);
   });
 
   it("records a refused task with its reason and never starts it on a resume", () => {
@@ -127,9 +128,9 @@ describe("noting progress", () => {
     let cp = fresh();
     cp = noteStarted(cp, "api", { taskId: "a", childSession: "ca", status: "running" }, T0 + 1);
     cp = noteStarted(cp, "ui", { taskId: "u", childSession: "cu", status: "waiting" }, T0 + 2);
-    expect(isSettled(cp)).toBe(false);
+    expect(isComplete(cp)).toBe(false);
     cp = noteRefused(cp, "docs", "refused", T0 + 3);
-    expect(isSettled(cp)).toBe(true);
+    expect(isComplete(cp)).toBe(true);
   });
 });
 
@@ -180,6 +181,42 @@ describe("planResume", () => {
     const plan = planResume(fresh(), rows({ api: { id: "t-api", childSession: "ca", state: "cancelled" } }));
     expect(plan.confirm).toEqual(["api"]);
     expect(plan.start).toEqual(["ui", "docs"]);
+  });
+
+  it("leaves a queued task alone while its job is still in the queue (nothing sent, nothing started twice)", () => {
+    const cp = noteQueued(noteStarting(fresh(), "api", T0 + 1), "api", "ca", T0 + 2);
+    const plan = planResume(cp, rows({}), (name) => name === "api");
+    expect(plan.waiting).toEqual(["api"]);
+    expect(plan.start).not.toContain("api");
+    expect(plan.confirm).not.toContain("api");
+  });
+
+  it("asks before a queued task starts again once it has left the queue without a row", () => {
+    const cp = noteQueued(noteStarting(fresh(), "api", T0 + 1), "api", "ca", T0 + 2);
+    const plan = planResume(cp, rows({}), () => false);
+    expect(plan.confirm).toEqual(["api"]);
+    expect(plan.start).not.toContain("api");
+    expect(plan.waiting).toEqual([]);
+  });
+
+  it("adopts the row of a queued task that has started since", () => {
+    const cp = noteQueued(noteStarting(fresh(), "api", T0 + 1), "api", "ca", T0 + 2);
+    const plan = planResume(cp, rows({ api: { id: "t-api", childSession: "ca", state: "running" } }));
+    expect(plan.kept).toContain("api");
+    expect(plan.adopt).toEqual([{ name: "api", taskId: "t-api", childSession: "ca", state: "running" }]);
+  });
+
+  it("a plan with a queued task is not complete, and a refused task is never turned back into a queued one", () => {
+    let cp = noteStarted(fresh(), "ui", { taskId: "u", childSession: "cu", status: "running" }, T0 + 1);
+    cp = noteRefused(cp, "docs", "refused", T0 + 2);
+    cp = noteQueued(cp, "api", "ca", T0 + 3);
+    expect(isComplete(cp)).toBe(false);
+    expect(noteQueued(noteRefused(fresh(), "api", "no", T0 + 1), "api", "ca", T0 + 2).tasks[0].state).toBe("refused");
+  });
+
+  it("keeps the request id a start was sent under, so a later resume reads that row", () => {
+    const cp = noteStarting(fresh(), "api", T0 + 1, "f2_plan-api-r2");
+    expect(cp.tasks[0]).toMatchObject({ state: "starting", requestId: "f2_plan-api-r2" });
   });
 });
 
@@ -265,7 +302,7 @@ describe("stopped tasks", () => {
     cp = noteRefused(cp, "docs", "no", T0 + 3);
     cp = noteStarted(cp, "ui", { taskId: "u", childSession: "cu", status: "running" }, T0 + 4);
     expect(cp.tasks.find((t) => t.name === "api")?.state).toBe("stopped");
-    expect(isSettled(cp)).toBe(false);
+    expect(isComplete(cp)).toBe(false);
     expect(listResumable([cp], OWNER, T0 + 5)).toHaveLength(1);
   });
 
