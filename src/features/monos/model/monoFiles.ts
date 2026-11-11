@@ -10,7 +10,7 @@ import {
 import { CHECKER_MONO_ID } from "../../hub/model/hubMcp";
 import { CHECKER_RULES } from "../../hub/model/checkerRules";
 import { forUser } from "../../hub/model/userName";
-import { ensureCaptainCharter, hasCaptainCharter } from "../../chief/model/charter";
+import { ensureCaptainCharter, hasCaptainCharter, withLockedRole } from "../../chief/model/charter";
 
 /**
  * The Mono's SOUL.md and MEMORY.md, kept in the app's data folder
@@ -266,21 +266,23 @@ export async function writeAgentFile(
   text: string,
   expectedHash?: string,
 ): Promise<string> {
+  let saving = text;
   if (path === "SOUL.md") {
     const current = await readAgentFile(monoId, path).catch(() => undefined);
     if (current && hasCaptainCharter(current.text) && !hasCaptainCharter(text)) {
       throw new Error("The captain charter is fixed. Edit the personality beside it.");
     }
+    if (hasCaptainCharter(text)) saving = withLockedRole(text);
   }
   try {
     const hash = await invoke<string>("mono_save", {
       ...folder(monoId),
       path,
-      text,
+      text: saving,
       expectedHash: expectedHash ?? null,
     });
     // Every soul the app saves is the one the tamper check compares with.
-    if (path === "SOUL.md") recordSavedSoul(monoId, text, hash);
+    if (path === "SOUL.md") recordSavedSoul(monoId, saving, hash);
     window.dispatchEvent(new CustomEvent(FILES_CHANGED));
     return hash;
   } catch (error) {

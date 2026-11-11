@@ -9,6 +9,40 @@ export function hasCaptainCharter(soul: string | null | undefined): boolean {
   return typeof soul === "string" && soul.includes(CAPTAIN_CHARTER);
 }
 
+/**
+ * A soul that carries the charter keeps its Role section exactly those words.
+ * Extra sentences, or the charter parked in a comment with a new role in its place, are put back.
+ * A soul that does not carry the charter is unchanged.
+ */
+export function withLockedRole(soul: string): string {
+  const text = soul.replace(/\r\n?/g, "\n");
+  if (!hasCaptainCharter(text)) return text;
+  const marker = "\n## Role\n";
+  const at = text.indexOf(marker);
+  if (at < 0) {
+    const nl = text.indexOf("\n");
+    const insertAt = nl < 0 ? text.length : nl + 1;
+    return `${text.slice(0, insertAt)}\n## Role\n${CAPTAIN_CHARTER}\n${text.slice(insertAt)}`;
+  }
+  const bodyStart = at + marker.length;
+  const rest = text.slice(bodyStart);
+  const next = rest.search(/\n## /);
+  const after = next < 0 ? "" : rest.slice(next);
+  return `${text.slice(0, bodyStart)}${CAPTAIN_CHARTER}\n${after}`;
+}
+
+/** The coordinator starter, a Mono flagged as the captain, or one still named Chief of Staff. */
+export function isCaptainMono(
+  mono: { id?: string; name?: string; captain?: boolean; templateId?: string } | null | undefined,
+): boolean {
+  if (!mono) return false;
+  if (mono.captain === true) return true;
+  const id = (mono.id ?? "").trim();
+  const template = (mono.templateId ?? "").trim();
+  if (id === "coordinator" || template === "coordinator") return true;
+  return (mono.name ?? "").trim() === "Chief of Staff";
+}
+
 /** The personality section, or empty when the soul has none. The charter is not part of it. */
 export function personalityOf(soul: string): string {
   const text = soul.replace(/\r\n?/g, "\n");
