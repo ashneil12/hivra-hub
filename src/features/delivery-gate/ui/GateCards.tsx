@@ -4,6 +4,8 @@ import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { SecondaryButton } from "../../../shared/ui/SecondaryButton";
+import { isGuardRefusal } from "../../commit-guard/model/refusal";
+import { OpenInSourceControlLink } from "../../commit-guard/ui/OpenInSourceControlLink";
 
 const TRY_AGAIN = "That didn't go through. Try again.";
 const ANSWERS = ["Approve", "Fix", "Skip"] as const;
@@ -132,6 +134,7 @@ export function GateCards({ project }: { project: string }) {
             <li key={card.id} className="border-b border-stroke px-3 py-2 last:border-b-0">
               <p className="text-[13px] text-content">{card.line}</p>
               {finding ? <p className="mt-0.5 text-[12px] text-content/70">{finding}</p> : null}
+              {finding && isGuardRefusal(finding) ? <OpenInSourceControlLink message={finding} /> : null}
               {card.prUrl ? (
                 <button
                   type="button"

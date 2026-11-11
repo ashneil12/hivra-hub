@@ -385,6 +385,7 @@ import {
   worktreeFocus,
 } from "../features/source-control/model/worktreeFocus";
 import { useProjectDiffStats } from "../features/source-control/hooks/useProjectDiffStats";
+import { onGuardFindingOpen } from "../features/commit-guard/model/openFinding";
 import { showWorktreeSetup } from "../features/source-control/model/worktreeSetup";
 import {
   listProjectActions,
@@ -5260,6 +5261,8 @@ function Workspace({
   const onShowSourceControl = useCallback(() => {
     setSidebarTab("changes");
   }, []);
+  // WP-200: a commit-guard refusal asked to be shown from a card or status line opens the Changes tab.
+  useEffect(() => onGuardFindingOpen(() => setSidebarTab("changes")), []);
 
   const onToggleChanges = useCallback(() => {
     onShowSourceControl();

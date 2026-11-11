@@ -136,6 +136,18 @@ pub(crate) struct Shared {
     hold_any_dot_segment: bool,
 }
 
+impl Shared {
+    /// The shared list's file names, folded. Read by the commit guard (WP-200), so it compares names the way the floor does.
+    pub(crate) fn file_names(&self) -> &[String] {
+        &self.files
+    }
+
+    /// The shared list's folder names, folded. Read by the commit guard (WP-200).
+    pub(crate) fn folder_names(&self) -> &[String] {
+        &self.dirs
+    }
+}
+
 const SHARED_LIST_JSON: &str = include_str!("../../../src/shared/security/agentConfigPaths.json");
 
 /// The loaded shared list, or the reason it would not load. Loaded once, before any caller takes the session store's
@@ -199,6 +211,11 @@ fn segments(text: &str) -> Vec<String> {
         .map(fold)
         .filter(|segment| !segment.is_empty())
         .collect()
+}
+
+/// A repo path as folded segments, the floor's own fold (WP-200: the commit guard reads it). `None` for an empty path.
+pub(crate) fn folded_segments(raw: &str) -> Option<Vec<String>> {
+    repo_path(raw).map(|path| path.lower)
 }
 
 struct RepoPath {

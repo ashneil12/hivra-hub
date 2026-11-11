@@ -37,6 +37,7 @@ import { MoreAgentsSettings } from "../../registry/ui/MoreAgentsSettings";
 import { PhaseSettings } from "../../phases/ui/PhaseSettings";
 // WP-104: copy diagnostics, and the health list.
 import { DiagnosticsPanel } from "../../diagnostics/ui/DiagnosticsPanel";
+import { CommitGuardAllowsPanel } from "../../commit-guard/ui/CommitGuardAllowsPanel";
 // WP-88: the morning note under the chat on Home.
 import { DailySummarySetting } from "../../chief/ui/DailySummarySetting";
 // WP-156: standing answers stay off until this setting is on.
@@ -720,6 +721,8 @@ export function SettingsView({
               {section === "general" ? <PhaseSettings projectKey={cwd} /> : null}
               {/* WP-104: diagnostics a person can send, and the health list. */}
               {section === "general" ? <DiagnosticsPanel /> : null}
+              {/* WP-200: the lines the secret check lets through because a person allowed them. */}
+              {section === "general" ? <CommitGuardAllowsPanel /> : null}
               {section === "connections" ? (
                 <div className="flex flex-col gap-10">
                   {/* WP-61: Hivra Cloud, off until the person turns it on. */}
