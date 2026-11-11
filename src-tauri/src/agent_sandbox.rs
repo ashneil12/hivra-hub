@@ -2930,3 +2930,225 @@ mod review_r4_repro {
         }
     }
 }
+
+/// Review r5 repro tests for PR #208 (WP-178). Each is red at a5bc60a97. The evaluator is the r4 one.
+///
+/// The sandbox checks a rename against the path of the node that moves (the r4 data-folder lock and its macOS
+/// self-check rely on that), not against the paths of what is inside it. `deny_one_git` names `<git>/hooks`,
+/// `<git>/config` and so on by path, and nothing locks the checkout folder above `.git` or the folders inside `.git`
+/// that hold a denied file. So an agent moves the subtree, writes the file under its new name, and moves it back.
+#[cfg(all(test, unix))]
+mod review_r5_repro {
+    use super::*;
+
+    fn filter_matches(line: &str, path: &str) -> bool {
+        if let Some(start) = line.find("(regex #\"") {
+            let rest = &line[start + "(regex #\"".len()..];
+            return rest.find("\")").is_some_and(|end| {
+                regex::Regex::new(&rest[..end]).is_ok_and(|re| re.is_match(path))
+            });
+        }
+        for (open, subpath) in [("(literal \"", false), ("(subpath \"", true)] {
+            if let Some(start) = line.find(open) {
+                let rest = &line[start + open.len()..];
+                let Some(end) = rest.find('"') else {
+                    return false;
+                };
+                let named = &rest[..end];
+                return path == named
+                    || (subpath && path.starts_with(&format!("{}/", named.trim_end_matches('/'))));
+            }
+        }
+        false
+    }
+
+    /// A deny that covers moving `path` away: `file-write*` or `file-write-unlink` on that exact node.
+    fn denies_moving(profile: &str, path: &str) -> bool {
+        profile.lines().any(|line| {
+            let line = line.trim();
+            line.starts_with("(deny ")
+                && (line.contains("file-write*") || line.contains("file-write-unlink"))
+                && filter_matches(line, path)
+        })
+    }
+
+    fn scratch(tag: &str) -> PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let dir = std::env::temp_dir().join(format!("sbx-r5-{tag}-{}-{nanos}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::canonicalize(&dir).unwrap()
+    }
+
+    fn git(dir: &Path, args: &[&str]) {
+        let ok = crate::git_cmd::git()
+            .arg("-C")
+            .arg(dir)
+            .args([
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@t",
+                "-c",
+                "commit.gpgsign=false",
+            ])
+            .args(args)
+            .status()
+            .unwrap()
+            .success();
+        assert!(ok, "git {args:?}");
+    }
+
+    /// HIGH (H-C still open): `mv ~/Projects/proj ~/Projects/p2; echo … > ~/Projects/p2/.git/hooks/pre-commit;
+    /// mv ~/Projects/p2 ~/Projects/proj`. No rule matches `~/Projects/p2/.git/hooks/…`, and the two renames move
+    /// nodes no rule names. Ash's next Commit in the Git panel runs that hook through `git_with_hooks`, outside the
+    /// sandbox. For a linked worktree the same goes for the main checkout that holds the common dir.
+    #[test]
+    fn an_agent_cannot_move_its_checkout_or_a_parent_to_reach_the_hooks() {
+        let home = scratch("home");
+        let proj = home.join("Projects").join("proj");
+        std::fs::create_dir_all(&proj).unwrap();
+        git(&proj, &["init", "-q"]);
+        let profile = profile_with_checkouts(&home, None, std::slice::from_ref(&proj)).unwrap();
+        let _ = std::fs::remove_dir_all(&home);
+        for node in [proj.clone(), home.join("Projects")] {
+            let path = node.to_string_lossy().to_string();
+            assert!(
+                denies_moving(&profile, &path),
+                "{path} can be renamed by the agent; its .git/hooks and .git/config are then writable under the new name"
+            );
+        }
+    }
+
+    /// HIGH (H-C still open): the folders inside `.git` that hold a denied file can be moved too.
+    /// `mv .git/worktrees .git/w; echo /tmp/evil > .git/w/<wt>/commondir; mv .git/w .git/worktrees` points a linked
+    /// worktree at a git dir whose config and hooks the agent wrote. `.git/modules` (a submodule's hooks) and
+    /// `.git/info` (`attributes`) work the same way.
+    #[test]
+    fn an_agent_cannot_move_the_folders_inside_git_that_hold_a_denied_file() {
+        let root = scratch("inner");
+        let main = root.join("main");
+        let wt = root.join("wt");
+        std::fs::create_dir_all(&main).unwrap();
+        git(&main, &["init", "-q"]);
+        std::fs::write(main.join("a.txt"), "a\n").unwrap();
+        git(&main, &["add", "a.txt"]);
+        git(&main, &["commit", "-q", "-m", "a"]);
+        git(&main, &["worktree", "add", "-q", wt.to_str().unwrap()]);
+        let profile =
+            profile_with_checkouts(Path::new("/Users/test"), None, std::slice::from_ref(&wt))
+                .unwrap();
+        let common = main.join(".git");
+        let _ = std::fs::remove_dir_all(&root);
+        for name in ["worktrees", "worktrees/wt", "modules", "info"] {
+            let path = common.join(name).to_string_lossy().to_string();
+            assert!(
+                denies_moving(&profile, &path),
+                "{path} can be renamed by the agent, and a denied file inside it is then writable under the new name"
+            );
+        }
+    }
+
+    /// HIGH (question c, H-C still open): the harness names only the chat's own folder. Every other project the app
+    /// knows keeps an open `.git`: an agent in project A writes project B's `.git/hooks/pre-commit` (or `core.hooksPath`
+    /// in B's `.git/config`), and Ash's next Commit, Push or Pull in B's Git panel runs it outside the sandbox. The
+    /// round-4 fix asked for each known project checkout's repository to be resolved and locked. The seam does not
+    /// exist yet, so this reads the spawn: it must pass more than the chat's own folder.
+    #[test]
+    fn a_sandboxed_spawn_locks_every_known_projects_git_not_only_the_chats_own() {
+        let source = include_str!("harness.rs");
+        let call = source
+            .find("crate::agent_sandbox::sandboxed_launch(")
+            .expect("harness_spawn calls sandboxed_launch");
+        let args = &source[call..call + 600];
+        assert!(
+            !args.contains("std::slice::from_ref(&workdir)"),
+            "harness_spawn names only the chat's folder, so every other project's .git hooks and config stay writable"
+        );
+    }
+
+    /// Probe on the Mac; HIGH if red (H-F partly open). `hdiutil` is refused by path only. `DENIED_PROGRAMS` says a
+    /// copy under another name is covered by `job-creation` and `lsopen`, which is true for launchctl and open but not
+    /// for hdiutil: a copy keeps Apple's signature, and the attach is done by the disk image service, not by the
+    /// sandboxed process, so the data folder's write deny is never asked. An image mounted over `<data>/settings`
+    /// makes the next spawn read `off` from the switch file (or one over `~/Library/LaunchAgents` adds a login job).
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn under_the_real_profile_a_copied_hdiutil_cannot_mount_over_the_data_folder() {
+        let root = scratch("hdi");
+        let home = root.join("home");
+        let data = root.join("data");
+        let settings = data.join("settings");
+        let src = root.join("src");
+        for dir in [&home, &settings, &src] {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+        std::fs::write(settings.join(SETTING_FILE), "on\n").unwrap();
+        std::fs::write(src.join(SETTING_FILE), "off\n").unwrap();
+        let image = root.join("img.dmg");
+        // Made outside the sandbox to keep the probe short; the agent can make it inside with the same copy.
+        let made = std::process::Command::new("/usr/sbin/hdiutil")
+            .args(["create", "-quiet", "-fs", "HFS+", "-srcfolder"])
+            .arg(&src)
+            .arg(&image)
+            .status()
+            .unwrap();
+        assert!(made.success(), "hdiutil create");
+        let copy = home.join("h");
+        std::fs::copy("/usr/sbin/hdiutil", &copy).unwrap();
+        let profile = profile_text_for(&home, Some(&data)).unwrap();
+        let _ = std::process::Command::new(SANDBOX_EXEC)
+            .args(["-p", &profile])
+            .arg(&copy)
+            .args(["attach", "-quiet", "-nobrowse", "-mountpoint"])
+            .arg(&settings)
+            .arg(&image)
+            .env("HOME", &home)
+            .status()
+            .unwrap();
+        let seen = std::fs::read_to_string(settings.join(SETTING_FILE)).unwrap_or_default();
+        let _ = std::process::Command::new("/usr/sbin/hdiutil")
+            .args(["detach", "-quiet", "-force"])
+            .arg(&settings)
+            .status();
+        let _ = std::fs::remove_dir_all(&root);
+        assert_eq!(
+            seen.trim(),
+            "on",
+            "a copied hdiutil mounted an image over the data folder's settings, so the switch reads off"
+        );
+    }
+
+    /// macOS probe of the first test: the move, the write and the move back, under the real profile.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn under_the_real_profile_moving_the_checkout_does_not_open_its_hooks() {
+        let home = scratch("mvhome");
+        let proj = home.join("Projects").join("proj");
+        std::fs::create_dir_all(&proj).unwrap();
+        git(&proj, &["init", "-q"]);
+        let profile = profile_with_checkouts(&home, None, std::slice::from_ref(&proj)).unwrap();
+        let script = "cd \"$HOME/Projects\" && mv proj p2 && mkdir -p p2/.git/hooks && \
+                      printf '#!/bin/sh\\ntouch /tmp/ran\\n' > p2/.git/hooks/pre-commit && mv p2 proj";
+        let _ = std::process::Command::new(SANDBOX_EXEC)
+            .args(["-p", &profile, "/bin/sh", "-c", script])
+            .env("HOME", &home)
+            .status()
+            .unwrap();
+        let planted = proj.join(".git").join("hooks").join("pre-commit").exists()
+            || home
+                .join("Projects")
+                .join("p2")
+                .join(".git")
+                .join("hooks")
+                .join("pre-commit")
+                .exists();
+        let _ = std::fs::remove_dir_all(&home);
+        assert!(
+            !planted,
+            "a hook was written into the named checkout by moving it, writing, and moving it back"
+        );
+    }
+}

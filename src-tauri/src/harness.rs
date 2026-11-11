@@ -5755,3 +5755,61 @@ mod dev_claude_tests {
         );
     }
 }
+
+/// Review r5 repro for PR #208 (WP-178). Red at a5bc60a97.
+#[cfg(all(test, unix))]
+mod review_r5_repro {
+    use super::*;
+
+    fn filter_matches(line: &str, path: &str) -> bool {
+        if let Some(start) = line.find("(regex #\"") {
+            let rest = &line[start + "(regex #\"".len()..];
+            return rest.find("\")").is_some_and(|end| {
+                regex::Regex::new(&rest[..end]).is_ok_and(|re| re.is_match(path))
+            });
+        }
+        false
+    }
+
+    fn denies_write(profile: &str, path: &str) -> bool {
+        profile.lines().any(|line| {
+            let line = line.trim();
+            line.starts_with("(deny ") && line.contains("file-write") && filter_matches(line, path)
+        })
+    }
+
+    /// HIGH (H-E still open): while the sandbox is on, the login-shell probe runs in the container, which denies reads of
+    /// `.zprofile` and `.zshrc`, so the probe's PATH has no Homebrew. A Finder launch inherits only launchd's PATH.
+    /// `gh` and `git-lfs` are then found in the fixed folders, where `~/.claude/local`, `~/.local/share/claude`,
+    /// `~/.opencode/bin`, `~/.grok/bin`, `~/.npm-global/bin` and `~/.bun/bin` come before `/opt/homebrew/bin`, and the
+    /// profile denies none of them. The agent drops `~/.bun/bin/gh`; the worktree sweep runs `gh pr list` every 15
+    /// minutes with this PATH, outside the sandbox (worktree_janitor::gh_prs_for_branch), and Ash's Commit or Push runs
+    /// `git-lfs` from it. Every home folder searched before Homebrew must be write-denied (or the search must not use them).
+    #[test]
+    fn every_home_folder_searched_before_homebrew_is_write_denied() {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let home = std::env::temp_dir().join(format!("harness-r5-{}-{nanos}", std::process::id()));
+        std::fs::create_dir_all(&home).unwrap();
+        let home = std::fs::canonicalize(&home).unwrap();
+        let profile = crate::agent_sandbox::profile_with_checkouts(&home, None, &[]).unwrap();
+        let search = gui_search_path_from(
+            None,
+            Some(home.to_string_lossy().into_owned()),
+            Some("/usr/bin:/bin:/usr/sbin:/sbin".into()),
+        );
+        let _ = std::fs::remove_dir_all(&home);
+        let open: Vec<String> = std::env::split_paths(&search)
+            .take_while(|dir| dir != Path::new("/opt/homebrew/bin"))
+            .filter(|dir| dir.starts_with(&home))
+            .map(|dir| dir.join("gh").to_string_lossy().into_owned())
+            .filter(|gh| !denies_write(&profile, gh))
+            .collect();
+        assert!(
+            open.is_empty(),
+            "an agent can plant gh or git-lfs here, and the app runs it outside the sandbox: {open:?}"
+        );
+    }
+}
