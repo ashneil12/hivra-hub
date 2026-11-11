@@ -95,3 +95,12 @@ test("a tab only names a panel that is on screen", async ({ page }) => {
     }
   }
 });
+
+test("a switched-off map node does not open the editor", async ({ page }) => {
+  await page.goto(pageUrl);
+  await page.getByRole("tab", { name: "Map" }).click();
+  // aria-disabled does not stop a real click. Playwright will not send one unless forced.
+  await page.getByRole("button", { name: "Inbox watch, off" }).click({ force: true });
+  await expect(page.getByRole("tab", { name: "Map" })).toHaveAttribute("aria-selected", "true");
+  await expect(page.getByRole("textbox", { name: "Automation name" })).toHaveCount(0);
+});
