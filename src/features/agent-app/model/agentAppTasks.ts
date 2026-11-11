@@ -55,6 +55,7 @@ import { lineRulesFor } from "../../crew/model/lineRules";
 import type { Catalog, RouteDefaults } from "../../crew/model/resolve";
 import { applyCrewLaunch, callerOverride, crewLabels, crewPaths } from "../../crew/model/taskRoute";
 import { routeDefaults } from "../../crew/model/workerDefault";
+import { isFanoutAgainDecisionKey } from "../../hub/model/decisionKey";
 import {
   activityNoteSummary,
   crewRuleSentence,
@@ -1467,7 +1468,7 @@ export function fanoutAgainKey(owner: string, plan: string, name: string, stoppe
 
 /** Whether a decision key is a restart decision (the trimmed key, as the store reads it). */
 export function isAgainKey(key: unknown): boolean {
-  return typeof key === "string" && key.trim().startsWith("fanout-again/");
+  return typeof key === "string" && isFanoutAgainDecisionKey(key);
 }
 
 /**
