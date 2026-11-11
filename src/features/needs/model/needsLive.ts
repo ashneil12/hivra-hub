@@ -148,9 +148,22 @@ function settleTap(result: Promise<unknown>, reasonOf: (out: unknown) => string 
     (error: unknown) => {
       if (mine !== tapEpoch) return;
       const raw = typeof error === "string" ? error : error instanceof Error ? error.message : "";
-      noteOneTapRefusal(raw.trim() ? raw : MISSED);
+      noteOneTapRefusal(personSentence(raw) ? raw.trim() : MISSED);
     },
   );
+}
+
+/**
+ * A thrown error is shown only when the store wrote it for a person: one line that starts with a capital letter, ends
+ * like a sentence, and carries no path, code, brace or error name. Anything else (an OS error, a SQLite code, a type
+ * error, an invoke argument) is the calm line instead.
+ */
+function personSentence(raw: string): boolean {
+  const text = raw.trim();
+  if (!text || /[\r\n]/.test(text)) return false;
+  if (!/^[A-Z][a-z']*\b/.test(text) || !/[.!?]$/.test(text)) return false;
+  if (/[\/\\{}`<>|]|::/.test(text)) return false;
+  return !/\b(?:[A-Z][A-Za-z]*Error|E[A-Z]{3,}|SQLITE_[A-Z]+|errno|panicked)\b|^Error\b|:\s*$/.test(text);
 }
 
 function takeReason(out: unknown): string | undefined {
