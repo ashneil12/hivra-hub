@@ -7,7 +7,7 @@ import type { HomeLine } from "../model/lines";
 import { HOME_ACTION_CAP } from "../model/needActions";
 import { FREE_UP_SPACE } from "../../monos/model/builderScale";
 import { NEEDS_YOU_RED } from "../../hub/ui/StatusMark";
-import { ArrowUp, Check, ChevronDown, ChevronUp } from "../../../shared/ui/icons";
+import { Check, ChevronDown, ChevronUp, SendArrow } from "../../../shared/ui/icons";
 import type { CatalogPanel } from "../../panels/model/panelTabs";
 import { workersLabel } from "../model/workingNow";
 import { HOME_MAX_WIDTH, HOME_STAGGER_MS } from "../vendor/homeLayout";
@@ -24,6 +24,8 @@ const TITLE: Record<string, string> = {
 
 const PRIMARY_BUTTON = "shrink-0 rounded-md bg-accent px-2.5 py-1 text-[12px] font-medium text-black";
 const QUIET_BUTTON = "shrink-0 rounded-md border border-content/20 px-2.5 py-1 text-[12px] text-content";
+// Name, up, down, switch, and an unpin slot. The slot stays empty on a section so the arrows line up.
+const ARRANGE_COLUMNS = { gridTemplateColumns: "minmax(0, 1fr) 1.5rem 1.5rem 2.25rem 4rem" };
 
 export type HomeNeed = {
   key: string;
@@ -274,9 +276,9 @@ function ChiefBox({ chief, onAsk }: { chief: HomeChief; onAsk: (text: string) =>
           aria-label="Send"
           title="Send"
           disabled={!ready}
-          className={`grid size-7 shrink-0 place-items-center rounded-md transition-colors disabled:cursor-default ${ready ? "bg-accent text-black" : "bg-content/10 text-content/45"}`}
+          className={`grid size-7 shrink-0 place-items-center rounded-md transition-colors disabled:cursor-default ${ready ? "bg-accent text-black" : "bg-content/25 text-content"}`}
         >
-          <ArrowUp className="size-3.5" strokeWidth={2} aria-hidden />
+          <SendArrow className="size-3.5" strokeWidth={2.25} aria-hidden />
         </button>
       </form>
     </div>
@@ -426,34 +428,43 @@ export function HomeScreen({
                     const title = titleOf(ref, catalog);
                     const shown = !arrangement.hidden.includes(key);
                     return (
-                      <div key={key} className="flex items-center gap-1.5 px-1 py-1">
-                        <span className="min-w-0 flex-1 truncate text-[13px] text-content">{title}</span>
-                        <button type="button" aria-label={`Move ${title} up`} className="grid size-6 place-items-center rounded text-content/70 hover:bg-content/8" onClick={() => onMove(key, -1)}>
+                      <div key={key} data-home-arrange={key} className="grid items-center gap-x-1.5 px-1 py-1" style={ARRANGE_COLUMNS}>
+                        <span className="min-w-0 truncate text-[13px] text-content">{title}</span>
+                        <button type="button" aria-label={`Move ${title} up`} className="grid size-6 place-items-center justify-self-center rounded text-content/70 hover:bg-content/8" onClick={() => onMove(key, -1)}>
                           <ChevronUp className="size-3.5" aria-hidden />
                         </button>
-                        <button type="button" aria-label={`Move ${title} down`} className="grid size-6 place-items-center rounded text-content/70 hover:bg-content/8" onClick={() => onMove(key, 1)}>
+                        <button type="button" aria-label={`Move ${title} down`} className="grid size-6 place-items-center justify-self-center rounded text-content/70 hover:bg-content/8" onClick={() => onMove(key, 1)}>
                           <ChevronDown className="size-3.5" aria-hidden />
                         </button>
-                        <ShowSwitch title={title} on={shown} onToggle={() => (shown ? onHide(key) : onShow(key))} />
-                        {ref.kind === "panel" ? (
-                          <button type="button" aria-label={`Unpin ${title}`} className="text-[12px] text-content/70 underline-offset-2 hover:underline" onClick={() => onUnpin(key)}>
-                            Unpin
-                          </button>
-                        ) : null}
+                        <span className="justify-self-center">
+                          <ShowSwitch title={title} on={shown} onToggle={() => (shown ? onHide(key) : onShow(key))} />
+                        </span>
+                        <span data-home-unpin="" className="min-w-0 justify-self-end">
+                          {ref.kind === "panel" ? (
+                            <button type="button" aria-label={`Unpin ${title}`} className="text-[12px] text-content/70 underline-offset-2 hover:underline" onClick={() => onUnpin(key)}>
+                              Unpin
+                            </button>
+                          ) : null}
+                        </span>
                       </div>
                     );
                   })}
                   {offered.map((panel) => (
-                    <div key={`${panel.plugin}:${panel.panelId}`} className="flex items-center gap-2 px-1 py-1">
-                      <span className="min-w-0 flex-1 truncate text-[13px] text-content/70">{panel.title}</span>
-                      <button
-                        type="button"
-                        aria-label={`Pin ${panel.title}`}
-                        className={QUIET_BUTTON}
-                        onClick={() => onPin(panel.plugin, panel.panelId)}
-                      >
-                        Pin
-                      </button>
+                    <div key={`${panel.plugin}:${panel.panelId}`} className="grid items-center gap-x-1.5 px-1 py-1" style={ARRANGE_COLUMNS}>
+                      <span className="min-w-0 truncate text-[13px] text-content/70">{panel.title}</span>
+                      <span />
+                      <span />
+                      <span />
+                      <span className="justify-self-end">
+                        <button
+                          type="button"
+                          aria-label={`Pin ${panel.title}`}
+                          className={QUIET_BUTTON}
+                          onClick={() => onPin(panel.plugin, panel.panelId)}
+                        >
+                          Pin
+                        </button>
+                      </span>
                     </div>
                   ))}
                   <button
@@ -554,9 +565,13 @@ export function HomeScreen({
                   {row.time ? <span data-home-time className="shrink-0 text-content/60">{row.time}</span> : null}
                 </button>
               )) : null}
-              {ref.kind === "panel" ? (panel && renderPanel ? renderPanel(panel) : (
-                <p className="border-t border-stroke px-3 py-3 text-[13px] text-content/70">This panel is not available.</p>
-              )) : null}
+              {ref.kind === "panel" ? (
+                <div data-home-panel className="border-t border-stroke px-3 py-3 text-[13px] text-content">
+                  {panel && renderPanel ? renderPanel(panel) : (
+                    <p className="text-content/70">This panel is not available.</p>
+                  )}
+                </div>
+              ) : null}
             </section>
           );
         })}

@@ -14,7 +14,9 @@ test("home shows the chief, the three sections, and customize", async ({ page },
   await expect(page.locator("[data-home-chief]")).toHaveText("Chief of Staff");
   await expect(page.locator("[data-home-avatar='chief']")).toHaveText("CS");
   await expect(page.locator("[data-home-scope]")).toHaveText("read all 7 projects");
-  await expect(page.getByRole("button", { name: "Send" })).not.toHaveClass(/bg-accent/);
+  const send = page.getByRole("button", { name: "Send" });
+  await expect(send).not.toHaveClass(/bg-accent/);
+  await expect(send.locator("path")).toHaveCount(2);
   await expect(page.getByLabel("Ask")).toHaveAttribute("placeholder", "Ask anything, or hand work to any project");
   await expect(home).toHaveAttribute("data-home-order", "needs-you moving-now recent");
 
@@ -48,8 +50,9 @@ test("home shows the chief, the three sections, and customize", async ({ page },
   }
 
   await page.getByLabel("Ask").fill("how is EXO going?");
-  await expect(page.getByRole("button", { name: "Send" })).toHaveClass(/bg-accent/);
-  await page.getByRole("button", { name: "Send" }).click();
+  await expect(send).toHaveClass(/bg-accent/);
+  await expect(send.locator("path")).toHaveCount(2);
+  await send.click();
   await expect(page.locator("[data-home-speaker='you']")).toHaveText("You");
   await expect(page.locator("[data-home-you] .user-message-bubble")).toHaveText("how is EXO going?");
   await expect(page.locator("[data-home-speaker='chief']")).toHaveText("Chief of Staff");
@@ -71,6 +74,28 @@ test("home shows the chief, the three sections, and customize", async ({ page },
   await expect(home).toHaveAttribute("data-home-order", "moving-now needs-you panel:my-panels:board");
   const pinned = page.locator("[data-home-section='panel:my-panels:board']");
   await expect(pinned).toBeVisible();
+  await expect(pinned.getByRole("heading", { name: "Example board" })).toBeVisible();
+  await expect(pinned.locator("[data-home-panel]")).toContainText("Example: board");
+  await expect(pinned).toHaveCSS("opacity", "1");
+  const aligned = async (locator: ReturnType<typeof page.getByRole>) => {
+    const box = await locator.boundingBox();
+    expect(box).toBeTruthy();
+    return box!.x;
+  };
+  const up = await Promise.all([
+    aligned(page.getByRole("button", { name: "Move Working now up" })),
+    aligned(page.getByRole("button", { name: "Move Needs you up" })),
+    aligned(page.getByRole("button", { name: "Move Done today up" })),
+    aligned(page.getByRole("button", { name: "Move Example board up" })),
+  ]);
+  expect(Math.max(...up) - Math.min(...up)).toBeLessThan(2);
+  const switches = await Promise.all([
+    aligned(page.getByRole("switch", { name: "Show Working now" })),
+    aligned(page.getByRole("switch", { name: "Show Needs you" })),
+    aligned(page.getByRole("switch", { name: "Show Done today" })),
+    aligned(page.getByRole("switch", { name: "Show Example board" })),
+  ]);
+  expect(Math.max(...switches) - Math.min(...switches)).toBeLessThan(2);
   await pinned.scrollIntoViewIfNeeded();
   const box = await pinned.boundingBox();
   expect(box).toBeTruthy();

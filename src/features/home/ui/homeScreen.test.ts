@@ -180,6 +180,33 @@ it("keeps customize on one button: a panel of switches, not a wall of links", ()
   expect(container.querySelector("[data-home-section='panel:my-panels:missing']")?.textContent).toContain("This panel is not available.");
 });
 
+it("a pinned page is a card with its title and its content", () => {
+  const arrangement = pinPanel(defaultArrangement(), "my-panels", "board");
+  draw({
+    arrangement,
+    catalog: [{ plugin: "my-panels", panelId: "board", title: "Example board", spec: { kind: "bespoke", title: "Example board", html: "<p>Example: board</p>", permissions: [] } }],
+    renderPanel: () => createElement("p", null, "Example: board"),
+  });
+  const card = container.querySelector("[data-home-section='panel:my-panels:board']")!;
+  expect(card.querySelector("h2")?.textContent).toBe("Example board");
+  expect(card.querySelector("[data-home-panel]")?.textContent).toContain("Example: board");
+});
+
+it("customize rows share one set of columns, with an empty unpin slot on a section", () => {
+  const arrangement = pinPanel(defaultArrangement(), "my-panels", "board");
+  draw({
+    arrangement,
+    catalog: [{ plugin: "my-panels", panelId: "board", title: "Example board", spec: { kind: "bespoke", title: "Example board", html: "<p>Example: board</p>", permissions: [] } }],
+  });
+  act(() => container.querySelector<HTMLButtonElement>("[data-home-action='customize']")!.click());
+  const rows = [...container.querySelectorAll("[data-home-arrange]")];
+  expect(rows.length).toBeGreaterThan(1);
+  for (const row of rows) expect(row.children).toHaveLength(5);
+  const section = container.querySelector("[data-home-arrange='moving-now'] [data-home-unpin]")!;
+  expect(section.querySelector("button")).toBeNull();
+  expect(container.querySelector("[data-home-arrange='panel:my-panels:board'] [data-home-unpin] button")?.textContent).toBe("Unpin");
+});
+
 it("an empty ask says nothing", () => {
   const asked: string[] = [];
   draw({ onAsk: (text) => asked.push(text) });
@@ -363,6 +390,7 @@ it("with no exchange, the card is the name line and the composer", () => {
 it("the send arrow turns blue once there is text", () => {
   draw();
   const send = container.querySelector<HTMLButtonElement>("button[aria-label='Send']")!;
+  expect(send.querySelectorAll("path")).toHaveLength(2);
   expect(send.className).not.toContain("bg-accent");
   const input = container.querySelector<HTMLInputElement>("input[aria-label='Ask']")!;
   const set = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
