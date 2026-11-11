@@ -33,7 +33,7 @@ it("adds the starter chief with the scope on, and opens that mono's chat", () =>
   const created = addChiefOfStaff();
   expect(created).toBeDefined();
   expect(created?.id).not.toBe("coordinator");
-  expect(created?.name).toBe("Coordinator");
+  expect(created?.name).toBe("Chief of Staff");
   expect(readsEveryProject(created)).toBe(true);
   expect(listMonos().some((mono) => mono.id === created?.id)).toBe(true);
   const opened: string[] = [];
