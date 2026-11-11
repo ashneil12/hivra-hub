@@ -53,6 +53,8 @@ import { invoke } from "@tauri-apps/api/core";
 import { createPortal } from "react-dom";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { ConnectionsSettings } from "../../connections/ui/ConnectionsSettings";
+// WP-61: Hivra Cloud, off until the person turns it on.
+import { CloudSettings } from "../../hivraCloud/ui/CloudSettings";
 import { MobileSettings } from "../../mobile/ui/MobileSettings";
 import { ask } from "@tauri-apps/plugin-dialog";
 import {
@@ -718,6 +720,8 @@ export function SettingsView({
               {section === "general" ? <DiagnosticsPanel /> : null}
               {section === "connections" ? (
                 <div className="flex flex-col gap-10">
+                  {/* WP-61: Hivra Cloud, off until the person turns it on. */}
+                  <CloudSettings />
                   <ConnectionsSettings />
                   <MobileSettings />
                 </div>
