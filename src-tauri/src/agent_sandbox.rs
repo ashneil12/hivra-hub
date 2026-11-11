@@ -447,6 +447,14 @@ pub fn preflight_with(sandbox_exec: &Path, profile: &str) -> Result<(), String> 
 /// Proves the profile refuses what it names, once per process, in a temporary home: a read of a secret folder, a read
 /// through a link to a secret, a write to the switch file and to `monocode.db`, and running `security`. An ordinary
 /// write in the same folder must still succeed, so a profile that refuses everything does not pass.
+///
+/// Off macOS there is no sandbox to prove, so the check fails and nothing starts sandboxed.
+#[cfg(not(target_os = "macos"))]
+pub fn self_check(_sandbox_exec: &Path) -> Result<(), String> {
+    Err("agent sandbox self-check failed: the sandbox is only available on macOS".to_string())
+}
+
+#[cfg(target_os = "macos")]
 pub fn self_check(sandbox_exec: &Path) -> Result<(), String> {
     static CHECKED: OnceLock<Result<(), String>> = OnceLock::new();
     // Only the real launcher's answer is kept for the process. Any other launcher (a test's stand-in) is checked afresh,
@@ -457,6 +465,7 @@ pub fn self_check(sandbox_exec: &Path) -> Result<(), String> {
     CHECKED.get_or_init(|| run_self_check(sandbox_exec)).clone()
 }
 
+#[cfg(target_os = "macos")]
 fn run_self_check(sandbox_exec: &Path) -> Result<(), String> {
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -472,6 +481,7 @@ fn run_self_check(sandbox_exec: &Path) -> Result<(), String> {
     result
 }
 
+#[cfg(target_os = "macos")]
 fn self_check_in(sandbox_exec: &Path, base: &Path) -> Result<(), String> {
     let base = std::fs::canonicalize(base).map_err(|e| format!("agent sandbox self-check: {e}"))?;
     let home = base.join("home");
