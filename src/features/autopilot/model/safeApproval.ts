@@ -74,6 +74,28 @@ function optionValues(word: string): string[] {
   return out.filter(Boolean);
 }
 
+/**
+ * Round 9 (LOW): the short-option clusters a read command takes as flags only, so `ls -la`, `git log -n5` and `head -n5` are
+ * not read as naming a file. A cluster of these is no value; anything else that carries one counts as an operand.
+ */
+const FLAG_CLUSTERS: Readonly<Record<string, RegExp>> = {
+  ls: /^-[A-Za-z]+$/,
+  cat: /^-[A-Za-z]+$/,
+  wc: /^-[A-Za-z]+$/,
+  stat: /^-[A-Za-z]+$/,
+  du: /^-[A-Za-z]+$/,
+  head: /^-[A-Za-z]*\d*$/,
+  tail: /^-[A-Za-z]*\d*$/,
+  git: /^-[A-Za-z]+\d*$/,
+};
+
+/** Whether an option word carries a value (optionValues) that the command doesn't read as a flag cluster (round 9). */
+function carriesValue(head: string, word: string): boolean {
+  if (!optionValues(word).length) return false;
+  const flags = Object.prototype.hasOwnProperty.call(FLAG_CLUSTERS, head) ? FLAG_CLUSTERS[head] : undefined;
+  return !(flags && flags.test(word));
+}
+
 /** A drive path, C:\ or C:/ (round 7, Windows CI). */
 const DRIVE = /^[a-z]:[\\/]/i;
 
@@ -84,7 +106,7 @@ const isAbsolutePath = (path: string) => path.startsWith("/") || DRIVE.test(path
  * An absolute path with ".", ".." and repeated slashes resolved; null when it isn't one or climbs past its root. A drive
  * path (round 7, Windows CI) keeps its drive as the first part.
  */
-function normalize(path: string, windows = windowsShaped(path)): string[] | null {
+function normalize(path: string, windows = false): string[] | null {
   // Round 8: a backslash is a separator only on Windows (a drive or UNC path). On a Mac or Linux it is a letter of a name.
   const text = windows ? path.replace(/\\/g, "/") : path;
   const drive = windows && DRIVE.test(text);
@@ -115,7 +137,7 @@ export function ignoresCase(folder: string): boolean {
  * A path as a containment check compares it (round 7, Windows CI): forward slashes, a verbatim `\\?\` prefix gone, repeated
  * and trailing slashes gone, and case folded where the file system ignores case.
  */
-export function comparablePath(path: string, caseless: boolean, windows = windowsShaped(path)): string {
+export function comparablePath(path: string, caseless: boolean, windows = false): string {
   // Round 8: a backslash becomes a separator only for a Windows path; on a Mac it is part of a name and stays one.
   const stripped = path.replace(/^(\\\\\?\\|\/\/\?\/)/, "");
   const text = (windows ? stripped.replace(/\\/g, "/") : stripped)
@@ -138,7 +160,7 @@ export function pathWithin(
   real: string,
   folder: string,
   caseless = ignoresCase(folder),
-  windows = windowsShaped(folder) || windowsShaped(real),
+  windows = windowsShaped(folder),
 ): boolean {
   const r = lexicalParts(comparablePath(real, caseless, windows));
   const f = lexicalParts(comparablePath(folder, caseless, windows));
@@ -166,18 +188,79 @@ function lexicalParts(text: string): string[] | null {
 }
 
 /** Whether an edit to `path` may go ahead in `folder`; why not otherwise. */
-export function editInside(path: string, folder: string | undefined): SafeVerdict {
-  // Round 8 (HIGH): on a Mac or Linux a backslash is a letter of a name, so a path that carries one is not read as a
-  // folder's climb (`a\b\c/../../x`), and waits. On Windows it is a separator, read as the OS reads it.
-  const windows = windowsShaped(folder ?? "") || windowsShaped(path);
-  if (!windows && path.includes("\\")) return `it edits ${path}, which has a backslash in it (a folder separator only on Windows), so it waits for Ash`;
+/**
+ * The path a file tool opens, and why a path can't be checked as it is (round 9). Claude Code opens Write, Edit, Read and
+ * Grep paths as p4 does: the string trimmed, then normalized (absolute) or resolved against the folder (relative), so `..`
+ * is taken by words and only then does the kernel follow links. So the path checked must already be in that form: no
+ * space or line break around it, the normal Unicode form, no `.` or `..` segment, no doubled or trailing separator, and no
+ * backslash on a Mac or Linux. A relative path is checked as the absolute path it opens. The platform comes from the chat's
+ * folder only (round 9): a path can't switch the reading.
+ */
+export function openedForm(raw: string, folder: string | undefined): { path: string } | { why: string } {
+  if (typeof raw !== "string" || raw === "") return { why: "it names no file" };
+  if (raw.includes("\0")) return { why: "its path has a NUL in it" };
+  if (raw !== raw.trim()) return { why: "its path has a space, tab or line break around it, which the tool trims before it opens the file, so it waits for Ash" };
+  if (raw !== raw.normalize("NFC")) return { why: "its name isn't in the normal Unicode form, so it waits for Ash" };
+  const windows = !!folder && windowsShaped(folder);
+  if (!windows && raw.includes("\\")) return { why: `it names ${raw}, which has a backslash in it (a folder separator only on Windows), so it waits for Ash` };
+  if (windows && raw.includes("/")) return { why: `it names ${raw} with forward slashes, which the tool doesn't open as written, so it waits for Ash` };
+  // A UNC share (\\server) is not absolute here: it is held, as a relative name that doesn't rebuild as written.
+  const absolute = windows ? DRIVE.test(raw) : raw.startsWith("/");
+  if (!absolute) {
+    if (!folder || (!windows && !folder.startsWith("/")) || (windows && !DRIVE.test(folder))) return { why: "the chat has no absolute folder to resolve it in, so it waits for Ash" };
+    if (raw.startsWith("~") || !spelledAsOpened(raw, windows, false)) return { why: `it names ${raw}, which isn't in the form the tool opens (no . or .. and no doubled or trailing separator), so it waits for Ash` };
+    const base = folder.replace(/[\\/]+$/, "");
+    return { path: `${base}${windows ? "\\" : "/"}${raw}` };
+  }
+  if (!spelledAsOpened(raw, windows, true)) return { why: `it names ${raw}, which isn't in the form the tool opens (no . or .. and no doubled or trailing separator), so it waits for Ash` };
+  return { path: raw };
+}
+
+/**
+ * Whether a path is already spelled as its own normalized form: rebuilding it from its parts, without `.`, `..`, empty or
+ * trailing parts, gives the same string. `absolute` says whether it is rooted (a `/`, or a drive on Windows).
+ */
+function spelledAsOpened(raw: string, windows: boolean, absolute: boolean): boolean {
+  const sep = windows ? "\\" : "/";
+  const cut = windows ? /[\\]/ : /\//;
+  let root = "";
+  let body = raw;
+  if (absolute) {
+    root = windows ? raw.slice(0, 3) : "/";
+    body = raw.slice(root.length);
+  }
+  const out: string[] = [];
+  for (const part of body.split(cut)) {
+    if (part === "" || part === ".") continue;
+    if (part === "..") {
+      if (!out.length) return false;
+      out.pop();
+      continue;
+    }
+    out.push(part);
+  }
+  const rebuilt = root + out.join(sep);
+  return rebuilt === raw;
+}
+
+/** Whether a word's suffix (from any position) has a `..` segment, so a climb the shell follows through a link (round 9). */
+function hasClimb(word: string): boolean {
+  for (let i = 0; i <= word.length; i++) {
+    if (word.slice(i).split("/").includes("..")) return true;
+  }
+  return false;
+}
+
+export function editInside(raw: string, folder: string | undefined): SafeVerdict {
+  // Round 9: the path checked is the one the tool opens (openedForm), so a word that climbs or carries whitespace waits.
+  const form = openedForm(raw, folder);
+  if ("why" in form) return `it edits ${raw}: ${form.why}`;
+  const path = form.path;
+  const windows = windowsShaped(folder ?? "");
   const root = folder ? normalize(folder.replace(/\/+$/, "") || "/", windows) : null;
   if (!root) return "the chat has no folder of its own to edit in";
   if (root.length < MIN_FOLDER_DEPTH) return "the chat's folder is too broad to edit in by itself";
-  if (path.includes("\0") || path.startsWith("~")) return `it edits ${path}, outside the chat's folder`;
-  // The folder's own parts, a drive first when it has one (round 7, Windows CI), so a relative path is placed under it.
-  const base = /^[a-z]:$/.test(root[0]) ? root.join("/") : `/${root.join("/")}`;
-  const parts = normalize(DRIVE.test(path) || path.startsWith("/") ? path : `${base}/${path}`, windows);
+  const parts = normalize(path, windows);
   if (!parts || parts.length <= root.length || root.some((part, i) => parts[i] !== part))
     return `it edits ${path}, outside the chat's folder`;
   const inner = parts.slice(root.length);
@@ -262,7 +345,16 @@ export function searchStartsOutside(call: ApprovalCall | undefined, folder: stri
   if (call.paths === undefined) return false;
   if (!Array.isArray(call.paths) || call.paths.some((path) => typeof path !== "string")) return true;
   // Under `find`, not `rg`: a search's paths are where it walks from, and none of them is a pattern to skip.
-  return walkHeld(["find", ...call.paths], folder);
+  // Round 9: the walk starts from the path the tool opens (openedForm); inside the folder it is judged as a relative place.
+  const forms = call.paths.map((path) => openedForm(path, folder));
+  if (forms.some((form) => "why" in form)) return true;
+  const home = (folder ?? "").replace(/[\\/]+$/, "");
+  const starts = forms.map((form) => {
+    const opened = (form as { path: string }).path;
+    const under = home;
+    return opened.startsWith(`${under}/`) || opened.startsWith(`${under}\\`) ? opened.slice(under.length + 1) : opened;
+  });
+  return walkHeld(["find", ...starts], folder);
 }
 
 // ---- shell -------------------------------------------------------------------------------------------------------
@@ -488,6 +580,10 @@ function safeCommandInner(command: string, folder: string | undefined, timer = f
   if (!Object.prototype.hasOwnProperty.call(COMMANDS, words[0])) return `${words[0]} isn't a read autopilot runs by itself`;
   const check = COMMANDS[words[0]];
   if (typeof check !== "function") return UNREADABLE_COMMAND;
+  // Round 9 (MED): a word with a `..` segment after a name waits, since the kernel follows a link before the climb. A
+  // Mac or Linux shell word with a literal backslash waits too: fold reads a backslash as a separator, the shell doesn't.
+  if (words.slice(1).some(hasClimb)) return "a word climbs with .. after a name, which the shell follows through a link, so it waits for Ash";
+  if (!windowsShaped(folder ?? "") && words.some((word) => word.includes("\\"))) return "a word has a backslash in it, which the shell reads as a letter of a name, so it waits for Ash";
   // WP-101 fix round 2, item B: a walk through folders has to start inside the chat's own, whatever it names.
   if (walkHeld(words, folder, timer)) return "it walks folders outside the chat's own, or reads what a project keeps out of git, so it waits for Ash";
   // Round 7, LOW: a timer in a folder that can't hold a walk (home, a parent of a project, or none) takes no bare name, so
@@ -495,7 +591,7 @@ function safeCommandInner(command: string, folder: string | undefined, timer = f
   // A git or cargo subcommand (`status`, `fmt`) is no file name, so it is not counted.
   const operands = words[0] === "git" || words[0] === "cargo" ? words.slice(2) : words.slice(1);
   // Round 8 (LOW): an option's glued or `=` value is an operand too (`file -fnotes.txt`, `wc --files0-from=notes.txt`).
-  if (timer && !projectFolder(folder) && operands.some((word) => !word.startsWith("-") || optionValues(word).length > 0))
+  if (timer && !projectFolder(folder) && operands.some((word) => !word.startsWith("-") || carriesValue(words[0], word)))
     return "a timer in a folder this shallow can't read a file by name, so it waits for Ash";
   // Round 6, HIGH-1: a word that names a place outside the chat's own folder (a rooted path, a home word, a climb out) waits,
   // whatever the command, so a read of the hub's database copies or a browser's store by its absolute path does not pass.
@@ -535,7 +631,16 @@ function safeCallInner(call: ApprovalCall | undefined, folder: string | undefine
     if (!serverTrusted(trusted, call.server)) return `${call.tool} reads from a server Hivra didn't install, so it waits for Ash`;
     return argsReason(call.args);
   }
-  if (READ_ONLY_TOOLS.has(call.tool)) return null;
+  // Round 9: a read or search names a path the tool opens as written (openedForm), or it waits.
+  if (READ_ONLY_TOOLS.has(call.tool)) {
+    if (!Array.isArray(call.paths)) return null;
+    for (const path of call.paths) {
+      if (typeof path !== "string") return "a path it reads isn't text, so it waits for Ash";
+      const form = openedForm(path, folder);
+      if ("why" in form) return form.why;
+    }
+    return null;
+  }
   if (EDIT_TOOLS.has(call.tool)) {
     if (!call.paths?.length) return "it doesn't say which file it edits";
     for (const path of call.paths) {
@@ -610,8 +715,8 @@ const within = (real: string, folder: string) => real === folder.replace(/\/+$/,
  * are outside the folder keeps its rule (MED-D); a read whose words are inside and whose real place is not, waits.
  */
 function namedInside(target: string, root: string): boolean {
-  const named = normalize(target);
-  const base = normalize(root);
+  const named = normalize(target, windowsShaped(root));
+  const base = normalize(root, windowsShaped(root));
   return !!named && !!base && named.length > base.length && base.every((part, i) => named[i] === part);
 }
 
@@ -660,7 +765,11 @@ export async function editStaysInside(
   if (!call || !EDIT_TOOLS.has(call.tool)) return null;
   const root = folder?.replace(/\/+$/, "");
   if (!root || !call.paths?.length) return "it doesn't say which file it edits";
-  const targets = call.paths.map((path) => (isAbsolutePath(path) ? path : `${root}/${path}`));
+  // Round 9: each target is the path the tool opens (openedForm); a form it can't open waits.
+  const forms = call.paths.map((path) => openedForm(path, root));
+  const refused = forms.find((form): form is { why: string } => "why" in form);
+  if (refused) return refused.why;
+  const targets = forms.map((form) => (form as { path: string }).path);
   let places: (RealPlace | null)[];
   try {
     places = await locate([`${root}/${PROBE}`, ...targets]);
@@ -702,7 +811,11 @@ export async function readStaysInside(
   const paths = call.paths as string[];
   const root = folder?.replace(/\/+$/, "");
   if (!root) return "the chat has no folder of its own to read in";
-  const targets = paths.map((path) => (isAbsolutePath(path) ? path : `${root}/${path}`));
+  // Round 9: each target is the path the tool opens (openedForm); a form it can't open waits.
+  const forms = paths.map((path) => openedForm(path, root));
+  const refused = forms.find((form): form is { why: string } => "why" in form);
+  if (refused) return refused.why;
+  const targets = forms.map((form) => (form as { path: string }).path);
   let places: (RealPlace | null)[];
   try {
     places = await locate([`${root}/${PROBE}`, ...targets]);

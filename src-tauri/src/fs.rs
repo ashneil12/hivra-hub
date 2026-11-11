@@ -1098,42 +1098,17 @@ pub async fn git_canonical_paths(paths: Vec<String>) -> Result<Vec<Option<String
     .map_err(|e| e.to_string())
 }
 
-/// Round 8, HIGH: on a Mac or Linux a backslash is a letter of a name, not a separator. A path that climbs (`..`) past such a
-/// letter (`a\b\c/../../x`) would be read by the Windows reading the approval side refuses, so it can't be placed here. A
-/// literal name with a backslash and no climb is read as the OS reads it, and is placed as before.
-fn climbs_past_backslash(path: &Path) -> bool {
-    !cfg!(windows)
-        && path.to_string_lossy().contains('\\')
-        && path
-            .components()
-            .any(|part| matches!(part, std::path::Component::ParentDir))
-}
-
-/// The path with its `.` and `..` taken by words, as a Write reads it (round 8, LOW): a `..` after a name goes up one name,
-/// and a climb past the root is refused, as is a climb past a backslash (climbs_past_backslash).
-fn lexical_place(path: &Path) -> Option<std::path::PathBuf> {
-    if climbs_past_backslash(path) {
-        return None;
-    }
-    let mut out = std::path::PathBuf::new();
-    for component in path.components() {
-        match component {
-            std::path::Component::ParentDir => {
-                if !out.pop() {
-                    return None;
-                }
-            }
-            std::path::Component::CurDir => {}
-            other => out.push(other.as_os_str()),
-        }
-    }
-    Some(out)
+/// Round 9: a path that climbs (`..`) is refused by the lookup and the canonical place. The file tools take their `..` by
+/// words before they open the file (Claude Code normalizes the path), and the approval side holds any path or word that
+/// still carries one. So a climb that reaches here is never one the tool opens, and the lookup never reads a `..` the
+/// kernel would follow through a link (round 8, HIGH-B and MED).
+fn has_climb(path: &Path) -> bool {
+    path.components()
+        .any(|part| matches!(part, std::path::Component::ParentDir))
 }
 
 fn canonical_place(path: &Path) -> Option<String> {
-    let path = lexical_place(path)?;
-    let path = path.as_path();
-    if !path.is_absolute() || path.as_os_str().to_string_lossy().contains('\0') {
+    if !path.is_absolute() || path.as_os_str().to_string_lossy().contains('\0') || has_climb(path) {
         return None;
     }
     let mut existing = path.to_path_buf();
@@ -1153,10 +1128,15 @@ fn canonical_place(path: &Path) -> Option<String> {
 /// Sets the git environment the app's own lookups run under (round 7, HIGH-A, part b). `safe.bareRepository=explicit`
 /// makes git use a bare repository only when it is named, so a folder planted with HEAD, config and refs beside a checkout
 /// is never taken for a repository, and its core.fsmonitor or diff.external never runs. Command-line config only.
+/// Round 9: the pair is appended after any GIT_CONFIG_* the process inherited, so an inherited setting is kept.
 pub(crate) fn git_safe_env(cmd: &mut Command) {
-    cmd.env("GIT_CONFIG_COUNT", "1")
-        .env("GIT_CONFIG_KEY_0", "safe.bareRepository")
-        .env("GIT_CONFIG_VALUE_0", "explicit");
+    let inherited = std::env::var("GIT_CONFIG_COUNT")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(0);
+    cmd.env("GIT_CONFIG_COUNT", (inherited + 1).to_string())
+        .env(format!("GIT_CONFIG_KEY_{inherited}"), "safe.bareRepository")
+        .env(format!("GIT_CONFIG_VALUE_{inherited}"), "explicit");
 }
 
 /// Staged diff (or unstaged vs HEAD if nothing is staged) for commit text generation.
@@ -2785,6 +2765,10 @@ fn locate_path(path: &Path, follow_last: bool) -> Result<Option<GitFileLocation>
     if !path.is_absolute() || path.as_os_str().to_string_lossy().contains('\0') {
         return Err("Invalid file path".into());
     }
+    // Round 9: a path with a climb is not placed; the tools take the climb by words before they open the file.
+    if has_climb(path) {
+        return Err("A path with .. isn't placed here".into());
+    }
     let entry = std::fs::symlink_metadata(path);
     let linked = follow_last
         && entry
@@ -2797,11 +2781,6 @@ fn locate_path(path: &Path, follow_last: bool) -> Result<Option<GitFileLocation>
         let directory = actual.parent().ok_or("Invalid file path")?.to_path_buf();
         (directory, actual)
     } else {
-        // Round 8, HIGH: a place that doesn't exist yet is placed by its parent, read as written. A climb past a backslash
-        // (`a\b\c/../../x`, on a Mac or Linux) is refused rather than read as one (climbs_past_backslash).
-        if climbs_past_backslash(path) {
-            return Err("A backslash is part of a name here, so the place can't be read".into());
-        }
         let mut parent = path.parent().ok_or("Invalid file path")?;
         while !parent.is_dir() {
             parent = parent.parent().ok_or("File has no existing parent")?;
@@ -9907,10 +9886,10 @@ mod tests {
         );
         assert_eq!(canonical_place(&chat.join("dangling")), None);
         assert_eq!(canonical_place(Path::new("relative/x")), None);
-        // Round 8, LOW: a `..` after a name is taken by words first, as a Write reads it, so it goes up the name, not the link.
+        // Round 9: a climb is not placed (the tools take it by words before they open the file, so it never arrives here).
         assert_eq!(
             canonical_place(&chat.join("src").join("missing").join("..").join("new.ts")),
-            Some(path_to_js(&root.join("src").join("new.ts")))
+            None
         );
         // Round 8, HIGH: on a Mac or Linux a backslash is a letter of a name, so a path that climbs with one is refused.
         assert_eq!(
@@ -9918,6 +9897,69 @@ mod tests {
             None
         );
         assert!(git_locate_file(&chat.join("a\\b\\c").join("..").join("..").join("x")).is_err());
+    }
+
+    /// Review of PR #201 round 8 (head f09194d45), HIGH-B, red first. Claude Code's Write opens `p4(file_path)`, which is
+    /// path.normalize: `<chat>/L/../S/x` is written at `<chat>/S/x`, and the kernel then follows S. The lookup follows L
+    /// first and then climbs (the kernel's reading of the raw words), so it places the Write at `<chat>/deep/S/x`, inside.
+    #[cfg(unix)]
+    #[test]
+    fn review_r8_locate_places_a_write_where_the_write_tool_opens_it() {
+        use std::os::unix::fs::symlink;
+        let home = tmp("review-r8-locate");
+        let chat = home.0.join("app");
+        let other = home.0.join("other");
+        std::fs::create_dir_all(chat.join("deep").join("d")).unwrap();
+        std::fs::create_dir_all(chat.join("deep").join("S")).unwrap();
+        std::fs::create_dir(&other).unwrap();
+        std::fs::write(other.join("package.json"), "{}\n").unwrap();
+        symlink("deep/d", chat.join("L")).unwrap();
+        symlink("../other", chat.join("S")).unwrap();
+        assert!(init_git_commit(
+            &chat,
+            &[("deep/S/package.json", "{}\n"), ("deep/d/keep", "\n")]
+        ));
+        let words = chat.join("L").join("..").join("S").join("package.json");
+        // Where the Write lands: the words normalized (Node's path.normalize), then the kernel.
+        let lands = std::fs::canonicalize(chat.join("S").join("package.json")).unwrap();
+        assert_eq!(
+            lands,
+            std::fs::canonicalize(other.join("package.json")).unwrap()
+        );
+        let root = std::fs::canonicalize(&chat).unwrap();
+        if let Ok(Some(place)) = git_locate_file(&words) {
+            assert_ne!(
+                std::fs::canonicalize(&place.root).unwrap(),
+                root,
+                "placed in the chat at {}, but the Write lands at {}",
+                place.relative,
+                lands.display()
+            );
+        }
+    }
+
+    /// Review of PR #201 round 8 (head f09194d45), MED (regression of round 8's lexical_place), red first. Outside git a
+    /// shell word is placed by canonical_place; `cat cache/../config` is opened by the kernel as written, through the link.
+    #[cfg(unix)]
+    #[test]
+    fn review_r8_canonical_place_of_a_word_follows_a_link_before_its_climb() {
+        use std::os::unix::fs::symlink;
+        let home = tmp("review-r8-canonical");
+        let chat = home.0.join("Notes").join("research");
+        let kube = home.0.join(".kube");
+        std::fs::create_dir_all(&chat).unwrap();
+        std::fs::create_dir_all(kube.join("cache")).unwrap();
+        std::fs::write(kube.join("config"), "token: x\n").unwrap();
+        symlink(kube.join("cache"), chat.join("cache")).unwrap();
+        let word = chat.join("cache").join("..").join("config");
+        let read = std::fs::canonicalize(&word).unwrap();
+        assert_eq!(read, std::fs::canonicalize(kube.join("config")).unwrap());
+        let placed = canonical_place(&word);
+        assert!(
+            placed.is_none() || placed == Some(path_to_js(&read)),
+            "placed at {placed:?}, but cat reads {}",
+            read.display()
+        );
     }
 
     #[test]

@@ -177,7 +177,9 @@ describe("round 8: the Windows reading of a backslash climb, by an explicit plat
   const chat = "C:\\Users\\dev\\Projects\\app";
   it("keeps a climb that stays inside a Windows chat inside it", () => {
     expect(pathWithin(`${chat}\\a\\b\\c\\..\\..\\src\\index.ts`, chat, true, true)).toBe(true);
-    expect(editInside(`${chat}\\a\\b\\c\\..\\..\\src\\index.ts`, chat)).toBeNull();
+    // Round 9: the climb itself is held, since the tool takes the climb by words before it opens the file.
+    expect(editInside(`${chat}\\a\\b\\c\\..\\..\\src\\index.ts`, chat)).not.toBeNull();
+    expect(editInside(`${chat}\\src\\index.ts`, chat)).toBeNull();
   });
   it("holds a climb that leaves a Windows chat through a drive or a UNC share", () => {
     expect(pathWithin(`${chat}\\a\\..\\..\\..\\..\\other\\x.ts`, chat, true, true)).toBe(false);

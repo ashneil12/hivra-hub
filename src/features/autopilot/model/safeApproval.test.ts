@@ -304,7 +304,8 @@ describe("edits", () => {
   it("are allowed inside the chat's folder only", () => {
     expect(editInside(`${FOLDER}/src/a.ts`, FOLDER)).toBeNull();
     expect(editInside("src/a.ts", FOLDER)).toBeNull();
-    expect(editInside(`${FOLDER}/src/../README.md`, `${FOLDER}/`)).toBeNull();
+    // Round 9: a path with a climb is held, since the tool takes the climb by words before it opens the file.
+    expect(editInside(`${FOLDER}/src/../README.md`, `${FOLDER}/`)).not.toBeNull();
     for (const path of [`${FOLDER}/../hub-y/a.ts`, `${FOLDER}-other/a.ts`, "/Users/someone/.zshrc", "~/.zshrc", "../escape.ts", FOLDER, "/"])
       expect(editInside(path, FOLDER), path).not.toBeNull();
   });

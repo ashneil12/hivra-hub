@@ -730,13 +730,44 @@ fn shallow_names(head: &str, args: &[String], folder: &str) -> Option<&'static s
     (!folder_holds_walk(folder)
         && operands
             .iter()
-            .any(|arg| !arg.starts_with('-') || carries_value(arg)))
+            .any(|arg| !arg.starts_with('-') || carries_value(head, arg)))
     .then_some("a timer in a folder this shallow can't read a file by name, so it waits for Ash")
 }
 
 /// Whether an option word carries a value: the text after `=`, or a short option's letters after its first two
 /// (`-bfnotes`, `-fnotes.txt`). Mirrors optionValues in safeApproval.ts (round 8).
-fn carries_value(arg: &str) -> bool {
+fn carries_value(head: &str, arg: &str) -> bool {
+    let carries = carries_option_value(arg);
+    carries && !flag_only_cluster(head, arg)
+}
+
+/// A word of short options the command takes as flags only (round 9): `ls -la`, `git log -n5`, `head -n5`. Mirrors
+/// FLAG_CLUSTERS in safeApproval.ts.
+fn flag_only_cluster(head: &str, arg: &str) -> bool {
+    let Some(rest) = arg.strip_prefix('-') else {
+        return false;
+    };
+    let letters_end = rest
+        .find(|c: char| !c.is_ascii_alphabetic())
+        .unwrap_or(rest.len());
+    let (letters, tail) = rest.split_at(letters_end);
+    let digits = tail.chars().all(|c| c.is_ascii_digit());
+    match head {
+        "ls" | "cat" | "wc" | "stat" | "du" => !rest.is_empty() && tail.is_empty(),
+        "head" | "tail" => digits,
+        "git" => !letters.is_empty() && digits,
+        _ => false,
+    }
+}
+
+/// Whether a word has a `..` segment after some position in it (round 9), so a climb the shell follows through a link.
+fn has_climb(word: &str) -> bool {
+    (0..=word.len())
+        .filter(|&i| word.is_char_boundary(i))
+        .any(|i| word[i..].split('/').any(|part| part == ".."))
+}
+
+fn carries_option_value(arg: &str) -> bool {
     arg.starts_with('-')
         && (arg
             .split_once('=')
@@ -849,6 +880,16 @@ fn verdict_with(command: &str, list: Option<&ProtectedList>, folder: &str) -> Op
     };
     if words.is_empty() {
         return Some("it can't be read plainly (a wildcard or an open quote)".into());
+    }
+    // Round 9 (MED, LOW): a word with a `..` after a name waits, since the kernel follows a link before the climb. A POSIX
+    // word with a literal backslash waits too, since the shell reads it as a letter of a name. Mirrors bashWords in TypeScript.
+    let posix = folder.starts_with('/');
+    if words.iter().any(|word| has_climb(word))
+        || (posix && words.iter().any(|word| word.contains('\\')))
+    {
+        return Some(
+            "a word climbs with .. after a name, or has a backslash, so it waits for Ash".into(),
+        );
     }
     let args = &words[1..];
     let why = match words[0].as_str() {

@@ -336,7 +336,6 @@ describe("a tool approval under autopilot", () => {
       "cat //Users/someone/Worktrees/hub-x/src/app.ts",
       "cat /users/someone/Worktrees/hub-x/README.md",
       "cat ./README.md",
-      "cat src/../README.md",
       "cat ./.zshrc",
       "git diff main..feature",
       "git diff HEAD~1 -- src/app.ts",
@@ -390,16 +389,12 @@ describe("a tool approval under autopilot", () => {
     it("still reads the chat's own files and ordinary files", () => {
       for (const path of [
         "/etc/hosts",
-        "/./etc/hosts",
         `${FOLDER}/README.md`,
         `${FOLDER}/src/app.ts`,
-        "/./Users/someone/Worktrees/hub-x/README.md",
         "/users/someone/Worktrees/hub-x/src/app.ts",
         "README.md",
         "src/app.ts",
-        "./src/../README.md",
         ".zshrc",
-        "../README.md",
         "/tmp/notes.txt",
         "/Users/someone/Documents/plan.md",
         // A project that ships its own startup file: the read tool names it absolutely, and it is the project's.
@@ -407,6 +402,9 @@ describe("a tool approval under autopilot", () => {
         `${FOLDER}/src/.profile`,
       ])
         expect(approvalVerdict(read("Read", [path]), FOLDER), path).toMatchObject({ kind: "allow" });
+      // Round 9: a path the tool would not open as written (a `.` segment) waits, however it reads.
+      expect(approvalVerdict(read("Read", ["/./Users/someone/Worktrees/hub-x/README.md"]), FOLDER)).toMatchObject({ kind: "held" });
+      expect(approvalVerdict(read("Read", ["../README.md"]), FOLDER)).toMatchObject({ kind: "held" });
       // No path at all, as with Grep, Glob and LS: nothing to judge, so the tool is read as before.
       expect(approvalVerdict(read("Read", undefined), FOLDER)).toMatchObject({ kind: "allow" });
       expect(approvalVerdict(read("Grep", undefined), FOLDER)).toMatchObject({ kind: "allow" });
@@ -472,8 +470,9 @@ describe("a tool approval under autopilot", () => {
     // Round 6, HIGH-1: a climb out of the chat's folder waits, a climb that stays in it does not.
     for (const command of ["cat ../README.md", "cat ../../README.md"])
       expect(approvalVerdict(bash(command), FOLDER), command).toMatchObject({ kind: "held" });
-    for (const command of ["cat src/.zshrc", "cat src/../.zshrc"])
-      expect(approvalVerdict(bash(command), FOLDER), command).toMatchObject({ kind: "allow" });
+    expect(approvalVerdict(bash("cat src/.zshrc"), FOLDER)).toMatchObject({ kind: "allow" });
+    // Round 9 (MED): a word with a climb after a name waits, even one that stays inside the chat.
+    expect(approvalVerdict(bash("cat src/../.zshrc"), FOLDER)).toMatchObject({ kind: "held" });
     // With no folder to resolve against, a climb to a startup file still waits.
     expect(approvalVerdict(bash("cat ../../.zshrc"), undefined)).toMatchObject({ kind: "held" });
     // The folder decides where a climb lands: out of a project under /tmp it reaches no home folder, and a chat that

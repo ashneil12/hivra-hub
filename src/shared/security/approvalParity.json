@@ -3,6 +3,26 @@
   "about": "Commands the autopilot timer (TypeScript safeCommand plus commandNamesLogin, judged in the check's folder) and the Rust timer check (watcher/safe_cmd.rs verdict(command, folder)) must both hold or both allow. A case may name its own \"folder\"; otherwise the top-level folder is used. Read by approvalParity.test.ts and by safe_cmd.rs tests.",
   "cases": [
     {
+      "command": "ls -la",
+      "held": false,
+      "folder": "/Users/example"
+    },
+    {
+      "command": "git log -n5",
+      "held": false,
+      "folder": "/Users/example"
+    },
+    {
+      "command": "file -bfnotes.txt",
+      "held": true,
+      "folder": "/Users/example"
+    },
+    {
+      "command": "cat src/../README.md",
+      "held": true,
+      "folder": "/Users/example/Projects/proj"
+    },
+    {
       "command": "git status",
       "held": false
     },
