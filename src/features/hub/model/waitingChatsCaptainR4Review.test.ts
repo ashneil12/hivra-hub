@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { mockHubData } from "./mockData";
 import { setHubDataSource } from "./hubData";
 import type { HubProject } from "./types";
+import { appCaptainDoor } from "../../autopilot/model/autopilotApp";
 import { gateLog, noteChats, resetWaitingChats, setCaptainDoor, setWaitingChatsHost, takePick } from "./waitingChats";
 
 const PROJECTS: HubProject[] = [
@@ -53,5 +54,25 @@ describe("the waiting-chat captain door (review of PR #244, round 4)", () => {
     await takePick("own-pick", { by: "autopilot" });
     const who = gateLog().find((row) => row.sessionId === "own-pick")?.answer?.who ?? "";
     expect(who.startsWith("captain:"), who).toBe(false);
+  });
+
+  it("holds a plain pick at the waiting-chat door instead of sending the chat's own recommendation", async () => {
+    const sent: string[] = [];
+    setWaitingChatsHost({
+      liveQuestion: () => undefined,
+      respond: () => undefined,
+      send: async (_id, text) => {
+        sent.push(text);
+        return true;
+      },
+      open: () => undefined,
+    });
+    setCaptainDoor((chat) => ({ ...appCaptainDoor(chat), moneyOverLimit: false }));
+    noteChats([markerChat("own-pick", "Needs Ash: Rename the file?\nMy pick: yes")]);
+    const result = await takePick("own-pick", { by: "autopilot" });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toMatch(/engine is down/);
+    expect(sent).toEqual([]);
+    expect(gateLog().find((row) => row.sessionId === "own-pick")?.answer).toBeUndefined();
   });
 });

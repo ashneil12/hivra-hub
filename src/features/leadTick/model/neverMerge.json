@@ -74,6 +74,8 @@
     "src-tauri/src/attribution/**",
     "src/features/autopilot/model/redList.ts",
     "src/features/autopilot/model/decide.ts",
+    "src/features/autopilot/model/autopilotApp.ts",
+    "src/dev/browserTauriMock.ts",
     "**/commit_guard*",
     "**/agent_sandbox*",
     "**/spend_ledger*",

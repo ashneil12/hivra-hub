@@ -2,6 +2,7 @@ import { isEditTool } from "../../../integrations/harness/core/preview";
 import { specOf } from "../../firstmate/model/brief";
 import { compactCiRepairContext } from "../../inbox/model/ciRepair";
 import { limitSection } from "../../../shared/lib/jsonText";
+import { buildPortableTranscript } from "./midThreadSwitch";
 import { displayPath } from "../../../shared/lib/paths";
 import { sameProviderAccountId } from "../../providers/model/providerAccounts";
 import {
@@ -410,6 +411,46 @@ export function wrapRecoveredPrompt(brief: string, text: string): string {
     "Your earlier conversation in this chat could not be resumed: its saved transcript is gone, so this is a fresh conversation. This is not a new task. Below is a brief of the chat so far, rebuilt from MonoCode's own copy; continue from it and do not say you have no prior context.";
   if (!body) return `${lead}\n\n${text}`;
   return `${lead}\n\n<chat_brief>\n${body}\n</chat_brief>\n\n${text}`;
+}
+
+/**
+ * WP-177: the first prompt of a moved chat that has no provider conversation yet. The newest saved messages are kept
+ * whole, up to the portable bound, under a lead that says the chat moved. Recovery of a lost transcript stays on
+ * wrapRecoveredPrompt. Once the provider has a session id the turn resumes it, so nothing is added.
+ */
+/** The machine named on the move-back note, or the one stored with the chat. */
+function movedFromName(session: Session): string {
+  const stored = session.movedFrom?.trim();
+  if (stored) return stored;
+  for (let index = session.blocks.length - 1; index >= 0; index -= 1) {
+    const line = (session.blocks[index]?.text ?? "").split("\n").find((part) => part.startsWith("From: "));
+    const name = line?.slice("From: ".length).trim();
+    if (name) return name;
+  }
+  return "another machine";
+}
+
+export function movedChatPrompt(session: Session, text: string, request: string = text): string {
+  if (!session.moveBriefOwed || session.providerSessionId) return text;
+  // A moved chat keeps the newest messages whole, up to the portable bound. Recovery of a lost transcript stays on the smaller brief.
+  // The turn being sent is not part of the chat so far, when it was already saved as the last user message.
+  const prior = session.blocks.filter((block, index) => {
+    const last = index === session.blocks.length - 1;
+    return !(last && block.role === "user" && block.text.trim() === request.trim());
+  });
+  const transcript = buildPortableTranscript(prior);
+  const lead = `You are continuing this chat, moved from ${movedFromName(session)}. This is not a new task. The messages below are the chat so far. Continue from them and do not say you have no prior context.`;
+  if (!transcript.trim()) return `${lead}\n\n${text}`;
+  return `${lead}\n\n<chat_so_far>\n${transcript}\n</chat_so_far>\n\n${text}`;
+}
+
+/**
+ * The chat so far, rebuilt from the saved messages, then the turn's text: the one fallback prompt the desktop's recovery
+ * (App.tsx resumeFallback) and a moved chat's first turn (movedChatPrompt, host and desktop) both send. `request` is the
+ * turn's own message, which the brief leaves out of its prior-messages list (defaults to the text).
+ */
+export function recoveredChatPrompt(session: Session, text: string, request: string = text): string {
+  return wrapRecoveredPrompt(buildDeterministicHandoff(session, request), text);
 }
 
 export function wrapHandoffPrompt(

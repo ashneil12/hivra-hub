@@ -1,6 +1,11 @@
 import { subscribeMoreAgentsChanges } from "../features/providers/model/moreAgents";
 import { setTurnTextDecorator } from "../integrations/harness/core/registry";
 // WP-85: terminal Claude sessions in the chat list.
+import { acceptStoredTeleportRow, applyTeleportRow } from "./model/teleportSessionState";
+import { launchRecovery, needsAnotherPass } from "../features/connections/model/teleportMove";
+import { settleTeleportLock } from "../features/connections/model/teleportLock";
+import { WINDOW_OWNER } from "../features/connections/model/teleportLocal";
+import { teleportStateOf } from "../features/connections/model/teleportState";
 import { startPendingReviews, type ReviewHooks } from "../features/security-review/model/launch";
 import { mergeTerminalSessions } from "../features/terminalMirror/model/list";
 import { TerminalMirrorPane } from "../features/terminalMirror/ui/TerminalMirrorPane";
@@ -631,7 +636,8 @@ import {
   userMessagesAfterHandoff,
   wrapForkPrompt,
   wrapHandoffPrompt,
-  wrapRecoveredPrompt,
+  movedChatPrompt,
+  recoveredChatPrompt,
 } from "../features/sessions/model/handoff";
 import {
   applyMidThreadSwitch,
@@ -863,6 +869,7 @@ import {
   waitsOnCutTurn,
 } from "../features/sessions/model/messageQueue";
 import { deliverQueuedFollowUp } from "../features/sessions/model/queuedFollowUp";
+import { registerSessionPersistFlush } from "../features/sessions/model/sessionPersistFlush";
 import {
   USAGE_LIMIT_RESUME_GRACE_MS,
   resumeUsageLimitedSession,
@@ -3182,13 +3189,19 @@ function Workspace({
     if (lastPersisted.current.get(session.id) === fingerprint) return;
     void upsertSession(session)
       .then((summary) => {
-        if (!summary) return;
+        // WP-177: a save that does not land stays pending, so a reply is not dropped.
+        if (!summary) {
+          if (!pendingPersist.current.has(session.id)) pendingPersist.current.set(session.id, session);
+          return;
+        }
         lastPersisted.current.set(session.id, fingerprint);
         if (summary.cwd === sidebarCwdRef.current) {
           setHistory((current) => mergeProjectHistorySummary(current, summary));
         }
       })
-      .catch(() => undefined);
+      .catch(() => {
+        if (!pendingPersist.current.has(session.id)) pendingPersist.current.set(session.id, session);
+      });
   }, []);
 
   useEffect(() => {
@@ -3265,7 +3278,13 @@ function Workspace({
             const fingerprint = persistFingerprint(session);
             if (lastPersisted.current.get(session.id) === fingerprint) return;
             const summary = await upsertSession(session).catch(() => null);
-            if (!summary) return;
+            const pendingNow = pendingPersist.current.get(session.id);
+            if (pendingNow && pendingNow !== session) return;
+            // WP-177: a refused or failed save stays pending. The timer had already cleared it.
+            if (!summary) {
+              if (!pendingNow) pendingPersist.current.set(session.id, session);
+              return;
+            }
             lastPersisted.current.set(session.id, fingerprint);
             if (summary.cwd === sidebarCwdRef.current) {
               setHistory((current) =>
@@ -3278,7 +3297,38 @@ function Workspace({
     };
     observe();
     const unsubscribe = sessionState.observe(observe);
+    // WP-177: a move hashes the stored row, so this window writes its pending save for that one chat before the plan.
+    // A refused flush keeps that pending save, so the reply is not dropped.
+    const unregisterFlush = registerSessionPersistFlush(async (sessionId) => {
+      const session = pendingPersist.current.get(sessionId);
+      if (!session) return;
+      if (
+        removingSessionIds.current.has(session.id) ||
+        switchingWorktrees.current.has(session.id)
+      ) {
+        pendingPersist.current.delete(sessionId);
+        return;
+      }
+      const fingerprint = persistFingerprint(session);
+      if (lastPersisted.current.get(session.id) === fingerprint) {
+        pendingPersist.current.delete(sessionId);
+        return;
+      }
+      const summary = await upsertSession(session).catch(() => null);
+      const pendingNow = pendingPersist.current.get(sessionId);
+      if (pendingNow && pendingNow !== session) return;
+      if (!summary) {
+        if (!pendingNow) pendingPersist.current.set(sessionId, session);
+        return;
+      }
+      pendingPersist.current.delete(sessionId);
+      lastPersisted.current.set(session.id, fingerprint);
+      if (summary.cwd === sidebarCwdRef.current) {
+        setHistory((current) => mergeProjectHistorySummary(current, summary));
+      }
+    });
     return () => {
+      unregisterFlush();
       unsubscribe();
       if (timer !== undefined) window.clearTimeout(timer);
     };
@@ -3666,6 +3716,50 @@ function Workspace({
   }, [appendTab, sessionDefaults?.runtimeMode, sidebarCwd]);
 
   // WP-123: open a forked chat. The original is not written.
+  // WP-177: once the first sessions are in App, finish or undo any chat move that stopped part way (launch recovery).
+  const launchRecoveryStarted = useRef(false);
+  useEffect(() => {
+    if (launchRecoveryStarted.current || sessions.length === 0) return;
+    launchRecoveryStarted.current = true;
+    // Every project folder the hub knows, not only the open tabs': a move's chat can sit in a project nobody has open.
+    const knownFolders = hubData()
+      .listProjects()
+      .map((project) => project.folder ?? "")
+      .filter((folder) => folder.trim() !== "");
+    // A move that is unfinished (a host offline, a young freeze, an unknown result) gets another pass, and the window
+    // tries again when the network comes back.
+    const RECOVERY_RETRY_MS = 30_000;
+    const RECOVERY_PASSES = 10;
+    const folders = [...sessions.map((session) => session.cwd), ...knownFolders];
+    const attempt = (passesLeft: number) => {
+      void launchRecovery(folders, {
+        owner: WINDOW_OWNER,
+        onRow: (row) => {
+          applyTeleportRow(sessionsRef, setSessions, row);
+        },
+      })
+        .then((lines) => {
+          if (passesLeft > 0 && needsAnotherPass(lines)) window.setTimeout(() => attempt(passesLeft - 1), RECOVERY_RETRY_MS);
+        })
+        .catch(() => {
+          if (passesLeft > 0) window.setTimeout(() => attempt(passesLeft - 1), RECOVERY_RETRY_MS);
+        });
+    };
+    attempt(RECOVERY_PASSES);
+    window.addEventListener("online", () => attempt(RECOVERY_PASSES));
+  }, [sessions]);
+  // WP-177: a chat move in another window changed a row this window holds. Take the stored row, and lock or unlock to match
+  // it, so a window that never saw the move cannot send from the chat (H2).
+  useEffect(() => {
+    const listening = listen<{ id: string }>("teleport-row-changed", (event) => {
+      const id = event.payload?.id;
+      if (!id) return;
+      void acceptStoredTeleportRow(sessionsRef, setSessions, id, getSession, settleTeleportLock).catch(() => undefined);
+    });
+    return () => {
+      void listening.then((unlisten) => unlisten());
+    };
+  }, []);
   const openForkedSession = useCallback(
     (session: Session) => {
       updateSessionState(sessionsRef, setSessions, (sessions) =>
@@ -9796,18 +9890,21 @@ function Workspace({
               appAccess: operatorAccess,
               ...firstMateLaunch(current),
               ...crewLaunch(current, crewRows()), // WP-143
-              text,
+              // WP-177: a moved chat's first turn sends the chat so far with the text (the same brief as resumeFallback).
+              text: movedChatPrompt(
+                sessionsRef.current.find((s) => s.id === sessionId) ?? current,
+                text,
+                submittedText,
+              ),
               attachments: turnAttachments,
               ...(editedResend ? { onAccepted: acceptEditedResend } : {}),
               // A conversation whose saved transcript is gone starts again from the chat's own brief.
               resumeFallback: (prompt) =>
-                wrapRecoveredPrompt(
-                  buildDeterministicHandoff(
-                    sessionsRef.current.find((s) => s.id === sessionId) ??
-                      current,
-                    submittedText,
-                  ),
+                recoveredChatPrompt(
+                  sessionsRef.current.find((s) => s.id === sessionId) ??
+                    current,
                   prompt,
+                  submittedText,
                 ),
               onEvent: routeTurnEvent,
             });
@@ -17361,6 +17458,11 @@ function Workspace({
   };
 
   const sessionPaneProps = {
+    // WP-177: a move's stored row goes into App's list, so the open chat and the next save see the move.
+    onTeleportRow: (row: Session) => {
+      applyTeleportRow(sessionsRef, setSessions, row);
+    },
+    onOpenChat: openForkedSession,
     workspaceSwitchingSessionId: workspaceNavigation.pending
       ? active?.id
       : undefined,
@@ -19188,6 +19290,12 @@ function selectedCommitSha(tab: WorkspaceTab): string | undefined {
 }
 
 
+/** WP-177: the machine a chat moved to, or undefined when it has not moved away. */
+function movedHostOf(session: Session): string | undefined {
+  const state = teleportStateOf(session);
+  return state.moved ? state.host : undefined;
+}
+
 function toTitleTab(
   tab: WorkspaceTab,
   sessions: Session[],
@@ -19291,6 +19399,8 @@ function toTitleTab(
         ? projectName(focusedFile.projectCwd ?? focusedFile.cwd)
         : "~",
     title: focused ? conversationTitle(focused) : "",
+    // WP-177: the header says where a moved chat went.
+    movedTo: focused ? movedHostOf(focused) : undefined,
     more,
     sessionCount: tabSessions.length,
     harnesses,

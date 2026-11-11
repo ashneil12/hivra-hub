@@ -81,6 +81,14 @@ describe("autopilot.decide writes a captain answer (review of PR #244, round 3)"
   });
 });
 
+describe("a plain waiting chat's door", () => {
+  it("does not mark the pick confident, and remembers when the chat asked", () => {
+    const waiting = appCaptainDoor({ projectId: "hivra", question: "Which first?", askedAt: 1_700_000_000_000 });
+    expect(waiting.confident).toBe(false);
+    expect(waiting.pendingSince).toBe(1_700_000_000_000);
+  });
+});
+
 describe("money past the limit with no project (review of PR #244, round 3)", () => {
   it("a chat with no one project still sees an app-wide limit, at both captain doors", async () => {
     spend.status = "over";

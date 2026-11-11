@@ -225,56 +225,70 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
-
-      - name: Install Linux system dependencies
-        if: runner.os == 'Linux' && matrix.part != 'web'
-        run: bash scripts/install-linux-deps-debian.sh --sources /etc/apt/sources.list.d/ubuntu.sources
+        with:
+          # The Rust half of a pull request reads the merge commit's first parent to see what the PR changed.
+          fetch-depth: ${{ matrix.part == 'rust' && github.event_name == 'pull_request' && 2 || 1 }}
 
       - uses: actions/setup-node@v4
         with:
           node-version: 20
           cache: npm
 
+      # Hivra (11 Nov 2026): a pull request that changes only web files skips the Rust half, about 15 minutes on the
+      # macOS runner (scripts/ci-rust-changed.mjs says which web files the Rust code still reads). A push to main, the
+      # nightly run, the pre-ship run and any doubt run it. A skipped half still reports success under the same name.
+      - name: Does this pull request change anything the Rust checks read?
+        id: rust
+        if: matrix.part == 'rust'
+        env:
+          RUST_CHECK_EVENT: ${{ github.event_name }}
+        run: node scripts/ci-rust-changed.mjs >> "$GITHUB_OUTPUT"
+
+      - name: Install Linux system dependencies
+        if: runner.os == 'Linux' && matrix.part != 'web' && steps.rust.outputs.run != 'false'
+        run: bash scripts/install-linux-deps-debian.sh --sources /etc/apt/sources.list.d/ubuntu.sources
+
       - uses: dtolnay/rust-toolchain@stable
-        if: matrix.part != 'web'
+        if: matrix.part != 'web' && steps.rust.outputs.run != 'false'
         with:
           components: rustfmt, clippy
 
       # Saved only from main, so a PR starts from main's compiled dependencies and never evicts them with its own.
       - uses: Swatinem/rust-cache@v2
-        if: matrix.part != 'web'
+        if: matrix.part != 'web' && steps.rust.outputs.run != 'false'
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
       # WP-173: pinned installer, pinned nextest. No new permissions and no secrets.
       - name: Install cargo-nextest
-        if: matrix.part != 'web'
+        if: matrix.part != 'web' && steps.rust.outputs.run != 'false'
         uses: taiki-e/install-action@0fd46367812ee04360509b4169d9f659d6892bb2 # v2.79.15
         with:
           tool: cargo-nextest@0.9.151
 
       - run: npm ci
+        if: steps.rust.outputs.run != 'false'
       - run: npm test ${{ matrix.shard && format('-- --shard={0}', matrix.shard) || '' }}
         if: matrix.part == 'web'
       - run: npx tsc --noEmit
         if: matrix.part == 'web'
       - run: cargo fmt --check
-        if: matrix.part == 'rust'
+        if: matrix.part == 'rust' && steps.rust.outputs.run != 'false'
       - run: cargo clippy --workspace --all-targets -- -D warnings
-        if: matrix.part == 'rust'
+        if: matrix.part == 'rust' && steps.rust.outputs.run != 'false'
       - run: cargo nextest run --workspace --profile ci
-        if: matrix.part == 'rust'
+        if: matrix.part == 'rust' && steps.rust.outputs.run != 'false'
       - name: Web and Rust checks together
         if: matrix.part == 'all'
         run: node scripts/ci-check-parallel.mjs
 
       # WP-173: list flaky and twice-failed tests. The script exits 0, so it does not change the job result.
       - name: Rust flaky tests in the job summary
-        if: always() && matrix.part != 'web'
+        if: always() && matrix.part != 'web' && steps.rust.outputs.run != 'false'
         run: node scripts/ci-rust-flaky-summary.mjs
 
       - name: Upload Rust test results
-        if: always() && matrix.part != 'web'
+        if: always() && matrix.part != 'web' && steps.rust.outputs.run != 'false'
         uses: actions/upload-artifact@v4
         with:
           name: rust-junit-${{ matrix.os }}-${{ matrix.part }}
