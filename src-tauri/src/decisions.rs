@@ -177,17 +177,30 @@ fn save(conn: &Connection, d: &Decision) -> Result<(), String> {
     Ok(())
 }
 
+/// WP-172: a restart decision of a fan-out names its plan, its task and the request id that was stopped (up to 100,
+/// 40 and 100 characters), then a 16-character owner tag, with the prefix and separators: 272 at most.
+const FANOUT_AGAIN_KEY_MAX: usize = 300;
+
+fn key_max(value: &str) -> usize {
+    if is_again_key(value) {
+        FANOUT_AGAIN_KEY_MAX
+    } else {
+        KEY_MAX
+    }
+}
+
 fn key_like(value: &str) -> Result<String, String> {
     let value = value.trim();
+    let max = key_max(value);
     if value.is_empty()
-        || value.len() > KEY_MAX
+        || value.len() > max
         || !value
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b':' | b'/'))
     {
         return Err(format!(
             "key must be a stable name for the question, like \"retention-policy\": letters, digits, - _ . : / and at \
-             most {KEY_MAX} characters"
+             most {max} characters"
         ));
     }
     Ok(value.to_string())
@@ -511,12 +524,22 @@ fn is_security_key(key: &str) -> bool {
 /// WP-144: so is a fresh-eyes review (`fresh-eyes/...`) and the question that its approved brief could not start
 /// (`fresh-eyes-start/...`). A chat answering `ask_person` on its own review's key would take the question out of the
 /// person's Inbox, and the review ignores its answer anyway. The app itself may close them (`app:fresh-eyes`).
+///
+/// WP-172: so is the decision that starts a stopped fan-out task again (`fanout-again/<plan>/<task>/<stopped request id>`).
+/// A stopped worker runs again only on Ash's yes, so an agent's `ask_person` answer (a chat, whatever the words) is refused
+/// here, and the app's own closers are not a way round it.
+///
+/// WP-203: so is a security review (`security-review/<head>`). A pass on a security path needs the person's word, so no
+/// chat or machine may answer it, not even the app.
+///
+/// Every prefix is read on the folded key, so a change of case or a hidden character does not let a machine through.
 pub fn person_only(key: &str, by: Option<&str>) -> Option<String> {
     // Checked on the folded key, so no spelling of a protected key gets past the rules.
     let folded = fold_key(key);
     let review = is_review_key(&folded);
     let security = is_security_key(&folded);
-    if !folded.starts_with("irreversible/") && !review && !security {
+    let again = is_again_key(&folded);
+    if !folded.starts_with("irreversible/") && !review && !security && !again {
         return None;
     }
     match by.map(str::trim).filter(|word| !word.is_empty()) {
@@ -528,10 +551,18 @@ pub fn person_only(key: &str, by: Option<&str>) -> Option<String> {
         Some(other) if review => Some(format!(
             "Only the person answers a fresh-eyes review; {other} cannot. It waits in the Inbox until they do."
         )),
+        Some(other) if again => Some(format!(
+            "Only the person answers whether a stopped task starts again; {other} cannot. It waits in Needs until they do."
+        )),
         Some(other) => Some(format!(
             "Only the person answers an irreversible step; {other} cannot. It waits in Needs until they do."
         )),
     }
+}
+
+/// WP-172: the decision keys that start a stopped fan-out task again.
+pub fn is_again_key(key: &str) -> bool {
+    key.starts_with("fanout-again/")
 }
 
 pub fn answer(

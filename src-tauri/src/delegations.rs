@@ -2657,6 +2657,24 @@ mod tests {
         );
     }
 
+    /// The same owner and request id get the row already there back, even one the owner cancelled, so a restart that
+    /// wants a worker of its own must send a new request id (WP-172: fanoutCheckpoint.ts resume, confirm).
+    #[test]
+    fn a_cancelled_request_comes_back_as_the_same_row_so_a_restart_needs_a_new_request_id() {
+        let store = store();
+        let mut conn = store.lock_conn().unwrap();
+        let first = record(&mut conn, launch("mono", "req-x", "child-x"), 10).unwrap();
+        cancel(&mut conn, std::slice::from_ref(&first.id), None, None, 11).unwrap();
+        let again = record(&mut conn, launch("mono", "req-x", "child-x"), 12).unwrap();
+        assert_eq!(
+            (again.id.as_str(), again.state.as_str()),
+            (first.id.as_str(), CANCELLED)
+        );
+        let restarted = record(&mut conn, launch("mono", "req-x-r2", "child-x"), 13).unwrap();
+        assert_ne!(restarted.id, first.id);
+        assert_eq!(restarted.state, RUNNING);
+    }
+
     /// A worker waiting on its owner's answer is taken over by a later request: the question is no longer anyone's.
     #[test]
     fn a_row_taken_over_drops_its_waiting_question() {

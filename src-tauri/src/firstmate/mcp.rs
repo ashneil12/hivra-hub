@@ -10,7 +10,8 @@ use crate::mcp_server::{arguments, new_request_id, pick, valid_request_id, App};
 pub const NAMES: [&str; 1] = ["delegate_tasks"];
 
 /// What the app action takes. `clientRequestId` only names the call, so a retry never starts a task twice.
-const FIELDS: [&str; 2] = ["intent", "tasks"];
+/// `resume` (WP-172) names an unfinished plan to carry on, and `confirm` the stopped tasks to start again.
+const FIELDS: [&str; 4] = ["intent", "tasks", "resume", "confirm"];
 
 /// One task's schema, built apart: a literal with the tool around it passes json!'s recursion limit.
 fn task_schema() -> Value {
@@ -60,15 +61,16 @@ pub fn tools() -> Vec<Value> {
     vec![json!({
         "name": "delegate_tasks",
         "title": "Delegate a multi-part ask",
-        "description": "Hand a multi-part ask to workers in one call, when the parts depend on each other or share names (a route one part writes and another calls, a file one part makes and another reads). Each task says what it owns, provides, requires and checks; the app writes that contract into every worker's brief, so the names are agreed once instead of paraphrased in each. Everything is checked before any worker starts: a requirement nothing provides, a provide nobody could check, two owners of one path, a bad brief, more than 8 tasks. Tasks that need nothing start together; a task that requires a name waits, and starts by itself once the task that provides it is done, its declared checks passed and what it provided is on disk. If a provider fails, was stopped or did not deliver, what waits on it is held, not run anyway: task_status says what landed and what did not start, and you decide (task_cancel what is held, then send it again once the missing part is redone). Each task is otherwise an ordinary delegate_task (its own worker, checkout, gates and report). A single part, or parts that need nothing from each other, can use delegate_task. Keep the same clientRequestId when retrying so no task starts twice.",
+        "description": "Hand a multi-part ask to workers in one call, when the parts depend on each other or share names (a route one part writes and another calls, a file one part makes and another reads). Each task says what it owns, provides, requires and checks; the app writes that contract into every worker's brief, so the names are agreed once instead of paraphrased in each. Everything is checked before any worker starts: a requirement nothing provides, a provide nobody could check, two owners of one path, a bad brief, more than 8 tasks. Tasks that need nothing start together; a task that requires a name waits, and starts by itself once the task that provides it is done, its declared checks passed and what it provided is on disk. If a provider fails, was stopped or did not deliver, what waits on it is held, not run anyway: task_status says what landed and what did not start, and you decide (task_cancel what is held, then send it again once the missing part is redone). Each task is otherwise an ordinary delegate_task (its own worker, checkout, gates and report). A single part, or parts that need nothing from each other, can use delegate_task. Keep the same clientRequestId when retrying so no task starts twice. After a crash or restart, task_status lists an unfinished plan; send delegate_tasks with resume (and confirm for any stopped task Ash wants started again) to carry it on without sending the same task twice.",
         "inputSchema": {
             "type": "object",
             "properties": {
                 "intent": { "type": "string", "description": "Ash's own ask, in his words, with the context needed to read it. Shared by every task that does not bring its own. The app also quotes his original request in each brief." },
                 "tasks": { "type": "array", "minItems": 1, "maxItems": 8, "items": task_schema(), "description": "The parts, in the order you want them started. A task that needs another is held until it is delivered, whatever its place." },
-                "clientRequestId": { "type": "string", "description": "Letters, digits, - and _. The same id on a retry never starts a task twice." }
+                "clientRequestId": { "type": "string", "description": "Letters, digits, - and _. The same id on a retry never starts a task twice." },
+                "resume": { "type": "string", "description": "WP-172: the id of an unfinished plan (task_status lists it under unfinishedPlans). Its tasks that never started are sent now, the ones that started are kept. Give tasks only for a new plan." },
+                "confirm": { "type": "array", "items": { "type": "string" }, "maxItems": 8, "description": "WP-172: with resume, the names of the stopped tasks to start again. Ash must say yes first." }
             },
-            "required": ["tasks"],
             "additionalProperties": false
         },
         "annotations": { "title": "Delegate a multi-part ask", "destructiveHint": true, "openWorldHint": true }
@@ -152,6 +154,20 @@ mod tests {
     }
 
     #[test]
+    fn a_resume_names_its_plan_and_what_to_start_again_and_needs_no_tasks() {
+        let app = Recorder(Mutex::new(Vec::new()));
+        let args = json!({ "resume": "plan-1", "confirm": ["api"], "clientRequestId": "resume-1" });
+        call(&app, "delegate_tasks", &args).unwrap();
+        let calls = app.0.lock().unwrap();
+        assert_eq!(calls[0].0, "tasks.fanout");
+        assert_eq!(
+            calls[0].1,
+            json!({ "resume": "plan-1", "confirm": ["api"] })
+        );
+        assert_eq!(calls[0].2, "resume-1");
+    }
+
+    #[test]
     fn a_call_with_no_request_id_gets_a_fresh_one() {
         let app = Recorder(Mutex::new(Vec::new()));
         call(&app, "delegate_tasks", &plan()).unwrap();
@@ -184,7 +200,10 @@ mod tests {
         assert!(NAMES.contains(&listed[0]["name"].as_str().unwrap()));
         let schema = &listed[0]["inputSchema"];
         assert_eq!(schema["additionalProperties"], false);
-        assert_eq!(schema["required"], json!(["tasks"]));
+        // A resume names its plan instead of the tasks, so the tasks are asked for unless one of the two is given.
+        assert!(schema.get("required").is_none());
+        assert_eq!(schema["properties"]["resume"]["type"], "string");
+        assert_eq!(schema["properties"]["confirm"]["items"]["type"], "string");
         assert_eq!(schema["properties"]["tasks"]["maxItems"], 8);
         let task = &schema["properties"]["tasks"]["items"];
         assert_eq!(task["additionalProperties"], false);
