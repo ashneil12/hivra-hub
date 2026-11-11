@@ -3074,37 +3074,51 @@ pub(crate) fn git_push_for(root: &Path) -> Result<(), String> {
     } else {
         git_remote_name(root).ok_or_else(|| "No git remote to push to".to_string())?
     };
-    let sha = crate::commit_guard::gate_outgoing_to(root, &remote)?;
+    let checked = crate::commit_guard::gate_outgoing_to(root, &remote)?;
     let branch = git_branch(root).ok_or_else(|| "Not on a branch".to_string())?;
-    let refspec = format!("{sha}:refs/heads/{branch}");
+    let refspec = format!("{}:refs/heads/{branch}", checked.sha);
     // A commit-graph or a pack bitmap can name a tree the guard did not read. These flags are also on the guard's
-    // own reads. `-u` with a `<sha>:refs/heads/<branch>` refspec does not set the upstream, so that is done after.
-    let mut args = vec![
-        "-c",
-        "core.commitGraph=false",
-        "-c",
-        "pack.useBitmaps=false",
-        "push",
-    ];
-    if !upstream {
-        args.push("-u");
+    // own reads. The push names the URLs the gate already resolved, not the remote: a pushurl written after the
+    // check would otherwise send the commit somewhere the check never read. `--set-upstream` cannot be used with
+    // a URL, so the tracking ref is written afterwards from the remote's name.
+    if checked.urls.is_empty() {
+        return Err(format!("the remote {remote} has no push URL"));
     }
-    args.extend([
-        "--no-follow-tags",
-        "--recurse-submodules=no",
-        &remote,
-        &refspec,
-    ]);
-    git_checked(root, &args)?;
-    if !upstream {
+    for url in &checked.urls {
+        git_checked(
+            root,
+            &[
+                "-c",
+                "core.commitGraph=false",
+                "-c",
+                "pack.useBitmaps=false",
+                "push",
+                "--no-follow-tags",
+                "--recurse-submodules=no",
+                url,
+                &refspec,
+            ],
+        )?;
+    }
+    remember_push_tracking(root, &remote, &branch, &checked.sha, !upstream);
+    Ok(())
+}
+
+/// A push of a raw URL does not move `refs/remotes/`. Write the refs the remote's fetch refspec maps, then
+/// point the branch at the remote by name. A fetch refspec that does not map this branch, or a detached
+/// checkout, cannot record the upstream. The objects have already landed, so that is not a failed push.
+fn remember_push_tracking(root: &Path, remote: &str, branch: &str, sha: &str, set_upstream: bool) {
+    let key = format!("remote.{remote}.fetch");
+    let specs = git_stdout(root, &["config", "--get-all", &key]).unwrap_or_default();
+    for dst in crate::commit_guard::remote_tracking_refs(&specs, branch) {
+        let _ = git_checked(root, &["update-ref", &dst, sha]);
+    }
+    if set_upstream {
         let tracking = format!("--set-upstream-to={remote}/{branch}");
-        // The push has already landed. A detached checkout, or a remote whose fetch refspec does not map this
-        // branch, cannot record the upstream. That must not be reported as a failed push.
-        if let Err(error) = git_checked(root, &["branch", &tracking, &branch]) {
+        if let Err(error) = git_checked(root, &["branch", &tracking, branch]) {
             eprintln!("git push landed, but the upstream was not recorded: {error}");
         }
     }
-    Ok(())
 }
 
 fn git_sync_changes_for(root: &Path) -> Result<(), String> {

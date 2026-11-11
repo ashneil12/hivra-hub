@@ -136,12 +136,11 @@ fn worker_patch(checkout: &Path, project: &Path) -> Result<WorkerPatch, String> 
         if !ok {
             return Err(format!("the copy's changes couldn't be gathered: {why}"));
         }
-        // WP-200: the staged blobs are checked, not a coloured diff. Git LFS and submodules are not followed.
-        let files = crate::commit_guard::scan_landing_index(checkout, &index, &base, project)?;
-        // The patch and the three-way side both come from the staged blobs. A textconv driver and the working
-        // tree must not supply bytes the check never read.
-        let patch = crate::commit_guard::landing_patch(checkout, &index, &base)?;
-        let staged = crate::commit_guard::staged_blobs(checkout, &index, &files)?;
+        // WP-200: one tree of this index. The file list, the patch and the staged blobs all come from that
+        // tree, so a later write to the index cannot put bytes into the patch that the check did not read.
+        // A textconv driver and the working tree must not supply bytes either.
+        let (files, patch, staged) =
+            crate::commit_guard::read_landing_index(checkout, &index, &base, project)?;
         Ok((patch, files, base.clone(), staged))
     })();
     let _ = std::fs::remove_file(&index);
@@ -549,6 +548,59 @@ mod tests {
             .output()
             .unwrap();
         assert!(String::from_utf8_lossy(&status.stdout).contains("?? new.txt"));
+    }
+
+    /// The scan, the patch and the staged blobs each read the index. A write between those reads must not
+    /// land: the bytes that land are the bytes that were checked.
+    #[test]
+    fn an_index_rewritten_between_the_reads_cannot_land() {
+        let (project, copy) = repo("split-index");
+        std::fs::write(copy.join("a.txt"), "two\n").unwrap();
+        let fired = std::rc::Rc::new(std::cell::Cell::new(false));
+        let flag = std::rc::Rc::clone(&fired);
+        let copy_for_hook = copy.clone();
+        crate::commit_guard::set_landing_index_hook(Some(Box::new(move |index| {
+            if flag.replace(true) {
+                return;
+            }
+            let key = format!("sk-ant-{}", "Ab3dEf7h".repeat(4));
+            std::fs::write(
+                copy_for_hook.join("secret.txt"),
+                format!("const KEY: &str = \"{key}\";\n"),
+            )
+            .unwrap();
+            let added = Command::new("git")
+                .arg("-C")
+                .arg(&copy_for_hook)
+                .env("GIT_INDEX_FILE", index)
+                .args(["add", "--", "secret.txt"])
+                .output()
+                .unwrap();
+            assert!(
+                added.status.success(),
+                "git add into the landing index: {}",
+                String::from_utf8_lossy(&added.stderr)
+            );
+        })));
+        struct ClearHook;
+        impl Drop for ClearHook {
+            fn drop(&mut self) {
+                crate::commit_guard::set_landing_index_hook(None);
+            }
+        }
+        let _clear = ClearHook;
+        let landing = land(&copy, &project).expect("the checked change still lands");
+        assert!(fired.get(), "the landing never read the index");
+        assert_eq!(landing.outcome, "landed");
+        assert_eq!(
+            std::fs::read_to_string(project.join("a.txt")).unwrap(),
+            "two\n"
+        );
+        assert!(
+            !project.join("secret.txt").exists(),
+            "bytes added to the index after the scan landed"
+        );
+        let _ = std::fs::remove_dir_all(project.parent().unwrap());
     }
 
     #[test]

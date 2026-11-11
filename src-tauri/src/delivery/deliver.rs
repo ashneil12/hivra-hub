@@ -262,28 +262,43 @@ pub(crate) fn push_sha(
     sha: &str,
 ) -> Result<(), String> {
     let checked = crate::commit_guard::gate_outgoing_to(checkout, remote)?;
-    if checked != sha {
+    if checked.sha != sha {
         return Err("The commit that was checked is no longer HEAD, so nothing was sent.".into());
     }
+    if checked.urls.is_empty() {
+        return Err(format!("the remote {remote} has no push URL"));
+    }
     let refspec = format!("{sha}:refs/heads/{branch}");
+    // The URLs are the ones the gate just resolved. Naming the remote would read pushurl again, and that
+    // value can change after the check. `--set-upstream` cannot be used with a URL.
+    for url in &checked.urls {
+        git(
+            checkout,
+            &[
+                "-c",
+                "core.commitGraph=false",
+                "-c",
+                "pack.useBitmaps=false",
+                "push",
+                "--no-follow-tags",
+                "--recurse-submodules=no",
+                url,
+                &refspec,
+            ],
+        )?;
+    }
+    // The push has already landed. A raw URL does not move the remote-tracking ref, so write the one the
+    // fetch refspec maps and then point the branch at the remote by name. That second step fails when the
+    // refspec does not map the branch. That is not a failed push.
     let tracking = format!("--set-upstream-to={remote}/{branch}");
-    git(
+    let specs = git(
         checkout,
-        &[
-            "-c",
-            "core.commitGraph=false",
-            "-c",
-            "pack.useBitmaps=false",
-            "push",
-            "--set-upstream",
-            "--no-follow-tags",
-            "--recurse-submodules=no",
-            remote,
-            &refspec,
-        ],
-    )?;
-    // The push has already landed. Recording the upstream fails when the remote's fetch refspec does not map
-    // the branch. That is not a failed push.
+        &["config", "--get-all", &format!("remote.{remote}.fetch")],
+    )
+    .unwrap_or_default();
+    for dst in crate::commit_guard::remote_tracking_refs(&specs, branch) {
+        let _ = git(checkout, &["update-ref", &dst, sha]);
+    }
     if let Err(error) = git(checkout, &["branch", &tracking, branch]) {
         eprintln!("git push landed, but the upstream was not recorded: {error}");
     }
@@ -706,7 +721,8 @@ pub fn deliver(
                 delivery.detail = filled.detail;
             } else {
                 let sha = crate::commit_guard::gate_outgoing_to(&checkout, &remote)
-                    .map_err(|e| format!("Pushing {branch} refused: {e}"))?;
+                    .map_err(|e| format!("Pushing {branch} refused: {e}"))?
+                    .sha;
                 push_sha(&checkout, &remote, &branch, &sha)
                     .map_err(|e| format!("Pushing {branch} failed: {e}"))?;
                 // WP-78: the push landed. A pull request that fails afterwards does not undo this line.

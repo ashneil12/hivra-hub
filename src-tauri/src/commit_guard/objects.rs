@@ -29,6 +29,34 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
+#[cfg(test)]
+pub(super) type IndexHook = Box<dyn FnMut(&Path)>;
+
+#[cfg(test)]
+thread_local! {
+    static LANDING_INDEX_HOOK: std::cell::RefCell<Option<IndexHook>> = std::cell::RefCell::new(None);
+}
+
+/// Test-only. A landing check reads the index more than once; a test uses this to change the index
+/// after one of those reads. Unset, this does nothing.
+pub(super) fn note_index_read(index: &Path) {
+    #[cfg(test)]
+    LANDING_INDEX_HOOK.with(|slot| {
+        if let Some(hook) = slot.borrow_mut().as_mut() {
+            hook(index);
+        }
+    });
+    #[cfg(not(test))]
+    {
+        let _ = index;
+    }
+}
+
+#[cfg(test)]
+pub(super) fn set_landing_index_hook(hook: Option<IndexHook>) {
+    LANDING_INDEX_HOOK.with(|slot| *slot.borrow_mut() = hook);
+}
+
 use super::{colour_wrapped, CHECK_TIMEOUT, COLOUR_REFUSED, MAX_CHECKED_BYTES};
 
 pub(super) struct Repo {
@@ -883,9 +911,15 @@ pub(super) fn scan_index(repo: &Repo, index: &Path, base: &str) -> Result<Scan, 
     ]);
     let bytes = read_capped(cmd, None, CHECK_TIMEOUT, MAX_CHECKED_BYTES)?;
     let changes = parse_raw(&bytes)?;
+    let scan = scan_changes(repo, &changes)?;
+    note_index_read(index);
+    Ok(scan)
+}
+
+fn scan_changes(repo: &Repo, changes: &[Change]) -> Result<Scan, String> {
     let mut scan = Scan::empty();
     let mut wanted = Vec::new();
-    for change in &changes {
+    for change in changes {
         if !scan.files.iter().any(|have| have == &change.path) {
             scan.files.push(change.path.clone());
         }
@@ -909,7 +943,7 @@ pub(super) fn scan_index(repo: &Repo, index: &Path, base: &str) -> Result<Scan, 
     }
     let blobs = cat_blobs(repo, &wanted)?;
     scan.blobs.extend(blobs.keys().cloned());
-    for change in &changes {
+    for change in changes {
         if change.new_mode == "160000" || super::is_zero_sha(&change.new_sha) {
             continue;
         }
@@ -934,10 +968,9 @@ pub(super) fn scan_index(repo: &Repo, index: &Path, base: &str) -> Result<Scan, 
     Ok(scan)
 }
 
-/// The patch `land` applies. `git diff --cached` can return the work tree when the index stat matches, so this
-/// writes the index to a tree and diffs that tree. Textconv stays off, and the patch has no commit line, so
-/// `git apply` can still take it.
-pub(super) fn index_patch(repo: &Repo, index: &Path, base: &str) -> Result<Vec<u8>, String> {
+/// Writes `index` to one tree and returns that id. The test hook runs only after the id is in hand, so a
+/// later edit of the index cannot change a scan, a patch or a blob read that all use this id.
+pub(super) fn index_tree(repo: &Repo, index: &Path) -> Result<String, String> {
     let mut write = command(repo);
     write.env("GIT_INDEX_FILE", index).args(["write-tree"]);
     let written = read_capped(write, None, CHECK_TIMEOUT, MAX_CHECKED_BYTES)?;
@@ -945,11 +978,36 @@ pub(super) fn index_patch(repo: &Repo, index: &Path, base: &str) -> Result<Vec<u
     if !is_oid(&tree) {
         return Err(UNREADABLE_CHANGE.into());
     }
+    note_index_read(index);
+    Ok(tree)
+}
+
+fn commit_tree(repo: &Repo, base: &str) -> Result<String, String> {
     let base_tree = git_text(repo, &["rev-parse", &format!("{base}^{{tree}}")])?;
     let base_tree = base_tree.trim().to_string();
     if !is_oid(&base_tree) {
         return Err(UNREADABLE_CHANGE.into());
     }
+    Ok(base_tree)
+}
+
+/// The same scan as `scan_index`, read from a tree id instead of the index.
+pub(super) fn scan_tree(repo: &Repo, tree: &str, base: &str) -> Result<Scan, String> {
+    let base_tree = commit_tree(repo, base)?;
+    let changes = raw_diff(repo, &[&base_tree, tree])?;
+    scan_changes(repo, &changes)
+}
+
+/// The patch `land` applies. `git diff --cached` can return the work tree when the index stat matches, so this
+/// writes the index to a tree and diffs that tree. Textconv stays off, and the patch has no commit line, so
+/// `git apply` can still take it.
+pub(super) fn index_patch(repo: &Repo, index: &Path, base: &str) -> Result<Vec<u8>, String> {
+    let tree = index_tree(repo, index)?;
+    tree_patch(repo, &tree, base)
+}
+
+pub(super) fn tree_patch(repo: &Repo, tree: &str, base: &str) -> Result<Vec<u8>, String> {
+    let base_tree = commit_tree(repo, base)?;
     let mut diff = command(repo);
     diff.args([
         "diff-tree",
@@ -963,7 +1021,7 @@ pub(super) fn index_patch(repo: &Repo, index: &Path, base: &str) -> Result<Vec<u
         "--no-renames",
         "--no-commit-id",
         &base_tree,
-        &tree,
+        tree,
     ]);
     read_capped(diff, None, CHECK_TIMEOUT, MAX_CHECKED_BYTES)
 }
@@ -1197,6 +1255,27 @@ pub(super) fn index_blobs(
     index: &Path,
     paths: &[String],
 ) -> Result<Vec<StagedBlob>, String> {
+    staged_at(repo, Some(index), paths, |path| format!(":{path}"))
+}
+
+/// Blobs from a tree id. A missing path is a deletion. This does not read the index.
+pub(super) fn tree_blobs(
+    repo: &Repo,
+    tree: &str,
+    paths: &[String],
+) -> Result<Vec<StagedBlob>, String> {
+    if !is_oid(tree) {
+        return Err(UNREADABLE_CHANGE.into());
+    }
+    staged_at(repo, None, paths, |path| format!("{tree}:{path}"))
+}
+
+fn staged_at(
+    repo: &Repo,
+    index: Option<&Path>,
+    paths: &[String],
+    spec: impl Fn(&str) -> String,
+) -> Result<Vec<StagedBlob>, String> {
     if paths.is_empty() {
         return Ok(Vec::new());
     }
@@ -1205,13 +1284,14 @@ pub(super) fn index_blobs(
         if path.contains('\n') || path.contains('\0') {
             return Err(UNREADABLE_CHANGE.into());
         }
-        input.push(':');
-        input.push_str(path);
+        input.push_str(&spec(path));
         input.push('\n');
     }
     let mut cmd = command(repo);
-    cmd.env("GIT_INDEX_FILE", index)
-        .args(["cat-file", "--batch"]);
+    if let Some(index) = index {
+        cmd.env("GIT_INDEX_FILE", index);
+    }
+    cmd.args(["cat-file", "--batch"]);
     let bytes = read_capped(
         cmd,
         Some(input.as_bytes()),
@@ -1219,17 +1299,17 @@ pub(super) fn index_blobs(
         MAX_CHECKED_BYTES,
     )?;
     let mut out = Vec::new();
-    let mut index = 0;
+    let mut at = 0;
     for path in paths {
-        if index >= bytes.len() {
+        if at >= bytes.len() {
             return Err(UNREADABLE_CHANGE.into());
         }
-        let Some(relative) = bytes[index..].iter().position(|byte| *byte == b'\n') else {
+        let Some(relative) = bytes[at..].iter().position(|byte| *byte == b'\n') else {
             return Err(UNREADABLE_CHANGE.into());
         };
-        let header = std::str::from_utf8(&bytes[index..index + relative])
+        let header = std::str::from_utf8(&bytes[at..at + relative])
             .map_err(|_| UNREADABLE_CHANGE.to_string())?;
-        index += relative + 1;
+        at += relative + 1;
         // The object name is the path, which may contain spaces, so the type and size are the last two words.
         if header.ends_with(" missing") {
             out.push((path.clone(), None));
@@ -1247,15 +1327,18 @@ pub(super) fn index_blobs(
         let size: usize = size_text
             .parse()
             .map_err(|_| UNREADABLE_CHANGE.to_string())?;
-        if index + size > bytes.len() {
+        if at + size > bytes.len() {
             return Err(UNREADABLE_CHANGE.into());
         }
-        let blob = bytes[index..index + size].to_vec();
-        index += size;
-        if index < bytes.len() && bytes[index] == b'\n' {
-            index += 1;
+        let blob = bytes[at..at + size].to_vec();
+        at += size;
+        if at < bytes.len() && bytes[at] == b'\n' {
+            at += 1;
         }
         out.push((path.clone(), Some(blob)));
+    }
+    if let Some(index) = index {
+        note_index_read(index);
     }
     Ok(out)
 }
@@ -1269,6 +1352,70 @@ fn has_url_rewrite(repo: &Repo) -> Result<bool, String> {
         Err(error) if error == "git failed" || error.is_empty() => Ok(false),
         Err(error) => Err(error),
     }
+}
+
+/// A push URL with no scheme and no host. `ls-remote` would resolve it from its scratch folder.
+fn is_relative_push_url(url: &str) -> bool {
+    if url.is_empty() || url.contains("://") || is_windows_drive(url) || is_scp_style(url) {
+        return false;
+    }
+    !Path::new(url).is_absolute()
+}
+
+fn is_windows_drive(url: &str) -> bool {
+    let mut chars = url.chars();
+    let Some(letter) = chars.next() else {
+        return false;
+    };
+    if !letter.is_ascii_alphabetic() || chars.next() != Some(':') {
+        return false;
+    }
+    matches!(chars.next(), Some('/' | '\\') | None)
+}
+
+/// `host:path`, which git does not resolve as a file. A single-letter head is a Windows drive, not a host.
+fn is_scp_style(url: &str) -> bool {
+    let Some(colon) = url.find(':') else {
+        return false;
+    };
+    if colon == 0 {
+        return false;
+    }
+    let head = &url[..colon];
+    if head.contains('/') || head.contains('\\') {
+        return false;
+    }
+    if head.len() == 1 && head.chars().next().is_some_and(|c| c.is_ascii_alphabetic()) {
+        return false;
+    }
+    true
+}
+
+fn lexical_normalize(path: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for part in path.components() {
+        match part {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                out.pop();
+            }
+            other => out.push(other.as_os_str()),
+        }
+    }
+    out
+}
+
+/// Resolves a relative push URL from `work_tree`. Anything else is returned unchanged. The result is
+/// lexical: the directory does not have to exist, and a symlink in the temp path is not rewritten.
+fn settle_push_url(work_tree: &Path, url: &str) -> String {
+    let url = url.trim();
+    if !is_relative_push_url(url) {
+        return url.to_string();
+    }
+    lexical_normalize(&work_tree.join(url))
+        .to_str()
+        .unwrap_or(url)
+        .to_string()
 }
 
 fn push_unique(urls: &mut Vec<String>, url: String) {
@@ -1306,7 +1453,9 @@ pub(super) fn push_destinations(repo: &Repo, remote: &str) -> Result<Vec<String>
     };
     let mut urls = Vec::new();
     for url in String::from_utf8_lossy(&output).lines() {
-        push_unique(&mut urls, url.to_string());
+        // A relative URL is resolved from this checkout. `ls-remote` runs in a scratch folder, so the
+        // same string would otherwise name a different directory there than `git push` uses.
+        push_unique(&mut urls, settle_push_url(&repo.work_tree, url));
     }
     if urls.is_empty() {
         return Err(format!("the remote {remote} has no push URL"));
@@ -1364,7 +1513,7 @@ pub(super) fn destinations_for(repo: &Repo, target: &str) -> Result<Vec<String>,
         }
     }
     if target.contains("://") || target.starts_with('/') || target.starts_with('.') {
-        return Ok(vec![target.to_string()]);
+        return Ok(vec![settle_push_url(&repo.work_tree, target)]);
     }
     Err(format!("the remote {target} has no push URL"))
 }
@@ -1635,6 +1784,7 @@ fn credentials_in(
         "-c",
         "color.ui=never",
         "config",
+        "--null",
         scope,
         "--includes",
         "--show-origin",
@@ -1651,9 +1801,14 @@ fn credentials_in(
     parse_credential_lines(&String::from_utf8_lossy(&out))
 }
 
-/// `file:<path><TAB>key value` lines from `git config --show-origin --get-regexp`. Only `credential.*` keys from a
-/// file origin are kept, so a command-line pair or a `url.*` line cannot come back through.
+/// Credential pairs from `git config --show-origin --get-regexp`. The command passes `--null`, so a value
+/// keeps its spaces and newlines: `origin NUL key LF value NUL`. Text with no NUL is the older line form
+/// (`file:<path><TAB>key value`), which the unit test still feeds in. Only `credential.*` keys from a file
+/// origin are kept, so a command-line pair or a `url.*` line cannot come back through.
 fn parse_credential_lines(text: &str) -> Vec<(String, String)> {
+    if text.contains('\0') {
+        return parse_credential_null(text);
+    }
     let mut pairs = Vec::new();
     for line in text.lines() {
         let line = line.trim_end_matches('\r');
@@ -1667,6 +1822,27 @@ fn parse_credential_lines(text: &str) -> Vec<(String, String)> {
             Some((key, value)) => (key, value),
             None => (rest, ""),
         };
+        if key.starts_with("credential.") && !key.is_empty() {
+            pairs.push((key.to_string(), value.to_string()));
+        }
+    }
+    pairs
+}
+
+fn parse_credential_null(text: &str) -> Vec<(String, String)> {
+    let mut pairs = Vec::new();
+    let mut parts = text.split('\0');
+    while let Some(origin) = parts.next() {
+        let Some(body) = parts.next() else {
+            break;
+        };
+        if !origin.starts_with("file:") {
+            continue;
+        }
+        let Some((key, value)) = body.split_once('\n') else {
+            continue;
+        };
+        let key = key.trim_end_matches('\r');
         if key.starts_with("credential.") && !key.is_empty() {
             pairs.push((key.to_string(), value.to_string()));
         }
@@ -1817,6 +1993,35 @@ file:/etc/gitconfig\tprotocol.version 0\n\
             .collect();
         assert_eq!(helpers, ["osxkeychain", "!'/tmp/helper.sh'"]);
         assert!(pairs.iter().all(|(key, _)| key.starts_with("credential.")));
+    }
+
+    /// A helper value with a space, and a newline inside it. The line printer splits that value in
+    /// two, so the space-bearing helper comes back short. `--null` keeps the whole value.
+    #[test]
+    fn a_credential_value_with_a_space_is_kept_whole() {
+        let dir = exclusive_scratch("cg-space").unwrap();
+        let system = dir.join("system.gitconfig");
+        std::fs::write(
+            &system,
+            "[credential]\n\thelper = \"store --file /tmp/my creds\\nmore\"\n\tusername = ada lovelace\n",
+        )
+        .unwrap();
+        let pairs = credentials_in(&dir, "--system", Some(&system), None);
+        let _ = std::fs::remove_dir_all(&dir);
+        let helper = pairs
+            .iter()
+            .find(|(key, _)| key == "credential.helper")
+            .map(|(_, value)| value.as_str());
+        let username = pairs
+            .iter()
+            .find(|(key, _)| key == "credential.username")
+            .map(|(_, value)| value.as_str());
+        assert_eq!(
+            helper,
+            Some("store --file /tmp/my creds\nmore"),
+            "pairs {pairs:?}"
+        );
+        assert_eq!(username, Some("ada lovelace"), "pairs {pairs:?}");
     }
 
     #[test]
