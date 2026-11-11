@@ -2721,4 +2721,132 @@ mod tests {
             Some(B1)
         );
     }
+
+    // ---- review/228-r1: red-first repros ------------------------------------------------------------------------
+
+    /// HIGH 1: CI does not rerun when main moves, so the checks stay green. The next poll records the new base as the
+    /// one the checks ran on, and the merge gate's hold is gone after one poll.
+    #[test]
+    fn r1_a_green_poll_after_main_moved_over_the_files_keeps_the_merge_hold() {
+        let store = store();
+        add(
+            &store,
+            &FakeGh::new(vec![Ok(based(B1))]),
+            input("mono-hivra"),
+            T0,
+        )
+        .unwrap();
+        let mut paused = 0;
+        let gh = moves_to_b2(FakeGh::new(vec![Ok(based(B2))]), &["src/lib.rs"], 1);
+        let swept = run(&store, &gh, T0 + QUIET_EVERY, &mut paused);
+        assert_eq!(swept.wakes.len(), 1, "the move is told: {swept:?}");
+        let green = green_base(&store.lock_conn().unwrap(), "cli/cli", 14716).unwrap();
+        let read = github::parse(&based(B2)).unwrap();
+        let held = base::hold(
+            &|p: &str| gh.rest(p),
+            "cli/cli",
+            14716,
+            green.as_deref(),
+            &read,
+        );
+        assert!(
+            held.is_some(),
+            "checks ran on B1 and main changed src/lib.rs since: the merge must wait (green base now {green:?})"
+        );
+    }
+
+    /// HIGH 1 (stale): seven hours later, still green on the old run, main moved over the files. The fresh baseline
+    /// must not record the moved base as green-tested.
+    #[test]
+    fn r1_a_stale_baseline_does_not_mark_a_moved_base_as_green() {
+        let store = store();
+        add(
+            &store,
+            &FakeGh::new(vec![Ok(based(B1))]),
+            input("mono-hivra"),
+            T0,
+        )
+        .unwrap();
+        let mut paused = 0;
+        let gh = moves_to_b2(FakeGh::new(vec![Ok(based(B2))]), &["src/lib.rs"], 1);
+        run(&store, &gh, T0 + 7 * 60 * 60_000, &mut paused);
+        let green = green_base(&store.lock_conn().unwrap(), "cli/cli", 14716).unwrap();
+        let read = github::parse(&based(B2)).unwrap();
+        let held = base::hold(
+            &|p: &str| gh.rest(p),
+            "cli/cli",
+            14716,
+            green.as_deref(),
+            &read,
+        );
+        assert!(held.is_some(), "green base now {green:?}");
+    }
+
+    /// HIGH 2: any agent session can call pr_watch on the same pull request; its add records the moved base as green
+    /// and green_base() picks the newest watch, so the hold is cleared by an agent tool.
+    #[test]
+    fn r1_another_agent_watching_the_pull_request_does_not_clear_the_hold() {
+        let store = store();
+        add(
+            &store,
+            &FakeGh::new(vec![Ok(based(B1))]),
+            input("mono-hivra"),
+            T0,
+        )
+        .unwrap();
+        add(
+            &store,
+            &FakeGh::new(vec![Ok(based(B2))]),
+            input("mono-other"),
+            T0 + 60_000,
+        )
+        .unwrap();
+        let gh = moves_to_b2(FakeGh::new(vec![]), &["src/lib.rs"], 1);
+        let green = green_base(&store.lock_conn().unwrap(), "cli/cli", 14716).unwrap();
+        let read = github::parse(&based(B2)).unwrap();
+        let held = base::hold(
+            &|p: &str| gh.rest(p),
+            "cli/cli",
+            14716,
+            green.as_deref(),
+            &read,
+        );
+        assert!(held.is_some(), "green base now {green:?}");
+    }
+
+    /// HIGH 2: pr_unwatch (an agent tool) ends the only watch; green_base() then reads None and the hold holds nothing.
+    #[test]
+    fn r1_unwatching_does_not_clear_the_hold() {
+        let store = store();
+        add(
+            &store,
+            &FakeGh::new(vec![Ok(based(B1))]),
+            input("mono-hivra"),
+            T0,
+        )
+        .unwrap();
+        remove(
+            &store,
+            RemoveInput {
+                owner_session: "mono-hivra".into(),
+                id: None,
+                repo: Some("cli/cli".into()),
+                number: Some(14716),
+                reason: None,
+            },
+            T0 + 60_000,
+        )
+        .unwrap();
+        let gh = moves_to_b2(FakeGh::new(vec![]), &["src/lib.rs"], 1);
+        let green = green_base(&store.lock_conn().unwrap(), "cli/cli", 14716).unwrap();
+        let read = github::parse(&based(B2)).unwrap();
+        let held = base::hold(
+            &|p: &str| gh.rest(p),
+            "cli/cli",
+            14716,
+            green.as_deref(),
+            &read,
+        );
+        assert!(held.is_some(), "green base now {green:?}");
+    }
 }

@@ -662,4 +662,33 @@ mod tests {
         let get = canned(vec![]);
         assert!(compare(&get, "acme/web", "../../user", B2).is_err());
     }
+
+    /// HIGH 4: GitHub's compare/A...B `behind_by` counts commits A has that B lacks. With A the head and B main that is
+    /// the pull request's own commits (live: ashneil12/hivra-hub#228, up to date with main, answers behind_by 4).
+    #[test]
+    fn r1_behind_counts_commits_main_has_that_the_head_lacks() {
+        let get = canned(vec![
+            (
+                behind_key(),
+                r#"{"status":"behind","ahead_by":0,"behind_by":4,"files":[]}"#.into(),
+            ),
+            (
+                format!("compare/{B2}...{H1}"),
+                r#"{"status":"ahead","ahead_by":4,"behind_by":0,"files":[]}"#.into(),
+            ),
+        ]);
+        let got = facts(
+            &get,
+            "acme/web",
+            7,
+            &Memo::default(),
+            &open(H1, B2, None),
+            false,
+        );
+        assert_eq!(
+            got.behind,
+            Some(0),
+            "a branch up to date with main is 0 commits behind it"
+        );
+    }
 }

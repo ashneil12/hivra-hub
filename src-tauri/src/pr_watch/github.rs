@@ -1098,4 +1098,25 @@ pub(crate) mod tests {
             .rest("repos/acme/web/pulls/7 --method DELETE")
             .is_err());
     }
+
+    /// HIGH 3: REST pulls/<n> base.sha is the base recorded at the last push (live: 18 of 19 open PRs on
+    /// ashneil12/hivra-hub show a base.sha that is not main's tip), not the branch tip GraphQL's baseRef.target.oid
+    /// gives. Under a GraphQL rate limit the merge gate would compare against a stale base.
+    #[test]
+    fn r1_the_rest_fallback_reads_the_base_branch_tip_not_the_recorded_base() {
+        let gh = FakeGh::new(vec![Err("API rate limit exceeded for user".into())])
+            .with_rest("/pulls/7", REST_PULL)
+            .with_rest("/check-runs", REST_RUNS)
+            .with_rest("/status", REST_STATUS)
+            .with_rest(
+                "/branches/main",
+                r#"{"name":"main","commit":{"sha":"b3b3b3b"}}"#,
+            )
+            .with_rest(
+                "/git/ref/heads/main",
+                r#"{"ref":"refs/heads/main","object":{"sha":"b3b3b3b","type":"commit"}}"#,
+            );
+        let got = read(&gh, "acme/web", 7).unwrap();
+        assert_eq!(got.base_tip.as_deref(), Some("b3b3b3b"));
+    }
 }
