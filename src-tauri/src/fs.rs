@@ -1067,6 +1067,8 @@ pub struct GitFileLocation {
     /// Whether the path's last part is a link (round 6, MED-1). The place is then where the link points, so a read or an
     /// edit through it is judged by its target, and a read of a link out of the chat's folder waits.
     pub linked: bool,
+    /// Whether the checkout's root holds a `.git` folder or file (round 7). A git command whose folder has none waits.
+    pub dot_git: bool,
 }
 
 /// Locate each file's own checkout, including files whose parents were deleted.
@@ -1080,6 +1082,46 @@ pub async fn git_locate_files(paths: Vec<String>) -> Result<Vec<Option<GitFileLo
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+/// Each path's canonical place, every link followed (round 7). A path that doesn't exist yet is placed by its nearest
+/// existing parent. None when it can't be placed: a relative path, a link to nothing, or a name with a climb left in it.
+#[tauri::command]
+pub async fn git_canonical_paths(paths: Vec<String>) -> Result<Vec<Option<String>>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        paths
+            .iter()
+            .map(|path| canonical_place(&expand_home(path)))
+            .collect()
+    })
+    .await
+    .map_err(|e| e.to_string())
+}
+
+fn canonical_place(path: &Path) -> Option<String> {
+    if !path.is_absolute() || path.as_os_str().to_string_lossy().contains('\0') {
+        return None;
+    }
+    let mut existing = path.to_path_buf();
+    let mut missing: Vec<std::ffi::OsString> = Vec::new();
+    while std::fs::symlink_metadata(&existing).is_err() {
+        missing.push(existing.file_name()?.to_os_string());
+        existing.pop();
+    }
+    let mut real = std::fs::canonicalize(&existing).ok()?;
+    for part in missing.iter().rev() {
+        real.push(part);
+    }
+    Some(path_to_js(&real))
+}
+
+/// Sets the git environment the app's own lookups run under (round 7, HIGH-A, part b). `safe.bareRepository=explicit`
+/// makes git use a bare repository only when it is named, so a folder planted with HEAD, config and refs beside a checkout
+/// is never taken for a repository, and its core.fsmonitor or diff.external never runs. Command-line config only.
+pub(crate) fn git_safe_env(cmd: &mut Command) {
+    cmd.env("GIT_CONFIG_COUNT", "1")
+        .env("GIT_CONFIG_KEY_0", "safe.bareRepository")
+        .env("GIT_CONFIG_VALUE_0", "explicit");
 }
 
 /// Staged diff (or unstaged vs HEAD if nothing is staged) for commit text generation.
@@ -2730,7 +2772,9 @@ fn locate_path(path: &Path, follow_last: bool) -> Result<Option<GitFileLocation>
         let actual = directory.join(path.strip_prefix(parent).map_err(|e| e.to_string())?);
         (directory, actual)
     };
-    let output = git_cmd()
+    let mut lookup = git_cmd();
+    git_safe_env(&mut lookup);
+    let output = lookup
         .args(["-C"])
         .arg(&directory)
         .args(["rev-parse", "--show-toplevel"])
@@ -2753,6 +2797,7 @@ fn locate_path(path: &Path, follow_last: bool) -> Result<Option<GitFileLocation>
         root: path_to_js(top),
         relative: path_to_js(relative),
         linked,
+        dot_git: top.join(".git").exists(),
     }))
 }
 
@@ -9749,6 +9794,77 @@ mod tests {
         assert_eq!(theirs.relative, "theirs.txt");
         // A dangling link is refused: a write would go through it to a place nothing has checked.
         assert!(git_locate_file(&repo.join("dangling")).is_err());
+    }
+
+    /// WP-101 review round 7, HIGH-A (b): a folder planted with HEAD, config and refs beside a checkout is not taken for a
+    /// repository by the app's lookup. Without the app's git environment git takes it for one (the chat's own folder becomes
+    /// the repository); with it, git refuses the planted folder and the lookup never places the chat there.
+    #[cfg(unix)]
+    #[test]
+    fn locate_does_not_take_a_planted_folder_for_a_repository() {
+        let home = tmp("locate-planted");
+        let repo = home.0.join("mono");
+        let chat = repo.join("packages").join("app");
+        std::fs::create_dir_all(chat.join("src")).unwrap();
+        assert!(init_git_commit(&repo, &[("root.txt", "a\n")]));
+        std::fs::write(chat.join("src").join("app.ts"), "x\n").unwrap();
+        std::fs::create_dir_all(chat.join("objects")).unwrap();
+        std::fs::create_dir_all(chat.join("refs")).unwrap();
+        std::fs::write(chat.join("objects").join("readme"), "x\n").unwrap();
+        std::fs::write(chat.join("refs").join("readme"), "x\n").unwrap();
+        std::fs::write(chat.join("HEAD"), "ref: refs/heads/main\n").unwrap();
+        std::fs::write(
+            chat.join("config"),
+            "[core]\n\trepositoryformatversion = 0\n\tbare = false\n\tworktree = .\n",
+        )
+        .unwrap();
+        let place = git_locate_file(&chat.join("src").join("app.ts"));
+        match place {
+            Ok(Some(place)) => assert_eq!(
+                std::fs::canonicalize(&place.root).unwrap(),
+                std::fs::canonicalize(&repo).unwrap(),
+                "the chat was placed in the planted folder"
+            ),
+            Ok(None) => panic!("the chat's checkout was not found"),
+            Err(_) => {}
+        }
+    }
+
+    /// WP-101 review round 7, usability: a path's canonical place follows every link, a file that doesn't exist yet is
+    /// placed by its nearest existing parent, and a link to nothing is not placed at all.
+    #[cfg(unix)]
+    #[test]
+    fn canonical_places_follow_every_link_and_place_new_files_by_parent() {
+        use std::os::unix::fs::symlink;
+        let home = tmp("canonical-places");
+        let chat = home.0.join("chat");
+        let outside = home.0.join("outside");
+        std::fs::create_dir_all(chat.join("src")).unwrap();
+        std::fs::create_dir(&outside).unwrap();
+        std::fs::write(outside.join("secret.txt"), "x\n").unwrap();
+        symlink(
+            outside.join("secret.txt"),
+            chat.join("src").join("linked.ts"),
+        )
+        .unwrap();
+        symlink(&outside, chat.join("vendor")).unwrap();
+        symlink(outside.join("missing.txt"), chat.join("dangling")).unwrap();
+        let root = std::fs::canonicalize(&chat).unwrap();
+        let outside = std::fs::canonicalize(&outside).unwrap();
+        assert_eq!(
+            canonical_place(&chat.join("src").join("new.ts")),
+            Some(path_to_js(&root.join("src").join("new.ts")))
+        );
+        assert_eq!(
+            canonical_place(&chat.join("src").join("linked.ts")),
+            Some(path_to_js(&outside.join("secret.txt")))
+        );
+        assert_eq!(
+            canonical_place(&chat.join("vendor").join("secret.txt")),
+            Some(path_to_js(&outside.join("secret.txt")))
+        );
+        assert_eq!(canonical_place(&chat.join("dangling")), None);
+        assert_eq!(canonical_place(Path::new("relative/x")), None);
     }
 
     #[test]

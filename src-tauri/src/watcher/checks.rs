@@ -517,6 +517,10 @@ fn command_for(words: &[String], cwd: &Path, search: &str, windows: bool) -> Opt
     let program = crate::harness::which_in_path_as(search, words.first()?, windows)?;
     let mut cmd = Command::new(program);
     cmd.args(&words[1..]).current_dir(cwd);
+    // Round 7, HIGH-A (part b): a check's git reads only the repository git is told about, never a folder planted beside it.
+    if words.first().map(String::as_str) == Some("git") {
+        crate::fs::git_safe_env(&mut cmd);
+    }
     Some(cmd)
 }
 

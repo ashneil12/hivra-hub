@@ -57,7 +57,7 @@ pub fn shell_words(command: &str) -> Option<Vec<String>> {
             in_word = true;
         } else if c == ' ' || c == '\t' {
             if in_word {
-                words.push(std::mem::take(&mut word));
+                words.push(refuse_equals(std::mem::take(&mut word))?);
             }
             in_word = false;
         } else if is_plain(c) {
@@ -69,9 +69,19 @@ pub fn shell_words(command: &str) -> Option<Vec<String>> {
         i += 1;
     }
     if in_word {
-        words.push(word);
+        words.push(refuse_equals(word)?);
     }
     Some(words)
+}
+
+/// A word that starts with `=` is zsh's command path (`=git` is /usr/bin/git), so it is refused whatever its quotes,
+/// as safeApproval's shell words refuse it (round 7, MED-A).
+fn refuse_equals(word: String) -> Option<String> {
+    if word.starts_with('=') {
+        None
+    } else {
+        Some(word)
+    }
 }
 
 fn has(args: &[String], flags: &[&str]) -> bool {
@@ -707,6 +717,20 @@ fn walks_folders(head: &str, args: &[String]) -> bool {
     }
 }
 
+/// Round 7, LOW: a timer in a folder that can't hold a walk (home, or a parent of a project) reads no file it names, so
+/// `grep -c X Documents/f` can't read the person's own file. A git or cargo subcommand is no file name. Mirrors
+/// safeCommandInner's rule in safeApproval.ts.
+fn shallow_names(head: &str, args: &[String], folder: &str) -> Option<&'static str> {
+    let operands = if matches!(head, "git" | "cargo") {
+        args.get(1..).unwrap_or(&[])
+    } else {
+        args
+    };
+    (!folder_holds_walk(folder) && operands.iter().any(|arg| !arg.starts_with('-'))).then_some(
+        "a timer in a folder this shallow can't read a file by name, so it waits for Ash",
+    )
+}
+
 /// Why a timer's words name a login store or a folder outside the chat's own, or None. A timer has no folder, so anything
 /// rooted, anything with a climb, and any dot-named part is outside (credentialPaths.ts with no folder).
 fn names_login_or_outside(
@@ -823,7 +847,8 @@ fn verdict_with(command: &str, list: Option<&ProtectedList>, folder: &str) -> Op
             return Some(format!("{other} isn't a read autopilot runs by itself"));
         }
     };
-    why.or_else(|| names_login_or_outside(&words[0], args, list, folder))
+    why.or_else(|| shallow_names(&words[0], args, folder))
+        .or_else(|| names_login_or_outside(&words[0], args, list, folder))
         .map(str::to_string)
 }
 
@@ -853,6 +878,24 @@ fn verdict_here(command: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// WP-101 review round 7, MED-A: zsh's `=command` word is refused, quoted or not, as safeApproval's words refuse it.
+    #[test]
+    fn a_word_that_starts_with_equals_is_refused() {
+        assert_eq!(shell_words("cat =git"), None);
+        assert_eq!(shell_words("head -c 4000 =node"), None);
+        assert_eq!(shell_words("cat '=git'"), None);
+        assert!(shell_words("grep --max-count=2 x").is_some());
+    }
+
+    /// WP-101 review round 7, LOW: a timer in a folder that can't hold a walk reads no file it names; a git subcommand is no
+    /// file name, and a chat's own check keeps its rule.
+    #[test]
+    fn a_timer_in_a_shallow_folder_reads_no_file_it_names() {
+        assert!(verdict("grep -c X Documents/f", "/Users/example").is_some());
+        assert_eq!(verdict("grep -c X src/app.ts", "/Users/example/proj"), None);
+        assert_eq!(verdict("git status", "/Users/example"), None);
+    }
 
     #[test]
     fn reads_words_as_sh_does() {
@@ -1244,7 +1287,10 @@ mod round6_tests {
         .is_some());
         assert!(verdict("rg -c -e sk-ant-api03-A .", "/Users/example/.ssh/work").is_some());
         assert!(verdict("rg -c -e fetchUser src", "/Users/example/Projects/hivra").is_none());
-        // A walk-free command runs anywhere, as it always did.
-        assert!(verdict("cat README.md", "/Users/example").is_none());
+        // A walk-free read of a bare file name waits in a folder that can't hold a walk (round 7, LOW); a project folder
+        // keeps it, and a git subcommand is no file name.
+        assert!(verdict("cat README.md", "/Users/example").is_some());
+        assert!(verdict("cat README.md", "/Users/example/Projects/proj").is_none());
+        assert!(verdict("git status", "/Users/example").is_none());
     }
 }
