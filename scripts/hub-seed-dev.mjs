@@ -16,7 +16,7 @@
 //    is ever written back to it.
 // 4. In the copy only, clear what would make a dev copy act on Ash's behalf or resume his real Claude transcripts:
 //    in-flight turns, queued messages, the open-tab snapshot, pending worktree removals, automations and their runs,
-//    reminders, orchestration rows, delegation rows and chat bindings, autopilot switches and resumes, every chat's
+//    reminders, one-time schedules, orchestration rows, delegation rows and chat bindings, autopilot switches and resumes, every chat's
 //    open /goal, every provider_session_id, and the vault's index, grants, requests and .env records (Hivra WP-92:
 //    values are in the keychain, never the database, and a dev copy uses its own keychain names).
 // 5. Check the copy's integrity, move it into place, and record what was done in seeded.json beside it.
@@ -131,6 +131,8 @@ export function scrub(db) {
     wipe("automationEventClaims", "automation_event_claims");
     wipe("automations", "automations");
     wipe("reminders", "session_reminders");
+    // WP-128: a one-time schedule is Ash's prompt for one of his chats or projects at a set time.
+    wipe("oneTimeSchedules", "one_time_schedules");
     wipe("orchestrationRuns", "orchestration_runs");
     wipe("orchestrationSidebar", "orchestration_sidebar");
     wipe("orchestrationWorkers", "orchestration_workers");

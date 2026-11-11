@@ -1677,6 +1677,17 @@ pub(crate) fn restrict_env(cmd: &mut Command, path_value: &str) {
     cmd.env("PATH", path_value);
 }
 
+/// Clears the child's environment to the allow-list (restrict_env), then runs `after`, which adds the worker's approved
+/// secrets. The order matters: anything set before the clear is gone.
+pub(crate) fn restrict_env_then(
+    cmd: &mut Command,
+    path_value: &str,
+    after: impl FnOnce(&mut Command) -> Result<(), String>,
+) -> Result<(), String> {
+    restrict_env(cmd, path_value);
+    after(cmd)
+}
+
 /// What the list says, for the window: the entries as stored, the ids allowed to run as they are now, and for each
 /// entry the fingerprint the window must send back to allow it and the absolute file it resolves to (null if none).
 pub(crate) fn view(stored: &Stored, path_value: &str) -> Value {
@@ -4339,5 +4350,55 @@ mod tests {
             approved_spawn(d.path(), "wp134", &path_value).is_err(),
             "a deno entry ran an edited agent.ts, named by a file URL with a query, on the old approval"
         );
+    }
+}
+
+#[cfg(test)]
+mod secrets_order_tests {
+    use super::*;
+
+    fn envs(cmd: &Command) -> std::collections::BTreeMap<String, Option<String>> {
+        cmd.get_envs()
+            .map(|(k, v)| {
+                (
+                    k.to_string_lossy().into_owned(),
+                    v.map(|v| v.to_string_lossy().into_owned()),
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_more_agents_worker_keeps_its_approved_secret_and_only_the_allow_list() {
+        let mut cmd = Command::new("true");
+        cmd.env("MONOCODE_CONTROL_TOKEN", "app-only");
+        cmd.env("SOME_PARENT_SETTING", "parent");
+        restrict_env_then(&mut cmd, "/usr/bin:/bin", |cmd| {
+            cmd.env("STRIPE_API_KEY", "sk_test_stand_in");
+            Ok(())
+        })
+        .unwrap();
+        let env = envs(&cmd);
+        assert_eq!(
+            env.get("STRIPE_API_KEY"),
+            Some(&Some("sk_test_stand_in".to_string()))
+        );
+        assert_eq!(env.get("PATH"), Some(&Some("/usr/bin:/bin".to_string())));
+        assert!(!env.keys().any(|k| k.starts_with("MONOCODE_")), "{env:?}");
+        assert!(!env.contains_key("SOME_PARENT_SETTING"), "{env:?}");
+        for key in env.keys() {
+            assert!(
+                key == "PATH" || key == "STRIPE_API_KEY" || ALLOWED_ENV.contains(&key.as_str()),
+                "unexpected variable {key}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_secret_set_before_the_clear_is_dropped_which_is_why_it_goes_after() {
+        let mut cmd = Command::new("true");
+        cmd.env("STRIPE_API_KEY", "sk_test_stand_in");
+        restrict_env(&mut cmd, "/usr/bin:/bin");
+        assert!(!envs(&cmd).contains_key("STRIPE_API_KEY"));
     }
 }

@@ -303,7 +303,7 @@ fn blocked(made: &[ChangeCommit]) -> Vec<Blocked> {
 pub fn collect(change: &Change) -> Result<Collected, String> {
     let folder = Path::new(&change.folder);
     if !git(folder, &["status", "--porcelain"])?.trim().is_empty() {
-        git(folder, &["add", "-A"])?;
+        crate::commit_guard::stage_all(folder)?;
         git(folder, &["commit", "-q", "-m", "Hub change"])?;
     }
     let made = commits(folder, &format!("{}..HEAD", change.base))?;
@@ -364,6 +364,8 @@ pub fn apply(change: &Change, dir: &Path) -> Result<Vec<ChangeCommit>, String> {
     let repo = Path::new(&change.repo);
     let before = git(repo, &["rev-parse", "HEAD"])?.trim().to_string();
     let range = format!("{}..{}", change.base, change.branch);
+    // WP-200: the commits this change brings in are checked the same way a push is, before they are picked.
+    crate::commit_guard::gate_range(repo, &[range.as_str()])?;
     if let Err(error) = git(repo, &["cherry-pick", "--allow-empty", &range]) {
         let _ = git(repo, &["cherry-pick", "--abort"]);
         return Err(format!(
@@ -424,6 +426,8 @@ pub fn land(change: &Change) -> Result<Vec<ChangeCommit>, String> {
             ));
         }
     }
+    let landing = format!("{head}..{}", change.branch);
+    crate::commit_guard::gate_range(repo, &[landing.as_str()])?;
     if let Err(error) = git(repo, &["merge", "--ff-only", &change.branch]) {
         return Err(format!(
             "The change couldn't go into {branch} ({}). Nothing changed.",

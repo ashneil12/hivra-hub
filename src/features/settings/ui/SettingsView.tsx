@@ -27,6 +27,8 @@ import { CrewDefaults } from "../../crew/ui/CrewDefaults";
 import { CrewRulesPage } from "../../crew/ui/CrewRulesPage";
 import { hubProjectIdFor } from "../../hub/model/hubData";
 import { GateSetting } from "../../delivery-gate/ui/GateSetting";
+// WP-162: update a conflicting package from main. Off until the person turns it on.
+import { ProgrammeUpdateSetting } from "../../programme/ui/ProgrammeUpdateSetting";
 // WP-85: show Claude sessions started in a terminal.
 import { TerminalSessionsSetting } from "../../terminalMirror/ui/TerminalSessionsSetting";
 // WP-134b: More agents, off until the person switches it on.
@@ -35,6 +37,7 @@ import { MoreAgentsSettings } from "../../registry/ui/MoreAgentsSettings";
 import { PhaseSettings } from "../../phases/ui/PhaseSettings";
 // WP-104: copy diagnostics, and the health list.
 import { DiagnosticsPanel } from "../../diagnostics/ui/DiagnosticsPanel";
+import { CommitGuardAllowsPanel } from "../../commit-guard/ui/CommitGuardAllowsPanel";
 // WP-88: the morning note under the chat on Home.
 import { DailySummarySetting } from "../../chief/ui/DailySummarySetting";
 // WP-156: standing answers stay off until this setting is on.
@@ -718,6 +721,8 @@ export function SettingsView({
               {section === "general" ? <PhaseSettings projectKey={cwd} /> : null}
               {/* WP-104: diagnostics a person can send, and the health list. */}
               {section === "general" ? <DiagnosticsPanel /> : null}
+              {/* WP-200: the lines the secret check lets through because a person allowed them. */}
+              {section === "general" ? <CommitGuardAllowsPanel /> : null}
               {section === "connections" ? (
                 <div className="flex flex-col gap-10">
                   {/* WP-61: Hivra Cloud, off until the person turns it on. */}
@@ -776,6 +781,8 @@ export function SettingsView({
                   <CrewRulesPage cwd={cwd} hideWorkerDefault />
                   {/* WP-81: check work before it goes to GitHub. Off until the person turns it on. */}
                   <GateSetting project={cwd} />
+                  {/* WP-162: update a conflicting package from main. Off until the person turns it on. */}
+                  <ProgrammeUpdateSetting project={cwd} />
                   {/* WP-77: labelled GitHub issues become tasks. Off until the person turns it on. */}
                   <GithubIssuesSetting project={cwd} />
                 </>

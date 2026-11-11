@@ -18,6 +18,8 @@ mod automations;
 pub mod autopilot;
 mod azure_devops;
 mod background_work;
+// WP-128: one prompt at a chosen time. Not a numbered migration, and it starts no thread.
+mod one_time_schedule;
 // WP-75: checked backups, one-item restore, and a full restore through the ship path.
 pub mod backups;
 mod chat_background;
@@ -38,7 +40,7 @@ mod github_issues;
 pub mod goal_graph;
 mod tasks; // WP-70: tasks shared by the person and their agents. // WP-77: labelled GitHub issues become tasks.
            // WP-159: the programme of packages a first mate keeps. Not the per-job worker queue.
-mod programme;
+mod programme; // WP-162: update a package branch from main, and the programme lead lease.
 
 // Hivra WP-12: delivery modes and the one merge path.
 mod delivery;
@@ -86,6 +88,7 @@ mod hub_plugin;
 mod inbox_media;
 pub mod instance;
 // WP-07: the name a person reads. Not the bundle name.
+pub mod commit_guard;
 mod display_name;
 mod jira;
 mod jsonc;
@@ -482,6 +485,8 @@ pub fn run() {
                     error: format!("the app's data folder is {app_data:?}"),
                 });
             }
+            // WP-200: the person-approved allows of the commit guard live in this copy's data folder, nowhere else.
+            commit_guard::set_allow_store(claim.data_dir.join("commit-guard-allows.json"));
             // WP-90: this copy's proxy answers every stack name, loopback only. A dev copy
             // keeps its own registry and takes the next free port above 7400.
             let dev_copy = identity.kind != instance::Kind::Daily;
@@ -530,6 +535,7 @@ pub fn run() {
             outside::init(app.handle())?; // WP-79
             mobile_access::init(app.handle())?;
             reminders::init(app.handle());
+            one_time_schedule::init(app.handle()); // WP-128
             checkpoint::init(app.handle())?;
             menu::install(app.handle())?;
             #[cfg(target_os = "windows")]
@@ -683,6 +689,14 @@ pub fn run() {
             delivery::delivery_merges,
             delivery::delivery_events_open,
             delivery::delivery_events_consume,
+            // WP-162: update a package branch from main, and the lead lease.
+            programme::programme_update_settings_get,
+            programme::programme_update_settings_set,
+            programme::programme_bind_checkout,
+            programme::programme_update_from_main,
+            programme::programme_lead_acquire,
+            programme::programme_lead_heartbeat,
+            programme::programme_consider_conflict,
             // Hivra WP-81: the check before work goes to GitHub.
             delivery_gate::gate_setting_get,
             delivery_gate::gate_setting_set,
@@ -852,6 +866,16 @@ pub fn run() {
             automations::automations_claim_due,
             automations::automations_claim_event,
             automations::automation_run_update,
+            // WP-128: one prompt at a chosen time.
+            one_time_schedule::one_time_schedules_list,
+            one_time_schedule::one_time_schedules_create,
+            one_time_schedule::one_time_schedules_cancel,
+            one_time_schedule::one_time_schedules_miss_closed,
+            one_time_schedule::one_time_schedules_claim,
+            one_time_schedule::one_time_schedules_remember_session,
+            one_time_schedule::one_time_schedules_ack_fired,
+            one_time_schedule::one_time_schedules_release,
+            one_time_schedule::one_time_schedules_note,
             external_editor::list_external_editors,
             external_editor::open_in_external_editor,
             fs::resolve_project_location,
@@ -883,6 +907,10 @@ pub fn run() {
             fs::git_range_context,
             fs::git_pr_status,
             fs::git_pr_create,
+            commit_guard::commit_guard_allow,
+            commit_guard::commit_guard_allows,
+            commit_guard::commit_guard_refusal,
+            commit_guard::commit_guard_remove,
             fs::git_github_status,
             fs::github_monocode_star_status,
             fs::github_star_monocode,
