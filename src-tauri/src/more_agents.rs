@@ -980,6 +980,27 @@ pub(crate) fn run_folder(data_dir: &Path) -> Result<PathBuf, String> {
     Ok(dir)
 }
 
+/// Removes one More agents run folder after its child has exited. A link, the run root, and anything that is not a
+/// direct child of `<data>/more-agents/run` are left where they are.
+pub(crate) fn remove_run_folder(data_dir: &Path, run_dir: &Path) -> Result<(), String> {
+    let root = data_dir.join("more-agents").join("run");
+    let meta = std::fs::symlink_metadata(run_dir)
+        .map_err(|error| format!("The run folder is not there: {error}"))?;
+    if meta.file_type().is_symlink() {
+        return Err("The run folder is a link, so it is not removed.".into());
+    }
+    if !meta.is_dir() {
+        return Err("The run folder is not a directory.".into());
+    }
+    let real_root = std::fs::canonicalize(&root).map_err(|error| error.to_string())?;
+    let real_dir = std::fs::canonicalize(run_dir).map_err(|error| error.to_string())?;
+    if real_dir == real_root || real_dir.parent() != Some(real_root.as_path()) {
+        return Err("That folder is not one More agents run.".into());
+    }
+    std::fs::remove_dir_all(&real_dir)
+        .map_err(|error| format!("Could not remove the run folder: {error}"))
+}
+
 /// An absolute path that is a file, or a bare name found on `path_value`. Anything else is not started.
 fn resolve_command(command: &str, path_value: &str) -> Result<String, String> {
     let not_found = "This agent was not found. Check the command in More agents.";
@@ -2311,6 +2332,100 @@ mod tests {
             real.starts_with(std::fs::canonicalize(&data).expect("canon data")) && mode == 0o700,
             "run folder is {real:?} with mode {mode:o}"
         );
+    }
+
+    fn short_lived_child(dir: &Path) -> std::process::Child {
+        #[cfg(unix)]
+        {
+            std::process::Command::new("true")
+                .current_dir(dir)
+                .spawn()
+                .expect("true")
+        }
+        #[cfg(windows)]
+        {
+            std::process::Command::new("cmd")
+                .args(["/c", "exit", "0"])
+                .current_dir(dir)
+                .spawn()
+                .expect("cmd")
+        }
+    }
+
+    /// The folder of a child that has exited is removed. The run root and anything outside it are not.
+    #[test]
+    fn a_short_lived_child_removes_its_run_folder_when_it_exits() {
+        let d = dir();
+        let data = d.path().join("data");
+        // An hour-old folder is still swept when a new run starts. `touch` sets a directory's time; opening one does not.
+        #[cfg(unix)]
+        {
+            std::fs::create_dir_all(data.join("more-agents").join("run")).expect("run root");
+            let stale = data.join("more-agents").join("run").join("stale");
+            std::fs::create_dir_all(&stale).expect("stale");
+            let aged = std::process::Command::new("touch")
+                .args(["-t", "202001010000.00"])
+                .arg(&stale)
+                .status()
+                .expect("touch");
+            assert!(aged.success(), "could not age the old run folder");
+            let run = run_folder(&data).expect("run folder");
+            assert!(
+                !stale.exists(),
+                "the startup sweep still removes an hour-old folder"
+            );
+            let _ = run;
+        }
+        let run = run_folder(&data).expect("run folder");
+        assert!(run.join("package.json").is_file());
+        let mut child = short_lived_child(&run);
+        let _ = child.wait();
+        // harness_spawn calls this after child.wait(), on the normal exit and on a spawn that was cancelled.
+        remove_run_folder(&data, &run).expect("reap");
+        assert!(!run.exists());
+        let root = data.join("more-agents").join("run");
+        assert!(root.is_dir());
+        let outside = d.path().join("outside");
+        std::fs::create_dir_all(&outside).expect("outside");
+        assert!(remove_run_folder(&data, &outside).is_err());
+        assert!(outside.is_dir());
+        assert!(remove_run_folder(&data, &root).is_err());
+        assert!(root.is_dir());
+        // A path that climbs out of the run root is not a child of it.
+        let climbed = root.join("..").join("outside");
+        assert!(remove_run_folder(&data, &climbed).is_err());
+        assert!(outside.is_dir());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_planted_link_is_not_removed_as_a_run_folder() {
+        let d = dir();
+        let data = d.path().join("data");
+        let outside = d.path().join("keep");
+        std::fs::create_dir_all(&outside).expect("keep");
+        std::fs::write(outside.join("note"), b"stay").expect("note");
+        let run = run_folder(&data).expect("run");
+        let link = run.parent().unwrap().join("linked");
+        std::os::unix::fs::symlink(&outside, &link).expect("link");
+        assert!(remove_run_folder(&data, &link).is_err());
+        assert_eq!(std::fs::read(outside.join("note")).expect("still"), b"stay");
+        assert!(outside.is_dir());
+        let _ = run;
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_planted_link_is_not_removed_as_a_run_folder() {
+        // The unix test plants a symlink. Here, a path that is not a direct child of the run root is refused.
+        let d = dir();
+        let data = d.path().join("data");
+        let run = run_folder(&data).expect("run");
+        let outside = d.path().join("keep");
+        std::fs::create_dir_all(&outside).expect("keep");
+        assert!(remove_run_folder(&data, &outside).is_err());
+        assert!(outside.is_dir());
+        assert!(run.is_dir());
     }
 
     #[test]

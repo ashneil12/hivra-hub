@@ -1310,6 +1310,7 @@ pub fn harness_spawn(
         account,
         run: Some(run.clone()),
     });
+    let more_run_cleanup = more_run.then(|| (app.path().app_data_dir().ok(), spawn_dir.clone()));
     if let Some(rejected) = host.install_spawn(session_id.clone(), epoch, kill_all, live) {
         run.lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -1323,8 +1324,10 @@ pub fn harness_spawn(
         let note_id = session_id.clone();
         let note_dir = workdir.clone();
         let note_before = journal_before;
+        let note_cleanup = more_run_cleanup.clone();
         thread::spawn(move || {
             let _ = child.wait();
+            reap_more_agent_run(note_cleanup);
             // WP-86: journal the lines this cancelled crew left behind.
             if let Some(before) = note_before.wait() {
                 let _ = crate::attribution::note_run(&note_app, &note_id, &note_dir, &before);
@@ -1407,6 +1410,7 @@ pub fn harness_spawn(
     let note_dir = workdir.clone();
     thread::spawn(move || {
         let code = child.wait().ok().and_then(|status| status.code());
+        reap_more_agent_run(more_run_cleanup);
         // WP-86: journal the lines this crew left behind. A failure leaves the journal as it was.
         if let Some(before) = note_before.wait() {
             let _ = crate::attribution::note_run(&wait_app, &wait_id, &note_dir, &before);
@@ -1435,6 +1439,14 @@ pub fn harness_spawn(
     });
 
     Ok(pid)
+}
+
+/// A More agents run folder goes when its child exits. Anything else has no folder to remove.
+fn reap_more_agent_run(cleanup: Option<(Option<PathBuf>, PathBuf)>) {
+    let Some((Some(data), dir)) = cleanup else {
+        return;
+    };
+    let _ = crate::more_agents::remove_run_folder(&data, &dir);
 }
 
 pub(crate) fn provider_account_dir(
