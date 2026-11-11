@@ -663,6 +663,8 @@ pub fn deliver(
                 .into();
                 delivery.detail = filled.detail;
             } else {
+                crate::commit_guard::gate_outgoing(&checkout)
+                    .map_err(|e| format!("Pushing {branch} refused: {e}"))?;
                 git(
                     &checkout,
                     &[
@@ -708,6 +710,7 @@ pub fn deliver(
                     .chars()
                     .take(200)
                     .collect();
+                crate::commit_guard::gate_outgoing(&checkout)?;
                 let created = gh.run(
                     Some(&checkout),
                     &[

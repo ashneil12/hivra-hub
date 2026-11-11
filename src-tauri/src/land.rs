@@ -106,12 +106,11 @@ fn worker_patch(checkout: &Path, project: &Path) -> Result<(Vec<u8>, Vec<String>
         // WP-91: a worker's handoff is a note kept in its own checkout, never one of its changes (checkpoint.rs leaves
         // it out of integration too), so it is not work that has to land before the copy can go.
         let handoff = format!(":(exclude){}", crate::goal_graph::handoff::DIR);
-        let (ok, _, why) = git(
-            checkout,
-            &["add", "-A", "--", ".", &handoff],
-            Some(&index),
-            None,
-        )?;
+        // WP-200: untracked agent files (local approvals, saved transcripts) are left out of what lands too.
+        let mut add = crate::commit_guard::add_all_pathspec(checkout)?;
+        add.push(handoff);
+        let add: Vec<&str> = add.iter().map(String::as_str).collect();
+        let (ok, _, why) = git(checkout, &add, Some(&index), None)?;
         if !ok {
             return Err(format!("the copy's changes couldn't be gathered: {why}"));
         }
@@ -130,6 +129,7 @@ fn worker_patch(checkout: &Path, project: &Path) -> Result<(Vec<u8>, Vec<String>
         if !ok {
             return Err(format!("the copy's change couldn't be written out: {why}"));
         }
+        crate::commit_guard::scan_patch(&String::from_utf8_lossy(&patch))?;
         let files = String::from_utf8_lossy(&names)
             .lines()
             .map(str::to_string)

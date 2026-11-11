@@ -1,0 +1,9 @@
+{
+  "comment": "Files an agent writes for itself inside a repository. Read by Rust (src-tauri/src/commit_guard.rs, include_str!). Hivra leaves these out of every staging, commit, push, pull request and land, unless git already tracks the same path. exact: one path. under: any file in dir whose name ends with ext.",
+  "exact": [
+    { "path": ".claude/settings.local.json", "kind": "an agent's local approvals" }
+  ],
+  "under": [
+    { "dir": ".claude/", "ext": ".jsonl", "kind": "an agent's saved transcript" }
+  ]
+}

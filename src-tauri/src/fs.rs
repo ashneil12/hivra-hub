@@ -1034,11 +1034,9 @@ pub async fn git_discard_all(cwd: String) -> Result<(), String> {
 /// Stage every changed file in the repo.
 #[tauri::command]
 pub async fn git_stage_all(cwd: String) -> Result<(), String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        git_checked(&expand_home(&cwd), &["add", "-A", "--", "."])
-    })
-    .await
-    .map_err(|e| e.to_string())?
+    tauri::async_runtime::spawn_blocking(move || crate::commit_guard::stage_all(&expand_home(&cwd)))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 /// Unstage every staged file.
@@ -2790,6 +2788,7 @@ fn git_commit_selected_for(root: &Path, message: &str, paths: &[String]) -> Resu
         return Err("Commit message cannot be empty".into());
     }
     let paths = git_selected_paths(root, paths)?;
+    crate::commit_guard::refuse_selected(root, &paths)?;
     let existing: Vec<&str> = paths
         .iter()
         .filter(|path| std::fs::symlink_metadata(root.join(path)).is_ok())
@@ -2827,6 +2826,7 @@ impl Drop for GitSelectionIndex {
 fn git_selected_context_for(root: &Path, paths: &[String]) -> Result<GitStagedContext, String> {
     no_blank_root(root)?;
     let paths = git_selected_paths(root, paths)?;
+    crate::commit_guard::refuse_selected(root, &paths)?;
     let index_dir = std::env::temp_dir().join(format!("monocode-git-selection-{}", Uuid::new_v4()));
     let directory = std::fs::DirBuilder::new();
     #[cfg(unix)]
@@ -2888,6 +2888,7 @@ fn git_commit_args(root: &Path, message: &str, extra: &[&str]) -> Result<(), Str
     if message.is_empty() {
         return Err("Commit message cannot be empty".into());
     }
+    crate::commit_guard::refuse_staged_agent_files(root)?;
     let mut args = vec!["commit"];
     args.extend_from_slice(extra);
     args.extend(["--cleanup=strip", "-m", message]);
@@ -2910,6 +2911,7 @@ fn git_head_message_for(root: &Path) -> Result<String, String> {
 }
 
 fn git_push_for(root: &Path) -> Result<(), String> {
+    crate::commit_guard::gate_outgoing(root)?;
     if git_stdout(root, &["rev-parse", "--abbrev-ref", "@{upstream}"]).is_some() {
         return git_checked(root, &["push"]);
     }
@@ -2920,6 +2922,7 @@ fn git_push_for(root: &Path) -> Result<(), String> {
 fn git_sync_changes_for(root: &Path) -> Result<(), String> {
     if git_stdout(root, &["rev-parse", "--abbrev-ref", "@{upstream}"]).is_some() {
         git_checked(root, &["pull", "--no-edit", "--ff"]).map_err(with_signing_hint)?;
+        crate::commit_guard::gate_outgoing(root)?;
         return git_checked(root, &["push"]);
     }
     git_push_for(root)
@@ -4370,6 +4373,7 @@ fn git_pr_create_for(root: &Path, input: &GitPrCreateInput) -> Result<String, St
     if title.is_empty() {
         return Err("Pull request title cannot be empty".into());
     }
+    crate::commit_guard::gate_outgoing(root)?;
     let stamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_nanos())

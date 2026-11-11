@@ -295,7 +295,7 @@ fn blocked(made: &[ChangeCommit]) -> Vec<Blocked> {
 pub fn collect(change: &Change) -> Result<Collected, String> {
     let folder = Path::new(&change.folder);
     if !git(folder, &["status", "--porcelain"])?.trim().is_empty() {
-        git(folder, &["add", "-A"])?;
+        crate::commit_guard::stage_all(folder)?;
         git(folder, &["commit", "-q", "-m", "Hub change"])?;
     }
     let made = commits(folder, &format!("{}..HEAD", change.base))?;
@@ -416,6 +416,8 @@ pub fn land(change: &Change) -> Result<Vec<ChangeCommit>, String> {
             ));
         }
     }
+    let landing = format!("{head}..{}", change.branch);
+    crate::commit_guard::gate_range(repo, &[landing.as_str()])?;
     if let Err(error) = git(repo, &["merge", "--ff-only", &change.branch]) {
         return Err(format!(
             "The change couldn't go into {branch} ({}). Nothing changed.",
