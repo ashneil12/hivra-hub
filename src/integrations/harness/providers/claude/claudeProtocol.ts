@@ -349,6 +349,13 @@ export function buildClaudeSpawnArgs(input: {
   const model = bridge ? bridgeLaunchModel(input.model, bridge) : input.model;
   const ownSubagents = subagentModelEnv(bridge ? model : input.routedModel);
   if (ownSubagents) settings.env = { ...settings.env, ...ownSubagents };
+  // Round 12: flag settings outrank user, project and local settings. A project's env can set
+  // CLAUDE_BASH_MAINTAIN_PROJECT_WORKING_DIR to "0" and move the shell out of the chat folder while every approval
+  // is still marked pinned. "1" here wins. The process env stays set too (harness.rs). An isolated helper has no
+  // chat folder, so it is left alone.
+  if (!input.isolated) {
+    settings.env = { ...settings.env, CLAUDE_BASH_MAINTAIN_PROJECT_WORKING_DIR: "1" };
+  }
   if (input.isolated) {
     args.push("--no-session-persistence");
     args.push("--strict-mcp-config");
@@ -1246,6 +1253,11 @@ const RESOURCE_TOOLS: ReadonlySet<string> = new Set(["ListMcpResourcesTool", "Re
 export function approvalCall(
   toolName: string,
   input: Record<string, unknown>,
+  /**
+   * Whether this launch still keeps its shell in the chat folder. Claude's builder passes true until EnterWorktree,
+   * ExitWorktree, or an init folder that is not the launch folder (round 12). Never read from `input`.
+   */
+  pinned = true,
 ): ApprovalCall {
   const command = typeof input.command === "string" ? input.command : undefined;
   // A search names where it starts in `path` (Grep, Glob, LS), and a Glob also names it in `pattern` (review H1).
@@ -1262,8 +1274,8 @@ export function approvalCall(
     tool: toolName,
     // Round 11: this builder is Claude's only. Claude's launch keeps the shell and the file tools in the chat folder
     // (CLAUDE_BASH_MAINTAIN_PROJECT_WORKING_DIR, harness.rs), so a relative search or shell word is judged in it. The flag
-    // is set here by the provider, never read from the tool input.
-    folderPinned: true,
+    // is set here by the provider, never read from the tool input. Round 12: it is false once that launch folder was left.
+    folderPinned: pinned,
     ...(command !== undefined ? { command } : {}),
     ...(paths.length ? { paths } : {}),
     ...(server !== undefined ? { server } : {}),
