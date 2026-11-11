@@ -120,6 +120,8 @@ pub(crate) fn command(
             cmd
         }
         None => {
+            // Only the Unix branch below changes `cmd`, so Windows clippy sees an unused `mut` without this.
+            #[cfg_attr(not(unix), allow(unused_mut))]
             let mut cmd = Command::new(program);
             #[cfg(unix)]
             if let Some(name) = argv0 {

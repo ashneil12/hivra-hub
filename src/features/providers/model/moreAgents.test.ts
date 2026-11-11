@@ -203,7 +203,10 @@ describe("argument rules match the app", () => {
     expect(argumentProblem("/usr/bin/python3", ["-m", "x"])).not.toBeNull();
     expect(argumentProblem("/usr/bin/python3", ["-Bm", "x"])).not.toBeNull();
     expect(argumentProblem("/opt/node", ["-pe", "1"])).not.toBeNull();
-    expect(argumentProblem("/usr/bin/python3", ["-m", "/abs/mod.py"])).toBeNull();
+    // `/abs/mod.py` is absolute on macOS and Linux only; on Windows a path with no drive is refused (see below).
+    expect(argumentProblem("/usr/bin/python3", ["-m", "/abs/mod.py"], "other")).toBeNull();
+    expect(argumentProblem("C:\\py\\python.exe", ["-m", "C:\\abs\\mod.py"], "win32")).toBeNull();
+    expect(argumentProblem("C:\\py\\python.exe", ["-m", "/abs/mod.py"], "win32")).not.toBeNull();
   });
 });
 
