@@ -1058,3 +1058,253 @@ mod tests {
         let _ = std::fs::remove_dir_all(&home);
     }
 }
+
+/// Review r3 repro tests for PR #208. Each states a property the profile should hold and is red at 4417a9621. The
+/// evaluator reads `regex`, `literal` and `subpath` filters, and takes any `file-write…` operation (a rename is checked
+/// as a write on the source and the target, never on the files inside a renamed folder).
+#[cfg(test)]
+mod review_r3_repro {
+    use super::*;
+
+    fn filter_matches(line: &str, path: &str) -> bool {
+        if let Some(start) = line.find("(regex #\"") {
+            let rest = &line[start + "(regex #\"".len()..];
+            return rest.find("\")").is_some_and(|end| {
+                regex::Regex::new(&rest[..end]).is_ok_and(|re| re.is_match(path))
+            });
+        }
+        for (open, subpath) in [("(literal \"", false), ("(subpath \"", true)] {
+            if let Some(start) = line.find(open) {
+                let rest = &line[start + open.len()..];
+                let Some(end) = rest.find('"') else {
+                    return false;
+                };
+                let named = &rest[..end];
+                return path == named
+                    || (subpath && path.starts_with(&format!("{}/", named.trim_end_matches('/'))));
+            }
+        }
+        false
+    }
+
+    /// Whether some deny line names a `file-write…` operation for `path`.
+    fn denies_write(profile: &str, path: &str) -> bool {
+        profile.lines().any(|line| {
+            let line = line.trim();
+            line.starts_with("(deny ") && line.contains("file-write") && filter_matches(line, path)
+        })
+    }
+
+    const HOME: &str = "/Users/test";
+
+    /// HIGH-1 is still open: `mv "~/Library/Application Support/com.ash.monocode-hub" …x` is a write to the folder
+    /// itself, which no rule names. The switch file then reads Missing, which is off, for the very next start.
+    #[test]
+    fn renaming_the_data_folder_or_a_parent_of_it_is_refused() {
+        let profile = profile_text(Path::new(HOME)).unwrap();
+        for path in [
+            "/Users/test/Library/Application Support/com.ash.monocode-hub",
+            "/Users/test/Library/Application Support/com.ash.monocode-hub.dev.slot",
+            "/Users/test/Library/Application Support",
+            "/Users/test/Library",
+        ] {
+            assert!(
+                denies_write(&profile, path),
+                "{path} can be renamed away, so the switch reads missing (off) at the next start"
+            );
+        }
+    }
+
+    /// The `denyWrite` globs under home name only what is inside a folder. Renaming the folder (or a parent) out, editing
+    /// it and renaming it back is never matched: a LaunchAgent, a global git config, a Claude hook.
+    #[test]
+    fn renaming_a_protected_folder_or_its_parent_is_refused() {
+        let profile = profile_text(Path::new(HOME)).unwrap();
+        for path in [
+            "/Users/test/Library/LaunchAgents",
+            "/Users/test/.config/git",
+            "/Users/test/.config/opencode",
+            "/Users/test/.config",
+            "/Users/test/.claude",
+            "/Users/test/.claude/hooks",
+        ] {
+            assert!(
+                denies_write(&profile, path),
+                "{path} can be renamed, edited outside the rule and renamed back"
+            );
+        }
+    }
+
+    /// The app runs what its data folder says, outside the profile: a worker gate (`gates/<project>.json` and its
+    /// script, run when a delegated worker reports done) and a ship record (`ship/current.json`, run at the next start).
+    #[test]
+    fn the_rest_of_the_data_folder_cannot_be_written() {
+        let profile = profile_text(Path::new(HOME)).unwrap();
+        let data = "/Users/test/Library/Application Support/com.ash.monocode-hub";
+        for name in [
+            "gates/proj.json",
+            "gates/check.mjs",
+            "ship/current.json",
+            "ship/planted/state.json",
+            "ship/planted/runner.mjs",
+        ] {
+            let path = format!("{data}/{name}");
+            assert!(
+                denies_write(&profile, &path),
+                "{path} is writable, and the app runs what it names outside the sandbox"
+            );
+        }
+    }
+
+    /// `.git/commondir` (and a linked worktree's `commondir`) tells git where the config is. The profile denies
+    /// `.git/config` but not these, so the agent points git at a config it wrote (see checkout_guard's r3 repro).
+    #[test]
+    fn a_git_common_dir_redirect_cannot_be_written() {
+        let profile = profile_text(Path::new(HOME)).unwrap();
+        for path in [
+            "/Users/test/proj/.git/commondir",
+            "/Users/test/proj/.git/worktrees/wt/commondir",
+            "/Users/test/proj/.git/worktrees/wt/config.worktree",
+        ] {
+            assert!(
+                denies_write(&profile, path),
+                "{path} is writable: git reads the repository config from wherever it points"
+            );
+        }
+    }
+
+    /// r2 MED-2 was fixed for the secret places only: their real targets are denied when they are links. The `denyWrite`
+    /// globs are not resolved, so a `~/.gitconfig` or `~/.claude/settings.json` kept in a dotfiles folder (a link, as
+    /// dotfile managers make them) is written through its real path.
+    #[cfg(unix)]
+    #[test]
+    fn a_linked_global_git_config_or_claude_settings_is_denied_at_its_real_path() {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let home =
+            std::env::temp_dir().join(format!("sbx-r3-links-{}-{nanos}", std::process::id()));
+        std::fs::create_dir_all(home.join("dotfiles")).unwrap();
+        std::fs::create_dir_all(home.join(".claude")).unwrap();
+        let home = std::fs::canonicalize(&home).unwrap();
+        std::fs::write(home.join("dotfiles/gitconfig"), "[user]\n").unwrap();
+        std::fs::write(home.join("dotfiles/claude-settings.json"), "{}\n").unwrap();
+        std::os::unix::fs::symlink(home.join("dotfiles/gitconfig"), home.join(".gitconfig"))
+            .unwrap();
+        std::os::unix::fs::symlink(
+            home.join("dotfiles/claude-settings.json"),
+            home.join(".claude/settings.json"),
+        )
+        .unwrap();
+        let profile = profile_text(&home).unwrap();
+        let targets = [
+            home.join("dotfiles/gitconfig"),
+            home.join("dotfiles/claude-settings.json"),
+        ];
+        let _ = std::fs::remove_dir_all(&home);
+        for target in targets {
+            let target = target.to_string_lossy().to_string();
+            assert!(
+                denies_write(&profile, &target),
+                "{target} (the real file behind a protected link) is writable"
+            );
+        }
+    }
+
+    /// L2: a submodule's git dir is `.git/modules/<name>`, and a name is its path (`vendor/lib`), so it often has a
+    /// slash; nested submodules sit under `.git/modules/<a>/modules/<b>`. The profile allows one segment only.
+    #[test]
+    fn a_submodule_with_a_slash_in_its_name_has_its_hooks_and_config_denied() {
+        let profile = profile_text(Path::new(HOME)).unwrap();
+        for path in [
+            "/Users/test/proj/.git/modules/vendor/lib/hooks/pre-commit",
+            "/Users/test/proj/.git/modules/vendor/lib/config",
+            "/Users/test/proj/.git/modules/a/modules/b/hooks/pre-commit",
+        ] {
+            assert!(denies_write(&profile, path), "{path} is writable");
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    fn temp_home(tag: &str) -> PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let dir = std::env::temp_dir().join(format!("sbx-r3-{tag}-{}-{nanos}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::canonicalize(&dir).unwrap()
+    }
+
+    /// The same as `renaming_the_data_folder_or_a_parent_of_it_is_refused`, under the real `sandbox-exec`.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn under_the_real_profile_renaming_the_data_folder_does_not_turn_the_sandbox_off() {
+        let home = temp_home("rename");
+        let data = home.join(APP_DATA_UNDER_HOME);
+        std::fs::create_dir_all(data.join("settings")).unwrap();
+        std::fs::write(data.join("settings").join(SETTING_FILE), "on\n").unwrap();
+        let profile = profile_text_for(&home, Some(&data)).unwrap();
+        let moved = Command::new(SANDBOX_EXEC)
+            .args(["-p", &profile, "/bin/mv"])
+            .arg(&data)
+            .arg(home.join("Library/Application Support/elsewhere"))
+            .env("HOME", &home)
+            .status()
+            .unwrap()
+            .success();
+        let on = decide(None, read_switch_file(&data));
+        let _ = std::fs::remove_dir_all(&home);
+        assert!(!moved, "a sandboxed mv renamed the data folder away");
+        assert!(on, "after the rename the switch reads off");
+    }
+
+    /// The exec denies are by path. A copy of launchctl runs under the profile, and a job it submits starts outside
+    /// the sandbox. This only runs `version`; it submits nothing.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_copied_launchctl_is_refused_too() {
+        let home = temp_home("copy");
+        let copy = home.join("lc");
+        std::fs::copy("/bin/launchctl", &copy).unwrap();
+        let profile = profile_text(&home).unwrap();
+        let ran = Command::new(SANDBOX_EXEC)
+            .args(["-p", &profile])
+            .arg(&copy)
+            .arg("version")
+            .env("HOME", &home)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .unwrap()
+            .success();
+        let _ = std::fs::remove_dir_all(&home);
+        assert!(!ran, "a copy of /bin/launchctl ran under the profile");
+    }
+
+    /// Functional: Claude Code on macOS reads its sign-in with `security find-generic-password -a $USER -w -s "Claude
+    /// Code-credentials"` (cli.js 2.1.42). With `/usr/bin/security` denied, a sandboxed Claude has no login.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn under_the_real_profile_claude_code_can_still_run_security_for_its_sign_in() {
+        let home = temp_home("security");
+        let profile = profile_text(&home).unwrap();
+        let status = Command::new(SANDBOX_EXEC)
+            .args([
+                "-p",
+                &profile,
+                "/bin/sh",
+                "-c",
+                "/usr/bin/security -h >/dev/null 2>&1; test $? -ne 126",
+            ])
+            .env("HOME", &home)
+            .status()
+            .unwrap();
+        let _ = std::fs::remove_dir_all(&home);
+        assert!(
+            status.success(),
+            "Claude Code's sign-in path (/usr/bin/security) is refused under the profile"
+        );
+    }
+}

@@ -450,3 +450,63 @@ mod tests {
         assert!(matches!(result, Err(super::GitFail::Unavailable)));
     }
 }
+
+/// Review r3 repro for PR #208 (WP-178). The builder's answer to open call (2) is that the app's own attribution git
+/// calls are read-only and run no hooks. They run no hooks, but a read-only `git diff` still runs a textconv program
+/// named in the repository's config, and the profile lets a sandboxed agent redirect that config with `.git/commondir`.
+/// `dirty_hashes` then runs the agent's program outside the sandbox. Red at 4417a9621.
+#[cfg(all(test, unix))]
+mod review_r3_repro {
+    use super::*;
+
+    #[test]
+    fn the_app_attribution_diff_never_runs_a_textconv_from_a_redirected_common_dir() {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let root = std::env::temp_dir().join(format!("attr-r3-{}-{nanos}", std::process::id()));
+        let main = root.join("main");
+        let evil = root.join("agent-common-dir");
+        let marker = root.join("RAN-OUTSIDE-THE-SANDBOX");
+        std::fs::create_dir_all(&main).unwrap();
+        let run = |args: &[&str]| {
+            let ok = crate::git_cmd::git()
+                .arg("-C")
+                .arg(&main)
+                .args(["-c", "user.name=t", "-c", "user.email=t@t"])
+                .args(args)
+                .status()
+                .unwrap()
+                .success();
+            assert!(ok, "git {args:?}");
+        };
+        run(&["init", "-q"]);
+        std::fs::write(main.join("a.txt"), "hello\n").unwrap();
+        run(&["add", "a.txt"]);
+        run(&["commit", "-q", "-m", "a"]);
+
+        std::fs::create_dir_all(&evil).unwrap();
+        std::os::unix::fs::symlink(main.join(".git/objects"), evil.join("objects")).unwrap();
+        std::os::unix::fs::symlink(main.join(".git/refs"), evil.join("refs")).unwrap();
+        std::fs::write(
+            evil.join("config"),
+            format!(
+                "[core]\n\trepositoryformatversion = 0\n\tbare = false\n[diff \"x\"]\n\ttextconv = \"touch '{}'; cat\"\n",
+                marker.display()
+            ),
+        )
+        .unwrap();
+        std::fs::write(main.join(".git/commondir"), format!("{}\n", evil.display())).unwrap();
+        std::fs::write(main.join(".gitattributes"), "* diff=x\n").unwrap();
+        std::fs::write(main.join("a.txt"), "hello\nmore\n").unwrap();
+
+        let _ = dirty_hashes(&main);
+        let ran = marker.exists();
+        let _ = std::fs::remove_dir_all(&root);
+        assert!(
+            !ran,
+            "attribution's own git diff ran the agent's textconv outside the sandbox"
+        );
+    }
+}

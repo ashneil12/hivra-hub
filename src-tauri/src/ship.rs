@@ -2721,3 +2721,67 @@ mod tests {
         assert!(InstanceLock::acquire_file(&dir.0.join(RUNNER_LOCK), Duration::ZERO).is_ok());
     }
 }
+
+/// Review r3 repro for PR #208 (WP-178). The sandbox profile protects only `settings/` and `monocode.db*` in the app's
+/// data folder. A sandboxed agent can still write `ship/current.json` and a ship record of its own, and at the daily
+/// app's next start `startup` restarts that record's "runner" with the record's own `node`, outside any sandbox. Red at
+/// 4417a9621 (the profile half is `agent_sandbox::review_r3_repro::the_rest_of_the_data_folder_cannot_be_written`).
+#[cfg(all(test, unix))]
+mod review_r3_repro {
+    use super::*;
+
+    #[test]
+    fn a_ship_record_an_agent_wrote_is_not_run_at_the_next_start() {
+        use std::os::unix::fs::PermissionsExt;
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let data = std::env::temp_dir().join(format!("ship-r3-{}-{nanos}", std::process::id()));
+        let dir = data.join(SHIP_DIR).join("planted");
+        std::fs::create_dir_all(&dir).unwrap();
+        let marker = data.join("RAN-OUTSIDE-THE-SANDBOX");
+        let program = dir.join("not-node.sh");
+        std::fs::write(
+            &program,
+            format!("#!/bin/sh\ntouch '{}'\n", marker.display()),
+        )
+        .unwrap();
+        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::write(dir.join("runner.mjs"), "// the agent's runner\n").unwrap();
+        // Everything below is what a sandboxed agent writes; it reads the running build's sha from `monocode version`.
+        write_json(
+            &dir.join(STATE),
+            &json!({
+                "id": "planted",
+                "phase": "trial",
+                "to": { "sha": instance::stamp().sha },
+                "from": { "sha": "0000000" },
+                "node": program.to_string_lossy(),
+            }),
+        )
+        .unwrap();
+        write_json(
+            &data.join(SHIP_DIR).join(CURRENT),
+            &json!({ "id": "planted" }),
+        )
+        .unwrap();
+
+        let daily = Identity {
+            kind: Kind::Daily,
+            identifier: instance::DAILY_IDENTIFIER.into(),
+            slot: None,
+        };
+        let _ = startup(&daily, &data);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !marker.exists() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        let ran = marker.exists();
+        let _ = std::fs::remove_dir_all(&data);
+        assert!(
+            !ran,
+            "the daily app ran a ship record an agent planted in its data folder, outside the sandbox"
+        );
+    }
+}

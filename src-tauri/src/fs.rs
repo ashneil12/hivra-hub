@@ -12011,3 +12011,49 @@ mod tests {
         assert!(git_push_for(blank).is_err());
     }
 }
+
+/// Review r3 repro for PR #208 (WP-178). `fs::git_cmd` now goes through `git_cmd::git()`, which sets
+/// `core.hooksPath=/dev/null` for every call, whether or not the sandbox is on. So a commit Ash makes from the Git
+/// panel no longer runs the repository's own pre-commit hook (Husky, lint-staged, a secret scanner). Red at 4417a9621.
+#[cfg(all(test, unix))]
+mod review_r3_repro {
+    use super::*;
+
+    #[test]
+    fn a_git_panel_commit_still_runs_the_repository_pre_commit_hook() {
+        use std::os::unix::fs::PermissionsExt;
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let repo = std::env::temp_dir().join(format!("fs-r3-{}-{nanos}", std::process::id()));
+        let marker = repo.join("hook-ran");
+        std::fs::create_dir_all(repo.join(".husky")).unwrap();
+        let hook = repo.join(".husky").join("pre-commit");
+        std::fs::write(&hook, format!("#!/bin/sh\ntouch '{}'\n", marker.display())).unwrap();
+        std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let plain = |args: &[&str]| {
+            assert!(std::process::Command::new("git")
+                .arg("-C")
+                .arg(&repo)
+                .args(args)
+                .status()
+                .unwrap()
+                .success());
+        };
+        plain(&["init", "-q"]);
+        plain(&["config", "core.hooksPath", ".husky"]);
+        plain(&["config", "user.name", "t"]);
+        plain(&["config", "user.email", "t@t"]);
+        plain(&["config", "commit.gpgsign", "false"]);
+
+        let committed = git_checked(&repo, &["commit", "--allow-empty", "-m", "from the panel"]);
+        let ran = marker.exists();
+        let _ = std::fs::remove_dir_all(&repo);
+        assert!(committed.is_ok(), "{committed:?}");
+        assert!(
+            ran,
+            "the Git panel's commit skipped the repository's pre-commit hook (core.hooksPath=/dev/null)"
+        );
+    }
+}
