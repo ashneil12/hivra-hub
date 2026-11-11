@@ -8,6 +8,9 @@ on:
     # tier runs 20 jobs (5 on macOS) at once, so drafts kept the PRs that are ready waiting in the
     # queue. Marking a PR ready for review runs everything.
     types: [opened, synchronize, reopened, ready_for_review]
+  # Hivra: the pre-ship run (`gh workflow run CI --ref main`): every job, the browser tests and the macOS jobs included.
+  # Any branch can be run the same way.
+  workflow_dispatch:
   schedule:
     # Hivra: nightly, on main, 03:47 UTC. The RPM jobs only; every other job skips a scheduled run. A pull request
     # that touches no packaging file builds one RPM image, so this run is what builds the second image and the
@@ -66,7 +69,11 @@ jobs:
       - run: npx vitest run --config mobile/vitest.config.ts
 
   browser:
-    if: github.event_name != 'schedule' && (github.event_name != 'pull_request' || !github.event.pull_request.draft)
+    # 11 Nov 2026 (Ash): the browser tests run once before each ship, not on every PR or merge. They were the slowest
+    # and flakiest jobs and most of the wait on every PR, so a PR merges on the fast checks (Rust and the web unit
+    # tests). Before a ship, `gh workflow run CI --ref main` runs everything, these included, and a failure stops the
+    # ship until it is fixed (in bulk). Any branch can be run the same way.
+    if: github.event_name != 'schedule' && github.event_name == 'workflow_dispatch'
     # Hivra: the suite runs one test at a time (workers: 1) and took about 22 minutes as one job, the longest wait
     # on every PR. Four shards (whole spec files each) run side by side on separate runners, so nothing is shared.
     # The install step is capped at 15 minutes and its retry at 8, so the job limit is 35 minutes: one full attempt
@@ -172,9 +179,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Windows and Linux are off while the app is Mac-only (Ash, 11 Nov 2026). Set the repository variable
-        # HUB_CROSS_PLATFORM_CI to true to run them again.
-        os: ${{ fromJSON(vars.HUB_CROSS_PLATFORM_CI == 'true' && '["ubuntu-latest","macos-latest","windows-latest"]' || '["macos-latest"]') }}
+        # PRs and pushes run on Linux (fast, and no wait for the 5 macOS runners); the pre-ship run (workflow_dispatch)
+        # uses macOS. Windows is off while the app is Mac-only (Ash, 11 Nov 2026); HUB_CROSS_PLATFORM_CI=true runs all three.
+        os: ${{ fromJSON(vars.HUB_CROSS_PLATFORM_CI == 'true' && '["ubuntu-latest","macos-latest","windows-latest"]' || github.event_name == 'workflow_dispatch' && '["macos-latest"]' || '["ubuntu-latest"]') }}
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -203,11 +210,14 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Windows and Linux are off while the app is Mac-only (Ash, 11 Nov 2026). Set the repository variable
-        # HUB_CROSS_PLATFORM_CI to true to run them again.
+        # Windows is off while the app is Mac-only (Ash, 11 Nov 2026). Set the repository variable
+        # HUB_CROSS_PLATFORM_CI to true to run it again.
         # By default the web half (vitest and tsc, which test no OS) runs on two Linux runners and macOS runs only the
         # Rust half. On 11 Nov 2026 the macOS job ran both halves on one 3-core runner: vitest took 25 minutes there
         # against 6 on Linux, and the Rust tests waited behind it, so every PR waited 27 minutes for that one job.
+        # The Rust half stays on macOS: on Linux it needs the WebKitGTK packages from Ubuntu's mirror, and on
+        # 11 Nov 2026 that mirror stopped resolving from GitHub's runners for hours, failing every Linux job that
+        # installs packages. The host and ship tests need no packages, so they run on Linux on a PR.
         include: ${{ fromJSON(vars.HUB_CROSS_PLATFORM_CI == 'true' && '[{"os":"macos-latest","part":"all"},{"os":"ubuntu-latest","part":"web"},{"os":"ubuntu-latest","part":"rust"},{"os":"windows-latest","part":"web","shard":"1/2"},{"os":"windows-latest","part":"web","shard":"2/2"},{"os":"windows-latest","part":"rust"}]' || '[{"os":"ubuntu-latest","part":"web","shard":"1/2"},{"os":"ubuntu-latest","part":"web","shard":"2/2"},{"os":"macos-latest","part":"rust"}]') }}
     runs-on: ${{ matrix.os }}
     steps:
@@ -276,8 +286,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Windows and Linux are off while the app is Mac-only; HUB_CROSS_PLATFORM_CI=true runs them again.
-        os: ${{ fromJSON(vars.HUB_CROSS_PLATFORM_CI == 'true' && '["macos-latest","ubuntu-latest","windows-latest"]' || '["macos-latest"]') }}
+        # PRs and pushes run on Linux (fast, and no wait for the 5 macOS runners); the pre-ship run (workflow_dispatch)
+        # uses macOS. Windows is off while the app is Mac-only; HUB_CROSS_PLATFORM_CI=true runs all three.
+        os: ${{ fromJSON(vars.HUB_CROSS_PLATFORM_CI == 'true' && '["macos-latest","ubuntu-latest","windows-latest"]' || github.event_name == 'workflow_dispatch' && '["macos-latest"]' || '["ubuntu-latest"]') }}
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -540,7 +551,7 @@ jobs:
   # WP-105: one required check that adds up the rest, so branch protection names one job instead of
   # every job. A new job stays out of this needs list until it has been green for a week. `if: always()`
   # means a failed or cancelled dependency still runs this job, so the failure is reported here too.
-  # Skipped counts as fine: a draft PR runs no jobs, the AppImage check and the RPM full set skip when packaging
+  # Skipped counts as fine: a draft PR runs no jobs, a PR runs no browser tests, the AppImage check and the RPM full set skip when packaging
   # files did not change, and a nightly run starts only the RPM jobs. scripts/ci-ok.mjs prints one line naming
   # every job and its result.
   ci-ok:
