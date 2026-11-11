@@ -308,8 +308,9 @@ pub fn pick_reviewer(
     present: &[crate::crew::resolve::Presence],
     never_use: &[String],
 ) -> Option<String> {
-    let mut cooled: Vec<String> = never_use.to_vec();
-    cooled.push(author.to_string());
+    // The author is not a cooled account, but the same skip keeps them from reviewing their own change.
+    // Never use is the third list, not folded into cooled.
+    let cooled = vec![author.to_string()];
     // Only a builder the app can start a session for can review: the launcher hosts Claude and Codex (launch.ts HOSTS).
     // Any other signed-in CLI is passed over, so one that cannot run never takes the review.
     let usable: Vec<crate::crew::resolve::Presence> = present
@@ -317,7 +318,7 @@ pub fn pick_reviewer(
         .filter(|row| HOSTABLE.contains(&row.cli.as_str()))
         .cloned()
         .collect();
-    crate::crew::resolve::default_cli_except(&usable, &cooled)
+    crate::crew::resolve::default_cli_except(&usable, &cooled, never_use)
         .and_then(|cli| known_builder(&cli))
         .filter(|reviewer| reviewer != author)
 }
