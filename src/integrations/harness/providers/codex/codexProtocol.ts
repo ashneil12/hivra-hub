@@ -22,6 +22,8 @@ import {
 } from "../../core/preview";
 import { formatShellIntent, inferShellIntent } from "../../core/shellIntent";
 import { streamTextDelta } from "../../core/streamText";
+import { realpathSync } from "node:fs";
+import path from "node:path";
 import type { HarnessEvent } from "../../core/types";
 
 /** Codex approval / sandbox settings for thread/start and turn/start. */
@@ -88,20 +90,52 @@ export function codexAutoFileChange(
   hivraSandbox: boolean,
   paths: string[] | undefined,
   cwd: string,
+  grantRoot?: string | null,
 ): "allow" | null {
   if (runtimeMode === "supervised" || runtimeMode === "auto") return null;
   if (runtimeMode === "full-access") return "allow";
   if (!hivraSandbox) return "allow";
+  // An empty or non-string grant root is not a path we can check, so it asks. A root outside the workspace
+  // would widen the write, so that asks too, even when every named path is inside.
+  if (grantRoot != null && (grantRoot === "" || !pathInside(grantRoot, cwd))) return null;
   if (!paths || paths.length === 0) return null;
-  if (paths.every((path) => pathInside(path, cwd))) return "allow";
+  if (paths.every((file) => pathInside(file, cwd))) return "allow";
   return null;
 }
 
-function pathInside(path: string, cwd: string): boolean {
-  const file = path.replace(/\\/g, "/").replace(/\/+$/, "");
-  const root = cwd.replace(/\\/g, "/").replace(/\/+$/, "");
+/** `..` and `.` resolved on the lexical path, then the deepest existing parent followed if it is a link. */
+function pathInside(file: string, root: string): boolean {
   if (!file || !root) return false;
-  return file === root || file.startsWith(`${root}/`);
+  const resolvedFile = resolveExisting(file, root);
+  const resolvedRoot = resolveExisting(root, "/");
+  if (!resolvedFile.startsWith("/") || !resolvedRoot.startsWith("/")) return false;
+  return resolvedFile === resolvedRoot || resolvedFile.startsWith(`${resolvedRoot}/`);
+}
+
+function lexicalAbsolute(input: string, base: string): string {
+  const slash = input.replace(/\\/g, "/");
+  const root = base.replace(/\\/g, "/").replace(/\/+$/, "") || "/";
+  const abs = slash.startsWith("/") ? slash : path.posix.join(root, slash);
+  const norm = path.posix.normalize(abs);
+  return norm.length > 1 ? norm.replace(/\/+$/, "") : norm;
+}
+
+function resolveExisting(input: string, base: string): string {
+  const lexical = lexicalAbsolute(input, base);
+  const parts = lexical.split("/").filter((part) => part.length > 0);
+  for (let n = parts.length; n >= 0; n -= 1) {
+    const prefix = n === 0 ? "/" : `/${parts.slice(0, n).join("/")}`;
+    try {
+      const real = realpathSync(prefix).replace(/\\/g, "/");
+      const rest = parts.slice(n);
+      const joined = rest.length === 0 ? real : path.posix.join(real, ...rest);
+      const norm = path.posix.normalize(joined);
+      return norm.length > 1 ? norm.replace(/\/+$/, "") : norm;
+    } catch {
+      // This prefix is not on disk yet. Try the parent.
+    }
+  }
+  return lexical;
 }
 
 const FIRST_MATE_CONFIG: CodexThreadConfig = {

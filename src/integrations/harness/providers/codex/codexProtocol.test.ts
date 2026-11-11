@@ -90,6 +90,15 @@ describe("runtimeModeToCodexConfig", () => {
     expect(codexAutoFileChange("auto-accept-edits", false, ["/outside/secret"], "/work")).toBe(
       "allow",
     );
+    // A grant root outside the workspace widens the write even when every named path is inside.
+    expect(codexAutoFileChange("auto-accept-edits", true, ["/work/a.ts"], "/work", "/elsewhere")).toBeNull();
+    expect(
+      codexAutoFileChange("auto-accept-edits", true, ["/work/a.ts"], "/work", "/work/../elsewhere"),
+    ).toBeNull();
+    expect(codexAutoFileChange("auto-accept-edits", true, ["/work/a.ts"], "/work", "")).toBeNull();
+    expect(codexAutoFileChange("auto-accept-edits", true, ["/work/sub/a.ts"], "/work", "/work/sub")).toBe(
+      "allow",
+    );
   });
 
   it("opens the sandbox network only for a lead, which needs the control socket", () => {

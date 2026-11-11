@@ -1655,6 +1655,7 @@ async function handleServerRequest(
           live.hivraSandbox,
           fileChangePaths(params),
           live.cwd,
+          fileChangeGrantRoot(params),
         )
       : autoApproval(live.runtimeMode, mapped.kind);
   if (auto) {
@@ -1794,6 +1795,17 @@ function waitApproval(
   }).finally(() => {
     live.approvals.delete(uiId);
   });
+}
+
+/**
+ * `grantRoot` on a file-change approval widens the write to that folder. Missing is no extra grant. A value that is
+ * not a string cannot be checked, so it comes back empty and the caller asks.
+ */
+function fileChangeGrantRoot(params: unknown): string | null | undefined {
+  const value = asRecord(params)?.grantRoot;
+  if (value == null) return undefined;
+  if (typeof value !== "string") return "";
+  return value;
 }
 
 /** Paths on a file-change approval. Missing, empty, or a change with no path fails closed (ask) while the sandbox is on. */
