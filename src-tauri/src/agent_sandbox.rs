@@ -3637,6 +3637,33 @@ mod review_r3_repro {
         assert!(on, "after the rename the switch reads off");
     }
 
+    /// Limit: the deny is job-creation and the launchd mach services, not exec. With System Integrity Protection on,
+    /// CI can kill a byte copy of a platform binary before `main`, so a failed `version` does not prove the profile
+    /// refused the copy. This is the original repro with only that assertion inverted.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_copied_launchctl_limit_the_copy_runs() {
+        let home = temp_home("copy");
+        let copy = home.join("lc");
+        std::fs::copy("/bin/launchctl", &copy).unwrap();
+        let profile = profile_text(&home).unwrap();
+        let ran = Command::new(SANDBOX_EXEC)
+            .args(["-p", &profile])
+            .arg(&copy)
+            .arg("version")
+            .env("HOME", &home)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .unwrap()
+            .success();
+        let _ = std::fs::remove_dir_all(&home);
+        assert!(
+            ran,
+            "a copy of /bin/launchctl did not run version under the profile"
+        );
+    }
+
     /// The path deny names `/bin/launchctl` only. `version` never talks to launchd, and with System Integrity Protection
     /// on, the system kills a byte copy before `main`, so a passing `version` check does not mean the profile refused it.
     /// An ad-hoc copy does run. `bootstrap` and `submit` must still fail, and no job may stay registered. The program is
@@ -3644,7 +3671,7 @@ mod review_r3_repro {
     /// out with the real `/bin/launchctl`, outside the sandbox, whether the assertions hold.
     #[cfg(target_os = "macos")]
     #[test]
-    fn a_copied_launchctl_is_refused_too() {
+    fn a_copied_launchctl_cannot_submit_a_job_under_the_real_profile() {
         use std::os::unix::fs::PermissionsExt;
         let home = temp_home("copy");
         let copy = home.join("lc");
