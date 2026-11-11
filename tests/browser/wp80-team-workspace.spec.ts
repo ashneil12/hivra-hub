@@ -41,3 +41,19 @@ test("the team switch is off by default, saves an address, and says what is left
   expect(text).not.toContain("/Users/");
   expect(text).not.toContain("invite-123");
 });
+
+test("a kept copy is named when the team edited the same field", async ({ page }) => {
+  await page.addInitScript(() => {
+    localStorage.setItem(
+      "wp80.team-workspace.fixture",
+      JSON.stringify({
+        enabled: true,
+        endpoint: "https://team.example.test/v1",
+        signedIn: true,
+        conflicts: ["exo.name"],
+      }),
+    );
+  });
+  await page.goto("/tests/browser/wp80-team-workspace.html");
+  await expect(page.getByText("Kept your copy of exo.name.")).toBeVisible();
+});

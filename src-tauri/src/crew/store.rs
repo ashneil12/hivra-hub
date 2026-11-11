@@ -941,11 +941,12 @@ fn common_dir(entry: &std::path::Path) -> Option<std::path::PathBuf> {
 }
 
 /// The main checkout's top-level folder, when the common directory is a `.git` folder. A bare repository has none.
+/// The on-disk spelling may be `.GIT` on a case-insensitive volume. The canonical path is the identity, not the spelling.
 fn main_checkout_top(common: &std::path::Path) -> Option<String> {
-    if common.file_name().and_then(|name| name.to_str()) != Some(".git") {
+    let parent = common.parent()?;
+    if !same_key(&parent.join(".git"), common) {
         return None;
     }
-    let parent = common.parent()?;
     parent.is_dir().then(|| path_key(&parent.to_string_lossy()))
 }
 
@@ -1012,8 +1013,11 @@ fn checkout_of(folder: &std::path::Path) -> Result<Option<Checkout>, String> {
         _ => return Err(unreadable()),
     };
     let stamp = meta.modified().ok();
+    // One entry for the folder however it was spelled. Path equality would miss `/Repo` and `/repo` on a
+    // case-insensitive volume.
+    let cache_key = crate::fs::canonical(folder).unwrap_or_else(|_| folder.to_path_buf());
     if let Ok(cache) = CHECKOUTS.lock() {
-        if let Some((_, (seen, found))) = cache.iter().find(|(key, _)| key == folder) {
+        if let Some((_, (seen, found))) = cache.iter().find(|(key, _)| key == &cache_key) {
             if *seen == stamp {
                 return Ok(Some(found.clone()));
             }
@@ -1045,7 +1049,7 @@ fn checkout_of(folder: &std::path::Path) -> Result<Option<Checkout>, String> {
     if let Ok(mut cache) = CHECKOUTS.lock() {
         bounded_put(
             &mut cache,
-            folder.to_path_buf(),
+            cache_key,
             (stamp, found.clone()),
             CHECKOUT_CACHE_MAX,
         );
@@ -1182,22 +1186,24 @@ fn known_checkout(
     Some(same_key(&resolved, common))
 }
 
-/// What sits above the checkout that owns `entry`. An unreadable `.git` is not skipped: walking past it would trust a
-/// repository a worker made underneath.
+/// What sits above the checkout that owns `entry`.
 enum Enclosing {
     Found(Vec<std::path::PathBuf>),
-    /// A `.git` above the checkout exists, but its common directory cannot be read.
-    Unreadable,
+    /// `.git` entries above the checkout that are not repositories. No repository was found further above them.
+    Unreadable(Vec<std::path::PathBuf>),
     None,
 }
 
-/// Every git common directory above the checkout that owns `entry`, nearest first. A repository a worker made between
-/// the project and its real checkout does not hide the real one.
+/// Every git common directory above the checkout that owns `entry`, nearest first. A `.git` that is not a repository
+/// does not stop the walk: a stray one was turning every folder into doubt, and it was also hiding a real repository
+/// further above. A repository above is still collected and judged. `Unreadable` means every `.git` above this one
+/// failed to read and none of them was a repository.
 fn enclosing_common(entry: &std::path::Path) -> Enclosing {
     let Some(checkout) = entry.parent() else {
         return Enclosing::None;
     };
     let mut found = Vec::new();
+    let mut blocked = Vec::new();
     for dir in checkout.ancestors().skip(1) {
         let candidate = dir.join(".git");
         if !candidate.exists() {
@@ -1205,14 +1211,48 @@ fn enclosing_common(entry: &std::path::Path) -> Enclosing {
         }
         match common_dir(&candidate) {
             Some(common) => found.push(common),
-            None => return Enclosing::Unreadable,
+            None => blocked.push(candidate),
         }
     }
-    if found.is_empty() {
-        Enclosing::None
-    } else {
+    if !found.is_empty() {
         Enclosing::Found(found)
+    } else if !blocked.is_empty() {
+        Enclosing::Unreadable(blocked)
+    } else {
+        Enclosing::None
     }
+}
+
+/// True when the folder's git dir names one of these unreadable `.git` entries, or a path inside it. A stray `.git`
+/// that this folder does not name does not own it. A folder that still names a destroyed enclosing git dir stays doubt:
+/// that is not the same as a stray file above a repository the folder does not use.
+fn git_points_at_unreadable(folder_key: &str, blocked: &[std::path::PathBuf]) -> bool {
+    if blocked.is_empty() {
+        return false;
+    }
+    let Some(entry) = git_entry(std::path::Path::new(folder_key)) else {
+        return false;
+    };
+    let mut named = Vec::new();
+    if let Some(text) = read_git_file(&entry) {
+        if let Some(rest) = text.lines().find_map(|line| line.strip_prefix("gitdir:")) {
+            if let Some(resolved) = resolve_git_path(&entry, rest) {
+                named.push(path_key(&resolved.to_string_lossy()));
+            }
+        }
+    }
+    if let Some(common) = common_dir(&entry) {
+        named.push(path_key(&common.to_string_lossy()));
+    }
+    if named.is_empty() {
+        return false;
+    }
+    blocked.iter().any(|bad| {
+        let bad_key = path_key(&bad.to_string_lossy());
+        named
+            .iter()
+            .any(|name| key_within(name, &bad_key) || key_within(&bad_key, name))
+    })
 }
 
 /// Yes from any enclosing checkout is Yes, then Undecided from any is Undecided, else No.
@@ -1284,18 +1324,21 @@ fn folder_checkout_top(folder_key: &str, common: &std::path::Path) -> Option<Str
     top.is_dir().then(|| path_key(&top.to_string_lossy()))
 }
 
-/// The `.git` file still has the shape of a linked worktree (`gitdir:` with a `worktrees` component).
+/// The `.git` file still has the shape of a linked worktree (`gitdir:` under a `worktrees` directory). The directory
+/// is the canonical one, so `Worktrees` on a case-insensitive volume is the same folder git calls `worktrees`.
 fn linked_worktree_shape(entry: &std::path::Path) -> bool {
     let Some(text) = read_git_file(entry) else {
         return false;
     };
-    text.lines().any(|line| {
-        let Some(rest) = line.strip_prefix("gitdir:") else {
-            return false;
-        };
-        rest.trim()
-            .split(['/', '\\'])
-            .any(|part| part == "worktrees")
+    let Some(rest) = text.lines().find_map(|line| line.strip_prefix("gitdir:")) else {
+        return false;
+    };
+    let Some(admin) = resolve_git_path(entry, rest) else {
+        return false;
+    };
+    admin.ancestors().skip(1).any(|dir| {
+        dir.parent()
+            .is_some_and(|parent| same_key(&parent.join("worktrees"), dir))
     })
 }
 
@@ -1313,10 +1356,11 @@ fn shape_under_common(entry: &std::path::Path, common: &std::path::Path) -> bool
     worktree_admin_of(&admin, common)
 }
 
-/// The root's git dir cannot be read. The root's top is judged through the enclosing checkout. An enclosing `.git`
-/// that cannot be read is undecided, not skipped. With nothing above the root, the folder's own common dir (from its
-/// files, not from git) keeps the place when it still registers the root, or when the root's `.git` still has the
-/// shape of a linked worktree of that common. A folder in another repository, or a folder with no git, stays unowned.
+/// The root's git dir cannot be read. The root's top is judged through the enclosing checkout. A `.git` above that is
+/// not a repository is doubt only when the folder's own git names it. With nothing above the root, the folder's own
+/// common dir (from its files, not from git) keeps the place when it still registers the root, or when the root's
+/// `.git` still has the shape of a linked worktree of that common. A folder in another repository, or a folder with
+/// no git, stays unowned.
 fn place_unreadable_root(folder_key: &str, root_key: &str, cache: &mut RegOnce) -> Place {
     let Some(entry) = git_entry(std::path::Path::new(root_key)) else {
         return if folder_unreadable(folder_key) {
@@ -1326,7 +1370,13 @@ fn place_unreadable_root(folder_key: &str, root_key: &str, cache: &mut RegOnce) 
         };
     };
     match enclosing_common(&entry) {
-        Enclosing::Unreadable => Place::Undecided,
+        Enclosing::Unreadable(blocked) => {
+            if git_points_at_unreadable(folder_key, &blocked) {
+                Place::Undecided
+            } else {
+                place_with_no_enclosing(folder_key, root_key, &entry, cache)
+            }
+        }
         Enclosing::Found(outers) => {
             let placed = place_enclosing(folder_key, root_key, &outers, None, cache);
             if placed == Place::No && folder_unreadable(folder_key) {
@@ -1514,7 +1564,8 @@ fn place_project(folder_key: &str, root_id: &str) -> Place {
         return Place::Yes;
     }
     // A repository made above the project, or an enclosing checkout the project's own `.git` hides. Yes from either
-    // side is Yes. An enclosing `.git` that cannot be read is doubt, not a reason to trust the inner repository.
+    // side is Yes. A `.git` above that is not a repository does not replace a decided place with doubt, unless the
+    // folder's own git still names that unreadable entry (a destroyed enclosing checkout, not a stray file).
     match enclosing_common(&entry) {
         Enclosing::Found(outers) => {
             let inner = common_dir(&entry);
@@ -1524,7 +1575,13 @@ fn place_project(folder_key: &str, root_id: &str) -> Place {
                 Place::No => direct,
             }
         }
-        Enclosing::Unreadable => Place::Undecided,
+        Enclosing::Unreadable(blocked) => {
+            if git_points_at_unreadable(folder_key, &blocked) {
+                Place::Undecided
+            } else {
+                direct
+            }
+        }
         Enclosing::None => direct,
     }
 }

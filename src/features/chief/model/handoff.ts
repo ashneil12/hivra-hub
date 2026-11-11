@@ -87,6 +87,7 @@ export async function captainHandoff(input: HandoffInput, deps: HandoffDeps): Pr
   if (!(await deps.canRead(project))) throw new Error("The Chief of Staff cannot read that project.");
   const key = handoffRequestKey({ project, department, title, brief });
   let taskId = deps.recall?.(key);
+  const retried = !!taskId;
   if (!taskId) {
     const filed = await deps.createTask({ project, title, brief });
     taskId = required(filed?.id ?? "", "The filed task");
@@ -98,7 +99,8 @@ export async function captainHandoff(input: HandoffInput, deps: HandoffDeps): Pr
     deps.forget?.(key);
     return { taskId, delegationId, department, line: handoffLine(department, title) };
   } catch (error) {
-    // The filed id stays remembered, so the retry hands that task on instead of filing another.
+    // One retry reuses the filed task. A handoff that fails again drops it, so the session map does not keep the id.
+    if (retried) deps.forget?.(key);
     throw error;
   }
 }
