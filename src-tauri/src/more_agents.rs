@@ -404,7 +404,7 @@ fn is_drive_colon(bytes: &[u8], at: usize) -> bool {
     #[cfg(not(windows))]
     {
         let _ = (bytes, at);
-        return false;
+        false
     }
     #[cfg(windows)]
     {

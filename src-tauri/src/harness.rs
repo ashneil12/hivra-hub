@@ -2260,7 +2260,7 @@ fn retry_text_file_busy(
                 thread::sleep(Duration::from_millis(20) * attempt);
                 if let Some(check) = recheck {
                     if let Err(error) = check() {
-                        return Err(std::io::Error::new(std::io::ErrorKind::Other, error));
+                        return Err(std::io::Error::other(error));
                     }
                 }
             }
