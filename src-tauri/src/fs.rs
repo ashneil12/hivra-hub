@@ -12225,3 +12225,64 @@ mod review_r3_repro {
         );
     }
 }
+
+/// Review r4 repro for PR #208 (WP-178). Round 4 moved every Git panel call (`fs::git_cmd`) to
+/// `git_cmd::git_with_hooks()`: never sandboxed, never contained, no `--attr-source`, no `core.attributesFile`. Those
+/// calls are not only Ash's commit, push and pull: the panel, the project sidebar and the Mono stall watch poll
+/// `git diff --numstat` on their own. A clean filter named by the checkout's `.gitattributes` (an ordinary file the agent
+/// writes) and defined in a config the agent can reach (a linked worktree's common `<main>/.git/config`, see
+/// `agent_sandbox::review_r4_repro`) runs outside the sandbox on the next poll. Red at 5eedc0d75.
+#[cfg(all(test, unix))]
+mod review_r4_repro {
+    use super::*;
+
+    #[test]
+    fn the_git_panels_automatic_diff_stats_never_run_a_clean_filter_from_the_checkout() {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let repo = std::env::temp_dir().join(format!("fs-r4-{}-{nanos}", std::process::id()));
+        let marker = std::env::temp_dir().join(format!("fs-r4-ran-{}-{nanos}", std::process::id()));
+        std::fs::create_dir_all(&repo).unwrap();
+        let plain = |args: &[&str]| {
+            assert!(crate::git_cmd::git()
+                .arg("-C")
+                .arg(&repo)
+                .args([
+                    "-c",
+                    "user.name=t",
+                    "-c",
+                    "user.email=t@t",
+                    "-c",
+                    "commit.gpgsign=false"
+                ])
+                .args(args)
+                .status()
+                .unwrap()
+                .success());
+        };
+        plain(&["init", "-q"]);
+        std::fs::write(repo.join("a.txt"), "hello\n").unwrap();
+        plain(&["add", "a.txt"]);
+        plain(&["commit", "-q", "-m", "a"]);
+        // What the agent writes: the filter in the repository config, the attribute in the working tree.
+        plain(&[
+            "config",
+            "filter.x.clean",
+            &format!("touch '{}'; cat", marker.display()),
+        ]);
+        std::fs::write(repo.join(".gitattributes"), "* filter=x\n").unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        std::fs::write(repo.join("a.txt"), "hello again\n").unwrap();
+
+        let _ = git_diff_stats_for(&repo);
+        let ran = marker.exists();
+        let _ = std::fs::remove_dir_all(&repo);
+        let _ = std::fs::remove_file(&marker);
+        assert!(
+            !ran,
+            "the Git panel's automatic diff stats ran the checkout's clean filter outside the sandbox"
+        );
+    }
+}
