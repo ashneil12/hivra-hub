@@ -6,6 +6,7 @@
 
 import { hasPendingApproval, type Block, type Session } from "../../sessions/model/session";
 import {
+  settingLooksSecret,
   sha256Hex,
   type CanResume,
   type ChatRecord,
@@ -65,6 +66,7 @@ function carriedSettings(settings: Session["modelSettings"] | undefined): Record
   for (const [key, value] of Object.entries(settings)) {
     if (typeof value !== "string" || !value.trim() || value.length > 64) continue;
     if (!/^[A-Za-z][A-Za-z0-9_-]{0,40}$/.test(key)) continue;
+    if (settingLooksSecret(key, value)) continue;
     out[key] = value;
   }
   return Object.keys(out).length > 0 ? out : undefined;

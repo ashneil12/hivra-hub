@@ -221,6 +221,13 @@ const SECRET_VALUE_PATTERNS: RegExp[] = [
 ];
 
 const SESSION_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
+const SECRET_SETTING_NAME = /^(token|api[_-]?key|access[_-]?key|secret|password|passwd|private[_-]?key|credential)$/i;
+const SECRET_SETTING_VALUE = /sk-[A-Za-z0-9_-]{8,}|AGE-SECRET-KEY-1|PRIVATE KEY|PuTTY-User-Key-File/;
+
+/** A model setting whose name or value is a key. It is dropped, not carried. */
+export function settingLooksSecret(key: string, value: string): boolean {
+  return SECRET_SETTING_NAME.test(key) || SECRET_SETTING_VALUE.test(value);
+}
 
 /** Why a chat that is running or waiting cannot move yet. Null when it can move now. */
 export function freezeRefusal(chat: Pick<ChatSnapshot, "turnRunning" | "approvalPending">): FreezeRefusal | null {
@@ -358,7 +365,21 @@ export function redactChat(chat: ChatSnapshot): { chat: ChatSnapshot; redactions
     redactions += out.count;
     return out.text;
   });
-  return { chat: { ...chat, transcript, title: title.text, queued }, redactions };
+  const keptSettings: Record<string, string> = {};
+  for (const [key, value] of Object.entries(chat.modelSettings ?? {})) {
+    if (typeof value !== "string") continue;
+    if (settingLooksSecret(key, value)) {
+      redactions += 1;
+      continue;
+    }
+    const out = redactString(value);
+    redactions += out.count;
+    keptSettings[key] = out.text;
+  }
+  const next: ChatSnapshot = { ...chat, transcript, title: title.text, queued };
+  if (Object.keys(keptSettings).length > 0) next.modelSettings = keptSettings;
+  else delete next.modelSettings;
+  return { chat: next, redactions };
 }
 
 function transcriptStrings(transcript: string): string[] {
