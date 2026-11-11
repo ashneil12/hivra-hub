@@ -1,17 +1,20 @@
 // Live Agents board. Counts, cost, time and checks come from the stores. A missing figure stays missing.
 
 import { useContext, useEffect, useMemo, useState, useSyncExternalStore } from "react";
+import { pickChief } from "../../home/model/chief";
 import { codingTeamChatProject, useCodingTeamVersion } from "../../hub/model/codingTeam";
 import { hubData, useHubDataVersion } from "../../hub/model/hubData";
 import { isGlobalProject } from "../../hub/model/hubProjects";
 import { leadMono, leadSpecFor } from "../../hub/model/hubLeads";
 import { useDelegationRows } from "../../monos/model/delegationStore";
 import type { Delegation } from "../../monos/model/delegations";
+import { listMonos, monosSnapshot, subscribeMonos } from "../../monos/model/mono";
 import { currentPrWatches, usePrWatchesVersion } from "../../pr-watch/model/prWatchBoard";
 import type { Block, Session } from "../../sessions/model/session";
 import { SessionStateContext } from "../../sessions/model/sessionStateStore";
 import { openBoardRow } from "../model/boardOpen";
-import { boardFromStores, mateStatus, type StoreCheck, type StoreSession } from "../model/fromStores";
+import { boardFromStores, mateStatus, type StoreCheck } from "../model/fromStores";
+import { liveBoardSessions } from "../model/liveSessions";
 import { stopBoardRow } from "../model/sessionStop";
 import { flattenBoard } from "../model/tree";
 import { taskWords } from "../model/words";
@@ -25,6 +28,7 @@ export function AgentsBoardScreen() {
   useCodingTeamVersion();
   usePrWatchesVersion();
   const delegations = useDelegationRows();
+  const monos = useSyncExternalStore(subscribeMonos, monosSnapshot);
   const store = useContext(SessionStateContext);
   const sessions = useSyncExternalStore(store ? store.subscribeShell : emptySubscribe, store ? store.snapshot : noSessions);
   const [now, setNow] = useState(() => Date.now());
@@ -39,7 +43,12 @@ export function AgentsBoardScreen() {
     return boardFromStores({
       now,
       projects,
-      sessions: boardSessions(sessions, delegations),
+      sessions: liveBoardSessions({
+        sessions,
+        childSessionIds: delegations.map((row) => row.childSession),
+        projectOfChat: codingTeamChatProject,
+        homeSessionId: pickChief(listMonos())?.sessionId ?? null,
+      }),
       mates: listed.map((project) => {
         const spec = leadSpecFor(project);
         const sessionId = leadMono(spec)?.sessionId ?? null;
@@ -70,7 +79,7 @@ export function AgentsBoardScreen() {
       checks: checksFor(delegations),
       costs: sessions.map((session) => ({ id: session.id, blocks: session.blocks })),
     });
-  }, [delegations, now, sessions]);
+  }, [delegations, monos, now, sessions]);
 
   const lines = useMemo(() => transcriptLines(sessions, delegations), [sessions, delegations]);
 
@@ -89,53 +98,6 @@ export function AgentsBoardScreen() {
       }}
     />
   );
-}
-
-function boardSessions(sessions: readonly Session[], delegations: readonly Delegation[]): StoreSession[] {
-  const childSessions = delegations.map((row) => row.childSession).filter((id): id is string => !!id);
-  const out: StoreSession[] = [];
-  for (const session of sessions) {
-    if (childSessions.includes(session.id)) continue;
-    const projectId = codingTeamChatProject(session.id);
-    if (projectId) {
-      out.push({
-        id: session.id,
-        place: "project",
-        projectId,
-        title: session.title,
-        status: session.busy ? "working" : "idle",
-        startedAt: firstStart(session.blocks),
-      });
-      continue;
-    }
-    const parent = parentWorker(session.id, childSessions);
-    if (!parent) continue;
-    out.push({
-      id: session.id,
-      place: "subchat",
-      parentSessionId: parent,
-      title: session.title,
-      status: session.busy ? "working" : "idle",
-      startedAt: firstStart(session.blocks),
-    });
-  }
-  return out;
-}
-
-function parentWorker(id: string, childSessions: readonly string[]): string | null {
-  if (!id.startsWith("app-")) return null;
-  let best: string | null = null;
-  for (const child of childSessions) {
-    if (id.startsWith(`app-${child}-`) && (!best || child.length > best.length)) best = child;
-  }
-  return best;
-}
-
-function firstStart(blocks: readonly Block[]): number | null {
-  for (const block of blocks) {
-    if (typeof block.startedAt === "number") return block.startedAt;
-  }
-  return null;
 }
 
 function checksFor(delegations: readonly Delegation[]): StoreCheck[] {
