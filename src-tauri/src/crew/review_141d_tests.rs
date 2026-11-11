@@ -1,5 +1,6 @@
 //! WP-141 follow-up (crew owner leftovers). Each test is a judgment the merged owner work still gets wrong:
-//! the refusal sentence wrapped twice, and a stray `.git` above a project turning every folder into doubt.
+//! the refusal sentence wrapped twice, a stray `.git` above a project turning every folder into doubt, and a
+//! case-insensitive `.git` name not compared through the canonical path.
 
 use serde_json::json;
 
@@ -162,3 +163,52 @@ fn a_stray_unreadable_git_between_a_package_and_its_repo_keeps_never_use() {
     );
 }
 
+/// True when this directory treats `FoldCase` and `foldcase` as one file. A case-sensitive volume skips the test.
+fn folds_case(dir: &std::path::Path) -> bool {
+    let probe = dir.join("FoldCase");
+    if std::fs::write(&probe, b"x").is_err() {
+        return false;
+    }
+    let same = std::fs::read(dir.join("foldcase")).ok().as_deref() == Some(b"x");
+    let _ = std::fs::remove_file(&probe);
+    same
+}
+
+/// Rename `.git` to `.GIT` in two steps. A single rename to a different case can fail on a case-insensitive volume.
+fn rename_git_dir(repo: &std::path::Path) -> bool {
+    let git = repo.join(".git");
+    let tmp = repo.join(".git-case-tmp");
+    let upper = repo.join(".GIT");
+    if std::fs::rename(&git, &tmp).is_err() || std::fs::rename(&tmp, &upper).is_err() {
+        return false;
+    }
+    std::fs::canonicalize(repo.join(".git"))
+        .ok()
+        .and_then(|path| path.file_name().map(|name| name == ".GIT"))
+        .unwrap_or(false)
+}
+
+/// The main checkout is recognised by the canonical `.git` path. On a case-insensitive volume the directory can
+/// be named `.GIT` and still be the same folder. Comparing the spelling dropped the package's Never use.
+#[test]
+fn a_case_renamed_git_dir_still_keeps_never_use_in_a_worktree() {
+    let (root, repo, worktree) = repo_and_worktree("git-case", &["pkg"]);
+    if !folds_case(&root) {
+        let _ = std::fs::remove_dir_all(&root);
+        return;
+    }
+    let package = repo.join("pkg");
+    let copy = worktree.join("pkg");
+    let store = SessionStore::open_in_memory().unwrap();
+    let mut conn = store.lock_conn().unwrap();
+    ban_codex(&mut conn, &package);
+    assert!(
+        rename_git_dir(&repo),
+        "the volume did not keep .GIT as the on-disk name"
+    );
+    git(&worktree, &["status", "--short"]);
+    let judged = codex_in(&conn, &copy);
+    let _ = std::fs::remove_dir_all(&root);
+    let err = judged.expect_err("the package still owns its copy after the git dir is named .GIT");
+    assert!(err.contains("Never use"), "{err}");
+}

@@ -941,11 +941,12 @@ fn common_dir(entry: &std::path::Path) -> Option<std::path::PathBuf> {
 }
 
 /// The main checkout's top-level folder, when the common directory is a `.git` folder. A bare repository has none.
+/// The on-disk spelling may be `.GIT` on a case-insensitive volume. The canonical path is the identity, not the spelling.
 fn main_checkout_top(common: &std::path::Path) -> Option<String> {
-    if common.file_name().and_then(|name| name.to_str()) != Some(".git") {
+    let parent = common.parent()?;
+    if !same_key(&parent.join(".git"), common) {
         return None;
     }
-    let parent = common.parent()?;
     parent.is_dir().then(|| path_key(&parent.to_string_lossy()))
 }
 
@@ -1012,8 +1013,11 @@ fn checkout_of(folder: &std::path::Path) -> Result<Option<Checkout>, String> {
         _ => return Err(unreadable()),
     };
     let stamp = meta.modified().ok();
+    // One entry for the folder however it was spelled. Path equality would miss `/Repo` and `/repo` on a
+    // case-insensitive volume.
+    let cache_key = crate::fs::canonical(folder).unwrap_or_else(|_| folder.to_path_buf());
     if let Ok(cache) = CHECKOUTS.lock() {
-        if let Some((_, (seen, found))) = cache.iter().find(|(key, _)| key == folder) {
+        if let Some((_, (seen, found))) = cache.iter().find(|(key, _)| key == &cache_key) {
             if *seen == stamp {
                 return Ok(Some(found.clone()));
             }
@@ -1045,7 +1049,7 @@ fn checkout_of(folder: &std::path::Path) -> Result<Option<Checkout>, String> {
     if let Ok(mut cache) = CHECKOUTS.lock() {
         bounded_put(
             &mut cache,
-            folder.to_path_buf(),
+            cache_key,
             (stamp, found.clone()),
             CHECKOUT_CACHE_MAX,
         );
@@ -1320,18 +1324,21 @@ fn folder_checkout_top(folder_key: &str, common: &std::path::Path) -> Option<Str
     top.is_dir().then(|| path_key(&top.to_string_lossy()))
 }
 
-/// The `.git` file still has the shape of a linked worktree (`gitdir:` with a `worktrees` component).
+/// The `.git` file still has the shape of a linked worktree (`gitdir:` under a `worktrees` directory). The directory
+/// is the canonical one, so `Worktrees` on a case-insensitive volume is the same folder git calls `worktrees`.
 fn linked_worktree_shape(entry: &std::path::Path) -> bool {
     let Some(text) = read_git_file(entry) else {
         return false;
     };
-    text.lines().any(|line| {
-        let Some(rest) = line.strip_prefix("gitdir:") else {
-            return false;
-        };
-        rest.trim()
-            .split(['/', '\\'])
-            .any(|part| part == "worktrees")
+    let Some(rest) = text.lines().find_map(|line| line.strip_prefix("gitdir:")) else {
+        return false;
+    };
+    let Some(admin) = resolve_git_path(entry, rest) else {
+        return false;
+    };
+    admin.ancestors().skip(1).any(|dir| {
+        dir.parent()
+            .is_some_and(|parent| same_key(&parent.join("worktrees"), dir))
     })
 }
 
