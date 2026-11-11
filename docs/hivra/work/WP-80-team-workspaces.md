@@ -34,33 +34,40 @@ Status: code is built, switched off. Ash's rule (11 Nov): cloud and teams stay o
 server, account, domain or spend is created by this package. Nothing sends until he sets both the switch and an
 endpoint in `team-workspace.json` (app data folder). Both default to off and empty.
 
-## Built (src-tauri/src/team_workspace.rs)
+## Built (src-tauri/src/team_workspace.rs, tests on a loopback stand-in)
 
-- **Build 1, roles and invitations:** owner, admin, member, guest (`allowed`, `authorize`). Invitation links hold a
-  256-bit random token, stored only as a SHA-256 hash, valid 7 days, one use. Nobody invites an owner or someone at
-  their own level. Members are removed or re-roled only by someone who outranks them; an owner is never removed.
-- **Build 2, the off switch and sync gate:** `sync_outbound` returns before any transport call unless `enabled` is
-  true and the endpoint is non-empty. Endpoints must be https, or http to this machine only, with no credentials.
-  Redirects are not followed, and only a 2xx answer counts as sent.
-  Only shared projects enter the payload; a private project's body and id are filtered out before serialising.
-- **Build 4, scoped board:** `shared_board` lists only shared projects, and only for a member who may read.
-- Status for the settings screen: `team_workspace_status` reads the file and makes no network call.
+- **Roles and invitations:** owner, admin, member, guest (`allowed`, `authorize`). Invitation links hold a 256-bit
+  random token, stored only as a SHA-256 hash, valid 7 days, one use. Nobody invites an owner or someone at their own
+  level. Members are removed or re-roled only by someone who outranks them; an owner is never removed.
+- **Accept flow over the wire:** `Client::accept` posts the invitation to the shared machine and receives a per-device
+  workspace token and a role. `team_workspace_accept` keeps the token in `team-workspace.json`.
+- **Authenticated payload:** every request after accept carries `Authorization: Bearer <token>`. The server takes the
+  person from the token, never from the body. A request with no token is not sent.
+- **Off switch:** `sync_outbound` and `Client::from_config` return before any request unless `enabled` is true and
+  the endpoint is set. Endpoints must be https, or http to this machine only, with no credentials. Redirects are not
+  followed, and only a 2xx answer counts as sent.
+- **Settings:** `team_workspace_save` writes the switch and endpoint (a bad endpoint writes nothing). The status
+  command reads the file, makes no request, and never shows the token.
+- **Private projects:** only shared projects enter a push. A private project's body and id are filtered out before
+  serialising.
+- **Co-editing (simplified):** documents have a revision. A write names the revision it saw; a stale write gets a
+  conflict and the current revision. This is not Yjs and does not merge.
+- **Presence:** members check in; anyone with read access lists who checked in.
+- **Agents:** an agent acts for one member and inherits that member's role. It reads the shared projects only, and it
+  can edit only if the member can. An agent with no membership gets nothing.
+- **Stand-in:** the test fixture in `team_workspace_tests.rs` is a loopback server that enforces the same rules. It is
+  the contract for the shared machine, not the machine.
 
 ## Left (not built, not in this change)
 
-- **Build 1 storage and sign-in:** the workspace is in memory and tests only. No shared server, no account sign-in,
-  no invitation transport. Invitations need an authenticated channel before any real use.
-- **Build 2 wiring:** the task and doc stores do not call the sync gate yet. The payload is not authenticated; that
-  must be designed with the server.
-- **Build 3, live editing:** Yjs co-editing, presence and cursors are not built, and no dependency was added.
-- **Build 4 agents:** first mates are not yet scoped to the shared board; only the board filter exists.
-- **Settings UI:** the switch is the JSON file, not a toggle. A toggle needs its own browser spec.
+- **Real hosted server:** not built, and not provisioned. The fixture is the only server.
+- **Settings toggle in the UI:** the commands exist; there is no Settings control, so no browser spec on chromium or
+  webkit yet.
+- **Store wiring:** the task and doc stores do not call the sync gate or the board filter yet. Until they do, the
+  filters are unused by the app.
+- **Live editing with Yjs, and presence cursors:** not built; the revision check and presence list are the stand-in.
+- **Two dev copies on one machine:** not run, so the cross-copy board edit and private-project check are not proven.
+- **Token storage:** the token sits in the settings file in plain text. It should move to the OS keychain before any
+  real use.
+- **Invitation delivery:** the link is shown once by whoever makes it; no delivery channel exists.
 - **Dependencies:** WP-61 (Hivra Cloud) is not used. The endpoint is a generic placeholder.
-- **Real two-client test:** the local-server test is the module's own rules plus a loopback stand-in for sync; two
-  live dev copies on one machine are not run.
-
-## Done when
-
-- [ ] Tests against a local shared server: invite, roles enforced, two clients co-edit a doc, a private project never
-      leaves its machine.
-- [ ] `npm run check` passes; a check with two dev copies on one machine.

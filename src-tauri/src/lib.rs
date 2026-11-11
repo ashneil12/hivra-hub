@@ -561,6 +561,8 @@ pub fn run() {
             dictation::dictation_stop,
             mobile_access::mobile_status,
             team_workspace::team_workspace_status,
+            team_workspace::team_workspace_save,
+            team_workspace::team_workspace_accept,
             mobile_access::mobile_configure,
             mobile_access::mobile_invite,
             mobile_access::mobile_cancel_invite,

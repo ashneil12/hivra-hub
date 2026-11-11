@@ -2,16 +2,18 @@
 //!
 //! Rules that hold everywhere in this file:
 //! - Nothing leaves the machine unless `enabled` is true AND `endpoint` is set. Both default to off and empty, read
-//!   from `team-workspace.json` in the app data folder. With either missing, `sync_outbound` makes no call at all.
+//!   from `team-workspace.json` in the app data folder. With either missing, no request is made.
+//! - Every request after accepting an invitation carries the workspace token that the server issued for that person.
+//!   A request with no token is not sent.
 //! - Only shared projects reach an outbound payload. A private project is filtered out before anything is serialised.
-//! - Roles and invitations are checked here, in one place, before any change. A shared machine must run the same
-//!   rules; this module is the reference for them.
+//! - Roles and invitations are checked here, in one place, before any change. The shared machine runs the same rules;
+//!   the loopback stand-in in the tests is the fixture for that contract.
 //!
-//! Not built here: live co-editing (Yjs), presence, the shared server itself, and wiring into the task and doc stores.
-//! See docs/hivra/work/WP-80-team-workspaces.md.
+//! Not built here: the real hosted server, live editing with Yjs (documents use revision checks instead), and wiring
+//! into the task and doc stores. See docs/hivra/work/WP-80-team-workspaces.md.
 //!
-//! The functions the rest of the app will call (sync, transport, board) are only reached by tests until that wiring
-//! lands, so they are allowed to be unused outside tests for now.
+//! The functions the rest of the app will call are only reached by tests until that wiring lands, so they are allowed
+//! to be unused outside tests for now.
 #![cfg_attr(not(test), allow(dead_code))]
 
 use serde::{Deserialize, Serialize};
@@ -28,6 +30,9 @@ mod tests;
 
 /// How long an invitation link works after it is made.
 pub const INVITE_TTL_SECS: u64 = 7 * 24 * 60 * 60;
+
+/// The settings file in the app data folder. Missing keys read as off and empty.
+pub const CONFIG_FILE: &str = "team-workspace.json";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -228,17 +233,16 @@ pub fn remove_member(ws: &mut Workspace, actor: &str, target: &str) -> Result<()
     Ok(())
 }
 
-// --- the off switch and what may leave the machine --------------------------------------------
+// --- the settings file and the off switch -----------------------------------------------------
 
-/// The settings file in the app data folder. Missing keys read as off and empty.
-pub const CONFIG_FILE: &str = "team-workspace.json";
-
-/// `team-workspace.json`.
+/// `team-workspace.json`. Missing keys read as off and empty. `token` is this device's workspace token, issued when an
+/// invitation is accepted; it is a secret and is never shown by the status command.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Config {
     pub enabled: bool,
     pub endpoint: String,
+    pub token: String,
 }
 
 /// A missing or unreadable file is the same as the default: off.
@@ -247,6 +251,36 @@ pub fn load_config(path: &Path) -> Config {
         .ok()
         .and_then(|bytes| serde_json::from_slice(&bytes).ok())
         .unwrap_or_default()
+}
+
+fn write_config(path: &Path, config: &Config) -> Result<(), String> {
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    }
+    let body = serde_json::to_vec_pretty(config).map_err(|e| e.to_string())?;
+    let tmp = path.with_extension("json.tmp");
+    std::fs::write(&tmp, &body).map_err(|e| e.to_string())?;
+    std::fs::rename(&tmp, path).map_err(|e| e.to_string())
+}
+
+/// Saves the switch and the endpoint. The endpoint is checked first, so a bad address writes nothing. The token stays.
+pub fn save_config(path: &Path, enabled: bool, endpoint: &str) -> Result<Config, String> {
+    let endpoint = endpoint.trim().to_string();
+    if !endpoint.is_empty() {
+        validate_endpoint(&endpoint)?;
+    }
+    let mut config = load_config(path);
+    config.enabled = enabled;
+    config.endpoint = endpoint;
+    write_config(path, &config)?;
+    Ok(config)
+}
+
+/// Keeps the workspace token that the shared machine issued at accept time.
+pub fn store_token(path: &Path, token: &str) -> Result<(), String> {
+    let mut config = load_config(path);
+    config.token = token.to_string();
+    write_config(path, &config)
 }
 
 /// One local project. Only `shared` projects are ever sent; `payload` is whatever the project holds.
@@ -265,6 +299,33 @@ pub fn shared_board<'a>(
 ) -> Result<Vec<&'a LocalProject>, TeamError> {
     authorize(ws, actor, Action::ReadBoard)?;
     Ok(projects.iter().filter(|p| p.shared).collect())
+}
+
+/// An agent acts for one member and inherits that member's role. It never sees a private project.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AgentScope {
+    pub account: String,
+    pub role: Role,
+}
+
+impl AgentScope {
+    pub fn can_edit(&self) -> bool {
+        allowed(self.role, Action::EditProject)
+    }
+}
+
+pub fn agent_for(ws: &Workspace, member_account: &str) -> Result<AgentScope, TeamError> {
+    let m = member(ws, member_account).ok_or(TeamError::NotMember)?;
+    Ok(AgentScope {
+        account: m.account.clone(),
+        role: m.role,
+    })
+}
+
+/// What an agent may read on the board: the shared projects only.
+pub fn agent_board<'a>(scope: &AgentScope, projects: &'a [LocalProject]) -> Vec<&'a LocalProject> {
+    let _ = scope;
+    projects.iter().filter(|p| p.shared).collect()
 }
 
 /// Endpoint rules: https, or plain http only to this machine, and never with credentials in the address.
@@ -298,88 +359,232 @@ pub enum SyncOutcome {
     Sent { projects: usize },
 }
 
-/// Where a payload goes. The real one is `HttpTransport`; tests use a counting double or a loopback stand-in.
-pub trait Transport {
-    fn post_json(&self, endpoint: &str, body: &str) -> Result<(), String>;
+/// A document write. A stale write comes back as `Conflict` with the revision the server holds now.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DocWrite {
+    Written { rev: u64 },
+    Conflict { rev: u64 },
 }
 
-pub struct HttpTransport;
+/// What the shared machine grants when an invitation is accepted.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct Grant {
+    pub token: String,
+    pub role: Role,
+}
 
-impl Transport for HttpTransport {
-    fn post_json(&self, endpoint: &str, body: &str) -> Result<(), String> {
-        // No redirects: a redirect would send the payload to an address the endpoint rules never checked. A 3xx is
-        // not a success either, so only a 2xx answer counts as sent.
-        let agent = ureq::AgentBuilder::new()
+/// A client for the shared machine. Only exists when the switch is on and an endpoint is set, so every network path
+/// goes through `from_config` first.
+#[derive(Debug, Clone)]
+pub struct Client {
+    base: String,
+    token: String,
+}
+
+impl Client {
+    pub fn from_config(config: &Config) -> Result<Option<Client>, String> {
+        if !config.enabled || config.endpoint.trim().is_empty() {
+            return Ok(None);
+        }
+        let url = validate_endpoint(&config.endpoint)?;
+        Ok(Some(Client {
+            base: url.as_str().trim_end_matches('/').to_string(),
+            token: config.token.clone(),
+        }))
+    }
+
+    fn agent() -> ureq::Agent {
+        // No redirects: a redirect would send data to an address the endpoint rules never checked.
+        ureq::AgentBuilder::new()
             .timeout(Duration::from_secs(10))
             .redirects(0)
-            .build();
-        match agent
-            .post(endpoint)
-            .set("Content-Type", "application/json")
-            .send_string(body)
-        {
-            Ok(response) if (200..300).contains(&response.status()) => Ok(()),
-            Ok(response) => Err(format!(
-                "the shared server answered {} and did not take the sync",
-                response.status()
-            )),
-            Err(e) => Err(format!("the shared server did not accept the sync: {e}")),
+            .build()
+    }
+
+    /// One request. Returns the status and the JSON body; only the caller decides what a status means.
+    fn call(&self, method: &str, path: &str, body: Option<&Value>) -> Result<(u16, Value), String> {
+        let mut request = Self::agent()
+            .request(method, &format!("{}{path}", self.base))
+            .set("Accept", "application/json");
+        if !self.token.is_empty() {
+            request = request.set("Authorization", &format!("Bearer {}", self.token));
         }
+        let result = match body {
+            Some(b) => request
+                .set("Content-Type", "application/json")
+                .send_string(&b.to_string()),
+            None => request.call(),
+        };
+        let (status, text) = match result {
+            Ok(resp) => (resp.status(), resp.into_string().unwrap_or_default()),
+            Err(ureq::Error::Status(status, resp)) => {
+                (status, resp.into_string().unwrap_or_default())
+            }
+            Err(e) => return Err(format!("the shared server could not be reached: {e}")),
+        };
+        Ok((status, serde_json::from_str(&text).unwrap_or(Value::Null)))
+    }
+
+    fn ok(status: u16, body: Value, what: &str) -> Result<Value, String> {
+        if (200..300).contains(&status) {
+            Ok(body)
+        } else {
+            Err(format!("{what}: the shared server answered {status}"))
+        }
+    }
+
+    /// Accepts an invitation and returns this device's workspace token and role.
+    pub fn accept(&self, invitation: &str, account: &str) -> Result<Grant, String> {
+        let (status, body) = self.call(
+            "POST",
+            "/v1/accept",
+            Some(&json!({ "token": invitation, "account": account })),
+        )?;
+        let body = Self::ok(status, body, "accepting the invitation")?;
+        serde_json::from_value(body)
+            .map_err(|e| format!("the shared server sent an unexpected reply: {e}"))
+    }
+
+    /// Pushes the shared projects and nothing else.
+    pub fn push_projects(&self, projects: &[LocalProject]) -> Result<usize, String> {
+        let shared: Vec<Value> = projects
+            .iter()
+            .filter(|p| p.shared)
+            .map(|p| json!({ "id": p.id, "payload": p.payload }))
+            .collect();
+        let count = shared.len();
+        let (status, body) = self.call("POST", "/v1/sync", Some(&json!({ "projects": shared })))?;
+        Self::ok(status, body, "sync").map(|_| count)
+    }
+
+    /// Writes a document if the revision the writer saw is still current. Otherwise reports the current revision.
+    pub fn put_doc(&self, id: &str, if_rev: u64, text: &str) -> Result<DocWrite, String> {
+        let (status, body) = self.call(
+            "PUT",
+            &format!("/v1/docs/{id}"),
+            Some(&json!({ "ifRev": if_rev, "body": text })),
+        )?;
+        if status == 409 {
+            return Ok(DocWrite::Conflict {
+                rev: body["rev"].as_u64().unwrap_or(0),
+            });
+        }
+        let body = Self::ok(status, body, "saving the doc")?;
+        Ok(DocWrite::Written {
+            rev: body["rev"].as_u64().unwrap_or(0),
+        })
+    }
+
+    pub fn get_doc(&self, id: &str) -> Result<(u64, String), String> {
+        let (status, body) = self.call("GET", &format!("/v1/docs/{id}"), None)?;
+        let body = Self::ok(status, body, "reading the doc")?;
+        Ok((
+            body["rev"].as_u64().unwrap_or(0),
+            body["body"].as_str().unwrap_or_default().to_string(),
+        ))
+    }
+
+    /// Says this person is here. The server takes the name from the token, not from the request.
+    pub fn heartbeat(&self, account: &str) -> Result<(), String> {
+        let (status, body) =
+            self.call("POST", "/v1/presence", Some(&json!({ "account": account })))?;
+        Self::ok(status, body, "presence").map(|_| ())
+    }
+
+    pub fn presence(&self) -> Result<Vec<String>, String> {
+        let (status, body) = self.call("GET", "/v1/presence", None)?;
+        let body = Self::ok(status, body, "presence")?;
+        Ok(body["accounts"]
+            .as_array()
+            .map(|a| {
+                a.iter()
+                    .filter_map(|v| v.as_str().map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default())
     }
 }
 
-/// Sends the shared projects, and nothing else, when the feature is on and an endpoint is set. Any other state returns
-/// before the transport is touched.
-pub fn sync_outbound(
-    config: &Config,
-    projects: &[LocalProject],
-    transport: &dyn Transport,
-) -> Result<SyncOutcome, String> {
+/// Sends the shared projects, and nothing else, when the feature is on, an endpoint is set and this device has a token.
+/// Any other state returns before a request is made.
+pub fn sync_outbound(config: &Config, projects: &[LocalProject]) -> Result<SyncOutcome, String> {
     if !config.enabled {
         return Ok(SyncOutcome::Disabled);
     }
     if config.endpoint.trim().is_empty() {
         return Ok(SyncOutcome::NoEndpoint);
     }
-    let url = validate_endpoint(&config.endpoint)?;
-    let shared: Vec<Value> = projects
-        .iter()
-        .filter(|p| p.shared)
-        .map(|p| json!({ "id": p.id, "payload": p.payload }))
-        .collect();
-    let count = shared.len();
-    let body = serde_json::to_string(&json!({ "projects": shared })).map_err(|e| e.to_string())?;
-    transport.post_json(url.as_str(), &body)?;
-    Ok(SyncOutcome::Sent { projects: count })
+    validate_endpoint(&config.endpoint)?;
+    if config.token.is_empty() {
+        return Err("accept an invitation before syncing".into());
+    }
+    let client = Client::from_config(config)?.ok_or("team workspaces are off")?;
+    let sent = client.push_projects(projects)?;
+    Ok(SyncOutcome::Sent { projects: sent })
 }
 
-/// What the settings screen may show. Reading it makes no network call.
+/// What the settings screen may show. Reading it makes no network call and never reveals the token.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Status {
     pub enabled: bool,
     pub endpoint_configured: bool,
-    /// On, and the endpoint passes the address rules. Nothing is sent unless this is true.
+    /// This device holds a workspace token from an accepted invitation.
+    pub signed_in: bool,
+    /// On, the endpoint passes the address rules, and a token is held. Nothing is sent unless this is true.
     pub active: bool,
 }
 
 pub fn status_for(config: &Config) -> Status {
     let endpoint_configured = !config.endpoint.trim().is_empty();
+    let signed_in = !config.token.is_empty();
     Status {
         enabled: config.enabled,
         endpoint_configured,
+        signed_in,
         active: config.enabled
             && endpoint_configured
+            && signed_in
             && validate_endpoint(&config.endpoint).is_ok(),
     }
 }
 
-#[tauri::command]
-pub fn team_workspace_status(app: tauri::AppHandle) -> Result<Status, String> {
-    let path = app
+fn config_path(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
+    Ok(app
         .path()
         .app_data_dir()
         .map_err(|e| e.to_string())?
-        .join(CONFIG_FILE);
+        .join(CONFIG_FILE))
+}
+
+#[tauri::command]
+pub fn team_workspace_status(app: tauri::AppHandle) -> Result<Status, String> {
+    Ok(status_for(&load_config(&config_path(&app)?)))
+}
+
+/// Saves the switch and endpoint that Ash sets in Settings. Off writes no network call.
+#[tauri::command]
+pub fn team_workspace_save(
+    app: tauri::AppHandle,
+    enabled: bool,
+    endpoint: String,
+) -> Result<Status, String> {
+    let config = save_config(&config_path(&app)?, enabled, &endpoint)?;
+    Ok(status_for(&config))
+}
+
+/// Accepts an invitation against the configured endpoint and keeps the token it returns. Off refuses before any call.
+#[tauri::command]
+pub fn team_workspace_accept(
+    app: tauri::AppHandle,
+    invitation: String,
+    account: String,
+) -> Result<Status, String> {
+    let path = config_path(&app)?;
+    let config = load_config(&path);
+    let client =
+        Client::from_config(&config)?.ok_or("team workspaces are off; turn them on first")?;
+    let grant = client.accept(invitation.trim(), account.trim())?;
+    store_token(&path, &grant.token)?;
     Ok(status_for(&load_config(&path)))
 }
