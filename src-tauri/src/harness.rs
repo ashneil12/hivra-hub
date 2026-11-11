@@ -17,9 +17,76 @@ use crate::passwd_identity;
 
 // WP-134b: the More agents start. A child module so it shares this host's private pieces without widening them.
 
-/// The longest stdout line a harness child may send. A line past it stops the read (a child that never ends a line
-/// cannot grow the app's memory without bound).
+/// The longest stdout line a More agents child may send. A longer line stops that child's read, so a child that never
+/// ends a line cannot grow the app's memory without bound.
 const MAX_STDOUT_LINE: usize = 8 * 1024 * 1024;
+
+/// Reads stdout line by line and hands each line on until `on_line` says stop or the stream ends. With a cap, a line
+/// past it ends the read; without one, every line is read whole.
+pub(crate) fn read_stdout_lines<R: BufRead>(
+    mut reader: R,
+    cap: Option<usize>,
+    mut on_line: impl FnMut(String) -> bool,
+) {
+    let mut raw = Vec::new();
+    loop {
+        raw.clear();
+        let read = match cap {
+            Some(max) => (&mut reader)
+                .take((max + 1) as u64)
+                .read_until(b'\n', &mut raw),
+            None => reader.read_until(b'\n', &mut raw),
+        };
+        if !matches!(read, Ok(n) if n > 0) {
+            break;
+        }
+        if cap.is_some_and(|max| raw.len() > max) {
+            break;
+        }
+        let line = String::from_utf8_lossy(&raw)
+            .trim_end_matches(['\n', '\r'])
+            .to_string();
+        if !on_line(line) {
+            break;
+        }
+    }
+}
+
+#[cfg(test)]
+mod stdout_cap_tests {
+    use super::read_stdout_lines;
+    use std::io::Cursor;
+
+    #[test]
+    fn a_claude_line_of_nine_mebibytes_is_delivered_whole_and_the_session_goes_on() {
+        let big = "x".repeat(9 * 1024 * 1024);
+        let input = format!("{big}\nnext\n");
+        let mut got = Vec::new();
+        read_stdout_lines(Cursor::new(input.into_bytes()), None, |line| {
+            got.push(line);
+            true
+        });
+        assert_eq!(got.len(), 2);
+        assert_eq!(got[0].len(), 9 * 1024 * 1024);
+        assert_eq!(got[1], "next");
+    }
+
+    #[test]
+    fn a_more_agents_line_past_the_cap_ends_the_read() {
+        let big = "x".repeat(9 * 1024 * 1024);
+        let input = format!("first\n{big}\nnext\n");
+        let mut got = Vec::new();
+        read_stdout_lines(
+            Cursor::new(input.into_bytes()),
+            Some(8 * 1024 * 1024),
+            |line| {
+                got.push(line);
+                true
+            },
+        );
+        assert_eq!(got, vec!["first".to_string()]);
+    }
+}
 const STDOUT_EVENT: &str = "harness-stdout";
 const STDERR_EVENT: &str = "harness-stderr";
 const EXIT_EVENT: &str = "harness-exit";
@@ -1214,24 +1281,11 @@ pub fn harness_spawn(
     let wait_store = codex_store.clone();
     let stdout_store = codex_store;
     let stdout_run = run.clone();
+    // Only a More agents child is capped. A Claude or Codex line can carry a large base64 payload (a PDF or an image),
+    // and cutting it would end the session, so those lines are read whole, as they always were.
+    let stdout_cap = more_run.then_some(MAX_STDOUT_LINE);
     thread::spawn(move || {
-        let mut reader = BufReader::new(stdout);
-        let mut raw = Vec::new();
-        loop {
-            raw.clear();
-            let read = (&mut reader)
-                .take((MAX_STDOUT_LINE + 1) as u64)
-                .read_until(b'\n', &mut raw);
-            if !matches!(read, Ok(n) if n > 0) {
-                break;
-            }
-            // A line past the cap is not read to its end: the reader stops here, and the child's pipe closes with it.
-            if raw.len() > MAX_STDOUT_LINE {
-                break;
-            }
-            let line = String::from_utf8_lossy(&raw)
-                .trim_end_matches(['\n', '\r'])
-                .to_string();
+        read_stdout_lines(BufReader::new(stdout), stdout_cap, |line| {
             if crate::harness_runs::ends_turn(&line) {
                 stdout_run
                     .lock()
@@ -1246,10 +1300,8 @@ pub fn harness_spawn(
                     store.sync_auth();
                 }
             }
-            if stdout_tx.send(line).is_err() {
-                break;
-            }
-        }
+            stdout_tx.send(line).is_ok()
+        });
     });
 
     let stderr_app = app.clone();
