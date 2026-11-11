@@ -831,6 +831,8 @@ pub fn run() {
             fs::git_pr_status,
             fs::git_pr_create,
             commit_guard::commit_guard_allow,
+            commit_guard::commit_guard_allows,
+            commit_guard::commit_guard_remove,
             fs::git_github_status,
             fs::github_monocode_star_status,
             fs::github_star_monocode,

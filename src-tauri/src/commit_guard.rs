@@ -494,8 +494,10 @@ fn digest(text: &str) -> String {
         .collect()
 }
 
+/// The repository's id in the allow list: a hash of its canonical path, so the UI's path and the gate's path match.
 fn repo_id(root: &Path) -> String {
-    digest(&root.to_string_lossy())
+    let canonical = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+    digest(&canonical.to_string_lossy())
 }
 
 fn line_hash(text: &str) -> String {
@@ -524,13 +526,6 @@ fn read_allows(path: &Path) -> Vec<Allow> {
         .unwrap_or_default()
 }
 
-fn save_allows(allows: &[Allow]) -> Result<(), String> {
-    let path = ALLOW_STORE
-        .get()
-        .ok_or_else(|| "the allow list has no folder yet".to_string())?;
-    write_allows(path, allows)
-}
-
 fn write_allows(path: &Path, allows: &[Allow]) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
@@ -550,16 +545,11 @@ fn head_line(root: &Path, file: &str, line: usize) -> Result<String, String> {
         .ok_or_else(|| format!("{file} has no line {line} at HEAD"))
 }
 
-/// Records a person's allow for one flagged line. The line's text is read from HEAD, so the allow matches only that
-/// exact line of that exact file in that repository.
-pub fn allow_finding(
-    _choice: PersonChoice,
-    repo: &Path,
-    file: &str,
-    line: usize,
-) -> Result<(), String> {
+/// Records a person's allow for one flagged line in `store`. The line's text is read from HEAD, so the allow matches
+/// only that exact line of that exact file in that repository.
+fn allow_finding_in(store: &Path, repo: &Path, file: &str, line: usize) -> Result<(), String> {
     let text = head_line(repo, file, line)?;
-    let mut allows = load_allows();
+    let mut allows = read_allows(store);
     let allow = Allow {
         repo: repo_id(repo),
         file: file.to_string(),
@@ -568,10 +558,40 @@ pub fn allow_finding(
     if !allows.contains(&allow) {
         allows.push(allow);
     }
-    save_allows(&allows)
+    write_allows(store, &allows)
 }
 
-/// Allows one flagged line from the app's UI (registered in lib.rs; the webview calls it from the refusal or Settings).
+/// Removes one allow from `store`. Nothing else in the list changes.
+fn remove_allow_in(store: &Path, allow: &Allow) -> Result<(), String> {
+    let allows: Vec<Allow> = read_allows(store)
+        .into_iter()
+        .filter(|kept| kept != allow)
+        .collect();
+    write_allows(store, &allows)
+}
+
+fn store_path() -> Result<&'static std::path::PathBuf, String> {
+    ALLOW_STORE
+        .get()
+        .ok_or_else(|| "the allow list has no folder yet".to_string())
+}
+
+/// Records a person's allow for one flagged line (the app's UI, through `commit_guard_allow`).
+pub fn allow_finding(
+    _choice: PersonChoice,
+    repo: &Path,
+    file: &str,
+    line: usize,
+) -> Result<(), String> {
+    allow_finding_in(store_path()?, repo, file, line)
+}
+
+/// Removes an allow (the app's UI, through `commit_guard_remove`).
+pub fn remove_allow(_choice: PersonChoice, allow: &Allow) -> Result<(), String> {
+    remove_allow_in(store_path()?, allow)
+}
+
+/// Allows one flagged line from the app's UI (registered in lib.rs; the webview calls it from a direct click).
 #[tauri::command]
 pub async fn commit_guard_allow(repo: String, file: String, line: usize) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || {
@@ -580,6 +600,19 @@ pub async fn commit_guard_allow(repo: String, file: String, line: usize) -> Resu
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+/// The allows on record, for the Settings list. Holds a repository's id, not its path.
+#[tauri::command]
+pub async fn commit_guard_allows() -> Result<Vec<Allow>, String> {
+    Ok(load_allows())
+}
+
+/// Removes one allow from the Settings list (the app's UI, through a direct click).
+#[tauri::command]
+pub async fn commit_guard_remove(repo: String, file: String, hash: String) -> Result<(), String> {
+    let allow = Allow { repo, file, hash };
+    remove_allow(PersonChoice(()), &allow)
 }
 
 #[cfg(test)]

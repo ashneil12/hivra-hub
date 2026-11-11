@@ -29,6 +29,7 @@ import { TerminalSessionsSetting } from "../../terminalMirror/ui/TerminalSession
 import { PhaseSettings } from "../../phases/ui/PhaseSettings";
 // WP-104: copy diagnostics, and the health list.
 import { DiagnosticsPanel } from "../../diagnostics/ui/DiagnosticsPanel";
+import { CommitGuardAllowsPanel } from "../../commit-guard/ui/CommitGuardAllowsPanel";
 // WP-88: the morning note under the chat on Home.
 import { DailySummarySetting } from "../../chief/ui/DailySummarySetting";
 // WP-164: quiet hours for routine programme notices.
@@ -706,6 +707,8 @@ export function SettingsView({
               {section === "general" ? <PhaseSettings projectKey={cwd} /> : null}
               {/* WP-104: diagnostics a person can send, and the health list. */}
               {section === "general" ? <DiagnosticsPanel /> : null}
+              {/* WP-200: the lines the secret check lets through because a person allowed them. */}
+              {section === "general" ? <CommitGuardAllowsPanel /> : null}
               {section === "connections" ? (
                 <div className="flex flex-col gap-10">
                   <ConnectionsSettings />

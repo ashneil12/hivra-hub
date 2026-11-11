@@ -710,3 +710,34 @@ fn a_secret_in_a_branch_the_self_build_would_pick_is_refused_before_the_pick() {
         "{err}"
     );
 }
+
+#[test]
+fn an_allow_is_recorded_for_the_head_line_and_can_be_removed() {
+    let (local, _remote) = pushed_repo("allow-round");
+    let key = fake_key();
+    local.write("src/config.rs", &format!("const KEY: &str = \"{key}\";\n"));
+    local.commit("config");
+    let dir = Repo::dir("allow-store-file");
+    let store = dir.path().join("commit-guard-allows.json");
+    allow_finding_in(&store, local.path(), "src/config.rs", 1).expect("the line is allowed");
+    let recorded = read_allows(&store);
+    let expected = Allow {
+        repo: repo_id(local.path()),
+        file: "src/config.rs".into(),
+        hash: line_hash(&format!("const KEY: &str = \"{key}\";")),
+    };
+    assert_eq!(recorded, vec![expected.clone()]);
+    assert!(
+        !err_text_has_value(&recorded),
+        "a stored allow must hold no value"
+    );
+    remove_allow_in(&store, &expected).expect("the allow is removed");
+    assert!(read_allows(&store).is_empty());
+}
+
+fn err_text_has_value(allows: &[Allow]) -> bool {
+    let key = fake_key();
+    allows
+        .iter()
+        .any(|allow| allow.hash.contains(key_body(&key)) || allow.file.contains(key_body(&key)))
+}
