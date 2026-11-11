@@ -24,6 +24,12 @@ export const loadTeamWorkspace = () => invoke<TeamWorkspaceStatus>("team_workspa
 export const saveTeamWorkspace = (enabled: boolean, endpoint: string) =>
   invoke<TeamWorkspaceStatus>("team_workspace_save", { enabled, endpoint });
 
+/** How often the window asks who is checked in, while sharing is active. */
+export const PRESENCE_REFRESH_MS = 15_000;
+
+/** The people checked in at the team server, as of the app's last sync round. Empty while the switch is off. */
+export const loadTeamPresence = () => invoke<string[]>("team_workspace_presence");
+
 /** Joins with an invitation link the team gave out. Refused while the switch is off. */
 export const joinTeamWorkspace = (invitation: string, account: string) =>
   invoke<TeamWorkspaceStatus>("team_workspace_accept", { invitation, account });

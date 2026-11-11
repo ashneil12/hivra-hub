@@ -2,7 +2,9 @@ import { useEffect, useState } from "react";
 import {
   describeTeamWorkspace,
   joinTeamWorkspace,
+  loadTeamPresence,
   loadTeamWorkspace,
+  PRESENCE_REFRESH_MS,
   saveTeamWorkspace,
   TEAM_WORKSPACE_DEFAULT,
   type TeamWorkspaceStatus,
@@ -21,6 +23,30 @@ export function TeamWorkspaceSetting() {
   const [account, setAccount] = useState("");
   const [error, setError] = useState<string>();
   const [busy, setBusy] = useState(false);
+  const [people, setPeople] = useState<string[]>([]);
+  const active = status?.active === true;
+
+  // Who is checked in is read from the server's presence list, only while sharing is active.
+  useEffect(() => {
+    if (!active) {
+      setPeople([]);
+      return;
+    }
+    let current = true;
+    const look = () =>
+      loadTeamPresence().then(
+        (list) => {
+          if (current && Array.isArray(list)) setPeople(list);
+        },
+        () => undefined,
+      );
+    void look();
+    const timer = window.setInterval(() => void look(), PRESENCE_REFRESH_MS);
+    return () => {
+      current = false;
+      window.clearInterval(timer);
+    };
+  }, [active]);
 
   useEffect(() => {
     let current = true;
@@ -117,6 +143,9 @@ export function TeamWorkspaceSetting() {
       <p className="pl-6 text-[12px] text-content/50">
         {status ? describeTeamWorkspace(status) : "Checking the setting."}
       </p>
+      {people.length > 0 && (
+        <p className="pl-6 text-[12px] text-content/65">Here now: {people.join(", ")}</p>
+      )}
 
       <div className="flex flex-col gap-1.5 pl-6">
         <label className="text-[12px] text-content/65" htmlFor="team-workspace-address">

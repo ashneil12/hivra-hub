@@ -89,22 +89,30 @@ it("turning it on saves the switch with the address, and shows the next step", a
 });
 
 it("saves a server address with the switch and shows it is in use once a token is held", async () => {
-  vi.mocked(invoke).mockResolvedValueOnce({ ...OFF, enabled: true });
-  await render();
-  vi.mocked(invoke).mockResolvedValueOnce({
-    enabled: true,
-    endpoint: "https://team.example.test/v1",
-    endpointConfigured: true,
-    signedIn: true,
-    active: true,
+  let saved = { ...OFF, enabled: true };
+  vi.mocked(invoke).mockImplementation(async (command: string) => {
+    if (command === "team_workspace_status") return saved;
+    if (command === "team_workspace_presence") return [];
+    if (command === "team_workspace_save") {
+      saved = {
+        enabled: true,
+        endpoint: "https://team.example.test/v1",
+        endpointConfigured: true,
+        signedIn: true,
+        active: true,
+      };
+      return saved;
+    }
+    throw new Error(`unexpected ${command}`);
   });
+  await render();
   await act(async () => {
     type(field("Team server address"), " https://team.example.test/v1 ");
   });
   await act(async () => {
     button("Save").click();
   });
-  expect(invoke).toHaveBeenLastCalledWith("team_workspace_save", {
+  expect(invoke).toHaveBeenCalledWith("team_workspace_save", {
     enabled: true,
     endpoint: "https://team.example.test/v1",
   });
@@ -123,22 +131,22 @@ it("goes back to off when the app refuses the change, and says why", async () =>
 });
 
 it("joins with an invitation only once the switch is on and an address is saved", async () => {
-  vi.mocked(invoke).mockResolvedValueOnce({
+  const onAndAddressed = {
     ...OFF,
     enabled: true,
     endpoint: "https://team.example.test/v1",
     endpointConfigured: true,
+  };
+  const joined = { ...onAndAddressed, signedIn: true, active: true };
+  vi.mocked(invoke).mockImplementation(async (command: string) => {
+    if (command === "team_workspace_status") return onAndAddressed;
+    if (command === "team_workspace_presence") return [];
+    if (command === "team_workspace_accept") return joined;
+    throw new Error(`unexpected ${command}`);
   });
   await render();
   expect(button("Join").disabled).toBe(true);
 
-  vi.mocked(invoke).mockResolvedValueOnce({
-    enabled: true,
-    endpoint: "https://team.example.test/v1",
-    endpointConfigured: true,
-    signedIn: true,
-    active: true,
-  });
   await act(async () => {
     type(field("Invitation code"), "  abc123  ");
     type(field("Your name"), " ann ");
@@ -146,9 +154,34 @@ it("joins with an invitation only once the switch is on and an address is saved"
   await act(async () => {
     button("Join").click();
   });
-  expect(invoke).toHaveBeenLastCalledWith("team_workspace_accept", {
+  expect(invoke).toHaveBeenCalledWith("team_workspace_accept", {
     invitation: "abc123",
     account: "ann",
   });
   expect(host.textContent).not.toContain("abc123");
+});
+
+it("lists who is checked in at the team server while sharing is active", async () => {
+  const active = {
+    ...OFF,
+    enabled: true,
+    endpoint: "https://team.example.test/v1",
+    endpointConfigured: true,
+    signedIn: true,
+    active: true,
+  };
+  vi.mocked(invoke).mockImplementation(async (command: string) => {
+    if (command === "team_workspace_presence") return ["ann", "ben"];
+    return active;
+  });
+  await render();
+  expect(invoke).toHaveBeenCalledWith("team_workspace_presence");
+  expect(host.textContent).toContain("Here now: ann, ben");
+});
+
+it("shows nobody here while the switch is off, and asks the server for nothing", async () => {
+  vi.mocked(invoke).mockResolvedValue(OFF);
+  await render();
+  expect(invoke).not.toHaveBeenCalledWith("team_workspace_presence");
+  expect(host.textContent).not.toContain("Here now");
 });

@@ -43,6 +43,7 @@ Object.assign(window, {
       if (command === "plugin:event|listen") return 0;
       if (command === "plugin:event|unlisten") return;
       if (command === "team_workspace_status") return status(read());
+      if (command === "team_workspace_presence") return [];
       if (command === "team_workspace_save") {
         const endpoint = String(args.endpoint ?? "").trim();
         const problem = refuse(endpoint);

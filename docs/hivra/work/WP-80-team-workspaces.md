@@ -63,14 +63,22 @@ endpoint in `team-workspace.json` (app data folder). Both default to off and emp
 - **Real hosted server:** not built, and not provisioned. The fixture is the only server.
 - **Settings switch:** built in Settings > Connections, off by default, with a join form. A browser spec runs on
   chromium and webkit against the real component with a fake IPC.
-- **Store wiring (push only):** a save of the `projects` document sends the shared projects when the switch is on.
-  Nothing reads team data back into the app: there is no pull, so a change from another member does not appear here.
-  Nothing marks a project shared yet (no control; a record needs `shared: true` in the stored document). The board
-  filter and the document field merge are not called by the task or doc stores.
-- **Field merge in the app:** `put_fields` and `get_fields` exist on the client and run against the stand-in only.
+- **Projects sync (built, projects only):** a save of the `projects` document runs a round while the switch is on, and
+  the app polls every 15 seconds. A round pulls shared projects another member made, and merges each field against
+  the server revision and this device's last-agreed value (`sync_round`): a local edit is never replaced by a pulled
+  value, a field only the other side changed is taken, and a field both sides changed keeps the local value and is
+  listed in `conflicts`. The local folder and the shared flag never leave the machine.
+- **Share control (built):** "Share with my team" in the project menu sets `shared` on that project, on Ash's click
+  only. Unsharing stops syncing and keeps the project locally.
+- **Presence (built, list only):** Settings shows "Here now" from the server's presence list while sharing is active.
+  No cursors.
+- **Tasks and docs (not wired):** the task store (`src-tauri/src/tasks/store.rs`) and the docs store
+  (`src-tauri/src/docs.rs`) do not sync. Each has its own tables, revisions and history, so they need their own
+  mapping. The field merge runs only on the project record.
 - **Live editing with Yjs, and presence cursors:** not built; the revision check and presence list are the stand-in.
-- **Two dev copies on one machine:** not run. Without a pull path a second copy cannot show a first copy's change, so
-  the cross-copy board edit, the per-field merge in the app and presence in the app are not proven.
+- **Two dev copies on one machine:** not run. The control socket only exposes `app.*` actions, with no way to accept
+  an invitation or share a project, and the windows were not driven. The round is proven against the loopback
+  fixture, not in two running apps.
 - **Token storage:** the token is kept in the Keychain (`monocode-hub:team-workspace`, dev copies `monocode-hub-dev:`).
   Not exercised against the real Keychain by the tests, which use an in-memory store.
 - **Invitation delivery:** the link is shown once by whoever makes it; no delivery channel exists.
