@@ -538,7 +538,8 @@ pub(crate) struct Stored {
     pub approvals: BTreeMap<String, Approval>,
 }
 
-/// A saved entry, checked, ready to start. `command` is the resolved executable.
+/// A saved entry, checked, ready to start. `command` is the path that is executed: a hard link of the approved file
+/// in its own folder, or that file when the folder cannot take a link.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Resolved {
     pub id: String,
@@ -889,14 +890,20 @@ fn valid_id(id: &str) -> bool {
 }
 
 fn command_basename(command: &str) -> String {
-    let last = command.rsplit(['/', '\\']).next().unwrap_or("");
+    program_display_name(command).to_ascii_lowercase()
+}
+
+/// The program name the Allow card shows: the file name, without a Windows extension, in the case it was typed.
+fn program_display_name(command: &str) -> String {
+    let last = command.rsplit(['/', '\\']).next().unwrap_or(command);
     let lower = last.to_ascii_lowercase();
     for suffix in [".exe", ".cmd", ".bat"] {
         if let Some(stripped) = lower.strip_suffix(suffix) {
-            return stripped.to_string();
+            let end = last.len() - (lower.len() - stripped.len());
+            return last[..end].to_string();
         }
     }
-    lower
+    last.to_string()
 }
 
 /// Replace the list on top of `expected` (the revision the window read). Approvals are kept only for entries that
@@ -1037,8 +1044,9 @@ pub(crate) fn approved_spawn(
     if pins_now != approval.pins {
         return Err(ON_DISK_CHANGED.into());
     }
-    // Run the canonical file itself, hashed again immediately before the path is handed back. A launcher then still
-    // finds the files installed beside it. A write between this hash and the spawn can still change the file.
+    // Hashed again here, then once more immediately before spawn (confirm_before_spawn), after the run folder exists.
+    // The child runs a hard link in the same folder, so a launcher still finds the files beside it, and a rename of
+    // the original name does not change the bytes. A writer of that folder can still replace the link before spawn.
     if file_sha256(Path::new(&resolved)).ok().as_deref() != Some(approval.sha256.as_str()) {
         return Err(ON_DISK_CHANGED.into());
     }
@@ -1051,9 +1059,50 @@ pub(crate) fn approved_spawn(
     Ok(Resolved {
         id: checked_id,
         name,
-        command: resolved,
+        command: spawn_path(&resolved),
         args: canonical_args,
     })
+}
+
+/// A hard link of `canonical` in its own folder. A rename of the original name leaves this link on the approved
+/// bytes, and the folder is unchanged so a program still loads the files installed beside it. One link per program:
+/// a later start refreshes it. When the folder cannot take a link, the canonical path is what runs.
+fn spawn_path(canonical: &str) -> String {
+    let path = Path::new(canonical);
+    let Some(parent) = path.parent() else {
+        return canonical.to_string();
+    };
+    let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+        return canonical.to_string();
+    };
+    if name.is_empty() || name.contains(['/', '\\']) {
+        return canonical.to_string();
+    }
+    let link = parent.join(format!(".{name}.hivra-pin"));
+    if link.symlink_metadata().is_ok() {
+        let _ = std::fs::remove_file(&link);
+    }
+    match std::fs::hard_link(path, &link) {
+        Ok(()) => link.to_string_lossy().into_owned(),
+        Err(_) => canonical.to_string(),
+    }
+}
+
+/// The last hash. Called after the run folder exists and immediately before the spawn. The command is the path that
+/// will be executed (the hard link, or the canonical file when no link could be made). A writer of the install folder
+/// can still change that path in the gap between this hash and the exec.
+pub(crate) fn confirm_before_spawn(data_dir: &Path, id: &str, command: &str) -> Result<(), String> {
+    let stored = read_stored(data_dir)?;
+    let approval = stored.approvals.get(id).ok_or(NOT_APPROVED)?;
+    if file_sha256(Path::new(command)).ok().as_deref() != Some(approval.sha256.as_str()) {
+        return Err(ON_DISK_CHANGED.into());
+    }
+    for (pin, sha) in &approval.pins {
+        if file_sha256(Path::new(pin)).ok().as_deref() != Some(sha.as_str()) {
+            return Err(ON_DISK_CHANGED.into());
+        }
+    }
+    Ok(())
 }
 
 /// The start of a More agents process. The webview names the entry by its id and nothing else: a command, an argument
@@ -1311,10 +1360,12 @@ pub(crate) fn data_folder_notes(
             .iter()
             .any(|(path, _)| Path::new(path).starts_with(&folder))
         {
-            notes.insert(
-                id.clone(),
-                json!("This entry reads a file in the app's folder. If the agent rewrites that file, the next start needs a new approval."),
-            );
+            let line = "This entry reads a file in the app's folder. If the agent rewrites that file, the next start needs a new approval.";
+            let text = match notes.get(id).and_then(Value::as_str) {
+                Some(existing) if !existing.is_empty() => format!("{existing} {line}"),
+                _ => line.to_string(),
+            };
+            notes.insert(id.clone(), json!(text));
         }
     }
 }
@@ -1384,15 +1435,22 @@ pub(crate) fn view(stored: &Stored, path_value: &str) -> Value {
                 .approvals
                 .get(&id)
                 .is_some_and(|a| still_approved(a, &fp, path.as_deref()));
+        // One note per entry. The shebang and remote lines stay, and the two limits that are not pinned are always said.
+        let mut lines = Vec::new();
         if let Some(note) = remote_note(&command, &args) {
-            notes.insert(id.clone(), json!(note));
+            lines.push(note);
         } else if path.as_deref().is_some_and(starts_with_shebang) {
-            // LOW-F: the interpreter on a script's first line is not pinned, so the card says so.
-            notes.insert(
-                id.clone(),
-                json!("This program is a script. The interpreter named on its first line is not pinned."),
+            lines.push(
+                "This program is a script. The interpreter named on its first line is not pinned."
+                    .to_string(),
             );
         }
+        let display = program_display_name(&command);
+        lines.push(format!(
+            "Files beside {display} aren't checked; an edit to them runs without a new Allow."
+        ));
+        lines.push("A writer of the install folder can still race the start.".to_string());
+        notes.insert(id.clone(), json!(lines.join(" ")));
         if allowed {
             approved.push(id.clone());
         }
@@ -1776,6 +1834,11 @@ mod tests {
             .unwrap()
             .ends_with("wp134-d"));
         assert!(shown["fingerprints"]["copilot"].as_str().is_some());
+        let note = shown["notes"]["copilot"].as_str().unwrap();
+        assert!(note.contains(
+            "Files beside wp134-d aren't checked; an edit to them runs without a new Allow."
+        ));
+        assert!(note.contains("A writer of the install folder can still race the start."));
     }
 
     #[cfg(unix)]
@@ -1890,15 +1953,17 @@ mod tests {
             .expect("approved and present");
         assert_eq!(run.id, "wp134b");
         let canonical = std::fs::canonicalize(&tool).expect("canonical");
+        let run_path = Path::new(&run.command);
         assert_eq!(
-            run.command,
-            canonical.to_string_lossy(),
-            "the approved file is not what runs"
+            run_path.parent(),
+            canonical.parent(),
+            "the approved program must run from its install folder"
         );
-        let data_real = std::fs::canonicalize(d.path()).expect("data");
-        assert!(
-            Path::new(&run.command).starts_with(&data_real),
-            "the approved program runs outside the data folder"
+        use std::os::unix::fs::MetadataExt;
+        assert_eq!(
+            std::fs::metadata(run_path).expect("run meta").ino(),
+            std::fs::metadata(&canonical).expect("file meta").ino(),
+            "the approved program must be the approved file, not a copy"
         );
         assert_eq!(
             file_sha256(Path::new(&run.command)).expect("copy"),
@@ -2270,7 +2335,14 @@ mod tests {
         approve(d.path(), "wp134", &path_value).expect("approve");
         let run = approved_spawn(d.path(), "wp134", &path_value).expect("run");
         let original = std::fs::canonicalize(&tool).expect("canonical");
-        assert_eq!(Path::new(&run.command), original.as_path());
+        let run_path = Path::new(&run.command);
+        assert_eq!(run_path.parent(), original.parent());
+        use std::os::unix::fs::MetadataExt;
+        assert_eq!(
+            std::fs::metadata(run_path).expect("run meta").ino(),
+            std::fs::metadata(&original).expect("file meta").ino(),
+            "a private copy would not be the approved file"
+        );
     }
 
     #[cfg(unix)]
@@ -2832,15 +2904,19 @@ mod tests {
             !String::from_utf8_lossy(&out.stdout).contains("swapped-bytes"),
             "a program swapped after the last hash ran with no new approval"
         );
+        // The path that will run is hashed again immediately before spawn. Replacing that path, not the original
+        // name, is the race a writer of the install folder still has. confirm_before_spawn is that last hash.
+        assert!(confirm_before_spawn(d.path(), "wp134", &run.command).is_ok());
+        std::fs::remove_file(&run.command).expect("drop the link");
+        std::fs::write(&run.command, b"#!/bin/sh\necho swapped-link\n").expect("new link");
+        assert!(
+            confirm_before_spawn(d.path(), "wp134", &run.command).is_err(),
+            "a replaced link still hashed as the approved file"
+        );
     }
 
-    // Review #231 r3 repro (MEDIUM, pin scope; not new against main): only the resolved command file and absolute
-    // argument files are hashed. An installed launcher or agent is that file plus everything it loads from beside it
-    // (npx-cli.js loads ../lib/cli.js and all of npm; every npm bin loads its package's modules). A process that can
-    // write the install folder edits one of those files instead, with no race, and the next start runs the edit on the
-    // old approval. r2's private copy hid this only by breaking every such launcher. WP-134b-more-agents.md now says
-    // the launcher "finds the files beside it" but not that those files are unpinned, and the Allow card says nothing
-    // (compare the shebang note). Fix by pinning the package, or by saying it on the card and in the doc.
+    // Review #231 r3 repro (MEDIUM, pin scope), inverted on the lead's call: files beside the approved program are not
+    // pinned (pinning the package broke every launcher). The Allow card must say so, with the program's name.
     #[cfg(unix)]
     #[test]
     fn review_231_r3_a_changed_file_beside_the_approved_program_needs_a_new_allow() {
@@ -2859,17 +2935,14 @@ mod tests {
         let path_value = bin.to_string_lossy().into_owned();
         write_agents(d.path(), 0, vec![entry("wp134", "fake-acp", &["--acp"])]).expect("seed");
         approve(d.path(), "wp134", &path_value).expect("approve");
-        std::fs::write(pkg.join("lib").join("cli.sh"), b"echo changed-module\n").expect("edit");
-        if let Ok(run) = approved_spawn(d.path(), "wp134", &path_value) {
-            let out = std::process::Command::new(&run.command)
-                .args(&run.args)
-                .output()
-                .expect("spawn");
-            assert!(
-                !String::from_utf8_lossy(&out.stdout).contains("changed-module"),
-                "a changed file the approved program loads ran on the old approval"
-            );
-        }
+        let shown = view(&read_stored(d.path()).expect("read"), &path_value);
+        let note = shown["notes"]["wp134"].as_str().unwrap_or("");
+        assert!(
+            note.contains(
+                "Files beside fake-acp aren't checked; an edit to them runs without a new Allow."
+            ),
+            "the Allow card does not say files beside the program are unchecked: {note}"
+        );
     }
 
     // Review #231 r3 repro (MEDIUM, pin bypass; not new in r3): `deno run file:///abs/agent.ts` runs a local file, and

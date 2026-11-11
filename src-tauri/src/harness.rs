@@ -1174,6 +1174,7 @@ pub fn harness_spawn(
             )?)
         }
     };
+    let more_id = more.as_ref().map(|run| run.id.clone());
     let more_run = more.is_some();
     let (command, args) = match more {
         Some(run) => (run.command, run.args),
@@ -1324,8 +1325,18 @@ pub fn harness_spawn(
         );
     }
     // WP-134: a More agents child gets no app environment (keys, the control endpoint): only the allow-list.
+    // The last hash is here, after the run folder exists and immediately before the spawn.
     if more_run {
         crate::more_agents::restrict_env(&mut cmd, &gui_search_path());
+        let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+        if let Err(error) = crate::more_agents::confirm_before_spawn(
+            &data_dir,
+            more_id.as_deref().unwrap_or(""),
+            &command,
+        ) {
+            let _ = crate::more_agents::remove_run_folder(&data_dir, &spawn_dir);
+            return Err(error);
+        }
     }
     let mut child = child_or_reap(
         spawn_managed(&mut cmd),
