@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { expect, it } from "vitest";
-import { BUILD_MOVED } from "../../pages/model/buildPage";
+import { newPageAsk } from "../../pages/model/buildPage";
 import { buildPanelFromPrompt, CREATOR_MODE } from "./buildPanel";
 
 it("sends a prompt to Creator mode and does not build a spec", () => {
@@ -12,5 +12,6 @@ it("sends a prompt to Creator mode and does not build a spec", () => {
 });
 
 it("leaves the Pages build where it moved", () => {
-  expect(BUILD_MOVED).toBe("Ask the Mono in its chat to build this page: pages aren't built from here any more.");
+  // A page is built by a first mate's page_build in its own chat; the Pages card asks there (G15).
+  expect(newPageAsk("a page of every agent")).toContain("page_build");
 });

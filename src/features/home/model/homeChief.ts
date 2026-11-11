@@ -34,6 +34,11 @@ export function setHomeChiefHost(next: HomeChiefHost | undefined): () => void {
   };
 }
 
+/** The chats the app lends, for another screen that sends a first mate a turn of its own (Pages' New page, G15). */
+export function monoChatHost(): HomeChiefHost | undefined {
+  return host;
+}
+
 export function notifyHomeChief(): void {
   version += 1;
   for (const listener of listeners) listener();
