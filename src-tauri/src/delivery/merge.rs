@@ -170,12 +170,8 @@ pub fn decide(read: &PrRead, open_decision: Option<&str>, allow: &Allow) -> Deci
             "{pr} conflicts with its base; bring it up to date first."
         ));
     }
-    // WP-202: GitHub's own merge state. BEHIND is a branch that main has moved past; DIRTY is a conflict with main.
-    if read.merge_state.as_deref() == Some("BEHIND") {
-        return Decision::Refuse(format!(
-            "{pr} is behind main; update it from main, push, and wait for green again."
-        ));
-    }
+    // WP-202: GitHub's merge state DIRTY is a conflict with main. BEHIND alone refuses nothing: whether main's moved
+    // changes touch this pull request is judged at merge time (base.rs), so a pull request that misses them ships.
     if read.merge_state.as_deref() == Some("DIRTY") {
         return Decision::Refuse(format!(
             "{pr} conflicts with main; rebase, push, and wait for green again."
@@ -228,19 +224,20 @@ pub fn decide(read: &PrRead, open_decision: Option<&str>, allow: &Allow) -> Deci
     }
 }
 
-/// The base check (WP-202) for the merge gate: `Some(reason)` holds the merge. Reads go through `gh`, never the database.
+/// The base check (WP-202) for the merge gate: `Some(reason)` holds the merge. It reads GitHub only (the checks' own
+/// main, the compare, the files), never the database, and it runs after the store lock is released.
 fn base_hold(
     gh: &dyn Github,
     repo: &str,
     number: u64,
-    green: Option<&str>,
+    head: &str,
     read: &PrRead,
 ) -> Option<String> {
     base::hold(
         &|path: &str| gh.run(None, &["api".to_string(), path.to_string()]),
         repo,
         number,
-        green,
+        head,
         read,
     )
 }
@@ -254,7 +251,6 @@ fn settle_again(
     head: &str,
     open: Option<&str>,
     allow: &Allow,
-    green: Option<&str>,
 ) -> Option<String> {
     let again = match gh.read_pr(repo, number) {
         Ok(again) => again,
@@ -273,7 +269,7 @@ fn settle_again(
         Decision::Merge { .. } => {}
         Decision::Refuse(reason) | Decision::Ask(reason) => return Some(reason),
     }
-    base_hold(gh, repo, number, green, &again)
+    base_hold(gh, repo, number, head, &again)
 }
 
 fn named_files(hits: &[String]) -> String {
@@ -561,12 +557,6 @@ pub fn merge(
     if number == 0 {
         return Err("number must be the pull request's number".into());
     }
-    // WP-202: the base the watch's last green run ran on, read before GitHub is asked (no lock held over the network).
-    let green = store.lock_conn().ok().and_then(|conn| {
-        crate::pr_watch::green_base(&conn, &repo, number)
-            .ok()
-            .flatten()
-    });
     // The protected-path list is loaded before the store lock is taken. A list that will not load is an error value
     // the floor turns into an ask, never a panic while the lock is held.
     let shared = super::protected::shared_list();
@@ -723,15 +713,6 @@ pub fn merge(
     } else {
         decided
     };
-    // WP-202: main moved under the pull request since its last green run, and what it changed touches its files. It
-    // waits for a rebase and green again; a refusal already decided stays as it is.
-    let decision = match decision {
-        Decision::Refuse(reason) => Decision::Refuse(reason),
-        other => match base_hold(gh, &repo, number, green.as_deref(), &read) {
-            Some(reason) => Decision::Refuse(reason),
-            None => other,
-        },
-    };
     let allowed_by = match decision {
         Decision::Refuse(reason) => {
             record(
@@ -769,15 +750,10 @@ pub fn merge(
     drop(conn);
     // WP-202: read again just before the merge (the WP-160 pattern): a move, a conflict or a red check that landed
     // while the read above was judged holds it. `--match-head-commit` still pins the head.
-    if let Some(reason) = settle_again(
-        gh,
-        &repo,
-        number,
-        &head,
-        open.as_deref(),
-        &allow,
-        green.as_deref(),
-    ) {
+    // The base hold (WP-202) and this read run with the store lock released. `gh pr merge --match-head-commit` pins the
+    // head only: GitHub does not pin the base, so the base is judged here, as close to the merge as this can get, and
+    // GitHub's own up-to-date rule is the server-side guard when the branch protection asks for it.
+    if let Some(reason) = settle_again(gh, &repo, number, &head, open.as_deref(), &allow) {
         let conn = store.lock_conn()?;
         record(
             &conn,

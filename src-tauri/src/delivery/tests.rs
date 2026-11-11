@@ -2355,12 +2355,17 @@ fn the_extra_list_stops_at_one_hundred_paths() {
 
 // ---- protected-path floor: the review's fixes (WP-158 review round) ----------------------------------------------------
 
+/// The floor's own `gh api` reads. The WP-202 base hold reads the head's check runs (`check-runs`) at every merge; that
+/// read is not the floor's, so it is not counted here.
 fn api_calls(gh: &FakeGithub) -> usize {
     gh.runs
         .lock()
         .unwrap()
         .iter()
-        .filter(|args| args.first().map(String::as_str) == Some("api"))
+        .filter(|args| {
+            args.first().map(String::as_str) == Some("api")
+                && !args.get(1).is_some_and(|path| path.contains("check-runs"))
+        })
         .count()
 }
 
@@ -2670,61 +2675,58 @@ fn person_merge(repo: &str) -> MergeRequest {
     }
 }
 
-/// A watch row that was last green on `base` (what the PR watch stores on a green read).
-fn green_base_row(store: &SessionStore, base: &str) {
-    store
-        .lock_conn()
-        .unwrap()
-        .execute(
-            "INSERT INTO pr_watches (id, owner_session, repo, repo_key, number, state, memo, next_read_at, created_at, updated_at)
-             VALUES ('w1', 'mono-hivra', 'acme/web', 'acme/web', 7, 'watching', ?1, 0, 0, 0)",
-            [serde_json::json!({ "greenBase": base }).to_string()],
-        )
-        .unwrap();
+/// The check runs of the head, as they ran on `base` (their `pull_requests[].base.sha`).
+fn checks_on(base: &str) -> String {
+    format!(
+        r#"{{"total_count":1,"check_runs":[{{"name":"build","status":"completed","conclusion":"success","pull_requests":[{{"base":{{"sha":"{base}"}}}}]}}]}}"#
+    )
 }
 
-const MOVED_BY_SRC: &str = r#"{"files":[{"filename":"src/lib.rs"}],"ahead_by":0,"behind_by":0}"#;
+const MOVED_BY_SRC: &str =
+    r#"{"status":"ahead","files":[{"filename":"src/lib.rs"}],"ahead_by":1,"behind_by":0}"#;
 const MOVED_BY_DOCS: &str =
-    r#"{"files":[{"filename":"docs/notes.md"}],"ahead_by":0,"behind_by":0}"#;
+    r#"{"status":"ahead","files":[{"filename":"docs/notes.md"}],"ahead_by":1,"behind_by":0}"#;
 const PR_FILES: &str = r#"[{"filename":"src/lib.rs"},{"filename":"README.md"}]"#;
 
 #[test]
-fn decide_refuses_a_branch_behind_main_or_in_conflict_with_it_and_blocks_nothing_unread() {
-    let behind = PrRead {
-        merge_state: Some("BEHIND".into()),
-        ..green("h1")
-    };
-    let Decision::Refuse(reason) = decide(&behind, None, &person()) else {
-        panic!("behind main must refuse");
-    };
-    assert!(reason.contains("behind main"), "{reason}");
+fn decide_refuses_a_branch_in_conflict_with_main_and_lets_a_behind_one_go_to_the_files_check() {
     let dirty = PrRead {
         merge_state: Some("DIRTY".into()),
-        ..green("h1")
+        ..green("a1b2c3d")
     };
     let Decision::Refuse(reason) = decide(&dirty, None, &person()) else {
         panic!("a dirty branch must refuse");
     };
     assert!(reason.contains("conflicts with main"), "{reason}");
-    let unread = PrRead {
-        merge_state: None,
-        ..green("h1")
+    // M3: behind main alone holds nothing; whether main's changes touch the pull request is judged at merge time.
+    let behind = PrRead {
+        merge_state: Some("BEHIND".into()),
+        ..green("a1b2c3d")
     };
     assert!(
-        matches!(decide(&unread, None, &person()), Decision::Merge { .. }),
-        "a merge state that wasn't read holds nothing"
+        matches!(decide(&behind, None, &person()), Decision::Merge { .. }),
+        "a behind branch whose files main didn't touch must ship"
     );
+    let unread = PrRead {
+        merge_state: None,
+        ..green("a1b2c3d")
+    };
+    assert!(matches!(
+        decide(&unread, None, &person()),
+        Decision::Merge { .. }
+    ));
 }
 
 #[test]
-fn a_base_move_over_the_pull_requests_files_holds_the_merge_until_green_again() {
+fn a_base_move_over_the_pull_requests_files_holds_the_merge_with_no_watch_at_all() {
+    // H2: no watch row exists. The hold still comes from GitHub: the checks ran on b1, main is b2, src/lib.rs moved.
     let s = store();
-    green_base_row(&s, "b1b1b1b");
     let moved = PrRead {
         base_tip: Some("b2b2b2b".into()),
-        ..green("h1")
+        ..green("a1b2c3d")
     };
     let gh = FakeGithub::new(vec![moved.clone(), moved])
+        .with_api("check-runs", &checks_on("b1b1b1b"))
         .with_api("compare/b1b1b1b...b2b2b2b", MOVED_BY_SRC)
         .with_api("pulls/7/files", PR_FILES);
     let out = merge::merge(&s, &gh, person_merge("acme/web"), 10).unwrap();
@@ -2741,12 +2743,12 @@ fn a_base_move_over_the_pull_requests_files_holds_the_merge_until_green_again() 
 #[test]
 fn a_base_move_that_misses_the_pull_request_still_merges() {
     let s = store();
-    green_base_row(&s, "b1b1b1b");
     let moved = PrRead {
         base_tip: Some("b2b2b2b".into()),
-        ..green("h1")
+        ..green("a1b2c3d")
     };
     let gh = FakeGithub::new(vec![moved.clone(), moved])
+        .with_api("check-runs", &checks_on("b1b1b1b"))
         .with_api("compare/b1b1b1b...b2b2b2b", MOVED_BY_DOCS)
         .with_api("pulls/7/files", PR_FILES);
     assert!(
@@ -2759,18 +2761,77 @@ fn a_base_move_that_misses_the_pull_request_still_merges() {
 }
 
 #[test]
+fn a_pull_request_whose_checks_do_not_say_which_main_they_ran_on_is_held() {
+    let s = store();
+    let gh = FakeGithub::new(vec![green("a1b2c3d"), green("a1b2c3d")])
+        .with_api("check-runs", r#"{"total_count":0,"check_runs":[]}"#);
+    let out = merge::merge(&s, &gh, person_merge("acme/web"), 10).unwrap();
+    assert!(
+        matches!(&out, MergeOutcome::Refused { reason } if reason.contains("which main")),
+        "{out:?}"
+    );
+    assert!(gh.ran("pr", "merge").is_empty());
+}
+
+#[test]
 fn a_move_that_lands_between_the_read_and_the_merge_refuses() {
     let s = store();
-    let first = green("h1");
+    let first = green("a1b2c3d");
     let second = PrRead {
-        merge_state: Some("BEHIND".into()),
-        ..green("h1")
+        merge_state: Some("DIRTY".into()),
+        ..green("a1b2c3d")
     };
     let gh = FakeGithub::new(vec![first, second]);
     let out = merge::merge(&s, &gh, person_merge("acme/web"), 10).unwrap();
     assert!(
-        matches!(&out, MergeOutcome::Refused { reason } if reason.contains("behind main")),
+        matches!(&out, MergeOutcome::Refused { reason } if reason.contains("conflicts with main")),
         "{out:?}"
     );
     assert!(gh.ran("pr", "merge").is_empty());
+}
+
+/// Wraps the fake and records, at every `gh api` call, whether the store lock was held (M1).
+struct LockProbe<'a> {
+    inner: FakeGithub,
+    store: &'a SessionStore,
+    held_at_api: std::sync::Mutex<Vec<bool>>,
+}
+
+impl Github for LockProbe<'_> {
+    fn read_pr(&self, repo: &str, number: u64) -> Result<crate::pr_watch::github::PrRead, String> {
+        self.inner.read_pr(repo, number)
+    }
+
+    fn run(&self, dir: Option<&std::path::Path>, args: &[String]) -> Result<String, String> {
+        if args.first().map(String::as_str) == Some("api") {
+            let free = self.store.try_lock_conn().unwrap().is_some();
+            self.held_at_api.lock().unwrap().push(!free);
+        }
+        self.inner.run(dir, args)
+    }
+}
+
+#[test]
+fn the_base_hold_runs_after_the_store_lock_is_released() {
+    // M1: the GitHub reads of the base hold run with no store lock held.
+    let s = store();
+    let moved = PrRead {
+        base_tip: Some("b2b2b2b".into()),
+        ..green("a1b2c3d")
+    };
+    let probe = LockProbe {
+        inner: FakeGithub::new(vec![moved.clone(), moved])
+            .with_api("check-runs", &checks_on("b1b1b1b"))
+            .with_api("compare/b1b1b1b...b2b2b2b", MOVED_BY_DOCS)
+            .with_api("pulls/7/files", PR_FILES),
+        store: &s,
+        held_at_api: std::sync::Mutex::new(Vec::new()),
+    };
+    merge::merge(&s, &probe, person_merge("acme/web"), 10).unwrap();
+    let held = probe.held_at_api.lock().unwrap().clone();
+    assert!(!held.is_empty(), "the base hold reads GitHub");
+    assert!(
+        held.iter().all(|h| !h),
+        "a GitHub read ran while the store lock was held: {held:?}"
+    );
 }

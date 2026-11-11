@@ -40,8 +40,6 @@ pub struct Memo {
     pub pr_files: Option<(String, Vec<String>, bool)>,
     /// How far behind main the head was, read once per head and base: (head, base, commits) (WP-202).
     pub behind_at: Option<(String, String, u32)>,
-    /// The base the last green read ran on (WP-202): the merge gate holds a move that touches the files since.
-    pub green_base: Option<String>,
     /// Base news already told, as "behind <head> <base>" or "dirty <head> <base>" (WP-202, the newest kept).
     pub told_base: Vec<String>,
 }

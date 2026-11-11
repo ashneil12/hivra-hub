@@ -668,11 +668,9 @@ pub fn add(store: &SessionStore, gh: &dyn Gh, input: AddInput, now: i64) -> Resu
         read.remarks.as_deref().unwrap_or(&[]),
     );
     let status = Status::of(&read);
-    // WP-202: the base as it is now is the one to judge a move from; a green read ran on it.
+    // WP-202: the base as it is now is the one to judge a move from. Which main a green run ran on is asked of GitHub
+    // at merge time, never recorded here.
     memo.base_sha = read.base_tip.clone();
-    if status.passed {
-        memo.green_base = read.base_tip.clone();
-    }
     let next_read_at = now
         + if status.in_flight(true) {
             IN_FLIGHT_EVERY
@@ -1129,27 +1127,23 @@ fn apply(
         base::Facts::default()
     };
     let status = Status::of(read);
-    let passed = status.passed;
+    let facts_unread = facts.unread;
     let mut report = (read.state == PrState::Open)
         .then(|| eval::evaluate(&w.memo, &read.detail, read.remarks.as_deref()));
     if let Some(report) = report.as_mut() {
         if stale {
-            let green = w.memo.green_base.clone();
             report.next = eval::baseline(
                 &w.memo.started_at,
                 &read.detail,
                 read.remarks.as_deref().unwrap_or(&[]),
             );
-            base::settle_stale(&mut report.next, read, passed);
-            if !passed {
-                report.next.green_base = green;
-            }
+            base::settle_stale(&mut report.next, read);
         } else {
             let conflict_told = report
                 .changes
                 .iter()
                 .any(|c| matches!(c, Change::Conflicting));
-            let news = base::news(&mut report.next, read, &facts, conflict_told, passed);
+            let news = base::news(&mut report.next, read, &facts, conflict_told);
             report.changes.extend(news);
         }
     }
@@ -1220,6 +1214,11 @@ fn apply(
         } else {
             QUIET_EVERY
         };
+    // WP-202: a base read that failed (a rate limit, the network) waits before GitHub is asked again, so a watch
+    // doesn't spend its budget on the same unanswerable question every poll.
+    if facts_unread {
+        w.next_read_at = w.next_read_at.max(now + base::RETRY_AFTER);
+    }
     let mut changed = before != (w.status.clone(), w.memo.clone(), w.title.clone());
     // Hivra WP-12: CI red, CI green, merged and closed feed delivery (and WP-11's classifier).
     let mut delivery_news =
@@ -1283,18 +1282,6 @@ fn apply(
         swept.changed.push(w.id);
     }
     Ok(())
-}
-
-/// The base the last green read of a watched pull request ran on (WP-202), when one is watched. The merge gate holds a
-/// move of main that touches the pull request's files since then.
-pub fn green_base(conn: &Connection, repo: &str, number: u64) -> Result<Option<String>, String> {
-    let key = repo.to_ascii_lowercase();
-    let watches = query(
-        conn,
-        "WHERE repo_key = ?1 AND number = ?2 AND state = 'watching' ORDER BY updated_at DESC LIMIT 1",
-        &[&key, &(number as i64)],
-    )?;
-    Ok(watches.into_iter().next().and_then(|w| w.memo.green_base))
 }
 
 // ---- the poller thread -------------------------------------------------------------------------------------------------
@@ -2598,11 +2585,11 @@ mod tests {
         recorded(|v| pr(v)["baseRef"] = json!({ "target": { "oid": base } }))
     }
 
-    fn compare_of(files: &[&str], behind: u32) -> String {
+    fn compare_of(files: &[&str], ahead: u32) -> String {
         json!({
             "files": files.iter().map(|f| json!({ "filename": f })).collect::<Vec<_>>(),
-            "ahead_by": 0,
-            "behind_by": behind,
+            "ahead_by": ahead,
+            "behind_by": 0,
         })
         .to_string()
     }
@@ -2705,8 +2692,29 @@ mod tests {
         assert!(open_wakes(&store).is_empty());
     }
 
+    /// The check runs of the fixture head, as if they ran on `base` (WP-202: the merge gate reads this from GitHub).
+    fn checks_on(base: &str) -> String {
+        json!({
+            "total_count": 1,
+            "check_runs": [{ "name": "build", "status": "completed", "conclusion": "success",
+                             "pull_requests": [{ "base": { "sha": base } }] }]
+        })
+        .to_string()
+    }
+
+    /// The merge gate's view of the fixture head, judged from GitHub's answers on `gh` (no stored state).
+    fn held_at_merge(gh: &FakeGh) -> Option<String> {
+        let read = github::parse(&based(B2)).unwrap();
+        base::hold(&|p: &str| gh.rest(p), "cli/cli", 14716, HEAD, &read)
+    }
+
+    /// The checks ran on main B1; main has moved to B2 over src/lib.rs since.
+    fn checks_ran_on_b1(gh: FakeGh) -> FakeGh {
+        gh.with_rest(&format!("commits/{HEAD}/check-runs"), &checks_on(B1))
+    }
+
     #[test]
-    fn a_green_read_records_the_base_its_checks_ran_on() {
+    fn r1_a_green_poll_after_main_moved_over_the_files_keeps_the_merge_hold() {
         let store = store();
         add(
             &store,
@@ -2715,10 +2723,120 @@ mod tests {
             T0,
         )
         .unwrap();
-        let conn = store.lock_conn().unwrap();
-        assert_eq!(
-            green_base(&conn, "cli/cli", 14716).unwrap().as_deref(),
-            Some(B1)
+        let mut paused = 0;
+        let gh = checks_ran_on_b1(moves_to_b2(
+            FakeGh::new(vec![Ok(based(B2))]),
+            &["src/lib.rs"],
+            1,
+        ));
+        let swept = run(&store, &gh, T0 + QUIET_EVERY, &mut paused);
+        assert_eq!(swept.wakes.len(), 1, "the move is told: {swept:?}");
+        assert!(
+            held_at_merge(&gh).is_some(),
+            "checks ran on B1 and main changed src/lib.rs since: the merge must wait"
         );
+    }
+
+    #[test]
+    fn r1_a_stale_baseline_does_not_mark_a_moved_base_as_green() {
+        let store = store();
+        add(
+            &store,
+            &FakeGh::new(vec![Ok(based(B1))]),
+            input("mono-hivra"),
+            T0,
+        )
+        .unwrap();
+        let mut paused = 0;
+        let gh = checks_ran_on_b1(moves_to_b2(
+            FakeGh::new(vec![Ok(based(B2))]),
+            &["src/lib.rs"],
+            1,
+        ));
+        run(&store, &gh, T0 + 7 * 60 * 60_000, &mut paused);
+        assert!(
+            held_at_merge(&gh).is_some(),
+            "a stale baseline must not move the checked main"
+        );
+    }
+
+    #[test]
+    fn r1_another_agent_watching_the_pull_request_does_not_clear_the_hold() {
+        let store = store();
+        add(
+            &store,
+            &FakeGh::new(vec![Ok(based(B1))]),
+            input("mono-hivra"),
+            T0,
+        )
+        .unwrap();
+        add(
+            &store,
+            &FakeGh::new(vec![Ok(based(B2))]),
+            input("mono-other"),
+            T0 + 60_000,
+        )
+        .unwrap();
+        let gh = checks_ran_on_b1(moves_to_b2(FakeGh::new(vec![]), &["src/lib.rs"], 1));
+        assert!(
+            held_at_merge(&gh).is_some(),
+            "a second watch must not clear the hold"
+        );
+    }
+
+    #[test]
+    fn r1_unwatching_does_not_clear_the_hold() {
+        let store = store();
+        add(
+            &store,
+            &FakeGh::new(vec![Ok(based(B1))]),
+            input("mono-hivra"),
+            T0,
+        )
+        .unwrap();
+        remove(
+            &store,
+            RemoveInput {
+                owner_session: "mono-hivra".into(),
+                id: None,
+                repo: Some("cli/cli".into()),
+                number: Some(14716),
+                reason: None,
+            },
+            T0 + 60_000,
+        )
+        .unwrap();
+        let gh = checks_ran_on_b1(moves_to_b2(FakeGh::new(vec![]), &["src/lib.rs"], 1));
+        assert!(
+            held_at_merge(&gh).is_some(),
+            "unwatching must not clear the hold"
+        );
+    }
+
+    #[test]
+    fn a_base_read_that_fails_waits_before_it_asks_again() {
+        let store = store();
+        add(
+            &store,
+            &FakeGh::new(vec![Ok(based(B1))]),
+            input("mono-hivra"),
+            T0,
+        )
+        .unwrap();
+        let mut paused = 0;
+        // Main moved, but GitHub can't answer the compare: the read waits RETRY_AFTER, not the quiet pace.
+        let t1 = T0 + QUIET_EVERY;
+        run(&store, &FakeGh::new(vec![Ok(based(B2))]), t1, &mut paused);
+        let id = input_id(&store);
+        let stored = get(&store.lock_conn().unwrap(), &id).unwrap().unwrap();
+        assert_eq!(stored.next_read_at, t1 + base::RETRY_AFTER);
+    }
+
+    fn input_id(store: &SessionStore) -> String {
+        let conn = store.lock_conn().unwrap();
+        conn.query_row("SELECT id FROM pr_watches LIMIT 1", [], |row| {
+            row.get::<_, String>(0)
+        })
+        .unwrap()
     }
 }

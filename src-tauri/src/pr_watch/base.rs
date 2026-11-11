@@ -1,9 +1,9 @@
 //! The base branch under a watched pull request (WP-202): when main moved, whether what it changed touches the pull
-//! request's own files, how far behind main the branch is, and the base the last green run ran on.
+//! request's own files, how far behind main the branch is, and which main the pull request's checks last ran on.
 //!
 //! Every fact comes from GitHub through a `get` (a REST path to its JSON), so the sweep and the merge gate read the
-//! same way. Nothing here writes to GitHub. A missing field reads as unknown and holds nothing; a read that fails
-//! leaves the watch's base where it was, so the next read tries again.
+//! same way. Nothing here writes to GitHub, and nothing is stored as "green": the merge gate asks GitHub, at merge
+//! time, which main the head's checks ran on. A missing or unreadable fact holds the merge rather than passing it.
 
 use super::eval::{Change, Memo};
 use super::github::PrRead;
@@ -14,6 +14,8 @@ pub const COMPARE_FILE_CAP: usize = 300;
 pub const PULL_FILES_PAGE: usize = 100;
 /// Remembered base wakes per watch (a head and base each add one key).
 const TOLD_BASE_MAX: usize = 20;
+/// How long a watch waits before it asks GitHub again after a failed base read (rate limits, the network).
+pub const RETRY_AFTER: i64 = 10 * 60_000;
 
 /// The `get` seam: a REST path (relative to the API root) to its JSON answer.
 pub type Get<'a> = &'a dyn Fn(&str) -> Result<String, String>;
@@ -23,8 +25,11 @@ pub type Get<'a> = &'a dyn Fn(&str) -> Result<String, String>;
 pub struct Compare {
     pub files: Vec<String>,
     pub cut_short: bool,
-    /// Commits the first side has that the second lacks: how far behind a branch is.
-    pub behind_by: u32,
+    /// Commits the second side has that the first lacks. For `compare(head...base)` that is how many commits main has
+    /// that the branch lacks (WP-202 H4: `behind_by` counts the branch's own commits).
+    pub ahead_by: u32,
+    /// GitHub's word for the pair: ahead, behind, identical, or diverged (the first is not an ancestor of the second).
+    pub status: String,
 }
 
 /// What main changed since the watch last saw it.
@@ -32,6 +37,8 @@ pub struct Compare {
 pub struct Moved {
     pub files: Vec<String>,
     pub cut_short: bool,
+    /// Main was rewritten (force-pushed): nothing can say which files moved, so the move is unknown.
+    pub diverged: bool,
 }
 
 /// What the network said this read, gathered before the database is held. `news` settles it onto the memo.
@@ -43,14 +50,15 @@ pub struct Facts {
     pub pr_files: Option<(Vec<String>, bool)>,
     /// How far behind main the head is (cached on the memo per head and base).
     pub behind: Option<u32>,
-    /// A move or a file list could not be read: the base is not advanced, so the next read asks again.
+    /// A move, a file list or the behind count could not be read: the base is not advanced, and the watch waits
+    /// `RETRY_AFTER` before asking again.
     pub unread: bool,
     /// Cache entries to store on the memo.
     pub cache_pr_files: Option<(String, Vec<String>, bool)>,
     pub cache_behind: Option<(String, String, u32)>,
 }
 
-/// The merge gate's view of one pull request against what it was green on.
+/// The merge gate's view of one pull request against what it was checked on.
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Touch {
     None,
@@ -61,20 +69,26 @@ enum Touch {
 
 // ---- parsing (pure) ------------------------------------------------------------------------------------------------
 
-/// A compare answer: its files, and the commits each side has that the other lacks.
+/// A compare answer: its files, and the commits the second side has that the first lacks.
 pub fn parse_compare(json: &str) -> Result<Compare, String> {
     let value: serde_json::Value = serde_json::from_str(json)
         .map_err(|_| "GitHub's compare answer was not JSON".to_string())?;
     let files = filenames(value.get("files"))?;
-    let behind_by = value
-        .get("behind_by")
+    let ahead_by = value
+        .get("ahead_by")
         .and_then(serde_json::Value::as_u64)
         .unwrap_or(0)
         .min(u32::MAX as u64) as u32;
+    let status = value
+        .get("status")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("")
+        .to_string();
     Ok(Compare {
         cut_short: files.len() >= COMPARE_FILE_CAP,
         files,
-        behind_by,
+        ahead_by,
+        status,
     })
 }
 
@@ -150,6 +164,40 @@ fn pull_files(get: Get, repo: &str, number: u64) -> Result<(Vec<String>, bool), 
     ))?)
 }
 
+/// The main commit each of the head's check runs ran on (their `pull_requests[].base.sha`), read from every page.
+/// `Ok(None)`: no run says. `Err`: the runs disagree, or the list can't be read whole. Either way the merge waits.
+pub fn checks_base(get: Get, repo: &str, head: &str) -> Result<Option<String>, String> {
+    if !is_sha(head) {
+        return Err("the head is not a commit id".into());
+    }
+    let paged = super::github::rest_pages(
+        get,
+        &format!("repos/{repo}/commits/{head}/check-runs"),
+        "check_runs",
+    )?;
+    let mut bases: Vec<String> = Vec::new();
+    for run in &paged.items {
+        let Some(prs) = run
+            .get("pull_requests")
+            .and_then(serde_json::Value::as_array)
+        else {
+            continue;
+        };
+        for pr in prs {
+            if let Some(sha) = pr.pointer("/base/sha").and_then(serde_json::Value::as_str) {
+                if !bases.iter().any(|b| b == sha) {
+                    bases.push(sha.to_string());
+                }
+            }
+        }
+    }
+    match bases.len() {
+        0 => Ok(None),
+        1 => Ok(bases.pop()),
+        _ => Err("the checks ran on more than one main".into()),
+    }
+}
+
 /// Everything the network says for one open pull request this read: main's move, the pull request's files, how far
 /// behind main the head is. Nothing is read for a read with no base, or for a watch whose state is stale (`stale`:
 /// the baseline is taken without replaying old news).
@@ -168,12 +216,13 @@ pub fn facts(get: Get, repo: &str, number: u64, memo: &Memo, read: &PrRead, stal
     };
     match cached {
         Some(n) => facts.behind = Some(n),
-        None => {
-            if let Ok(c) = compare(get, repo, head, base) {
-                facts.behind = Some(c.behind_by);
-                facts.cache_behind = Some((head.into(), base.into(), c.behind_by));
+        None => match compare(get, repo, head, base) {
+            Ok(c) => {
+                facts.behind = Some(c.ahead_by);
+                facts.cache_behind = Some((head.into(), base.into(), c.ahead_by));
             }
-        }
+            Err(_) => facts.unread = true,
+        },
     }
     let Some(old) = memo.base_sha.as_deref() else {
         return facts;
@@ -181,15 +230,26 @@ pub fn facts(get: Get, repo: &str, number: u64, memo: &Memo, read: &PrRead, stal
     if old == base {
         return facts;
     }
-    let moved = match compare(get, repo, old, base) {
-        Ok(c) => Moved {
-            files: c.files,
-            cut_short: c.cut_short,
-        },
+    let c = match compare(get, repo, old, base) {
+        Ok(c) => c,
         Err(_) => {
             facts.unread = true;
             return facts;
         }
+    };
+    if c.status == "diverged" {
+        // Main was force-pushed: the files can't be listed, so the move counts as unknown.
+        facts.moved = Some(Moved {
+            files: Vec::new(),
+            cut_short: true,
+            diverged: true,
+        });
+        return facts;
+    }
+    let moved = Moved {
+        files: c.files,
+        cut_short: c.cut_short,
+        diverged: false,
     };
     let pr = match &memo.pr_files {
         Some((h, files, cut)) if h == head => (files.clone(), *cut),
@@ -213,13 +273,7 @@ pub fn facts(get: Get, repo: &str, number: u64, memo: &Memo, read: &PrRead, stal
 
 /// The base news for this read, and the memo it leaves behind. `memo` is the memo the read's own evaluation produced
 /// (it carries the watch's base fields). `conflict_told` says the read already reported a conflict.
-pub fn news(
-    memo: &mut Memo,
-    read: &PrRead,
-    facts: &Facts,
-    conflict_told: bool,
-    passed: bool,
-) -> Vec<Change> {
+pub fn news(memo: &mut Memo, read: &PrRead, facts: &Facts, conflict_told: bool) -> Vec<Change> {
     let mut out = Vec::new();
     if let Some(pr) = &facts.cache_pr_files {
         memo.pr_files = Some(pr.clone());
@@ -230,14 +284,20 @@ pub fn news(
     let (Some(head), Some(base)) = (read.detail.head_sha.clone(), read.base_tip.clone()) else {
         return out;
     };
-    if passed {
-        memo.green_base = Some(base.clone());
-    }
     if memo.base_sha.as_deref() != Some(base.as_str()) {
         let known = memo.base_sha.is_some();
         match (known, &facts.moved, facts.unread) {
             // A watch from before the base was read: record it, tell nothing.
             (false, _, _) => memo.base_sha = Some(base.clone()),
+            // Main was rewritten: unknown, so it is said, and the new base is recorded.
+            (true, Some(moved), false) if moved.diverged => {
+                out.push(Change::BaseMoved {
+                    to: base.clone(),
+                    files: Vec::new(),
+                    cut_short: true,
+                });
+                memo.base_sha = Some(base.clone());
+            }
             // Judged: main moved, and the files were read.
             (true, Some(moved), false) => {
                 if let Some(pr) = &facts.pr_files {
@@ -254,8 +314,8 @@ pub fn news(
                         }),
                         Touch::None => {}
                     }
+                    memo.base_sha = Some(base.clone());
                 }
-                memo.base_sha = Some(base.clone());
             }
             // Not judged: keep the old base, so the next read asks again.
             _ => {}
@@ -288,41 +348,61 @@ fn tell(memo: &mut Memo, key: String) {
     }
 }
 
-/// A stale watch's baseline: main's current base and the green base are taken as already told, so nothing replays.
-pub fn settle_stale(memo: &mut Memo, read: &PrRead, passed: bool) {
+/// A stale watch's baseline: main's current base is taken as seen, and a BEHIND or DIRTY state the head already has is
+/// marked told. The told keys already kept are not cleared, so a replay can't re-announce them.
+pub fn settle_stale(memo: &mut Memo, read: &PrRead) {
     memo.base_sha = read.base_tip.clone();
-    memo.told_base.clear();
-    if passed {
-        memo.green_base = read.base_tip.clone();
+    if let (Some(head), Some(base)) = (read.detail.head_sha.as_deref(), read.base_tip.as_deref()) {
+        let key = match read.merge_state.as_deref() {
+            Some("BEHIND") => format!("behind {head} {base}"),
+            Some("DIRTY") => format!("dirty {head} {base}"),
+            _ => return,
+        };
+        if !memo.told_base.contains(&key) {
+            tell(memo, key);
+        }
     }
 }
 
 // ---- the merge gate -------------------------------------------------------------------------------------------------
 
-/// The merge gate's base check (WP-202): refuses while main moved since the last green run and what it changed touches
-/// this pull request, or when the move cannot be read. `None` means the base holds nothing. `green` is the base the
-/// watch's last green run ran on; without a watch there is nothing to compare, so nothing is held here.
-pub fn hold(
-    get: Get,
-    repo: &str,
-    number: u64,
-    green: Option<&str>,
-    read: &PrRead,
-) -> Option<String> {
-    let green = green?;
-    let base = read.base_tip.as_deref()?;
+/// The merge gate's base check (WP-202), read from GitHub at merge time and never from the database. `Some(reason)`
+/// holds the merge. It holds when main moved since the main the head's checks ran on and what it changed touches this
+/// pull request, and whenever the answer is unknown: no base, no checks that say which main they ran on, a rewritten
+/// main, or a read that failed. A move that misses the pull request's files holds nothing.
+pub fn hold(get: Get, repo: &str, number: u64, head: &str, read: &PrRead) -> Option<String> {
+    let pr = format!("{repo}#{number}");
+    let Some(base) = read.base_tip.as_deref() else {
+        return Some(format!(
+            "{pr}'s base branch couldn't be read, so it waits. Try again."
+        ));
+    };
+    let green = match checks_base(get, repo, head) {
+        Ok(Some(sha)) => sha,
+        Ok(None) => {
+            return Some(format!(
+                "{pr}'s checks don't say which main they ran on, so it waits for a run on the current main."
+            ))
+        }
+        Err(error) => return Some(format!("{pr}'s checks couldn't be checked ({error}), so it waits. Try again.")),
+    };
     if green == base {
         return None;
     }
-    let pr = format!("{repo}#{number}");
-    let moved = match compare(get, repo, green, base) {
+    let moved = match compare(get, repo, &green, base) {
+        Ok(c) if c.status == "diverged" => {
+            return Some(format!(
+                "main was rewritten since {pr}'s checks ran, so it waits for a run on the new main."
+            ))
+        }
         Ok(c) => Moved {
             files: c.files,
             cut_short: c.cut_short,
+            diverged: false,
         },
         Err(error) => {
             return Some(format!(
-                "{pr} couldn't be checked against main's changes since its last green run ({error}), so it waits. Try again."
+                "{pr} couldn't be checked against main's changes since its checks ran ({error}), so it waits. Try again."
             ))
         }
     };
@@ -337,11 +417,11 @@ pub fn hold(
     match touch(&moved, &pr_files) {
         Touch::None => None,
         Touch::Named(files) => Some(format!(
-            "main moved since {pr}'s last green run, and changed {}. Rebase onto main, push, and wait for green again.",
+            "main moved since {pr}'s checks ran, and changed {}. Rebase onto main, push, and wait for green again.",
             files.join(", ")
         )),
         Touch::Unknown => Some(format!(
-            "main moved since {pr}'s last green run and changed more files than GitHub lists, so it may touch this pull request. Rebase onto main, push, and wait for green again."
+            "main moved since {pr}'s checks ran and changed more files than GitHub lists, so it may touch this pull request. Rebase onto main, push, and wait for green again."
         )),
     }
 }
@@ -405,8 +485,25 @@ mod tests {
         serde_json::Value::Array(items).to_string()
     }
 
-    fn compare_json(files: &[&str], behind: u32) -> String {
-        serde_json::json!({ "files": files.iter().map(|n| serde_json::json!({ "filename": n })).collect::<Vec<_>>(), "ahead_by": 0, "behind_by": behind }).to_string()
+    /// A compare answer: `ahead` commits the second side has that the first lacks.
+    fn compare_json(files: &[&str], ahead: u32) -> String {
+        serde_json::json!({
+            "status": if ahead > 0 { "ahead" } else { "identical" },
+            "files": files.iter().map(|n| serde_json::json!({ "filename": n })).collect::<Vec<_>>(),
+            "ahead_by": ahead,
+            "behind_by": 0,
+        })
+        .to_string()
+    }
+
+    /// Check runs that ran on `base`, one page.
+    fn checks_on(base: &str) -> String {
+        serde_json::json!({
+            "total_count": 1,
+            "check_runs": [{ "name": "build", "status": "completed", "conclusion": "success",
+                             "pull_requests": [{ "base": { "sha": base } }] }]
+        })
+        .to_string()
     }
 
     fn moved_key() -> String {
@@ -417,16 +514,20 @@ mod tests {
         format!("compare/{H1}...{B2}")
     }
 
+    fn checks_key() -> String {
+        format!("commits/{H1}/check-runs")
+    }
+
     #[test]
-    fn a_compare_lists_its_files_and_how_far_behind_it_is() {
+    fn a_compare_lists_its_files_and_how_far_ahead_it_is() {
         let c = parse_compare(&compare_json(&["src/a.rs", "src/b.rs"], 3)).unwrap();
         assert_eq!(c.files, vec!["src/a.rs", "src/b.rs"]);
-        assert_eq!((c.behind_by, c.cut_short), (3, false));
+        assert_eq!((c.ahead_by, c.cut_short), (3, false));
         let full: Vec<&str> = std::iter::repeat_n("x.rs", COMPARE_FILE_CAP).collect();
         assert!(parse_compare(&compare_json(&full, 0)).unwrap().cut_short);
         assert!(parse_compare("not json").is_err());
         assert!(
-            parse_compare(r#"{"behind_by":1}"#).is_err(),
+            parse_compare(r#"{"ahead_by":1}"#).is_err(),
             "no file list is not an empty one"
         );
     }
@@ -460,7 +561,7 @@ mod tests {
         let read = open(H1, B2, None);
         let got = facts(&get, "acme/web", 7, &memo, &read, false);
         assert_eq!(
-            news(&mut memo, &read, &got, false, false),
+            news(&mut memo, &read, &got, false),
             vec![Change::BaseMoved {
                 to: B2.into(),
                 files: vec!["src/lib.rs".into()],
@@ -469,12 +570,8 @@ mod tests {
         );
         assert_eq!(memo.base_sha.as_deref(), Some(B2));
         // The same read again: the base is recorded, so nothing is news.
-        let got = facts_again(&get, &memo, &read);
-        assert!(news(&mut memo, &read, &got, false, false).is_empty());
-    }
-
-    fn facts_again(get: Get, memo: &Memo, read: &PrRead) -> Facts {
-        facts(get, "acme/web", 7, memo, read, false)
+        let got = facts(&get, "acme/web", 7, &memo, &read, false);
+        assert!(news(&mut memo, &read, &got, false).is_empty());
     }
 
     #[test]
@@ -490,23 +587,23 @@ mod tests {
         };
         let read = open(H1, B2, None);
         let got = facts(&get, "acme/web", 7, &memo, &read, false);
-        assert!(news(&mut memo, &read, &got, false, false).is_empty());
+        assert!(news(&mut memo, &read, &got, false).is_empty());
         assert_eq!(memo.base_sha.as_deref(), Some(B2));
     }
 
     #[test]
-    fn behind_is_news_once_per_head_and_base() {
+    fn behind_is_news_once_per_head_and_base_and_counts_what_main_has_that_the_branch_lacks() {
         let get = canned(vec![(behind_key(), compare_json(&[], 3))]);
         let mut memo = Memo::default();
         let read = open(H1, B2, Some("BEHIND"));
         let got = facts(&get, "acme/web", 7, &memo, &read, false);
         assert_eq!(
-            news(&mut memo, &read, &got, false, false),
+            news(&mut memo, &read, &got, false),
             vec![Change::Behind { commits: Some(3) }]
         );
-        let got = facts_again(&get, &memo, &read);
+        let got = facts(&get, "acme/web", 7, &memo, &read, false);
         assert!(
-            news(&mut memo, &read, &got, false, false).is_empty(),
+            news(&mut memo, &read, &got, false).is_empty(),
             "a repeat poll fires nothing"
         );
         // A new head is a new key.
@@ -517,8 +614,31 @@ mod tests {
         )]);
         let got = facts(&get, "acme/web", 7, &memo, &next, false);
         assert_eq!(
-            news(&mut memo, &next, &got, false, false),
+            news(&mut memo, &next, &got, false),
             vec![Change::Behind { commits: Some(3) }]
+        );
+    }
+
+    #[test]
+    fn r1_behind_counts_commits_main_has_that_the_head_lacks() {
+        // The compare is head...base: its ahead_by is main's commits the branch lacks. Up to date is 0, not the
+        // branch's own commits (which are behind_by on this compare).
+        let get = canned(vec![(
+            behind_key(),
+            r#"{"status":"behind","ahead_by":0,"behind_by":4,"files":[]}"#.into(),
+        )]);
+        let got = facts(
+            &get,
+            "acme/web",
+            7,
+            &Memo::default(),
+            &open(H1, B2, None),
+            false,
+        );
+        assert_eq!(
+            got.behind,
+            Some(0),
+            "a branch up to date with main is 0 commits behind it"
         );
     }
 
@@ -529,13 +649,13 @@ mod tests {
         let mut memo = Memo::default();
         let got = facts(&get, "acme/web", 7, &memo, &read, false);
         assert_eq!(
-            news(&mut memo, &read, &got, false, false),
+            news(&mut memo, &read, &got, false),
             vec![Change::Conflicting]
         );
-        assert!(news(&mut memo, &read, &got, false, false).is_empty());
+        assert!(news(&mut memo, &read, &got, false).is_empty());
         let mut told = Memo::default();
         assert!(
-            news(&mut told, &read, &got, true, false).is_empty(),
+            news(&mut told, &read, &got, true).is_empty(),
             "the conflict was already told"
         );
     }
@@ -546,7 +666,7 @@ mod tests {
         let mut memo = Memo::default();
         let read = open(H1, B2, None);
         let got = facts(&get, "acme/web", 7, &memo, &read, false);
-        assert!(news(&mut memo, &read, &got, false, false).is_empty());
+        assert!(news(&mut memo, &read, &got, false).is_empty());
         assert_eq!(memo.base_sha.as_deref(), Some(B2));
     }
 
@@ -560,7 +680,7 @@ mod tests {
         let read = open(H1, B2, None);
         let got = facts(&get, "acme/web", 7, &memo, &read, false);
         assert!(got.unread);
-        assert!(news(&mut memo, &read, &got, false, false).is_empty());
+        assert!(news(&mut memo, &read, &got, false).is_empty());
         assert_eq!(
             memo.base_sha.as_deref(),
             Some(B1),
@@ -569,21 +689,37 @@ mod tests {
     }
 
     #[test]
-    fn a_passed_read_records_the_base_it_ran_on() {
-        let get = canned(vec![(behind_key(), compare_json(&[], 0))]);
-        let mut memo = Memo::default();
+    fn a_rewritten_main_is_said_as_an_unknown_move_and_the_base_moves_on() {
+        let get = canned(vec![
+            (
+                moved_key(),
+                r#"{"status":"diverged","ahead_by":2,"behind_by":2,"files":[]}"#.into(),
+            ),
+            (behind_key(), compare_json(&[], 1)),
+        ]);
+        let mut memo = Memo {
+            base_sha: Some(B1.into()),
+            ..Memo::default()
+        };
         let read = open(H1, B2, None);
         let got = facts(&get, "acme/web", 7, &memo, &read, false);
-        news(&mut memo, &read, &got, false, true);
-        assert_eq!(memo.green_base.as_deref(), Some(B2));
+        assert_eq!(
+            news(&mut memo, &read, &got, false),
+            vec![Change::BaseMoved {
+                to: B2.into(),
+                files: Vec::new(),
+                cut_short: true
+            }]
+        );
+        assert_eq!(memo.base_sha.as_deref(), Some(B2));
     }
 
     #[test]
-    fn a_stale_watch_reads_nothing_and_settles_on_the_current_base() {
+    fn a_stale_watch_reads_nothing_and_settles_on_the_current_base_without_replaying_told_news() {
         let get = canned(vec![]);
         let mut memo = Memo {
             base_sha: Some(B1.into()),
-            told_base: vec!["behind old".into()],
+            told_base: vec![format!("behind {H1} {B2}")],
             ..Memo::default()
         };
         let read = open(H1, B2, Some("BEHIND"));
@@ -593,20 +729,33 @@ mod tests {
             Facts::default(),
             "a stale watch asks GitHub for nothing"
         );
-        settle_stale(&mut memo, &read, true);
+        settle_stale(&mut memo, &read);
         assert_eq!(memo.base_sha.as_deref(), Some(B2));
-        assert!(memo.told_base.is_empty());
-        assert_eq!(memo.green_base.as_deref(), Some(B2));
+        assert_eq!(
+            memo.told_base,
+            vec![format!("behind {H1} {B2}")],
+            "a replay after a stale baseline must not announce BEHIND again"
+        );
     }
 
     #[test]
-    fn the_merge_hold_refuses_an_overlap_with_what_main_changed_since_green() {
+    fn a_stale_baseline_marks_a_behind_head_as_told_so_it_is_not_announced_later() {
+        let mut memo = Memo {
+            base_sha: Some(B1.into()),
+            ..Memo::default()
+        };
+        settle_stale(&mut memo, &open(H1, B2, Some("BEHIND")));
+        assert_eq!(memo.told_base, vec![format!("behind {H1} {B2}")]);
+    }
+
+    #[test]
+    fn the_merge_hold_holds_a_move_over_the_files_since_the_checks_ran_on_the_old_main() {
         let get = canned(vec![
+            (checks_key(), checks_on(B1)),
             (moved_key(), compare_json(&["src/lib.rs"], 0)),
             ("pulls/7/files".into(), files_json(&["src/lib.rs"])),
         ]);
-        let read = open(H1, B2, None);
-        let reason = hold(&get, "acme/web", 7, Some(B1), &read).expect("held");
+        let reason = hold(&get, "acme/web", 7, H1, &open(H1, B2, None)).expect("held");
         assert!(
             reason.contains("src/lib.rs") && reason.contains("Rebase onto main"),
             "{reason}"
@@ -616,50 +765,75 @@ mod tests {
     #[test]
     fn the_merge_hold_lets_a_move_that_misses_the_pull_request_through() {
         let get = canned(vec![
+            (checks_key(), checks_on(B1)),
             (moved_key(), compare_json(&["docs/notes.md"], 0)),
             ("pulls/7/files".into(), files_json(&["src/lib.rs"])),
         ]);
-        assert_eq!(
-            hold(&get, "acme/web", 7, Some(B1), &open(H1, B2, None)),
-            None
+        assert_eq!(hold(&get, "acme/web", 7, H1, &open(H1, B2, None)), None);
+    }
+
+    #[test]
+    fn the_merge_hold_lets_a_pull_request_through_when_its_checks_ran_on_the_current_main() {
+        let get = canned(vec![(checks_key(), checks_on(B2))]);
+        assert_eq!(hold(&get, "acme/web", 7, H1, &open(H1, B2, None)), None);
+    }
+
+    #[test]
+    fn the_merge_hold_holds_when_the_checks_do_not_say_which_main_they_ran_on() {
+        let none = canned(vec![(
+            checks_key(),
+            r#"{"total_count":1,"check_runs":[{"name":"build","status":"completed","conclusion":"success","pull_requests":[]}]}"#
+                .into(),
+        )]);
+        assert!(
+            hold(&none, "acme/web", 7, H1, &open(H1, B2, None)).is_some(),
+            "unknown holds"
+        );
+        let split = canned(vec![(
+            checks_key(),
+            r#"{"total_count":2,"check_runs":[
+                {"name":"a","pull_requests":[{"base":{"sha":"b1b1b1b"}}]},
+                {"name":"b","pull_requests":[{"base":{"sha":"b9b9b9b"}}]}]}"#
+                .into(),
+        )]);
+        assert!(
+            hold(&split, "acme/web", 7, H1, &open(H1, B2, None)).is_some(),
+            "runs on two mains hold"
         );
     }
 
     #[test]
-    fn the_merge_hold_holds_nothing_without_a_green_base_or_at_the_same_base() {
-        let get = canned(vec![]);
-        let read = open(H1, B2, None);
-        assert_eq!(
-            hold(&get, "acme/web", 7, None, &read),
-            None,
-            "no watch, nothing to compare"
-        );
-        assert_eq!(
-            hold(&get, "acme/web", 7, Some(B2), &read),
-            None,
-            "green on this base"
-        );
+    fn the_merge_hold_holds_when_the_base_branch_is_unknown_or_the_move_cannot_be_read() {
+        let get = canned(vec![(checks_key(), checks_on(B1))]);
         let no_tip = PrRead {
             base_tip: None,
             ..open(H1, B2, None)
         };
-        assert_eq!(
-            hold(&get, "acme/web", 7, Some(B1), &no_tip),
-            None,
-            "a missing base field blocks nothing"
+        assert!(
+            hold(&get, "acme/web", 7, H1, &no_tip).is_some(),
+            "an unknown base holds"
         );
+        let reason = hold(&get, "acme/web", 7, H1, &open(H1, B2, None)).expect("held");
+        assert!(reason.contains("couldn't be"), "{reason}");
     }
 
     #[test]
-    fn the_merge_hold_refuses_when_the_move_cannot_be_read() {
-        let get = canned(vec![]);
-        let reason = hold(&get, "acme/web", 7, Some(B1), &open(H1, B2, None)).expect("held");
-        assert!(reason.contains("couldn't be checked"), "{reason}");
+    fn the_merge_hold_holds_a_rewritten_main_since_the_checks_ran() {
+        let get = canned(vec![
+            (checks_key(), checks_on(B1)),
+            (
+                moved_key(),
+                r#"{"status":"diverged","ahead_by":1,"behind_by":1,"files":[]}"#.into(),
+            ),
+        ]);
+        let reason = hold(&get, "acme/web", 7, H1, &open(H1, B2, None)).expect("held");
+        assert!(reason.contains("rewritten"), "{reason}");
     }
 
     #[test]
     fn a_commit_id_that_is_not_hex_never_reaches_a_path() {
         let get = canned(vec![]);
         assert!(compare(&get, "acme/web", "../../user", B2).is_err());
+        assert!(checks_base(&get, "acme/web", "../../user").is_err());
     }
 }

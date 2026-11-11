@@ -313,7 +313,9 @@ pub fn read(gh: &dyn Gh, repo: &str, number: u64) -> Result<PrRead, ReadError> {
 }
 
 /// The same facts as the GraphQL read, over REST (WP-202). REST can't say which checks are required, so every check
-/// counts; it reads no comments or reviews, so `remarks` is None and nothing is told as new.
+/// counts; it reads no comments or reviews, so `remarks` is None and nothing is told as new. The base is main's branch
+/// tip (`repos/{r}/branches/{base}`), never the pull request's recorded base; without it the base is None, which holds
+/// a merge rather than passing one.
 fn read_rest(gh: &dyn Gh, repo: &str, number: u64) -> Result<PrRead, String> {
     let (owner, name) = split_repo(repo).ok_or_else(|| format!("{repo} is not owner/name"))?;
     let pr = rest_json(gh, &format!("repos/{owner}/{name}/pulls/{number}"))?;
@@ -321,13 +323,28 @@ fn read_rest(gh: &dyn Gh, repo: &str, number: u64) -> Result<PrRead, String> {
         .pointer("/head/sha")
         .and_then(Value::as_str)
         .map(str::to_string);
+    let base_ref = pr
+        .pointer("/base/ref")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    let branch_tip = rest_json(gh, &format!("repos/{owner}/{name}/branches/{base_ref}"))
+        .ok()
+        .and_then(|branch| {
+            branch
+                .pointer("/commit/sha")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        });
+    let get = |path: &str| gh.rest(path);
     let mut checks: Vec<(Check, Option<i64>)> = Vec::new();
     if let Some(sha) = head_sha.as_deref() {
-        let runs = rest_json(
-            gh,
-            &format!("repos/{owner}/{name}/commits/{sha}/check-runs?per_page=100"),
+        let runs = rest_pages(
+            &get,
+            &format!("repos/{owner}/{name}/commits/{sha}/check-runs"),
+            "check_runs",
         )?;
-        for run in items(&runs, "check_runs") {
+        for run in &runs.items {
             let node = json!({
                 "name": run.get("name"),
                 "status": run.get("status"),
@@ -338,8 +355,12 @@ fn read_rest(gh: &dyn Gh, repo: &str, number: u64) -> Result<PrRead, String> {
             });
             checks.extend(check_of(&node));
         }
-        let statuses = rest_json(gh, &format!("repos/{owner}/{name}/commits/{sha}/status"))?;
-        for status in items(&statuses, "statuses") {
+        let statuses = rest_pages(
+            &get,
+            &format!("repos/{owner}/{name}/commits/{sha}/status"),
+            "statuses",
+        )?;
+        for status in &statuses.items {
             let node = json!({
                 "context": status.get("context"),
                 "state": status.get("state"),
@@ -347,6 +368,44 @@ fn read_rest(gh: &dyn Gh, repo: &str, number: u64) -> Result<PrRead, String> {
                 "createdAt": status.get("created_at"),
             });
             checks.extend(check_of(&node));
+        }
+        // The combined state is GitHub's own word for all the statuses. If it says failure or pending and no listed
+        // status agrees (a status past the listed pages), the check says so: a red or unfinished commit is never green.
+        let total = statuses
+            .first
+            .get("total_count")
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
+        let combined = statuses
+            .first
+            .get("state")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        if total > 0 {
+            let listed_failed = checks.iter().any(|(c, _)| c.status.failed());
+            let listed_pending = checks.iter().any(|(c, _)| c.status == CheckStatus::Pending);
+            if matches!(combined, "failure" | "error") && !listed_failed {
+                checks.push((
+                    Check {
+                        name: "combined commit status".into(),
+                        status: CheckStatus::Failure,
+                        url: None,
+                        required: false,
+                    },
+                    None,
+                ));
+            }
+            if combined == "pending" && !listed_pending {
+                checks.push((
+                    Check {
+                        name: "combined commit status".into(),
+                        status: CheckStatus::Pending,
+                        url: None,
+                        required: false,
+                    },
+                    None,
+                ));
+            }
         }
     }
     let merged = pr.get("merged").and_then(Value::as_bool) == Some(true);
@@ -380,15 +439,8 @@ fn read_rest(gh: &dyn Gh, repo: &str, number: u64) -> Result<PrRead, String> {
             .and_then(Value::as_str)
             .unwrap_or_default()
             .to_string(),
-        base_ref: pr
-            .pointer("/base/ref")
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .to_string(),
-        base_tip: pr
-            .pointer("/base/sha")
-            .and_then(Value::as_str)
-            .map(str::to_string),
+        base_ref,
+        base_tip: branch_tip,
         head_repo: pr
             .pointer("/head/repo/full_name")
             .and_then(Value::as_str)
@@ -413,6 +465,62 @@ fn read_rest(gh: &dyn Gh, repo: &str, number: u64) -> Result<PrRead, String> {
         remarks: None,
         rate: None,
     })
+}
+
+/// Every item of a paged REST list, and the first page's object (for its counts and state). A list GitHub says is
+/// longer than what came back is an error: the caller holds rather than judge a partial list.
+pub struct Paged {
+    pub items: Vec<Value>,
+    pub first: Value,
+}
+
+const PER_PAGE: usize = 100;
+const MAX_PAGES: usize = 10;
+
+/// Read a REST list page by page (`per_page`, up to [`MAX_PAGES`]) until GitHub's `total_count` is met (WP-202 M2).
+pub fn rest_pages(
+    get: &dyn Fn(&str) -> Result<String, String>,
+    path: &str,
+    key: &str,
+) -> Result<Paged, String> {
+    let mut items: Vec<Value> = Vec::new();
+    let mut total: Option<usize> = None;
+    let mut first = Value::Null;
+    let sep = if path.contains('?') { '&' } else { '?' };
+    for page in 1..=MAX_PAGES {
+        let json: Value = serde_json::from_str(&get(&format!(
+            "{path}{sep}per_page={PER_PAGE}&page={page}"
+        ))?)
+        .map_err(|_| format!("GitHub's answer for {path} was not JSON"))?;
+        if page == 1 {
+            first = json.clone();
+        }
+        if total.is_none() {
+            total = json
+                .get("total_count")
+                .and_then(Value::as_u64)
+                .map(|n| n as usize);
+        }
+        let batch = json
+            .get(key)
+            .and_then(Value::as_array)
+            .ok_or_else(|| format!("GitHub's answer for {path} has no {key} list"))?;
+        let got = batch.len();
+        items.extend(batch.iter().cloned());
+        if got == 0 || total.is_some_and(|t| items.len() >= t) {
+            break;
+        }
+    }
+    match total {
+        Some(t) if items.len() < t => Err(format!(
+            "GitHub listed {} of {t} {key} for {path}, so the list is incomplete",
+            items.len()
+        )),
+        None if items.len() >= PER_PAGE * MAX_PAGES => {
+            Err(format!("{path} has too many {key} to read whole"))
+        }
+        _ => Ok(Paged { items, first }),
+    }
 }
 
 fn rest_json(gh: &dyn Gh, path: &str) -> Result<Value, String> {
@@ -1045,6 +1153,10 @@ pub(crate) mod tests {
     fn a_graphql_rate_limit_reads_the_same_facts_over_rest() {
         let gh = FakeGh::new(vec![Err("API rate limit exceeded for user".into())])
             .with_rest("/pulls/7", REST_PULL)
+            .with_rest(
+                "/branches/main",
+                r#"{"name":"main","commit":{"sha":"b2b2b2b"}}"#,
+            )
             .with_rest("/check-runs", REST_RUNS)
             .with_rest("/status", REST_STATUS);
         let got = read(&gh, "acme/web", 7).unwrap();
@@ -1097,5 +1209,80 @@ pub(crate) mod tests {
         assert!(CliGh
             .rest("repos/acme/web/pulls/7 --method DELETE")
             .is_err());
+    }
+
+    #[test]
+    fn r1_the_rest_fallback_reads_the_base_branch_tip_not_the_recorded_base() {
+        let gh = FakeGh::new(vec![Err("API rate limit exceeded for user".into())])
+            .with_rest("/pulls/7", REST_PULL)
+            .with_rest("/check-runs", REST_RUNS)
+            .with_rest("/status", REST_STATUS)
+            .with_rest(
+                "/branches/main",
+                r#"{"name":"main","commit":{"sha":"b3b3b3b"}}"#,
+            )
+            .with_rest(
+                "/git/ref/heads/main",
+                r#"{"ref":"refs/heads/main","object":{"sha":"b3b3b3b","type":"commit"}}"#,
+            );
+        let got = read(&gh, "acme/web", 7).unwrap();
+        assert_eq!(got.base_tip.as_deref(), Some("b3b3b3b"));
+    }
+
+    #[test]
+    fn a_rest_list_is_read_page_by_page_until_githubs_total_is_met() {
+        let page = |from: usize, to: usize| {
+            json!({
+                "total_count": 150,
+                "check_runs": (from..to).map(|i| json!({ "name": format!("c{i}") })).collect::<Vec<_>>(),
+            })
+            .to_string()
+        };
+        let gh = FakeGh::new(vec![])
+            .with_rest("&page=1", &page(0, 100))
+            .with_rest("&page=2", &page(100, 150));
+        let paged = rest_pages(
+            &|p: &str| gh.rest(p),
+            "repos/acme/web/commits/h/check-runs",
+            "check_runs",
+        )
+        .unwrap();
+        assert_eq!(
+            paged.items.len(),
+            150,
+            "every page is read, not only the first 100"
+        );
+    }
+
+    #[test]
+    fn a_rest_list_that_stays_short_of_its_total_is_an_error_not_a_partial_answer() {
+        let gh = FakeGh::new(vec![]).with_rest(
+            "&page=",
+            r#"{"total_count":150,"check_runs":[{"name":"c"}]}"#,
+        );
+        assert!(rest_pages(
+            &|p: &str| gh.rest(p),
+            "repos/acme/web/commits/h/check-runs",
+            "check_runs"
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn a_failed_combined_status_that_no_listed_status_shows_is_not_green() {
+        let gh = FakeGh::new(vec![Err("API rate limit exceeded".into())])
+            .with_rest("/pulls/7", REST_PULL)
+            .with_rest("/branches/main", r#"{"commit":{"sha":"b2b2b2b"}}"#)
+            .with_rest("/check-runs", r#"{"total_count":0,"check_runs":[]}"#)
+            .with_rest(
+                "/status",
+                r#"{"state":"failure","total_count":1,"statuses":[{"context":"ci/a","state":"success"}]}"#,
+            );
+        let got = read(&gh, "acme/web", 7).unwrap();
+        assert!(
+            got.detail.checks.iter().any(|c| c.status.failed()),
+            "the combined state says failure: {:?}",
+            got.detail.checks
+        );
     }
 }

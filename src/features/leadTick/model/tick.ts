@@ -33,9 +33,9 @@ export type TickWatch = {
     mergeable: "mergeable" | "conflicting" | "unknown" | "";
     /** The pull request's label names (pr_watch.rs `Status`). */
     labels: string[];
-    /** Commits main has that the branch lacks (pr_watch.rs `Status`, WP-202). Absent on an older watch. */
+    /** Commits main has that the branch lacks (pr_watch.rs `Status`, WP-202). Informational: the merge gate judges files. */
     behind?: number;
-    /** GitHub's merge state (pr_watch.rs `Status`, WP-202). Absent on an older watch. */
+    /** GitHub's merge state (pr_watch.rs `Status`, WP-202). Informational: only DIRTY refuses, at the merge gate. */
     mergeState?: string;
   };
 };
@@ -165,11 +165,6 @@ function watchFor(row: ProgrammePackage, watches: readonly TickWatch[], folder: 
   return mine.find((w) => w.state === "watching") ?? mine[mine.length - 1];
 }
 
-/** Whether GitHub says the branch is behind main (WP-202): the merge state, or a count of commits behind. */
-function behindMain(watch: TickWatch): boolean {
-  return watch.status.mergeState === "BEHIND" || (watch.status.behind ?? 0) > 0;
-}
-
 function merged(watch: TickWatch): boolean {
   return watch.status.pr === "merged" || watch.endReason === "merged";
 }
@@ -295,11 +290,6 @@ export async function runLeadTick(input: LeadTickInput, ports: LeadTickPorts): P
       continue;
     }
     if (!green(watch)) continue;
-    // WP-202: green on an old main is not green to merge. The crew updates the branch from main, pushes, and waits.
-    if (behindMain(watch)) {
-      once(noteKey("behind", String(watch.number), head), `${pr} is green but behind main: update it from main, push and wait for green again.`, attention);
-      continue;
-    }
     const park =
       row.securityPark || row.status === "parked"
         ? "security park"
