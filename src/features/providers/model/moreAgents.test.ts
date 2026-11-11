@@ -319,3 +319,20 @@ describe("a file URL is percent-decoded the way the app decodes it", () => {
     expect(argumentProblem("/opt/deno", ["file:///%2e%2e/x"])).toBeNull();
   });
 });
+
+// Review #241 r3 repro (MEDIUM; mirrors of review_241_r3_a_path_holding_a_url_marker_is_pinned_or_refused and
+// review_241_r3_a_file_after_key_equals_in_a_flag_value_is_pinned_or_refused in more_agents.rs). The window calls any
+// value that holds `://` anywhere a URL, so a relative path with a `x://` run in it is allowed, and it looks at a flag
+// value only up to its first `=`, so `--config=key=~/x` is allowed.
+describe("review #241 r3: a relative file behind :// or inside a flag's key=value is refused", () => {
+  it("refuses ../../x://agent.mjs and key=../x://y", async () => {
+    const { argumentProblem } = await import("./moreAgents");
+    expect(argumentProblem("/opt/node", ["../../../../../../tmp/x://agent.mjs"])).not.toBeNull();
+    expect(argumentProblem("/opt/codex-acp", ["-c", "instructions_file=../../../../tmp/x://y"])).not.toBeNull();
+  });
+
+  it("refuses --config=key=~/x", async () => {
+    const { argumentProblem } = await import("./moreAgents");
+    expect(argumentProblem("/opt/codex-acp", ["--config=instructions_file=~/x"])).not.toBeNull();
+  });
+});

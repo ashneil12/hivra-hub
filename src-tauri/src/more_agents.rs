@@ -3975,4 +3975,281 @@ mod tests {
             "the pinned path is not what the child runs: {text}"
         );
     }
+
+    /// Runs `disclaim::main(args)` in a child of this test binary, the way the app runs `monocode disclaim-exec`,
+    /// with `cwd` as its folder. The child execs the program, so what it prints is the program's.
+    #[cfg(unix)]
+    fn through_launcher(args: &[String], cwd: &Path) -> std::process::Output {
+        std::process::Command::new(std::env::current_exe().expect("test binary"))
+            .args([
+                "--exact",
+                "more_agents::tests::review_241_r3_launcher_child",
+                "--test-threads=1",
+                "--nocapture",
+                "-q",
+            ])
+            .env("REVIEW_241_R3_LAUNCHER", args.join("\u{1f}"))
+            .current_dir(cwd)
+            .output()
+            .expect("start the launcher")
+    }
+
+    /// The launcher child for `through_launcher`. Without its variable it does nothing.
+    #[cfg(unix)]
+    #[test]
+    fn review_241_r3_launcher_child() {
+        let Ok(raw) = std::env::var("REVIEW_241_R3_LAUNCHER") else {
+            return;
+        };
+        let args: Vec<std::ffi::OsString> = raw.split('\u{1f}').map(Into::into).collect();
+        std::process::exit(crate::disclaim::main(&args));
+    }
+
+    // Review #241 r3 repro (MEDIUM, the stated limit is smaller than the code). The PR body says "The launcher hash
+    // closes that gap on macOS for a start that uses it", and WP-134b says a swap after the last hash "still runs when
+    // the start does not go through the launcher". The launcher is given only the program's hash
+    // (`disclaim::command(.., Some(sha256))`). A pinned argument file (`node /abs/agent.mjs`, the usual shape of a
+    // local agent) is last hashed in the app by confirm_before_spawn, and the child reads it after it starts. This
+    // start goes through the launcher entry point (`disclaim::main` with `--expect-sha256`, in a child of this test
+    // binary) with the approved program unchanged: a rename over the pinned file after confirm_before_spawn runs the
+    // renamed bytes. The macOS branch of the launcher gets the same arguments and never sees a pin either.
+    #[cfg(unix)]
+    #[test]
+    fn review_241_r3_a_pinned_file_swapped_after_the_last_hash_runs_through_the_launcher() {
+        let d = dir();
+        let bin = d.path().join("bin");
+        make_tool(&bin, "wp134-runner", b"#!/bin/sh\n. \"$1\"\n");
+        let agents = d.path().join("agents");
+        std::fs::create_dir_all(&agents).expect("agents");
+        let agent = agents.join("agent.sh");
+        std::fs::write(&agent, b"echo approved-bytes\n").expect("agent");
+        let path_value = bin.to_string_lossy().into_owned();
+        let agent_arg = agent.to_string_lossy().into_owned();
+        write_agents(
+            d.path(),
+            0,
+            vec![entry("wp134", "wp134-runner", &[agent_arg.as_str()])],
+        )
+        .expect("seed");
+        approve(d.path(), "wp134", &path_value).expect("approve");
+        assert_eq!(
+            read_stored(d.path()).expect("read").approvals["wp134"]
+                .pins
+                .len(),
+            1,
+            "the agent file is pinned"
+        );
+        let run = approved_start(d.path(), "wp134", "", &[], false, &path_value)
+            .expect("starts as approved");
+        let folder = run_folder(d.path()).expect("run folder");
+        confirm_before_spawn(d.path(), "wp134", &run.command)
+            .expect("the last hash in the app passes");
+        let swap = agents.join(".agent.new");
+        std::fs::write(&swap, b"echo swapped-bytes\n").expect("swap file");
+        std::fs::rename(&swap, &agent).expect("rename over the pinned file");
+        let mut launcher = vec!["--expect-sha256".to_string(), run.sha256.clone()];
+        if let Some(argv0) = &run.argv0 {
+            launcher.push("--argv0".into());
+            launcher.push(argv0.clone());
+        }
+        launcher.push("--".into());
+        launcher.push(run.command.clone());
+        launcher.extend(run.args.iter().cloned());
+        let out = through_launcher(&launcher, &folder);
+        let _ = remove_run_folder(d.path(), &folder);
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            stdout.contains("approved-bytes") || stdout.contains("swapped-bytes"),
+            "the launcher did not start the program: {stdout} {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(
+            !stdout.contains("swapped-bytes"),
+            "a pinned file renamed after the last hash ran through the launcher with no new Allow"
+        );
+    }
+
+    // Review #241 r3 repro (MEDIUM, same claim, the program itself). The launcher's last hash opens the program by
+    // path, reads it and closes it, then execs that path again (posix_spawnp on macOS, exec after the fallback here).
+    // A writer renaming two files over the approved name in a loop still gets its bytes run through the launcher with
+    // the approved hash. Both files are ELF programs, so this is not the `#!` re-read: `true` is the approved bytes,
+    // and `id` printing `uid=` is the writer's.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn review_241_r3_a_rename_loop_still_beats_the_launcher_hash() {
+        use sha2::{Digest, Sha256};
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc;
+        let (Ok(good_bytes), Ok(evil_bytes)) =
+            (std::fs::read("/usr/bin/true"), std::fs::read("/usr/bin/id"))
+        else {
+            eprintln!("no /usr/bin/true or /usr/bin/id; nothing to show");
+            return;
+        };
+        let d = dir();
+        let bin = d.path().join("bin");
+        let good = make_tool(&bin, ".wp134-good", &good_bytes);
+        let evil = make_tool(&bin, ".wp134-evil", &evil_bytes);
+        let tool = bin.join("wp134-tool");
+        std::fs::hard_link(&good, &tool).expect("the approved program");
+        let sha: String = Sha256::digest(&good_bytes)
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
+        let stop = Arc::new(AtomicBool::new(false));
+        let writer = {
+            let (stop, tmp, tool) = (stop.clone(), bin.join(".wp134-next"), tool.clone());
+            let (good, evil) = (good.clone(), evil.clone());
+            std::thread::spawn(move || {
+                while !stop.load(Ordering::Relaxed) {
+                    for source in [&evil, &good] {
+                        let _ = std::fs::remove_file(&tmp);
+                        if std::fs::hard_link(source, &tmp).is_ok() {
+                            let _ = std::fs::rename(&tmp, &tool);
+                        }
+                    }
+                }
+            })
+        };
+        let launcher = vec![
+            "--expect-sha256".to_string(),
+            sha,
+            "--".to_string(),
+            tool.to_string_lossy().into_owned(),
+        ];
+        let (mut refused, mut approved_ran, mut swapped_ran) = (0, 0, 0);
+        for _ in 0..2000 {
+            let out = through_launcher(&launcher, d.path());
+            if String::from_utf8_lossy(&out.stdout).contains("uid=") {
+                swapped_ran += 1;
+                break;
+            }
+            if out.status.success() {
+                approved_ran += 1;
+            } else {
+                refused += 1;
+            }
+        }
+        stop.store(true, Ordering::Relaxed);
+        let _ = writer.join();
+        assert_eq!(
+            swapped_ran, 0,
+            "a looping writer ran its own bytes through the launcher's hash \
+             ({approved_ran} approved runs and {refused} refused starts before it)"
+        );
+    }
+
+    // Review #241 r3 repro (MEDIUM, not new in r3; the MED-4 class). path_is_refused calls any value that holds `://`
+    // anywhere a URL and checks nothing else, and plain_assignment does not split such a word. `://` is a legal run of
+    // path characters (a folder named `x:` and an empty segment), so an absolute file after key= is not pinned and a
+    // relative file is allowed: node resolves `../../x://agent.mjs` from the run folder as a path.
+    #[cfg(unix)]
+    #[test]
+    fn review_241_r3_a_path_holding_a_url_marker_is_pinned_or_refused() {
+        let d = dir();
+        let bin = d.path().join("bin");
+        make_tool(&bin, "wp134-acp", b"#!/bin/sh\n");
+        let folder = d.path().join("x:");
+        std::fs::create_dir_all(&folder).expect("folder");
+        let file = folder.join("instructions.md");
+        std::fs::write(&file, b"approved instructions").expect("file");
+        let path_value = bin.to_string_lossy().into_owned();
+        let word = format!(
+            "instructions_file={}/x://instructions.md",
+            d.path().to_string_lossy()
+        );
+        let agent = entry("wp134", "wp134-acp", &["-c", word.as_str()]);
+        if checked_fields(&agent).is_ok() {
+            write_agents(d.path(), 0, vec![agent]).expect("seed");
+            approve(d.path(), "wp134", &path_value).expect("approve");
+            std::fs::write(&file, b"changed instructions").expect("edit");
+            assert!(
+                approved_spawn(d.path(), "wp134", &path_value).is_err(),
+                "an edited file named with :// after key= ran on the old approval"
+            );
+        }
+        for args in [
+            &["../../../../../../tmp/x://agent.mjs"][..],
+            &["-c", "instructions_file=../../../../tmp/x://y"][..],
+        ] {
+            assert!(
+                checked_fields(&entry("wp134", "/opt/node", args)).is_err(),
+                "a relative file holding :// was allowed: {args:?}"
+            );
+        }
+    }
+
+    // Review #241 r3 repro (MEDIUM, the MED-4 shape inside a flag value). candidates and pin_split split a flag at its
+    // first `=` and stop. `--config=key=/abs/file` is the same override as `-c key=/abs/file` (a clap `--config` takes
+    // `=value`), but only `key=/abs/file` is looked at, which is neither absolute nor split again: the file is not
+    // pinned, and an edit to it runs on the old approval. `--config=key=~/x` is allowed for the same reason.
+    #[cfg(unix)]
+    #[test]
+    fn review_241_r3_a_file_after_key_equals_in_a_flag_value_is_pinned_or_refused() {
+        let d = dir();
+        let bin = d.path().join("bin");
+        make_tool(&bin, "wp134-acp", b"#!/bin/sh\n");
+        let file = d.path().join("instructions.md");
+        std::fs::write(&file, b"approved instructions").expect("file");
+        let path_value = bin.to_string_lossy().into_owned();
+        let word = format!("--config=instructions_file={}", file.to_string_lossy());
+        let agent = entry("wp134", "wp134-acp", &[word.as_str()]);
+        if checked_fields(&agent).is_ok() {
+            write_agents(d.path(), 0, vec![agent]).expect("seed");
+            approve(d.path(), "wp134", &path_value).expect("approve");
+            std::fs::write(&file, b"changed instructions").expect("edit");
+            assert!(
+                approved_spawn(d.path(), "wp134", &path_value).is_err(),
+                "an edited file after --config=key= ran on the old approval"
+            );
+        }
+        assert!(
+            checked_fields(&entry(
+                "wp134",
+                "/opt/wp134-acp",
+                &["--config=instructions_file=~/x"]
+            ))
+            .is_err(),
+            "--config=key=~/x names a home file and was allowed"
+        );
+    }
+
+    // Review #241 r3 repro (MEDIUM, not new in r3). file_url_target decodes everything after the host as the path,
+    // `?` and `#` included. A URL parser does not: `file:///dir/agent.ts?v=1` is `/dir/agent.ts` with a query (the
+    // url crate's to_file_path, which deno uses for a local module, drops it, and so does node's fileURLToPath). With
+    // a file named `agent.ts?v=1` beside it, the app pins that file, and an edit to agent.ts, the file deno runs,
+    // starts on the old approval. Without that one extra file the start is refused, so this is the whole gap.
+    #[cfg(unix)]
+    #[test]
+    fn review_241_r3_a_file_url_with_a_query_pins_the_file_it_opens() {
+        let d = dir();
+        let bin = d.path().join("bin");
+        make_tool(&bin, "deno", b"#!/bin/sh\n");
+        let script = d.path().join("agent.ts");
+        std::fs::write(&script, b"console.log('approved')").expect("script");
+        std::fs::write(d.path().join("agent.ts?v=1"), b"console.log('decoy')").expect("decoy");
+        let url = format!("file://{}?v=1", script.to_string_lossy());
+        assert_eq!(
+            url::Url::parse(&url)
+                .expect("url")
+                .to_file_path()
+                .expect("a file path"),
+            script,
+            "a URL parser opens agent.ts"
+        );
+        let path_value = bin.to_string_lossy().into_owned();
+        let agent = entry("wp134", "deno", &["run", url.as_str()]);
+        if checked_fields(&agent).is_err() {
+            return; // Refused when it is added: nothing unpinned can run.
+        }
+        write_agents(d.path(), 0, vec![agent]).expect("seed");
+        if approve(d.path(), "wp134", &path_value).is_err() {
+            return; // Refused at the Allow: nothing unpinned can run.
+        }
+        std::fs::write(&script, b"require('cp').exec('xx')").expect("edit");
+        assert!(
+            approved_spawn(d.path(), "wp134", &path_value).is_err(),
+            "a deno entry ran an edited agent.ts, named by a file URL with a query, on the old approval"
+        );
+    }
 }
