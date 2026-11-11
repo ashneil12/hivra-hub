@@ -240,7 +240,18 @@ export function FirstMateInboxPanel({
 
   return (
     <>
-      <DigestBanner immediate={shown?.immediate ?? []} digest={shown?.digest ?? null} />
+      <DigestBanner
+        immediate={shown?.immediate ?? []}
+        digest={shown?.digest ?? null}
+        onOpen={(id) => {
+          // A line about a card below shows that card; a line about work that needs you opens that work's chat.
+          const item = items.find((entry) => id.startsWith(`${entry.id}:`));
+          if (item?.key) return setSelectedKey(item.key);
+          const row = rows.find((entry) => id.startsWith(`needs:${entry.id}:`));
+          const chat = row?.childSession ?? row?.ownerSession ?? item?.chatId;
+          if (chat) onOpenSession?.(chat);
+        }}
+      />
       <FirstMateInbox
         items={items}
         stale={stale}

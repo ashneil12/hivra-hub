@@ -9,7 +9,9 @@ use super::checkout::{self, Bind};
 use super::gitrun;
 use super::settings::{self, Strategy};
 use super::tick::{self, Next, Tick};
-use super::update::{self, fetch_args, merge_args, push_transport_args, rebase_args, Outcome};
+use super::update::{
+    self, fetch_args, merge_args, push_transport_args, rebase_args, Interrupt, Outcome,
+};
 use super::UpdateReport;
 
 fn memory() -> Connection {
@@ -141,6 +143,32 @@ fn configure(dir: &Path) {
 
 fn run(conn: &Connection) -> UpdateReport {
     update::update_from_main(conn, "pkg-1").unwrap()
+}
+
+struct InterruptGuard;
+
+impl InterruptGuard {
+    fn arm(kind: Interrupt) -> Self {
+        update::set_interrupt(kind);
+        Self
+    }
+}
+
+impl Drop for InterruptGuard {
+    fn drop(&mut self) {
+        update::set_interrupt(Interrupt::Off);
+    }
+}
+
+fn git_path_exists(dir: &Path, name: &str) -> bool {
+    let printed = git(dir, &["rev-parse", "--git-path", name]);
+    let path = PathBuf::from(&printed);
+    let path = if path.is_absolute() {
+        path
+    } else {
+        dir.join(path)
+    };
+    path.exists()
 }
 
 #[test]
@@ -824,6 +852,368 @@ fn the_tick_finds_the_package_worktree_by_its_branch_and_updates_it() {
     assert_ne!(lab.sha(&lab.package, "HEAD"), before);
     assert_eq!(lab.sha(&lab.main, "refs/heads/main"), main_sha);
     assert_eq!(lab.sha(&lab.origin, "refs/heads/main"), main_sha);
+}
+
+#[test]
+fn an_update_does_not_run_while_the_packages_builder_is_live() {
+    let lab = Lab::open("pkg");
+    lab.commit(&lab.package, "pkg.txt", "pkg\n");
+    lab.push(&lab.package, "pkg");
+    lab.commit(&lab.main, "trunk.txt", "trunk\n");
+    lab.push(&lab.main, "main");
+    let before = lab.sha(&lab.package, "HEAD");
+    let main_sha = lab.sha(&lab.main, "refs/heads/main");
+    let conn = memory();
+    lab.bind(&conn, "pkg");
+    conn.execute(
+        "INSERT INTO programme_packages (
+            id, project_id, wp, title, brief_path, branch, status, security_park, priority, notes,
+            park_reason, version, created_at, updated_at, claimed_at, finished_at
+         ) VALUES ('pkg-1', 'crew', 'WP-162', 'Update', 'docs/wp.md', 'pkg', 'building', 0, 0, '', NULL, 1, 1, 1, 1, NULL)",
+        [],
+    )
+    .unwrap();
+
+    match update::update_from_main(&conn, "pkg-1").unwrap().outcome {
+        Outcome::Refused { reason } => {
+            assert!(reason.to_ascii_lowercase().contains("builder"), "{reason}");
+        }
+        other => panic!("expected a refusal while the builder is live, got {other:?}"),
+    }
+    assert_eq!(lab.sha(&lab.package, "HEAD"), before, "the update ran");
+    assert_eq!(lab.sha(&lab.origin, "refs/heads/main"), main_sha);
+    assert_eq!(lab.sha(&lab.main, "refs/heads/main"), main_sha);
+
+    conn.execute(
+        "UPDATE programme_packages SET status = 'pr_open' WHERE id = 'pkg-1'",
+        [],
+    )
+    .unwrap();
+    match update::update_from_main(&conn, "pkg-1").unwrap().outcome {
+        Outcome::Updated { .. } => {}
+        other => panic!("expected the update once the builder is done, got {other:?}"),
+    }
+    assert_ne!(lab.sha(&lab.package, "HEAD"), before);
+    assert_eq!(lab.sha(&lab.origin, "refs/heads/main"), main_sha);
+}
+
+fn insert_package(conn: &Connection, id: &str, wp: &str, branch: &str) {
+    conn.execute(
+        "INSERT INTO programme_packages (
+            id, project_id, wp, title, brief_path, branch, status, security_park, priority, notes,
+            park_reason, version, created_at, updated_at, claimed_at, finished_at
+         ) VALUES (?1, 'crew', ?2, 'Update', 'docs/wp.md', ?3, 'pr_open', 0, 0, '', NULL, 1, 1, 1, NULL, NULL)",
+        rusqlite::params![id, wp, branch],
+    )
+    .unwrap();
+}
+
+#[test]
+fn a_lead_cannot_claim_a_worktree_that_was_not_made_for_the_package() {
+    let lab = Lab::open("pkg");
+    let conn = memory();
+    insert_package(&conn, "pkg-1", "WP-162", "wp/162");
+    match update::claim_worktree(&conn, &lab.main, "pkg-1", "pkg").unwrap() {
+        update::Claim::Reported(message) => {
+            assert!(
+                message.to_ascii_lowercase().contains("not")
+                    && message.to_ascii_lowercase().contains("package"),
+                "{message}"
+            );
+        }
+        update::Claim::Worktree(path) => panic!("adopted {} for WP-162", path.display()),
+    }
+    assert!(checkout::get(&conn, "pkg-1").unwrap().is_none());
+
+    match update::claim_worktree(&conn, &lab.main, "pkg-1", "wp/162b-update-leftovers").unwrap() {
+        update::Claim::Reported(_) => {}
+        update::Claim::Worktree(path) => panic!("adopted {} for WP-162", path.display()),
+    }
+
+    match update::claim_worktree(&conn, &lab.main, "missing", "pkg").unwrap() {
+        update::Claim::Reported(message) => {
+            assert!(
+                message
+                    .to_ascii_lowercase()
+                    .contains("not on the programme"),
+                "{message}"
+            );
+        }
+        update::Claim::Worktree(path) => panic!("guessed {} with no programme row", path.display()),
+    }
+
+    let real = lab.root.join("wp-162");
+    let real_path = real.to_string_lossy().into_owned();
+    git(
+        &lab.main,
+        &["worktree", "add", "-b", "wp/162", &real_path, "main"],
+    );
+    match update::claim_worktree(&conn, &lab.main, "pkg-1", "wp/162").unwrap() {
+        update::Claim::Worktree(path) => {
+            assert_eq!(
+                fs::canonicalize(&path).unwrap(),
+                fs::canonicalize(&real).unwrap()
+            );
+        }
+        update::Claim::Reported(message) => panic!("the package worktree was refused: {message}"),
+    }
+    assert!(checkout::get(&conn, "pkg-1").unwrap().is_none());
+}
+
+mod review_leftovers {
+    use super::*;
+
+    fn conflict_lab() -> (Lab, Connection, String, String) {
+        let lab = Lab::open("pkg");
+        lab.commit(&lab.package, "README.md", "package\n");
+        lab.push(&lab.package, "pkg");
+        lab.commit(&lab.main, "README.md", "trunk\n");
+        lab.push(&lab.main, "main");
+        let before = lab.sha(&lab.package, "HEAD");
+        let main_sha = lab.sha(&lab.main, "refs/heads/main");
+        let conn = memory();
+        lab.bind(&conn, "pkg");
+        (lab, conn, before, main_sha)
+    }
+
+    #[test]
+    fn a_merge_timeout_aborts_before_saying_nothing_changed() {
+        let _guard = InterruptGuard::arm(Interrupt::RewriteTimeout);
+        let (lab, conn, before, main_sha) = conflict_lab();
+
+        match run(&conn).outcome {
+            Outcome::NotFinished { reason } => {
+                assert!(reason.contains("Nothing was changed"), "{reason}");
+            }
+            other => panic!("expected an unfinished merge, got {other:?}"),
+        }
+        assert_eq!(lab.sha(&lab.package, "HEAD"), before);
+        assert!(
+            git(&lab.package, &["status", "--porcelain"]).is_empty(),
+            "the merge was still in progress"
+        );
+        assert!(
+            !git_path_exists(&lab.package, "MERGE_HEAD"),
+            "the merge was not aborted"
+        );
+        assert!(!fs::read_to_string(lab.package.join("README.md"))
+            .unwrap()
+            .contains("<<<<<<<"));
+        assert_eq!(lab.sha(&lab.main, "refs/heads/main"), main_sha);
+    }
+
+    #[test]
+    fn a_rebase_timeout_aborts_before_saying_nothing_changed() {
+        let _guard = InterruptGuard::arm(Interrupt::RewriteTimeout);
+        let (lab, conn, before, main_sha) = conflict_lab();
+        settings::set(
+            &conn,
+            lab.main.to_str().unwrap(),
+            false,
+            Strategy::Rebase,
+            0,
+            1,
+        )
+        .unwrap();
+
+        match run(&conn).outcome {
+            Outcome::NotFinished { reason } => {
+                assert!(reason.contains("Nothing was changed"), "{reason}");
+            }
+            other => panic!("expected an unfinished rebase, got {other:?}"),
+        }
+        assert_eq!(lab.sha(&lab.package, "HEAD"), before);
+        assert!(git(&lab.package, &["status", "--porcelain"]).is_empty());
+        assert!(
+            !git_path_exists(&lab.package, "rebase-merge"),
+            "the rebase was not aborted"
+        );
+        assert_eq!(lab.sha(&lab.main, "refs/heads/main"), main_sha);
+        assert_eq!(lab.sha(&lab.origin, "refs/heads/main"), main_sha);
+    }
+
+    #[test]
+    fn a_merge_that_cannot_be_cancelled_is_told_plainly() {
+        let _guard = InterruptGuard::arm(Interrupt::AbortFails);
+        let (lab, conn, before, main_sha) = conflict_lab();
+
+        match run(&conn).outcome {
+            Outcome::NotFinished { reason } => {
+                assert!(reason.contains("could not be cancelled"), "{reason}");
+                assert!(reason.contains("left for you"), "{reason}");
+                assert!(!reason.contains("Nothing was changed"), "{reason}");
+            }
+            other => panic!("expected the failed abort to be reported, got {other:?}"),
+        }
+        assert!(git_path_exists(&lab.package, "MERGE_HEAD"));
+        assert_eq!(lab.sha(&lab.package, "HEAD"), before);
+        assert_eq!(lab.sha(&lab.main, "refs/heads/main"), main_sha);
+    }
+
+    #[test]
+    fn a_rebase_that_cannot_be_cancelled_is_told_plainly() {
+        let _guard = InterruptGuard::arm(Interrupt::AbortFails);
+        let (lab, conn, _before, main_sha) = conflict_lab();
+        settings::set(
+            &conn,
+            lab.main.to_str().unwrap(),
+            false,
+            Strategy::Rebase,
+            0,
+            1,
+        )
+        .unwrap();
+
+        match run(&conn).outcome {
+            Outcome::NotFinished { reason } => {
+                assert!(reason.contains("could not be cancelled"), "{reason}");
+                assert!(reason.contains("left for you"), "{reason}");
+                assert!(!reason.contains("Nothing was changed"), "{reason}");
+            }
+            other => panic!("expected the failed abort to be reported, got {other:?}"),
+        }
+        assert!(git_path_exists(&lab.package, "rebase-merge"));
+        assert_eq!(lab.sha(&lab.main, "refs/heads/main"), main_sha);
+        assert_eq!(lab.sha(&lab.origin, "refs/heads/main"), main_sha);
+    }
+
+    fn ahead_lab() -> (Lab, Connection, String, String) {
+        let lab = Lab::open("pkg");
+        lab.commit(&lab.package, "pkg.txt", "pkg\n");
+        lab.push(&lab.package, "pkg");
+        lab.commit(&lab.main, "trunk.txt", "trunk\n");
+        lab.push(&lab.main, "main");
+        let before = lab.sha(&lab.package, "HEAD");
+        let main_sha = lab.sha(&lab.origin, "refs/heads/main");
+        let conn = memory();
+        lab.bind(&conn, "pkg");
+        (lab, conn, before, main_sha)
+    }
+
+    #[test]
+    fn a_push_timeout_after_the_remote_accepted_does_not_rewind_the_branch() {
+        let _guard = InterruptGuard::arm(Interrupt::PushAfterAccept);
+        let (lab, conn, before, main_sha) = ahead_lab();
+
+        match run(&conn).outcome {
+            Outcome::Updated { head, .. } => {
+                assert_eq!(head, lab.sha(&lab.package, "HEAD"));
+                assert_eq!(lab.sha(&lab.origin, "refs/heads/pkg"), head);
+                assert_ne!(head, before);
+            }
+            other => panic!("expected the landed push to stand, got {other:?}"),
+        }
+        assert_eq!(lab.sha(&lab.origin, "refs/heads/main"), main_sha);
+        assert_eq!(lab.sha(&lab.main, "refs/heads/main"), main_sha);
+    }
+
+    #[test]
+    fn a_push_timeout_that_cannot_be_read_does_not_rewind_the_branch() {
+        let _guard = InterruptGuard::arm(Interrupt::PushUnreadable);
+        let (lab, conn, before, main_sha) = ahead_lab();
+
+        match run(&conn).outcome {
+            Outcome::NotFinished { reason } => {
+                assert!(reason.contains("left as it is"), "{reason}");
+                assert!(!reason.contains("Nothing was changed"), "{reason}");
+                assert!(!reason.contains("put back"), "{reason}");
+            }
+            other => panic!("expected the branch to be left, got {other:?}"),
+        }
+        assert_ne!(lab.sha(&lab.package, "HEAD"), before);
+        assert_eq!(lab.sha(&lab.origin, "refs/heads/pkg"), before);
+        assert_eq!(lab.sha(&lab.origin, "refs/heads/main"), main_sha);
+    }
+
+    #[test]
+    fn a_push_that_lands_on_one_remote_is_not_rewound_when_another_refuses() {
+        let (lab, conn, before, main_sha) = ahead_lab();
+        let other = lab.root.join("other.git");
+        let other_path = other.to_string_lossy().into_owned();
+        let origin = lab.origin.to_string_lossy().into_owned();
+        git(&lab.root, &["clone", "--bare", &origin, &other_path]);
+        let other_wt = lab.root.join("other-wt");
+        let other_wt_path = other_wt.to_string_lossy().into_owned();
+        git(&lab.root, &["clone", &other_path, &other_wt_path]);
+        configure(&other_wt);
+        git(&other_wt, &["checkout", "pkg"]);
+        lab.commit(&other_wt, "diverge.txt", "no\n");
+        lab.push(&other_wt, "pkg");
+        git(
+            &lab.package,
+            &["remote", "set-url", "--add", "--push", "origin", &origin],
+        );
+        git(
+            &lab.package,
+            &[
+                "remote",
+                "set-url",
+                "--add",
+                "--push",
+                "origin",
+                &other_path,
+            ],
+        );
+
+        match run(&conn).outcome {
+            Outcome::NotFinished { reason } => {
+                assert!(reason.contains("left as it is"), "{reason}");
+                assert!(reason.contains("already has it"), "{reason}");
+                assert!(!reason.contains("put back"), "{reason}");
+            }
+            other => panic!("expected the landed push to be left, got {other:?}"),
+        }
+        let head = lab.sha(&lab.package, "HEAD");
+        assert_ne!(head, before);
+        assert_eq!(lab.sha(&lab.origin, "refs/heads/pkg"), head);
+        assert_eq!(lab.sha(&lab.origin, "refs/heads/main"), main_sha);
+    }
+
+    #[test]
+    fn a_removed_recorded_worktree_is_looked_up_again() {
+        let lab = Lab::open("pkg");
+        lab.commit(&lab.package, "pkg.txt", "pkg\n");
+        let conn = memory();
+        let project = lab.main.to_str().unwrap().to_string();
+        settings::set(&conn, &project, true, Strategy::Merge, 0, 1).unwrap();
+        tick::record(&conn, &project, "pkg-1", &lab.package, "pkg", 1).unwrap();
+        let Next::Update(_) = tick::next(&conn, &project, "pkg-1", "pkg").unwrap() else {
+            panic!("a present worktree is reused");
+        };
+
+        let package_path = lab.package.to_string_lossy().into_owned();
+        git(&lab.main, &["worktree", "remove", "--force", &package_path]);
+        let Next::Find { branch } = tick::next(&conn, &project, "pkg-1", "pkg").unwrap() else {
+            panic!("a removed worktree must be looked up again");
+        };
+        assert_eq!(branch, "pkg");
+
+        let fresh = lab.root.join("pkg-again");
+        let fresh_path = fresh.to_string_lossy().into_owned();
+        git(&lab.main, &["worktree", "add", &fresh_path, "pkg"]);
+        let found = update::branch_worktree(&lab.main, "pkg")
+            .unwrap()
+            .expect("the new worktree");
+        tick::record(&conn, &project, "pkg-1", &found, "pkg", 2).unwrap();
+        let Next::Update(plan) = tick::next(&conn, &project, "pkg-1", "pkg").unwrap() else {
+            panic!("the new worktree should be recorded");
+        };
+        assert_eq!(
+            fs::canonicalize(&plan.worktree).unwrap(),
+            fs::canonicalize(&fresh).unwrap()
+        );
+    }
+
+    #[test]
+    fn a_deleted_worktree_folder_is_not_adopted() {
+        let lab = Lab::open("pkg");
+        fs::remove_dir_all(&lab.package).unwrap();
+        assert_eq!(
+            update::branch_worktree(&lab.main, "pkg").unwrap(),
+            None,
+            "a removed folder is not a worktree to adopt"
+        );
+    }
 }
 
 #[test]

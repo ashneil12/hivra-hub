@@ -110,4 +110,147 @@ describe("run feed", () => {
     }, () => stopped);
     expect(partial.map((row) => row.id)).toEqual(["new"]);
   });
+
+  it("does not read an older page again once that run is already held", async () => {
+    const older = entry({
+      id: "old",
+      kind: "automation.started",
+      summary: "Older.",
+      at: 1,
+      seq: 1,
+    });
+    const newer = entry({
+      id: "new",
+      kind: "automation.started",
+      summary: "Newer.",
+      at: 2,
+      seq: 2,
+    });
+    const ancient = entry({
+      id: "ancient",
+      kind: "automation.started",
+      summary: "Ancient.",
+      at: 0,
+      seq: 0,
+    });
+    const calls: string[] = [];
+    const merged = await collectRunPages(
+      async (kind, before) => {
+        calls.push(before ? `${kind}:${before.seq}` : kind);
+        if (kind !== "automation.started") return { entries: [], next: null };
+        if (!before) {
+          return { entries: [newer], next: { at: newer.at, seq: newer.seq } };
+        }
+        if (before.seq === newer.seq) {
+          return { entries: [older], next: { at: older.at, seq: older.seq } };
+        }
+        return { entries: [ancient], next: null };
+      },
+      () => false,
+      [older],
+    );
+    expect(merged.map((row) => row.id)).toEqual(["new", "old"]);
+    expect(calls).toContain("automation.started:2");
+    expect(calls).not.toContain("automation.started:1");
+  });
+
+  it("stops at the first page when that page already contains a held run", async () => {
+    const older = entry({
+      id: "old",
+      kind: "automation.completed",
+      summary: "Older.",
+      at: 1,
+      seq: 1,
+    });
+    const newer = entry({
+      id: "new",
+      kind: "automation.completed",
+      summary: "Newer.",
+      at: 2,
+      seq: 2,
+    });
+    const calls: string[] = [];
+    const merged = await collectRunPages(
+      async (kind, before) => {
+        calls.push(before ? `${kind}:${before.seq}` : kind);
+        if (kind !== "automation.completed") return { entries: [], next: null };
+        return { entries: [newer, older], next: { at: older.at, seq: older.seq } };
+      },
+      () => false,
+      [older],
+    );
+    expect(merged.map((row) => row.id)).toEqual(["new", "old"]);
+    expect(calls.some((call) => call.includes(":"))).toBe(false);
+  });
+
+  it("keeps runs for the open project, a trailing slash, and a project-less run", () => {
+    const rows = [
+      entry({
+        id: "here",
+        kind: "automation.started",
+        summary: "Here.",
+        project: "/work/project",
+      }),
+      entry({
+        id: "slash",
+        kind: "automation.started",
+        summary: "Slash.",
+        project: "/work/project/",
+      }),
+      entry({
+        id: "win",
+        kind: "automation.completed",
+        summary: "Win.",
+        project: "C:\\Work\\Project",
+      }),
+      entry({
+        id: "there",
+        kind: "automation.failed",
+        summary: "There.",
+        project: "/work/other",
+        target: "other/run-9",
+      }),
+      entry({
+        id: "nested",
+        kind: "automation.started",
+        summary: "Nested.",
+        project: "/work/project/sub",
+        target: "nested/run-3",
+      }),
+      entry({
+        id: "home",
+        kind: "automation.started",
+        summary: "Home.",
+        project: "~",
+        target: "home/run-4",
+      }),
+      entry({
+        id: "blank",
+        kind: "automation.failed",
+        summary: "Blank.",
+        project: "",
+        target: "blank/run-5",
+      }),
+    ];
+    expect(visibleRuns(rows, { project: "/work/project" }).map((row) => row.id)).toEqual([
+      "here",
+      "slash",
+      "home",
+      "blank",
+    ]);
+    expect(visibleRuns(rows, { project: "c:/work/project" }).map((row) => row.id)).toEqual([
+      "win",
+      "home",
+      "blank",
+    ]);
+    expect(visibleRuns(rows, {}).map((row) => row.id)).toEqual([
+      "here",
+      "slash",
+      "win",
+      "there",
+      "nested",
+      "home",
+      "blank",
+    ]);
+  });
 });

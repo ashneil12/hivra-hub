@@ -152,6 +152,11 @@ pub(crate) fn enqueue_limited(
     let title = one_line(&input.title, "title", TITLE_MAX)?;
     let brief_path = rel_path(&input.brief_path, "briefPath")?;
     let branch = branch_name(&input.branch)?;
+    // A branch nobody queued is refused, including one a Lead names that is not
+    // this package's. A merged or failed row may hand its branch to the next package.
+    if !branch_for_package(&branch, &wp) && !branch_released(conn, &actor.project, &branch)? {
+        return Err("That branch was not made for this package. Nothing was queued.".into());
+    }
     let priority = priority_of(input.priority)?;
     let notes = notes_text(input.notes.as_deref().unwrap_or(""))?;
     let tx = conn
@@ -592,6 +597,64 @@ fn rel_path(value: &str, name: &str) -> Result<String, String> {
         return Err(format!("{name} must stay inside the project."));
     }
     Ok(text.to_string())
+}
+
+/// True when a merged or failed row in this project already used this branch.
+fn branch_released(conn: &Connection, project: &str, branch: &str) -> Result<bool, String> {
+    conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM programme_packages
+         WHERE project_id = ?1 AND branch = ?2 COLLATE NOCASE
+         AND status IN ('merged', 'failed'))",
+        params![project, branch],
+        |row| row.get::<_, i64>(0),
+    )
+    .map(|found| found != 0)
+    .map_err(db_err)
+}
+
+/// The branch is this package's worktree branch: it starts with `wp/` and either a
+/// path segment is the package id (`wp/WP-162`, `wp/WP-A`) or a token is the
+/// package's trailing number (`wp/162` for `WP-162`). `wp/162b-update` is not `WP-162`,
+/// and `wp/90` is not `WP-9`.
+pub(crate) fn branch_for_package(branch: &str, wp: &str) -> bool {
+    let branch = branch.trim();
+    let wp = wp.trim();
+    if wp.is_empty() || branch.len() < 4 {
+        return false;
+    }
+    let Some(prefix) = branch.get(..3) else {
+        return false;
+    };
+    if !prefix.eq_ignore_ascii_case("wp/") {
+        return false;
+    }
+    if branch
+        .split('/')
+        .any(|segment| segment.eq_ignore_ascii_case(wp))
+    {
+        return true;
+    }
+    let Some(number) = trailing_digits(wp) else {
+        return false;
+    };
+    branch
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .any(|token| token == number)
+}
+
+fn trailing_digits(wp: &str) -> Option<&str> {
+    let start = wp
+        .char_indices()
+        .rev()
+        .take_while(|(_, c)| c.is_ascii_digit())
+        .last()
+        .map(|(index, _)| index)?;
+    let number = &wp[start..];
+    if number.is_empty() {
+        None
+    } else {
+        Some(number)
+    }
 }
 
 fn branch_name(value: &str) -> Result<String, String> {

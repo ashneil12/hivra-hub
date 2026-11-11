@@ -2,15 +2,20 @@
 //!
 //! The push is a normal push: no `--force` and no `--no-verify`. `refs/heads/main`
 //! is read at the start and must be the same sha at the end. A fetch that fails,
-//! a timeout, or a push that is not a fast-forward leaves the package branch
-//! where it was. Those are not final failures.
+//! a merge or rebase that times out, or a push that is refused leaves the package
+//! branch where it was, after a merge or rebase still in progress is aborted.
+//! A push that times out once the remote has the commit is left in place. None of
+//! these is a final failure.
 
 use std::fs::{self, OpenOptions};
-use std::io::{Read, Write};
+use std::io::{Read, Seek, Write};
 use std::path::{Path, PathBuf};
-use std::time::{Duration, SystemTime};
+use std::time::Duration;
 
-use rusqlite::Connection;
+#[cfg(test)]
+use std::cell::Cell;
+
+use rusqlite::{Connection, OptionalExtension};
 use serde::Serialize;
 
 use super::checkout::{self, Checkout};
@@ -19,7 +24,6 @@ use super::names;
 use super::settings::{self, Strategy};
 
 const LOCK_NAME: &str = "hivra-programme-update.lock";
-const LOCK_STALE: Duration = Duration::from_secs(10 * 60);
 
 #[derive(Clone, Debug)]
 pub(crate) struct Plan {
@@ -29,6 +33,8 @@ pub(crate) struct Plan {
     pub base: String,
     pub remote: String,
     pub strategy: Strategy,
+    /// The programme row is `building`: a builder holds this package, so the update does not run.
+    pub builder_live: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -100,10 +106,107 @@ pub(crate) fn branch_worktree(folder: &Path, branch: &str) -> Result<Option<Path
             current = None;
         }
     }
+    // A removed worktree can stay in the list until it is pruned. It is not a place to update.
+    found.retain(|path| path.is_dir());
     match found.len() {
         0 => Ok(None),
         1 => Ok(found.pop()),
         _ => Err("More than one worktree has that branch checked out. Nothing was changed.".into()),
+    }
+}
+
+/// A worktree the lead may record, or a report and no git change.
+#[derive(Debug)]
+pub(crate) enum Claim {
+    Worktree(PathBuf),
+    Reported(String),
+}
+
+/// The branch to look up, after the programme row has been checked.
+pub(crate) enum Gate {
+    Proceed(String),
+    Reported(String),
+}
+
+/// The named branch is this programme package's own branch, and that branch was
+/// made for the package. A lead can type any branch; this does not guess a worktree.
+pub(crate) fn gate_package_branch(
+    conn: &Connection,
+    package_id: &str,
+    branch: &str,
+) -> Result<Gate, String> {
+    let Some((wp, recorded)) = package_row(conn, package_id)? else {
+        return Ok(Gate::Reported(
+            "That package is not on the programme. Nothing was changed.".into(),
+        ));
+    };
+    let Ok(asked) = names::branch_name(branch) else {
+        return Ok(Gate::Reported(
+            "That branch is not this package's. Nothing was changed.".into(),
+        ));
+    };
+    let Ok(recorded) = names::branch_name(&recorded) else {
+        return Ok(Gate::Reported(
+            "That branch was not made for this package. Nothing was changed.".into(),
+        ));
+    };
+    if !asked.eq_ignore_ascii_case(recorded) {
+        return Ok(Gate::Reported(
+            "That branch is not this package's. Nothing was changed.".into(),
+        ));
+    }
+    if !super::store::branch_for_package(recorded, &wp) {
+        return Ok(Gate::Reported(
+            "That branch was not made for this package. Nothing was changed.".into(),
+        ));
+    }
+    Ok(Gate::Proceed(recorded.to_string()))
+}
+
+#[cfg(test)]
+pub(crate) fn claim_worktree(
+    conn: &Connection,
+    folder: &Path,
+    package_id: &str,
+    branch: &str,
+) -> Result<Claim, String> {
+    match gate_package_branch(conn, package_id, branch)? {
+        Gate::Reported(message) => Ok(Claim::Reported(message)),
+        Gate::Proceed(branch) => adopt_worktree(folder, &branch),
+    }
+}
+
+/// The one worktree with `branch` checked out, or a report. The main checkout is never it.
+pub(crate) fn adopt_worktree(folder: &Path, branch: &str) -> Result<Claim, String> {
+    let Some(path) = branch_worktree(folder, branch)? else {
+        return Ok(Claim::Reported(
+            "No worktree has this package's branch checked out. Nothing was changed.".into(),
+        ));
+    };
+    match main_checkout(&path) {
+        Ok(true) => Ok(Claim::Reported(
+            "This is the main checkout, not a package worktree. Nothing was changed.".into(),
+        )),
+        Ok(false) => Ok(Claim::Worktree(path)),
+        Err(outcome) => Err(outcome_reason(outcome)),
+    }
+}
+
+fn package_row(conn: &Connection, package_id: &str) -> Result<Option<(String, String)>, String> {
+    conn.query_row(
+        "SELECT wp, branch FROM programme_packages WHERE id = ?1",
+        rusqlite::params![package_id],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )
+    .optional()
+    .map_err(|error| error.to_string())
+}
+
+fn outcome_reason(outcome: Outcome) -> String {
+    match outcome {
+        Outcome::Refused { reason } | Outcome::NotFinished { reason } => reason,
+        Outcome::Conflict { detail } => detail,
+        Outcome::Updated { .. } | Outcome::AlreadyCurrent => "Nothing was changed.".into(),
     }
 }
 
@@ -125,7 +228,20 @@ fn plan_from(conn: &Connection, checkout: &Checkout) -> Result<Plan, String> {
         base,
         remote,
         strategy,
+        builder_live: builder_is_live(conn, &checkout.package_id)?,
     })
+}
+
+fn builder_is_live(conn: &Connection, package_id: &str) -> Result<bool, String> {
+    let status: Option<String> = conn
+        .query_row(
+            "SELECT status FROM programme_packages WHERE id = ?1",
+            rusqlite::params![package_id],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|error| error.to_string())?;
+    Ok(status.as_deref() == Some("building"))
 }
 
 pub(crate) fn execute(plan: &Plan) -> UpdateReport {
@@ -140,6 +256,11 @@ pub(crate) fn execute(plan: &Plan) -> UpdateReport {
 }
 
 fn try_update(plan: &Plan) -> Result<Outcome, Outcome> {
+    if plan.builder_live {
+        return Err(refused(
+            "This package's builder is still working. Nothing was changed.",
+        ));
+    }
     let branch = names::branch_name(&plan.branch).map_err(refused)?;
     let base = names::branch_name(&plan.base).map_err(refused)?;
     let remote = names::remote_name(&plan.remote).map_err(refused)?;
@@ -194,10 +315,17 @@ fn try_update(plan: &Plan) -> Result<Outcome, Outcome> {
         guard_main(&worktree, base, &main_before)?;
         return Ok(Outcome::AlreadyCurrent);
     }
-    if let Err(outcome) = push(&worktree, remote, branch, base) {
-        undo_ours(&worktree, branch, &old, &new_head)?;
-        guard_main(&worktree, base, &main_before)?;
-        return Err(outcome);
+    match push(&worktree, remote, branch, base) {
+        Ok(()) => {}
+        Err(PushFault::Rejected(outcome)) => {
+            undo_ours(&worktree, branch, &old, &new_head)?;
+            guard_main(&worktree, base, &main_before)?;
+            return Err(outcome);
+        }
+        Err(PushFault::Uncertain(outcome)) => {
+            guard_main(&worktree, base, &main_before)?;
+            return Err(outcome);
+        }
     }
     guard_main(&worktree, base, &main_before)?;
     if head(&worktree)? != new_head {
@@ -272,7 +400,14 @@ fn merge(
 ) -> Result<(), Outcome> {
     let args = merge_args(remote, base);
     let borrowed: Vec<&str> = args.iter().map(String::as_str).collect();
-    let ran = git(worktree, &borrowed, LOCAL_TIMEOUT)?;
+    let ran = match git(worktree, &borrowed, LOCAL_TIMEOUT) {
+        Ok(ran) => ran,
+        Err(outcome) => {
+            // A timeout kills git after it may have started the merge. Abort before any report.
+            cancel_merge(worktree, old, branch)?;
+            return Err(outcome);
+        }
+    };
     if ran.code == 0 {
         return Ok(());
     }
@@ -302,7 +437,14 @@ fn rebase(
 ) -> Result<(), Outcome> {
     let args = rebase_args(remote, base);
     let borrowed: Vec<&str> = args.iter().map(String::as_str).collect();
-    let ran = git(worktree, &borrowed, LOCAL_TIMEOUT)?;
+    let ran = match git(worktree, &borrowed, LOCAL_TIMEOUT) {
+        Ok(ran) => ran,
+        Err(outcome) => {
+            // A timeout kills git after it may have started the rebase. Abort before any report.
+            cancel_rebase(worktree, old, branch)?;
+            return Err(outcome);
+        }
+    };
     if ran.code == 0 {
         return Ok(());
     }
@@ -323,35 +465,98 @@ fn rebase(
     ))
 }
 
-fn push(worktree: &Path, remote: &str, branch: &str, base: &str) -> Result<(), Outcome> {
+enum PushFault {
+    /// The remote does not have the commit. The caller may put the branch back.
+    Rejected(Outcome),
+    /// The push did not finish, and the remote may already have the commit. Do not rewind.
+    Uncertain(Outcome),
+}
+
+fn push(worktree: &Path, remote: &str, branch: &str, base: &str) -> Result<(), PushFault> {
     if names::is_protected(branch, base) {
-        return Err(refused("That branch is main. It was not updated."));
+        return Err(PushFault::Rejected(refused(
+            "That branch is main. It was not updated.",
+        )));
     }
     // The gate returns the URLs it checked. The push names those URLs, not the remote: a pushurl written after
     // the check would otherwise send the commit somewhere the check never read.
-    let checked =
-        crate::commit_guard::gate_outgoing_to(worktree, remote).map_err(outcome_from_gate)?;
+    let checked = crate::commit_guard::gate_outgoing_to(worktree, remote)
+        .map_err(|error| PushFault::Rejected(outcome_from_gate(error)))?;
     if checked.urls.is_empty() {
-        return Err(outcome_from_gate(format!(
+        return Err(PushFault::Rejected(outcome_from_gate(format!(
             "the remote {remote} has no push URL."
-        )));
+        ))));
     }
     let refspec = format!("{}:refs/heads/{branch}", checked.sha);
+    let mut landed = false;
     for url in &checked.urls {
         let (before, after) = push_transport_args(url, &refspec);
         let mut args = before;
         args.push("push".to_string());
         args.extend(after);
         let borrowed: Vec<&str> = args.iter().map(String::as_str).collect();
-        let ran = git(worktree, &borrowed, FETCH_TIMEOUT)?;
-        if ran.code != 0 {
-            return Err(not_finished(
-                "A normal push was refused, so the branch was put back. Nothing was force-pushed.",
-            ));
+        match git(worktree, &borrowed, FETCH_TIMEOUT) {
+            Ok(ran) if ran.code == 0 => landed = true,
+            Ok(_) if landed => {
+                return Err(left_in_place(
+                    "A later push was refused. The branch was left as it is, because the remote already has it. Nothing was force-pushed.",
+                ));
+            }
+            Ok(_) => match remote_has_sha(worktree, url, branch, &checked.sha) {
+                Ok(true) => landed = true,
+                Ok(false) => {
+                    return Err(PushFault::Rejected(not_finished(
+                        "A normal push was refused, so the branch was put back. Nothing was force-pushed.",
+                    )));
+                }
+                Err(()) => {
+                    return Err(left_in_place(
+                        "The push did not finish in time. The branch was left as it is, because the remote may already have it. Try again.",
+                    ));
+                }
+            },
+            Err(_) if landed => {
+                return Err(left_in_place(
+                    "The push did not finish in time. The branch was left as it is, because the remote already has it. Try again.",
+                ));
+            }
+            Err(_) => match remote_has_sha(worktree, url, branch, &checked.sha) {
+                Ok(true) => landed = true,
+                Ok(false) => {
+                    return Err(PushFault::Rejected(not_finished(
+                        "The push did not finish in time, so the branch was put back. Nothing was force-pushed. Try again.",
+                    )));
+                }
+                Err(()) => {
+                    return Err(left_in_place(
+                        "The push did not finish in time. The branch was left as it is, because the remote may already have it. Try again.",
+                    ));
+                }
+            },
         }
     }
     record_pushed_refs(worktree, remote, branch, &checked.sha);
     Ok(())
+}
+
+fn left_in_place(reason: &str) -> PushFault {
+    PushFault::Uncertain(not_finished(reason))
+}
+
+/// Whether `url` already has `sha` on `branch`. An unreadable remote is not a no.
+fn remote_has_sha(worktree: &Path, url: &str, branch: &str, sha: &str) -> Result<bool, ()> {
+    let spec = format!("refs/heads/{branch}");
+    let ran = git(worktree, &["ls-remote", url, &spec], FETCH_TIMEOUT).map_err(|_| ())?;
+    if ran.code != 0 {
+        return Err(());
+    }
+    Ok(ran.stdout.lines().any(|line| {
+        let mut parts = line.split_whitespace();
+        match (parts.next(), parts.next()) {
+            (Some(found), Some(name)) => found == sha && name == spec,
+            _ => false,
+        }
+    }))
 }
 
 /// A secret or an agent file is a final refusal. Anything else (the remote could not be read, a timeout) is not:
@@ -381,17 +586,28 @@ fn record_pushed_refs(worktree: &Path, remote: &str, branch: &str, sha: &str) {
 }
 
 fn cancel_merge(worktree: &Path, old: &str, branch: &str) -> Result<(), Outcome> {
-    if in_merge(worktree) {
-        let _ = git(worktree, &["merge", "--abort"], LOCAL_TIMEOUT);
+    if in_merge(worktree) && !abort_finished(worktree, &["merge", "--abort"], in_merge) {
+        return Err(not_finished(
+            "The merge could not be cancelled, so the worktree was left for you.",
+        ));
     }
     settled(worktree, old, branch)
 }
 
 fn cancel_rebase(worktree: &Path, old: &str, branch: &str) -> Result<(), Outcome> {
-    if in_rebase(worktree) {
-        let _ = git(worktree, &["rebase", "--abort"], LOCAL_TIMEOUT);
+    if in_rebase(worktree) && !abort_finished(worktree, &["rebase", "--abort"], in_rebase) {
+        return Err(not_finished(
+            "The rebase could not be cancelled, so the worktree was left for you.",
+        ));
     }
     settled(worktree, old, branch)
+}
+
+fn abort_finished(worktree: &Path, args: &[&str], still: fn(&Path) -> bool) -> bool {
+    match git(worktree, args, LOCAL_TIMEOUT) {
+        Ok(ran) if ran.code == 0 => !still(worktree),
+        _ => false,
+    }
 }
 
 fn settled(worktree: &Path, old: &str, branch: &str) -> Result<(), Outcome> {
@@ -674,6 +890,7 @@ fn absolute_common_dir(worktree: &Path) -> Result<PathBuf, Outcome> {
 }
 
 struct HeldLock {
+    file: fs::File,
     path: PathBuf,
     root: PathBuf,
     token: String,
@@ -681,7 +898,10 @@ struct HeldLock {
 
 impl Drop for HeldLock {
     fn drop(&mut self) {
-        release_lock(&self.path, &self.root, &self.token);
+        if lock_parent(&self.path, &self.root).is_err() {
+            return;
+        }
+        let _ = unlink_if_ours(&mut self.file, &self.path, &self.token);
     }
 }
 
@@ -690,105 +910,385 @@ fn hold_lock(git_dir: &Path) -> Result<HeldLock, Outcome> {
         not_finished("The worktree could not be read. Nothing was changed. Try again.")
     })?;
     let path = root.join(LOCK_NAME);
-    if path.parent() != Some(root.as_path()) {
-        return Err(refused(
-            "The update lock would sit outside the worktree. Nothing was changed.",
-        ));
+    lock_parent(&path, &root)?;
+    match fs::symlink_metadata(&path) {
+        Ok(meta) if meta.file_type().is_symlink() => {
+            return Err(refused(
+                "The update lock is not a file this update can hold. Nothing was changed.",
+            ));
+        }
+        Ok(meta) if !meta.is_file() => {
+            return Err(not_finished(
+                "The update could not lock the worktree. Nothing was changed. Try again.",
+            ));
+        }
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(_) => {
+            return Err(not_finished(
+                "The update could not lock the worktree. Nothing was changed. Try again.",
+            ));
+        }
     }
     if let Some(held) = create_lock(&path, &root)? {
         return Ok(held);
     }
-    if lock_is_stale(&path) {
-        remove_lock_file(&path, &root)?;
-        if let Some(held) = create_lock(&path, &root)? {
-            return Ok(held);
-        }
-    }
-    Err(not_finished(
-        "Another update is already running in this worktree. Nothing was changed.",
-    ))
+    adopt_lock(&path, &root)
 }
 
 fn create_lock(path: &Path, root: &Path) -> Result<Option<HeldLock>, Outcome> {
-    match OpenOptions::new().write(true).create_new(true).open(path) {
-        Ok(mut file) => {
-            let token = uuid::Uuid::new_v4().simple().to_string();
-            let _ = writeln!(file, "{token}");
-            Ok(Some(HeldLock {
-                path: path.to_path_buf(),
-                root: root.to_path_buf(),
-                token,
-            }))
-        }
-        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => Ok(None),
-        Err(_) => Err(not_finished(
-            "The update could not lock the worktree. Nothing was changed. Try again.",
-        )),
-    }
-}
-
-fn lock_is_stale(path: &Path) -> bool {
-    let Ok(meta) = fs::metadata(path) else {
-        return false;
+    let mut options = OpenOptions::new();
+    options.read(true).write(true).create_new(true);
+    apply_nofollow(&mut options);
+    let mut file = match options.open(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => return Ok(None),
+        Err(error) => return Err(lock_open_error(error)),
     };
-    let Ok(modified) = meta.modified() else {
-        return false;
-    };
-    SystemTime::now()
-        .duration_since(modified)
-        .map(|age| age > LOCK_STALE)
-        .unwrap_or(false)
-}
-
-fn remove_lock_file(path: &Path, root: &Path) -> Result<(), Outcome> {
-    let Ok(canonical) = crate::fs::canonical(path) else {
-        return Ok(());
-    };
-    let Ok(root) = crate::fs::canonical(root) else {
-        return Err(refused(
-            "The update lock would sit outside the worktree. Nothing was changed.",
-        ));
-    };
-    if canonical.parent() != Some(root.as_path())
-        || canonical.file_name().and_then(|n| n.to_str()) != Some(LOCK_NAME)
+    let token = uuid::Uuid::new_v4().simple().to_string();
+    if !write_token(&mut file, &token) || !lock_exclusive(&file) || !same_file_as_path(&file, path)
     {
-        return Err(refused(
-            "The update lock would sit outside the worktree. Nothing was changed.",
+        let _ = unlink_if_ours(&mut file, path, &token);
+        return Err(not_finished(
+            "The update could not lock the worktree. Nothing was changed. Try again.",
         ));
     }
-    let _ = fs::remove_file(canonical);
+    Ok(Some(HeldLock {
+        file,
+        path: path.to_path_buf(),
+        root: root.to_path_buf(),
+        token,
+    }))
+}
+
+/// Takes a lock file nobody still holds. The file is not deleted first: a live holder
+/// keeps the flock, so this fails instead of removing their lock.
+fn adopt_lock(path: &Path, root: &Path) -> Result<HeldLock, Outcome> {
+    let mut file = open_existing(path)?;
+    if !lock_exclusive(&file) {
+        return Err(not_finished(
+            "Another update is already running in this worktree. Nothing was changed.",
+        ));
+    }
+    if !same_file_as_path(&file, path) {
+        return Err(not_finished(
+            "The update could not lock the worktree. Nothing was changed. Try again.",
+        ));
+    }
+    let token = uuid::Uuid::new_v4().simple().to_string();
+    if !write_token(&mut file, &token) {
+        return Err(not_finished(
+            "The update could not lock the worktree. Nothing was changed. Try again.",
+        ));
+    }
+    Ok(HeldLock {
+        file,
+        path: path.to_path_buf(),
+        root: root.to_path_buf(),
+        token,
+    })
+}
+
+#[cfg(test)]
+fn remove_lock_file(path: &Path, root: &Path, expected_token: &str) -> Result<(), Outcome> {
+    lock_parent(path, root)?;
+    match fs::symlink_metadata(path) {
+        Ok(meta) if meta.file_type().is_symlink() => {
+            return Err(refused(
+                "The update lock is not a file this update can hold. Nothing was changed.",
+            ));
+        }
+        Ok(meta) if meta.is_file() => {}
+        Ok(_) => {
+            return Err(refused(
+                "The update lock is not a file this update can hold. Nothing was changed.",
+            ));
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(_) => {
+            return Err(not_finished(
+                "The update could not lock the worktree. Nothing was changed. Try again.",
+            ));
+        }
+    }
+    let mut file = open_existing(path)?;
+    if !lock_exclusive(&file) {
+        return Err(not_finished(
+            "Another update is already running in this worktree. Nothing was changed.",
+        ));
+    }
+    let _ = unlink_if_ours(&mut file, path, expected_token);
     Ok(())
 }
 
-fn release_lock(path: &Path, root: &Path, token: &str) {
-    let Ok(canonical) = crate::fs::canonical(path) else {
-        return;
+/// The lock file's parent is `root`. The lock file itself is not canonicalized, so a symlink is not followed.
+fn lock_parent(path: &Path, root: &Path) -> Result<(), Outcome> {
+    let root = crate::fs::canonical(root).map_err(|_| {
+        refused("The update lock would sit outside the worktree. Nothing was changed.")
+    })?;
+    let Some(parent) = path.parent() else {
+        return Err(refused(
+            "The update lock would sit outside the worktree. Nothing was changed.",
+        ));
     };
-    let Ok(root) = crate::fs::canonical(root) else {
-        return;
-    };
-    if canonical.parent() != Some(root.as_path())
-        || canonical.file_name().and_then(|name| name.to_str()) != Some(LOCK_NAME)
+    let parent = crate::fs::canonical(parent).map_err(|_| {
+        refused("The update lock would sit outside the worktree. Nothing was changed.")
+    })?;
+    if parent != root || path.file_name().and_then(|name| name.to_str()) != Some(LOCK_NAME) {
+        return Err(refused(
+            "The update lock would sit outside the worktree. Nothing was changed.",
+        ));
+    }
+    Ok(())
+}
+
+fn apply_nofollow(options: &mut OpenOptions) {
+    #[cfg(unix)]
     {
-        return;
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW);
     }
-    let Ok(mut file) = fs::File::open(&canonical) else {
-        return;
-    };
-    let mut found = String::new();
-    if file.read_to_string(&mut found).is_err() {
-        return;
-    }
-    if found.trim() == token {
-        let _ = fs::remove_file(canonical);
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        // FILE_FLAG_OPEN_REPARSE_POINT: a symlink swapped in is opened as itself.
+        options.custom_flags(0x0020_0000);
     }
 }
 
+fn open_existing(path: &Path) -> Result<fs::File, Outcome> {
+    let mut options = OpenOptions::new();
+    options.read(true).write(true);
+    apply_nofollow(&mut options);
+    options.open(path).map_err(lock_open_error)
+}
+
+fn lock_open_error(error: std::io::Error) -> Outcome {
+    #[cfg(unix)]
+    if error.raw_os_error() == Some(libc::ELOOP) {
+        return refused("The update lock is not a file this update can hold. Nothing was changed.");
+    }
+    let _ = error;
+    not_finished("The update could not lock the worktree. Nothing was changed. Try again.")
+}
+
+fn lock_exclusive(file: &fs::File) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::io::AsRawFd;
+        unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) == 0 }
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::io::AsRawHandle;
+        use windows_sys::Win32::Storage::FileSystem::{
+            LockFileEx, LOCKFILE_EXCLUSIVE_LOCK, LOCKFILE_FAIL_IMMEDIATELY,
+        };
+        use windows_sys::Win32::System::IO::OVERLAPPED;
+        let mut overlapped: OVERLAPPED = unsafe { std::mem::zeroed() };
+        unsafe {
+            LockFileEx(
+                file.as_raw_handle(),
+                LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY,
+                0,
+                1,
+                0,
+                &mut overlapped,
+            ) != 0
+        }
+    }
+}
+
+fn write_token(file: &mut fs::File, token: &str) -> bool {
+    if file.rewind().is_err() || file.set_len(0).is_err() {
+        return false;
+    }
+    if writeln!(file, "{token}").is_err() || writeln!(file, "{}", std::process::id()).is_err() {
+        return false;
+    }
+    file.sync_all().is_ok()
+}
+
+fn token_of(file: &mut fs::File) -> Option<String> {
+    if file.rewind().is_err() {
+        return None;
+    }
+    let mut found = String::new();
+    if file.read_to_string(&mut found).is_err() {
+        return None;
+    }
+    let line = found.lines().next()?.trim();
+    if line.is_empty() {
+        None
+    } else {
+        Some(line.to_string())
+    }
+}
+
+fn same_file_as_path(file: &fs::File, path: &Path) -> bool {
+    let Ok(opened) = file.metadata() else {
+        return false;
+    };
+    let Ok(named) = fs::symlink_metadata(path) else {
+        return false;
+    };
+    if named.file_type().is_symlink() || !named.is_file() {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        opened.dev() == named.dev() && opened.ino() == named.ino()
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        opened.volume_serial_number() == named.volume_serial_number()
+            && opened.file_index() == named.file_index()
+    }
+}
+
+fn unlink_if_ours(file: &mut fs::File, path: &Path, token: &str) -> bool {
+    if token_of(file).as_deref() != Some(token) || !same_file_as_path(file, path) {
+        return false;
+    }
+    fs::remove_file(path).is_ok()
+}
+
 fn git(cwd: &Path, args: &[&str], timeout: Duration) -> Result<gitrun::Ran, Outcome> {
-    gitrun::run(cwd, args, timeout).map_err(|error| match error {
+    if let Some(stopped) = interrupt_before(args) {
+        return stopped;
+    }
+    let ran = gitrun::run(cwd, args, timeout).map_err(|error| match error {
         gitrun::RunError::Refused(reason) => refused(reason),
         gitrun::RunError::NotFinished(reason) => not_finished(reason),
-    })
+    })?;
+    if interrupt_after(args, ran.code) {
+        return Err(timed_out());
+    }
+    Ok(ran)
+}
+
+fn timed_out() -> Outcome {
+    not_finished("The update did not finish in time. Nothing was changed. Try again.")
+}
+
+/// A test asks git to report a timeout, or an abort that did not run. Off in every other build.
+#[cfg(test)]
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Interrupt {
+    Off,
+    /// The merge or rebase command runs, then is reported as a timeout.
+    RewriteTimeout,
+    /// `merge --abort` and `rebase --abort` fail and do not run.
+    AbortFails,
+    /// The push command runs, then is reported as a timeout.
+    PushAfterAccept,
+    /// The push and the following remote read are both reported as timeouts.
+    PushUnreadable,
+}
+
+#[cfg(test)]
+thread_local! {
+    static INTERRUPT: Cell<Interrupt> = const { Cell::new(Interrupt::Off) };
+}
+
+#[cfg(test)]
+pub(crate) fn set_interrupt(kind: Interrupt) {
+    INTERRUPT.with(|cell| cell.set(kind));
+}
+
+#[cfg(test)]
+fn interrupt_kind() -> Interrupt {
+    INTERRUPT.with(|cell| cell.get())
+}
+
+#[cfg(test)]
+fn clear_interrupt() {
+    set_interrupt(Interrupt::Off);
+}
+
+#[cfg(test)]
+fn interrupt_before(args: &[&str]) -> Option<Result<gitrun::Ran, Outcome>> {
+    match interrupt_kind() {
+        Interrupt::AbortFails if is_abort(args) => {
+            clear_interrupt();
+            Some(Ok(gitrun::Ran {
+                code: 1,
+                stdout: String::new(),
+                stderr: "abort failed".into(),
+            }))
+        }
+        Interrupt::PushUnreadable if is_push(args) => Some(Err(timed_out())),
+        Interrupt::PushUnreadable if is_ls_remote(args) => {
+            clear_interrupt();
+            Some(Err(timed_out()))
+        }
+        _ => None,
+    }
+}
+
+#[cfg(not(test))]
+fn interrupt_before(_args: &[&str]) -> Option<Result<gitrun::Ran, Outcome>> {
+    None
+}
+
+#[cfg(test)]
+fn interrupt_after(args: &[&str], code: i32) -> bool {
+    match interrupt_kind() {
+        Interrupt::RewriteTimeout if is_rewrite(args) => {
+            clear_interrupt();
+            true
+        }
+        Interrupt::PushAfterAccept if is_push(args) && code == 0 => {
+            clear_interrupt();
+            true
+        }
+        _ => false,
+    }
+}
+
+#[cfg(not(test))]
+fn interrupt_after(_args: &[&str], _code: i32) -> bool {
+    false
+}
+
+#[cfg(test)]
+fn command_name<'a>(args: &'a [&'a str]) -> Option<&'a str> {
+    let mut index = 0;
+    while index < args.len() {
+        let arg = args[index];
+        if arg == "-c" || arg == "-C" {
+            index += 2;
+            continue;
+        }
+        if arg.starts_with('-') {
+            index += 1;
+            continue;
+        }
+        return Some(arg);
+    }
+    None
+}
+
+#[cfg(test)]
+fn is_push(args: &[&str]) -> bool {
+    command_name(args) == Some("push")
+}
+
+#[cfg(test)]
+fn is_ls_remote(args: &[&str]) -> bool {
+    command_name(args) == Some("ls-remote")
+}
+
+#[cfg(test)]
+fn is_rewrite(args: &[&str]) -> bool {
+    matches!(command_name(args), Some("merge" | "rebase")) && !args.contains(&"--abort")
+}
+
+#[cfg(test)]
+fn is_abort(args: &[&str]) -> bool {
+    matches!(command_name(args), Some("merge" | "rebase")) && args.contains(&"--abort")
 }
 
 fn refused(reason: impl Into<String>) -> Outcome {
@@ -800,5 +1300,148 @@ fn refused(reason: impl Into<String>) -> Outcome {
 fn not_finished(reason: impl Into<String>) -> Outcome {
     Outcome::NotFinished {
         reason: reason.into(),
+    }
+}
+
+#[cfg(test)]
+mod lock_ownership {
+    use std::time::SystemTime;
+
+    use super::*;
+
+    fn scratch() -> PathBuf {
+        let root = std::env::temp_dir().join(format!(
+            "hivra-update-lock-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        root
+    }
+
+    fn finish(root: &Path) {
+        let Ok(temp) = crate::fs::canonical(std::env::temp_dir()) else {
+            return;
+        };
+        let Ok(dir) = crate::fs::canonical(root) else {
+            return;
+        };
+        if dir.starts_with(temp) {
+            let _ = fs::remove_dir_all(dir);
+        }
+    }
+
+    fn age(path: &Path) {
+        let file = OpenOptions::new().write(true).open(path).unwrap();
+        let old = SystemTime::now()
+            .checked_sub(Duration::from_secs(2 * 60 * 60))
+            .unwrap();
+        file.set_modified(old).unwrap();
+    }
+
+    #[test]
+    fn remove_lock_file_does_not_delete_a_lock_it_does_not_own() {
+        let root = scratch();
+        let path = root.join(LOCK_NAME);
+        fs::write(&path, "someone-else\n").unwrap();
+        age(&path);
+        let _ = remove_lock_file(&path, &root, "not-ours");
+        assert!(
+            path.exists(),
+            "deleted a lock whose token this update does not own"
+        );
+        assert!(fs::read_to_string(&path).unwrap().contains("someone-else"));
+        finish(&root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn remove_lock_file_does_not_follow_a_symlink_to_another_file() {
+        let root = scratch();
+        let outside_dir = scratch();
+        let outside = outside_dir.join("victim.txt");
+        fs::write(&outside, "keep\n").unwrap();
+        let link = root.join(LOCK_NAME);
+        std::os::unix::fs::symlink(&outside, &link).unwrap();
+        let result = remove_lock_file(&link, &root, "someone-else");
+        assert!(result.is_err());
+        assert_eq!(fs::read_to_string(&outside).unwrap(), "keep\n");
+        finish(&root);
+        finish(&outside_dir);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn remove_lock_file_does_not_follow_a_symlink_to_another_file() {
+        let root = scratch();
+        let outside_dir = scratch();
+        let outside = outside_dir.join("victim.txt");
+        fs::write(&outside, "keep\n").unwrap();
+        let link = root.join(LOCK_NAME);
+        if std::os::windows::fs::symlink_file(&outside, &link).is_err() {
+            finish(&root);
+            finish(&outside_dir);
+            return;
+        }
+        let result = remove_lock_file(&link, &root, "someone-else");
+        assert!(result.is_err());
+        assert_eq!(fs::read_to_string(&outside).unwrap(), "keep\n");
+        finish(&root);
+        finish(&outside_dir);
+    }
+
+    /// Another thread holds the file. The mtime is hours old, which used to count as stale.
+    /// No clock is waited on: the holder signals, then this thread tries the lock.
+    #[test]
+    fn a_lock_another_thread_still_holds_is_not_taken_even_when_it_looks_old() {
+        use std::sync::mpsc;
+        use std::thread;
+
+        let root = scratch();
+        let path = root.join(LOCK_NAME);
+        fs::write(&path, "held-by-the-other-update\n").unwrap();
+        age(&path);
+        let (ready_tx, ready_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel::<()>();
+        let held = path.clone();
+        let worker = thread::spawn(move || {
+            let file = open_existing(&held).unwrap();
+            assert!(
+                lock_exclusive(&file),
+                "the other update could not hold the lock"
+            );
+            ready_tx.send(()).unwrap();
+            let _ = release_rx.recv();
+        });
+        ready_rx.recv().unwrap();
+        let taken = hold_lock(&root).is_ok();
+        let body = fs::read_to_string(&path).unwrap_or_default();
+        assert!(
+            body.contains("held-by-the-other-update"),
+            "took a lock another update still holds (taken={taken}): {body}"
+        );
+        let _ = release_tx.send(());
+        worker.join().unwrap();
+        finish(&root);
+    }
+
+    #[test]
+    fn an_abandoned_lock_is_taken_and_the_old_token_cannot_remove_it() {
+        let root = scratch();
+        let path = root.join(LOCK_NAME);
+        fs::write(&path, "old-token\n").unwrap();
+        age(&path);
+        let Ok(held) = hold_lock(&root) else {
+            finish(&root);
+            panic!("an abandoned lock was not taken");
+        };
+        let body = fs::read_to_string(&path).unwrap();
+        assert!(
+            !body.contains("old-token"),
+            "the abandoned lock was not replaced: {body}"
+        );
+        let _ = remove_lock_file(&path, &root, "old-token");
+        assert!(path.exists(), "the old token removed the new holder's lock");
+        drop(held);
+        finish(&root);
     }
 }

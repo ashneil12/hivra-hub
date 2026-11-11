@@ -7,6 +7,8 @@ import { playCue } from "../../settings/model/sounds";
 const TRY_AGAIN = "That didn't go through. Try again.";
 const HELP =
   "When this is off, a conflict is only reported. Nothing is merged or rebased, and main is never changed.";
+const REBASE_LIMIT =
+  "A rebase rewrites the branch. A branch that is already on the remote is left as it is, because a normal push cannot rewrite it.";
 
 type Strategy = "merge" | "rebase";
 
@@ -146,6 +148,7 @@ export function ProgrammeUpdateSetting({ project }: { project: string }) {
           Rebase
         </button>
       </div>
+      <p className="mt-1 text-[12px] text-content/60">{REBASE_LIMIT}</p>
     </div>
   );
 }

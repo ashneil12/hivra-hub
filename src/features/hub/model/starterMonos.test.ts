@@ -10,7 +10,7 @@ describe("starter monos", () => {
   it("loads the bundled templates, and none of them is a special id", () => {
     const offers = starterOffers();
     expect(offers.map((offer) => offer.name)).toEqual([
-      "Coordinator",
+      "Chief of Staff",
       "Design review",
       "Planner",
       "Record keeper",
@@ -26,7 +26,7 @@ describe("starter monos", () => {
   });
 
   it("adding one makes an ordinary mono, and a second add is another mono", () => {
-    const offer = starterOffers().find((item) => item.name === "Coordinator");
+    const offer = starterOffers().find((item) => item.name === "Chief of Staff");
     expect(offer).toBeDefined();
     const first = addStarterMono(offer!.id, ["/work/demo"]);
     const second = addStarterMono(offer!.id);
@@ -34,7 +34,7 @@ describe("starter monos", () => {
     expect(first?.id).not.toBe(offer!.id);
     expect(second?.id).not.toBe(first?.id);
     expect(second?.id).not.toBe(offer!.id);
-    expect(first).toMatchObject({ name: "Coordinator", role: offer!.role, instructions: offer!.soul, projects: ["/work/demo"] });
+    expect(first).toMatchObject({ name: "Chief of Staff", role: offer!.role, instructions: offer!.soul, projects: ["/work/demo"] });
     expect(listMonos()).toHaveLength(2);
   });
 
@@ -56,7 +56,7 @@ describe("starter monos", () => {
 
   it("only the coordinator starts able to read every project", () => {
     const offers = starterOffers();
-    const coordinator = offers.find((item) => item.name === "Coordinator");
+    const coordinator = offers.find((item) => item.name === "Chief of Staff");
     expect(coordinator?.everyProject).toBe(true);
     expect(coordinator?.soul).toContain("\nEvery project: read\n");
     expect(offers.filter((item) => item.everyProject).map((item) => item.id)).toEqual([coordinator?.id]);

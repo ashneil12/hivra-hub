@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { createAutomationTrigger, type Automation } from "./automations";
 import { mapLayout } from "./mapLayout";
@@ -192,5 +193,78 @@ describe("mapLayout", () => {
     expect(dumped).not.toContain("ghp_");
     expect(dumped).not.toContain("sk-ant-");
     expect(dumped).not.toContain("PROMPT_SHOULD_NOT_LEAK");
+  });
+
+  it("does not keep a triggerLabel or triggerRepo helper", () => {
+    const source = readFileSync(new URL("./mapLayout.ts", import.meta.url), "utf8");
+    expect(source.includes("triggerLabel")).toBe(false);
+    expect(source.includes("triggerRepo")).toBe(false);
+    const labels = (rows: Automation[]) =>
+      mapLayout(rows)
+        .nodes.filter((node) => node.kind === "trigger")
+        .map((node) => node.label)
+        .sort();
+    expect(
+      labels([
+        automation({
+          id: "hour",
+          name: "Hourly",
+          triggers: [
+            createAutomationTrigger("time", "hourly", {
+              id: "time-hour",
+              scheduleKind: "hourly",
+              minute: 15,
+            }),
+          ],
+        }),
+      ]),
+    ).toEqual(["The hourly schedule"]);
+    expect(
+      labels([
+        automation({
+          id: "bad",
+          name: "Bad clock",
+          triggers: [
+            createAutomationTrigger("time", "daily", {
+              id: "time-bad",
+              scheduleKind: "daily",
+              time: "25:00",
+            }),
+            createAutomationTrigger("time", "daily", {
+              id: "time-blank",
+              scheduleKind: "daily",
+              time: "",
+            }),
+          ],
+        }),
+      ]),
+    ).toEqual(["The schedule", "The schedule"]);
+    expect(
+      labels([
+        automation({
+          id: "bare",
+          name: "Bare",
+          triggers: [
+            createAutomationTrigger("github", "issue_opened", { id: "no-repo" }),
+            createAutomationTrigger("github", "not_a_known_event", { id: "unknown" }),
+          ],
+        }),
+      ]),
+    ).toEqual(["A new issue", "An event"]);
+    expect(
+      labels([
+        automation({
+          id: "repos",
+          name: "Repos",
+          triggers: [
+            createAutomationTrigger("github", "issue_opened", {
+              id: "list",
+              repo: "  ",
+              repos: ["acme/web", " ", "acme/web", "acme/api"],
+            }),
+          ],
+        }),
+      ]),
+    ).toEqual(["A new issue in acme/api", "A new issue in acme/web"]);
   });
 });

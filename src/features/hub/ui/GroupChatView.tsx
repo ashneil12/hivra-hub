@@ -31,8 +31,6 @@ import {
   retryReply,
   roomDrafts,
   roomGoal,
-  setRoomLead,
-  setRoomResponder,
   startGoal,
   roomPick,
   roomWorking,
@@ -41,8 +39,7 @@ import {
 import { openCodingTeam, setHubSelection, useHubSelection } from "../model/hubNav";
 import { findWaiting } from "../model/waiting";
 import { roomAttachments } from "../model/roomAttachments";
-import { GOAL_MAX_TURNS, RESPONDER_LABELS, RESPONDER_MODES, responderOf } from "../model/roomModes";
-import { quickModel } from "../model/roomDecider";
+import { GOAL_MAX_TURNS } from "../model/roomModes";
 import { hostOf } from "../model/roomTurns";
 import type { ChatMessage, GroupChat, RoomAttachment } from "../model/types";
 import type { Attachment } from "../../sessions/model/session";
@@ -53,6 +50,7 @@ import { useWaitingDrafts } from "../../selfBuild/model/monoMake";
 import { useWaitingTeamDrafts } from "../../selfBuild/model/teamMake";
 import { TeamDraftsInChat } from "../../selfBuild/ui/TeamDraftCard";
 import { CouncilRoom } from "../../council/ui/CouncilRoom";
+import { CouncilSwitch } from "../../council/ui/CouncilSwitch";
 import { consumeCouncilCommand } from "../../council/model/command";
 import { requestCouncil } from "../../council/model/host";
 
@@ -103,9 +101,15 @@ export function GroupChatView({ chatId, projectId }: { chatId: string; projectId
   /** WP-22: the next message is a goal the room's lead works toward. */
   const [goalNext, setGoalNext] = useState(false);
   // WP-23: a council on this room. A room that already has one opens on it; closing it stays closed until the room changes.
-  const [councilOpen, setCouncilOpen] = useState(() => !!getChat(chatId)?.council);
+  // Dropwave: council is a mode of the chat, off until its switch under the box is turned on (an unfinished council
+  // still opens on itself, so its answer is not lost behind the switch).
+  const councilUnfinished = (id: string) => {
+    const phase = getChat(id)?.council?.phase;
+    return phase === "restate" || phase === "running";
+  };
+  const [councilOpen, setCouncilOpen] = useState(() => councilUnfinished(chatId));
   useEffect(() => {
-    setCouncilOpen(!!getChat(chatId)?.council);
+    setCouncilOpen(councilUnfinished(chatId));
   }, [chatId]);
   const begin = (text: string, attachments?: RoomAttachment[]) => {
     const id = startConversation(chat.id, text, { title: draftTitle, attachments });
@@ -259,19 +263,10 @@ export function GroupChatView({ chatId, projectId }: { chatId: string; projectId
             className="mt-1 flex h-6 items-center gap-2 rounded-md px-0.5 text-[13px] text-content/60 hover:text-content"
           >
             <Plus className="size-3.5" strokeWidth={1.75} />
-            Add a Mono
+            Add a first mate
           </button>
         </div>
-        {members.length ? <RoomResponder chat={chat} members={members} /> : null}
-        {/* WP-23: the group's way in to a council. */}
-        <button
-          type="button"
-          data-hub-council
-          onClick={() => setCouncilOpen(true)}
-          className="mx-3 mb-2 flex h-7 items-center rounded-md px-1 text-left text-[13px] text-content/80 hover:bg-content/8"
-        >
-          Council
-        </button>
+        {/* Dropwave (Ash, 11 Nov): who answers and who leads are a team's settings, in Settings, Teams, not in the chat. */}
         {picker ? <MonoPicker chat={chat} monos={monos} anchor={picker} onClose={() => setPicker(null)} /> : null}
         {members.length || chat.conversations.length ? (
           <div className="flex min-h-0 flex-1 flex-col overflow-y-auto px-2 pb-2">
@@ -512,49 +507,12 @@ export function GroupChatView({ chatId, projectId }: { chatId: string; projectId
               answer(conv?.id);
             }}
           />
+          {/* WP-23, Dropwave: council is a mode of this chat. The switch sits under the box, here and in the council. */}
+          <div className="px-1 pt-2">
+            <CouncilSwitch on={false} onChange={() => setCouncilOpen(true)} />
+          </div>
         </div>}
       </div>
-    </div>
-  );
-}
-
-/**
- * WP-22: who answers in this room (its responder mode) and who leads it. Auto names the quick model it asks, or says
- * the lead answers until one is set up.
- */
-function RoomResponder({ chat, members }: { chat: GroupChat; members: Mono[] }) {
-  const mode = responderOf(chat);
-  const lead = hostOf(members.map((m) => ({ id: m.id, name: monoLook(m).name })), chat.leadId);
-  const model = mode === "auto" ? quickModel() : undefined;
-  const select = "h-6 w-full rounded-md border border-content/15 bg-transparent px-1 text-[12px] text-content";
-  return (
-    <div className="flex flex-col gap-1 px-3 pb-3" data-hub-room-settings>
-      <label className="flex flex-col gap-0.5 text-xs leading-5 text-content/60">
-        Who answers
-        <select className={select} value={mode} onChange={(e) => setRoomResponder(chat.id, e.target.value as typeof mode)} data-hub-room-responder>
-          {RESPONDER_MODES.map((m) => (
-            <option key={m} value={m}>
-              {RESPONDER_LABELS[m].label}
-            </option>
-          ))}
-        </select>
-      </label>
-      <p className="text-[11px] leading-4 text-content/55" data-hub-room-responder-hint>
-        {RESPONDER_LABELS[mode].hint}
-        {mode === "auto" ? (model ? ` It asks ${model.name}.` : " Add a model in Settings, Other models; until then the lead answers.") : ""}
-      </p>
-      {members.length > 1 ? (
-        <label className="flex flex-col gap-0.5 text-xs leading-5 text-content/60">
-          Lead
-          <select className={select} value={lead?.id ?? ""} onChange={(e) => setRoomLead(chat.id, e.target.value || undefined)} data-hub-room-lead>
-            {members.map((m) => (
-              <option key={m.id} value={m.id}>
-                {monoLook(m).name}
-              </option>
-            ))}
-          </select>
-        </label>
-      ) : null}
     </div>
   );
 }
@@ -682,7 +640,7 @@ function EmptyChat({ chat, onAdd }: { chat: GroupChat; onAdd: () => void }) {
       <div className="flex max-w-[380px] flex-col items-center gap-3 text-center">
         <p className="text-[13px] text-content">Only you are in {chatPhrase(chat)} so far.</p>
         <p className="text-[13px] leading-5 text-content/60">
-          A leadership team is a group chat with the Monos you choose. Add one to start talking.
+          A leadership team is a group chat with the first mates you choose. Add one to start talking.
         </p>
         <button
           type="button"
@@ -690,7 +648,7 @@ function EmptyChat({ chat, onAdd }: { chat: GroupChat; onAdd: () => void }) {
           className="flex items-center gap-1.5 rounded-md bg-content/10 px-3 py-1.5 text-[13px] text-content hover:bg-content/15"
         >
           <Plus className="size-3.5" strokeWidth={1.75} />
-          Add a Mono
+          Add a first mate
         </button>
       </div>
     </div>
@@ -722,7 +680,7 @@ function MonoPicker({ chat, monos, anchor, onClose }: { chat: GroupChat; monos: 
       style={{ left: anchor.left, top: Math.max(8, top) }}
       className="fixed z-50 w-[260px] rounded-lg border border-stroke popover-glass p-1 shadow-2xl"
     >
-      <div className="px-2 pb-1 pt-1 text-xs text-content/60">Add a Mono to {chat.name}</div>
+      <div className="px-2 pb-1 pt-1 text-xs text-content/60">Add a first mate to {chat.name}</div>
       {monos.map((mono) => {
         const look = monoLook(mono);
         const inChat = chat.memberIds.includes(mono.id);

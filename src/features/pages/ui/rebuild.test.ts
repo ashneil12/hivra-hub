@@ -51,6 +51,7 @@ it("Rebuild: say what should change, see the new version, use it, and the page k
   await act(async () => root.render(createElement(PagesContent)));
   expect(host.querySelector("[data-pages-open] h1")!.textContent).toBe("Agents");
 
+  await act(async () => (host.querySelector("[data-pages-menu-button]") as HTMLButtonElement).click());
   await act(async () => (host.querySelector("[data-pages-rebuild]") as HTMLButtonElement).click());
   const input = host.querySelector('[data-pages-rebuild-ask] input[aria-label="What should change"]') as HTMLInputElement;
   expect((host.querySelector("[data-pages-rebuild-ask] [data-pages-mono-picker]") as HTMLSelectElement).value).toBe("ed");
@@ -80,6 +81,7 @@ it("a new version that newly asks something says so, and using it is Use it and 
   const root = createRoot(host);
   roots.push(root);
   await act(async () => root.render(createElement(PagesContent)));
+  await act(async () => (host.querySelector("[data-pages-menu-button]") as HTMLButtonElement).click());
   await act(async () => (host.querySelector("[data-pages-rebuild]") as HTMLButtonElement).click());
   await type(host.querySelector('[data-pages-rebuild-ask] input') as HTMLInputElement, "let me message a Mono");
   await act(async () => (host.querySelector("[data-pages-rebuild-ask] form") as HTMLFormElement).requestSubmit());

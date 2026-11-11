@@ -88,6 +88,25 @@ it("the held-builders line opens Settings > Worktrees > Clean up, and nothing el
   });
 });
 
+it("needs you opens the inbox and does not queue a decision", () => {
+  const used = hands();
+  applyHomeOpen({ kind: "needs" }, used);
+  expect(used.closeChrome).toHaveBeenCalledOnce();
+  expect(used.openInbox).toHaveBeenCalledOnce();
+  expect(takeHomeDecision([{ key: "ship", project: "C:/work/crew" }])).toBeNull();
+});
+
+it("opens an http link and ignores every other scheme", () => {
+  const open = vi.spyOn(window, "open").mockImplementation(() => null);
+  const used = hands();
+  applyHomeOpen({ kind: "url", href: "https://example.com/pr/1" }, used);
+  applyHomeOpen({ kind: "url", href: "javascript:alert(1)" }, used);
+  applyHomeOpen({ kind: "url", href: "file:///tmp/secret" }, used);
+  expect(open).toHaveBeenCalledExactlyOnceWith("https://example.com/pr/1", "_blank", "noopener");
+  expect(used.openTeam).not.toHaveBeenCalled();
+  open.mockRestore();
+});
+
 it("a spend pause opens Settings > Crew on the spend limit, and does not open Clean up", () => {
   const line = builderHoldLine({
     id: "builders-spend",

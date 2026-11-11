@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 import { beforeEach, expect, it } from "vitest";
 import { undoBotChange } from "../../hub/model/botChanges";
-import { BUILD_MOVED, buildPage, checkBuiltSpec, SEATED_ONLY_PAGES } from "./buildPage";
+import { buildPage, checkBuiltSpec, SEATED_ONLY_PAGES } from "./buildPage";
 import { handleBridgeCall, KEYS_REFUSAL } from "./bridge";
 import { checkBespokePage } from "./designCheck";
 import { approvedPermissions, keepPage, pageFromSpec, resetPagesForTest } from "./pages";
@@ -26,8 +26,11 @@ it("a built page is validated before it is ready (a Mono's page_build, or the de
   expect((await buildPage(req, { roster, stub: true })).status).toBe("ready");
 });
 
-it("outside the dev stub the Build button says pages are built from a Mono's chat now (WP-04), never pretends", async () => {
-  expect(await buildPage(req, { roster, stub: false })).toEqual({ status: "not-connected", reason: BUILD_MOVED });
+it("outside the dev stub the Build button asks the first mate in its own chat (G15), never pretends", async () => {
+  // No chat reachable from here: a plain line, no page made up. The ask itself is in buildPage.firstMate.test.ts.
+  const r = await buildPage(req, { roster, stub: false, chat: null });
+  expect(r.status).toBe("error");
+  expect(r).not.toHaveProperty("spec");
 });
 
 it("bundles the restyled Tremor-style bar list as an allowed block", () => {

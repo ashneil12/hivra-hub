@@ -87,7 +87,10 @@ import {
   monoLook,
   monosSnapshot,
   subscribeMonos,
+  monoSessionProject,
 } from "../../monos/model/mono";
+import { hubData } from "../../hub/model/hubData";
+import { ONE_CHAT_LOOK } from "../../hub/model/hubBundle";
 import { MonoHeader } from "../../monos/ui/MonoHeader";
 import { reportTeamOf, useDelegationPane } from "../../monos/hooks/useDelegationPane";
 import { readTeamReport } from "../../monos/model/teamReport";
@@ -493,6 +496,8 @@ const LocalSessionPane = memo(function LocalSessionPane({
   useCodingTeamVersion();
   // A coding team's own chat (codingTeam.ts) sends like a Mono's: Stop in the send button, the model line above the box.
   const teamChat = !agent && isCodingTeamChat(session.id);
+  // Dropwave: a first mate's chat is written in the same box as every other chat (hubBundle.ts ONE_CHAT_LOOK).
+  const monoBox = !!agent && !ONE_CHAT_LOOK;
   const delegationPane = useDelegationPane(session.id, isOrchestratorChat(session.id), !!session.pendingQuestion);
   // WP-120: the lead strip names the crew only when this chat has handed work out.
   const hasCrew = ownsWork(session.id, useDelegationRows());
@@ -784,11 +789,13 @@ const LocalSessionPane = memo(function LocalSessionPane({
       compactSupported={canCompactHarnessContext(session.harness)}
       recents={recents}
       hideProjectPicker={
+        !!agent ||
         !!session.inboxAsk ||
         (hideProjectPicker ? !showDeckProjectPicker : false)
       }
-      hideBranchPicker={!!session.inboxAsk || managed}
-      hideTopBar={!!session.inboxAsk}
+      hideBranchPicker={!!agent || !!session.inboxAsk || managed}
+      // A first mate's chat has no checkout or repo to pick: its box starts at the text.
+      hideTopBar={!!agent || !!session.inboxAsk}
       context={session.context}
       quoteRequest={quoteRequest}
       initialDraft={
@@ -821,6 +828,7 @@ const LocalSessionPane = memo(function LocalSessionPane({
           : undefined
       }
       draftWorkspace={
+        !agent &&
         !session.inboxAsk &&
         !session.worktreeRemoved &&
         !managed &&
@@ -1047,7 +1055,9 @@ const LocalSessionPane = memo(function LocalSessionPane({
           <PrivateMark on />
           {copyChatLink}
         </div>
-      ) : copyChatLink ? (
+      ) : copyChatLink && !ONE_CHAT_LOOK ? (
+        // Dropwave (Ash, 11 Nov: "I don't see the point of that copy chat link button"): in the hub the link is in the
+        // chat's right-click menu in the chat list, not a button over the first message.
         <div
           className={`pointer-events-none absolute top-2 z-10 ${splitButtons ? "right-16" : "right-2"}`}
         >
@@ -1131,7 +1141,7 @@ const LocalSessionPane = memo(function LocalSessionPane({
             {remoteSessionLoading ? null : isEmpty ? (
               agent ? (
                 <div className="scrollbar-none h-full min-h-0 overflow-y-auto">
-                  <MonoHeader agent={agent} greeting />
+                  <MonoHeader agent={agent} greeting project={monoProjectName(session.id)} />
                 </div>
               ) : session.inboxAsk ? (
                 <div className="scrollbar-none h-full min-h-0 overflow-y-auto">
@@ -1378,9 +1388,9 @@ const LocalSessionPane = memo(function LocalSessionPane({
               // A Mono's composer fills the width with the room's side padding (GroupChatView).
               // A worker's glass dock floats over the transcript ([data-glass-dock] in index.css).
               data-glass-dock={glassDock || undefined}
-              className={agent ? "w-full shrink-0 px-6 xl:px-8" : "mx-auto w-full max-w-4xl shrink-0"}
+              className={monoBox ? "w-full shrink-0 px-6 xl:px-8" : "mx-auto w-full max-w-4xl shrink-0"}
             >
-              {agent ? (
+              {agent && monoBox ? (
                 <>
                   <MessageQueue
                     messages={visibleMonoCompletionMessages(session)}
@@ -1591,4 +1601,10 @@ function monoUsageProviders(harness: HarnessId): RateLimitProvider[] {
     harness === "devin"
     ? [harness]
     : [];
+}
+
+/** Dropwave: the project a Mono's chat is its own chat for (the Chief of Staff has one per project), by name. */
+function monoProjectName(sessionId: string): string | undefined {
+  const projectId = monoSessionProject(sessionId);
+  return projectId ? hubData().listProjects().find((project) => project.id === projectId)?.name : undefined;
 }

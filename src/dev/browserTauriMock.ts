@@ -284,6 +284,12 @@ mockIPC(
       (window as unknown as { __ipc: string[] }).__ipc = [...seen];
     }
     if (cmd.startsWith("plugin:hub|")) return hubIpc(cmd, args as Record<string, unknown> | undefined);
+    // The design mockup's own example answers (src/dev/mockup/ipc.ts): the Inbox's sources, Notes, the changes card.
+    const mockup = (window as unknown as { __mockupIpc?: (cmd: string, args?: Record<string, unknown>) => unknown }).__mockupIpc?.(
+      cmd,
+      args as Record<string, unknown> | undefined,
+    );
+    if (mockup !== undefined) return mockup;
     if (cmd === "set_window_glass_enabled") {
       emulateNativeGlass(args as GlassArgs);
       return true;
@@ -318,7 +324,7 @@ mockIPC(
     }
     // Dev only: chats a browser test seeds (`monocode:dev-sessions`, as session_list_by_project returns them) for their
     // folder; session_get reads one back with an empty transcript, so opening it from the list works.
-    if (cmd === "session_list_by_project" || cmd === "session_get") {
+    if (cmd === "session_list_by_project" || cmd === "session_get" || cmd === "mono_session_get") {
       let seeded: Array<Record<string, unknown>> = [];
       try {
         seeded = JSON.parse(localStorage.getItem("monocode:dev-sessions") ?? "[]");
@@ -326,7 +332,7 @@ mockIPC(
         seeded = [];
       }
       const a = args as { cwd?: string; sessionId?: string };
-      if (cmd === "session_get") {
+      if (cmd === "session_get" || cmd === "mono_session_get") {
         const found = seeded.find((entry) => entry.id === a.sessionId);
         return found ? { modelSettings: {}, blocks: [], ...found } : null;
       }
@@ -373,6 +379,16 @@ mockIPC(
     if (cmd === "decisions_list") return seededList("monocode:dev-decisions");
     if (cmd === "delivery_list") return seededList("monocode:dev-deliveries");
     if (cmd === "pr_watch_list") return seededList("monocode:dev-pr-watches");
+    if (cmd === "automations_list") return seededList("monocode:dev-automations");
+    // A project with no project file: no actions, no runs (the generic list answer below is an array, not a listing).
+    if (cmd === "project_actions_list") {
+      const cwd = (args as { cwd?: string } | undefined)?.cwd ?? "";
+      return {
+        status: { projectRoot: cwd, path: `${cwd}/.monocode/project.json`, state: "none", error: null, fileHash: null, file: null, trustedHash: null, trusted: null, importedAt: null },
+        actions: [],
+        runs: [],
+      };
+    }
     // WP-210: answering a seeded decision clears it on the one Needs you list.
     if (cmd === "decisions_answer") {
       const input = (args ?? {}) as { project?: string; key?: string; answer?: string };

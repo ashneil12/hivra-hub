@@ -4,7 +4,7 @@ import { RestorePreview } from "./RestorePreview";
 import { FolderOpen } from "../../../shared/ui/icons";
 import { IS_MAC } from "../../../platform/tauri/platform";
 import { dismissDoneNeeds, hubData, useHubDataVersion } from "../model/hubData";
-import { appItemInView, NO_CODE_ITEM, openCodingTeam, showAppItem } from "../model/hubNav";
+import { appItemInView, NO_CODE_ITEM, PROJECT_HOME_ITEM, openCodingTeam, showAppItem } from "../model/hubNav";
 import type { HubSelection } from "../model/hubNav";
 import { GroupChatView, NewGroupChat } from "./GroupChatView";
 import { NewProjectView } from "./NewProjectView";
@@ -48,6 +48,8 @@ export function HubSurface({ selection }: { selection: HubSelection }) {
   if (selection.item === "restore") return <RestorePreview />;
   if (selection.item === "autopilot") return <AutopilotView />;
   if (!project) return <HubHome />;
+  // Dropwave: a project opens on its own home (the Chief of Staff's box, then what this project needs and has).
+  if (selection.item === PROJECT_HOME_ITEM) return <HomeView key={project.id} projectId={project.id} />;
   if (selection.item === "leadership-team")
     return <GroupChatView key={project.id} chatId={leadershipChatId(project.id)} projectId={project.id} />;
   if (selection.item.startsWith("chat:"))

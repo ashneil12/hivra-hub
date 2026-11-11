@@ -7,6 +7,7 @@ import { builderLaunchAllowed, type BuilderHealth, type BuilderScale } from "../
 import type { WorkerLimits } from "../../monos/model/workerPool";
 import { collectProgramme, readPackage, type ProgrammePackage, type ProgrammeStatus } from "../../programme/model/programme";
 import type { LeadContext } from "./schedule";
+import { DEFAULT_INTERVAL_MINUTES, leaseMsForTick } from "./setting";
 import type { ConflictAnswer, LeadLeaseAnswer, LeadTickPorts, SlotAnswer, TickMergeOutcome, TickWatch } from "./tick";
 
 export type SlotFacts = {
@@ -100,7 +101,12 @@ export function conflictOf(value: unknown): ConflictAnswer {
   throw new Error("The branch check gave no answer.");
 }
 
-export function appPorts(host: PortHost, folder: string, context: LeadContext): LeadTickPorts {
+export function appPorts(
+  host: PortHost,
+  folder: string,
+  context: LeadContext,
+  intervalMinutes = DEFAULT_INTERVAL_MINUTES,
+): LeadTickPorts {
   const actor = { id: context.lead.sessionId, project: context.projectId, kind: "first-mate" };
   return {
     async list() {
@@ -146,7 +152,14 @@ export function appPorts(host: PortHost, folder: string, context: LeadContext): 
     },
     async leadLease() {
       // The project's folder is the key the Settings switch and the Rust side use.
-      return leaseOf(await host.invoke("programme_lead_acquire", { project: folder, holder: context.lead.sessionId }));
+      // The lease follows this project's tick interval (two intervals), not a fixed 15 minutes.
+      return leaseOf(
+        await host.invoke("programme_lead_acquire", {
+          project: folder,
+          holder: context.lead.sessionId,
+          leaseMs: leaseMsForTick(intervalMinutes),
+        }),
+      );
     },
     async considerConflict(packageId, branch) {
       return conflictOf(await host.invoke("programme_consider_conflict", { project: folder, packageId, branch }));

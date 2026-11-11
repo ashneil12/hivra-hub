@@ -189,6 +189,8 @@ test("Rebuild changes the page from Ash's words: the new version previews live, 
   await expect(page.locator("[data-pages-open] h1")).toHaveText("Agents");
   // No Mono runs here: the dev stub stands in for the one that changes the page.
   await page.evaluate(() => localStorage.setItem("monocode:pages-dev-stub", "1"));
+  // Dropwave: Ask for a change sits behind the page's three-dot menu.
+  await page.locator("[data-pages-menu-button]").click();
   await page.locator("[data-pages-rebuild]").click();
   await page.locator('[data-pages-rebuild-ask] input[aria-label="What should change"]').fill("Add a column for stuck time");
   await shot(page, "rebuild-1-ask");

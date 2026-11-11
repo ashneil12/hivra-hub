@@ -188,13 +188,13 @@ function automationLabel(automation: Automation): string {
 /** One node per repo. A time trigger stays one node. The key uses the scrubbed repo. */
 function triggerPieces(trigger: AutomationTrigger): { key: string; label: string }[] {
   if (trigger.kind === "time") {
-    return [{ key: triggerKey(trigger), label: scrubShownText(triggerLabel(trigger)) }];
+    return [{ key: triggerKey(trigger), label: scrubShownText(scheduleLabel(trigger)) }];
   }
   const repos = uniqueRepos(trigger);
-  if (repos.length === 0) {
-    return [{ key: triggerKey(trigger), label: scrubShownText(triggerLabel(trigger)) }];
-  }
   const noun = eventNoun(trigger.event);
+  if (repos.length === 0) {
+    return [{ key: triggerKey(trigger), label: scrubShownText(noun) }];
+  }
   return repos.map((repo) => {
     const shown = scrubShownText(repo);
     return {
@@ -202,6 +202,13 @@ function triggerPieces(trigger: AutomationTrigger): { key: string; label: string
       label: shown ? `${noun} in ${shown}` : noun,
     };
   });
+}
+
+/** Same words as `started_by` for a schedule. */
+function scheduleLabel(trigger: AutomationTrigger): string {
+  if (trigger.scheduleKind === "hourly") return "The hourly schedule";
+  const clock = clockPhrase(trigger.time);
+  return clock ? `The ${clock} schedule` : "The schedule";
 }
 
 function uniqueRepos(trigger: AutomationTrigger): string[] {
@@ -216,18 +223,6 @@ function uniqueRepos(trigger: AutomationTrigger): string[] {
   add(trigger.repo);
   for (const repo of trigger.repos ?? []) add(repo);
   return out;
-}
-
-/** Same words as `started_by` for a scheduled or event trigger. */
-export function triggerLabel(trigger: AutomationTrigger): string {
-  if (trigger.kind === "time") {
-    if (trigger.scheduleKind === "hourly") return "The hourly schedule";
-    const clock = clockPhrase(trigger.time);
-    return clock ? `The ${clock} schedule` : "The schedule";
-  }
-  const noun = eventNoun(trigger.event);
-  const repo = triggerRepo(trigger);
-  return repo ? `${noun} in ${repo}` : noun;
 }
 
 function eventNoun(event: string): string {
@@ -246,12 +241,6 @@ function eventNoun(event: string): string {
     default:
       return "An event";
   }
-}
-
-function triggerRepo(trigger: AutomationTrigger): string {
-  const repo = text(trigger.repo);
-  if (repo) return repo;
-  return (trigger.repos ?? []).map((item) => text(item)).find((item) => item.length > 0) ?? "";
 }
 
 function text(value: unknown): string {
