@@ -681,15 +681,15 @@ function carriedMonoRules(rules: unknown): CrewRule[] {
 /** Only a Mono's own chat or a coding-team chat has tasks; the checker only reads. */
 /** WP-141: the folder whose crew policy a launch or a pick reads: the chat's team, else the project it names, else its own. */
 /**
- * WP-141 round 11: the worker default for a folder. The folder's own hub project, then the most specific project that
- * owns it. A host that has not named hub roots looks the folder up only, and does not ask which projects own it.
+ * WP-141 round 11: the worker default a session, a brief and a pick send. The same lookup as a plan
+ * (projectDefaultForFolder): the folder's own hub project, then the most specific project that owns it.
+ * Hub roots, when the host names them, are sent so a project with no crew row is still found.
  */
 function projectDefaultFor(tasks: AgentAppTasksHost, folder: string) {
-  const roots = tasks.hubProjectRoots?.();
   return projectDefaultForFolder(
     folder,
     (key) => tasks.pool?.projectDefault?.(tasks.hubProjectId?.(key) ?? key),
-    roots === undefined ? undefined : { roots },
+    { roots: tasks.hubProjectRoots?.() },
   );
 }
 

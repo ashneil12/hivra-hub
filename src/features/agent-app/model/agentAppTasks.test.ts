@@ -92,6 +92,19 @@ vi.mock("../../selfBuild/model/hubCode", async (actual) => ({
 }));
 const PROJECT_PREVIEW = "/tmp/hub-preview";
 
+// A session, a brief and a pick ask which projects own the folder. This file does not stage that command, so the
+// answer is no owners. Any other command still fails the way the real bridge does.
+vi.mock("@tauri-apps/api/core", async () => {
+  const actual = await vi.importActual<typeof import("@tauri-apps/api/core")>("@tauri-apps/api/core");
+  return {
+    ...actual,
+    invoke: vi.fn(async (command: string, args?: unknown) => {
+      if (command === "crew_projects_owning") return [];
+      return actual.invoke(command, args as never);
+    }),
+  };
+});
+
 vi.mock("../../../integrations/harness/core/availability", () => ({
   // Before the first probe ends every harness reads as missing. A bench plan resolves only the Claude wrapper.
   isHarnessAvailable: (id: string) =>

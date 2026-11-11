@@ -225,7 +225,8 @@ function mostSpecificFirst(owners: readonly string[]): string[] {
 
 /**
  * WP-141 round 11: the worker default for a folder. Its own hub project wins, then the most specific project that
- * owns it. `opts` absent looks up the folder only, so a caller that has not named hub roots makes no ownership read.
+ * owns it. `roots` are hub project folders, so a project with a worker default and no crew row is still found.
+ * A plan, a session start, a brief and the crew pick all use this.
  */
 export async function projectDefaultForFolder(
   folder: string,
@@ -234,9 +235,8 @@ export async function projectDefaultForFolder(
 ): Promise<WorkerPick> {
   const own = usableDefault(lookup(folder));
   if (own) return own;
-  if (!opts) return undefined;
   const seen = pathKey(folder);
-  for (const owner of mostSpecificFirst(await owningProjects(folder, opts.roots))) {
+  for (const owner of mostSpecificFirst(await owningProjects(folder, opts?.roots))) {
     if (pathKey(owner) === seen) continue;
     const pick = usableDefault(lookup(owner));
     if (pick) return pick;
