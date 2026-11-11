@@ -23,6 +23,8 @@ pub mod wiring;
 pub mod creator;
 
 #[cfg(test)]
+mod commands_tests;
+#[cfg(test)]
 mod creator_tests;
 #[cfg(test)]
 mod defaults_tests;
@@ -37,6 +39,7 @@ mod tests;
 #[cfg(test)]
 mod verify_tests;
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
@@ -95,6 +98,37 @@ fn scope(project: Option<String>) -> Result<Scope, String> {
 #[tauri::command(async)]
 pub fn plugins_list(app: tauri::AppHandle) -> Result<registry::Registry, String> {
     registry::read(&host(&app)?)
+}
+
+/// Slash commands from plugins that are on for `cwd`. A missing or unreadable registry is an empty list.
+/// Each plugin is read from its files again: a recorded command name is not trusted, and one broken command
+/// does not drop its siblings. The same command name keeps the first plugin in name order.
+pub fn plugin_commands_for(host: &Host, cwd: &Path) -> Vec<hivra::Command> {
+    let Ok(registry) = registry::read(host) else {
+        return Vec::new();
+    };
+    let mut by_name: BTreeMap<String, hivra::Command> = BTreeMap::new();
+    for (name, entry) in &registry.plugins {
+        if !entry.active_for(Some(cwd)) {
+            continue;
+        }
+        let Ok(loaded) = load_plugin(&host.installed(name)) else {
+            continue;
+        };
+        for command in loaded.hivra.commands {
+            by_name.entry(command.name.clone()).or_insert(command);
+        }
+    }
+    by_name.into_values().collect()
+}
+
+/// WP-182: the card's command list. Same rules as `plugin_commands_for`.
+#[tauri::command(async)]
+pub fn list_plugin_commands(app: tauri::AppHandle, cwd: String) -> Vec<hivra::Command> {
+    let Ok(host) = host(&app) else {
+        return Vec::new();
+    };
+    plugin_commands_for(&host, &crate::fs::expand_home(&cwd))
 }
 
 /// Read and validate a plugin folder without installing it.

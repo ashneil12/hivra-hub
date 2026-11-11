@@ -1046,6 +1046,8 @@ pub fn run() {
             // WP-143: is an Explore agent already defined? Reads only; nothing is written.
             explore_agent::claude_explore_agent_defined,
             skills::list_skills,
+            // WP-182: plugin slash commands for the Mono card.
+            plugins::list_plugin_commands,
             // WP-30: plugins.
             plugins::plugins_list,
             plugins::plugins_inspect,
