@@ -154,6 +154,12 @@ export const HARNESS_IDLE_PARK_MS = 3 * 60_000;
 const BACKGROUND_RECHECK_MS = 30_000;
 
 /**
+ * Hard ceiling on one background hold: once a provider has reported background work for this long, the chat is
+ * parked anyway and a status line says so. A provider whose work never reports its end must not keep a CLI alive.
+ */
+export const BACKGROUND_HOLD_CEILING_MS = 60 * 60_000;
+
+/**
  * Each warm child is a CLI process of a few hundred MB, plus its MCP servers.
  * Past `limit` idle ones, the least recently settled is parked early, never
  * one `keep` claims (the conversation on screen) unless the limit is zero.
@@ -178,8 +184,12 @@ const idleParkTimers = new Map<
     timer: ReturnType<typeof setTimeout>;
     /** The last check found background work, so the idle time starts again once it ends. */
     wasBusy: boolean;
+    /** When the current background hold began: the first check that found work in this run of busy checks. */
+    holdSince?: number;
   }
 >();
+/** Where a status line for a parked chat goes: the sink of its last turn, kept until the chat is stopped. */
+const idleParkEvents = new Map<string, (event: HarnessEvent) => void>();
 const sessionOperationTails = new Map<string, Promise<void>>();
 const sessionSteerTails = new Map<string, Promise<void>>();
 const activeTurnSessions = new Set<string>();
@@ -252,14 +262,16 @@ function armIdlePark(
   sessionId: string,
   delay: number,
   wasBusy: boolean,
+  holdSince?: number,
 ): void {
   cancelIdlePark(sessionId);
   idleParkTimers.set(sessionId, {
     harness,
     wasBusy,
+    holdSince,
     timer: setTimeout(() => {
       idleParkTimers.delete(sessionId);
-      parkWhenQuiet(harness, sessionId, wasBusy);
+      parkWhenQuiet(harness, sessionId, wasBusy, holdSince);
     }, delay),
   });
 }
@@ -268,9 +280,21 @@ function parkWhenQuiet(
   harness: HarnessId,
   sessionId: string,
   wasBusy: boolean,
+  holdSince?: number,
 ): void {
   if (hasBackgroundWork(harness, sessionId)) {
-    armIdlePark(harness, sessionId, BACKGROUND_RECHECK_MS, true);
+    const since = holdSince ?? Date.now();
+    if (Date.now() - since < BACKGROUND_HOLD_CEILING_MS) {
+      armIdlePark(harness, sessionId, BACKGROUND_RECHECK_MS, true, since);
+      return;
+    }
+    // The provider has reported work for the whole ceiling. Park it anyway, and say why in the chat.
+    idleParkEvents.get(sessionId)?.({
+      type: "status",
+      text: "The provider still reported background work after 60 minutes, so the chat was parked. Send a message to continue.",
+      key: "background-hold-ceiling",
+    });
+    void stopHarnessSession(harness, sessionId);
     return;
   }
   if (wasBusy) {
@@ -313,6 +337,7 @@ export function enforceHarnessIdleLimit(): void {
 export function resetHarnessIdlePark(): void {
   for (const { timer } of idleParkTimers.values()) clearTimeout(timer);
   idleParkTimers.clear();
+  idleParkEvents.clear();
   clearTimeout(idleLimitCheck);
   idleLimitCheck = undefined;
   idleParkPolicy = {
@@ -364,6 +389,7 @@ export function sendHarnessTurn(input: SendTurnInput & { harness: HarnessId }) {
       throw new Error(`${input.harness} is not connected yet`);
     }
     cancelIdlePark(input.sessionId);
+    idleParkEvents.set(input.sessionId, input.onEvent);
     const controlled = typeof isTauri === "function" && isTauri();
     if (controlled)
       await invoke("control_authorize_turn", {
@@ -548,6 +574,7 @@ export async function stopHarnessSession(
   sessionId: string,
 ): Promise<void> {
   cancelIdlePark(sessionId);
+  idleParkEvents.delete(sessionId);
   const adapter = getHarness(harness);
   if (!adapter?.live) return;
   await adapter.stopSession(sessionId);
