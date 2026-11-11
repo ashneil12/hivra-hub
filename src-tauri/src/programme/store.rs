@@ -615,7 +615,8 @@ fn branch_released(conn: &Connection, project: &str, branch: &str) -> Result<boo
 /// The branch is this package's worktree branch: it starts with `wp/` and either a
 /// path segment is the package id (`wp/WP-162`, `wp/WP-A`) or a token is the id
 /// without its `WP-` prefix (`wp/162` for `WP-162`, `wp/153b-quarantine-rewrite`
-/// for `WP-153b`), compared ignoring case. `wp/162b-update` is not `WP-162`,
+/// for `WP-153b`), compared ignoring case. A numbered token may be any part of the
+/// branch; a lettered one only the first part after `wp/`. `wp/162b-update` is not `WP-162`,
 /// and `wp/90` is not `WP-9`.
 pub(crate) fn branch_for_package(branch: &str, wp: &str) -> bool {
     let branch = branch.trim();
@@ -638,9 +639,14 @@ pub(crate) fn branch_for_package(branch: &str, wp: &str) -> bool {
     let Some(token) = package_token(wp) else {
         return false;
     };
-    branch
-        .split(|c: char| !c.is_ascii_alphanumeric())
-        .any(|part| part.eq_ignore_ascii_case(token))
+    let mut parts = branch[3..].split(|c: char| !c.is_ascii_alphanumeric());
+    if token.bytes().all(|b| b.is_ascii_digit()) {
+        return parts.any(|part| part == token);
+    }
+    // A lettered id is also a word (`WP-A` would match `wp/fix-a-bug`), so only the first part after `wp/` counts.
+    parts
+        .next()
+        .is_some_and(|first| first.eq_ignore_ascii_case(token))
 }
 
 /// The package id with a leading `WP-` removed. `WP-153b` is `153b`.
