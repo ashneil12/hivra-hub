@@ -1,5 +1,10 @@
 import { nativeModelId } from "../../../../features/sessions/model/models";
 import { AcpSubagents } from "../../core/acpSubagents";
+import {
+  changeMode,
+  keepCurrentMode,
+  type PermissionRowKey,
+} from "../../core/permissionMatrix";
 import type { RuntimeMode } from "../../../../features/sessions/model/session";
 import { AcpClient, type AcpHandlers } from "../../core/acp";
 import { TURN_IDLE_TIMEOUT_MS } from "../../core/jsonRpc";
@@ -55,6 +60,8 @@ type Live = {
   stale: boolean;
   runtimeMode: RuntimeMode;
   planning: boolean;
+  /** The mode Antigravity last confirmed, for the refusal rule (WP-175). */
+  appliedMode?: PermissionRowKey;
   onEvent: (event: HarnessEvent) => void;
   approvals: Map<number, (decision: ApprovalDecision) => void>;
   promptInFlight: boolean;
@@ -256,6 +263,15 @@ async function teardownLive(live: Live): Promise<void> {
   live.acp.close();
   unwatchChild(live.childKey);
   await killChild(live.childKey).catch(() => undefined);
+}
+
+/**
+ * Antigravity's ACP session/prompt is awaited for the whole turn. This adapter's
+ * ACP handling has no signal for a detached shell, a subagent that outlives
+ * the prompt, or a follow-up turn after it returns, so nothing is kept busy.
+ */
+export function antigravityHasBackgroundWork(_sessionId: string): boolean {
+  return false;
 }
 
 export async function stopAntigravitySession(sessionId: string): Promise<void> {
@@ -630,16 +646,31 @@ async function applyRuntimeMode(
   runtimeMode: RuntimeMode,
   planning = false,
 ): Promise<void> {
-  // Fail closed: a rejected downgrade must not leave a prior yolo mode active.
-  await live.acp
-    .request(
-      "session/set_mode",
-      {
-        sessionId: live.acpSessionId,
-        modeId: antigravityModeId(runtimeMode, planning),
-      },
-      CONTROL_TIMEOUT_MS,
-    );
+  // Fail closed: a refused downgrade ends the turn as waiting, so a prior yolo
+  // mode never runs on. A refused upgrade keeps the current mode and says so
+  // (core/permissionMatrix.ts, WP-175).
+  const target: PermissionRowKey = planning ? "plan" : runtimeMode;
+  const result = await changeMode({
+    current: live.appliedMode ?? null,
+    target,
+    cli: "antigravity",
+    send: () =>
+      live.acp.request(
+        "session/set_mode",
+        {
+          sessionId: live.acpSessionId,
+          modeId: antigravityModeId(runtimeMode, planning),
+        },
+        CONTROL_TIMEOUT_MS,
+      ),
+  });
+  if (result.outcome === "applied") {
+    live.appliedMode = target;
+    return;
+  }
+  if (result.outcome === "keep") {
+    keepCurrentMode(live, result.current, result.message);
+  }
 }
 
 async function setConfigOption(
