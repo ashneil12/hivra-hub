@@ -59,6 +59,24 @@ mod stdout_cap_tests {
     use super::read_stdout_lines;
     use std::io::Cursor;
 
+    // Review r5 repro (LOW): a stderr line past the cap ends the stderr read, so the pipe closes and the child's next
+    // stderr write fails (EPIPE or SIGPIPE: Node throws, Rust's eprintln! panics, Go exits). One long log line ends the
+    // agent. A stderr reader should drop the rest of that line and read on.
+    #[test]
+    fn review_r5_a_long_stderr_line_does_not_end_the_read() {
+        let big = "x".repeat(65 * 1024);
+        let input = format!("{big}\nnext\n");
+        let mut got = Vec::new();
+        read_stdout_lines(Cursor::new(input.into_bytes()), Some(64 * 1024), |line| {
+            got.push(line);
+            true
+        });
+        assert!(
+            got.iter().any(|line| line == "next"),
+            "the read ended at the long line"
+        );
+    }
+
     #[test]
     fn a_claude_line_of_nine_mebibytes_is_delivered_whole_and_the_session_goes_on() {
         let big = "x".repeat(9 * 1024 * 1024);

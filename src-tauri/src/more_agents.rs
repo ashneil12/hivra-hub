@@ -1767,4 +1767,91 @@ mod tests {
             "a withdrawn approval came back once the generation counter restarted"
         );
     }
+
+    // Review r5 check (should pass): a space-separated loader value and an attached short value are both pinned, and
+    // the child is given the canonical path, not the link.
+    #[cfg(unix)]
+    #[test]
+    fn review_r5_space_separated_and_attached_values_are_pinned_and_canonical() {
+        let d = dir();
+        let bin = d.path().join("bin");
+        make_tool(&bin, "wp134-node", b"#!/bin/sh\n");
+        let hook = d.path().join("hook.mjs");
+        let req = d.path().join("req.cjs");
+        let link = d.path().join("hook-link.mjs");
+        std::fs::write(&hook, b"// hook").expect("hook");
+        std::fs::write(&req, b"// req").expect("req");
+        std::os::unix::fs::symlink(&hook, &link).expect("link");
+        let path_value = bin.to_string_lossy().into_owned();
+        let link_arg = link.to_string_lossy().into_owned();
+        let attached = format!("-r{}", req.to_string_lossy());
+        write_agents(
+            d.path(),
+            0,
+            vec![entry(
+                "wp134",
+                "wp134-node",
+                &["--import", link_arg.as_str(), attached.as_str()],
+            )],
+        )
+        .expect("seed");
+        approve(d.path(), "wp134", &path_value).expect("approve");
+        let run = approved_spawn(d.path(), "wp134", &path_value).expect("starts as approved");
+        let canonical_hook = std::fs::canonicalize(&hook).expect("canon");
+        assert_eq!(run.args[1], canonical_hook.to_string_lossy());
+        std::fs::write(&req, b"require('child_process').exec('anything')").expect("swap");
+        assert!(approved_spawn(d.path(), "wp134", &path_value).is_err());
+    }
+
+    // Review r5 repro (LOW): `-m` inside a short-flag cluster (`python3 -Bm mod`, `-um mod`) loads a module by name and
+    // is not seen as a loader flag, because only the second character is checked.
+    #[test]
+    fn review_r5_a_loader_flag_inside_a_cluster_is_refused() {
+        for cluster in ["-Bm", "-um", "-Im"] {
+            assert_eq!(
+                checked_fields(&entry("wp134", "/opt/python3", &[cluster, "agentmod"]))
+                    .err()
+                    .as_deref(),
+                Some(LOADER_REFUSED),
+                "{cluster} agentmod loads a module by name"
+            );
+        }
+    }
+
+    // Review r5 repro (MEDIUM, functional): a dot alone now makes an argument a relative file, so a version-pinned
+    // package, a dotted model name and an address are refused.
+    #[test]
+    fn review_r5_a_dotted_word_that_is_not_a_path_is_accepted() {
+        for args in [
+            &["some-acp-agent@1.2.3", "--acp"][..],
+            &["--model=gpt-4.1"][..],
+            &["--host", "127.0.0.1"][..],
+        ] {
+            assert!(
+                checked_fields(&entry("wp134", "/opt/npx", args)).is_ok(),
+                "{args:?} is refused as a relative file"
+            );
+        }
+    }
+
+    // Review r5 repro (LOW): the run folder is made with `create_dir_all`, which follows a link planted at
+    // `<data>/more-agents/run`, so the child can start inside a folder an agent writes; and it is not private (0700).
+    #[cfg(unix)]
+    #[test]
+    fn review_r5_the_run_folder_stays_inside_the_data_folder_and_is_private() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = dir();
+        let data = d.path().join("data");
+        let outside = d.path().join("project");
+        std::fs::create_dir_all(data.join("more-agents")).expect("data");
+        std::fs::create_dir_all(&outside).expect("outside");
+        std::os::unix::fs::symlink(&outside, data.join("more-agents").join("run")).expect("plant");
+        let run = run_folder(&data).expect("run folder");
+        let real = std::fs::canonicalize(&run).expect("canon");
+        let mode = std::fs::metadata(&run).expect("meta").permissions().mode() & 0o777;
+        assert!(
+            real.starts_with(std::fs::canonicalize(&data).expect("canon data")) && mode == 0o700,
+            "run folder is {real:?} with mode {mode:o}"
+        );
+    }
 }
